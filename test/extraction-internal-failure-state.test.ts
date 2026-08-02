@@ -240,3 +240,52 @@ describe('R7: claim 소유권 토큰', () => {
     } finally { db.close(); }
   });
 });
+
+/**
+ * R21 — 제외 경로 마커도 소유권 가드를 가진다.
+ *
+ * 다른 마커 쓰기는 전부 가드가 있는데 이 경로만 무가드였다. 살아있는 claim(-3) 위에
+ * 0/0 을 덮으면 소유자는 리스갱신 실패로 중단되고, 그 롤백은 extracted=-3 을 요구하므로
+ * 무효가 되어 행이 0/0 확정마커로 남는다 → 세션이 pending 에서 **영구 제외**된다.
+ */
+describe('R21: 제외 마커의 소유권 가드', () => {
+  it('살아있는 claim 위에 제외 마커를 덮지 않는다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
+        .run('s', new Date().toISOString(), EXTRACTION_STATE.CLAIMED, 0, 'ownerA');
+
+      // 제외 경로가 쓰는 것과 동일한 SQL
+      const res = db.prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+        VALUES (?, ?, 0, 0)
+        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+          extracted = 0, saved = 0
+        WHERE extraction_log.extracted <> ${EXTRACTION_STATE.CLAIMED}
+      `).run('s', new Date().toISOString());
+
+      expect(res.changes, '처리 중인 세션을 덮으면 그 작업이 영구 손실된다').toBe(0);
+      const row = db.prepare('SELECT extracted, claim_owner FROM extraction_log WHERE session_id = ?')
+        .get('s') as { extracted: number; claim_owner: string };
+      expect(row.extracted).toBe(EXTRACTION_STATE.CLAIMED);
+      expect(row.claim_owner).toBe('ownerA');
+    } finally { db.close(); }
+  });
+
+  it('선점되지 않은 세션에는 정상적으로 제외 마커를 쓴다 (가드가 과잉차단 아님)', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's2', 12);
+      const res = db.prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+        VALUES (?, ?, 0, 0)
+        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+          extracted = 0, saved = 0
+        WHERE extraction_log.extracted <> ${EXTRACTION_STATE.CLAIMED}
+      `).run('s2', new Date().toISOString());
+      expect(res.changes).toBe(1);
+      expect(pendingIds(db), '제외 마커가 있으면 pending 에서 빠진다').not.toContain('s2');
+    } finally { db.close(); }
+  });
+});

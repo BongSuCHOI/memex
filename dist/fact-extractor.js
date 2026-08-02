@@ -132,6 +132,9 @@ const EXCLUDE_PROJECTS = (process.env.BACKFILL_EXCLUDE_PROJECTS ||
     '/Users/jung-wankim/Project/Claude/memory-bank')
     .split(',')
     .map((s) => s.trim())
+    // 후행 슬래시를 제거한다. 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위
+    // 경로가 배제에서 풀리고, 코드가 막으려는 자기참조 피드백 루프가 열린다(R21 MEDIUM).
+    .map((s) => s.replace(/\/+$/, ''))
     .filter(Boolean);
 function isExcludedProject(project) {
     if (!project)
@@ -369,13 +372,23 @@ opts) {
         // (무경보 무진전 — 이 스레드가 계속 닫아온 클래스, Codex R20 MEDIUM).
         let markerWritten = false;
         try {
-            db.prepare(`
+            // 🚨 다른 마커 쓰기는 전부 소유권·상태 가드가 있는데(claim WHERE owned,
+            // failureMarkerUpsertSql, writeCompletionMarker 의 ownGuard) **이 경로만 무가드**
+            // 였다. 살아있는 claim(-3) 위에 0/0 을 덮으면 소유자는 리스갱신 실패로 중단되고,
+            // 그 롤백은 extracted=-3 을 요구하므로 무효가 되어 행이 0/0 확정마커로 남는다 →
+            // 세션이 pending 에서 영구 제외되고 워커는 'handoff' 로 거짓 계상한다
+            // (Codex R21 HIGH, 재현됨). 처리 중인 세션은 건드리지 않는다.
+            const res = db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
         VALUES (?, ?, 0, 0)
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
           extracted = 0, saved = 0
+        WHERE extraction_log.extracted <> ${EXTRACTION_STATE.CLAIMED}
       `).run(sessionId, new Date().toISOString());
-            markerWritten = true;
+            markerWritten = res.changes > 0;
+            if (!markerWritten) {
+                console.error(`extraction: session ${sessionId} 제외 마커를 쓰지 않았습니다 — 다른 러너가 선점 중`);
+            }
         }
         catch (e) {
             console.error(`extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: `
