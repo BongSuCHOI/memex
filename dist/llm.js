@@ -118,11 +118,18 @@ function retryBudget() {
         return Math.min(5, parseInt(raw.trim(), 10));
     return 2; // 기본 총 3회 시도
 }
-/** 지수 백오프(500ms → 1500ms …). 테스트는 MEMORY_BANK_LLM_RETRY_BASE_MS=0 으로 즉시. */
+/**
+ * 지수 백오프(500ms → 1500ms …). 테스트는 MEMORY_BANK_LLM_RETRY_BASE_MS=0 으로 즉시.
+ * base 와 결과 모두 상한을 둔다 — 오타 하나(예: 500000)로 워커가 사실상 정지하는
+ * 것을 막기 위해서다 (Codex 리뷰 MEDIUM 2026-07-17).
+ */
+const MAX_BACKOFF_BASE_MS = 5_000;
+const MAX_BACKOFF_MS = 30_000;
 function backoffMs(attempt) {
     const raw = process.env.MEMORY_BANK_LLM_RETRY_BASE_MS;
-    const base = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
-    return base * Math.pow(3, attempt);
+    const parsed = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
+    const base = Math.min(parsed, MAX_BACKOFF_BASE_MS);
+    return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 /** 단발 호출 — Agent SDK 우선, 실패 시(그리고 키가 있을 때만) Anthropic SDK 폴백. */

@@ -25,7 +25,13 @@ export declare function buildExtractionPrompt(exchanges: Array<{
     user_message: string;
     assistant_message: string;
 }>): string;
-export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string): Promise<ExtractedFact[]>;
+/**
+ * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
+ *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
+ */
+export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string, stats?: {
+    droppedBatches: number;
+}): Promise<ExtractedFact[]>;
 export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], codingAgent?: string): Promise<string[]>;
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string): Promise<{
     extracted: number;

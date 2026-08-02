@@ -495,6 +495,20 @@ export function initDatabase(): Database.Database {
     )
   `);
 
+  // Dead-letter marker for extraction (Codex 적대 리뷰 2026-07-17). A batch whose
+  // LLM call fails DETERMINISTICALLY (400/413/max_tokens — the same input always
+  // fails) is dropped so one bad batch can't wedge the session queue forever, but
+  // dropping it silently means those exchanges' facts are lost with no record.
+  // The count is persisted so the loss is queryable instead of invisible:
+  //   SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0;
+  {
+    const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'dropped_batches')) {
+      db.prepare('ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0').run();
+    }
+  }
+
   // Self-heal slug-format scope_project rows (cheap probe; no-op when clean).
   // Keeps the canonical path format intact even when other devices sync in
   // facts written by older code.

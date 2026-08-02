@@ -151,9 +151,14 @@ export function buildExtractionPrompt(
   }).join('\n\n');
 }
 
+/**
+ * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
+ *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
+ */
 export async function extractFactsFromExchanges(
   db: Database.Database,
   sessionId: string,
+  stats?: { droppedBatches: number },
 ): Promise<ExtractedFact[]> {
   const exchanges = db.prepare(`
     SELECT id, user_message, assistant_message
@@ -203,14 +208,26 @@ export async function extractFactsFromExchanges(
       // 실패를 3분류한다 — 예전에는 전부 삼켜서, 공급자 장애로 한 건도 못 뽑은
       // 세션이 extraction_log 에 '완료(0건)'로 기록되고 pending 쿼리에서 영구 제외됐다
       // (그 대화의 fact 는 영원히 추출되지 않음 = 데이터 손실).
+      //
+      // 🚨 추출 경로는 consolidation 과 위험이 비대칭이라 'unknown' 처리가 다르다:
+      // consolidation 에서 건너뛴 fact 는 살아 있고 검색되지만(중복제거만 미실행),
+      // 추출에서 건너뛴 배치는 **fact 가 애초에 만들어지지 않는다** — 되돌릴 수 없다.
+      // 그래서 인식 못 한 에러(unknown)는 '이 요청 잘못'으로 단정하지 않고 transient
+      // 와 같이 이연한다(다음 run 재시도). 무한 재시도 위험은 callHaiku 가 이미 유한
+      // 재시도로 흡수했고, 워커가 이연 건수를 로그로 표면화한다.
+      // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
+      //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
       const cls = classifyLlmError(error);
-      if (cls === 'transient') {
-        transientFailures.push(error);
-        console.error(`Batch ${b} extraction failed (transient — session will be retried):`, error);
+      if (cls === 'deterministic') {
+        // 요청 자체가 잘못됨(400/413/max_tokens): 같은 입력은 같은 결과이므로 이
+        // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
+        // 단 폐기를 **기록**한다(dead-letter): 조용히 버리면 그 교환들의 fact 가
+        // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
+        if (stats) stats.droppedBatches += 1;
+        console.error(`Batch ${b} extraction failed (deterministic — batch dropped, recorded):`, error);
       } else {
-        // deterministic/unknown: 같은 입력은 같은 결과다. 이 배치만 포기하고 진행 —
-        // 여기서 throw 하면 그 세션이 영원히 pending 으로 남아 큐를 막는다(bounded).
-        console.error(`Batch ${b} extraction failed (${cls} — batch dropped):`, error);
+        transientFailures.push(error);
+        console.error(`Batch ${b} extraction failed (${cls} — session deferred, will retry):`, error);
       }
     }
   }
@@ -283,7 +300,8 @@ export async function runFactExtraction(
     return { extracted: 0, saved: 0 };
   }
 
-  const facts = await extractFactsFromExchanges(db, sessionId);
+  const stats = { droppedBatches: 0 };
+  const facts = await extractFactsFromExchanges(db, sessionId, stats);
 
   let saved = 0;
   if (facts.length > 0) {
@@ -301,11 +319,20 @@ export async function runFactExtraction(
   // SessionEnd hook and the cross-project backfill worker).
   try {
     db.prepare(`
-      INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-        extracted = excluded.extracted, saved = excluded.saved
-    `).run(sessionId, new Date().toISOString(), facts.length, saved);
+        extracted = excluded.extracted, saved = excluded.saved,
+        dropped_batches = excluded.dropped_batches
+    `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches);
+    if (stats.droppedBatches > 0) {
+      // 조용히 넘어가지 않는다 — 폐기가 있었다는 사실을 로그로도 표면화(fail-loud).
+      console.error(
+        `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
+        `(deterministic LLM failures — those exchanges produced no facts; ` +
+        `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
+      );
+    }
   } catch {
     // log table may not exist on very old DBs — extraction result still stands
   }

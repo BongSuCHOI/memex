@@ -101,6 +101,17 @@ describe('callHaiku 재시도/복구', () => {
     expect(queryCalls).toBe(1);
   });
 
+  it('백오프는 상한이 있다 — 오타 하나로 워커가 정지하지 않는다 (Codex MEDIUM)', async () => {
+    const { callHaiku } = await import('../src/llm.js');
+    process.env.MEMORY_BANK_LLM_RETRY_BASE_MS = '500000'; // 오타 시나리오: 500초
+    process.env.MEMORY_BANK_LLM_RETRIES = '1';
+    scenarios.push({ result: '' }, { result: 'ok' });
+    const t0 = Date.now();
+    await callHaiku('sys', 'user');
+    // base 5s 상한이므로 첫 백오프는 최대 5s — 500s 가 아니다. 여유 있게 20s 로 검증.
+    expect(Date.now() - t0).toBeLessThan(20_000);
+  }, 30_000);
+
   it('성공 반환값은 비어있지 않음이 보장된다 (호출자 계약)', async () => {
     const { callHaiku } = await llm();
     scenarios.push({ result: '   ' }, { result: 'real' }); // 공백만 = 빈 응답 취급
@@ -115,6 +126,33 @@ describe('분류기 단일 소스 (llm-error-class)', () => {
     expect(classifyLlmError(new EmptyLlmResponseError())).toBe('transient');
     // LlmCallError 로 감싸도 내부 원인으로 분류된다
     expect(classifyLlmError(new LlmCallError(new EmptyLlmResponseError()))).toBe('transient');
+  });
+
+  // Codex 적대 리뷰 2026-07-17 회귀 고정: 아래 shape 들이 'unknown' 으로 떨어지면
+  // fact-extractor 가 배치를 버리고 세션을 완료 기록해 원 결함(영구 손실)이 재현된다.
+  it('status 필드 없는 provider/전송 실패 shape 도 transient 로 분류된다', async () => {
+    const { classifyLlmError } = await import('../src/llm-error-class.js');
+    for (const msg of [
+      'API Error: 500 Internal Server Error',
+      'Internal Server Error',
+      'API Error: 503',
+      'http error 429',
+      'fetch failed',
+      'stream disconnected before completion',
+      'premature close',
+    ]) {
+      expect(classifyLlmError(new Error(msg)), msg).toBe('transient');
+    }
+  });
+
+  it('그래도 bare 숫자는 상태코드로 읽지 않는다 (오분류 회귀 방지)', async () => {
+    const { classifyLlmError } = await import('../src/llm-error-class.js');
+    // 'retry after 400 ms' 의 400 을 deterministic 으로 읽으면 안 된다.
+    expect(classifyLlmError(new Error('rate limit: retry after 400 ms'))).toBe('transient');
+    expect(classifyLlmError(new Error('processed 500 items'))).toBe('unknown');
+    // per-request 오류는 여전히 deterministic 이어야 한다 (재시도 낭비 차단 유지).
+    expect(classifyLlmError(new Error('prompt is too long'))).toBe('deterministic');
+    expect(classifyLlmError(new Error('Request failed with status code 400'))).toBe('deterministic');
   });
 
   it('consolidator 는 같은 구현을 re-export 한다 (중복 정의 없음)', async () => {

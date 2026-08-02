@@ -14,7 +14,7 @@ import path from 'node:path';
  * deterministic 은 그 배치만 버리고 진행한다(=큐를 막지 않음).
  */
 
-const llmBehavior: { mode: 'transient' | 'deterministic' | 'ok' } = { mode: 'ok' };
+const llmBehavior: { mode: 'transient' | 'deterministic' | 'ok' | 'unknown' } = { mode: 'ok' };
 
 vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
@@ -26,6 +26,10 @@ vi.mock('../src/llm.js', async (importOriginal) => {
       }
       if (llmBehavior.mode === 'deterministic') {
         throw Object.assign(new Error('prompt is too long'), { status: 413 });
+      }
+      if (llmBehavior.mode === 'unknown') {
+        // 분류기가 인식 못 하는 shape (status 없음, 알려진 문구 없음)
+        throw new Error('weird provider hiccup xyz');
       }
       return JSON.stringify([
         { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9 },
@@ -113,6 +117,15 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(loggedSessions()).toContain(SESSION); // 이제서야 완료 기록
   });
 
+  it('AC4d: 인식 못 한 에러(unknown)도 세션을 잃지 않는다 (Codex 리뷰 회귀 고정)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'unknown';
+
+    // 추출은 consolidation 과 달리 건너뛰면 fact 가 아예 안 생긴다 → 이연이 옳다.
+    await expect(runFactExtraction(db, SESSION, PROJECT)).rejects.toThrow(/weird provider hiccup/);
+    expect(loggedSessions()).not.toContain(SESSION);
+  });
+
   it('AC4c: deterministic 실패는 throw 하지 않고 진행해 기록한다 (큐 wedge 방지)', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'deterministic';
@@ -121,5 +134,28 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(result.extracted).toBe(0);
     // 같은 입력은 같은 결과 — 영원히 재시도하면 큐가 막히므로 완료로 기록한다.
     expect(loggedSessions()).toContain(SESSION);
+  });
+
+  it('AC4e: 폐기된 배치는 dead-letter 로 기록돼 조회 가능하다 (무음 손실 금지)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'deterministic';
+
+    await runFactExtraction(db, SESSION, PROJECT);
+    const row = db.prepare(
+      'SELECT dropped_batches FROM extraction_log WHERE session_id = ?',
+    ).get(SESSION) as { dropped_batches: number } | undefined;
+    // 폐기 사실이 DB 에 남아야 "왜 이 세션엔 fact 가 없나"를 사후에 답할 수 있다.
+    expect(row?.dropped_batches).toBeGreaterThan(0);
+  });
+
+  it('AC4f: 정상 처리 세션은 dropped_batches 가 0 이다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'ok';
+
+    await runFactExtraction(db, SESSION, PROJECT);
+    const row = db.prepare(
+      'SELECT dropped_batches FROM extraction_log WHERE session_id = ?',
+    ).get(SESSION) as { dropped_batches: number } | undefined;
+    expect(row?.dropped_batches).toBe(0);
   });
 });

@@ -138,7 +138,11 @@ export function buildExtractionPrompt(exchanges) {
         return `### Exchange ${i + 1}\nUser: ${userSnippet}\nAssistant: ${assistantSnippet}`;
     }).join('\n\n');
 }
-export async function extractFactsFromExchanges(db, sessionId) {
+/**
+ * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
+ *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
+ */
+export async function extractFactsFromExchanges(db, sessionId, stats) {
     const exchanges = db.prepare(`
     SELECT id, user_message, assistant_message
     FROM exchanges
@@ -197,7 +201,11 @@ export async function extractFactsFromExchanges(db, sessionId) {
             if (cls === 'deterministic') {
                 // 요청 자체가 잘못됨(400/413/max_tokens): 같은 입력은 같은 결과이므로 이
                 // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
-                console.error(`Batch ${b} extraction failed (deterministic — batch dropped):`, error);
+                // 단 폐기를 **기록**한다(dead-letter): 조용히 버리면 그 교환들의 fact 가
+                // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
+                if (stats)
+                    stats.droppedBatches += 1;
+                console.error(`Batch ${b} extraction failed (deterministic — batch dropped, recorded):`, error);
             }
             else {
                 transientFailures.push(error);
@@ -255,7 +263,8 @@ export async function runFactExtraction(db, sessionId, project, codingAgent) {
         catch { /* log table may not exist on very old DBs */ }
         return { extracted: 0, saved: 0 };
     }
-    const facts = await extractFactsFromExchanges(db, sessionId);
+    const stats = { droppedBatches: 0 };
+    const facts = await extractFactsFromExchanges(db, sessionId, stats);
     let saved = 0;
     if (facts.length > 0) {
         // Detect coding agent from session's exchanges if not provided
@@ -267,11 +276,18 @@ export async function runFactExtraction(db, sessionId, project, codingAgent) {
     // SessionEnd hook and the cross-project backfill worker).
     try {
         db.prepare(`
-      INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-        extracted = excluded.extracted, saved = excluded.saved
-    `).run(sessionId, new Date().toISOString(), facts.length, saved);
+        extracted = excluded.extracted, saved = excluded.saved,
+        dropped_batches = excluded.dropped_batches
+    `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches);
+        if (stats.droppedBatches > 0) {
+            // 조용히 넘어가지 않는다 — 폐기가 있었다는 사실을 로그로도 표면화(fail-loud).
+            console.error(`extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
+                `(deterministic LLM failures — those exchanges produced no facts; ` +
+                `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`);
+        }
     }
     catch {
         // log table may not exist on very old DBs — extraction result still stands

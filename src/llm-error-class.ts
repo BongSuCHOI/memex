@@ -109,6 +109,15 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
   // but never a bare incidental number ("retry after 400 ms").
   const labelled = m.match(/status(?:\s*code)?\s*[:=]?\s*(\d{3})\b/);
   if (labelled) return byCode(parseInt(labelled[1], 10));
+  // Provider SDKs also report the code with an error-word prefix and no "status"
+  // label: "API Error: 500 Internal Server Error", "http error 429". Anchoring on
+  // that prefix keeps the bare-number exclusion intact ("retry after 400 ms" has
+  // no error word before the number) while classifying the real shapes.
+  // (Codex adversarial review 2026-07-17: '500 Internal Server Error' fell to
+  // 'unknown', which for extraction meant the batch was dropped and the session
+  // recorded complete — the very data loss this change set out to fix.)
+  const prefixed = m.match(/\b(?:api|http|request|response|server)\s*(?:error|failure)?\s*[:=-]?\s*(\d{3})\b/);
+  if (prefixed) return byCode(parseInt(prefixed[1], 10));
 
   // DETERMINISTIC (per-request) phrases checked FIRST so a specific request-size
   // / param error isn't swallowed by the broader transient phrases below.
@@ -117,7 +126,10 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
   }
   // TRANSIENT phrases: rate limit / server / network / outage, plus auth-KEY
   // errors (kept narrow — "invalid api key", not "invalid api request").
-  if (/unauthor|forbidden|invalid.*(api.?key|access.?token|credential)|timeout|etimedout|econnreset|econnrefused|enotfound|socket hang up|network|overloaded|temporarily|rate.?limit|too many requests|service unavailable|bad gateway|gateway timeout/.test(m)) {
+  // 'internal server error' / 'fetch failed' / stream teardown are added from the
+  // 2026-07-17 review: they are provider-side or transport failures with no
+  // status field, and mis-reading them as per-request faults loses data.
+  if (/unauthor|forbidden|invalid.*(api.?key|access.?token|credential)|timeout|etimedout|econnreset|econnrefused|enotfound|epipe|socket hang up|network|fetch failed|stream (disconnect|closed|ended|aborted)|premature close|overloaded|temporarily|rate.?limit|too many requests|internal server error|server error|service unavailable|bad gateway|gateway timeout/.test(m)) {
     return 'transient';
   }
   return 'unknown'; // unrecognized → caller bounds it (retry MAX then advance)

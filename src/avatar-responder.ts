@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { l2DistanceToSimilarity } from './db.js';
 import type { AvatarResponse, Fact, RelationType } from './types.js';
 import { callHaiku, parseJsonResponse } from './llm.js';
+import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { searchSimilarFacts } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
@@ -123,9 +124,11 @@ export async function askAvatar(
   try {
     response = await callHaiku(AVATAR_SYSTEM_PROMPT, prompt, 1024);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // 원문 provider 에러는 엔드포인트·토큰 조각 등을 담을 수 있어 사용자 대면 응답에
+    // 그대로 싣지 않는다 — 분류만 노출하고 상세는 서버 로그로 (Codex 리뷰 MEDIUM).
+    console.error('ask_avatar: LLM call failed after retries:', error);
     return {
-      answer: `⚠️ LLM 호출 실패로 답변을 생성하지 못했습니다 (재시도 후에도 실패): ${detail}`,
+      answer: `⚠️ LLM 호출이 재시도 후에도 실패해 답변을 생성하지 못했습니다 (${classifyLlmError(error)}). 잠시 후 다시 시도해 주세요.`,
       sources: [],
       confidence: 0,
       relatedDecisions,

@@ -195,9 +195,13 @@ async function main() {
         // 빈 응답)로 실패한 세션까지 영구 제외돼 그 대화의 fact 가 영원히 추출되지
         // 않았다. transient 는 기록하지 않고 다음 run 에 남긴다 — 이번 run 에서만
         // 건너뛰므로 루프가 물리지도 않는다(스핀 방지 목적은 유지).
+        // fact-extractor 와 **같은 기준**으로 갈라야 한다(생산자-소비자 정렬):
+        // deterministic 만 영구 기록하고, transient/unknown 은 이연한다. 추출은
+        // 건너뛰면 fact 가 아예 안 생기므로 인식 못 한 에러를 '이 세션 잘못'으로
+        // 단정하지 않는다 (Codex 리뷰 2026-07-17).
         const cls = classifyLlmError(error);
         log(`session ${next.sid}: ERROR (${cls}) ${error instanceof Error ? error.message : error}`);
-        if (cls === 'transient') {
+        if (cls !== 'deterministic') {
           transientSessions++;
           return; // extraction_log 미기록 → 다음 run 재시도
         }

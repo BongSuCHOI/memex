@@ -23643,6 +23643,12 @@ function initDatabase() {
       saved INTEGER NOT NULL DEFAULT 0
     )
   `);
+  {
+    const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`).all();
+    if (!cols.some((c) => c.name === "dropped_batches")) {
+      db.prepare("ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0").run();
+    }
+  }
   autoHealScopeProjects(db);
   return db;
 }
@@ -26350,10 +26356,13 @@ function retryBudget() {
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
   return 2;
 }
+var MAX_BACKOFF_BASE_MS = 5e3;
+var MAX_BACKOFF_MS = 3e4;
 function backoffMs(attempt) {
   const raw = process.env.MEMORY_BANK_LLM_RETRY_BASE_MS;
-  const base = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
-  return base * Math.pow(3, attempt);
+  const parsed = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
+  const base = Math.min(parsed, MAX_BACKOFF_BASE_MS);
+  return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 var sleep2 = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 async function callOnce(systemPrompt, userMessage, maxTokens) {
