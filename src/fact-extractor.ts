@@ -340,19 +340,44 @@ export async function saveExtractedFacts(
 }
 
 /**
- * 추출 실패의 **소비자측 3분류**. 두 워커(SessionEnd 훅·backfill)가 같은 표현식을
- * 각자 인라인으로 들고 있으면 한쪽만 갱신돼 드리프트한다(R6 에서 마커 SQL 로 겪은 것과
- * 같은 계열). 분류 규칙을 여기 한 곳에 두고 소비자는 호출만 한다.
+ * 추출 실패의 분류 — **라우팅(예산 소모 여부)과 보고(로그·카운터)가 같은 정의를 쓴다.**
  *
- *  - 'handoff'  : 다른 러너가 인수함. 실패가 아니다 — 경보로 세지 말 것.
- *  - 'provider' : 공급자 장애/빈응답. 예산 미소모, 다음 run 재시도.
- *  - 'internal' : 런타임·DB·파서. 재시도 예산을 소모한다 — 운영 점검 대상.
+ * 🚨 이전에는 소비자가 3분류(handoff/provider/internal)인데 실제 이연 판정은 4분류였다:
+ * deterministic 한 공급자 거절(400/413/422 · prompt-too-long)은 재시도해도 같은 결과라
+ * 재시도 예산(-4, 3회 후 -2 영구제외)을 **소모하는데**, 워커는 그것을 'provider' 로 세어
+ * "will retry next run" 이라 보고하고 internalFailures 도 0 이라 아무 경보가 없었다.
+ * 즉 예산이 조용히 타들어가는 동안 로그는 "곧 재시도됨"이라고 말했다(Codex R12 HIGH).
+ * 분류를 4분류로 맞추고 라우팅 술어까지 같은 모듈에 둬서 둘이 어긋날 수 없게 한다.
  */
-export function classifyExtractionFailure(err: unknown): 'handoff' | 'provider' | 'internal' {
+export type ExtractionFailureKind =
+  | 'handoff'                // 다른 러너가 인수 — 실패 아님. 예산 무관, 경보 아님
+  | 'provider_transient'     // 장애·빈응답·rate limit — 예산 미소모, 다음 run 재시도
+  | 'provider_deterministic' // 요청 자체가 거절됨 — 재시도 무의미, 예산 소모
+  | 'internal';              // 런타임·DB·파서 — 예산 소모 + 운영 점검 대상
+
+export function classifyExtractionFailure(err: unknown): ExtractionFailureKind {
   if (err instanceof ClaimLostError) return 'handoff';
-  if (err instanceof LlmCallError) return 'provider';
+  if (err instanceof LlmCallError) {
+    return classifyLlmError(err) === 'deterministic' ? 'provider_deterministic' : 'provider_transient';
+  }
   return 'internal';
 }
+
+/**
+ * 이 실패가 재시도 예산을 소모하는가. runFactExtraction 의 라우팅과 워커의 보고가
+ * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
+ */
+export function failureConsumesBudget(kind: ExtractionFailureKind): boolean {
+  return kind === 'provider_deterministic' || kind === 'internal';
+}
+
+/** 소비자 보고 표(라벨·후속 안내). 워커가 자체 문구를 들면 분류와 어긋난다. */
+export const FAILURE_REPORT: Record<ExtractionFailureKind, { label: string; note: string }> = {
+  handoff: { label: 'HANDOFF', note: '다른 러너가 인수 — 실패 아님' },
+  provider_transient: { label: 'ERROR', note: '공급자 일시 실패 — 예산 미소모, 다음 run 재시도' },
+  provider_deterministic: { label: 'ERROR', note: '요청 거절 — 재시도 무의미, 예산 소모(반복 시 영구 제외)' },
+  internal: { label: 'ERROR', note: '런타임/DB 점검 필요 — 예산 소모' },
+};
 
 export async function runFactExtraction(
   db: Database.Database,
@@ -473,7 +498,7 @@ export async function runFactExtraction(
   };
 
   /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
-  const writeInternalFailureMarker = () => {
+  const writeInternalFailureMarker = (kind: ExtractionFailureKind = 'internal') => {
     if (!holdsClaim) return;
     try {
       const attempts = (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? preClaim.saved : 0) + 1;
@@ -484,8 +509,8 @@ export async function runFactExtraction(
         exhausted ? 0 : attempts, owner,
       );
       console.error(
-        `extraction: session ${sessionId} 내부 실패 (attempt ${attempts}/${MAX_INTERNAL_RETRIES}`
-        + `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — 런타임/DB 점검 필요`,
+        `extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}`
+        + `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — ${FAILURE_REPORT[kind].note}`,
       );
     } catch { /* best-effort */ }
   };
@@ -516,14 +541,15 @@ export async function runFactExtraction(
     //  · 공급자 실패(LlmCallError, transient/unknown) → claim 해제 후 rethrow.
     //    예산을 쓰지 않고 다음 run 에 즉시 재시도된다.
     //  · 내부 실패(임베딩/DB/파서) → 재시도 예산 마커(-4, 소진 시 -2) 후 rethrow.
-    if (e instanceof ClaimLostError) {
-      // 소유권 이양 — 이 세션의 실패가 아니다. 예산을 소모하지 않고(SQL 가드가 이미
-      // 0행 처리하지만 **계약을 코드로 표현**한다), 남의 행이므로 해제도 하지 않는다.
+    // 분류·라우팅을 소비자와 **같은 함수**로 판정한다(문구와 동작이 어긋나지 않게).
+    const kind = classifyExtractionFailure(e);
+    if (kind === 'handoff') {
+      // 남의 행이므로 해제할 것도 기록할 것도 없다(SQL 가드가 이미 0행이지만 계약을 코드로).
       console.error(`extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`);
-    } else if (e instanceof LlmCallError && classifyLlmError(e) !== 'deterministic') {
-      releaseClaim();      // 공급자 장애 — 예산 미소모, 다음 run 즉시 재시도
+    } else if (failureConsumesBudget(kind)) {
+      writeInternalFailureMarker(kind); // deterministic 거절 · 내부 실패 — 예산 소모
     } else {
-      writeInternalFailureMarker(); // 내부 실패 — 재시도 예산 소모
+      releaseClaim();                   // 공급자 일시 실패 — 예산 미소모, 즉시 재시도
     }
     throw e;
   }

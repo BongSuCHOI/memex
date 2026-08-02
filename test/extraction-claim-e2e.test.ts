@@ -133,14 +133,46 @@ describe('claim E2E', () => {
  * 분류를 단일 소스 함수로 두고 그 함수를 직접 고정한다.
  */
 describe('R11: 소비자 분류 단일 소스', () => {
-  it('handoff / provider / internal 을 정확히 가른다', async () => {
-    const { classifyExtractionFailure, ClaimLostError } = await import('../src/fact-extractor.js');
+  it('4분류: 예산을 태우는 실패와 아닌 실패를 정확히 가른다', async () => {
+    const { classifyExtractionFailure, failureConsumesBudget, FAILURE_REPORT, ClaimLostError } =
+      await import('../src/fact-extractor.js');
     const { LlmCallError } = await import('../src/llm-error-class.js');
 
-    expect(classifyExtractionFailure(new ClaimLostError('taken')), '이양은 실패가 아니다').toBe('handoff');
-    expect(classifyExtractionFailure(new LlmCallError(Object.assign(new Error('503'), { status: 503 })))).toBe('provider');
-    expect(classifyExtractionFailure(new Error('embedding runtime blew up')), '런타임은 점검 대상').toBe('internal');
-    expect(classifyExtractionFailure(new TypeError('undefined is not a function'))).toBe('internal');
+    const cases: Array<[unknown, string, boolean]> = [
+      [new ClaimLostError('taken'), 'handoff', false],
+      [new LlmCallError(Object.assign(new Error('service unavailable'), { status: 503 })), 'provider_transient', false],
+      [new LlmCallError(Object.assign(new Error('prompt is too long'), { status: 413 })), 'provider_deterministic', true],
+      [new Error('embedding runtime blew up'), 'internal', true],
+      [new TypeError('undefined is not a function'), 'internal', true],
+    ];
+    for (const [err, kind, burns] of cases) {
+      expect(classifyExtractionFailure(err), String(kind)).toBe(kind);
+      // 🚨 R12 HIGH 회귀: deterministic 거절은 예산을 **태운다**. 이걸 'provider' 로
+      // 뭉개면 워커가 "will retry next run" 이라 보고하는 동안 예산이 조용히 소진된다.
+      expect(failureConsumesBudget(kind as never), `${kind} 예산 판정`).toBe(burns);
+      // 보고 문구도 같은 소스에서 나와야 라우팅과 어긋나지 않는다
+      expect(FAILURE_REPORT[kind as never]).toBeDefined();
+    }
+  });
+
+  it('보고 표가 모든 분류를 덮는다 (새 분류 추가 시 누락 방지)', async () => {
+    const { classifyExtractionFailure, FAILURE_REPORT, failureConsumesBudget, ClaimLostError } =
+      await import('../src/fact-extractor.js');
+    const { LlmCallError } = await import('../src/llm-error-class.js');
+    const kinds = new Set([
+      classifyExtractionFailure(new ClaimLostError('x')),
+      classifyExtractionFailure(new LlmCallError(Object.assign(new Error('e'), { status: 500 }))),
+      classifyExtractionFailure(new LlmCallError(Object.assign(new Error('e'), { status: 400 }))),
+      classifyExtractionFailure(new Error('e')),
+    ]);
+    expect(kinds.size, '4분류가 모두 도달 가능해야 한다').toBe(4);
+    for (const k of kinds) {
+      expect(FAILURE_REPORT[k], `${k} 보고 문구 누락`).toBeDefined();
+      expect(typeof failureConsumesBudget(k), `${k} 예산 판정 누락`).toBe('boolean');
+    }
+    // handoff 만 실패가 아니다 — 라벨로도 구분돼야 운영 로그에서 걸러진다
+    expect(FAILURE_REPORT.handoff.label).toBe('HANDOFF');
+    expect(FAILURE_REPORT.provider_deterministic.label).toBe('ERROR');
   });
 
   it('두 워커가 같은 단일 소스를 사용한다 (드리프트 차단)', async () => {
@@ -149,6 +181,8 @@ describe('R11: 소비자 분류 단일 소스', () => {
       const src = fs.readFileSync(w, 'utf8');
       expect(src, `${w} 가 분류를 인라인으로 재구현하면 드리프트한다`).toContain('classifyExtractionFailure');
       expect(src.includes('instanceof ClaimLostError'), `${w} 인라인 분기 잔존`).toBe(false);
+      // 라벨/예산 판정도 자체 구현하면 분류와 어긋난다 — 단일 소스 사용을 강제
+      expect(src, `${w} 가 보고 문구를 자체 정의`).toContain('FAILURE_REPORT');
     }
   });
 });

@@ -63,15 +63,27 @@ renewLease?: () => void,
  */
 commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
 /**
- * 추출 실패의 **소비자측 3분류**. 두 워커(SessionEnd 훅·backfill)가 같은 표현식을
- * 각자 인라인으로 들고 있으면 한쪽만 갱신돼 드리프트한다(R6 에서 마커 SQL 로 겪은 것과
- * 같은 계열). 분류 규칙을 여기 한 곳에 두고 소비자는 호출만 한다.
+ * 추출 실패의 분류 — **라우팅(예산 소모 여부)과 보고(로그·카운터)가 같은 정의를 쓴다.**
  *
- *  - 'handoff'  : 다른 러너가 인수함. 실패가 아니다 — 경보로 세지 말 것.
- *  - 'provider' : 공급자 장애/빈응답. 예산 미소모, 다음 run 재시도.
- *  - 'internal' : 런타임·DB·파서. 재시도 예산을 소모한다 — 운영 점검 대상.
+ * 🚨 이전에는 소비자가 3분류(handoff/provider/internal)인데 실제 이연 판정은 4분류였다:
+ * deterministic 한 공급자 거절(400/413/422 · prompt-too-long)은 재시도해도 같은 결과라
+ * 재시도 예산(-4, 3회 후 -2 영구제외)을 **소모하는데**, 워커는 그것을 'provider' 로 세어
+ * "will retry next run" 이라 보고하고 internalFailures 도 0 이라 아무 경보가 없었다.
+ * 즉 예산이 조용히 타들어가는 동안 로그는 "곧 재시도됨"이라고 말했다(Codex R12 HIGH).
+ * 분류를 4분류로 맞추고 라우팅 술어까지 같은 모듈에 둬서 둘이 어긋날 수 없게 한다.
  */
-export declare function classifyExtractionFailure(err: unknown): 'handoff' | 'provider' | 'internal';
+export type ExtractionFailureKind = 'handoff' | 'provider_transient' | 'provider_deterministic' | 'internal';
+export declare function classifyExtractionFailure(err: unknown): ExtractionFailureKind;
+/**
+ * 이 실패가 재시도 예산을 소모하는가. runFactExtraction 의 라우팅과 워커의 보고가
+ * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
+ */
+export declare function failureConsumesBudget(kind: ExtractionFailureKind): boolean;
+/** 소비자 보고 표(라벨·후속 안내). 워커가 자체 문구를 들면 분류와 어긋난다. */
+export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
+    label: string;
+    note: string;
+}>;
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
 /**
  * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커

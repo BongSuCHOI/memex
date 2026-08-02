@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
-import { runFactExtraction, classifyExtractionFailure } from '../dist/fact-extractor.js';
+import { runFactExtraction, classifyExtractionFailure, FAILURE_REPORT } from '../dist/fact-extractor.js';
 import { getIndexDir } from '../dist/paths.js';
 
 function log(line) {
@@ -46,9 +46,10 @@ async function main() {
   } catch (error) {
     // 이양(handoff)은 실패가 아니다 — 다른 러너가 같은 세션을 인수한 정상 경로다.
     const cls = classifyExtractionFailure(error);
+    const rep = FAILURE_REPORT[cls];
     log(
-      `worker: ${cls === 'handoff' ? 'HANDOFF' : 'ERROR'} (${cls}) session=${sessionId}: `
-      + `${error instanceof Error ? error.message : error}`,
+      `worker: ${rep.label} (${cls}) session=${sessionId}: `
+      + `${error instanceof Error ? error.message : error} — ${rep.note}`,
     );
     process.exitCode = 0; // extraction failure must never surface as hook failure
   } finally {

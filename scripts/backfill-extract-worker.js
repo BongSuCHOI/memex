@@ -19,7 +19,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
-import { runFactExtraction, classifyExtractionFailure } from '../dist/fact-extractor.js';
+import {
+  runFactExtraction, classifyExtractionFailure, failureConsumesBudget, FAILURE_REPORT,
+} from '../dist/fact-extractor.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
 
@@ -179,7 +181,7 @@ async function main() {
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(`backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`);
 
-    let done = 0, totalSaved = 0, transientSessions = 0, internalFailures = 0, handoffSessions = 0;
+    let done = 0, totalSaved = 0, transientSessions = 0, budgetBurned = 0, handoffSessions = 0;
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
@@ -206,12 +208,16 @@ async function main() {
         // 실패 분류와 마커 기록은 **선점 소유자**인 runFactExtraction 이 단독 수행한다
         // (소유권 토큰이 그쪽에만 있으므로 여기서 쓰면 남의 claim 을 덮을 수 있다).
         // 워커는 관측만 한다.
-        // 3분류: handoff(소유권 이양) / provider(공급자) / internal(런타임·DB).
-        // handoff 를 internal 로 세면 "런타임 점검 필요" 거짓 경보가 된다.
+        // 분류·라벨·예산 판정을 전부 단일 소스에서 가져온다 — 워커가 자체 문구나
+        // 자체 버킷을 들면 "예산은 타는데 로그는 재시도된다고 말하는" 모순이 생긴다.
         const cls = classifyExtractionFailure(error);
-        log(`session ${next.sid}: ${cls === 'handoff' ? 'HANDOFF' : 'ERROR'} (${cls}) ${error instanceof Error ? error.message : error}`);
+        const rep = FAILURE_REPORT[cls];
+        log(
+          `session ${next.sid}: ${rep.label} (${cls}) ${error instanceof Error ? error.message : error}`
+          + ` — ${rep.note}`,
+        );
         if (cls === 'handoff') handoffSessions++;
-        else if (cls === 'internal') internalFailures++;
+        else if (failureConsumesBudget(cls)) budgetBurned++;
         else transientSessions++;
       }
       done++;
@@ -221,7 +227,8 @@ async function main() {
       `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
       (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') +
       (handoffSessions > 0 ? `, handoff ${handoffSessions} — 다른 러너가 처리 중` : '') +
-      (internalFailures > 0 ? `, INTERNAL failures ${internalFailures} — 런타임/DB 점검 필요` : '') + ')',
+      (budgetBurned > 0 ? `, budget-burned ${budgetBurned} — 재시도 예산 소모(반복 시 영구 제외)` : '') +
+      ')',
     );
   } catch (error) {
     log(`backfill-extract: FATAL ${error instanceof Error ? error.message : error}`);
