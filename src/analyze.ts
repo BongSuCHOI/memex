@@ -4,7 +4,9 @@ import path from 'path';
 import { getDbPath } from './paths.js';
 import { canonicalArchiveName } from './archive-io.js';
 import { slugifyPath } from './project-canon.js';
-import { EXTRACTION_STATE, MAX_INTERNAL_RETRIES } from './pending-extraction.js';
+import {
+  EXTRACTION_STATE, pendingExtractionCoreQuery, getExtractionConfig,
+} from './pending-extraction.js';
 
 /**
  * Full-history analysis over the conversation index.
@@ -176,23 +178,17 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
       report.coverage.extraction.errors = ext.errors ?? 0;
       report.coverage.extraction.retrying = ext.retrying ?? 0;
 
-      const pending = db.prepare(`
-        SELECT COUNT(*) AS n FROM (
-          SELECT e.session_id
-          FROM exchanges e
-          WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
-            -- 워커/훅의 pending 판정과 같은 의미여야 한다: 재시도 예산이 남은
-            -- 내부 실패(-4)는 아직 미처리다. 여기만 다르면 리포트가 백로그를
-            -- 과소보고해 "다 처리됐다"는 거짓 신호를 준다.
-            AND NOT EXISTS (
-              SELECT 1 FROM extraction_log l
-              WHERE l.session_id = e.session_id
-                AND NOT (l.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
-                         AND l.saved < ${MAX_INTERNAL_RETRIES})
-            )
-          GROUP BY e.session_id
-        )
-      `).get() as { n: number };
+      // 🚨 손으로 복제하지 않는다. 이 자리에 사본을 두면 반드시 드리프트한다 —
+      // 실제로 -4(재시도 예산) 예외만 반영하고 -3(만료 리스 회수) 예외가 빠져서,
+      // 주석은 "워커/훅과 같은 의미"라고 주장하는데 35분 된 claim 세션을 '처리됨'
+      // 으로 세어 백로그를 과소보고했다(Codex R24 MEDIUM). 단일 소스를 그대로 쓴다.
+      //
+      // 의미 변화 고지: 공유 쿼리는 최소 교환수·제외 프로젝트 필터를 포함하므로
+      // 이 수치는 "워커가 실제로 집을 세션 수"가 된다(이전에는 그 필터가 없는
+      // 원시 집계였다). 리포트 목적상 이쪽이 더 정확하다.
+      const { sql: pendingSql, params: pendingParams } = pendingExtractionCoreQuery(getExtractionConfig());
+      const pending = db.prepare(`SELECT COUNT(*) AS n FROM (${pendingSql})`)
+        .get(...pendingParams) as { n: number };
       report.coverage.extraction.pending = pending.n;
     } else {
       report.coverage.extraction.pending = cov.sessions;

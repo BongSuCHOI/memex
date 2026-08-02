@@ -86,3 +86,54 @@ describe('워커 ↔ dist 계약', () => {
     }
   });
 });
+
+/**
+ * R24 — pending 판정 사본 금지.
+ *
+ * 이 스레드에서 pending 술어의 손복제가 반복적으로 드리프트했다: analyze.ts 사본이
+ * -4(재시도 예산) 예외만 반영하고 -3(만료 리스) 예외가 빠져, 주석은 "워커/훅과 같은
+ * 의미"라 주장하면서 35분 된 claim 세션을 '처리됨'으로 세었다. 사본이 존재하는 한
+ * 같은 일이 또 생기므로, **사본 자체를 금지**한다.
+ */
+describe('R24: pending 판정은 단일 소스만', () => {
+  it('pendingExtractionCoreQuery 외에 NOT EXISTS 사본이 없다', async () => {
+    const fs = await import('node:fs');
+    for (const f of ['src/analyze.ts', 'scripts/backfill-extract-worker.js']) {
+      const src = fs.readFileSync(f, 'utf8');
+      expect(src.includes('FROM extraction_log l'), `${f} 에 pending 술어 사본이 있다`).toBe(false);
+      if (src.includes('pending')) {
+        expect(src, `${f} 는 단일 소스를 써야 한다`).toContain('pendingExtractionCoreQuery');
+      }
+    }
+  });
+
+  it('analyze 의 pending 수치가 워커 선정 결과와 일치한다', async () => {
+    const { pendingExtractionCoreQuery, getExtractionConfig } = await import('../src/pending-extraction.js');
+    const Database = (await import('better-sqlite3')).default;
+    const os = await import('node:os'); const path = await import('node:path'); const fs = await import('node:fs');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-analyze-parity-'));
+    const db = new Database(path.join(tmp, 't.sqlite'));
+    try {
+      db.exec(`
+        CREATE TABLE exchanges (id INTEGER PRIMARY KEY, session_id TEXT, timestamp TEXT,
+          is_sidechain INTEGER DEFAULT 0, cwd TEXT);
+        CREATE TABLE extraction_log (session_id TEXT PRIMARY KEY, processed_at TEXT,
+          extracted INTEGER, saved INTEGER, claim_owner TEXT);`);
+      const ins = db.prepare('INSERT INTO exchanges (session_id,timestamp,is_sidechain,cwd) VALUES (?,?,0,?)');
+      for (const sid of ['fresh', 'expired', 'done']) for (let i = 0; i < 5; i++) ins.run(sid, '2026-08-02T00:00:00Z', '/tmp/p');
+      const L = db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?,?)');
+      L.run('fresh', new Date().toISOString(), -3, 0, 'alive');                       // 처리 중
+      L.run('expired', new Date(Date.now() - 60 * 60_000).toISOString(), -3, 0, 'dead'); // 만료 → pending
+      L.run('done', new Date().toISOString(), 3, 3, null);                            // 완료
+
+      const { sql, params } = pendingExtractionCoreQuery(getExtractionConfig());
+      const rows = (db.prepare(sql).all(...params) as Array<{ sid: string }>).map(r => r.sid);
+      const count = (db.prepare(`SELECT COUNT(*) AS n FROM (${sql})`).get(...params) as { n: number }).n;
+
+      expect(rows, '만료 claim 은 회수 대상이므로 pending').toContain('expired');
+      expect(rows, '처리 중인 세션은 pending 아님').not.toContain('fresh');
+      expect(rows, '완료 세션은 pending 아님').not.toContain('done');
+      expect(count, '리포트 수치와 선정 목록이 일치해야 한다').toBe(rows.length);
+    } finally { db.close(); fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+});
