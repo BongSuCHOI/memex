@@ -327,4 +327,30 @@ describe('R21: 제외 마커의 소유권 가드', () => {
       else process.env.BACKFILL_EXCLUDE_PROJECTS = prev;
     }
   });
+
+  it('R24: 손상된 타임스탬프(NULL·파싱불가)도 회수 대상 — pending 과 선점이 일치한다', () => {
+    const db = makeDb();
+    try {
+      for (const sid of ['nullTs', 'badTs']) seedSession(db, sid, 12);
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
+        .run('nullTs', null, EXTRACTION_STATE.CLAIMED, 0, 'dead');
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
+        .run('badTs', 'not-a-timestamp', EXTRACTION_STATE.CLAIMED, 0, 'dead');
+
+      // 🚨 두 판정이 어긋나면 세션이 "pending 인데 선점 불가" 가 되어 매 run 슬롯만
+      //    먹는다(무한 재선정). pending 은 회수 대상으로 보는데 claim 만 NULL 비교의
+      //    3치논리로 실패하던 자리다.
+      const pending = pendingIds(db);
+      for (const sid of ['nullTs', 'badTs']) {
+        expect(pending, `${sid} 는 pending 이어야`).toContain(sid);
+        for (const variant of ['worker', 'hook'] as const) {
+          const c = db.prepare(claimSessionSql(variant)).run(sid, new Date().toISOString(), randomUUID()).changes;
+          expect(c, `${sid} 를 ${variant} 가 선점하지 못하면 무한 재선정`).toBe(1);
+          // 다음 변형 검사를 위해 되돌린다
+          db.prepare('UPDATE extraction_log SET extracted=?, processed_at=?, claim_owner=? WHERE session_id=?')
+            .run(EXTRACTION_STATE.CLAIMED, sid === 'nullTs' ? null : 'not-a-timestamp', 'dead', sid);
+        }
+      }
+    } finally { db.close(); }
+  });
 });

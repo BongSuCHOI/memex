@@ -88,8 +88,10 @@ export const CLAIM_LEASE_MINUTES = 30;
  * 전부에 영향(Codex R23, 실측 재현: 1시간 만료 claim 이 fresh=1).
  */
 export function freshClaimPredicate(alias = 'extraction_log'): string {
+  // 손상 타임스탬프는 "살아있지 않다"로 판정한다(COALESCE). 그러지 않으면 NULL 비교가
+  // 3치논리로 번져 `NOT (fresh)` 가 NULL 이 되고, hook 변형 선점이 조용히 실패한다.
   return `${alias}.extracted = ${EXTRACTION_STATE.CLAIMED}`
-    + ` AND datetime(${alias}.processed_at) > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')`;
+    + ` AND COALESCE(datetime(${alias}.processed_at) > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'), 0)`;
 }
 
 /**
@@ -112,8 +114,12 @@ export function claimSessionSql(variant: 'worker' | 'hook'): string {
   const owned = variant === 'worker'
     // pending 이었던 상태만: 재시도 대상(-4) 또는 리스 만료 claim
     ? `extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}`
+      // 🚨 손상 타임스탬프(NULL·파싱 불가)도 회수 대상이다. pending 쿼리는 그런 행을
+      //    이미 회수 대상으로 보는데 여기서만 선점이 실패하면, 세션이 **pending 인데
+      //    처리 불가**가 되어 매 run 슬롯만 먹는다(무한 재선정). `IS NULL` 로 명시.
       + ` OR (extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}`
-      + ` AND datetime(extraction_log.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))`
+      + ` AND (datetime(extraction_log.processed_at) IS NULL`
+      + `      OR datetime(extraction_log.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')))`
     // 살아있는 claim 이 아니면 무엇이든 선점 가능
     : `NOT (${freshClaimPredicate()})`;
   // 🚨 소유권 토큰(claim_owner)이 없으면 "내 claim 만 건드린다"는 계약을 SQL 로
