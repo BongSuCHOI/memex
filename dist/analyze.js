@@ -108,9 +108,20 @@ export async function analyzeHistory(options = {}) {
             // 이 수치는 "워커가 실제로 집을 세션 수"가 된다(이전에는 그 필터가 없는
             // 원시 집계였다). 리포트 목적상 이쪽이 더 정확하다.
             const { sql: pendingSql, params: pendingParams } = pendingExtractionCoreQuery(getExtractionConfig());
-            const pending = db.prepare(`SELECT COUNT(*) AS n FROM (${pendingSql})`)
-                .get(...pendingParams);
-            report.coverage.extraction.pending = pending.n;
+            try {
+                const pending = db.prepare(`SELECT COUNT(*) AS n FROM (${pendingSql})`)
+                    .get(...pendingParams);
+                report.coverage.extraction.pending = pending.n;
+            }
+            catch (e) {
+                // 공유 쿼리는 cwd 컬럼을 요구한다(정본 스키마에 있고 initDatabase 가
+                // 마이그레이션한다). analyze 는 readonly 로 열어 마이그레이션하지 않으므로,
+                // 아주 오래된 미마이그레이션 DB 에서는 실패할 수 있다 — 그때는 사본을
+                // 만들어 드리프트를 재생산하는 대신 **측정 불가를 표면화**한다.
+                console.error(`analyze: pending 집계 불가(구버전 스키마 추정) — 0 으로 보고하지 않습니다: `
+                    + `${e instanceof Error ? e.message : String(e)}`);
+                report.coverage.extraction.pending = cov.sessions;
+            }
         }
         else {
             report.coverage.extraction.pending = cov.sessions;
