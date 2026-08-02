@@ -218,7 +218,15 @@ async function main() {
           // 남은 동안 pending 에 다시 포함되고, 소진하면 아래에서 -2 로 승격된다.
           internalFailures++;
           const prev = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get(next.sid);
-          const attempts = (prev && prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? prev.saved : 0) + 1;
+          // 🚨 나는 이 세션의 마지막 관측자가 아니다 (Codex R5 HIGH-2). 세션 선정 후
+          // SessionEnd 훅이 같은 세션을 성공 추출해 마커(extracted>=0)를 썼을 수 있다.
+          // 그걸 실패 상태로 덮으면 완료된 세션이 재추출돼 중복 fact 가 쌓인다.
+          // 선(先)확인으로 흔한 경우를 걸러내고, TOCTOU 는 아래 UPSERT 의 WHERE 가 막는다.
+          if (prev && prev.extracted !== EXTRACTION_STATE.RETRIABLE_INTERNAL) {
+            log(`session ${next.sid}: INTERNAL failure — 다른 라이터가 이미 확정(extracted=${prev.extracted}), 마커 유지`);
+            return;
+          }
+          const attempts = (prev ? prev.saved : 0) + 1;
           const exhausted = attempts >= MAX_INTERNAL_RETRIES;
           try {
             db.prepare(`
@@ -226,6 +234,7 @@ async function main() {
               VALUES (?, ?, ?, ?)
               ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
                 extracted = excluded.extracted, saved = excluded.saved
+              WHERE extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
             `).run(
               next.sid, new Date().toISOString(),
               exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL,

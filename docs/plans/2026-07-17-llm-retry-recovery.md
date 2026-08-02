@@ -43,6 +43,24 @@
 - [ ] AC5: 분류기 단일 소스 — consolidator 재수출로 기존 importer(테스트 포함) 무회귀
 - [ ] AC6: 전체 vitest 회귀 0
 - [ ] AC7: cloud 비교 결론이 코드 증거로 뒷받침(LLM 호출 0건) + 동일 클래스 스캔 결과 보고
+- [ ] AC8: 내부 실패(임베딩/DB throw)는 재시도 예산이 남는 동안 pending 유지(손실 없음),
+      예산 소진 시 영구 마커로 승격해 큐가 물리지 않음(기아 없음) — 양끝 실증
+
+## Codex 적대 리뷰 라운드 이력 (진동 → 수렴)
+
+같은 결함이 두 방향으로 왕복한 것이 이 작업의 핵심 교훈이다.
+
+| R | 판정 | 지적 | 대응 |
+|---|------|------|------|
+| R1 | HIGH×2 | `API Error: 500` 이 unknown→배치 폐기 / `dist/llm-error-class.js` 미추적 | 분류기 확장 + dist 커밋 |
+| R2 | HIGH | deterministic 배치 폐기가 무음 | `dropped_batches` dead-letter 컬럼 + 로그 |
+| R3 | CRITICAL | R1 수정이 에러 단어를 선택적으로 만들어 `response 400 ms timeout`→deterministic **역행** | 에러 단어 필수화 + 회귀 고정 |
+| R3 | HIGH | 내부 실패 이연 → 오래된 백로그 **기아** | 내부 실패는 마커 기록 |
+| R4 | CRITICAL | 그 마커(-2)가 pending 에서 영구 제외 → **영구 손실** | ← 진동 확인 |
+| R5 | — | **제3 터미널 상태(-4 + 예산 3회)** 로 양쪽 동시 충족 | 이 커밋 |
+
+**교훈**: "이연 vs 기록" 이진 선택으로는 두 실패모드를 동시에 못 막는다. 재시도 예산을 가진
+제3 상태가 필요했다 (`dispatcher-terminal-state-invariant`: 런 종료는 유효한 다음 상태로).
 
 ## Deviations
 - hard-process-contract 부재(이 repo는 /init-project 미적용) — 이전 /team 3회와 동일하게 진행.

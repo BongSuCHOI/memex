@@ -159,3 +159,68 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(row?.dropped_batches).toBe(0);
   });
 });
+
+/**
+ * Codex 적대 리뷰 R5 회귀 — 마커 쓰기의 동시성/스키마 가정.
+ *
+ * 공통 뿌리: **마커를 쓰는 쪽이 "내가 마지막 상태 관측자"라고 가정**한다.
+ *  HIGH-1 컬럼이 없으면(마이그레이션 락 지연) INSERT 가 통째로 실패 → 마커 미기록
+ *         → 세션 영구 pending → 매 run 재추출 → 중복 fact 누적
+ *  HIGH-2 세션 선정 후 다른 라이터가 성공 마커를 썼는데 실패 상태로 덮어씀 → 재추출
+ */
+describe('R5: 마커 쓰기 견고성', () => {
+  it('HIGH-1: dropped_batches 컬럼이 없어도 마커는 반드시 기록된다 (재추출/중복 차단)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'ok';
+    // 마이그레이션이 락으로 지연된 상태를 재현: 컬럼만 없는 extraction_log
+    db.exec('DROP TABLE IF EXISTS extraction_log');
+    db.exec(`CREATE TABLE extraction_log (
+      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
+    )`);
+
+    await runFactExtraction(db, SESSION, PROJECT);
+
+    const row = db.prepare('SELECT extracted FROM extraction_log WHERE session_id = ?')
+      .get(SESSION) as { extracted: number } | undefined;
+    // 수정 전에는 'no such column: dropped_batches' 로 INSERT 가 죽고 catch 가 삼켜
+    // 이 행이 아예 없었다 → 세션이 영구 pending.
+    expect(row, '컬럼이 없어도 멱등성 마커는 남아야 한다').toBeDefined();
+    expect(row!.extracted).toBeGreaterThanOrEqual(0);
+  });
+
+  it('HIGH-2: 내부 실패 UPSERT 는 다른 라이터의 성공 마커를 덮지 않는다', () => {
+    // 워커의 내부-실패 UPSERT 와 동일한 SQL. 성공 마커(extracted>=0)가 이미 있는 상태.
+    db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
+      .run('sess-race', new Date().toISOString(), 5, 5);
+
+    db.prepare(`
+      INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+      VALUES (?, ?, -4, 1)
+      ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+        extracted = excluded.extracted, saved = excluded.saved
+      WHERE extraction_log.extracted = -4
+    `).run('sess-race', new Date().toISOString());
+
+    const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
+      .get('sess-race') as { extracted: number; saved: number };
+    expect(row.extracted, '성공 마커가 -4 로 퇴행하면 재추출→중복 fact').toBe(5);
+    expect(row.saved).toBe(5);
+  });
+
+  it('HIGH-2 대칭: 재시도 상태(-4)는 정상적으로 갱신된다 (가드가 과잉차단 아님)', () => {
+    db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
+      .run('sess-retry', new Date().toISOString(), -4, 1);
+
+    db.prepare(`
+      INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+      VALUES (?, ?, -4, 2)
+      ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+        extracted = excluded.extracted, saved = excluded.saved
+      WHERE extraction_log.extracted = -4
+    `).run('sess-retry', new Date().toISOString());
+
+    const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
+      .get('sess-retry') as { extracted: number; saved: number };
+    expect(row.saved, '예산 카운터는 증가해야 한다').toBe(2);
+  });
+});

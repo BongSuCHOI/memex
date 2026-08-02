@@ -318,14 +318,37 @@ export async function runFactExtraction(
   // Record the session as processed (idempotency marker shared by the
   // SessionEnd hook and the cross-project backfill worker).
   try {
-    db.prepare(`
-      INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-        extracted = excluded.extracted, saved = excluded.saved,
-        dropped_batches = excluded.dropped_batches
-    `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches);
-    if (stats.droppedBatches > 0) {
+    // 🚨 dropped_batches 컬럼은 마이그레이션이 락 경합으로 지연될 수 있다(db.ts).
+    // 그때 5-컬럼 INSERT 는 'no such column' 으로 실패하고, 아래 catch 가 삼키면
+    // **마커가 아예 안 써진다** → 세션이 영구 pending → 매 run 재추출 → facts.id 가
+    // randomUUID 이고 내용 UNIQUE 가 없어 **중복 fact 가 누적**된다(Codex R5 HIGH-1).
+    // 마커 기록(멱등성)이 dead-letter 카운터보다 우선이므로, 컬럼이 없으면 4-컬럼으로
+    // 폴백해 마커는 반드시 남기고 카운터 누락만 크게 표면화한다.
+    const hasDropped = (db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
+      .all() as Array<{ name: string }>).some(c => c.name === 'dropped_batches');
+    if (hasDropped) {
+      db.prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+          extracted = excluded.extracted, saved = excluded.saved,
+          dropped_batches = excluded.dropped_batches
+      `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches);
+    } else {
+      db.prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+          extracted = excluded.extracted, saved = excluded.saved
+      `).run(sessionId, new Date().toISOString(), facts.length, saved);
+      if (stats.droppedBatches > 0) {
+        console.error(
+          `extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 ` +
+          `${stats.droppedBatches}건을 기록하지 못했습니다(마이그레이션 지연). 마커는 기록됨.`,
+        );
+      }
+    }
+    if (stats.droppedBatches > 0 && hasDropped) {
       // 조용히 넘어가지 않는다 — 폐기가 있었다는 사실을 로그로도 표면화(fail-loud).
       console.error(
         `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
@@ -333,8 +356,14 @@ export async function runFactExtraction(
         `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
       );
     }
-  } catch {
-    // log table may not exist on very old DBs — extraction result still stands
+  } catch (e) {
+    // 아주 오래된 DB 는 log 테이블 자체가 없을 수 있다 — 추출 결과는 유효하다.
+    // 단 조용히 넘기지 않는다: 마커 미기록 = 다음 run 재추출(중복 fact 위험)이므로
+    // 원인을 표면화해야 진단이 가능하다(fail-loud).
+    console.error(
+      `extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
+      `${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 
   return { extracted: facts.length, saved };
