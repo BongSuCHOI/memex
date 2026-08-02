@@ -1,4 +1,5 @@
 import { callHaiku, parseJsonResponse } from './llm.js';
+import { classifyLlmError, LlmCallError } from './llm-error-class.js';
 import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { classifyAndLinkFact } from './ontology-classifier.js';
@@ -154,6 +155,8 @@ export async function extractFactsFromExchanges(db, sessionId) {
     const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
     const allFacts = [];
     const seen = new Set();
+    // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
+    const transientFailures = [];
     for (let b = 0; b < selectedBatches.length; b++) {
         if (allFacts.length >= MAX_FACTS_PER_SESSION)
             break;
@@ -178,8 +181,34 @@ export async function extractFactsFromExchanges(db, sessionId) {
             }
         }
         catch (error) {
-            console.error(`Batch ${b} extraction failed:`, error);
+            // 실패를 3분류한다 — 예전에는 전부 삼켜서, 공급자 장애로 한 건도 못 뽑은
+            // 세션이 extraction_log 에 '완료(0건)'로 기록되고 pending 쿼리에서 영구 제외됐다
+            // (그 대화의 fact 는 영원히 추출되지 않음 = 데이터 손실).
+            //
+            // 🚨 추출 경로는 consolidation 과 위험이 비대칭이라 'unknown' 처리가 다르다:
+            // consolidation 에서 건너뛴 fact 는 살아 있고 검색되지만(중복제거만 미실행),
+            // 추출에서 건너뛴 배치는 **fact 가 애초에 만들어지지 않는다** — 되돌릴 수 없다.
+            // 그래서 인식 못 한 에러(unknown)는 '이 요청 잘못'으로 단정하지 않고 transient
+            // 와 같이 이연한다(다음 run 재시도). 무한 재시도 위험은 callHaiku 가 이미 유한
+            // 재시도로 흡수했고, 워커가 이연 건수를 로그로 표면화한다.
+            // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
+            //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
+            const cls = classifyLlmError(error);
+            if (cls === 'deterministic') {
+                // 요청 자체가 잘못됨(400/413/max_tokens): 같은 입력은 같은 결과이므로 이
+                // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
+                console.error(`Batch ${b} extraction failed (deterministic — batch dropped):`, error);
+            }
+            else {
+                transientFailures.push(error);
+                console.error(`Batch ${b} extraction failed (${cls} — session deferred, will retry):`, error);
+            }
         }
+    }
+    // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
+    // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
+    if (transientFailures.length > 0) {
+        throw new LlmCallError(transientFailures[0]);
     }
     return allFacts;
 }
