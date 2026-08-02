@@ -178,7 +178,12 @@ export function initDatabase() {
     expect(out, '일회성 락은 예산 대상이 아니다').not.toMatch(/budget-burned/);
   });
 
-  it('R18: 최신 세션이 지속 실패해도 오래된 백로그가 진행된다 (기아 방지)', () => {
+  // ⚠️ 이 테스트는 **기아를 검증하지 않는다.** runWorker 스텁이 pendingSessions 반환을
+  //    4세션으로 하드코딩 치환하므로 run 간 재선정이 일어나지 않는다 — 기아로는 실패할
+  //    수 없다(Codex R20 이 vacuous 로 지적). 검증하는 것은 "지속 실패 시 잘못된 귀속을
+  //    남기지 않는가" 하나다. 기아 특성(실패셋이 MAX_SESSIONS 를 포화할 때만 발생하며
+  //    그 조건은 DB 전역 고장이고 매 run 경보가 뜬다)은 리뷰어가 다중 run 으로 실측했다.
+  it('R18: 지속 실패해도 잘못된 귀속을 남기지 않는다 (기아 검증 아님 — 위 주석 참조)', () => {
     writeStubs({ staleTable: false });
     // project 조회가 **항상** 실패하는 DB. 예전 구현이면 이 세션들이 마커 없이 매 run
     // 재선정돼(ORDER BY ts DESC LIMIT) 오래된 세션이 영원히 진입하지 못했다.
@@ -214,6 +219,7 @@ export const FAILURE_REPORT = {
     expect(out, '경보로 표면화').toMatch(/INTERNAL failures 4/);
     // 마커를 안 남기므로 다음 run 에 그대로 재시도된다(손실 없음).
     expect(out, '예산을 태우면 안 된다').not.toMatch(/budget-burned/);
+    // 이 스텁은 run 간 재선정을 재현하지 못하므로 기아 여부는 여기서 주장하지 않는다.
   });
 
   it('R19: 정상 제외(excluded_project)를 실패로 오보고하지 않는다', () => {
