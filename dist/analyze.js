@@ -90,7 +90,7 @@ export async function analyzeHistory(options = {}) {
             const ext = db.prepare(`
         SELECT
           SUM(CASE WHEN extracted >= 0 THEN 1 ELSE 0 END) AS processed,
-          SUM(CASE WHEN extracted = -1 THEN 1 ELSE 0 END) AS seeded,
+          SUM(CASE WHEN extracted = ${EXTRACTION_STATE.SEED} THEN 1 ELSE 0 END) AS seeded,
           SUM(CASE WHEN extracted = ${EXTRACTION_STATE.PERMANENT} THEN 1 ELSE 0 END) AS errors,
           SUM(CASE WHEN extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL} THEN 1 ELSE 0 END) AS retrying
         FROM extraction_log
