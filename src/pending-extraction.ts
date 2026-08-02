@@ -76,10 +76,20 @@ export const MAX_INTERNAL_RETRIES = 3;
  */
 export const CLAIM_LEASE_MINUTES = 30;
 
-/** SQLite 식 "리스가 아직 살아있는 claim" 조건 (테이블 별칭을 받는다). */
+/**
+ * SQLite 식 "리스가 아직 살아있는 claim" 조건 (테이블 별칭을 받는다).
+ *
+ * 🚨 `datetime(...)` 으로 **양쪽을 파싱**해 비교한다. processed_at 은 JS
+ * `toISOString()`(`2026-08-02T10:48:32.698Z`)인데 `datetime('now',…)` 는 공백 구분
+ * (`2026-08-02 11:18:32`)이라, 문자열로 비교하면 index 10 에서 'T'(0x54) > ' '(0x20)
+ * 이 되어 **같은 UTC 날짜의 만료 claim 이 언제나 fresh 로 판정**된다. 실효 리스가
+ * 30분이 아니라 "날짜가 바뀔 때까지"(최대 ~24.5시간)가 되어, 죽은 소유자의 claim 이
+ * 세션을 하루 가까이 잠근다 — 소비자 4곳(pending 쿼리·worker/hook claim·제외 마커)
+ * 전부에 영향(Codex R23, 실측 재현: 1시간 만료 claim 이 fresh=1).
+ */
 export function freshClaimPredicate(alias = 'extraction_log'): string {
   return `${alias}.extracted = ${EXTRACTION_STATE.CLAIMED}`
-    + ` AND ${alias}.processed_at > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')`;
+    + ` AND datetime(${alias}.processed_at) > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')`;
 }
 
 /**
@@ -103,7 +113,7 @@ export function claimSessionSql(variant: 'worker' | 'hook'): string {
     // pending 이었던 상태만: 재시도 대상(-4) 또는 리스 만료 claim
     ? `extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}`
       + ` OR (extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}`
-      + ` AND extraction_log.processed_at <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))`
+      + ` AND datetime(extraction_log.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))`
     // 살아있는 claim 이 아니면 무엇이든 선점 가능
     : `NOT (${freshClaimPredicate()})`;
   // 🚨 소유권 토큰(claim_owner)이 없으면 "내 claim 만 건드린다"는 계약을 SQL 로
@@ -180,7 +190,7 @@ export function pendingExtractionCoreQuery(cfg: ExtractionConfig): { sql: string
           -- 리스가 만료된 claim(-3)도 미처리다. 소유자가 죽었을 수 있으므로
           -- 회수해야 한다 — 그렇지 않으면 claim 자체가 새로운 영구손실 통로가 된다.
           AND NOT (l.extracted = ${EXTRACTION_STATE.CLAIMED}
-                   AND l.processed_at <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))
+                   AND datetime(l.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))
       )
       ${exClause}
     GROUP BY e.session_id

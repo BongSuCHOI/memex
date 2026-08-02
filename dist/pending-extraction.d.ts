@@ -48,7 +48,17 @@ export declare const MAX_INTERNAL_RETRIES = 3;
  * 추출 1회는 LLM·임베딩·온톨로지까지 수 분이므로 넉넉히 잡는다.
  */
 export declare const CLAIM_LEASE_MINUTES = 30;
-/** SQLite 식 "리스가 아직 살아있는 claim" 조건 (테이블 별칭을 받는다). */
+/**
+ * SQLite 식 "리스가 아직 살아있는 claim" 조건 (테이블 별칭을 받는다).
+ *
+ * 🚨 `datetime(...)` 으로 **양쪽을 파싱**해 비교한다. processed_at 은 JS
+ * `toISOString()`(`2026-08-02T10:48:32.698Z`)인데 `datetime('now',…)` 는 공백 구분
+ * (`2026-08-02 11:18:32`)이라, 문자열로 비교하면 index 10 에서 'T'(0x54) > ' '(0x20)
+ * 이 되어 **같은 UTC 날짜의 만료 claim 이 언제나 fresh 로 판정**된다. 실효 리스가
+ * 30분이 아니라 "날짜가 바뀔 때까지"(최대 ~24.5시간)가 되어, 죽은 소유자의 claim 이
+ * 세션을 하루 가까이 잠근다 — 소비자 4곳(pending 쿼리·worker/hook claim·제외 마커)
+ * 전부에 영향(Codex R23, 실측 재현: 1시간 만료 claim 이 fresh=1).
+ */
 export declare function freshClaimPredicate(alias?: string): string;
 /**
  * 세션 선점 SQL — **LLM 호출 전에** 실행해 중복 추출을 구조적으로 차단한다.

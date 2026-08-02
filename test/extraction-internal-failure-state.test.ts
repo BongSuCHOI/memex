@@ -147,7 +147,7 @@ describe('R6: 세션 선점(claim) 계약', () => {
     try {
       seedSession(db, 's', 12);
       const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 5) * 60_000)
-        .toISOString().replace('T', ' ').slice(0, 19); // SQLite datetime 비교 형식
+        .toISOString(); // 🚨 프로덕션 실제 포맷 — 공백 변환은 결함을 가린다(R23)
       db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
         .run('s', stale, EXTRACTION_STATE.CLAIMED, 0);
 
@@ -215,7 +215,7 @@ describe('R7: claim 소유권 토큰', () => {
       seedSession(db, 's', 12);
       const owner = randomUUID();
       const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 5) * 60_000)
-        .toISOString().replace('T', ' ').slice(0, 19);
+        .toISOString();
       db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
         .run('s', stale, EXTRACTION_STATE.CLAIMED, 0, owner);
       expect(pendingIds(db), '갱신 전에는 회수 대상').toContain('s');
@@ -295,7 +295,7 @@ describe('R21: 제외 마커의 소유권 가드', () => {
     try {
       seedSession(db, 's3', 12);
       const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 30) * 60_000)
-        .toISOString().replace('T', ' ').slice(0, 19);
+        .toISOString();
       db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
         .run('s3', stale, EXTRACTION_STATE.CLAIMED, 0, 'deadOwner');
 
