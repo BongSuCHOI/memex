@@ -18,7 +18,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
-import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
+import {
+  getExtractionConfig, pendingExtractionCoreQuery,
+  EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
+} from '../dist/pending-extraction.js';
 import { runFactExtraction } from '../dist/fact-extractor.js';
 import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
@@ -209,14 +212,44 @@ async function main() {
           return; // extraction_log 미기록 → 다음 run 재시도
         }
         if (!isProviderError) {
+          // 내부 실패는 제3의 터미널 상태(-4, 재시도 예산)로 기록한다. 이연하면
+          // 런타임이 깨졌을 때 오래된 백로그가 기아하고(R3 HIGH), 영구 마커(-2)를
+          // 남기면 일시적 장애 한 번에 세션이 영영 사라진다(R4 CRITICAL). 예산이
+          // 남은 동안 pending 에 다시 포함되고, 소진하면 아래에서 -2 로 승격된다.
           internalFailures++;
-          log(`session ${next.sid}: INTERNAL failure (not a provider error) — 런타임/DB 점검 필요`);
+          const prev = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get(next.sid);
+          const attempts = (prev && prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? prev.saved : 0) + 1;
+          const exhausted = attempts >= MAX_INTERNAL_RETRIES;
+          try {
+            db.prepare(`
+              INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+                extracted = excluded.extracted, saved = excluded.saved
+            `).run(
+              next.sid, new Date().toISOString(),
+              exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL,
+              exhausted ? 0 : attempts,
+            );
+          } catch { /* ignore */ }
+          log(
+            `session ${next.sid}: INTERNAL failure (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
+            `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — 런타임/DB 점검 필요`,
+          );
+          return; // 아래의 deterministic 영구 마커 경로를 타지 않는다
         }
         try {
+          // deterministic = 같은 입력이면 같은 결과 → 영구 마커. 단 이전 내부 실패가
+          // 남긴 재시도 마커(-4)는 반드시 덮어써야 한다 — OR IGNORE 로 두면 -4 가
+          // 남아 세션이 매 run 재선정되며 영원히 같은 거절을 반복한다(wedge).
+          // 성공 기록(>=0)과 seed(-1)는 건드리지 않도록 조건을 좁힌다.
           db.prepare(`
-            INSERT OR IGNORE INTO extraction_log (session_id, processed_at, extracted, saved)
-            VALUES (?, ?, -2, 0)
-          `).run(next.sid, new Date().toISOString());
+            INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+              extracted = excluded.extracted, saved = 0
+            WHERE extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
+          `).run(next.sid, new Date().toISOString(), EXTRACTION_STATE.PERMANENT);
         } catch { /* ignore */ }
       }
       done++;

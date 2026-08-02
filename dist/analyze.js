@@ -4,6 +4,7 @@ import path from 'path';
 import { getDbPath } from './paths.js';
 import { canonicalArchiveName } from './archive-io.js';
 import { slugifyPath } from './project-canon.js';
+import { EXTRACTION_STATE, MAX_INTERNAL_RETRIES } from './pending-extraction.js';
 /**
  * Convert a filesystem path to the Claude Code project slug used in the
  * `exchanges.project` column (e.g. /Users/me/app → -Users-me-app).
@@ -35,7 +36,7 @@ function emptyReport() {
             totalExchanges: 0,
             projectCount: 0,
             dateRange: null,
-            extraction: { processed: 0, seeded: 0, errors: 0, pending: 0 },
+            extraction: { processed: 0, seeded: 0, errors: 0, retrying: 0, pending: 0 },
             summaries: { withSummary: 0, withoutSummary: 0 },
         },
         facts: { active: 0, inactive: 0, byCategory: [], byScope: [] },
@@ -90,18 +91,28 @@ export async function analyzeHistory(options = {}) {
         SELECT
           SUM(CASE WHEN extracted >= 0 THEN 1 ELSE 0 END) AS processed,
           SUM(CASE WHEN extracted = -1 THEN 1 ELSE 0 END) AS seeded,
-          SUM(CASE WHEN extracted = -2 THEN 1 ELSE 0 END) AS errors
+          SUM(CASE WHEN extracted = ${EXTRACTION_STATE.PERMANENT} THEN 1 ELSE 0 END) AS errors,
+          SUM(CASE WHEN extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL} THEN 1 ELSE 0 END) AS retrying
         FROM extraction_log
       `).get();
             report.coverage.extraction.processed = ext.processed ?? 0;
             report.coverage.extraction.seeded = ext.seeded ?? 0;
             report.coverage.extraction.errors = ext.errors ?? 0;
+            report.coverage.extraction.retrying = ext.retrying ?? 0;
             const pending = db.prepare(`
         SELECT COUNT(*) AS n FROM (
           SELECT e.session_id
           FROM exchanges e
           WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
-            AND NOT EXISTS (SELECT 1 FROM extraction_log l WHERE l.session_id = e.session_id)
+            -- 워커/훅의 pending 판정과 같은 의미여야 한다: 재시도 예산이 남은
+            -- 내부 실패(-4)는 아직 미처리다. 여기만 다르면 리포트가 백로그를
+            -- 과소보고해 "다 처리됐다"는 거짓 신호를 준다.
+            AND NOT EXISTS (
+              SELECT 1 FROM extraction_log l
+              WHERE l.session_id = e.session_id
+                AND NOT (l.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
+                         AND l.saved < ${MAX_INTERNAL_RETRIES})
+            )
           GROUP BY e.session_id
         )
       `).get();

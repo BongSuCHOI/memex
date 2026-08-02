@@ -461,8 +461,22 @@ export function initDatabase() {
                 db.prepare('ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0').run();
             }
             catch (e) {
-                if (!/duplicate column name/i.test(e?.message ?? ''))
-                    throw e;
+                // 실패를 3분류한다 (Codex 리뷰 R3/R4 MEDIUM). duplicate 만 흡수하고 전부
+                // 던지면, 다른 프로세스가 쓰기 락을 쥔 순간의 초기화가 통째로 죽어
+                // 훅/워커가 그 세션을 아예 처리하지 못한다 — 일시적 경합이 기능 정지가 된다.
+                const msg = e?.message ?? '';
+                if (/duplicate column name/i.test(msg)) {
+                    /* 이미 있음 — 다른 프로세스가 먼저 추가 */
+                }
+                else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
+                    // 일시적 경합: 이 컬럼은 선택적 메타데이터(폐기 배치 카운터)이므로 다음
+                    // 초기화가 추가한다. 그때까지 이 컬럼을 쓰는 INSERT 는 자체 catch 로
+                    // 마커를 남기지 않을 뿐이고, 세션은 pending 에 남아 재처리된다(손실 없음).
+                    console.error('[db] extraction_log.dropped_batches 마이그레이션 지연 — 락 경합, 다음 초기화에서 재시도');
+                }
+                else {
+                    throw e; // 진짜 스키마 이상은 조용히 넘기지 않는다
+                }
             }
         }
     }

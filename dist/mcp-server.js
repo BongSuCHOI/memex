@@ -23649,7 +23649,13 @@ function initDatabase() {
       try {
         db.prepare("ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0").run();
       } catch (e) {
-        if (!/duplicate column name/i.test(e?.message ?? "")) throw e;
+        const msg = e?.message ?? "";
+        if (/duplicate column name/i.test(msg)) {
+        } else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
+          console.error("[db] extraction_log.dropped_batches \uB9C8\uC774\uADF8\uB808\uC774\uC158 \uC9C0\uC5F0 \u2014 \uB77D \uACBD\uD569, \uB2E4\uC74C \uCD08\uAE30\uD654\uC5D0\uC11C \uC7AC\uC2DC\uB3C4");
+        } else {
+          throw e;
+        }
       }
     }
   }
