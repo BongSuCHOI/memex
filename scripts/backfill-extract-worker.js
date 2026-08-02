@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
-import { runFactExtraction } from '../dist/fact-extractor.js';
+import { runFactExtraction, ClaimLostError } from '../dist/fact-extractor.js';
 import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
@@ -180,7 +180,7 @@ async function main() {
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(`backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`);
 
-    let done = 0, totalSaved = 0, transientSessions = 0, internalFailures = 0;
+    let done = 0, totalSaved = 0, transientSessions = 0, internalFailures = 0, handoffSessions = 0;
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
@@ -207,10 +207,13 @@ async function main() {
         // 실패 분류와 마커 기록은 **선점 소유자**인 runFactExtraction 이 단독 수행한다
         // (소유권 토큰이 그쪽에만 있으므로 여기서 쓰면 남의 claim 을 덮을 수 있다).
         // 워커는 관측만 한다.
-        const isProviderError = error instanceof LlmCallError;
-        const cls = isProviderError ? classifyLlmError(error) : 'internal';
-        log(`session ${next.sid}: ERROR (${cls}) ${error instanceof Error ? error.message : error}`);
-        if (cls === 'internal') internalFailures++;
+        // 3분류: handoff(소유권 이양) / provider(공급자) / internal(런타임·DB).
+        // handoff 를 internal 로 세면 "런타임 점검 필요" 거짓 경보가 된다.
+        const cls = error instanceof ClaimLostError ? 'handoff'
+          : error instanceof LlmCallError ? classifyLlmError(error) : 'internal';
+        log(`session ${next.sid}: ${cls === 'handoff' ? 'HANDOFF' : 'ERROR'} (${cls}) ${error instanceof Error ? error.message : error}`);
+        if (cls === 'handoff') handoffSessions++;
+        else if (cls === 'internal') internalFailures++;
         else transientSessions++;
       }
       done++;
@@ -219,6 +222,7 @@ async function main() {
     log(
       `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
       (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') +
+      (handoffSessions > 0 ? `, handoff ${handoffSessions} — 다른 러너가 처리 중` : '') +
       (internalFailures > 0 ? `, INTERNAL failures ${internalFailures} — 런타임/DB 점검 필요` : '') + ')',
     );
   } catch (error) {

@@ -399,7 +399,7 @@ opts) {
             .run(new Date().toISOString(), sessionId, owner).changes;
         if (renewed === 0) {
             holdsClaim = false; // 남의 행이 되었으므로 롤백도 하지 않는다
-            throw new Error(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
+            throw new ClaimLostError(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
         }
     };
     /** 내 claim 만 되돌린다 — 소유권 토큰으로 다른 러너의 claim 을 건드리지 않는다. */
@@ -451,11 +451,17 @@ opts) {
         //  · 공급자 실패(LlmCallError, transient/unknown) → claim 해제 후 rethrow.
         //    예산을 쓰지 않고 다음 run 에 즉시 재시도된다.
         //  · 내부 실패(임베딩/DB/파서) → 재시도 예산 마커(-4, 소진 시 -2) 후 rethrow.
-        const providerFailure = e instanceof LlmCallError && classifyLlmError(e) !== 'deterministic';
-        if (providerFailure)
-            releaseClaim();
-        else
-            writeInternalFailureMarker();
+        if (e instanceof ClaimLostError) {
+            // 소유권 이양 — 이 세션의 실패가 아니다. 예산을 소모하지 않고(SQL 가드가 이미
+            // 0행 처리하지만 **계약을 코드로 표현**한다), 남의 행이므로 해제도 하지 않는다.
+            console.error(`extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`);
+        }
+        else if (e instanceof LlmCallError && classifyLlmError(e) !== 'deterministic') {
+            releaseClaim(); // 공급자 장애 — 예산 미소모, 다음 run 즉시 재시도
+        }
+        else {
+            writeInternalFailureMarker(); // 내부 실패 — 재시도 예산 소모
+        }
         throw e;
     }
     // 완료 마커 — saveExtractedFacts 의 트랜잭션 안에서 호출된다(원자적 커밋).

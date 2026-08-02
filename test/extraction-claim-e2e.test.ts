@@ -109,4 +109,19 @@ describe('claim E2E', () => {
     console.log(`  → 루프 꼬리 탈취: 저장된 fact ${n}건 (saved=${saved})`);
     expect(n, '탈취 후 남은 fact 는 새 소유자의 재추출과 중복된다').toBe(0);
   });
+
+  it('R10 MEDIUM: claim 이양은 ClaimLostError 로 구분돼 내부 실패로 오분류되지 않는다', async () => {
+    const { runFactExtraction, ClaimLostError } = await import('../src/fact-extractor.js');
+    factsPerCall = 1; stealAtEmbedCall = 1;
+    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+
+    let caught: unknown;
+    try { await runFactExtraction(db, 'S1', '/tmp/p'); } catch (e) { caught = e; }
+    expect(caught, '이양은 전용 타입이어야 소비자가 3분류할 수 있다').toBeInstanceOf(ClaimLostError);
+
+    const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
+      .get('S1') as { extracted: number; saved: number };
+    console.log(`  → 이양 후 상태: extracted=${row.extracted} saved=${row.saved}`);
+    expect(row.extracted, '남의 claim(-3)이 유지돼야 한다 — 예산(-4) 소모 금지').toBe(-3);
+  });
 });
