@@ -132,6 +132,18 @@ describe('backfill 워커 실행 계약', () => {
 
   it('R16: 세션 1건의 DB 오류가 배치 전체를 죽이지 않는다 (요약·경보 생존)', () => {
     writeStubs({ staleTable: false });
+    // 이 테스트의 유일한 실패는 **선점 이전 DB 오류**여야 한다 — 추출은 성공시킨다.
+    // (다른 실패가 섞이면 budget-burned 가 그쪽에서 나와 단언이 무의미해진다.)
+    fs.writeFileSync(path.join(sandbox, 'dist', 'fact-extractor.js'), `
+export async function runFactExtraction() { return { extracted: 0, saved: 0 }; }
+export function classifyExtractionFailure() { return 'internal'; }
+export const FAILURE_REPORT = {
+  handoff: { label: 'HANDOFF', note: 'h', bucket: 'handoff', consumesBudget: false, escalate: false },
+  provider_transient: { label: 'ERROR', note: 't', bucket: 'transient', consumesBudget: false, escalate: false },
+  provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
+  internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
+};
+`);
     // 2번째 세션의 sessionProject 조회에서 SQLITE_BUSY 를 던지게 만든다.
     const dbStub = path.join(sandbox, 'dist', 'db.js');
     fs.writeFileSync(dbStub, `
@@ -157,5 +169,26 @@ export function initDatabase() {
     expect(out, '요약줄이 사라지면 무슨 일이 있었는지 알 수 없다').toMatch(/done this run/);
     expect(out, '나머지 세션은 계속 처리돼야 한다').toMatch(/sessions 4/);
     expect(out, '실패 경보는 여전히 표면화돼야 한다').toMatch(/INTERNAL failures/);
+    // 🚨 이전 버전의 이 테스트는 같은 오류를 budget-burned 로 세는 것을 **계약으로
+    // 고정**해, 예산을 안 태우고 태웠다고 보고하는 결함을 초록으로 통과시켰다
+    // (Codex R17 NOTE). 선점 이전 실패는 마커가 없으니 예산이 아니라 재시도다.
+    expect(out, '선점 이전 실패는 pre_claim 으로 구분돼야 한다').toMatch(/pre_claim/);
+    expect(out, '마커도 안 썼는데 예산 소모로 보고하면 거짓 회계다').not.toMatch(/budget-burned/);
+    expect(out, '예산 미소모 = 다음 run 재시도 대상').toMatch(/transient-deferred/);
+  });
+
+  it('R17: 격리된 예외가 요약에서 사라지지 않는다 (과소계상 방지)', () => {
+    writeStubs({ staleTable: false });
+    // 분류기 자체가 던지게 만들어 fn 의 자체 격리를 뚫는다 → runPool 이중 catch 경로.
+    const fe = path.join(sandbox, 'dist', 'fact-extractor.js');
+    fs.writeFileSync(fe, `
+export async function runFactExtraction() { throw new Error('boom'); }
+export function classifyExtractionFailure() { throw new Error('classifier exploded'); }
+export const FAILURE_REPORT = {};
+`);
+    const { out, code } = runWorker();
+    expect(code, '격리 경로에서도 정상 종료').toBe(0);
+    // 삼키면 done 에도 buckets 에도 안 잡혀 "sessions 0" 으로 조용히 끝난다.
+    expect(out, '격리 건수가 표면화돼야 한다').toMatch(/isolated-exceptions 4/);
   });
 });
