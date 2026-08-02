@@ -125,3 +125,30 @@ describe('claim E2E', () => {
     expect(row.extracted, '남의 claim(-3)이 유지돼야 한다 — 예산(-4) 소모 금지').toBe(-3);
   });
 });
+
+/**
+ * R11 MEDIUM — **소비자측** 분류 검증.
+ * 기존 테스트는 producer(전용 타입 throw)만 덮었고, 워커가 그 타입을 어떻게 읽는지는
+ * 검증되지 않았다. 두 워커가 표현식을 각자 인라인으로 들면 드리프트하므로(R6 계열),
+ * 분류를 단일 소스 함수로 두고 그 함수를 직접 고정한다.
+ */
+describe('R11: 소비자 분류 단일 소스', () => {
+  it('handoff / provider / internal 을 정확히 가른다', async () => {
+    const { classifyExtractionFailure, ClaimLostError } = await import('../src/fact-extractor.js');
+    const { LlmCallError } = await import('../src/llm-error-class.js');
+
+    expect(classifyExtractionFailure(new ClaimLostError('taken')), '이양은 실패가 아니다').toBe('handoff');
+    expect(classifyExtractionFailure(new LlmCallError(Object.assign(new Error('503'), { status: 503 })))).toBe('provider');
+    expect(classifyExtractionFailure(new Error('embedding runtime blew up')), '런타임은 점검 대상').toBe('internal');
+    expect(classifyExtractionFailure(new TypeError('undefined is not a function'))).toBe('internal');
+  });
+
+  it('두 워커가 같은 단일 소스를 사용한다 (드리프트 차단)', async () => {
+    const fs = await import('node:fs');
+    for (const w of ['scripts/fact-extract-worker.js', 'scripts/backfill-extract-worker.js']) {
+      const src = fs.readFileSync(w, 'utf8');
+      expect(src, `${w} 가 분류를 인라인으로 재구현하면 드리프트한다`).toContain('classifyExtractionFailure');
+      expect(src.includes('instanceof ClaimLostError'), `${w} 인라인 분기 잔존`).toBe(false);
+    }
+  });
+});

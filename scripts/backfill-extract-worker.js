@@ -19,8 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
-import { runFactExtraction, ClaimLostError } from '../dist/fact-extractor.js';
-import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
+import { runFactExtraction, classifyExtractionFailure } from '../dist/fact-extractor.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
 
@@ -209,8 +208,7 @@ async function main() {
         // 워커는 관측만 한다.
         // 3분류: handoff(소유권 이양) / provider(공급자) / internal(런타임·DB).
         // handoff 를 internal 로 세면 "런타임 점검 필요" 거짓 경보가 된다.
-        const cls = error instanceof ClaimLostError ? 'handoff'
-          : error instanceof LlmCallError ? classifyLlmError(error) : 'internal';
+        const cls = classifyExtractionFailure(error);
         log(`session ${next.sid}: ${cls === 'handoff' ? 'HANDOFF' : 'ERROR'} (${cls}) ${error instanceof Error ? error.message : error}`);
         if (cls === 'handoff') handoffSessions++;
         else if (cls === 'internal') internalFailures++;

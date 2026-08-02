@@ -62,6 +62,16 @@ renewLease?: () => void,
  * fact 도 남지 않으므로 중복이 생길 수 없다.
  */
 commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
+/**
+ * 추출 실패의 **소비자측 3분류**. 두 워커(SessionEnd 훅·backfill)가 같은 표현식을
+ * 각자 인라인으로 들고 있으면 한쪽만 갱신돼 드리프트한다(R6 에서 마커 SQL 로 겪은 것과
+ * 같은 계열). 분류 규칙을 여기 한 곳에 두고 소비자는 호출만 한다.
+ *
+ *  - 'handoff'  : 다른 러너가 인수함. 실패가 아니다 — 경보로 세지 말 것.
+ *  - 'provider' : 공급자 장애/빈응답. 예산 미소모, 다음 run 재시도.
+ *  - 'internal' : 런타임·DB·파서. 재시도 예산을 소모한다 — 운영 점검 대상.
+ */
+export declare function classifyExtractionFailure(err: unknown): 'handoff' | 'provider' | 'internal';
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
 /**
  * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커
