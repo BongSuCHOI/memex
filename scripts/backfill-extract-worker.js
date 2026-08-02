@@ -206,24 +206,41 @@ async function main() {
       // 그 세션은 마커가 없어 영구 pending 이라 최신 세션이 매 run 슬롯을 점유해
       // 오래된 백로그를 기아시킨다(R3 HIGH 메커니즘 재현 — Codex R17, 내가 만든 회귀).
       // 수정 전에는 같은 오류가 배치를 죽였으니, 조용한 거짓 회계로 바꾸면 더 나쁘다.
+      // 🚨 sessionProject 는 **부가 정보**이지 처리 전제가 아니다. 이걸 실패로 다루면
+      // 두 나쁜 선택 사이를 왕복한다: budget 으로 세면 마커 없이 예산을 태웠다고
+      // 보고하는 거짓 회계(R17 HIGH), transient 로 세면 마커가 없어 최신 세션이 매 run
+      // 슬롯을 점유해 백로그가 기아한다(R3 HIGH 재도입 — R18 이 3회 run 으로 재현).
+      // 정답은 실패로 다루지 않는 것이다: 프로젝트를 모르면 'unknown' 으로 진행하고,
+      // 선점·예산·마커는 runFactExtraction 이 정상 경로에서 소유한다.
       let project = null;
       try {
         project = sessionProject(db, next.sid);
       } catch (e) {
-        buckets.transient += 1;   // 예산 미소모 — 다음 run 그대로 재시도된다
-        escalateFailures += 1;    // 단 DB 오류이므로 운영 점검 대상이다
         log(
-          `session ${next.sid}: ERROR (pre_claim) ${e instanceof Error ? e.message : e}`
-          + ' — 선점 이전 실패(마커 없음): 예산 미소모, 다음 run 재시도 · 런타임/DB 점검 필요',
+          `session ${next.sid}: WARN project 조회 실패 — 'unknown' 으로 진행합니다`
+          + ` (${e instanceof Error ? e.message : e})`,
         );
-        done++;
-        return;
       }
       try {
         // 선점은 runFactExtraction 이 단독 소유한다. 'worker' 변형은 자기가 pending
         // 으로 선정했던 상태일 때만 성공하므로, 선정 후 훅이 먼저 확정한 세션을
         // 덮어 재추출하는 중복 경로가 구조적으로 막힌다(Codex R6 HIGH).
         const result = await runFactExtraction(db, next.sid, project ?? 'unknown', undefined, { claimVariant: 'worker' });
+        // 🚨 claim 미획득은 "fact 0건 처리 완료"가 아니다. 구분하지 않으면 done++ 만
+        // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
+        // detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아(R18 독립 발견).
+        if (result.skipped) {
+          if (result.skipped === 'claim_not_acquired') {
+            buckets.handoff += 1;
+            log(`session ${next.sid}: HANDOFF (claim_not_acquired) — 다른 러너가 처리 중`);
+          } else {
+            buckets.transient += 1;
+            escalateFailures += 1;
+            log(`session ${next.sid}: ERROR (${result.skipped}) — 선점 보류, 다음 run 재시도 · 점검 필요`);
+          }
+          done++;
+          return;
+        }
         totalSaved += result.saved;
         if (result.saved > 0) {
           log(`session ${next.sid} (${project ?? '?'}, ${next.n} exch): saved ${result.saved}`);

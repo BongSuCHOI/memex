@@ -425,7 +425,13 @@ export async function runFactExtraction(
    * 선점·복원을 이 함수가 단독으로 소유하므로 호출자 간 로직 분기가 없다.
    */
   opts?: { claimVariant?: 'worker' | 'hook' },
-): Promise<{ extracted: number; saved: number }> {
+  /**
+   * 🚨 `skipped` 는 "처리 안 함"의 **사유**다. 이게 없으면 호출자가 claim 미획득을
+   * "fact 0건 처리 완료"와 구분하지 못해 정상 세션으로 계상하고, 유일한 흔적인
+   * console.error 는 detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아
+   * (Codex R18 독립 발견).
+   */
+): Promise<{ extracted: number; saved: number; skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project' }> {
   // Skip self-referential repos (memory-bank's own monitoring sessions) — mark
   // as processed with zero facts so they are never re-attempted, no LLM calls.
   if (isExcludedProject(project)) {
@@ -437,7 +443,7 @@ export async function runFactExtraction(
           extracted = 0, saved = 0
       `).run(sessionId, new Date().toISOString());
     } catch { /* log table may not exist on very old DBs */ }
-    return { extracted: 0, saved: 0 };
+    return { extracted: 0, saved: 0, skipped: 'excluded_project' };
   }
 
   // 🚨 LLM 을 부르기 **전에** 세션을 선점한다. SessionEnd 훅과 backfill 워커는
@@ -457,7 +463,7 @@ export async function runFactExtraction(
       .run(sessionId, new Date().toISOString(), owner).changes;
     if (claimed === 0) {
       console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
-      return { extracted: 0, saved: 0 };
+      return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' };
     }
     holdsClaim = true;
   } catch (e) {
@@ -482,7 +488,7 @@ export async function runFactExtraction(
           .run(sessionId, new Date().toISOString(), owner).changes;
         if (retried === 0) {
           console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 건너뜁니다`);
-          return { extracted: 0, saved: 0 };
+          return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' };
         }
         holdsClaim = true;
         console.error(`extraction: claim_owner 컬럼을 즉시 추가하고 선점 재시도 성공 (session ${sessionId})`);
@@ -491,11 +497,11 @@ export async function runFactExtraction(
           `extraction: session ${sessionId} — claim_owner 마이그레이션 실패(${e2 instanceof Error ? e2.message : e2}), `
           + `이번 실행은 보류합니다(다음 run 재시도)`,
         );
-        return { extracted: 0, saved: 0 };
+        return { extracted: 0, saved: 0, skipped: 'claim_error' };
       }
     } else {
       console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
-      return { extracted: 0, saved: 0 };
+      return { extracted: 0, saved: 0, skipped: 'claim_error' };
     }
   }
 
