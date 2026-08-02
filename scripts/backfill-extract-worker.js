@@ -21,6 +21,7 @@ import { initDatabase } from '../dist/db.js';
 import {
   getExtractionConfig, pendingExtractionCoreQuery,
   EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
+  failureMarkerUpsertSql,
 } from '../dist/pending-extraction.js';
 import { runFactExtraction } from '../dist/fact-extractor.js';
 import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
@@ -187,7 +188,10 @@ async function main() {
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
-        const result = await runFactExtraction(db, next.sid, project ?? 'unknown');
+        // 선점은 runFactExtraction 이 단독 소유한다. 'worker' 변형은 자기가 pending
+        // 으로 선정했던 상태일 때만 성공하므로, 선정 후 훅이 먼저 확정한 세션을
+        // 덮어 재추출하는 중복 경로가 구조적으로 막힌다(Codex R6 HIGH).
+        const result = await runFactExtraction(db, next.sid, project ?? 'unknown', undefined, { claimVariant: 'worker' });
         totalSaved += result.saved;
         if (result.saved > 0) {
           log(`session ${next.sid} (${project ?? '?'}, ${next.n} exch): saved ${result.saved}`);
@@ -216,26 +220,27 @@ async function main() {
           // 런타임이 깨졌을 때 오래된 백로그가 기아하고(R3 HIGH), 영구 마커(-2)를
           // 남기면 일시적 장애 한 번에 세션이 영영 사라진다(R4 CRITICAL). 예산이
           // 남은 동안 pending 에 다시 포함되고, 소진하면 아래에서 -2 로 승격된다.
-          internalFailures++;
           const prev = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get(next.sid);
           // 🚨 나는 이 세션의 마지막 관측자가 아니다 (Codex R5 HIGH-2). 세션 선정 후
           // SessionEnd 훅이 같은 세션을 성공 추출해 마커(extracted>=0)를 썼을 수 있다.
           // 그걸 실패 상태로 덮으면 완료된 세션이 재추출돼 중복 fact 가 쌓인다.
           // 선(先)확인으로 흔한 경우를 걸러내고, TOCTOU 는 아래 UPSERT 의 WHERE 가 막는다.
-          if (prev && prev.extracted !== EXTRACTION_STATE.RETRIABLE_INTERNAL) {
+          // 내 claim(-3)과 이전 재시도(-4)만 내 소유다. 그 외(성공/seed/영구)는
+          // 다른 라이터가 확정한 것이므로 건드리지 않는다.
+          const mine = !prev || prev.extracted === EXTRACTION_STATE.CLAIMED
+            || prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL;
+          if (!mine) {
             log(`session ${next.sid}: INTERNAL failure — 다른 라이터가 이미 확정(extracted=${prev.extracted}), 마커 유지`);
             return;
           }
-          const attempts = (prev ? prev.saved : 0) + 1;
+          // 계수는 skip 이후에 — 다른 라이터가 성공시킨 세션을 '런타임 점검 필요'로
+          // 계상하면 요약 로그가 거짓 경보를 낸다(Codex R6 LOW).
+          internalFailures++;
+          // claim(-3)에서 넘어온 첫 실패는 시도 0회에서 시작한다.
+          const attempts = (prev && prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? prev.saved : 0) + 1;
           const exhausted = attempts >= MAX_INTERNAL_RETRIES;
           try {
-            db.prepare(`
-              INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-                extracted = excluded.extracted, saved = excluded.saved
-              WHERE extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
-            `).run(
+            db.prepare(failureMarkerUpsertSql()).run(
               next.sid, new Date().toISOString(),
               exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL,
               exhausted ? 0 : attempts,

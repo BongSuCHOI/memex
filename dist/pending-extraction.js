@@ -47,10 +47,71 @@ export function getExtractionConfig() {
 export const EXTRACTION_STATE = {
     SEED: -1,
     PERMANENT: -2,
+    /** 처리 중 선점(claim). 리스 만료 후에는 pending 으로 되돌아온다. */
+    CLAIMED: -3,
     RETRIABLE_INTERNAL: -4,
 };
 /** 내부 실패 재시도 예산 — 소진하면 PERMANENT 로 승격(무한 재시도 방지). */
 export const MAX_INTERNAL_RETRIES = 3;
+/**
+ * claim 리스 수명(분). 이 시간이 지난 claim 은 "죽은 소유자"로 보고 회수한다.
+ *
+ * 리스가 없으면 추출 도중 프로세스가 죽었을 때 claim 이 영원히 남아 세션이
+ * 영구 미추출된다 — R4 와 같은 손실 클래스가 claim 축에서 재현되는 것이다.
+ * 추출 1회는 LLM·임베딩·온톨로지까지 수 분이므로 넉넉히 잡는다.
+ */
+export const CLAIM_LEASE_MINUTES = 30;
+/** SQLite 식 "리스가 아직 살아있는 claim" 조건 (테이블 별칭을 받는다). */
+export function freshClaimPredicate(alias = 'extraction_log') {
+    return `${alias}.extracted = ${EXTRACTION_STATE.CLAIMED}`
+        + ` AND ${alias}.processed_at > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')`;
+}
+/**
+ * 세션 선점 SQL — **LLM 호출 전에** 실행해 중복 추출을 구조적으로 차단한다.
+ *
+ * SessionEnd 훅 워커와 backfill 워커 사이에는 어떤 직렬화 수단도 없었고, 마커는
+ * 파이프라인 *끝*에 써지므로 창이 수 분간 열려 있었다 — 둘이 같은 세션을 집으면
+ * 각자 fact 를 저장해 중복이 쌓인다(facts.id 는 randomUUID, 내용 UNIQUE 없음).
+ * 마커 시점 가드로는 늦다: 그때는 이미 파이프라인이 두 번 돈 뒤다. (Codex R6 HIGH)
+ *
+ * 두 변형이 필요한 이유 — 호출자의 정당한 기대가 다르다:
+ *  - 'worker': 자기가 pending 으로 **선정했던 상태**일 때만 선점한다. 선정 후 훅이
+ *    먼저 끝내 성공 마커를 썼다면 그 위를 덮지 않는다(재추출=중복 차단).
+ *  - 'hook'  : 현재 세션을 처리하므로 확정 마커 위에서도 선점할 수 있어야 한다
+ *    (--resume 으로 교환이 늘어난 세션의 재추출은 의도된 동작). 단 살아있는
+ *    claim 만은 존중한다.
+ * 실행 후 `changes === 1` 이어야 소유권 획득이다(0 이면 타 라이터 소유 → skip).
+ */
+export function claimSessionSql(variant) {
+    const owned = variant === 'worker'
+        // pending 이었던 상태만: 재시도 대상(-4) 또는 리스 만료 claim
+        ? `extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}`
+            + ` OR (extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}`
+            + ` AND extraction_log.processed_at <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))`
+        // 살아있는 claim 이 아니면 무엇이든 선점 가능
+        : `NOT (${freshClaimPredicate()})`;
+    return `
+    INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+    VALUES (?, ?, ${EXTRACTION_STATE.CLAIMED}, 0)
+    ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+      extracted = ${EXTRACTION_STATE.CLAIMED}, saved = 0
+    WHERE ${owned}`;
+}
+/**
+ * 내부 실패 마커 UPSERT — 워커/테스트가 공유하는 단일 소스.
+ * `WHERE` 가드가 다른 라이터의 확정 마커(성공/seed/영구)를 덮는 것을 막는다.
+ * 자기 claim(-3)과 이전 재시도(-4)만 갱신 대상이다.
+ */
+export function failureMarkerUpsertSql() {
+    return `
+    INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+      extracted = excluded.extracted, saved = excluded.saved
+    WHERE extraction_log.extracted IN (
+      ${EXTRACTION_STATE.CLAIMED}, ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
+    )`;
+}
 /**
  * Core SELECT over pending-extraction sessions, through GROUP BY / HAVING but
  * WITHOUT any ORDER BY / LIMIT — callers wrap it:
@@ -79,6 +140,10 @@ export function pendingExtractionCoreQuery(cfg) {
           -- 이 예외가 없으면 일시적 런타임 장애 한 번에 세션이 영구 손실된다.
           AND NOT (l.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
                    AND l.saved < ${MAX_INTERNAL_RETRIES})
+          -- 리스가 만료된 claim(-3)도 미처리다. 소유자가 죽었을 수 있으므로
+          -- 회수해야 한다 — 그렇지 않으면 claim 자체가 새로운 영구손실 통로가 된다.
+          AND NOT (l.extracted = ${EXTRACTION_STATE.CLAIMED}
+                   AND l.processed_at <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))
       )
       ${exClause}
     GROUP BY e.session_id

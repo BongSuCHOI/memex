@@ -33,7 +33,17 @@ export declare function extractFactsFromExchanges(db: Database.Database, session
     droppedBatches: number;
 }): Promise<ExtractedFact[]>;
 export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], codingAgent?: string): Promise<string[]>;
-export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string): Promise<{
+export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
+/**
+ * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커
+ * 위에서도 선점한다(--resume 세션 재추출은 의도된 동작). 'worker'는 자기가
+ * pending 으로 선정했던 상태(미기록 / -4 / 리스만료 claim)일 때만 선점한다 —
+ * 선정 후 훅이 먼저 확정했다면 그 위를 덮지 않아 중복 추출이 생기지 않는다.
+ * 선점·복원을 이 함수가 단독으로 소유하므로 호출자 간 로직 분기가 없다.
+ */
+opts?: {
+    claimVariant?: 'worker' | 'hook';
+}): Promise<{
     extracted: number;
     saved: number;
 }>;

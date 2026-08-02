@@ -3,6 +3,7 @@ import { classifyLlmError, LlmCallError } from './llm-error-class.js';
 import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { classifyAndLinkFact } from './ontology-classifier.js';
+import { claimSessionSql, EXTRACTION_STATE } from './pending-extraction.js';
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 ## Rules
@@ -248,7 +249,15 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     }
     return savedIds;
 }
-export async function runFactExtraction(db, sessionId, project, codingAgent) {
+export async function runFactExtraction(db, sessionId, project, codingAgent, 
+/**
+ * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커
+ * 위에서도 선점한다(--resume 세션 재추출은 의도된 동작). 'worker'는 자기가
+ * pending 으로 선정했던 상태(미기록 / -4 / 리스만료 claim)일 때만 선점한다 —
+ * 선정 후 훅이 먼저 확정했다면 그 위를 덮지 않아 중복 추출이 생기지 않는다.
+ * 선점·복원을 이 함수가 단독으로 소유하므로 호출자 간 로직 분기가 없다.
+ */
+opts) {
     // Skip self-referential repos (memory-bank's own monitoring sessions) — mark
     // as processed with zero facts so they are never re-attempted, no LLM calls.
     if (isExcludedProject(project)) {
@@ -263,8 +272,50 @@ export async function runFactExtraction(db, sessionId, project, codingAgent) {
         catch { /* log table may not exist on very old DBs */ }
         return { extracted: 0, saved: 0 };
     }
+    // 🚨 LLM 을 부르기 **전에** 세션을 선점한다. SessionEnd 훅과 backfill 워커는
+    // 서로를 직렬화할 수단이 없고 마커는 파이프라인 끝에 써지므로, 선점이 없으면
+    // 둘이 같은 세션을 각자 추출해 fact 가 두 벌 저장된다(Codex R6 HIGH).
+    // 마커 시점에 막는 것은 늦다 — 그때는 이미 비용도 중복도 발생한 뒤다.
+    // 선점 이전 상태를 기억해 둔다 — 실패 시 그대로 되돌려야 재시도 카운터(saved)가
+    // 보존된다. 무조건 DELETE 로 풀면 매 run 카운터가 0 으로 리셋돼 예산이 영원히
+    // 소진되지 않는다(무한 재시도 = R3 기아의 다른 얼굴).
+    let preClaim;
+    try {
+        preClaim = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
+            .get(sessionId);
+        const claimed = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
+            .run(sessionId, new Date().toISOString()).changes;
+        if (claimed === 0) {
+            console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
+            return { extracted: 0, saved: 0 };
+        }
+    }
+    catch (e) {
+        // 아주 오래된 DB 는 log 테이블이 없을 수 있다 — 선점 없이 진행(기존 동작).
+        console.error(`extraction: session ${sessionId} claim 실패, 선점 없이 진행: ${e instanceof Error ? e.message : String(e)}`);
+    }
     const stats = { droppedBatches: 0 };
-    const facts = await extractFactsFromExchanges(db, sessionId, stats);
+    let facts;
+    try {
+        facts = await extractFactsFromExchanges(db, sessionId, stats);
+    }
+    catch (e) {
+        // 선점을 쥔 채 실패하면 리스가 만료될 때까지(수십 분) 재시도가 막힌다.
+        // transient 실패는 즉시 재시도 가능해야 하므로 **내 claim 만** 회수하되,
+        // 선점 이전 상태(재시도 카운터 포함)를 그대로 복원한다.
+        // `WHERE extracted = -3`: 그사이 다른 라이터가 확정했다면 그 마커는 건드리지 않는다.
+        try {
+            if (preClaim) {
+                db.prepare(`UPDATE extraction_log SET extracted = ?, saved = ? `
+                    + `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED}`).run(preClaim.extracted, preClaim.saved, sessionId);
+            }
+            else {
+                db.prepare(`DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED}`).run(sessionId);
+            }
+        }
+        catch { /* 로그 테이블 부재 — 원 에러를 그대로 올린다 */ }
+        throw e;
+    }
     let saved = 0;
     if (facts.length > 0) {
         // Detect coding agent from session's exchanges if not provided

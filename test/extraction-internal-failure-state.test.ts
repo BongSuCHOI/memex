@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   pendingExtractionCoreQuery, getExtractionConfig,
   EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
+  claimSessionSql, CLAIM_LEASE_MINUTES,
 } from '../src/pending-extraction.js';
 
 /**
@@ -112,5 +113,70 @@ describe('내부 실패 = 재시도 예산을 가진 제3 상태 (-4)', () => {
     // 전부 음수여야 한다 — 0 이상은 "성공적으로 추출한 fact 수" 의미로 예약됨
     for (const c of codes) expect(c).toBeLessThan(0);
     expect(MAX_INTERNAL_RETRIES).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * R6 HIGH — 진입 시점 선점(claim) 계약.
+ *
+ * SessionEnd 훅과 backfill 워커는 서로를 직렬화할 수단이 없고, 마커는 파이프라인
+ * *끝*에 써지므로 창이 수 분간 열려 있었다 → 둘이 같은 세션을 각자 추출해 fact 가
+ * 두 벌 저장됐다. 마커 시점 가드로는 늦다(이미 두 번 돈 뒤). 그래서 LLM 호출 **전**
+ * 에 선점한다. 단 선점 자체가 새로운 영구손실 통로가 되면 안 되므로 리스를 둔다.
+ */
+describe('R6: 세션 선점(claim) 계약', () => {
+  const claim = (db: Database.Database, sid: string, variant: 'worker' | 'hook', at?: string) =>
+    db.prepare(claimSessionSql(variant)).run(sid, at ?? new Date().toISOString()).changes;
+
+  it('중복 차단: 살아있는 claim 이 있으면 훅도 워커도 선점하지 못한다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      expect(claim(db, 's', 'worker'), '첫 선점은 성공').toBe(1);
+      expect(claim(db, 's', 'hook'), '훅은 살아있는 claim 을 존중').toBe(0);
+      expect(claim(db, 's', 'worker'), '워커도 마찬가지').toBe(0);
+    } finally { db.close(); }
+  });
+
+  it('strand 방지: 리스가 만료된 claim 은 회수되고 pending 으로 돌아온다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 5) * 60_000)
+        .toISOString().replace('T', ' ').slice(0, 19); // SQLite datetime 비교 형식
+      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+        .run('s', stale, EXTRACTION_STATE.CLAIMED, 0);
+
+      expect(pendingIds(db), '소유자가 죽었을 수 있으므로 미처리로 본다').toContain('s');
+      expect(claim(db, 's', 'worker'), '만료 claim 은 회수 가능').toBe(1);
+    } finally { db.close(); }
+  });
+
+  it('워커 변형은 확정 마커 위를 덮지 않는다 (TOCTOU 중복 차단)', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      // 워커가 pending 으로 선정한 뒤, 훅이 먼저 끝내 성공 마커를 쓴 상황
+      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+        .run('s', new Date().toISOString(), 4, 4);
+      expect(claim(db, 's', 'worker'), '재추출하면 fact 가 중복된다').toBe(0);
+      // 훅 변형은 --resume 재추출이 정당하므로 허용된다
+      expect(claim(db, 's', 'hook')).toBe(1);
+    } finally { db.close(); }
+  });
+
+  it('재시도 대상(-4)은 워커가 선점할 수 있고, 예산 카운터는 복원으로 보존된다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+        .run('s', new Date().toISOString(), EXTRACTION_STATE.RETRIABLE_INTERNAL, 2);
+      expect(claim(db, 's', 'worker')).toBe(1);
+      // 선점은 saved 를 0 으로 만들지만, 실패 시 복원 경로가 이전 상태를 되돌린다
+      db.prepare(`UPDATE extraction_log SET extracted = ?, saved = ? WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED}`)
+        .run(EXTRACTION_STATE.RETRIABLE_INTERNAL, 2, 's');
+      const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get('s') as { extracted: number; saved: number };
+      expect(row.saved, '카운터가 리셋되면 예산이 영원히 소진되지 않는다').toBe(2);
+    } finally { db.close(); }
   });
 });
