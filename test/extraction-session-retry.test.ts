@@ -248,7 +248,11 @@ describe('R7: claim 실패 분류', () => {
     const res = await runFactExtraction(db, SESSION, PROJECT);
     const after = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
 
-    expect(res, '선점 못 했으면 이번 실행은 아무것도 하지 않는다').toEqual({ extracted: 0, saved: 0 });
+    expect(res.extracted, '선점 못 했으면 이번 실행은 아무것도 하지 않는다').toBe(0);
+    expect(res.saved).toBe(0);
+    // 🚨 사유를 함께 돌려줘야 호출자가 "fact 0건 처리 완료"와 구분한다 — 구분 못 하면
+    // 정상 세션으로 계상돼 요약·경보 어디에도 안 남는다(R18 무경보 기아).
+    expect(res.skipped, '건너뛴 사유가 있어야 한다').toBe('claim_error');
     expect(after, '가드 없이 진행하면 다른 러너와 중복 저장한다').toBe(before);
   });
 
