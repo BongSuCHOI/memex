@@ -22,6 +22,9 @@ export function getExtractionConfig() {
         '/Users/jung-wankim/Project/Claude/memory-bank')
         .split(',')
         .map((s) => s.trim())
+        // 후행 슬래시 제거 — 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위 경로가
+        // 배제에서 풀린다. 소비자(SQL 필터·isExcludedProject)가 같은 값을 봐야 한다.
+        .map((s) => s.replace(/\/+$/, ''))
         .filter(Boolean);
     // Default 2: 1-exchange sessions are overwhelmingly automated-worker /
     // monitoring noise that yields no durable facts. Interpolated into SQL →

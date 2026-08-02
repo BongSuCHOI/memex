@@ -8,6 +8,7 @@ import {
   pendingExtractionCoreQuery, getExtractionConfig,
   EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
   claimSessionSql, CLAIM_LEASE_MINUTES, renewClaimSql, failureMarkerUpsertSql,
+  freshClaimPredicate,
 } from '../src/pending-extraction.js';
 
 /**
@@ -287,5 +288,43 @@ describe('R21: 제외 마커의 소유권 가드', () => {
       expect(res.changes).toBe(1);
       expect(pendingIds(db), '제외 마커가 있으면 pending 에서 빠진다').not.toContain('s2');
     } finally { db.close(); }
+  });
+
+  it('R22: 만료된 claim 은 회수 대상 — 제외 마커를 쓸 수 있어야 한다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's3', 12);
+      const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 30) * 60_000)
+        .toISOString().replace('T', ' ').slice(0, 19);
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
+        .run('s3', stale, EXTRACTION_STATE.CLAIMED, 0, 'deadOwner');
+
+      // 제외 경로가 쓰는 것과 동일한 SQL(리스 술어 기반)
+      const res = db.prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+        VALUES (?, ?, 0, 0)
+        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+          extracted = 0, saved = 0
+        WHERE NOT (${freshClaimPredicate()})
+      `).run('s3', new Date().toISOString());
+
+      // `<> CLAIMED` 가드였을 때는 여기서 0 — 죽은 소유자의 행 때문에 세션이 마커를
+      // 영원히 못 받고 매 run 재선정됐다(무한 재선정).
+      expect(res.changes, '만료 claim 은 회수 대상이다').toBe(1);
+      expect(pendingIds(db), '마커가 써졌으니 pending 을 떠난다').not.toContain('s3');
+    } finally { db.close(); }
+  });
+
+  it('R22: 제외 목록 정규화가 단일 소스에서 온다 (SQL 필터와 판정 일치)', () => {
+    const prev = process.env.BACKFILL_EXCLUDE_PROJECTS;
+    try {
+      process.env.BACKFILL_EXCLUDE_PROJECTS = '/tmp/excluded-proj/';
+      const cfg = getExtractionConfig();
+      // 정규화가 한쪽에만 있으면 SQL 은 raw 로 필터해 제외 대상을 선정해버린다.
+      expect(cfg.excludeProjects, '후행 슬래시는 파싱 시점에 제거').toEqual(['/tmp/excluded-proj']);
+    } finally {
+      if (prev === undefined) delete process.env.BACKFILL_EXCLUDE_PROJECTS;
+      else process.env.BACKFILL_EXCLUDE_PROJECTS = prev;
+    }
   });
 });

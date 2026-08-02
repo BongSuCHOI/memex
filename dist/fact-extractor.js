@@ -4,7 +4,7 @@ import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { classifyAndLinkFact } from './ontology-classifier.js';
 import { randomUUID } from 'node:crypto';
-import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from './pending-extraction.js';
+import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, freshClaimPredicate, getExtractionConfig, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from './pending-extraction.js';
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 ## Rules
@@ -128,17 +128,14 @@ function maxLlmCallsPerSession() {
 // Self-referential repos whose conversations must NOT be extracted (e.g.
 // memory-bank's own monitoring/cron sessions — extracting them creates noise
 // facts and an endless feedback loop). Comma-separated cwd paths, env-overridable.
-const EXCLUDE_PROJECTS = (process.env.BACKFILL_EXCLUDE_PROJECTS ||
-    '/Users/jung-wankim/Project/Claude/memory-bank')
-    .split(',')
-    .map((s) => s.trim())
-    // 후행 슬래시를 제거한다. 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위
-    // 경로가 배제에서 풀리고, 코드가 막으려는 자기참조 피드백 루프가 열린다(R21 MEDIUM).
-    .map((s) => s.replace(/\/+$/, ''))
-    .filter(Boolean);
+// 🚨 제외 목록은 **단일 소스**(getExtractionConfig)에서 온다. 여기서 따로 파싱하면
+// pending SQL 필터와 이 판정이 갈라져, 제외 대상이 선정된 뒤에야 걸러지거나(슬롯 낭비)
+// 정규화가 한쪽에만 적용된다(R22 MEDIUM — 후행 슬래시 수정이 이쪽에만 들어갔었다).
+// 파일 헤더가 명시한 "두 소비자는 동일 술어" 계약이 그것이다.
 function isExcludedProject(project) {
     if (!project)
         return false;
+    const EXCLUDE_PROJECTS = getExtractionConfig().excludeProjects;
     // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
     // '/…/memory-bank' 가 '/…/memory-bank-cloud' 를 삼켜, 그 프로젝트의 세션이
     // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
@@ -377,13 +374,16 @@ opts) {
             // 였다. 살아있는 claim(-3) 위에 0/0 을 덮으면 소유자는 리스갱신 실패로 중단되고,
             // 그 롤백은 extracted=-3 을 요구하므로 무효가 되어 행이 0/0 확정마커로 남는다 →
             // 세션이 pending 에서 영구 제외되고 워커는 'handoff' 로 거짓 계상한다
-            // (Codex R21 HIGH, 재현됨). 처리 중인 세션은 건드리지 않는다.
+            // (Codex R21 HIGH, 재현됨). 처리 **중**인 세션만 건드리지 않는다 — 리스가
+            // 만료된 claim 은 죽은 소유자의 것이므로 회수 대상이다. `<> CLAIMED` 로 두면
+            // 만료 claim 까지 존중해 그 세션이 마커를 영원히 못 받고 매 run 재선정된다
+            // (R22 HIGH, 5/5 run 진전 0). 코드베이스의 다른 모든 경로와 같은 술어를 쓴다.
             const res = db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
         VALUES (?, ?, 0, 0)
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
           extracted = 0, saved = 0
-        WHERE extraction_log.extracted <> ${EXTRACTION_STATE.CLAIMED}
+        WHERE NOT (${freshClaimPredicate()})
       `).run(sessionId, new Date().toISOString());
             markerWritten = res.changes > 0;
             if (!markerWritten) {
