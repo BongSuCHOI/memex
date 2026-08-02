@@ -47,6 +47,11 @@ export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-te
 - 0.9+: explicit decision/declaration
 - 0.7-0.9: inferred from behavior
 - Below 0.7: do not extract`;
+/** 선점(claim)을 잃어 작업을 중단할 때 던진다. 호출자는 이것을 실패가 아니라
+ *  "다른 러너가 이 세션을 가져갔다"로 읽어야 한다 — 예산을 소모하지 않는다. */
+export class ClaimLostError extends Error {
+    constructor(message) { super(message); this.name = 'ClaimLostError'; }
+}
 const BATCH_SIZE = 5; // configurable-ok
 const MAX_FACTS_PER_SESSION = 20; // configurable-ok
 const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
@@ -236,31 +241,64 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
  * 여기가 리스 밖이면 정상 작업이 회수돼 다른 워커가 같은 세션을 저장한다
  * (Codex R8 HIGH: R7 HIGH-1 의 잔존 구간). fact 마다 갱신·소유권 확인한다.
  */
-renewLease) {
+renewLease, 
+/**
+ * 🚨 완료 마커를 **fact 삽입과 같은 트랜잭션 안에서** 쓰기 위한 커밋 훅.
+ * 갱신 행 수를 반환하며 0 이면(=선점을 잃음) 트랜잭션 전체가 롤백된다.
+ *
+ * 체크포인트(리스 확인)를 아무리 촘촘히 박아도 **마지막 확인과 커밋 사이**에는
+ * 항상 창이 남는다 — R7(배치)→R8(저장 루프)→R9(루프 꼬리)로 같은 결함이 세 번
+ * 좁아지기만 했다. 원인은 "저장"과 "소유권 확정"이 서로 다른 시점이라는 구조다.
+ * 둘을 원자적으로 묶으면 창의 크기와 무관하게 닫힌다: 커밋 순간 소유권이 없으면
+ * fact 도 남지 않으므로 중복이 생길 수 없다.
+ */
+commitMarker) {
     await initEmbeddings();
-    const savedIds = [];
+    // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
+    const prepared = [];
     for (const fact of facts) {
-        renewLease?.(); // 잃었으면 throw → 중복 저장 전에 중단
-        const embedding = await generateEmbedding(fact.fact);
-        const embeddingKr = fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null;
-        const id = insertFact(db, {
-            fact: fact.fact,
-            category: fact.category,
-            scope_type: fact.scope_type,
-            scope_project: fact.scope_type === 'project' ? project : null,
-            source_exchange_ids: sourceExchangeIds,
-            embedding,
-            coding_agent: codingAgent,
-            fact_kr: fact.fact_kr ?? null,
-            embedding_kr: embeddingKr,
+        renewLease?.(); // 잃었으면 여기서 중단 — 비싼 임베딩을 더 돌리지 않는다
+        prepared.push({
+            fact,
+            embedding: await generateEmbedding(fact.fact),
+            embeddingKr: fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null,
         });
-        savedIds.push(id);
-        // Ontology classification + relation detection (must await to prevent DB close race)
+    }
+    // 2단계(동기·원자적): fact 삽입 + 완료 마커를 한 트랜잭션으로. 마커가 0행이면
+    // 선점을 잃은 것이므로 throw → 삽입까지 통째로 롤백된다(부분 저장 잔존 없음).
+    const savedIds = [];
+    const commit = db.transaction(() => {
+        for (const p of prepared) {
+            savedIds.push(insertFact(db, {
+                fact: p.fact.fact,
+                category: p.fact.category,
+                scope_type: p.fact.scope_type,
+                scope_project: p.fact.scope_type === 'project' ? project : null,
+                source_exchange_ids: sourceExchangeIds,
+                embedding: p.embedding,
+                coding_agent: codingAgent,
+                fact_kr: p.fact.fact_kr ?? null,
+                embedding_kr: p.embeddingKr,
+            }));
+        }
+        if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
+            throw new ClaimLostError('완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).');
+        }
+    });
+    try {
+        commit();
+    }
+    catch (e) {
+        savedIds.length = 0; // 롤백됐으므로 호출자에게 저장 0건으로 보고
+        throw e;
+    }
+    // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
+    for (let i = 0; i < savedIds.length; i++) {
         try {
-            await classifyAndLinkFact(db, id, embedding);
+            await classifyAndLinkFact(db, savedIds[i], prepared[i].embedding);
         }
         catch (err) {
-            console.error(`Ontology pipeline failed for fact ${id}:`, err);
+            console.error(`Ontology pipeline failed for fact ${savedIds[i]}:`, err);
         }
     }
     return savedIds;
@@ -321,7 +359,15 @@ opts) {
             // 마이그레이션이 락으로 지연된 경우다. 조용히 스킵하면 그 run 의 pending 세션이
             // 무음으로 빠지므로, 컬럼을 즉시 추가해 자가치유한 뒤 한 번만 재시도한다.
             try {
-                db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
+                try {
+                    db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
+                }
+                catch (eAlter) {
+                    // 동시 실행이 먼저 추가했으면 목적은 이미 달성 — 보류할 이유가 없다.
+                    // (R8 수정이 한 층 아래에서 같은 '문구 불일치'를 만들었던 자리다.)
+                    if (!/duplicate column name/i.test(eAlter instanceof Error ? eAlter.message : String(eAlter)))
+                        throw eAlter;
+                }
                 const retried = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
                     .run(sessionId, new Date().toISOString(), owner).changes;
                 if (retried === 0) {
@@ -396,7 +442,7 @@ opts) {
         if (facts.length > 0) {
             const agent = codingAgent || detectAgentFromSession(db, sessionId);
             const exchangeIds = db.prepare('SELECT id FROM exchanges WHERE session_id = ?').all(sessionId).map(r => r.id);
-            saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent, renewLease)).length;
+            saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent, renewLease, writeCompletionMarker)).length;
         }
     }
     catch (e) {
@@ -412,64 +458,66 @@ opts) {
             writeInternalFailureMarker();
         throw e;
     }
-    // Record the session as processed (idempotency marker shared by the
-    // SessionEnd hook and the cross-project backfill worker).
-    try {
-        // 🚨 dropped_batches 컬럼은 마이그레이션이 락 경합으로 지연될 수 있다(db.ts).
-        // 그때 5-컬럼 INSERT 는 'no such column' 으로 실패하고, 아래 catch 가 삼키면
-        // **마커가 아예 안 써진다** → 세션이 영구 pending → 매 run 재추출 → facts.id 가
-        // randomUUID 이고 내용 UNIQUE 가 없어 **중복 fact 가 누적**된다(Codex R5 HIGH-1).
-        // 마커 기록(멱등성)이 dead-letter 카운터보다 우선이므로, 컬럼이 없으면 4-컬럼으로
-        // 폴백해 마커는 반드시 남기고 카운터 누락만 크게 표면화한다.
+    // 완료 마커 — saveExtractedFacts 의 트랜잭션 안에서 호출된다(원자적 커밋).
+    // fact 가 0건이면 트랜잭션이 없으므로 여기서 직접 호출한다.
+    function writeCompletionMarker(extracted, savedCount) {
+        // dropped_batches 컬럼은 마이그레이션이 지연될 수 있다 — 없으면 4-컬럼 폴백으로
+        // **마커는 반드시** 남긴다(미기록 = 재추출 = 중복, Codex R5 HIGH-1).
         const hasDropped = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
             .all().some(c => c.name === 'dropped_batches');
-        // 성공 마커도 내 claim 위에서만 쓴다 — 그사이 소유권이 넘어갔다면 새 소유자의
-        // 상태를 덮지 않는다. (claim 없이 도는 구버전 DB 경로는 가드 없이 기존 동작.)
+        // 소유권 가드: 그사이 선점이 넘어갔다면 새 소유자의 상태를 덮지 않는다.
+        // (claim 없이 도는 구버전 DB 경로는 가드 없이 기존 동작.)
         const ownGuard = holdsClaim ? ' WHERE extraction_log.claim_owner = ?' : '';
         const ownArgs = holdsClaim ? [owner] : [];
-        // 소유권 가드가 붙은 UPSERT 는 claim 을 잃었을 때 **0행 매칭으로 조용히** 실패한다.
-        // 마커 미기록 = 재추출 → 중복이므로 반드시 표면화한다(fail-loud).
-        let markerWritten;
-        if (hasDropped) {
-            db.prepare(`
-        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches, claim_owner)
-        VALUES (?, ?, ?, ?, ?, NULL)
-        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-          extracted = excluded.extracted, saved = excluded.saved,
-          dropped_batches = excluded.dropped_batches, claim_owner = NULL${ownGuard}
-      `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches, ...ownArgs);
-            markerWritten = db.prepare('SELECT changes() AS c').get();
+        const now = new Date().toISOString();
+        let res;
+        try {
+            res = hasDropped
+                ? db.prepare(`
+          INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches, claim_owner)
+          VALUES (?, ?, ?, ?, ?, NULL)
+          ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+            extracted = excluded.extracted, saved = excluded.saved,
+            dropped_batches = excluded.dropped_batches, claim_owner = NULL${ownGuard}
+        `).run(sessionId, now, extracted, savedCount, stats.droppedBatches, ...ownArgs)
+                : db.prepare(`
+          INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
+            extracted = excluded.extracted, saved = excluded.saved${ownGuard}
+        `).run(sessionId, now, extracted, savedCount, ...ownArgs);
         }
-        else {
-            db.prepare(`
-        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-          extracted = excluded.extracted, saved = excluded.saved${ownGuard}
-      `).run(sessionId, new Date().toISOString(), facts.length, saved, ...ownArgs);
-            markerWritten = db.prepare('SELECT changes() AS c').get();
-            if (stats.droppedBatches > 0) {
-                console.error(`extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 ` +
-                    `${stats.droppedBatches}건을 기록하지 못했습니다(마이그레이션 지연). 마커는 기록됨.`);
+        catch (e) {
+            // 아주 오래된 DB 는 extraction_log 자체가 없다. 이 경로는 선점도 없었으므로
+            // (holdsClaim=false) '소유권 상실'이 아니다 — 추출 결과를 롤백하면 안 된다.
+            // 그 외 오류는 진짜 문제이므로 던져서 트랜잭션을 되돌린다.
+            if (!holdsClaim && /no such table/i.test(e instanceof Error ? e.message : String(e))) {
+                console.error(`extraction: session ${sessionId} — extraction_log 부재(구버전 DB), 마커 생략`);
+                return 1; // 롤백 사유 아님
+            }
+            throw e;
+        }
+        if (!hasDropped && stats.droppedBatches > 0) {
+            console.error(`extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 `
+                + `${stats.droppedBatches}건을 기록하지 못했습니다(마이그레이션 지연). 마커는 기록됨.`);
+        }
+        if (hasDropped && stats.droppedBatches > 0 && res.changes > 0) {
+            console.error(`extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) `
+                + `(deterministic LLM failures — those exchanges produced no facts; `
+                + `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`);
+        }
+        return res.changes; // 0 = 소유권 상실 → 호출자가 롤백/표면화
+    }
+    if (facts.length === 0) {
+        try {
+            if (writeCompletionMarker(0, 0) === 0 && holdsClaim) {
+                console.error(`extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`);
             }
         }
-        if (stats.droppedBatches > 0 && hasDropped) {
-            // 조용히 넘어가지 않는다 — 폐기가 있었다는 사실을 로그로도 표면화(fail-loud).
-            console.error(`extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
-                `(deterministic LLM failures — those exchanges produced no facts; ` +
-                `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`);
+        catch (e) {
+            console.error(`extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: `
+                + `${e instanceof Error ? e.message : String(e)}`);
         }
-        if (markerWritten && markerWritten.c === 0) {
-            console.error(`extraction: session ${sessionId} 완료 마커가 기록되지 않았습니다(소유권 상실 추정) — `
-                + `다음 run 에서 재추출될 수 있습니다. fact ${saved}건은 이미 저장됨.`);
-        }
-    }
-    catch (e) {
-        // 아주 오래된 DB 는 log 테이블 자체가 없을 수 있다 — 추출 결과는 유효하다.
-        // 단 조용히 넘기지 않는다: 마커 미기록 = 다음 run 재추출(중복 fact 위험)이므로
-        // 원인을 표면화해야 진단이 가능하다(fail-loud).
-        console.error(`extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
-            `${e instanceof Error ? e.message : String(e)}`);
     }
     return { extracted: facts.length, saved };
 }

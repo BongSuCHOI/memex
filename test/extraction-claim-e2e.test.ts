@@ -94,4 +94,19 @@ describe('claim E2E', () => {
     const cols = (db.prepare("SELECT name FROM pragma_table_info('extraction_log')").all() as Array<{name:string}>).map(c => c.name);
     expect(cols, '컬럼이 즉시 추가되어야 한다').toContain('claim_owner');
   });
+
+  it('R9 HIGH: 마지막(유일) fact 구간에서 탈취돼도 저장이 남지 않는다 (원자적 커밋)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    factsPerCall = 1;               // fact 1건 = 루프 꼬리 = 체크포인트 사각
+    stealAtEmbedCall = 1;           // 그 유일한 fact 의 임베딩 중 탈취
+    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+
+    // 체크포인트 방식이면 여기서 예외 없이 성공 반환 + fact 1건이 남는다.
+    // 원자적 커밋이면 마커가 0행 → 트랜잭션 롤백 → fact 0건.
+    let saved = -1;
+    try { saved = (await runFactExtraction(db, 'S1', '/tmp/p')).saved; } catch { saved = -1; }
+    const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
+    console.log(`  → 루프 꼬리 탈취: 저장된 fact ${n}건 (saved=${saved})`);
+    expect(n, '탈취 후 남은 fact 는 새 소유자의 재추출과 중복된다').toBe(0);
+  });
 });
