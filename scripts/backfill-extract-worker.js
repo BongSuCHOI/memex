@@ -143,7 +143,14 @@ async function runPool(items, concurrency, fn) {
   const workers = Array.from({ length: concurrency }, async () => {
     while (queue.length > 0) {
       const item = queue.shift();
-      if (item) await fn(item);
+      if (!item) continue;
+      // 이중 방어: fn 이 자체 격리를 하지만, 한 태스크의 예외가 Promise.all 을 통해
+      // **남은 세션 전부**를 중단시키는 일은 구조적으로 막는다.
+      try {
+        await fn(item);
+      } catch (e) {
+        log(`session ${item.sid ?? '?'}: 격리되지 않은 예외 — 이 세션만 건너뜁니다: ${e instanceof Error ? e.message : e}`);
+      }
     }
   });
   await Promise.all(workers);
@@ -184,8 +191,13 @@ async function main() {
     let done = 0, totalSaved = 0, escalateFailures = 0;
     const buckets = { handoff: 0, transient: 0, budget: 0 };
     await runPool(sessions, CONCURRENCY, async (next) => {
-      const project = sessionProject(db, next.sid);
+      // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
+      // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
+      // 통째로 사라진 채 exit 0 으로 끝난다 — R12~R14 가 닫아온 "무음 경보 소실"과
+      // 같은 클래스가 남아 있던 마지막 문이다(Codex R16 재현: 4세션 중 3건 무음 유실).
+      let project = null;
       try {
+        project = sessionProject(db, next.sid);
         // 선점은 runFactExtraction 이 단독 소유한다. 'worker' 변형은 자기가 pending
         // 으로 선정했던 상태일 때만 성공하므로, 선정 후 훅이 먼저 확정한 세션을
         // 덮어 재추출하는 중복 경로가 구조적으로 막힌다(Codex R6 HIGH).
