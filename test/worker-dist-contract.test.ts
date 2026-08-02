@@ -67,4 +67,22 @@ describe('워커 ↔ dist 계약', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }, 40_000);
+
+  it('dist 표가 src 표와 키·필드가 동일하다 (stale dist 스큐 탐지)', async () => {
+    // 다른 테스트는 src 를, 이 파일은 dist 를 읽는다 — 둘의 일치를 아무도 주장하지
+    // 않으면 stale dist 스큐가 미탐지로 남는다(Codex R15 MEDIUM). 여기서 주장한다.
+    const src = await import('../src/fact-extractor.js');
+    const dist = await import('../dist/fact-extractor.js');
+
+    expect(Object.keys(dist.FAILURE_REPORT).sort(), '분류 키 불일치 → dist 재빌드 필요')
+      .toEqual(Object.keys(src.FAILURE_REPORT).sort());
+    for (const k of Object.keys(src.FAILURE_REPORT) as Array<keyof typeof src.FAILURE_REPORT>) {
+      expect(dist.FAILURE_REPORT[k], `${k} 필드 불일치 → dist 재빌드 필요`)
+        .toEqual(src.FAILURE_REPORT[k]);
+    }
+    // 워커가 실제로 부르는 심볼도 동작이 같아야 한다
+    for (const k of Object.keys(src.FAILURE_REPORT) as Array<keyof typeof src.FAILURE_REPORT>) {
+      expect(dist.failureConsumesBudget(k), `${k} 예산 판정 불일치`).toBe(src.failureConsumesBudget(k));
+    }
+  });
 });
