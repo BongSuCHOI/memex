@@ -75,15 +75,26 @@ commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
 export type ExtractionFailureKind = 'handoff' | 'provider_transient' | 'provider_deterministic' | 'internal';
 export declare function classifyExtractionFailure(err: unknown): ExtractionFailureKind;
 /**
+ * 소비자 보고·집계 표 — 라벨·문구뿐 아니라 **카운터 버킷과 예산 소모 여부까지** 여기서
+ * 나온다. 워커가 자체 분기를 들면 "예산 판정과 카운터가 반대로 붙는" 실수를 테스트가
+ * 잡지 못한다(문자열 검사는 워커가 결과를 무시해도 통과) — 분기 자체를 없앤다.
+ *
+ * `escalate`: 운영자가 손을 대야 하는 실패인가. R12 수정 과정에서 요약줄의
+ * "INTERNAL failures — 런타임/DB 점검 필요" 경보가 일반 예산 회계로 대체돼 사라졌던
+ * 것을 이 플래그로 복원한다(Codex R13 MEDIUM — 내가 만든 회귀).
+ */
+export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
+    label: string;
+    note: string;
+    bucket: 'handoff' | 'transient' | 'budget';
+    consumesBudget: boolean;
+    escalate: boolean;
+}>;
+/**
  * 이 실패가 재시도 예산을 소모하는가. runFactExtraction 의 라우팅과 워커의 보고가
  * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
  */
 export declare function failureConsumesBudget(kind: ExtractionFailureKind): boolean;
-/** 소비자 보고 표(라벨·후속 안내). 워커가 자체 문구를 들면 분류와 어긋난다. */
-export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
-    label: string;
-    note: string;
-}>;
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
 /**
  * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커

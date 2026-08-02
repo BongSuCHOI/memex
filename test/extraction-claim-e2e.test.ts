@@ -155,24 +155,51 @@ describe('R11: 소비자 분류 단일 소스', () => {
     }
   });
 
+  // ⚠️ 이 테스트는 **분류기 분기 수**를 세는 것이지 파이프라인 도달성을 주장하지 않는다.
+  //    provider_deterministic 은 현 파이프라인에서 도달하지 않는다(배치 루프가 드롭) —
+  //    손으로 만든 에러로 도달성을 주장하면 vacuous 다(Codex R13 LOW).
   it('보고 표가 모든 분류를 덮는다 (새 분류 추가 시 누락 방지)', async () => {
-    const { classifyExtractionFailure, FAILURE_REPORT, failureConsumesBudget, ClaimLostError } =
-      await import('../src/fact-extractor.js');
-    const { LlmCallError } = await import('../src/llm-error-class.js');
-    const kinds = new Set([
-      classifyExtractionFailure(new ClaimLostError('x')),
-      classifyExtractionFailure(new LlmCallError(Object.assign(new Error('e'), { status: 500 }))),
-      classifyExtractionFailure(new LlmCallError(Object.assign(new Error('e'), { status: 400 }))),
-      classifyExtractionFailure(new Error('e')),
-    ]);
-    expect(kinds.size, '4분류가 모두 도달 가능해야 한다').toBe(4);
+    const { FAILURE_REPORT, failureConsumesBudget } = await import('../src/fact-extractor.js');
+    const kinds = Object.keys(FAILURE_REPORT) as Array<keyof typeof FAILURE_REPORT>;
+    expect(kinds.length, '표가 분류를 전부 덮어야 한다').toBe(4);
     for (const k of kinds) {
-      expect(FAILURE_REPORT[k], `${k} 보고 문구 누락`).toBeDefined();
-      expect(typeof failureConsumesBudget(k), `${k} 예산 판정 누락`).toBe('boolean');
+      const rep = FAILURE_REPORT[k];
+      expect(rep.note, `${k} 문구 누락`).toBeTruthy();
+      expect(['handoff', 'transient', 'budget'], `${k} 버킷`).toContain(rep.bucket);
+      // 표와 술어가 어긋나면 "예산은 타는데 카운터는 재시도"가 된다
+      expect(failureConsumesBudget(k), `${k} 술어↔표 불일치`).toBe(rep.consumesBudget);
+      // budget 버킷 ⇔ 예산 소모 (버킷을 잘못 붙이면 집계가 거짓말한다)
+      expect(rep.bucket === 'budget', `${k} 버킷↔예산 불일치`).toBe(rep.consumesBudget);
     }
-    // handoff 만 실패가 아니다 — 라벨로도 구분돼야 운영 로그에서 걸러진다
-    expect(FAILURE_REPORT.handoff.label).toBe('HANDOFF');
-    expect(FAILURE_REPORT.provider_deterministic.label).toBe('ERROR');
+    expect(FAILURE_REPORT.handoff.label, '이양은 로그에서 실패와 구분돼야 한다').toBe('HANDOFF');
+    // 운영 에스컬레이션은 internal 에만 — 예산 회계에 섞이면 손댈 실패가 묻힌다
+    expect(FAILURE_REPORT.internal.escalate).toBe(true);
+    expect(FAILURE_REPORT.provider_deterministic.escalate).toBe(false);
+    expect(FAILURE_REPORT.provider_transient.escalate).toBe(false);
+    expect(FAILURE_REPORT.handoff.escalate).toBe(false);
+  });
+
+  it('워커가 카운팅 분기를 자체 구현하지 않는다 (반대로 붙어도 통과하는 테스트 방지)', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync('scripts/backfill-extract-worker.js', 'utf8');
+    // 버킷을 표에서 그대로 읽어야 한다 — 조건 분기가 있으면 반전 실수를 잡을 수 없다
+    expect(src, '버킷 집계가 표 기반이어야 한다').toContain('buckets[rep.bucket]');
+    expect(src.includes('failureConsumesBudget('), '워커가 예산 판정을 재구현').toBe(false);
+    // 운영 경보가 요약줄에 남아 있어야 한다(R12 수정 중 사라졌던 회귀의 고정)
+    expect(src, 'INTERNAL 경보 누락').toContain('INTERNAL failures');
+    expect(src, 'escalate 신호 미사용').toContain('rep.escalate');
+  });
+
+  it('훅 워커는 로깅이 깨져도 훅 실패로 표면화하지 않는다', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync('scripts/fact-extract-worker.js', 'utf8');
+    // exitCode 확정이 표 역참조보다 앞서야 한다 — 스큐로 TypeError 가 나도 불변식 유지
+    const iExit = src.indexOf('process.exitCode = 0');
+    const iRep = src.indexOf('FAILURE_REPORT?.[cls]');
+    expect(iExit).toBeGreaterThan(-1);
+    expect(iRep).toBeGreaterThan(-1);
+    expect(iExit, 'exitCode 확정이 역참조보다 뒤면 불변식이 깨진다').toBeLessThan(iRep);
+    expect(src, '최상위 rejection 미처리').toContain('main().catch(');
   });
 
   it('두 워커가 같은 단일 소스를 사용한다 (드리프트 차단)', async () => {

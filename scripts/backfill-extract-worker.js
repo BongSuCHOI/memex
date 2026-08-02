@@ -20,7 +20,7 @@ import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 import {
-  runFactExtraction, classifyExtractionFailure, failureConsumesBudget, FAILURE_REPORT,
+  runFactExtraction, classifyExtractionFailure, FAILURE_REPORT,
 } from '../dist/fact-extractor.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
@@ -181,7 +181,8 @@ async function main() {
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(`backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`);
 
-    let done = 0, totalSaved = 0, transientSessions = 0, budgetBurned = 0, handoffSessions = 0;
+    let done = 0, totalSaved = 0, escalateFailures = 0;
+    const buckets = { handoff: 0, transient: 0, budget: 0 };
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
@@ -211,23 +212,27 @@ async function main() {
         // 분류·라벨·예산 판정을 전부 단일 소스에서 가져온다 — 워커가 자체 문구나
         // 자체 버킷을 들면 "예산은 타는데 로그는 재시도된다고 말하는" 모순이 생긴다.
         const cls = classifyExtractionFailure(error);
-        const rep = FAILURE_REPORT[cls];
+        const rep = FAILURE_REPORT[cls] ?? { label: 'ERROR', note: '분류 불가', bucket: 'budget', escalate: true };
         log(
           `session ${next.sid}: ${rep.label} (${cls}) ${error instanceof Error ? error.message : error}`
           + ` — ${rep.note}`,
         );
-        if (cls === 'handoff') handoffSessions++;
-        else if (failureConsumesBudget(cls)) budgetBurned++;
-        else transientSessions++;
+        // 🚨 분기를 두지 않는다 — 워커가 자체 조건을 들면 예산 판정과 카운터가 반대로
+        // 붙어도 문자열 검사 테스트는 통과한다. 버킷을 표에서 그대로 읽는다.
+        buckets[rep.bucket] = (buckets[rep.bucket] ?? 0) + 1;
+        if (rep.escalate) escalateFailures++;
       }
       done++;
       if (done % 25 === 0) log(`progress: ${done}/${sessions.length} sessions, facts saved ${totalSaved}`);
     });
     log(
       `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
-      (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') +
-      (handoffSessions > 0 ? `, handoff ${handoffSessions} — 다른 러너가 처리 중` : '') +
-      (budgetBurned > 0 ? `, budget-burned ${budgetBurned} — 재시도 예산 소모(반복 시 영구 제외)` : '') +
+      (buckets.transient > 0 ? `, transient-deferred ${buckets.transient} — will retry next run` : '') +
+      (buckets.handoff > 0 ? `, handoff ${buckets.handoff} — 다른 러너가 처리 중` : '') +
+      (buckets.budget > 0 ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)` : '') +
+      // 운영 에스컬레이션 신호는 별도로 유지한다 — 예산 회계에 섞으면 "손대야 할 실패"가
+      // 일반 통계로 묻힌다(R12 수정 중 사라졌던 경보의 복원).
+      (escalateFailures > 0 ? `, INTERNAL failures ${escalateFailures} — 런타임/DB 점검 필요` : '') +
       ')',
     );
   } catch (error) {

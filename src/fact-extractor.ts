@@ -352,6 +352,11 @@ export async function saveExtractedFacts(
 export type ExtractionFailureKind =
   | 'handoff'                // 다른 러너가 인수 — 실패 아님. 예산 무관, 경보 아님
   | 'provider_transient'     // 장애·빈응답·rate limit — 예산 미소모, 다음 run 재시도
+  // ⚠️ 현재 이 파이프라인에서는 **도달하지 않는다**: 배치 루프가 deterministic 거절을
+  //    드롭(dropped_batches)하고 transient 만 모아 던지므로, catch 에 오는 LlmCallError
+  //    는 항상 non-deterministic 이다. 유일한 다른 LLM 경로(classifyAndLinkFact)는 자체
+  //    catch 로 전량 삼킨다. 분류를 남겨두는 이유는 **라우팅 계약을 명시**하기 위함이며
+  //    (도달하게 되면 예산을 소모하는 것이 맞다), 도달 여부는 테스트가 주장하지 않는다.
   | 'provider_deterministic' // 요청 자체가 거절됨 — 재시도 무의미, 예산 소모
   | 'internal';              // 런타임·DB·파서 — 예산 소모 + 운영 점검 대상
 
@@ -364,20 +369,48 @@ export function classifyExtractionFailure(err: unknown): ExtractionFailureKind {
 }
 
 /**
+ * 소비자 보고·집계 표 — 라벨·문구뿐 아니라 **카운터 버킷과 예산 소모 여부까지** 여기서
+ * 나온다. 워커가 자체 분기를 들면 "예산 판정과 카운터가 반대로 붙는" 실수를 테스트가
+ * 잡지 못한다(문자열 검사는 워커가 결과를 무시해도 통과) — 분기 자체를 없앤다.
+ *
+ * `escalate`: 운영자가 손을 대야 하는 실패인가. R12 수정 과정에서 요약줄의
+ * "INTERNAL failures — 런타임/DB 점검 필요" 경보가 일반 예산 회계로 대체돼 사라졌던
+ * 것을 이 플래그로 복원한다(Codex R13 MEDIUM — 내가 만든 회귀).
+ */
+export const FAILURE_REPORT: Record<ExtractionFailureKind, {
+  label: string; note: string;
+  bucket: 'handoff' | 'transient' | 'budget';
+  consumesBudget: boolean;
+  escalate: boolean;
+}> = {
+  handoff: {
+    label: 'HANDOFF', note: '다른 러너가 인수 — 실패 아님',
+    bucket: 'handoff', consumesBudget: false, escalate: false,
+  },
+  provider_transient: {
+    label: 'ERROR', note: '공급자 일시 실패 — 예산 미소모, 다음 run 재시도',
+    bucket: 'transient', consumesBudget: false, escalate: false,
+  },
+  provider_deterministic: {
+    label: 'ERROR', note: '요청 거절 — 재시도 무의미, 예산 소모(반복 시 영구 제외)',
+    bucket: 'budget', consumesBudget: true, escalate: false,
+  },
+  internal: {
+    label: 'ERROR', note: '런타임/DB 점검 필요 — 예산 소모',
+    bucket: 'budget', consumesBudget: true, escalate: true,
+  },
+};
+
+/**
  * 이 실패가 재시도 예산을 소모하는가. runFactExtraction 의 라우팅과 워커의 보고가
  * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
  */
 export function failureConsumesBudget(kind: ExtractionFailureKind): boolean {
-  return kind === 'provider_deterministic' || kind === 'internal';
+  // 표에서 파생 — 명시 비교로 두면 새 분류가 조용히 false 로 떨어진다(Codex R13 LOW).
+  // Record 타입이라 분류를 추가하면 표가 컴파일 에러를 낸다(강제력 대칭).
+  return FAILURE_REPORT[kind].consumesBudget;
 }
 
-/** 소비자 보고 표(라벨·후속 안내). 워커가 자체 문구를 들면 분류와 어긋난다. */
-export const FAILURE_REPORT: Record<ExtractionFailureKind, { label: string; note: string }> = {
-  handoff: { label: 'HANDOFF', note: '다른 러너가 인수 — 실패 아님' },
-  provider_transient: { label: 'ERROR', note: '공급자 일시 실패 — 예산 미소모, 다음 run 재시도' },
-  provider_deterministic: { label: 'ERROR', note: '요청 거절 — 재시도 무의미, 예산 소모(반복 시 영구 제외)' },
-  internal: { label: 'ERROR', note: '런타임/DB 점검 필요 — 예산 소모' },
-};
 
 export async function runFactExtraction(
   db: Database.Database,
