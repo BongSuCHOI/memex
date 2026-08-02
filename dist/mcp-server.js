@@ -23646,7 +23646,11 @@ function initDatabase() {
   {
     const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`).all();
     if (!cols.some((c) => c.name === "dropped_batches")) {
-      db.prepare("ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0").run();
+      try {
+        db.prepare("ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0").run();
+      } catch (e) {
+        if (!/duplicate column name/i.test(e?.message ?? "")) throw e;
+      }
     }
   }
   autoHealScopeProjects(db);
@@ -26271,7 +26275,7 @@ function classifyLlmError(err) {
   const m2 = (e?.message ?? String(err)).toLowerCase();
   const labelled = m2.match(/status(?:\s*code)?\s*[:=]?\s*(\d{3})\b/);
   if (labelled) return byCode(parseInt(labelled[1], 10));
-  const prefixed = m2.match(/\b(?:api|http|request|response|server)\s*(?:error|failure)?\s*[:=-]?\s*(\d{3})\b/);
+  const prefixed = m2.match(/\b(?:api|http|request|response|server)\s+(?:error|failure|code)\s*[:=-]?\s*(\d{3})\b/);
   if (prefixed) return byCode(parseInt(prefixed[1], 10));
   if (/too (large|long)|prompt is too long|context length|maximum.*token|max_?tokens|content.*too|invalid[_ ]?request|bad request|unprocessable/.test(m2)) {
     return "deterministic";

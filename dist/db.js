@@ -450,11 +450,20 @@ export function initDatabase() {
     // dropping it silently means those exchanges' facts are lost with no record.
     // The count is persisted so the loss is queryable instead of invisible:
     //   SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0;
+    // check-then-ALTER 는 경쟁 상태다 — hook 과 MCP 서버가 동시에 초기화하면 한쪽이
+    // duplicate column 으로 실패해 DB 초기화 전체가 죽는다. 이미 있으면 성공으로
+    // 흡수하고, 그 외 에러만 전파한다 (Codex 리뷰 R3 MEDIUM).
     {
         const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
             .all();
         if (!cols.some((c) => c.name === 'dropped_batches')) {
-            db.prepare('ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0').run();
+            try {
+                db.prepare('ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0').run();
+            }
+            catch (e) {
+                if (!/duplicate column name/i.test(e?.message ?? ''))
+                    throw e;
+            }
         }
     }
     // Self-heal slug-format scope_project rows (cheap probe; no-op when clean).

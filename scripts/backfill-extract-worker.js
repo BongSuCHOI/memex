@@ -20,7 +20,7 @@ import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 import { runFactExtraction } from '../dist/fact-extractor.js';
-import { classifyLlmError } from '../dist/llm-error-class.js';
+import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
 
@@ -180,7 +180,7 @@ async function main() {
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(`backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`);
 
-    let done = 0, totalSaved = 0, transientSessions = 0;
+    let done = 0, totalSaved = 0, transientSessions = 0, internalFailures = 0;
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
@@ -195,15 +195,22 @@ async function main() {
         // 빈 응답)로 실패한 세션까지 영구 제외돼 그 대화의 fact 가 영원히 추출되지
         // 않았다. transient 는 기록하지 않고 다음 run 에 남긴다 — 이번 run 에서만
         // 건너뛰므로 루프가 물리지도 않는다(스핀 방지 목적은 유지).
-        // fact-extractor 와 **같은 기준**으로 갈라야 한다(생산자-소비자 정렬):
-        // deterministic 만 영구 기록하고, transient/unknown 은 이연한다. 추출은
-        // 건너뛰면 fact 가 아예 안 생기므로 인식 못 한 에러를 '이 세션 잘못'으로
-        // 단정하지 않는다 (Codex 리뷰 2026-07-17).
-        const cls = classifyLlmError(error);
+        // 이연 대상은 **공급자 실패만**이다. fact-extractor 는 공급자 거절을
+        // LlmCallError 로 감싸 던지므로 그것만 이연하고, 내부 실패(DB 쓰기·임베딩
+        // 런타임·파서 버그)는 이연하지 않는다 — 내부가 깨진 상태에서 이연하면
+        // 최신 세션이 매 run 재시도되며 오래된 백로그가 영구 기아한다
+        // (Codex 리뷰 R3 HIGH). 내부 실패는 마커를 남겨 큐를 진행시키되 INTERNAL
+        // 로 크게 표면화한다 — 조용히 넘어가지 않는다.
+        const isProviderError = error instanceof LlmCallError;
+        const cls = isProviderError ? classifyLlmError(error) : 'internal';
         log(`session ${next.sid}: ERROR (${cls}) ${error instanceof Error ? error.message : error}`);
-        if (cls !== 'deterministic') {
+        if (isProviderError && cls !== 'deterministic') {
           transientSessions++;
           return; // extraction_log 미기록 → 다음 run 재시도
+        }
+        if (!isProviderError) {
+          internalFailures++;
+          log(`session ${next.sid}: INTERNAL failure (not a provider error) — 런타임/DB 점검 필요`);
         }
         try {
           db.prepare(`
@@ -217,7 +224,8 @@ async function main() {
     });
     log(
       `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
-      (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') + ')',
+      (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') +
+      (internalFailures > 0 ? `, INTERNAL failures ${internalFailures} — 런타임/DB 점검 필요` : '') + ')',
     );
   } catch (error) {
     log(`backfill-extract: FATAL ${error instanceof Error ? error.message : error}`);

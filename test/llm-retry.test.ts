@@ -155,6 +155,23 @@ describe('분류기 단일 소스 (llm-error-class)', () => {
     expect(classifyLlmError(new Error('Request failed with status code 400'))).toBe('deterministic');
   });
 
+  // Codex R3 CRITICAL 회귀 고정: 에러 단어 없이 '<명사> <숫자>' 가 오면 그 숫자를
+  // 상태코드로 읽으면 안 된다. 'response 400 ms timeout' 이 HTTP 400(deterministic)
+  // 으로 뒤집히면 타임아웃 배치가 영구 폐기돼 데이터 손실이 재현된다.
+  it('에러 단어 없는 근접 숫자를 상태코드로 오독하지 않는다 (R3 CRITICAL)', async () => {
+    const { classifyLlmError } = await import('../src/llm-error-class.js');
+    // timeout 문구가 있으므로 transient 여야 한다 (절대 deterministic 아님).
+    expect(classifyLlmError(new Error('response 400 ms timeout'))).toBe('transient');
+    expect(classifyLlmError(new Error('server 503 ms latency, socket hang up'))).toBe('transient');
+    // 문구 단서가 없으면 unknown — 추출 경로가 이연하므로 손실이 없다(안전 방향).
+    expect(classifyLlmError(new Error('request 400 ms'))).toBe('unknown');
+    expect(classifyLlmError(new Error('response 413 items'))).toBe('unknown');
+    // 진짜 provider 코드 shape 는 계속 인식돼야 한다.
+    expect(classifyLlmError(new Error('API Error: 500 Internal Server Error'))).toBe('transient');
+    expect(classifyLlmError(new Error('http error 429'))).toBe('transient');
+    expect(classifyLlmError(new Error('api error: 413'))).toBe('deterministic');
+  });
+
   it('consolidator 는 같은 구현을 re-export 한다 (중복 정의 없음)', async () => {
     const shared = await import('../src/llm-error-class.js');
     const consolidator = await import('../src/consolidator.js');

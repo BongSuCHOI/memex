@@ -106,13 +106,15 @@ export function classifyLlmError(err) {
     if (labelled)
         return byCode(parseInt(labelled[1], 10));
     // Provider SDKs also report the code with an error-word prefix and no "status"
-    // label: "API Error: 500 Internal Server Error", "http error 429". Anchoring on
-    // that prefix keeps the bare-number exclusion intact ("retry after 400 ms" has
-    // no error word before the number) while classifying the real shapes.
-    // (Codex adversarial review 2026-07-17: '500 Internal Server Error' fell to
-    // 'unknown', which for extraction meant the batch was dropped and the session
-    // recorded complete — the very data loss this change set out to fix.)
-    const prefixed = m.match(/\b(?:api|http|request|response|server)\s*(?:error|failure)?\s*[:=-]?\s*(\d{3})\b/);
+    // label: "API Error: 500 Internal Server Error", "http error 429".
+    //
+    // 🚨 에러 단어(error/failure/code)는 **필수**다. 선택적으로 두면
+    // "response 400 ms timeout" 의 400 이 HTTP 400 으로 읽혀 타임아웃이
+    // deterministic 으로 뒤집히고, 그 배치는 영구 폐기된다 — 이 변경이 없애려던
+    // 손실 클래스가 되살아난다 (Codex 적대 리뷰 R3 CRITICAL, 실측 재현).
+    // 인식이 애매하면 'unknown' 으로 떨어뜨리는 편이 안전하다: 추출 경로는
+    // unknown 을 이연하므로 데이터가 사라지지 않는다.
+    const prefixed = m.match(/\b(?:api|http|request|response|server)\s+(?:error|failure|code)\s*[:=-]?\s*(\d{3})\b/);
     if (prefixed)
         return byCode(parseInt(prefixed[1], 10));
     // DETERMINISTIC (per-request) phrases checked FIRST so a specific request-size
