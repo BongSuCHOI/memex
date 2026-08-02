@@ -103,13 +103,34 @@ export function claimSessionSql(variant: 'worker' | 'hook'): string {
       + ` AND extraction_log.processed_at <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'))`
     // 살아있는 claim 이 아니면 무엇이든 선점 가능
     : `NOT (${freshClaimPredicate()})`;
+  // 🚨 소유권 토큰(claim_owner)이 없으면 "내 claim 만 건드린다"는 계약을 SQL 로
+  // 표현할 수 없다 — `extracted = -3` 은 **상태**만 보므로 A 의 롤백이 B 의 살아있는
+  // claim 을 지우거나 덮어써 상호배제가 깨진다(Codex R7 HIGH-2).
+  // 파라미터 순서: (session_id, processed_at, claim_owner)
   return `
-    INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-    VALUES (?, ?, ${EXTRACTION_STATE.CLAIMED}, 0)
+    INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
+    VALUES (?, ?, ${EXTRACTION_STATE.CLAIMED}, 0, ?)
     ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-      extracted = ${EXTRACTION_STATE.CLAIMED}, saved = 0
+      extracted = ${EXTRACTION_STATE.CLAIMED}, saved = 0, claim_owner = excluded.claim_owner
     WHERE ${owned}`;
 }
+
+/**
+ * 리스 갱신(heartbeat). 파라미터: (processed_at, session_id, claim_owner)
+ *
+ * 리스는 "소유자가 죽었을 때 회수"하기 위한 것이지 "정상 작업에 제한시간을 두기"
+ * 위한 것이 아니다. 갱신이 없으면 리스보다 오래 걸리는 **정상 추출**이 살아있는 채로
+ * 회수 대상이 되어 다른 워커가 선점 → 양쪽이 fact 를 저장한다(Codex R7 HIGH-1).
+ * `changes === 0` 이면 이미 claim 을 잃은 것이므로 즉시 중단해야 중복이 안 생긴다.
+ */
+export function renewClaimSql(): string {
+  return `UPDATE extraction_log SET processed_at = ?
+          WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`;
+}
+
+/** 내 claim 만 해제/복원하기 위한 술어 조각. 파라미터로 claim_owner 를 받는다. */
+export const OWNED_CLAIM_PREDICATE =
+  `extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`;
 
 /**
  * 내부 실패 마커 UPSERT — 워커/테스트가 공유하는 단일 소스.
@@ -117,14 +138,16 @@ export function claimSessionSql(variant: 'worker' | 'hook'): string {
  * 자기 claim(-3)과 이전 재시도(-4)만 갱신 대상이다.
  */
 export function failureMarkerUpsertSql(): string {
+  // 파라미터: (session_id, processed_at, extracted, saved, claim_owner)
+  // 내가 쥔 claim 위에서만 실패 마커를 남긴다 — 다른 라이터의 확정 마커(성공/seed/
+  // 영구)도, **다른 라이터의 claim** 도 덮지 않는다.
   return `
-    INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
+    VALUES (?, ?, ?, ?, NULL)
     ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-      extracted = excluded.extracted, saved = excluded.saved
-    WHERE extraction_log.extracted IN (
-      ${EXTRACTION_STATE.CLAIMED}, ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
-    )`;
+      extracted = excluded.extracted, saved = excluded.saved, claim_owner = NULL
+    WHERE extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}
+      AND extraction_log.claim_owner = ?`;
 }
 
 /**

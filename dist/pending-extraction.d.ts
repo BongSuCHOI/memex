@@ -68,6 +68,17 @@ export declare function freshClaimPredicate(alias?: string): string;
  */
 export declare function claimSessionSql(variant: 'worker' | 'hook'): string;
 /**
+ * 리스 갱신(heartbeat). 파라미터: (processed_at, session_id, claim_owner)
+ *
+ * 리스는 "소유자가 죽었을 때 회수"하기 위한 것이지 "정상 작업에 제한시간을 두기"
+ * 위한 것이 아니다. 갱신이 없으면 리스보다 오래 걸리는 **정상 추출**이 살아있는 채로
+ * 회수 대상이 되어 다른 워커가 선점 → 양쪽이 fact 를 저장한다(Codex R7 HIGH-1).
+ * `changes === 0` 이면 이미 claim 을 잃은 것이므로 즉시 중단해야 중복이 안 생긴다.
+ */
+export declare function renewClaimSql(): string;
+/** 내 claim 만 해제/복원하기 위한 술어 조각. 파라미터로 claim_owner 를 받는다. */
+export declare const OWNED_CLAIM_PREDICATE: string;
+/**
  * 내부 실패 마커 UPSERT — 워커/테스트가 공유하는 단일 소스.
  * `WHERE` 가드가 다른 라이터의 확정 마커(성공/seed/영구)를 덮는 것을 막는다.
  * 자기 claim(-3)과 이전 재시도(-4)만 갱신 대상이다.

@@ -31,7 +31,13 @@ export declare function buildExtractionPrompt(exchanges: Array<{
  */
 export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string, stats?: {
     droppedBatches: number;
-}): Promise<ExtractedFact[]>;
+}, 
+/**
+ * 배치마다 호출되는 리스 갱신 훅. 리스보다 오래 걸리는 정상 추출이 회수 대상이
+ * 되어 다른 워커가 선점하는 것을 막는다(R7 HIGH-1). throw 하면 즉시 중단한다 —
+ * 이미 claim 을 잃었다는 뜻이므로 계속하면 중복 작업이다.
+ */
+renewLease?: () => void): Promise<ExtractedFact[]>;
 export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], codingAgent?: string): Promise<string[]>;
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
 /**

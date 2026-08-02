@@ -174,8 +174,10 @@ describe('R5: 마커 쓰기 견고성', () => {
     llmBehavior.mode = 'ok';
     // 마이그레이션이 락으로 지연된 상태를 재현: 컬럼만 없는 extraction_log
     db.exec('DROP TABLE IF EXISTS extraction_log');
+    // dropped_batches 만 없는 상태(= 그 마이그레이션만 지연). claim_owner 는 있다.
     db.exec(`CREATE TABLE extraction_log (
-      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
+      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER,
+      claim_owner TEXT
     )`);
 
     await runFactExtraction(db, SESSION, PROJECT);
@@ -222,5 +224,39 @@ describe('R5: 마커 쓰기 견고성', () => {
     const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
       .get('sess-retry') as { extracted: number; saved: number };
     expect(row.saved, '예산 카운터는 증가해야 한다').toBe(2);
+  });
+});
+
+/**
+ * R7 HIGH-3 — claim 실패의 2분류.
+ * 전부 "구버전 DB"로 보고 선점 없이 진행하면 SQLITE_BUSY 같은 **일시 오류가
+ * 상호배제를 우회**해 중복 LLM 호출·중복 insert 를 낸다. 일시 오류는 통과가 아니라
+ * 보류다(external-probe-gate-classification).
+ */
+describe('R7: claim 실패 분류', () => {
+  it('스키마 오류(일시)는 선점 없이 진행하지 않고 보류한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'ok';
+    // claim_owner 가 없는 테이블 → claim SQL 이 'no such column' 으로 실패
+    db.exec('DROP TABLE IF EXISTS extraction_log');
+    db.exec(`CREATE TABLE extraction_log (
+      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
+    )`);
+
+    const before = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
+    const res = await runFactExtraction(db, SESSION, PROJECT);
+    const after = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
+
+    expect(res, '선점 못 했으면 이번 실행은 아무것도 하지 않는다').toEqual({ extracted: 0, saved: 0 });
+    expect(after, '가드 없이 진행하면 다른 러너와 중복 저장한다').toBe(before);
+  });
+
+  it('테이블 자체가 없는 구버전 DB 는 기존대로 진행한다 (하위호환)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'ok';
+    db.exec('DROP TABLE IF EXISTS extraction_log');
+
+    const res = await runFactExtraction(db, SESSION, PROJECT);
+    expect(res.saved, '구버전 DB 에서도 추출은 동작해야 한다').toBeGreaterThan(0);
   });
 });

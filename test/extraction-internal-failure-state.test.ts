@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import {
   pendingExtractionCoreQuery, getExtractionConfig,
   EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
-  claimSessionSql, CLAIM_LEASE_MINUTES,
+  claimSessionSql, CLAIM_LEASE_MINUTES, renewClaimSql, failureMarkerUpsertSql,
 } from '../src/pending-extraction.js';
 
 /**
@@ -36,7 +37,7 @@ function makeDb(): Database.Database {
     );
     CREATE TABLE extraction_log (
       session_id TEXT PRIMARY KEY, processed_at TEXT,
-      extracted INTEGER, saved INTEGER
+      extracted INTEGER, saved INTEGER, claim_owner TEXT
     );
   `);
   return db;
@@ -68,7 +69,7 @@ describe('내부 실패 = 재시도 예산을 가진 제3 상태 (-4)', () => {
     try {
       seedSession(db, 'sess-internal', 12);
       // 워커가 임베딩/DB throw 를 만나 1회차 실패를 기록한 상태
-      db.prepare('INSERT INTO extraction_log VALUES (?, ?, ?, ?)')
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?, ?, ?, ?)')
         .run('sess-internal', new Date().toISOString(), EXTRACTION_STATE.RETRIABLE_INTERNAL, 1);
 
       expect(pendingIds(db)).toContain('sess-internal');
@@ -80,7 +81,7 @@ describe('내부 실패 = 재시도 예산을 가진 제3 상태 (-4)', () => {
     try {
       seedSession(db, 'sess-a', 12);
       const upd = db.prepare(`
-        INSERT INTO extraction_log VALUES (?, ?, ?, ?)
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET saved = excluded.saved
       `);
       for (let attempts = 1; attempts < MAX_INTERNAL_RETRIES; attempts++) {
@@ -96,7 +97,7 @@ describe('내부 실패 = 재시도 예산을 가진 제3 상태 (-4)', () => {
     const db = makeDb();
     try {
       for (const sid of ['done', 'seed', 'permanent', 'fresh']) seedSession(db, sid, 12);
-      const ins = db.prepare('INSERT INTO extraction_log VALUES (?, ?, ?, ?)');
+      const ins = db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?, ?, ?, ?)');
       const now = new Date().toISOString();
       ins.run('done', now, 3, 3);                            // 정상 추출 완료
       ins.run('seed', now, EXTRACTION_STATE.SEED, 0);        // 과거 fact 보유
@@ -125,8 +126,10 @@ describe('내부 실패 = 재시도 예산을 가진 제3 상태 (-4)', () => {
  * 에 선점한다. 단 선점 자체가 새로운 영구손실 통로가 되면 안 되므로 리스를 둔다.
  */
 describe('R6: 세션 선점(claim) 계약', () => {
-  const claim = (db: Database.Database, sid: string, variant: 'worker' | 'hook', at?: string) =>
-    db.prepare(claimSessionSql(variant)).run(sid, at ?? new Date().toISOString()).changes;
+  const claim = (
+    db: Database.Database, sid: string, variant: 'worker' | 'hook',
+    owner = randomUUID(), at?: string,
+  ) => db.prepare(claimSessionSql(variant)).run(sid, at ?? new Date().toISOString(), owner).changes;
 
   it('중복 차단: 살아있는 claim 이 있으면 훅도 워커도 선점하지 못한다', () => {
     const db = makeDb();
@@ -144,7 +147,7 @@ describe('R6: 세션 선점(claim) 계약', () => {
       seedSession(db, 's', 12);
       const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 5) * 60_000)
         .toISOString().replace('T', ' ').slice(0, 19); // SQLite datetime 비교 형식
-      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
         .run('s', stale, EXTRACTION_STATE.CLAIMED, 0);
 
       expect(pendingIds(db), '소유자가 죽었을 수 있으므로 미처리로 본다').toContain('s');
@@ -157,7 +160,7 @@ describe('R6: 세션 선점(claim) 계약', () => {
     try {
       seedSession(db, 's', 12);
       // 워커가 pending 으로 선정한 뒤, 훅이 먼저 끝내 성공 마커를 쓴 상황
-      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
         .run('s', new Date().toISOString(), 4, 4);
       expect(claim(db, 's', 'worker'), '재추출하면 fact 가 중복된다').toBe(0);
       // 훅 변형은 --resume 재추출이 정당하므로 허용된다
@@ -169,7 +172,7 @@ describe('R6: 세션 선점(claim) 계약', () => {
     const db = makeDb();
     try {
       seedSession(db, 's', 12);
-      db.prepare('INSERT INTO extraction_log VALUES (?,?,?,?)')
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved) VALUES (?,?,?,?)')
         .run('s', new Date().toISOString(), EXTRACTION_STATE.RETRIABLE_INTERNAL, 2);
       expect(claim(db, 's', 'worker')).toBe(1);
       // 선점은 saved 를 0 으로 만들지만, 실패 시 복원 경로가 이전 상태를 되돌린다
@@ -177,6 +180,63 @@ describe('R6: 세션 선점(claim) 계약', () => {
         .run(EXTRACTION_STATE.RETRIABLE_INTERNAL, 2, 's');
       const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get('s') as { extracted: number; saved: number };
       expect(row.saved, '카운터가 리셋되면 예산이 영원히 소진되지 않는다').toBe(2);
+    } finally { db.close(); }
+  });
+});
+
+/**
+ * R7 HIGH — 소유권 토큰. 상태(-3)만 보는 술어로는 "내 claim"을 표현할 수 없어
+ * A 의 롤백이 B 의 살아있는 claim 을 덮었다. 세 결함(리스 미갱신·롤백 오소유·
+ * claim 예외 fail-open)이 모두 이 뿌리를 공유한다.
+ */
+describe('R7: claim 소유권 토큰', () => {
+  it('HIGH-2: 다른 소유자의 claim 은 해제/복원할 수 없다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      const B = randomUUID();
+      db.prepare(claimSessionSql('hook')).run('s', new Date().toISOString(), B);
+
+      // A 가 자기 토큰으로 롤백을 시도 — B 의 행이므로 아무 일도 없어야 한다
+      const A = randomUUID();
+      const changed = db.prepare(
+        `DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
+      ).run('s', A).changes;
+      expect(changed, 'A 가 B 의 claim 을 지우면 상호배제가 깨진다').toBe(0);
+      const row = db.prepare('SELECT claim_owner FROM extraction_log WHERE session_id = ?').get('s') as { claim_owner: string };
+      expect(row.claim_owner).toBe(B);
+    } finally { db.close(); }
+  });
+
+  it('HIGH-1: 리스 갱신은 소유자만 가능하고, 갱신하면 회수 대상에서 벗어난다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      const owner = randomUUID();
+      const stale = new Date(Date.now() - (CLAIM_LEASE_MINUTES + 5) * 60_000)
+        .toISOString().replace('T', ' ').slice(0, 19);
+      db.prepare('INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner) VALUES (?,?,?,?,?)')
+        .run('s', stale, EXTRACTION_STATE.CLAIMED, 0, owner);
+      expect(pendingIds(db), '갱신 전에는 회수 대상').toContain('s');
+
+      // 남이 갱신 시도 → 실패
+      expect(db.prepare(renewClaimSql()).run(new Date().toISOString(), 's', randomUUID()).changes).toBe(0);
+      // 소유자가 갱신 → 성공, 회수 대상에서 벗어남
+      expect(db.prepare(renewClaimSql()).run(new Date().toISOString(), 's', owner).changes).toBe(1);
+      expect(pendingIds(db), '갱신했으면 살아있는 작업이다').not.toContain('s');
+    } finally { db.close(); }
+  });
+
+  it('실패 마커도 내 claim 위에서만 써진다', () => {
+    const db = makeDb();
+    try {
+      seedSession(db, 's', 12);
+      const B = randomUUID();
+      db.prepare(claimSessionSql('hook')).run('s', new Date().toISOString(), B);
+      const changed = db.prepare(failureMarkerUpsertSql()).run(
+        's', new Date().toISOString(), EXTRACTION_STATE.RETRIABLE_INTERNAL, 1, randomUUID(),
+      ).changes;
+      expect(changed, '남의 claim 을 실패 마커로 덮으면 그 작업이 사라진다').toBe(0);
     } finally { db.close(); }
   });
 });

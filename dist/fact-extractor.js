@@ -3,7 +3,8 @@ import { classifyLlmError, LlmCallError } from './llm-error-class.js';
 import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { classifyAndLinkFact } from './ontology-classifier.js';
-import { claimSessionSql, EXTRACTION_STATE } from './pending-extraction.js';
+import { randomUUID } from 'node:crypto';
+import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from './pending-extraction.js';
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 ## Rules
@@ -143,7 +144,13 @@ export function buildExtractionPrompt(exchanges) {
  * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
  *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
  */
-export async function extractFactsFromExchanges(db, sessionId, stats) {
+export async function extractFactsFromExchanges(db, sessionId, stats, 
+/**
+ * 배치마다 호출되는 리스 갱신 훅. 리스보다 오래 걸리는 정상 추출이 회수 대상이
+ * 되어 다른 워커가 선점하는 것을 막는다(R7 HIGH-1). throw 하면 즉시 중단한다 —
+ * 이미 claim 을 잃었다는 뜻이므로 계속하면 중복 작업이다.
+ */
+renewLease) {
     const exchanges = db.prepare(`
     SELECT id, user_message, assistant_message
     FROM exchanges
@@ -166,6 +173,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats) {
         if (allFacts.length >= MAX_FACTS_PER_SESSION)
             break;
         const prompt = buildExtractionPrompt(selectedBatches[b]);
+        renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
             const response = await callHaiku(EXTRACTION_SYSTEM_PROMPT, prompt);
             const extracted = parseJsonResponse(response);
@@ -279,49 +287,102 @@ opts) {
     // 선점 이전 상태를 기억해 둔다 — 실패 시 그대로 되돌려야 재시도 카운터(saved)가
     // 보존된다. 무조건 DELETE 로 풀면 매 run 카운터가 0 으로 리셋돼 예산이 영원히
     // 소진되지 않는다(무한 재시도 = R3 기아의 다른 얼굴).
+    const owner = randomUUID();
     let preClaim;
+    let holdsClaim = false;
     try {
         preClaim = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
             .get(sessionId);
         const claimed = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
-            .run(sessionId, new Date().toISOString()).changes;
+            .run(sessionId, new Date().toISOString(), owner).changes;
         if (claimed === 0) {
             console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
             return { extracted: 0, saved: 0 };
         }
+        holdsClaim = true;
     }
     catch (e) {
-        // 아주 오래된 DB 는 log 테이블이 없을 수 있다 — 선점 없이 진행(기존 동작).
-        console.error(`extraction: session ${sessionId} claim 실패, 선점 없이 진행: ${e instanceof Error ? e.message : String(e)}`);
+        // 🚨 실패를 2분류한다. 전부 "오래된 DB"로 보고 선점 없이 진행하면, SQLITE_BUSY
+        // 같은 **일시 오류가 상호배제를 우회**해 중복 LLM 호출·중복 insert 를 낸다
+        // (R7 HIGH-3, external-probe-gate-classification: 일시 오류는 보류이지 통과가 아님).
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/no such table/i.test(msg)) {
+            console.error(`extraction: session ${sessionId} — extraction_log 부재(구버전 DB), 선점 없이 진행`);
+        }
+        else {
+            console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
+            return { extracted: 0, saved: 0 };
+        }
     }
-    const stats = { droppedBatches: 0 };
-    let facts;
-    try {
-        facts = await extractFactsFromExchanges(db, sessionId, stats);
-    }
-    catch (e) {
-        // 선점을 쥔 채 실패하면 리스가 만료될 때까지(수십 분) 재시도가 막힌다.
-        // transient 실패는 즉시 재시도 가능해야 하므로 **내 claim 만** 회수하되,
-        // 선점 이전 상태(재시도 카운터 포함)를 그대로 복원한다.
-        // `WHERE extracted = -3`: 그사이 다른 라이터가 확정했다면 그 마커는 건드리지 않는다.
+    /**
+     * 리스 갱신 겸 소유권 확인. 잃었으면 즉시 throw 해서 중단한다 —
+     * 계속 진행하면 새 소유자와 중복 작업이 된다.
+     */
+    const renewLease = () => {
+        if (!holdsClaim)
+            return;
+        const renewed = db.prepare(renewClaimSql())
+            .run(new Date().toISOString(), sessionId, owner).changes;
+        if (renewed === 0) {
+            holdsClaim = false; // 남의 행이 되었으므로 롤백도 하지 않는다
+            throw new Error(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
+        }
+    };
+    /** 내 claim 만 되돌린다 — 소유권 토큰으로 다른 러너의 claim 을 건드리지 않는다. */
+    const releaseClaim = () => {
+        if (!holdsClaim)
+            return;
         try {
             if (preClaim) {
-                db.prepare(`UPDATE extraction_log SET extracted = ?, saved = ? `
-                    + `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED}`).run(preClaim.extracted, preClaim.saved, sessionId);
+                db.prepare('UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL '
+                    + `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(preClaim.extracted, preClaim.saved, sessionId, owner);
             }
             else {
-                db.prepare(`DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED}`).run(sessionId);
+                db.prepare(`DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(sessionId, owner);
             }
         }
         catch { /* 로그 테이블 부재 — 원 에러를 그대로 올린다 */ }
-        throw e;
-    }
+    };
+    /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
+    const writeInternalFailureMarker = () => {
+        if (!holdsClaim)
+            return;
+        try {
+            const attempts = (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? preClaim.saved : 0) + 1;
+            const exhausted = attempts >= MAX_INTERNAL_RETRIES;
+            db.prepare(failureMarkerUpsertSql()).run(sessionId, new Date().toISOString(), exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL, exhausted ? 0 : attempts, owner);
+            console.error(`extraction: session ${sessionId} 내부 실패 (attempt ${attempts}/${MAX_INTERNAL_RETRIES}`
+                + `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — 런타임/DB 점검 필요`);
+        }
+        catch { /* best-effort */ }
+    };
+    const stats = { droppedBatches: 0 };
+    let facts;
     let saved = 0;
-    if (facts.length > 0) {
-        // Detect coding agent from session's exchanges if not provided
-        const agent = codingAgent || detectAgentFromSession(db, sessionId);
-        const exchangeIds = db.prepare('SELECT id FROM exchanges WHERE session_id = ?').all(sessionId).map(r => r.id);
-        saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent)).length;
+    try {
+        facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease);
+        // 🚨 저장 **직전** 소유권을 재확인한다. 마지막 갱신 이후에 claim 을 빼앗겼다면
+        // (배치가 1개뿐이면 갱신도 1회뿐이라 창이 넓다) 여기서 멈춰야 한다 — 그대로
+        // 저장하면 새 소유자와 함께 fact 를 두 벌 쓰게 된다.
+        renewLease();
+        if (facts.length > 0) {
+            const agent = codingAgent || detectAgentFromSession(db, sessionId);
+            const exchangeIds = db.prepare('SELECT id FROM exchanges WHERE session_id = ?').all(sessionId).map(r => r.id);
+            saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent)).length;
+        }
+    }
+    catch (e) {
+        // 실패를 2분류한다 — 이 판정을 워커가 아니라 **선점 소유자**가 내려야
+        // 소유권 토큰으로 안전하게 마커를 쓸 수 있다(호출자 간 로직 중복도 사라진다).
+        //  · 공급자 실패(LlmCallError, transient/unknown) → claim 해제 후 rethrow.
+        //    예산을 쓰지 않고 다음 run 에 즉시 재시도된다.
+        //  · 내부 실패(임베딩/DB/파서) → 재시도 예산 마커(-4, 소진 시 -2) 후 rethrow.
+        const providerFailure = e instanceof LlmCallError && classifyLlmError(e) !== 'deterministic';
+        if (providerFailure)
+            releaseClaim();
+        else
+            writeInternalFailureMarker();
+        throw e;
     }
     // Record the session as processed (idempotency marker shared by the
     // SessionEnd hook and the cross-project backfill worker).
@@ -334,22 +395,26 @@ opts) {
         // 폴백해 마커는 반드시 남기고 카운터 누락만 크게 표면화한다.
         const hasDropped = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
             .all().some(c => c.name === 'dropped_batches');
+        // 성공 마커도 내 claim 위에서만 쓴다 — 그사이 소유권이 넘어갔다면 새 소유자의
+        // 상태를 덮지 않는다. (claim 없이 도는 구버전 DB 경로는 가드 없이 기존 동작.)
+        const ownGuard = holdsClaim ? ' WHERE extraction_log.claim_owner = ?' : '';
+        const ownArgs = holdsClaim ? [owner] : [];
         if (hasDropped) {
             db.prepare(`
-        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches, claim_owner)
+        VALUES (?, ?, ?, ?, ?, NULL)
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
           extracted = excluded.extracted, saved = excluded.saved,
-          dropped_batches = excluded.dropped_batches
-      `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches);
+          dropped_batches = excluded.dropped_batches, claim_owner = NULL${ownGuard}
+      `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches, ...ownArgs);
         }
         else {
             db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-          extracted = excluded.extracted, saved = excluded.saved
-      `).run(sessionId, new Date().toISOString(), facts.length, saved);
+          extracted = excluded.extracted, saved = excluded.saved${ownGuard}
+      `).run(sessionId, new Date().toISOString(), facts.length, saved, ...ownArgs);
             if (stats.droppedBatches > 0) {
                 console.error(`extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 ` +
                     `${stats.droppedBatches}건을 기록하지 못했습니다(마이그레이션 지연). 마커는 기록됨.`);

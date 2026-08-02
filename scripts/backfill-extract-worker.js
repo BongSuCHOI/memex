@@ -18,11 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
-import {
-  getExtractionConfig, pendingExtractionCoreQuery,
-  EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
-  failureMarkerUpsertSql,
-} from '../dist/pending-extraction.js';
+import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 import { runFactExtraction } from '../dist/fact-extractor.js';
 import { classifyLlmError, LlmCallError } from '../dist/llm-error-class.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
@@ -208,63 +204,14 @@ async function main() {
         // 최신 세션이 매 run 재시도되며 오래된 백로그가 영구 기아한다
         // (Codex 리뷰 R3 HIGH). 내부 실패는 마커를 남겨 큐를 진행시키되 INTERNAL
         // 로 크게 표면화한다 — 조용히 넘어가지 않는다.
+        // 실패 분류와 마커 기록은 **선점 소유자**인 runFactExtraction 이 단독 수행한다
+        // (소유권 토큰이 그쪽에만 있으므로 여기서 쓰면 남의 claim 을 덮을 수 있다).
+        // 워커는 관측만 한다.
         const isProviderError = error instanceof LlmCallError;
         const cls = isProviderError ? classifyLlmError(error) : 'internal';
         log(`session ${next.sid}: ERROR (${cls}) ${error instanceof Error ? error.message : error}`);
-        if (isProviderError && cls !== 'deterministic') {
-          transientSessions++;
-          return; // extraction_log 미기록 → 다음 run 재시도
-        }
-        if (!isProviderError) {
-          // 내부 실패는 제3의 터미널 상태(-4, 재시도 예산)로 기록한다. 이연하면
-          // 런타임이 깨졌을 때 오래된 백로그가 기아하고(R3 HIGH), 영구 마커(-2)를
-          // 남기면 일시적 장애 한 번에 세션이 영영 사라진다(R4 CRITICAL). 예산이
-          // 남은 동안 pending 에 다시 포함되고, 소진하면 아래에서 -2 로 승격된다.
-          const prev = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?').get(next.sid);
-          // 🚨 나는 이 세션의 마지막 관측자가 아니다 (Codex R5 HIGH-2). 세션 선정 후
-          // SessionEnd 훅이 같은 세션을 성공 추출해 마커(extracted>=0)를 썼을 수 있다.
-          // 그걸 실패 상태로 덮으면 완료된 세션이 재추출돼 중복 fact 가 쌓인다.
-          // 선(先)확인으로 흔한 경우를 걸러내고, TOCTOU 는 아래 UPSERT 의 WHERE 가 막는다.
-          // 내 claim(-3)과 이전 재시도(-4)만 내 소유다. 그 외(성공/seed/영구)는
-          // 다른 라이터가 확정한 것이므로 건드리지 않는다.
-          const mine = !prev || prev.extracted === EXTRACTION_STATE.CLAIMED
-            || prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL;
-          if (!mine) {
-            log(`session ${next.sid}: INTERNAL failure — 다른 라이터가 이미 확정(extracted=${prev.extracted}), 마커 유지`);
-            return;
-          }
-          // 계수는 skip 이후에 — 다른 라이터가 성공시킨 세션을 '런타임 점검 필요'로
-          // 계상하면 요약 로그가 거짓 경보를 낸다(Codex R6 LOW).
-          internalFailures++;
-          // claim(-3)에서 넘어온 첫 실패는 시도 0회에서 시작한다.
-          const attempts = (prev && prev.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? prev.saved : 0) + 1;
-          const exhausted = attempts >= MAX_INTERNAL_RETRIES;
-          try {
-            db.prepare(failureMarkerUpsertSql()).run(
-              next.sid, new Date().toISOString(),
-              exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL,
-              exhausted ? 0 : attempts,
-            );
-          } catch { /* ignore */ }
-          log(
-            `session ${next.sid}: INTERNAL failure (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
-            `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — 런타임/DB 점검 필요`,
-          );
-          return; // 아래의 deterministic 영구 마커 경로를 타지 않는다
-        }
-        try {
-          // deterministic = 같은 입력이면 같은 결과 → 영구 마커. 단 이전 내부 실패가
-          // 남긴 재시도 마커(-4)는 반드시 덮어써야 한다 — OR IGNORE 로 두면 -4 가
-          // 남아 세션이 매 run 재선정되며 영원히 같은 거절을 반복한다(wedge).
-          // 성공 기록(>=0)과 seed(-1)는 건드리지 않도록 조건을 좁힌다.
-          db.prepare(`
-            INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-            VALUES (?, ?, ?, 0)
-            ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-              extracted = excluded.extracted, saved = 0
-            WHERE extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
-          `).run(next.sid, new Date().toISOString(), EXTRACTION_STATE.PERMANENT);
-        } catch { /* ignore */ }
+        if (cls === 'internal') internalFailures++;
+        else transientSessions++;
       }
       done++;
       if (done % 25 === 0) log(`progress: ${done}/${sessions.length} sessions, facts saved ${totalSaved}`);

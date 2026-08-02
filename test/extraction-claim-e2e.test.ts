@@ -45,4 +45,18 @@ describe('claim E2E', () => {
     expect(n, '한쪽은 claim 에 막혀 skip 되어야 한다').toBeLessThanOrEqual(1);
     expect(Math.min(a.saved, b.saved)).toBe(0);
   });
+
+  it('R7 HIGH-1: 리스를 빼앗기면 즉시 중단해 중복 저장하지 않는다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    // 추출 시작 직후 다른 러너가 claim 을 탈취한 상황을 재현:
+    // 첫 배치 LLM 호출 중에 claim_owner 를 바꿔치기한다.
+    setTimeout(() => {
+      try { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); }
+      catch { /* ignore */ }
+    }, 20);
+    await expect(runFactExtraction(db, 'S1', '/tmp/p')).rejects.toThrow(/claim lost/i);
+    const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
+    console.log(`  → 탈취 후 저장된 fact ${n}건 (중단되어야 하므로 0)`);
+    expect(n, 'claim 을 잃고도 계속 저장하면 중복이 된다').toBe(0);
+  });
 });

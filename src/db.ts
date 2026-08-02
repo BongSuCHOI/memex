@@ -527,6 +527,22 @@ export function initDatabase(): Database.Database {
         }
       }
     }
+    // claim_owner: 세션 선점의 **소유권 토큰**. 상태(-3)만으로는 "내 claim"을 SQL 로
+    // 식별할 수 없어 한 러너의 롤백이 다른 러너의 살아있는 claim 을 덮는다(R7 HIGH-2).
+    if (!cols.some((c) => c.name === 'claim_owner')) {
+      try {
+        db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
+      } catch (e) {
+        const msg = (e as Error)?.message ?? '';
+        if (/duplicate column name/i.test(msg)) {
+          /* 다른 프로세스가 먼저 추가 */
+        } else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
+          console.error('[db] extraction_log.claim_owner 마이그레이션 지연 — 락 경합, 다음 초기화에서 재시도');
+        } else {
+          throw e;
+        }
+      }
+    }
   }
 
   // Self-heal slug-format scope_project rows (cheap probe; no-op when clean).
