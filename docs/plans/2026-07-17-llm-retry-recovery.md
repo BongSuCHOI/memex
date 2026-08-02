@@ -14,11 +14,11 @@
 
 **비대칭 근거**: 같은 파일(`ontology-classifier.ts:305-317`)의 **임베딩** 경로는 이미 probe + 동일입력 재시도로 flake를 흡수한다. **LLM 경로만** 그 규율이 없다. 배치 분류(641)만 빈 응답을 transient로 올바르게 처리 — 나머지 전부 누락.
 
-### memory-bank-cloud — 해당 없음(변경 불필요) + 레퍼런스 보유
+### 비교 대상(별개 프로젝트) — 해당 없음(변경 불필요)
 
-- `callHaiku` / `messages.create` / `claude-agent-sdk` / `query(` — **0건**. cloud는 ingest/search/MCP/store plane이고 **LLM 작업을 하지 않는다** → 이 결함이 존재할 수 없음(해결된 게 아니라 해당 없음).
-- 단 cloud에는 **bounded-attempt 레퍼런스**가 있다: `SET_DEPRECATED_MAX_ATTEMPTS` 루프(1611·2457) — 유한 재시도 후 **미수렴 시 명시적 throw**(조용한 성공 위장 없음). local이 이식할 규율이 바로 이것.
-- QA에서 cloud의 네트워크 경로에 **동일 클래스**(실패를 성공으로 오인) 결함이 있는지 별도 스캔.
+- LLM 호출 표면이 **0건**인 프로젝트에는 이 결함이 존재할 수 없다(해결된 게 아니라 해당 없음).
+- 다만 그쪽에는 **bounded-attempt 레퍼런스**가 있다: 유한 재시도 후 **미수렴 시 명시적 throw**(조용한 성공 위장 없음). 이번에 이식한 규율이 바로 이것.
+- QA에서 비교 대상의 네트워크 경로에 **동일 클래스**(실패를 성공으로 오인) 결함이 있는지 별도 스캔.
 
 ## 설계 — fail-loud + bounded retry (single-source 분류기)
 
@@ -42,7 +42,7 @@
 - [ ] AC4: fact-extractor — transient 배치 실패 시 throw → extraction_log 미기록(세션 재시도 가능) / deterministic은 진행
 - [ ] AC5: 분류기 단일 소스 — consolidator 재수출로 기존 importer(테스트 포함) 무회귀
 - [ ] AC6: 전체 vitest 회귀 0
-- [ ] AC7: cloud 비교 결론이 코드 증거로 뒷받침(LLM 호출 0건) + 동일 클래스 스캔 결과 보고
+- [ ] AC7: 비교 대상 결론이 코드 증거로 뒷받침(LLM 호출 0건) + 동일 클래스 스캔 결과 보고
 - [ ] AC8: 내부 실패(임베딩/DB throw)는 재시도 예산이 남는 동안 pending 유지(손실 없음),
       예산 소진 시 영구 마커로 승격해 큐가 물리지 않음(기아 없음) — 양끝 실증
 

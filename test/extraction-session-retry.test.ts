@@ -270,7 +270,7 @@ describe('R7: claim 실패 분류', () => {
  * R20 — 제외 판정의 경로 경계.
  *
  * raw prefix 로 비교하면 형제 프로젝트가 함께 배제된다: '/…/memory-bank' 가
- * '/…/memory-bank-cloud' 를 삼켜 그 프로젝트 세션이 영구 0/0 마커를 받고 fact 가
+ * '/…/memory-bank-sibling' 을 삼켜 그 프로젝트 세션이 영구 0/0 마커를 받고 fact 가
  * 영영 추출되지 않았다(실측 적격 8세션 전건). pending SQL 은 exact 매칭이라 선정은
  * 되고 여기서만 걸러져 **무음**이었다.
  */
@@ -278,9 +278,9 @@ describe('R20: 제외 판정은 경로 경계로', () => {
   it('형제 프로젝트를 배제하지 않는다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
-    const sibling = '/Users/jung-wankim/Project/Claude/memory-bank-cloud';
+    const sibling = '/Users/jung-wankim/Project/Claude/memory-bank-sibling';
     const res = await runFactExtraction(db, SESSION, sibling);
-    expect(res.skipped, 'memory-bank-cloud 는 별개 프로젝트다 — 배제되면 안 된다').toBeUndefined();
+    expect(res.skipped, 'memory-bank-sibling 은 별개 프로젝트다 — 배제되면 안 된다').toBeUndefined();
     expect(res.saved, '정상 추출돼야 한다').toBeGreaterThan(0);
   });
 

@@ -251,7 +251,7 @@ async function main() {
             // 정상 흐름이다 — 영구 마커가 써졌고 재시도 대상이 아니다. 이걸 transient+
             // escalate 로 세면 "다음 run 재시도"·"INTERNAL failures" 가 둘 다 거짓이
             // 된다(R19 MEDIUM). SQL 필터는 exact, isExcludedProject 는 prefix 라
-            // 형제 경로(memory-bank-cloud vs memory-bank)에서 실제로 도달한다.
+            // 형제 경로(memory-bank-x vs memory-bank)에서 실제로 도달한다.
             log(`session ${next.sid}: skip (excluded_project) — 자기참조 repo, 정상 제외`);
           } else if (result.skipped === 'claim_not_acquired') {
             buckets.handoff += 1;
