@@ -42,7 +42,14 @@ async function main() {
   try {
     db = initDatabase();
     const result = await runFactExtraction(db, sessionId, project);
-    log(`worker: session=${sessionId} extracted=${result.extracted} saved=${result.saved}`);
+    // skipped 를 무시하면 claim 미획득·보류가 'extracted=0 saved=0' 정상 처리와
+    // 구분되지 않아 DB 장애가 무경보로 남는다(R19 — backfill 에서 닫은 결함이
+    // 이쪽에 그대로 있었다).
+    if (result.skipped) {
+      log(`worker: SKIPPED (${result.skipped}) session=${sessionId} — 처리하지 않음`);
+    } else {
+      log(`worker: session=${sessionId} extracted=${result.extracted} saved=${result.saved}`);
+    }
   } catch (error) {
     // 이양(handoff)은 실패가 아니다 — 다른 러너가 같은 세션을 인수한 정상 경로다.
     // 🚨 불변식 우선: 어떤 로깅 실패도 훅 실패로 표면화되면 안 된다. 표 역참조보다

@@ -206,20 +206,32 @@ async function main() {
       // 그 세션은 마커가 없어 영구 pending 이라 최신 세션이 매 run 슬롯을 점유해
       // 오래된 백로그를 기아시킨다(R3 HIGH 메커니즘 재현 — Codex R17, 내가 만든 회귀).
       // 수정 전에는 같은 오류가 배치를 죽였으니, 조용한 거짓 회계로 바꾸면 더 나쁘다.
-      // 🚨 sessionProject 는 **부가 정보**이지 처리 전제가 아니다. 이걸 실패로 다루면
-      // 두 나쁜 선택 사이를 왕복한다: budget 으로 세면 마커 없이 예산을 태웠다고
-      // 보고하는 거짓 회계(R17 HIGH), transient 로 세면 마커가 없어 최신 세션이 매 run
-      // 슬롯을 점유해 백로그가 기아한다(R3 HIGH 재도입 — R18 이 3회 run 으로 재현).
-      // 정답은 실패로 다루지 않는 것이다: 프로젝트를 모르면 'unknown' 으로 진행하고,
-      // 선점·예산·마커는 runFactExtraction 이 정상 경로에서 소유한다.
+      // 🚨 이 지점의 불변식: **일시 장애는 잘못된 데이터도, 영구 정지도 만들지 않는다.**
+      // 세 번 틀렸던 자리다 — budget 으로 세면 마커 없이 예산을 태웠다고 보고하는 거짓
+      // 회계(R17), transient 로 세면 마커 없는 세션이 매 run 슬롯을 점유해 기아(R18),
+      // 'unknown' 으로 진행하면 fact 가 **영구 오귀속**되고 완료 마커가 재시도까지
+      // 막는다(R19: 실제 cwd 조회 0건, unknown 1건).
+      //
+      // 정답: ① SQLITE_BUSY 류는 유계 재시도로 흡수한다(로컬 읽기라 ms 단위로 풀린다)
+      //       ② 그래도 실패하면 **마커 없이 이번 run 만 건너뛴다** — 잘못된 귀속을
+      //          남기지 않고, 다음 run 에 정상 처리된다
+      //       ③ 지속 실패는 DB 자체가 깨진 것이므로 매 run 경보로 표면화한다.
+      //          (기아처럼 보이는 것은 은폐가 아니라 그 고장의 **증상**이다.)
       let project = null;
-      try {
-        project = sessionProject(db, next.sid);
-      } catch (e) {
+      let projectFailed = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { project = sessionProject(db, next.sid); projectFailed = null; break; }
+        catch (e) { projectFailed = e; }
+      }
+      if (projectFailed) {
+        buckets.transient += 1;   // 마커 미기록 → 예산 미소모, 다음 run 재시도
+        escalateFailures += 1;    // DB 오류이므로 운영 점검 대상
         log(
-          `session ${next.sid}: WARN project 조회 실패 — 'unknown' 으로 진행합니다`
-          + ` (${e instanceof Error ? e.message : e})`,
+          `session ${next.sid}: ERROR (project_lookup) ${projectFailed instanceof Error ? projectFailed.message : projectFailed}`
+          + ' — 재시도 3회 실패: 잘못된 귀속을 남기지 않기 위해 이번 run 은 건너뜁니다 · 런타임/DB 점검 필요',
         );
+        done++;
+        return;
       }
       try {
         // 선점은 runFactExtraction 이 단독 소유한다. 'worker' 변형은 자기가 pending
@@ -230,7 +242,13 @@ async function main() {
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
         // detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아(R18 독립 발견).
         if (result.skipped) {
-          if (result.skipped === 'claim_not_acquired') {
+          if (result.skipped === 'excluded_project') {
+            // 정상 흐름이다 — 영구 마커가 써졌고 재시도 대상이 아니다. 이걸 transient+
+            // escalate 로 세면 "다음 run 재시도"·"INTERNAL failures" 가 둘 다 거짓이
+            // 된다(R19 MEDIUM). SQL 필터는 exact, isExcludedProject 는 prefix 라
+            // 형제 경로(memory-bank-cloud vs memory-bank)에서 실제로 도달한다.
+            log(`session ${next.sid}: skip (excluded_project) — 자기참조 repo, 정상 제외`);
+          } else if (result.skipped === 'claim_not_acquired') {
             buckets.handoff += 1;
             log(`session ${next.sid}: HANDOFF (claim_not_acquired) — 다른 러너가 처리 중`);
           } else {

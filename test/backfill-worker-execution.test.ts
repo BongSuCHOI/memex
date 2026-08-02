@@ -168,13 +168,14 @@ export function initDatabase() {
     expect(code, '한 세션 오류로 워커가 비정상 종료하면 안 된다').toBe(0);
     expect(out, '요약줄이 사라지면 무슨 일이 있었는지 알 수 없다').toMatch(/done this run/);
     expect(out, '나머지 세션은 계속 처리돼야 한다').toMatch(/sessions 4/);
-    // 🚨 이 단언은 두 번 틀렸었다. 처음엔 budget-burned 를 계약으로 고정해 **거짓 회계**를
-    // 통과시켰고(R17 NOTE), 그 다음엔 transient 를 고정해 **무기한 재시도=기아**를
-    // 계약으로 굳혔다(R18 HIGH). 정답은 project 조회가 애초에 실패 사유가 아니라는 것:
-    // 경고만 남기고 'unknown' 으로 진행해, 선점·예산·마커는 정상 경로가 소유한다.
-    expect(out, 'project 조회 실패는 경고이지 세션 실패가 아니다').toMatch(/WARN project 조회 실패/);
-    expect(out, '실패로 계상하면 안 된다 — 예산도').not.toMatch(/budget-burned/);
-    expect(out, '실패로 계상하면 안 된다 — 재시도 이연도').not.toMatch(/transient-deferred/);
+    expect(out, '일회성 흡수 시 경보 없음').not.toMatch(/INTERNAL failures/);
+    // 🚨 이 단언은 세 번 틀렸었다: budget(거짓 회계 R17) → transient 무기한(기아 R18)
+    // → 'unknown' 진행(영구 오귀속 R19).
+    // **일회성** SQLITE_BUSY 는 유계 재시도가 흡수하는 것이 정답이다 — 세션은 정상
+    // 처리되고 아무 실패도 보고되지 않는다. (지속 실패는 별도 테스트가 덮는다.)
+    expect(out, '일회성 락은 재시도로 흡수 — 오귀속도 실패 보고도 없어야').not.toMatch(/project_lookup/);
+    expect(out, "'unknown' 오귀속 금지").not.toMatch(/WARN project 조회 실패/);
+    expect(out, '일회성 락은 예산 대상이 아니다').not.toMatch(/budget-burned/);
   });
 
   it('R18: 최신 세션이 지속 실패해도 오래된 백로그가 진행된다 (기아 방지)', () => {
@@ -206,10 +207,33 @@ export const FAILURE_REPORT = {
 `);
     const { out, code } = runWorker();
     expect(code).toBe(0);
-    // 세션들이 **처리 완료**로 진행돼야 다음 run 에서 오래된 백로그가 슬롯을 얻는다.
-    expect(out, '전 세션이 처리돼야 한다').toMatch(/sessions 4/);
-    expect(out, '무기한 재시도로 이연되면 백로그가 기아한다').not.toMatch(/transient-deferred 4/);
-    expect(out, 'project 조회 실패는 경고로만').toMatch(/WARN project 조회 실패/);
+    // 🚨 핵심 계약: **일시 오류가 영구 오귀속을 만들지 않는다.** 'unknown' 으로 진행하면
+    // fact 가 가짜 프로젝트에 영구 귀속되고 완료 마커가 재시도까지 막는다(R19 HIGH).
+    expect(out, "'unknown' 으로 진행하면 안 된다").not.toMatch(/WARN project 조회 실패/);
+    expect(out, '전용 사유로 건너뛴다').toMatch(/project_lookup/);
+    expect(out, '경보로 표면화').toMatch(/INTERNAL failures 4/);
+    // 마커를 안 남기므로 다음 run 에 그대로 재시도된다(손실 없음).
+    expect(out, '예산을 태우면 안 된다').not.toMatch(/budget-burned/);
+  });
+
+  it('R19: 정상 제외(excluded_project)를 실패로 오보고하지 않는다', () => {
+    writeStubs({ staleTable: false });
+    fs.writeFileSync(path.join(sandbox, 'dist', 'fact-extractor.js'), `
+export async function runFactExtraction() { return { extracted: 0, saved: 0, skipped: 'excluded_project' }; }
+export function classifyExtractionFailure() { return 'internal'; }
+export const FAILURE_REPORT = {
+  handoff: { label: 'HANDOFF', note: 'h', bucket: 'handoff', consumesBudget: false, escalate: false },
+  provider_transient: { label: 'ERROR', note: 't', bucket: 'transient', consumesBudget: false, escalate: false },
+  provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
+  internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
+};
+`);
+    const { out, code } = runWorker();
+    expect(code).toBe(0);
+    // 영구 마커가 써진 정상 흐름이다 — 재시도 주장도 INTERNAL 경보도 거짓이 된다.
+    expect(out, '정상 제외는 재시도 대상이 아니다').not.toMatch(/transient-deferred/);
+    expect(out, '정상 제외는 운영 경보가 아니다').not.toMatch(/INTERNAL failures/);
+    expect(out, '제외 사실 자체는 남아야 한다').toMatch(/excluded_project/);
   });
 
   it('R18: claim 미획득을 정상 처리로 계상하지 않는다 (무경보 기아 방지)', () => {
