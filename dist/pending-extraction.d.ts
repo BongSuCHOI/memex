@@ -76,8 +76,6 @@ export declare function claimSessionSql(variant: 'worker' | 'hook'): string;
  * `changes === 0` 이면 이미 claim 을 잃은 것이므로 즉시 중단해야 중복이 안 생긴다.
  */
 export declare function renewClaimSql(): string;
-/** 내 claim 만 해제/복원하기 위한 술어 조각. 파라미터로 claim_owner 를 받는다. */
-export declare const OWNED_CLAIM_PREDICATE: string;
 /**
  * 내부 실패 마커 UPSERT — 워커/테스트가 공유하는 단일 소스.
  * `WHERE` 가드가 다른 라이터의 확정 마커(성공/seed/영구)를 덮는 것을 막는다.

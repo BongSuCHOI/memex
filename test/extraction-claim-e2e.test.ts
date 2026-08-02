@@ -13,9 +13,19 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
 let calls = 0;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callHaiku: async () => { calls++; await new Promise(r => setTimeout(r, 60));
-    return JSON.stringify([{ fact: `dup-probe-${calls}`, category: 'preference', scope_type: 'project', confidence: 0.9 }]); } }));
+    return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
+      ({ fact: `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9 }))); } }));
+let factsPerCall = 1;
+let embedCalls = 0;
+let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)
+let stealHook: (() => void) | null = null;
 vi.mock('../src/embeddings.js', async (io) => ({ ...(await io<typeof import('../src/embeddings.js')>()),
-  initEmbeddings: async () => {}, generateEmbedding: async () => new Array(384).fill(0.01) }));
+  initEmbeddings: async () => {},
+  generateEmbedding: async () => {
+    embedCalls++;
+    if (stealAtEmbedCall && embedCalls === stealAtEmbedCall) stealHook?.();
+    return new Array(384).fill(0.01);
+  } }));
 vi.mock('../src/ontology-classifier.js', async (io) => ({ ...(await io<typeof import('../src/ontology-classifier.js')>()), classifyAndLinkFact: async () => {} }));
 
 let tmp: string; let db: import('better-sqlite3').Database;
@@ -23,7 +33,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMORY_BANK_CONFIG_DIR = tmp;
   process.env.MEMORY_BANK_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0;
+  calls = 0; factsPerCall = 1; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -58,5 +68,30 @@ describe('claim E2E', () => {
     const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
     console.log(`  → 탈취 후 저장된 fact ${n}건 (중단되어야 하므로 0)`);
     expect(n, 'claim 을 잃고도 계속 저장하면 중복이 된다').toBe(0);
+  });
+
+  it('R8 HIGH: 저장 구간에서 리스를 빼앗겨도 중단한다 (가장 긴 단계 보호)', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    factsPerCall = 4; // 저장 루프가 여러 번 돌도록
+    // 결정론적 재현: 2번째 임베딩(=2번째 fact 저장 중) 시점에 claim 탈취.
+    // 타이머는 임베딩이 스텁이라 저장이 먼저 끝나 재현이 안 된다(플레이키).
+    stealAtEmbedCall = 2;
+    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+    await expect(runFactExtraction(db, 'S1', '/tmp/p')).rejects.toThrow(/claim lost/i);
+    const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
+    console.log(`  → 저장 중 탈취: fact ${n}건에서 중단 (4건 전부 저장되면 실패)`);
+    expect(n, '탈취 후에도 계속 저장하면 새 소유자와 중복된다').toBeLessThan(4);
+  });
+
+  it('R8 MEDIUM: claim_owner 컬럼이 없으면 즉시 추가하고 선점을 재시도한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    db.exec('DROP TABLE IF EXISTS extraction_log');
+    db.exec(`CREATE TABLE extraction_log (
+      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
+    )`);
+    const res = await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(res.saved, '무음 스킵이면 0 — 자가치유 후 정상 추출되어야 한다').toBeGreaterThan(0);
+    const cols = (db.prepare("SELECT name FROM pragma_table_info('extraction_log')").all() as Array<{name:string}>).map(c => c.name);
+    expect(cols, '컬럼이 즉시 추가되어야 한다').toContain('claim_owner');
   });
 });

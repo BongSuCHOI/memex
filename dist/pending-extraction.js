@@ -113,8 +113,6 @@ export function renewClaimSql() {
     return `UPDATE extraction_log SET processed_at = ?
           WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`;
 }
-/** 내 claim 만 해제/복원하기 위한 술어 조각. 파라미터로 claim_owner 를 받는다. */
-export const OWNED_CLAIM_PREDICATE = `extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`;
 /**
  * 내부 실패 마커 UPSERT — 워커/테스트가 공유하는 단일 소스.
  * `WHERE` 가드가 다른 라이터의 확정 마커(성공/seed/영구)를 덮는 것을 막는다.

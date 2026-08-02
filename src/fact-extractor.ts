@@ -259,11 +259,19 @@ export async function saveExtractedFacts(
   project: string,
   sourceExchangeIds: string[],
   codingAgent?: string,
+  /**
+   * 🚨 저장 구간은 파이프라인에서 **가장 긴** 단계다 — fact 당 임베딩 2회 +
+   * classifyAndLinkFact(내부에서 callHaiku = 헤드리스 세션 1회)를 최대 20 fact 반복.
+   * 여기가 리스 밖이면 정상 작업이 회수돼 다른 워커가 같은 세션을 저장한다
+   * (Codex R8 HIGH: R7 HIGH-1 의 잔존 구간). fact 마다 갱신·소유권 확인한다.
+   */
+  renewLease?: () => void,
 ): Promise<string[]> {
   await initEmbeddings();
   const savedIds: string[] = [];
 
   for (const fact of facts) {
+    renewLease?.(); // 잃었으면 throw → 중복 저장 전에 중단
     const embedding = await generateEmbedding(fact.fact);
     const embeddingKr = fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null;
 
@@ -347,6 +355,26 @@ export async function runFactExtraction(
     const msg = e instanceof Error ? e.message : String(e);
     if (/no such table/i.test(msg)) {
       console.error(`extraction: session ${sessionId} — extraction_log 부재(구버전 DB), 선점 없이 진행`);
+    } else if (/no such column:? ?claim_owner|has no column named claim_owner/i.test(msg)) {
+      // 마이그레이션이 락으로 지연된 경우다. 조용히 스킵하면 그 run 의 pending 세션이
+      // 무음으로 빠지므로, 컬럼을 즉시 추가해 자가치유한 뒤 한 번만 재시도한다.
+      try {
+        db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
+        const retried = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
+          .run(sessionId, new Date().toISOString(), owner).changes;
+        if (retried === 0) {
+          console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 건너뜁니다`);
+          return { extracted: 0, saved: 0 };
+        }
+        holdsClaim = true;
+        console.error(`extraction: claim_owner 컬럼을 즉시 추가하고 선점 재시도 성공 (session ${sessionId})`);
+      } catch (e2) {
+        console.error(
+          `extraction: session ${sessionId} — claim_owner 마이그레이션 실패(${e2 instanceof Error ? e2.message : e2}), `
+          + `이번 실행은 보류합니다(다음 run 재시도)`,
+        );
+        return { extracted: 0, saved: 0 };
+      }
     } else {
       console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
       return { extracted: 0, saved: 0 };
@@ -418,7 +446,7 @@ export async function runFactExtraction(
       const exchangeIds = (db.prepare(
         'SELECT id FROM exchanges WHERE session_id = ?'
       ).all(sessionId) as Array<{ id: string }>).map(r => r.id);
-      saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent)).length;
+      saved = (await saveExtractedFacts(db, facts, project, exchangeIds, agent, renewLease)).length;
     }
   } catch (e) {
     // 실패를 2분류한다 — 이 판정을 워커가 아니라 **선점 소유자**가 내려야
@@ -447,6 +475,9 @@ export async function runFactExtraction(
     // 상태를 덮지 않는다. (claim 없이 도는 구버전 DB 경로는 가드 없이 기존 동작.)
     const ownGuard = holdsClaim ? ' WHERE extraction_log.claim_owner = ?' : '';
     const ownArgs = holdsClaim ? [owner] : [];
+    // 소유권 가드가 붙은 UPSERT 는 claim 을 잃었을 때 **0행 매칭으로 조용히** 실패한다.
+    // 마커 미기록 = 재추출 → 중복이므로 반드시 표면화한다(fail-loud).
+    let markerWritten: { c: number } | undefined;
     if (hasDropped) {
       db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches, claim_owner)
@@ -455,6 +486,7 @@ export async function runFactExtraction(
           extracted = excluded.extracted, saved = excluded.saved,
           dropped_batches = excluded.dropped_batches, claim_owner = NULL${ownGuard}
       `).run(sessionId, new Date().toISOString(), facts.length, saved, stats.droppedBatches, ...ownArgs);
+      markerWritten = db.prepare('SELECT changes() AS c').get() as { c: number };
     } else {
       db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
@@ -462,6 +494,7 @@ export async function runFactExtraction(
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
           extracted = excluded.extracted, saved = excluded.saved${ownGuard}
       `).run(sessionId, new Date().toISOString(), facts.length, saved, ...ownArgs);
+      markerWritten = db.prepare('SELECT changes() AS c').get() as { c: number };
       if (stats.droppedBatches > 0) {
         console.error(
           `extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 ` +
@@ -475,6 +508,12 @@ export async function runFactExtraction(
         `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
         `(deterministic LLM failures — those exchanges produced no facts; ` +
         `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
+      );
+    }
+    if (markerWritten && markerWritten.c === 0) {
+      console.error(
+        `extraction: session ${sessionId} 완료 마커가 기록되지 않았습니다(소유권 상실 추정) — `
+        + `다음 run 에서 재추출될 수 있습니다. fact ${saved}건은 이미 저장됨.`,
       );
     }
   } catch (e) {

@@ -234,14 +234,15 @@ describe('R5: 마커 쓰기 견고성', () => {
  * 보류다(external-probe-gate-classification).
  */
 describe('R7: claim 실패 분류', () => {
-  it('스키마 오류(일시)는 선점 없이 진행하지 않고 보류한다', async () => {
+  it('알 수 없는 스키마/락 오류는 선점 없이 진행하지 않고 보류한다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
-    // claim_owner 가 없는 테이블 → claim SQL 이 'no such column' 으로 실패
+    // 자가치유 대상(claim_owner 부재)이 **아닌** 스키마 오류를 만든다.
+    // claim_owner 부재는 R8 에서 즉시 ALTER 로 치유하므로 별도 E2E 가 덮는다.
     db.exec('DROP TABLE IF EXISTS extraction_log');
     db.exec(`CREATE TABLE extraction_log (
-      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
-    )`);
+      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, claim_owner TEXT
+    )`); // saved 컬럼 없음 → 'has no column named saved'
 
     const before = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
     const res = await runFactExtraction(db, SESSION, PROJECT);
