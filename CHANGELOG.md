@@ -45,6 +45,20 @@ fact 가 다시는 추출되지 않았다**. 재시도 부재가 곧 데이터 �
 `extraction_log` 에 `dropped_batches`, `claim_owner` 컬럼이 멱등 마이그레이션으로 추가된다
 (락 경합 시 다음 초기화에서 재시도).
 
+## [1.4.4] - 2026-07-14
+
+### Fixed — 플러그인 업데이트 후 구버전 프로세스 잔존 (버전 드리프트)
+
+- sync 싱글톤 락에 `{pid, version, startedAt}` 기록 — 신버전이 구버전·legacy 홀더를
+  선점한다. 6시간 이상 wedge 된 홀더는 버전과 무관하게 선점(실측: v1.3.3 sync 가 23시간
+  wedge 되어 인덱싱이 하루 동안 동결됐다)
+- `sync-cli` 가 시그널 종료 시 락을 해제하지 않던 문제 수정
+
+### Added
+
+- SessionStart hook `scripts/version-drift-check.js` — 구버전 detached 워커 sweep +
+  드리프트 경고 주입. MCP 서버는 라이브 세션을 소유하므로 sweep 대상에서 제외
+
 ## [1.4.3] - 2026-07-12
 
 ### Fixed
