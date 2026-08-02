@@ -114,13 +114,29 @@ export async function askAvatar(
     ...factContextLines,
   ].join('\n');
 
-  // Step 5: Call Haiku
-  const response = await callHaiku(AVATAR_SYSTEM_PROMPT, prompt, 1024);
+  // Step 5: Call Haiku.
+  // callHaiku 는 이제 재시도를 소진하면 throw 한다(빈 응답 포함). 여기는 사용자 대면
+  // 경로라 크래시 대신 degrade 하되, **실패를 실패로** 표면화한다 — 예전에는 빈 응답이
+  // '응답을 생성할 수 없습니다'라는 정상 답변 형식으로 반환돼 호출 실패와 "답할 근거가
+  // 없음"이 구분되지 않았다(fail-loud-no-unapproved-fallback).
+  let response: string;
+  try {
+    response = await callHaiku(AVATAR_SYSTEM_PROMPT, prompt, 1024);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      answer: `⚠️ LLM 호출 실패로 답변을 생성하지 못했습니다 (재시도 후에도 실패): ${detail}`,
+      sources: [],
+      confidence: 0,
+      relatedDecisions,
+    };
+  }
   const parsed = parseJsonResponse<AvatarRawResponse>(response);
 
   if (!parsed) {
+    // 호출은 성공(비어있지 않은 본문)했는데 JSON 이 아님 — 본문을 그대로 보여준다.
     return {
-      answer: response || '응답을 생성할 수 없습니다.',
+      answer: response,
       sources: [],
       confidence: 0,
       relatedDecisions,

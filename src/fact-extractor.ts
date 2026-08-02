@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type { ExtractedFact } from './types.js';
 import { callHaiku, parseJsonResponse } from './llm.js';
+import { classifyLlmError, LlmCallError } from './llm-error-class.js';
 import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { classifyAndLinkFact } from './ontology-classifier.js';
@@ -174,6 +175,8 @@ export async function extractFactsFromExchanges(
 
   const allFacts: ExtractedFact[] = [];
   const seen = new Set<string>();
+  // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
+  const transientFailures: unknown[] = [];
 
   for (let b = 0; b < selectedBatches.length; b++) {
     if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
@@ -197,8 +200,25 @@ export async function extractFactsFromExchanges(
         }
       }
     } catch (error) {
-      console.error(`Batch ${b} extraction failed:`, error);
+      // 실패를 3분류한다 — 예전에는 전부 삼켜서, 공급자 장애로 한 건도 못 뽑은
+      // 세션이 extraction_log 에 '완료(0건)'로 기록되고 pending 쿼리에서 영구 제외됐다
+      // (그 대화의 fact 는 영원히 추출되지 않음 = 데이터 손실).
+      const cls = classifyLlmError(error);
+      if (cls === 'transient') {
+        transientFailures.push(error);
+        console.error(`Batch ${b} extraction failed (transient — session will be retried):`, error);
+      } else {
+        // deterministic/unknown: 같은 입력은 같은 결과다. 이 배치만 포기하고 진행 —
+        // 여기서 throw 하면 그 세션이 영원히 pending 으로 남아 큐를 막는다(bounded).
+        console.error(`Batch ${b} extraction failed (${cls} — batch dropped):`, error);
+      }
     }
+  }
+
+  // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
+  // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
+  if (transientFailures.length > 0) {
+    throw new LlmCallError(transientFailures[0]);
   }
 
   return allFacts;

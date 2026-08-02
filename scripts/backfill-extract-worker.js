@@ -20,6 +20,7 @@ import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 import { runFactExtraction } from '../dist/fact-extractor.js';
+import { classifyLlmError } from '../dist/llm-error-class.js';
 import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
 
@@ -179,7 +180,7 @@ async function main() {
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(`backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`);
 
-    let done = 0, totalSaved = 0;
+    let done = 0, totalSaved = 0, transientSessions = 0;
     await runPool(sessions, CONCURRENCY, async (next) => {
       const project = sessionProject(db, next.sid);
       try {
@@ -189,8 +190,17 @@ async function main() {
           log(`session ${next.sid} (${project ?? '?'}, ${next.n} exch): saved ${result.saved}`);
         }
       } catch (error) {
-        // record failure so the loop cannot spin on one bad session
-        log(`session ${next.sid}: ERROR ${error instanceof Error ? error.message : error}`);
+        // 실패를 3분류한다. 예전에는 어떤 에러든 extraction_log(-2) 로 기록해서
+        // "한 세션에 물리지 않는다"는 목적은 달성했지만, 공급자 장애(429/5xx/네트워크/
+        // 빈 응답)로 실패한 세션까지 영구 제외돼 그 대화의 fact 가 영원히 추출되지
+        // 않았다. transient 는 기록하지 않고 다음 run 에 남긴다 — 이번 run 에서만
+        // 건너뛰므로 루프가 물리지도 않는다(스핀 방지 목적은 유지).
+        const cls = classifyLlmError(error);
+        log(`session ${next.sid}: ERROR (${cls}) ${error instanceof Error ? error.message : error}`);
+        if (cls === 'transient') {
+          transientSessions++;
+          return; // extraction_log 미기록 → 다음 run 재시도
+        }
         try {
           db.prepare(`
             INSERT OR IGNORE INTO extraction_log (session_id, processed_at, extracted, saved)
@@ -201,7 +211,10 @@ async function main() {
       done++;
       if (done % 25 === 0) log(`progress: ${done}/${sessions.length} sessions, facts saved ${totalSaved}`);
     });
-    log(`backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved})`);
+    log(
+      `backfill-extract: done this run (sessions ${done}, facts saved ${totalSaved}` +
+      (transientSessions > 0 ? `, transient-deferred ${transientSessions} — will retry next run` : '') + ')',
+    );
   } catch (error) {
     log(`backfill-extract: FATAL ${error instanceof Error ? error.message : error}`);
   } finally {
