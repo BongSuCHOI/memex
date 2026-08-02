@@ -212,7 +212,19 @@ async function main() {
         // 분류·라벨·예산 판정을 전부 단일 소스에서 가져온다 — 워커가 자체 문구나
         // 자체 버킷을 들면 "예산은 타는데 로그는 재시도된다고 말하는" 모순이 생긴다.
         const cls = classifyExtractionFailure(error);
-        const rep = FAILURE_REPORT[cls] ?? { label: 'ERROR', note: '분류 불가', bucket: 'budget', escalate: true };
+        // 🚨 `?? {…}` 는 **키 부재**만 막고 **필드 부재**는 못 막는다. dist↔scripts 스큐로
+        // 구버전 표(label/note 만 있는)가 로드되면 ?? 가 발화하지 않아 rep.bucket 이
+        // undefined → 유령 버킷에 집계되고 복원한 INTERNAL 경보가 **조용히** 사라진다
+        // (Codex R14 재현). 필드 단위로 보수적 기본값을 채운다 — 미지는 무음보다 경보.
+        const raw = FAILURE_REPORT?.[cls];
+        const bucket = raw?.bucket === 'handoff' || raw?.bucket === 'transient' || raw?.bucket === 'budget'
+          ? raw.bucket : 'budget';
+        const rep = {
+          label: raw?.label ?? 'ERROR',
+          note: raw?.note ?? '분류 표가 불완전합니다(dist 재빌드 필요)',
+          bucket,
+          escalate: typeof raw?.escalate === 'boolean' ? raw.escalate : true,
+        };
         log(
           `session ${next.sid}: ${rep.label} (${cls}) ${error instanceof Error ? error.message : error}`
           + ` — ${rep.note}`,

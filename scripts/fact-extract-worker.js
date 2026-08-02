@@ -51,7 +51,9 @@ async function main() {
     process.exitCode = 0; // extraction failure must never surface as hook failure
     try {
       const cls = classifyExtractionFailure(error);
-      const rep = FAILURE_REPORT?.[cls] ?? { label: 'ERROR', note: '분류 표 부재' };
+      // 필드 단위 방어 — 구버전 표는 키가 있어도 필드가 빠질 수 있다(R14).
+      const raw = FAILURE_REPORT?.[cls];
+      const rep = { label: raw?.label ?? 'ERROR', note: raw?.note ?? '분류 표가 불완전합니다(dist 재빌드 필요)' };
       log(
         `worker: ${rep.label} (${cls}) session=${sessionId}: `
         + `${error instanceof Error ? error.message : error} — ${rep.note}`,
