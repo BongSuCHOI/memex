@@ -242,7 +242,12 @@ async function main() {
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
         // detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아(R18 독립 발견).
         if (result.skipped) {
-          if (result.skipped === 'excluded_project') {
+          if (result.skipped === 'excluded_project_unmarked') {
+            // 마커가 안 써졌다 — 다음 run 에 다시 선정된다. 정상 제외와 구분해 경보.
+            buckets.transient += 1;
+            escalateFailures += 1;
+            log(`session ${next.sid}: ERROR (excluded_project_unmarked) — 제외 마커 미기록, 다음 run 재선정 · 점검 필요`);
+          } else if (result.skipped === 'excluded_project') {
             // 정상 흐름이다 — 영구 마커가 써졌고 재시도 대상이 아니다. 이걸 transient+
             // escalate 로 세면 "다음 run 재시도"·"INTERNAL failures" 가 둘 다 거짓이
             // 된다(R19 MEDIUM). SQL 필터는 exact, isExcludedProject 는 prefix 라

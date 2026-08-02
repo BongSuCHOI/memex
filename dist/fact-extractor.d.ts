@@ -108,5 +108,5 @@ opts?: {
 }): Promise<{
     extracted: number;
     saved: number;
-    skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project';
+    skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project' | 'excluded_project_unmarked';
 }>;

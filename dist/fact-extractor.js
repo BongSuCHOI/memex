@@ -136,7 +136,11 @@ const EXCLUDE_PROJECTS = (process.env.BACKFILL_EXCLUDE_PROJECTS ||
 function isExcludedProject(project) {
     if (!project)
         return false;
-    return EXCLUDE_PROJECTS.some((p) => project === p || project.startsWith(p));
+    // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
+    // '/…/memory-bank' 가 '/…/memory-bank-cloud' 를 삼켜, 그 프로젝트의 세션이
+    // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
+    // pending SQL 필터는 exact 매칭이라 선정은 되고 여기서만 걸러져 무음이었다.
+    return EXCLUDE_PROJECTS.some((p) => project === p || project.startsWith(`${p}/`));
 }
 export function buildExtractionPrompt(exchanges) {
     return exchanges.map((ex, i) => {
@@ -359,6 +363,11 @@ opts) {
     // Skip self-referential repos (memory-bank's own monitoring sessions) — mark
     // as processed with zero facts so they are never re-attempted, no LLM calls.
     if (isExcludedProject(project)) {
+        // 🚨 마커가 **실제로 써졌는지**를 반환값이 구분해야 한다. 삼키고 'excluded_project'
+        // 를 돌려주면 호출자가 "영구 마커가 써진 정상 흐름"으로 단정해 버킷·경보 없이
+        // 넘기고, INSERT 가 일시 실패한 세션은 마커 없이 매 run 슬롯만 점유한다
+        // (무경보 무진전 — 이 스레드가 계속 닫아온 클래스, Codex R20 MEDIUM).
+        let markerWritten = false;
         try {
             db.prepare(`
         INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
@@ -366,9 +375,16 @@ opts) {
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
           extracted = 0, saved = 0
       `).run(sessionId, new Date().toISOString());
+            markerWritten = true;
         }
-        catch { /* log table may not exist on very old DBs */ }
-        return { extracted: 0, saved: 0, skipped: 'excluded_project' };
+        catch (e) {
+            console.error(`extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: `
+                + `${e instanceof Error ? e.message : String(e)}`);
+        }
+        return {
+            extracted: 0, saved: 0,
+            skipped: markerWritten ? 'excluded_project' : 'excluded_project_unmarked',
+        };
     }
     // 🚨 LLM 을 부르기 **전에** 세션을 선점한다. SessionEnd 훅과 backfill 워커는
     // 서로를 직렬화할 수단이 없고 마커는 파이프라인 끝에 써지므로, 선점이 없으면
