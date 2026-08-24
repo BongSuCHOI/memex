@@ -26,15 +26,12 @@ export interface ConversationExchange {
   sessionId?: string;
   cwd?: string;
   gitBranch?: string;
-  claudeVersion?: string;
+  codexVersion?: string;
 
   // Thinking metadata
   thinkingLevel?: string;
   thinkingDisabled?: boolean;
   thinkingTriggers?: string; // JSON array
-
-  // Coding agent that generated this exchange
-  codingAgent?: string; // e.g., 'claude-code', 'codex', 'opencode', 'custom-agent'
 
   // Tool calls (populated separately)
   toolCalls?: ToolCall[];
@@ -72,7 +69,6 @@ export interface Fact {
   consolidated_count: number;
   is_active: boolean;
   ontology_category_id?: string | null;
-  coding_agent?: string | null; // e.g., 'claude-code', 'codex', 'opencode'
 }
 
 export interface FactRevision {

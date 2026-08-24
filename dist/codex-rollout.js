@@ -185,6 +185,7 @@ export async function parseRolloutStream(input, { archivePath = '' } = {}) {
             lineEnd: cur.assistantLine,
             sessionId: meta ? (meta.session_id ?? meta.id) : undefined,
             cwd: meta ? meta.cwd : undefined,
+            codexVersion: meta ? meta.cli_version : undefined,
             isSidechain: false,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         });

@@ -73,10 +73,6 @@ const SearchInputSchema = z
       .regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be in YYYY-MM-DD format')
       .optional()
       .describe('Only return conversations before this date (YYYY-MM-DD format)'),
-    coding_agent: z
-      .string()
-      .optional()
-      .describe('Filter by coding agent (e.g., "claude-code", "codex", "opencode"). Omit to search all agents.'),
     response_format: ResponseFormatEnum.default('markdown').describe(
       'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
     ),
@@ -109,7 +105,6 @@ const SearchFactsInputSchema = z
     query: z.string().min(2, 'Query must be at least 2 characters').max(10000, 'Query too long (max 10000 chars)'),
     project: z.string().max(500).optional(),
     category: z.enum(['decision', 'preference', 'pattern', 'knowledge', 'constraint']).optional(),
-    coding_agent: z.string().optional().describe('Filter facts by coding agent (e.g., "claude-code", "codex")'),
     include_revisions: z.boolean().default(false),
     limit: z.number().int().min(1).max(50).default(10),
   })
@@ -148,7 +143,7 @@ function handleError(error: unknown): string {
 const server = new Server(
   {
     name: 'memory-bank',
-    version: '1.0.0',
+    version: '1.5.0-codex.1',
   },
   {
     capabilities: {
@@ -178,7 +173,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
             after: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
             before: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-            coding_agent: { type: 'string', description: 'Filter by coding agent (e.g., "claude-code", "codex", "opencode")' },
             response_format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown' },
           },
           required: ['query'],
@@ -226,7 +220,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               enum: ['decision', 'preference', 'pattern', 'knowledge', 'constraint'],
               description: 'Filter by fact category',
             },
-            coding_agent: { type: 'string', description: 'Filter by coding agent (e.g., "claude-code", "codex", "opencode")' },
             include_revisions: { type: 'boolean', description: 'Include revision history', default: false },
             limit: { type: 'number', minimum: 1, maximum: 50, default: 10, description: 'Max results' },
           },
@@ -383,7 +376,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          coding_agent: params.coding_agent,
         };
 
         const results = await searchMultipleConcepts(params.query, options);
@@ -408,7 +400,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          coding_agent: params.coding_agent,
         };
 
         const results = await searchConversations(params.query, options);
@@ -510,17 +501,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const queryEmbedding = await generateEmbedding(params.query, 'query');
         const results = searchSimilarFacts(db, queryEmbedding, currentProject, params.limit);
 
-        // Apply category and coding_agent filters
+        // Apply the optional fact category filter.
         let filtered = results;
         if (params.category) {
           filtered = filtered.filter(r => r.fact.category === params.category);
         }
-        if (params.coding_agent) {
-          filtered = filtered.filter(r => (r.fact.coding_agent || 'codex') === params.coding_agent);
-        }
-
-        const agentLabel = params.coding_agent ? ` | Agent: ${params.coding_agent}` : '';
-        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nProject: ${currentProject}${agentLabel}\nResults: ${filtered.length}\n\n`;
+        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nProject: ${currentProject}\nResults: ${filtered.length}\n\n`;
 
         if (filtered.length === 0) {
           output += '_No matching facts found._\n';
@@ -539,8 +525,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const catName = catInfo ? catInfo.name : '';
 
           output += `## [${fact.category}] ${fact.fact}\n`;
-          const factAgent = fact.coding_agent || 'codex';
-          output += `- Scope: ${fact.scope_type}${fact.scope_project ? ` (${fact.scope_project})` : ''} | Agent: ${factAgent}\n`;
+          output += `- Scope: ${fact.scope_type}${fact.scope_project ? ` (${fact.scope_project})` : ''}\n`;
           output += `- Confirmed: ${fact.consolidated_count}x | Similarity: ${similarity}\n`;
           if (domainName) output += `- Ontology: ${domainName}/${catName}\n`;
           output += `- Created: ${fact.created_at}\n`;

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, detectCodingAgent } from './paths.js';
+import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage } from './paths.js';
 import { archiveFileExists, readArchiveFile, statArchiveFile } from './archive-io.js';
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath } from './codex-rollout.js';
 const EXCLUSION_MARKERS = [
@@ -32,7 +32,6 @@ export interface SyncOptions {
   skipIndex?: boolean;
   skipSummaries?: boolean;
   summaryLimit?: number; // Max summaries to generate per run (default: 10)
-  codingAgent?: string;  // Override coding agent detection (e.g., 'codex', 'opencode')
 }
 
 function copyIfNewer(src: string, dest: string): boolean {
@@ -78,9 +77,6 @@ export async function syncConversations(
     summarized: 0,
     errors: []
   };
-
-  // Detect coding agent from source directory or use override
-  const codingAgent = options.codingAgent || detectCodingAgent(sourceDir);
 
   // Ensure source directory exists
   if (!fs.existsSync(sourceDir)) {
@@ -158,9 +154,6 @@ export async function syncConversations(
         for (const exchange of exchanges) {
           // Worker-prompt exchange = ephemeral state, not knowledge — never index.
           if (isWorkerPromptMessage(exchange.userMessage)) continue;
-          // Tag each exchange with the coding agent
-          exchange.codingAgent = codingAgent;
-
           const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
           const embedding = await generateExchangeEmbedding(
             exchange.userMessage,

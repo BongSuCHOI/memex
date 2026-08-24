@@ -9,18 +9,13 @@ import path from 'path';
 import os from 'os';
 import { runCodex } from '../dist/codex-exec.js';
 
-const DB_PATH = process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH ||
-  path.join(os.homedir(), '.config/superpowers/conversation-index/db.sqlite');
+const memoryBankHome = process.env.MEMORY_BANK_HOME
+  || process.env.MEMORY_BANK_CONFIG_DIR
+  || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'memory-bank');
+const DB_PATH = process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH
+  || path.join(memoryBankHome, 'conversation-index', 'db.sqlite');
 
 const db = new Database(DB_PATH);
-
-// Ensure fact_kr column exists
-try {
-  const cols = db.prepare("SELECT name FROM pragma_table_info('facts')").all();
-  if (!cols.some(c => c.name === 'fact_kr')) {
-    db.prepare('ALTER TABLE facts ADD COLUMN fact_kr TEXT').run();
-  }
-} catch {}
 
 // Get untranslated facts
 const untranslated = db.prepare(

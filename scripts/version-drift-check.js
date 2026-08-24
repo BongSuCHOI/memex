@@ -97,7 +97,7 @@ async function main() {
       let vs = [];
       try {
         vs = fs.readdirSync(path.join(cacheBase, mkt, 'memory-bank'))
-          .filter((d) => /^\d+(\.\d+)*$/.test(d));
+          .filter((d) => /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(d));
       } catch { continue; }
       versions.push(...vs);
     }

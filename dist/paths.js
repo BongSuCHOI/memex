@@ -12,31 +12,20 @@ function ensureDir(dir) {
     return dir;
 }
 /**
- * Get the personal superpowers directory
+ * Native memory-bank data root.
  *
- * Precedence:
- * 1. MEMORY_BANK_CONFIG_DIR env var (if set, for testing)
- * 2. PERSONAL_SUPERPOWERS_DIR env var (if set)
- * 3. XDG_CONFIG_HOME/superpowers (if XDG_CONFIG_HOME is set)
- * 4. ~/.config/superpowers (default)
+ * Precedence (no legacy fallback, no migration):
+ * 1. MEMORY_BANK_HOME          — explicit root, used as-is
+ * 2. MEMORY_BANK_CONFIG_DIR    — explicit root, used as-is
+ * 3. XDG_CONFIG_HOME/memory-bank
+ * 4. ~/.config/memory-bank     — default
  */
-export function getSuperpowersDir() {
-    let dir;
-    if (process.env.MEMORY_BANK_CONFIG_DIR) {
-        dir = process.env.MEMORY_BANK_CONFIG_DIR;
-    }
-    else if (process.env.PERSONAL_SUPERPOWERS_DIR) {
-        dir = process.env.PERSONAL_SUPERPOWERS_DIR;
-    }
-    else {
-        const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-        if (xdgConfigHome) {
-            dir = path.join(xdgConfigHome, 'superpowers');
-        }
-        else {
-            dir = path.join(os.homedir(), '.config', 'superpowers');
-        }
-    }
+export function getMemoryBankHome() {
+    const dir = process.env.MEMORY_BANK_HOME
+        || process.env.MEMORY_BANK_CONFIG_DIR
+        || (process.env.XDG_CONFIG_HOME
+            ? path.join(process.env.XDG_CONFIG_HOME, 'memory-bank')
+            : path.join(os.homedir(), '.config', 'memory-bank'));
     return ensureDir(dir);
 }
 /**
@@ -47,13 +36,13 @@ export function getArchiveDir() {
     if (process.env.TEST_ARCHIVE_DIR) {
         return ensureDir(process.env.TEST_ARCHIVE_DIR);
     }
-    return ensureDir(path.join(getSuperpowersDir(), 'conversation-archive'));
+    return ensureDir(path.join(getMemoryBankHome(), 'conversation-archive'));
 }
 /**
  * Get conversation index directory
  */
 export function getIndexDir() {
-    return ensureDir(path.join(getSuperpowersDir(), 'conversation-index'));
+    return ensureDir(path.join(getMemoryBankHome(), 'conversation-index'));
 }
 /**
  * Get database path
@@ -78,66 +67,16 @@ export function getExcludeConfigPath() {
  */
 export { sessionsRoot as getSessionsRoot };
 /**
- * Get the list of coding agent sources to sync from.
- * Default: local Codex rollouts only. Additional agents configured via
- * MEMORY_BANK_AGENT_SOURCES env var (JSON) or agent-sources.json config file.
- *
- * Format: [{"name": "opencode", "sourceDir": "/path/to/conversations"}]
- */
-export function getAgentSources() {
-    const defaultSources = [
-        { name: 'codex', sourceDir: sessionsRoot() },
-    ];
-    // Check env variable for additional sources
-    if (process.env.MEMORY_BANK_AGENT_SOURCES) {
-        try {
-            const extra = JSON.parse(process.env.MEMORY_BANK_AGENT_SOURCES);
-            return [...defaultSources, ...extra];
-        }
-        catch {
-            // Invalid JSON, use defaults only
-        }
-    }
-    // Check for config file
-    const configPath = path.join(getIndexDir(), 'agent-sources.json');
-    if (fs.existsSync(configPath)) {
-        try {
-            const content = fs.readFileSync(configPath, 'utf-8');
-            const extra = JSON.parse(content);
-            return [...defaultSources, ...extra];
-        }
-        catch {
-            // Invalid config, use defaults only
-        }
-    }
-    return defaultSources;
-}
-/**
- * Detect coding agent from a source directory path.
- * Returns the agent name if the path matches a known source, 'codex' otherwise.
- */
-export function detectCodingAgent(sourcePath) {
-    const sources = getAgentSources();
-    for (const source of sources) {
-        if (sourcePath.startsWith(source.sourceDir)) {
-            return source.name;
-        }
-    }
-    return 'codex';
-}
-/**
  * Reserved basename of the isolated working directory that llm.ts gives to
  * headless CodexExec calls (see LLM_WORKDIR in llm.ts). Every one-shot
  * `codex exec` call runs with --ephemeral inside its own mkdtemp, so nothing
- * persists under this name anymore. The slug is kept for legacy-archive
- * compatibility: pre-Codex transcripts polluted the conversation index with
- * 6.4k worker exchanges (observed 2026-07-08), and old archives still carry
- * those slugs.
+ * persists under this name anymore. The reserved name still prevents an
+ * accidentally persisted worker rollout from entering the index.
  */
 export const LLM_WORKDIR_BASENAME = 'memory-bank-llm';
 /**
- * True if a project key (derived from session cwd or legacy archive slugs)
- * must be skipped by indexing/sync. Combines the user-configured exact-match
+ * True if a project key derived from session cwd must be skipped by
+ * indexing/sync. Combines the user-configured exact-match
  * list with the built-in exclusion of the plugin's own LLM worker sessions.
  */
 export function isExcludedProject(project, excluded) {

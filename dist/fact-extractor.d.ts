@@ -30,38 +30,14 @@ export declare function buildExtractionPrompt(exchanges: Array<{
     user_message: string;
     assistant_message: string;
 }>): string;
-/**
- * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
- *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
- */
+/** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string, stats?: {
     droppedBatches: number;
-}, 
-/**
- * 배치마다 호출되는 리스 갱신 훅. 리스보다 오래 걸리는 정상 추출이 회수 대상이
- * 되어 다른 워커가 선점하는 것을 막는다(R7 HIGH-1). throw 하면 즉시 중단한다 —
- * 이미 claim 을 잃었다는 뜻이므로 계속하면 중복 작업이다.
- */
-renewLease?: () => void): Promise<ExtractedFact[]>;
-export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], codingAgent?: string, 
-/**
- * 🚨 저장 구간은 파이프라인에서 **가장 긴** 단계다 — fact 당 임베딩 2회 +
- * classifyAndLinkFact(내부에서 callMemoryModel = 헤드리스 세션 1회)를 최대 20 fact 반복.
- * 여기가 리스 밖이면 정상 작업이 회수돼 다른 워커가 같은 세션을 저장한다
- * (Codex R8 HIGH: R7 HIGH-1 의 잔존 구간). fact 마다 갱신·소유권 확인한다.
- */
-renewLease?: () => void, 
-/**
- * 🚨 완료 마커를 **fact 삽입과 같은 트랜잭션 안에서** 쓰기 위한 커밋 훅.
- * 갱신 행 수를 반환하며 0 이면(=선점을 잃음) 트랜잭션 전체가 롤백된다.
- *
- * 체크포인트(리스 확인)를 아무리 촘촘히 박아도 **마지막 확인과 커밋 사이**에는
- * 항상 창이 남는다 — R7(배치)→R8(저장 루프)→R9(루프 꼬리)로 같은 결함이 세 번
- * 좁아지기만 했다. 원인은 "저장"과 "소유권 확정"이 서로 다른 시점이라는 구조다.
- * 둘을 원자적으로 묶으면 창의 크기와 무관하게 닫힌다: 커밋 순간 소유권이 없으면
- * fact 도 남지 않으므로 중복이 생길 수 없다.
- */
-commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
+}, renewLease?: () => void, options?: {
+    onlyAfterRowid?: number;
+}): Promise<ExtractedFact[]>;
+/** Save facts and the completion marker in one transaction. */
+export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], renewLease?: () => void, commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
 /**
  * 추출 실패의 분류 — **라우팅(예산 소모 여부)과 보고(로그·카운터)가 같은 정의를 쓴다.**
  *
@@ -95,15 +71,8 @@ export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
  * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
  */
 export declare function failureConsumesBudget(kind: ExtractionFailureKind): boolean;
-export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, codingAgent?: string, 
-/**
- * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커
- * 위에서도 선점한다(--resume 세션 재추출은 의도된 동작). 'worker'는 자기가
- * pending 으로 선정했던 상태(미기록 / -4 / 리스만료 claim)일 때만 선점한다 —
- * 선정 후 훅이 먼저 확정했다면 그 위를 덮지 않아 중복 추출이 생기지 않는다.
- * 선점·복원을 이 함수가 단독으로 소유하므로 호출자 간 로직 분기가 없다.
- */
-opts?: {
+/** Claim a session, process unhandled rows, and atomically record completion. */
+export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, opts?: {
     claimVariant?: 'worker' | 'hook';
 }): Promise<{
     extracted: number;

@@ -13,7 +13,7 @@ describe('paths', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bank-paths-'));
     // Clear all relevant env vars before each test
     delete process.env.MEMORY_BANK_CONFIG_DIR;
-    delete process.env.PERSONAL_SUPERPOWERS_DIR;
+    delete process.env.MEMORY_BANK_HOME;
     delete process.env.XDG_CONFIG_HOME;
     delete process.env.TEST_ARCHIVE_DIR;
     delete process.env.MEMORY_BANK_DB_PATH;
@@ -30,48 +30,38 @@ describe('paths', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  describe('getSuperpowersDir', () => {
-    it('should use MEMORY_BANK_CONFIG_DIR when set', async () => {
+  describe('getMemoryBankHome', () => {
+    it('should use MEMORY_BANK_HOME when set (highest priority)', async () => {
+      const homeDir = path.join(tmpDir, 'home');
+      process.env.MEMORY_BANK_CONFIG_DIR = path.join(tmpDir, 'ignored-config');
+      process.env.MEMORY_BANK_HOME = homeDir;
+      const { getMemoryBankHome } = await import('../src/paths.js');
+      expect(getMemoryBankHome()).toBe(homeDir);
+    });
+
+    it('should use MEMORY_BANK_CONFIG_DIR next', async () => {
+      delete process.env.MEMORY_BANK_HOME;
       const configDir = path.join(tmpDir, 'custom-config');
       process.env.MEMORY_BANK_CONFIG_DIR = configDir;
-      // Re-import to get fresh module
-      const { getSuperpowersDir } = await import('../src/paths.js');
-      const result = getSuperpowersDir();
-      expect(result).toBe(configDir);
-      expect(fs.existsSync(configDir)).toBe(true);
+      const { getMemoryBankHome } = await import('../src/paths.js');
+      expect(getMemoryBankHome()).toBe(configDir);
     });
 
-    it('should use PERSONAL_SUPERPOWERS_DIR as second priority', async () => {
-      const personalDir = path.join(tmpDir, 'personal');
-      process.env.PERSONAL_SUPERPOWERS_DIR = personalDir;
-      const { getSuperpowersDir } = await import('../src/paths.js');
-      const result = getSuperpowersDir();
-      expect(result).toBe(personalDir);
-      expect(fs.existsSync(personalDir)).toBe(true);
-    });
-
-    it('should prefer MEMORY_BANK_CONFIG_DIR over PERSONAL_SUPERPOWERS_DIR', async () => {
-      const configDir = path.join(tmpDir, 'config');
-      const personalDir = path.join(tmpDir, 'personal');
-      process.env.MEMORY_BANK_CONFIG_DIR = configDir;
-      process.env.PERSONAL_SUPERPOWERS_DIR = personalDir;
-      const { getSuperpowersDir } = await import('../src/paths.js');
-      const result = getSuperpowersDir();
-      expect(result).toBe(configDir);
-    });
-
-    it('should use XDG_CONFIG_HOME/superpowers when set', async () => {
+    it('should use XDG_CONFIG_HOME/memory-bank when set', async () => {
+      delete process.env.MEMORY_BANK_HOME;
+      delete process.env.MEMORY_BANK_CONFIG_DIR;
       const xdgDir = path.join(tmpDir, 'xdg');
       process.env.XDG_CONFIG_HOME = xdgDir;
-      const { getSuperpowersDir } = await import('../src/paths.js');
-      const result = getSuperpowersDir();
-      expect(result).toBe(path.join(xdgDir, 'superpowers'));
+      const { getMemoryBankHome } = await import('../src/paths.js');
+      expect(getMemoryBankHome()).toBe(path.join(xdgDir, 'memory-bank'));
     });
 
-    it('should default to ~/.config/superpowers', async () => {
-      const { getSuperpowersDir } = await import('../src/paths.js');
-      const result = getSuperpowersDir();
-      expect(result).toBe(path.join(os.homedir(), '.config', 'superpowers'));
+    it('should default to ~/.config/memory-bank', async () => {
+      delete process.env.MEMORY_BANK_HOME;
+      delete process.env.MEMORY_BANK_CONFIG_DIR;
+      delete process.env.XDG_CONFIG_HOME;
+      const { getMemoryBankHome } = await import('../src/paths.js');
+      expect(getMemoryBankHome()).toBe(path.join(os.homedir(), '.config', 'memory-bank'));
     });
   });
 
@@ -85,7 +75,7 @@ describe('paths', () => {
       expect(fs.existsSync(archiveDir)).toBe(true);
     });
 
-    it('should use superpowers/conversation-archive by default', async () => {
+    it('should use memory-bank/conversation-archive by default', async () => {
       const configDir = path.join(tmpDir, 'config');
       process.env.MEMORY_BANK_CONFIG_DIR = configDir;
       const { getArchiveDir } = await import('../src/paths.js');
@@ -166,7 +156,7 @@ describe('paths', () => {
       expect(isExcludedProject('-private-var-folders-ms-q41xyz-T-memory-bank-llm', [])).toBe(true);
     });
 
-    it('should exclude legacy mkdtemp LLM workdir slugs (built-in)', async () => {
+    it('should exclude nested temporary LLM workdir slugs (built-in)', async () => {
       const { isExcludedProject } = await import('../src/paths.js');
       expect(isExcludedProject('-private-var-folders-ms-q41xyz-T-tmp-03lvGlu1k7-memory-bank-llm', [])).toBe(true);
     });
@@ -178,9 +168,9 @@ describe('paths', () => {
 
     it('should not exclude ordinary projects', async () => {
       const { isExcludedProject } = await import('../src/paths.js');
-      expect(isExcludedProject('-Users-jung-wankim-Project-Claude-cc-sync', [])).toBe(false);
+      expect(isExcludedProject('-Users-example-Project-codex-sync', [])).toBe(false);
       // Repo dir itself is not the worker slug
-      expect(isExcludedProject('-Users-jung-wankim-Project-Claude-memory-bank', [])).toBe(false);
+      expect(isExcludedProject('-Users-example-Project-memory-bank', [])).toBe(false);
     });
 
     it('should not exclude names merely containing the workdir basename mid-slug', async () => {
@@ -215,5 +205,14 @@ describe('isWorkerPromptMessage', () => {
     expect(isWorkerPromptMessage('')).toBe(false);
     expect(isWorkerPromptMessage(null)).toBe(false);
     expect(isWorkerPromptMessage(undefined)).toBe(false);
+  });
+});
+
+describe('sync lock creation contract', () => {
+  it('creates the shared parent recursively but the lock leaf exclusively', () => {
+    const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'sync-cli.ts'), 'utf8');
+    expect(source).toContain("fs.mkdirSync(path.dirname(__lockDir), { recursive: true });");
+    expect(source).toContain('fs.mkdirSync(__lockDir);');
+    expect(source).not.toMatch(/mkdirSync\(__lockDir,\s*\{\s*recursive:\s*true/);
   });
 });

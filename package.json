@@ -11,9 +11,9 @@
     "memory-bank-mcp-server": "./cli/mcp-server"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "build": "tsc && npm run bundle",
     "bundle": "esbuild src/mcp-server.ts --bundle --platform=node --format=esm --outfile=dist/mcp-server.js --external:fsevents --external:sharp --external:onnxruntime-node --external:better-sqlite3 --external:@xenova/transformers --external:sqlite-vec",
-    "postinstall": "npm rebuild better-sqlite3 2>/dev/null || true",
     "test": "vitest run",
     "test:watch": "vitest",
     "pretest": "npm run build"
@@ -26,8 +26,7 @@
     "embeddings"
   ],
   "author": {
-    "name": "Jesse Vincent",
-    "email": "jesse@fsck.com"
+    "name": "BongSuCHOI"
   },
   "license": "MIT",
   "type": "module",
@@ -47,10 +46,5 @@
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/BongSuCHOI/memory-bank"
-  },
-  "homepage": "https://github.com/BongSuCHOI/memory-bank"
+  }
 }

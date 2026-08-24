@@ -2,12 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { initDatabase } from './db.js';
-import { getSuperpowersDir } from './paths.js';
+import { getMemoryBankHome } from './paths.js';
 
 const SYNC_DIR_NAME = 'sync';
 
 export function getSyncDir(): string {
-  const dir = path.join(getSuperpowersDir(), 'conversation-index', SYNC_DIR_NAME);
+  const dir = path.join(getMemoryBankHome(), 'conversation-index', SYNC_DIR_NAME);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

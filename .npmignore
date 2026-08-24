@@ -2,9 +2,6 @@
 test/
 vitest.config.ts
 
-# Video source & output
-video/
-
 # Docs (images)
 docs/*.gif
 docs/*.svg
@@ -13,10 +10,7 @@ docs/*.svg
 src/
 
 # Dev config
-.omc/
-.claude-plugin/
 tsconfig.json
-scripts/
 
 # Git
 .git/

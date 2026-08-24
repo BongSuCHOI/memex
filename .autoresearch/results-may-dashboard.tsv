@@ -1,9 +1,0 @@
-iter	commit	metric_sec	status	description
-1	6b210a3	14.12	measured	baseline (current 3-nested JOIN + 12 NOT LIKE x 2)
-2	c155121	16.25	measured	remove 12 NOT LIKE x 2 (kept length check)
-3	f89f983	7.33	measured	drop last_prompt JOIN entirely (NULL)
-4	070d399	5.09	measured	drop cwd_t JOIN too (real_path NULL)
-5	76a4351	60.05	measured	LIMIT 500/200 (metric: / page load)
-6	14c850c	60.03	measured	connections=[] (skip self-join)
-7	0fc555c	60.05	measured	toolUsage=[] too
-8	63fea20	1.07	measured	toolUsage+connections=[] (clean retry)

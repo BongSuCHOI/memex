@@ -4,7 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { syncConversations } from '../src/sync.js';
 import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
 
 // Sync consumes Codex rollout transcripts found recursively under the session
 // root. Project key = basename of session_meta.cwd; archive layout stays
@@ -161,29 +160,6 @@ describe('sync command', () => {
     writeRollout('marked', '/x/project-a', markerBody);
     writeRollout('normal', '/x/project-a');
 
-    // Initialize test database
-    const db = new Database(dbPath);
-    sqliteVec.load(db);
-    db.exec(`
-      CREATE TABLE exchanges (
-        id TEXT PRIMARY KEY,
-        project TEXT NOT NULL,
-        timestamp TEXT NOT NULL,
-        user_message TEXT NOT NULL,
-        assistant_message TEXT NOT NULL,
-        archive_path TEXT NOT NULL,
-        line_start INTEGER NOT NULL,
-        line_end INTEGER NOT NULL,
-        last_indexed INTEGER
-      )
-    `);
-    db.exec(`
-      CREATE VIRTUAL TABLE vec_exchanges USING vec0(
-        id TEXT PRIMARY KEY,
-        embedding FLOAT[384]
-      )
-    `);
-    db.close();
 
     // Sync with indexing enabled
     const result = await syncConversations(sourceDir, destDir);

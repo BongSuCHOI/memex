@@ -17,13 +17,9 @@ export const MAX_CLASSIFY_ATTEMPTS = 3;
 // Deterministic reuse gate: when the nearest existing category is at least
 // this cosine-similar to the fact embedding, assign it WITHOUT an LLM call.
 //
-// DISABLED BY DEFAULT — live measurement rejected it (scripts/measure-det-gate.mjs,
-// 2026-07-05, n=800): top-1-category agreement with the actual LLM assignment
-// was only 72% at sim≥0.93 (2.3% of facts) and 89% at ≥0.94 (n=9, 1.1%).
-// Too little volume to matter and too much misfile risk to auto-assign.
-// Batching delivers the spawn reduction instead. Set
-// MEMORY_BANK_ONTOLOGY_DET_GATE to a value in (0,1) to opt in after
-// re-measuring (e.g. once the taxonomy is consolidated).
+// Disabled by default because a fixed similarity threshold is corpus-specific.
+// Set MEMORY_BANK_ONTOLOGY_DET_GATE to a measured value in (0,1) only after
+// validating it against the current taxonomy.
 function detGate() {
     const raw = process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
     const v = raw ? Number(raw) : NaN;

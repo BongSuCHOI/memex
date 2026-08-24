@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { getDbPath } from './paths.js';
 import { canonicalArchiveName } from './archive-io.js';
-import { slugifyPath } from './project-canon.js';
 import {
   EXTRACTION_STATE, pendingExtractionCoreQuery, getExtractionConfig,
 } from './pending-extraction.js';
@@ -37,10 +36,6 @@ export interface AnalysisReport {
   generatedAt: string;
   coverage: {
     totalConversations: number;
-    /** Conversations from main sessions (UUID-named files) */
-    mainConversations: number;
-    /** Subagent transcripts (agent-*.jsonl) — no summaries by design */
-    agentTranscripts: number;
     totalSessions: number;
     totalExchanges: number;
     projectCount: number;
@@ -68,35 +63,11 @@ export interface AnalyzeOptions {
   timelineMonths?: number; // default 12
 }
 
-/**
- * Convert a filesystem path to the Claude Code project slug used in the
- * `exchanges.project` column (e.g. /Users/me/app → -Users-me-app).
- * Uses the canonical slug rule from project-canon ('/', '.', '_' → '-').
- * Values that already look like slugs are returned unchanged.
- */
-export function projectSlug(project: string): string {
-  if (!project.startsWith('/')) return project;
-  return slugifyPath(project);
-}
-
-const UUID_JSONL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i;
-
-/**
- * Whether an archive path is a main-session conversation (UUID-named file)
- * as opposed to a subagent transcript (agent-*.jsonl). Summaries are only
- * ever generated for main sessions.
- */
-export function isMainConversation(archivePath: string): boolean {
-  return UUID_JSONL.test(path.basename(archivePath));
-}
-
 function emptyReport(): AnalysisReport {
   return {
     generatedAt: new Date().toISOString(),
     coverage: {
       totalConversations: 0,
-      mainConversations: 0,
-      agentTranscripts: 0,
       totalSessions: 0,
       totalExchanges: 0,
       projectCount: 0,
@@ -207,8 +178,8 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
     }
 
     // ── Summary coverage (summary files live next to archived .jsonl) ─────
-    // Only main-session conversations (UUID-named) get summaries; subagent
-    // transcripts (agent-*.jsonl) are excluded by design.
+    // Subagent rollouts never enter the archive, so every distinct archive is
+    // an eligible main-session conversation.
     // One readdir per archive directory instead of per-file access checks —
     // the real index has ~54K main conversations across <100 directories.
     const conversationPaths = db.prepare('SELECT DISTINCT archive_path FROM exchanges')
@@ -228,23 +199,19 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
       return names;
     };
 
-    let mainConversations = 0;
     let withSummary = 0;
     for (const { archive_path } of conversationPaths) {
-      if (!archive_path || !isMainConversation(archive_path)) continue;
-      mainConversations++;
+      if (!archive_path) continue;
       const summaryName = path.basename(archive_path).replace(/\.jsonl$/, '-summary.txt');
       if (dirListing(path.dirname(archive_path)).has(summaryName)) {
         withSummary++;
       }
     }
-    report.coverage.mainConversations = mainConversations;
-    report.coverage.agentTranscripts = cov.conversations - mainConversations;
     report.coverage.summaries.withSummary = withSummary;
-    report.coverage.summaries.withoutSummary = mainConversations - withSummary;
+    report.coverage.summaries.withoutSummary = cov.conversations - withSummary;
 
     // ── Facts ──────────────────────────────────────────────────────────────
-    const factsBySlug = new Map<string, number>();
+    const factsByProject = new Map<string, number>();
     if (tables.has('facts')) {
       const factTotals = db.prepare(`
         SELECT
@@ -267,8 +234,8 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
         GROUP BY scope_type ORDER BY count DESC
       `).all() as Array<{ scope: string; count: number }>);
 
-      // Per-project fact counts. scope_project may hold either a cwd path or
-      // an already-slugged project name — normalize both to the slug form.
+      // Exchanges use the basename of session_meta.cwd as the project key;
+      // project-scoped facts keep the absolute cwd. Join them by basename.
       const factProjects = db.prepare(`
         SELECT scope_project, COUNT(*) AS n
         FROM facts
@@ -276,8 +243,8 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
         GROUP BY scope_project
       `).all() as Array<{ scope_project: string; n: number }>;
       for (const row of factProjects) {
-        const slug = projectSlug(row.scope_project);
-        factsBySlug.set(slug, (factsBySlug.get(slug) ?? 0) + row.n);
+        const project = path.basename(row.scope_project);
+        factsByProject.set(project, (factsByProject.get(project) ?? 0) + row.n);
       }
     }
 
@@ -316,7 +283,7 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
       conversations: p.conversations,
       sessions: p.sessions,
       exchanges: p.exchanges,
-      facts: factsBySlug.get(p.project) ?? 0,
+      facts: factsByProject.get(p.project) ?? 0,
       firstActivity: p.firstActivity,
       lastActivity: p.lastActivity,
     }));
@@ -394,7 +361,7 @@ export function formatAnalysisMarkdown(report: AnalysisReport): string {
 
   lines.push('## Coverage');
   lines.push('');
-  lines.push(`- Conversations: ${c.totalConversations.toLocaleString()} (main sessions ${c.mainConversations.toLocaleString()}, agent transcripts ${c.agentTranscripts.toLocaleString()})`);
+  lines.push(`- Conversations: ${c.totalConversations.toLocaleString()}`);
   lines.push(`- Sessions: ${c.totalSessions.toLocaleString()}`);
   lines.push(`- Exchanges: ${c.totalExchanges.toLocaleString()}`);
   lines.push(`- Projects: ${c.projectCount.toLocaleString()}`);
@@ -409,7 +376,7 @@ export function formatAnalysisMarkdown(report: AnalysisReport): string {
   const extTotal = extDone + c.extraction.pending + c.extraction.errors;
   const extRemaining = c.extraction.pending + c.extraction.errors;
   lines.push(`| Fact extraction | ${extDone.toLocaleString()} | ${extRemaining.toLocaleString()} | ${pct(extDone, extTotal)} |`);
-  lines.push(`| Summaries (main sessions) | ${c.summaries.withSummary.toLocaleString()} | ${c.summaries.withoutSummary.toLocaleString()} | ${pct(c.summaries.withSummary, c.mainConversations)} |`);
+  lines.push(`| Summaries | ${c.summaries.withSummary.toLocaleString()} | ${c.summaries.withoutSummary.toLocaleString()} | ${pct(c.summaries.withSummary, c.totalConversations)} |`);
   lines.push('');
 
   lines.push('## Facts');

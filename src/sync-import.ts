@@ -3,7 +3,6 @@ import path from 'path';
 import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql } from './db.js';
 import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION } from './embeddings.js';
 import { getSyncDir } from './sync-export.js';
-import { canonicalizeProject } from './project-canon.js';
 
 interface SyncFact {
   id: string;
@@ -83,12 +82,6 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
         const f: SyncFact = JSON.parse(line);
         const existingById = db.prepare('SELECT id FROM facts WHERE id = ?').get(f.id);
         if (existingById) continue;
-
-        // Canonicalize scope before dedup/insert — other devices may still
-        // export slug-format project names.
-        if (f.scope_project) {
-          f.scope_project = canonicalizeProject(db, f.scope_project);
-        }
 
         // Content-based dedup: re-exports from other devices assign new ids
         // to identical facts, so id-only checks accumulate duplicates.

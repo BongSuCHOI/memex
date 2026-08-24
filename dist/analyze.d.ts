@@ -24,10 +24,6 @@ export interface AnalysisReport {
     generatedAt: string;
     coverage: {
         totalConversations: number;
-        /** Conversations from main sessions (UUID-named files) */
-        mainConversations: number;
-        /** Subagent transcripts (agent-*.jsonl) — no summaries by design */
-        agentTranscripts: number;
         totalSessions: number;
         totalExchanges: number;
         projectCount: number;
@@ -74,18 +70,5 @@ export interface AnalyzeOptions {
     topProjects?: number;
     timelineMonths?: number;
 }
-/**
- * Convert a filesystem path to the Claude Code project slug used in the
- * `exchanges.project` column (e.g. /Users/me/app → -Users-me-app).
- * Uses the canonical slug rule from project-canon ('/', '.', '_' → '-').
- * Values that already look like slugs are returned unchanged.
- */
-export declare function projectSlug(project: string): string;
-/**
- * Whether an archive path is a main-session conversation (UUID-named file)
- * as opposed to a subagent transcript (agent-*.jsonl). Summaries are only
- * ever generated for main sessions.
- */
-export declare function isMainConversation(archivePath: string): boolean;
 export declare function analyzeHistory(options?: AnalyzeOptions): Promise<AnalysisReport>;
 export declare function formatAnalysisMarkdown(report: AnalysisReport): string;

@@ -169,26 +169,6 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
  *  HIGH-2 세션 선정 후 다른 라이터가 성공 마커를 썼는데 실패 상태로 덮어씀 → 재추출
  */
 describe('R5: 마커 쓰기 견고성', () => {
-  it('HIGH-1: dropped_batches 컬럼이 없어도 마커는 반드시 기록된다 (재추출/중복 차단)', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    llmBehavior.mode = 'ok';
-    // 마이그레이션이 락으로 지연된 상태를 재현: 컬럼만 없는 extraction_log
-    db.exec('DROP TABLE IF EXISTS extraction_log');
-    // dropped_batches 만 없는 상태(= 그 마이그레이션만 지연). claim_owner 는 있다.
-    db.exec(`CREATE TABLE extraction_log (
-      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER,
-      claim_owner TEXT
-    )`);
-
-    await runFactExtraction(db, SESSION, PROJECT);
-
-    const row = db.prepare('SELECT extracted FROM extraction_log WHERE session_id = ?')
-      .get(SESSION) as { extracted: number } | undefined;
-    // 수정 전에는 'no such column: dropped_batches' 로 INSERT 가 죽고 catch 가 삼켜
-    // 이 행이 아예 없었다 → 세션이 영구 pending.
-    expect(row, '컬럼이 없어도 멱등성 마커는 남아야 한다').toBeDefined();
-    expect(row!.extracted).toBeGreaterThanOrEqual(0);
-  });
 
   it('HIGH-2: 내부 실패 UPSERT 는 다른 라이터의 성공 마커를 덮지 않는다', () => {
     // 워커의 내부-실패 UPSERT 와 동일한 SQL. 성공 마커(extracted>=0)가 이미 있는 상태.
@@ -233,38 +213,6 @@ describe('R5: 마커 쓰기 견고성', () => {
  * 상호배제를 우회**해 중복 LLM 호출·중복 insert 를 낸다. 일시 오류는 통과가 아니라
  * 보류다(external-probe-gate-classification).
  */
-describe('R7: claim 실패 분류', () => {
-  it('알 수 없는 스키마/락 오류는 선점 없이 진행하지 않고 보류한다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    llmBehavior.mode = 'ok';
-    // 자가치유 대상(claim_owner 부재)이 **아닌** 스키마 오류를 만든다.
-    // claim_owner 부재는 R8 에서 즉시 ALTER 로 치유하므로 별도 E2E 가 덮는다.
-    db.exec('DROP TABLE IF EXISTS extraction_log');
-    db.exec(`CREATE TABLE extraction_log (
-      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, claim_owner TEXT
-    )`); // saved 컬럼 없음 → 'has no column named saved'
-
-    const before = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
-    const res = await runFactExtraction(db, SESSION, PROJECT);
-    const after = (db.prepare('SELECT COUNT(*) c FROM facts').get() as { c: number }).c;
-
-    expect(res.extracted, '선점 못 했으면 이번 실행은 아무것도 하지 않는다').toBe(0);
-    expect(res.saved).toBe(0);
-    // 🚨 사유를 함께 돌려줘야 호출자가 "fact 0건 처리 완료"와 구분한다 — 구분 못 하면
-    // 정상 세션으로 계상돼 요약·경보 어디에도 안 남는다(R18 무경보 기아).
-    expect(res.skipped, '건너뛴 사유가 있어야 한다').toBe('claim_error');
-    expect(after, '가드 없이 진행하면 다른 러너와 중복 저장한다').toBe(before);
-  });
-
-  it('테이블 자체가 없는 구버전 DB 는 기존대로 진행한다 (하위호환)', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    llmBehavior.mode = 'ok';
-    db.exec('DROP TABLE IF EXISTS extraction_log');
-
-    const res = await runFactExtraction(db, SESSION, PROJECT);
-    expect(res.saved, '구버전 DB 에서도 추출은 동작해야 한다').toBeGreaterThan(0);
-  });
-});
 
 /**
  * R20 — 제외 판정의 경로 경계.

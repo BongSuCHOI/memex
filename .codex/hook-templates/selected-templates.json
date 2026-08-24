@@ -1,9 +1,0 @@
-{
-  "contract_type": "hard",
-  "stack_detection": "node via package.json; categories universal + web-ts expected from installer",
-  "selected_user_scope_templates": [
-    "universal/*.sh",
-    "web-ts/*.sh"
-  ],
-  "install_command": "bash ~/.codex/scripts/install-project-hooks.sh \"$(pwd)\""
-}

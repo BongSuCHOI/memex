@@ -1,8 +1,7 @@
 import { syncConversations } from './sync.js';
-import { getArchiveDir, getSessionsRoot } from './paths.js';
+import { getArchiveDir, getSessionsRoot, getMemoryBankHome } from './paths.js';
 import { parseLockMeta, decideTakeover } from './version-guard.js';
 import path from 'path';
-import os from 'os';
 import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 const args = process.argv.slice(2);
@@ -64,7 +63,8 @@ if (isBackground) {
 // version preempts an older holder, and any holder past WEDGE_MAX_MS is
 // preempted regardless of version (normal incremental sync completes in
 // minutes; 6h means wedged).
-const __lockDir = path.join(process.env.MEMORY_BANK_RUN_LOCKS_DIR || path.join(os.homedir(), '.config', 'superpowers', 'run-locks'), 'memory-bank-sync.lock');
+const __lockDir = path.join(process.env.MEMORY_BANK_RUN_LOCKS_DIR
+    || path.join(getMemoryBankHome(), 'run-locks'), 'memory-bank-sync.lock');
 const __pidFile = path.join(__lockDir, 'pid');
 const WEDGE_MAX_MS = 6 * 60 * 60 * 1000;
 const __myVersion = (() => {
@@ -122,7 +122,8 @@ function __writeLockMeta() {
 function __reclaimLock() {
     try {
         fs.rmSync(__lockDir, { recursive: true, force: true });
-        fs.mkdirSync(__lockDir, { recursive: false });
+        fs.mkdirSync(path.dirname(__lockDir), { recursive: true });
+        fs.mkdirSync(__lockDir); // exclusive — EEXIST means another holder won
         return true;
     }
     catch {
@@ -131,48 +132,57 @@ function __reclaimLock() {
 }
 async function __acquireLock() {
     try {
-        fs.mkdirSync(__lockDir, { recursive: false });
+        // Parent is shared infrastructure (recursive OK). The leaf must stay
+        // exclusive: mkdirSync succeeding here IS the singleton acquisition.
+        fs.mkdirSync(path.dirname(__lockDir), { recursive: true });
+        fs.mkdirSync(__lockDir);
+        __writeLockMeta();
+        return true;
     }
-    catch {
-        let raw = '';
-        try {
-            raw = fs.readFileSync(__pidFile, 'utf8');
+    catch (e) {
+        if (!(e instanceof Error && 'code' in e && e.code === 'EEXIST')) {
+            console.error(`Failed to create sync lock dir: ${e instanceof Error ? e.message : e}`);
+            return false;
         }
-        catch { }
-        const holder = parseLockMeta(raw);
-        if (!holder || !__pidAlive(holder.pid)) {
-            // Garbage or dead holder — reclaim (pre-existing behavior).
+    }
+    let raw = '';
+    try {
+        raw = fs.readFileSync(__pidFile, 'utf8');
+    }
+    catch { }
+    const holder = parseLockMeta(raw);
+    if (!holder || !__pidAlive(holder.pid)) {
+        // Garbage or dead holder — reclaim (pre-existing behavior).
+        if (!__reclaimLock())
+            return false;
+    }
+    else {
+        // Live holder: preempt if it runs older code or is wedged.
+        let runMs = holder.startedAt !== null ? Date.now() - holder.startedAt : null;
+        if (runMs === null) {
+            try {
+                runMs = Date.now() - fs.statSync(__lockDir).mtimeMs;
+            }
+            catch {
+                runMs = null;
+            }
+        }
+        const decision = decideTakeover(holder, __myVersion, runMs, WEDGE_MAX_MS);
+        if (decision === 'defer')
+            return false;
+        if (!__isSyncCliProcess(holder.pid)) {
+            // Pid was recycled by an unrelated process — the lock is garbage.
             if (!__reclaimLock())
                 return false;
         }
         else {
-            // Live holder: preempt if it runs older code or is wedged.
-            let runMs = holder.startedAt !== null ? Date.now() - holder.startedAt : null;
-            if (runMs === null) {
-                try {
-                    runMs = Date.now() - fs.statSync(__lockDir).mtimeMs;
-                }
-                catch {
-                    runMs = null;
-                }
-            }
-            const decision = decideTakeover(holder, __myVersion, runMs, WEDGE_MAX_MS);
-            if (decision === 'defer')
+            console.log(`Preempting sync lock holder pid=${holder.pid} version=${holder.version ?? 'legacy'} (${decision})`);
+            if (!(await __killAndConfirm(holder.pid))) {
+                console.error(`Failed to terminate lock holder pid=${holder.pid} - skip`);
                 return false;
-            if (!__isSyncCliProcess(holder.pid)) {
-                // Pid was recycled by an unrelated process — the lock is garbage.
-                if (!__reclaimLock())
-                    return false;
             }
-            else {
-                console.log(`Preempting sync lock holder pid=${holder.pid} version=${holder.version ?? 'legacy'} (${decision})`);
-                if (!(await __killAndConfirm(holder.pid))) {
-                    console.error(`Failed to terminate lock holder pid=${holder.pid} - skip`);
-                    return false;
-                }
-                if (!__reclaimLock())
-                    return false;
-            }
+            if (!__reclaimLock())
+                return false;
         }
     }
     __writeLockMeta();

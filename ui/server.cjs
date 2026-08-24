@@ -5,34 +5,25 @@
  */
 const http = require('http');
 const path = require('path');
+const os = require('os');
 const PLUGIN_ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT
   || process.env.PLUGIN_ROOT
   || path.resolve(__dirname, '..');
 const Database = require(path.join(PLUGIN_ROOT, 'node_modules/better-sqlite3'));
-const {
-  ACCESS_COOKIE_NAME,
-  createReplacementOsAccessState,
-  authenticateReplacementOsAccess,
-  isReplacementOsAuthenticated,
-  getReplacementOsQuota,
-  consumeReplacementOsQuota,
-  renderReplacementOsLoginPage,
-  renderReplacementOsPage,
-  readReplacementOsPublication,
-  chatWithReplacementOs,
-} = require('./replacement-os.cjs');
+const MEMORY_BANK_HOME = process.env.MEMORY_BANK_HOME
+  || process.env.MEMORY_BANK_CONFIG_DIR
+  || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'memory-bank');
 
 const DB_PATH = process.env.MEMORY_BANK_DB_PATH
   || process.env.TEST_DB_PATH
-  || path.join(process.env.HOME, '.config/superpowers/conversation-index/db.sqlite');
+  || path.join(MEMORY_BANK_HOME, 'conversation-index', 'db.sqlite');
 const PORT = process.env.PORT || 3847;
-const replacementOsAccess = createReplacementOsAccessState();
 
 let db;
 try { db = new Database(DB_PATH, { readonly: true }); }
 catch (e) {
   db = null;
-  console.error(`DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors, but /hue-os still works.`);
+  console.error(`DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors.`);
 }
 
 function ensureDb() {
@@ -40,31 +31,6 @@ function ensureDb() {
 }
 function query(sql, params = []) { ensureDb(); return db.prepare(sql).all(...params); }
 function queryOne(sql, params = []) { ensureDb(); return db.prepare(sql).get(...params); }
-
-function parseCookies(req) {
-  const header = req.headers.cookie || '';
-  const cookies = {};
-  for (const part of header.split(';')) {
-    const [rawKey, ...rawValue] = part.trim().split('=');
-    if (!rawKey) continue;
-    cookies[rawKey] = decodeURIComponent(rawValue.join('=') || '');
-  }
-  return cookies;
-}
-
-function clientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
-  return req.socket.remoteAddress || 'unknown';
-}
-
-function replacementOsToken(req) {
-  return parseCookies(req)[ACCESS_COOKIE_NAME];
-}
-
-function isReplacementOsRequestAuthenticated(req) {
-  return isReplacementOsAuthenticated(replacementOsAccess, replacementOsToken(req));
-}
 
 function writeJson(res, status, payload, headers = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
@@ -239,11 +205,18 @@ apiHandlers['/api/project-detail'] = (params) => {
 
   let facts = [];
   try {
+    const scopeProjects = query(`
+      SELECT DISTINCT cwd FROM exchanges
+      WHERE project = ? AND cwd IS NOT NULL AND cwd != ''
+    `, [project]).map((row) => row.cwd);
+    const projectScopes = [...new Set([project, ...scopeProjects])];
+    const placeholders = projectScopes.map(() => '?').join(', ');
     facts = query(`
       SELECT fact, fact_kr, category, scope_type FROM facts
-      WHERE is_active = 1 AND (scope_project = ? OR scope_type = 'global')
+      WHERE is_active = 1
+        AND (scope_project IN (${placeholders}) OR scope_type = 'global')
       ORDER BY consolidated_count DESC LIMIT 20
-    `, [project]);
+    `, projectScopes);
   } catch(e) {}
 
   const sessions = query(`
@@ -255,24 +228,6 @@ apiHandlers['/api/project-detail'] = (params) => {
   return { project, info, toolUsage, activity, recentPrompts, facts, sessions };
 };
 
-const handleHueOsLogin = async (params, body) => authenticateReplacementOsAccess(replacementOsAccess, String(body && body.password || ''));
-const handleHueOsProfile = async (params, body, context) => ({
-  ...readReplacementOsPublication(),
-  quota: getReplacementOsQuota(replacementOsAccess, context.ip),
-});
-const handleHueOsChat = async (params, body, context) => {
-  const quota = consumeReplacementOsQuota(replacementOsAccess, context.ip);
-  if (!quota.ok) {
-    const error = `오늘 대화 한도 ${quota.limit}회를 모두 사용했습니다. 00:00에 초기화됩니다.`;
-    const blocked = new Error(error);
-    blocked.statusCode = 429;
-    blocked.payload = { error, quota };
-    throw blocked;
-  }
-  const result = await chatWithReplacementOs(body || {}, { signal: context.signal });
-  return { ...result, quota };
-};
-
 // Translation API (async handler - special case)
 const asyncHandlers = {
   '/api/translate': async (params, body) => {
@@ -281,77 +236,13 @@ const asyncHandlers = {
     const translated = await translateTexts(texts.slice(0, 50)); // max 50 at a time
     return { translated };
   },
-  '/api/hue-os/login': handleHueOsLogin,
-  '/api/hue-os/profile': handleHueOsProfile,
-  '/api/hue-os/chat': handleHueOsChat,
-  '/api/replacement-os/login': handleHueOsLogin,
-  '/api/replacement-os/profile': handleHueOsProfile,
-  '/api/replacement-os/chat': handleHueOsChat,
 };
-
-// Graph 3D data API
-apiHandlers['/api/graph-data'] = () => {
-  const projects = query(`
-    SELECT project, COUNT(*) as exchanges, COUNT(DISTINCT session_id) as sessions,
-           MIN(timestamp) as first_seen, MAX(timestamp) as last_seen,
-           COUNT(DISTINCT git_branch) as branches
-    FROM exchanges GROUP BY project ORDER BY exchanges DESC
-  `);
-  const toolUsage = query(`
-    SELECT e.project, tc.tool_name, COUNT(*) as cnt
-    FROM tool_calls tc JOIN exchanges e ON tc.exchange_id = e.id
-    GROUP BY e.project, tc.tool_name ORDER BY cnt DESC
-  `);
-  const connections = query(`
-    SELECT DISTINCT e1.project as source, e2.project as target, COUNT(*) as strength
-    FROM exchanges e1 JOIN exchanges e2 ON e1.session_id = e2.session_id AND e1.project < e2.project
-    GROUP BY e1.project, e2.project HAVING strength > 2
-  `);
-  const allTools = query(`
-    SELECT tool_name, COUNT(*) as cnt FROM tool_calls GROUP BY tool_name ORDER BY cnt DESC LIMIT 50
-  `);
-  let facts = [];
-  try { facts = query(`SELECT id, fact, fact_kr, category, scope_type, scope_project FROM facts WHERE is_active = 1 LIMIT 200`); } catch(e) {}
-  let domains = [];
-  try { domains = query(`SELECT id, name, description FROM ontology_domains`); } catch(e) {}
-  let relations = [];
-  try { relations = query(`SELECT source_fact_id, relation_type, target_fact_id FROM ontology_relations LIMIT 500`); } catch(e) {}
-  return { projects, toolUsage, connections, timeline: [], allTools, facts, domains, relations };
-};
-
-// Serve graph-3d.html with live data injected server-side
-function serveGraph3D(res) {
-  const fs = require('fs');
-  const graphPath = path.join(PLUGIN_ROOT, 'docs', 'graph-3d.html');
-  if (fs.existsSync(graphPath)) {
-    let html = fs.readFileSync(graphPath, 'utf-8');
-    // Replace hardcoded var R={...} data with live DB data
-    const liveData = apiHandlers['/api/graph-data']();
-    html = html.replace(
-      /var R=\{[\s\S]*?\n(?=var DOM=)/,
-      `var R=${JSON.stringify(liveData)};\n`
-    );
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(html);
-  } else {
-    res.writeHead(404); res.end('graph-3d.html not found');
-  }
-}
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/' || url.pathname === '/graph') {
-    serveGraph3D(res);
-    return;
-  }
-  if (url.pathname === '/dashboard') {
+  if (url.pathname === '/' || url.pathname === '/dashboard') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(getHTML());
-    return;
-  }
-  if (url.pathname === '/hue-os' || url.pathname === '/replacement-os' || url.pathname === '/os' || url.pathname === '/replacement') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(isReplacementOsRequestAuthenticated(req) ? renderReplacementOsPage() : renderReplacementOsLoginPage());
     return;
   }
   // Async API handlers (translation etc.)
@@ -364,21 +255,10 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
-      const isReplacementApi = url.pathname.startsWith('/api/replacement-os/');
-      const isHueOsApi = url.pathname.startsWith('/api/hue-os/');
-      const isHueOsLogin = url.pathname === '/api/hue-os/login' || url.pathname === '/api/replacement-os/login';
-      if ((isReplacementApi || isHueOsApi) && !isHueOsLogin && !isReplacementOsRequestAuthenticated(req)) {
-        writeJson(res, 401, { error: 'authentication_required' });
-        return;
-      }
       try {
         const parsed = body ? JSON.parse(body) : {};
-        const result = await asyncHandlers[url.pathname](url.searchParams, parsed, { ip: clientIp(req), signal: abortController.signal });
-        const headers = { 'Access-Control-Allow-Origin': '*' };
-        if (isHueOsLogin && result.ok && result.token) {
-          headers['Set-Cookie'] = `${ACCESS_COOKIE_NAME}=${encodeURIComponent(result.token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`;
-        }
-        writeJson(res, 200, isHueOsLogin && result.ok ? { ok: true } : result, headers);
+        const result = await asyncHandlers[url.pathname](url.searchParams, parsed, { signal: abortController.signal });
+        writeJson(res, 200, result, { 'Access-Control-Allow-Origin': '*' });
       } catch (e) {
         writeJson(res, e.statusCode || 500, e.payload || { error: e.message });
       }
@@ -401,7 +281,6 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Memory Bank UI: http://localhost:${PORT}`);
-  console.log(`Hue OS: http://localhost:${PORT}/hue-os`);
 });
 process.on('SIGINT', () => { if (db) db.close(); process.exit(); });
 process.on('SIGTERM', () => { if (db) db.close(); process.exit(); });
@@ -413,8 +292,6 @@ function getHTML() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Memory Bank</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -426,7 +303,7 @@ function getHTML() {
   --radius:12px;--radius-sm:8px;
 }
 html{font-size:15px}
-body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;
   background-image:radial-gradient(ellipse 80% 60% at 50% -20%, rgba(108,138,255,0.06), transparent),
                     radial-gradient(ellipse 60% 40% at 80% 100%, rgba(52,211,153,0.04), transparent);
 }
@@ -447,7 +324,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
 .logo span{font-size:11px;color:var(--text-dim);font-weight:400;letter-spacing:1px;text-transform:uppercase;margin-left:4px}
 .header-stats{display:flex;gap:20px}
 .stat{text-align:right}
-.stat-value{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:500;color:var(--text-bright)}
+.stat-value{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:18px;font-weight:500;color:var(--text-bright)}
 .stat-label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px}
 
 /* Tabs */
@@ -464,15 +341,15 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
 /* Controls */
 .controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
 .search-input{flex:1;min-width:240px;background:var(--bg-glass);border:1px solid var(--border);color:var(--text-bright);
-  padding:10px 16px;border-radius:20px;font-size:14px;font-family:'Outfit',sans-serif;
+  padding:10px 16px;border-radius:20px;font-size:14px;font-family:inherit;
   backdrop-filter:blur(10px);transition:all 0.2s}
 .search-input:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-glow)}
 .search-input::placeholder{color:var(--text-dim)}
 select{background:var(--bg-glass);border:1px solid var(--border);color:var(--text);padding:10px 16px;
-  border-radius:20px;font-size:13px;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(10px)}
+  border-radius:20px;font-size:13px;font-family:inherit;cursor:pointer;backdrop-filter:blur(10px)}
 select:focus{border-color:var(--accent);outline:none}
 .btn{background:linear-gradient(135deg,var(--accent),#818cf8);color:#fff;border:none;padding:10px 24px;
-  border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;font-family:'Outfit',sans-serif;
+  border-radius:20px;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;
   transition:all 0.2s;letter-spacing:0.3px}
 .btn:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(108,138,255,0.3)}
 .btn-ghost{background:var(--bg-glass);color:var(--text);border:1px solid var(--border);font-weight:500}
@@ -482,7 +359,7 @@ select:focus{border-color:var(--accent);outline:none}
 .sort-bar{display:flex;align-items:center;gap:4px;margin-bottom:20px;background:var(--bg-glass);
   border:1px solid var(--border);border-radius:20px;padding:3px;width:fit-content}
 .sort-btn{padding:6px 16px;border-radius:17px;border:none;background:transparent;color:var(--text-dim);
-  font-size:12px;font-weight:500;cursor:pointer;font-family:'Outfit',sans-serif;transition:all 0.2s;letter-spacing:0.2px}
+  font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;transition:all 0.2s;letter-spacing:0.2px}
 .sort-btn.active{background:var(--accent-glow);color:var(--accent);font-weight:600}
 .sort-btn:hover:not(.active){color:var(--text)}
 
@@ -491,7 +368,7 @@ select:focus{border-color:var(--accent);outline:none}
 .group-title{font-size:12px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.5px;
   margin-bottom:12px;display:flex;align-items:center;gap:10px}
 .group-title::after{content:'';flex:1;height:1px;background:var(--border)}
-.group-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);
+.group-count{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim);
   background:var(--bg-glass);padding:2px 10px;border-radius:10px;font-weight:400}
 
 /* Project Cards */
@@ -506,13 +383,13 @@ select:focus{border-color:var(--accent);outline:none}
 .project-card:hover::before{opacity:1}
 .project-name{font-size:14px;font-weight:600;color:var(--text-bright);margin-bottom:2px;
   word-break:break-all;line-height:1.4}
-.project-path{font-size:11px;color:var(--text-dim);margin-bottom:8px;font-family:'JetBrains Mono',monospace;
+.project-path{font-size:11px;color:var(--text-dim);margin-bottom:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   opacity:0.7;word-break:break-all}
 .project-prompt{font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5;
   max-height:36px;overflow:hidden;font-style:italic;opacity:0.8}
 .project-prompt{flex:1}
 .project-meta{display:flex;justify-content:space-between;align-items:center;margin-top:auto}
-.project-stat{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);font-weight:500}
+.project-stat{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--accent);font-weight:500}
 .project-date{font-size:11px;color:var(--text-dim)}
 
 /* Exchange List */
@@ -533,7 +410,7 @@ select:focus{border-color:var(--accent);outline:none}
   font-size:13px;line-height:1.7;max-height:500px;overflow-y:auto}
 .msg-user{background:rgba(108,138,255,0.06);border-left:3px solid var(--accent)}
 .msg-assistant{background:rgba(52,211,153,0.05);border-left:3px solid var(--accent2)}
-.msg-tool{background:rgba(245,158,11,0.05);border-left:3px solid var(--warn);font-family:'JetBrains Mono',monospace;
+.msg-tool{background:rgba(245,158,11,0.05);border-left:3px solid var(--warn);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   font-size:12px;padding:10px 14px;margin:4px 0}
 .msg-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;display:block}
 .msg-user .msg-label{color:var(--accent)}
@@ -541,12 +418,12 @@ select:focus{border-color:var(--accent);outline:none}
 
 /* Pagination */
 .pagination{display:flex;gap:10px;padding:20px 0;justify-content:center;align-items:center}
-.page-info{color:var(--text-dim);font-size:13px;font-family:'JetBrains Mono',monospace}
+.page-info{color:var(--text-dim);font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 
 /* Searchable Select */
 .searchable-select{position:relative;min-width:220px}
 .ss-trigger{background:var(--bg-glass);border:1px solid var(--border);color:var(--text);padding:10px 36px 10px 16px;
-  border-radius:20px;font-size:13px;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(10px);
+  border-radius:20px;font-size:13px;font-family:inherit;cursor:pointer;backdrop-filter:blur(10px);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:all 0.2s;width:100%}
 .ss-trigger:hover{border-color:var(--border-hover)}
 .ss-trigger.open{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);border-radius:20px 20px 0 0}
@@ -558,18 +435,18 @@ select:focus{border-color:var(--accent);outline:none}
   display:none;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,0.5)}
 .ss-dropdown.open{display:flex}
 .ss-search{background:var(--bg-glass);border:none;border-bottom:1px solid var(--border);color:var(--text-bright);
-  padding:10px 14px;font-size:13px;font-family:'Outfit',sans-serif;outline:none}
+  padding:10px 14px;font-size:13px;font-family:inherit;outline:none}
 .ss-search::placeholder{color:var(--text-dim)}
 .ss-list{overflow-y:auto;max-height:264px}
 .ss-option{padding:8px 14px;cursor:pointer;font-size:13px;color:var(--text);transition:background 0.15s;
   display:flex;justify-content:space-between;align-items:center}
 .ss-option:hover,.ss-option.highlighted{background:var(--bg-hover);color:var(--text-bright)}
 .ss-option.selected{color:var(--accent);font-weight:500}
-.ss-option .ss-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)}
+.ss-option .ss-count{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text-dim)}
 .ss-empty{padding:12px 14px;font-size:12px;color:var(--text-dim);text-align:center;font-style:italic}
 
 /* Utils */
-.result-count{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--text-dim);margin-bottom:16px}
+.result-count{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--text-dim);margin-bottom:16px}
 
 /* Responsive */
 @media(max-width:1200px){

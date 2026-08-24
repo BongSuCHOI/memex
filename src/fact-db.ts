@@ -1,16 +1,12 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import type { Fact, FactRevision } from './types.js';
-import { canonicalizeProject } from './project-canon.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
 
 type FactVecTable = 'vec_facts' | 'vec_facts_kr' | 'vec_categories';
 
-/** dtype-aware MATCH/INSERT param for a fact-side vec table: the SQL
- * placeholder (vec_int8(?) wrap for int8) and the correctly-encoded blob.
- * float32 tables (pre-migration DBs) and int8 tables (fresh DBs / migrated)
- * are both served — the actual schema decides. */
+/** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]) {
   const dt = getVecTableDtype(db, table);
   return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
@@ -24,7 +20,6 @@ interface InsertFactParams {
   scope_project: string | null;
   source_exchange_ids: string[];
   embedding: number[] | null;  // number[] to match generateEmbedding() return type
-  coding_agent?: string;       // e.g., 'claude-code', 'codex', 'opencode'
   fact_kr?: string | null;     // Korean translation — enables same-language matching for Korean queries
   embedding_kr?: number[] | null;
 }
@@ -46,24 +41,19 @@ interface InsertRevisionParams {
 export function insertFact(db: Database.Database, params: InsertFactParams): string {
   const id = randomUUID();
   const now = new Date().toISOString();
-  const scopeProject = params.scope_project
-    ? canonicalizeProject(db, params.scope_project)
-    : params.scope_project;
-
   db.prepare(`
-    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, coding_agent, fact_kr, embedding_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
+    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
   `).run(
     id,
     params.fact,
     params.category,
     params.scope_type,
-    scopeProject,
+    params.scope_project,
     JSON.stringify(params.source_exchange_ids),
     params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null,
     now,
     now,
-    params.coding_agent || 'codex',
     params.fact_kr ?? null,
     EMBEDDING_VERSION,
   );
@@ -98,13 +88,12 @@ export function getActiveFacts(db: Database.Database): Fact[] {
 }
 
 export function getFactsByProject(db: Database.Database, project: string): Fact[] {
-  const canon = canonicalizeProject(db, project);
   return (db.prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY consolidated_count DESC
-  `).all(canon) as Record<string, unknown>[]).map(rowToFact);
+  `).all(project) as Record<string, unknown>[]).map(rowToFact);
 }
 
 export function updateFact(db: Database.Database, id: string, params: UpdateFactParams): void {
@@ -177,8 +166,6 @@ export function searchSimilarFacts(
   limit: number = 5,
   threshold: number = 0.85,
 ): Array<{ fact: Fact; distance: number }> {
-  const canonProject = project ? canonicalizeProject(db, project) : project;
-
   // Search both language indexes: the query language is unknown, and
   // multilingual models score same-language pairs far higher than
   // cross-language pairs. Keep the best (smallest) distance per fact id.
@@ -188,9 +175,7 @@ export function searchSimilarFacts(
   // dominated by other projects' facts — fetching only limit*2 starves the
   // requested scope of candidates entirely.
   const candidateFetch = Math.max(limit * 2, 50);
-  // Per-table dtype: the two language indexes can be at DIFFERENT dtypes
-  // mid-migration, and int8 distances come back ×127-scaled — normalize
-  // BEFORE the cross-table merge or the scales are incomparable.
+  // Int8 distances come back ×127-scaled, so normalize before merging.
   const fetch = (table: FactVecTable) => {
     try {
       const p = vecParamFor(db, table, embedding);
@@ -203,7 +188,7 @@ export function searchSimilarFacts(
       for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
       return rows;
     } catch {
-      return []; // table may not exist on very old DBs
+      return [];
     }
   };
 
@@ -232,7 +217,7 @@ export function searchSimilarFacts(
 
     const fact = rowToFact(row);
     // Scope filter: same project or global only
-    if (canonProject && fact.scope_type === 'project' && fact.scope_project !== canonProject) continue;
+    if (project && fact.scope_type === 'project' && fact.scope_project !== project) continue;
 
     results.push({ fact, distance: vr.distance });
     if (results.length >= limit) break;
@@ -260,12 +245,12 @@ export function searchSimilarFactsSameScope(
   limit: number = 5,
   threshold: number = 0.85,
 ): Array<{ fact: Fact; distance: number }> {
-  const canonProject = scope.type === 'project' ? canonicalizeProject(db, scope.project) : null;
+  const scopeProject = scope.type === 'project' ? scope.project : null;
 
   // Early out only if the scope is genuinely empty (nothing to match against).
   const scopeCount = scope.type === 'global'
     ? (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?").get(EMBEDDING_VERSION) as { n: number }).n
-    : (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(canonProject, EMBEDDING_VERSION) as { n: number }).n;
+    : (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(scopeProject, EMBEDDING_VERSION) as { n: number }).n;
   if (scopeCount === 0) return [];
 
   // fetchN returns rows AND whether the index returned fewer than requested
@@ -313,7 +298,7 @@ export function searchSimilarFactsSameScope(
       const fact = rowToFact(row);
       if (scope.type === 'global') {
         if (fact.scope_type !== 'global') continue;
-      } else if (fact.scope_type !== 'project' || fact.scope_project !== canonProject) {
+      } else if (fact.scope_type !== 'project' || fact.scope_project !== scopeProject) {
         continue;
       }
       results.push({ fact, distance: vr.distance });
@@ -343,8 +328,7 @@ export function searchSimilarFactsSameScope(
  * global facts otherwise outscore any newly extracted project fact (count=1)
  * forever, so project context would never surface in injection.
  */
-export function getTopFacts(db: Database.Database, rawProject: string, limit: number = 10): Fact[] {
-  const project = canonicalizeProject(db, rawProject);
+export function getTopFacts(db: Database.Database, project: string, limit: number = 10): Fact[] {
   const now = new Date();
   const d7 = new Date(now.getTime() - 7 * 86400000).toISOString();
   const d30 = new Date(now.getTime() - 30 * 86400000).toISOString();
@@ -386,19 +370,6 @@ export function getTopFacts(db: Database.Database, rawProject: string, limit: nu
     .map(rowToFact);
 }
 
-/**
- * Legacy: get facts by pure confirmation count (for backward compatibility).
- */
-export function getTopFactsByCount(db: Database.Database, project: string, limit: number = 10): Fact[] {
-  return (db.prepare(`
-    SELECT * FROM facts
-    WHERE is_active = 1
-      AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
-    ORDER BY consolidated_count DESC
-    LIMIT ?
-  `).all(canonicalizeProject(db, project), limit) as Record<string, unknown>[]).map(rowToFact);
-}
-
 export function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[] {
   return (db.prepare(`
     SELECT * FROM facts
@@ -406,7 +377,7 @@ export function getNewFactsSince(db: Database.Database, project: string, since: 
       AND created_at > ?
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY created_at ASC
-  `).all(since, canonicalizeProject(db, project)) as Record<string, unknown>[]).map(rowToFact);
+  `).all(since, project) as Record<string, unknown>[]).map(rowToFact);
 }
 
 /**
@@ -509,6 +480,5 @@ function rowToFact(row: Record<string, unknown>): Fact {
     consolidated_count: row['consolidated_count'] as number,
     is_active: Boolean(row['is_active']),
     ontology_category_id: (row['ontology_category_id'] as string | null) ?? null,
-    coding_agent: (row['coding_agent'] as string | null) ?? null,
   };
 }

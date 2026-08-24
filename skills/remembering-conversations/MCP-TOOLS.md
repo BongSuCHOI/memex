@@ -1,6 +1,8 @@
 # Memory Bank MCP Tools Reference
 
-The memory-bank plugin exposes two MCP tools for searching and displaying past conversations.
+This file documents the two conversation-retrieval tools. The plugin also
+exposes fact, ontology, provenance, graph, and cross-project tools through the
+same MCP server.
 
 ## search
 
@@ -99,14 +101,14 @@ Display a full conversation from memory bank as markdown.
 **Read entire conversation:**
 ```typescript
 {
-  path: "/Users/name/.config/superpowers/conversation-archive/project/uuid.jsonl"
+  path: "/Users/name/.config/memory-bank/conversation-archive/project/rollout.jsonl"
 }
 ```
 
 **Read specific range:**
 ```typescript
 {
-  path: "/Users/name/.config/superpowers/conversation-archive/project/uuid.jsonl",
+  path: "/Users/name/.config/memory-bank/conversation-archive/project/rollout.jsonl",
   startLine: 100,
   endLine: 200
 }

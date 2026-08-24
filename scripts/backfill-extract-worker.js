@@ -22,7 +22,6 @@ import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending
 import {
   runFactExtraction, classifyExtractionFailure, FAILURE_REPORT,
 } from '../dist/fact-extractor.js';
-import { canonicalizeProject } from '../dist/project-canon.js';
 import { getIndexDir } from '../dist/paths.js';
 
 const maxArg = process.argv.indexOf('--max');
@@ -171,7 +170,7 @@ function sessionProject(db, sid) {
   const bySlug = db.prepare(
     'SELECT project FROM exchanges WHERE session_id = ? LIMIT 1'
   ).get(sid);
-  return bySlug ? canonicalizeProject(db, bySlug.project) : null;
+  return bySlug ? bySlug.project : null;
 }
 
 async function main() {

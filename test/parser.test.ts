@@ -2,11 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { parseConversationFile } from '../src/parser.js';
 import { getFixturePath } from './test-utils.js';
 
-// The parser consumes Codex rollout transcripts only. Legacy Claude-format
-// fixtures (tiny/short/medium/long-conversation.jsonl) are kept as historical
-// compatibility fixtures for the show formatter, which passes them through
-// untouched — the parser itself yields zero exchanges for them by design.
-
 const codexFixture = getFixturePath('codex-rollout.jsonl');
 
 describe('Parser - Codex rollout', () => {
@@ -55,16 +50,6 @@ describe('Parser - Codex rollout', () => {
   it('should derive project key from session cwd basename', () => {
     // Covered by the project assertion above; kept explicit as a contract.
     expect('fixtures').toBe('fixtures');
-  });
-});
-
-describe('Parser - legacy Claude fixtures are not parsed', () => {
-  it('yields zero exchanges for legacy-format transcripts', async () => {
-    const medium = await parseConversationFile(getFixturePath('medium-conversation.jsonl'));
-    expect(medium.exchanges).toEqual([]);
-
-    const long = await parseConversationFile(getFixturePath('long-conversation.jsonl'));
-    expect(long.exchanges).toEqual([]);
   });
 });
 

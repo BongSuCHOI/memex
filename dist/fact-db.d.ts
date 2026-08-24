@@ -7,7 +7,6 @@ interface InsertFactParams {
     scope_project: string | null;
     source_exchange_ids: string[];
     embedding: number[] | null;
-    coding_agent?: string;
     fact_kr?: string | null;
     embedding_kr?: number[] | null;
 }
@@ -70,11 +69,7 @@ export declare function searchSimilarFactsSameScope(db: Database.Database, embed
  * global facts otherwise outscore any newly extracted project fact (count=1)
  * forever, so project context would never surface in injection.
  */
-export declare function getTopFacts(db: Database.Database, rawProject: string, limit?: number): Fact[];
-/**
- * Legacy: get facts by pure confirmation count (for backward compatibility).
- */
-export declare function getTopFactsByCount(db: Database.Database, project: string, limit?: number): Fact[];
+export declare function getTopFacts(db: Database.Database, project: string, limit?: number): Fact[];
 export declare function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[];
 /**
  * All active facts after a KEYSET cursor `(createdAt, id)`, EVERY scope/project,

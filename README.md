@@ -1,45 +1,59 @@
 # Memory Bank for Codex
 
-> Conversations → Knowledge Graph. Your local **Codex** session rollouts become searchable, structured knowledge: facts, ontology relations, RAG search, and automatic context injection.
+Memory Bank turns local Codex rollout sessions into searchable long-term
+memory. It archives user/assistant exchanges, indexes them with local
+embeddings and FTS5, extracts durable facts with the Codex CLI, and exposes the
+result through MCP tools and a local dashboard.
 
-This fork strips every Claude/Anthropic runtime dependency. The LLM backend for fact extraction, summarization, consolidation, and translation is the locally installed **codex CLI** (CodexExec provider) — authenticated by your existing Codex login, no API keys.
+## What it provides
 
-## Features
+- Codex rollout ingestion from `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- subagent and harness-context exclusion
+- semantic and text conversation search
+- extracted facts, ontology relations, provenance, and cross-project insights
+- prompt-time context injection and session-end extraction hooks
+- nine MCP tools: `search`, `read`, `search_facts`, `search_ontology`,
+  `ask_avatar`, `trace_fact`, `explore_graph`, `cross_project_insights`, and
+  `graph_stats`
+- a local dashboard on port 3847
 
-- **Rollout ingestion** — recursive discovery of `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`; turns assembled from `response_item.message` (user/assistant) and `custom_tool_call` / `function_call`; `reasoning`, developer/system records, and harness context blocks are never indexed.
-- **Subagent isolation** — threads flagged by `session_meta.parent_thread_id` or subagent sources are skipped end-to-end.
-- **Knowledge graph** — domain/category ontology with typed relations (INFLUENCES / SUPPORTS / SUPERSEDES / CONTRADICTS).
-- **RAG search** — vector search (384-dim, local embeddings) + FTS5, enriched with related facts.
-- **Context injection** — relevant past decisions prepended to prompts on session start/prompt boundaries.
-- **MCP server** — `search`, `read`, `search_facts`, `search_ontology`, `ask_avatar`, `trace_fact`, `explore_graph`, `cross_project_insights`, `graph_stats`.
+All model-backed work runs through the locally authenticated Codex CLI. No API
+key or external model SDK is used. The default model is `gpt-5.6-luna`.
 
 ## Requirements
 
-| Tool | Version |
-|---|---|
-| Node.js | ≥ 22.15 (built-in zstd) |
-| codex CLI | ≥ 0.149 (`codex exec --ephemeral --ignore-user-config …` flags) |
+- Node.js 22.15 or newer
+- Codex CLI 0.149 or newer
 
-## Install
+## Build
 
 ```bash
-git clone --branch codex-only https://github.com/BongSuCHOI/memory-bank.git
-cd memory-bank
+cd /path/to/memory-bank-codex
 npm install
-npm run build          # tsc && esbuild bundle into dist/
+npm run build
 ```
 
-Nothing installs itself behind your back: the MCP launcher (`cli/mcp-server-wrapper.js`) and the prompt injector fail loudly with the exact commands above when dependencies are missing.
+Nothing installs dependencies, registers MCP servers, or changes Codex config
+automatically. If the built server or dependencies are absent, the launcher
+prints the exact manual command and exits.
 
-### Register the MCP server
+## Codex wiring
 
-Project scope — commit at repo root (`.mcp.json`):
+The native plugin bundle is described by `.codex-plugin/plugin.json` and uses:
 
-```json
-{ "mcpServers": { "memory-bank": { "command": "node", "args": ["cli/mcp-server-wrapper.js"] } } }
-```
+- `.mcp.json` for the Memory Bank MCP server
+- `hooks.json` for `SessionStart`, `UserPromptSubmit`, and `SessionEnd`
+- `skills/` for historical search, whole-history analysis, and dashboard launch
 
-or user scope in `~/.codex/config.toml`:
+For checkout-local development, open Codex in this repository so the committed
+`.mcp.json` and root `hooks.json` are discovered. A personal plugin installation must
+be added through a Codex marketplace; do not hand-edit Codex plugin cache files.
+
+The complete local marketplace setup, plugin registration/removal, MCP and CLI
+reference, hook lifecycle, extraction logic, data cleanup, and Mermaid architecture
+diagrams are documented in the [Korean operations and architecture guide](docs/GUIDE-KR.md).
+
+User-scope MCP-only registration is also possible:
 
 ```toml
 [mcp_servers.memory-bank]
@@ -47,49 +61,62 @@ command = "node"
 args = ["/absolute/path/to/memory-bank/cli/mcp-server-wrapper.js"]
 ```
 
-### Hooks
-
-The repo-root [`hooks.json`](hooks.json) is a default discovery target for Codex sessions opened in this checkout. It wires `SessionStart` (version check + background sync + non-blocking maintenance), `UserPromptSubmit` (context injection), and `SessionEnd` (stabilized fact extraction → export). First invocation asks you to trust each command hash.
-
-## Quick Start
+## CLI
 
 ```bash
-node cli/memory-bank.js sync      # archive + index new rollouts
-node cli/memory-bank.js search "React auth"
+node cli/memory-bank.js sync
+node cli/memory-bank.js search "React authentication"
 node cli/memory-bank.js stats
+node cli/memory-bank.js analyze
 ```
 
-## Environment
+Data is stored under `~/.config/memory-bank` by default:
 
-| Variable | Meaning |
-|---|---|
-| `MEMORY_BANK_CODEX_MODEL` | Model forwarded to `codex exec -m`. Default: **gpt-5.6-luna**. Legacy `MEMORY_BANK_FACT_MODEL` overrides only the fact-extraction path. |
-| `MEMORY_BANK_CODEX_BIN` | Alternate codex binary (default `codex` on PATH). |
-| `MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS` | Per-call timeout (default 180000). |
-| `MEMORY_BANK_SESSIONS_DIR` / `TEST_SESSIONS_DIR` | Override rollout discovery root. |
-| `MEMORY_BANK_STABILIZE_*_MS` | SessionEnd transcript stabilization tuning. |
-
-## Safety contract (LLM calls)
-
-Every extraction/summary call runs:
-
+```text
+conversation-archive/
+conversation-index/db.sqlite
 ```
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `MEMORY_BANK_HOME` | Override the complete Memory Bank data root |
+| `MEMORY_BANK_CONFIG_DIR` | Test alias for the data root |
+| `XDG_CONFIG_HOME` | Places data at `$XDG_CONFIG_HOME/memory-bank` |
+| `MEMORY_BANK_DB_PATH` | Override only the SQLite database path |
+| `MEMORY_BANK_SESSIONS_DIR` | Override the Codex rollout root |
+| `MEMORY_BANK_CODEX_MODEL` | Model for every Codex-backed operation; default `gpt-5.6-luna` |
+| `MEMORY_BANK_CODEX_BIN` | Alternate Codex executable |
+| `MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS` | Per-call timeout; default 180000 ms |
+
+## Model isolation
+
+Every extraction, summary, consolidation, and translation call runs in an
+isolated temporary directory with:
+
+```text
 codex exec --ephemeral --ignore-user-config --ignore-rules \
-           --sandbox read-only --skip-git-repo-check -C <mktemp> [-m <model>] --json -
+  --sandbox read-only --skip-git-repo-check -C <temporary-directory> \
+  -m gpt-5.6-luna --json -
 ```
 
-`--ephemeral` writes no child rollout; `--ignore-user-config` prevents plugin/hook recursion; the throwaway workdir keeps your repositories untouched; a process-group kill enforces timeouts. Nested invocations refuse via `MEMORY_BANK_CODEX_EXEC_INNER`.
+This prevents child rollout creation, plugin/hook recursion, user-config
+coupling, and writes to the active repository.
 
 ## Verification
 
-Dependency-free behavior suite (no install needed):
-
 ```bash
+npm run typecheck
+npm run build
+npm test
 node --test test/codex-slice.test.mjs
 ```
 
-Full typecheck/build/vitest requires the install step above. Dynamic gates still pending validation on this fork: real `codex plugin add` against `.codex-plugin/plugin.json`, live hook dispatch inside a Codex session, and end-to-end extraction against a genuine rollout.
+See `docs/SCHEMA.md` for the current database schema.
 
-## License
+## License and origin
 
-MIT — see upstream [jung-wan-kim/memory-bank](https://github.com/jung-wan-kim/memory-bank) for the original project and history.
+MIT. This Codex-native project is derived from
+[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank); see
+`LICENSE` and Git history for attribution.

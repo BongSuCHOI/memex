@@ -12,18 +12,15 @@ const restoreConsole = suppressConsole();
 
 describe('verifyIndex', () => {
   const testDir = path.join(os.tmpdir(), 'conversation-search-test-' + Date.now());
-  const projectsDir = path.join(testDir, '.claude', 'projects');
-  const archiveDir = path.join(testDir, '.config', 'superpowers', 'conversation-archive');
-  const dbPath = path.join(testDir, '.config', 'superpowers', 'conversation-index', 'db.sqlite');
+  const archiveDir = path.join(testDir, '.config', 'memory-bank', 'conversation-archive');
+  const dbPath = path.join(testDir, '.config', 'memory-bank', 'conversation-index', 'db.sqlite');
 
   beforeEach(() => {
     // Create test directories
-    fs.mkdirSync(path.join(testDir, '.config', 'superpowers', 'conversation-index'), { recursive: true });
-    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.mkdirSync(path.join(testDir, '.config', 'memory-bank', 'conversation-index'), { recursive: true });
     fs.mkdirSync(archiveDir, { recursive: true });
 
     // Override environment paths for testing
-    process.env.TEST_PROJECTS_DIR = projectsDir;
     process.env.TEST_ARCHIVE_DIR = archiveDir;
     process.env.TEST_DB_PATH = dbPath;
   });
@@ -31,7 +28,6 @@ describe('verifyIndex', () => {
   afterEach(() => {
     // Clean up test directory
     fs.rmSync(testDir, { recursive: true, force: true });
-    delete process.env.TEST_PROJECTS_DIR;
     delete process.env.TEST_ARCHIVE_DIR;
     delete process.env.TEST_DB_PATH;
   });
@@ -174,18 +170,15 @@ describe('verifyIndex', () => {
 
 describe('repairIndex', () => {
   const testDir = path.join(os.tmpdir(), 'conversation-repair-test-' + Date.now());
-  const projectsDir = path.join(testDir, '.claude', 'projects');
-  const archiveDir = path.join(testDir, '.config', 'superpowers', 'conversation-archive');
-  const dbPath = path.join(testDir, '.config', 'superpowers', 'conversation-index', 'db.sqlite');
+  const archiveDir = path.join(testDir, '.config', 'memory-bank', 'conversation-archive');
+  const dbPath = path.join(testDir, '.config', 'memory-bank', 'conversation-index', 'db.sqlite');
 
   beforeEach(() => {
     // Create test directories
-    fs.mkdirSync(path.join(testDir, '.config', 'superpowers', 'conversation-index'), { recursive: true });
-    fs.mkdirSync(projectsDir, { recursive: true });
+    fs.mkdirSync(path.join(testDir, '.config', 'memory-bank', 'conversation-index'), { recursive: true });
     fs.mkdirSync(archiveDir, { recursive: true });
 
     // Override environment paths for testing
-    process.env.TEST_PROJECTS_DIR = projectsDir;
     process.env.TEST_ARCHIVE_DIR = archiveDir;
     process.env.TEST_DB_PATH = dbPath;
   });
@@ -193,7 +186,6 @@ describe('repairIndex', () => {
   afterEach(() => {
     // Clean up test directory
     fs.rmSync(testDir, { recursive: true, force: true });
-    delete process.env.TEST_PROJECTS_DIR;
     delete process.env.TEST_ARCHIVE_DIR;
     delete process.env.TEST_DB_PATH;
   });

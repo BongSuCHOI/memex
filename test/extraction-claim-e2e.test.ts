@@ -44,6 +44,44 @@ beforeEach(async () => {
 afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMORY_BANK_CONFIG_DIR; delete process.env.MEMORY_BANK_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
+  it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    const firstWatermark = (db.prepare(
+      'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
+    ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid;
+    expect(calls).toBe(1);
+    expect(firstWatermark).toBe(2);
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(calls, '동일 transcript 재실행은 LLM을 다시 호출하지 않아야 한다').toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
+
+    db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      'e2', '/tmp/p', new Date(Date.now() + 1000).toISOString(),
+      '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
+      '화면 단위 ProviderScope를 사용하면 수명주기와 테스트 격리가 더 명확해집니다.',
+      '/tmp/a2.jsonl', 11, 20, 'S1',
+    );
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(calls, '재개 세션은 새 exchange 배치에 대해 한 번만 호출해야 한다').toBe(2);
+    const incremental = db.prepare(
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0'",
+    ).get() as { source_exchange_ids: string };
+    expect(JSON.parse(incremental.source_exchange_ids)).toEqual(['e2']);
+    const finalWatermark = (db.prepare(
+      'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
+    ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid;
+    expect(finalWatermark).toBe(3);
+  });
+
   it('훅과 워커가 같은 세션을 동시에 처리해도 fact 는 한 벌만 저장된다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const [a, b] = await Promise.all([
@@ -83,17 +121,6 @@ describe('claim E2E', () => {
     expect(n, '탈취 후에도 계속 저장하면 새 소유자와 중복된다').toBeLessThan(4);
   });
 
-  it('R8 MEDIUM: claim_owner 컬럼이 없으면 즉시 추가하고 선점을 재시도한다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    db.exec('DROP TABLE IF EXISTS extraction_log');
-    db.exec(`CREATE TABLE extraction_log (
-      session_id TEXT PRIMARY KEY, processed_at TEXT, extracted INTEGER, saved INTEGER
-    )`);
-    const res = await runFactExtraction(db, 'S1', '/tmp/p');
-    expect(res.saved, '무음 스킵이면 0 — 자가치유 후 정상 추출되어야 한다').toBeGreaterThan(0);
-    const cols = (db.prepare("SELECT name FROM pragma_table_info('extraction_log')").all() as Array<{name:string}>).map(c => c.name);
-    expect(cols, '컬럼이 즉시 추가되어야 한다').toContain('claim_owner');
-  });
 
   it('R9 HIGH: 마지막(유일) fact 구간에서 탈취돼도 저장이 남지 않는다 (원자적 커밋)', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');

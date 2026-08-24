@@ -20,53 +20,56 @@ export interface LockMeta {
   startedAt: number | null;
 }
 
-/** Numeric dotted-version compare: -1 / 0 / 1. Missing parts count as 0. */
+/** Small semver-compatible comparator for plugin cache version directories. */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map((n) => parseInt(n, 10));
-  const pb = b.split('.').map((n) => parseInt(n, 10));
-  const len = Math.max(pa.length, pb.length);
+  const split = (value: string) => {
+    const [core, ...preParts] = value.split('-');
+    return {
+      core: core.split('.').map((n) => parseInt(n, 10)),
+      pre: preParts.join('-'),
+    };
+  };
+  const pa = split(a);
+  const pb = split(b);
+  const len = Math.max(pa.core.length, pb.core.length);
   for (let i = 0; i < len; i++) {
-    const x = Number.isFinite(pa[i]) ? pa[i] : 0;
-    const y = Number.isFinite(pb[i]) ? pb[i] : 0;
+    const x = Number.isFinite(pa.core[i]) ? pa.core[i] : 0;
+    const y = Number.isFinite(pb.core[i]) ? pb.core[i] : 0;
     if (x !== y) return x < y ? -1 : 1;
   }
-  return 0;
+  if (pa.pre === pb.pre) return 0;
+  if (!pa.pre) return 1;
+  if (!pb.pre) return -1;
+  return pa.pre.localeCompare(pb.pre, undefined, { numeric: true }) < 0 ? -1 : 1;
 }
 
 /**
- * Parse lock pid-file content. Accepts the v1.4.4+ JSON form
- * {pid, version, startedAt} and the legacy bare-pid form (≤1.4.3).
+ * Parse the JSON lock pid-file content: {pid, version, startedAt}.
  * Returns null when no usable pid can be extracted (caller treats the
  * lock as garbage: reclaim without killing anything).
  */
 export function parseLockMeta(raw: string): LockMeta | null {
   const t = raw.trim();
   if (!t) return null;
-  if (t.startsWith('{')) {
-    try {
-      const o = JSON.parse(t) as { pid?: unknown; version?: unknown; startedAt?: unknown };
-      const pid = typeof o.pid === 'number' ? o.pid : parseInt(String(o.pid), 10);
-      if (!Number.isFinite(pid) || pid <= 1) return null;
-      return {
-        pid,
-        version: typeof o.version === 'string' && o.version ? o.version : null,
-        startedAt: typeof o.startedAt === 'number' && Number.isFinite(o.startedAt) ? o.startedAt : null,
-      };
-    } catch {
-      return null;
-    }
+  try {
+    const o = JSON.parse(t) as { pid?: unknown; version?: unknown; startedAt?: unknown };
+    const pid = typeof o.pid === 'number' ? o.pid : parseInt(String(o.pid), 10);
+    if (!Number.isFinite(pid) || pid <= 1) return null;
+    return {
+      pid,
+      version: typeof o.version === 'string' && o.version ? o.version : null,
+      startedAt: typeof o.startedAt === 'number' && Number.isFinite(o.startedAt) ? o.startedAt : null,
+    };
+  } catch {
+    return null;
   }
-  const pid = parseInt(t, 10);
-  if (!Number.isFinite(pid) || pid <= 1) return null;
-  return { pid, version: null, startedAt: null };
 }
 
 export type TakeoverDecision = 'takeover-stale-version' | 'takeover-wedged' | 'defer';
 
 /**
  * Decide whether a live lock holder should be preempted.
- *  - Older version (a legacy no-version lock can only come from ≤1.4.3, i.e.
- *    older by construction) → take over: stale code must not keep indexing.
+ *  - Older known version → take over: stale code must not keep indexing.
  *  - Runtime above wedgeMaxMs → take over regardless of version: a wedged sync
  *    starves indexing either way (observed: 23h; normal incremental sync is
  *    minutes). holderRunMs null (unknown start) → no wedge judgement.
@@ -77,8 +80,7 @@ export function decideTakeover(
   holderRunMs: number | null,
   wedgeMaxMs: number,
 ): TakeoverDecision {
-  const holderVersion = holder.version ?? '0.0.0';
-  if (compareVersions(holderVersion, myVersion) < 0) return 'takeover-stale-version';
+  if (holder.version && compareVersions(holder.version, myVersion) < 0) return 'takeover-stale-version';
   if (holderRunMs !== null && holderRunMs > wedgeMaxMs) return 'takeover-wedged';
   return 'defer';
 }
@@ -88,7 +90,7 @@ export function decideTakeover(
  * Deliberately excludes mcp-server / mcp-server-wrapper (owned by live sessions).
  */
 const WORKER_RE =
-  /plugins\/cache\/memory-bank-dev\/memory-bank\/(\d+(?:\.\d+)*)\/(?:dist\/sync-cli\.js|scripts\/(?:backfill-extract-worker|backfill-ontology-worker|fact-consolidate-worker|fact-extract-worker|reembed-worker)\.js)/;
+  /plugins\/cache\/[^/]+\/memory-bank\/([A-Za-z0-9][A-Za-z0-9._+-]*)\/(?:dist\/sync-cli\.js|scripts\/(?:backfill-extract-worker|backfill-ontology-worker|fact-consolidate-worker|fact-extract-worker|reembed-worker)\.js)/;
 
 /**
  * If `command` is a memory-bank detached worker from a version OLDER than

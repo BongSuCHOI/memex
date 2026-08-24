@@ -41,7 +41,7 @@ If the report recommends backfill:
 
 **Do NOT wait for backfills to finish.** They are long-running background work.
 Report them as "진행 중 (백그라운드)" with the log location
-(`~/.config/superpowers/conversation-index/backfill-extract.log`), never as "완료".
+(`~/.config/memory-bank/conversation-index/backfill-extract.log`), never as "완료".
 
 ## Step 3 — Synthesize the organized report
 

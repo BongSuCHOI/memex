@@ -4,7 +4,7 @@ export type VecDtype = 'float32' | 'int8';
 export declare const VEC_INT8_SCALE = 127;
 /** Authoritative dtype of any vec0 table — read from the ACTUAL schema in
  * sqlite_master (never a flag), so readers/writers can never disagree with a
- * migration swap. Unknown/absent table defaults to int8 (the fresh-DB DDL). */
+ * Unknown/absent tables default to int8, matching the schema below. */
 export declare function getVecTableDtype(db: Database.Database, table: string): VecDtype;
 export declare function getVecDtype(db: Database.Database): VecDtype;
 /** Convert a float embedding to the blob matching the table dtype. */
@@ -23,7 +23,6 @@ export declare function normalizeVecDistance(distance: number, dtype: VecDtype):
  * (run it through normalizeVecDistance first for int8 tables).
  */
 export declare function l2DistanceToSimilarity(distance: number): number;
-export declare function migrateSchema(db: Database.Database): void;
 export declare function initDatabase(): Database.Database;
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
 export declare function getAllExchanges(db: Database.Database): Array<{

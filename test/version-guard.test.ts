@@ -6,7 +6,7 @@ import {
   staleWorkerVersion,
 } from '../src/version-guard.js';
 
-const CACHE = '/Users/u/.claude/plugins/cache/memory-bank-dev/memory-bank';
+const CACHE = '/Users/u/.codex/plugins/cache/local/memory-bank';
 
 describe('compareVersions', () => {
   it('orders numerically, not lexically', () => {
@@ -14,6 +14,8 @@ describe('compareVersions', () => {
     expect(compareVersions('1.4.3', '1.3.3')).toBe(1);
     expect(compareVersions('1.4.3', '1.4.3')).toBe(0);
     expect(compareVersions('1.10.0', '1.9.9')).toBe(1); // lexical sort would say 1.10 < 1.9
+    expect(compareVersions('1.5.0-codex.1', '1.5.0-codex.2')).toBe(-1);
+    expect(compareVersions('1.5.0', '1.5.0-codex.2')).toBe(1);
   });
 
   it('treats missing parts as 0', () => {
@@ -23,10 +25,6 @@ describe('compareVersions', () => {
 });
 
 describe('parseLockMeta', () => {
-  it('parses the legacy bare-pid form (≤1.4.3)', () => {
-    expect(parseLockMeta('36387\n')).toEqual({ pid: 36387, version: null, startedAt: null });
-  });
-
   it('parses the JSON form', () => {
     const raw = JSON.stringify({ pid: 123, version: '1.4.4', startedAt: 1770000000000 });
     expect(parseLockMeta(raw)).toEqual({ pid: 123, version: '1.4.4', startedAt: 1770000000000 });
@@ -35,6 +33,7 @@ describe('parseLockMeta', () => {
   it('rejects garbage, empty, and pid<=1 (never kill init)', () => {
     expect(parseLockMeta('')).toBeNull();
     expect(parseLockMeta('not-a-pid')).toBeNull();
+    expect(parseLockMeta('36387')).toBeNull();
     expect(parseLockMeta('{broken json')).toBeNull();
     expect(parseLockMeta('1')).toBeNull();
     expect(parseLockMeta(JSON.stringify({ pid: 0, version: '1.4.4' }))).toBeNull();
@@ -56,10 +55,8 @@ describe('decideTakeover', () => {
     ).toBe('takeover-stale-version');
   });
 
-  it('treats a legacy no-version lock as older by construction', () => {
-    expect(decideTakeover({ pid: 9, version: null, startedAt: null }, '1.4.4', null, WEDGE)).toBe(
-      'takeover-stale-version',
-    );
+  it('does not preempt an unknown-version holder without wedge evidence', () => {
+    expect(decideTakeover({ pid: 9, version: null, startedAt: null }, '1.4.4', null, WEDGE)).toBe('defer');
   });
 
   it('defers to a same-version holder within the wedge cap', () => {
@@ -100,7 +97,7 @@ describe('staleWorkerVersion', () => {
   });
 
   it('never matches unrelated processes or dev checkouts', () => {
-    expect(staleWorkerVersion('node /Users/u/Project/Claude/memory-bank/dist/sync-cli.js', '1.4.4')).toBeNull();
+    expect(staleWorkerVersion('node /Users/u/Project/Codex/memory-bank/dist/sync-cli.js', '1.4.4')).toBeNull();
     expect(staleWorkerVersion('node /some/other/app/sync-cli.js', '1.4.4')).toBeNull();
     expect(staleWorkerVersion('grep memory-bank', '1.4.4')).toBeNull();
   });

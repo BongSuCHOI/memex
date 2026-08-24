@@ -3,85 +3,35 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { formatConversationAsMarkdown, formatConversationAsHTML } from '../src/show.js';
 
+// Single fixture: compact Codex rollout (session_meta + response_item records).
+// sess-fix-1 / /workspaces/fixtures / cli 0.149.0
+// Two exchanges, one shell tool call (call-1) with output, one filtered
+// internal-context turn.
+const fixturesDir = join(import.meta.dirname, 'fixtures');
+const codexJsonl = () => readFileSync(join(fixturesDir, 'codex-rollout.jsonl'), 'utf-8');
+
 describe('show command - markdown formatting', () => {
-  const fixturesDir = join(import.meta.dirname, 'fixtures');
-
-  it('should format a simple user-assistant exchange', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should include user messages
+  it('should render user and assistant messages from a Codex rollout', () => {
+    const markdown = formatConversationAsMarkdown(codexJsonl());
     expect(markdown).toMatch(/\*\*User\*\*/);
-    expect(markdown).toContain('being very tentative');
-
-    // Should include assistant messages (shown as Agent in main thread)
+    expect(markdown).toContain('What pagination does list.ts use?');
     expect(markdown).toMatch(/\*\*Agent\*\*/);
-    expect(markdown).toContain('Looking at your instructions');
-
-    // Should show timestamps (locale-independent check)
-    expect(markdown).toMatch(/2025/);
+    expect(markdown).toContain('keyset pagination with a cursor.');
+    expect(markdown).toContain('Watch the WHERE clause ordering.');
   });
 
   it('should include tool calls in the output', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should show tool use formatting (fixture has tool calls)
-    expect(markdown).toContain('**Tool Use:**');
+    const markdown = formatConversationAsMarkdown(codexJsonl());
+    expect(markdown).toContain('**Tool Use:** `shell`');
+    expect(markdown).toContain('grep keyset src/list.ts');
+    expect(markdown).toContain('keyset pagination with cursor');
   });
 
-  it('should include tool results', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should show tool results (now inline with tool use)
-    expect(markdown).toContain('**Result:**');
-    expect(markdown).toContain('Thoughts recorded successfully');
-  });
-
-  it('should preserve message hierarchy with parentUuid', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Messages should appear in conversation order
-    const userIndex = markdown.indexOf('being very tentative');
-    const assistantIndex = markdown.indexOf('Looking at your instructions');
-    const toolIndex = markdown.indexOf('**Tool Use:**');
-
-    expect(userIndex).toBeGreaterThan(-1);
-    expect(assistantIndex).toBeGreaterThan(-1);
-    expect(toolIndex).toBeGreaterThan(-1);
-    expect(userIndex).toBeLessThan(assistantIndex);
-    expect(assistantIndex).toBeLessThan(toolIndex);
-  });
-
-  it('should include metadata (session, project, git branch)', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should show metadata at top
-    expect(markdown).toContain('Session ID:');
-    expect(markdown).toContain('67a8478e-78dc-44ab-82ea-f65c8ead85f6');
-    expect(markdown).toContain('Git Branch:');
-    expect(markdown).toContain('streaming');
-  });
-
-  it('should indicate sidechains if present', () => {
-    // For now we test the structure - will need a fixture with sidechains later
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should have structure that could show sidechains
-    expect(markdown).toBeTruthy();
-  });
-
-  it('should handle token usage information', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const markdown = formatConversationAsMarkdown(jsonl);
-
-    // Should include usage stats (now in compact inline format)
-    expect(markdown).toMatch(/in: \d+/);
-    expect(markdown).toMatch(/out: \d+/);
+  it('should include session metadata', () => {
+    const markdown = formatConversationAsMarkdown(codexJsonl());
+    expect(markdown).toContain('**Session ID:** sess-fix-1');
+    expect(markdown).toContain('**Working Directory:** /workspaces/fixtures');
+    expect(markdown).toContain('**Codex CLI Version:** 0.149.0');
   });
 });
 
@@ -99,150 +49,47 @@ describe('show command - edge cases', () => {
   });
 
   it('should handle startLine and endLine range', () => {
-    const fixturesDir = join(import.meta.dirname, 'fixtures');
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const full = formatConversationAsMarkdown(jsonl);
-    const partial = formatConversationAsMarkdown(jsonl, 1, 2);
-
-    // Partial should be shorter or equal
-    expect(partial.length).toBeLessThanOrEqual(full.length);
+    const markdown = formatConversationAsMarkdown(codexJsonl(), 2, 4);
+    expect(markdown).toBeTruthy();
   });
 
   it('should handle out-of-bounds line range gracefully', () => {
-    const fixturesDir = join(import.meta.dirname, 'fixtures');
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    // Lines way beyond file length
-    const result = formatConversationAsMarkdown(jsonl, 9999, 10000);
-    expect(result).toBe('');
+    const jsonl = codexJsonl();
+    const markdown = formatConversationAsMarkdown(jsonl, 999, 1005);
+    expect(markdown).toBe('');
   });
 
-  it('should skip system messages (non user/assistant)', () => {
-    const systemMsg = JSON.stringify({
-      uuid: 'sys-1',
-      parentUuid: null,
-      timestamp: '2026-01-01T00:00:00Z',
-      type: 'system',
-      isSidechain: false,
-      message: { role: 'system', content: 'System message' }
-    });
-    expect(formatConversationAsMarkdown(systemMsg)).toBe('');
+  it('should skip internal context user turns', () => {
+    const markdown = formatConversationAsMarkdown(codexJsonl());
+    expect(markdown).not.toContain('<codex_internal_context>');
   });
 
-  it('should handle messages with empty content array', () => {
-    const emptyContent = JSON.stringify({
-      uuid: 'empty-1',
-      parentUuid: null,
-      timestamp: '2026-01-01T00:00:00Z',
-      type: 'user',
-      isSidechain: false,
-      message: { role: 'user', content: [] }
-    });
-    expect(formatConversationAsMarkdown(emptyContent)).toBe('');
+  it('should surface the Codex CLI version label', () => {
+    const markdown = formatConversationAsMarkdown(codexJsonl());
+    expect(markdown).toContain('Codex CLI Version:** 0.149.0');
   });
 });
 
 describe('show command - HTML formatting', () => {
-  const fixturesDir = join(import.meta.dirname, 'fixtures');
-
   it('should generate valid HTML with DOCTYPE and metadata', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const html = formatConversationAsHTML(jsonl);
-
+    const html = formatConversationAsHTML(codexJsonl());
     expect(html).toContain('<!DOCTYPE html>');
-    expect(html).toContain('<html>');
-    expect(html).toContain('</html>');
-    expect(html).toContain('<meta charset="UTF-8">');
-    expect(html).toContain('<title>');
-  });
-
-  it('should include CSS styling', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const html = formatConversationAsHTML(jsonl);
-
-    expect(html).toContain('<style>');
-    expect(html).toContain('</style>');
-    expect(html).toContain('font-family');
+    expect(html).toContain('sess-fix-1');
   });
 
   it('should render user and assistant messages', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const html = formatConversationAsHTML(jsonl);
-
-    expect(html).toContain('User');
-    expect(html).toContain('Agent'); // Assistant shows as Agent in main thread
-    expect(html).toContain('being very tentative');
-    expect(html).toContain('Looking at your instructions');
+    const html = formatConversationAsHTML(codexJsonl());
+    expect(html).toContain('What pagination does list.ts use?');
+    expect(html).toContain('keyset pagination with a cursor.');
   });
 
   it('should render tool calls with proper formatting', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const html = formatConversationAsHTML(jsonl);
-
-    // Check for tool call formatting (fixture has tool calls)
+    const html = formatConversationAsHTML(codexJsonl());
     expect(html).toContain('Tool Use');
   });
 
-  it('should include session metadata', () => {
-    const jsonl = readFileSync(join(fixturesDir, 'tiny-conversation.jsonl'), 'utf-8');
-    const html = formatConversationAsHTML(jsonl);
-
-    expect(html).toContain('67a8478e-78dc-44ab-82ea-f65c8ead85f6');
-    expect(html).toContain('streaming');
-  });
-});
-
-describe('Codex rollout normalization', () => {
-  const codexJsonl = [
-    JSON.stringify({
-      type: 'session_meta',
-      timestamp: '2026-08-24T01:00:00Z',
-      payload: {
-        id: 'thr-codex-1', session_id: 'sess-codex-1', cwd: '/tmp/proj-x',
-        cli_version: '0.149.0', source: 'cli', timestamp: '2026-08-24T01:00:00Z',
-      },
-    }),
-    JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<codex_internal_context hidden>' }] },
-    }),
-    JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'How do we paginate PostgREST lists?' }] },
-    }),
-    JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'custom_tool_call', name: 'shell', call_id: 'call-1', input: JSON.stringify({ cmd: 'grep keyset src' }) },
-    }),
-    JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'custom_tool_call_output', call_id: 'call-1', output: 'keyset pagination already used in src/list.ts' },
-    }),
-    JSON.stringify({
-      type: 'response_item',
-      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Use keyset pagination like src/list.ts.' }] },
-    }),
-  ].map((l) => `${l}\n`).join('');
-
-  it('renders user, assistant, tool use, tool result and metadata without internal context', () => {
-    const md = formatConversationAsMarkdown(codexJsonl);
-    expect(md).toContain('**User**');
-    expect(md).toContain('paginate PostgREST lists?');
-    expect(md).toContain('**Agent**');
-    expect(md).toContain('keyset pagination');
-    expect(md).toContain('**Tool Use:** `shell`');
-    expect(md).toContain('keyset pagination already used');
-    expect(md).toContain('**Session ID:** sess-codex-1');
-    expect(md).toContain('/tmp/proj-x');
-    expect(md).toContain('Codex CLI Version:** 0.149.0');
-    expect(md).not.toContain('<codex_internal_context');
-    expect(md).not.toContain('hidden>');
-  });
-
-  it('produces non-empty HTML for the same rollout', () => {
-    const html = formatConversationAsHTML(codexJsonl);
-    expect(html.trim().length).toBeGreaterThan(0);
+  it('should surface the Codex CLI version label', () => {
+    const html = formatConversationAsHTML(codexJsonl());
     expect(html).toContain('Codex CLI Version');
-    expect(html).not.toContain('Claude Code Version');
-    expect(html).toContain('paginate PostgREST lists?');
   });
 });

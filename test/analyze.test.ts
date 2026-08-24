@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import Database from 'better-sqlite3';
-import { analyzeHistory, formatAnalysisMarkdown, projectSlug, isMainConversation } from '../src/analyze.js';
+import { analyzeHistory, formatAnalysisMarkdown } from '../src/analyze.js';
 
 function createSchema(db: Database.Database) {
   db.exec(`
@@ -64,38 +64,6 @@ describe('analyze', () => {
     }
   });
 
-  describe('projectSlug', () => {
-    it('converts filesystem paths to project slugs', () => {
-      expect(projectSlug('/Users/me/Project/app')).toBe('-Users-me-Project-app');
-    });
-
-    it('converts dots as well as slashes', () => {
-      expect(projectSlug('/tmp/my.app')).toBe('-tmp-my-app');
-    });
-
-    it('converts underscores per the canonical slug rule', () => {
-      expect(projectSlug('/Users/me/article21_admin')).toBe('-Users-me-article21-admin');
-    });
-
-    it('leaves existing slugs unchanged', () => {
-      expect(projectSlug('-Users-me-Project-app')).toBe('-Users-me-Project-app');
-    });
-  });
-
-  describe('isMainConversation', () => {
-    it('accepts UUID-named session files', () => {
-      expect(isMainConversation('/a/b/2b0b050f-a99d-43df-85d0-b507fe6fa611.jsonl')).toBe(true);
-    });
-
-    it('rejects subagent transcripts', () => {
-      expect(isMainConversation('/a/b/agent-abf9d54.jsonl')).toBe(false);
-    });
-
-    it('rejects non-jsonl names', () => {
-      expect(isMainConversation('/a/b/2b0b050f-a99d-43df-85d0-b507fe6fa611.txt')).toBe(false);
-    });
-  });
-
   it('returns an empty report when database does not exist', async () => {
     const report = await analyzeHistory({ dbPath: join(testDir, 'missing.db') });
     expect(report.coverage.totalConversations).toBe(0);
@@ -119,9 +87,8 @@ describe('analyze', () => {
 
     const archiveDir = join(testDir, 'archive', 'proj-a');
     mkdirSync(archiveDir, { recursive: true });
-    // Main-session conversations are UUID-named
-    const convA = join(archiveDir, '11111111-1111-1111-1111-111111111111.jsonl');
-    const convB = join(archiveDir, '22222222-2222-2222-2222-222222222222.jsonl');
+    const convA = join(archiveDir, 'rollout-2026-05-01-11111111-1111-1111-1111-111111111111.jsonl');
+    const convB = join(archiveDir, 'rollout-2026-06-01-22222222-2222-2222-2222-222222222222.jsonl');
     writeFileSync(convA, '{}');
     writeFileSync(convB, '{}');
     // Only conversation A has a summary
@@ -131,28 +98,28 @@ describe('analyze', () => {
       INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, is_sidechain, session_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    // Project A: 2 main conversations, 2 sessions, 3 exchanges across 2 months
-    insert.run('e1', '-tmp-proj-a', '2026-05-01T10:00:00Z', 'q1', 'a1', convA, 1, 2, 0, 'sess-1');
-    insert.run('e2', '-tmp-proj-a', '2026-05-02T10:00:00Z', 'q2', 'a2', convA, 3, 4, 0, 'sess-1');
-    insert.run('e3', '-tmp-proj-a', '2026-06-01T10:00:00Z', 'q3', 'a3', convB, 1, 2, 0, 'sess-2');
-    // Project B: 1 main conversation + 1 agent transcript
-    const convC = join(testDir, '33333333-3333-3333-3333-333333333333.jsonl');
-    const agentConv = join(testDir, 'agent-abc1234.jsonl');
+    // Project A: 2 conversations, 2 sessions, 3 exchanges across 2 months
+    insert.run('e1', 'proj-a', '2026-05-01T10:00:00Z', 'q1', 'a1', convA, 1, 2, 0, 'sess-1');
+    insert.run('e2', 'proj-a', '2026-05-02T10:00:00Z', 'q2', 'a2', convA, 3, 4, 0, 'sess-1');
+    insert.run('e3', 'proj-a', '2026-06-01T10:00:00Z', 'q3', 'a3', convB, 1, 2, 0, 'sess-2');
+    // Project B: two rollout files in one session
+    const convC = join(testDir, 'rollout-2026-06-15-33333333-3333-3333-3333-333333333333.jsonl');
+    const continuedConv = join(testDir, 'rollout-2026-06-15-44444444-4444-4444-4444-444444444444.jsonl');
     writeFileSync(convC, '{}');
-    writeFileSync(agentConv, '{}');
-    insert.run('e4', '-tmp-proj-b', '2026-06-15T10:00:00Z', 'q4', 'a4', convC, 1, 2, 0, 'sess-3');
+    writeFileSync(continuedConv, '{}');
+    insert.run('e4', 'proj-b', '2026-06-15T10:00:00Z', 'q4', 'a4', convC, 1, 2, 0, 'sess-3');
     // is_sidechain=0 — sess-3 이 워커의 최소 교환수(기본 2)를 충족해야 pending 이다.
     // pending 판정이 단일 소스로 바뀌면서 이 수치는 "로그 행 없는 세션"이 아니라
     // "워커가 실제로 집을 세션"이 됐으므로, 픽스처도 그 조건을 갖춰야 의미가 유지된다.
-    insert.run('e5', '-tmp-proj-b', '2026-06-15T11:00:00Z', 'q5', 'a5', agentConv, 1, 2, 0, 'sess-3');
+    insert.run('e5', 'proj-b', '2026-06-15T11:00:00Z', 'q5', 'a5', continuedConv, 1, 2, 0, 'sess-3');
 
     // Extraction: sess-1 processed, sess-2 seeded, sess-3 pending
     db.prepare("INSERT INTO extraction_log VALUES ('sess-1', '2026-06-01T00:00:00Z', 3, 2)").run();
     db.prepare("INSERT INTO extraction_log VALUES ('sess-2', '2026-06-01T00:00:00Z', -1, -1)").run();
 
-    // Facts: 2 for project A (one via cwd path, one via slug), 1 global, 1 inactive
+    // Facts: 2 for project A (cwd and basename forms), 1 global, 1 inactive
     db.prepare(`INSERT INTO facts VALUES ('f1', 'Fact one', 'decision', 'project', '/tmp/proj-a', 1, 'cat-1')`).run();
-    db.prepare(`INSERT INTO facts VALUES ('f2', 'Fact two', 'pattern', 'project', '-tmp-proj-a', 1, 'cat-1')`).run();
+    db.prepare(`INSERT INTO facts VALUES ('f2', 'Fact two', 'pattern', 'project', 'proj-a', 1, 'cat-1')`).run();
     db.prepare(`INSERT INTO facts VALUES ('f3', 'Fact three', 'preference', 'global', NULL, 1, NULL)`).run();
     db.prepare(`INSERT INTO facts VALUES ('f4', 'Old fact', 'decision', 'project', '/tmp/proj-a', 0, NULL)`).run();
 
@@ -166,8 +133,6 @@ describe('analyze', () => {
 
     // Coverage
     expect(report.coverage.totalConversations).toBe(4);
-    expect(report.coverage.mainConversations).toBe(3);
-    expect(report.coverage.agentTranscripts).toBe(1);
     expect(report.coverage.totalSessions).toBe(3);
     expect(report.coverage.totalExchanges).toBe(5);
     expect(report.coverage.projectCount).toBe(2);
@@ -180,9 +145,9 @@ describe('analyze', () => {
     expect(report.coverage.extraction.errors).toBe(0);
     expect(report.coverage.extraction.pending).toBe(1);
 
-    // Summaries: 1 of 3 MAIN conversations (agent transcripts excluded)
+    // Summaries: 1 of 4 conversations
     expect(report.coverage.summaries.withSummary).toBe(1);
-    expect(report.coverage.summaries.withoutSummary).toBe(2);
+    expect(report.coverage.summaries.withoutSummary).toBe(3);
 
     // Facts
     expect(report.facts.active).toBe(3);
@@ -194,13 +159,13 @@ describe('analyze', () => {
     // Domains
     expect(report.domains).toEqual([{ domain: 'Infrastructure', facts: 2 }]);
 
-    // Projects: A first (more exchanges), facts matched via cwd→slug + slug
-    expect(report.projects[0].project).toBe('-tmp-proj-a');
+    // Projects: A first (more exchanges), facts matched via cwd basename
+    expect(report.projects[0].project).toBe('proj-a');
     expect(report.projects[0].conversations).toBe(2);
     expect(report.projects[0].sessions).toBe(2);
     expect(report.projects[0].exchanges).toBe(3);
     expect(report.projects[0].facts).toBe(2);
-    expect(report.projects[1].project).toBe('-tmp-proj-b');
+    expect(report.projects[1].project).toBe('proj-b');
     expect(report.projects[1].facts).toBe(0);
 
     // Timeline: ascending months
@@ -271,7 +236,7 @@ describe('analyze', () => {
       expect(md).toContain('# Conversation History Analysis');
       expect(md).toContain('## Coverage');
       expect(md).toContain('| Fact extraction |');
-      expect(md).toContain('| Summaries (main sessions) |');
+      expect(md).toContain('| Summaries |');
       expect(md).toContain('## Facts');
       expect(md).toContain('## Top Projects');
       expect(md).toContain('proj-a');
@@ -320,8 +285,6 @@ describe('analyze', () => {
         generatedAt: '2026-07-03T00:00:00Z',
         coverage: {
           totalConversations: 0,
-          mainConversations: 0,
-          agentTranscripts: 0,
           totalSessions: 0,
           totalExchanges: 0,
           projectCount: 0,

@@ -1,7 +1,6 @@
 /**
  * Test-specific indexing helpers
- * These allow direct indexing of test fixture files without requiring
- * the full .claude/projects directory structure
+ * These allow direct indexing of Codex rollout fixture files.
  */
 
 import { initDatabase, insertExchange } from '../src/db.js';
@@ -11,7 +10,7 @@ import { suppressConsole } from './test-utils.js';
 
 /**
  * Index a list of conversation files directly (for testing)
- * Unlike the main indexConversations(), this doesn't expect .claude/projects structure
+ * Unlike the main indexConversations(), this accepts explicit fixture paths.
  * Suppresses console output for clean test runs
  */
 export async function indexTestFiles(filePaths: string[]): Promise<void> {

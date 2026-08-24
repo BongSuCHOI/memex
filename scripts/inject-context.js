@@ -41,8 +41,9 @@ function readStdin(timeoutMs = 2000) {
 
 function injectSocketPath() {
   // Mirrors paths.ts getIndexDir() without importing the heavy dist chain.
-  const base = process.env.MEMORY_BANK_CONFIG_DIR
-    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'superpowers');
+  const base = process.env.MEMORY_BANK_HOME
+    || process.env.MEMORY_BANK_CONFIG_DIR
+    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'memory-bank');
   return path.join(base, 'conversation-index', 'inject-daemon.sock');
 }
 

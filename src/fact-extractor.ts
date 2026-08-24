@@ -164,27 +164,21 @@ export function buildExtractionPrompt(
   }).join('\n\n');
 }
 
-/**
- * @param stats 선택적 out-param. deterministic 실패로 **폐기된 배치 수**를 돌려준다
- *   (dead-letter 회계). 선택적이라 기존 호출자는 그대로 동작한다.
- */
+/** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(
   db: Database.Database,
   sessionId: string,
   stats?: { droppedBatches: number },
-  /**
-   * 배치마다 호출되는 리스 갱신 훅. 리스보다 오래 걸리는 정상 추출이 회수 대상이
-   * 되어 다른 워커가 선점하는 것을 막는다(R7 HIGH-1). throw 하면 즉시 중단한다 —
-   * 이미 claim 을 잃었다는 뜻이므로 계속하면 중복 작업이다.
-   */
   renewLease?: () => void,
+  options?: { onlyAfterRowid?: number },
 ): Promise<ExtractedFact[]> {
   const exchanges = db.prepare(`
     SELECT id, user_message, assistant_message
     FROM exchanges
     WHERE session_id = ?
+      ${options?.onlyAfterRowid != null ? 'AND rowid > ?' : ''}
     ORDER BY timestamp ASC
-  `).all(sessionId) as Array<{ id: string; user_message: string; assistant_message: string }>;
+  `).all(...(options?.onlyAfterRowid != null ? [sessionId, options.onlyAfterRowid] : [sessionId])) as Array<{ id: string; user_message: string; assistant_message: string }>;
 
   const substantive = exchanges.filter(
     ex => isSubstantiveExchange(ex.user_message, ex.assistant_message),
@@ -261,29 +255,13 @@ export async function extractFactsFromExchanges(
   return allFacts;
 }
 
+/** Save facts and the completion marker in one transaction. */
 export async function saveExtractedFacts(
   db: Database.Database,
   facts: ExtractedFact[],
   project: string,
   sourceExchangeIds: string[],
-  codingAgent?: string,
-  /**
-   * 🚨 저장 구간은 파이프라인에서 **가장 긴** 단계다 — fact 당 임베딩 2회 +
-   * classifyAndLinkFact(내부에서 callMemoryModel = 헤드리스 세션 1회)를 최대 20 fact 반복.
-   * 여기가 리스 밖이면 정상 작업이 회수돼 다른 워커가 같은 세션을 저장한다
-   * (Codex R8 HIGH: R7 HIGH-1 의 잔존 구간). fact 마다 갱신·소유권 확인한다.
-   */
   renewLease?: () => void,
-  /**
-   * 🚨 완료 마커를 **fact 삽입과 같은 트랜잭션 안에서** 쓰기 위한 커밋 훅.
-   * 갱신 행 수를 반환하며 0 이면(=선점을 잃음) 트랜잭션 전체가 롤백된다.
-   *
-   * 체크포인트(리스 확인)를 아무리 촘촘히 박아도 **마지막 확인과 커밋 사이**에는
-   * 항상 창이 남는다 — R7(배치)→R8(저장 루프)→R9(루프 꼬리)로 같은 결함이 세 번
-   * 좁아지기만 했다. 원인은 "저장"과 "소유권 확정"이 서로 다른 시점이라는 구조다.
-   * 둘을 원자적으로 묶으면 창의 크기와 무관하게 닫힌다: 커밋 순간 소유권이 없으면
-   * fact 도 남지 않으므로 중복이 생길 수 없다.
-   */
   commitMarker?: (extracted: number, saved: number) => number,
 ): Promise<string[]> {
   await initEmbeddings();
@@ -311,7 +289,6 @@ export async function saveExtractedFacts(
         scope_project: p.fact.scope_type === 'project' ? project : null,
         source_exchange_ids: sourceExchangeIds,
         embedding: p.embedding,
-        coding_agent: codingAgent,
         fact_kr: p.fact.fact_kr ?? null,
         embedding_kr: p.embeddingKr,
       }));
@@ -414,25 +391,12 @@ export function failureConsumesBudget(kind: ExtractionFailureKind): boolean {
 }
 
 
+/** Claim a session, process unhandled rows, and atomically record completion. */
 export async function runFactExtraction(
   db: Database.Database,
   sessionId: string,
   project: string,
-  codingAgent?: string,
-  /**
-   * claimVariant: 선점 조건. 'hook'(기본)은 살아있는 claim 만 존중하고 확정 마커
-   * 위에서도 선점한다(--resume 세션 재추출은 의도된 동작). 'worker'는 자기가
-   * pending 으로 선정했던 상태(미기록 / -4 / 리스만료 claim)일 때만 선점한다 —
-   * 선정 후 훅이 먼저 확정했다면 그 위를 덮지 않아 중복 추출이 생기지 않는다.
-   * 선점·복원을 이 함수가 단독으로 소유하므로 호출자 간 로직 분기가 없다.
-   */
   opts?: { claimVariant?: 'worker' | 'hook' },
-  /**
-   * 🚨 `skipped` 는 "처리 안 함"의 **사유**다. 이게 없으면 호출자가 claim 미획득을
-   * "fact 0건 처리 완료"와 구분하지 못해 정상 세션으로 계상하고, 유일한 흔적인
-   * console.error 는 detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아
-   * (Codex R18 독립 발견).
-   */
 ): Promise<{ extracted: number; saved: number; skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project' | 'excluded_project_unmarked' }> {
   // Skip self-referential repos (memory-bank's own monitoring sessions) — mark
   // as processed with zero facts so they are never re-attempted, no LLM calls.
@@ -476,8 +440,27 @@ export async function runFactExtraction(
       skipped: markerWritten ? 'excluded_project' : 'excluded_project_unmarked',
     };
   }
+  // 🚨 동일 재실행 게이트(비용 최적화): 성공 상태 마커 + last_exchange_rowid 이후
+  // 새 exchange 가 없으면 claim 도 걸지 않고 즉시 종료한다. 안전성(중복 차단)은
+  // claim 성공 직후의 post-claim watermark read 가 소유한다 — 이 값은 다른 러너가
+  // 방금 완료한 최신 워터마크를 반영할 수 있다(UPDATE 는 이 컬럼을 건드리지 않음).
+  {
+    const marker = db.prepare('SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?')
+      .get(sessionId) as { extracted?: number; last_exchange_rowid?: number } | undefined;
+    const settled = !!marker && typeof marker.extracted === 'number'
+      && (marker.extracted >= 0 || marker.extracted === -1 || marker.extracted === -2);
+    if (settled && marker) {
+      const maxRow = (db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?')
+        .get(sessionId) as { m: number }).m;
+      if (maxRow <= (marker.last_exchange_rowid ?? 0)) {
+        // 멱등 no-op: LLM 호출 없이 종료 — 중복 facts 도 생기지 않는다.
+        return { extracted: 0, saved: 0 };
+      }
+    }
+  }
 
-  // 🚨 LLM 을 부르기 **전에** 세션을 선점한다. SessionEnd 훅과 backfill 워커는
+  let onlyAfterRowid: number | undefined;
+
   // 서로를 직렬화할 수단이 없고 마커는 파이프라인 끝에 써지므로, 선점이 없으면
   // 둘이 같은 세션을 각자 추출해 fact 가 두 벌 저장된다(Codex R6 HIGH).
   // 마커 시점에 막는 것은 늦다 — 그때는 이미 비용도 중복도 발생한 뒤다.
@@ -497,43 +480,21 @@ export async function runFactExtraction(
       return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' };
     }
     holdsClaim = true;
+    // 🚨 post-claim watermark read — race 소유 지점. 내 UPDATE 는 이 컬럼을 건드리지
+    // 않으므로, gate 이후 다른 러너가 방금 기록한 최신 last_exchange_rowid 를 그대로
+    // 읽는다. 이후 신규 rows 만 LLM 배치 후보가 된다.
+    const claimedRow = db.prepare('SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?')
+      .get(sessionId) as { last_exchange_rowid?: number } | undefined;
+    onlyAfterRowid = typeof claimedRow?.last_exchange_rowid === 'number' && claimedRow.last_exchange_rowid > 0
+      ? claimedRow.last_exchange_rowid
+      : undefined;
   } catch (e) {
-    // 🚨 실패를 2분류한다. 전부 "오래된 DB"로 보고 선점 없이 진행하면, SQLITE_BUSY
-    // 같은 **일시 오류가 상호배제를 우회**해 중복 LLM 호출·중복 insert 를 낸다
-    // (R7 HIGH-3, external-probe-gate-classification: 일시 오류는 보류이지 통과가 아님).
+    // 🚨 fresh-schema 계약: extraction_log 는 initDatabase 가 항상 보장한다.
+    // 스키마 오류를 포함한 모든 claim 실패는 예산 소모 없이 보류(claim_error)만
+    // 한다 — legacy ALTER/진행 분기는 없다.
     const msg = e instanceof Error ? e.message : String(e);
-    if (/no such table/i.test(msg)) {
-      console.error(`extraction: session ${sessionId} — extraction_log 부재(구버전 DB), 선점 없이 진행`);
-    } else if (/no such column:? ?claim_owner|has no column named claim_owner/i.test(msg)) {
-      // 마이그레이션이 락으로 지연된 경우다. 조용히 스킵하면 그 run 의 pending 세션이
-      // 무음으로 빠지므로, 컬럼을 즉시 추가해 자가치유한 뒤 한 번만 재시도한다.
-      try {
-        try {
-          db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
-        } catch (eAlter) {
-          // 동시 실행이 먼저 추가했으면 목적은 이미 달성 — 보류할 이유가 없다.
-          // (R8 수정이 한 층 아래에서 같은 '문구 불일치'를 만들었던 자리다.)
-          if (!/duplicate column name/i.test(eAlter instanceof Error ? eAlter.message : String(eAlter))) throw eAlter;
-        }
-        const retried = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
-          .run(sessionId, new Date().toISOString(), owner).changes;
-        if (retried === 0) {
-          console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 건너뜁니다`);
-          return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' };
-        }
-        holdsClaim = true;
-        console.error(`extraction: claim_owner 컬럼을 즉시 추가하고 선점 재시도 성공 (session ${sessionId})`);
-      } catch (e2) {
-        console.error(
-          `extraction: session ${sessionId} — claim_owner 마이그레이션 실패(${e2 instanceof Error ? e2.message : e2}), `
-          + `이번 실행은 보류합니다(다음 run 재시도)`,
-        );
-        return { extracted: 0, saved: 0, skipped: 'claim_error' };
-      }
-    } else {
-      console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
-      return { extracted: 0, saved: 0, skipped: 'claim_error' };
-    }
+    console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
+    return { extracted: 0, saved: 0, skipped: 'claim_error' };
   }
 
   /**
@@ -564,7 +525,7 @@ export async function runFactExtraction(
           `DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
         ).run(sessionId, owner);
       }
-    } catch { /* 로그 테이블 부재 — 원 에러를 그대로 올린다 */ }
+    } catch { /* best-effort release; the original extraction error is preserved */ }
   };
 
   /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
@@ -589,7 +550,7 @@ export async function runFactExtraction(
   let facts: ExtractedFact[];
   let saved = 0;
   try {
-    facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease);
+    facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease, { onlyAfterRowid });
 
     // 🚨 저장 **직전** 소유권을 재확인한다. 마지막 갱신 이후에 claim 을 빼앗겼다면
     // (배치가 1개뿐이면 갱신도 1회뿐이라 창이 넓다) 여기서 멈춰야 한다 — 그대로
@@ -597,12 +558,11 @@ export async function runFactExtraction(
     renewLease();
 
     if (facts.length > 0) {
-      const agent = codingAgent || detectAgentFromSession(db, sessionId);
       const exchangeIds = (db.prepare(
-        'SELECT id FROM exchanges WHERE session_id = ?'
-      ).all(sessionId) as Array<{ id: string }>).map(r => r.id);
+        `SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid != null ? ' AND rowid > ?' : ''}`
+      ).all(...(onlyAfterRowid != null ? [sessionId, onlyAfterRowid] : [sessionId])) as Array<{ id: string }>).map(r => r.id);
       saved = (await saveExtractedFacts(
-        db, facts, project, exchangeIds, agent, renewLease, writeCompletionMarker,
+        db, facts, project, exchangeIds, renewLease, writeCompletionMarker,
       )).length;
     }
   } catch (e) {
@@ -627,48 +587,18 @@ export async function runFactExtraction(
   // 완료 마커 — saveExtractedFacts 의 트랜잭션 안에서 호출된다(원자적 커밋).
   // fact 가 0건이면 트랜잭션이 없으므로 여기서 직접 호출한다.
   function writeCompletionMarker(extracted: number, savedCount: number): number {
-    // dropped_batches 컬럼은 마이그레이션이 지연될 수 있다 — 없으면 4-컬럼 폴백으로
-    // **마커는 반드시** 남긴다(미기록 = 재추출 = 중복, Codex R5 HIGH-1).
-    const hasDropped = (db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
-      .all() as Array<{ name: string }>).some(c => c.name === 'dropped_batches');
-    // 소유권 가드: 그사이 선점이 넘어갔다면 새 소유자의 상태를 덮지 않는다.
-    // (claim 없이 도는 구버전 DB 경로는 가드 없이 기존 동작.)
-    const ownGuard = holdsClaim ? ' WHERE extraction_log.claim_owner = ?' : '';
-    const ownArgs = holdsClaim ? [owner] : [];
     const now = new Date().toISOString();
-    let res: { changes: number };
-    try {
-      res = hasDropped
-      ? db.prepare(`
-          INSERT INTO extraction_log (session_id, processed_at, extracted, saved, dropped_batches, claim_owner)
-          VALUES (?, ?, ?, ?, ?, NULL)
-          ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-            extracted = excluded.extracted, saved = excluded.saved,
-            dropped_batches = excluded.dropped_batches, claim_owner = NULL${ownGuard}
-        `).run(sessionId, now, extracted, savedCount, stats.droppedBatches, ...ownArgs)
-      : db.prepare(`
-          INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-            extracted = excluded.extracted, saved = excluded.saved${ownGuard}
-        `).run(sessionId, now, extracted, savedCount, ...ownArgs);
-    } catch (e) {
-      // 아주 오래된 DB 는 extraction_log 자체가 없다. 이 경로는 선점도 없었으므로
-      // (holdsClaim=false) '소유권 상실'이 아니다 — 추출 결과를 롤백하면 안 된다.
-      // 그 외 오류는 진짜 문제이므로 던져서 트랜잭션을 되돌린다.
-      if (!holdsClaim && /no such table/i.test(e instanceof Error ? e.message : String(e))) {
-        console.error(`extraction: session ${sessionId} — extraction_log 부재(구버전 DB), 마커 생략`);
-        return 1; // 롤백 사유 아님
-      }
-      throw e;
-    }
-    if (!hasDropped && stats.droppedBatches > 0) {
-      console.error(
-        `extraction: session ${sessionId} — dropped_batches 컬럼 부재로 폐기 카운터 `
-        + `${stats.droppedBatches}건을 기록하지 못했습니다(마이그레이션 지연). 마커는 기록됨.`,
-      );
-    }
-    if (hasDropped && stats.droppedBatches > 0 && res.changes > 0) {
+    // 워터마크: 처리 시점의 세션 MAX(rowid). 완료 마커와 같은 문장에서 기록돼
+    // 마커·워터마크가 항상 한 세트로 커밋된다.
+    const watermark = (db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?')
+      .get(sessionId) as { m: number }).m;
+    const res = db.prepare(`
+      UPDATE extraction_log
+      SET processed_at = ?, extracted = ?, saved = ?, dropped_batches = ?,
+          last_exchange_rowid = ?, claim_owner = NULL
+      WHERE session_id = ? AND claim_owner = ?
+    `).run(now, extracted, savedCount, stats.droppedBatches, watermark, sessionId, owner);
+    if (stats.droppedBatches > 0 && res.changes > 0) {
       console.error(
         `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) `
         + `(deterministic LLM failures — those exchanges produced no facts; `
@@ -692,15 +622,4 @@ export async function runFactExtraction(
   }
 
   return { extracted: facts.length, saved };
-}
-
-/**
- * Detect the coding agent from a session's exchanges.
- * Returns the coding_agent of the first exchange in the session, or 'codex' as default.
- */
-function detectAgentFromSession(db: Database.Database, sessionId: string): string {
-  const row = db.prepare(
-    'SELECT coding_agent FROM exchanges WHERE session_id = ? LIMIT 1'
-  ).get(sessionId) as { coding_agent: string | null } | undefined;
-  return row?.coding_agent || 'codex';
 }

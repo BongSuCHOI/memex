@@ -63,7 +63,6 @@ export function initDatabase() {
 export function getExtractionConfig() { return { minExchanges: 2, excludeProjects: [] }; }
 export function pendingExtractionCoreQuery() { return { sql: 'SELECT 1', params: [] }; }
 `);
-  fs.writeFileSync(path.join(dist, 'project-canon.js'), `export function canonicalizeProject(_d, p) { return p; }\n`);
   fs.writeFileSync(path.join(dist, 'paths.js'), `export function getIndexDir() { return ${JSON.stringify(path.join(sandbox, 'index'))}; }\n`);
 
   // 워커 원본을 그대로 복사 — 검증 대상은 **실제 소스**여야 한다.

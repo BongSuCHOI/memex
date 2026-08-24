@@ -18,11 +18,10 @@ export interface LockMeta {
     version: string | null;
     startedAt: number | null;
 }
-/** Numeric dotted-version compare: -1 / 0 / 1. Missing parts count as 0. */
+/** Small semver-compatible comparator for plugin cache version directories. */
 export declare function compareVersions(a: string, b: string): number;
 /**
- * Parse lock pid-file content. Accepts the v1.4.4+ JSON form
- * {pid, version, startedAt} and the legacy bare-pid form (≤1.4.3).
+ * Parse the JSON lock pid-file content: {pid, version, startedAt}.
  * Returns null when no usable pid can be extracted (caller treats the
  * lock as garbage: reclaim without killing anything).
  */
@@ -30,8 +29,7 @@ export declare function parseLockMeta(raw: string): LockMeta | null;
 export type TakeoverDecision = 'takeover-stale-version' | 'takeover-wedged' | 'defer';
 /**
  * Decide whether a live lock holder should be preempted.
- *  - Older version (a legacy no-version lock can only come from ≤1.4.3, i.e.
- *    older by construction) → take over: stale code must not keep indexing.
+ *  - Older known version → take over: stale code must not keep indexing.
  *  - Runtime above wedgeMaxMs → take over regardless of version: a wedged sync
  *    starves indexing either way (observed: 23h; normal incremental sync is
  *    minutes). holderRunMs null (unknown start) → no wedge judgement.

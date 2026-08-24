@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, detectCodingAgent } from './paths.js';
+import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage } from './paths.js';
 import { archiveFileExists, readArchiveFile, statArchiveFile } from './archive-io.js';
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath } from './codex-rollout.js';
 const EXCLUSION_MARKERS = [
@@ -58,8 +58,6 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
         summarized: 0,
         errors: []
     };
-    // Detect coding agent from source directory or use override
-    const codingAgent = options.codingAgent || detectCodingAgent(sourceDir);
     // Ensure source directory exists
     if (!fs.existsSync(sourceDir)) {
         return result;
@@ -129,8 +127,6 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                     // Worker-prompt exchange = ephemeral state, not knowledge — never index.
                     if (isWorkerPromptMessage(exchange.userMessage))
                         continue;
-                    // Tag each exchange with the coding agent
-                    exchange.codingAgent = codingAgent;
                     const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
                     const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
                     insertExchange(db, exchange, embedding, toolNames);

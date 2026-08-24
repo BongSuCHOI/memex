@@ -21,11 +21,10 @@ export interface ConversationExchange {
     sessionId?: string;
     cwd?: string;
     gitBranch?: string;
-    claudeVersion?: string;
+    codexVersion?: string;
     thinkingLevel?: string;
     thinkingDisabled?: boolean;
     thinkingTriggers?: string;
-    codingAgent?: string;
     toolCalls?: ToolCall[];
 }
 export interface SearchResult {
@@ -55,7 +54,6 @@ export interface Fact {
     consolidated_count: number;
     is_active: boolean;
     ontology_category_id?: string | null;
-    coding_agent?: string | null;
 }
 export interface FactRevision {
     id: string;

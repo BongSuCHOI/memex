@@ -42,13 +42,12 @@ const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
- * Model resolution (extraction path only): MEMORY_BANK_CODEX_MODEL, else
- * legacy MEMORY_BANK_FACT_MODEL — then codex-exec's central default
- * (DEFAULT_CODEX_MODEL = gpt-5.6-luna) applies when neither is set.
+ * Model resolution: MEMORY_BANK_CODEX_MODEL, then codex-exec's central
+ * default (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
  * The resolved id is always forwarded via -m.
  */
 async function callOnce(systemPrompt, userMessage, _maxTokens) {
-    const model = process.env.MEMORY_BANK_CODEX_MODEL || process.env.MEMORY_BANK_FACT_MODEL || null;
+    const model = process.env.MEMORY_BANK_CODEX_MODEL || null;
     const timeoutRaw = process.env.MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS;
     const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
     return runCodex({ systemPrompt, userMessage, model, timeoutMs });

@@ -18357,30 +18357,18 @@ function ensureDir(dir) {
   }
   return dir;
 }
-function getSuperpowersDir() {
-  let dir;
-  if (process.env.MEMORY_BANK_CONFIG_DIR) {
-    dir = process.env.MEMORY_BANK_CONFIG_DIR;
-  } else if (process.env.PERSONAL_SUPERPOWERS_DIR) {
-    dir = process.env.PERSONAL_SUPERPOWERS_DIR;
-  } else {
-    const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-    if (xdgConfigHome) {
-      dir = path2.join(xdgConfigHome, "superpowers");
-    } else {
-      dir = path2.join(os2.homedir(), ".config", "superpowers");
-    }
-  }
+function getMemoryBankHome() {
+  const dir = process.env.MEMORY_BANK_HOME || process.env.MEMORY_BANK_CONFIG_DIR || (process.env.XDG_CONFIG_HOME ? path2.join(process.env.XDG_CONFIG_HOME, "memory-bank") : path2.join(os2.homedir(), ".config", "memory-bank"));
   return ensureDir(dir);
 }
 function getArchiveDir() {
   if (process.env.TEST_ARCHIVE_DIR) {
     return ensureDir(process.env.TEST_ARCHIVE_DIR);
   }
-  return ensureDir(path2.join(getSuperpowersDir(), "conversation-archive"));
+  return ensureDir(path2.join(getMemoryBankHome(), "conversation-archive"));
 }
 function getIndexDir() {
-  return ensureDir(path2.join(getSuperpowersDir(), "conversation-index"));
+  return ensureDir(path2.join(getMemoryBankHome(), "conversation-index"));
 }
 function getDbPath() {
   if (process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH) {
@@ -18395,57 +18383,6 @@ import Database from "better-sqlite3";
 import path3 from "path";
 import fs2 from "fs";
 import * as sqliteVec from "sqlite-vec";
-
-// src/project-canon.ts
-var slugCache = /* @__PURE__ */ new Map();
-function isSlugProject(project) {
-  return typeof project === "string" && project.startsWith("-");
-}
-function slugifyPath(p) {
-  return p.replace(/[/._]/g, "-");
-}
-function canonicalizeProject(db, project) {
-  if (!project || !isSlugProject(project)) return project;
-  const cached2 = slugCache.get(project);
-  if (cached2) return cached2;
-  let resolved = project;
-  try {
-    const rows = db.prepare(`
-      SELECT cwd, COUNT(*) AS n FROM exchanges
-      WHERE project = ? AND cwd IS NOT NULL
-      GROUP BY cwd ORDER BY n DESC
-    `).all(project);
-    const exact = rows.find((r) => slugifyPath(r.cwd) === project);
-    resolved = (exact || rows[0])?.cwd ?? project;
-  } catch {
-  }
-  if (resolved !== project) slugCache.set(project, resolved);
-  return resolved;
-}
-function autoHealScopeProjects(db) {
-  let healed = 0;
-  try {
-    const probe = db.prepare(
-      "SELECT 1 FROM facts WHERE scope_type = 'project' AND scope_project LIKE '-%' LIMIT 1"
-    ).get();
-    if (!probe) return 0;
-    const slugs = db.prepare(
-      "SELECT DISTINCT scope_project AS s FROM facts WHERE scope_type = 'project' AND scope_project LIKE '-%'"
-    ).all();
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    for (const { s } of slugs) {
-      const canon = canonicalizeProject(db, s);
-      if (canon && canon !== s) {
-        const r = db.prepare(
-          "UPDATE facts SET scope_project = ?, updated_at = ? WHERE scope_type = 'project' AND scope_project = ?"
-        ).run(canon, now, s);
-        healed += r.changes;
-      }
-    }
-  } catch {
-  }
-  return healed;
-}
 
 // src/embeddings.ts
 import { pipeline } from "@xenova/transformers";
@@ -18569,34 +18506,6 @@ function normalizeVecDistance(distance, dtype) {
 function l2DistanceToSimilarity(distance) {
   return 1 - distance * distance / 2;
 }
-function migrateSchema(db) {
-  const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
-  const columnNames = new Set(columns.map((c) => c.name));
-  const migrations = [
-    { name: "last_indexed", sql: "ALTER TABLE exchanges ADD COLUMN last_indexed INTEGER" },
-    { name: "parent_uuid", sql: "ALTER TABLE exchanges ADD COLUMN parent_uuid TEXT" },
-    { name: "is_sidechain", sql: "ALTER TABLE exchanges ADD COLUMN is_sidechain BOOLEAN DEFAULT 0" },
-    { name: "session_id", sql: "ALTER TABLE exchanges ADD COLUMN session_id TEXT" },
-    { name: "cwd", sql: "ALTER TABLE exchanges ADD COLUMN cwd TEXT" },
-    { name: "git_branch", sql: "ALTER TABLE exchanges ADD COLUMN git_branch TEXT" },
-    { name: "claude_version", sql: "ALTER TABLE exchanges ADD COLUMN claude_version TEXT" },
-    { name: "thinking_level", sql: "ALTER TABLE exchanges ADD COLUMN thinking_level TEXT" },
-    { name: "thinking_disabled", sql: "ALTER TABLE exchanges ADD COLUMN thinking_disabled BOOLEAN" },
-    { name: "thinking_triggers", sql: "ALTER TABLE exchanges ADD COLUMN thinking_triggers TEXT" },
-    { name: "coding_agent", sql: "ALTER TABLE exchanges ADD COLUMN coding_agent TEXT DEFAULT 'codex'" }
-  ];
-  let migrated = false;
-  for (const migration of migrations) {
-    if (!columnNames.has(migration.name)) {
-      console.error(`Migrating schema: adding ${migration.name} column...`);
-      db.prepare(migration.sql).run();
-      migrated = true;
-    }
-  }
-  if (migrated) {
-    console.error("Migration complete.");
-  }
-}
 function initDatabase() {
   const dbPath = getDbPath();
   const dbDir = path3.dirname(dbPath);
@@ -18626,11 +18535,11 @@ function initDatabase() {
       session_id TEXT,
       cwd TEXT,
       git_branch TEXT,
-      claude_version TEXT,
+      codex_version TEXT,
       thinking_level TEXT,
       thinking_disabled BOOLEAN,
       thinking_triggers TEXT,
-      coding_agent TEXT DEFAULT 'codex'
+      embedding_version INTEGER NOT NULL DEFAULT 0
     )
   `);
   db.exec(`
@@ -18651,7 +18560,6 @@ function initDatabase() {
       embedding int8[384]
     )
   `);
-  migrateSchema(db);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_timestamp ON exchanges(timestamp DESC)
   `);
@@ -18669,9 +18577,6 @@ function initDatabase() {
   `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_git_branch ON exchanges(git_branch)
-  `);
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_coding_agent ON exchanges(coding_agent)
   `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_calls(tool_name)
@@ -18725,7 +18630,13 @@ function initDatabase() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       consolidated_count INTEGER DEFAULT 1,
-      is_active INTEGER DEFAULT 1
+      is_active INTEGER DEFAULT 1,
+      ontology_category_id TEXT,
+      fact_kr TEXT,
+      embedding_version INTEGER NOT NULL DEFAULT 1,
+      ontology_attempts INTEGER NOT NULL DEFAULT 0,
+      consolidation_attempts INTEGER NOT NULL DEFAULT 0,
+      ontology_last_attempt_at TEXT
     )
   `);
   db.exec(`
@@ -18787,37 +18698,6 @@ function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-  const factColumns = db.prepare(
-    `SELECT name FROM pragma_table_info('facts')`
-  ).all();
-  const factColumnNames = new Set(factColumns.map((c) => c.name));
-  if (!factColumnNames.has("ontology_category_id")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN ontology_category_id TEXT").run();
-  }
-  if (!factColumnNames.has("fact_kr")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN fact_kr TEXT").run();
-  }
-  if (!factColumnNames.has("coding_agent")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN coding_agent TEXT DEFAULT 'codex'").run();
-  }
-  if (!factColumnNames.has("embedding_version")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 1").run();
-  }
-  if (!factColumnNames.has("ontology_attempts")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN ontology_attempts INTEGER NOT NULL DEFAULT 0").run();
-  }
-  if (!factColumnNames.has("consolidation_attempts")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN consolidation_attempts INTEGER NOT NULL DEFAULT 0").run();
-  }
-  if (!factColumnNames.has("ontology_last_attempt_at")) {
-    db.prepare("ALTER TABLE facts ADD COLUMN ontology_last_attempt_at TEXT").run();
-  }
-  const exchangeColumns = db.prepare(
-    `SELECT name FROM pragma_table_info('exchanges')`
-  ).all();
-  if (!exchangeColumns.some((c) => c.name === "embedding_version")) {
-    db.prepare("ALTER TABLE exchanges ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0").run();
-  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,
@@ -18828,14 +18708,6 @@ function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-  db.exec(`DROP INDEX IF EXISTS idx_ontology_relations_pair`);
-  db.exec(`
-    DELETE FROM ontology_relations
-    WHERE rowid NOT IN (
-      SELECT MIN(rowid) FROM ontology_relations
-      GROUP BY source_fact_id, relation_type, target_fact_id
-    )
-  `);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_relations_triple
     ON ontology_relations(source_fact_id, relation_type, target_fact_id)
@@ -18843,7 +18715,6 @@ function initDatabase() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_source ON ontology_relations(source_fact_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_target ON ontology_relations(target_fact_id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_ontology ON facts(ontology_category_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_coding_agent ON facts(coding_agent)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_active_created_id ON facts(is_active, created_at, id)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ontology_categories_domain ON ontology_categories(domain_id)`);
   db.exec(`
@@ -18851,39 +18722,12 @@ function initDatabase() {
       session_id TEXT PRIMARY KEY,
       processed_at TEXT NOT NULL,
       extracted INTEGER NOT NULL DEFAULT 0,
-      saved INTEGER NOT NULL DEFAULT 0
+      saved INTEGER NOT NULL DEFAULT 0,
+      dropped_batches INTEGER NOT NULL DEFAULT 0,
+      claim_owner TEXT,
+      last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
-  {
-    const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`).all();
-    if (!cols.some((c) => c.name === "dropped_batches")) {
-      try {
-        db.prepare("ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0").run();
-      } catch (e) {
-        const msg = e?.message ?? "";
-        if (/duplicate column name/i.test(msg)) {
-        } else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
-          console.error("[db] extraction_log.dropped_batches \uB9C8\uC774\uADF8\uB808\uC774\uC158 \uC9C0\uC5F0 \u2014 \uB77D \uACBD\uD569, \uB2E4\uC74C \uCD08\uAE30\uD654\uC5D0\uC11C \uC7AC\uC2DC\uB3C4");
-        } else {
-          throw e;
-        }
-      }
-    }
-    if (!cols.some((c) => c.name === "claim_owner")) {
-      try {
-        db.prepare("ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT").run();
-      } catch (e) {
-        const msg = e?.message ?? "";
-        if (/duplicate column name/i.test(msg)) {
-        } else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
-          console.error("[db] extraction_log.claim_owner \uB9C8\uC774\uADF8\uB808\uC774\uC158 \uC9C0\uC5F0 \u2014 \uB77D \uACBD\uD569, \uB2E4\uC74C \uCD08\uAE30\uD654\uC5D0\uC11C \uC7AC\uC2DC\uB3C4");
-        } else {
-          throw e;
-        }
-      }
-    }
-  }
-  autoHealScopeProjects(db);
   return db;
 }
 
@@ -18898,7 +18742,6 @@ function getRevisions(db, factId) {
   ).all(factId);
 }
 function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85) {
-  const canonProject = project ? canonicalizeProject(db, project) : project;
   const candidateFetch = Math.max(limit * 2, 50);
   const fetch = (table) => {
     try {
@@ -18930,7 +18773,7 @@ function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85)
     ).get(vr.id, EMBEDDING_VERSION);
     if (!row) continue;
     const fact = rowToFact(row);
-    if (canonProject && fact.scope_type === "project" && fact.scope_project !== canonProject) continue;
+    if (project && fact.scope_type === "project" && fact.scope_project !== project) continue;
     results.push({ fact, distance: vr.distance });
     if (results.length >= limit) break;
   }
@@ -18977,8 +18820,7 @@ function rowToFact(row) {
     updated_at: row["updated_at"],
     consolidated_count: row["consolidated_count"],
     is_active: Boolean(row["is_active"]),
-    ontology_category_id: row["ontology_category_id"] ?? null,
-    coding_agent: row["coding_agent"] ?? null
+    ontology_category_id: row["ontology_category_id"] ?? null
   };
 }
 
@@ -19275,7 +19117,7 @@ function validateISODate(dateStr, paramName) {
   }
 }
 async function searchConversations(query, options = {}) {
-  const { limit = 10, mode = "both", after, before, coding_agent } = options;
+  const { limit = 10, mode = "both", after, before } = options;
   if (after) validateISODate(after, "--after");
   if (before) validateISODate(before, "--before");
   const db = getSearchDb();
@@ -19290,10 +19132,6 @@ async function searchConversations(query, options = {}) {
     if (before) {
       filterParts.push(`e.timestamp <= ?`);
       filterParams.push(before);
-    }
-    if (coding_agent) {
-      filterParts.push(`e.coding_agent = ?`);
-      filterParams.push(coding_agent);
     }
     const timeClause = filterParts.length > 0 ? `AND ${filterParts.join(" AND ")}` : "";
     const timeParams = filterParams;
@@ -19311,7 +19149,6 @@ async function searchConversations(query, options = {}) {
             e.archive_path,
             e.line_start,
             e.line_end,
-            e.coding_agent,
             vec.distance
           FROM vec_exchanges AS vec
           JOIN exchanges AS e ON vec.id = e.id
@@ -19349,8 +19186,7 @@ async function searchConversations(query, options = {}) {
           e.assistant_message,
           e.archive_path,
           e.line_start,
-          e.line_end,
-          e.coding_agent`;
+          e.line_end`;
       let textResults = [];
       const ftsTokens = query.split(/[^\p{L}\p{N}]+/u).map((t) => t.trim()).filter(Boolean);
       const ftsExpr = ftsTokens.map((t) => `"${t}"`).join(" ");
@@ -19520,8 +19356,7 @@ async function searchConversations(query, options = {}) {
       assistantMessage: row.assistant_message,
       archivePath: row.archive_path,
       lineStart: row.line_start,
-      lineEnd: row.line_end,
-      codingAgent: row.coding_agent || "codex"
+      lineEnd: row.line_end
     };
     const summaryPath = row.archive_path.replace(".jsonl", "-summary.txt");
     let summary;
@@ -19595,9 +19430,7 @@ async function formatResults(results) {
     const result = results[index];
     const date3 = new Date(result.exchange.timestamp).toISOString().split("T")[0];
     const simPct = result.similarity !== void 0 ? Math.round(result.similarity * 100) : null;
-    const agent = result.exchange.codingAgent || "codex";
-    const agentTag = agent !== "codex" ? ` @${agent}` : "";
-    output += `${index + 1}. [${result.exchange.project}, ${date3}${agentTag}]`;
+    output += `${index + 1}. [${result.exchange.project}, ${date3}]`;
     if (simPct !== null) {
       output += ` - ${simPct}% match`;
     }
@@ -21267,7 +21100,7 @@ function normalizeCodexRecords(records) {
     const rec = r;
     return !!rec && (rec.type === "session_meta" || rec.type === "response_item");
   });
-  if (!isRollout) return records;
+  if (!isRollout) return [];
   let meta = null;
   let lastTs = "";
   const out = [];
@@ -21776,7 +21609,7 @@ function backoffMs(attempt) {
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 async function callOnce(systemPrompt, userMessage, _maxTokens) {
-  const model = process.env.MEMORY_BANK_CODEX_MODEL || process.env.MEMORY_BANK_FACT_MODEL || null;
+  const model = process.env.MEMORY_BANK_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
   return runCodex({ systemPrompt, userMessage, model, timeoutMs });
@@ -21954,7 +21787,6 @@ var SearchInputSchema = external_exports.object({
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
   after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations after this date (YYYY-MM-DD format)"),
   before: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations before this date (YYYY-MM-DD format)"),
-  coding_agent: external_exports.string().optional().describe('Filter by coding agent (e.g., "claude-code", "codex", "opencode"). Omit to search all agents.'),
   response_format: ResponseFormatEnum.default("markdown").describe(
     'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
   )
@@ -21968,7 +21800,6 @@ var SearchFactsInputSchema = external_exports.object({
   query: external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
   project: external_exports.string().max(500).optional(),
   category: external_exports.enum(["decision", "preference", "pattern", "knowledge", "constraint"]).optional(),
-  coding_agent: external_exports.string().optional().describe('Filter facts by coding agent (e.g., "claude-code", "codex")'),
   include_revisions: external_exports.boolean().default(false),
   limit: external_exports.number().int().min(1).max(50).default(10)
 }).strict();
@@ -21990,7 +21821,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memory-bank",
-    version: "1.0.0"
+    version: "1.5.0-codex.1"
   },
   {
     capabilities: {
@@ -22017,7 +21848,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
             after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
             before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            coding_agent: { type: "string", description: 'Filter by coding agent (e.g., "claude-code", "codex", "opencode")' },
             response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
           },
           required: ["query"],
@@ -22065,7 +21895,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               enum: ["decision", "preference", "pattern", "knowledge", "constraint"],
               description: "Filter by fact category"
             },
-            coding_agent: { type: "string", description: 'Filter by coding agent (e.g., "claude-code", "codex", "opencode")' },
             include_revisions: { type: "boolean", description: "Include revision history", default: false },
             limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Max results" }
           },
@@ -22214,8 +22043,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const options = {
           limit: params.limit,
           after: params.after,
-          before: params.before,
-          coding_agent: params.coding_agent
+          before: params.before
         };
         const results = await searchMultipleConcepts(params.query, options);
         if (params.response_format === "json") {
@@ -22236,8 +22064,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           mode: params.mode,
           limit: params.limit,
           after: params.after,
-          before: params.before,
-          coding_agent: params.coding_agent
+          before: params.before
         };
         const results = await searchConversations(params.query, options);
         if (params.response_format === "json") {
@@ -22326,14 +22153,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (params.category) {
           filtered = filtered.filter((r) => r.fact.category === params.category);
         }
-        if (params.coding_agent) {
-          filtered = filtered.filter((r) => (r.fact.coding_agent || "codex") === params.coding_agent);
-        }
-        const agentLabel = params.coding_agent ? ` | Agent: ${params.coding_agent}` : "";
         let output = `# Facts Search Results
 
 Query: "${params.query}"
-Project: ${currentProject}${agentLabel}
+Project: ${currentProject}
 Results: ${filtered.length}
 
 `;
@@ -22351,8 +22174,7 @@ Results: ${filtered.length}
           const catName = catInfo ? catInfo.name : "";
           output += `## [${fact.category}] ${fact.fact}
 `;
-          const factAgent = fact.coding_agent || "codex";
-          output += `- Scope: ${fact.scope_type}${fact.scope_project ? ` (${fact.scope_project})` : ""} | Agent: ${factAgent}
+          output += `- Scope: ${fact.scope_type}${fact.scope_project ? ` (${fact.scope_project})` : ""}
 `;
           output += `- Confirmed: ${fact.consolidated_count}x | Similarity: ${similarity}
 `;

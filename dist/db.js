@@ -3,7 +3,6 @@ import path from 'path';
 import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { getDbPath } from './paths.js';
-import { autoHealScopeProjects } from './project-canon.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
 export const VEC_INT8_SCALE = 127;
 /**
@@ -18,7 +17,7 @@ export const VEC_INT8_SCALE = 127;
 const VEC_TABLES = new Set(['vec_exchanges', 'vec_facts', 'vec_facts_kr', 'vec_categories']);
 /** Authoritative dtype of any vec0 table — read from the ACTUAL schema in
  * sqlite_master (never a flag), so readers/writers can never disagree with a
- * migration swap. Unknown/absent table defaults to int8 (the fresh-DB DDL). */
+ * Unknown/absent tables default to int8, matching the schema below. */
 export function getVecTableDtype(db, table) {
     if (!VEC_TABLES.has(table))
         throw new Error(`not a vec table: ${table}`);
@@ -60,34 +59,6 @@ export function normalizeVecDistance(distance, dtype) {
  */
 export function l2DistanceToSimilarity(distance) {
     return 1 - (distance * distance) / 2;
-}
-export function migrateSchema(db) {
-    const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
-    const columnNames = new Set(columns.map(c => c.name));
-    const migrations = [
-        { name: 'last_indexed', sql: 'ALTER TABLE exchanges ADD COLUMN last_indexed INTEGER' },
-        { name: 'parent_uuid', sql: 'ALTER TABLE exchanges ADD COLUMN parent_uuid TEXT' },
-        { name: 'is_sidechain', sql: 'ALTER TABLE exchanges ADD COLUMN is_sidechain BOOLEAN DEFAULT 0' },
-        { name: 'session_id', sql: 'ALTER TABLE exchanges ADD COLUMN session_id TEXT' },
-        { name: 'cwd', sql: 'ALTER TABLE exchanges ADD COLUMN cwd TEXT' },
-        { name: 'git_branch', sql: 'ALTER TABLE exchanges ADD COLUMN git_branch TEXT' },
-        { name: 'claude_version', sql: 'ALTER TABLE exchanges ADD COLUMN claude_version TEXT' },
-        { name: 'thinking_level', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_level TEXT' },
-        { name: 'thinking_disabled', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_disabled BOOLEAN' },
-        { name: 'thinking_triggers', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_triggers TEXT' },
-        { name: 'coding_agent', sql: "ALTER TABLE exchanges ADD COLUMN coding_agent TEXT DEFAULT 'codex'" },
-    ];
-    let migrated = false;
-    for (const migration of migrations) {
-        if (!columnNames.has(migration.name)) {
-            console.error(`Migrating schema: adding ${migration.name} column...`);
-            db.prepare(migration.sql).run();
-            migrated = true;
-        }
-    }
-    if (migrated) {
-        console.error('Migration complete.');
-    }
 }
 export function initDatabase() {
     const dbPath = getDbPath();
@@ -136,11 +107,11 @@ export function initDatabase() {
       session_id TEXT,
       cwd TEXT,
       git_branch TEXT,
-      claude_version TEXT,
+      codex_version TEXT,
       thinking_level TEXT,
       thinking_disabled BOOLEAN,
       thinking_triggers TEXT,
-      coding_agent TEXT DEFAULT 'codex'
+      embedding_version INTEGER NOT NULL DEFAULT 0
     )
   `);
     // Create tool_calls table
@@ -158,10 +129,8 @@ export function initDatabase() {
   `);
     // Create vector search index.
     //
-    // dtype: int8 quantized vectors use 4× less storage and ~2× faster KNN with
-    // no recall@10 loss (measured on a 50K-exchange benchmark: 73.6MB→18.4MB,
-    // p50 19.1ms→8.7ms, recall identical). Fresh DBs are created int8; existing
-    // float32 DBs keep float32 until scripts/migrate-vec-int8.mjs converts them.
+    // int8 quantized vectors use 4× less storage than float32 and make KNN
+    // scans cheaper. Fresh Memory Bank databases always use int8.
     // The authoritative dtype is the ACTUAL schema in sqlite_master (getVecDtype)
     // — float32 and int8 blobs are not interchangeable, and deriving from the
     // real schema (not a flag) makes flag/schema divergence impossible.
@@ -171,9 +140,7 @@ export function initDatabase() {
       embedding int8[384]
     )
   `);
-    // Run migrations first
-    migrateSchema(db);
-    // Create indexes (after migrations ensure columns exist)
+    // Create indexes
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_timestamp ON exchanges(timestamp DESC)
   `);
@@ -191,9 +158,6 @@ export function initDatabase() {
   `);
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_git_branch ON exchanges(git_branch)
-  `);
-    db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_coding_agent ON exchanges(coding_agent)
   `);
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_calls(tool_name)
@@ -279,7 +243,13 @@ export function initDatabase() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       consolidated_count INTEGER DEFAULT 1,
-      is_active INTEGER DEFAULT 1
+      is_active INTEGER DEFAULT 1,
+      ontology_category_id TEXT,
+      fact_kr TEXT,
+      embedding_version INTEGER NOT NULL DEFAULT 1,
+      ontology_attempts INTEGER NOT NULL DEFAULT 0,
+      consolidation_attempts INTEGER NOT NULL DEFAULT 0,
+      ontology_last_attempt_at TEXT
     )
   `);
     db.exec(`
@@ -352,49 +322,6 @@ export function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-    // Idempotent column addition for facts.ontology_category_id
-    const factColumns = db.prepare(`SELECT name FROM pragma_table_info('facts')`).all();
-    const factColumnNames = new Set(factColumns.map((c) => c.name));
-    if (!factColumnNames.has('ontology_category_id')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN ontology_category_id TEXT').run();
-    }
-    if (!factColumnNames.has('fact_kr')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN fact_kr TEXT').run();
-    }
-    if (!factColumnNames.has('coding_agent')) {
-        db.prepare("ALTER TABLE facts ADD COLUMN coding_agent TEXT DEFAULT 'codex'").run();
-    }
-    // Embedding model version (1 = all-MiniLM-L6-v2, 2 = multilingual L12-v2).
-    // The re-embed worker upgrades rows where version < current.
-    if (!factColumnNames.has('embedding_version')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 1').run();
-    }
-    // Ontology classification attempt ledger: without it, a fact whose
-    // classification permanently fails (unparseable LLM output, oversized
-    // content) stays NULL forever and is re-selected by every backfill run —
-    // one wasted LLM call per run per stuck fact. After MAX attempts the
-    // classifier persists the General/Misc fallback so the fact leaves the
-    // queue for good (it stays fully searchable — ontology is an overlay).
-    if (!factColumnNames.has('ontology_attempts')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN ontology_attempts INTEGER NOT NULL DEFAULT 0').run();
-    }
-    // Consolidation attempt ledger (cross-run): a driver fact whose comparison
-    // CALL keeps failing is held (retried) up to MAX attempts, then skipped so it
-    // can't wedge the cursor. This distinguishes a short/transient outage (a few
-    // attempts, then it succeeds and the counter resets) from a persistently
-    // un-processable fact (reaches MAX and is skipped) WITHOUT inspecting the
-    // provider-specific error — run-local counting alone can't, because a real
-    // outage spans separate worker runs.
-    if (!factColumnNames.has('consolidation_attempts')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN consolidation_attempts INTEGER NOT NULL DEFAULT 0').run();
-    }
-    if (!factColumnNames.has('ontology_last_attempt_at')) {
-        db.prepare('ALTER TABLE facts ADD COLUMN ontology_last_attempt_at TEXT').run();
-    }
-    const exchangeColumns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
-    if (!exchangeColumns.some((c) => c.name === 'embedding_version')) {
-        db.prepare('ALTER TABLE exchanges ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0').run();
-    }
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,
@@ -405,21 +332,8 @@ export function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
-    // Relation dedup + cross-process uniqueness (idempotent migration) — on
-    // the TRIPLE (source, type, target), never the pair: distinct relation
-    // TYPES between the same facts (a SUPPORTS b + a CONTRADICTS b) are valid,
-    // user-visible graph data and must not be collapsed. Only EXACT duplicate
-    // triples (same type re-written by pre-idempotency retries) are removed,
-    // keeping the earliest row. A short-lived 2026-07-05 build shipped a
-    // pair-level index by mistake — drop it so the triple index governs.
-    db.exec(`DROP INDEX IF EXISTS idx_ontology_relations_pair`);
-    db.exec(`
-    DELETE FROM ontology_relations
-    WHERE rowid NOT IN (
-      SELECT MIN(rowid) FROM ontology_relations
-      GROUP BY source_fact_id, relation_type, target_fact_id
-    )
-  `);
+    // Exact relation triples are unique; different relation types between the
+    // same pair remain valid.
     db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_relations_triple
     ON ontology_relations(source_fact_id, relation_type, target_fact_id)
@@ -427,7 +341,6 @@ export function initDatabase() {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_source ON ontology_relations(source_fact_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_target ON ontology_relations(target_fact_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_ontology ON facts(ontology_category_id)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_coding_agent ON facts(coding_agent)`);
     // Keyset pagination for the consolidation drain (getAllNewFactsSince): serves
     // both `WHERE is_active = 1 AND (created_at, id) > cursor` and the
     // `ORDER BY created_at, id` without a temp sort over the whole table.
@@ -441,93 +354,49 @@ export function initDatabase() {
       session_id TEXT PRIMARY KEY,
       processed_at TEXT NOT NULL,
       extracted INTEGER NOT NULL DEFAULT 0,
-      saved INTEGER NOT NULL DEFAULT 0
+      saved INTEGER NOT NULL DEFAULT 0,
+      dropped_batches INTEGER NOT NULL DEFAULT 0,
+      claim_owner TEXT,
+      last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
-    // Dead-letter marker for extraction (Codex 적대 리뷰 2026-07-17). A batch whose
-    // LLM call fails DETERMINISTICALLY (400/413/max_tokens — the same input always
-    // fails) is dropped so one bad batch can't wedge the session queue forever, but
-    // dropping it silently means those exchanges' facts are lost with no record.
-    // The count is persisted so the loss is queryable instead of invisible:
-    //   SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0;
-    // check-then-ALTER 는 경쟁 상태다 — hook 과 MCP 서버가 동시에 초기화하면 한쪽이
-    // duplicate column 으로 실패해 DB 초기화 전체가 죽는다. 이미 있으면 성공으로
-    // 흡수하고, 그 외 에러만 전파한다 (Codex 리뷰 R3 MEDIUM).
-    {
-        const cols = db.prepare(`SELECT name FROM pragma_table_info('extraction_log')`)
-            .all();
-        if (!cols.some((c) => c.name === 'dropped_batches')) {
-            try {
-                db.prepare('ALTER TABLE extraction_log ADD COLUMN dropped_batches INTEGER NOT NULL DEFAULT 0').run();
-            }
-            catch (e) {
-                // 실패를 3분류한다 (Codex 리뷰 R3/R4 MEDIUM). duplicate 만 흡수하고 전부
-                // 던지면, 다른 프로세스가 쓰기 락을 쥔 순간의 초기화가 통째로 죽어
-                // 훅/워커가 그 세션을 아예 처리하지 못한다 — 일시적 경합이 기능 정지가 된다.
-                const msg = e?.message ?? '';
-                if (/duplicate column name/i.test(msg)) {
-                    /* 이미 있음 — 다른 프로세스가 먼저 추가 */
-                }
-                else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
-                    // 일시적 경합: 이 컬럼은 선택적 메타데이터(폐기 배치 카운터)이므로 다음
-                    // 초기화가 추가한다. 그때까지 이 컬럼을 쓰는 INSERT 는 자체 catch 로
-                    // 마커를 남기지 않을 뿐이고, 세션은 pending 에 남아 재처리된다(손실 없음).
-                    console.error('[db] extraction_log.dropped_batches 마이그레이션 지연 — 락 경합, 다음 초기화에서 재시도');
-                }
-                else {
-                    throw e; // 진짜 스키마 이상은 조용히 넘기지 않는다
-                }
-            }
-        }
-        // claim_owner: 세션 선점의 **소유권 토큰**. 상태(-3)만으로는 "내 claim"을 SQL 로
-        // 식별할 수 없어 한 러너의 롤백이 다른 러너의 살아있는 claim 을 덮는다(R7 HIGH-2).
-        if (!cols.some((c) => c.name === 'claim_owner')) {
-            try {
-                db.prepare('ALTER TABLE extraction_log ADD COLUMN claim_owner TEXT').run();
-            }
-            catch (e) {
-                const msg = e?.message ?? '';
-                if (/duplicate column name/i.test(msg)) {
-                    /* 다른 프로세스가 먼저 추가 */
-                }
-                else if (/database is locked|database table is locked|SQLITE_BUSY/i.test(msg)) {
-                    console.error('[db] extraction_log.claim_owner 마이그레이션 지연 — 락 경합, 다음 초기화에서 재시도');
-                }
-                else {
-                    throw e;
-                }
-            }
-        }
-    }
-    // Self-heal slug-format scope_project rows (cheap probe; no-op when clean).
-    // Keeps the canonical path format intact even when other devices sync in
-    // facts written by older code.
-    autoHealScopeProjects(db);
     return db;
 }
 export function insertExchange(db, exchange, embedding, _toolNames) {
     const now = Date.now();
-    // ONE transaction for exchanges + vec + tool_calls, with the dtype read
-    // INSIDE it. Two invariants depend on this:
-    //  1. No partial state: an exchanges row without its vector must never be
-    //     observable (the int8 migration snapshots/verifies by comparing the
-    //     two tables — a row committed between separate transactions would be
-    //     missed by its delta pass and lose its vector permanently).
-    //  2. dtype consistency: the migration swaps the vec table dtype under
-    //     BEGIN IMMEDIATE; reading dtype inside our own write transaction
-    //     serializes against the swap, so we can never quantize for a schema
-    //     that changed between the read and the write.
+    // One transaction keeps the exchange, vector, and tool calls atomic. Read
+    // the table dtype inside that write transaction so the blob always matches
+    // the actual vec schema.
     const insertAll = db.transaction(() => {
         // The embedding parameter was just generated with the current model, so
         // stamp the current version — search filters on it and the re-embed
         // worker must not redo freshly indexed rows.
         db.prepare(`
-      INSERT OR REPLACE INTO exchanges
+      INSERT INTO exchanges
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
-       parent_uuid, is_sidechain, session_id, cwd, git_branch, claude_version,
-       thinking_level, thinking_disabled, thinking_triggers, coding_agent, embedding_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.claudeVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, exchange.codingAgent || 'codex', EMBEDDING_VERSION);
+       parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
+       thinking_level, thinking_disabled, thinking_triggers, embedding_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project = excluded.project,
+        timestamp = excluded.timestamp,
+        user_message = excluded.user_message,
+        assistant_message = excluded.assistant_message,
+        archive_path = excluded.archive_path,
+        line_start = excluded.line_start,
+        line_end = excluded.line_end,
+        last_indexed = excluded.last_indexed,
+        parent_uuid = excluded.parent_uuid,
+        is_sidechain = excluded.is_sidechain,
+        session_id = excluded.session_id,
+        cwd = excluded.cwd,
+        git_branch = excluded.git_branch,
+        codex_version = excluded.codex_version,
+        thinking_level = excluded.thinking_level,
+        thinking_disabled = excluded.thinking_disabled,
+        thinking_triggers = excluded.thinking_triggers,
+        embedding_version = excluded.embedding_version
+    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION);
         // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
         const vecDtype = getVecDtype(db);
         db.prepare('DELETE FROM vec_exchanges WHERE id = ?').run(exchange.id);
@@ -544,9 +413,7 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
             }
         }
     });
-    // .immediate(): acquire the write lock at BEGIN, before any read — a
-    // deferred BEGIN would let the int8 migration swap commit between our reads
-    // and the lock upgrade (stale-dtype write / SQLITE_BUSY_SNAPSHOT).
+    // .immediate(): acquire the write lock at BEGIN, before any schema read.
     insertAll.immediate();
 }
 export function getAllExchanges(db) {

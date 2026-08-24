@@ -53,7 +53,6 @@ export interface SearchOptions {
   mode?: 'vector' | 'text' | 'both';
   after?: string;  // ISO date string
   before?: string; // ISO date string
-  coding_agent?: string; // Filter by coding agent (e.g., 'claude-code', 'codex', 'opencode')
 }
 
 interface ExchangeRow {
@@ -66,7 +65,6 @@ interface ExchangeRow {
   line_start: number;
   line_end: number;
   distance: number;
-  coding_agent: string | null;
 }
 
 function validateISODate(dateStr: string, paramName: string): void {
@@ -85,7 +83,7 @@ export async function searchConversations(
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {
-  const { limit = 10, mode = 'both', after, before, coding_agent } = options;
+  const { limit = 10, mode = 'both', after, before } = options;
 
   // Validate date parameters
   if (after) validateISODate(after, '--after');
@@ -105,10 +103,6 @@ export async function searchConversations(
     if (before) {
       filterParts.push(`e.timestamp <= ?`);
       filterParams.push(before);
-    }
-    if (coding_agent) {
-      filterParts.push(`e.coding_agent = ?`);
-      filterParams.push(coding_agent);
     }
     const timeClause = filterParts.length > 0 ? `AND ${filterParts.join(' AND ')}` : '';
     const timeParams = filterParams;
@@ -131,7 +125,6 @@ export async function searchConversations(
             e.archive_path,
             e.line_start,
             e.line_end,
-            e.coding_agent,
             vec.distance
           FROM vec_exchanges AS vec
           JOIN exchanges AS e ON vec.id = e.id
@@ -182,8 +175,7 @@ export async function searchConversations(
           e.assistant_message,
           e.archive_path,
           e.line_start,
-          e.line_end,
-          e.coding_agent`;
+          e.line_end`;
 
       let textResults: ExchangeRow[] = [];
 
@@ -251,7 +243,7 @@ export async function searchConversations(
             // — joining before the sort materializes the FULL conversation
             // text of every match (a common-word query matched 17.8K rows ≈
             // 350MB pulled to keep 10; measured 34s).
-            // Filtered queries (after/before/coding_agent): the filter MUST
+            // Filtered queries (after/before): the filter MUST
             // apply BEFORE the limit or valid old/filtered hits vanish (an
             // inner-limit over-fetch was reproduced hiding a valid old row
             // behind 250 newer matches) — so they use the join-then-sort
@@ -455,7 +447,6 @@ export async function searchConversations(
       archivePath: row.archive_path,
       lineStart: row.line_start,
       lineEnd: row.line_end,
-      codingAgent: row.coding_agent || 'codex',
     };
 
     // Try to load summary if available
@@ -550,10 +541,7 @@ export async function formatResults(results: Array<SearchResult & { summary?: st
     const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
     const simPct = result.similarity !== undefined ? Math.round(result.similarity * 100) : null;
 
-    // Header with match percentage and coding agent
-    const agent = result.exchange.codingAgent || 'codex';
-    const agentTag = agent !== 'codex' ? ` @${agent}` : '';
-    output += `${index + 1}. [${result.exchange.project}, ${date}${agentTag}]`;
+    output += `${index + 1}. [${result.exchange.project}, ${date}]`;
     if (simPct !== null) {
       output += ` - ${simPct}% match`;
     }
@@ -797,4 +785,3 @@ export async function formatMultiConceptResults(
 
   return output;
 }
-

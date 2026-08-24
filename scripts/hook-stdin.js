@@ -2,16 +2,9 @@
 //
 // Codex hook stdin carries snake_case keys (grounded in the codex-cli 0.149
 // binary: hook_event_name, session_id, transcript_path, agent_transcript_path,
-// cwd, prompt, turn_id). Accept camelCase and legacy aliases too — a missing
-// or renamed key must degrade to "skip", never crash the session lifecycle.
+// cwd, prompt, turn_id). A missing key degrades to "skip" and never crashes
+// the session lifecycle.
 import fs from 'node:fs';
-
-function firstKey(obj, keys) {
-  for (const k of keys) {
-    if (obj && obj[k] != null && obj[k] !== '') return obj[k];
-  }
-  return undefined;
-}
 
 /** Read all of stdin and defensively extract the keys we care about. */
 export async function readHookStdin({ timeoutMs = 5_000 } = {}) {
@@ -39,18 +32,11 @@ export async function readHookStdin({ timeoutMs = 5_000 } = {}) {
   return {
     raw,
     json,
-    event: String(firstKey(obj, ['hook_event_name', 'event_name', 'event', 'hook_type']) ?? ''),
-    sessionId: firstKey(obj, ['session_id', 'sessionId', 'thread_id', 'threadId', 'conversation_id']),
-    transcriptPath: firstKey(obj, [
-      'transcript_path',
-      'transcriptPath',
-      'agent_transcript_path',
-      'agentTranscriptPath',
-      'rollout_path',
-      'rolloutPath',
-    ]),
-    prompt: firstKey(obj, ['prompt', 'user_prompt', 'userPrompt', 'message']),
-    cwd: firstKey(obj, ['cwd', 'working_directory', 'workingDirectory']),
+    event: typeof obj.hook_event_name === 'string' ? obj.hook_event_name : '',
+    sessionId: obj.session_id,
+    transcriptPath: obj.transcript_path || obj.agent_transcript_path,
+    prompt: obj.prompt,
+    cwd: obj.cwd,
   };
 }
 

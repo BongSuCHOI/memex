@@ -1,14 +1,14 @@
 import { sessionsRoot } from './codex-rollout.js';
 /**
- * Get the personal superpowers directory
+ * Native memory-bank data root.
  *
- * Precedence:
- * 1. MEMORY_BANK_CONFIG_DIR env var (if set, for testing)
- * 2. PERSONAL_SUPERPOWERS_DIR env var (if set)
- * 3. XDG_CONFIG_HOME/superpowers (if XDG_CONFIG_HOME is set)
- * 4. ~/.config/superpowers (default)
+ * Precedence (no legacy fallback, no migration):
+ * 1. MEMORY_BANK_HOME          — explicit root, used as-is
+ * 2. MEMORY_BANK_CONFIG_DIR    — explicit root, used as-is
+ * 3. XDG_CONFIG_HOME/memory-bank
+ * 4. ~/.config/memory-bank     — default
  */
-export declare function getSuperpowersDir(): string;
+export declare function getMemoryBankHome(): string;
 /**
  * Get conversation archive directory
  */
@@ -32,40 +32,16 @@ export declare function getExcludeConfigPath(): string;
  */
 export { sessionsRoot as getSessionsRoot };
 /**
- * Known coding agent source directories.
- * Maps source directory paths to coding agent identifiers.
- * Used during sync to auto-detect which agent generated a conversation.
- */
-export interface AgentSource {
-    name: string;
-    sourceDir: string;
-}
-/**
- * Get the list of coding agent sources to sync from.
- * Default: local Codex rollouts only. Additional agents configured via
- * MEMORY_BANK_AGENT_SOURCES env var (JSON) or agent-sources.json config file.
- *
- * Format: [{"name": "opencode", "sourceDir": "/path/to/conversations"}]
- */
-export declare function getAgentSources(): AgentSource[];
-/**
- * Detect coding agent from a source directory path.
- * Returns the agent name if the path matches a known source, 'codex' otherwise.
- */
-export declare function detectCodingAgent(sourcePath: string): string;
-/**
  * Reserved basename of the isolated working directory that llm.ts gives to
  * headless CodexExec calls (see LLM_WORKDIR in llm.ts). Every one-shot
  * `codex exec` call runs with --ephemeral inside its own mkdtemp, so nothing
- * persists under this name anymore. The slug is kept for legacy-archive
- * compatibility: pre-Codex transcripts polluted the conversation index with
- * 6.4k worker exchanges (observed 2026-07-08), and old archives still carry
- * those slugs.
+ * persists under this name anymore. The reserved name still prevents an
+ * accidentally persisted worker rollout from entering the index.
  */
 export declare const LLM_WORKDIR_BASENAME = "memory-bank-llm";
 /**
- * True if a project key (derived from session cwd or legacy archive slugs)
- * must be skipped by indexing/sync. Combines the user-configured exact-match
+ * True if a project key derived from session cwd must be skipped by
+ * indexing/sync. Combines the user-configured exact-match
  * list with the built-in exclusion of the plugin's own LLM worker sessions.
  */
 export declare function isExcludedProject(project: string, excluded?: string[]): boolean;

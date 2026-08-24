@@ -42,8 +42,8 @@ function codexText(content: unknown): string {
 }
 
 /**
- * Codex rollout records → legacy ConversationMessage stream, so both
- * Markdown and HTML formatters keep working unchanged.
+ * Codex rollout records → display message stream shared by the Markdown and
+ * HTML formatters.
  *
  * Mapping: session_meta → metadata on every message; response_item.message
  * (user/assistant) → text turns; custom_tool_call / function_call →
@@ -56,8 +56,7 @@ function normalizeCodexRecords(records: unknown[]): ConversationMessage[] {
     const rec = r as { type?: unknown } | null;
     return !!rec && (rec.type === 'session_meta' || rec.type === 'response_item');
   });
-  // Legacy Claude-format records already structurally match the target shape.
-  if (!isRollout) return records as unknown as ConversationMessage[];
+  if (!isRollout) return [];
 
   let meta: Record<string, unknown> | null = null;
   let lastTs = '';
