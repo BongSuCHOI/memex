@@ -190,3 +190,59 @@ describe('show command - HTML formatting', () => {
     expect(html).toContain('streaming');
   });
 });
+
+describe('Codex rollout normalization', () => {
+  const codexJsonl = [
+    JSON.stringify({
+      type: 'session_meta',
+      timestamp: '2026-08-24T01:00:00Z',
+      payload: {
+        id: 'thr-codex-1', session_id: 'sess-codex-1', cwd: '/tmp/proj-x',
+        cli_version: '0.149.0', source: 'cli', timestamp: '2026-08-24T01:00:00Z',
+      },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<codex_internal_context hidden>' }] },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'How do we paginate PostgREST lists?' }] },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'shell', call_id: 'call-1', input: JSON.stringify({ cmd: 'grep keyset src' }) },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'custom_tool_call_output', call_id: 'call-1', output: 'keyset pagination already used in src/list.ts' },
+    }),
+    JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Use keyset pagination like src/list.ts.' }] },
+    }),
+  ].map((l) => `${l}\n`).join('');
+
+  it('renders user, assistant, tool use, tool result and metadata without internal context', () => {
+    const md = formatConversationAsMarkdown(codexJsonl);
+    expect(md).toContain('**User**');
+    expect(md).toContain('paginate PostgREST lists?');
+    expect(md).toContain('**Agent**');
+    expect(md).toContain('keyset pagination');
+    expect(md).toContain('**Tool Use:** `shell`');
+    expect(md).toContain('keyset pagination already used');
+    expect(md).toContain('**Session ID:** sess-codex-1');
+    expect(md).toContain('/tmp/proj-x');
+    expect(md).toContain('Codex CLI Version:** 0.149.0');
+    expect(md).not.toContain('<codex_internal_context');
+    expect(md).not.toContain('hidden>');
+  });
+
+  it('produces non-empty HTML for the same rollout', () => {
+    const html = formatConversationAsHTML(codexJsonl);
+    expect(html.trim().length).toBeGreaterThan(0);
+    expect(html).toContain('Codex CLI Version');
+    expect(html).not.toContain('Claude Code Version');
+    expect(html).toContain('paginate PostgREST lists?');
+  });
+});

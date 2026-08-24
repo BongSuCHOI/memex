@@ -5,7 +5,9 @@
  */
 const http = require('http');
 const path = require('path');
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+const PLUGIN_ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT
+  || process.env.PLUGIN_ROOT
+  || path.resolve(__dirname, '..');
 const Database = require(path.join(PLUGIN_ROOT, 'node_modules/better-sqlite3'));
 const {
   ACCESS_COOKIE_NAME,
@@ -20,7 +22,9 @@ const {
   chatWithReplacementOs,
 } = require('./replacement-os.cjs');
 
-const DB_PATH = path.join(process.env.HOME, '.config/superpowers/conversation-index/db.sqlite');
+const DB_PATH = process.env.MEMORY_BANK_DB_PATH
+  || process.env.TEST_DB_PATH
+  || path.join(process.env.HOME, '.config/superpowers/conversation-index/db.sqlite');
 const PORT = process.env.PORT || 3847;
 const replacementOsAccess = createReplacementOsAccessState();
 
@@ -87,7 +91,7 @@ async function translateTexts(texts) {
   const textsToTranslate = uncached.map(u => u.text);
 
   try {
-    // Use translate-worker.mjs (Agent SDK - no API key needed)
+    // Use translate-worker.mjs (Codex CLI — no API key needed)
     const { execFileSync } = require('child_process');
     const workerPath = path.join(__dirname, 'translate-worker.mjs');
     const output = execFileSync('node', [workerPath], {
@@ -134,11 +138,14 @@ const apiHandlers = {
         GROUP BY project
       ) cwd_t ON p.project = cwd_t.project
       LEFT JOIN (
-        SELECT e1.project, e1.user_message
-        FROM exchanges e1
-        INNER JOIN (
-          SELECT project, MAX(timestamp) as max_ts
-          FROM exchanges
+        SELECT project, user_message
+        FROM (
+          SELECT e1.project, e1.user_message,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY e1.project
+                   ORDER BY e1.timestamp DESC, e1.rowid DESC
+                 ) AS rn
+          FROM exchanges e1
           WHERE user_message NOT LIKE '%<observed_from_primary_session>%'
             AND user_message NOT LIKE '%<task-notification>%'
             AND user_message NOT LIKE '%<what_happened>%'
@@ -152,18 +159,8 @@ const apiHandlers = {
             AND user_message NOT LIKE '%<teammate-message%'
             AND user_message NOT LIKE '[Image:%'
             AND length(user_message) > 2 AND length(user_message) < 2000
-          GROUP BY project
-        ) e2 ON e1.project = e2.project AND e1.timestamp = e2.max_ts
-          AND e1.user_message NOT LIKE '%<observed_from_primary_session>%'
-          AND e1.user_message NOT LIKE '%<task-notification>%'
-          AND e1.user_message NOT LIKE '%<what_happened>%'
-          AND e1.user_message NOT LIKE '%<command-%'
-          AND e1.user_message NOT LIKE '%<local-command-%'
-          AND e1.user_message NOT LIKE 'PROGRESS SUMMARY%'
-          AND e1.user_message NOT LIKE 'Warmup%'
-          AND e1.user_message NOT LIKE 'cd %'
-          AND e1.user_message NOT LIKE '# /%'
-          AND length(e1.user_message) > 2 AND length(e1.user_message) < 2000
+        )
+        WHERE rn = 1
       ) lp ON p.project = lp.project
       ORDER BY p.last_seen DESC
     `);
@@ -627,7 +624,7 @@ function esc(s){if(!s)return'';const d=document.createElement('div');d.textConte
 const projectPathMap={};
 function registerPath(project,realPath){if(realPath)projectPathMap[project]=realPath}
 function getPath(p){return projectPathMap[p]||p}
-function shortPath(p){return getPath(p).replace(/^\\/Users\\/jung-wankim\\//,'~/')}
+function shortPath(p){return getPath(p).replace(/^\\/Users\\/[^\\/]+\\//,'~/')}
 function projectName(p){
   const full=getPath(p);
   const parts=full.split('/').filter(Boolean);
@@ -636,11 +633,18 @@ function projectName(p){
 function shortProject(p){return shortPath(p)}
 function getGroup(p){
   const full=getPath(p);
-  if(full.includes('/Project/Claude/'))return'Claude';
-  if(full.includes('/Project/bs-hanyang/')||full.includes('/Project/bs/'))return'BS Hanyang';
-  if(full.includes('/Project/hugh-soft/')||full.includes('/Project/hugh/'))return'Hugh Soft';
-  if(full.includes('/Project/')){const m=full.match(/\\/Project\\/([^/]+)/);return m?m[1]:'Project'}
-  if(full.includes('plugins')||full.includes('.claude'))return'Plugins';
+  const userMatch=full.match(/\\/Users\\/[^\\/]+\\/(.*)/);
+  if(userMatch){
+    const rest=userMatch[1];
+    if(rest.startsWith('.codex/plugins/')||rest.startsWith('plugins/'))return'Plugins';
+    if(rest.startsWith('.codex'))return'Codex';
+    for(const top of['Documents','Project','Projects','Workspace','src']){
+      if(rest.startsWith(top+'/')){const m=rest.match(new RegExp('^'+top+'/([^/]+)'));if(m)return m[1];}
+    }
+    return'Users';
+  }
+  if(full.includes('.codex/plugins/')||full.includes('/plugins/'))return'Plugins';
+  if(full.includes('.codex'))return'Codex';
   return'Other';
 }
 function fmtDate(ts){if(!ts)return'';const d=new Date(ts);return d.toLocaleDateString('ko-KR')+' '+d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}

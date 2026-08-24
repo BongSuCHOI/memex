@@ -12,7 +12,7 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
 
 let calls = 0;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
-  callHaiku: async () => { calls++; await new Promise(r => setTimeout(r, 60));
+  callMemoryModel: async () => { calls++; await new Promise(r => setTimeout(r, 60));
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
       ({ fact: `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9 }))); } }));
 let factsPerCall = 1;

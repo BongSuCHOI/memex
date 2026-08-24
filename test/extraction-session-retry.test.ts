@@ -20,7 +20,7 @@ vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
   return {
     ...actual,
-    callHaiku: async () => {
+    callMemoryModel: async () => {
       if (llmBehavior.mode === 'transient') {
         throw Object.assign(new Error('service unavailable'), { status: 503 });
       }
@@ -274,11 +274,24 @@ describe('R7: claim 실패 분류', () => {
  * 영영 추출되지 않았다(실측 적격 8세션 전건). pending SQL 은 exact 매칭이라 선정은
  * 되고 여기서만 걸러져 **무음**이었다.
  */
+const EX_BASE = path.join(os.tmpdir(), 'r20-exclude');
+const SELF_PROJECT = path.join(EX_BASE, 'memory-bank');
+
 describe('R20: 제외 판정은 경로 경계로', () => {
+  beforeEach(() => {
+    process.env.BACKFILL_EXCLUDE_PROJECTS = [
+      SELF_PROJECT,
+      path.join(SELF_PROJECT, 'scripts'),
+    ].join(',');
+  });
+  afterEach(() => {
+    delete process.env.BACKFILL_EXCLUDE_PROJECTS;
+  });
+
   it('형제 프로젝트를 배제하지 않는다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
-    const sibling = '/Users/jung-wankim/Project/Claude/memory-bank-sibling';
+    const sibling = path.join(EX_BASE, 'memory-bank-sibling');
     const res = await runFactExtraction(db, SESSION, sibling);
     expect(res.skipped, 'memory-bank-sibling 은 별개 프로젝트다 — 배제되면 안 된다').toBeUndefined();
     expect(res.saved, '정상 추출돼야 한다').toBeGreaterThan(0);
@@ -287,10 +300,7 @@ describe('R20: 제외 판정은 경로 경계로', () => {
   it('자기 자신과 그 하위 경로는 계속 배제한다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
-    for (const p of [
-      '/Users/jung-wankim/Project/Claude/memory-bank',
-      '/Users/jung-wankim/Project/Claude/memory-bank/scripts',
-    ]) {
+    for (const p of [SELF_PROJECT, path.join(SELF_PROJECT, 'scripts')]) {
       const res = await runFactExtraction(db, `${SESSION}-${p.length}`, p);
       expect(res.skipped, `${p} 는 배제 대상`).toBe('excluded_project');
     }
@@ -300,7 +310,7 @@ describe('R20: 제외 판정은 경로 경계로', () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
     db.exec('DROP TABLE IF EXISTS extraction_log'); // INSERT 실패 재현
-    const res = await runFactExtraction(db, SESSION, '/Users/jung-wankim/Project/Claude/memory-bank');
+    const res = await runFactExtraction(db, SESSION, SELF_PROJECT);
     // 마커가 없으면 다음 run 에 다시 선정된다 — '정상 제외'로 보고하면 무음 무진전.
     expect(res.skipped).toBe('excluded_project_unmarked');
   });

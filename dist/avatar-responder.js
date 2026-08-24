@@ -1,5 +1,5 @@
 import { l2DistanceToSimilarity } from './db.js';
-import { callHaiku, parseJsonResponse } from './llm.js';
+import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { searchSimilarFacts } from './fact-db.js';
@@ -56,7 +56,7 @@ export async function askAvatar(db, question, project) {
             }
         }
     }
-    // Step 4: Build context for Haiku
+    // Step 4: Build context for the LLM
     const factContextLines = [];
     for (const { fact, distance } of vectorResults) {
         const similarity = l2DistanceToSimilarity(distance).toFixed(2);
@@ -81,14 +81,14 @@ export async function askAvatar(db, question, project) {
         'Past decisions and knowledge:',
         ...factContextLines,
     ].join('\n');
-    // Step 5: Call Haiku.
-    // callHaiku 는 이제 재시도를 소진하면 throw 한다(빈 응답 포함). 여기는 사용자 대면
+    // Step 5: Call the LLM.
+    // callMemoryModel 는 이제 재시도를 소진하면 throw 한다(빈 응답 포함). 여기는 사용자 대면
     // 경로라 크래시 대신 degrade 하되, **실패를 실패로** 표면화한다 — 예전에는 빈 응답이
     // '응답을 생성할 수 없습니다'라는 정상 답변 형식으로 반환돼 호출 실패와 "답할 근거가
     // 없음"이 구분되지 않았다(fail-loud-no-unapproved-fallback).
     let response;
     try {
-        response = await callHaiku(AVATAR_SYSTEM_PROMPT, prompt, 1024);
+        response = await callMemoryModel(AVATAR_SYSTEM_PROMPT, prompt, 1024);
     }
     catch (error) {
         // 원문 provider 에러는 엔드포인트·토큰 조각 등을 담을 수 있어 사용자 대면 응답에

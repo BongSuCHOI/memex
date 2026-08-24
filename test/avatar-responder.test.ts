@@ -5,7 +5,7 @@ import * as sqliteVec from 'sqlite-vec';
 
 // Mock LLM
 vi.mock('../src/llm.js', () => ({
-  callHaiku: vi.fn(),
+  callMemoryModel: vi.fn(),
   parseJsonResponse: vi.fn(),
 }));
 
@@ -17,7 +17,7 @@ vi.mock('../src/embeddings.js', () => ({
   EMBEDDING_MODEL: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
 }));
 
-import { callHaiku, parseJsonResponse } from '../src/llm.js';
+import { callMemoryModel, parseJsonResponse } from '../src/llm.js';
 import { askAvatar } from '../src/avatar-responder.js';
 
 function initTestSchema(db: Database.Database) {
@@ -115,7 +115,7 @@ describe('avatar-responder', () => {
       confidence: 0.9,
       cited_fact_ids: ['fact-react'],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'What frontend framework?', 'test-project');
 
@@ -134,7 +134,7 @@ describe('avatar-responder', () => {
       confidence: 1.5,
       cited_fact_ids: [],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'question');
     expect(result.confidence).toBe(1);
@@ -149,7 +149,7 @@ describe('avatar-responder', () => {
       confidence: -0.5,
       cited_fact_ids: [],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'question');
     expect(result.confidence).toBe(0);
@@ -160,7 +160,7 @@ describe('avatar-responder', () => {
     insertTestFact(db, 'fact-z', 'Some fact', emb);
 
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('Raw text response');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('Raw text response');
 
     const result = await askAvatar(db, 'question');
     expect(result.answer).toBe('Raw text response');
@@ -176,7 +176,7 @@ describe('avatar-responder', () => {
       answer: 'Answer',
       cited_fact_ids: [],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'question');
     expect(result.confidence).toBe(0);
@@ -192,7 +192,7 @@ describe('avatar-responder', () => {
       confidence: 0.8,
       cited_fact_ids: [],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'question');
     expect(result.sources.length).toBe(2);
@@ -207,7 +207,7 @@ describe('avatar-responder', () => {
       confidence: 0.9,
       cited_fact_ids: ['fact-rel'],
     });
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
     const result = await askAvatar(db, 'question');
     expect(result.sources.length).toBe(1);

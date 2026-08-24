@@ -68,7 +68,7 @@ export declare function classifyFactToOntology(db: Database.Database, fact: Fact
 }>;
 /**
  * Classify a batch of facts with ONE LLM call (plus zero-cost deterministic
- * assignments). Each callHaiku() spawns a full headless Claude session
+ * assignments). Each callMemoryModel() spawns a full headless Codex session
  * (~10-14s + a transcript + auxiliary calls), so per-fact single calls made
  * the backfill drain both slow and noisy on the proxy; batching divides the
  * spawn count by the batch size.

@@ -202,19 +202,6 @@ describe('paths', () => {
     });
   });
 
-  describe('getProjectsDir', () => {
-    it('should honor TEST_PROJECTS_DIR override', async () => {
-      process.env.TEST_PROJECTS_DIR = tmpDir;
-      const { getProjectsDir } = await import('../src/paths.js');
-      expect(getProjectsDir()).toBe(tmpDir);
-    });
-
-    it('should default to ~/.claude/projects', async () => {
-      delete process.env.TEST_PROJECTS_DIR;
-      const { getProjectsDir } = await import('../src/paths.js');
-      expect(getProjectsDir()).toBe(path.join(os.homedir(), '.claude', 'projects'));
-    });
-  });
 });
 
 describe('isWorkerPromptMessage', () => {

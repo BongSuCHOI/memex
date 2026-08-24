@@ -63,7 +63,7 @@ export function insertFact(db: Database.Database, params: InsertFactParams): str
     params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null,
     now,
     now,
-    params.coding_agent || 'claude-code',
+    params.coding_agent || 'codex',
     params.fact_kr ?? null,
     EMBEDDING_VERSION,
   );

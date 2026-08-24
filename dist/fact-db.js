@@ -19,7 +19,7 @@ export function insertFact(db, params) {
     db.prepare(`
     INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, coding_agent, fact_kr, embedding_version)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
-  `).run(id, params.fact, params.category, params.scope_type, scopeProject, JSON.stringify(params.source_exchange_ids), params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null, now, now, params.coding_agent || 'claude-code', params.fact_kr ?? null, EMBEDDING_VERSION);
+  `).run(id, params.fact, params.category, params.scope_type, scopeProject, JSON.stringify(params.source_exchange_ids), params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null, now, now, params.coding_agent || 'codex', params.fact_kr ?? null, EMBEDDING_VERSION);
     // Insert into vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
         const p = vecParamFor(db, 'vec_facts', params.embedding);

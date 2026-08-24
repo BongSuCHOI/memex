@@ -1,5 +1,5 @@
 import { marked } from 'marked';
-
+import { isInternalContextMessage } from './codex-rollout.js';
 interface ConversationMessage {
   uuid: string;
   parentUuid: string | null;
@@ -12,7 +12,7 @@ interface ConversationMessage {
   version?: string;
   message: {
     role: string;
-    content: string | Array<{ type: string; text?: string; id?: string; name?: string; input?: any }>;
+    content: string | Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown }>;
     usage?: {
       input_tokens: number;
       output_tokens: number;
@@ -31,6 +31,135 @@ function parseJsonlMessages(lines: string[]): ConversationMessage[] {
   return messages;
 }
 
+/** Flatten Codex content items (string or {text} parts) into plain text. */
+function codexText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return (content as Array<{ text?: unknown }>)
+    .filter((c) => c && typeof c.text === 'string')
+    .map((c) => c.text as string)
+    .join('\n');
+}
+
+/**
+ * Codex rollout records → legacy ConversationMessage stream, so both
+ * Markdown and HTML formatters keep working unchanged.
+ *
+ * Mapping: session_meta → metadata on every message; response_item.message
+ * (user/assistant) → text turns; custom_tool_call / function_call →
+ * assistant tool_use blocks; matching *_output → user tool_result blocks;
+ * reasoning/event_msg/world_state/turn_context/compacted are dropped;
+ * harness context user messages are filtered via isInternalContextMessage.
+ */
+function normalizeCodexRecords(records: unknown[]): ConversationMessage[] {
+  const isRollout = records.some((r) => {
+    const rec = r as { type?: unknown } | null;
+    return !!rec && (rec.type === 'session_meta' || rec.type === 'response_item');
+  });
+  // Legacy Claude-format records already structurally match the target shape.
+  if (!isRollout) return records as unknown as ConversationMessage[];
+
+  let meta: Record<string, unknown> | null = null;
+  let lastTs = '';
+  const out: ConversationMessage[] = [];
+
+  records.forEach((rec, idx) => {
+    if (!rec || typeof rec !== 'object') return;
+    // Boundary cast: rec came from JSON.parse (unknown shape). Every field
+    // access below re-validates with typeof / in — nothing is trusted blindly.
+    const row = rec as Record<string, unknown>;
+    if (typeof row.timestamp === 'string' && row.timestamp) lastTs = row.timestamp;
+    const ts = (typeof row.timestamp === 'string' && row.timestamp) || lastTs || new Date(0).toISOString();
+
+    if (row.type === 'session_meta') {
+      const payload = row.payload;
+      meta = payload && typeof payload === 'object'
+        ? payload as Record<string, unknown>
+        : {};
+      return;
+    }
+    if (row.type !== 'response_item') return;
+    const p = (row.payload ?? {}) as Record<string, unknown>;
+    // Paginated reads may start after session_meta — meta can be null here,
+    // so all metadata access goes through a null-object local.
+    const currentMeta: Record<string, unknown> = meta ?? {};
+    const pType = String(p.type ?? '');
+    const sessionId = typeof currentMeta.session_id === 'string'
+      ? currentMeta.session_id
+      : typeof currentMeta.id === 'string' ? currentMeta.id : '';
+    const gitRaw = currentMeta.git;
+    let nestedBranch: string | undefined;
+    if (gitRaw && typeof gitRaw === 'object' && 'branch' in gitRaw
+        && typeof gitRaw.branch === 'string') {
+      nestedBranch = gitRaw.branch;
+    }
+    const base = {
+      uuid: `${sessionId}:${idx}`,
+      parentUuid: null,
+      timestamp: ts,
+      isSidechain: false,
+      sessionId,
+      gitBranch: typeof currentMeta.git_branch === 'string' ? currentMeta.git_branch : nestedBranch,
+      cwd: typeof currentMeta.cwd === 'string' ? currentMeta.cwd : undefined,
+      version: typeof currentMeta.cli_version === 'string' ? currentMeta.cli_version : undefined,
+    };
+
+    if (pType === 'message') {
+      const role = p.role === 'assistant' ? 'assistant' : p.role === 'user' ? 'user' : null;
+      if (!role) return;
+      const text = codexText(p.content);
+      if (role === 'user' && isInternalContextMessage(text)) return;
+      out.push({
+        ...base,
+        type: role,
+        message: { role, content: text },
+      });
+      return;
+    }
+
+    if ((pType === 'custom_tool_call' || pType === 'function_call')) {
+      const rawInput = pType === 'function_call' ? p.arguments : p.input;
+      let input: unknown = rawInput;
+      if (typeof rawInput === 'string') {
+        try { input = JSON.parse(rawInput); } catch { input = rawInput; }
+      }
+      out.push({
+        ...base,
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: String(p.call_id ?? p.id ?? `tool_${idx}`),
+            name: String(p.name ?? 'unknown'),
+            input,
+          }],
+        },
+      });
+      return;
+    }
+
+    if ((pType === 'custom_tool_call_output' || pType === 'function_call_output')) {
+      const output = p.output ?? p.result ?? '';
+      const text = typeof output === 'string' ? output : JSON.stringify(output);
+      out.push({
+        ...base,
+        type: 'user',
+        toolUseResult: text,
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: String(p.call_id ?? p.id ?? ''),
+            content: text,
+          }],
+        },
+      });
+    }
+  });
+  return out;
+}
+
 export function formatConversationAsMarkdown(jsonl: string, startLine?: number, endLine?: number): string {
   const allLines = jsonl.trim().split('\n').filter(line => line.trim());
 
@@ -42,7 +171,7 @@ export function formatConversationAsMarkdown(jsonl: string, startLine?: number, 
       )
     : allLines;
 
-  const allMessages = parseJsonlMessages(lines);
+  const allMessages = normalizeCodexRecords(parseJsonlMessages(lines));
 
   // Filter out system messages and messages with no content
   const messages = allMessages.filter(msg => {
@@ -78,7 +207,7 @@ export function formatConversationAsMarkdown(jsonl: string, startLine?: number, 
     output += `**Working Directory:** ${firstMessage.cwd}\n\n`;
   }
   if (firstMessage.version) {
-    output += `**Claude Code Version:** ${firstMessage.version}\n\n`;
+    output += `**Codex CLI Version:** ${firstMessage.version}\n\n`;
   }
 
   output += '---\n\n';
@@ -230,8 +359,7 @@ export function formatConversationAsMarkdown(jsonl: string, startLine?: number, 
 
 export function formatConversationAsHTML(jsonl: string): string {
   const lines = jsonl.trim().split('\n').filter(line => line.trim());
-  const allMessages = parseJsonlMessages(lines);
-
+  const allMessages = normalizeCodexRecords(parseJsonlMessages(lines));
   // Filter out system messages and messages with no content
   const messages = allMessages.filter(msg => {
     if (msg.type !== 'user' && msg.type !== 'assistant') return false;
@@ -275,7 +403,7 @@ export function formatConversationAsHTML(jsonl: string): string {
     bodyContent += `<tr><th>Working Directory</th><td>${escapeHtml(firstMessage.cwd)}</td></tr>`;
   }
   if (firstMessage.version) {
-    bodyContent += `<tr><th>Claude Code Version</th><td>${escapeHtml(firstMessage.version)}</td></tr>`;
+    bodyContent += `<tr><th>Codex CLI Version</th><td>${escapeHtml(firstMessage.version)}</td></tr>`;
   }
   bodyContent += '</table></div>';
 

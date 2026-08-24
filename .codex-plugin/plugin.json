@@ -1,0 +1,36 @@
+{
+  "version": "1.5.0-codex.1",
+  "name": "memory-bank",
+  "description": "Semantic memory for Codex. Conversations become a searchable knowledge graph: facts, ontology relations, RAG search, and context injection.",
+  "author": {
+    "name": "BongSuCHOI"
+  },
+  "homepage": "https://github.com/BongSuCHOI/memory-bank",
+  "repository": "https://github.com/BongSuCHOI/memory-bank",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "search",
+    "conversations",
+    "semantic-search",
+    "knowledge-graph",
+    "codex"
+  ],
+  "interface": {
+    "displayName": "Memory Bank",
+    "shortDescription": "Codex conversation memory: semantic search, facts, knowledge graph",
+    "longDescription": "Turns local Codex session rollouts into a searchable knowledge graph of decisions and patterns, with RAG search, ontology relations, MCP tools, and automatic context injection.",
+    "developerName": "BongSuCHOI",
+    "category": "Engineering",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Search my memory bank for past decisions about authentication"
+    ]
+  },
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/"
+}

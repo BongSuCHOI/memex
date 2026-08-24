@@ -1,115 +1,22 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { LLM_WORKDIR_BASENAME, getProjectsDir } from './paths.js';
+import { LLM_WORKDIR_BASENAME } from './paths.js';
 import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
-// Isolated working directory for headless Agent SDK sessions. The CLI that
-// query() spawns persists a transcript under ~/.claude/projects/<cwd-slug>/;
-// running it from the caller's cwd drops worker transcripts into that
-// project's dir, where a user `claude --resume` can pick one up as their own
-// session (observed 2026-07-05). A dedicated cwd keeps them in their own slug.
+import { runCodex } from './codex-exec.js';
+// Stable containment directory for LLM-side artifacts. CodexExec gives every
+// call its own mkdtemp workdir and runs codex exec with --ephemeral +
+// --ignore-user-config, so the child persists no session rollout and nothing
+// accumulates here to prune.
 const LLM_WORKDIR = path.join(os.tmpdir(), LLM_WORKDIR_BASENAME);
 export function llmWorkdir() {
     try {
         fs.mkdirSync(LLM_WORKDIR, { recursive: true });
     }
     catch {
-        /* fall through — SDK will spawn in process cwd */
+        /* fall through — caller cwd is an acceptable anchor */
     }
-    pruneLlmTranscripts();
     return LLM_WORKDIR;
-}
-// ---------------------------------------------------------------------------
-// Transcript pruning — the one-shot sessions above each persist a transcript
-// (session .jsonl + agent-*.jsonl) that nothing ever deletes; observed
-// accumulation: 11,573 files / 99MB (2026-07-08). Prune files older than a
-// TTL, throttled to at most once per hour per process tree via a marker file.
-// Scope is strictly our reserved namespace: directories under
-// ~/.claude/projects whose name ends with '-memory-bank-llm' (covers the
-// current fixed workdir slug and legacy mkdtemp variants on any machine).
-// ---------------------------------------------------------------------------
-const PRUNE_MARKER = path.join(LLM_WORKDIR, '.last-transcript-prune');
-const PRUNE_THROTTLE_MS = 60 * 60 * 1000; // at most hourly
-function transcriptTtlMs() {
-    const raw = process.env.MEMORY_BANK_LLM_TRANSCRIPT_TTL_HOURS;
-    const hours = raw != null && /^\d+$/.test(raw) ? parseInt(raw, 10) : 24;
-    // Floor of 1h so an in-flight session's freshly-written transcript can
-    // never be deleted from under the CLI that is still appending to it.
-    return Math.max(1, hours) * 60 * 60 * 1000;
-}
-export function pruneLlmTranscripts(now = Date.now()) {
-    try {
-        // Throttle: mtime of the marker is the last prune time.
-        try {
-            const markerAge = now - fs.statSync(PRUNE_MARKER).mtimeMs;
-            if (markerAge >= 0 && markerAge < PRUNE_THROTTLE_MS)
-                return;
-        }
-        catch {
-            /* no marker yet — proceed */
-        }
-        try {
-            fs.writeFileSync(PRUNE_MARKER, new Date(now).toISOString());
-        }
-        catch {
-            /* marker write failed — still prune, worst case we prune more often */
-        }
-        const projectsDir = getProjectsDir();
-        const ttl = transcriptTtlMs();
-        let entries;
-        try {
-            entries = fs.readdirSync(projectsDir);
-        }
-        catch {
-            return; // no projects dir — nothing to prune
-        }
-        for (const entry of entries) {
-            if (entry !== LLM_WORKDIR_BASENAME && !entry.endsWith(`-${LLM_WORKDIR_BASENAME}`))
-                continue;
-            const dir = path.join(projectsDir, entry);
-            let stat;
-            try {
-                stat = fs.lstatSync(dir);
-            }
-            catch {
-                continue;
-            }
-            if (!stat.isDirectory())
-                continue; // never follow symlinks
-            let files;
-            try {
-                files = fs.readdirSync(dir);
-            }
-            catch {
-                continue;
-            }
-            for (const file of files) {
-                // Only transcript artifacts; leave anything else untouched.
-                if (!file.endsWith('.jsonl') && !file.endsWith('-summary.txt'))
-                    continue;
-                const filePath = path.join(dir, file);
-                try {
-                    const fstat = fs.lstatSync(filePath);
-                    if (fstat.isFile() && now - fstat.mtimeMs > ttl)
-                        fs.unlinkSync(filePath);
-                }
-                catch {
-                    /* skip file on any error */
-                }
-            }
-            // Drop the directory once empty (rmdir refuses non-empty dirs — safe).
-            try {
-                fs.rmdirSync(dir);
-            }
-            catch {
-                /* not empty or in use — fine */
-            }
-        }
-    }
-    catch {
-        /* pruning is best-effort housekeeping — never break the LLM call */
-    }
 }
 /** 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지. */
 function retryBudget() {
@@ -132,59 +39,23 @@ function backoffMs(attempt) {
     return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
-/** 단발 호출 — Agent SDK 우선, 실패 시(그리고 키가 있을 때만) Anthropic SDK 폴백. */
-async function callOnce(systemPrompt, userMessage, maxTokens) {
-    const model = process.env.MEMORY_BANK_FACT_MODEL || 'haiku';
-    // Try Claude Agent SDK first (works inside Claude Code without API key)
-    try {
-        for await (const message of query({
-            prompt: `${systemPrompt}\n\n${userMessage}`,
-            options: {
-                model,
-                max_tokens: maxTokens,
-                systemPrompt,
-                // One-shot classification calls: no tools/turn loops needed, and the
-                // spawned session must NOT load user settings/plugins — otherwise its
-                // own SessionStart/End hooks re-spawn sync/backfill workers and every
-                // LLM call cascades into more sessions (observed as a proxy flood).
-                maxTurns: 1,
-                settingSources: [],
-                cwd: llmWorkdir(),
-            },
-        })) {
-            if (message && typeof message === 'object' && 'type' in message && message.type === 'result') {
-                return message.result || '';
-            }
-        }
-        // 스트림이 result 메시지 없이 끝남 — 호출 실패이지 "빈 답변"이 아니다.
-        return '';
-    }
-    catch (agentSdkError) {
-        // Fallback to direct Anthropic SDK if agent SDK fails (standalone mode)
-        const apiKey = process.env.ANTHROPIC_API_KEY || process.env.MEMORY_BANK_API_TOKEN;
-        if (!apiKey) {
-            // 키 없음 = 폴백 불가. 원인 에러를 그대로 전파해야 분류기가 transient/deterministic
-            // 을 읽을 수 있다 (문자열로 감싸면 status 등 구조가 소실된다).
-            throw agentSdkError;
-        }
-        const { default: Anthropic } = await import('@anthropic-ai/sdk');
-        const baseURL = process.env.MEMORY_BANK_API_BASE_URL;
-        const client = new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
-        const response = await client.messages.create({
-            model: process.env.MEMORY_BANK_FACT_MODEL || 'claude-haiku-4-5-20251001',
-            max_tokens: maxTokens,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userMessage }],
-        });
-        const textBlock = response.content.find((b) => b.type === 'text');
-        return textBlock?.text || '';
-    }
+/**
+ * One-shot LLM call through the local Codex CLI (CodexExec provider).
+ * maxTokens kept for signature compatibility; the CLI manages its own budget.
+ * Model resolution (extraction path only): MEMORY_BANK_CODEX_MODEL, else
+ * legacy MEMORY_BANK_FACT_MODEL — then codex-exec's central default
+ * (DEFAULT_CODEX_MODEL = gpt-5.6-luna) applies when neither is set.
+ * The resolved id is always forwarded via -m.
+ */
+async function callOnce(systemPrompt, userMessage, _maxTokens) {
+    const model = process.env.MEMORY_BANK_CODEX_MODEL || process.env.MEMORY_BANK_FACT_MODEL || null;
+    const timeoutRaw = process.env.MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS;
+    const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
+    return runCodex({ systemPrompt, userMessage, model, timeoutMs });
 }
 /**
- * Call Haiku via Claude Agent SDK (no API key needed inside Claude Code —
- * billed to the local subscription, NOT a metered API key).
- * Falls back to direct Anthropic SDK only if ANTHROPIC_API_KEY is set
- * (standalone use outside Claude Code).
+ * One LLM call through the local Codex CLI (CodexExec) — authenticated by the
+ * user's local Codex login; no API key involved.
  *
  * 복구 계약 (2026-07-17 — 사용자 피드백 "에러나거나 0바이트인데 재시도·복구가 없다"):
  *  - **빈 응답('')도 실패**다. 모든 호출자가 JSON 을 요구하므로 빈 본문은 유효한 답이
@@ -200,7 +71,7 @@ async function callOnce(systemPrompt, userMessage, maxTokens) {
  *    보류·재시도, deterministic 은 attempt 소모)가 비로소 작동한다 (fail-loud).
  * 호출자 계약: 성공 반환값은 **비어있지 않음이 보장**된다.
  */
-export async function callHaiku(systemPrompt, userMessage, maxTokens = 2048) {
+export async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
     const retries = retryBudget();
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -217,7 +88,7 @@ export async function callHaiku(systemPrompt, userMessage, maxTokens = 2048) {
                 throw error;
         }
         if (attempt < retries) {
-            console.error(`callHaiku: attempt ${attempt + 1}/${retries + 1} failed (${lastError instanceof Error ? lastError.message : lastError}) — retrying`);
+            console.error(`callMemoryModel: attempt ${attempt + 1}/${retries + 1} failed (${lastError instanceof Error ? lastError.message : lastError}) — retrying`);
             await sleep(backoffMs(attempt));
         }
     }

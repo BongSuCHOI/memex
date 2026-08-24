@@ -247,7 +247,7 @@ export async function analyzeHistory(options = {}) {
         // ── Recommendations ────────────────────────────────────────────────────
         const rec = [];
         if (report.coverage.extraction.pending > 0) {
-            rec.push(`${report.coverage.extraction.pending} sessions have no extracted facts yet — run scripts/backfill-extract-worker.js (requires ANTHROPIC_API_KEY).`);
+            rec.push(`${report.coverage.extraction.pending} sessions have no extracted facts yet — run scripts/backfill-extract-worker.js (requires local codex CLI auth).`);
         }
         if (report.coverage.summaries.withoutSummary > 0) {
             rec.push(`${report.coverage.summaries.withoutSummary} conversations are missing summaries — run "memory-bank sync" (generates up to 10 per run).`);

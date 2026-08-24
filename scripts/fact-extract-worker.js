@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Detached worker spawned by fact-extract-hook.js.
+ * Detached worker spawned by scripts/session-end-hook.js (foreground).
  *
  * Environment:
  *   SESSION_ID - session to extract facts from (required)

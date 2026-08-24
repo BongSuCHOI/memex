@@ -43,7 +43,7 @@ const MAX_FACTS = maxArg > -1
 // zero workers (silent no-op) or overspawn. With batching, CONCURRENCY is the
 // number of batch LLM calls in flight (= concurrent headless spawns).
 const CONCURRENCY = Math.max(1, boundedInt(process.env.BACKFILL_CONCURRENCY, 4, 8));
-// Facts per LLM call. One callHaiku() = one headless Claude spawn (~10-14s +
+// Facts per LLM call. One callMemoryModel() = one Codex spawn (~10-14s +
 // transcript + auxiliary calls), so per-fact single calls made the drain
 // dominate the proxy; batching divides spawn count by BATCH_SIZE.
 const BATCH_SIZE = Math.max(1, boundedInt(process.env.BACKFILL_BATCH_SIZE, 20, 50));

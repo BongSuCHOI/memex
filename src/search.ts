@@ -455,7 +455,7 @@ export async function searchConversations(
       archivePath: row.archive_path,
       lineStart: row.line_start,
       lineEnd: row.line_end,
-      codingAgent: row.coding_agent || 'claude-code',
+      codingAgent: row.coding_agent || 'codex',
     };
 
     // Try to load summary if available
@@ -551,8 +551,8 @@ export async function formatResults(results: Array<SearchResult & { summary?: st
     const simPct = result.similarity !== undefined ? Math.round(result.similarity * 100) : null;
 
     // Header with match percentage and coding agent
-    const agent = result.exchange.codingAgent || 'claude-code';
-    const agentTag = agent !== 'claude-code' ? ` @${agent}` : '';
+    const agent = result.exchange.codingAgent || 'codex';
+    const agentTag = agent !== 'codex' ? ` @${agent}` : '';
     output += `${index + 1}. [${result.exchange.project}, ${date}${agentTag}]`;
     if (simPct !== null) {
       output += ` - ${simPct}% match`;

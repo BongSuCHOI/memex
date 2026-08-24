@@ -31,13 +31,13 @@ function runScript(scriptPath, args) {
 }
 
 function showHelp() {
-  console.log(`memory-bank - Manage and search Claude Code conversations
+  console.log(`memory-bank - Manage and search Codex conversations
 
 USAGE:
   memory-bank <command> [options]
 
 COMMANDS:
-  sync        Sync conversations from ~/.claude/projects and index them
+  sync        Sync conversations from Codex session rollouts and index them
   index       Index conversations for search
   search      Search indexed conversations
   show        Display a conversation in readable format

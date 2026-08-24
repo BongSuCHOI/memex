@@ -1,10 +1,7 @@
 export declare function llmWorkdir(): string;
-export declare function pruneLlmTranscripts(now?: number): void;
 /**
- * Call Haiku via Claude Agent SDK (no API key needed inside Claude Code —
- * billed to the local subscription, NOT a metered API key).
- * Falls back to direct Anthropic SDK only if ANTHROPIC_API_KEY is set
- * (standalone use outside Claude Code).
+ * One LLM call through the local Codex CLI (CodexExec) — authenticated by the
+ * user's local Codex login; no API key involved.
  *
  * 복구 계약 (2026-07-17 — 사용자 피드백 "에러나거나 0바이트인데 재시도·복구가 없다"):
  *  - **빈 응답('')도 실패**다. 모든 호출자가 JSON 을 요구하므로 빈 본문은 유효한 답이
@@ -20,5 +17,5 @@ export declare function pruneLlmTranscripts(now?: number): void;
  *    보류·재시도, deterministic 은 attempt 소모)가 비로소 작동한다 (fail-loud).
  * 호출자 계약: 성공 반환값은 **비어있지 않음이 보장**된다.
  */
-export declare function callHaiku(systemPrompt: string, userMessage: string, maxTokens?: number): Promise<string>;
+export declare function callMemoryModel(systemPrompt: string, userMessage: string, maxTokens?: number): Promise<string>;
 export declare function parseJsonResponse<T>(text: string): T | null;

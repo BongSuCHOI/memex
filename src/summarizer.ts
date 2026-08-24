@@ -1,36 +1,7 @@
 import { ConversationExchange } from './types.js';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { llmWorkdir } from './llm.js';
+import { runCodex } from './codex-exec.js';
 
-/**
- * Get API environment overrides for summarization calls.
- * Returns full env merged with process.env so subprocess inherits PATH, HOME, etc.
- *
- * Env vars (all optional):
- * - MEMORY_BANK_API_MODEL: Model to use (default: haiku)
- * - MEMORY_BANK_API_MODEL_FALLBACK: Fallback model on error (default: sonnet)
- * - MEMORY_BANK_API_BASE_URL: Custom API endpoint
- * - MEMORY_BANK_API_TOKEN: Auth token for custom endpoint
- * - MEMORY_BANK_API_TIMEOUT_MS: Timeout for API calls (default: SDK default)
- */
-function getApiEnv(): Record<string, string | undefined> | undefined {
-  const baseUrl = process.env.MEMORY_BANK_API_BASE_URL;
-  const token = process.env.MEMORY_BANK_API_TOKEN;
-  const timeoutMs = process.env.MEMORY_BANK_API_TIMEOUT_MS;
-
-  if (!baseUrl && !token && !timeoutMs) {
-    return undefined;
-  }
-
-  // Merge with process.env so subprocess inherits PATH, HOME, etc.
-  return {
-    ...process.env,
-    ...(baseUrl && { ANTHROPIC_BASE_URL: baseUrl }),
-    ...(token && { ANTHROPIC_AUTH_TOKEN: token }),
-    ...(timeoutMs && { API_TIMEOUT_MS: timeoutMs }),
-  };
-}
 
 export function formatConversationText(exchanges: ConversationExchange[]): string {
   return exchanges.map(ex => {
@@ -47,49 +18,17 @@ function extractSummary(text: string): string {
   return text.trim();
 }
 
-async function callClaude(prompt: string, sessionId?: string, useFallback = false): Promise<string> {
-  const primaryModel = process.env.MEMORY_BANK_API_MODEL || 'haiku';
-  const fallbackModel = process.env.MEMORY_BANK_API_MODEL_FALLBACK || 'sonnet';
-  const model = useFallback ? fallbackModel : primaryModel;
+const SUMMARIZER_SYSTEM_PROMPT =
+  'Write concise, factual summaries. Output ONLY the summary - no preamble, no "Here is", ' +
+  'no "I will". Your output will be indexed directly.';
 
-  for await (const message of query({
-    prompt,
-    options: {
-      model,
-      max_tokens: 4096,
-      env: getApiEnv(),
-      resume: sessionId,
-      // Same containment as llm.ts callHaiku: transcripts land in the reserved
-      // memory-bank-llm slug (never indexed, TTL-pruned), and the spawned
-      // session must not load user settings/plugins — its SessionStart/End
-      // hooks would re-spawn sync/backfill workers and cascade into more
-      // sessions. Resume works because every call shares this fixed cwd.
-      cwd: llmWorkdir(),
-      settingSources: [],
-      // Don't override systemPrompt when resuming - it uses the original session's prompt
-      // Instead, the prompt itself should provide clear instructions
-      ...(sessionId ? {} : {
-        systemPrompt: 'Write concise, factual summaries. Output ONLY the summary - no preamble, no "Here is", no "I will". Your output will be indexed directly.'
-      })
-    } as any
-  })) {
-    if (message && typeof message === 'object' && 'type' in message && message.type === 'result') {
-      const result = (message as any).result;
-
-      // Check if result is an API error (SDK returns errors as result strings)
-      if (typeof result === 'string' && result.includes('API Error') && result.includes('thinking.budget_tokens')) {
-        if (!useFallback) {
-          console.log(`    ${primaryModel} hit thinking budget error, retrying with ${fallbackModel}`);
-          return await callClaude(prompt, sessionId, true);
-        }
-        // If fallback also fails, return error message
-        return result;
-      }
-
-      return result;
-    }
-  }
-  return '';
+/**
+ * One-shot summary call through the local Codex CLI (CodexExec provider).
+ * Legacy SDK resume semantics are dropped on purpose: every call is
+ * self-contained and its prompt carries the full conversation text.
+ */
+async function callSummaryModel(prompt: string): Promise<string> {
+  return runCodex({ systemPrompt: SUMMARIZER_SYSTEM_PROMPT, userMessage: prompt });
 }
 
 function chunkExchanges(exchanges: ConversationExchange[], chunkSize: number): ConversationExchange[][] {
@@ -115,13 +54,11 @@ export async function summarizeConversation(exchanges: ConversationExchange[], s
 
   // For short conversations (≤15 exchanges), summarize directly
   if (exchanges.length <= 15) {
-    const conversationText = sessionId
-      ? '' // When resuming, no need to include conversation text - it's already in context
-      : formatConversationText(exchanges);
+    const conversationText = formatConversationText(exchanges);
 
     const prompt = `${SUMMARIZER_CONTEXT_MARKER}.
 
-Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Codex will see this summary when searching previous conversations for useful memories and information.
 
 Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
 
@@ -143,7 +80,7 @@ Bad:
 
 ${conversationText}`;
 
-    const result = await callClaude(prompt, sessionId);
+    const result = await callSummaryModel(prompt);
     return extractSummary(result);
   }
 
@@ -170,7 +107,7 @@ ${chunkText}
 Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetooth controller initialization error, fixed by adjusting memory allocation.</summary>`;
 
     try {
-      const summary = await callClaude(prompt); // No sessionId for chunks
+      const summary = await callSummaryModel(prompt);
       const extracted = extractSummary(summary);
       chunkSummaries.push(extracted);
       console.log(`  Chunk ${i + 1}/${chunks.length}: ${extracted.split(/\s+/).length} words`);
@@ -186,7 +123,7 @@ Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetoot
   // Synthesize chunks into final summary
   const synthesisPrompt = `${SUMMARIZER_CONTEXT_MARKER}.
 
-Please write a concise, factual summary that synthesizes these part-summaries into one cohesive paragraph. Focus on what was accomplished and any notable technical decisions or challenges. Output in <summary></summary> tags. Claude will see this summary when searching previous conversations for useful memories and information.
+Please write a concise, factual summary that synthesizes these part-summaries into one cohesive paragraph. Focus on what was accomplished and any notable technical decisions or challenges. Output in <summary></summary> tags. Codex will see this summary when searching previous conversations for useful memories and information.
 
 Part summaries:
 ${chunkSummaries.map((s, i) => `${i + 1}. ${s}`).join('\n')}
@@ -201,7 +138,7 @@ Your summary (max 200 words):`;
 
   console.log(`  Synthesizing final summary...`);
   try {
-    const result = await callClaude(synthesisPrompt); // No sessionId for synthesis
+    const result = await callSummaryModel(synthesisPrompt);
     return extractSummary(result);
   } catch (error) {
     console.log(`  Synthesis failed, using chunk summaries`);

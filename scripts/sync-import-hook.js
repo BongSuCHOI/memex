@@ -2,7 +2,7 @@
 
 /**
  * SessionStart Hook: Import facts/ontology from sync/ folder (from other devices).
- * Runs before fact-consolidate-hook.
+ * Part of the SessionStart maintenance chain (scripts/session-start-maintenance.js).
  */
 
 import { importFromSync } from '../dist/sync-import.js';

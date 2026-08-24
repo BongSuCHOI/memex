@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { Fact, ConsolidationResult } from './types.js';
-import { callHaiku, parseJsonResponse } from './llm.js';
+import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
 import {
@@ -27,7 +27,7 @@ export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine thei
   "reason": "one-line justification"
 }`;
 
-const MAX_HAIKU_CALLS = 10;
+const MAX_LLM_CALLS = 10;
 // Cross-run retries for a driver fact whose comparison CALL keeps failing before
 // it is skipped (advanced past). A short/transient outage is retried (held) until
 // it recovers — a success resets the counter — while a persistently failing fact
@@ -84,7 +84,7 @@ async function consolidateOne(
   // treating it as a skippable "bad fact".
   let response: string;
   try {
-    response = await callHaiku(CONSOLIDATION_SYSTEM_PROMPT, buildConsolidationPrompt(closest.fact.fact, newFact.fact));
+    response = await callMemoryModel(CONSOLIDATION_SYSTEM_PROMPT, buildConsolidationPrompt(closest.fact.fact, newFact.fact));
   } catch (e) {
     throw new LlmCallError(e);
   }
@@ -115,22 +115,22 @@ export async function consolidateFacts(
   // No initEmbeddings() — consolidation uses stored vectors + the LLM, never the
   // local embedding model (see consolidateAllPending).
   const newFacts = getNewFactsSince(db, project, lastConsolidatedAt);
-  let haikuCalls = 0, merged = 0, contradictions = 0, evolutions = 0;
+  let llmCalls = 0, merged = 0, contradictions = 0, evolutions = 0;
   for (const newFact of newFacts) {
-    if (haikuCalls >= MAX_HAIKU_CALLS) break;
+    if (llmCalls >= MAX_LLM_CALLS) break;
     const stillActive = db.prepare('SELECT 1 FROM facts WHERE id = ? AND is_active = 1').get(newFact.id);
     if (!stillActive) continue;
     try {
       const { called, verdict } = await consolidateOne(db, newFact);
-      if (called) haikuCalls++; // count the CALL, not the verdict (malformed output still spent budget)
+      if (called) llmCalls++; // count the CALL, not the verdict (malformed output still spent budget)
       if (verdict === 'DUPLICATE') merged++;
       else if (verdict === 'CONTRADICTION') contradictions++;
       else if (verdict === 'EVOLUTION') evolutions++;
     } catch (error) {
-      // A throw means callHaiku was reached and failed — that attempt still
+      // A throw means callMemoryModel was reached and failed — that attempt still
       // counts against the budget, otherwise a persistently-failing LLM would
       // let this loop attempt a call for every one of N similar facts.
-      haikuCalls++;
+      llmCalls++;
       console.error(`Consolidation failed for fact ${newFact.id}:`, error);
     }
   }
@@ -139,10 +139,10 @@ export async function consolidateFacts(
 
 /**
  * Consolidate the ENTIRE backlog in one pass: every new fact (any scope, any
- * project) processed exactly once, under a single shared Haiku budget. The
+ * project) processed exactly once, under a single shared LLM budget. The
  * consolidate worker calls this once while holding the global lock, instead of
  * looping consolidateFacts per project — which reprocessed shared global facts
- * once per project (up to `MAX_HAIKU_CALLS × projectCount` calls) and, for
+ * once per project (up to `MAX_LLM_CALLS × projectCount` calls) and, for
  * INDEPENDENT/CONTRADICTION verdicts (new fact stays active), kept re-comparing
  * the same global fact every pass.
  *
@@ -155,14 +155,14 @@ export async function consolidateFacts(
 export async function consolidateAllPending(
   db: Database.Database,
   since: { createdAt: string; id: string } | null,
-): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number; haikuCalls: number; cursor: { createdAt: string; id: string } | null }> {
+): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number; llmCalls: number; cursor: { createdAt: string; id: string } | null }> {
   // NOTE: no initEmbeddings() here — consolidation never generates an embedding.
   // It compares facts using their ALREADY-STORED vectors (searchSimilarFactsSameScope
-  // does a vec MATCH on the stored blob) and an LLM (callHaiku). Loading the local
+  // does a vec MATCH on the stored blob) and an LLM (callMemoryModel). Loading the local
   // embedding model was a ~1s no-op on every run, wasteful because the consolidate
   // worker is spawned on every SessionStart — most runs have an empty backlog.
   const newFacts = getAllNewFactsSince(db, since);
-  let haikuCalls = 0;
+  let llmCalls = 0;
   let merged = 0;
   let contradictions = 0;
   let evolutions = 0;
@@ -177,7 +177,7 @@ export async function consolidateAllPending(
 
   for (let i = 0; i < newFacts.length; i++) {
     const newFact = newFacts[i];
-    if (haikuCalls >= MAX_HAIKU_CALLS) break; // budget wall — cursor stays at the last examined fact
+    if (llmCalls >= MAX_LLM_CALLS) break; // budget wall — cursor stays at the last examined fact
 
     // Re-read: an earlier comparison this run may have deactivated this fact.
     const stillActive = db.prepare('SELECT 1 FROM facts WHERE id = ? AND is_active = 1').get(newFact.id);
@@ -185,7 +185,7 @@ export async function consolidateAllPending(
       try {
         // Same-scope isolation + budget accounting via the shared helper.
         const { called, verdict } = await consolidateOne(db, newFact);
-        if (called) haikuCalls++; // count the CALL, not the verdict
+        if (called) llmCalls++; // count the CALL, not the verdict
         if (verdict === 'DUPLICATE') merged++;
         else if (verdict === 'CONTRADICTION') contradictions++;
         else if (verdict === 'EVOLUTION') evolutions++;
@@ -193,7 +193,7 @@ export async function consolidateAllPending(
         // (the guard keeps this a no-op write for the common zero case).
         db.prepare('UPDATE facts SET consolidation_attempts = 0 WHERE id = ? AND consolidation_attempts > 0').run(newFact.id);
       } catch (error) {
-        haikuCalls++;
+        llmCalls++;
         console.error(`Consolidation call failed for fact ${newFact.id}:`, error);
 
         // A non-LLM error (parser/DB/internal bug, NOT an LlmCallError) must NEVER
@@ -239,7 +239,7 @@ export async function consolidateAllPending(
     cursor = { createdAt: newFact.created_at, id: newFact.id };
   }
 
-  return { processed, merged, contradictions, evolutions, haikuCalls, cursor };
+  return { processed, merged, contradictions, evolutions, llmCalls, cursor };
 }
 
 export function applyConsolidationResult(

@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 
 // Mock the LLM so each consolidation "comparison" is deterministic and counted.
 vi.mock('../src/llm.js', () => ({
-  callHaiku: vi.fn().mockResolvedValue('{"relation":"INDEPENDENT","merged_fact":"","reason":"unrelated"}'),
+  callMemoryModel: vi.fn().mockResolvedValue('{"relation":"INDEPENDENT","merged_fact":"","reason":"unrelated"}'),
   parseJsonResponse: vi.fn().mockReturnValue({ relation: 'INDEPENDENT', merged_fact: '', reason: 'unrelated' }),
 }));
 // Avoid loading the real embedding model.
@@ -18,7 +18,7 @@ vi.mock('../src/embeddings.js', () => ({
   EMBEDDING_MODEL: 'test',
 }));
 
-import { callHaiku, parseJsonResponse } from '../src/llm.js';
+import { callMemoryModel, parseJsonResponse } from '../src/llm.js';
 import { initDatabase } from '../src/db.js';
 import { insertFact, getAllNewFactsSince } from '../src/fact-db.js';
 import { consolidateAllPending, isTransientLlmError, classifyLlmError } from '../src/consolidator.js';
@@ -44,7 +44,7 @@ describe('consolidateAllPending', () => {
     vi.clearAllMocks();
     // Restore default verdict (INDEPENDENT) so tests are order-independent —
     // clearAllMocks resets call history but NOT return values set by earlier tests.
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{"relation":"INDEPENDENT","merged_fact":"","reason":"unrelated"}');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{"relation":"INDEPENDENT","merged_fact":"","reason":"unrelated"}');
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue({ relation: 'INDEPENDENT', merged_fact: '', reason: 'unrelated' });
   });
 
@@ -75,20 +75,20 @@ describe('consolidateAllPending', () => {
 
     // 6 facts, each compared at most once; the single budget caps total calls.
     const MAX = 10;
-    expect((callHaiku as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(MAX);
-    expect(result.haikuCalls).toBeLessThanOrEqual(MAX);
+    expect((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(MAX);
+    expect(result.llmCalls).toBeLessThanOrEqual(MAX);
     // No fact is visited more than once: processed == distinct new facts.
     expect(result.processed).toBe(6);
   });
 
-  it('honors the single Haiku budget across the whole backlog', async () => {
+  it('honors the single LLM budget across the whole backlog', async () => {
     // 20 mutually-similar facts, one budget of 10 → at most 10 calls total.
     for (let i = 0; i < 20; i++) addFact(db, `similar fact ${i}`, 'global', null);
 
     const result = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
 
-    expect(result.haikuCalls).toBeLessThanOrEqual(10);
-    expect((callHaiku as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(10);
+    expect(result.llmCalls).toBeLessThanOrEqual(10);
+    expect((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(10);
   });
 
   it('returns zero work when nothing is newer than `since`', async () => {
@@ -98,7 +98,7 @@ describe('consolidateAllPending', () => {
     const result = await consolidateAllPending(db, { createdAt: future, id: '' });
 
     expect(result.processed).toBe(0);
-    expect(callHaiku).not.toHaveBeenCalled();
+    expect(callMemoryModel).not.toHaveBeenCalled();
   });
 
   it('NEVER compares a global fact against a private project fact (no cross-project mutation)', async () => {
@@ -114,8 +114,8 @@ describe('consolidateAllPending', () => {
 
     await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
 
-    // Every callHaiku comparison prompt must exclude the project-private fact.
-    for (const call of (callHaiku as ReturnType<typeof vi.fn>).mock.calls) {
+    // Every callMemoryModel comparison prompt must exclude the project-private fact.
+    for (const call of (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls) {
       const prompt = String(call[1]);
       expect(prompt).not.toContain('Uses private vendor X globally' + '\0'); // sanity
       // the project-private fact text must never appear as a candidate in any prompt
@@ -144,7 +144,7 @@ describe('consolidateAllPending', () => {
     expect(global.fact).toBe('Uses vendor X');
     expect(global.is_active).toBe(1);
     // No prompt ever paired the global fact with the secret project fact.
-    for (const call of (callHaiku as ReturnType<typeof vi.fn>).mock.calls) {
+    for (const call of (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls) {
       const prompt = String(call[1]);
       const crossScopePair = prompt.includes('SECRET token') && /Existing fact:\s*"Uses vendor X"/.test(prompt);
       expect(crossScopePair).toBe(false);
@@ -183,13 +183,13 @@ describe('consolidateAllPending', () => {
     // no-op verdict — the cursor advances, so it cannot starve later facts.
     addFact(db, 'dup fact A', 'global', null);
     addFact(db, 'dup fact B', 'global', null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('not json at all');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('not json at all');
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null); // unparseable
 
     const result = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
 
-    expect(result.haikuCalls).toBe((callHaiku as ReturnType<typeof vi.fn>).mock.calls.length);
-    expect(result.haikuCalls).toBeGreaterThanOrEqual(1);
+    expect(result.llmCalls).toBe((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length);
+    expect(result.llmCalls).toBeGreaterThanOrEqual(1);
     // Both facts stay active (no merge/deactivation on a no-op verdict).
     const active = db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1").get() as { n: number };
     expect(active.n).toBe(2);
@@ -203,14 +203,14 @@ describe('consolidateAllPending', () => {
     db.prepare("UPDATE facts SET created_at = ? WHERE fact = 'clean later'").run(new Date(base + 1000).toISOString());
 
     // Every comparison is unparseable → each is a no-op, cursor advances anyway.
-    (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('not json');
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('not json');
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
 
     const run = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
 
     // Both facts examined (no cursor hold), budget counted, and the run reached
     // the end of the backlog — a non-JSON response cannot starve later facts.
-    expect(run.haikuCalls).toBe((callHaiku as ReturnType<typeof vi.fn>).mock.calls.length);
+    expect(run.llmCalls).toBe((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length);
     expect(run.cursor).not.toBeNull();
     expect(run.cursor!.createdAt >= new Date(base + 1000).toISOString()).toBe(true); // advanced past both
   });
@@ -249,7 +249,7 @@ describe('consolidateAllPending', () => {
 
   it('a TRANSIENT provider outage (503) holds the cursor forever — never skips, no attempt burned', async () => {
     for (let i = 0; i < 5; i++) addFact(db, `outage ${i}`, 'global', null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('503 overloaded'), { status: 503 }));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('503 overloaded'), { status: 503 }));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 5; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -262,7 +262,7 @@ describe('consolidateAllPending', () => {
   it('a DETERMINISTIC per-fact rejection (400 oversized) is SKIPPED after MAX (no wedge)', async () => {
     addFact(db, 'oversized driver', 'global', null);
     addFact(db, 'oversized sibling', 'global', null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('400 prompt too long'), { status: 400 }));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('400 prompt too long'), { status: 400 }));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 4; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -282,7 +282,7 @@ describe('consolidateAllPending', () => {
   it('AUTH/config errors (401/403) hold the cursor (correct — nothing succeeds until config is fixed)', async () => {
     addFact(db, 'auth A', 'global', null);
     addFact(db, 'auth B', 'global', null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('401 unauthorized'), { status: 401 }));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('401 unauthorized'), { status: 401 }));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 4; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -325,7 +325,7 @@ describe('consolidateAllPending', () => {
   it('a recognized TRANSIENT outage holds the cursor (never skips the backlog)', async () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('down'), { status: 503 }));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('down'), { status: 503 }));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 5; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -339,7 +339,7 @@ describe('consolidateAllPending', () => {
     // "API Error: 500 Internal Server Error" classifies as unknown (no labelled
     // status, no phrase). Only DETERMINISTIC rejections skip — unknown holds so a
     // weird outage shape never silently drains the backlog.
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('API Error: 500 Internal Server Error'));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('API Error: 500 Internal Server Error'));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 8; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -351,7 +351,7 @@ describe('consolidateAllPending', () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
     // status 400 → deterministic → the fact itself is at fault → bounded skip.
-    (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('bad request'), { status: 400 }));
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('bad request'), { status: 400 }));
 
     let cursor: { createdAt: string; id: string } | null = null;
     for (let r = 0; r < 8; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
@@ -364,7 +364,7 @@ describe('consolidateAllPending', () => {
   it('a NON-LLM internal error HOLDS (never advances the cursor on a code bug)', async () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
-    // callHaiku resolves; the failure is in parsing (an internal bug, NOT an
+    // callMemoryModel resolves; the failure is in parsing (an internal bug, NOT an
     // LlmCallError) → must hold, never be treated as a skippable "bad fact".
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error('parser boom'); });
 
@@ -386,7 +386,7 @@ describe('consolidateAllPending', () => {
     }
 
     const run1 = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
-    expect(run1.haikuCalls).toBeLessThanOrEqual(10);
+    expect(run1.llmCalls).toBeLessThanOrEqual(10);
     expect(run1.cursor).not.toBeNull();
     expect(run1.cursor!.createdAt > '2000-01-01T00:00:00Z').toBe(true); // advanced
 

@@ -2,7 +2,7 @@
 
 /**
  * SessionEnd Hook: Export facts/ontology to sync/ folder for cross-device sync.
- * Runs after fact-extract-hook.
+ * Runs after extraction completes in scripts/session-end-hook.js.
  */
 
 import { exportForSync } from '../dist/sync-export.js';

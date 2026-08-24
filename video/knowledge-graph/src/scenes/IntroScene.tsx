@@ -24,7 +24,7 @@ export const IntroScene = () => {
       fontFamily: sans,
     }}>
       <div style={{ fontSize: 14, color: colors.accent, fontWeight: 600, textTransform: "uppercase", letterSpacing: 4, opacity: tagOpacity, marginBottom: 16, fontFamily: mono }}>
-        claude code plugin
+        codex plugin
       </div>
       <div style={{ fontSize: 78, fontWeight: 700, color: colors.text, transform: `scale(${titleScale})`, letterSpacing: -2 }}>
         <span style={{ color: colors.purple }}>Memory</span> Bank

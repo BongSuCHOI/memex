@@ -1,6 +1,6 @@
 ---
 name: search-conversations
-description: Search previous Claude Code conversations using semantic or text search
+description: Search previous Codex conversations using semantic or text search
 ---
 
 # Search Past Conversations

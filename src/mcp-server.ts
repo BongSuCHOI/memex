@@ -2,7 +2,7 @@
 /**
  * MCP Server for Memory Bank.
  *
- * This server provides tools to search and explore indexed Claude Code conversations
+ * This server provides tools to search and explore indexed Codex conversations
  * using semantic search, text search, and conversation display capabilities.
  */
 
@@ -33,7 +33,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { readArchiveFile, resolveArchiveFile } from './archive-io.js';
-import { getArchiveDir } from './paths.js';
+import { getArchiveDir, getSessionsRoot } from './paths.js';
 
 // Zod Schemas for Input Validation
 
@@ -471,7 +471,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const realFile = fs.realpathSync(resolvedFile);
       const allowedRoots = [
         getArchiveDir(),
-        path.join(os.homedir(), '.claude', 'projects'),
+        getSessionsRoot(),
       ].map(root => {
         try { return fs.realpathSync(root); } catch { return path.resolve(root); }
       });
@@ -516,7 +516,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           filtered = filtered.filter(r => r.fact.category === params.category);
         }
         if (params.coding_agent) {
-          filtered = filtered.filter(r => (r.fact.coding_agent || 'claude-code') === params.coding_agent);
+          filtered = filtered.filter(r => (r.fact.coding_agent || 'codex') === params.coding_agent);
         }
 
         const agentLabel = params.coding_agent ? ` | Agent: ${params.coding_agent}` : '';
@@ -539,7 +539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const catName = catInfo ? catInfo.name : '';
 
           output += `## [${fact.category}] ${fact.fact}\n`;
-          const factAgent = fact.coding_agent || 'claude-code';
+          const factAgent = fact.coding_agent || 'codex';
           output += `- Scope: ${fact.scope_type}${fact.scope_project ? ` (${fact.scope_project})` : ''} | Agent: ${factAgent}\n`;
           output += `- Confirmed: ${fact.consolidated_count}x | Similarity: ${similarity}\n`;
           if (domainName) output += `- Ontology: ${domainName}/${catName}\n`;

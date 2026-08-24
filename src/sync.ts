@@ -3,7 +3,7 @@ import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
 import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, detectCodingAgent } from './paths.js';
 import { archiveFileExists, readArchiveFile, statArchiveFile } from './archive-io.js';
-
+import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath } from './codex-rollout.js';
 const EXCLUSION_MARKERS = [
   '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
   'Only use NO_INSIGHTS_FOUND',
@@ -65,15 +65,6 @@ function copyIfNewer(src: string, dest: string): boolean {
   return true;
 }
 
-function extractSessionIdFromPath(filePath: string): string | null {
-  // Extract session ID from filename: /path/to/abc-123-def.jsonl -> abc-123-def
-  const basename = path.basename(filePath, '.jsonl');
-  // Session IDs are UUIDs, validate format
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(basename)) {
-    return basename;
-  }
-  return null;
-}
 
 export async function syncConversations(
   sourceDir: string,
@@ -100,52 +91,48 @@ export async function syncConversations(
   const filesToIndex: string[] = [];
   const filesToSummarize: Array<{ path: string; sessionId: string }> = [];
 
-  // Walk source directory
-  const projects = fs.readdirSync(sourceDir);
+  // Walk Codex session rollouts. Layout is recursive (YYYY/MM/DD), and the
+  // project key is derived from each session's own cwd in session_meta —
+  // the archive keeps its <project>/<file>.jsonl contract on disk.
   const excludedProjects = getExcludedProjects();
 
-  for (const project of projects) {
-    if (isExcludedProject(project, excludedProjects)) {
-      console.error("\nSkipping excluded project: " + project);
-      continue;
-    }
+  for (const srcFile of discoverSessionFiles(sourceDir)) {
+    try {
+      const { meta, isSubagent } = await readRolloutMeta(srcFile);
+      // Subagent / child threads are harness plumbing, never knowledge.
+      if (isSubagent) continue;
+      const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+      const project = cwd ? path.basename(cwd) : 'unknown';
+      if (isExcludedProject(project, excludedProjects)) {
+        console.error(`\nSkipping excluded project: ${project}`);
+        continue;
+      }
 
-    const projectPath = path.join(sourceDir, project);
-    const stat = fs.statSync(projectPath);
+      const destFile = path.join(destDir, project, path.basename(srcFile));
 
-    if (!stat.isDirectory()) continue;
+      const wasCopied = copyIfNewer(srcFile, destFile);
+      if (wasCopied) {
+        result.copied++;
+        filesToIndex.push(destFile);
+      } else {
+        result.skipped++;
+      }
 
-    const files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
-
-    for (const file of files) {
-      const srcFile = path.join(projectPath, file);
-      const destFile = path.join(destDir, project, file);
-
-      try {
-        const wasCopied = copyIfNewer(srcFile, destFile);
-        if (wasCopied) {
-          result.copied++;
-          filesToIndex.push(destFile);
-        } else {
-          result.skipped++;
-        }
-
-        // Check if this file needs a summary (whether newly copied or existing)
-        if (!options.skipSummaries) {
-          const summaryPath = destFile.replace('.jsonl', '-summary.txt');
-          if (!archiveFileExists(summaryPath) && !shouldSkipConversation(destFile)) {
-            const sessionId = extractSessionIdFromPath(destFile);
-            if (sessionId) {
-              filesToSummarize.push({ path: destFile, sessionId });
-            }
+      // Check if this file needs a summary (whether newly copied or existing)
+      if (!options.skipSummaries) {
+        const summaryPath = destFile.replace('.jsonl', '-summary.txt');
+        if (!archiveFileExists(summaryPath) && !shouldSkipConversation(destFile)) {
+          const sessionId = extractSessionIdFromPath(destFile);
+          if (sessionId) {
+            filesToSummarize.push({ path: destFile, sessionId });
           }
         }
-      } catch (error) {
-        result.errors.push({
-          file: srcFile,
-          error: error instanceof Error ? error.message : String(error)
-        });
       }
+    } catch (error) {
+      result.errors.push({
+        file: srcFile,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 

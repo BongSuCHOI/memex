@@ -7,28 +7,21 @@ description: Use when user asks 'how should I...' or 'what's the best approach..
 
 **Core principle:** Search before reinventing. Searching costs nothing; reinventing or repeating mistakes costs everything.
 
-## Mandatory: Use the Search Agent
+## Historical Search: Delegate First, Fall Back to Direct Tools
 
-**YOU MUST dispatch the search-conversations agent for any historical search.**
+For any historical search, prefer delegating to a subagent so raw transcripts never enter this session's context. Use the host's available Codex subagent or delegation mechanism to dispatch the bundled `search-conversations` agent, with a brief like: "Search past conversations for [topic]. Focus on [decisions / patterns / gotchas / code examples]."
 
 Announce: "Dispatching search agent to find [topic]."
 
-Then use the Task tool with `subagent_type: "search-conversations"`:
-
-```
-Task tool:
-  description: "Search past conversations for [topic]"
-  prompt: "Search for [specific query or topic]. Focus on [what you're looking for - e.g., decisions, patterns, gotchas, code examples]."
-  subagent_type: "search-conversations"
-```
-
 The agent will:
 1. Search with the `search` tool
-2. Read top 2-5 results with the `show` tool
+2. Read top 2-5 results with the `read` tool
 3. Synthesize findings (200-1000 words)
 4. Return actionable insights + sources
 
 **Saves 50-100x context vs. loading raw conversations.**
+
+**Direct fallback (no delegation mechanism exposed):** call the memory-bank MCP tools yourself — `search` for the query, then `read` on the top 2-5 results — and synthesize inline, citing archive paths.
 
 ## When to Use
 
@@ -54,12 +47,10 @@ You often get value out of consulting your memory bank once you understand what 
 - For info in current conversation
 - Before understanding what you're being asked to do
 
-## Direct Tool Access (Discouraged)
+## Direct Tool Access (Fallback)
 
-You CAN use MCP tools directly, but DON'T:
-- `mcp__plugin_memory-bank_memory-bank__search`
-- `mcp__plugin_memory-bank_memory-bank__show`
+When delegation is unavailable, call the memory-bank MCP tools directly:
+- `search` — semantic/text lookup over past Codex conversations
+- `read` — full transcript of a result (archive path + line range)
 
-Using these directly wastes your context window. Always dispatch the agent instead.
-
-See MCP-TOOLS.md for complete API reference if needed for advanced usage.
+Prefer the delegated worker for volume; direct calls are the fallback. See MCP-TOOLS.md for the complete API reference.

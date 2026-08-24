@@ -245,8 +245,9 @@ describe('repairIndex', () => {
 
     // Create initial conversation
     const messages = [
-      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Hello' }, timestamp: '2024-01-01T00:00:00Z' }),
-      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Hi there!' }, timestamp: '2024-01-01T00:00:01Z' })
+      JSON.stringify({ type: 'session_meta', payload: { id: 'thr-repair', session_id: 'sess-repair', cwd: '/x/test-project' } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Hi there!' }] } })
     ];
     fs.writeFileSync(conversationPath, messages.join('\n'));
     fs.writeFileSync(summaryPath, 'Old summary');
@@ -278,8 +279,8 @@ describe('repairIndex', () => {
     // Update the conversation file (add new exchange)
     const updatedMessages = [
       ...messages,
-      JSON.stringify({ type: 'user', message: { role: 'user', content: 'New message' }, timestamp: '2024-01-01T00:00:02Z' }),
-      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'New response' }, timestamp: '2024-01-01T00:00:03Z' })
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'New message' }] } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'New response' }] } })
     ];
     fs.writeFileSync(conversationPath, updatedMessages.join('\n'));
 

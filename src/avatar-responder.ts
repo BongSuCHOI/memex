@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { l2DistanceToSimilarity } from './db.js';
 import type { AvatarResponse, Fact, RelationType } from './types.js';
-import { callHaiku, parseJsonResponse } from './llm.js';
+import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
 import { searchSimilarFacts } from './fact-db.js';
@@ -80,7 +80,7 @@ export async function askAvatar(
     }
   }
 
-  // Step 4: Build context for Haiku
+  // Step 4: Build context for the LLM
   const factContextLines: string[] = [];
 
   for (const { fact, distance } of vectorResults) {
@@ -115,14 +115,14 @@ export async function askAvatar(
     ...factContextLines,
   ].join('\n');
 
-  // Step 5: Call Haiku.
-  // callHaiku 는 이제 재시도를 소진하면 throw 한다(빈 응답 포함). 여기는 사용자 대면
+  // Step 5: Call the LLM.
+  // callMemoryModel 는 이제 재시도를 소진하면 throw 한다(빈 응답 포함). 여기는 사용자 대면
   // 경로라 크래시 대신 degrade 하되, **실패를 실패로** 표면화한다 — 예전에는 빈 응답이
   // '응답을 생성할 수 없습니다'라는 정상 답변 형식으로 반환돼 호출 실패와 "답할 근거가
   // 없음"이 구분되지 않았다(fail-loud-no-unapproved-fallback).
   let response: string;
   try {
-    response = await callHaiku(AVATAR_SYSTEM_PROMPT, prompt, 1024);
+    response = await callMemoryModel(AVATAR_SYSTEM_PROMPT, prompt, 1024);
   } catch (error) {
     // 원문 provider 에러는 엔드포인트·토큰 조각 등을 담을 수 있어 사용자 대면 응답에
     // 그대로 싣지 않는다 — 분류만 노출하고 상세는 서버 로그로 (Codex 리뷰 MEDIUM).

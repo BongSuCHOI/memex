@@ -1,236 +1,56 @@
-import readline from 'readline';
-import { ConversationExchange, ToolCall } from './types.js';
-import crypto from 'crypto';
+// Codex rollout transcript parser facade.
+//
+// Turn assembly lives in codex-rollout.ts (rollout JSONL -> normalized
+// user/agent exchanges). This module preserves the public parse API consumed
+// by sync/indexer/search and adds transparent .zst archive support on top.
+import fs from 'node:fs';
+import path from 'node:path';
+import { ConversationExchange } from './types.js';
 import { createArchiveReadStream } from './archive-io.js';
-
-interface JSONLMessage {
-  type: string;
-  message?: {
-    role: 'user' | 'assistant';
-    content: string | Array<any>;
-  };
-  timestamp?: string;
-  uuid?: string;
-  parentUuid?: string;
-  isSidechain?: boolean;
-  sessionId?: string;
-  cwd?: string;
-  gitBranch?: string;
-  version?: string;
-  thinkingMetadata?: {
-    level?: string;
-    disabled?: boolean;
-    triggers?: Array<any>;
-  };
-}
+import { parseRolloutStream } from './codex-rollout.js';
 
 export async function parseConversation(
   filePath: string,
   projectName: string,
   archivePath: string
 ): Promise<ConversationExchange[]> {
-  const exchanges: ConversationExchange[] = [];
   const fileStream = createArchiveReadStream(filePath);
-  const rl = readline.createInterface({
-    input: fileStream,
-    crlfDelay: Infinity
-  });
-
-  let lineNumber = 0;
-  let currentExchange: {
-    userMessage: string;
-    userLine: number;
-    assistantMessages: string[];
-    lastAssistantLine: number;
-    timestamp: string;
-    parentUuid?: string;
-    isSidechain?: boolean;
-    sessionId?: string;
-    cwd?: string;
-    gitBranch?: string;
-    claudeVersion?: string;
-    thinkingLevel?: string;
-    thinkingDisabled?: boolean;
-    thinkingTriggers?: string;
-    toolCalls: ToolCall[];
-  } | null = null;
-
-  const finalizeExchange = () => {
-    if (currentExchange && currentExchange.assistantMessages.length > 0) {
-      const exchangeId = crypto
-        .createHash('md5')
-        .update(`${archivePath}:${currentExchange.userLine}-${currentExchange.lastAssistantLine}`)
-        .digest('hex');
-
-      // Update tool call exchange IDs
-      const toolCalls = currentExchange.toolCalls.map(tc => ({
-        ...tc,
-        exchangeId
-      }));
-
-      const exchange: ConversationExchange = {
-        id: exchangeId,
-        project: projectName,
-        timestamp: currentExchange.timestamp,
-        userMessage: currentExchange.userMessage,
-        assistantMessage: currentExchange.assistantMessages.join('\n\n'),
-        archivePath,
-        lineStart: currentExchange.userLine,
-        lineEnd: currentExchange.lastAssistantLine,
-        parentUuid: currentExchange.parentUuid,
-        isSidechain: currentExchange.isSidechain,
-        sessionId: currentExchange.sessionId,
-        cwd: currentExchange.cwd,
-        gitBranch: currentExchange.gitBranch,
-        claudeVersion: currentExchange.claudeVersion,
-        thinkingLevel: currentExchange.thinkingLevel,
-        thinkingDisabled: currentExchange.thinkingDisabled,
-        thinkingTriggers: currentExchange.thinkingTriggers,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined
-      };
-      exchanges.push(exchange);
+  try {
+    const { meta, exchanges } = await parseRolloutStream(fileStream, { archivePath });
+    if (meta && typeof meta.cwd === 'string') {
+      for (const e of exchanges) (e as Record<string, unknown>).cwd = meta.cwd;
     }
-  };
-
-  for await (const line of rl) {
-    lineNumber++;
-
-    try {
-      const parsed: JSONLMessage = JSON.parse(line);
-
-      // Skip non-message types
-      if (parsed.type !== 'user' && parsed.type !== 'assistant') {
-        continue;
-      }
-
-      if (!parsed.message) {
-        continue;
-      }
-
-      // Extract text from message content
-      let text = '';
-      const toolCalls: ToolCall[] = [];
-
-      if (typeof parsed.message.content === 'string') {
-        text = parsed.message.content;
-      } else if (Array.isArray(parsed.message.content)) {
-        // Extract text blocks
-        const textBlocks = parsed.message.content
-          .filter(block => block.type === 'text' && block.text)
-          .map(block => block.text);
-        text = textBlocks.join('\n');
-
-        // Extract tool use blocks
-        if (parsed.message.role === 'assistant') {
-          for (const block of parsed.message.content) {
-            if (block.type === 'tool_use') {
-              const toolCallId = crypto.randomUUID();
-              toolCalls.push({
-                id: toolCallId,
-                exchangeId: '', // Will be set when we know the exchange ID
-                toolName: block.name || 'unknown',
-                toolInput: block.input,
-                isError: false,
-                timestamp: parsed.timestamp || new Date().toISOString()
-              });
-            }
-          }
-        }
-
-        // Tool RESULTS are intentionally not associated back to their tool_use
-        // here. The tool_calls table therefore stores tool_name + tool_input
-        // only; `tool_result` stays NULL and `is_error` stays 0 for every row.
-        // This is fine because NO feature reads those two columns — embeddings
-        // include tool NAMES only ("Tools: a, b"), search shows name counts, and
-        // the `read` tool returns the raw archive (which has full results). If a
-        // future feature needs real result/error data, MATCH tool_result blocks
-        // to the preceding tool_use by tool_use_id and populate both columns —
-        // do NOT trust the current always-0 `is_error`.
-      }
-
-      // Skip empty messages
-      if (!text.trim() && toolCalls.length === 0) {
-        continue;
-      }
-
-      if (parsed.message.role === 'user') {
-        // Finalize previous exchange before starting new one
-        finalizeExchange();
-
-        // Start new exchange
-        currentExchange = {
-          userMessage: text || '(tool results only)',
-          userLine: lineNumber,
-          assistantMessages: [],
-          lastAssistantLine: lineNumber,
-          timestamp: parsed.timestamp || new Date().toISOString(),
-          parentUuid: parsed.parentUuid,
-          isSidechain: parsed.isSidechain,
-          sessionId: parsed.sessionId,
-          cwd: parsed.cwd,
-          gitBranch: parsed.gitBranch,
-          claudeVersion: parsed.version,
-          thinkingLevel: parsed.thinkingMetadata?.level,
-          thinkingDisabled: parsed.thinkingMetadata?.disabled,
-          thinkingTriggers: parsed.thinkingMetadata?.triggers ? JSON.stringify(parsed.thinkingMetadata.triggers) : undefined,
-          toolCalls: []
-        };
-      } else if (parsed.message.role === 'assistant' && currentExchange) {
-        // Accumulate assistant messages
-        if (text.trim()) {
-          currentExchange.assistantMessages.push(text);
-        }
-        currentExchange.lastAssistantLine = lineNumber;
-
-        // Add tool calls to current exchange
-        if (toolCalls.length > 0) {
-          currentExchange.toolCalls.push(...toolCalls);
-        }
-
-        // Update timestamp to last assistant message
-        if (parsed.timestamp) {
-          currentExchange.timestamp = parsed.timestamp;
-        }
-
-        // Update metadata from assistant messages (use most recent)
-        if (parsed.sessionId) currentExchange.sessionId = parsed.sessionId;
-        if (parsed.cwd) currentExchange.cwd = parsed.cwd;
-        if (parsed.gitBranch) currentExchange.gitBranch = parsed.gitBranch;
-        if (parsed.version) currentExchange.claudeVersion = parsed.version;
-      }
-    } catch (error) {
-      // Skip malformed JSON lines
-      continue;
-    }
+    for (const e of exchanges) (e as Record<string, unknown>).project = projectName;
+    return exchanges as unknown as ConversationExchange[];
+  } finally {
+    fileStream.destroy();
   }
-
-  // Finalize last exchange
-  finalizeExchange();
-
-  return exchanges;
 }
 
 /**
- * Convenience function to parse a conversation file
- * Extracts project name from the file path and returns exchanges with metadata
+ * Convenience wrapper: derive the project key from the session's own cwd
+ * (the rollout directory layout is dates, not projects) and parse the file.
+ * Subagent threads are flagged via isSidechain so downstream sync can skip
+ * them exactly like legacy sidechain transcripts.
  */
 export async function parseConversationFile(filePath: string): Promise<{
   project: string;
   exchanges: ConversationExchange[];
 }> {
-  // Extract project name from path (directory name before the .jsonl file)
-  const pathParts = filePath.split('/');
-  let project = 'unknown';
-
-  // Find the parent directory name (second to last part)
-  if (pathParts.length >= 2) {
-    project = pathParts[pathParts.length - 2];
+  const fileStream = createArchiveReadStream(filePath);
+  try {
+    const { meta, isSubagent, exchanges } = await parseRolloutStream(fileStream, {
+      archivePath: filePath,
+    });
+    const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+    const project = cwd ? path.basename(cwd) : 'unknown';
+    for (const e of exchanges) {
+      const rec = e as Record<string, unknown>;
+      rec.project = project;
+      if (isSubagent) rec.isSidechain = true;
+    }
+    return { project, exchanges: exchanges as unknown as ConversationExchange[] };
+  } finally {
+    fileStream.destroy();
   }
-
-  const exchanges = await parseConversation(filePath, project, filePath);
-
-  return {
-    project,
-    exchanges
-  };
 }

@@ -6,6 +6,10 @@ import { syncConversations } from '../src/sync.js';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
+// Sync consumes Codex rollout transcripts found recursively under the session
+// root. Project key = basename of session_meta.cwd; archive layout stays
+// <project>/<file>.jsonl.
+
 describe('sync command', () => {
   let testDir: string;
   let sourceDir: string;
@@ -18,10 +22,8 @@ describe('sync command', () => {
     destDir = join(testDir, 'dest');
     dbPath = join(testDir, 'test.db');
 
-    // Create source directory
-    mkdirSync(sourceDir, { recursive: true });
+    mkdirSync(join(sourceDir, '2026', '08', '24'), { recursive: true });
 
-    // Set DB path for sync to use
     process.env.TEST_DB_PATH = dbPath;
   });
 
@@ -34,30 +36,53 @@ describe('sync command', () => {
     }
   });
 
+  /** Write one minimal-but-valid rollout transcript into the session tree. */
+  function writeRollout(name: string, projectCwd: string, body?: string): string {
+    const day = join(sourceDir, '2026', '08', '24');
+    const file = join(day, `rollout-${name}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        type: 'session_meta',
+        timestamp: '2026-08-24T01:00:00Z',
+        payload: { id: `thr-${name}`, session_id: `sess-${name}`, cwd: projectCwd, source: 'cli' },
+      }),
+    ];
+    if (body !== undefined) {
+      lines.push(body); // pre-rendered extra records (marker cases etc.)
+    } else {
+      lines.push(
+        JSON.stringify({
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `Question ${name}` }] },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Answer ${name}` }] },
+        }),
+      );
+    }
+    writeFileSync(file, lines.join('\n') + '\n', 'utf-8');
+    return file;
+  }
+
   it('should copy new files from source to destination', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    const testFile = join(sourceDir, 'project-a', 'test.jsonl');
-    writeFileSync(testFile, 'test content', 'utf-8');
+    const src = writeRollout('one', '/x/project-a');
 
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
     expect(result.copied).toBe(1);
     expect(result.skipped).toBe(0);
 
-    // Verify file was copied
-    const destFile = join(destDir, 'project-a', 'test.jsonl');
+    const destFile = join(destDir, 'project-a', 'rollout-one.jsonl');
     expect(statSync(destFile).isFile()).toBe(true);
+    expect(src).toContain('rollout-one.jsonl');
   });
 
   it('should skip files that have not been modified', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    const testFile = join(sourceDir, 'project-a', 'test.jsonl');
-    writeFileSync(testFile, 'test content', 'utf-8');
+    writeRollout('keep', '/x/project-a');
 
-    // First sync - should copy
     await syncConversations(sourceDir, destDir, { skipIndex: true });
 
-    // Second sync - should skip (same mtime)
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
     expect(result.copied).toBe(0);
@@ -65,20 +90,15 @@ describe('sync command', () => {
   });
 
   it('should copy files that were modified after previous sync', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    const testFile = join(sourceDir, 'project-a', 'test.jsonl');
-    writeFileSync(testFile, 'version 1', 'utf-8');
+    const src = writeRollout('bump', '/x/project-a');
 
-    // First sync
     await syncConversations(sourceDir, destDir, { skipIndex: true });
 
-    // Modify source file (update mtime)
     const now = new Date();
     const future = new Date(now.getTime() + 5000);
-    writeFileSync(testFile, 'version 2', 'utf-8');
-    utimesSync(testFile, future, future);
+    writeFileSync(src, '{"type":"session_meta","payload":{"cwd":"/x/project-a"}}\n', 'utf-8');
+    utimesSync(src, future, future);
 
-    // Second sync - should copy updated file
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
     expect(result.copied).toBe(1);
@@ -86,12 +106,9 @@ describe('sync command', () => {
   });
 
   it('should handle multiple projects', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    mkdirSync(join(sourceDir, 'project-b'), { recursive: true });
-    mkdirSync(join(sourceDir, 'project-c'), { recursive: true });
-    writeFileSync(join(sourceDir, 'project-a', 'test1.jsonl'), 'content 1', 'utf-8');
-    writeFileSync(join(sourceDir, 'project-b', 'test2.jsonl'), 'content 2', 'utf-8');
-    writeFileSync(join(sourceDir, 'project-c', 'test3.jsonl'), 'content 3', 'utf-8');
+    writeRollout('a1', '/x/project-a');
+    writeRollout('b1', '/x/project-b');
+    writeRollout('c1', '/x/project-c');
 
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
@@ -99,11 +116,11 @@ describe('sync command', () => {
     expect(result.skipped).toBe(0);
   });
 
-  it('should only sync jsonl files', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    writeFileSync(join(sourceDir, 'project-a', 'test.jsonl'), 'good', 'utf-8');
-    writeFileSync(join(sourceDir, 'project-a', 'test.txt'), 'bad', 'utf-8');
-    writeFileSync(join(sourceDir, 'project-a', 'test.json'), 'bad', 'utf-8');
+  it('should only sync rollout jsonl files', async () => {
+    const day = join(sourceDir, '2026', '08', '24');
+    writeFileSync(join(day, 'rollout-good.jsonl'), '{}\n', 'utf-8');
+    writeFileSync(join(day, 'notes.txt'), 'bad', 'utf-8');
+    writeFileSync(join(day, 'data.json'), 'bad', 'utf-8');
 
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
@@ -111,10 +128,8 @@ describe('sync command', () => {
   });
 
   it('should skip excluded projects', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-    mkdirSync(join(sourceDir, 'project-b'), { recursive: true });
-    writeFileSync(join(sourceDir, 'project-a', 'test1.jsonl'), 'content', 'utf-8');
-    writeFileSync(join(sourceDir, 'project-b', 'test2.jsonl'), 'content', 'utf-8');
+    writeRollout('a-excl', '/x/project-a');
+    writeRollout('b-keep', '/x/project-b');
 
     process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS = 'project-a';
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
@@ -122,51 +137,29 @@ describe('sync command', () => {
 
     expect(result.copied).toBe(1);
     expect(existsSync(join(destDir, 'project-a'))).toBe(false);
-    expect(existsSync(join(destDir, 'project-b', 'test2.jsonl'))).toBe(true);
+    expect(existsSync(join(destDir, 'project-b', 'rollout-b-keep.jsonl'))).toBe(true);
   });
 
   it('should skip indexing conversations with DO NOT INDEX marker', async () => {
-    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
-
-    // Create conversation WITH marker
-    const markedConversation = JSON.stringify({
-      type: 'user',
-      uuid: 'uuid-1',
-      parentUuid: null,
-      timestamp: '2025-10-01T12:00:00Z',
-      isSidechain: false,
-      message: {
-        role: 'user',
-        content: '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>\nSummarize this conversation...'
-      }
-    }) + '\n' + JSON.stringify({
-      type: 'assistant',
-      uuid: 'uuid-2',
-      parentUuid: 'uuid-1',
-      timestamp: '2025-10-01T12:00:01Z',
-      isSidechain: false,
-      message: { role: 'assistant', content: 'Summary of conversation' }
-    });
-
-    // Create conversation WITHOUT marker
-    const normalConversation = JSON.stringify({
-      type: 'user',
-      uuid: 'uuid-3',
-      parentUuid: null,
-      timestamp: '2025-10-01T13:00:00Z',
-      isSidechain: false,
-      message: { role: 'user', content: 'Normal question' }
-    }) + '\n' + JSON.stringify({
-      type: 'assistant',
-      uuid: 'uuid-4',
-      parentUuid: 'uuid-3',
-      timestamp: '2025-10-01T13:00:01Z',
-      isSidechain: false,
-      message: { role: 'assistant', content: 'Normal answer' }
-    });
-
-    writeFileSync(join(sourceDir, 'project-a', 'marked.jsonl'), markedConversation, 'utf-8');
-    writeFileSync(join(sourceDir, 'project-a', 'normal.jsonl'), normalConversation, 'utf-8');
+    const markerBody = [
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>\nSummarize this conversation...',
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Summary of conversation' }] },
+      }),
+    ].join('\n');
+    writeRollout('marked', '/x/project-a', markerBody);
+    writeRollout('normal', '/x/project-a');
 
     // Initialize test database
     const db = new Database(dbPath);

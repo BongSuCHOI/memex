@@ -10,6 +10,7 @@
  * never clear, so the hook spawned the worker (model load + LLM setup) on EVERY
  * session start forever, for nothing.
  */
+import { fileURLToPath } from 'node:url';
 function boundedInt(raw, def, cap) {
     if (raw === undefined || !/^\d+$/.test(raw.trim()))
         return def;
@@ -19,7 +20,9 @@ function boundedInt(raw, def, cap) {
 /** Env-derived config, identical for the worker and the hook. */
 export function getExtractionConfig() {
     const excludeProjects = (process.env.BACKFILL_EXCLUDE_PROJECTS ||
-        '/Users/jung-wankim/Project/Claude/memory-bank')
+        // This plugin's own repo root, derived from module location — never a
+        // hardcoded personal path. Trailing slashes are stripped below anyway.
+        fileURLToPath(new URL('..', import.meta.url)))
         .split(',')
         .map((s) => s.trim())
         // 후행 슬래시 제거 — 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위 경로가

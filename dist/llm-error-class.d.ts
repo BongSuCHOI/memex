@@ -8,14 +8,14 @@
  */
 export type LlmErrorClass = 'transient' | 'deterministic' | 'unknown';
 /**
- * Extract an HTTP status from the common provider-error shapes: a top-level
- * `status`/`statusCode` (Anthropic SDK APIError) OR a nested `response.status`/
+ * Extract an HTTP status from common provider-error shapes: a top-level
+ * `status`/`statusCode` OR a nested `response.status`/
  * `response.statusCode` (axios / fetch-wrapper style). Reading only the top
  * level misses nested shapes and misclassifies a real 400/413 as 'unknown'.
  */
 export declare function extractStatus(x: unknown): number | undefined;
 /**
- * Wraps a rejection from the LLM provider call (callHaiku) so the drain loop can
+ * Wraps a rejection from the LLM provider call (callMemoryModel) so the drain loop can
  * tell a provider error apart from an internal bug (parser/DB/mutation). ONLY a
  * provider error is eligible for classification + bounded skip; an internal
  * error must hold, never advance the cursor.
@@ -26,8 +26,8 @@ export declare class LlmCallError extends Error {
     constructor(reason: unknown);
 }
 /**
- * The provider call completed without producing any text — the Agent SDK stream
- * ended with no result message, or the result was empty/whitespace.
+ * The provider call completed without producing any text — the Codex CLI emitted
+ * no final agent message, or the result was empty/whitespace.
  *
  * This is a CALL-level failure, not "the model legitimately answered nothing":
  * every caller here asks for JSON, so an empty body is never a valid answer.
@@ -40,7 +40,7 @@ export declare class EmptyLlmResponseError extends Error {
     constructor(detail?: string);
 }
 /**
- * Classify a callHaiku rejection into three states so the drain loop can satisfy
+ * Classify a callMemoryModel rejection into three states so the drain loop can satisfy
  * BOTH "an outage must never silently skip the backlog" AND "one un-processable
  * fact must never wedge the cursor forever" — a binary flag cannot do both under
  * a single monotonic cursor with imperfect error recognition:

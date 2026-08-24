@@ -11,6 +11,8 @@
  * session start forever, for nothing.
  */
 
+import { fileURLToPath } from 'node:url';
+
 function boundedInt(raw: string | undefined, def: number, cap: number): number {
   if (raw === undefined || !/^\d+$/.test(raw.trim())) return def;
   const n = parseInt(raw.trim(), 10);
@@ -26,7 +28,9 @@ export interface ExtractionConfig {
 export function getExtractionConfig(): ExtractionConfig {
   const excludeProjects = (
     process.env.BACKFILL_EXCLUDE_PROJECTS ||
-    '/Users/jung-wankim/Project/Claude/memory-bank'
+    // This plugin's own repo root, derived from module location — never a
+    // hardcoded personal path. Trailing slashes are stripped below anyway.
+    fileURLToPath(new URL('..', import.meta.url))
   )
     .split(',')
     .map((s) => s.trim())

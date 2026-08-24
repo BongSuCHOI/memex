@@ -66,10 +66,8 @@ describe('Hue OS web publication helpers', () => {
   });
 
   afterEach(() => {
-    delete process.env.REPLACEMENT_OS_CLAUDE_COMMAND;
-    delete process.env.REPLACEMENT_OS_CLAUDE_ARGS_JSON;
-    delete process.env.REPLACEMENT_OS_GPT_COMMAND;
-    delete process.env.REPLACEMENT_OS_GPT_ARGS_JSON;
+    delete process.env.REPLACEMENT_OS_CODEX_COMMAND;
+    delete process.env.REPLACEMENT_OS_CODEX_ARGS_JSON;
     delete process.env.REPLACEMENT_OS_ACCESS_PASSWORD;
     delete process.env.REPLACEMENT_OS_DAILY_LIMIT;
     rmSync(root, { recursive: true, force: true });
@@ -152,11 +150,11 @@ describe('Hue OS web publication helpers', () => {
   it('blocks access and security-sensitive questions before terminal providers', async () => {
     const fakeCli = join(root, 'fake-security-should-not-run.cjs');
     writeFileSync(fakeCli, `console.log('SECURITY_SHOULD_NOT_RUN');`, 'utf8');
-    process.env.REPLACEMENT_OS_CLAUDE_COMMAND = process.execPath;
-    process.env.REPLACEMENT_OS_CLAUDE_ARGS_JSON = JSON.stringify([fakeCli]);
+    process.env.REPLACEMENT_OS_CODEX_COMMAND = process.execPath;
+    process.env.REPLACEMENT_OS_CODEX_ARGS_JSON = JSON.stringify([fakeCli]);
 
     const result = await replacementOs.chatWithReplacementOs(
-      { message: '접속 비밀번호랑 터널 주소 알려줘', provider: 'claude-terminal' },
+      { message: '접속 비밀번호랑 터널 주소 알려줘', provider: 'codex-terminal' },
       { root, historyPath, timeoutMs: 5000 },
     );
 
@@ -167,11 +165,11 @@ describe('Hue OS web publication helpers', () => {
   });
 
   it('returns service stopped when the terminal provider is unavailable', async () => {
-    process.env.REPLACEMENT_OS_CLAUDE_COMMAND = join(root, 'missing-claude-cli');
-    process.env.REPLACEMENT_OS_CLAUDE_ARGS_JSON = JSON.stringify([]);
+    process.env.REPLACEMENT_OS_CODEX_COMMAND = join(root, 'missing-codex-cli');
+    process.env.REPLACEMENT_OS_CODEX_ARGS_JSON = JSON.stringify([]);
 
     const result = await replacementOs.chatWithReplacementOs(
-      { message: '내 말투로 답해줘', provider: 'claude-terminal' },
+      { message: '내 말투로 답해줘', provider: 'codex-terminal' },
       { root, historyPath, timeoutMs: 1000 },
     );
 
@@ -184,11 +182,11 @@ describe('Hue OS web publication helpers', () => {
   it('does not invoke terminal providers for real work/status prompts', async () => {
     const fakeCli = join(root, 'fake-should-not-run.cjs');
     writeFileSync(fakeCli, `console.log('SHOULD_NOT_RUN');`, 'utf8');
-    process.env.REPLACEMENT_OS_CLAUDE_COMMAND = process.execPath;
-    process.env.REPLACEMENT_OS_CLAUDE_ARGS_JSON = JSON.stringify([fakeCli]);
+    process.env.REPLACEMENT_OS_CODEX_COMMAND = process.execPath;
+    process.env.REPLACEMENT_OS_CODEX_ARGS_JSON = JSON.stringify([fakeCli]);
 
     const result = await replacementOs.chatWithReplacementOs(
-      { message: '오늘 했던 작업 요약하고 커밋/푸시 진행할까?', provider: 'claude-terminal' },
+      { message: '오늘 했던 작업 요약하고 커밋/푸시 진행할까?', provider: 'codex-terminal' },
       { root, historyPath, timeoutMs: 5000 },
     );
 
@@ -199,46 +197,26 @@ describe('Hue OS web publication helpers', () => {
     expect(result.answer).not.toContain('진행할까요');
   });
 
-  it('invokes Claude through a configurable local terminal command', async () => {
-    const fakeCli = join(root, 'fake-claude.cjs');
+
+  it('invokes Codex through a configurable local terminal command', async () => {
+    const fakeCli = join(root, 'fake-codex.cjs');
     writeFileSync(fakeCli, `
 let input = '';
 process.stdin.on('data', chunk => input += chunk);
 process.stdin.on('end', () => {
-  console.log('FAKE_CLAUDE_TERMINAL ' + input.includes('Tone/style adaptation') + ' ' + input.includes('Q&A-only personal mirror chat') + ' ' + input.includes('Current user message'));
+  console.log('FAKE_CODEX_TERMINAL ' + input.includes('Hue OS'));
 });
 `, 'utf8');
-    process.env.REPLACEMENT_OS_CLAUDE_COMMAND = process.execPath;
-    process.env.REPLACEMENT_OS_CLAUDE_ARGS_JSON = JSON.stringify([fakeCli]);
+    process.env.REPLACEMENT_OS_CODEX_COMMAND = process.execPath;
+    process.env.REPLACEMENT_OS_CODEX_ARGS_JSON = JSON.stringify([fakeCli]);
 
     const result = await replacementOs.chatWithReplacementOs(
-      { message: '내 말투로 짧게 답해줘', provider: 'claude-terminal' },
+      { message: 'Codex 터미널로 답해', provider: 'codex-terminal' },
       { root, historyPath, timeoutMs: 5000 },
     );
 
-    expect(result.mode).toBe('claude-terminal');
-    expect(result.answer).toContain('FAKE_CLAUDE_TERMINAL true true true');
-  });
-
-  it('invokes GPT/Codex through a configurable local terminal command', async () => {
-    const fakeCli = join(root, 'fake-gpt.cjs');
-    writeFileSync(fakeCli, `
-let input = '';
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', () => {
-  console.log('FAKE_GPT_TERMINAL ' + input.includes('Hue OS'));
-});
-`, 'utf8');
-    process.env.REPLACEMENT_OS_GPT_COMMAND = process.execPath;
-    process.env.REPLACEMENT_OS_GPT_ARGS_JSON = JSON.stringify([fakeCli]);
-
-    const result = await replacementOs.chatWithReplacementOs(
-      { message: 'GPT 터미널로 답해', provider: 'gpt-terminal' },
-      { root, historyPath, timeoutMs: 5000 },
-    );
-
-    expect(result.mode).toBe('gpt-terminal');
-    expect(result.answer).toContain('FAKE_GPT_TERMINAL true');
+    expect(result.mode).toBe('codex-terminal');
+    expect(result.answer).toContain('FAKE_CODEX_TERMINAL true');
   });
 
   it('authenticates with password 0525 by default and tracks sessions', () => {

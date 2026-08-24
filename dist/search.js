@@ -428,7 +428,7 @@ export async function searchConversations(query, options = {}) {
             archivePath: row.archive_path,
             lineStart: row.line_start,
             lineEnd: row.line_end,
-            codingAgent: row.coding_agent || 'claude-code',
+            codingAgent: row.coding_agent || 'codex',
         };
         // Try to load summary if available
         const summaryPath = row.archive_path.replace('.jsonl', '-summary.txt');
@@ -522,8 +522,8 @@ export async function formatResults(results) {
         const date = new Date(result.exchange.timestamp).toISOString().split('T')[0];
         const simPct = result.similarity !== undefined ? Math.round(result.similarity * 100) : null;
         // Header with match percentage and coding agent
-        const agent = result.exchange.codingAgent || 'claude-code';
-        const agentTag = agent !== 'claude-code' ? ` @${agent}` : '';
+        const agent = result.exchange.codingAgent || 'codex';
+        const agentTag = agent !== 'codex' ? ` @${agent}` : '';
         output += `${index + 1}. [${result.exchange.project}, ${date}${agentTag}]`;
         if (simPct !== null) {
             output += ` - ${simPct}% match`;

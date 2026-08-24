@@ -5,7 +5,7 @@ import { CONSOLIDATION_SYSTEM_PROMPT } from '../src/consolidator.js';
 import { BATCH_CLASSIFY_SYSTEM_PROMPT, DETECT_RELATION_SYSTEM_PROMPT } from '../src/ontology-classifier.js';
 
 // Pollution detection (indexing guard + purge) identifies the plugin's own
-// worker sessions by the EXACT leading text of each Haiku system prompt. If a
+// worker sessions by the EXACT leading text of each worker system prompt. If a
 // prompt is later tuned but WORKER_PROMPT_PREFIXES isn't updated, detection
 // silently breaks and pollution accumulates in search. This test binds the two
 // together so ANY drift fails loudly at build time, not silently in production.

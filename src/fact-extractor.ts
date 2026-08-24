@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { ExtractedFact } from './types.js';
-import { callHaiku, parseJsonResponse } from './llm.js';
+import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError, LlmCallError } from './llm-error-class.js';
 import { insertFact } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
@@ -209,7 +209,7 @@ export async function extractFactsFromExchanges(
     renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
 
     try {
-      const response = await callHaiku(EXTRACTION_SYSTEM_PROMPT, prompt);
+      const response = await callMemoryModel(EXTRACTION_SYSTEM_PROMPT, prompt);
       const extracted = parseJsonResponse<ExtractedFact[]>(response);
 
       if (extracted && Array.isArray(extracted)) {
@@ -233,7 +233,7 @@ export async function extractFactsFromExchanges(
       // consolidation 에서 건너뛴 fact 는 살아 있고 검색되지만(중복제거만 미실행),
       // 추출에서 건너뛴 배치는 **fact 가 애초에 만들어지지 않는다** — 되돌릴 수 없다.
       // 그래서 인식 못 한 에러(unknown)는 '이 요청 잘못'으로 단정하지 않고 transient
-      // 와 같이 이연한다(다음 run 재시도). 무한 재시도 위험은 callHaiku 가 이미 유한
+      // 와 같이 이연한다(다음 run 재시도). 무한 재시도 위험은 callMemoryModel 가 이미 유한
       // 재시도로 흡수했고, 워커가 이연 건수를 로그로 표면화한다.
       // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
       //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
@@ -269,7 +269,7 @@ export async function saveExtractedFacts(
   codingAgent?: string,
   /**
    * 🚨 저장 구간은 파이프라인에서 **가장 긴** 단계다 — fact 당 임베딩 2회 +
-   * classifyAndLinkFact(내부에서 callHaiku = 헤드리스 세션 1회)를 최대 20 fact 반복.
+   * classifyAndLinkFact(내부에서 callMemoryModel = 헤드리스 세션 1회)를 최대 20 fact 반복.
    * 여기가 리스 밖이면 정상 작업이 회수돼 다른 워커가 같은 세션을 저장한다
    * (Codex R8 HIGH: R7 HIGH-1 의 잔존 구간). fact 마다 갱신·소유권 확인한다.
    */
@@ -696,11 +696,11 @@ export async function runFactExtraction(
 
 /**
  * Detect the coding agent from a session's exchanges.
- * Returns the coding_agent of the first exchange in the session, or 'claude-code' as default.
+ * Returns the coding_agent of the first exchange in the session, or 'codex' as default.
  */
 function detectAgentFromSession(db: Database.Database, sessionId: string): string {
   const row = db.prepare(
     'SELECT coding_agent FROM exchanges WHERE session_id = ? LIMIT 1'
   ).get(sessionId) as { coding_agent: string | null } | undefined;
-  return row?.coding_agent || 'claude-code';
+  return row?.coding_agent || 'codex';
 }

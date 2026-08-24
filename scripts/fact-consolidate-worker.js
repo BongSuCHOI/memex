@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Detached worker spawned by fact-consolidate-hook.js.
+ * Detached worker spawned by scripts/session-start-maintenance.js.
  * Runs LLM-based fact consolidation without blocking SessionStart.
  *
  * Environment:
@@ -18,14 +18,14 @@ import { getIndexDir } from '../dist/paths.js';
 // GLOBAL single-instance lock (NOT per-project): consolidation touches shared
 // global-scope facts (getAllNewFactsSince spans every scope), so concurrent
 // per-project workers would race on the same rows. One lock-holder processes
-// the ENTIRE backlog in a single pass — every new fact once, one Haiku budget —
+// the ENTIRE backlog in a single pass — every new fact once, one LLM budget —
 // so no project is starved and shared globals aren't reprocessed per project.
 // This kills the flood: the SessionStart hook re-spawns this worker on every
 // session with no lock (measured 14 orphaned ppid=1 workers at once, each
-// spawning a headless Claude session per LLM call).
+// spawning a headless Codex session per LLM call).
 const LOCK = path.join(getIndexDir(), 'fact-consolidate.lock');
 // Persisted progress cursor: without it, INDEPENDENT facts (which stay active)
-// would re-consume the whole Haiku budget on the same oldest rows every run and
+// would re-consume the whole LLM budget on the same oldest rows every run and
 // never reach newer backlog. Each run resumes from the last fully-examined
 // created_at.
 const CURSOR = path.join(getIndexDir(), 'fact-consolidate-cursor.txt');
@@ -103,7 +103,7 @@ async function main() {
 
   // Resume from the persisted keyset cursor. Absent/legacy/corrupt cursor →
   // start from the BEGINNING (null) so no active fact is ever skipped — the
-  // per-run Haiku budget only caps actual consolidation CALLS, and facts with
+  // per-run LLM budget only caps actual consolidation CALLS, and facts with
   // no similar candidate don't consume budget, so the whole backlog drains
   // across a few runs regardless of age. An explicit LAST_CONSOLIDATED_AT env
   // (manual/scoped runs) still seeds a starting timestamp.
@@ -116,11 +116,11 @@ async function main() {
   try {
     db = initDatabase();
     // One pass over the backlog after the cursor: every new fact once, single
-    // Haiku budget, then advance the cursor so the next run reaches newer rows.
+    // LLM budget, then advance the cursor so the next run reaches newer rows.
     const result = await consolidateAllPending(db, since);
     writeCursor(result.cursor);
-    if (result.haikuCalls > 0) {
-      log(`worker: processed=${result.processed} haiku=${result.haikuCalls} merged=${result.merged} contradictions=${result.contradictions} evolutions=${result.evolutions} cursor=${JSON.stringify(result.cursor)}`);
+    if (result.llmCalls > 0) {
+      log(`worker: processed=${result.processed} llmCalls=${result.llmCalls} merged=${result.merged} contradictions=${result.contradictions} evolutions=${result.evolutions} cursor=${JSON.stringify(result.cursor)}`);
     }
   } catch (error) {
     log(`worker: FATAL ${error instanceof Error ? error.message : error}`);

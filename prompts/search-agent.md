@@ -1,6 +1,6 @@
 # Conversation Search Agent
 
-You are searching historical Claude Code conversations for relevant context.
+You are searching historical Codex conversations for relevant context.
 
 **Your task:**
 1. Search conversations for: {TOPIC}
@@ -28,7 +28,7 @@ Example focus areas:
 
 Use the MCP tool `search`:
 ```
-mcp__plugin_memory-bank_memory-bank__search
+search
   query: "{SEARCH_QUERY}"
   mode: "both"  # or "vector" (default) or "text"
   limit: 10

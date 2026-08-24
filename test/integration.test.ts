@@ -37,7 +37,7 @@ describe('Integration Tests', () => {
 
   describe('Indexing', () => {
     it('should index a conversation successfully', async () => {
-      const fixturePath = getFixturePath('short-conversation.jsonl');
+      const fixturePath = getFixturePath('codex-rollout.jsonl');
 
       await indexTestFiles([fixturePath]);
 
@@ -49,19 +49,29 @@ describe('Integration Tests', () => {
     });
 
     it('should handle multiple conversations', async () => {
-      const shortPath = getFixturePath('short-conversation.jsonl');
-      const longPath = getFixturePath('long-conversation.jsonl');
+      const fixturePath = getFixturePath('codex-rollout.jsonl');
 
-      await indexTestFiles([shortPath, longPath]);
+      // Second, distinct rollout generated in a temp dir (helper-style).
+      const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-extra-'));
+      const extraRollout = path.join(extraDir, 'rollout-extra.jsonl');
+      fs.writeFileSync(extraRollout, [
+        JSON.stringify({ type: 'session_meta', payload: { id: 'thr-extra', session_id: 'sess-extra', cwd: '/x/project-b', source: 'cli' } }),
+        JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Extra question' }] } }),
+        JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Extra answer' }] } }),
+      ].join('\n') + '\n', 'utf-8');
+
+      await indexTestFiles([fixturePath, extraRollout]);
 
       const db = initDatabase();
       const count = db.prepare('SELECT COUNT(*) as count FROM exchanges').get() as { count: number };
       expect(count.count).toBeGreaterThan(1);
       db.close();
+      fs.rmSync(extraDir, { recursive: true, force: true });
     });
 
+
     it('should store embeddings in vec_exchanges table', async () => {
-      const fixturePath = getFixturePath('short-conversation.jsonl');
+      const fixturePath = getFixturePath('codex-rollout.jsonl');
 
       await indexTestFiles([fixturePath]);
 
@@ -72,7 +82,7 @@ describe('Integration Tests', () => {
     });
 
     it('should preserve conversation metadata', async () => {
-      const fixturePath = getFixturePath('long-conversation.jsonl');
+      const fixturePath = getFixturePath('codex-rollout.jsonl');
 
       await indexTestFiles([fixturePath]);
 
@@ -91,7 +101,7 @@ describe('Integration Tests', () => {
   describe('Vector Search', () => {
     beforeEach(async () => {
       // Index test conversations
-      await indexTestFiles([getFixturePath('short-conversation.jsonl')]);
+      await indexTestFiles([getFixturePath('codex-rollout.jsonl')]);
     });
 
     it('should find conversations by semantic similarity', async () => {
@@ -132,7 +142,7 @@ describe('Integration Tests', () => {
 
   describe('Text Search', () => {
     beforeEach(async () => {
-      await indexTestFiles([getFixturePath('long-conversation.jsonl')]);
+      await indexTestFiles([getFixturePath('codex-rollout.jsonl')]);
     });
 
     it('should find exact text matches', async () => {
@@ -173,8 +183,8 @@ describe('Integration Tests', () => {
   describe('Combined Search', () => {
     beforeEach(async () => {
       await indexTestFiles([
-        getFixturePath('short-conversation.jsonl'),
-        getFixturePath('long-conversation.jsonl')
+        getFixturePath('codex-rollout.jsonl'),
+        getFixturePath('codex-rollout.jsonl')
       ]);
     });
 
@@ -204,7 +214,7 @@ describe('Integration Tests', () => {
 
   describe('Date Filtering', () => {
     beforeEach(async () => {
-      await indexTestFiles([getFixturePath('short-conversation.jsonl')]);
+      await indexTestFiles([getFixturePath('codex-rollout.jsonl')]);
     });
 
     it('should filter by after date', async () => {

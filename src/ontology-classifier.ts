@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { l2DistanceToSimilarity } from './db.js';
 import type { Fact, RelationType } from './types.js';
-import { callHaiku, parseJsonResponse } from './llm.js';
+import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { generateEmbedding } from './embeddings.js';
 import { searchSimilarFacts } from './fact-db.js';
 import {
@@ -536,7 +536,7 @@ interface BatchClassifyItem extends ClassifyResponse {
 
 /**
  * Classify a batch of facts with ONE LLM call (plus zero-cost deterministic
- * assignments). Each callHaiku() spawns a full headless Claude session
+ * assignments). Each callMemoryModel() spawns a full headless Codex session
  * (~10-14s + a transcript + auxiliary calls), so per-fact single calls made
  * the backfill drain both slow and noisy on the proxy; batching divides the
  * spawn count by the batch size.
@@ -631,7 +631,7 @@ export async function classifyFactsBatch(
 
   let response: string;
   try {
-    response = await callHaiku(BATCH_CLASSIFY_SYSTEM_PROMPT, JSON.stringify(payload), 256 * remaining.length + 512);
+    response = await callMemoryModel(BATCH_CLASSIFY_SYSTEM_PROMPT, JSON.stringify(payload), 256 * remaining.length + 512);
   } catch (error) {
     console.error(`Batch classification call failed (transient, no attempt burned):`, error);
     return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], assignments };
@@ -784,7 +784,7 @@ export function parkExhaustedFacts(db: Database.Database): number {
 export async function detectRelations(
   db: Database.Database,
   newFact: Fact,
-  // 2 (was 5): each candidate costs one Haiku call, so per-fact ontology cost
+  // 2 (was 5): each candidate costs one LLM call, so per-fact ontology cost
   // was classify ×1 + relations ×0..5 = up to 6 calls. Capping candidates at 2
   // drops that to up to 3 while still linking the strongest neighbours (the
   // 0.89 similarity floor already rejects weak pairs, so candidates 3-5 were
@@ -807,7 +807,7 @@ export async function detectRelations(
     ].join('\n');
 
     try {
-      const response = await callHaiku(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256);
+      const response = await callMemoryModel(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256);
       const result = parseJsonResponse<DetectRelationResponse>(response);
 
       if (result && result.has_relation && result.relation_type) {

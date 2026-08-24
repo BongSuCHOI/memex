@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Translation worker - reads texts from stdin, translates via Agent SDK, writes to stdout.
- * Used by server.cjs to translate content without needing API key.
+ * Translation worker - reads texts from stdin, translates via the local codex
+ * CLI (CodexExec provider), writes JSON array to stdout.
+ * Used by server.cjs to translate content without needing an API key.
  */
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { runCodex } from '../dist/codex-exec.js';
 
 const input = [];
 process.stdin.setEncoding('utf-8');
@@ -18,15 +19,7 @@ process.stdin.on('end', async () => {
 Texts:
 ${JSON.stringify(texts)}`;
 
-    let result = '';
-    for await (const message of query({
-      prompt,
-      options: { model: 'haiku', max_tokens: 4096 }
-    })) {
-      if (message && typeof message === 'object' && 'type' in message && message.type === 'result') {
-        result = message.result || '';
-      }
-    }
+    const result = await runCodex({ userMessage: prompt });
 
     const match = result.match(/\[[\s\S]*\]/);
     if (match) {

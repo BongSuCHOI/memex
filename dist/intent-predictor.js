@@ -3,7 +3,7 @@ import { initDatabase } from './db.js';
  * Predict user intent based on historical tool usage patterns for a project.
  *
  * Analyzes: "In this project, the user usually does X, Y, Z"
- * This helps Claude proactively prepare relevant context.
+ * This helps Codex proactively prepare relevant context.
  */
 export function predictIntent(project) {
     const db = initDatabase();

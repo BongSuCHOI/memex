@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "memory-bank": {
+      "command": "node",
+      "args": [
+        "cli/mcp-server-wrapper.js"
+      ],
+      "cwd": ".",
+      "env": {}
+    }
+  }
+}

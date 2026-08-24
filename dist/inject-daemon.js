@@ -9,7 +9,7 @@ import { initEmbeddings } from './embeddings.js';
  *
  * Why: the UserPromptSubmit hook pays ~2.3s PER PROMPT as a cold node process
  * (measured: model load 1,130ms + node startup ~400ms + imports 186ms dominate;
- * the actual search is ~30ms). Every Claude session already runs an MCP server
+ * the actual search is ~30ms). Every Codex session with the plugin runs an MCP server
  * with the embedding model warm — this sidecar lets the hook reuse it: the hook
  * connects, sends the prompt, and gets the context back in ~150ms warm.
  *

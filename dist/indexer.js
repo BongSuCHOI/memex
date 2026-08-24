@@ -4,7 +4,8 @@ import { initDatabase, insertExchange } from './db.js';
 import { parseConversation } from './parser.js';
 import { initEmbeddings, generateExchangeEmbedding } from './embeddings.js';
 import { summarizeConversation } from './summarizer.js';
-import { getArchiveDir, getExcludedProjects, isExcludedProject, isWorkerPromptMessage, getProjectsDir } from './paths.js';
+import { getArchiveDir, getExcludedProjects, isExcludedProject, isWorkerPromptMessage, getSessionsRoot } from './paths.js';
+import { discoverSessionFiles, readRolloutMeta } from './codex-rollout.js';
 import { archiveFileExists, statArchiveFile } from './archive-io.js';
 /**
  * Copy source → archive unless a current copy (plain or .zst) already exists.
@@ -18,12 +19,12 @@ function archiveIfStale(sourcePath, archivePath) {
     fs.copyFileSync(sourcePath, archivePath);
     return true;
 }
-// Set max output tokens for Claude SDK (used by summarizer)
-process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000';
+// Concurrency headroom for parallel embedding/summary workers.
 // Increase max listeners for concurrent API calls
 import { EventEmitter } from 'events';
 EventEmitter.defaultMaxListeners = 20;
-// Projects dir (with TEST_PROJECTS_DIR override) now lives in paths.ts.
+// Session discovery (recursive rollout walk) lives in codex-rollout.ts;
+// TEST_SESSIONS_DIR / MEMORY_BANK_SESSIONS_DIR override the sessions root.
 // Process items in batches with limited concurrency
 export async function processBatch(items, processor, concurrency) {
     const results = [];
@@ -42,101 +43,93 @@ export async function indexConversations(limitToProject, maxConversations, concu
     if (noSummaries) {
         console.log('⚠️  Running in no-summaries mode (skipping AI summaries)');
     }
-    console.log('Scanning for conversation files...');
-    const PROJECTS_DIR = getProjectsDir();
-    const ARCHIVE_DIR = getArchiveDir(); // Now uses paths.ts
-    const projects = fs.readdirSync(PROJECTS_DIR);
+    console.log('Scanning for Codex session rollouts...');
+    const SESSIONS_DIR = getSessionsRoot();
+    const ARCHIVE_DIR = getArchiveDir();
     let totalExchanges = 0;
     let conversationsProcessed = 0;
     const excludedProjects = getExcludedProjects();
-    for (const project of projects) {
-        // Skip excluded projects (user list + built-in LLM worker sessions)
+    const toProcess = [];
+    const rolloutFiles = discoverSessionFiles(SESSIONS_DIR);
+    if (limitToProject)
+        console.log(`Limiting to project: ${limitToProject}`);
+    for (const sourcePath of rolloutFiles) {
+        // Header pre-parse routes sessions cheaply: subagent threads and excluded
+        // projects never reach the archive; project = session's own cwd basename.
+        const { meta, isSubagent } = await readRolloutMeta(sourcePath);
+        if (isSubagent)
+            continue;
+        const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+        const project = cwd ? path.basename(cwd) : 'unknown';
         if (isExcludedProject(project, excludedProjects)) {
             console.log(`\nSkipping excluded project: ${project}`);
             continue;
         }
-        // Skip if limiting to specific project
         if (limitToProject && project !== limitToProject)
             continue;
-        const projectPath = path.join(PROJECTS_DIR, project);
-        const stat = fs.statSync(projectPath);
-        if (!stat.isDirectory())
-            continue;
-        const files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
-        if (files.length === 0)
-            continue;
-        console.log(`\nProcessing project: ${project} (${files.length} conversations)`);
-        if (concurrency > 1)
-            console.log(`  Concurrency: ${concurrency}`);
-        // Create archive directory for this project
+        const fileName = path.basename(sourcePath);
         const projectArchive = path.join(ARCHIVE_DIR, project);
         fs.mkdirSync(projectArchive, { recursive: true });
-        const toProcess = [];
-        for (const file of files) {
-            const sourcePath = path.join(projectPath, file);
-            const archivePath = path.join(projectArchive, file);
-            // Copy to archive (skip when a current plain or compressed copy exists)
-            if (archiveIfStale(sourcePath, archivePath)) {
-                console.log(`  Archived: ${file}`);
-            }
-            // Parse conversation
-            const exchanges = await parseConversation(sourcePath, project, archivePath);
-            if (exchanges.length === 0) {
-                console.log(`  Skipped ${file} (no exchanges)`);
+        const archivePath = path.join(projectArchive, fileName);
+        // Copy to archive (skip when a current plain or compressed copy exists)
+        if (archiveIfStale(sourcePath, archivePath)) {
+            console.log(`  Archived: ${project}/${fileName}`);
+        }
+        // Parse conversation
+        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        if (exchanges.length === 0) {
+            continue;
+        }
+        toProcess.push({
+            file: `${project}/${fileName}`,
+            sourcePath,
+            archivePath,
+            summaryPath: archivePath.replace('.jsonl', '-summary.txt'),
+            exchanges
+        });
+    }
+    // Batch summarize conversations in parallel (unless --no-summaries)
+    if (!noSummaries) {
+        const needsSummary = toProcess.filter(c => !archiveFileExists(c.summaryPath));
+        if (needsSummary.length > 0) {
+            console.log(`  Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...`);
+            await processBatch(needsSummary, async (conv) => {
+                try {
+                    const summary = await summarizeConversation(conv.exchanges);
+                    fs.writeFileSync(conv.summaryPath, summary, 'utf-8');
+                    const wordCount = summary.split(/\s+/).length;
+                    console.log(`  ✓ ${conv.file}: ${wordCount} words`);
+                    return summary;
+                }
+                catch (error) {
+                    console.log(`  ✗ ${conv.file}: ${error}`);
+                    return null;
+                }
+            }, concurrency);
+        }
+    }
+    else {
+        console.log(`  Skipping ${toProcess.length} summaries (--no-summaries mode)`);
+    }
+    // Now process embeddings and DB inserts (fast, sequential is fine)
+    for (const conv of toProcess) {
+        for (const exchange of conv.exchanges) {
+            // The plugin's own worker-prompt sessions are ephemeral state, not
+            // knowledge — never index them.
+            if (isWorkerPromptMessage(exchange.userMessage))
                 continue;
-            }
-            toProcess.push({
-                file,
-                sourcePath,
-                archivePath,
-                summaryPath: archivePath.replace('.jsonl', '-summary.txt'),
-                exchanges
-            });
+            const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+            const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
+            insertExchange(db, exchange, embedding, toolNames);
         }
-        // Batch summarize conversations in parallel (unless --no-summaries)
-        if (!noSummaries) {
-            const needsSummary = toProcess.filter(c => !archiveFileExists(c.summaryPath));
-            if (needsSummary.length > 0) {
-                console.log(`  Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...`);
-                await processBatch(needsSummary, async (conv) => {
-                    try {
-                        const summary = await summarizeConversation(conv.exchanges);
-                        fs.writeFileSync(conv.summaryPath, summary, 'utf-8');
-                        const wordCount = summary.split(/\s+/).length;
-                        console.log(`  ✓ ${conv.file}: ${wordCount} words`);
-                        return summary;
-                    }
-                    catch (error) {
-                        console.log(`  ✗ ${conv.file}: ${error}`);
-                        return null;
-                    }
-                }, concurrency);
-            }
-        }
-        else {
-            console.log(`  Skipping ${toProcess.length} summaries (--no-summaries mode)`);
-        }
-        // Now process embeddings and DB inserts (fast, sequential is fine)
-        for (const conv of toProcess) {
-            for (const exchange of conv.exchanges) {
-                // The plugin's own worker-prompt sessions are ephemeral state, not
-                // knowledge — never index them (legacy transcripts sit under REAL
-                // project slugs, so the slug exclusion can't catch them).
-                if (isWorkerPromptMessage(exchange.userMessage))
-                    continue;
-                const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
-                const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                insertExchange(db, exchange, embedding, toolNames);
-            }
-            totalExchanges += conv.exchanges.length;
-            conversationsProcessed++;
-            // Check if we hit the limit
-            if (maxConversations && conversationsProcessed >= maxConversations) {
-                console.log(`\nReached limit of ${maxConversations} conversations`);
-                db.close();
-                console.log(`✅ Indexing complete! Conversations: ${conversationsProcessed}, Exchanges: ${totalExchanges}`);
-                return;
-            }
+        totalExchanges += conv.exchanges.length;
+        conversationsProcessed++;
+        // Check if we hit the limit
+        if (maxConversations && conversationsProcessed >= maxConversations) {
+            console.log(`\nReached limit of ${maxConversations} conversations`);
+            db.close();
+            console.log(`✅ Indexing complete! Conversations: ${conversationsProcessed}, Exchanges: ${totalExchanges}`);
+            return;
         }
     }
     db.close();
@@ -144,53 +137,48 @@ export async function indexConversations(limitToProject, maxConversations, concu
 }
 export async function indexSession(sessionId, concurrency = 1, noSummaries = false) {
     console.log(`Indexing session: ${sessionId}`);
-    // Find the conversation file for this session
-    const PROJECTS_DIR = getProjectsDir();
-    const ARCHIVE_DIR = getArchiveDir(); // Now uses paths.ts
-    const projects = fs.readdirSync(PROJECTS_DIR);
-    const excludedProjects = getExcludedProjects();
+    // Locate the rollout whose filename carries this thread id
+    const SESSIONS_DIR = getSessionsRoot();
+    const ARCHIVE_DIR = getArchiveDir();
+    const candidates = discoverSessionFiles(SESSIONS_DIR).filter(p => path.basename(p).includes(sessionId));
     let found = false;
-    for (const project of projects) {
-        if (isExcludedProject(project, excludedProjects))
-            continue;
-        const projectPath = path.join(PROJECTS_DIR, project);
-        if (!fs.statSync(projectPath).isDirectory())
-            continue;
-        const files = fs.readdirSync(projectPath).filter(f => f.includes(sessionId) && f.endsWith('.jsonl'));
-        if (files.length > 0) {
-            found = true;
-            const file = files[0];
-            const sourcePath = path.join(projectPath, file);
-            const db = initDatabase();
-            await initEmbeddings();
-            const projectArchive = path.join(ARCHIVE_DIR, project);
-            fs.mkdirSync(projectArchive, { recursive: true });
-            const archivePath = path.join(projectArchive, file);
-            // Archive
-            archiveIfStale(sourcePath, archivePath);
-            // Parse and summarize
-            const exchanges = await parseConversation(sourcePath, project, archivePath);
-            if (exchanges.length > 0) {
-                // Generate summary (unless --no-summaries)
-                const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
-                if (!noSummaries && !archiveFileExists(summaryPath)) {
-                    const summary = await summarizeConversation(exchanges);
-                    fs.writeFileSync(summaryPath, summary, 'utf-8');
-                    console.log(`Summary: ${summary.split(/\s+/).length} words`);
-                }
-                // Index
-                for (const exchange of exchanges) {
-                    if (isWorkerPromptMessage(exchange.userMessage))
-                        continue; // worker prompt = ephemeral state, not knowledge
-                    const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
-                    const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                    insertExchange(db, exchange, embedding, toolNames);
-                }
-                console.log(`✅ Indexed session ${sessionId}: ${exchanges.length} exchanges`);
+    for (const sourcePath of candidates) {
+        const { meta, isSubagent } = await readRolloutMeta(sourcePath);
+        if (isSubagent)
+            continue; // harness plumbing, never knowledge
+        found = true;
+        const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+        const project = cwd ? path.basename(cwd) : 'unknown';
+        const fileName = path.basename(sourcePath);
+        const db = initDatabase();
+        await initEmbeddings();
+        const projectArchive = path.join(ARCHIVE_DIR, project);
+        fs.mkdirSync(projectArchive, { recursive: true });
+        const archivePath = path.join(projectArchive, fileName);
+        // Archive
+        archiveIfStale(sourcePath, archivePath);
+        // Parse and summarize
+        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        if (exchanges.length > 0) {
+            // Generate summary (unless --no-summaries)
+            const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
+            if (!noSummaries && !archiveFileExists(summaryPath)) {
+                const summary = await summarizeConversation(exchanges);
+                fs.writeFileSync(summaryPath, summary, 'utf-8');
+                console.log(`Summary: ${summary.split(/\s+/).length} words`);
             }
-            db.close();
-            break;
+            // Index
+            for (const exchange of exchanges) {
+                if (isWorkerPromptMessage(exchange.userMessage))
+                    continue; // worker prompt = ephemeral state, not knowledge
+                const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+                const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
+                insertExchange(db, exchange, embedding, toolNames);
+            }
+            console.log(`✅ Indexed session ${sessionId}: ${exchanges.length} exchanges`);
         }
+        db.close();
+        break;
     }
     if (!found) {
         console.log(`Session ${sessionId} not found`);
@@ -204,38 +192,38 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
         console.log('⚠️  Running in no-summaries mode (skipping AI summaries)');
     const db = initDatabase();
     await initEmbeddings();
-    const PROJECTS_DIR = getProjectsDir();
-    const ARCHIVE_DIR = getArchiveDir(); // Now uses paths.ts
-    const projects = fs.readdirSync(PROJECTS_DIR);
+    const SESSIONS_DIR = getSessionsRoot();
+    const ARCHIVE_DIR = getArchiveDir();
     const excludedProjects = getExcludedProjects();
     const unprocessed = [];
-    // Collect all unprocessed conversations
-    for (const project of projects) {
+    // Collect all unprocessed rollouts. Partial/malformed files parse with
+    // per-line tolerance; whatever yields no exchanges simply stays unindexed
+    // and will be retried on the next run once the transcript completes.
+    for (const sourcePath of discoverSessionFiles(SESSIONS_DIR)) {
+        const { meta, isSubagent } = await readRolloutMeta(sourcePath);
+        if (isSubagent)
+            continue;
+        const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+        const project = cwd ? path.basename(cwd) : 'unknown';
         if (isExcludedProject(project, excludedProjects))
             continue;
-        const projectPath = path.join(PROJECTS_DIR, project);
-        if (!fs.statSync(projectPath).isDirectory())
+        const fileName = path.basename(sourcePath);
+        const projectArchive = path.join(ARCHIVE_DIR, project);
+        const archivePath = path.join(projectArchive, fileName);
+        const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
+        // Check if already indexed in database
+        const alreadyIndexed = db.prepare('SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?')
+            .get(archivePath);
+        if (alreadyIndexed.count > 0)
             continue;
-        const files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
-        for (const file of files) {
-            const sourcePath = path.join(projectPath, file);
-            const projectArchive = path.join(ARCHIVE_DIR, project);
-            const archivePath = path.join(projectArchive, file);
-            const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
-            // Check if already indexed in database
-            const alreadyIndexed = db.prepare('SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?')
-                .get(archivePath);
-            if (alreadyIndexed.count > 0)
-                continue;
-            fs.mkdirSync(projectArchive, { recursive: true });
-            // Archive if needed (a current plain or compressed copy counts)
-            archiveIfStale(sourcePath, archivePath);
-            // Parse and check
-            const exchanges = await parseConversation(sourcePath, project, archivePath);
-            if (exchanges.length === 0)
-                continue;
-            unprocessed.push({ project, file, sourcePath, archivePath, summaryPath, exchanges });
-        }
+        fs.mkdirSync(projectArchive, { recursive: true });
+        // Archive if needed (a current plain or compressed copy counts)
+        archiveIfStale(sourcePath, archivePath);
+        // Parse and check
+        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        if (exchanges.length === 0)
+            continue;
+        unprocessed.push({ project, file: `${project}/${fileName}`, sourcePath, archivePath, summaryPath, exchanges });
     }
     if (unprocessed.length === 0) {
         console.log('✅ All conversations are already processed!');

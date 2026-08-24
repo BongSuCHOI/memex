@@ -2,7 +2,7 @@ import { WORKER_PROMPT_PREFIXES } from './paths.js';
 
 /**
  * SQL predicate + params matching WORKER-PROMPT POLLUTION exchanges — the
- * plugin's own Haiku worker sessions that ephemeral-state cleanup (purge) must
+ * plugin's own LLM worker sessions that ephemeral-state cleanup (purge) must
  * remove and indexing must never store. Single source of truth: the prefixes
  * come from paths.ts WORKER_PROMPT_PREFIXES, so adding a new worker prompt there
  * (for the indexing guard) automatically extends the purge too — the old code

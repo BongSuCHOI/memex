@@ -13,7 +13,7 @@ const FALSE_IDENTITY_CLAIMS = [
   'literal consciousness transfer',
   'perfect identity replication',
 ];
-const TERMINAL_PROVIDERS = ['claude-terminal', 'gpt-terminal'];
+const TERMINAL_PROVIDERS = ['codex-terminal'];
 const ACCESS_COOKIE_NAME = 'replacement_os_session';
 
 function escapeHtml(value) {
@@ -367,40 +367,23 @@ function parseArgsJson(envName, fallback) {
 }
 
 function getTerminalProviderConfig(provider) {
-  if (provider === 'claude-terminal') {
+  if (provider === 'codex-terminal') {
     return {
       provider,
-      command: process.env.REPLACEMENT_OS_CLAUDE_COMMAND || 'claude',
-      args: parseArgsJson('REPLACEMENT_OS_CLAUDE_ARGS_JSON', [
-        '--print',
-        '--model',
-        process.env.REPLACEMENT_OS_CLAUDE_MODEL || 'sonnet',
-        '--output-format',
-        'text',
-        '--no-session-persistence',
-        '--tools',
-        '',
-      ]),
-      description: 'Claude Sonnet via local Claude Code terminal CLI',
-    };
-  }
-  if (provider === 'gpt-terminal') {
-    return {
-      provider,
-      command: process.env.REPLACEMENT_OS_GPT_COMMAND || 'codex',
-      args: parseArgsJson('REPLACEMENT_OS_GPT_ARGS_JSON', [
+      command: process.env.REPLACEMENT_OS_CODEX_COMMAND || 'codex',
+      args: parseArgsJson('REPLACEMENT_OS_CODEX_ARGS_JSON', [
         'exec',
-        '--model',
-        process.env.REPLACEMENT_OS_GPT_MODEL || 'gpt-5.5',
+        '--ephemeral',
+        '--ignore-user-config',
+        '--ignore-rules',
         '--sandbox',
         'read-only',
-        '--ask-for-approval',
-        'never',
         '--skip-git-repo-check',
-        '--ephemeral',
+        '--color',
+        'never',
         '-',
       ]),
-      description: 'GPT/Codex via local Codex terminal CLI',
+      description: 'Codex via local Codex terminal CLI',
     };
   }
   throw new Error(`Unknown terminal provider: ${provider}`);
@@ -426,7 +409,7 @@ function terminalWorkingDirectory(options = {}) {
 }
 
 function runTerminalModel(prompt, options = {}) {
-  const provider = options.provider || 'claude-terminal';
+  const provider = options.provider || 'codex-terminal';
   const config = getTerminalProviderConfig(provider);
   const timeoutMs = options.timeoutMs || terminalTimeoutMs();
   const maxOutputBytes = options.maxOutputBytes || terminalMaxOutputBytes();
@@ -542,33 +525,16 @@ function createFallbackChatResponse({ message, publication = readReplacementOsPu
   };
 }
 
-async function callClaudeAgent(prompt) {
-  const { query } = await import('@anthropic-ai/claude-agent-sdk');
-  let result = '';
-  for await (const message of query({
-    prompt,
-    options: {
-      model: process.env.REPLACEMENT_OS_CHAT_MODEL || process.env.MEMORY_BANK_FACT_MODEL || 'haiku',
-      max_tokens: Number(process.env.REPLACEMENT_OS_CHAT_MAX_TOKENS || 1400),
-      systemPrompt: 'You are a safe local Hue OS web chat adapter. Answer in Korean unless asked otherwise.',
-    },
-  })) {
-    if (message && typeof message === 'object' && message.type === 'result') {
-      result = message.result || '';
-    }
-  }
-  return result.trim();
-}
 
 async function chatWithReplacementOs(body = {}, options = {}) {
   const publication = readReplacementOsPublication(options);
   const message = String(body.message || '').trim();
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const prompt = buildReplacementOsPrompt({ message, messages, publication });
-  const requestedProvider = String(body.provider || process.env.REPLACEMENT_OS_CHAT_PROVIDER || 'claude-terminal');
-  const provider = ['auto', 'fallback', 'claude-agent-sdk', ...TERMINAL_PROVIDERS].includes(requestedProvider)
+  const requestedProvider = String(body.provider || process.env.REPLACEMENT_OS_CHAT_PROVIDER || 'codex-terminal');
+  const provider = ['auto', 'fallback', ...TERMINAL_PROVIDERS].includes(requestedProvider)
     ? requestedProvider
-    : 'claude-terminal';
+    : 'codex-terminal';
 
   if (looksLikeAccessOrSecurityInfoRequest(message) || looksLikeRealWorkOrStatusRequest(message) || looksLikeHardConsentAction(message)) {
     return { ...createFallbackChatResponse({ message, publication }), provider, publication };
@@ -606,24 +572,8 @@ async function chatWithReplacementOs(body = {}, options = {}) {
     }
   }
 
-  if (provider === 'auto') {
-    return { ...createServiceStoppedResponse(), provider: 'auto', publication };
-  }
-
-  try {
-    const answer = await callClaudeAgent(prompt);
-    if (!answer) throw new Error('empty model response');
-    return {
-      answer,
-      confidence: null,
-      mode: 'claude-agent-sdk',
-      provider: 'claude-agent-sdk',
-      cited: ['replacement-os-v1.json', 'personal-mirror facts', 'local tone profile'],
-      publication,
-    };
-  } catch (error) {
-    return { ...createServiceStoppedResponse(), provider, publication };
-  }
+  // Single terminal provider — a failure here means the local CLI is down.
+  return { ...createServiceStoppedResponse(), provider, publication };
 }
 
 function renderReplacementOsLoginPage() {

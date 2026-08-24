@@ -1,0 +1,9 @@
+{"type":"session_meta","timestamp":"2026-08-24T01:00:00Z","payload":{"id":"thr-fix-1","session_id":"sess-fix-1","cwd":"/workspaces/fixtures","cli_version":"0.149.0","source":"cli"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<codex_internal_context>ignore</codex_internal_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"What pagination does list.ts use?"}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"shell","call_id":"call-1","input":"{\"cmd\":\"grep keyset src/list.ts\"}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"keyset pagination with cursor"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"list.ts uses keyset pagination with a cursor."}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Any gotchas?"}]}}
+{"type":"response_item","payload":{"type":"reasoning","summary":[]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Watch the WHERE clause ordering."}]}}

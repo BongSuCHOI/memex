@@ -5,7 +5,7 @@ import * as sqliteVec from 'sqlite-vec';
 
 // Mock LLM module
 vi.mock('../src/llm.js', () => ({
-  callHaiku: vi.fn(),
+  callMemoryModel: vi.fn(),
   parseJsonResponse: vi.fn(),
 }));
 
@@ -17,7 +17,7 @@ vi.mock('../src/embeddings.js', () => ({
   EMBEDDING_MODEL: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2',
 }));
 
-import { callHaiku, parseJsonResponse } from '../src/llm.js';
+import { callMemoryModel, parseJsonResponse } from '../src/llm.js';
 import {
   classifyFactToOntology,
   detectRelations,
@@ -166,7 +166,7 @@ describe('ontology-classifier', () => {
         domain_description: 'Frontend development',
         category_description: 'TypeScript usage patterns',
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{"domain":"Frontend"}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{"domain":"Frontend"}');
 
       const fact = makeFact();
       const result = await classifyFactToOntology(db, fact);
@@ -189,7 +189,7 @@ describe('ontology-classifier', () => {
         is_new_category: true,
         category_description: 'React patterns',
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const fact = makeFact();
       const result = await classifyFactToOntology(db, fact);
@@ -209,7 +209,7 @@ describe('ontology-classifier', () => {
         is_new_domain: false,
         is_new_category: false,
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const fact = makeFact();
       const result = await classifyFactToOntology(db, fact);
@@ -222,7 +222,7 @@ describe('ontology-classifier', () => {
       // Old behaviour built General/Misc but never persisted the fact's
       // assignment — leaving it NULL and eternally re-selected by backfill.
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('invalid response');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('invalid response');
 
       const fact = makeFact();
       await expect(classifyFactToOntology(db, fact)).rejects.toThrow(/unparseable/);
@@ -242,7 +242,7 @@ describe('ontology-classifier', () => {
         const result = await classifyFactToOntology(db, fact);
 
         expect(result.categoryId).toBe(category.id);
-        expect(callHaiku).not.toHaveBeenCalled();
+        expect(callMemoryModel).not.toHaveBeenCalled();
         const row = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get('fact-det') as { ontology_category_id: string };
         expect(row.ontology_category_id).toBe(category.id);
       } finally {
@@ -264,12 +264,12 @@ describe('ontology-classifier', () => {
         is_new_domain: false,
         is_new_category: false,
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const fact = makeFact({ id: 'fact-nogate', embedding: new Float32Array(embeddingArr) });
       await classifyFactToOntology(db, fact);
 
-      expect(callHaiku).toHaveBeenCalledTimes(1); // went through the LLM, not the gate
+      expect(callMemoryModel).toHaveBeenCalledTimes(1); // went through the LLM, not the gate
     });
   });
 
@@ -305,7 +305,7 @@ describe('ontology-classifier', () => {
       insertTestFact(db, 'fact-max', 'Max attempts test', embeddingArr);
 
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
 
       for (let i = 0; i < MAX_CLASSIFY_ATTEMPTS; i++) {
         await classifyAndLinkFact(db, 'fact-max', embeddingArr);
@@ -330,7 +330,7 @@ describe('ontology-classifier', () => {
         { index: 0, domain: 'Testing', category: 'Framework', is_new_domain: true, is_new_category: true },
         { index: 1, domain: 'Database', category: 'Postgres', is_new_domain: true, is_new_category: true },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const facts = [
         makeFact({ id: 'b-0', fact: 'Use Vitest' }),
@@ -340,7 +340,7 @@ describe('ontology-classifier', () => {
 
       expect(result.classified.sort()).toEqual(['b-0', 'b-1']);
       expect(result.failed).toEqual([]);
-      expect(callHaiku).toHaveBeenCalledTimes(1); // ONE spawn for the whole batch
+      expect(callMemoryModel).toHaveBeenCalledTimes(1); // ONE spawn for the whole batch
       const c0 = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get('b-0') as { ontology_category_id: string | null };
       const c1 = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get('b-1') as { ontology_category_id: string | null };
       expect(c0.ontology_category_id).toBeTruthy();
@@ -356,7 +356,7 @@ describe('ontology-classifier', () => {
         { index: 0, domain: 'Testing', category: 'Framework', is_new_domain: true, is_new_category: true },
         // index 1 missing entirely
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'p-0', fact: 'Fact zero' }),
@@ -372,7 +372,7 @@ describe('ontology-classifier', () => {
       insertTestFact(db, 'u-0', 'Fact A', emb);
 
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 'u-0', fact: 'Fact A' })]);
       expect(result.failed).toEqual(['u-0']);
@@ -384,7 +384,7 @@ describe('ontology-classifier', () => {
       const emb = new Array(384).fill(0.1);
       insertTestFact(db, 't-0', 'Fact T', emb);
 
-      (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('spawn ETIMEDOUT'));
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('spawn ETIMEDOUT'));
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 't-0', fact: 'Fact T' })]);
       expect(result.transient).toEqual(['t-0']);
@@ -399,11 +399,11 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Testing', category: 'Framework', is_new_domain: true, is_new_category: true },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       await classifyFactsBatch(db, [makeFact({ id: 'j-0', fact: malicious })]);
 
-      const userMessage = (callHaiku as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
+      const userMessage = (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
       const payload = JSON.parse(userMessage); // must be valid JSON, not prose sections
       expect(payload.facts).toHaveLength(1);
       expect(payload.facts[0].index).toBe(0);
@@ -422,7 +422,7 @@ describe('ontology-classifier', () => {
         { index: 5, domain: 'Range', category: 'Out', is_new_domain: true, is_new_category: true }, // out of range
         { index: 1.5 as unknown as number, domain: 'Float', category: 'Bad', is_new_domain: true, is_new_category: true }, // non-integer
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'i-0', fact: 'Fact zero' }),
@@ -440,7 +440,7 @@ describe('ontology-classifier', () => {
       const emb = new Array(384).fill(0.1);
       insertTestFact(db, 'e-0', 'Empty response test', emb);
 
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('');
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 'e-0', fact: 'Empty response test' })]);
       expect(result.transient).toEqual(['e-0']);
@@ -460,7 +460,7 @@ describe('ontology-classifier', () => {
       const result = await classifyFactsBatch(db, [makeFact({ id: 'ce-0', fact: 'Embedding model down', embedding: null })]);
 
       expect(result.transient).toEqual(['ce-0']); // starved candidates must NOT reach the LLM
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
       const row = db.prepare('SELECT ontology_category_id, ontology_attempts FROM facts WHERE id = ?').get('ce-0') as {
         ontology_category_id: string | null;
         ontology_attempts: number;
@@ -483,7 +483,7 @@ describe('ontology-classifier', () => {
       const stats = await backfillClassifyBatch(db, ['cx-0']);
 
       expect(stats.failed).toBe(1); // content failure → attempt burned (no eternal transient loop)
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
       const row = db.prepare('SELECT ontology_attempts FROM facts WHERE id = ?').get('cx-0') as { ontology_attempts: number };
       expect(row.ontology_attempts).toBe(1);
 
@@ -501,7 +501,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Recovered', category: 'Flake', is_new_domain: true, is_new_category: true },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 'fl-0', fact: 'Flaky once', embedding: null })]);
 
@@ -522,7 +522,7 @@ describe('ontology-classifier', () => {
       await expect(
         classifyFactsBatch(db, [makeFact({ id: 'st-0', fact: 'Starved', embedding: new Float32Array(embeddingArr) })]),
       ).rejects.toThrow(/repair FAILED/);
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
       const row = db.prepare('SELECT ontology_category_id, ontology_attempts FROM facts WHERE id = ?').get('st-0') as {
         ontology_category_id: string | null;
         ontology_attempts: number;
@@ -544,7 +544,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Existing', category: 'Real Cat', is_new_domain: false, is_new_category: false },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'sm-0', fact: 'Stale mask', embedding: new Float32Array(embeddingArr) }),
@@ -570,7 +570,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Existing', category: 'Real Cat', is_new_domain: false, is_new_category: false },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'cr-0', fact: 'Crowded stale', embedding: new Float32Array(embeddingArr) }),
@@ -598,7 +598,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Existing', category: 'Missing Cat', is_new_domain: false, is_new_category: false },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'xm-0', fact: 'Exact match trigger', embedding: new Float32Array(embeddingArr) }),
@@ -628,7 +628,7 @@ describe('ontology-classifier', () => {
       ]);
 
       expect(result.transient).toEqual(['sr-0']); // 1 stale left → refuse until fully reconciled
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
     });
 
     it('insert path does NOT ledger IndexRepairError — corruption cannot park innocent facts', async () => {
@@ -648,7 +648,7 @@ describe('ontology-classifier', () => {
         relation_type: flap++ % 2 === 0 ? 'SUPPORTS' : 'INFLUENCES',
         reasoning: 'similar',
       }));
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       for (let i = 0; i < MAX_CLASSIFY_ATTEMPTS; i++) {
         // Surfaces loudly at the caller boundary (no silent success)…
@@ -680,7 +680,7 @@ describe('ontology-classifier', () => {
       await expect(
         classifyFactsBatch(db, [makeFact({ id: 'wr-0', fact: 'Write broken', embedding: new Float32Array(embeddingArr) })]),
       ).rejects.toThrow(/repair FAILED \(write/);
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
     });
 
     it('purge-only heal (missing add FAILED) must NOT unlock classification — transient', async () => {
@@ -705,7 +705,7 @@ describe('ontology-classifier', () => {
       ]);
 
       expect(result.transient).toEqual(['po-0']); // incomplete index → refuse, don't classify with partial candidates
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
       const row = db.prepare('SELECT ontology_category_id, ontology_attempts FROM facts WHERE id = ?').get('po-0') as {
         ontology_category_id: string | null;
         ontology_attempts: number;
@@ -725,7 +725,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Existing', category: 'Indexed Cat', is_new_domain: false, is_new_category: false },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'pi-0', fact: 'Partial index', embedding: new Float32Array(embeddingArr) }),
@@ -745,7 +745,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Existing', category: 'Existing Cat', is_new_domain: false, is_new_category: false },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [
         makeFact({ id: 'sh-0', fact: 'Self heal', embedding: new Float32Array(embeddingArr) }),
@@ -770,12 +770,12 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Genesis', category: 'Bootstrap', is_new_domain: true, is_new_category: true },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 'cs-0', fact: 'First ever fact', embedding: null })]);
 
       expect(result.classified).toEqual(['cs-0']);
-      expect(callHaiku).toHaveBeenCalledTimes(1);
+      expect(callMemoryModel).toHaveBeenCalledTimes(1);
       expect(getDomainByName(db, 'Genesis')).toBeTruthy();
     });
 
@@ -786,7 +786,7 @@ describe('ontology-classifier', () => {
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
         { index: 0, domain: 'Bad\u0000Domain', category: 'Cat', is_new_domain: true, is_new_category: true },
       ]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
 
       const result = await classifyFactsBatch(db, [makeFact({ id: 'n-0', fact: 'Name sanitize test' })]);
       expect(result.failed).toEqual(['n-0']); // unusable name = content failure → ledger
@@ -806,7 +806,7 @@ describe('ontology-classifier', () => {
         ]);
 
         expect(result.deterministic).toEqual(['d-0']);
-        expect(callHaiku).not.toHaveBeenCalled();
+        expect(callMemoryModel).not.toHaveBeenCalled();
       } finally {
         delete process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
       }
@@ -821,7 +821,7 @@ describe('ontology-classifier', () => {
       db.prepare('UPDATE facts SET ontology_attempts = ? WHERE id = ?').run(MAX_CLASSIFY_ATTEMPTS - 1, 'bf-0');
 
       (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('garbage');
 
       const stats = await backfillClassifyBatch(db, ['bf-0']);
 
@@ -839,7 +839,7 @@ describe('ontology-classifier', () => {
       const emb = new Array(384).fill(0.1);
       insertTestFact(db, 'tr-0', 'Transient test', emb);
 
-      (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('proxy down'));
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('proxy down'));
 
       const stats = await backfillClassifyBatch(db, ['tr-0']);
 
@@ -862,7 +862,7 @@ describe('ontology-classifier', () => {
 
       const stats = await backfillClassifyBatch(db, ['sk-0', 'nonexistent']);
       expect(stats.classified + stats.deterministic + stats.fallback + stats.failed).toBe(0);
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
     });
   });
 
@@ -952,7 +952,7 @@ describe('ontology-classifier', () => {
     it('should skip when fact has no embedding', async () => {
       const fact = makeFact({ embedding: null });
       await detectRelations(db, fact);
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
     });
 
     it('should detect SUPPORTS relation between similar facts', async () => {
@@ -964,7 +964,7 @@ describe('ontology-classifier', () => {
         relation_type: 'SUPPORTS',
         reasoning: 'Both facts advocate for TypeScript usage',
       });
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const newFact = makeFact({
         id: 'fact-new',
@@ -993,7 +993,7 @@ describe('ontology-classifier', () => {
       const embeddingArr = new Array(384).fill(0.1);
       insertTestFact(db, 'existing-2', 'Use React for UI', embeddingArr);
 
-      (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('API timeout'));
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('API timeout'));
 
       const fact = makeFact({ id: 'new-fact', embedding: new Float32Array(embeddingArr) });
       await detectRelations(db, fact);
@@ -1009,7 +1009,7 @@ describe('ontology-classifier', () => {
         relation_type: null,
         reasoning: 'No meaningful relation',
       });
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const fact = makeFact({ id: 'unrelated', embedding: new Float32Array(embeddingArr) });
       await detectRelations(db, fact);
@@ -1022,7 +1022,7 @@ describe('ontology-classifier', () => {
   describe('classifyAndLinkFact', () => {
     it('should skip non-existent fact', async () => {
       await classifyAndLinkFact(db, 'nonexistent-id');
-      expect(callHaiku).not.toHaveBeenCalled();
+      expect(callMemoryModel).not.toHaveBeenCalled();
     });
 
     it('should classify active fact', async () => {
@@ -1038,7 +1038,7 @@ describe('ontology-classifier', () => {
         domain_description: 'Testing tools',
         category_description: 'Test frameworks',
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       await classifyAndLinkFact(db, 'fact-classify', embeddingArr);
 
@@ -1061,7 +1061,7 @@ describe('ontology-classifier', () => {
         is_new_domain: true,
         is_new_category: true,
       }]);
-      (callHaiku as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
       const embeddingArr = new Array(384).fill(0.2);
       await classifyAndLinkFact(db, 'fact-no-emb', embeddingArr);
@@ -1074,7 +1074,7 @@ describe('ontology-classifier', () => {
       const embeddingArr = new Array(384).fill(0.1);
       insertTestFact(db, 'fact-err', 'Error test', embeddingArr);
 
-      (callHaiku as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('LLM error'));
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('LLM error'));
 
       // Should not throw
       await classifyAndLinkFact(db, 'fact-err', embeddingArr);

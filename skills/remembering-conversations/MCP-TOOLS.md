@@ -4,9 +4,9 @@ The memory-bank plugin exposes two MCP tools for searching and displaying past c
 
 ## search
 
-Search your memory bank of past Claude Code conversations using semantic or text search.
+Search your memory bank of past Codex conversations using semantic or text search.
 
-**Tool name:** `mcp__plugin_memory-bank_memory-bank__search`
+**Tool name:** `search`
 
 ### Parameters
 
@@ -84,7 +84,7 @@ Machine-readable format:
 
 Display a full conversation from memory bank as markdown.
 
-**Tool name:** `mcp__plugin_memory-bank_memory-bank__read`
+**Tool name:** `read`
 
 ### Parameters
 
@@ -130,7 +130,7 @@ Both tools return errors as text content with `isError: true`:
 ## Performance Notes
 
 - **Search** is fast (< 100ms typically)
-- **Show** can be slow for large conversations
+- **`read`** can be slow for large conversations
   - Use `startLine`/`endLine` to paginate
   - Conversations can be 1000+ lines
 - Vector search uses sqlite-vec with cached embeddings

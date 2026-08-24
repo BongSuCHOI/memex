@@ -18,10 +18,10 @@ export declare function consolidateFacts(db: Database.Database, project: string,
 }>;
 /**
  * Consolidate the ENTIRE backlog in one pass: every new fact (any scope, any
- * project) processed exactly once, under a single shared Haiku budget. The
+ * project) processed exactly once, under a single shared LLM budget. The
  * consolidate worker calls this once while holding the global lock, instead of
  * looping consolidateFacts per project — which reprocessed shared global facts
- * once per project (up to `MAX_HAIKU_CALLS × projectCount` calls) and, for
+ * once per project (up to `MAX_LLM_CALLS × projectCount` calls) and, for
  * INDEPENDENT/CONTRADICTION verdicts (new fact stays active), kept re-comparing
  * the same global fact every pass.
  *
@@ -39,7 +39,7 @@ export declare function consolidateAllPending(db: Database.Database, since: {
     merged: number;
     contradictions: number;
     evolutions: number;
-    haikuCalls: number;
+    llmCalls: number;
     cursor: {
         createdAt: string;
         id: string;

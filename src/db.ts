@@ -94,7 +94,7 @@ export function migrateSchema(db: Database.Database): void {
     { name: 'thinking_level', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_level TEXT' },
     { name: 'thinking_disabled', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_disabled BOOLEAN' },
     { name: 'thinking_triggers', sql: 'ALTER TABLE exchanges ADD COLUMN thinking_triggers TEXT' },
-    { name: 'coding_agent', sql: "ALTER TABLE exchanges ADD COLUMN coding_agent TEXT DEFAULT 'claude-code'" },
+    { name: 'coding_agent', sql: "ALTER TABLE exchanges ADD COLUMN coding_agent TEXT DEFAULT 'codex'" },
   ];
 
   let migrated = false;
@@ -167,7 +167,7 @@ export function initDatabase(): Database.Database {
       thinking_level TEXT,
       thinking_disabled BOOLEAN,
       thinking_triggers TEXT,
-      coding_agent TEXT DEFAULT 'claude-code'
+      coding_agent TEXT DEFAULT 'codex'
     )
   `);
 
@@ -406,7 +406,7 @@ export function initDatabase(): Database.Database {
     db.prepare('ALTER TABLE facts ADD COLUMN fact_kr TEXT').run();
   }
   if (!factColumnNames.has('coding_agent')) {
-    db.prepare("ALTER TABLE facts ADD COLUMN coding_agent TEXT DEFAULT 'claude-code'").run();
+    db.prepare("ALTER TABLE facts ADD COLUMN coding_agent TEXT DEFAULT 'codex'").run();
   }
   // Embedding model version (1 = all-MiniLM-L6-v2, 2 = multilingual L12-v2).
   // The re-embed worker upgrades rows where version < current.
@@ -572,6 +572,9 @@ export function insertExchange(
   //     serializes against the swap, so we can never quantize for a schema
   //     that changed between the read and the write.
   const insertAll = db.transaction(() => {
+    // The embedding parameter was just generated with the current model, so
+    // stamp the current version — search filters on it and the re-embed
+    // worker must not redo freshly indexed rows.
     db.prepare(`
       INSERT OR REPLACE INTO exchanges
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
@@ -597,10 +600,7 @@ export function insertExchange(
       exchange.thinkingLevel || null,
       exchange.thinkingDisabled ? 1 : 0,
       exchange.thinkingTriggers || null,
-      exchange.codingAgent || 'claude-code',
-      // The embedding parameter was just generated with the current model, so
-      // stamp the current version — search filters on it and the re-embed
-      // worker must not redo freshly indexed rows.
+      exchange.codingAgent || 'codex',
       EMBEDDING_VERSION
     );
 

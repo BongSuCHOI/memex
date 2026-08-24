@@ -1,173 +1,45 @@
-import readline from 'readline';
-import crypto from 'crypto';
+import path from 'node:path';
 import { createArchiveReadStream } from './archive-io.js';
+import { parseRolloutStream } from './codex-rollout.js';
 export async function parseConversation(filePath, projectName, archivePath) {
-    const exchanges = [];
     const fileStream = createArchiveReadStream(filePath);
-    const rl = readline.createInterface({
-        input: fileStream,
-        crlfDelay: Infinity
-    });
-    let lineNumber = 0;
-    let currentExchange = null;
-    const finalizeExchange = () => {
-        if (currentExchange && currentExchange.assistantMessages.length > 0) {
-            const exchangeId = crypto
-                .createHash('md5')
-                .update(`${archivePath}:${currentExchange.userLine}-${currentExchange.lastAssistantLine}`)
-                .digest('hex');
-            // Update tool call exchange IDs
-            const toolCalls = currentExchange.toolCalls.map(tc => ({
-                ...tc,
-                exchangeId
-            }));
-            const exchange = {
-                id: exchangeId,
-                project: projectName,
-                timestamp: currentExchange.timestamp,
-                userMessage: currentExchange.userMessage,
-                assistantMessage: currentExchange.assistantMessages.join('\n\n'),
-                archivePath,
-                lineStart: currentExchange.userLine,
-                lineEnd: currentExchange.lastAssistantLine,
-                parentUuid: currentExchange.parentUuid,
-                isSidechain: currentExchange.isSidechain,
-                sessionId: currentExchange.sessionId,
-                cwd: currentExchange.cwd,
-                gitBranch: currentExchange.gitBranch,
-                claudeVersion: currentExchange.claudeVersion,
-                thinkingLevel: currentExchange.thinkingLevel,
-                thinkingDisabled: currentExchange.thinkingDisabled,
-                thinkingTriggers: currentExchange.thinkingTriggers,
-                toolCalls: toolCalls.length > 0 ? toolCalls : undefined
-            };
-            exchanges.push(exchange);
+    try {
+        const { meta, exchanges } = await parseRolloutStream(fileStream, { archivePath });
+        if (meta && typeof meta.cwd === 'string') {
+            for (const e of exchanges)
+                e.cwd = meta.cwd;
         }
-    };
-    for await (const line of rl) {
-        lineNumber++;
-        try {
-            const parsed = JSON.parse(line);
-            // Skip non-message types
-            if (parsed.type !== 'user' && parsed.type !== 'assistant') {
-                continue;
-            }
-            if (!parsed.message) {
-                continue;
-            }
-            // Extract text from message content
-            let text = '';
-            const toolCalls = [];
-            if (typeof parsed.message.content === 'string') {
-                text = parsed.message.content;
-            }
-            else if (Array.isArray(parsed.message.content)) {
-                // Extract text blocks
-                const textBlocks = parsed.message.content
-                    .filter(block => block.type === 'text' && block.text)
-                    .map(block => block.text);
-                text = textBlocks.join('\n');
-                // Extract tool use blocks
-                if (parsed.message.role === 'assistant') {
-                    for (const block of parsed.message.content) {
-                        if (block.type === 'tool_use') {
-                            const toolCallId = crypto.randomUUID();
-                            toolCalls.push({
-                                id: toolCallId,
-                                exchangeId: '', // Will be set when we know the exchange ID
-                                toolName: block.name || 'unknown',
-                                toolInput: block.input,
-                                isError: false,
-                                timestamp: parsed.timestamp || new Date().toISOString()
-                            });
-                        }
-                    }
-                }
-                // Tool RESULTS are intentionally not associated back to their tool_use
-                // here. The tool_calls table therefore stores tool_name + tool_input
-                // only; `tool_result` stays NULL and `is_error` stays 0 for every row.
-                // This is fine because NO feature reads those two columns — embeddings
-                // include tool NAMES only ("Tools: a, b"), search shows name counts, and
-                // the `read` tool returns the raw archive (which has full results). If a
-                // future feature needs real result/error data, MATCH tool_result blocks
-                // to the preceding tool_use by tool_use_id and populate both columns —
-                // do NOT trust the current always-0 `is_error`.
-            }
-            // Skip empty messages
-            if (!text.trim() && toolCalls.length === 0) {
-                continue;
-            }
-            if (parsed.message.role === 'user') {
-                // Finalize previous exchange before starting new one
-                finalizeExchange();
-                // Start new exchange
-                currentExchange = {
-                    userMessage: text || '(tool results only)',
-                    userLine: lineNumber,
-                    assistantMessages: [],
-                    lastAssistantLine: lineNumber,
-                    timestamp: parsed.timestamp || new Date().toISOString(),
-                    parentUuid: parsed.parentUuid,
-                    isSidechain: parsed.isSidechain,
-                    sessionId: parsed.sessionId,
-                    cwd: parsed.cwd,
-                    gitBranch: parsed.gitBranch,
-                    claudeVersion: parsed.version,
-                    thinkingLevel: parsed.thinkingMetadata?.level,
-                    thinkingDisabled: parsed.thinkingMetadata?.disabled,
-                    thinkingTriggers: parsed.thinkingMetadata?.triggers ? JSON.stringify(parsed.thinkingMetadata.triggers) : undefined,
-                    toolCalls: []
-                };
-            }
-            else if (parsed.message.role === 'assistant' && currentExchange) {
-                // Accumulate assistant messages
-                if (text.trim()) {
-                    currentExchange.assistantMessages.push(text);
-                }
-                currentExchange.lastAssistantLine = lineNumber;
-                // Add tool calls to current exchange
-                if (toolCalls.length > 0) {
-                    currentExchange.toolCalls.push(...toolCalls);
-                }
-                // Update timestamp to last assistant message
-                if (parsed.timestamp) {
-                    currentExchange.timestamp = parsed.timestamp;
-                }
-                // Update metadata from assistant messages (use most recent)
-                if (parsed.sessionId)
-                    currentExchange.sessionId = parsed.sessionId;
-                if (parsed.cwd)
-                    currentExchange.cwd = parsed.cwd;
-                if (parsed.gitBranch)
-                    currentExchange.gitBranch = parsed.gitBranch;
-                if (parsed.version)
-                    currentExchange.claudeVersion = parsed.version;
-            }
-        }
-        catch (error) {
-            // Skip malformed JSON lines
-            continue;
-        }
+        for (const e of exchanges)
+            e.project = projectName;
+        return exchanges;
     }
-    // Finalize last exchange
-    finalizeExchange();
-    return exchanges;
+    finally {
+        fileStream.destroy();
+    }
 }
 /**
- * Convenience function to parse a conversation file
- * Extracts project name from the file path and returns exchanges with metadata
+ * Convenience wrapper: derive the project key from the session's own cwd
+ * (the rollout directory layout is dates, not projects) and parse the file.
+ * Subagent threads are flagged via isSidechain so downstream sync can skip
+ * them exactly like legacy sidechain transcripts.
  */
 export async function parseConversationFile(filePath) {
-    // Extract project name from path (directory name before the .jsonl file)
-    const pathParts = filePath.split('/');
-    let project = 'unknown';
-    // Find the parent directory name (second to last part)
-    if (pathParts.length >= 2) {
-        project = pathParts[pathParts.length - 2];
+    const fileStream = createArchiveReadStream(filePath);
+    try {
+        const { meta, isSubagent, exchanges } = await parseRolloutStream(fileStream, {
+            archivePath: filePath,
+        });
+        const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+        const project = cwd ? path.basename(cwd) : 'unknown';
+        for (const e of exchanges) {
+            const rec = e;
+            rec.project = project;
+            if (isSubagent)
+                rec.isSidechain = true;
+        }
+        return { project, exchanges: exchanges };
     }
-    const exchanges = await parseConversation(filePath, project, filePath);
-    return {
-        project,
-        exchanges
-    };
+    finally {
+        fileStream.destroy();
+    }
 }

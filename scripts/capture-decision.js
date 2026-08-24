@@ -17,7 +17,7 @@ import { initDatabase } from '../dist/db.js';
 import { insertFact } from '../dist/fact-db.js';
 import { generateEmbedding, initEmbeddings } from '../dist/embeddings.js';
 import { classifyAndLinkFact } from '../dist/ontology-classifier.js';
-import { callHaiku, parseJsonResponse } from '../dist/llm.js';
+import { callMemoryModel, parseJsonResponse } from '../dist/llm.js';
 
 const EXTRACT_DECISION_SYSTEM_PROMPT = `Extract a single concise technical decision fact from the provided tool call context.
 
@@ -47,7 +47,7 @@ async function main() {
   }
 
   try {
-    const response = await callHaiku(
+    const response = await callMemoryModel(
       EXTRACT_DECISION_SYSTEM_PROMPT,
       `Tool: ${toolName}\nContext:\n${decisionText.slice(0, 3000)}`,
       512,

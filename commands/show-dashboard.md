@@ -23,7 +23,8 @@ Run the following steps:
 
 3. **If no server is running**, start the web UI server in the background and open the browser:
    ```bash
-   CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" node "${CLAUDE_PLUGIN_ROOT}/ui/server.cjs" &
+   export MEMORY_BANK_PLUGIN_ROOT="$PWD"   # run inside the memory-bank checkout
+   node "$MEMORY_BANK_PLUGIN_ROOT/ui/server.cjs" &
    sleep 1
    open "http://localhost:3847"
    ```

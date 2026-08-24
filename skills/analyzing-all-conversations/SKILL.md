@@ -36,7 +36,7 @@ If the report recommends backfill:
 
 | Gap | Action |
 |-----|--------|
-| Pending fact extraction | `node "$PLUGIN_ROOT/scripts/backfill-extract-worker.js" --max 500` — run in background. Requires `ANTHROPIC_API_KEY`. Lock-protected and idempotent: safe to start, exits immediately if another worker is already running. |
+| Pending fact extraction | `node "$PLUGIN_ROOT/scripts/backfill-extract-worker.js" --max 500` — run in background. Uses the local codex CLI (CodexExec). Lock-protected and idempotent: safe to start, exits immediately if another worker is already running. |
 | Missing summaries | `node "$PLUGIN_ROOT/cli/memory-bank.js" sync` — generates up to 10 summaries per run; repeated syncs (each session start) drain the queue gradually. |
 
 **Do NOT wait for backfills to finish.** They are long-running background work.

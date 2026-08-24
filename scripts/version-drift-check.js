@@ -87,20 +87,26 @@ async function main() {
   // 2) Drift visibility: newer version present in the plugin cache than the
   //    one THIS session runs (i.e. update landed but session not restarted,
   //    or install record lags the cache).
-  const cacheBase = path.join(
-    process.env.HOME || process.env.USERPROFILE || '',
-    '.claude', 'plugins', 'cache', 'memory-bank-dev', 'memory-bank',
-  );
+  const codexHome = process.env.CODEX_HOME
+    || path.join(process.env.HOME || process.env.USERPROFILE || '', '.codex');
+  const cacheBase = path.join(codexHome, 'plugins', 'cache');
   try {
-    const versions = fs
-      .readdirSync(cacheBase)
-      .filter((d) => /^\d+(\.\d+)*$/.test(d))
-      .sort(compareVersions);
+    // Newest installed copy across every marketplace that carries memory-bank.
+    const versions = [];
+    for (const mkt of fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase) : []) {
+      let vs = [];
+      try {
+        vs = fs.readdirSync(path.join(cacheBase, mkt, 'memory-bank'))
+          .filter((d) => /^\d+(\.\d+)*$/.test(d));
+      } catch { continue; }
+      versions.push(...vs);
+    }
+    versions.sort(compareVersions);
     const newest = versions.at(-1);
     if (newest && compareVersions(version, newest) < 0) {
       console.log(
         `[memory-bank] version drift: this session runs v${version} but v${newest} is installed. ` +
-          `Restart the session (or run: claude plugin update memory-bank@memory-bank-dev) to apply.`,
+          `Restart the session (or reinstall the memory-bank plugin) to apply.`,
       );
     }
   } catch {

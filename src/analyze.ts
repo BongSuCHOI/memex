@@ -338,7 +338,7 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
     const rec: string[] = [];
     if (report.coverage.extraction.pending > 0) {
       rec.push(
-        `${report.coverage.extraction.pending} sessions have no extracted facts yet — run scripts/backfill-extract-worker.js (requires ANTHROPIC_API_KEY).`,
+        `${report.coverage.extraction.pending} sessions have no extracted facts yet — run scripts/backfill-extract-worker.js (requires local codex CLI auth).`,
       );
     }
     if (report.coverage.summaries.withoutSummary > 0) {

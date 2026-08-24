@@ -9,8 +9,8 @@
  * session start, daemon disabled, or any socket hiccup.
  *
  * Input (either):
- *   stdin JSON  { "prompt": "...", "cwd": "..." }   ← Claude Code hook contract
- *   env         USER_PROMPT / CWD                   ← manual invocation
+ *   stdin JSON  { "prompt": "...", "cwd": "...", "session_id": "..." }   ← Codex UserPromptSubmit hook contract
+ *   env         USER_PROMPT / CWD                                        ← manual invocation
  *
  * IMPORTANT: keep the import list here LIGHT — the fast path must not pay for
  * better-sqlite3/transformers imports. Heavy modules load lazily only in the
@@ -20,45 +20,10 @@
 import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
-import fs from 'node:fs';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/**
- * Self-heal missing runtime deps (better-sqlite3 등 native 모듈).
- *
- * 왜: (a) `claude plugin update` 가 npm install 을 비결정적으로 누락한다
- * (실측: 1.4.0 캐시엔 node_modules 생성, 1.4.1 캐시엔 미생성 → 콜드 경로
- * 전체가 Cannot find package 로 사망). (b) cc-sync 는 node_modules 를
- * 제외하고 plugins/cache 를 타 머신에 실어 나르므로, 동기화로 받은 캐시는
- * 항상 deps 가 없다. 두 경우 모두 첫 프롬프트에서 감지해 1회 한정으로
- * detached npm install 을 시도한다 (marker 파일 'wx' 원자 생성으로 중복
- * 방지 — 실패해도 다음 설치 디렉토리에서만 재시도, 무한 루프 없음).
- */
-function selfHealDeps(pluginRoot) {
-  const marker = path.join(pluginRoot, '.deps-heal-attempted');
-  try {
-    fs.writeFileSync(marker, new Date().toISOString(), { flag: 'wx' }); // 원자적 1회 게이트
-  } catch {
-    return false; // 이미 시도됨 (성공/실패 무관 — 재폭주 방지)
-  }
-  try {
-    const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
-      // windowsHide: 콘솔을 상속하지 않는 detached 프로세스는 Windows 에서 새 conhost
-      // 창을 띄운다. 이 self-heal 은 프롬프트 주입 경로라 창이 반복해 깜빡인다.
-      // (비-Windows 에서는 no-op — PR #3 이 정렬한 나머지 5개 spawn 과 동일 계약)
-      cwd: pluginRoot, detached: true, stdio: 'ignore', windowsHide: true,
-    });
-    child.unref();
-    process.stderr.write('inject-context: missing deps detected — spawned background npm install (one-shot)\n');
-    return true;
-  } catch (e) {
-    process.stderr.write(`inject-context: self-heal spawn failed: ${e && e.message}\n`);
-    return false;
-  }
-}
 
 const SOCKET_CONNECT_TIMEOUT_MS = 300;
 const SOCKET_RESPONSE_TIMEOUT_MS = 3000;
@@ -79,6 +44,17 @@ function injectSocketPath() {
   const base = process.env.MEMORY_BANK_CONFIG_DIR
     || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'superpowers');
   return path.join(base, 'conversation-index', 'inject-daemon.sock');
+}
+
+/** Emit valid Codex 0.149 UserPromptSubmit JSON — never raw context text. */
+function emitContext(context) {
+  process.stdout.write(JSON.stringify({
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: context,
+    },
+  }) + '\n');
 }
 
 /** Ask the warm daemon; resolve null (not reject) on ANY failure so the caller
@@ -141,7 +117,7 @@ async function main() {
   // FAST PATH — warm daemon inside a running MCP server.
   const daemonContext = await askDaemon(prompt, cwd, sessionId);
   if (daemonContext !== null) {
-    if (daemonContext) process.stdout.write(daemonContext + '\n');
+    if (daemonContext) emitContext(daemonContext);
     return;
   }
 
@@ -149,13 +125,16 @@ async function main() {
   try {
     const { computeInjectContext } = await import(path.join(__dirname, '../dist/inject-core.js'));
     const context = await computeInjectContext(prompt, cwd, 'fallback', sessionId || undefined);
-    if (context) process.stdout.write(context + '\n');
+    if (context) emitContext(context);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     process.stderr.write(`inject-context: error: ${msg}\n`);
-    // deps 누락(plugin update 미설치 / cc-sync 로 받은 캐시)이면 1회 자가치유
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
-      selfHealDeps(path.join(__dirname, '..'));
+      // Fail loud, never auto-install: missing deps are an explicit setup step.
+      process.stderr.write(
+        'inject-context: runtime dependencies are missing. Run manually:\n' +
+        `  cd "${path.join(__dirname, '..')}" && npm install && npm run build\n`,
+      );
     }
   }
 }

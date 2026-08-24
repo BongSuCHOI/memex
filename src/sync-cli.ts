@@ -1,5 +1,5 @@
 import { syncConversations } from './sync.js';
-import { getArchiveDir } from './paths.js';
+import { getArchiveDir, getSessionsRoot } from './paths.js';
 import { parseLockMeta, decideTakeover } from './version-guard.js';
 import path from 'path';
 import os from 'os';
@@ -12,7 +12,7 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log(`
 Usage: memory-bank sync [--background]
 
-Sync conversations from ~/.claude/projects to archive and index them.
+Sync conversations from Codex session rollouts to archive and index them.
 
 This command:
 1. Copies new or updated .jsonl files to conversation archive
@@ -32,9 +32,8 @@ EXAMPLES:
   # Sync in background (for hooks)
   memory-bank sync --background
 
-  # Use in Claude Code hook
-  # In .claude/hooks/session-end:
-  memory-bank sync --background
+  # Use in a Codex SessionEnd hook:
+  # hooks.json -> "command": "node cli/memory-bank.js sync --background"
 `);
   process.exit(0);
 }
@@ -72,7 +71,10 @@ if (isBackground) {
 // version preempts an older holder, and any holder past WEDGE_MAX_MS is
 // preempted regardless of version (normal incremental sync completes in
 // minutes; 6h means wedged).
-const __lockDir = path.join(os.homedir(), '.claude', 'run-locks', 'memory-bank-sync.lock');
+const __lockDir = path.join(
+  process.env.MEMORY_BANK_RUN_LOCKS_DIR || path.join(os.homedir(), '.config', 'superpowers', 'run-locks'),
+  'memory-bank-sync.lock',
+);
 const __pidFile = path.join(__lockDir, 'pid');
 const WEDGE_MAX_MS = 6 * 60 * 60 * 1000;
 
@@ -168,7 +170,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => process.exit(143));
 }
 
-const sourceDir = path.join(os.homedir(), '.claude', 'projects');
+const sourceDir = getSessionsRoot();
 const destDir = getArchiveDir();
 
 console.log('Syncing conversations...');
