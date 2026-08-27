@@ -1,11 +1,17 @@
-import Database from 'better-sqlite3';
-import { ConversationExchange, type EvidenceSourceType } from './types.js';
-import { createHash, randomUUID } from 'node:crypto';
-import path from 'path';
-import * as sqliteVec from 'sqlite-vec';
-import { getDbPath, ensureDbDir } from './paths.js';
-import { EMBEDDING_VERSION } from './embeddings.js';
-
+import Database from "better-sqlite3";
+import type { ConversationExchange, EvidenceSourceType } from "./types.js";
+import { createHash, randomUUID } from "node:crypto";
+import path from "path";
+import * as sqliteVec from "sqlite-vec";
+import {
+  getMemexHome,
+  getDbPath,
+  ensureDbDir,
+  LLM_WORKDIR_BASENAME,
+} from "./paths.js";
+import { sessionsRoot } from "./codex-rollout.js";
+import os from "node:os";
+import { EMBEDDING_VERSION } from "./embeddings.js";
 
 // === vec table dtype handling ===
 // int8 quantization: q = clamp(round(x*127)). e5 embeddings are L2-normalized
@@ -14,7 +20,7 @@ import { EMBEDDING_VERSION } from './embeddings.js';
 // faster. IMPORTANT: int8 L2 distances are scaled by ×127 vs float32 —
 // consumers converting distance→similarity must divide by VEC_INT8_SCALE first.
 
-export type VecDtype = 'float32' | 'int8';
+export type VecDtype = "float32" | "int8";
 export const VEC_INT8_SCALE = 127;
 
 /**
@@ -26,30 +32,44 @@ export const VEC_INT8_SCALE = 127;
  * declared column type cannot. Absent table ⇒ 'int8' (that is what
  * initDatabase creates for fresh DBs).
  */
-const VEC_TABLES = new Set(['vec_exchanges', 'vec_facts', 'vec_facts_kr', 'vec_categories']);
+const VEC_TABLES = new Set([
+  "vec_exchanges",
+  "vec_facts",
+  "vec_facts_kr",
+  "vec_categories",
+]);
 
 /** Authoritative dtype of any vec0 table — read from the ACTUAL schema in
  * sqlite_master (never a flag), so readers/writers can never disagree with a
  * Unknown/absent tables default to int8, matching the schema below. */
-export function getVecTableDtype(db: Database.Database, table: string): VecDtype {
+export function getVecTableDtype(
+  db: Database.Database,
+  table: string,
+): VecDtype {
   if (!VEC_TABLES.has(table)) throw new Error(`not a vec table: ${table}`);
-  const row = db.prepare(
-    `SELECT sql FROM sqlite_master WHERE type='table' AND name=?`
-  ).get(table) as { sql: string } | undefined;
-  if (!row?.sql) return 'int8';
-  return /int8\s*\[/i.test(row.sql) ? 'int8' : 'float32';
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`)
+    .get(table) as { sql: string } | undefined;
+  if (!row?.sql) return "int8";
+  return /int8\s*\[/i.test(row.sql) ? "int8" : "float32";
 }
 
 export function getVecDtype(db: Database.Database): VecDtype {
-  return getVecTableDtype(db, 'vec_exchanges');
+  return getVecTableDtype(db, "vec_exchanges");
 }
 
 /** Convert a float embedding to the blob matching the table dtype. */
-export function embeddingToVecBlob(embedding: number[], dtype: VecDtype): Buffer {
-  if (dtype === 'int8') {
+export function embeddingToVecBlob(
+  embedding: number[],
+  dtype: VecDtype,
+): Buffer {
+  if (dtype === "int8") {
     const q = new Int8Array(embedding.length);
     for (let i = 0; i < embedding.length; i++) {
-      q[i] = Math.max(-127, Math.min(127, Math.round(embedding[i] * VEC_INT8_SCALE)));
+      q[i] = Math.max(
+        -127,
+        Math.min(127, Math.round(embedding[i] * VEC_INT8_SCALE)),
+      );
     }
     return Buffer.from(q.buffer);
   }
@@ -58,12 +78,15 @@ export function embeddingToVecBlob(embedding: number[], dtype: VecDtype): Buffer
 
 /** SQL placeholder for a vec_exchanges MATCH/INSERT param under the dtype. */
 export function vecParamSql(dtype: VecDtype): string {
-  return dtype === 'int8' ? 'vec_int8(?)' : '?';
+  return dtype === "int8" ? "vec_int8(?)" : "?";
 }
 
 /** Normalize a vec KNN distance back to float32 scale (int8 distances are ×127). */
-export function normalizeVecDistance(distance: number, dtype: VecDtype): number {
-  return dtype === 'int8' ? distance / VEC_INT8_SCALE : distance;
+export function normalizeVecDistance(
+  distance: number,
+  dtype: VecDtype,
+): number {
+  return dtype === "int8" ? distance / VEC_INT8_SCALE : distance;
 }
 
 /**
@@ -85,15 +108,14 @@ export function initDatabase(): Database.Database {
   // Ensure directory exists
   ensureDbDir();
 
-
   const db = new Database(dbPath);
 
   // Load sqlite-vec extension
   sqliteVec.load(db);
 
   // Enable WAL mode for better concurrency
-  db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');
+  db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
   // Cap the -wal file so it is truncated back after each checkpoint. The default
   // (-1 = unlimited) let the WAL grow WITHOUT BOUND under this workload: many
   // long-lived MCP-server readers (one per session) keep a read mark active
@@ -103,13 +125,13 @@ export function initDatabase(): Database.Database {
   // (every worker + the MCP server), so no single writer can bloat the WAL no
   // matter which path is active. 64 MiB is far above normal working-set needs; it
   // only reclaims runaway file space after checkpoints.
-  db.pragma('journal_size_limit = 67108864');
+  db.pragma("journal_size_limit = 67108864");
   // Required so the exchanges_fts AFTER DELETE trigger fires when an exchange is
   // re-indexed via `INSERT OR REPLACE` (the REPLACE-induced delete does NOT fire
   // delete triggers unless recursive_triggers is on — verified: without it a
   // re-indexed exchange leaves a stale FTS row). Keeps the external-content FTS
   // index consistent with the source table on every write path.
-  db.pragma('recursive_triggers = ON');
+  db.pragma("recursive_triggers = ON");
 
   // Create exchanges table
   db.exec(`
@@ -143,19 +165,31 @@ export function initDatabase(): Database.Database {
   // Existing durable databases predate provenance. Additive migration only:
   // rowids, rollout archives, embeddings, and extraction watermarks stay put.
   const exchangeColumns = new Set(
-    (db.prepare('PRAGMA table_info(exchanges)').all() as Array<{ name: string }>).map((r) => r.name),
+    (
+      db.prepare("PRAGMA table_info(exchanges)").all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name),
   );
-  if (!exchangeColumns.has('provenance')) {
-    db.exec(`ALTER TABLE exchanges ADD COLUMN provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]'`);
+  if (!exchangeColumns.has("provenance")) {
+    db.exec(
+      `ALTER TABLE exchanges ADD COLUMN provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]'`,
+    );
   }
-  if (!exchangeColumns.has('assistant_learnable')) {
-    db.exec('ALTER TABLE exchanges ADD COLUMN assistant_learnable BOOLEAN NOT NULL DEFAULT 0');
+  if (!exchangeColumns.has("assistant_learnable")) {
+    db.exec(
+      "ALTER TABLE exchanges ADD COLUMN assistant_learnable BOOLEAN NOT NULL DEFAULT 0",
+    );
   }
-  if (!exchangeColumns.has('has_memex_recall')) {
-    db.exec('ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0');
+  if (!exchangeColumns.has("has_memex_recall")) {
+    db.exec(
+      "ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0",
+    );
   }
   // Policy v1: agent-generated prose is context, never primary evidence.
-  db.prepare('UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0').run();
+  db.prepare(
+    "UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0",
+  ).run();
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS recall_events (
@@ -174,15 +208,23 @@ export function initDatabase(): Database.Database {
     )
   `);
   const recallColumns = new Set(
-    (db.prepare('PRAGMA table_info(recall_events)').all() as Array<{ name: string }>).map((r) => r.name),
+    (
+      db.prepare("PRAGMA table_info(recall_events)").all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name),
   );
-  if (!recallColumns.has('status')) {
-    db.exec("ALTER TABLE recall_events ADD COLUMN status TEXT NOT NULL DEFAULT 'prepared'");
+  if (!recallColumns.has("status")) {
+    db.exec(
+      "ALTER TABLE recall_events ADD COLUMN status TEXT NOT NULL DEFAULT 'prepared'",
+    );
   }
-  if (!recallColumns.has('emitted_at')) {
-    db.exec('ALTER TABLE recall_events ADD COLUMN emitted_at TEXT');
+  if (!recallColumns.has("emitted_at")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN emitted_at TEXT");
   }
-  db.exec('CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)');
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)",
+  );
 
   // Create tool_calls table
   db.exec(`
@@ -201,13 +243,21 @@ export function initDatabase(): Database.Database {
     )
   `);
   const toolColumns = new Set(
-    (db.prepare('PRAGMA table_info(tool_calls)').all() as Array<{ name: string }>).map((r) => r.name),
+    (
+      db.prepare("PRAGMA table_info(tool_calls)").all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name),
   );
-  if (!toolColumns.has('source_type')) {
-    db.exec("ALTER TABLE tool_calls ADD COLUMN source_type TEXT NOT NULL DEFAULT 'external_unverified'");
+  if (!toolColumns.has("source_type")) {
+    db.exec(
+      "ALTER TABLE tool_calls ADD COLUMN source_type TEXT NOT NULL DEFAULT 'external_unverified'",
+    );
   }
-  if (!toolColumns.has('learnable')) {
-    db.exec('ALTER TABLE tool_calls ADD COLUMN learnable BOOLEAN NOT NULL DEFAULT 0');
+  if (!toolColumns.has("learnable")) {
+    db.exec(
+      "ALTER TABLE tool_calls ADD COLUMN learnable BOOLEAN NOT NULL DEFAULT 0",
+    );
   }
 
   // Create vector search index.
@@ -283,17 +333,24 @@ export function initDatabase(): Database.Database {
   // prove the index is populated, so be conservative: an empty exchanges set is
   // ready (triggers index every future insert); a non-empty set stays NOT ready
   // until scripts/backfill-fts.mjs rebuilds the index and sets the flag.
-  db.exec(`CREATE TABLE IF NOT EXISTS fts_meta (key TEXT PRIMARY KEY, value TEXT)`);
-  const hasFtsFlag = db.prepare(`SELECT 1 FROM fts_meta WHERE key='exchanges_fts_built'`).get() !== undefined;
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS fts_meta (key TEXT PRIMARY KEY, value TEXT)`,
+  );
+  const hasFtsFlag =
+    db
+      .prepare(`SELECT 1 FROM fts_meta WHERE key='exchanges_fts_built'`)
+      .get() !== undefined;
   if (!hasFtsFlag) {
-    const exchangesHaveRows = db.prepare('SELECT 1 FROM exchanges LIMIT 1').get() !== undefined;
+    const exchangesHaveRows =
+      db.prepare("SELECT 1 FROM exchanges LIMIT 1").get() !== undefined;
     // INSERT OR IGNORE (not plain INSERT): initDatabase() runs in every MCP/hook
     // process, so two callers can both observe a missing flag and race to insert.
     // OR IGNORE makes the first writer win and the rest no-op instead of crashing
     // on SQLITE_CONSTRAINT_PRIMARYKEY. The value is deterministic for the DB state,
     // so a lost race is harmless.
-    db.prepare(`INSERT OR IGNORE INTO fts_meta(key, value) VALUES('exchanges_fts_built', ?)`)
-      .run(exchangesHaveRows ? '0' : '1');
+    db.prepare(
+      `INSERT OR IGNORE INTO fts_meta(key, value) VALUES('exchanges_fts_built', ?)`,
+    ).run(exchangesHaveRows ? "0" : "1");
   }
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS exchanges_fts_ai AFTER INSERT ON exchanges BEGIN
@@ -435,14 +492,24 @@ export function initDatabase(): Database.Database {
     ON ontology_relations(source_fact_id, relation_type, target_fact_id)
   `);
 
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_source ON ontology_relations(source_fact_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_relations_target ON ontology_relations(target_fact_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_ontology ON facts(ontology_category_id)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_relations_source ON ontology_relations(source_fact_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_relations_target ON ontology_relations(target_fact_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_facts_ontology ON facts(ontology_category_id)`,
+  );
   // Keyset pagination for the consolidation drain (getAllNewFactsSince): serves
   // both `WHERE is_active = 1 AND (created_at, id) > cursor` and the
   // `ORDER BY created_at, id` without a temp sort over the whole table.
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_facts_active_created_id ON facts(is_active, created_at, id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_ontology_categories_domain ON ontology_categories(domain_id)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_facts_active_created_id ON facts(is_active, created_at, id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_ontology_categories_domain ON ontology_categories(domain_id)`,
+  );
 
   // Tracks which sessions have been through fact extraction (SessionEnd hook
   // or the backfill worker). Makes extraction idempotent and lets the backfill
@@ -465,27 +532,35 @@ export function insertExchange(
   db: Database.Database,
   exchange: ConversationExchange,
   embedding: number[],
-  _toolNames?: string[]
+  _toolNames?: string[],
 ): void {
   const now = Date.now();
   const promptHash = hashRecallPrompt(exchange.userMessage);
   const recall = exchange.sessionId
-    ? db.prepare('SELECT 1 FROM recall_events WHERE session_id = ? AND prompt_hash = ?')
-      .get(exchange.sessionId, promptHash) !== undefined
+    ? db
+        .prepare(
+          "SELECT 1 FROM recall_events WHERE session_id = ? AND prompt_hash = ?",
+        )
+        .get(exchange.sessionId, promptHash) !== undefined
     : false;
   const classifiedTools = (exchange.toolCalls ?? []).map((call) => ({
     call,
-    evidence: classifyToolEvidence(call.toolName, call.toolInput),
+    evidence: classifyToolEvidence(call.toolName, call.toolInput, {
+      cwd: exchange.cwd,
+    }),
   }));
-  const toolRecall = classifiedTools.some(({ evidence }) => evidence.sourceType === 'memex_recall');
+  const toolRecall = classifiedTools.some(
+    ({ evidence }) => evidence.sourceType === "memex_recall",
+  );
   const hasRecall = recall || toolRecall;
-  const provenance = exchange.provenance
-    ?? [...new Set<EvidenceSourceType>([
-      'human_assertion',
-      'assistant_generated',
+  const provenance = exchange.provenance ?? [
+    ...new Set<EvidenceSourceType>([
+      "human_assertion",
+      "assistant_generated",
       ...classifiedTools.map(({ evidence }) => evidence.sourceType),
-      ...(hasRecall ? ['memex_recall' as const] : []),
-    ])];
+      ...(hasRecall ? ["memex_recall" as const] : []),
+    ]),
+  ];
   const assistantLearnable = exchange.assistantLearnable ?? false;
   const hasMemexRecall = exchange.hasMemexRecall ?? hasRecall;
 
@@ -552,9 +627,10 @@ export function insertExchange(
 
     // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
     const vecDtype = getVecDtype(db);
-    db.prepare('DELETE FROM vec_exchanges WHERE id = ?').run(exchange.id);
-    db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ${vecParamSql(vecDtype)})`)
-      .run(exchange.id, embeddingToVecBlob(embedding, vecDtype));
+    db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(exchange.id);
+    db.prepare(
+      `INSERT INTO vec_exchanges (id, embedding) VALUES (?, ${vecParamSql(vecDtype)})`,
+    ).run(exchange.id, embeddingToVecBlob(embedding, vecDtype));
 
     if (exchange.toolCalls && exchange.toolCalls.length > 0) {
       const toolStmt = db.prepare(`
@@ -564,7 +640,11 @@ export function insertExchange(
       `);
 
       for (const toolCall of exchange.toolCalls) {
-        const evidence = classifyToolEvidence(toolCall.toolName, toolCall.toolInput);
+        const evidence = classifyToolEvidence(
+          toolCall.toolName,
+          toolCall.toolInput,
+          { cwd: exchange.cwd },
+        );
         toolStmt.run(
           toolCall.id,
           toolCall.exchangeId,
@@ -574,7 +654,11 @@ export function insertExchange(
           toolCall.isError ? 1 : 0,
           toolCall.timestamp,
           toolCall.sourceType ?? evidence.sourceType,
-          (toolCall.learnable ?? evidence.learnable) && !toolCall.isError && !!toolCall.toolResult ? 1 : 0,
+          (toolCall.learnable ?? evidence.learnable) &&
+            !toolCall.isError &&
+            toolCall.toolResult
+            ? 1
+            : 0,
         );
       }
     }
@@ -584,8 +668,15 @@ export function insertExchange(
 }
 
 const MEMEX_RECALL_TOOLS = new Set([
-  'search', 'read', 'search_facts', 'search_ontology', 'ask_avatar',
-  'trace_fact', 'graph_stats', 'cross_project_insights', 'explore_graph',
+  "search",
+  "read",
+  "search_facts",
+  "search_ontology",
+  "ask_avatar",
+  "trace_fact",
+  "graph_stats",
+  "cross_project_insights",
+  "explore_graph",
 ]);
 
 export function isMemexRecallToolName(toolName: string): boolean {
@@ -593,49 +684,206 @@ export function isMemexRecallToolName(toolName: string): boolean {
   return !!match && MEMEX_RECALL_TOOLS.has(match[1]);
 }
 
-const REPO_READ_TOOLS = new Set(['read', 'read_file', 'grep', 'view_image']);
+const REPO_READ_TOOLS = new Set(["read", "read_file", "grep", "view_image"]);
 
-function commandText(input: unknown): string {
-  if (typeof input === 'string') return input;
-  if (!input || typeof input !== 'object') return '';
-  const cmd = (input as { cmd?: unknown }).cmd;
-  return Array.isArray(cmd) ? cmd.join(' ') : typeof cmd === 'string' ? cmd : '';
+/**
+ * Optional context that lets the trust classifier prove WHERE an observation
+ * came from. Provenance is evidence-source-level: a read result is only
+ * repository-local (learnable) evidence when its path resolves inside the
+ * canonical project working directory AND outside every Memex data surface.
+ */
+export interface ToolEvidenceContext {
+  /** Canonical project cwd of the exchange, when known. */
+  cwd?: string | null;
 }
 
-export function classifyToolEvidence(toolName: string, toolInput?: unknown): {
+/** Absolute roots whose contents must never become learnable evidence:
+ * Memex's own derived data (facts, archives, summaries), Codex rollout
+ * transcripts, and ephemeral Memex model workdirs. Reading a
+ * summary/rollout back with a local file tool would otherwise launder
+ * assistant synthesis or memex_recall into `repo_file/learnable=1`. */
+function deniedEvidenceRoots(): string[] {
+  const roots: string[] = [];
+  const push = (p?: string | null) => {
+    if (!p) return;
+    try {
+      roots.push(path.resolve(p));
+    } catch {
+      /* unresolvable — skip */
+    }
+  };
+  try {
+    // MEMEX_HOME root covers archive/, index/, and the SQLite DB in one hop.
+    push(getMemexHome());
+    push(sessionsRoot());
+    // Scoped temp denial: only Memex model workdirs, not the whole temp tree,
+    // so projects that legitimately live under a system temp dir keep working.
+    push(path.join(os.tmpdir(), LLM_WORKDIR_BASENAME));
+  } catch {
+    /* resolver unavailable — denylist stays partial */
+  }
+  return [...new Set(roots)].filter((r) => r && r !== "/");
+}
+
+function isInside(child: string, ancestor: string): boolean {
+  const c = path.resolve(child);
+  return c === ancestor || c.startsWith(ancestor + path.sep);
+}
+
+/** Extract candidate target paths from common repo-read tool input shapes. */
+function readTargetPaths(input: unknown): string[] {
+  if (!input || typeof input !== "object") return [];
+  const out: string[] = [];
+  for (const key of [
+    "path",
+    "file",
+    "filepath",
+    "file_path",
+    "paths",
+    "files",
+  ]) {
+    const value = (input as Record<string, unknown>)[key];
+    if (typeof value === "string" && value.trim()) out.push(value.trim());
+    else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string" && item.trim()) out.push(item.trim());
+      }
+    }
+  }
+  return out;
+}
+
+/** Path-aware verdict for a repo-local observation. ctx.cwd turns locality
+ * into a proof requirement; without it only the data-root denylist applies
+ * (backward-compatible for callers that cannot supply a cwd). */
+function repoReadVerdict(
+  toolInput: unknown,
+  ctx?: ToolEvidenceContext,
+): { sourceType: EvidenceSourceType; learnable: boolean } {
+  const demote = (): {
+    sourceType: EvidenceSourceType;
+    learnable: boolean;
+  } => ({
+    sourceType: "external_unverified",
+    learnable: false,
+  });
+  const denied = deniedEvidenceRoots();
+  const base = ctx?.cwd ? ctx.cwd : process.cwd();
+  const targets = readTargetPaths(toolInput).map((target) =>
+    path.resolve(base, target),
+  );
+
+  // Step 1 — locality proof: with a project context, every observation must
+  // land inside the canonical project working directory to count as a
+  // repository-local observation at all.
+  let locallyProven = !ctx?.cwd || targets.length > 0;
+  if (ctx?.cwd) {
+    let projectRoot: string;
+    try {
+      projectRoot = path.resolve(ctx.cwd);
+    } catch {
+      locallyProven = false;
+    }
+    if (
+      locallyProven &&
+      targets.some((target) => !isInside(target, projectRoot))
+    ) {
+      locallyProven = false;
+    }
+    // Fail closed when locality is unprovable (no extractable target path).
+    if (targets.length === 0) locallyProven = false;
+  } else {
+    // Legacy callers cannot prove locality; keep their previous contract.
+    locallyProven = true;
+  }
+  if (!locallyProven) return demote();
+
+  // Step 2 — denied data surfaces: even inside the project, readings from
+  // Memex-owned data roots stay non-learnable (label kept, learning flipped).
+  for (const target of targets) {
+    for (const root of denied) {
+      if (isInside(target, root)) {
+        return { sourceType: "repo_file", learnable: false };
+      }
+    }
+  }
+
+  return { sourceType: "repo_file", learnable: true };
+}
+
+/** True when a shell command references any denied evidence root. */
+function commandTouchesDeniedRoot(command: string): boolean {
+  const normalized = command.replace(/~/g, os.homedir());
+  return deniedEvidenceRoots().some((root) => normalized.includes(root));
+}
+
+function commandText(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return "";
+  const cmd = (input as { cmd?: unknown }).cmd;
+  return Array.isArray(cmd)
+    ? cmd.join(" ")
+    : typeof cmd === "string"
+      ? cmd
+      : "";
+}
+
+export function classifyToolEvidence(
+  toolName: string,
+  toolInput?: unknown,
+  ctx?: ToolEvidenceContext,
+): {
   sourceType: EvidenceSourceType;
   learnable: boolean;
 } {
-  if (isMemexRecallToolName(toolName)) return { sourceType: 'memex_recall', learnable: false };
-  const leaf = toolName.split('__').at(-1) ?? toolName;
-  if (REPO_READ_TOOLS.has(leaf)) return { sourceType: 'repo_file', learnable: true };
-  if (leaf !== 'shell' && leaf !== 'exec_command') {
-    return { sourceType: 'external_unverified', learnable: false };
+  if (isMemexRecallToolName(toolName))
+    return { sourceType: "memex_recall", learnable: false };
+  const leaf = toolName.split("__").at(-1) ?? toolName;
+  if (REPO_READ_TOOLS.has(leaf)) return repoReadVerdict(toolInput, ctx);
+  if (leaf !== "shell" && leaf !== "exec_command") {
+    return { sourceType: "external_unverified", learnable: false };
   }
 
   const command = commandText(toolInput).trim();
-  if (!command || /(^|\s)(curl|wget|ssh|scp|sftp)\b|https?:\/\/|\bgh\s+api\b/i.test(command)) {
-    return { sourceType: 'external_unverified', learnable: false };
+  if (
+    !command ||
+    /(^|\s)(curl|wget|ssh|scp|sftp)\b|https?:\/\/|\bgh\s+api\b/i.test(command)
+  ) {
+    return { sourceType: "external_unverified", learnable: false };
   }
   if (/^git\s+(status|log|show|diff|rev-parse|branch)(\s|$)/.test(command)) {
-    return { sourceType: 'git_history', learnable: true };
+    return { sourceType: "git_history", learnable: true };
   }
-  if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?test(\s|$)|^node\s+--test(\s|$)|^(npx\s+)?vitest(\s|$)|^(pytest|cargo\s+test|go\s+test)(\s|$)/.test(command)) {
-    return { sourceType: 'test_execution', learnable: true };
+  if (
+    /^(npm|pnpm|yarn|bun)\s+(run\s+)?test(\s|$)|^node\s+--test(\s|$)|^(npx\s+)?vitest(\s|$)|^(pytest|cargo\s+test|go\s+test)(\s|$)/.test(
+      command,
+    )
+  ) {
+    return { sourceType: "test_execution", learnable: true };
   }
   if (/^(rg|grep|find|ls|stat|jq)(\s|$)/.test(command)) {
-    return { sourceType: 'repo_file', learnable: true };
+    if (commandTouchesDeniedRoot(command)) {
+      // Reading our own archives/rollouts/temp outputs through a shell is the
+      // same laundering vector as reading them through read tools — demote.
+      return { sourceType: "repo_file", learnable: false };
+    }
+    return { sourceType: "repo_file", learnable: true };
   }
-  return { sourceType: 'external_unverified', learnable: false };
+  return { sourceType: "external_unverified", learnable: false };
 }
 
 export function hashRecallPrompt(prompt: string): string {
-  return createHash('sha256').update(prompt, 'utf8').digest('hex');
+  return createHash("sha256").update(prompt, "utf8").digest("hex");
 }
 
 export function recordRecallEvent(
   db: Database.Database,
-  event: { sessionId: string; project: string; prompt: string; factIds: string[] },
+  event: {
+    sessionId: string;
+    project: string;
+    prompt: string;
+    factIds: string[];
+  },
 ): string | null {
   if (!event.sessionId || event.factIds.length === 0) return null;
   const id = randomUUID();
@@ -658,22 +906,38 @@ export function markRecallEventEmitted(
   db: Database.Database,
   event: { sessionId: string; prompt: string },
 ): boolean {
-  const row = db.prepare(`
+  const row = db
+    .prepare(`
     SELECT id FROM recall_events
     WHERE session_id = ? AND prompt_hash = ? AND status = 'prepared'
     ORDER BY created_at DESC, rowid DESC LIMIT 1
-  `).get(event.sessionId, hashRecallPrompt(event.prompt)) as { id: string } | undefined;
+  `)
+    .get(event.sessionId, hashRecallPrompt(event.prompt)) as
+    | { id: string }
+    | undefined;
   if (!row) return false;
-  return db.prepare(`UPDATE recall_events SET status = 'emitted', emitted_at = ? WHERE id = ?`)
-    .run(new Date().toISOString(), row.id).changes === 1;
+  return (
+    db
+      .prepare(
+        `UPDATE recall_events SET status = 'emitted', emitted_at = ? WHERE id = ?`,
+      )
+      .run(new Date().toISOString(), row.id).changes === 1
+  );
 }
 
-export function getAllExchanges(db: Database.Database): Array<{ id: string; archivePath: string }> {
-  const stmt = db.prepare(`SELECT id, archive_path as archivePath FROM exchanges`);
+export function getAllExchanges(
+  db: Database.Database,
+): Array<{ id: string; archivePath: string }> {
+  const stmt = db.prepare(
+    `SELECT id, archive_path as archivePath FROM exchanges`,
+  );
   return stmt.all() as Array<{ id: string; archivePath: string }>;
 }
 
-export function getFileLastIndexed(db: Database.Database, archivePath: string): number | null {
+export function getFileLastIndexed(
+  db: Database.Database,
+  archivePath: string,
+): number | null {
   const stmt = db.prepare(`
     SELECT MAX(last_indexed) as lastIndexed
     FROM exchanges

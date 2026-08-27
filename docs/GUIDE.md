@@ -165,7 +165,7 @@ trust는 “non-Memex”와 동의어가 아닙니다. call ID별 result를 다�
 
 | 분류 | 기본 학습 |
 | --- | --- |
-| local file/read/grep observation | 허용 |
+| local file/read/grep observation | 허용 (project cwd 내부 + Memex 데이터 루트·Codex sessions·model workdir 밖일 때만) |
 | bounded read-only Git history/status/diff | 허용 |
 | 명시적 test command 결과 | 허용 |
 | Memex MCP result | 금지 |
@@ -175,6 +175,11 @@ trust는 “non-Memex”와 동의어가 아닙니다. call ID별 result를 다�
 shell/exec 입력에 network command가 섞이면 전체 result를 안전하게
 `external_unverified`로 분류합니다. generated artifact를 향후 허용하려면 source별
 validator와 회귀 테스트를 먼저 추가하고 allowlist를 좁게 확장합니다.
+
+경로가 증명되는 파일 관측이어도 대상이 `MEMEX_HOME`(archive/index/DB),
+`$CODEX_HOME/sessions`, 임시 model workdir 안에 있으면 Memex 자료의 재독입(self
+재섭취)이므로 `learnable=0`으로 강등합니다. project cwd 밖 경로나 대상을 특정할 수
+없는 관측은 repository evidence로 인정하지 않습니다.
 
 Codex의 unified `exec`처럼 한 tool result 안에 여러 내부 호출의 출력이 합쳐지고 각
 출력의 원 source를 안정적으로 역매핑할 수 없는 surface는 기본적으로

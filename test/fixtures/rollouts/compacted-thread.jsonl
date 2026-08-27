@@ -1,0 +1,11 @@
+{"timestamp": "2026-08-20T01:00:00.000Z", "type": "session_meta", "payload": {"id": "9c1d0a2e-compact-0001-4444-5555-666677778888", "session_id": "9c1d0a2e-compact-0001-4444-5555-666677778888", "timestamp": "2026-08-20T01:00:00.000Z", "cwd": "/tmp/mb-fixture/team-a/shared", "originator": "codex-tui", "cli_version": "0.149.1", "source": "cli", "thread_source": "user"}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "question before compaction about retry policy"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "answer before compaction"}]}}
+{"timestamp": "2026-08-20T01:10:00.000Z", "type": "compacted", "payload": {"message": "", "window_id": 3, "window_number": 1, "previous_window_id": null, "replacement_history": [
+  {"type": "message", "id": "msg-cp-1", "role": "user", "content": [{"type": "input_text", "text": "earlier human prompt replayed from replacement history"}]},
+  {"type": "message", "id": "msg-cp-2", "role": "assistant", "content": [{"type": "output_text", "text": "assistant synthesis replayed; recalled-fact-marker: project uses SQLite"}]},
+  {"type": "message", "id": "msg-cp-3", "role": "developer", "content": [{"type": "input_text", "text": "<environment_context>replayed harness context</environment_context>"}]},
+  {"type": "compaction", "id": "cmp_0197example0000000000000000000000000000000000000000", "encrypted_content": "gAAAA-compacted-summary-content-must-never-be-indexed"}
+]}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "follow-up question after compaction"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "post-compact answer"}]}}

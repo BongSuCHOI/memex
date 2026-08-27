@@ -45,9 +45,16 @@ provenance는 turn taint가 아니라 evidence source 단위입니다.
 parser는 call ID로 tool result를 원 호출에 연결합니다. extractor는 human assertion과
 `learnable=1` tool result를 직접 읽어 candidate를 만들며, assistant가 그 evidence를
 요약한 문장을 다시 evidence로 쓰지 않습니다. 같은 turn의 Memex recall은 sibling
-repo/Git/test result를 오염시키지 않습니다. 전체 text는 FTS/vector search에 남습니다.
+repo/Git/test result를 taint하지 않습니다. 전체 text는 FTS/vector search에 남습니다.
 여러 내부 source가 하나로 합쳐져 call 단위 귀속이 불가능한 composite `exec` output은
 안전한 기본값인 `external_unverified/learnable=0`입니다.
+
+파일 관측 evidence의 learnability는 경로로 증명됩니다. project cwd 밖으로
+resolve되거나(extraction 시 exchange cwd 기준), 대상 경로를 특정할 수 없으면
+fail-closed로 demote됩니다. 프로젝트 내부라도 Memex 데이터 루트(`MEMEX_HOME` 아래
+archive/index/DB), `$CODEX_HOME/sessions`, 임시 model workdir 안의 관측은 레이블을
+유지한 채 `learnable=0`으로 강등됩니다. 이 경계가 없으면 self 요약·rollout을 로컬 파일
+tool로 다시 읽어 assistant synthesis나 recall이 repository evidence로 세탁됩니다.
 
 긴 session은 `MEMORY_BANK_MAX_EXTRACT_CALLS` 범위에서 전체 시간대를 고르게 샘플링한
 batch를 사용합니다. model output은 구조/enum/숫자 confidence를 검증하고 confidence

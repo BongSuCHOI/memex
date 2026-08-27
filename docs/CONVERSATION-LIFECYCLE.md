@@ -30,6 +30,12 @@ stateDiagram-v2
 
 malformed 한 줄은 해당 줄의 오류로 격리하며 전체 archive discovery를 중단하지 않습니다.
 
+`type: "compacted"` 레코드는 transport noise로 전체가 무시됩니다. 특히 그 안의
+`replacement_history`(user/assistant/developer message 재생 목록과 암호화된
+compaction payload)는 어떤 형태로든 exchange로 재조립되지 않습니다. 압축 요약이
+recalled fact나 agent synthesis를 human evidence처럼 다시 유입시키는 self-ingestion을
+이 계약이 차단하며, 회귀 테스트는 `compacted-thread.jsonl` fixture가 소유합니다.
+
 ## 3. project identity와 archive key
 
 ```text
