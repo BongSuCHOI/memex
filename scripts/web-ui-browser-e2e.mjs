@@ -17,8 +17,7 @@ const EVIDENCE =
     ? path.resolve(process.argv[evidenceArg + 1])
     : fs.mkdtempSync("/tmp/mb-web-ui-evidence-");
 const TEMP = fs.mkdtempSync("/tmp/mb-web-ui-e2e-");
-const HOME = path.join(TEMP, "memory-bank");
-const DB_PATH = path.join(HOME, "conversation-index", "db.sqlite");
+const XDG_CONFIG_HOME = path.join(TEMP, "xdg");
 const PROFILE = path.join(TEMP, "chrome-profile");
 const MALICIOUS =
   "<img src=x onerror=globalThis.__mbInjected=true> 한글 사실은 안전하게 표시됩니다";
@@ -136,8 +135,13 @@ function startServer(port) {
     cwd: ROOT,
     env: {
       ...process.env,
-      MEMEX_HOME: HOME,
-      TEST_DB_PATH: DB_PATH,
+      MEMEX_HOME: "",
+      MEMEX_DB_PATH: "",
+      MEMORY_BANK_HOME: "",
+      MEMORY_BANK_CONFIG_DIR: "",
+      MEMORY_BANK_DB_PATH: "",
+      TEST_DB_PATH: "",
+      XDG_CONFIG_HOME,
       MEMORY_BANK_PLUGIN_ROOT: ROOT,
       PORT: String(port),
     },
@@ -327,8 +331,13 @@ let chrome;
 let cdp;
 try {
   fs.mkdirSync(EVIDENCE, { recursive: true });
-  process.env.MEMEX_HOME = HOME;
-  process.env.TEST_DB_PATH = DB_PATH;
+  process.env.MEMEX_HOME = "";
+  process.env.MEMEX_DB_PATH = "";
+  process.env.MEMORY_BANK_HOME = "";
+  process.env.MEMORY_BANK_CONFIG_DIR = "";
+  process.env.MEMORY_BANK_DB_PATH = "";
+  process.env.TEST_DB_PATH = "";
+  process.env.XDG_CONFIG_HOME = XDG_CONFIG_HOME;
   const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
   const db = initDatabase();
   const now = new Date().toISOString();

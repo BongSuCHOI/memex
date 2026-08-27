@@ -23,6 +23,9 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ### Changed
 
+- `memex-ui` now resolves its default SQLite root under
+  `$XDG_CONFIG_HOME/memex` or `~/.config/memex`, matching the CLI instead of
+  incorrectly probing the removed `memory-bank` default namespace.
 - Onboarding docs (README.md, README-KR.md, docs/GUIDE.md) now present the
   one-time `setup --install-cli` shim as the default path to a terminal `memex`
   command and drop the npx shell-function workaround; clarified that in-session

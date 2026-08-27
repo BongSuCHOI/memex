@@ -25,7 +25,7 @@ const MEMORY_BANK_HOME =
   process.env.MEMORY_BANK_CONFIG_DIR ||
   path.join(
     process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
-    "memory-bank",
+    "memex",
   );
 
 const DB_PATH =
