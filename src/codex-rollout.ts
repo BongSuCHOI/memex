@@ -16,18 +16,22 @@
 //   - reasoning / developer / system records are never part of a turn.
 // Subagent isolation: session_meta.parent_thread_id set, or source/thread_source
 // marked subagent -> the whole file is flagged and skipped by callers.
-import readline from 'node:readline';
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import readline from "node:readline";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 /** Root directory that holds Codex rollout sessions (recursive layout). */
 export function sessionsRoot(): string {
-  if (process.env.MEMORY_BANK_SESSIONS_DIR) return process.env.MEMORY_BANK_SESSIONS_DIR;
+  // MEMEX_SESSIONS_DIR is the current namespace; the historical variable stays
+  // honored read-only for existing custom installs.
+  if (process.env.MEMEX_SESSIONS_DIR) return process.env.MEMEX_SESSIONS_DIR;
+  if (process.env.MEMORY_BANK_SESSIONS_DIR)
+    return process.env.MEMORY_BANK_SESSIONS_DIR;
   if (process.env.TEST_SESSIONS_DIR) return process.env.TEST_SESSIONS_DIR;
-  const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  return path.join(home, 'sessions');
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  return path.join(home, "sessions");
 }
 
 /** Recursively list rollout transcript files, oldest-first. */
@@ -52,17 +56,24 @@ export function discoverSessionFiles(root: string = sessionsRoot()): string[] {
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) stack.push(p);
-      else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) out.push(p);
+      else if (
+        e.isFile() &&
+        e.name.startsWith("rollout-") &&
+        e.name.endsWith(".jsonl")
+      )
+        out.push(p);
     }
   }
   return out.sort();
 }
 
 /** True when a parsed session_meta marks a subagent/child thread. */
-export function isSubagentMeta(meta: Record<string, unknown> | null | undefined): boolean {
+export function isSubagentMeta(
+  meta: Record<string, unknown> | null | undefined,
+): boolean {
   if (!meta) return false;
   const ptid = (meta as { parent_thread_id?: unknown }).parent_thread_id;
-  if (ptid != null && ptid !== '') return true;
+  if (ptid != null && ptid !== "") return true;
   return /subagent|child_thread|spawned/i.test(
     JSON.stringify([meta.source ?? null, meta.thread_source ?? null]),
   );
@@ -85,11 +96,12 @@ export async function readRolloutMeta(
       settled = true;
       resolve({ meta, isSubagent: isSubagentMeta(meta) });
     };
-    rl.on('line', (line) => {
+    rl.on("line", (line) => {
       if (meta != null) return;
       try {
-        const rec: { type?: string; payload?: Record<string, unknown> } = JSON.parse(line);
-        if (rec && rec.type === 'session_meta') {
+        const rec: { type?: string; payload?: Record<string, unknown> } =
+          JSON.parse(line);
+        if (rec && rec.type === "session_meta") {
           meta = rec.payload || {};
           rl.close();
           stream.close();
@@ -98,8 +110,8 @@ export async function readRolloutMeta(
         /* malformed header line — keep scanning */
       }
     });
-    rl.on('close', finish);
-    stream.on('error', finish);
+    rl.on("close", finish);
+    stream.on("error", finish);
   });
 }
 
@@ -110,40 +122,56 @@ export async function readRolloutMeta(
  * Legacy bare-UUID transcript names keep working.
  */
 export function extractSessionIdFromPath(filePath: string): string | null {
-  const basename = path.basename(filePath, '.jsonl');
-  const matches = basename.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+  const basename = path.basename(filePath, ".jsonl");
+  const matches = basename.match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+  );
   return matches ? matches[matches.length - 1] : null;
 }
 
 type ContentItem = { type?: string; text?: unknown };
 
 function textFromContent(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const c of content as ContentItem[]) {
-    if (c && typeof c.text === 'string') parts.push(c.text);
+    if (c && typeof c.text === "string") parts.push(c.text);
   }
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
-function safeParseInput(input: unknown): unknown {
-  if (typeof input !== 'string') return input ?? null;
+/**
+ * Domain shape of a parsed tool-call input: an already-structured JSON
+ * payload (object, array, or scalar) when parsing succeeded, otherwise the
+ * original raw string. Mirrors what the indexer can persist into
+ * tool_calls.tool_input.
+ */
+type ToolCallInput =
+  | Record<string, unknown>
+  | unknown[]
+  | string
+  | number
+  | boolean
+  | null;
+
+function safeParseInput(input: unknown): ToolCallInput {
+  if (typeof input !== "string") return (input ?? null) as ToolCallInput;
   try {
-    return JSON.parse(input);
+    return JSON.parse(input) as ToolCallInput;
   } catch {
     return input;
   }
 }
 
 const ENV_CONTEXT_PREFIXES = [
-  '<environment_context>',
-  '<user_instructions>',
-  '<turn_context>',
-  '<codex_internal_context',
-  '<codex_context',
-  '# AGENTS.md instructions',
-  'The following is the Codex agent history',
+  "<environment_context>",
+  "<user_instructions>",
+  "<turn_context>",
+  "<codex_internal_context",
+  "<codex_context",
+  "# AGENTS.md instructions",
+  "The following is the Codex agent history",
 ];
 
 /** Pure single-source check for harness/developer context that must never be
@@ -165,7 +193,7 @@ export interface ParsedRollout {
  */
 export async function parseRolloutStream(
   input: NodeJS.ReadableStream,
-  { archivePath = '' }: { archivePath?: string } = {},
+  { archivePath = "" }: { archivePath?: string } = {},
 ): Promise<ParsedRollout> {
   const rl = readline.createInterface({ input, crlfDelay: Infinity });
   const exchanges: Array<Record<string, unknown>> = [];
@@ -179,24 +207,27 @@ export async function parseRolloutStream(
     toolCalls: Array<Record<string, unknown>>;
   } | null = null;
   let lineNo = 0;
-  let lastTs = '';
+  let lastTs = "";
 
   const flush = () => {
-    if (!cur || (cur.assistantMessages.length === 0 && cur.toolCalls.length === 0)) {
+    if (
+      !cur ||
+      (cur.assistantMessages.length === 0 && cur.toolCalls.length === 0)
+    ) {
       cur = null;
       return;
     }
     const id = crypto
-      .createHash('md5')
+      .createHash("md5")
       .update(`${archivePath}:${cur.userLine}-${cur.assistantLine}`)
-      .digest('hex');
+      .digest("hex");
     const toolCalls = cur.toolCalls.map((tc) => ({ ...tc, exchangeId: id }));
     exchanges.push({
       id,
-      project: '',
+      project: "",
       timestamp: cur.timestamp,
-      userMessage: cur.userMessage || '(tool calls only)',
-      assistantMessage: cur.assistantMessages.join('\n\n'),
+      userMessage: cur.userMessage || "(tool calls only)",
+      assistantMessage: cur.assistantMessages.join("\n\n"),
       archivePath,
       lineStart: cur.userLine,
       lineEnd: cur.assistantLine,
@@ -211,30 +242,36 @@ export async function parseRolloutStream(
 
   for await (const line of rl) {
     lineNo++;
-    let rec: { type?: string; timestamp?: string; payload?: Record<string, unknown> };
+    let rec: {
+      type?: string;
+      timestamp?: string;
+      payload?: Record<string, unknown>;
+    };
     try {
       rec = JSON.parse(line);
     } catch {
       continue; // malformed-line tolerance
     }
-    if (!rec || typeof rec !== 'object') continue;
-    if (typeof rec.timestamp === 'string' && rec.timestamp) lastTs = rec.timestamp;
+    if (!rec || typeof rec !== "object") continue;
+    if (typeof rec.timestamp === "string" && rec.timestamp)
+      lastTs = rec.timestamp;
 
-    if (rec.type === 'session_meta') {
+    if (rec.type === "session_meta") {
       meta = (rec.payload as Record<string, unknown>) || {};
       continue;
     }
     // Turn content only arrives on response_item; event_msg/reasoning/world_state/
     // turn_context/compacted are transport noise by contract.
-    if (rec.type !== 'response_item') continue;
+    if (rec.type !== "response_item") continue;
     const p = rec.payload || {};
-    const pType = String(p.type ?? '');
-    if (pType === 'reasoning' || pType === 'developer' || pType === 'system') continue;
+    const pType = String(p.type ?? "");
+    if (pType === "reasoning" || pType === "developer" || pType === "system")
+      continue;
 
-    if (pType === 'message') {
+    if (pType === "message") {
       const role = p.role;
       const text = textFromContent(p.content);
-      if (role === 'user') {
+      if (role === "user") {
         if (isInternalContextMessage(text)) continue;
         flush();
         cur = {
@@ -245,32 +282,40 @@ export async function parseRolloutStream(
           timestamp: rec.timestamp || lastTs,
           toolCalls: [],
         };
-      } else if (role === 'assistant' && cur) {
+      } else if (role === "assistant" && cur) {
         cur.assistantMessages.push(text);
         cur.assistantLine = lineNo;
       }
       continue;
     }
 
-    if ((pType === 'custom_tool_call' || pType === 'function_call') && cur) {
+    if ((pType === "custom_tool_call" || pType === "function_call") && cur) {
       cur.toolCalls.push({
         id: String(p.call_id ?? p.id ?? crypto.randomUUID()),
-        exchangeId: '',
-        toolName: String(p.name ?? 'unknown'),
-        toolInput: safeParseInput(pType === 'function_call' ? p.arguments : p.input),
+        exchangeId: "",
+        toolName: String(p.name ?? "unknown"),
+        toolInput: safeParseInput(
+          pType === "function_call" ? p.arguments : p.input,
+        ),
         isError: false,
-        timestamp: (rec.timestamp as string) || lastTs || new Date(0).toISOString(),
+        timestamp:
+          (rec.timestamp as string) || lastTs || new Date(0).toISOString(),
       });
       cur.assistantLine = lineNo;
       continue;
     }
 
-    if ((pType === 'custom_tool_call_output' || pType === 'function_call_output') && cur) {
-      const callId = String(p.call_id ?? p.id ?? '');
+    if (
+      (pType === "custom_tool_call_output" ||
+        pType === "function_call_output") &&
+      cur
+    ) {
+      const callId = String(p.call_id ?? p.id ?? "");
       const call = cur.toolCalls.find((candidate) => candidate.id === callId);
       if (call) {
-        const output = p.output ?? p.result ?? '';
-        call.toolResult = typeof output === 'string' ? output : JSON.stringify(output);
+        const output = p.output ?? p.result ?? "";
+        call.toolResult =
+          typeof output === "string" ? output : JSON.stringify(output);
         call.isError = p.is_error === true;
         cur.assistantLine = lineNo;
       }
@@ -292,7 +337,9 @@ export async function parseConversation(
 ): Promise<Array<Record<string, unknown>>> {
   const stream = fs.createReadStream(filePath);
   try {
-    const { meta, exchanges } = await parseRolloutStream(stream, { archivePath });
+    const { meta, exchanges } = await parseRolloutStream(stream, {
+      archivePath,
+    });
     for (const e of exchanges) {
       e.project = projectName;
       if (meta && meta.cwd) e.cwd = meta.cwd;

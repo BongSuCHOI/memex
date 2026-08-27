@@ -3,73 +3,108 @@
  * Memex Web UI
  * Cinematic dark-theme conversation explorer
  */
-const http = require('http');
-const path = require('path');
-const os = require('os');
-const PLUGIN_ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT
-  || process.env.PLUGIN_ROOT
-  || path.resolve(__dirname, '..');
-const Database = require(path.join(PLUGIN_ROOT, 'node_modules/better-sqlite3'));
-const MEMORY_BANK_HOME = process.env.MEMORY_BANK_HOME
-  || process.env.MEMORY_BANK_CONFIG_DIR
-  || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'memory-bank');
+const http = require("http");
+const path = require("path");
+const os = require("os");
+const PLUGIN_ROOT =
+  process.env.MEMORY_BANK_PLUGIN_ROOT ||
+  process.env.PLUGIN_ROOT ||
+  path.resolve(__dirname, "..");
+// Standard resolution walks up from ui/ to <root>/node_modules and beyond,
+// so this works both inside the repository and inside npm/npx store layouts
+// where dependencies are hoisted next to the package directory.
+let Database;
+try {
+  Database = require("better-sqlite3");
+} catch {
+  Database = require(path.join(PLUGIN_ROOT, "node_modules/better-sqlite3"));
+}
+const MEMORY_BANK_HOME =
+  process.env.MEMEX_HOME ||
+  process.env.MEMORY_BANK_HOME ||
+  process.env.MEMORY_BANK_CONFIG_DIR ||
+  path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+    "memory-bank",
+  );
 
-const DB_PATH = process.env.MEMORY_BANK_DB_PATH
-  || process.env.TEST_DB_PATH
-  || path.join(MEMORY_BANK_HOME, 'conversation-index', 'db.sqlite');
+const DB_PATH =
+  process.env.MEMEX_DB_PATH ||
+  process.env.MEMORY_BANK_DB_PATH ||
+  process.env.TEST_DB_PATH ||
+  path.join(MEMORY_BANK_HOME, "conversation-index", "db.sqlite");
 const PORT = parseInt(String(process.env.PORT || 3847), 10);
 
-
-
-
-
 // ── CX-06: 3D Knowledge Galaxy (restored from upstream ui/relations/) ──────
-const GRAPH_DIR = path.join(__dirname, 'relations');
-const REL_TYPES = ['SUPPORTS', 'INFLUENCES', 'SUPERSEDES', 'CONTRADICTS'];
+const GRAPH_DIR = path.join(__dirname, "relations");
+const REL_TYPES = ["SUPPORTS", "INFLUENCES", "SUPERSEDES", "CONTRADICTS"];
 const REL_IDX = Object.fromEntries(REL_TYPES.map((t, i) => [t, i]));
 const CURATED = [
-  '#52d8e8', '#7c9cba', '#8fb47a', '#b48fc7', '#ff8fa8', '#e8d27a',
-  '#c8956c', '#5fd3a3', '#e89b6c', '#9b8fe0', '#6cc8e8', '#e8c86c',
+  "#52d8e8",
+  "#7c9cba",
+  "#8fb47a",
+  "#b48fc7",
+  "#ff8fa8",
+  "#e8d27a",
+  "#c8956c",
+  "#5fd3a3",
+  "#e89b6c",
+  "#9b8fe0",
+  "#6cc8e8",
+  "#e8c86c",
 ];
-function hslHex(h, s, l) {
-  s /= 100; l /= 100;
+function hslHex(h, _s, _l) {
+  // Only hue drives the automatic palette; saturation/lightness params are
+  // kept for call-site readability but intentionally do not affect output.
   const k = (n) => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
   const f = (n) => Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
-  const to = (x) => Math.round(255 * x).toString(16).padStart(2, '0');
-  return '#' + to(f(0)) + to(f(8)) + to(f(4));
+  const to = (x) =>
+    Math.round(255 * x)
+      .toString(16)
+      .padStart(2, "0");
+  return "#" + to(f(0)) + to(f(8)) + to(f(4));
 }
 function clean(s, n) {
-  if (!s) return '';
-  const t = String(s).replace(/\s+/g, ' ').trim();
-  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+  if (!s) return "";
+  const t = String(s).replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
 
 /** Canonical absolute path only — never the plugin cwd, never a basename. */
 function canonicalProject(p) {
   if (!p || !path.isAbsolute(p)) return null;
   let r = path.normalize(p);
-  if (r.length > 1) r = r.replace(/\/+$/, '');
+  if (r.length > 1) r = r.replace(/\/+$/, "");
   return r;
 }
 
-
-
 let db;
-try { db = new Database(DB_PATH, { readonly: true }); }
-catch (e) {
+try {
+  db = new Database(DB_PATH, { readonly: true });
+} catch (e) {
   db = null;
-  console.error(`DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors.`);
+  console.error(
+    `DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors.`,
+  );
 }
 
 function ensureDb() {
   if (!db) throw new Error(`Conversation DB unavailable: ${DB_PATH}`);
 }
-function query(sql, params = []) { ensureDb(); return db.prepare(sql).all(...params); }
-function queryOne(sql, params = []) { ensureDb(); return db.prepare(sql).get(...params); }
+function query(sql, params = []) {
+  ensureDb();
+  return db.prepare(sql).all(...params);
+}
+function queryOne(sql, params = []) {
+  ensureDb();
+  return db.prepare(sql).get(...params);
+}
 
 function writeJson(res, status, payload, headers = {}) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    ...headers,
+  });
   res.end(JSON.stringify(payload));
 }
 
@@ -84,23 +119,26 @@ async function translateTexts(texts) {
   const results = new Array(texts.length);
   for (let i = 0; i < texts.length; i++) {
     const cached = translationCache.get(texts[i]);
-    if (cached) { results[i] = cached; }
-    else { uncached.push({ index: i, text: texts[i] }); }
+    if (cached) {
+      results[i] = cached;
+    } else {
+      uncached.push({ index: i, text: texts[i] });
+    }
   }
 
   if (uncached.length === 0) return results;
 
-  const textsToTranslate = uncached.map(u => u.text);
+  const textsToTranslate = uncached.map((u) => u.text);
 
   try {
     // Use translate-worker.mjs (Codex CLI — no API key needed)
-    const { execFileSync } = require('child_process');
-    const workerPath = path.join(__dirname, 'translate-worker.mjs');
-    const output = execFileSync('node', [workerPath], {
+    const { execFileSync } = require("child_process");
+    const workerPath = path.join(__dirname, "translate-worker.mjs");
+    const output = execFileSync("node", [workerPath], {
       input: JSON.stringify(textsToTranslate),
-      encoding: 'utf-8',
+      encoding: "utf-8",
       timeout: 30000,
-      env: { ...process.env, NODE_NO_WARNINGS: '1' }
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
 
     const translated = JSON.parse(output.trim());
@@ -110,7 +148,7 @@ async function translateTexts(texts) {
       translationCache.set(uncached[i].text, kr);
     }
   } catch (e) {
-    console.error('Translation failed:', e.message);
+    console.error("Translation failed:", e.message);
     for (const { index, text } of uncached) results[index] = text;
   }
 
@@ -118,15 +156,25 @@ async function translateTexts(texts) {
 }
 
 const apiHandlers = {
-  '/api/stats': () => {
-    const total = queryOne('SELECT COUNT(*) as cnt FROM exchanges');
-    const projects = queryOne('SELECT COUNT(DISTINCT project) as cnt FROM exchanges');
-    const tools = queryOne('SELECT COUNT(*) as cnt FROM tool_calls');
-    const dateRange = queryOne('SELECT MIN(timestamp) as first_ts, MAX(timestamp) as last_ts FROM exchanges');
-    return { total: total.cnt, projects: projects.cnt, tools: tools.cnt, first: dateRange.first_ts, last: dateRange.last_ts };
+  "/api/stats": () => {
+    const total = queryOne("SELECT COUNT(*) as cnt FROM exchanges");
+    const projects = queryOne(
+      "SELECT COUNT(DISTINCT project) as cnt FROM exchanges",
+    );
+    const tools = queryOne("SELECT COUNT(*) as cnt FROM tool_calls");
+    const dateRange = queryOne(
+      "SELECT MIN(timestamp) as first_ts, MAX(timestamp) as last_ts FROM exchanges",
+    );
+    return {
+      total: total.cnt,
+      projects: projects.cnt,
+      tools: tools.cnt,
+      first: dateRange.first_ts,
+      last: dateRange.last_ts,
+    };
   },
 
-  '/api/projects': () => {
+  "/api/projects": () => {
     return query(`
       SELECT p.project, p.count, p.first_seen, p.last_seen, lp.user_message as last_prompt, cwd_t.real_path
       FROM (
@@ -168,68 +216,107 @@ const apiHandlers = {
     `);
   },
 
-  '/api/search': (params) => {
-    const q = params.get('q') || '', project = params.get('project') || '';
-    const limit = Math.min(parseInt(params.get('limit') || '50'), 200);
-    const offset = parseInt(params.get('offset') || '0');
-    let where = [], args = [];
-    if (q) { where.push('(e.user_message LIKE ? OR e.assistant_message LIKE ?)'); args.push(`%${q}%`, `%${q}%`); }
-    if (project) { where.push('e.project = ?'); args.push(project); }
-    const wc = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  "/api/search": (params) => {
+    const q = params.get("q") || "",
+      project = params.get("project") || "";
+    const limit = Math.min(parseInt(params.get("limit") || "50"), 200);
+    const offset = parseInt(params.get("offset") || "0");
+    const where = [],
+      args = [];
+    if (q) {
+      where.push("(e.user_message LIKE ? OR e.assistant_message LIKE ?)");
+      args.push(`%${q}%`, `%${q}%`);
+    }
+    if (project) {
+      where.push("e.project = ?");
+      args.push(project);
+    }
+    const wc = where.length ? "WHERE " + where.join(" AND ") : "";
     const cnt = queryOne(`SELECT COUNT(*) as cnt FROM exchanges e ${wc}`, args);
-    const rows = query(`SELECT e.id, e.project, e.timestamp, e.user_message, e.assistant_message, e.session_id, e.cwd, e.git_branch FROM exchanges e ${wc} ORDER BY e.timestamp DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+    const rows = query(
+      `SELECT e.id, e.project, e.timestamp, e.user_message, e.assistant_message, e.session_id, e.cwd, e.git_branch FROM exchanges e ${wc} ORDER BY e.timestamp DESC LIMIT ? OFFSET ?`,
+      [...args, limit, offset],
+    );
     return { total: cnt.cnt, offset, limit, results: rows };
   },
 
-  '/api/exchange': (params) => {
-    const id = params.get('id');
-    if (!id) return { error: 'id required' };
-    const row = queryOne('SELECT * FROM exchanges WHERE id = ?', [id]);
-    const tools = query('SELECT * FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp', [id]);
+  "/api/exchange": (params) => {
+    const id = params.get("id");
+    if (!id) return { error: "id required" };
+    const row = queryOne("SELECT * FROM exchanges WHERE id = ?", [id]);
+    const tools = query(
+      "SELECT * FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp",
+      [id],
+    );
     return { exchange: row, tools };
   },
 
-  '/api/user-prompts': (params) => {
-    const q = params.get('q') || '', project = params.get('project') || '';
-    const limit = Math.min(parseInt(params.get('limit') || '50'), 200);
-    const offset = parseInt(params.get('offset') || '0');
-    let where = ["e.user_message NOT LIKE '%<observed_from_primary_session>%'", "e.user_message NOT LIKE '%<what_happened>%'", "length(e.user_message) > 1", "length(e.user_message) < 5000"];
-    let args = [];
-    if (q) { where.push('e.user_message LIKE ?'); args.push(`%${q}%`); }
-    if (project) { where.push('e.project = ?'); args.push(project); }
-    const wc = 'WHERE ' + where.join(' AND ');
+  "/api/user-prompts": (params) => {
+    const q = params.get("q") || "",
+      project = params.get("project") || "";
+    const limit = Math.min(parseInt(params.get("limit") || "50"), 200);
+    const offset = parseInt(params.get("offset") || "0");
+    const where = [
+      "e.user_message NOT LIKE '%<observed_from_primary_session>%'",
+      "e.user_message NOT LIKE '%<what_happened>%'",
+      "length(e.user_message) > 1",
+      "length(e.user_message) < 5000",
+    ];
+    const args = [];
+    if (q) {
+      where.push("e.user_message LIKE ?");
+      args.push(`%${q}%`);
+    }
+    if (project) {
+      where.push("e.project = ?");
+      args.push(project);
+    }
+    const wc = "WHERE " + where.join(" AND ");
     const cnt = queryOne(`SELECT COUNT(*) as cnt FROM exchanges e ${wc}`, args);
-    const rows = query(`SELECT e.id, e.project, e.timestamp, e.user_message, e.session_id FROM exchanges e ${wc} ORDER BY e.timestamp DESC LIMIT ? OFFSET ?`, [...args, limit, offset]);
+    const rows = query(
+      `SELECT e.id, e.project, e.timestamp, e.user_message, e.session_id FROM exchanges e ${wc} ORDER BY e.timestamp DESC LIMIT ? OFFSET ?`,
+      [...args, limit, offset],
+    );
     return { total: cnt.cnt, offset, limit, results: rows };
-  }
+  },
 };
 
 // Project detail API
-apiHandlers['/api/project-detail'] = (params) => {
-  const project = params.get('project');
-  if (!project) return { error: 'project required' };
+apiHandlers["/api/project-detail"] = (params) => {
+  const project = params.get("project");
+  if (!project) return { error: "project required" };
 
-  const info = queryOne(`
+  const info = queryOne(
+    `
     SELECT COUNT(*) as exchanges, COUNT(DISTINCT session_id) as sessions,
            MIN(timestamp) as first_seen, MAX(timestamp) as last_seen,
            COUNT(DISTINCT git_branch) as branches
     FROM exchanges WHERE project = ?
-  `, [project]);
+  `,
+    [project],
+  );
 
-  const toolUsage = query(`
+  const toolUsage = query(
+    `
     SELECT tc.tool_name, COUNT(*) as cnt
     FROM tool_calls tc JOIN exchanges e ON tc.exchange_id = e.id
     WHERE e.project = ?
     GROUP BY tc.tool_name ORDER BY cnt DESC LIMIT 20
-  `, [project]);
+  `,
+    [project],
+  );
 
-  const activity = query(`
+  const activity = query(
+    `
     SELECT date(timestamp) as day, COUNT(*) as cnt
     FROM exchanges WHERE project = ?
     GROUP BY date(timestamp) ORDER BY day DESC LIMIT 60
-  `, [project]);
+  `,
+    [project],
+  );
 
-  const recentPrompts = query(`
+  const recentPrompts = query(
+    `
     SELECT user_message, timestamp FROM exchanges
     WHERE project = ? AND length(user_message) > 5 AND length(user_message) < 2000
       AND user_message NOT LIKE '%<system-reminder>%'
@@ -237,111 +324,163 @@ apiHandlers['/api/project-detail'] = (params) => {
       AND user_message NOT LIKE '%<local-command-%'
       AND user_message NOT LIKE 'Warmup%'
     ORDER BY timestamp DESC LIMIT 10
-  `, [project]);
+  `,
+    [project],
+  );
 
   // CX-08: exchanges.project is already the canonical path — no basename
   // workaround, no cwd merging. Scope contract: this project + global.
   let facts = [];
   try {
-    facts = query(`
+    facts = query(
+      `
       SELECT id, fact, category, scope_type FROM facts
       WHERE is_active = 1
         AND (scope_project = ? OR scope_type = 'global')
       ORDER BY consolidated_count DESC LIMIT 20
-    `, [project]);
-  } catch(e) {}
+    `,
+      [project],
+    );
+  } catch {
+    /* facts table missing/unreadable — tab renders an empty list */
+  }
 
-  const sessions = query(`
+  const sessions = query(
+    `
     SELECT session_id, MIN(timestamp) as started, MAX(timestamp) as ended, COUNT(*) as exchanges
     FROM exchanges WHERE project = ? AND session_id IS NOT NULL
     GROUP BY session_id ORDER BY started DESC LIMIT 15
-  `, [project]);
+  `,
+    [project],
+  );
 
   return { project, info, toolUsage, activity, recentPrompts, facts, sessions };
 };
 
 // ── CX-08: Facts tab + Pipeline Health (read-only reads) ──────────────────
-apiHandlers['/api/facts'] = (params) => {
-  const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
-  const project = params.get('project') || null;
-  const scope = params.get('scope') || 'global';
+apiHandlers["/api/facts"] = (params) => {
+  const fm = require(path.join(PLUGIN_ROOT, "dist", "fact-management.js"));
+  const project = params.get("project") || null;
+  const scope = params.get("scope") || "global";
   if (project && !canonicalProject(project)) {
-    const e = new Error('project must be a canonical absolute path'); e.statusCode = 400; throw e;
+    const e = new Error("project must be a canonical absolute path");
+    e.statusCode = 400;
+    throw e;
   }
-  if (!['global', 'all'].includes(scope)) {
-    const e = new Error('scope must be global|all'); e.statusCode = 400; throw e;
+  if (!["global", "all"].includes(scope)) {
+    const e = new Error("scope must be global|all");
+    e.statusCode = 400;
+    throw e;
   }
-  if (project && scope === 'all') {
-    const e = new Error('project and scope=all are mutually exclusive'); e.statusCode = 400; throw e;
+  if (project && scope === "all") {
+    const e = new Error("project and scope=all are mutually exclusive");
+    e.statusCode = 400;
+    throw e;
   }
   return fm.listFacts(db, {
     project: canonicalProject(project),
     scope,
-    includeInactive: params.get('all') === '1',
-    limit: Math.min(parseInt(params.get('limit') || '100'), 500),
-    offset: Math.max(parseInt(params.get('offset') || '0'), 0),
+    includeInactive: params.get("all") === "1",
+    limit: Math.min(parseInt(params.get("limit") || "100"), 500),
+    offset: Math.max(parseInt(params.get("offset") || "0"), 0),
   });
 };
 
-apiHandlers['/api/facts-detail'] = (params) => {
-  const id = params.get('id');
-  if (!id) { const e = new Error('id required'); e.statusCode = 400; throw e; }
-  const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
+apiHandlers["/api/facts-detail"] = (params) => {
+  const id = params.get("id");
+  if (!id) {
+    const e = new Error("id required");
+    e.statusCode = 400;
+    throw e;
+  }
+  const fm = require(path.join(PLUGIN_ROOT, "dist", "fact-management.js"));
   const detail = fm.showFact(db, id);
-  if (!detail) { const e = new Error('fact not found'); e.statusCode = 404; throw e; }
+  if (!detail) {
+    const e = new Error("fact not found");
+    e.statusCode = 404;
+    throw e;
+  }
   return detail;
 };
 
-apiHandlers['/api/pipeline-status'] = () => {
+apiHandlers["/api/pipeline-status"] = () => {
   // Read-only pipeline readiness (CX-04 contract).
-  const { getPipelineStatus } = require(path.join(PLUGIN_ROOT, 'dist', 'pipeline-status.js'));
+  const { getPipelineStatus } = require(
+    path.join(PLUGIN_ROOT, "dist", "pipeline-status.js"),
+  );
   return getPipelineStatus();
 };
 
 // CX-06: read-only live graph data for the 3D Knowledge Galaxy.
-apiHandlers['/api/graph-data'] = (params) => {
-  const scope = params.get('scope') || (params.get('project') ? 'project' : 'global');
-  if (!['project', 'global', 'all'].includes(scope)) throw new Error('scope must be project|global|all');
+apiHandlers["/api/graph-data"] = (params) => {
+  const scope =
+    params.get("scope") || (params.get("project") ? "project" : "global");
+  if (!["project", "global", "all"].includes(scope))
+    throw new Error("scope must be project|global|all");
   let project = null;
-  if (scope === 'project') {
-    project = canonicalProject(params.get('project'));
+  if (scope === "project") {
+    project = canonicalProject(params.get("project"));
     if (!project) {
-      const e = new Error('project (canonical absolute cwd) is required for scope=project; use scope=global or scope=all explicitly');
+      const e = new Error(
+        "project (canonical absolute cwd) is required for scope=project; use scope=global or scope=all explicitly",
+      );
       e.statusCode = 400;
       throw e;
     }
   }
 
-  const typesParam = params.get('types');
+  const typesParam = params.get("types");
   let allowedTypes = REL_TYPES;
   if (typesParam) {
-    const requested = typesParam.split(',').map((t) => t.trim().toUpperCase()).filter(Boolean);
-    if (!requested.length) throw new Error('types must be a non-empty comma list when provided');
-    for (const t of requested) { if (!REL_TYPES.includes(t)) { const e = new Error(`unknown relation type: ${t}`); e.statusCode = 400; throw e; } }
+    const requested = typesParam
+      .split(",")
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean);
+    if (!requested.length)
+      throw new Error("types must be a non-empty comma list when provided");
+    for (const t of requested) {
+      if (!REL_TYPES.includes(t)) {
+        const e = new Error(`unknown relation type: ${t}`);
+        e.statusCode = 400;
+        throw e;
+      }
+    }
     allowedTypes = requested.filter((t) => REL_TYPES.includes(t));
   }
 
   // Scope predicate: project => that canonical project + global; global =>
   // global facts only; all => everything active.
   const factRows = (() => {
-    if (scope === 'all') return query("SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1");
-    if (scope === 'global') return query("SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1 AND scope_type = 'global'");
+    if (scope === "all")
+      return query(
+        "SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1",
+      );
+    if (scope === "global")
+      return query(
+        "SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1 AND scope_type = 'global'",
+      );
     return query(
       "SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1 AND (scope_type = 'global' OR scope_project = ?)",
       [project],
     );
   })();
 
-  const catIds = [...new Set(factRows.map((f) => f.ontology_category_id).filter(Boolean))];
-  const cats = catIds.length ? query(
-    `SELECT id, name, domain_id FROM ontology_categories WHERE id IN (${catIds.map(() => '?').join(',')})`,
-    catIds,
-  ) : [];
+  const catIds = [
+    ...new Set(factRows.map((f) => f.ontology_category_id).filter(Boolean)),
+  ];
+  const cats = catIds.length
+    ? query(
+        `SELECT id, name, domain_id FROM ontology_categories WHERE id IN (${catIds.map(() => "?").join(",")})`,
+        catIds,
+      )
+    : [];
   const domIds = [...new Set(cats.map((c) => c.domain_id))];
-  const domains = domIds.length ? query(
-    `SELECT id, name FROM ontology_domains WHERE id IN (${domIds.map(() => '?').join(',')})`,
-    domIds,
-  ) : [];
+  const domains = domIds.length
+    ? query(
+        `SELECT id, name FROM ontology_domains WHERE id IN (${domIds.map(() => "?").join(",")})`,
+        domIds,
+      )
+    : [];
 
   const domainIdx = new Map(domains.map((d, i) => [d.id, i]));
   const catIdx = new Map(cats.map((c, i) => [c.id, i]));
@@ -351,8 +490,12 @@ apiHandlers['/api/graph-data'] = (params) => {
   const outFacts = [];
   const factIndex = new Map();
   for (const f of factRows) {
-    const di = f.ontology_category_id ? domainIdx.get(cats[catIdx.get(f.ontology_category_id)].domain_id) : undefined;
-    const ci = f.ontology_category_id ? catIdx.get(f.ontology_category_id) : undefined;
+    const di = f.ontology_category_id
+      ? domainIdx.get(cats[catIdx.get(f.ontology_category_id)].domain_id)
+      : undefined;
+    const ci = f.ontology_category_id
+      ? catIdx.get(f.ontology_category_id)
+      : undefined;
     if (di === undefined || ci === undefined) continue; // unclassified -> not on graph yet
     domainFacts[di]++;
     catFacts[ci]++;
@@ -360,14 +503,20 @@ apiHandlers['/api/graph-data'] = (params) => {
     outFacts.push([di, ci, clean(f.fact_kr || f.fact, 140), 0, f.id]);
   }
 
-  const relRows = query('SELECT source_fact_id AS s, target_fact_id AS t, relation_type AS ty FROM ontology_relations');
+  const relRows = query(
+    "SELECT source_fact_id AS s, target_fact_id AS t, relation_type AS ty FROM ontology_relations",
+  );
   const rel = [];
   const relByType = Object.fromEntries(REL_TYPES.map((t) => [t, 0]));
   let danglingSkipped = 0;
   for (const r of relRows) {
     if (!allowedTypes.includes(r.ty)) continue;
-    const si = factIndex.get(r.s), ti = factIndex.get(r.t);
-    if (si === undefined || ti === undefined) { danglingSkipped++; continue; }
+    const si = factIndex.get(r.s),
+      ti = factIndex.get(r.t);
+    if (si === undefined || ti === undefined) {
+      danglingSkipped++;
+      continue;
+    }
     if (si === ti) continue;
     rel.push([si, ti, REL_IDX[r.ty]]);
     relByType[r.ty]++;
@@ -375,11 +524,12 @@ apiHandlers['/api/graph-data'] = (params) => {
     outFacts[ti][3]++;
   }
 
-  const hueOf = (i) => (i < CURATED.length ? CURATED[i] : hslHex((i * 47) % 360, 55, 62));
+  const hueOf = (i) =>
+    i < CURATED.length ? CURATED[i] : hslHex((i * 47) % 360, 55, 62);
   return {
     meta: {
       generated: new Date().toISOString(),
-      source: 'memex-live',
+      source: "memex-live",
       scope,
       project,
       domains: domains.length,
@@ -390,45 +540,68 @@ apiHandlers['/api/graph-data'] = (params) => {
       danglingSkipped,
     },
     relTypes: REL_TYPES,
-    domains: domains.map((d, i) => ({ id: i, name: d.name, facts: domainFacts[i], hue: hueOf(i) })),
-    cats: cats.map((c, i) => ({ id: i, name: c.name, dom: domainIdx.get(c.domain_id), facts: catFacts[i] })),
+    domains: domains.map((d, i) => ({
+      id: i,
+      name: d.name,
+      facts: domainFacts[i],
+      hue: hueOf(i),
+    })),
+    cats: cats.map((c, i) => ({
+      id: i,
+      name: c.name,
+      dom: domainIdx.get(c.domain_id),
+      facts: catFacts[i],
+    })),
     facts: outFacts,
     rel,
   };
 };
 
 // Node detail provenance: fact -> revisions + source exchanges.
-apiHandlers['/api/fact-provenance'] = (params) => {
-  const id = params.get('id');
+apiHandlers["/api/fact-provenance"] = (params) => {
+  const id = params.get("id");
   if (!id || id.length < 8 || !/^[0-9a-fA-F-]+$/.test(id)) {
-    const e = new Error('id (fact uuid) required'); e.statusCode = 400; throw e;
+    const e = new Error("id (fact uuid) required");
+    e.statusCode = 400;
+    throw e;
   }
-  const fact = queryOne('SELECT id, fact, category, scope_type, scope_project, created_at, updated_at, consolidated_count FROM facts WHERE id = ?', [id]);
-  if (!fact) return { error: 'fact not found' };
+  const fact = queryOne(
+    "SELECT id, fact, category, scope_type, scope_project, created_at, updated_at, consolidated_count FROM facts WHERE id = ?",
+    [id],
+  );
+  if (!fact) return { error: "fact not found" };
   let revisions = [];
   try {
-    revisions = query('SELECT previous_fact, new_fact, reason, created_at FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC LIMIT 20', [id]);
-  } catch (e2) { void e2; }
+    revisions = query(
+      "SELECT previous_fact, new_fact, reason, created_at FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC LIMIT 20",
+      [id],
+    );
+  } catch (e2) {
+    void e2;
+  }
   let sources = [];
   try {
-    const raw = queryOne('SELECT source_exchange_ids AS ids FROM facts WHERE id = ?', [id]);
+    const raw = queryOne(
+      "SELECT source_exchange_ids AS ids FROM facts WHERE id = ?",
+      [id],
+    );
     const ids = raw && raw.ids ? JSON.parse(raw.ids) : [];
     if (ids.length > 0) {
       sources = query(
         `SELECT id, project, timestamp, substr(user_message,1,160) AS user_message, archive_path, line_start, line_end
-         FROM exchanges WHERE id IN (${ids.map(() => '?').join(',')})`,
+         FROM exchanges WHERE id IN (${ids.map(() => "?").join(",")})`,
         ids,
       );
     }
-  } catch (e4) { void e4; }
+  } catch (e4) {
+    void e4;
+  }
   return { fact, revisions, sources };
 };
 
-
-
 // Translation API (async handler - special case)
 const asyncHandlers = {
-  '/api/translate': async (params, body) => {
+  "/api/translate": async (_params, body) => {
     const texts = body && body.texts ? body.texts : [];
     if (!texts.length) return { translated: [] };
     const translated = await translateTexts(texts.slice(0, 50)); // max 50 at a time
@@ -437,23 +610,32 @@ const asyncHandlers = {
 };
 
 // CX-06: serve the restored 3D Knowledge Galaxy under /graph (loopback only).
-const GRAPH_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
+const GRAPH_MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+};
 function serveGraphAsset(relName, res) {
   const file = path.join(GRAPH_DIR, relName);
-  if (!file.startsWith(GRAPH_DIR) || !require('fs').existsSync(file)) {
-    res.writeHead(404); res.end('Not found'); return;
+  if (!file.startsWith(GRAPH_DIR) || !require("fs").existsSync(file)) {
+    res.writeHead(404);
+    res.end("Not found");
+    return;
   }
-  res.writeHead(200, { 'Content-Type': GRAPH_MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
-  res.end(require('fs').readFileSync(file));
+  res.writeHead(200, {
+    "Content-Type":
+      GRAPH_MIME[path.extname(file)] || "application/octet-stream",
+    "Cache-Control": "no-store",
+  });
+  res.end(require("fs").readFileSync(file));
 }
 
 // CX-08: the ONLY mutation surface. POST + JSON content-type + same-origin
 // loopback Origin + size cap; delegates exclusively to fact-management.js.
-const MUTATION_ACTIONS = ['edit', 'deactivate', 'restore', 'delete'];
+const MUTATION_ACTIONS = ["edit", "deactivate", "restore", "delete"];
 const MAX_MUTATION_BODY = 100 * 1024; // 100 KB
-function handleFactsMutation(req, res, url) {
-  if (req.method !== 'POST') {
-    writeJson(res, 405, { error: 'mutations require POST' });
+function handleFactsMutation(req, res, _url) {
+  if (req.method !== "POST") {
+    writeJson(res, 405, { error: "mutations require POST" });
     return;
   }
   const origin = req.headers.origin;
@@ -461,61 +643,82 @@ function handleFactsMutation(req, res, url) {
     let ok = false;
     try {
       const o = new URL(origin);
-      ok = (o.hostname === '127.0.0.1' || o.hostname === 'localhost') && Number(o.port) === PORT;
-    } catch { ok = false; }
+      ok =
+        (o.hostname === "127.0.0.1" || o.hostname === "localhost") &&
+        Number(o.port) === PORT;
+    } catch {
+      ok = false;
+    }
     if (!ok) {
-      writeJson(res, 403, { error: `cross-origin mutation rejected (origin=${origin})` });
+      writeJson(res, 403, {
+        error: `cross-origin mutation rejected (origin=${origin})`,
+      });
       return;
     }
   }
-  const ctype = String(req.headers['content-type'] || '');
+  const ctype = String(req.headers["content-type"] || "");
   if (!/application\/json/i.test(ctype)) {
-    writeJson(res, 415, { error: 'content-type must be application/json' });
+    writeJson(res, 415, { error: "content-type must be application/json" });
     return;
   }
-  let body = '';
+  let body = "";
   let oversized = false;
-  req.on('data', (chunk) => {
+  req.on("data", (chunk) => {
     body += chunk;
-    if (body.length > MAX_MUTATION_BODY) { oversized = true; req.destroy(); }
+    if (body.length > MAX_MUTATION_BODY) {
+      oversized = true;
+      req.destroy();
+    }
   });
-  req.on('end', async () => {
+  req.on("end", async () => {
     if (oversized) return; // connection destroyed above
     let dbw;
     try {
-      const parsed = JSON.parse(body || '{}');
+      const parsed = JSON.parse(body || "{}");
       const action = parsed.action;
       if (!MUTATION_ACTIONS.includes(action)) {
-        writeJson(res, 400, { error: `action must be one of ${MUTATION_ACTIONS.join('|')}` });
+        writeJson(res, 400, {
+          error: `action must be one of ${MUTATION_ACTIONS.join("|")}`,
+        });
         return;
       }
-      const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
+      const fm = require(path.join(PLUGIN_ROOT, "dist", "fact-management.js"));
       dbw = openWritableDb();
-      if (action === 'edit') {
-        const r = await fm.editFact(dbw, String(parsed.id || ''), {
-          text: String(parsed.text || ''),
-          reason: parsed.reason ? String(parsed.reason).slice(0, 500) : undefined,
+      if (action === "edit") {
+        const r = await fm.editFact(dbw, String(parsed.id || ""), {
+          text: String(parsed.text || ""),
+          reason: parsed.reason
+            ? String(parsed.reason).slice(0, 500)
+            : undefined,
         });
         writeJson(res, 200, r);
         return;
       }
       let result;
-      if (action === 'deactivate') {
-        result = fm.deactivateFactTransactional(dbw, String(parsed.id || ''));
-      } else if (action === 'restore') {
-        result = fm.restoreFact(dbw, String(parsed.id || ''));
+      if (action === "deactivate") {
+        result = fm.deactivateFactTransactional(dbw, String(parsed.id || ""));
+      } else if (action === "restore") {
+        result = fm.restoreFact(dbw, String(parsed.id || ""));
       } else {
         if (!parsed.confirm) {
-          writeJson(res, 400, { error: 'hard delete requires confirm:true after reviewing impact' });
+          writeJson(res, 400, {
+            error: "hard delete requires confirm:true after reviewing impact",
+          });
           return;
         }
-        result = fm.hardDeleteFact(dbw, String(parsed.id || ''), { confirm: true });
+        result = fm.hardDeleteFact(dbw, String(parsed.id || ""), {
+          confirm: true,
+        });
       }
       writeJson(res, 200, result);
     } catch (e) {
       writeJson(res, e.statusCode || 400, { error: e.message });
     } finally {
-      try { if (dbw && dbw !== db) dbw.close(); } catch { /* memoized conn stays open */ }
+      try {
+        if (dbw && dbw !== db) dbw.close();
+      } catch {
+        /* memoized conn stays open */
+      }
     }
   });
 }
@@ -525,55 +728,76 @@ function openWritableDb() {
   if (!db) throw new Error(`Conversation DB unavailable: ${DB_PATH}`);
   // Single writer connection reused across mutations (transaction owner is
   // fact-management's transaction itself).
-  if (!writableDbMemo || !writableDbMemo.open) writableDbMemo = new Database(DB_PATH);
+  if (!writableDbMemo || !writableDbMemo.open)
+    writableDbMemo = new Database(DB_PATH);
   return writableDbMemo;
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/api/facts-mutate') {
+  const url = new URL(req.url, "http://localhost");
+  if (url.pathname === "/api/facts-mutate") {
     handleFactsMutation(req, res, url);
     return;
   }
-  if (url.pathname === '/facts') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  if (url.pathname === "/facts") {
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
     res.end(getFactsHTML());
     return;
   }
-  if (url.pathname === '/pipeline') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  if (url.pathname === "/pipeline") {
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
     res.end(getPipelineHTML());
     return;
   }
-  if (url.pathname === '/' || url.pathname === '/dashboard') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  if (url.pathname === "/" || url.pathname === "/dashboard") {
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
     res.end(getHTML());
     return;
   }
-  if (url.pathname === '/graph' || url.pathname === '/graph/' || url.pathname === '/graph/index.html') {
-    serveGraphAsset('index.html', res);
+  if (
+    url.pathname === "/graph" ||
+    url.pathname === "/graph/" ||
+    url.pathname === "/graph/index.html"
+  ) {
+    serveGraphAsset("index.html", res);
     return;
   }
-  if (url.pathname.startsWith('/graph/')) {
-    const asset = url.pathname.slice('/graph/'.length);
+  if (url.pathname.startsWith("/graph/")) {
+    const asset = url.pathname.slice("/graph/".length);
     // Path-confinement: only plain filenames of the vendored bundle.
     if (/^[A-Za-z0-9._-]+$/.test(asset)) serveGraphAsset(asset, res);
-    else { res.writeHead(404); res.end('Not found'); }
+    else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
     return;
   }
   // Async API handlers (translation etc.)
   if (asyncHandlers[url.pathname]) {
     const abortController = new AbortController();
-    req.on('aborted', () => abortController.abort());
-    res.on('close', () => {
+    req.on("aborted", () => abortController.abort());
+    res.on("close", () => {
       if (!res.writableEnded) abortController.abort();
     });
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", async () => {
       try {
         const parsed = body ? JSON.parse(body) : {};
-        const result = await asyncHandlers[url.pathname](url.searchParams, parsed, { signal: abortController.signal });
+        const result = await asyncHandlers[url.pathname](
+          url.searchParams,
+          parsed,
+          { signal: abortController.signal },
+        );
         writeJson(res, 200, result);
       } catch (e) {
         writeJson(res, e.statusCode || 500, e.payload || { error: e.message });
@@ -585,31 +809,40 @@ const server = http.createServer((req, res) => {
     try {
       const result = apiHandlers[url.pathname](url.searchParams);
       // No CORS: this UI is loopback-only and same-origin by contract.
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(result));
     } catch (e) {
       // Validation errors carry a statusCode (400); everything else is 500.
       const status = e && e.statusCode ? e.statusCode : 500;
-      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e.message }));
     }
     return;
   }
-  res.writeHead(404); res.end('Not found');
+  res.writeHead(404);
+  res.end("Not found");
 });
 
 // CX-06/CX-11: private data must never leave the machine — loopback bind is
 // the default and there is no flag that widens it.
-const BIND = process.env.MEMORY_BANK_BIND || '127.0.0.1';
-if (BIND !== '127.0.0.1' && BIND !== 'localhost') {
-  console.error(`Refusing to bind ${BIND}: this UI serves private facts on loopback only.`);
+const BIND = process.env.MEMORY_BANK_BIND || "127.0.0.1";
+if (BIND !== "127.0.0.1" && BIND !== "localhost") {
+  console.error(
+    `Refusing to bind ${BIND}: this UI serves private facts on loopback only.`,
+  );
   process.exit(1);
 }
 server.listen(PORT, BIND, () => {
   console.log(`Memex UI: http://localhost:${PORT}`);
 });
-process.on('SIGINT', () => { if (db) db.close(); process.exit(); });
-process.on('SIGTERM', () => { if (db) db.close(); process.exit(); });
+process.on("SIGINT", () => {
+  if (db) db.close();
+  process.exit();
+});
+process.on("SIGTERM", () => {
+  if (db) db.close();
+  process.exit();
+});
 
 function getHTML() {
   return `<!DOCTYPE html>
