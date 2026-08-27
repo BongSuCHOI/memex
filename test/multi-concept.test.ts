@@ -1,63 +1,125 @@
-import { describe, it, expect } from 'vitest';
-import { searchMultipleConcepts } from '../src/search.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../src/embeddings.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/embeddings.js')>();
+  const axisFor = new Map([
+    ['React', 0],
+    ['Router', 1],
+    ['xyzabc123', 2],
+    ['qwerty789', 3],
+  ]);
+
+  return {
+    ...actual,
+    initEmbeddings: vi.fn(async () => {}),
+    generateEmbedding: vi.fn(async (text: string) => {
+      const embedding = Array<number>(384).fill(0);
+      embedding[axisFor.get(text) ?? 4] = 1;
+      return embedding;
+    }),
+  };
+});
+
+import { initDatabase, insertExchange } from '../src/db.js';
+import { getSearchDb, searchMultipleConcepts } from '../src/search.js';
+
+const RELATED_ARCHIVE = '/fixtures/react-router.jsonl';
+const originalDbEnv = {
+  MEMEX_DB_PATH: process.env.MEMEX_DB_PATH,
+  MEMORY_BANK_DB_PATH: process.env.MEMORY_BANK_DB_PATH,
+  TEST_DB_PATH: process.env.TEST_DB_PATH,
+};
+let testDir: string | undefined;
 
 describe('multi-concept search', () => {
-  it('should find conversations matching all concepts', async () => {
-    // This test will use the actual database
-    // Looking for conversations that discuss both "React Router" AND "authentication"
-    const results = await searchMultipleConcepts(['React', 'Router'], { limit: 5 });
+  beforeAll(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-multi-concept-'));
+    // The current override has highest precedence, so this test cannot fall
+    // through to a caller's live Memex DB even when historical env vars exist.
+    process.env.MEMEX_DB_PATH = path.join(testDir, 'test.db');
 
-    // Should return results
-    expect(Array.isArray(results)).toBe(true);
+    const db = initDatabase();
+    try {
+      const insertFixture = (id: string, archivePath: string, vector: number[]) => {
+        insertExchange(db, {
+          id,
+          project: '/fixtures/project',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          userMessage: `Fixture exchange ${id}`,
+          assistantMessage: 'Fixture response.',
+          archivePath,
+          lineStart: 1,
+          lineEnd: 2,
+        }, vector);
+      };
 
-    // Results should be sorted by average similarity
-    if (results.length > 1) {
-      expect(results[0].averageSimilarity).toBeGreaterThanOrEqual(results[1].averageSimilarity);
-    }
-  });
+      const relatedCentroid = Array<number>(384).fill(0);
+      relatedCentroid[0] = Math.SQRT1_2;
+      relatedCentroid[1] = Math.SQRT1_2;
+      insertFixture('related-exchange', RELATED_ARCHIVE, relatedCentroid);
 
-  it('should have lower similarity for unrelated concepts than related ones', async () => {
-    const unrelated = await searchMultipleConcepts(['xyzabc123', 'qwerty789'], { limit: 5 });
+      // With limit=1 each concept overfetches five neighbours: four
+      // concept-specific rows plus the shared centroid. Their intersection is
+      // therefore exactly the shared conversation, exercising the AND logic.
+      for (let index = 0; index < 4; index += 1) {
+        const reactOnly = Array<number>(384).fill(0);
+        reactOnly[0] = 1;
+        insertFixture(`react-${index}`, `/fixtures/react-${index}.jsonl`, reactOnly);
 
-    expect(Array.isArray(unrelated)).toBe(true);
-    // e5 similarity scores are compressed (unrelated pairs still score ~0.4-0.7),
-    // so assert relative ordering against a related query instead of an
-    // absolute near-zero bound (which was calibrated for all-MiniLM-L6-v2).
-    if (unrelated.length > 0) {
-      expect(unrelated[0].averageSimilarity).toBeLessThan(0.8);
-
-      // Relative ordering is only meaningful once stored vectors match the
-      // current model — during background re-embedding the live DB holds
-      // mixed-version vectors and rankings are noise.
-      const { initDatabase } = await import('../src/db.js');
-      const { EMBEDDING_VERSION } = await import('../src/embeddings.js');
-      const db = initDatabase();
-      const pending = db.prepare(
-        'SELECT 1 FROM exchanges WHERE embedding_version != ? LIMIT 1'
-      ).get(EMBEDDING_VERSION);
-      db.close();
-      if (!pending) {
-        const related = await searchMultipleConcepts(['React', 'Router'], { limit: 5 });
-        if (related.length > 0) {
-          expect(unrelated[0].averageSimilarity).toBeLessThan(related[0].averageSimilarity);
-        }
+        const routerOnly = Array<number>(384).fill(0);
+        routerOnly[1] = 1;
+        insertFixture(`router-${index}`, `/fixtures/router-${index}.jsonl`, routerOnly);
       }
+    } finally {
+      db.close();
     }
   });
 
-  it('should respect limit parameter', async () => {
-    const results = await searchMultipleConcepts(['React', 'Router'], { limit: 2 });
-
-    expect(results.length).toBeLessThanOrEqual(2);
+  afterAll(() => {
+    try { getSearchDb().close(); } catch { /* search may not have opened */ }
+    for (const [name, value] of Object.entries(originalDbEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (testDir) fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('should include similarity scores for each concept', async () => {
+  it('finds only conversations represented in every concept result set', async () => {
     const results = await searchMultipleConcepts(['React', 'Router'], { limit: 1 });
 
-    if (results.length > 0) {
-      expect(results[0].conceptSimilarities).toBeDefined();
-      expect(results[0].conceptSimilarities?.length).toBe(2);
-      expect(results[0].averageSimilarity).toBeDefined();
-    }
+    expect(results).toHaveLength(1);
+    expect(results[0].exchange.archivePath).toBe(RELATED_ARCHIVE);
+
+    const ranked = await searchMultipleConcepts(['React', 'React'], { limit: 2 });
+    expect(ranked).toHaveLength(2);
+    expect(ranked[0].averageSimilarity).toBeGreaterThanOrEqual(ranked[1].averageSimilarity);
+  });
+
+  it('scores unrelated concepts lower than related ones', async () => {
+    const [unrelated, related] = await Promise.all([
+      searchMultipleConcepts(['xyzabc123', 'qwerty789'], { limit: 1 }),
+      searchMultipleConcepts(['React', 'Router'], { limit: 1 }),
+    ]);
+
+    expect(unrelated).toHaveLength(1);
+    expect(related).toHaveLength(1);
+    expect(unrelated[0].averageSimilarity).toBeLessThan(related[0].averageSimilarity);
+  });
+
+  it('respects the limit parameter', async () => {
+    const results = await searchMultipleConcepts(['React', 'Router'], { limit: 1 });
+
+    expect(results).toHaveLength(1);
+  });
+
+  it('includes a similarity score for each concept', async () => {
+    const results = await searchMultipleConcepts(['React', 'Router'], { limit: 1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].conceptSimilarities).toHaveLength(2);
+    expect(results[0].averageSimilarity).toBeTypeOf('number');
   });
 });
