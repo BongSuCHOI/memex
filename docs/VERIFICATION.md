@@ -83,6 +83,7 @@ manifest/skill contract, dependency packaging, MCP initialize/list/call, UI asse
 | built-in Memory setup | PASS | enabled 감지, 승인 없는 무변경, explicit disable+재확인, disabled no-op, help 4/4; 실제 사용자 config dry-run 전후 SHA-256 동일 |
 | 설치 artifact 계약 | PASS-WITH-NOTES | MCP 9 tools, 3 skills, installed cache, package onboarding, cleanup 모두 PASS; formal validator는 0.149.1에 없음 |
 | installer E2E | PASS | dry-run, plugin-managed hook manifest, fallback hook 무변경, real install, idempotent rerun, first sync, removal, user-state isolation |
+| public GitHub 설치 | PASS | `BongSuCHOI/memex`에서 두 명령 설치, setup, 2-exchange sync, Luna fact 2건, ontology/embedding, readiness 3종 true, update 후 data 보존, removal/cleanup |
 | lifecycle offline | PASS | 9/9 및 7-surface cleanup |
 | lifecycle authenticated | PASS | 11/11; 실제 Codex 3-event hook, context nonce, Luna fact 추출, 다음 MCP 검색 |
 | browser E2E | PASS | Facts, Pipeline, empty graph, keyboard focus, CJK, markup injection rejection |
