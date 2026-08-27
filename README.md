@@ -136,14 +136,22 @@ always targets the latest `main` runtime and does not install globally:
 memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
 ```
 
+Alternatively, once `memex setup` exists you can install a permanent shim
+instead of a shell function:
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
+```
+
+That creates `~/.local/bin/memex` (never a global install; PATH is checked and
+reported). Remove it later with `memex setup --uninstall-cli`.
+
 Then perform the one-time corpus setup:
 
 ```bash
 memex setup
 memex sync
-memex backfill extract --foreground
-memex backfill ontology --foreground
-memex backfill embeddings --foreground
+memex backfill all
 memex status
 ```
 
@@ -158,15 +166,18 @@ What each stage does:
 
 1. `sync` reads existing `$CODEX_HOME/sessions`, archives new rollouts, and
    builds conversation search indexes.
-2. `backfill extract` distills durable facts from already indexed exchanges.
-3. `backfill ontology` classifies facts and builds graph structure.
-4. `backfill embeddings` fills missing semantic vectors.
-5. `status` reports conversation, fact, and graph readiness separately.
+2. `backfill all` runs each backlog stage in order — `extract` distills
+   durable facts from already indexed exchanges, `ontology` classifies facts
+   and builds graph structure, and `embeddings` fills missing semantic
+   vectors. Each stage runs in the foreground by default so completion is
+   directly observable; orchestration stops at the first failing stage and is
+   idempotent to re-run.
+3. `status` reports conversation, fact, and graph readiness separately.
 
 Large histories and local model-backed extraction can take several minutes or
-longer. Run the commands in the foreground for unambiguous first-time
-completion. If you choose `--background`, “started” is not “finished”; keep
-checking `memex status` until pending counts reach the expected state.
+longer. The default foreground mode reports completion directly. If you choose
+`--background`, “started” is not “finished”; keep checking `memex status` until
+pending counts reach the expected state.
 
 Marketplace installation does not modify source rollouts or derived data before
 this onboarding step. `sync` is idempotent and safe to repeat.
@@ -266,20 +277,25 @@ codex plugin marketplace remove memex --json
 ```
 
 Uninstalling preserves both `$CODEX_HOME/sessions` and Memex's derived data.
-Review the exact data path before deleting it manually. See
-[the operations guide](docs/GUIDE.md#uninstall-and-data-retention).
+To wipe Memex data entirely, run `memex home` to resolve the exact data root,
+then remove that directory — never touch `$CODEX_HOME/sessions`. See
+[the operations guide](docs/GUIDE.md#uninstall-and-data-retention) for the full
+data-deletion walkthrough including partial reset options.
 
 ## Data and privacy
 
-Default derived data remains at `~/.config/memory-bank` for durable-data
-compatibility. Resolution order:
+The default derived data root is `~/.config/memex`. Resolution order:
 
-1. `MEMORY_BANK_HOME`
-2. `MEMORY_BANK_CONFIG_DIR`
-3. `$XDG_CONFIG_HOME/memory-bank`
-4. `~/.config/memory-bank`
+1. `MEMEX_HOME`
+2. `MEMORY_BANK_HOME` (historical, honored read-only)
+3. `MEMORY_BANK_CONFIG_DIR` (historical, honored read-only)
+4. `$XDG_CONFIG_HOME/memex`
+5. `~/.config/memex`
 
-The naming is historical storage compatibility, not a Claude runtime adapter.
+Pre-v0.2 installs that still hold data under the historical `memory-bank`
+namespace are migrated explicitly with `memex migrate-home` (copy → verify →
+succeed; the source directory is never deleted). The naming is historical
+storage compatibility, not a Claude runtime adapter.
 See [schema](docs/SCHEMA.md) and [security boundaries](docs/ARCHITECTURE.md).
 
 ## Verification

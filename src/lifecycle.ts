@@ -16,19 +16,24 @@
  *  - Never installs dependencies or plugins; never mutates anything outside
  *    $CODEX_HOME/hooks.json and the Memex data root.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import crypto from 'node:crypto';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { lastObserved } from './observe-hook-event.js';
-import { getInjectLogPath } from './inject-log.js';
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { lastObserved } from "./observe-hook-event.js";
+import { getMemexHome } from "./paths.js";
+import { getInjectLogPath } from "./inject-log.js";
 
 const runtimeRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-export const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'SessionEnd'] as const;
+export const HOOK_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "SessionEnd",
+] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 export interface LifecycleCommandConfig {
@@ -40,21 +45,16 @@ export interface LifecycleCommandConfig {
 /** Relative-to-plugin-root commands registered for each event. */
 export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
   SessionStart: [
-    { script: 'scripts/version-drift-check.js', async: true },
-    { script: 'cli/memex.js', args: ['sync', '--background'], async: true },
-    { script: 'scripts/sync-import-hook.js', async: true },
-    { script: 'scripts/session-start-maintenance.js', async: true },
+    { script: "scripts/version-drift-check.js", async: true },
+    { script: "cli/memex.js", args: ["sync", "--background"], async: true },
+    { script: "scripts/sync-import-hook.js", async: true },
+    { script: "scripts/session-start-maintenance.js", async: true },
   ],
-  UserPromptSubmit: [
-    { script: 'scripts/inject-context-hook.sh' },
-  ],
-  SessionEnd: [
-    { script: 'scripts/session-end-hook.js' },
-  ],
+  UserPromptSubmit: [{ script: "scripts/inject-context-hook.sh" }],
+  SessionEnd: [{ script: "scripts/session-end-hook.js" }],
 };
 
-
-const OWNERSHIP_KEY = '_memoryBank';
+const OWNERSHIP_KEY = "_memoryBank";
 
 export interface LifecycleRegistration {
   schemaVersion: 1;
@@ -73,35 +73,32 @@ export interface LifecycleRegistration {
 function codexHome(): string {
   return process.env.CODEX_HOME
     ? path.resolve(process.env.CODEX_HOME)
-    : path.join(os.homedir(), '.codex');
+    : path.join(os.homedir(), ".codex");
 }
 
 export function hooksFilePath(): string {
-  return path.join(codexHome(), 'hooks.json');
+  return path.join(codexHome(), "hooks.json");
 }
 
 export function dataRoot(): string {
-  const dir = process.env.MEMORY_BANK_HOME
-    || process.env.MEMORY_BANK_CONFIG_DIR
-    || (process.env.XDG_CONFIG_HOME
-      ? path.join(process.env.XDG_CONFIG_HOME, 'memory-bank')
-      : path.join(os.homedir(), '.config', 'memory-bank'));
+  // Single-source resolution (MEMEX_HOME > MEMORY_BANK_* compat > XDG > default).
+  const dir = getMemexHome();
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 export function registrationPath(): string {
-  return path.join(dataRoot(), 'lifecycle-registration.json');
+  return path.join(dataRoot(), "lifecycle-registration.json");
 }
 
 export function pluginRoot(): string {
   return process.env.MEMORY_BANK_PLUGIN_ROOT
     ? path.resolve(process.env.MEMORY_BANK_PLUGIN_ROOT)
-    : path.resolve(HERE, '..');
+    : path.resolve(HERE, "..");
 }
 
 export function fingerprintOf(command: string): string {
-  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+  return crypto.createHash("sha256").update(command).digest("hex").slice(0, 16);
 }
 
 interface HookEntry {
@@ -110,14 +107,20 @@ interface HookEntry {
   async?: boolean;
   [OWNERSHIP_KEY]?: boolean;
 }
-interface HookMatcherBlock { matcher?: string; hooks?: HookEntry[] }
-interface HooksFile { hooks?: Record<string, HookMatcherBlock[] | undefined>; [k: string]: unknown }
+interface HookMatcherBlock {
+  matcher?: string;
+  hooks?: HookEntry[];
+}
+interface HooksFile {
+  hooks?: Record<string, HookMatcherBlock[] | undefined>;
+  [k: string]: unknown;
+}
 
 function readHooksFile(file: string): HooksFile {
   if (!fs.existsSync(file)) return {};
-  let raw = '';
+  let raw = "";
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    raw = fs.readFileSync(file, "utf8");
   } catch (e) {
     throw new Error(`cannot read ${file}: ${(e as Error).message}`);
   }
@@ -125,8 +128,8 @@ function readHooksFile(file: string): HooksFile {
   // A malformed config must fail loud, never be silently clobbered by setup.
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') return parsed as HooksFile;
-    throw new Error('not a JSON object');
+    if (parsed && typeof parsed === "object") return parsed as HooksFile;
+    throw new Error("not a JSON object");
   } catch {
     throw new Error(
       `${file} is not valid JSON — fix or remove it manually; refusing to touch it`,
@@ -137,25 +140,35 @@ function readHooksFile(file: string): HooksFile {
 function serializeHooksFile(hooks: HooksFile): string {
   // Preserve foreign key order via JSON.stringify on plain objects (insertion
   // order) and keep the file byte-stable when nothing changed.
-  return JSON.stringify(hooks, null, 2) + '\n';
+  return JSON.stringify(hooks, null, 2) + "\n";
 }
 
 export function commandFor(root: string, c: LifecycleCommandConfig): string {
-  const runner = c.script.endsWith('.sh') ? 'bash' : 'node';
+  const runner = c.script.endsWith(".sh") ? "bash" : "node";
   const scriptPath = path.join(root, c.script);
-  const extraArgs = c.args && c.args.length > 0
-    ? ' ' + c.args.map((a) => (a.includes(' ') && !a.startsWith('"') ? `"${a}"` : a)).join(' ')
-    : '';
+  const extraArgs =
+    c.args && c.args.length > 0
+      ? " " +
+        c.args
+          .map((a) => (a.includes(" ") && !a.startsWith('"') ? `"${a}"` : a))
+          .join(" ")
+      : "";
   return `${runner} "${scriptPath}"${extraArgs}`;
 }
 
-
 /** Build the desired entry list for a given plugin root (absolute commands). */
-export function desiredEntries(root = pluginRoot()): Array<{ event: HookEvent; command: string; async?: boolean }> {
-  const entries: Array<{ event: HookEvent; command: string; async?: boolean }> = [];
+export function desiredEntries(
+  root = pluginRoot(),
+): Array<{ event: HookEvent; command: string; async?: boolean }> {
+  const entries: Array<{ event: HookEvent; command: string; async?: boolean }> =
+    [];
   for (const event of HOOK_EVENTS) {
     for (const c of LIFECYCLE_COMMANDS[event]) {
-      entries.push({ event, command: commandFor(root, c), ...(c.async ? { async: true } : {}) });
+      entries.push({
+        event,
+        command: commandFor(root, c),
+        ...(c.async ? { async: true } : {}),
+      });
     }
   }
   return entries;
@@ -181,13 +194,14 @@ export function planSetup(root = pluginRoot()): PlanDiff {
   for (const event of HOOK_EVENTS) {
     for (const block of hooks.hooks?.[event] ?? []) {
       for (const h of block.hooks ?? []) {
-        if (!h.command || typeof h.command !== 'string') continue;
+        if (!h.command || typeof h.command !== "string") continue;
         if ((h as Record<string, unknown>)[OWNERSHIP_KEY] === true) {
           existingCommands.add(h.command);
           // Owned entry pointing at a path that no longer exists or not desired -> stale
           const m = h.command.match(/"([^"]+)"/);
-          const p = m ? m[1] : '';
-          if ((p && !fs.existsSync(p)) || !desiredCmds.has(h.command)) staleOwned++;
+          const p = m ? m[1] : "";
+          if ((p && !fs.existsSync(p)) || !desiredCmds.has(h.command))
+            staleOwned++;
         } else {
           preservedForeign++;
         }
@@ -195,7 +209,8 @@ export function planSetup(root = pluginRoot()): PlanDiff {
     }
   }
 
-  const add = desired.filter((d) => !existingCommands.has(d.command))
+  const add = desired
+    .filter((d) => !existingCommands.has(d.command))
     .map(({ event, command }) => ({ event, command }));
   return {
     targetFile: hooksFilePath(),
@@ -213,21 +228,27 @@ export interface SetupResult {
 }
 
 /** Apply the idempotent setup. Returns what changed. Never runs installers. */
-export function setupHooks({ dryRun = false, root = pluginRoot() }: { dryRun?: boolean; root?: string } = {}): SetupResult {
+export function setupHooks({
+  dryRun = false,
+  root = pluginRoot(),
+}: {
+  dryRun?: boolean;
+  root?: string;
+} = {}): SetupResult {
   // Fail loud when the handler scripts are not resolvable at this root.
   for (const d of desiredEntries(root)) {
     const m = d.command.match(/"([^"]+)"/);
-    const p = m ? m[1] : '';
+    const p = m ? m[1] : "";
     if (!p || !fs.existsSync(p)) {
       throw new Error(
         `handler not found: ${p || d.command}\n` +
-        'Build first: npm install && npm run build (never run automatically)',
+          "Build first: npm install && npm run build (never run automatically)",
       );
     }
   }
 
   const file = hooksFilePath();
-  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  const before = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const hooks = readHooksFile(file);
   const diff = planSetup(root);
 
@@ -237,23 +258,27 @@ export function setupHooks({ dryRun = false, root = pluginRoot() }: { dryRun?: b
     // Prune owned entries whose registered path no longer exists (plugin
     // relocation / cache-version bump) or that are not in desired commands,
     // then re-add at the current root.
-    if (hooks.hooks) for (const event of HOOK_EVENTS) {
-      const blocks = hooks.hooks?.[event];
-      if (!Array.isArray(blocks)) continue;
-      for (const block of blocks) {
-        if (!block.hooks) continue;
-        block.hooks = block.hooks.filter((h) => {
-          if ((h as Record<string, unknown>)[OWNERSHIP_KEY] !== true) return true;
-          const m = h.command ? h.command.match(/"([^"]+)"/) : null;
-          if (m && !fs.existsSync(m[1])) return false;
-          return desiredCmds.has(h.command ?? '');
-        });
+    if (hooks.hooks)
+      for (const event of HOOK_EVENTS) {
+        const blocks = hooks.hooks?.[event];
+        if (!Array.isArray(blocks)) continue;
+        for (const block of blocks) {
+          if (!block.hooks) continue;
+          block.hooks = block.hooks.filter((h) => {
+            if ((h as Record<string, unknown>)[OWNERSHIP_KEY] !== true)
+              return true;
+            const m = h.command ? h.command.match(/"([^"]+)"/) : null;
+            if (m && !fs.existsSync(m[1])) return false;
+            return desiredCmds.has(h.command ?? "");
+          });
+        }
+        hooks.hooks[event] = blocks.filter((b) => (b.hooks ?? []).length > 0);
+        if (
+          (hooks.hooks[event] as HookMatcherBlock[] | undefined)?.length === 0
+        )
+          delete hooks.hooks[event];
       }
-      hooks.hooks[event] = blocks.filter((b) => (b.hooks ?? []).length > 0);
-      if ((hooks.hooks[event] as HookMatcherBlock[] | undefined)?.length === 0) delete hooks.hooks[event];
-    }
   }
-
 
   if (!dryRun && diff.add.length > 0) {
     if (!hooks.hooks) hooks.hooks = {};
@@ -261,14 +286,16 @@ export function setupHooks({ dryRun = false, root = pluginRoot() }: { dryRun?: b
       diff.add.some((a) => a.command === x.command),
     )) {
       if (!hooks.hooks[event]) hooks.hooks[event] = [];
-      let block = (hooks.hooks[event] as HookMatcherBlock[]).find((b) => !b.matcher);
+      let block = (hooks.hooks[event] as HookMatcherBlock[]).find(
+        (b) => !b.matcher,
+      );
       if (!block) {
-        block = { matcher: '', hooks: [] };
+        block = { matcher: "", hooks: [] };
         (hooks.hooks[event] as HookMatcherBlock[]).push(block);
       }
       if (!block.hooks) block.hooks = [];
       block.hooks.push({
-        type: 'command',
+        type: "command",
         command,
         ...({ [OWNERSHIP_KEY]: true } as object),
         ...(async ? { async: true } : {}),
@@ -292,9 +319,13 @@ export function setupHooks({ dryRun = false, root = pluginRoot() }: { dryRun?: b
       ...rest,
     })),
   };
-  const after = dryRun ? before : (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+  const after = dryRun
+    ? before
+    : fs.existsSync(file)
+      ? fs.readFileSync(file, "utf8")
+      : "";
   if (!dryRun) {
-    fs.writeFileSync(registrationPath(), JSON.stringify(reg, null, 2) + '\n');
+    fs.writeFileSync(registrationPath(), JSON.stringify(reg, null, 2) + "\n");
   }
   const changed = !dryRun && after !== before;
   return { changed, diff, registrationPath: registrationPath() };
@@ -307,16 +338,22 @@ export interface RemoveResult {
 }
 
 /** Remove only Memex-owned entries (exact fingerprint match). */
-export function removeHooks({ dryRun = false }: { dryRun?: boolean } = {}): RemoveResult {
+export function removeHooks({
+  dryRun = false,
+}: {
+  dryRun?: boolean;
+} = {}): RemoveResult {
   const file = hooksFilePath();
   const owned = new Set<string>();
   try {
-    const reg = JSON.parse(fs.readFileSync(registrationPath(), 'utf8')) as LifecycleRegistration;
+    const reg = JSON.parse(
+      fs.readFileSync(registrationPath(), "utf8"),
+    ) as LifecycleRegistration;
     for (const e of reg.entries) owned.add(e.command);
   } catch {
     /* no registration record: fall back to ownership flag */
   }
-  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  const before = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const hooks = readHooksFile(file);
   let removed = 0;
   let preservedForeign = 0;
@@ -331,16 +368,20 @@ export function removeHooks({ dryRun = false }: { dryRun?: boolean } = {}): Remo
         for (const h of block.hooks ?? []) {
           const isOurs =
             (h as Record<string, unknown>)[OWNERSHIP_KEY] === true ||
-            (typeof h.command === 'string' && owned.has(h.command));
+            (typeof h.command === "string" && owned.has(h.command));
           if (isOurs) removed++;
           else {
             kept.push(h);
-            if (typeof h.command === 'string') preservedForeign++;
+            if (typeof h.command === "string") preservedForeign++;
           }
         }
         // Keep foreign matcher blocks untouched; drop blocks we emptied.
         if (kept.length > 0 || (block.hooks?.length ?? 0) === 0) {
-          keptBlocks.push(kept.length === (block.hooks?.length ?? 0) ? block : { ...block, hooks: kept });
+          keptBlocks.push(
+            kept.length === (block.hooks?.length ?? 0)
+              ? block
+              : { ...block, hooks: kept },
+          );
         }
       }
       if (keptBlocks.length > 0) hooks.hooks[event] = keptBlocks;
@@ -353,7 +394,11 @@ export function removeHooks({ dryRun = false }: { dryRun?: boolean } = {}): Remo
   const changed = !dryRun && serialized !== before;
   if (changed) {
     fs.writeFileSync(file, serialized, { mode: 0o644 });
-    try { fs.rmSync(registrationPath(), { force: true }); } catch { /* ignore */ }
+    try {
+      fs.rmSync(registrationPath(), { force: true });
+    } catch {
+      /* ignore */
+    }
   }
   // `removed` is the observed/would-observe count in both dry-run and apply.
   void dryRun;
@@ -362,19 +407,19 @@ export function removeHooks({ dryRun = false }: { dryRun?: boolean } = {}): Remo
 
 export interface DoctorReport {
   json: unknown[];
-  overall: 'PASS' | 'PARTIAL' | 'FAIL';
+  overall: "PASS" | "PARTIAL" | "FAIL";
 }
 
 interface Check {
   name: string;
-  status: 'ok' | 'warn' | 'fail';
+  status: "ok" | "warn" | "fail";
   detail: string;
 }
 
 function trustStateLines(): string[] {
   try {
-    const cfg = fs.readFileSync(path.join(codexHome(), 'config.toml'), 'utf8');
-    return cfg.split('\n').filter((l) => l.trim().startsWith('[hooks.state.'));
+    const cfg = fs.readFileSync(path.join(codexHome(), "config.toml"), "utf8");
+    return cfg.split("\n").filter((l) => l.trim().startsWith("[hooks.state."));
   } catch {
     return [];
   }
@@ -389,14 +434,20 @@ function trustedEventsConfigured(): boolean {
 function pluginManagedHookEvents(): HookEvent[] {
   try {
     const root = pluginRoot();
-    const manifestPath = path.join(root, '.codex-plugin', 'plugin.json');
+    const manifestPath = path.join(root, ".codex-plugin", "plugin.json");
     if (!fs.existsSync(manifestPath)) return [];
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { hooks?: unknown };
-    if (typeof manifest.hooks !== 'string') return [];
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      hooks?: unknown;
+    };
+    if (typeof manifest.hooks !== "string") return [];
     const hookPath = path.resolve(root, manifest.hooks);
-    if (!hookPath.startsWith(root + path.sep) || !fs.existsSync(hookPath)) return [];
-    const config = JSON.parse(fs.readFileSync(hookPath, 'utf8')) as HooksFile;
-    return HOOK_EVENTS.filter((event) => Array.isArray(config.hooks?.[event]) && config.hooks[event]!.length > 0);
+    if (!hookPath.startsWith(root + path.sep) || !fs.existsSync(hookPath))
+      return [];
+    const config = JSON.parse(fs.readFileSync(hookPath, "utf8")) as HooksFile;
+    return HOOK_EVENTS.filter(
+      (event) =>
+        Array.isArray(config.hooks?.[event]) && config.hooks[event]!.length > 0,
+    );
   } catch {
     return [];
   }
@@ -407,20 +458,33 @@ export function doctor(): DoctorReport {
   const checks: Check[] = [];
 
   // Dependency + build readiness (report-only; never auto-install).
-  const runtimeDependencies = ['better-sqlite3', '@xenova/transformers', 'sqlite-vec'];
+  const runtimeDependencies = [
+    "better-sqlite3",
+    "@xenova/transformers",
+    "sqlite-vec",
+  ];
   const nodeModules = runtimeDependencies.every((dependency) => {
-    try { runtimeRequire.resolve(dependency); return true; } catch { return false; }
+    try {
+      runtimeRequire.resolve(dependency);
+      return true;
+    } catch {
+      return false;
+    }
   });
   checks.push({
-    name: 'dependencies',
-    status: nodeModules ? 'ok' : 'fail',
-    detail: nodeModules ? 'runtime dependencies resolvable' : 'runtime package dependencies unavailable — verify Node/npm network and cache',
+    name: "dependencies",
+    status: nodeModules ? "ok" : "fail",
+    detail: nodeModules
+      ? "runtime dependencies resolvable"
+      : "runtime package dependencies unavailable — verify Node/npm network and cache",
   });
-  const distEntry = fs.existsSync(path.join(pluginRoot(), 'dist', 'db.js'));
+  const distEntry = fs.existsSync(path.join(pluginRoot(), "dist", "db.js"));
   checks.push({
-    name: 'build',
-    status: distEntry ? 'ok' : 'fail',
-    detail: distEntry ? 'dist/ present' : `missing — run: cd ${pluginRoot()} && npm run build`,
+    name: "build",
+    status: distEntry ? "ok" : "fail",
+    detail: distEntry
+      ? "dist/ present"
+      : `missing — run: cd ${pluginRoot()} && npm run build`,
   });
 
   // Codex home + hooks file
@@ -431,99 +495,140 @@ export function doctor(): DoctorReport {
     for (const event of HOOK_EVENTS) {
       for (const block of hooks.hooks[event] ?? []) {
         for (const h of block.hooks ?? []) {
-          if (typeof h.command === 'string') foundCommands.add(h.command);
+          if (typeof h.command === "string") foundCommands.add(h.command);
         }
       }
     }
   }
   const configuredEvents = HOOK_EVENTS.filter((ev) =>
-    LIFECYCLE_COMMANDS[ev].every((c) => foundCommands.has(commandFor(pluginRoot(), c))),
+    LIFECYCLE_COMMANDS[ev].every((c) =>
+      foundCommands.has(commandFor(pluginRoot(), c)),
+    ),
   );
   const pluginEvents = pluginManagedHookEvents();
   const activeEvents = [...new Set([...configuredEvents, ...pluginEvents])];
   checks.push({
-    name: 'codex-home',
-    status: fs.existsSync(codexHome()) ? 'ok' : 'fail',
+    name: "codex-home",
+    status: fs.existsSync(codexHome()) ? "ok" : "fail",
     detail: codexHome(),
   });
   checks.push({
-    name: 'lifecycle-configured',
+    name: "lifecycle-configured",
     status:
-      activeEvents.length === HOOK_EVENTS.length ? 'ok'
-      : activeEvents.length > 0 ? 'warn'
-      : 'fail',
-    detail: pluginEvents.length === HOOK_EVENTS.length
-      ? `${pluginEvents.join(', ')} (plugin manifest)`
-      : configuredEvents.length
-      ? `${configuredEvents.join(', ')} (${file})`
-      : `not configured — run: memex setup-hooks`,
+      activeEvents.length === HOOK_EVENTS.length
+        ? "ok"
+        : activeEvents.length > 0
+          ? "warn"
+          : "fail",
+    detail:
+      pluginEvents.length === HOOK_EVENTS.length
+        ? `${pluginEvents.join(", ")} (plugin manifest)`
+        : configuredEvents.length
+          ? `${configuredEvents.join(", ")} (${file})`
+          : `not configured — run: memex setup-hooks`,
   });
   const observedDetail = HOOK_EVENTS.map((ev) => {
     const ts = lastObserved(ev);
-    return `${ev}: ${ts ? `observed ${ts}` : 'never observed'}`;
-  }).join('; ');
+    return `${ev}: ${ts ? `observed ${ts}` : "never observed"}`;
+  }).join("; ");
   checks.push({
-    name: 'lifecycle-observed',
-    status: HOOK_EVENTS.every((ev) => lastObserved(ev)) ? 'ok' : 'warn',
+    name: "lifecycle-observed",
+    status: HOOK_EVENTS.every((ev) => lastObserved(ev)) ? "ok" : "warn",
     detail: observedDetail,
   });
   // Inject output parse/consumption — distinguishes valid injection vs error vs no-match
   try {
     const logPath = getInjectLogPath();
     if (fs.existsSync(logPath)) {
-      const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+      const lines = fs
+        .readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
       const last = lines.length ? JSON.parse(lines[lines.length - 1]) : null;
       if (last) {
-        const okStatuses: Record<string, true> = { injected: true, 'no-match': true, deduped: true, skipped: true };
+        const okStatuses: Record<string, true> = {
+          injected: true,
+          "no-match": true,
+          deduped: true,
+          skipped: true,
+        };
         checks.push({
-          name: 'inject-output',
-          status: okStatuses[last.status as string] ? 'ok' : last.status === 'error' ? 'fail' : 'warn',
-          detail: `${last.status} via=${last.via ?? 'unknown'} ${last.ts ?? ''} ${last.error ? `error=${String(last.error).slice(0,80)}` : ''}`.trim(),
+          name: "inject-output",
+          status: okStatuses[last.status as string]
+            ? "ok"
+            : last.status === "error"
+              ? "fail"
+              : "warn",
+          detail:
+            `${last.status} via=${last.via ?? "unknown"} ${last.ts ?? ""} ${last.error ? `error=${String(last.error).slice(0, 80)}` : ""}`.trim(),
         });
       } else {
-        checks.push({ name: 'inject-output', status: 'warn', detail: 'inject log empty — no UserPromptSubmit observed yet' });
+        checks.push({
+          name: "inject-output",
+          status: "warn",
+          detail: "inject log empty — no UserPromptSubmit observed yet",
+        });
       }
     } else {
-      checks.push({ name: 'inject-output', status: 'warn', detail: 'no inject log yet — UserPromptSubmit not yet observed' });
+      checks.push({
+        name: "inject-output",
+        status: "warn",
+        detail: "no inject log yet — UserPromptSubmit not yet observed",
+      });
     }
   } catch {
-    checks.push({ name: 'inject-output', status: 'warn', detail: 'unable to read inject log' });
+    checks.push({
+      name: "inject-output",
+      status: "warn",
+      detail: "unable to read inject log",
+    });
   }
   // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
   let trustedEntries = 0;
-  const configToml = path.join(codexHome(), 'config.toml');
+  const configToml = path.join(codexHome(), "config.toml");
   try {
     if (fs.existsSync(configToml)) {
       const marker = `hooks.state.`;
       let section = false;
-      for (const line of fs.readFileSync(configToml, 'utf8').split('\n')) {
+      for (const line of fs.readFileSync(configToml, "utf8").split("\n")) {
         const t = line.trim();
-        if (t.startsWith('[')) {
+        if (t.startsWith("[")) {
           section = t.includes(marker) && t.includes(hooksFilePath());
           if (section) trustedEntries++;
         }
       }
       void section;
     }
-  } catch { /* unreadable config: treat as untrusted */ }
+  } catch {
+    /* unreadable config: treat as untrusted */
+  }
   checks.push({
-    name: 'hook-trust',
-    status: trustedEventsConfigured() ? (configuredEvents.every((ev) => hasTrustFor(ev)) ? 'ok' : 'warn') : 'warn',
+    name: "hook-trust",
+    status: trustedEventsConfigured()
+      ? configuredEvents.every((ev) => hasTrustFor(ev))
+        ? "ok"
+        : "warn"
+      : "warn",
     detail:
       trustedEntries > 0
         ? `${trustedEntries} trusted hook state entries reference ${hooksFilePath()}`
-        : 'no persisted hook trust found in config.toml — Codex will prompt for trust on the next session start',
+        : "no persisted hook trust found in config.toml — Codex will prompt for trust on the next session start",
   });
   checks.push({
-    name: 'mcp-manifest',
-    status: fs.existsSync(path.join(pluginRoot(), '.codex-plugin', 'plugin.json')) ? 'ok' : 'fail',
-    detail: '.codex-plugin/plugin.json present (MCP servers declared there)',
+    name: "mcp-manifest",
+    status: fs.existsSync(
+      path.join(pluginRoot(), ".codex-plugin", "plugin.json"),
+    )
+      ? "ok"
+      : "fail",
+    detail: ".codex-plugin/plugin.json present (MCP servers declared there)",
   });
 
-  const hasFail = checks.some((c) => c.status === 'fail');
-  const allOk = checks.every((c) => c.status === 'ok');
+  const hasFail = checks.some((c) => c.status === "fail");
+  const allOk = checks.every((c) => c.status === "ok");
   return {
     json: checks.map(({ name, status, detail }) => ({ name, status, detail })),
-    overall: hasFail ? 'FAIL' : allOk ? 'PASS' : 'PARTIAL',
+    overall: hasFail ? "FAIL" : allOk ? "PASS" : "PARTIAL",
   };
 }

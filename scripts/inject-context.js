@@ -17,55 +17,75 @@
  * fallback.
  */
 
-import net from 'node:net';
-import path from 'node:path';
-import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import net from "node:net";
+import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 
 const SOCKET_CONNECT_TIMEOUT_MS = 300;
 const SOCKET_RESPONSE_TIMEOUT_MS = 3000;
 
 function readStdin(timeoutMs = 2000) {
   return new Promise((resolve) => {
-    if (process.stdin.isTTY) return resolve('');
-    let data = '';
+    if (process.stdin.isTTY) return resolve("");
+    let data = "";
     const timer = setTimeout(() => resolve(data), timeoutMs);
-    process.stdin.on('data', (c) => (data += c));
-    process.stdin.on('end', () => { clearTimeout(timer); resolve(data); });
-    process.stdin.on('error', () => { clearTimeout(timer); resolve(data); });
+    process.stdin.on("data", (c) => (data += c));
+    process.stdin.on("end", () => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+    process.stdin.on("error", () => {
+      clearTimeout(timer);
+      resolve(data);
+    });
   });
 }
 
 function injectSocketPath() {
   // Mirrors paths.ts getIndexDir() without importing the heavy dist chain.
-  const base = process.env.MEMORY_BANK_HOME
-    || process.env.MEMORY_BANK_CONFIG_DIR
-    || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'memory-bank');
-  return path.join(base, 'conversation-index', 'inject-daemon.sock');
+  const base =
+    process.env.MEMEX_HOME ||
+    process.env.MEMORY_BANK_HOME ||
+    process.env.MEMORY_BANK_CONFIG_DIR ||
+    path.join(
+      process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+      "memex",
+    );
+  return path.join(base, "conversation-index", "inject-daemon.sock");
 }
 
 /** Emit valid Codex 0.149 UserPromptSubmit JSON — never raw context text. */
 function emitContext(context) {
-  process.stdout.write(JSON.stringify({
-    continue: true,
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: context,
-    },
-  }) + '\n');
+  process.stdout.write(
+    JSON.stringify({
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: context,
+      },
+    }) + "\n",
+  );
 }
 
 async function markRecallEmitted(sessionId, prompt) {
   if (!sessionId || !prompt) return;
   try {
-    const { initDatabase, markRecallEventEmitted } = await import(path.join(__dirname, '../dist/db.js'));
+    const { initDatabase, markRecallEventEmitted } = await import(
+      path.join(__dirname, "../dist/db.js")
+    );
     const db = initDatabase();
-    try { markRecallEventEmitted(db, { sessionId, prompt }); } finally { db.close(); }
+    try {
+      markRecallEventEmitted(db, { sessionId, prompt });
+    } finally {
+      db.close();
+    }
   } catch (error) {
-    process.stderr.write(`inject-context: recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(
+      `inject-context: recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
   }
 }
 /** Ask the warm daemon; resolve null (not reject) on ANY failure so the caller
@@ -73,61 +93,79 @@ async function markRecallEmitted(sessionId, prompt) {
 function askDaemon(prompt, cwd, sessionId) {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const done = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
     let conn;
     try {
       conn = net.connect(injectSocketPath());
     } catch {
       return done(null);
     }
-    const connectTimer = setTimeout(() => { conn.destroy(); done(null); }, SOCKET_CONNECT_TIMEOUT_MS);
-    conn.on('connect', () => {
+    const connectTimer = setTimeout(() => {
+      conn.destroy();
+      done(null);
+    }, SOCKET_CONNECT_TIMEOUT_MS);
+    conn.on("connect", () => {
       clearTimeout(connectTimer);
-      conn.setTimeout(SOCKET_RESPONSE_TIMEOUT_MS, () => { conn.destroy(); done(null); });
-      conn.write(JSON.stringify({ prompt, cwd, session_id: sessionId }) + '\n');
-      let buf = '';
-      conn.on('data', (c) => {
-        buf += c.toString('utf8');
-        const nl = buf.indexOf('\n');
+      conn.setTimeout(SOCKET_RESPONSE_TIMEOUT_MS, () => {
+        conn.destroy();
+        done(null);
+      });
+      conn.write(JSON.stringify({ prompt, cwd, session_id: sessionId }) + "\n");
+      let buf = "";
+      conn.on("data", (c) => {
+        buf += c.toString("utf8");
+        const nl = buf.indexOf("\n");
         if (nl < 0) return;
         try {
           const res = JSON.parse(buf.slice(0, nl));
-          done(res && res.ok ? String(res.context ?? '') : null);
+          done(res && res.ok ? String(res.context ?? "") : null);
         } catch {
           done(null);
         }
         conn.destroy();
       });
     });
-    conn.on('error', () => { clearTimeout(connectTimer); done(null); });
+    conn.on("error", () => {
+      clearTimeout(connectTimer);
+      done(null);
+    });
   });
 }
 
 async function main() {
   // Parse hook input: stdin JSON first, env fallback (manual runs).
   const raw = await readStdin();
-  let prompt = '';
-  let cwd = '';
-  let sessionId = '';
+  let prompt = "";
+  let cwd = "";
+  let sessionId = "";
   if (raw) {
     try {
       const j = JSON.parse(raw);
-      prompt = String(j.prompt ?? '');
-      cwd = String(j.cwd ?? '');
-      sessionId = String(j.session_id ?? ''); // 세션 dedup 원장 키 (hook stdin 계약)
+      prompt = String(j.prompt ?? "");
+      cwd = String(j.cwd ?? "");
+      sessionId = String(j.session_id ?? ""); // 세션 dedup 원장 키 (hook stdin 계약)
     } catch {
       prompt = raw; // plain-text stdin = the prompt itself
     }
   }
-  if (!prompt) prompt = process.env.USER_PROMPT || '';
+  if (!prompt) prompt = process.env.USER_PROMPT || "";
   if (!cwd) cwd = process.env.CWD || process.cwd();
-  if (!sessionId) sessionId = process.env.SESSION_ID || '';
+  if (!sessionId) sessionId = process.env.SESSION_ID || "";
 
   // CX-01: privacy-safe event observation (event/ts/session/cwd only).
   try {
-    const { recordHookEvent } = await import(path.join(__dirname, '../dist/observe-hook-event.js'));
-    recordHookEvent('UserPromptSubmit', { sessionId, cwd });
-  } catch { /* observation is best-effort */ }
+    const { recordHookEvent } = await import(
+      path.join(__dirname, "../dist/observe-hook-event.js")
+    );
+    recordHookEvent("UserPromptSubmit", { sessionId, cwd });
+  } catch {
+    /* observation is best-effort */
+  }
   if (!prompt || prompt.length < 20) return; // not worth an injection
 
   // FAST PATH — warm daemon inside a running MCP server.
@@ -142,8 +180,15 @@ async function main() {
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
   try {
-    const { computeInjectContext } = await import(path.join(__dirname, '../dist/inject-core.js'));
-    const context = await computeInjectContext(prompt, cwd, 'fallback', sessionId || undefined);
+    const { computeInjectContext } = await import(
+      path.join(__dirname, "../dist/inject-core.js")
+    );
+    const context = await computeInjectContext(
+      prompt,
+      cwd,
+      "fallback",
+      sessionId || undefined,
+    );
     if (context) {
       emitContext(context);
       await markRecallEmitted(sessionId, prompt);
@@ -154,8 +199,8 @@ async function main() {
     if (/Cannot find (package|module)|ERR_MODULE_NOT_FOUND/.test(msg)) {
       // Fail loud, never auto-install: missing deps are an explicit setup step.
       process.stderr.write(
-        'inject-context: runtime dependencies are missing. Run manually:\n' +
-        `  cd "${path.join(__dirname, '..')}" && npm install && npm run build\n`,
+        "inject-context: runtime dependencies are missing. Run manually:\n" +
+          `  cd "${path.join(__dirname, "..")}" && npm install && npm run build\n`,
       );
     }
   }

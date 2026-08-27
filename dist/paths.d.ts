@@ -1,14 +1,18 @@
-import { sessionsRoot } from './codex-rollout.js';
+import { sessionsRoot } from "./codex-rollout.js";
+export declare function getMemexHome(): string;
 /**
- * Native memory-bank data root (pure getter — never mutates filesystem).
- *
- * Precedence (no legacy fallback, no migration):
- * 1. MEMORY_BANK_HOME          — explicit root, used as-is
- * 2. MEMORY_BANK_CONFIG_DIR    — explicit root, used as-is
- * 3. XDG_CONFIG_HOME/memory-bank
- * 4. ~/.config/memory-bank     — default
+ * @deprecated Historical name kept as a thin alias so pre-existing importers
+ * (`dist/paths.js`) keep resolving the SAME root during the transition.
+ * New code must call {@link getMemexHome}.
  */
 export declare function getMemoryBankHome(): string;
+/**
+ * Read-only detection of a pre-v0.2 data root created by an older install.
+ * Used by `memex doctor`, onboarding status checks, and `memex migrate-home`
+ * to surface (never auto-execute) a pending migration. Returns null when the
+ * legacy default location holds no recognizable Memex data.
+ */
+export declare function detectLegacyDataRoot(): string | null;
 /**
  * Get conversation archive directory (pure getter).
  */
@@ -55,7 +59,10 @@ export declare const LLM_WORKDIR_BASENAME = "memory-bank-llm";
  * still excludes the reserved LLM worker workdir, matched on the final path
  * segment so both `.../memory-bank-llm` and legacy slug forms stay covered.
  */
-export declare function isExcludedProject(project: string, excluded?: string[]): boolean;
+export declare function isExcludedProject(
+ project: string,
+ excluded?: string[],
+): boolean;
 /**
  * Exact leading text of the plugin's own LLM worker prompts (CodexExec era).
  * Sessions from BEFORE the fixed workdir existed ran their worker prompts
@@ -72,7 +79,9 @@ export declare const WORKER_PROMPT_PREFIXES: readonly string[];
  * such an exchange is ephemeral worker state, never knowledge, and must not
  * be indexed (searchable) regardless of which project slug it sits under.
  */
-export declare function isWorkerPromptMessage(userMessage: string | null | undefined): boolean;
+export declare function isWorkerPromptMessage(
+ userMessage: string | null | undefined,
+): boolean;
 /**
  * Get list of projects to exclude from indexing
  * Configurable via env var or config file
