@@ -33,17 +33,22 @@ layer.
 ## Storage and compatibility
 
 The public product name, package, plugin, MCP server, CLI, UI, and skills are
-`memex`. Existing installations may already contain durable data under the
-historical storage namespace. Until an explicit data migration is introduced,
-retain this compatibility contract:
+`memex`. The canonical data root is `MEMEX_HOME` when set, then the historical
+variables as read-only compatibility fallbacks for pre-v0.2 installs:
 
-1. `MEMORY_BANK_HOME`
-2. `MEMORY_BANK_CONFIG_DIR`
-3. `$XDG_CONFIG_HOME/memory-bank`
-4. `~/.config/memory-bank`
+1. `MEMEX_HOME` (current)
+2. `MEMORY_BANK_HOME` (historical, honored read-only)
+3. `MEMORY_BANK_CONFIG_DIR` (historical, honored read-only)
+4. `$XDG_CONFIG_HOME/memex`
+5. `~/.config/memex` (default)
 
-Do not silently move, copy, merge, or delete that data. Do not introduce new
-legacy runtime adapters for Claude Code, OMC, Superpowers, or other agents.
+The explicit data migration is introduced via `memex migrate-home`, which
+copies legacy `~/.config/memory-bank` data into the current root and verifies
+SQLite integrity and row-count parity before succeeding. The source directory
+is never deleted or mutated by that command; cleanup remains a separate,
+manual step. Never silently move, copy, merge, or delete durable data outside
+this explicitly invoked migration. Do not introduce new legacy runtime
+adapters for Claude Code, OMC, Superpowers, or other agents.
 
 ## Plugin and lifecycle boundaries
 

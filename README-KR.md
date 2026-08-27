@@ -88,11 +88,18 @@ memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
 
 memex setup
 memex sync
-memex backfill extract --foreground
-memex backfill ontology --foreground
-memex backfill embeddings --foreground
+memex backfill all
 memex status
 ```
+
+셸 함수 대신 영구 shim을 선호한다면 다음으로 설치할 수 있습니다:
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
+```
+
+이 명령은 `~/.local/bin/memex`를 만듭니다(전역 설치 아님; PATH 여부를 점검해
+알려줍니다). 제거는 `memex setup --uninstall-cli`로 합니다.
 
 `memex setup`은 Codex의 실제 `memories` feature 상태를 확인합니다. built-in Memory가
 켜져 있으면 double-memory/conflicting-memory 위험과 OFF 권장을 보여주며, 대화형
@@ -100,8 +107,9 @@ terminal에서는 동의를 묻습니다. 비대화형 실행은 절대 자동�
 `memex setup --disable-codex-memory`가 있을 때만 Codex 자체
 `codex features disable memories`를 호출한 뒤 OFF 상태를 재검증합니다.
 
-대화량과 local model extraction에 따라 수분 이상 걸릴 수 있습니다. 최초 실행은
-완료를 직접 확인할 수 있는 `--foreground`를 권장합니다. `--background`의 started
+대화량과 local model extraction에 따라 수분 이상 걸릴 수 있습니다. 기본 실행은
+완료를 직접 확인할 수 있는 foreground이며, `backfill all`은 각 단계를 순서대로
+실행하고 실패한 단계에서 멈춥니다(재실행해도 안전). `--background`의 started
 메시지는 완료가 아니므로 `memex status`의 pending count를 확인해야 합니다.
 `sync`는 idempotent하므로 다시 실행해도 안전합니다.
 
@@ -150,6 +158,16 @@ Git marketplace snapshot을 갱신하고 plugin을 최신 상태로 재설치합
 항상 최신 main을 대상으로 하며, update는 skills/hooks/MCP metadata까지 맞춥니다.
 완료 후 Codex를 재시작합니다. 기존 Memex data는 보존됩니다.
 
+## 데이터 위치
+
+기본 derived data root는 `~/.config/memex`입니다. 우선순위:
+`MEMEX_HOME` → `MEMORY_BANK_HOME`(호환, read-only) → `MEMORY_BANK_CONFIG_DIR`
+(호환) → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
+
+기존 설치가 역사적 `memory-bank` 네임스페이스에 데이터를 두고 있다면 명령어로
+명시적 마이그레이션합니다. 소스 디렉터리는 절대 삭제되지 않습니다.
+자세한 내용은 [SCHEMA](docs/SCHEMA.md)를 참조하세요.
+
 ## 해제
 
 Marketplace plugin hooks는 plugin 제거와 함께 사라집니다. 과거/manual
@@ -162,8 +180,10 @@ codex plugin remove memex@memex --json
 codex plugin marketplace remove memex --json
 ```
 
-해제는 Codex rollout과 Memex derived data를 보존합니다. 데이터 경로와 보존 정책은
-[운영 가이드](docs/GUIDE.md#uninstall-and-data-retention)를 참조하세요.
+해제는 Codex rollout과 Memex derived data를 보존합니다. Memex 데이터를 완전히
+삭제하려면 `memex home`으로 exact data root를 확인한 뒤 해당 디렉터리만 삭제하고,
+`$CODEX_HOME/sessions`는 절대 건드리지 않습니다. 부분 초기화 옵션을 포함한 전체
+삭제 절차는 [운영 가이드](docs/GUIDE.md#uninstall-and-data-retention)를 참조하세요.
 
 ## 검증과 기여
 

@@ -2,6 +2,37 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## Unreleased
+
+### Added
+
+- `memex migrate-home` (with `--from`, `--dry-run`, `--json`) copies a legacy
+  data root to the current one, verifies SQLite integrity and row-count parity,
+  and writes receipts under `logs/home-migration.json`. The source directory is
+  never deleted or mutated; cleanup stays manual.
+- `memex home [--json]` prints the resolved data-root exact path.
+- `memex backfill all` runs extract → ontology → embeddings sequentially in one
+  command, stopping at first failure with idempotent-resume guidance.
+- `memex setup --install-cli` / `--uninstall-cli`: opt-in POSIX shim at
+  `~/.local/bin/memex` so the CLI works without an npx shell function. Only
+  Memex-owned files are created or removed; PATH misses are reported per shell;
+  `--dry-run` supported. No global installs, no user-project package-manager
+  calls.
+- Data-deletion walkthrough in docs/GUIDE.md covering full wipe, derived-only
+  reset, scoped fact deletion, legacy-path caution, and rollout safety.
+
+### Changed
+
+- Data root resolution prefers `MEMEX_HOME`; historical `MEMORY_BANK_HOME` and
+  `MEMORY_BANK_CONFIG_DIR` remain read-only compatibility fallbacks before
+  `$XDG_CONFIG_HOME/memex` and `~/.config/memex` defaults.
+- `memex backfill <target>` now runs in the foreground by default with exit-code
+  propagation; background execution is opt-in via `--background`, and
+  `--foreground` is accepted as a deprecated no-op for older scripts.
+- Documentation updated for the new root resolution order, explicit migration,
+  foreground backfill, CLI shim onboarding, and deletion guide
+  (README.md, README-KR.md, docs/GUIDE.md, docs/SCHEMA.md).
+
 ## 0.1.0 - 2026-08-27
 
 First independent Memex release. Versioned `0.1.0` because the product feature

@@ -95,6 +95,16 @@ memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
 memex setup
 ```
 
+셸 함수 대신 영구 shim을 원하면(기존 npx 함수 정의 후 1회):
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
+```
+
+`~/.local/bin/memex`가 생겨 이후 터미널에서 `memex`를 직접 실행할 수 있습니다.
+전역 설치는 하지 않으며, PATH 누락 시 안내를 출력합니다. 제거는
+`memex setup --uninstall-cli`(본 명령이 만든 파일만 삭제)입니다.
+
 ### Built-in Memory 충돌 점검
 
 `memex setup`은 `codex features list`의 effective `memories` 상태를 읽습니다. 활성화된
@@ -112,23 +122,22 @@ double-memory/conflicting-memory 위험을 설명하고 OFF를 권장합니다.
 
 ```bash
 memex sync
-memex backfill extract --foreground
-memex backfill ontology --foreground
-memex backfill embeddings --foreground
+memex backfill all
 memex status
 memex status --json
 ```
 
 - `sync`: `$CODEX_HOME/sessions` rollout을 읽고 archive/index/search corpus 생성
-- `backfill extract`: indexed exchange에서 durable fact 추출
-- `backfill ontology`: fact 분류와 graph 구조 생성
-- `backfill embeddings`: 누락된 semantic vector 생성
+- `backfill all`: 각 backlog 단계를 순서대로 실행 — `extract`(durable fact 추출),
+  `ontology`(fact 분류와 graph 구조 생성), `embeddings`(누락된 semantic vector 생성).
+  단일 단계만 실행하려면 `memex backfill <extract|ontology|embeddings>` 사용
 - `status`: conversation/fact/graph readiness와 pending count 확인
 
-대화 기록이 많거나 local Codex model이 fact를 추출하는 경우 수분 이상 걸릴 수
-있습니다. 최초 실행은 완료 여부가 명확한 `--foreground`를 권장합니다.
-`--background`의 “started” 출력은 완료 증거가 아닙니다. `memex status`의 pending
-count를 확인해야 합니다.
+`backfill`은 기본적으로 foreground로 실행되어 완료가 직접 관측되고, 첫 실패 단계에서
+멈춥니다(단계는 idempotent하므로 `memex backfill all`을 다시 실행해 이어갈 수
+있습니다). 대화 기록이 많거나 local Codex model이 fact를 추출하는 경우 수분 이상
+걸릴 수 있습니다. `--background`의 “started” 출력은 완료 증거가 아닙니다.
+`memex status`의 pending count를 확인해야 합니다.
 
 `sync`는 idempotent하므로 onboarding 이후 다시 실행해도 안전합니다.
 
@@ -246,7 +255,7 @@ body-size guard를 통과한 뒤 CLI와 같은 transactional service를 사용�
 ## 9. 저장소와 개인정보
 
 ```text
-~/.config/memory-bank/
+~/.config/memex/
 ├── conversation-archive/
 └── conversation-index/
     ├── db.sqlite
@@ -254,11 +263,24 @@ body-size guard를 통과한 뒤 CLI와 같은 transactional service를 사용�
     └── lifecycle-registration.json
 ```
 
-우선순위: `MEMORY_BANK_HOME` → `MEMORY_BANK_CONFIG_DIR` →
-`$XDG_CONFIG_HOME/memory-bank` → `~/.config/memory-bank`.
+우선순위: `MEMEX_HOME` → `MEMORY_BANK_HOME`(호환) → `MEMORY_BANK_CONFIG_DIR`
+(호환) → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
 
-이 namespace는 기존 durable data를 자동 이동하지 않기 위한 저장 호환성입니다.
-Claude runtime 호환 계층이 아닙니다. 원본 Codex rollout은 항상 read-only입니다.
+기존 설치가 여전히 `~/.config/memory-bank/`에 데이터를 두고 있다면 런타임은
+그 디렉터리를 건드리지 않고 새 root를 바라봅니다. 데이터 이전은 명령어로
+명시적으로 수행합니다:
+
+```bash
+memex migrate-home            # 감지된 legacy root에서 copy → verify → switch
+memex migrate-home --dry-run  # 쓰기 없이 계획만 출력
+memex home --json             # 해석된 data root 확인 (JSON)
+```
+
+마이그레이션은 source를 절대 삭제하지 않으며 SQLite integrity_check와
+row-count 비교로 무결성을 검증한 뒤 receipts(`<new>/logs/home-migration.json`)를
+남깁니다. 검증 완료 후 필요하면 수동으로 옛 디렉터리를 정리합니다.
+이 namespace 규칙은 Claude runtime 호환 계층이 아닙니다. 원본 Codex rollout은
+항상 read-only입니다.
 
 ## 10. 업데이트
 
@@ -315,3 +337,46 @@ codex plugin marketplace remove memex-local --json
 
 기본 해제는 `$CODEX_HOME/sessions`와 Memex data root를 보존합니다. derived data
 삭제가 필요하면 환경변수 해석 결과와 exact path를 먼저 확인한 뒤 별도 수행합니다.
+
+### 데이터 삭제 가이드
+
+plugin 제거만으로는 데이터가 남습니다. 완전히 삭제하려면 아래 순서를 따릅니다.
+
+먼저 실제 데이터 위치를 확인합니다. `MEMEX_HOME`, `MEMORY_BANK_HOME`,
+`MEMORY_BANK_CONFIG_DIR` 중 설정된 값이 우선 적용됩니다(과거 변수는 하위 호환용
+read-only fallback).
+
+```bash
+memex home            # 현재 data root exact path 출력
+memex home --json
+```
+
+Memex가 생성하는 데이터는 모두 이 data root 안에 있습니다:
+
+- `memex.db` — 관측·facts·graph 등 파생 SQLite DB (재구성 가능)
+- `archives/` — rollout에서 유래한 원문 스냅샷 (재구성 가능)
+- `logs/` — 백필 수행 기록, migration receipts (재구성 가능)
+- Web UI 소켓/임시 파일
+
+전체 삭제(복구 불가, 재동기화 시 처음부터 다시 추출):
+
+```bash
+memex doctor          # 종료 전 상태 점검(선택)
+rm -rf "$(memex home)"
+```
+
+부분 삭제:
+
+- derived index/graph만 초기화하고 원문 보존 → data root 안의 `memex.db`만 삭제.
+  다음 sync/backfill에서 archives로부터 다시 구축됩니다.
+- 특정 프로젝트의 facts만 제거 → scope를 지정해 CLI/MCP delete 계열 도구 사용
+  (근원 rollout은 건드리지 않음). 세부 방법은 `docs/FACT-LIFECYCLE.md` 참조.
+
+주의사항:
+
+- **삭제 대상은 Memex 파생 데이터뿐**입니다. `$CODEX_HOME/sessions` rollout은
+  절대 삭제·수정하지 않습니다(원본 대화 기록이며 Memex의 유일한 근원).
+- legacy 경로(`~/.config/memory-bank`)를 쓰던 설치는 `memex home`이 해당 폴더를
+  가리킬 수 있습니다. 반드시 출력된 exact path만 삭제하고, 이후 정리는 수동으로
+  판단합니다(`memex migrate-home` 후 남은 구폴더 포함).
+- dry-run 없이 되돌릴 수 없으므로, 필요 시 사전에 data root 폴더를 통째로 백업합니다.
