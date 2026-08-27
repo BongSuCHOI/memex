@@ -80,26 +80,26 @@ hooks, CLI/UI launcher가 함께 설치됩니다. 첫 실행에는 Node의 `npx`
 
 ## 설치 후 1회 onboarding
 
-설치가 끝나면 **Codex를 재시작**합니다. 터미널에서 읽기 쉬운 명령을 위해 현재 shell에
-다음 함수를 정의한 뒤 기존 session history를 순서대로 준비합니다.
+설치가 끝나면 **Codex를 재시작**합니다. 이 시점부터 Codex 세션 내부 기능(대화 검색,
+fact 추출·주입, MCP 도구)은 별도 설정 없이 동작합니다. 터미널에서 `memex` CLI를 직접
+쓰려면 플러그인 등록만으로는 PATH에 실행 파일이 생기지 않으므로, 다음 명령을 **한 번만**
+실행해 영구 shim을 만듭니다(전역 설치 아님; PATH 누락 시 안내 출력):
 
 ```bash
-memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
+npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
+```
 
+`~/.local/bin/memex`가 생기고, 기존 session history를 conversation → fact → ontology/vector
+순서로 준비합니다:
+
+```bash
 memex setup
 memex sync
 memex backfill all
 memex status
 ```
 
-셸 함수 대신 영구 shim을 선호한다면 다음으로 설치할 수 있습니다:
-
-```bash
-npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
-```
-
-이 명령은 `~/.local/bin/memex`를 만듭니다(전역 설치 아님; PATH 여부를 점검해
-알려줍니다). 제거는 `memex setup --uninstall-cli`로 합니다.
+제거는 `memex setup --uninstall-cli`(본 명령이 만든 파일만 삭제)입니다.
 
 `memex setup`은 Codex의 실제 `memories` feature 상태를 확인합니다. built-in Memory가
 켜져 있으면 double-memory/conflicting-memory 위험과 OFF 권장을 보여주며, 대화형

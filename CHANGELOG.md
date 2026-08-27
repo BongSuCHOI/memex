@@ -23,6 +23,10 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ### Changed
 
+- Onboarding docs (README.md, README-KR.md, docs/GUIDE.md) now present the
+  one-time `setup --install-cli` shim as the default path to a terminal `memex`
+  command and drop the npx shell-function workaround; clarified that in-session
+  features need only plugin registration + Codex restart.
 - Data root resolution prefers `MEMEX_HOME`; historical `MEMORY_BANK_HOME` and
   `MEMORY_BANK_CONFIG_DIR` remain read-only compatibility fallbacks before
   `$XDG_CONFIG_HOME/memex` and `~/.config/memex` defaults.

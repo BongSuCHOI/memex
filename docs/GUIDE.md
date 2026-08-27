@@ -86,16 +86,8 @@ node scripts/install-memex.mjs \
 hooks를 다시 로드하지 않습니다.
 
 첫 사용 전에 기존 Codex session history를 conversation → fact → ontology/vector
-순서로 준비합니다. 현재 terminal session에서 짧은 `memex` 명령을 쓰려면 먼저 다음
-shell function을 정의합니다.
-
-```bash
-memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
-
-memex setup
-```
-
-셸 함수 대신 영구 shim을 원하면(기존 npx 함수 정의 후 1회):
+순서로 준비합니다. 터미널에서 `memex` CLI를 직접 쓰려면 플러그인 등록만으로는 PATH에
+실행 파일이 생기지 않으므로, 다음 명령을 **한 번만** 실행해 영구 shim을 만듭니다:
 
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli

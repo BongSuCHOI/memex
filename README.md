@@ -127,26 +127,17 @@ development validation. The full JSON and rollback behavior remain in
 ## First-run onboarding
 
 After installation, **restart Codex** so the newly installed MCP server, skills,
-and plugin-managed hooks are loaded in a fresh session.
-
-For readable terminal commands, define this session-local shell function. It
-always targets the latest `main` runtime and does not install globally:
-
-```bash
-memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
-```
-
-Alternatively, once `memex setup` exists you can install a permanent shim
-instead of a shell function:
+and plugin-managed hooks are loaded in a fresh session. In-session features
+(conversation search, fact extraction/injection, MCP tools) then work without any
+further setup. To use the `memex` CLI directly in your terminal, note that plugin
+registration alone does not put a `memex` binary on your PATH — run this once to
+install a permanent shim (never a global install; PATH is checked and reported):
 
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
 ```
 
-That creates `~/.local/bin/memex` (never a global install; PATH is checked and
-reported). Remove it later with `memex setup --uninstall-cli`.
-
-Then perform the one-time corpus setup:
+That creates `~/.local/bin/memex`, which you use for the one-time corpus setup:
 
 ```bash
 memex setup
