@@ -223,9 +223,17 @@ export async function consolidateAllPending(db, since) {
 export function applyConsolidationResult(db, existingFact, newFact, result) {
     // Normalize merged_fact: treat empty/whitespace-only as absent
     const mergedFact = result.merged_fact?.trim() || null;
+    const mergedSources = [...new Set([
+            ...existingFact.source_exchange_ids,
+            ...newFact.source_exchange_ids,
+        ])];
+    const newEvidenceSource = newFact.source_exchange_ids[0] ?? null;
     switch (result.relation) {
         case 'DUPLICATE':
-            updateFact(db, existingFact.id, { consolidated_count_increment: true });
+            updateFact(db, existingFact.id, {
+                consolidated_count_increment: true,
+                source_exchange_ids: mergedSources,
+            });
             deactivateFact(db, newFact.id);
             break;
         case 'CONTRADICTION':
@@ -235,7 +243,7 @@ export function applyConsolidationResult(db, existingFact, newFact, result) {
                 previous_fact: existingFact.fact,
                 new_fact: mergedFact || newFact.fact,
                 reason: result.reason,
-                source_exchange_id: null,
+                source_exchange_id: newEvidenceSource,
             });
             if (mergedFact) {
                 updateFact(db, newFact.id, { fact: mergedFact });
@@ -247,11 +255,12 @@ export function applyConsolidationResult(db, existingFact, newFact, result) {
                 previous_fact: existingFact.fact,
                 new_fact: mergedFact || newFact.fact,
                 reason: result.reason,
-                source_exchange_id: null,
+                source_exchange_id: newEvidenceSource,
             });
             updateFact(db, existingFact.id, {
                 fact: mergedFact || newFact.fact,
                 consolidated_count_increment: true,
+                source_exchange_ids: mergedSources,
             });
             deactivateFact(db, newFact.id);
             break;

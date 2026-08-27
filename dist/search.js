@@ -56,7 +56,7 @@ function validateISODate(dateStr, paramName) {
     }
 }
 export async function searchConversations(query, options = {}) {
-    const { limit = 10, mode = 'both', after, before } = options;
+    const { limit = 10, mode = 'both', after, before, project } = options;
     // Validate date parameters
     if (after)
         validateISODate(after, '--after');
@@ -68,6 +68,10 @@ export async function searchConversations(query, options = {}) {
         // Build filter clauses with parameterized queries
         const filterParts = [];
         const filterParams = [];
+        if (project) {
+            filterParts.push(`e.project = ?`);
+            filterParams.push(project);
+        }
         if (after) {
             filterParts.push(`e.timestamp >= ?`);
             filterParams.push(after);
@@ -76,7 +80,7 @@ export async function searchConversations(query, options = {}) {
             filterParts.push(`e.timestamp <= ?`);
             filterParams.push(before);
         }
-        const timeClause = filterParts.length > 0 ? `AND ${filterParts.join(' AND ')}` : '';
+        const filterClause = filterParts.length > 0 ? `AND ${filterParts.join(' AND ')}` : '';
         const timeParams = filterParams;
         if (mode === 'vector' || mode === 'both') {
             // Vector similarity search
@@ -101,7 +105,7 @@ export async function searchConversations(query, options = {}) {
           WHERE vec.embedding MATCH ${vecParamSql(vecDtype)}
             AND k = ?
             AND e.embedding_version = ?
-            ${timeClause}
+            ${filterClause}
           ORDER BY vec.distance ASC
         `);
                 // embedding_version filter: old-model vectors are incomparable with the
@@ -210,13 +214,13 @@ export async function searchConversations(query, options = {}) {
                         // inner-limit over-fetch was reproduced hiding a valid old row
                         // behind 250 newer matches) — so they use the join-then-sort
                         // form; filters shrink the materialized set instead.
-                        const mkFtsStmt = timeClause
+                        const mkFtsStmt = filterClause
                             ? (orderBy) => db.prepare(`
                   SELECT ${cols}, 0 as distance
                   FROM exchanges_fts AS fts
                   JOIN exchanges AS e ON e.rowid = fts.rowid
                   WHERE exchanges_fts MATCH ?
-                    ${timeClause}
+                    ${filterClause}
                   ORDER BY ${orderBy.replace('rowid', 'fts.rowid')}
                   LIMIT ?
                 `)
@@ -256,7 +260,7 @@ export async function searchConversations(query, options = {}) {
                                 const stmt = n <= RANK_BUDGET ? rankedStmt : recentStmt;
                                 // filtered form: (expr, ...timeParams, limit)
                                 // unfiltered subquery form: (expr, innerLimit, outerLimit)
-                                if (timeClause)
+                                if (filterClause)
                                     return stmt.all(expr, ...params, lim);
                                 const rows = stmt.all(expr, lim, lim);
                                 // Self-heal on index desync: every legit FTS rowid joins to an
@@ -390,7 +394,7 @@ export async function searchConversations(query, options = {}) {
           SELECT ${cols}, 0 as distance
           FROM exchanges AS e
           WHERE (e.user_message LIKE ? ESCAPE '\\' OR e.assistant_message LIKE ? ESCAPE '\\')
-            ${timeClause}
+            ${filterClause}
           ORDER BY e.timestamp DESC
           LIMIT ?
         `);
@@ -617,7 +621,7 @@ export async function getKnowledgeContext(query, project, limit = 5) {
             const domainName = catInfo ? (domainMap.get(catInfo.domainId) ?? 'Unclassified') : 'Unclassified';
             const catName = catInfo ? catInfo.name : 'Unclassified';
             // Expand via 1-hop graph traversal
-            const related = getRelatedFacts(db, fact.id, 1);
+            const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project ?? null);
             const relatedFacts = related.map(({ fact: relFact, relation }) => ({
                 fact: relFact.fact,
                 relationType: relation.relation_type,

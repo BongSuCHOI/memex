@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { ExtractedFact } from './types.js';
-export declare const EXTRACTION_SYSTEM_PROMPT = "You are an expert at extracting long-term facts from conversations.\n\n## Rules\n- 1 fact = 1 sentence (concise)\n- Ignore trivial exchanges (greetings, \"yes\", \"thanks\")\n- Code snippets are NOT facts - extract only decisions/patterns\n- No duplicate facts within the same batch\n- Prefer durable facts (decisions, conventions, constraints, lessons) over\n  session-ephemeral details (\"user is currently editing file X\" is NOT a fact)\n- Capture problem\u2192solution lessons as \"pattern\"\n  (e.g., \"X error in this project is caused by Y and fixed by Z\")\n\n## scope determination\n- project: specific files/paths/DB/API/framework/business logic\n- global: coding style, language/response format, common tool usage\n\n## Output format (JSON array)\n[\n  {\n    \"fact\": \"User uses Riverpod for state management\",\n    \"fact_kr\": \"\uC0AC\uC6A9\uC790\uB294 \uC0C1\uD0DC \uAD00\uB9AC\uC5D0 Riverpod\uC744 \uC0AC\uC6A9\uD55C\uB2E4\",\n    \"category\": \"decision\",\n    \"scope_type\": \"project\",\n    \"confidence\": 0.9\n  }\n]\n\n## fact_kr rules\n- Natural Korean translation of \"fact\"\n- Keep technical terms (API/tool/framework names, file paths, commands) in English\n\n## category choices\n- decision: architecture/technology decisions\n- preference: user preferences\n- pattern: repeated patterns\n- knowledge: project knowledge\n- constraint: constraints\n\n## confidence criteria\n- 0.9+: explicit decision/declaration\n- 0.7-0.9: inferred from behavior\n- Below 0.7: do not extract";
+export declare const EXTRACTION_SYSTEM_PROMPT = "You are an expert at extracting long-term facts from conversations.\n\n## Rules\n- 1 fact = 1 sentence (concise)\n- Ignore trivial exchanges (greetings, \"yes\", \"thanks\")\n- Code snippets are NOT facts - extract only decisions/patterns\n- No duplicate facts within the same batch\n- Prefer durable facts (decisions, conventions, constraints, lessons) over\n  session-ephemeral details (\"user is currently editing file X\" is NOT a fact)\n- Capture problem\u2192solution lessons as \"pattern\"\n  (e.g., \"X error in this project is caused by Y and fixed by Z\")\n- Treat only content present in the evidence block as evidence. Never reconstruct\n  or infer a decision from content marked as excluded Memex recall output.\n- Human assertions and explicitly labeled trusted tool evidence are primary\n  evidence. Assistant synthesis and Memex recall are context only and must not\n  support, reinforce, contradict, or raise confidence for a fact.\n\n## scope determination\n- project: specific files/paths/DB/API/framework/business logic\n- global: coding style, language/response format, common tool usage\n\n## Output format (JSON array)\n[\n  {\n    \"fact\": \"User uses Riverpod for state management\",\n    \"fact_kr\": \"\uC0AC\uC6A9\uC790\uB294 \uC0C1\uD0DC \uAD00\uB9AC\uC5D0 Riverpod\uC744 \uC0AC\uC6A9\uD55C\uB2E4\",\n    \"category\": \"decision\",\n    \"scope_type\": \"project\",\n    \"confidence\": 0.9\n  }\n]\n\n## fact_kr rules\n- Natural Korean translation of \"fact\"\n- Keep technical terms (API/tool/framework names, file paths, commands) in English\n\n## category choices\n- decision: architecture/technology decisions\n- preference: user preferences\n- pattern: repeated patterns\n- knowledge: project knowledge\n- constraint: constraints\n\n## confidence criteria\n- 0.9+: explicit decision/declaration\n- 0.7-0.9: inferred from behavior\n- Below 0.7: do not extract";
 /** 선점(claim)을 잃어 작업을 중단할 때 던진다. 호출자는 이것을 실패가 아니라
  *  "다른 러너가 이 세션을 가져갔다"로 읽어야 한다 — 예산을 소모하지 않는다. */
 export declare class ClaimLostError extends Error {
@@ -11,7 +11,7 @@ export declare class ClaimLostError extends Error {
  * Filters harness artifacts (local command output), bare slash commands,
  * and trivial acknowledgements — they waste LLM calls and produce noise facts.
  */
-export declare function isSubstantiveExchange(userMessage: string, assistantMessage: string): boolean;
+export declare function isSubstantiveExchange(userMessage: string, assistantMessage: string, hasLearnableToolEvidence?: boolean): boolean;
 /** Normalize fact text for cross-batch duplicate detection within a session. */
 export declare function normalizeFactText(fact: string): string;
 /**
@@ -29,6 +29,14 @@ export declare function selectSpreadBatches<T>(batches: T[], maxBatches: number)
 export declare function buildExtractionPrompt(exchanges: Array<{
     user_message: string;
     assistant_message: string;
+    assistant_learnable?: number | boolean;
+    has_memex_recall?: number | boolean;
+    tool_evidence?: Array<{
+        tool_name: string;
+        tool_result: string | null;
+        source_type: string;
+        learnable: number | boolean;
+    }>;
 }>): string;
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string, stats?: {

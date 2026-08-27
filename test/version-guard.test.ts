@@ -3,10 +3,11 @@ import {
   compareVersions,
   parseLockMeta,
   decideTakeover,
+  isSyncCliCommand,
   staleWorkerVersion,
 } from '../src/version-guard.js';
 
-const CACHE = '/Users/u/.codex/plugins/cache/local/memory-bank';
+const CACHE = '/Users/u/.codex/plugins/cache/local/memex';
 
 describe('compareVersions', () => {
   it('orders numerically, not lexically', () => {
@@ -75,6 +76,16 @@ describe('decideTakeover', () => {
   it('defers to a newer holder and to unknown runtime', () => {
     expect(decideTakeover({ pid: 9, version: '1.5.0', startedAt: null }, '1.4.4', HOUR, WEDGE)).toBe('defer');
     expect(decideTakeover({ pid: 9, version: '1.4.4', startedAt: null }, '1.4.4', null, WEDGE)).toBe('defer');
+  });
+});
+
+describe('isSyncCliCommand', () => {
+  it('recognizes only current Memex cache workers', () => {
+    expect(isSyncCliCommand('node /Users/u/.codex/plugins/cache/local/memex/0.1.0/dist/sync-cli.js')).toBe(true);
+    expect(isSyncCliCommand('node /Users/u/.codex/plugins/cache/local/memory-bank/1.5.0/dist/sync-cli.js')).toBe(false);
+    expect(isSyncCliCommand('node /Users/u/Projects/memory-bank-codex/dist/sync-cli.js')).toBe(false);
+    expect(isSyncCliCommand('node /some/other/app/sync-cli.js')).toBe(false);
+    expect(isSyncCliCommand('grep memex sync-cli')).toBe(false);
   });
 });
 

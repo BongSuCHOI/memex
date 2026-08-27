@@ -1,0 +1,5 @@
+{"timestamp": "2026-08-20T01:00:00.000Z", "type": "session_meta", "payload": {"id": "0f8f2c1e-intern-0001-2222-3333-444455556666", "session_id": "0f8f2c1e-intern-0001-2222-3333-444455556666", "timestamp": "2026-08-20T01:00:00.000Z", "cwd": "/tmp/mb-fixture/team-a/shared", "originator": "codex-tui", "cli_version": "0.149.1", "source": "cli", "thread_source": "user"}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions\nalways lint before commit"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<codex_internal_context>session bootstrap noise</codex_internal_context>"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "real question about retry policy"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Retries back off exponentially with a cap."}]}}

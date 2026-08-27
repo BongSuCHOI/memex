@@ -1,108 +1,286 @@
-# Memory Bank for Codex
+# Memex
 
-Memory Bank turns local Codex rollout sessions into searchable long-term
-memory. It archives user/assistant exchanges, indexes them with local
-embeddings and FTS5, extracts durable facts with the Codex CLI, and exposes the
-result through MCP tools and a local dashboard.
+[![Release](https://img.shields.io/badge/release-0.1.0-2563eb)](CHANGELOG.md)
+[![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
+[![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## What it provides
+> Collect scattered Codex conversations, distill durable knowledge, connect it,
+> index it, and bring the right memory back when it matters.
 
-- Codex rollout ingestion from `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- subagent and harness-context exclusion
-- semantic and text conversation search
-- extracted facts, ontology relations, provenance, and cross-project insights
-- prompt-time context injection and session-end extraction hooks
-- nine MCP tools: `search`, `read`, `search_facts`, `search_ontology`,
-  `ask_avatar`, `trace_fact`, `explore_graph`, `cross_project_insights`, and
-  `graph_stats`
-- a local dashboard on port 3847
+Memex is a local-first personal knowledge system for Codex. It turns local
+rollout sessions into a searchable conversation archive, durable facts, an
+ontology-backed knowledge graph, and bounded context that Codex can reuse in
+later work.
 
-All model-backed work runs through the locally authenticated Codex CLI. No API
-key or external model SDK is used. The default model is `gpt-5.6-luna`.
+[한국어 README](README-KR.md) · [Documentation](docs/README.md) ·
+[Install and operations](docs/GUIDE.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[Schema](docs/SCHEMA.md)
+
+Memex is an independent Codex-native project derived from the MIT-licensed
+[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank),
+which descends from
+[`obra/episodic-memory`](https://github.com/obra/episodic-memory). It preserves
+the knowledge-system capabilities, not Claude Code compatibility code. See
+[lineage and migration](docs/LINEAGE.md).
+
+## Why 0.1.0?
+
+`0.1.0` is the right first public release. The feature set is substantial and
+tested, but the repository is newly independent and its Codex marketplace,
+host-adapter, and installation contracts may still change before a stable
+`1.0.0`. Version `1.0.0` will mean those public contracts are intentionally
+stable, not merely that many features exist.
+
+## Features
+
+- Semantic, FTS5/BM25, and hybrid search over Codex conversation history
+- Deterministic full-history analysis without an LLM call
+- Incremental fact extraction, confidence gates, consolidation, revisions, and provenance
+- Domain/category ontology and typed knowledge-graph relations
+- Project, global, and explicitly requested all-project scope isolation
+- 1–3 hop graph traversal and cross-project insights
+- Bounded RAG context injection with relevance and per-session deduplication
+- Transparent bounded reads for compressed `.jsonl.zst` archives
+- Nine MCP tools for conversations, facts, ontology, graph, and provenance
+- Three Codex skills for recall, history analysis, and dashboard workflows
+- Loopback-only Web UI with facts, pipeline health, and a 3D Knowledge Galaxy
+- Codex-native SessionStart, UserPromptSubmit, and SessionEnd hooks
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    R[Codex rollout JSONL] --> S[Sync and parser]
+    S --> A[Immutable local archive]
+    S --> C[(Conversation index)]
+    C --> X[Incremental fact extraction]
+    X --> F[(Facts and revisions)]
+    F --> O[(Ontology and typed relations)]
+    C --> Q[Hybrid retrieval]
+    F --> Q
+    O --> Q
+    Q --> M[MCP tools and skills]
+    Q --> H[Prompt context hook]
+    C --> UI[Loopback Web UI]
+    F --> UI
+    O --> UI
+```
+
+Source rollouts are read-only. Archives, SQLite/FTS/vector indexes, facts, and
+graph data are derived local state. Model-backed work runs through an isolated,
+ephemeral local `codex exec`; there is no Claude fallback or separate API-key
+provider.
+
+For the detailed mechanisms, see:
+
+- [System architecture](docs/ARCHITECTURE.md)
+- [Conversation lifecycle](docs/CONVERSATION-LIFECYCLE.md)
+- [Fact lifecycle](docs/FACT-LIFECYCLE.md)
+- [Knowledge graph](docs/KNOWLEDGE-GRAPH.md)
+- [Retrieval and context injection](docs/RETRIEVAL-AND-CONTEXT.md)
+- [MCP and skills](docs/MCP-AND-SKILLS.md)
+- [Web UI and 3D visualization](docs/VISUALIZATION.md)
 
 ## Requirements
 
 - Node.js 22.15 or newer
-- Codex CLI 0.149 or newer
+- An authenticated Codex CLI
+- macOS or Linux for the current hook and Unix-socket runtime
 
-## Build
+The plugin uses Node's bundled `npx` launcher to resolve the latest runtime from
+`BongSuCHOI/memex#main` into npm's isolated cache. It does not clone or build in
+your project, install a global package, or write dependencies into the Codex
+plugin cache.
 
-```bash
-cd /path/to/memory-bank-codex
-npm install
-npm run build
-```
+## Recommended installation
 
-Nothing installs dependencies, registers MCP servers, or changes Codex config
-automatically. If the built server or dependencies are absent, the launcher
-prints the exact manual command and exits.
-
-## Codex wiring
-
-The native plugin bundle is described by `.codex-plugin/plugin.json` and uses:
-
-- `.mcp.json` for the Memory Bank MCP server
-- `hooks.json` for `SessionStart`, `UserPromptSubmit`, and `SessionEnd`
-- `skills/` for historical search, whole-history analysis, and dashboard launch
-
-For checkout-local development, open Codex in this repository so the committed
-`.mcp.json` and root `hooks.json` are discovered. A personal plugin installation must
-be added through a Codex marketplace; do not hand-edit Codex plugin cache files.
-
-The complete local marketplace setup, plugin registration/removal, MCP and CLI
-reference, hook lifecycle, extraction logic, data cleanup, and Mermaid architecture
-diagrams are documented in the [Korean operations and architecture guide](docs/GUIDE-KR.md).
-
-User-scope MCP-only registration is also possible:
-
-```toml
-[mcp_servers.memory-bank]
-command = "node"
-args = ["/absolute/path/to/memory-bank/cli/mcp-server-wrapper.js"]
-```
-
-## CLI
+Install directly from the public repository:
 
 ```bash
-node cli/memory-bank.js sync
-node cli/memory-bank.js search "React authentication"
-node cli/memory-bank.js stats
-node cli/memory-bank.js analyze
+codex plugin marketplace add BongSuCHOI/memex
+codex plugin add memex@memex
 ```
 
-Data is stored under `~/.config/memory-bank` by default:
+That is the complete user installation. It installs the plugin manifest, three
+skills, MCP declaration, lifecycle hooks, CLI launcher, and UI launcher. The
+first runtime call may take longer while `npx` fills its cache with native
+SQLite, vector, and embedding dependencies.
+
+### Existing manual marketplace flow
+
+The external marketplace layout remains supported for development and
+air-gapped/local testing:
 
 ```text
-conversation-archive/
-conversation-index/db.sqlite
+memex-local-marketplace/
+├── .agents/plugins/marketplace.json
+└── plugins/memex -> /absolute/path/to/memex
 ```
 
-## Configuration
+Point its entry at `./plugins/memex`, register it with
+`codex plugin marketplace add /absolute/path/memex-local-marketplace`, install
+`memex@<marketplace-name>`. The source installer remains available for local
+development validation. The full JSON and rollback behavior remain in
+[the operations guide](docs/GUIDE.md#manual-local-marketplace).
 
-| Variable | Purpose |
+## First-run onboarding
+
+After installation, **restart Codex** so the newly installed MCP server, skills,
+and plugin-managed hooks are loaded in a fresh session.
+
+For readable terminal commands, define this session-local shell function. It
+always targets the latest `main` runtime and does not install globally:
+
+```bash
+memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
+```
+
+Then perform the one-time corpus setup:
+
+```bash
+memex setup
+memex sync
+memex backfill extract --foreground
+memex backfill ontology --foreground
+memex backfill embeddings --foreground
+memex status
+```
+
+`memex setup` checks the effective Codex `memories` feature. When built-in
+Memory is enabled, Memex explains the double-memory/conflicting-memory risk and
+recommends disabling it. Interactive terminals ask for confirmation; automation
+and non-interactive shells never change the setting without the explicit
+`memex setup --disable-codex-memory` approval flag. The change uses Codex's own
+`codex features disable memories` command and is verified afterward.
+
+What each stage does:
+
+1. `sync` reads existing `$CODEX_HOME/sessions`, archives new rollouts, and
+   builds conversation search indexes.
+2. `backfill extract` distills durable facts from already indexed exchanges.
+3. `backfill ontology` classifies facts and builds graph structure.
+4. `backfill embeddings` fills missing semantic vectors.
+5. `status` reports conversation, fact, and graph readiness separately.
+
+Large histories and local model-backed extraction can take several minutes or
+longer. Run the commands in the foreground for unambiguous first-time
+completion. If you choose `--background`, “started” is not “finished”; keep
+checking `memex status` until pending counts reach the expected state.
+
+Marketplace installation does not modify source rollouts or derived data before
+this onboarding step. `sync` is idempotent and safe to repeat.
+
+## Daily use
+
+```bash
+memex sync
+memex search "why did we choose SQLite?"
+memex search --both "authentication migration"
+memex stats
+memex analyze --top 30 --out ~/memex-report.md
+memex status
+```
+
+| Command | Purpose |
 | --- | --- |
-| `MEMORY_BANK_HOME` | Override the complete Memory Bank data root |
-| `MEMORY_BANK_CONFIG_DIR` | Test alias for the data root |
-| `XDG_CONFIG_HOME` | Places data at `$XDG_CONFIG_HOME/memory-bank` |
-| `MEMORY_BANK_DB_PATH` | Override only the SQLite database path |
-| `MEMORY_BANK_SESSIONS_DIR` | Override the Codex rollout root |
-| `MEMORY_BANK_CODEX_MODEL` | Model for every Codex-backed operation; default `gpt-5.6-luna` |
-| `MEMORY_BANK_CODEX_BIN` | Alternate Codex executable |
-| `MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS` | Per-call timeout; default 180000 ms |
+| `memex setup` | Detect built-in Codex Memory conflict; disable only with approval |
+| `memex sync` | Archive and index new Codex rollouts |
+| `memex index` | Re-index or verify the local corpus |
+| `memex search` | Vector, text, or hybrid conversation search |
+| `memex show` | Render one archived conversation |
+| `memex stats` | Show corpus and index statistics |
+| `memex analyze` | Generate a deterministic full-history report |
+| `memex status` | Read pipeline readiness without mutation |
+| `memex backfill` | Run extraction, ontology, or embedding backlog work |
+| `memex facts` | Inspect and manage durable facts |
+| `memex migrate-projects` | Safely re-derive canonical project identities |
+| `memex setup-hooks` | Explicit fallback registration for non-plugin installs |
+| `memex remove-hooks` | Remove only explicitly registered Memex hook entries |
+| `memex doctor` | Diagnose dependencies, build, MCP, and lifecycle state |
 
-## Model isolation
+## MCP tools and skills
 
-Every extraction, summary, consolidation, and translation call runs in an
-isolated temporary directory with:
+The plugin exposes:
 
 ```text
-codex exec --ephemeral --ignore-user-config --ignore-rules \
-  --sandbox read-only --skip-git-repo-check -C <temporary-directory> \
-  -m gpt-5.6-luna --json -
+search, read, search_facts, search_ontology, ask_avatar,
+trace_fact, explore_graph, cross_project_insights, graph_stats
 ```
 
-This prevents child rollout creation, plugin/hook recursion, user-config
-coupling, and writes to the active repository.
+Project-sensitive tools require a canonical absolute project path or explicit
+`global`/`all` scope. The MCP process never guesses scope from its own cwd.
+See [MCP and skills](docs/MCP-AND-SKILLS.md) for schemas and examples.
+
+## Local Web UI
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex-ui
+# http://localhost:3847
+```
+
+Routes:
+
+- `/` — conversations, projects, search, and exchanges
+- `/facts` — facts, revisions, provenance, and guarded mutations
+- `/graph` — scoped live 3D knowledge graph
+- `/pipeline` — readiness and backlog health
+
+The server binds only to loopback. See [visualization](docs/VISUALIZATION.md).
+
+## Updates
+
+Preview, then update the Git marketplace snapshot and reinstall the plugin:
+
+```bash
+memex update --dry-run
+memex update
+```
+
+The runtime launcher already follows the latest `main`; `memex update` refreshes
+the marketplace snapshot too, so updated skills, hooks, and MCP metadata are
+installed together. Restart Codex afterward. Durable Memex data is preserved.
+
+## Recall provenance and self-ingestion safety
+
+Memex records hook recalls as durable, per-event `memex_recall` receipts keyed
+by session and human-prompt hash. Memex MCP retrieval results are classified the
+same way. Provenance is evidence-level, not turn-level: human assertions and
+allowlisted local repository, Git-history, and test-execution results remain
+learnable even beside a recall; Memex results, external/unknown tool output, and
+assistant-generated synthesis do not. The complete exchange remains searchable.
+This prevents “recall → agent echo → new fact → recall” amplification while
+preserving evidence-backed fact evolution.
+
+## Uninstall
+
+Plugin-managed hooks disappear when the plugin is removed. If an older/manual
+installation used `setup-hooks`, remove only those fingerprinted entries
+before deleting the plugin:
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex remove-hooks --dry-run
+npx --yes --package=github:BongSuCHOI/memex#main memex remove-hooks
+codex plugin remove memex@memex --json
+codex plugin marketplace remove memex --json
+```
+
+Uninstalling preserves both `$CODEX_HOME/sessions` and Memex's derived data.
+Review the exact data path before deleting it manually. See
+[the operations guide](docs/GUIDE.md#uninstall-and-data-retention).
+
+## Data and privacy
+
+Default derived data remains at `~/.config/memory-bank` for durable-data
+compatibility. Resolution order:
+
+1. `MEMORY_BANK_HOME`
+2. `MEMORY_BANK_CONFIG_DIR`
+3. `$XDG_CONFIG_HOME/memory-bank`
+4. `~/.config/memory-bank`
+
+The naming is historical storage compatibility, not a Claude runtime adapter.
+See [schema](docs/SCHEMA.md) and [security boundaries](docs/ARCHITECTURE.md).
 
 ## Verification
 
@@ -110,13 +288,36 @@ coupling, and writes to the active repository.
 npm run typecheck
 npm run build
 npm test
+npm run test:marketplace
+npm run test:package
 node --test test/codex-slice.test.mjs
+node --test test/*slice.test.mjs
+node scripts/validate-plugin.mjs
 ```
 
-See `docs/SCHEMA.md` for the current database schema.
+Codex CLI 0.149.1 does not expose `codex plugin validate`; the repository
+records that version boundary and runs an isolated installed-artifact
+substitute instead. Current receipts and remaining limits are documented in
+[verification](docs/VERIFICATION.md).
 
-## License and origin
+## Contributing
 
-MIT. This Codex-native project is derived from
-[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank); see
-`LICENSE` and Git history for attribution.
+Clone and build only for development or contribution:
+
+```bash
+git clone https://github.com/BongSuCHOI/memex.git
+cd memex
+npm ci
+npm run build
+npm test
+```
+
+Read [AGENTS.md](AGENTS.md) for product invariants, ownership boundaries, and
+required checks. When behavior changes, update the owner document identified in
+[the documentation map](docs/README.md) in the same change.
+
+## License
+
+MIT. Upstream attribution and third-party notices are in
+[docs/LINEAGE.md](docs/LINEAGE.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -2,7 +2,7 @@ import { l2DistanceToSimilarity } from './db.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
-import { searchSimilarFacts } from './fact-db.js';
+import { searchSimilarFacts, searchSimilarFactsSameScope } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
 const AVATAR_SYSTEM_PROMPT = `You are acting as the user's technical alter ego.
 You represent their past engineering decisions, preferences, and patterns.
@@ -25,12 +25,21 @@ You represent their past engineering decisions, preferences, and patterns.
 - 0.7-0.9: inferred from related decisions
 - 0.5-0.7: weak inference, needs verification
 - below 0.5: not enough information`;
-export async function askAvatar(db, question, project) {
+export async function askAvatar(db, question, project, scope) {
     await initEmbeddings();
     const questionEmbedding = await generateEmbedding(question, 'query');
     const scopeProject = project ?? null;
     // Step 1: Vector search for top-10 relevant facts
-    const vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+    let vectorResults;
+    if (scope === 'global') {
+        vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: 'global' }, 10, 0.6);
+    }
+    else if (scopeProject) {
+        vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+    }
+    else {
+        vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
+    }
     if (vectorResults.length === 0) {
         return {
             answer: '관련된 과거 결정을 찾을 수 없습니다. 아직 충분한 기억이 쌓이지 않았습니다.',
@@ -48,8 +57,10 @@ export async function askAvatar(db, question, project) {
     const relatedDecisions = [];
     const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
     for (const { fact } of vectorResults.slice(0, 5)) {
-        const related = getRelatedFacts(db, fact.id, 1);
+        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
         for (const { fact: relFact, relation } of related) {
+            if (scope === 'global' && relFact.scope_type !== 'global')
+                continue;
             if (!expandedFactIds.has(relFact.id)) {
                 expandedFactIds.add(relFact.id);
                 relatedDecisions.push({ fact: relFact, relation: relation.relation_type });

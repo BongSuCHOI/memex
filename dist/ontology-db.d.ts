@@ -26,7 +26,7 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
     distance: number;
 }>;
 export declare function classifyFact(db: Database.Database, factId: string, categoryId: string): void;
-export declare function getFactsByCategory(db: Database.Database, categoryId: string): Fact[];
+export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];
 export declare function createRelation(db: Database.Database, sourceFactId: string, relationType: RelationType, targetFactId: string, reasoning?: string): OntologyRelation;
 /**
@@ -45,11 +45,11 @@ export declare function createRelation(db: Database.Database, sourceFactId: stri
  *                       Prevents cross-project noise in graph traversal.
  *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
  */
-export declare function getRelatedFacts(db: Database.Database, factId: string, hops?: number, decay?: number, minRelevance?: number, scopeProject?: string | null): Array<{
+export declare function getRelatedFacts(db: Database.Database, factId: string, hops?: number, decay?: number, minRelevance?: number, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Array<{
     fact: Fact;
     relation: OntologyRelation;
     relevance: number;
     hop: number;
 }>;
 export declare function getRelationsForFact(db: Database.Database, factId: string): OntologyRelation[];
-export declare function getOntologyTree(db: Database.Database): DomainTree[];
+export declare function getOntologyTree(db: Database.Database, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): DomainTree[];

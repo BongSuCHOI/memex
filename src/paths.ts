@@ -14,7 +14,7 @@ function ensureDir(dir: string): string {
 }
 
 /**
- * Native memory-bank data root.
+ * Native memory-bank data root (pure getter — never mutates filesystem).
  *
  * Precedence (no legacy fallback, no migration):
  * 1. MEMORY_BANK_HOME          — explicit root, used as-is
@@ -23,44 +23,67 @@ function ensureDir(dir: string): string {
  * 4. ~/.config/memory-bank     — default
  */
 export function getMemoryBankHome(): string {
-  const dir = process.env.MEMORY_BANK_HOME
+  return process.env.MEMORY_BANK_HOME
     || process.env.MEMORY_BANK_CONFIG_DIR
     || (process.env.XDG_CONFIG_HOME
       ? path.join(process.env.XDG_CONFIG_HOME, 'memory-bank')
       : path.join(os.homedir(), '.config', 'memory-bank'));
-  return ensureDir(dir);
 }
 
 /**
- * Get conversation archive directory
+ * Get conversation archive directory (pure getter).
  */
 export function getArchiveDir(): string {
-  // Allow test override
   if (process.env.TEST_ARCHIVE_DIR) {
-    return ensureDir(process.env.TEST_ARCHIVE_DIR);
+    return process.env.TEST_ARCHIVE_DIR;
   }
-
-  return ensureDir(path.join(getMemoryBankHome(), 'conversation-archive'));
+  return path.join(getMemoryBankHome(), 'conversation-archive');
 }
 
 /**
- * Get conversation index directory
+ * Get conversation index directory (pure getter).
  */
 export function getIndexDir(): string {
-  return ensureDir(path.join(getMemoryBankHome(), 'conversation-index'));
+  return path.join(getMemoryBankHome(), 'conversation-index');
 }
 
 /**
- * Get database path
+ * Get database path (pure getter).
  */
 export function getDbPath(): string {
-  // Allow test override with direct DB path
   if (process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH) {
     return process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH!;
   }
-
   return path.join(getIndexDir(), 'db.sqlite');
 }
+
+/**
+ * Write helpers (explicit directory creation for write paths only).
+ */
+export function ensureMemoryBankHome(): string {
+  const dir = getMemoryBankHome();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function ensureArchiveDir(): string {
+  const dir = getArchiveDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function ensureIndexDir(): string {
+  const dir = getIndexDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function ensureDbDir(): string {
+  const dbDir = path.dirname(getDbPath());
+  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+  return dbDir;
+}
+
 
 /**
  * Get exclude config path
@@ -87,16 +110,20 @@ export { sessionsRoot as getSessionsRoot };
 export const LLM_WORKDIR_BASENAME = 'memory-bank-llm';
 
 /**
- * True if a project key derived from session cwd must be skipped by
- * indexing/sync. Combines the user-configured exact-match
- * list with the built-in exclusion of the plugin's own LLM worker sessions.
+ * True if a canonical project must be skipped by indexing/sync.
+ *
+ * CX-02: `project` is the canonical absolute cwd. The user list is an
+ * exact-match on that canonical path (a basename entry can no longer
+ * accidentally exclude an unrelated same-named project). The built-in rule
+ * still excludes the reserved LLM worker workdir, matched on the final path
+ * segment so both `.../memory-bank-llm` and legacy slug forms stay covered.
  */
 export function isExcludedProject(project: string, excluded?: string[]): boolean {
   const list = excluded ?? getExcludedProjects();
   if (list.includes(project)) return true;
-  // Built-in: LLM worker session slugs (cwd path with '/' → '-'), e.g.
-  // -private-var-folders-…-T-memory-bank-llm or …-T-tmp-XXXX-memory-bank-llm.
-  return project === LLM_WORKDIR_BASENAME || project.endsWith(`-${LLM_WORKDIR_BASENAME}`);
+  // Built-in: the plugin's own headless worker workdir basename.
+  const segments = project.split('/').filter(Boolean);
+  return segments[segments.length - 1] === LLM_WORKDIR_BASENAME;
 }
 
 /**

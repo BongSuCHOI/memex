@@ -1,0 +1,226 @@
+/**
+ * CX-04 — pipeline readiness & backfill observability.
+ *
+ * READ-ONLY by contract: status opens the database readonly, never spawns
+ * workers, never calls the LLM, never mutates anything. Readiness is derived
+ * from ledger/table state, not from file existence or live PIDs.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
+import { getDbPath, getArchiveDir } from './paths.js';
+import { EXTRACTION_STATE, freshClaimPredicate } from './pending-extraction.js';
+function tableExists(db, name) {
+    return (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined);
+}
+function count(db, sql, ...params) {
+    const row = db.prepare(sql).get(...params);
+    return row ? Number(row.c) : 0;
+}
+/** Recursively count rollout/summary files under the archive root. */
+function countArchiveFiles(archiveDir) {
+    let n = 0;
+    const walk = (dir) => {
+        let entries = [];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const e of entries) {
+            if (e.isDirectory())
+                walk(path.join(dir, e.name));
+            else if (e.isFile() && e.name.endsWith('.jsonl'))
+                n++;
+        }
+    };
+    walk(archiveDir);
+    return n;
+}
+export function getPipelineStatus(opts = {}) {
+    const dbPath = opts.dbPath ?? getDbPath();
+    const dbExists = fs.existsSync(dbPath);
+    // Lifecycle observation log lives outside the DB and is always safe to read.
+    const lifecycleLastEventAt = readHookEvents();
+    if (!dbExists) {
+        return {
+            dataRootEmpty: true,
+            conversations: { sessionsIndexed: 0, exchanges: 0, archiveFiles: countArchiveFiles(getArchiveDir()), ready: false },
+            extraction: { total: 0, done: 0, pending: 0, claimed: 0, failedPermanent: 0, retriable: 0, lastSuccessAt: null, lastErrorAt: null },
+            embeddings: { activeFacts: 0, factVectorsPending: 0 },
+            ontology: { classifiedFacts: 0, pendingFacts: 0 },
+            relations: 0,
+            lifecycleLastEventAt,
+            readiness: { conversationReady: false, factReady: false, graphReady: false },
+        };
+    }
+    const db = new Database(dbPath, { readonly: true });
+    // vec0 virtual tables need the sqlite-vec module even for plain reads.
+    let vecReadable = true;
+    try {
+        sqliteVec.load(db);
+    }
+    catch {
+        vecReadable = false;
+    }
+    try {
+        const hasExchanges = tableExists(db, 'exchanges');
+        const hasExtractionLog = tableExists(db, 'extraction_log');
+        const hasFacts = tableExists(db, 'facts');
+        const hasRelations = tableExists(db, 'ontology_relations');
+        const exchanges = hasExchanges
+            ? count(db, 'SELECT COUNT(*) AS c FROM exchanges')
+            : 0;
+        const sessionsIndexed = hasExchanges
+            ? count(db, "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0")
+            : 0;
+        // ── Extraction stage counters ────────────────────────────────────────
+        let extraction = {
+            total: 0, done: 0, pending: 0, claimed: 0,
+            failedPermanent: 0, retriable: 0, lastSuccessAt: null, lastErrorAt: null,
+        };
+        if (hasExchanges && hasExtractionLog) {
+            const total = count(db, "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0");
+            // done = settled success rows (extracted >= 0).
+            const done = count(db, `
+        SELECT COUNT(*) AS c FROM extraction_log
+        WHERE extracted >= 0`);
+            const permanent = count(db, 'SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?', EXTRACTION_STATE.PERMANENT);
+            const retriable = count(db, `SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?
+        AND saved < 3`, EXTRACTION_STATE.RETRIABLE_INTERNAL);
+            const claimedFresh = count(db, `SELECT COUNT(*) AS c FROM extraction_log
+        WHERE extracted = ? AND ${freshClaimPredicate()}`, EXTRACTION_STATE.CLAIMED);
+            // Pending = sessions with exchanges lacking a settled extraction_log row.
+            const settledSessions = count(db, `
+        SELECT COUNT(*) AS c FROM (
+          SELECT DISTINCT e.session_id
+          FROM exchanges e
+          WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+            AND EXISTS (
+              SELECT 1 FROM extraction_log l WHERE l.session_id = e.session_id
+                AND (l.extracted >= 0 OR l.extracted = ?
+                OR (l.extracted = ? AND ${freshClaimPredicate('l')}))
+            )
+        )`, EXTRACTION_STATE.PERMANENT, EXTRACTION_STATE.CLAIMED);
+            const times = db.prepare(`
+        SELECT
+          MAX(CASE WHEN extracted >= 0 THEN processed_at END) AS lastOk,
+          MAX(CASE WHEN extracted < 0 THEN processed_at END) AS lastErr
+        FROM extraction_log`).get();
+            extraction = {
+                total,
+                done,
+                pending: Math.max(0, total - settledSessions),
+                claimed: claimedFresh,
+                failedPermanent: permanent,
+                retriable,
+                lastSuccessAt: times.lastOk,
+                lastErrorAt: times.lastErr,
+            };
+        }
+        // ── Embeddings / ontology / relations ────────────────────────────────
+        let embeddings = { activeFacts: 0, factVectorsPending: 0 };
+        let ontology = { classifiedFacts: 0, pendingFacts: 0 };
+        let relations = 0;
+        if (hasFacts) {
+            embeddings.activeFacts = count(db, 'SELECT COUNT(*) AS c FROM facts WHERE is_active = 1');
+            if (vecReadable && tableExists(db, 'vec_facts')) {
+                embeddings.factVectorsPending = count(db, `
+          SELECT COUNT(*) AS c FROM facts f
+          WHERE f.is_active = 1
+            AND NOT EXISTS (SELECT 1 FROM vec_facts v WHERE v.id = f.id)`);
+            }
+            else {
+                // Extension missing or table absent: report every active fact as
+                // vector-pending instead of crashing the read-only report.
+                embeddings.factVectorsPending = embeddings.activeFacts;
+            }
+            ontology.classifiedFacts = count(db, 'SELECT COUNT(*) AS c FROM facts WHERE is_active = 1 AND ontology_category_id IS NOT NULL');
+            ontology.pendingFacts = embeddings.activeFacts - ontology.classifiedFacts;
+        }
+        if (hasRelations)
+            relations = count(db, 'SELECT COUNT(*) AS c FROM ontology_relations');
+        const archiveFiles = countArchiveFiles(getArchiveDir());
+        const conversationReady = exchanges > 0;
+        const factReady = conversationReady
+            && extraction.pending === 0
+            && extraction.claimed === 0
+            && extraction.failedPermanent === 0
+            && embeddings.factVectorsPending === 0;
+        const graphReady = factReady && ontology.pendingFacts === 0;
+        return {
+            dataRootEmpty: false,
+            conversations: { sessionsIndexed, exchanges, archiveFiles, ready: conversationReady },
+            extraction,
+            embeddings,
+            ontology,
+            relations,
+            lifecycleLastEventAt,
+            readiness: { conversationReady, factReady, graphReady },
+        };
+    }
+    finally {
+        db.close();
+    }
+}
+/** Privacy-safe: reads only ts/event fields from logs/hook-events.jsonl. */
+function readHookEvents() {
+    const out = {};
+    const base = process.env.MEMORY_BANK_HOME
+        || process.env.MEMORY_BANK_CONFIG_DIR
+        || (process.env.XDG_CONFIG_HOME
+            ? path.join(process.env.XDG_CONFIG_HOME, 'memory-bank')
+            : path.join(os.homedir(), '.config', 'memory-bank'));
+    const file = path.join(base, 'logs', 'hook-events.jsonl');
+    try {
+        const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+        for (const line of lines) {
+            try {
+                const rec = JSON.parse(line);
+                if (rec.event && typeof rec.ts === 'string')
+                    out[rec.event] = rec.ts;
+            }
+            catch { /* skip malformed */ }
+        }
+    }
+    catch { /* no log yet */ }
+    return out;
+}
+export function formatPipelineStatus(s) {
+    const lines = [];
+    if (s.dataRootEmpty)
+        lines.push('Data root: EMPTY (no index database yet — run: memex sync)');
+    else
+        lines.push(`Conversations: ${s.conversations.ready ? 'READY' : 'EMPTY'} (${s.conversations.sessionsIndexed} sessions / ${s.conversations.exchanges} exchanges / ${s.conversations.archiveFiles} archived rollouts)`);
+    const ex = s.extraction;
+    const parts = [
+        `${ex.done} done`,
+        `${ex.pending} pending`,
+        `${ex.claimed} claimed`,
+        `${ex.failedPermanent} permanent-failed`,
+    ];
+    if (ex.retriable > 0)
+        parts.push(`${ex.retriable} retriable`);
+    lines.push(`Fact extraction: ${ex.total === 0 ? 'EMPTY' : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 ? 'DONE' : 'PARTIAL'} (${parts.join(', ')})`);
+    if (ex.lastSuccessAt)
+        lines.push(`  last success: ${ex.lastSuccessAt}`);
+    if (ex.lastErrorAt)
+        lines.push(`  last failure: ${ex.lastErrorAt}`);
+    lines.push(`Embeddings: ${s.embeddings.factVectorsPending === 0 ? 'READY' : 'PENDING'} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`);
+    lines.push(`Ontology: ${s.ontology.pendingFacts === 0 ? 'READY' : 'PENDING'} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`);
+    lines.push(`Relations: ${s.relations}`);
+    for (const [ev, ts] of Object.entries(s.lifecycleLastEventAt)) {
+        lines.push(`Lifecycle ${ev}: observed ${ts}`);
+    }
+    lines.push('');
+    lines.push(`conversation-ready: ${s.readiness.conversationReady ? 'YES' : 'NO'}`);
+    lines.push(`fact-ready:         ${s.readiness.factReady ? 'YES' : 'NO'}`);
+    lines.push(`graph-ready:        ${s.readiness.graphReady ? 'YES' : 'NO'}`);
+    if (!s.readiness.factReady && s.extraction.failedPermanent > 0) {
+        lines.push('NOTE: permanent extraction failures exist — overall readiness stays PARTIAL until they are resolved.');
+    }
+    return lines.join('\n');
+}

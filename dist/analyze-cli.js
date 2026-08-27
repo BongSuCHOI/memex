@@ -3,7 +3,7 @@ import { analyzeHistory, formatAnalysisMarkdown } from './analyze.js';
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Usage: memory-bank analyze [options]
+Usage: memex analyze [options]
 
 Analyze the ENTIRE indexed conversation history and print an organized
 report: coverage (extraction/summaries), fact breakdowns, knowledge
@@ -18,13 +18,13 @@ OPTIONS:
 
 EXAMPLES:
   # Markdown report to stdout
-  memory-bank analyze
+  memex analyze
 
   # JSON for scripting
-  memory-bank analyze --json
+  memex analyze --json
 
   # Save full report with top 30 projects
-  memory-bank analyze --top 30 --out ~/conversation-report.md
+  memex analyze --top 30 --out ~/conversation-report.md
 `);
     process.exit(0);
 }

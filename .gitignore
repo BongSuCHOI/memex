@@ -8,5 +8,6 @@ tmp/
 *.db-wal
 .env
 ui/relations/data.json
+optional-exports/
 galaxy-*.png
 /tmp/mbgalaxy-server.log

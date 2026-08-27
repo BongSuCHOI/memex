@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Memory Bank Web UI v2
+ * Memex Web UI
  * Cinematic dark-theme conversation explorer
  */
 const http = require('http');
@@ -17,7 +17,43 @@ const MEMORY_BANK_HOME = process.env.MEMORY_BANK_HOME
 const DB_PATH = process.env.MEMORY_BANK_DB_PATH
   || process.env.TEST_DB_PATH
   || path.join(MEMORY_BANK_HOME, 'conversation-index', 'db.sqlite');
-const PORT = process.env.PORT || 3847;
+const PORT = parseInt(String(process.env.PORT || 3847), 10);
+
+
+
+
+
+// ── CX-06: 3D Knowledge Galaxy (restored from upstream ui/relations/) ──────
+const GRAPH_DIR = path.join(__dirname, 'relations');
+const REL_TYPES = ['SUPPORTS', 'INFLUENCES', 'SUPERSEDES', 'CONTRADICTS'];
+const REL_IDX = Object.fromEntries(REL_TYPES.map((t, i) => [t, i]));
+const CURATED = [
+  '#52d8e8', '#7c9cba', '#8fb47a', '#b48fc7', '#ff8fa8', '#e8d27a',
+  '#c8956c', '#5fd3a3', '#e89b6c', '#9b8fe0', '#6cc8e8', '#e8c86c',
+];
+function hslHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  const to = (x) => Math.round(255 * x).toString(16).padStart(2, '0');
+  return '#' + to(f(0)) + to(f(8)) + to(f(4));
+}
+function clean(s, n) {
+  if (!s) return '';
+  const t = String(s).replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
+
+/** Canonical absolute path only — never the plugin cwd, never a basename. */
+function canonicalProject(p) {
+  if (!p || !path.isAbsolute(p)) return null;
+  let r = path.normalize(p);
+  if (r.length > 1) r = r.replace(/\/+$/, '');
+  return r;
+}
+
+
 
 let db;
 try { db = new Database(DB_PATH, { readonly: true }); }
@@ -203,20 +239,16 @@ apiHandlers['/api/project-detail'] = (params) => {
     ORDER BY timestamp DESC LIMIT 10
   `, [project]);
 
+  // CX-08: exchanges.project is already the canonical path — no basename
+  // workaround, no cwd merging. Scope contract: this project + global.
   let facts = [];
   try {
-    const scopeProjects = query(`
-      SELECT DISTINCT cwd FROM exchanges
-      WHERE project = ? AND cwd IS NOT NULL AND cwd != ''
-    `, [project]).map((row) => row.cwd);
-    const projectScopes = [...new Set([project, ...scopeProjects])];
-    const placeholders = projectScopes.map(() => '?').join(', ');
     facts = query(`
-      SELECT fact, fact_kr, category, scope_type FROM facts
+      SELECT id, fact, category, scope_type FROM facts
       WHERE is_active = 1
-        AND (scope_project IN (${placeholders}) OR scope_type = 'global')
+        AND (scope_project = ? OR scope_type = 'global')
       ORDER BY consolidated_count DESC LIMIT 20
-    `, projectScopes);
+    `, [project]);
   } catch(e) {}
 
   const sessions = query(`
@@ -228,6 +260,172 @@ apiHandlers['/api/project-detail'] = (params) => {
   return { project, info, toolUsage, activity, recentPrompts, facts, sessions };
 };
 
+// ── CX-08: Facts tab + Pipeline Health (read-only reads) ──────────────────
+apiHandlers['/api/facts'] = (params) => {
+  const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
+  const project = params.get('project') || null;
+  const scope = params.get('scope') || 'global';
+  if (project && !canonicalProject(project)) {
+    const e = new Error('project must be a canonical absolute path'); e.statusCode = 400; throw e;
+  }
+  if (!['global', 'all'].includes(scope)) {
+    const e = new Error('scope must be global|all'); e.statusCode = 400; throw e;
+  }
+  if (project && scope === 'all') {
+    const e = new Error('project and scope=all are mutually exclusive'); e.statusCode = 400; throw e;
+  }
+  return fm.listFacts(db, {
+    project: canonicalProject(project),
+    scope,
+    includeInactive: params.get('all') === '1',
+    limit: Math.min(parseInt(params.get('limit') || '100'), 500),
+    offset: Math.max(parseInt(params.get('offset') || '0'), 0),
+  });
+};
+
+apiHandlers['/api/facts-detail'] = (params) => {
+  const id = params.get('id');
+  if (!id) { const e = new Error('id required'); e.statusCode = 400; throw e; }
+  const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
+  const detail = fm.showFact(db, id);
+  if (!detail) { const e = new Error('fact not found'); e.statusCode = 404; throw e; }
+  return detail;
+};
+
+apiHandlers['/api/pipeline-status'] = () => {
+  // Read-only pipeline readiness (CX-04 contract).
+  const { getPipelineStatus } = require(path.join(PLUGIN_ROOT, 'dist', 'pipeline-status.js'));
+  return getPipelineStatus();
+};
+
+// CX-06: read-only live graph data for the 3D Knowledge Galaxy.
+apiHandlers['/api/graph-data'] = (params) => {
+  const scope = params.get('scope') || (params.get('project') ? 'project' : 'global');
+  if (!['project', 'global', 'all'].includes(scope)) throw new Error('scope must be project|global|all');
+  let project = null;
+  if (scope === 'project') {
+    project = canonicalProject(params.get('project'));
+    if (!project) {
+      const e = new Error('project (canonical absolute cwd) is required for scope=project; use scope=global or scope=all explicitly');
+      e.statusCode = 400;
+      throw e;
+    }
+  }
+
+  const typesParam = params.get('types');
+  let allowedTypes = REL_TYPES;
+  if (typesParam) {
+    const requested = typesParam.split(',').map((t) => t.trim().toUpperCase()).filter(Boolean);
+    if (!requested.length) throw new Error('types must be a non-empty comma list when provided');
+    for (const t of requested) { if (!REL_TYPES.includes(t)) { const e = new Error(`unknown relation type: ${t}`); e.statusCode = 400; throw e; } }
+    allowedTypes = requested.filter((t) => REL_TYPES.includes(t));
+  }
+
+  // Scope predicate: project => that canonical project + global; global =>
+  // global facts only; all => everything active.
+  const factRows = (() => {
+    if (scope === 'all') return query("SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1");
+    if (scope === 'global') return query("SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1 AND scope_type = 'global'");
+    return query(
+      "SELECT id, fact, fact_kr, ontology_category_id FROM facts WHERE is_active = 1 AND (scope_type = 'global' OR scope_project = ?)",
+      [project],
+    );
+  })();
+
+  const catIds = [...new Set(factRows.map((f) => f.ontology_category_id).filter(Boolean))];
+  const cats = catIds.length ? query(
+    `SELECT id, name, domain_id FROM ontology_categories WHERE id IN (${catIds.map(() => '?').join(',')})`,
+    catIds,
+  ) : [];
+  const domIds = [...new Set(cats.map((c) => c.domain_id))];
+  const domains = domIds.length ? query(
+    `SELECT id, name FROM ontology_domains WHERE id IN (${domIds.map(() => '?').join(',')})`,
+    domIds,
+  ) : [];
+
+  const domainIdx = new Map(domains.map((d, i) => [d.id, i]));
+  const catIdx = new Map(cats.map((c, i) => [c.id, i]));
+  const domainFacts = new Array(domains.length).fill(0);
+  const catFacts = new Array(cats.length).fill(0);
+
+  const outFacts = [];
+  const factIndex = new Map();
+  for (const f of factRows) {
+    const di = f.ontology_category_id ? domainIdx.get(cats[catIdx.get(f.ontology_category_id)].domain_id) : undefined;
+    const ci = f.ontology_category_id ? catIdx.get(f.ontology_category_id) : undefined;
+    if (di === undefined || ci === undefined) continue; // unclassified -> not on graph yet
+    domainFacts[di]++;
+    catFacts[ci]++;
+    factIndex.set(f.id, outFacts.length);
+    outFacts.push([di, ci, clean(f.fact_kr || f.fact, 140), 0, f.id]);
+  }
+
+  const relRows = query('SELECT source_fact_id AS s, target_fact_id AS t, relation_type AS ty FROM ontology_relations');
+  const rel = [];
+  const relByType = Object.fromEntries(REL_TYPES.map((t) => [t, 0]));
+  let danglingSkipped = 0;
+  for (const r of relRows) {
+    if (!allowedTypes.includes(r.ty)) continue;
+    const si = factIndex.get(r.s), ti = factIndex.get(r.t);
+    if (si === undefined || ti === undefined) { danglingSkipped++; continue; }
+    if (si === ti) continue;
+    rel.push([si, ti, REL_IDX[r.ty]]);
+    relByType[r.ty]++;
+    outFacts[si][3]++;
+    outFacts[ti][3]++;
+  }
+
+  const hueOf = (i) => (i < CURATED.length ? CURATED[i] : hslHex((i * 47) % 360, 55, 62));
+  return {
+    meta: {
+      generated: new Date().toISOString(),
+      source: 'memex-live',
+      scope,
+      project,
+      domains: domains.length,
+      categories: cats.length,
+      facts: outFacts.length,
+      relations: rel.length,
+      relByType,
+      danglingSkipped,
+    },
+    relTypes: REL_TYPES,
+    domains: domains.map((d, i) => ({ id: i, name: d.name, facts: domainFacts[i], hue: hueOf(i) })),
+    cats: cats.map((c, i) => ({ id: i, name: c.name, dom: domainIdx.get(c.domain_id), facts: catFacts[i] })),
+    facts: outFacts,
+    rel,
+  };
+};
+
+// Node detail provenance: fact -> revisions + source exchanges.
+apiHandlers['/api/fact-provenance'] = (params) => {
+  const id = params.get('id');
+  if (!id || id.length < 8 || !/^[0-9a-fA-F-]+$/.test(id)) {
+    const e = new Error('id (fact uuid) required'); e.statusCode = 400; throw e;
+  }
+  const fact = queryOne('SELECT id, fact, category, scope_type, scope_project, created_at, updated_at, consolidated_count FROM facts WHERE id = ?', [id]);
+  if (!fact) return { error: 'fact not found' };
+  let revisions = [];
+  try {
+    revisions = query('SELECT previous_fact, new_fact, reason, created_at FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC LIMIT 20', [id]);
+  } catch (e2) { void e2; }
+  let sources = [];
+  try {
+    const raw = queryOne('SELECT source_exchange_ids AS ids FROM facts WHERE id = ?', [id]);
+    const ids = raw && raw.ids ? JSON.parse(raw.ids) : [];
+    if (ids.length > 0) {
+      sources = query(
+        `SELECT id, project, timestamp, substr(user_message,1,160) AS user_message, archive_path, line_start, line_end
+         FROM exchanges WHERE id IN (${ids.map(() => '?').join(',')})`,
+        ids,
+      );
+    }
+  } catch (e4) { void e4; }
+  return { fact, revisions, sources };
+};
+
+
+
 // Translation API (async handler - special case)
 const asyncHandlers = {
   '/api/translate': async (params, body) => {
@@ -238,11 +436,129 @@ const asyncHandlers = {
   },
 };
 
+// CX-06: serve the restored 3D Knowledge Galaxy under /graph (loopback only).
+const GRAPH_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
+function serveGraphAsset(relName, res) {
+  const file = path.join(GRAPH_DIR, relName);
+  if (!file.startsWith(GRAPH_DIR) || !require('fs').existsSync(file)) {
+    res.writeHead(404); res.end('Not found'); return;
+  }
+  res.writeHead(200, { 'Content-Type': GRAPH_MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+  res.end(require('fs').readFileSync(file));
+}
+
+// CX-08: the ONLY mutation surface. POST + JSON content-type + same-origin
+// loopback Origin + size cap; delegates exclusively to fact-management.js.
+const MUTATION_ACTIONS = ['edit', 'deactivate', 'restore', 'delete'];
+const MAX_MUTATION_BODY = 100 * 1024; // 100 KB
+function handleFactsMutation(req, res, url) {
+  if (req.method !== 'POST') {
+    writeJson(res, 405, { error: 'mutations require POST' });
+    return;
+  }
+  const origin = req.headers.origin;
+  if (origin) {
+    let ok = false;
+    try {
+      const o = new URL(origin);
+      ok = (o.hostname === '127.0.0.1' || o.hostname === 'localhost') && Number(o.port) === PORT;
+    } catch { ok = false; }
+    if (!ok) {
+      writeJson(res, 403, { error: `cross-origin mutation rejected (origin=${origin})` });
+      return;
+    }
+  }
+  const ctype = String(req.headers['content-type'] || '');
+  if (!/application\/json/i.test(ctype)) {
+    writeJson(res, 415, { error: 'content-type must be application/json' });
+    return;
+  }
+  let body = '';
+  let oversized = false;
+  req.on('data', (chunk) => {
+    body += chunk;
+    if (body.length > MAX_MUTATION_BODY) { oversized = true; req.destroy(); }
+  });
+  req.on('end', async () => {
+    if (oversized) return; // connection destroyed above
+    let dbw;
+    try {
+      const parsed = JSON.parse(body || '{}');
+      const action = parsed.action;
+      if (!MUTATION_ACTIONS.includes(action)) {
+        writeJson(res, 400, { error: `action must be one of ${MUTATION_ACTIONS.join('|')}` });
+        return;
+      }
+      const fm = require(path.join(PLUGIN_ROOT, 'dist', 'fact-management.js'));
+      dbw = openWritableDb();
+      if (action === 'edit') {
+        const r = await fm.editFact(dbw, String(parsed.id || ''), {
+          text: String(parsed.text || ''),
+          reason: parsed.reason ? String(parsed.reason).slice(0, 500) : undefined,
+        });
+        writeJson(res, 200, r);
+        return;
+      }
+      let result;
+      if (action === 'deactivate') {
+        result = fm.deactivateFactTransactional(dbw, String(parsed.id || ''));
+      } else if (action === 'restore') {
+        result = fm.restoreFact(dbw, String(parsed.id || ''));
+      } else {
+        if (!parsed.confirm) {
+          writeJson(res, 400, { error: 'hard delete requires confirm:true after reviewing impact' });
+          return;
+        }
+        result = fm.hardDeleteFact(dbw, String(parsed.id || ''), { confirm: true });
+      }
+      writeJson(res, 200, result);
+    } catch (e) {
+      writeJson(res, e.statusCode || 400, { error: e.message });
+    } finally {
+      try { if (dbw && dbw !== db) dbw.close(); } catch { /* memoized conn stays open */ }
+    }
+  });
+}
+
+let writableDbMemo = null;
+function openWritableDb() {
+  if (!db) throw new Error(`Conversation DB unavailable: ${DB_PATH}`);
+  // Single writer connection reused across mutations (transaction owner is
+  // fact-management's transaction itself).
+  if (!writableDbMemo || !writableDbMemo.open) writableDbMemo = new Database(DB_PATH);
+  return writableDbMemo;
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/api/facts-mutate') {
+    handleFactsMutation(req, res, url);
+    return;
+  }
+  if (url.pathname === '/facts') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(getFactsHTML());
+    return;
+  }
+  if (url.pathname === '/pipeline') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(getPipelineHTML());
+    return;
+  }
   if (url.pathname === '/' || url.pathname === '/dashboard') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(getHTML());
+    return;
+  }
+  if (url.pathname === '/graph' || url.pathname === '/graph/' || url.pathname === '/graph/index.html') {
+    serveGraphAsset('index.html', res);
+    return;
+  }
+  if (url.pathname.startsWith('/graph/')) {
+    const asset = url.pathname.slice('/graph/'.length);
+    // Path-confinement: only plain filenames of the vendored bundle.
+    if (/^[A-Za-z0-9._-]+$/.test(asset)) serveGraphAsset(asset, res);
+    else { res.writeHead(404); res.end('Not found'); }
     return;
   }
   // Async API handlers (translation etc.)
@@ -258,7 +574,7 @@ const server = http.createServer((req, res) => {
       try {
         const parsed = body ? JSON.parse(body) : {};
         const result = await asyncHandlers[url.pathname](url.searchParams, parsed, { signal: abortController.signal });
-        writeJson(res, 200, result, { 'Access-Control-Allow-Origin': '*' });
+        writeJson(res, 200, result);
       } catch (e) {
         writeJson(res, e.statusCode || 500, e.payload || { error: e.message });
       }
@@ -268,10 +584,13 @@ const server = http.createServer((req, res) => {
   if (apiHandlers[url.pathname]) {
     try {
       const result = apiHandlers[url.pathname](url.searchParams);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      // No CORS: this UI is loopback-only and same-origin by contract.
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      // Validation errors carry a statusCode (400); everything else is 500.
+      const status = e && e.statusCode ? e.statusCode : 500;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
     return;
@@ -279,8 +598,15 @@ const server = http.createServer((req, res) => {
   res.writeHead(404); res.end('Not found');
 });
 
-server.listen(PORT, () => {
-  console.log(`Memory Bank UI: http://localhost:${PORT}`);
+// CX-06/CX-11: private data must never leave the machine — loopback bind is
+// the default and there is no flag that widens it.
+const BIND = process.env.MEMORY_BANK_BIND || '127.0.0.1';
+if (BIND !== '127.0.0.1' && BIND !== 'localhost') {
+  console.error(`Refusing to bind ${BIND}: this UI serves private facts on loopback only.`);
+  process.exit(1);
+}
+server.listen(PORT, BIND, () => {
+  console.log(`Memex UI: http://localhost:${PORT}`);
 });
 process.on('SIGINT', () => { if (db) db.close(); process.exit(); });
 process.on('SIGTERM', () => { if (db) db.close(); process.exit(); });
@@ -291,7 +617,8 @@ function getHTML() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Memory Bank</title>
+<title>Memex</title>
+<style>.mbnav{display:flex;gap:12px;margin:10px 0 4px;font-size:13.5px}.mbnav a{color:#8a92b2;text-decoration:none}.mbnav a:focus-visible{outline:2px solid #6cc8e8}.mbnav a.active{color:#f0f2fa}</style>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -382,9 +709,10 @@ select:focus{border-color:var(--accent);outline:none}
   box-shadow:0 8px 32px rgba(0,0,0,0.4)}
 .project-card:hover::before{opacity:1}
 .project-name{font-size:14px;font-weight:600;color:var(--text-bright);margin-bottom:2px;
-  word-break:break-all;line-height:1.4}
+  word-break:keep-all;overflow-wrap:break-word;line-height:1.4}
 .project-path{font-size:11px;color:var(--text-dim);margin-bottom:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
   opacity:0.7;word-break:break-all}
+
 .project-prompt{font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.5;
   max-height:36px;overflow:hidden;font-style:italic;opacity:0.8}
 .project-prompt{flex:1}
@@ -476,11 +804,12 @@ select:focus{border-color:var(--accent);outline:none}
 </style>
 </head>
 <body>
+<div class="mbnav"><a href="/" class="active" aria-current="page">Conversations</a><a href="/facts">Facts</a><a href="/graph">Graph</a><a href="/pipeline">Pipeline Health</a></div>
 
 <div class="header">
   <div class="logo">
     <div class="logo-icon">M</div>
-    <div><h1>Memory Bank</h1></div>
+    <div><h1>Memex</h1></div>
   </div>
   <div class="header-stats" id="stats"></div>
 </div>
@@ -742,5 +1071,213 @@ async function showExchange(id){
 loadStats();showProjects();
 </script>
 </body>
+</html>`;
+}
+
+// ── CX-08: Facts management page (keyboard-accessible, mutation via CX-07) ──
+function getFactsHTML() {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memex · Facts</title>
+<style>
+:root{--bg:#08090c;--card:#12141c;--border:rgba(255,255,255,.08);--text:#d4d8e8;--dim:#8a92b2;--accent:#6cc8e8;--danger:#ff5c7f}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 16px 60px}
+nav{display:flex;gap:14px;margin-bottom:20px;font-size:14px}
+nav a{color:var(--dim);text-decoration:none;padding:4px 10px;border-radius:6px}
+nav a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+nav a.active{color:var(--text);background:var(--card)}
+h1{font-size:20px;margin-bottom:6px}
+.scope{font-size:12.5px;color:var(--dim);margin-bottom:16px;overflow-wrap:anywhere}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+input[type=text]{flex:1;min-width:260px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:14px}
+button{background:var(--card);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:13.5px;cursor:pointer}
+button.danger{border-color:var(--danger);color:var(--danger)}
+button:disabled{opacity:.45;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:10px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+td.fact{word-break:keep-all;overflow-wrap:break-word} /* 한글·영문 혼합 줄바꿈 유지 (CJK 음절 보존) */
+
+.tag{font-size:11px;color:var(--dim);border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.inactive{opacity:.55}
+dialog{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:520px;width:92%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+textarea{width:100%;min-height:90px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:14px;overflow-wrap:anywhere}
+.row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+.detail{margin-top:18px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;font-size:13.5px}
+.detail pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.err{color:var(--danger);margin-top:10px;font-size:13px;overflow-wrap:anywhere}
+.ok{color:#5fd3a3;margin-top:10px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <a href="/">Conversations</a>
+  <a href="/facts" class="active" aria-current="page">Facts</a>
+  <a href="/graph">Graph</a>
+  <a href="/pipeline">Pipeline Health</a>
+</nav>
+<h1>Facts</h1>
+<div class="scope" id="scope">Project: (전체/미지정 — global facts만 보려면 비워 두세요)</div>
+<form class="bar" id="loadForm">
+  <label for="proj" style="position:absolute;left:-9999px">canonical project path</label>
+  <input type="text" id="proj" placeholder="/absolute/path/to/project (canonical cwd)" spellcheck="false">
+  <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="all"> include inactive</label>
+  <button type="submit">Load</button>
+</form>
+<table aria-label="facts list">
+  <thead><tr><th>상태</th><th>fact</th><th>category</th><th>scope</th><th>작업</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="5">Load를 누르세요.</td></tr></tbody>
+</table>
+<div class="err" id="err" role="alert"></div>
+
+<dialog id="editDlg" aria-label="edit fact">
+  <form method="dialog" onsubmit="return false">
+    <h2 style="font-size:16px;margin-bottom:10px">Edit fact</h2>
+    <textarea id="editText"></textarea>
+    <input type="text" id="editReason" placeholder="reason (revision에 기록)" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px">
+    <div class="row">
+      <button value="cancel" onclick="document.getElementById('editDlg').close()">Cancel</button>
+      <button id="editSave" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="confirmDlg" aria-label="confirm">
+  <p id="confirmMsg" style="overflow-wrap:anywhere"></p>
+  <div class="row">
+    <button onclick="document.getElementById('confirmDlg').close()">Cancel</button>
+    <button id="confirmYes" class="danger">Confirm</button>
+  </div>
+</dialog>
+<script>
+const $ = (s) => document.querySelector(s);
+let CURRENT = null;
+async function loadFacts() {
+  const p = $('#proj').value.trim();
+  $('#scope').textContent = 'Visible memory: ' + (p ? p + ' + global' : '(project 미지정 — global만 표시하려면 scope 파라미터 사용)');
+  const q = new URLSearchParams();
+  if (p) q.set('project', p);
+  if ($('#all').checked) q.set('all', '1');
+  const r = await fetch('/api/facts?' + q.toString());
+  const rows = await r.json();
+  if (!Array.isArray(rows)) { $('#err').textContent = rows.error || 'load failed'; return; }
+  CURRENT = p || null;
+  const tb = $('#rows'); tb.innerHTML = '';
+  for (const f of rows) {
+    const tr = document.createElement('tr');
+    if (!f.is_active) tr.className = 'inactive';
+    const tdState = document.createElement('td'); tdState.textContent = f.is_active ? 'active' : 'inactive';
+    const tdFact = document.createElement('td'); tdFact.className = 'fact'; tdFact.textContent = f.fact;
+    const tdCat = document.createElement('td'); tdCat.innerHTML = '<span class="tag"></span>'; tdCat.querySelector('.tag').textContent = f.category;
+    const tdScope = document.createElement('td'); tdScope.className = 'fact'; tdScope.textContent = f.scope_type === 'global' ? 'global' : (f.scope_project || '');
+    const tdOps = document.createElement('td');
+    const mkBtn = (label, fn, cls) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; if (cls) b.className = cls; b.style.marginRight = '6px'; b.style.padding='3px 8px'; return b; };
+    if (f.is_active) {
+      tdOps.appendChild(mkBtn('Detail', () => showDetail(f.id)));
+      tdOps.appendChild(mkBtn('Edit', () => startEdit(f)));
+      tdOps.appendChild(mkBtn('Deactivate', () => mutate({ action: 'deactivate', id: f.id }, '이 fact를 비활성화할까요? (검색·주입·graph에서 제외)')));
+    } else {
+      tdOps.appendChild(mkBtn('Restore', () => mutate({ action: 'restore', id: f.id })));
+    }
+    tr.append(tdState, tdFact, tdCat, tdScope, tdOps);
+    tb.appendChild(tr);
+  }
+  if (!rows.length) tb.innerHTML = '<tr><td colspan="5">조건에 맞는 fact가 없습니다.</td></tr>';
+}
+async function showDetail(id) {
+  const r = await fetch('/api/facts-detail?id=' + encodeURIComponent(id));
+  const d = await r.json();
+  let box = document.getElementById('detailBox');
+  if (!box) { box = document.createElement('div'); box.id = 'detailBox'; box.className = 'detail'; $('.wrap').insertBefore(box, $('#err')); }
+  const esc = (s) => String(s == null ? '' : s);
+  box.innerHTML = '<strong>Detail / provenance</strong><pre></pre>';
+  box.querySelector('pre').textContent = JSON.stringify(d, null, 2);
+}
+function startEdit(f) {
+  $('#editText').value = f.fact;
+  $('#editReason').value = '';
+  $('#editSave').onclick = async () => {
+    await mutate({ action: 'edit', id: f.id, text: $('#editText').value, reason: $('#editReason').value });
+    document.getElementById('editDlg').close();
+  };
+  document.getElementById('editDlg').showModal();
+}
+async function mutate(payload, confirmMsg) {
+  if (confirmMsg) {
+    $('#confirmMsg').textContent = confirmMsg;
+    const dlg = document.getElementById('confirmDlg');
+    $('#confirmYes').onclick = () => { dlg.close(); doMutate(payload); };
+    dlg.showModal();
+    return;
+  }
+  await doMutate(payload);
+}
+async function doMutate(payload) {
+  try {
+    const r = await fetch('/api/facts-mutate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    $('#err').textContent = ''; $('#ok') && 0;
+    await loadFacts();
+  } catch (e) { $('#err').textContent = e.message; }
+}
+$('#loadForm').addEventListener('submit', (e) => { e.preventDefault(); loadFacts(); });
+const qs = new URLSearchParams(location.search);
+if (qs.get('project')) $('#proj').value = qs.get('project');
+loadFacts();
+</script>
+</div>
+</body>
+</html>`;
+}
+
+// ── CX-08: Pipeline Health page (read-only, CX-04 status) ───────────────────
+function getPipelineHTML() {
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memex · Pipeline Health</title>
+<style>
+body{background:#08090c;color:#d4d8e8;font-family:-apple-system,'Apple SD Gothic Neo',sans-serif;line-height:1.6}
+.wrap{max-width:900px;margin:0 auto;padding:24px 16px 60px}
+nav{display:flex;gap:14px;margin-bottom:20px;font-size:14px}
+nav a{color:#8a92b2;text-decoration:none}nav a:focus-visible{outline:2px solid #6cc8e8}
+nav a.active{color:#d4d8e8}
+h1{font-size:20px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:10px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.08)}
+.yes{color:#5fd3a3}.no{color:#ff5c7f}.warn{color:#e8d27a}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#12141c;border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px;font-size:12.5px}
+</style>
+</head>
+<body><div class="wrap">
+<nav><a href="/">Conversations</a><a href="/facts">Facts</a><a href="/graph">Graph</a><a href="/pipeline" class="active" aria-current="page">Pipeline Health</a></nav>
+<h1>Pipeline Health</h1>
+<div id="out">loading…</div>
+<script>
+fetch('/api/pipeline-status').then(r=>r.json()).then((s)=>{
+  const rd = s.readiness;
+  const flag=(b)=>b?'<span class="yes">YES</span>':'<span class="no">NO</span>';
+  let html = '<table><tbody>' +
+    '<tr><th>conversation-ready</th><td>'+flag(rd.conversationReady)+'</td></tr>' +
+    '<tr><th>fact-ready</th><td>'+flag(rd.factReady)+'</td></tr>' +
+    '<tr><th>graph-ready</th><td>'+flag(rd.graphReady)+'</td></tr>' +
+    '</tbody></table><pre></pre>';
+  const out=document.getElementById('out'); out.innerHTML=html;
+  out.querySelector('pre').textContent = JSON.stringify(s,null,2);
+}).catch(e=>{ document.getElementById('out').innerHTML='<span class="no">'+e.message+'</span>'; });
+</script>
+</div></body>
 </html>`;
 }

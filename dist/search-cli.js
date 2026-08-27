@@ -10,7 +10,7 @@ for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') {
         console.log(`
-Usage: memory-bank search [OPTIONS] <query>
+Usage: memex search [OPTIONS] <query>
 
 Search indexed conversations using semantic similarity or exact text matching.
 
@@ -27,19 +27,19 @@ OPTIONS:
 
 EXAMPLES:
   # Semantic search
-  memory-bank search "React Router authentication errors"
+  memex search "React Router authentication errors"
 
   # Find exact string
-  memory-bank search --text "a1b2c3d4e5f6"
+  memex search --text "a1b2c3d4e5f6"
 
   # Time filtering
-  memory-bank search --after 2025-09-01 "refactoring"
+  memex search --after 2025-09-01 "refactoring"
 
   # Combine modes
-  memory-bank search --both "React Router data loading"
+  memex search --both "React Router data loading"
 
   # Multi-concept search (AND - all concepts must match)
-  memory-bank search "React Router" "authentication" "JWT"
+  memex search "React Router" "authentication" "JWT"
 `);
         process.exit(0);
     }
@@ -64,8 +64,8 @@ EXAMPLES:
     }
 }
 if (queries.length === 0) {
-    console.error('Usage: memory-bank search [OPTIONS] <query> [query2] [query3]...');
-    console.error('Try: memory-bank search --help');
+    console.error('Usage: memex search [OPTIONS] <query> [query2] [query3]...');
+    console.error('Try: memex search --help');
     process.exit(1);
 }
 // Multi-concept search if multiple queries provided

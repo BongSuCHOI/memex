@@ -1,4 +1,4 @@
-// Public API for memory-bank package
+// Public API for the Memex package
 export * from './types.js';
 export * from './db.js';
 export * from './embeddings.js';

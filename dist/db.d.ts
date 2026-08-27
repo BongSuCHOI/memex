@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { ConversationExchange } from './types.js';
+import { ConversationExchange, type EvidenceSourceType } from './types.js';
 export type VecDtype = 'float32' | 'int8';
 export declare const VEC_INT8_SCALE = 127;
 /** Authoritative dtype of any vec0 table — read from the ACTUAL schema in
@@ -25,6 +25,22 @@ export declare function normalizeVecDistance(distance: number, dtype: VecDtype):
 export declare function l2DistanceToSimilarity(distance: number): number;
 export declare function initDatabase(): Database.Database;
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
+export declare function isMemexRecallToolName(toolName: string): boolean;
+export declare function classifyToolEvidence(toolName: string, toolInput?: unknown): {
+    sourceType: EvidenceSourceType;
+    learnable: boolean;
+};
+export declare function hashRecallPrompt(prompt: string): string;
+export declare function recordRecallEvent(db: Database.Database, event: {
+    sessionId: string;
+    project: string;
+    prompt: string;
+    factIds: string[];
+}): string | null;
+export declare function markRecallEventEmitted(db: Database.Database, event: {
+    sessionId: string;
+    prompt: string;
+}): boolean;
 export declare function getAllExchanges(db: Database.Database): Array<{
     id: string;
     archivePath: string;

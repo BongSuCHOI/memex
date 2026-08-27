@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getDbPath } from './paths.js';
 import { canonicalArchiveName } from './archive-io.js';
+import { canonicalizeProjectPath } from './project-identity.js';
 import { EXTRACTION_STATE, pendingExtractionCoreQuery, getExtractionConfig, } from './pending-extraction.js';
 function emptyReport() {
     return {
@@ -158,8 +159,8 @@ export async function analyzeHistory(options = {}) {
         FROM facts WHERE is_active = 1
         GROUP BY scope_type ORDER BY count DESC
       `).all();
-            // Exchanges use the basename of session_meta.cwd as the project key;
-            // project-scoped facts keep the absolute cwd. Join them by basename.
+            // CX-02: facts.scope_project is the canonical absolute path and
+            // exchanges.project uses the same identity — no basename collapse.
             const factProjects = db.prepare(`
         SELECT scope_project, COUNT(*) AS n
         FROM facts
@@ -167,7 +168,7 @@ export async function analyzeHistory(options = {}) {
         GROUP BY scope_project
       `).all();
             for (const row of factProjects) {
-                const project = path.basename(row.scope_project);
+                const project = canonicalizeProjectPath(row.scope_project);
                 factsByProject.set(project, (factsByProject.get(project) ?? 0) + row.n);
             }
         }
@@ -223,7 +224,7 @@ export async function analyzeHistory(options = {}) {
             rec.push(`${report.coverage.extraction.pending} sessions have no extracted facts yet — run scripts/backfill-extract-worker.js (requires local codex CLI auth).`);
         }
         if (report.coverage.summaries.withoutSummary > 0) {
-            rec.push(`${report.coverage.summaries.withoutSummary} conversations are missing summaries — run "memory-bank sync" (generates up to 10 per run).`);
+            rec.push(`${report.coverage.summaries.withoutSummary} conversations are missing summaries — run "memex sync" (generates up to 10 per run).`);
         }
         if (report.coverage.extraction.errors > 0) {
             rec.push(`${report.coverage.extraction.errors} sessions failed extraction — check backfill-extract.log in the index directory.`);

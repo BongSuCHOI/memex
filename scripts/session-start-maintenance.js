@@ -26,6 +26,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 async function main() {
   try {
     // 1. Offload LLM-based consolidation to a detached worker (non-blocking)
+    // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+    try {
+      const { recordHookEvent } = await import('../dist/observe-hook-event.js');
+      recordHookEvent('SessionStart', {
+        sessionId: process.env.SESSION_ID || '',
+        cwd: process.env.CWD || '',
+      });
+    } catch { /* observation is best-effort */ }
+
     const worker = path.join(HERE, 'fact-consolidate-worker.js');
     try {
       const child = spawn(process.execPath, [worker], {

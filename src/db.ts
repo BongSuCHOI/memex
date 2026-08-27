@@ -1,10 +1,11 @@
 import Database from 'better-sqlite3';
-import { ConversationExchange } from './types.js';
+import { ConversationExchange, type EvidenceSourceType } from './types.js';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'path';
-import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
-import { getDbPath } from './paths.js';
+import { getDbPath, ensureDbDir } from './paths.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
+
 
 // === vec table dtype handling ===
 // int8 quantization: q = clamp(round(x*127)). e5 embeddings are L2-normalized
@@ -82,10 +83,8 @@ export function initDatabase(): Database.Database {
   const dbPath = getDbPath();
 
   // Ensure directory exists
-  const dbDir = path.dirname(dbPath);
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
+  ensureDbDir();
+
 
   const db = new Database(dbPath);
 
@@ -134,9 +133,56 @@ export function initDatabase(): Database.Database {
       thinking_level TEXT,
       thinking_disabled BOOLEAN,
       thinking_triggers TEXT,
-      embedding_version INTEGER NOT NULL DEFAULT 0
+      embedding_version INTEGER NOT NULL DEFAULT 0,
+      provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
+      assistant_learnable BOOLEAN NOT NULL DEFAULT 0,
+      has_memex_recall BOOLEAN NOT NULL DEFAULT 0
     )
   `);
+
+  // Existing durable databases predate provenance. Additive migration only:
+  // rowids, rollout archives, embeddings, and extraction watermarks stay put.
+  const exchangeColumns = new Set(
+    (db.prepare('PRAGMA table_info(exchanges)').all() as Array<{ name: string }>).map((r) => r.name),
+  );
+  if (!exchangeColumns.has('provenance')) {
+    db.exec(`ALTER TABLE exchanges ADD COLUMN provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]'`);
+  }
+  if (!exchangeColumns.has('assistant_learnable')) {
+    db.exec('ALTER TABLE exchanges ADD COLUMN assistant_learnable BOOLEAN NOT NULL DEFAULT 0');
+  }
+  if (!exchangeColumns.has('has_memex_recall')) {
+    db.exec('ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0');
+  }
+  // Policy v1: agent-generated prose is context, never primary evidence.
+  db.prepare('UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0').run();
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recall_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      fact_ids TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'memex_recall'
+        CHECK(source_type = 'memex_recall'),
+      learnable BOOLEAN NOT NULL DEFAULT 0 CHECK(learnable = 0),
+      status TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(status IN ('prepared','emitted')),
+      created_at TEXT NOT NULL,
+      emitted_at TEXT
+    )
+  `);
+  const recallColumns = new Set(
+    (db.prepare('PRAGMA table_info(recall_events)').all() as Array<{ name: string }>).map((r) => r.name),
+  );
+  if (!recallColumns.has('status')) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN status TEXT NOT NULL DEFAULT 'prepared'");
+  }
+  if (!recallColumns.has('emitted_at')) {
+    db.exec('ALTER TABLE recall_events ADD COLUMN emitted_at TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)');
 
   // Create tool_calls table
   db.exec(`
@@ -148,14 +194,26 @@ export function initDatabase(): Database.Database {
       tool_result TEXT,
       is_error BOOLEAN DEFAULT 0,
       timestamp TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'external_unverified'
+        CHECK(source_type IN ('repo_file','git_history','test_execution','external_unverified','memex_recall')),
+      learnable BOOLEAN NOT NULL DEFAULT 0,
       FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
     )
   `);
+  const toolColumns = new Set(
+    (db.prepare('PRAGMA table_info(tool_calls)').all() as Array<{ name: string }>).map((r) => r.name),
+  );
+  if (!toolColumns.has('source_type')) {
+    db.exec("ALTER TABLE tool_calls ADD COLUMN source_type TEXT NOT NULL DEFAULT 'external_unverified'");
+  }
+  if (!toolColumns.has('learnable')) {
+    db.exec('ALTER TABLE tool_calls ADD COLUMN learnable BOOLEAN NOT NULL DEFAULT 0');
+  }
 
   // Create vector search index.
   //
   // int8 quantized vectors use 4× less storage than float32 and make KNN
-  // scans cheaper. Fresh Memory Bank databases always use int8.
+  // scans cheaper. Fresh Memex databases always use int8.
   // The authoritative dtype is the ACTUAL schema in sqlite_master (getVecDtype)
   // — float32 and int8 blobs are not interchangeable, and deriving from the
   // real schema (not a flag) makes flag/schema divergence impossible.
@@ -410,6 +468,26 @@ export function insertExchange(
   _toolNames?: string[]
 ): void {
   const now = Date.now();
+  const promptHash = hashRecallPrompt(exchange.userMessage);
+  const recall = exchange.sessionId
+    ? db.prepare('SELECT 1 FROM recall_events WHERE session_id = ? AND prompt_hash = ?')
+      .get(exchange.sessionId, promptHash) !== undefined
+    : false;
+  const classifiedTools = (exchange.toolCalls ?? []).map((call) => ({
+    call,
+    evidence: classifyToolEvidence(call.toolName, call.toolInput),
+  }));
+  const toolRecall = classifiedTools.some(({ evidence }) => evidence.sourceType === 'memex_recall');
+  const hasRecall = recall || toolRecall;
+  const provenance = exchange.provenance
+    ?? [...new Set<EvidenceSourceType>([
+      'human_assertion',
+      'assistant_generated',
+      ...classifiedTools.map(({ evidence }) => evidence.sourceType),
+      ...(hasRecall ? ['memex_recall' as const] : []),
+    ])];
+  const assistantLearnable = exchange.assistantLearnable ?? false;
+  const hasMemexRecall = exchange.hasMemexRecall ?? hasRecall;
 
   // One transaction keeps the exchange, vector, and tool calls atomic. Read
   // the table dtype inside that write transaction so the blob always matches
@@ -422,8 +500,9 @@ export function insertExchange(
       INSERT INTO exchanges
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
        parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
-       thinking_level, thinking_disabled, thinking_triggers, embedding_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       thinking_level, thinking_disabled, thinking_triggers, embedding_version,
+       provenance, assistant_learnable, has_memex_recall)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project = excluded.project,
         timestamp = excluded.timestamp,
@@ -442,7 +521,10 @@ export function insertExchange(
         thinking_level = excluded.thinking_level,
         thinking_disabled = excluded.thinking_disabled,
         thinking_triggers = excluded.thinking_triggers,
-        embedding_version = excluded.embedding_version
+        embedding_version = excluded.embedding_version,
+        provenance = excluded.provenance,
+        assistant_learnable = excluded.assistant_learnable,
+        has_memex_recall = excluded.has_memex_recall
     `).run(
       exchange.id,
       exchange.project,
@@ -462,7 +544,10 @@ export function insertExchange(
       exchange.thinkingLevel || null,
       exchange.thinkingDisabled ? 1 : 0,
       exchange.thinkingTriggers || null,
-      EMBEDDING_VERSION
+      EMBEDDING_VERSION,
+      JSON.stringify(provenance),
+      assistantLearnable ? 1 : 0,
+      hasMemexRecall ? 1 : 0,
     );
 
     // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
@@ -474,11 +559,12 @@ export function insertExchange(
     if (exchange.toolCalls && exchange.toolCalls.length > 0) {
       const toolStmt = db.prepare(`
         INSERT OR REPLACE INTO tool_calls
-        (id, exchange_id, tool_name, tool_input, tool_result, is_error, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (id, exchange_id, tool_name, tool_input, tool_result, is_error, timestamp, source_type, learnable)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const toolCall of exchange.toolCalls) {
+        const evidence = classifyToolEvidence(toolCall.toolName, toolCall.toolInput);
         toolStmt.run(
           toolCall.id,
           toolCall.exchangeId,
@@ -486,13 +572,100 @@ export function insertExchange(
           toolCall.toolInput ? JSON.stringify(toolCall.toolInput) : null,
           toolCall.toolResult || null,
           toolCall.isError ? 1 : 0,
-          toolCall.timestamp
+          toolCall.timestamp,
+          toolCall.sourceType ?? evidence.sourceType,
+          (toolCall.learnable ?? evidence.learnable) && !toolCall.isError && !!toolCall.toolResult ? 1 : 0,
         );
       }
     }
   });
   // .immediate(): acquire the write lock at BEGIN, before any schema read.
   insertAll.immediate();
+}
+
+const MEMEX_RECALL_TOOLS = new Set([
+  'search', 'read', 'search_facts', 'search_ontology', 'ask_avatar',
+  'trace_fact', 'graph_stats', 'cross_project_insights', 'explore_graph',
+]);
+
+export function isMemexRecallToolName(toolName: string): boolean {
+  const match = /^mcp__memex__(.+)$/.exec(toolName);
+  return !!match && MEMEX_RECALL_TOOLS.has(match[1]);
+}
+
+const REPO_READ_TOOLS = new Set(['read', 'read_file', 'grep', 'view_image']);
+
+function commandText(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (!input || typeof input !== 'object') return '';
+  const cmd = (input as { cmd?: unknown }).cmd;
+  return Array.isArray(cmd) ? cmd.join(' ') : typeof cmd === 'string' ? cmd : '';
+}
+
+export function classifyToolEvidence(toolName: string, toolInput?: unknown): {
+  sourceType: EvidenceSourceType;
+  learnable: boolean;
+} {
+  if (isMemexRecallToolName(toolName)) return { sourceType: 'memex_recall', learnable: false };
+  const leaf = toolName.split('__').at(-1) ?? toolName;
+  if (REPO_READ_TOOLS.has(leaf)) return { sourceType: 'repo_file', learnable: true };
+  if (leaf !== 'shell' && leaf !== 'exec_command') {
+    return { sourceType: 'external_unverified', learnable: false };
+  }
+
+  const command = commandText(toolInput).trim();
+  if (!command || /(^|\s)(curl|wget|ssh|scp|sftp)\b|https?:\/\/|\bgh\s+api\b/i.test(command)) {
+    return { sourceType: 'external_unverified', learnable: false };
+  }
+  if (/^git\s+(status|log|show|diff|rev-parse|branch)(\s|$)/.test(command)) {
+    return { sourceType: 'git_history', learnable: true };
+  }
+  if (/^(npm|pnpm|yarn|bun)\s+(run\s+)?test(\s|$)|^node\s+--test(\s|$)|^(npx\s+)?vitest(\s|$)|^(pytest|cargo\s+test|go\s+test)(\s|$)/.test(command)) {
+    return { sourceType: 'test_execution', learnable: true };
+  }
+  if (/^(rg|grep|find|ls|stat|jq)(\s|$)/.test(command)) {
+    return { sourceType: 'repo_file', learnable: true };
+  }
+  return { sourceType: 'external_unverified', learnable: false };
+}
+
+export function hashRecallPrompt(prompt: string): string {
+  return createHash('sha256').update(prompt, 'utf8').digest('hex');
+}
+
+export function recordRecallEvent(
+  db: Database.Database,
+  event: { sessionId: string; project: string; prompt: string; factIds: string[] },
+): string | null {
+  if (!event.sessionId || event.factIds.length === 0) return null;
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO recall_events
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
+  `).run(
+    id,
+    event.sessionId,
+    event.project,
+    hashRecallPrompt(event.prompt),
+    JSON.stringify([...new Set(event.factIds)]),
+    new Date().toISOString(),
+  );
+  return id;
+}
+
+export function markRecallEventEmitted(
+  db: Database.Database,
+  event: { sessionId: string; prompt: string },
+): boolean {
+  const row = db.prepare(`
+    SELECT id FROM recall_events
+    WHERE session_id = ? AND prompt_hash = ? AND status = 'prepared'
+    ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get(event.sessionId, hashRecallPrompt(event.prompt)) as { id: string } | undefined;
+  if (!row) return false;
+  return db.prepare(`UPDATE recall_events SET status = 'emitted', emitted_at = ? WHERE id = ?`)
+    .run(new Date().toISOString(), row.id).changes === 1;
 }
 
 export function getAllExchanges(db: Database.Database): Array<{ id: string; archivePath: string }> {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP server launcher for the memory-bank Codex plugin.
+ * MCP server launcher for the Memex Codex plugin.
  *
  * Deliberately dependency-free of side effects: this wrapper NEVER installs
  * anything. If the runtime prerequisites are missing it fails loudly with the
@@ -10,26 +10,27 @@
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const PLUGIN_ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT || join(__dirname, '..');
-const NODE_MODULES = join(PLUGIN_ROOT, 'node_modules');
 const MCP_SERVER = join(PLUGIN_ROOT, 'dist', 'mcp-server.js');
+const require = createRequire(import.meta.url);
 
 function fail(message) {
-  console.error(`[memory-bank] ERROR: ${message}`);
+  console.error(`[memex] ERROR: ${message}`);
   process.exit(1);
 }
 
-if (!existsSync(NODE_MODULES)) {
-  fail(
-    `dependencies are not installed (${NODE_MODULES} missing).\n` +
-      `Run manually:\n` +
-      `  cd "${PLUGIN_ROOT}" && npm install`,
-  );
+for (const dependency of ['better-sqlite3', '@xenova/transformers', 'sqlite-vec']) {
+  try {
+    require.resolve(dependency);
+  } catch {
+    fail(`runtime dependency is unavailable: ${dependency}. Reinstall the Memex plugin package.`);
+  }
 }
 
 if (!existsSync(MCP_SERVER)) {
@@ -44,6 +45,7 @@ const child = spawn(process.execPath, [MCP_SERVER], {
   cwd: PLUGIN_ROOT,
   stdio: 'inherit',
   shell: false,
+  env: { ...process.env, MEMORY_BANK_MCP_AUTOSTART: '1' },
 });
 
 process.on('SIGTERM', () => child.kill('SIGTERM'));
@@ -58,6 +60,6 @@ child.on('exit', (code, signal) => {
 });
 
 child.on('error', (err) => {
-  console.error(`[memory-bank] ERROR: failed to start MCP server: ${err.message}`);
+  console.error(`[memex] ERROR: failed to start MCP server: ${err.message}`);
   process.exit(1);
 });

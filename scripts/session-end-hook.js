@@ -67,6 +67,11 @@ async function loadRolloutModule() {
 
 async function main() {
   const hook = await readHookStdin();
+  // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+  try {
+    const { recordHookEvent } = await import('../dist/observe-hook-event.js');
+    recordHookEvent('SessionEnd', { sessionId: hook.sessionId || '', cwd: hook.cwd || '' });
+  } catch { /* observation is best-effort */ }
   const tp = hook.transcriptPath ? String(hook.transcriptPath) : '';
 
   if (!tp) {
@@ -74,6 +79,11 @@ async function main() {
     console.error('[session-end-hook] no transcript_path in hook stdin; skipping extraction');
     return;
   }
+  // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+  try {
+    const { recordHookEvent } = await import('../dist/observe-hook-event.js');
+    recordHookEvent('SessionEnd', { sessionId: hook.sessionId || '', cwd: hook.cwd || '' });
+  } catch { /* observation is best-effort */ }
 
   const stability = await waitForFileStable(tp, {
     pollMs: Number(process.env.MEMORY_BANK_STABILIZE_POLL_MS || 250),

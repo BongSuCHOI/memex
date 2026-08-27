@@ -13,4 +13,4 @@ export interface SyncOptions {
     skipSummaries?: boolean;
     summaryLimit?: number;
 }
-export declare function syncConversations(sourceDir: string, destDir: string, options?: SyncOptions): Promise<SyncResult>;
+export declare function syncConversations(sourceDir: string, destDir?: string, options?: SyncOptions): Promise<SyncResult>;

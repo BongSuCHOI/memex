@@ -1,7 +1,7 @@
 /**
  * Full-history analysis over the conversation index.
  *
- * Deterministic (no LLM) aggregation used by `memory-bank analyze` and the
+ * Deterministic (no LLM) aggregation used by `memex analyze` and the
  * `analyzing-all-conversations` skill: coverage, per-project rollups,
  * fact breakdowns, ontology domains, monthly timeline, and gap
  * recommendations (which backfills to run).

@@ -1,10 +1,13 @@
 {
-  "version": "1.5.0-codex.1",
-  "name": "memory-bank",
-  "description": "Semantic memory for Codex. Conversations become a searchable knowledge graph: facts, ontology relations, RAG search, and context injection.",
+  "version": "0.1.0",
+  "name": "memex",
+  "description": "Local-first personal knowledge for Codex: conversation memory, facts, RAG, knowledge graphs, and context injection.",
   "author": {
-    "name": "BongSuCHOI"
+    "name": "BongSuCHOI",
+    "url": "https://github.com/BongSuCHOI"
   },
+  "homepage": "https://github.com/BongSuCHOI/memex#readme",
+  "repository": "https://github.com/BongSuCHOI/memex",
   "license": "MIT",
   "keywords": [
     "memory",
@@ -15,20 +18,22 @@
     "codex"
   ],
   "interface": {
-    "displayName": "Memory Bank",
-    "shortDescription": "Codex conversation memory: semantic search, facts, knowledge graph",
-    "longDescription": "Turns local Codex session rollouts into a searchable knowledge graph of decisions and patterns, with RAG search, ontology relations, MCP tools, and automatic context injection.",
+    "displayName": "Memex",
+    "shortDescription": "Local-first knowledge memory for Codex conversations",
+    "longDescription": "Collects local Codex rollouts, distills durable facts, connects them in an ontology graph, and makes them available through RAG search, MCP tools, a local UI, and automatic context injection.",
     "developerName": "BongSuCHOI",
     "category": "Engineering",
+    "websiteURL": "https://github.com/BongSuCHOI/memex",
     "capabilities": [
       "Interactive",
       "Read",
       "Write"
     ],
     "defaultPrompt": [
-      "Search my memory bank for past decisions about authentication"
+      "Search Memex for my past decisions about authentication"
     ]
   },
   "mcpServers": "./.mcp.json",
+  "hooks": "./hooks.json",
   "skills": "./skills/"
 }

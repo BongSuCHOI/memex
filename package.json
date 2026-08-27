@@ -1,20 +1,43 @@
 {
-  "name": "memory-bank",
-  "version": "1.5.0-codex.1",
-  "description": "Semantic memory for Codex conversations",
+  "name": "memex",
+  "version": "0.1.0",
+  "description": "A local-first personal knowledge system for Codex conversations",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    ".codex-plugin/",
+    ".mcp.json",
+    "hooks.json",
+    "cli/",
+    "dist/",
+    "docs/",
+    "scripts/",
+    "skills/",
+    "ui/",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "README-KR.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "bin": {
-    "memory-bank": "./cli/memory-bank.js",
-    "memory-bank-index": "./cli/index-conversations.js",
-    "memory-bank-search": "./cli/search-conversations",
-    "memory-bank-mcp-server": "./cli/mcp-server"
+    "memex": "./cli/memex.js",
+    "memex-index": "./cli/index-conversations.js",
+    "memex-search": "./cli/search-conversations",
+    "memex-mcp-server": "./cli/mcp-server",
+    "memex-ui": "./ui/server.cjs",
+    "memex-hook-version-drift": "./scripts/version-drift-check.js",
+    "memex-hook-sync-import": "./scripts/sync-import-hook.js",
+    "memex-hook-maintenance": "./scripts/session-start-maintenance.js",
+    "memex-hook-inject": "./scripts/inject-context.js",
+    "memex-hook-session-end": "./scripts/session-end-hook.js"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc && npm run bundle",
     "bundle": "esbuild src/mcp-server.ts --bundle --platform=node --format=esm --outfile=dist/mcp-server.js --external:fsevents --external:sharp --external:onnxruntime-node --external:better-sqlite3 --external:@xenova/transformers --external:sqlite-vec",
     "test": "vitest run",
+    "test:marketplace": "node scripts/marketplace-e2e.mjs",
+    "test:package": "node scripts/package-runtime-e2e.mjs",
     "test:watch": "vitest",
     "pretest": "npm run build"
   },
@@ -23,12 +46,20 @@
     "conversations",
     "search",
     "semantic-search",
-    "embeddings"
+    "embeddings",
+    "rag",
+    "personal-knowledge",
+    "knowledge-graph"
   ],
   "author": {
     "name": "BongSuCHOI"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BongSuCHOI/memex"
+  },
+  "homepage": "https://github.com/BongSuCHOI/memex",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

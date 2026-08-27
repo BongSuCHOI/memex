@@ -167,14 +167,27 @@ export function classifyFact(
   ).run(categoryId, new Date().toISOString(), factId);
 }
 
-export function getFactsByCategory(db: Database.Database, categoryId: string): Fact[] {
-  return (db
-    .prepare(
-      `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1 ORDER BY consolidated_count DESC`,
-    )
-    .all(categoryId) as Record<string, unknown>[])
-    .map(rowToFact);
+export function getFactsByCategory(
+  db: Database.Database,
+  categoryId: string,
+  scopeProject?: string | null,
+  scopeType?: 'project' | 'global' | 'all',
+): Fact[] {
+  let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
+  const params: unknown[] = [categoryId];
+
+  if (scopeType === 'global') {
+    query += ` AND scope_type = 'global'`;
+  } else if (scopeProject && scopeType !== 'all') {
+    query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
+    params.push(scopeProject);
+  }
+
+  query += ` ORDER BY consolidated_count DESC`;
+  return (db.prepare(query).all(...params) as Record<string, unknown>[]).map(rowToFact);
 }
+
+
 
 export function getFactsByDomain(db: Database.Database, domainId: string): Fact[] {
   return (db
@@ -268,6 +281,7 @@ export function getRelatedFacts(
   decay: number = 0.6,
   minRelevance: number = 0.2,
   scopeProject?: string | null,
+  scopeType?: 'project' | 'global' | 'all',
 ): Array<{ fact: Fact; relation: OntologyRelation; relevance: number; hop: number }> {
   const visited = new Set<string>([factId]);
   const results: Array<{ fact: Fact; relation: OntologyRelation; relevance: number; hop: number }> = [];
@@ -315,7 +329,8 @@ export function getRelatedFacts(
       for (const [targetId, rows] of outByNeighbour) {
         const fact = rowToFact(rows[0]);
 
-        // Scope filter: skip facts from other projects (unless scopeProject is null)
+        // Scope filter:
+        if (scopeType === 'global' && fact.scope_type !== 'global') continue;
         if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
 
         // Select the surfaced edge FIRST: a neighbour with no qualifying
@@ -367,7 +382,8 @@ export function getRelatedFacts(
       for (const [sourceId, rows] of inByNeighbour) {
         const fact = rowToFact(rows[0]);
 
-        // Scope filter: skip facts from other projects
+        // Scope filter:
+        if (scopeType === 'global' && fact.scope_type !== 'global') continue;
         if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
 
         // Same pruning contract as the outgoing side: no qualifying edge →
@@ -415,7 +431,11 @@ export function getRelationsForFact(
 
 // === Ontology Tree ===
 
-export function getOntologyTree(db: Database.Database): DomainTree[] {
+export function getOntologyTree(
+  db: Database.Database,
+  scopeProject?: string | null,
+  scopeType?: 'project' | 'global' | 'all',
+): DomainTree[] {
   const domains = listDomains(db);
   const tree: DomainTree[] = [];
 
@@ -427,15 +447,20 @@ export function getOntologyTree(db: Database.Database): DomainTree[] {
     };
 
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id);
-      domainEntry.categories.push({ category, facts });
+      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+      if (facts.length > 0 || (!scopeProject && !scopeType)) {
+        domainEntry.categories.push({ category, facts });
+      }
     }
 
-    tree.push(domainEntry);
+    if (domainEntry.categories.length > 0 || (!scopeProject && !scopeType)) {
+      tree.push(domainEntry);
+    }
   }
 
   return tree;
 }
+
 
 // === Row Mappers ===
 

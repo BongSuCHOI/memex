@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Server for Memory Bank.
+ * MCP Server for Memex.
  *
  * This server provides tools to search and explore indexed Codex conversations
  * using semantic search, text search, and conversation display capabilities.
@@ -24,6 +24,7 @@ import {
   SearchOptions,
 } from './search.js';
 import { formatConversationAsMarkdown } from './show.js';
+import { canonicalizeProjectPath } from './project-identity.js';
 import { initDatabase } from './db.js';
 import { searchSimilarFacts, searchAllFacts, getRevisions } from './fact-db.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
@@ -55,6 +56,9 @@ const SearchInputSchema = z
       ),
     mode: SearchModeEnum.default('both').describe(
       'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both"). Only used for single-concept searches.'
+    ),
+    project: z.string().max(500).optional().describe(
+      'Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly.'
     ),
     limit: z
       .number()
@@ -100,10 +104,13 @@ const ShowConversationInputSchema = z
   })
   .strict();
 
+const ScopeEnum = z.enum(['project', 'global', 'all']);
+
 const SearchFactsInputSchema = z
   .object({
     query: z.string().min(2, 'Query must be at least 2 characters').max(10000, 'Query too long (max 10000 chars)'),
-    project: z.string().max(500).optional(),
+    project: z.string().max(500).optional().describe('Canonical absolute Codex thread cwd (required unless scope is global/all)'),
+    scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"'),
     category: z.enum(['decision', 'preference', 'pattern', 'knowledge', 'constraint']).optional(),
     include_revisions: z.boolean().default(false),
     limit: z.number().int().min(1).max(50).default(10),
@@ -115,19 +122,55 @@ const SearchOntologyInputSchema = z
     domain: z.string().optional().describe('Filter by domain name (case-insensitive partial match)'),
     category: z.string().optional().describe('Filter by category name (case-insensitive partial match)'),
     include_relations: z.boolean().default(false).describe('Include 1-hop fact relations'),
+    project: z.string().max(500).optional().describe('Canonical absolute Codex thread cwd (required unless scope is global/all)'),
+    scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"'),
   })
   .strict();
+
 
 type SearchOntologyInput = z.infer<typeof SearchOntologyInputSchema>;
 
 const AskAvatarInputSchema = z
   .object({
     question: z.string().min(2, 'Question must be at least 2 characters').max(10000, 'Question too long (max 10000 chars)').describe('Question to ask'),
-    project: z.string().max(500).optional().describe('Project path to scope the search'),
+    project: z.string().max(500).optional().describe('Canonical absolute Codex thread cwd (required unless scope is global/all)'),
+    scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"'),
   })
   .strict();
 
 type AskAvatarInput = z.infer<typeof AskAvatarInputSchema>;
+
+// ── CX-03: explicit active-project scope contract ───────────────────────────
+// Project-sensitive tools never fall back to process.cwd(): the MCP server
+// runs with the plugin root as cwd, so an omitted project would silently mix
+// plugin-root facts into the user's project. The caller must pass the
+// canonical absolute Codex thread cwd, or an explicit global/all scope.
+
+interface ResolvedScope {
+  /** Canonical absolute project path; null for global/all scopes. */
+  project: string | null;
+  scope: 'project' | 'global' | 'all';
+}
+
+function resolveProjectScope(
+  raw: { project?: string; current_project?: string; scope?: 'project' | 'global' | 'all' },
+  tool: string,
+  field: 'project' | 'current_project' = 'project',
+): ResolvedScope {
+  const scope = raw.scope ?? 'project';
+  if (scope === 'global' || scope === 'all') return { project: null, scope };
+  const value = (field === 'current_project' ? raw.current_project : raw.project) ?? '';
+  if (!value.trim()) {
+    throw new Error(
+      JSON.stringify({
+        error: `${tool}: ${field} is required for project-scoped queries`,
+        expected: 'canonical absolute Codex thread cwd (session_meta.cwd), or scope: "global" | "all"',
+        example: { [field]: '/Users/me/work/app-a' },
+      }),
+    );
+  }
+  return { project: canonicalizeProjectPath(value.trim()), scope };
+}
 
 // Error Handling Utility
 
@@ -142,8 +185,8 @@ function handleError(error: unknown): string {
 
 const server = new Server(
   {
-    name: 'memory-bank',
-    version: '1.5.0-codex.1',
+    name: 'memex',
+    version: '0.1.0',
   },
   {
     capabilities: {
@@ -152,11 +195,10 @@ const server = new Server(
   }
 );
 
-// Register Tools
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
+// Register Tools. Export the exact discovery contract so tests and docs can
+// verify that the published JSON Schema matches the handler validation.
+export function getToolDefinitions() {
+  return [
       {
         name: 'search',
         description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
@@ -170,6 +212,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               ],
             },
             mode: { type: 'string', enum: ['vector', 'text', 'both'], default: 'both' },
+            project: { type: 'string', description: 'Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global.' },
             limit: { type: 'number', minimum: 1, maximum: 50, default: 10 },
             after: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
             before: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
@@ -214,7 +257,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             query: { type: 'string', minLength: 2, description: 'Search query for facts' },
-            project: { type: 'string', description: 'Project path to scope the search (defaults to cwd)' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global" (global facts only), or "all"' },
             category: {
               type: 'string',
               enum: ['decision', 'preference', 'pattern', 'knowledge', 'constraint'],
@@ -243,6 +287,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             domain: { type: 'string', description: 'Filter by domain name (partial, case-insensitive)' },
             category: { type: 'string', description: 'Filter by category name (partial, case-insensitive)' },
             include_relations: { type: 'boolean', default: false, description: 'Include 1-hop relations for each fact' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd. Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global", or "all"' },
           },
           additionalProperties: false,
         },
@@ -261,7 +307,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             question: { type: 'string', minLength: 2, description: 'Question to ask' },
-            project: { type: 'string', description: 'Project path to scope the search (optional)' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd. Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global", or "all"' },
           },
           required: ['question'],
           additionalProperties: false,
@@ -281,7 +328,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             query: { type: 'string', minLength: 2, description: 'Search query to find the fact to trace' },
-            project: { type: 'string', description: 'Project path to scope the search (optional)' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd. Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global", or "all"' },
             limit: { type: 'number', minimum: 1, maximum: 10, default: 3, description: 'Max facts to trace' },
           },
           required: ['query'],
@@ -301,7 +349,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: 'object',
           properties: {
-            project: { type: 'string', description: 'Project path to scope stats (optional, default: all)' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd. Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global", or "all"' },
           },
           additionalProperties: false,
         },
@@ -320,10 +369,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {
             query: { type: 'string', minLength: 2, description: 'Topic or decision to find cross-project insights for' },
-            current_project: { type: 'string', description: 'Current project path (results from this project are excluded)' },
+            current_project: { type: 'string', description: 'Canonical absolute Codex thread cwd to exclude (required).' },
+            scope: { type: 'string', enum: ['project'], description: 'cross_project_insights always excludes the given current_project; pass its cwd explicitly.' },
             limit: { type: 'number', minimum: 1, maximum: 20, default: 5, description: 'Max results' },
           },
-          required: ['query'],
+          required: ['query', 'current_project'],
           additionalProperties: false,
         },
         annotations: {
@@ -342,7 +392,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             query: { type: 'string', minLength: 2, description: 'Starting topic or fact to explore from' },
             hops: { type: 'number', minimum: 1, maximum: 3, default: 2, description: 'Graph traversal depth (1-3 hops)' },
-            project: { type: 'string', description: 'Project scope (optional)' },
+            project: { type: 'string', description: 'Canonical absolute Codex thread cwd. Required unless scope is global/all.' },
+            scope: { type: 'string', enum: ['project', 'global', 'all'], description: '"project" (default, requires project), "global", or "all"' },
           },
           required: ['query'],
           additionalProperties: false,
@@ -355,15 +406,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           openWorldHint: false,
         },
       },
-    ],
-  };
+  ];
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return { tools: getToolDefinitions() };
 });
 
 // Handle Tool Calls
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  return handleToolCall(name, args ?? {});
+});
+
+/**
+ * CX-03: exported so isolated tests can drive the exact tool surface without
+ * a stdio transport. Mirrors the protocol handler one-for-one.
+ */
+export async function handleToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
   try {
-    const { name, arguments: args } = request.params;
 
     if (name === 'search') {
       const params = SearchInputSchema.parse(args);
@@ -376,6 +441,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit: params.limit,
           after: params.after,
           before: params.before,
+          project: params.project,
         };
 
         const results = await searchMultipleConcepts(params.query, options);
@@ -400,6 +466,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           limit: params.limit,
           after: params.after,
           before: params.before,
+          project: params.project,
         };
 
         const results = await searchConversations(params.query, options);
@@ -421,10 +488,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } else {
           resultText = await formatResults(results);
 
-          // Append knowledge graph context for markdown format
+          // Append knowledge graph context for markdown format.
+          // CX-11/F5: never attach all-project facts implicitly — only when
+          // the caller scoped the search with an explicit project.
           try {
-            const knowledgeCtx = await getKnowledgeContext(params.query, null, 3);
-            resultText += formatKnowledgeContext(knowledgeCtx);
+            if (params.project) {
+              const knowledgeCtx = await getKnowledgeContext(params.query, params.project, 3);
+              resultText += formatKnowledgeContext(knowledgeCtx);
+            }
           } catch {
             // Knowledge context is best-effort, don't fail the search
           }
@@ -493,20 +564,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'search_facts') {
       const params = SearchFactsInputSchema.parse(args);
-      const currentProject = params.project || process.cwd();
+      // CX-03: no cwd fallback — explicit project or global/all scope required.
+      const scopeInfo = resolveProjectScope(params, 'search_facts');
+      const scopeFilter = scopeInfo.scope;
 
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, 'query');
-        const results = searchSimilarFacts(db, queryEmbedding, currentProject, params.limit);
+        let results = searchSimilarFacts(db, queryEmbedding, scopeInfo.project, params.limit);
+        if (scopeFilter === 'global') {
+          // global-only: drop every project-scoped candidate.
+          results = results.filter(r => r.fact.scope_type === 'global');
+        }
 
         // Apply the optional fact category filter.
         let filtered = results;
         if (params.category) {
           filtered = filtered.filter(r => r.fact.category === params.category);
         }
-        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nProject: ${currentProject}\nResults: ${filtered.length}\n\n`;
+        const scopeLabel = scopeFilter === 'project' ? scopeInfo.project : `${scopeFilter} facts only`;
+        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nScope: ${scopeLabel}\nResults: ${filtered.length}\n\n`;
 
         if (filtered.length === 0) {
           output += '_No matching facts found._\n';
@@ -541,7 +619,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
 
           // Show graph relations for this fact
-          const related = getRelatedFacts(db, fact.id, 1);
+          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
           if (related.length > 0) {
             output += `- Related:\n`;
             for (const { fact: relFact, relation } of related) {
@@ -567,10 +645,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'search_ontology') {
       const params = SearchOntologyInputSchema.parse(args) as SearchOntologyInput;
+      const scopeInfo = resolveProjectScope(params, 'search_ontology');
 
       try {
         const db = initDatabase();
-        const tree = getOntologyTree(db);
+        const tree = getOntologyTree(db, scopeInfo.project, scopeInfo.scope);
 
         // Apply domain/category filters
         const domainFilter = params.domain?.toLowerCase();
@@ -612,7 +691,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               output += `  - ID: ${fact.id} | Confirmed: ${fact.consolidated_count}x | ${fact.created_at.slice(0, 10)}\n`;
 
               if (params.include_relations) {
-                const related = getRelatedFacts(db, fact.id, 1);
+                const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
                     output += `  - ↔ [${relation.relation_type}] "${relFact.fact}"\n`;
@@ -636,11 +715,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === 'ask_avatar') {
       const params = AskAvatarInputSchema.parse(args) as AskAvatarInput;
-      const project = params.project || process.cwd();
+      // CX-03: explicit scope contract; global/all scopes restrict sources.
+      const avatarScope = resolveProjectScope(params, 'ask_avatar');
 
       try {
         const db = initDatabase();
-        const result = await askAvatar(db, params.question, project);
+        const result = await askAvatar(db, params.question, avatarScope.project ?? undefined, avatarScope.scope);
         db.close();
 
         const confidenceLabel =
@@ -686,17 +766,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const params = z.object({
         query: z.string().min(2),
         project: z.string().optional(),
+        scope: ScopeEnum.optional(),
         limit: z.number().int().min(1).max(10).default(3),
       }).strict().parse(args);
 
-      const currentProject = params.project || process.cwd();
+      // CX-03: explicit scope contract.
+      const traceScope = resolveProjectScope(params, 'trace_fact');
 
       await initEmbeddings();
       const db = initDatabase();
 
       try {
         const queryEmbedding = await generateEmbedding(params.query, 'query');
-        const results = searchSimilarFacts(db, queryEmbedding, currentProject, params.limit, 0.5);
+        let results = searchSimilarFacts(db, queryEmbedding, traceScope.project, params.limit, 0.5);
+        if (traceScope.scope === 'global') {
+          results = results.filter(r => r.fact.scope_type === 'global');
+        }
 
         if (results.length === 0) {
           return { content: [{ type: 'text', text: 'No matching facts found to trace.' }] };
@@ -741,7 +826,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
 
           // Show graph relations
-          const related = getRelatedFacts(db, fact.id, 1);
+          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, traceScope.project, traceScope.scope);
           if (related.length > 0) {
             output += `### Related Facts (1-hop)\n\n`;
             for (const { fact: relFact, relation } of related) {
@@ -763,33 +848,83 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (name === 'graph_stats') {
-      z.object({
+      const gs = z.object({
         project: z.string().max(500).optional(),
+        scope: ScopeEnum.optional(),
       }).strict().parse(args);
+      // CX-11/F3: the scope parameter is a contract, not decoration — apply it.
+      const gsScope = resolveProjectScope(gs, 'graph_stats');
 
       const db = initDatabase();
       try {
-        const totalFacts = (db.prepare('SELECT COUNT(*) as count FROM facts WHERE is_active = 1').get() as { count: number }).count;
-        const totalDomains = (db.prepare('SELECT COUNT(*) as count FROM ontology_domains').get() as { count: number }).count;
-        const totalCategories = (db.prepare('SELECT COUNT(*) as count FROM ontology_categories').get() as { count: number }).count;
-        const totalRelations = (db.prepare('SELECT COUNT(*) as count FROM ontology_relations').get() as { count: number }).count;
-        const totalRevisions = (db.prepare('SELECT COUNT(*) as count FROM fact_revisions').get() as { count: number }).count;
+        const factWhere = gsScope.scope === 'global'
+          ? "f.is_active = 1 AND f.scope_type = 'global'"
+          : gsScope.project
+            ? "f.is_active = 1 AND (f.scope_type = 'global' OR f.scope_project = ?)"
+            : 'f.is_active = 1';
+        const factArgs = gsScope.scope === 'project' && gsScope.project ? [gsScope.project] : [];
+
+        const totalFacts = (db.prepare(`SELECT COUNT(*) as count FROM facts f WHERE ${factWhere}`).get(...factArgs) as { count: number }).count;
+
+        const totalDomains = (db.prepare(`
+          SELECT COUNT(DISTINCT d.id) as count
+          FROM ontology_domains d
+          JOIN ontology_categories c ON c.domain_id = d.id
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
+        `).get(...factArgs) as { count: number }).count;
+
+        const totalCategories = (db.prepare(`
+          SELECT COUNT(DISTINCT c.id) as count
+          FROM ontology_categories c
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
+        `).get(...factArgs) as { count: number }).count;
+
+        const relWhere = gsScope.scope === 'global'
+          ? "s.is_active = 1 AND t.is_active = 1 AND s.scope_type = 'global' AND t.scope_type = 'global'"
+          : gsScope.project
+            ? "s.is_active = 1 AND t.is_active = 1 AND (s.scope_type = 'global' OR s.scope_project = ?) AND (t.scope_type = 'global' OR t.scope_project = ?)"
+            : "s.is_active = 1 AND t.is_active = 1";
+        const relArgs = gsScope.scope === 'project' && gsScope.project ? [gsScope.project, gsScope.project] : [];
+
+        const totalRelations = (db.prepare(`
+          SELECT COUNT(*) as count
+          FROM ontology_relations r
+          JOIN facts s ON r.source_fact_id = s.id
+          JOIN facts t ON r.target_fact_id = t.id
+          WHERE ${relWhere}
+        `).get(...relArgs) as { count: number }).count;
+
+        const totalRevisions = (db.prepare(`
+          SELECT COUNT(*) as count
+          FROM fact_revisions fr
+          JOIN facts f ON fr.fact_id = f.id
+          WHERE ${factWhere}
+        `).get(...factArgs) as { count: number }).count;
 
         const categoryBreakdown = db.prepare(
-          'SELECT category, COUNT(*) as count FROM facts WHERE is_active = 1 GROUP BY category ORDER BY count DESC'
-        ).all() as Array<{ category: string; count: number }>;
+          `SELECT f.category, COUNT(*) as count FROM facts f WHERE ${factWhere} GROUP BY f.category ORDER BY count DESC`
+        ).all(...factArgs) as Array<{ category: string; count: number }>;
 
         const topDomains = db.prepare(`
           SELECT d.name, COUNT(f.id) as fact_count
           FROM ontology_domains d
           JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id AND f.is_active = 1
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
           GROUP BY d.id ORDER BY fact_count DESC LIMIT 10
-        `).all() as Array<{ name: string; fact_count: number }>;
+        `).all(...factArgs) as Array<{ name: string; fact_count: number }>;
 
-        const relationBreakdown = db.prepare(
-          'SELECT relation_type, COUNT(*) as count FROM ontology_relations GROUP BY relation_type ORDER BY count DESC'
-        ).all() as Array<{ relation_type: string; count: number }>;
+        const relationBreakdown = db.prepare(`
+          SELECT r.relation_type, COUNT(*) as count
+          FROM ontology_relations r
+          JOIN facts s ON r.source_fact_id = s.id
+          JOIN facts t ON r.target_fact_id = t.id
+          WHERE ${relWhere}
+          GROUP BY r.relation_type ORDER BY count DESC
+        `).all(...relArgs) as Array<{ relation_type: string; count: number }>;
+
 
         let output = `# Knowledge Graph Statistics\n\n`;
         output += `| Metric | Count |\n|--------|-------|\n`;
@@ -829,6 +964,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const params = z.object({
         query: z.string().min(2),
         current_project: z.string().optional(),
+        scope: ScopeEnum.optional(),
         limit: z.number().int().min(1).max(20).default(5),
       }).strict().parse(args);
 
@@ -839,8 +975,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const queryEmbedding = await generateEmbedding(params.query, 'query');
         const allResults = searchAllFacts(db, queryEmbedding, params.limit * 3, 0.5);
 
-        // Filter out current project facts, keep only OTHER projects
-        const currentProject = params.current_project || process.cwd();
+        // CX-03: current_project is required — never guess the active project.
+        const cxScope = resolveProjectScope(params, 'cross_project_insights', 'current_project');
+        const currentProject = cxScope.project ?? '';
         const crossProjectResults = allResults.filter(
           r => r.fact.scope_type === 'project' && r.fact.scope_project !== currentProject
         ).slice(0, params.limit);
@@ -881,14 +1018,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         query: z.string().min(2),
         hops: z.number().int().min(1).max(3).default(2),
         project: z.string().optional(),
+        scope: ScopeEnum.optional(),
       }).strict().parse(args);
+      // CX-11/F4: traversal seeds obey the same scope contract; no all-project
+      // default. Relation hops are filtered to stay inside the resolved scope.
+      const egScope = resolveProjectScope(params, 'explore_graph');
 
       await initEmbeddings();
       const db = initDatabase();
 
       try {
         const queryEmbedding = await generateEmbedding(params.query, 'query');
-        const seedFacts = searchSimilarFacts(db, queryEmbedding, params.project ?? null, 3, 0.5);
+        let seedFacts = searchSimilarFacts(db, queryEmbedding, egScope.project, 3, 0.5);
+        if (egScope.scope === 'global') {
+          seedFacts = seedFacts.filter((r) => r.fact.scope_type === 'global');
+        }
+        const seedIds = new Set(seedFacts.map((r) => r.fact.id));
 
         if (seedFacts.length === 0) {
           return { content: [{ type: 'text', text: `No facts found related to "${params.query}" to start graph exploration.` }] };
@@ -915,8 +1060,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           allDiscovered.add(seedFact.id);
 
-          // Multi-hop traversal
-          const related = getRelatedFacts(db, seedFact.id, params.hops);
+          // Multi-hop traversal, confined to the resolved scope:
+          const related = getRelatedFacts(
+            db,
+            seedFact.id,
+            params.hops,
+            0.6,
+            0.2,
+            egScope.project,
+            egScope.scope,
+          ).slice(0, 20);
+          void seedIds;
 
           if (related.length === 0) {
             output += `_No connected facts found._\n\n`;
@@ -966,7 +1120,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       isError: true,
     };
   }
-});
+}
 
 // Main Function
 
@@ -983,9 +1137,16 @@ async function main() {
   await server.connect(transport);
 }
 
-// Run the Server
+// Run the Server — only when this file is the entry process (direct run or
+// spawned by cli/mcp-server-wrapper.js with MEMORY_BANK_MCP_AUTOSTART=1).
+// Library/test imports must not start a stdio server or inject daemon.
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith('mcp-server.js') || process.argv[1].endsWith('mcp-server'));
 
-main().catch((error) => {
-  console.error('Server error:', error);
-  process.exit(1);
-});
+if (isDirectRun || process.env.MEMORY_BANK_MCP_AUTOSTART === '1') {
+  main().catch((error) => {
+    console.error('Server error:', error);
+    process.exit(1);
+  });
+}

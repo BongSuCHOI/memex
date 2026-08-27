@@ -8,7 +8,7 @@
  * frozen and stale-version workers kept spawning).
  *
  * This hook, running from the NEWEST installed version at every session start:
- *  1. Sweeps detached memory-bank workers (sync-cli / backfill / consolidate /
+ *  1. Sweeps detached Memex workers (sync-cli / backfill / consolidate /
  *     extract / reembed) that run from an OLDER versioned plugin cache dir.
  *     Their work is idempotent and re-fired on every session start, so killing
  *     a stale one loses nothing. MCP servers are never touched — they belong
@@ -74,12 +74,12 @@ async function main() {
     if (!stale) continue;
     const dead = await killAndConfirm(pid);
     swept.push({ pid, stale, dead });
-    console.error(`[memory-bank drift] stale v${stale} worker pid=${pid} ${dead ? 'terminated' : 'TERMINATION FAILED'}`);
+    console.error(`[memex drift] stale v${stale} worker pid=${pid} ${dead ? 'terminated' : 'TERMINATION FAILED'}`);
   }
   if (swept.length > 0) {
     const failed = swept.filter((s) => !s.dead);
     console.log(
-      `[memory-bank] swept ${swept.length - failed.length} stale-version worker(s) (running < v${version})` +
+      `[memex] swept ${swept.length - failed.length} stale-version worker(s) (running < v${version})` +
         (failed.length ? ` — FAILED to stop pid(s): ${failed.map((f) => f.pid).join(', ')}` : ''),
     );
   }
@@ -91,12 +91,12 @@ async function main() {
     || path.join(process.env.HOME || process.env.USERPROFILE || '', '.codex');
   const cacheBase = path.join(codexHome, 'plugins', 'cache');
   try {
-    // Newest installed copy across every marketplace that carries memory-bank.
+    // Newest installed copy across every marketplace that carries Memex.
     const versions = [];
     for (const mkt of fs.existsSync(cacheBase) ? fs.readdirSync(cacheBase) : []) {
       let vs = [];
       try {
-        vs = fs.readdirSync(path.join(cacheBase, mkt, 'memory-bank'))
+        vs = fs.readdirSync(path.join(cacheBase, mkt, 'memex'))
           .filter((d) => /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(d));
       } catch { continue; }
       versions.push(...vs);
@@ -105,8 +105,8 @@ async function main() {
     const newest = versions.at(-1);
     if (newest && compareVersions(version, newest) < 0) {
       console.log(
-        `[memory-bank] version drift: this session runs v${version} but v${newest} is installed. ` +
-          `Restart the session (or reinstall the memory-bank plugin) to apply.`,
+        `[memex] version drift: this session runs v${version} but v${newest} is installed. ` +
+          `Restart the session (or reinstall the memex plugin) to apply.`,
       );
     }
   } catch {
@@ -115,5 +115,5 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`[memory-bank drift] ${e && e.message ? e.message : e}`);
+  console.error(`[memex drift] ${e && e.message ? e.message : e}`);
 });

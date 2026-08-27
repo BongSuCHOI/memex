@@ -1,6 +1,6 @@
 import { sessionsRoot } from './codex-rollout.js';
 /**
- * Native memory-bank data root.
+ * Native memory-bank data root (pure getter — never mutates filesystem).
  *
  * Precedence (no legacy fallback, no migration):
  * 1. MEMORY_BANK_HOME          — explicit root, used as-is
@@ -10,17 +10,24 @@ import { sessionsRoot } from './codex-rollout.js';
  */
 export declare function getMemoryBankHome(): string;
 /**
- * Get conversation archive directory
+ * Get conversation archive directory (pure getter).
  */
 export declare function getArchiveDir(): string;
 /**
- * Get conversation index directory
+ * Get conversation index directory (pure getter).
  */
 export declare function getIndexDir(): string;
 /**
- * Get database path
+ * Get database path (pure getter).
  */
 export declare function getDbPath(): string;
+/**
+ * Write helpers (explicit directory creation for write paths only).
+ */
+export declare function ensureMemoryBankHome(): string;
+export declare function ensureArchiveDir(): string;
+export declare function ensureIndexDir(): string;
+export declare function ensureDbDir(): string;
 /**
  * Get exclude config path
  */
@@ -40,9 +47,13 @@ export { sessionsRoot as getSessionsRoot };
  */
 export declare const LLM_WORKDIR_BASENAME = "memory-bank-llm";
 /**
- * True if a project key derived from session cwd must be skipped by
- * indexing/sync. Combines the user-configured exact-match
- * list with the built-in exclusion of the plugin's own LLM worker sessions.
+ * True if a canonical project must be skipped by indexing/sync.
+ *
+ * CX-02: `project` is the canonical absolute cwd. The user list is an
+ * exact-match on that canonical path (a basename entry can no longer
+ * accidentally exclude an unrelated same-named project). The built-in rule
+ * still excludes the reserved LLM worker workdir, matched on the final path
+ * segment so both `.../memory-bank-llm` and legacy slug forms stay covered.
  */
 export declare function isExcludedProject(project: string, excluded?: string[]): boolean;
 /**

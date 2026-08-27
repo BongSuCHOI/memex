@@ -1,7 +1,7 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getIndexDir } from './paths.js';
+import { ensureIndexDir, getIndexDir } from './paths.js';
 import { computeInjectContext } from './inject-core.js';
 import { initEmbeddings } from './embeddings.js';
 /**
@@ -28,6 +28,10 @@ export function injectSocketPath() {
     return path.join(getIndexDir(), 'inject-daemon.sock');
 }
 export function startInjectDaemon() {
+    // The sidecar can be the first Memex writer in a brand-new installation:
+    // create its owned directory before binding instead of silently losing the
+    // daemon to listen(2) ENOENT.
+    ensureIndexDir();
     const sockPath = injectSocketPath();
     const server = net.createServer((conn) => {
         let buf = '';
@@ -86,4 +90,5 @@ export function startInjectDaemon() {
         server.unref();
     }
     catch { /* sidecar is best-effort */ }
+    return server;
 }

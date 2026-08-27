@@ -5,7 +5,7 @@
  * the IDENTICAL predicate — otherwise the spawn condition drifts from the work
  * condition. Observed drift (2026-07-11): the hook counted any session missing
  * from extraction_log (509), while the worker additionally drops
- * memory-bank-llm pollution sessions and sessions below MIN_EXCHANGES and so
+ * Memex model-worker pollution sessions and sessions below MIN_EXCHANGES and so
  * only processed 4 — leaving 505 phantom "pending" sessions that the worker can
  * never clear, so the hook spawned the worker (model load + LLM setup) on EVERY
  * session start forever, for nothing.

@@ -1,9 +1,10 @@
 {
   "mcpServers": {
-    "memory-bank": {
+    "memex": {
       "command": "node",
       "args": [
-        "cli/mcp-server-wrapper.js"
+        "cli/runtime-exec.js",
+        "memex-mcp-server"
       ],
       "cwd": ".",
       "env": {}

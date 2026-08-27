@@ -2,7 +2,7 @@ import { getIndexStats, formatStats } from './stats.js';
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Usage: memory-bank stats
+Usage: memex stats
 
 Display statistics about the indexed conversation archive.
 
@@ -15,7 +15,7 @@ Shows:
 
 EXAMPLES:
   # Show index statistics
-  memory-bank stats
+  memex stats
 `);
     process.exit(0);
 }

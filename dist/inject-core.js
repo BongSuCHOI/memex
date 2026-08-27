@@ -6,6 +6,7 @@ import { getRelatedFacts } from './ontology-db.js';
 import { detectRepeat, formatRepeatContext } from './repeat-detector.js';
 import { appendInjectLog } from './inject-log.js';
 import { loadLedger, appendLedger } from './inject-ledger.js';
+import { recordRecallEvent } from './db.js';
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
 // thresholds cannot separate relevant from irrelevant). A fact is injected
@@ -122,6 +123,14 @@ export async function computeInjectContext(userPrompt, project, via, sessionId) 
                 catch { /* best-effort */ }
             }
             appendLedger(sessionId, ledger, injectedIds);
+            if (sessionId) {
+                recordRecallEvent(db, {
+                    sessionId,
+                    project,
+                    prompt: userPrompt,
+                    factIds: injectedIds,
+                });
+            }
             const block = lines.join('\n') + '\n';
             appendInjectLog({
                 status: 'injected', project, prompt_len: userPrompt.length,

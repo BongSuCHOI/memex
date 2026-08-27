@@ -3,6 +3,7 @@ import path from 'path';
 import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql } from './db.js';
 import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION } from './embeddings.js';
 import { getSyncDir } from './sync-export.js';
+import { canonicalizeProjectPath } from './project-identity.js';
 
 interface SyncFact {
   id: string;
@@ -16,6 +17,28 @@ interface SyncFact {
   updated_at: string;
   consolidated_count: number;
   ontology_category_id: string | null;
+}
+
+const ALLOWED_SCOPE_TYPES: Record<string, true> = { project: true, global: true };
+const ALLOWED_RELATION_TYPES: Record<string, true> = { SUPPORTS: true, INFLUENCES: true, SUPERSEDES: true, CONTRADICTS: true };
+
+function canonicalScopeProject(scopeType: string, scopeProject: string | null): string | null {
+  if (scopeType === 'global') return null;
+  if (scopeType === 'project') {
+    if (typeof scopeProject !== 'string' || !scopeProject.trim()) return null;
+    const c = canonicalizeProjectPath(scopeProject);
+    // Must remain absolute after canonicalization; reject lexical variants that collapse to empty
+    if (!c || !path.isAbsolute(c)) return null;
+    return c;
+  }
+  return null;
+}
+
+function isValidScope(scopeType: unknown, scopeProject: unknown): boolean {
+  if (typeof scopeType !== 'string' || !ALLOWED_SCOPE_TYPES[scopeType]) return false;
+  if (scopeType === 'global') return scopeProject === null || scopeProject === '' || scopeProject === undefined;
+  // project
+  return typeof scopeProject === 'string' && !!scopeProject.trim() && path.isAbsolute(scopeProject) && !!canonicalizeProjectPath(scopeProject);
 }
 
 /**
@@ -34,7 +57,6 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
   }
 
   const db = initDatabase();
-
   try {
     // Import domains first (facts reference them via categories)
     const domainsPath = path.join(syncDir, 'ontology-domains.jsonl');
@@ -43,10 +65,11 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
       for (const line of lines) {
         try {
           const d = JSON.parse(line);
+          if (!d.id || typeof d.id !== 'string' || !d.name || typeof d.name !== 'string') continue;
           const existing = db.prepare('SELECT id FROM ontology_domains WHERE id = ?').get(d.id);
           if (!existing) {
             db.prepare('INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)').run(
-              d.id, d.name, d.description, d.created_at
+              d.id, d.name, d.description ?? null, d.created_at ?? new Date().toISOString()
             );
             result.newDomains++;
           }
@@ -61,10 +84,13 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
       for (const line of lines) {
         try {
           const c = JSON.parse(line);
+          if (!c.id || typeof c.id !== 'string' || !c.domain_id || typeof c.domain_id !== 'string' || !c.name || typeof c.name !== 'string') continue;
+          const domainExists = db.prepare('SELECT id FROM ontology_domains WHERE id = ?').get(c.domain_id);
+          if (!domainExists) continue;
           const existing = db.prepare('SELECT id FROM ontology_categories WHERE id = ?').get(c.id);
           if (!existing) {
             db.prepare('INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)').run(
-              c.id, c.domain_id, c.name, c.description, c.created_at
+              c.id, c.domain_id, c.name, c.description ?? null, c.created_at ?? new Date().toISOString()
             );
             result.newCategories++;
           }
@@ -80,6 +106,18 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
     for (const line of factsLines) {
       try {
         const f: SyncFact = JSON.parse(line);
+        // Trust-boundary validation
+        if (!f.id || typeof f.id !== 'string' || !f.fact || typeof f.fact !== 'string' || !f.category || typeof f.category !== 'string') continue;
+        if (!isValidScope(f.scope_type, f.scope_project)) continue;
+        const canonicalProject = canonicalScopeProject(f.scope_type, f.scope_project);
+        if (f.scope_type === 'project' && !canonicalProject) continue;
+        // Normalize for storage
+        f.scope_project = canonicalProject;
+        // ontology_category_id FK check if present
+        if (f.ontology_category_id) {
+          const catExists = db.prepare('SELECT id FROM ontology_categories WHERE id = ?').get(f.ontology_category_id);
+          if (!catExists) continue;
+        }
         const existingById = db.prepare('SELECT id FROM facts WHERE id = ?').get(f.id);
         if (existingById) continue;
 
@@ -149,12 +187,29 @@ export async function importFromSync(): Promise<{ newFacts: number; newDomains: 
       for (const line of lines) {
         try {
           const r = JSON.parse(line);
+          if (!r.id || typeof r.id !== 'string' || !r.source_fact_id || typeof r.source_fact_id !== 'string' || !r.target_fact_id || typeof r.target_fact_id !== 'string' || !r.relation_type || typeof r.relation_type !== 'string') continue;
+          if (!ALLOWED_RELATION_TYPES[r.relation_type]) continue;
+          // Endpoint existence and scope compatibility. A relation may connect
+          // a project fact with a global fact, but it must never bridge two
+          // different project scopes.
+          const src = db.prepare('SELECT id, scope_type, scope_project FROM facts WHERE id = ?').get(r.source_fact_id) as
+            | { id: string; scope_type: string; scope_project: string | null }
+            | undefined;
+          const tgt = db.prepare('SELECT id, scope_type, scope_project FROM facts WHERE id = ?').get(r.target_fact_id) as
+            | { id: string; scope_type: string; scope_project: string | null }
+            | undefined;
+          if (!src || !tgt) continue;
+          if (
+            src.scope_type === 'project'
+            && tgt.scope_type === 'project'
+            && src.scope_project !== tgt.scope_project
+          ) continue;
           const existing = db.prepare('SELECT id FROM ontology_relations WHERE id = ?').get(r.id);
           if (!existing) {
             db.prepare(`
               INSERT INTO ontology_relations (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
               VALUES (?, ?, ?, ?, ?, ?)
-            `).run(r.id, r.source_fact_id, r.relation_type, r.target_fact_id, r.reasoning, r.created_at);
+            `).run(r.id, r.source_fact_id, r.relation_type, r.target_fact_id, r.reasoning ?? null, r.created_at ?? new Date().toISOString());
             result.newRelations++;
           }
         } catch { /* skip malformed */ }

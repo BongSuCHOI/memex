@@ -1,5 +1,12 @@
 import Database from 'better-sqlite3';
 import type { Fact, FactRevision } from './types.js';
+type FactVecTable = 'vec_facts' | 'vec_facts_kr' | 'vec_categories';
+/** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
+export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
+    sql: string;
+    blob: Buffer<ArrayBufferLike>;
+    dt: import("./db.js").VecDtype;
+};
 interface InsertFactParams {
     fact: string;
     category: string;
@@ -14,6 +21,7 @@ interface UpdateFactParams {
     fact?: string;
     embedding?: number[] | null;
     consolidated_count_increment?: boolean;
+    source_exchange_ids?: string[];
 }
 interface InsertRevisionParams {
     fact_id: string;

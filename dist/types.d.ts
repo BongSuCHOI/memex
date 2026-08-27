@@ -1,3 +1,4 @@
+export type EvidenceSourceType = 'human_assertion' | 'assistant_generated' | 'repo_file' | 'git_history' | 'test_execution' | 'external_unverified' | 'memex_recall';
 export interface ToolCall {
     id: string;
     exchangeId: string;
@@ -6,6 +7,8 @@ export interface ToolCall {
     toolResult?: string;
     isError: boolean;
     timestamp: string;
+    sourceType?: EvidenceSourceType;
+    learnable?: boolean;
 }
 export interface ConversationExchange {
     id: string;
@@ -25,6 +28,9 @@ export interface ConversationExchange {
     thinkingLevel?: string;
     thinkingDisabled?: boolean;
     thinkingTriggers?: string;
+    provenance?: EvidenceSourceType[];
+    assistantLearnable?: boolean;
+    hasMemexRecall?: boolean;
     toolCalls?: ToolCall[];
 }
 export interface SearchResult {

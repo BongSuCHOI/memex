@@ -1,0 +1,20 @@
+{
+  "name": "memex",
+  "interface": {
+    "displayName": "Memex"
+  },
+  "plugins": [
+    {
+      "name": "memex",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

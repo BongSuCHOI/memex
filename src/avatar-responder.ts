@@ -4,7 +4,7 @@ import type { AvatarResponse, Fact, RelationType } from './types.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
-import { searchSimilarFacts } from './fact-db.js';
+import { searchSimilarFacts, searchSimilarFactsSameScope } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
 
 const AVATAR_SYSTEM_PROMPT = `You are acting as the user's technical alter ego.
@@ -39,6 +39,7 @@ export async function askAvatar(
   db: Database.Database,
   question: string,
   project?: string,
+  scope?: 'project' | 'global' | 'all',
 ): Promise<AvatarResponse> {
   await initEmbeddings();
 
@@ -46,7 +47,14 @@ export async function askAvatar(
   const scopeProject = project ?? null;
 
   // Step 1: Vector search for top-10 relevant facts
-  const vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+  let vectorResults: Array<{ fact: Fact; distance: number }>;
+  if (scope === 'global') {
+    vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: 'global' }, 10, 0.6);
+  } else if (scopeProject) {
+    vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+  } else {
+    vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
+  }
 
   if (vectorResults.length === 0) {
     return {
@@ -71,8 +79,9 @@ export async function askAvatar(
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
 
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1);
+    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
     for (const { fact: relFact, relation } of related) {
+      if (scope === 'global' && relFact.scope_type !== 'global') continue;
       if (!expandedFactIds.has(relFact.id)) {
         expandedFactIds.add(relFact.id);
         relatedDecisions.push({ fact: relFact, relation: relation.relation_type });

@@ -16,7 +16,8 @@ describe('Fact Extractor', () => {
       ];
       const prompt = buildExtractionPrompt(exchanges);
       expect(prompt).toContain('What should we use for state management?');
-      expect(prompt).toContain('Riverpod');
+      expect(prompt).not.toContain('I recommend Riverpod');
+      expect(prompt).toContain('assistant synthesis excluded');
       expect(prompt).toContain('Exchange 1');
       expect(prompt).toContain('Exchange 2');
     });
@@ -45,7 +46,7 @@ describe('Fact Extractor', () => {
       const exchanges = [{ user_message: '<script>alert("xss")</script>', assistant_message: '```json\n{"key": "value"}\n```' }];
       const prompt = buildExtractionPrompt(exchanges);
       expect(prompt).toContain('<script>');
-      expect(prompt).toContain('```json');
+      expect(prompt).not.toContain('```json');
     });
   });
 
@@ -114,15 +115,16 @@ describe('Fact Extractor', () => {
       expect(isSubstantiveExchange('진행해줘', '진행합니다.')).toBe(false);
     });
 
-    it('keeps trivial-looking acknowledgements when the reply is substantive', () => {
+    it('does not use a substantive assistant reply as evidence', () => {
       const longAnswer = 'A'.repeat(300);
-      expect(isSubstantiveExchange('ok', longAnswer)).toBe(true);
-      expect(isSubstantiveExchange('계속', longAnswer)).toBe(true);
+      expect(isSubstantiveExchange('ok', longAnswer)).toBe(false);
+      expect(isSubstantiveExchange('계속', longAnswer)).toBe(false);
     });
 
-    it('keeps short but substantive questions with real answers', () => {
+    it('keeps a short prompt only when trusted tool evidence exists', () => {
       const longAnswer = 'The reason is that better-sqlite3 requires a native rebuild after install. '.repeat(3);
-      expect(isSubstantiveExchange('왜?', longAnswer)).toBe(true);
+      expect(isSubstantiveExchange('왜?', longAnswer)).toBe(false);
+      expect(isSubstantiveExchange('왜?', longAnswer, true)).toBe(true);
     });
 
     it('keeps normal exchanges', () => {

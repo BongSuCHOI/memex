@@ -78,12 +78,24 @@ export function decideTakeover(holder, myVersion, holderRunMs, wedgeMaxMs) {
     return 'defer';
 }
 /**
- * Detached memory-bank workers running from a versioned plugin cache dir.
- * Deliberately excludes mcp-server / mcp-server-wrapper (owned by live sessions).
+ * True only for a Node process whose executable script is a Memex sync CLI.
  */
-const WORKER_RE = /plugins\/cache\/[^/]+\/memory-bank\/([A-Za-z0-9][A-Za-z0-9._+-]*)\/(?:dist\/sync-cli\.js|scripts\/(?:backfill-extract-worker|backfill-ontology-worker|fact-consolidate-worker|fact-extract-worker|reembed-worker)\.js)/;
+export function isSyncCliCommand(command) {
+    const normalized = command.replaceAll('\\', '/');
+    const scriptIndex = normalized.indexOf('/dist/sync-cli.js');
+    if (scriptIndex < 0)
+        return false;
+    const beforeScript = normalized.slice(0, scriptIndex);
+    return /(?:^|[/\s])node(?:\.exe)?(?:\s|$)/i.test(beforeScript)
+        && /\/memex(?:\/|$)/.test(beforeScript);
+}
 /**
- * If `command` is a memory-bank detached worker from a version OLDER than
+ * Detached Memex workers running from a versioned plugin cache dir. MCP
+ * servers remain owned by live sessions.
+ */
+const WORKER_RE = /plugins\/cache\/[^/]+\/memex\/([A-Za-z0-9][A-Za-z0-9._+-]*)\/(?:dist\/sync-cli\.js|scripts\/(?:backfill-extract-worker|backfill-ontology-worker|fact-consolidate-worker|fact-extract-worker|reembed-worker)\.js)/;
+/**
+ * If `command` is a Memex detached worker from a version OLDER than
  * `myVersion`, return that stale version string; otherwise null.
  */
 export function staleWorkerVersion(command, myVersion) {

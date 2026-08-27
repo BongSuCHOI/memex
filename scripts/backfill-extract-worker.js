@@ -49,7 +49,7 @@ const MAX_SESSIONS = maxArg > -1
 // zero workers (silent no-op) or overspawn.
 const CONCURRENCY = Math.max(1, boundedInt(process.env.BACKFILL_CONCURRENCY, 4, 8));
 
-// Exclude self-referential repo conversations (memory-bank's own monitoring /
+// Exclude self-referential repo conversations (Memex's own monitoring /
 // cron sessions). These are ~98% 1-exchange noise that the backfill itself
 // generates, so including them is a feedback loop that never converges.
 // Comma-separated cwd paths; env-overridable.

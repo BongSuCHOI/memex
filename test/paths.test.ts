@@ -66,12 +66,14 @@ describe('paths', () => {
   });
 
   describe('getArchiveDir', () => {
-    it('should use TEST_ARCHIVE_DIR when set', async () => {
+    it('should use TEST_ARCHIVE_DIR when set without creating directory', async () => {
       const archiveDir = path.join(tmpDir, 'test-archive');
       process.env.TEST_ARCHIVE_DIR = archiveDir;
-      const { getArchiveDir } = await import('../src/paths.js');
+      const { getArchiveDir, ensureArchiveDir } = await import('../src/paths.js');
       const result = getArchiveDir();
       expect(result).toBe(archiveDir);
+      expect(fs.existsSync(archiveDir)).toBe(false);
+      ensureArchiveDir();
       expect(fs.existsSync(archiveDir)).toBe(true);
     });
 
@@ -83,6 +85,7 @@ describe('paths', () => {
       expect(result).toBe(path.join(configDir, 'conversation-archive'));
     });
   });
+
 
   describe('getDbPath', () => {
     it('should use MEMORY_BANK_DB_PATH when set', async () => {
@@ -151,14 +154,14 @@ describe('paths', () => {
   });
 
   describe('isExcludedProject', () => {
-    it('should exclude the current LLM workdir slug (built-in)', async () => {
+    it('should exclude the current LLM workdir path (built-in, CX-02 canonical)', async () => {
       const { isExcludedProject } = await import('../src/paths.js');
-      expect(isExcludedProject('-private-var-folders-ms-q41xyz-T-memory-bank-llm', [])).toBe(true);
+      expect(isExcludedProject('/private/var/folders/ms/q41xyz/T/memory-bank-llm', [])).toBe(true);
     });
 
-    it('should exclude nested temporary LLM workdir slugs (built-in)', async () => {
+    it('should exclude nested temporary LLM workdir paths (built-in, CX-02 canonical)', async () => {
       const { isExcludedProject } = await import('../src/paths.js');
-      expect(isExcludedProject('-private-var-folders-ms-q41xyz-T-tmp-03lvGlu1k7-memory-bank-llm', [])).toBe(true);
+      expect(isExcludedProject('/tmp/03lvGlu1k7/memory-bank-llm', [])).toBe(true);
     });
 
     it('should exclude the bare workdir basename (built-in)', async () => {

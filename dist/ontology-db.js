@@ -101,11 +101,18 @@ export function searchSimilarCategories(db, embedding, k = 20) {
 export function classifyFact(db, factId, categoryId) {
     db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`).run(categoryId, new Date().toISOString(), factId);
 }
-export function getFactsByCategory(db, categoryId) {
-    return db
-        .prepare(`SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1 ORDER BY consolidated_count DESC`)
-        .all(categoryId)
-        .map(rowToFact);
+export function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
+    let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
+    const params = [categoryId];
+    if (scopeType === 'global') {
+        query += ` AND scope_type = 'global'`;
+    }
+    else if (scopeProject && scopeType !== 'all') {
+        query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
+        params.push(scopeProject);
+    }
+    query += ` ORDER BY consolidated_count DESC`;
+    return db.prepare(query).all(...params).map(rowToFact);
 }
 export function getFactsByDomain(db, domainId) {
     return db
@@ -178,7 +185,7 @@ export function createRelation(db, sourceFactId, relationType, targetFactId, rea
  *                       Prevents cross-project noise in graph traversal.
  *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
  */
-export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject) {
+export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType) {
     const visited = new Set([factId]);
     const results = [];
     let frontier = [factId];
@@ -221,7 +228,9 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             }
             for (const [targetId, rows] of outByNeighbour) {
                 const fact = rowToFact(rows[0]);
-                // Scope filter: skip facts from other projects (unless scopeProject is null)
+                // Scope filter:
+                if (scopeType === 'global' && fact.scope_type !== 'global')
+                    continue;
                 if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
                     continue;
                 // Select the surfaced edge FIRST: a neighbour with no qualifying
@@ -271,7 +280,9 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             }
             for (const [sourceId, rows] of inByNeighbour) {
                 const fact = rowToFact(rows[0]);
-                // Scope filter: skip facts from other projects
+                // Scope filter:
+                if (scopeType === 'global' && fact.scope_type !== 'global')
+                    continue;
                 if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
                     continue;
                 // Same pruning contract as the outgoing side: no qualifying edge →
@@ -309,7 +320,7 @@ export function getRelationsForFact(db, factId) {
         .all(factId, factId);
 }
 // === Ontology Tree ===
-export function getOntologyTree(db) {
+export function getOntologyTree(db, scopeProject, scopeType) {
     const domains = listDomains(db);
     const tree = [];
     for (const domain of domains) {
@@ -319,10 +330,14 @@ export function getOntologyTree(db) {
             categories: [],
         };
         for (const category of categories) {
-            const facts = getFactsByCategory(db, category.id);
-            domainEntry.categories.push({ category, facts });
+            const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+            if (facts.length > 0 || (!scopeProject && !scopeType)) {
+                domainEntry.categories.push({ category, facts });
+            }
         }
-        tree.push(domainEntry);
+        if (domainEntry.categories.length > 0 || (!scopeProject && !scopeType)) {
+            tree.push(domainEntry);
+        }
     }
     return tree;
 }

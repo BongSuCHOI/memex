@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { EMBEDDING_VERSION } from './embeddings.js';
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
-function vecParamFor(db, table, embedding) {
+export function vecParamFor(db, table, embedding) {
     const dt = getVecTableDtype(db, table);
     return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
 }
@@ -60,6 +60,10 @@ export function updateFact(db, id, params) {
     }
     if (params.consolidated_count_increment) {
         updates.push('consolidated_count = consolidated_count + 1');
+    }
+    if (params.source_exchange_ids !== undefined) {
+        updates.push('source_exchange_ids = ?');
+        values.push(JSON.stringify([...new Set(params.source_exchange_ids)]));
     }
     values.push(id);
     db.prepare(`UPDATE facts SET ${updates.join(', ')} WHERE id = ?`).run(...values);

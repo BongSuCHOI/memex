@@ -240,7 +240,7 @@ export async function parseRolloutStream(input, { archivePath = '' } = {}) {
         }
         if ((pType === 'custom_tool_call' || pType === 'function_call') && cur) {
             cur.toolCalls.push({
-                id: crypto.randomUUID(),
+                id: String(p.call_id ?? p.id ?? crypto.randomUUID()),
                 exchangeId: '',
                 toolName: String(p.name ?? 'unknown'),
                 toolInput: safeParseInput(pType === 'function_call' ? p.arguments : p.input),
@@ -248,6 +248,17 @@ export async function parseRolloutStream(input, { archivePath = '' } = {}) {
                 timestamp: rec.timestamp || lastTs || new Date(0).toISOString(),
             });
             cur.assistantLine = lineNo;
+            continue;
+        }
+        if ((pType === 'custom_tool_call_output' || pType === 'function_call_output') && cur) {
+            const callId = String(p.call_id ?? p.id ?? '');
+            const call = cur.toolCalls.find((candidate) => candidate.id === callId);
+            if (call) {
+                const output = p.output ?? p.result ?? '';
+                call.toolResult = typeof output === 'string' ? output : JSON.stringify(output);
+                call.isError = p.is_error === true;
+                cur.assistantLine = lineNo;
+            }
         }
     }
     flush();

@@ -1,0 +1,278 @@
+{
+  "verdict": "PASS",
+  "environment": {
+    "platform": "darwin arm64 (Apple M1 Pro)",
+    "node": "v26.7.0",
+    "chrome": "Google Chrome",
+    "recorded_at": "2026-08-26T18:59:27.701Z",
+    "isolation": "/tmp/mb-bench-LJmogj",
+    "thresholds_predeclared": {
+      "AC_PERF_01_vector_p95_ms": 2000,
+      "AC_PERF_01_text_p95_ms": 1000,
+      "AC_PERF_01_both_p95_ms": 2000,
+      "AC_PERF_02_fact_p95_ms": 500,
+      "AC_PERF_02_graph_p95_ms": 500,
+      "AC_PERF_03_warm_p95_ms": 3000,
+      "AC_PERF_03_cold_p95_ms": 5000,
+      "AC_PERF_04_sync_p95_ms": 120000,
+      "AC_PERF_04_peak_rss_mb": 2048,
+      "AC_PERF_05_api_p95_ms": 1000,
+      "AC_PERF_05_browser_p95_ms": 10000,
+      "AC_PERF_06_analyze_p95_ms": 5000,
+      "AC_PERF_06_peak_rss_mb": 1024
+    }
+  },
+  "corpus": {
+    "rollouts": 200,
+    "exchanges": 800,
+    "projects": 7,
+    "facts": 50,
+    "relations": 49,
+    "repeated_runs": 3
+  },
+  "results": {
+    "AC_PERF_01_conversation_search": {
+      "vector_p50_ms": 5.2896249999976135,
+      "vector_p95_ms": 6.872875000000931,
+      "text_p50_ms": 0.41625000000203727,
+      "text_p95_ms": 0.8639169999951264,
+      "both_p50_ms": 0.8523330000025453,
+      "both_p95_ms": 1.0955830000020796,
+      "error_ratio": 0,
+      "no_match_ratio": 0,
+      "raw_samples": {
+        "vector": [
+          5.936874999999418,
+          5.132417000000714,
+          5.450250000001688,
+          5.210249999996449,
+          5.2896249999976135,
+          5.1504999999961,
+          5.330625000002328,
+          5.013874999996915,
+          5.466624999993655,
+          6.872875000000931
+        ],
+        "text": [
+          0.8639169999951264,
+          0.5829159999993863,
+          0.7403749999939464,
+          0.584208000000217,
+          0.4792500000039581,
+          0.41625000000203727,
+          0.378458999999566,
+          0.3619170000019949,
+          0.38041700000030687,
+          0.3790420000004815
+        ],
+        "both": [
+          1.0955830000020796,
+          0.9855829999942216,
+          0.8523330000025453,
+          0.8946250000008149,
+          0.761292000002868,
+          0.7712919999976293,
+          0.9214589999974123,
+          0.7510000000038417,
+          0.7784579999934067,
+          0.8656660000051488
+        ]
+      },
+      "threshold_check": {
+        "vector_p95_pass": true,
+        "text_p95_pass": true,
+        "both_p95_pass": true,
+        "error_ratio_pass": true,
+        "no_match_ratio_pass": true
+      }
+    },
+    "AC_PERF_02_fact_and_graph_search": {
+      "fact_p50_ms": 0.6401659999974072,
+      "fact_p95_ms": 0.8899999999994179,
+      "graph_p50_ms": 0.12470799999573501,
+      "graph_p95_ms": 0.27133299999695737,
+      "error_ratio": 0,
+      "raw_samples": {
+        "fact": [
+          0.8899999999994179,
+          0.6714170000050217,
+          0.5215419999949518,
+          0.5887079999956768,
+          0.5555839999942691,
+          0.513874999996915,
+          0.8178330000009737,
+          0.7213330000013229,
+          0.6401659999974072,
+          0.697041999999783
+        ],
+        "graph": [
+          0.27133299999695737,
+          0.15595800000301097,
+          0.12195899999642279,
+          0.1465410000018892,
+          0.12562500000058208,
+          0.1292909999974654,
+          0.11974999999802094,
+          0.12470799999573501,
+          0.09070799999608425,
+          0.0983330000017304
+        ]
+      },
+      "threshold_check": {
+        "fact_p95_pass": true,
+        "graph_p95_pass": true,
+        "error_ratio_pass": true
+      }
+    },
+    "AC_PERF_03_context_injection": {
+      "warm_transport": "hook-process -> unix-socket -> MCP-sidecar",
+      "cold_transport": "fresh-hook-process -> local fallback",
+      "warm_p50_ms": 58.821165999994264,
+      "warm_p95_ms": 62.715125000002445,
+      "cold_p50_ms": 888.8232500000013,
+      "cold_p95_ms": 911.4086669999961,
+      "warm_injected_ratio": 1,
+      "cold_injected_ratio": 1,
+      "error_ratio": 0,
+      "raw_samples": {
+        "warm": [
+          51.321791999995185,
+          59.4809580000001,
+          59.572832999998354,
+          62.715125000002445,
+          58.821165999994264,
+          58.58400000000256,
+          59.92395800000668,
+          56.23820799999521,
+          55.68258400000195,
+          58.96833300000435
+        ],
+        "cold": [
+          888.8232500000013,
+          883.6729999999952,
+          907.5199169999978,
+          911.4086669999961,
+          835.8171670000011
+        ]
+      },
+      "threshold_check": {
+        "warm_p95_pass": true,
+        "cold_p95_pass": true,
+        "warm_injection_pass": true,
+        "cold_injection_pass": true
+      }
+    },
+    "AC_PERF_04_incremental_sync": {
+      "memory_method": "child-process resourceUsage.maxRSS",
+      "sync_p50_ms": 11898.398417,
+      "sync_p95_ms": 12178.025708,
+      "noop_resync_ms": 45.83870900000001,
+      "peak_rss_p95_mb": 920.6,
+      "raw_samples": {
+        "sync_ms": [
+          12178.025708,
+          11512.879083,
+          11898.398417
+        ],
+        "peak_rss_mb": [
+          919.8,
+          920.6,
+          903.9
+        ],
+        "noop": {
+          "runtime_ms": 45.83870900000001,
+          "peak_rss_mb": 59.5,
+          "copied": 0,
+          "indexed": 0,
+          "skipped": 200,
+          "errors": []
+        }
+      },
+      "threshold_check": {
+        "sync_p95_pass": true,
+        "peak_rss_pass": true,
+        "noop_pass": true
+      }
+    },
+    "AC_PERF_05_3d_graph": {
+      "api_transport": "loopback HTTP /api/graph-data",
+      "browser_transport": "Google Chrome headless via CDP",
+      "api_p50_ms": 1.4099169999972219,
+      "api_p95_ms": 14.579834000003757,
+      "browser_first_interactive_p50_ms": 526.5,
+      "browser_first_interactive_p95_ms": 672.5999999046326,
+      "rendered_nodes": 50,
+      "rendered_edges": 49,
+      "raw_samples": {
+        "api_ms": [
+          14.579834000003757,
+          2.3857500000012806,
+          1.821791000002122,
+          1.2959590000027674,
+          1.3007090000028256,
+          1.4099169999972219,
+          1.293707999997423,
+          1.1853750000009313,
+          1.633958000005805,
+          1.8326249999954598
+        ],
+        "browser": [
+          {
+            "firstInteractiveMs": 672.5999999046326,
+            "canvasWidth": 756,
+            "canvasHeight": 469,
+            "domains": "1",
+            "facts": "50",
+            "bootHidden": true
+          },
+          {
+            "firstInteractiveMs": 526.5,
+            "canvasWidth": 756,
+            "canvasHeight": 469,
+            "domains": "1",
+            "facts": "50",
+            "bootHidden": true
+          },
+          {
+            "firstInteractiveMs": 523.3999999761581,
+            "canvasWidth": 756,
+            "canvasHeight": 469,
+            "domains": "1",
+            "facts": "50",
+            "bootHidden": true
+          }
+        ]
+      },
+      "threshold_check": {
+        "api_p95_pass": true,
+        "browser_p95_pass": true,
+        "populated_graph_pass": true
+      }
+    },
+    "AC_PERF_06_full_history_analyze": {
+      "memory_method": "child-process resourceUsage.maxRSS",
+      "analyze_p50_ms": 19.001166,
+      "analyze_p95_ms": 19.464,
+      "peak_rss_p95_mb": 55.4,
+      "analyzed_conversations": 200,
+      "analyzed_exchanges": 800,
+      "raw_samples": {
+        "analyze_ms": [
+          19.464,
+          18.203792000000004,
+          19.001166
+        ],
+        "peak_rss_mb": [
+          55.4,
+          55.4,
+          55.4
+        ]
+      },
+      "threshold_check": {
+        "analyze_p95_pass": true,
+        "peak_rss_pass": true,
+        "coverage_pass": true
+      }
+    }
+  }
+}

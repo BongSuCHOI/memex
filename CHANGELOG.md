@@ -1,13 +1,89 @@
 # Changelog
 
-## 1.5.0-codex.1
+All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-- Converted ingestion to native Codex rollout discovery and parsing.
-- Replaced model SDK calls with isolated `codex exec` calls using
-  `gpt-5.6-luna` by default.
-- Added a native Codex plugin manifest, MCP configuration, hooks, skills, and
-  commands.
-- Moved all runtime data to `~/.config/memory-bank` with explicit overrides.
-- Removed compatibility with other coding-agent plugins and their generated
-  QA, marketing, deployment, and session artifacts.
-- Added clean-start locking and idempotent resumed-session extraction.
+## 0.1.0 - 2026-08-27
+
+First independent Memex release. Versioned `0.1.0` because the product feature
+set is complete enough for public use while marketplace and Codex host-adapter
+contracts remain intentionally pre-1.0.
+
+### Product identity
+
+- Renamed the public package, Codex plugin, MCP server, CLI, UI, installer, and
+  dashboard skill from Memory Bank to Memex.
+- Promoted the Codex-native implementation from a conversion branch to the
+  project's primary `main` line.
+- Replaced conversion plans and superseded audits with maintainable product,
+  architecture, lifecycle, schema, operations, lineage, and verification docs.
+- Retained the historical `MEMORY_BANK_*` environment namespace and
+  `~/.config/memory-bank` data root to avoid silently relocating durable data.
+
+### Codex-native runtime
+
+- Ingests only Codex rollout JSONL from `$CODEX_HOME/sessions` by default.
+- Uses canonical absolute rollout cwd as project identity and collision-safe
+  archive storage keys.
+- Runs summaries, extraction, classification, consolidation, and synthesis
+  through isolated local `codex exec`, defaulting to `gpt-5.6-luna`.
+- Recognizes only current `memex` cache paths when validating a live sync-lock
+  owner; pre-Memex package paths are not runtime ownership evidence.
+- Adds a repository marketplace installable through `codex plugin marketplace
+  add` and `codex plugin add`, with plugin-managed SessionStart,
+  UserPromptSubmit, and SessionEnd hooks.
+- Retains explicit fingerprinted hook setup/removal as a non-plugin fallback.
+- Adds clone-free runtime launch through one `npx` source of truth targeting
+  verified `main`, plus `memex update` for marketplace refresh and plugin
+  reinstall without touching durable data.
+- Adds `memex setup`, which detects Codex built-in `memories`, recommends
+  disabling the conflicting second memory system, and changes it only after
+  interactive or explicit CLI approval through Codex's own feature command.
+
+### Knowledge system
+
+- Conversation archive, vector/FTS/hybrid search, and deterministic full-history
+  analysis.
+- Incremental fact extraction with row-preserving watermarks, claim leases,
+  confidence gates, retryable failure states, and self-ingestion exclusion.
+- Adds durable per-event `memex_recall` prepared/emitted receipts and
+  evidence-level tool provenance. Human and allowlisted repo/Git/test evidence
+  remain learnable beside recall; Memex/external/unknown output and assistant
+  synthesis stay searchable but cannot reinforce facts.
+- Preserves new evidence IDs through duplicate/evolution consolidation so a
+  trusted repository observation can supersede an older recalled fact.
+- Duplicate, contradiction, and evolution consolidation with revision history.
+- Domain/category ontology, typed relations, scoped multi-hop traversal,
+  provenance, and cross-project insights.
+- Project/global/all scope enforcement across MCP, CLI, import, graph traversal,
+  Web UI, and context injection.
+- Transparent bounded `.jsonl.zst` archive reads.
+
+### Retrieval and interfaces
+
+- Nine MCP tools: `search`, `read`, `search_facts`, `search_ontology`,
+  `ask_avatar`, `trace_fact`, `explore_graph`, `cross_project_insights`, and
+  `graph_stats`.
+- Context injection with warm Unix-socket and cold local paths, relevance gate,
+  one-hop relation expansion, per-session dedup ledger, and token budget.
+- Transactional fact CLI/API operations with full-UUID hard-delete gating.
+- Loopback Conversations, Facts, Pipeline Health, and live 3D Knowledge Galaxy
+  interfaces, including empty-state and scoped graph handling.
+
+### Verification
+
+- Codex rollout fixtures cover main, resumed, subagent, tool-only, malformed,
+  internal-context, worker, empty, and same-basename project cases.
+- Added isolated lifecycle, installer, MCP, scope, security, browser, cleanup,
+  and benchmark contracts.
+- Restricted npm packages to an explicit public-file allowlist so local agent
+  run state, token logs, and transient workspace artifacts cannot ship.
+- Codex CLI 0.149.1 does not expose a formal `plugin validate` subcommand; the
+  repository includes an isolated version-bound substitute and records this as
+  `PASS-WITH-NOTES`, not as a formal-validator result.
+
+## Pre-Memex history
+
+The Claude-to-Codex adapter conversion and upstream feature-parity work were
+completed before the 0.1.0 identity change. They are summarized in
+[docs/LINEAGE.md](docs/LINEAGE.md); superseded plans and transient agent
+receipts are intentionally not retained as user documentation.

@@ -120,7 +120,7 @@ describe('sync-export/import', () => {
     fs.writeFileSync(path.join(syncDir, 'facts.jsonl'),
       JSON.stringify({
         id: 'imp-fact-1', fact: 'Use REST for APIs', category: 'decision',
-        scope_type: 'project', scope_project: 'api-proj', source_exchange_ids: '[]',
+        scope_type: 'project', scope_project: '/tmp/api-proj', source_exchange_ids: '[]',
         created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: 'imp-cat-1'
       }) + '\n'
     );
@@ -224,6 +224,42 @@ describe('sync-export/import', () => {
       expect(row).toBeTruthy();
       expect(row['fact']).toBe('Round trip test');
       expect(row['category']).toBe('pattern');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects imported relations whose project endpoints belong to different scopes', async () => {
+    const { getSyncDir } = await import('../src/sync-export.js');
+    const syncDir = getSyncDir();
+    const now = new Date().toISOString();
+    const facts = [
+      {
+        id: 'scope-a-fact', fact: 'Project A decision', category: 'decision',
+        scope_type: 'project', scope_project: '/tmp/team-a/shared', source_exchange_ids: '[]',
+        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+      },
+      {
+        id: 'scope-b-fact', fact: 'Project B decision', category: 'decision',
+        scope_type: 'project', scope_project: '/tmp/team-b/shared', source_exchange_ids: '[]',
+        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+      },
+    ];
+    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), facts.map((f) => JSON.stringify(f)).join('\n') + '\n');
+    fs.writeFileSync(path.join(syncDir, 'ontology-relations.jsonl'), JSON.stringify({
+      id: 'cross-project-relation', source_fact_id: 'scope-a-fact', relation_type: 'SUPPORTS',
+      target_fact_id: 'scope-b-fact', reasoning: 'must be rejected', created_at: now,
+    }) + '\n');
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    const result = await importFromSync();
+    expect(result.newFacts).toBe(2);
+    expect(result.newRelations).toBe(0);
+
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE id = ?').get('cross-project-relation')).toEqual({ c: 0 });
     } finally {
       db.close();
     }

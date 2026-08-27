@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage } from './paths.js';
+import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, ensureArchiveDir } from './paths.js';
 import { archiveFileExists, readArchiveFile, statArchiveFile } from './archive-io.js';
+import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT } from './project-identity.js';
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath } from './codex-rollout.js';
 const EXCLUSION_MARKERS = [
     '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
@@ -51,6 +52,7 @@ function copyIfNewer(src, dest) {
     return true;
 }
 export async function syncConversations(sourceDir, destDir, options = {}) {
+    const targetArchiveDir = destDir || ensureArchiveDir();
     const result = {
         copied: 0,
         skipped: 0,
@@ -76,16 +78,18 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             if (isSubagent)
                 continue;
             const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-            const project = cwd ? path.basename(cwd) : 'unknown';
+            // CX-02: project identity is the canonical absolute cwd; the archive
+            // directory uses a collision-free storage key derived from it.
+            const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
             if (isExcludedProject(project, excludedProjects)) {
                 console.error(`\nSkipping excluded project: ${project}`);
                 continue;
             }
-            const destFile = path.join(destDir, project, path.basename(srcFile));
+            const destFile = path.join(targetArchiveDir, projectStorageKey(project), path.basename(srcFile));
             const wasCopied = copyIfNewer(srcFile, destFile);
             if (wasCopied) {
                 result.copied++;
-                filesToIndex.push(destFile);
+                filesToIndex.push({ path: destFile, project });
             }
             else {
                 result.skipped++;
@@ -96,7 +100,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                 if (!archiveFileExists(summaryPath) && !shouldSkipConversation(destFile)) {
                     const sessionId = extractSessionIdFromPath(destFile);
                     if (sessionId) {
-                        filesToSummarize.push({ path: destFile, sessionId });
+                        filesToSummarize.push({ path: destFile, sessionId, project });
                     }
                 }
             }
@@ -115,13 +119,14 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
         const { parseConversation } = await import('./parser.js');
         const db = initDatabase();
         await initEmbeddings();
-        for (const file of filesToIndex) {
+        for (const { path: file, project } of filesToIndex) {
             try {
                 // Check for DO NOT INDEX marker
                 if (shouldSkipConversation(file)) {
                     continue; // Skip indexing but file is already copied
                 }
-                const project = path.basename(path.dirname(file));
+                // CX-02: project = canonical absolute cwd (carried from the rollout
+                // header), never the archive directory name.
                 const exchanges = await parseConversation(file, project, file);
                 for (const exchange of exchanges) {
                     // Worker-prompt exchange = ephemeral state, not knowledge — never index.
@@ -153,9 +158,8 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
         if (remaining > 0) {
             console.error(`  (${remaining} more need summaries - will process on next sync)`);
         }
-        for (const { path: filePath } of toSummarize) {
+        for (const { path: filePath, project } of toSummarize) {
             try {
-                const project = path.basename(path.dirname(filePath));
                 const exchanges = await parseConversation(filePath, project, filePath);
                 if (exchanges.length === 0) {
                     continue; // Skip empty conversations

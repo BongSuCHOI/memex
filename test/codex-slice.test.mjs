@@ -86,7 +86,8 @@ test('turn assembly excludes reasoning/system and collects tool calls', async ()
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>ignore me' }] } },
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello agent' }] } },
     { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'hi human' }] } },
-    { type: 'response_item', payload: { type: 'custom_tool_call', name: 'shell', input: JSON.stringify({ cmd: 'ls' }) } },
+    { type: 'response_item', payload: { type: 'custom_tool_call', name: 'shell', call_id: 'call-shell-1', input: JSON.stringify({ cmd: 'ls' }) } },
+    { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call-shell-1', output: 'a.ts' } },
     { type: 'response_item', payload: { type: 'reasoning', summary: [] } },
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'again' }] } },
     { type: 'response_item', payload: { type: 'function_call', name: 'read_file', arguments: '{"path":"a.ts"}' } },
@@ -101,6 +102,7 @@ test('turn assembly excludes reasoning/system and collects tool calls', async ()
   assert.equal(exchanges[0].toolCalls.length, 1);
   assert.equal(exchanges[0].toolCalls[0].toolName, 'shell');
   assert.deepEqual(exchanges[0].toolCalls[0].toolInput, { cmd: 'ls' }); // input parsed
+  assert.equal(exchanges[0].toolCalls[0].toolResult, 'a.ts');
   assert.equal(exchanges[1].toolCalls[0].toolName, 'read_file');
   assert.deepEqual(exchanges[1].toolCalls[0].toolInput, { path: 'a.ts' }); // arguments parsed
   const all = JSON.stringify(exchanges);

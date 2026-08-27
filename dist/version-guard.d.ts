@@ -36,7 +36,11 @@ export type TakeoverDecision = 'takeover-stale-version' | 'takeover-wedged' | 'd
  */
 export declare function decideTakeover(holder: LockMeta, myVersion: string, holderRunMs: number | null, wedgeMaxMs: number): TakeoverDecision;
 /**
- * If `command` is a memory-bank detached worker from a version OLDER than
+ * True only for a Node process whose executable script is a Memex sync CLI.
+ */
+export declare function isSyncCliCommand(command: string): boolean;
+/**
+ * If `command` is a Memex detached worker from a version OLDER than
  * `myVersion`, return that stale version string; otherwise null.
  */
 export declare function staleWorkerVersion(command: string, myVersion: string): string | null;

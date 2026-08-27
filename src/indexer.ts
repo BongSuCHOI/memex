@@ -7,6 +7,7 @@ import { summarizeConversation } from './summarizer.js';
 import { ConversationExchange } from './types.js';
 import { getArchiveDir, getExcludedProjects, isExcludedProject, isWorkerPromptMessage, getSessionsRoot } from './paths.js';
 import { discoverSessionFiles, readRolloutMeta } from './codex-rollout.js';
+import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT } from './project-identity.js';
 import { archiveFileExists, statArchiveFile } from './archive-io.js';
 
 /**
@@ -92,7 +93,9 @@ export async function indexConversations(
     const { meta, isSubagent } = await readRolloutMeta(sourcePath);
     if (isSubagent) continue;
     const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-    const project = cwd ? path.basename(cwd) : 'unknown';
+    // CX-02: project identity is the canonical absolute cwd; archive dir uses
+    // the collision-free storageKey.
+    const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
     if (isExcludedProject(project, excludedProjects)) {
       console.log(`\nSkipping excluded project: ${project}`);
       continue;
@@ -100,7 +103,7 @@ export async function indexConversations(
     if (limitToProject && project !== limitToProject) continue;
 
     const fileName = path.basename(sourcePath);
-    const projectArchive = path.join(ARCHIVE_DIR, project);
+    const projectArchive = path.join(ARCHIVE_DIR, projectStorageKey(project));
     fs.mkdirSync(projectArchive, { recursive: true });
     const archivePath = path.join(projectArchive, fileName);
 
@@ -198,13 +201,14 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
 
     found = true;
     const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-    const project = cwd ? path.basename(cwd) : 'unknown';
+    // CX-02: canonical absolute cwd as project identity.
+    const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
     const fileName = path.basename(sourcePath);
 
     const db = initDatabase();
     await initEmbeddings();
 
-    const projectArchive = path.join(ARCHIVE_DIR, project);
+    const projectArchive = path.join(ARCHIVE_DIR, projectStorageKey(project));
     fs.mkdirSync(projectArchive, { recursive: true });
 
     const archivePath = path.join(projectArchive, fileName);
@@ -278,11 +282,12 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
     const { meta, isSubagent } = await readRolloutMeta(sourcePath);
     if (isSubagent) continue;
     const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-    const project = cwd ? path.basename(cwd) : 'unknown';
+    // CX-02: canonical absolute cwd as project identity.
+    const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
     if (isExcludedProject(project, excludedProjects)) continue;
 
     const fileName = path.basename(sourcePath);
-    const projectArchive = path.join(ARCHIVE_DIR, project);
+    const projectArchive = path.join(ARCHIVE_DIR, projectStorageKey(project));
     const archivePath = path.join(projectArchive, fileName);
     const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
 

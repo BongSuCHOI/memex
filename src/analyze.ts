@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getDbPath } from './paths.js';
 import { canonicalArchiveName } from './archive-io.js';
+import { canonicalizeProjectPath } from './project-identity.js';
 import {
   EXTRACTION_STATE, pendingExtractionCoreQuery, getExtractionConfig,
 } from './pending-extraction.js';
@@ -10,7 +11,7 @@ import {
 /**
  * Full-history analysis over the conversation index.
  *
- * Deterministic (no LLM) aggregation used by `memory-bank analyze` and the
+ * Deterministic (no LLM) aggregation used by `memex analyze` and the
  * `analyzing-all-conversations` skill: coverage, per-project rollups,
  * fact breakdowns, ontology domains, monthly timeline, and gap
  * recommendations (which backfills to run).
@@ -234,8 +235,8 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
         GROUP BY scope_type ORDER BY count DESC
       `).all() as Array<{ scope: string; count: number }>);
 
-      // Exchanges use the basename of session_meta.cwd as the project key;
-      // project-scoped facts keep the absolute cwd. Join them by basename.
+      // CX-02: facts.scope_project is the canonical absolute path and
+      // exchanges.project uses the same identity — no basename collapse.
       const factProjects = db.prepare(`
         SELECT scope_project, COUNT(*) AS n
         FROM facts
@@ -243,7 +244,7 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
         GROUP BY scope_project
       `).all() as Array<{ scope_project: string; n: number }>;
       for (const row of factProjects) {
-        const project = path.basename(row.scope_project);
+        const project = canonicalizeProjectPath(row.scope_project);
         factsByProject.set(project, (factsByProject.get(project) ?? 0) + row.n);
       }
     }
@@ -310,7 +311,7 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
     }
     if (report.coverage.summaries.withoutSummary > 0) {
       rec.push(
-        `${report.coverage.summaries.withoutSummary} conversations are missing summaries — run "memory-bank sync" (generates up to 10 per run).`,
+        `${report.coverage.summaries.withoutSummary} conversations are missing summaries — run "memex sync" (generates up to 10 per run).`,
       );
     }
     if (report.coverage.extraction.errors > 0) {

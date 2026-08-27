@@ -1,11 +1,30 @@
-# Database schema
+# Memex SQLite 스키마와 불변식
 
-Memory Bank creates a new SQLite database at
-`~/.config/memory-bank/conversation-index/db.sqlite` unless
-`MEMORY_BANK_DB_PATH` overrides it. The schema is created by `src/db.ts`; no
-pre-Codex database migration is performed.
+schema의 최종 소유자는 `src/db.ts`입니다. 기본 DB는
+`~/.config/memory-bank/conversation-index/db.sqlite`이며
+`MEMORY_BANK_HOME`, `MEMORY_BANK_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+`MEMORY_BANK_DB_PATH` 순서로 이동할 수 있습니다. 이 역사적 namespace는 기존
+durable data를 자동 이동하지 않기 위해 유지합니다.
 
-## Conversation tables
+## 1. 관계 개요
+
+```mermaid
+erDiagram
+    EXCHANGES ||--o{ TOOL_CALLS : contains
+    RECALL_EVENTS }o--|| EXCHANGES : matches_prompt
+    EXCHANGES }o--o{ FACTS : provenance
+    FACTS ||--o{ FACT_REVISIONS : evolves
+    ONTOLOGY_DOMAINS ||--o{ ONTOLOGY_CATEGORIES : contains
+    ONTOLOGY_CATEGORIES ||--o{ FACTS : classifies
+    FACTS ||--o{ ONTOLOGY_RELATIONS : source
+    FACTS ||--o{ ONTOLOGY_RELATIONS : target
+    EXTRACTION_LOG ||--|| EXCHANGES : watermarks
+```
+
+`source_exchange_ids`는 JSON 배열이므로 물리 FK는 아니지만 provenance API가 이
+논리 연결을 검증합니다.
+
+## 2. Conversation corpus
 
 ```sql
 CREATE TABLE exchanges (
@@ -28,7 +47,10 @@ CREATE TABLE exchanges (
   thinking_level TEXT,
   thinking_disabled BOOLEAN,
   thinking_triggers TEXT,
-  embedding_version INTEGER NOT NULL DEFAULT 0
+  embedding_version INTEGER NOT NULL DEFAULT 0,
+  provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
+  assistant_learnable BOOLEAN NOT NULL DEFAULT 0,
+  has_memex_recall BOOLEAN NOT NULL DEFAULT 0
 );
 
 CREATE TABLE tool_calls (
@@ -38,16 +60,47 @@ CREATE TABLE tool_calls (
   tool_input TEXT,
   tool_result TEXT,
   is_error BOOLEAN DEFAULT 0,
-  timestamp TEXT NOT NULL
+  timestamp TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'external_unverified',
+  learnable BOOLEAN NOT NULL DEFAULT 0
+);
+
+CREATE TABLE recall_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  prompt_hash TEXT NOT NULL,
+  fact_ids TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'memex_recall',
+  learnable BOOLEAN NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'prepared',
+  created_at TEXT NOT NULL,
+  emitted_at TEXT
 );
 ```
 
-`exchanges_fts` is an external-content FTS5 table over `user_message` and
-`assistant_message` with `porter unicode61` tokenization and `detail=column`.
-Insert, update, and delete triggers keep it synchronized. `fts_meta` records
-whether the FTS index has been built.
+중요한 불변식:
 
-## Facts and extraction
+- `project`는 canonical absolute `session_meta.cwd`다.
+- `archive_path`는 data root 안의 읽기 가능한 원본 사본을 가리킨다.
+- 동일 exchange re-index는 `INSERT ... ON CONFLICT DO UPDATE`로 rowid를 보존한다.
+- `line_start/end`는 provenance read의 재현 가능한 범위다.
+- sidechain/worker/internal prompt는 사용자 knowledge로 승격하지 않는다.
+- `provenance`는 `human_assertion`, `assistant_generated`, `repo_file`,
+  `git_history`, `test_execution`, `external_unverified`, `memex_recall`의 JSON 배열이다.
+- `tool_calls`마다 source/trust를 따로 저장한다. Memex sibling tool이 있어도
+  allowlisted repo/Git/test result의 `learnable=1`은 유지된다.
+- assistant synthesis는 recall 유무와 관계없이 기본 `assistant_learnable=0`이다.
+- FTS/vector search는 full exchange를 유지하지만 fact extraction은 human assertion과
+  `learnable=1` tool result만 prompt에 넣는다.
+- recall event는 context 계산 시 `prepared`, hook stdout emit 후 `emitted`다. Codex가
+  실제 소비했는지는 host receipt가 없어 별도 주장하지 않는다.
+
+`exchanges_fts`는 user/assistant text의 external-content FTS5 테이블입니다.
+insert/update/delete trigger가 동기화하며 `fts_meta`의 rebuild-ready 상태가 없으면
+검색은 결과를 숨기지 않고 안전한 text fallback을 사용합니다.
+
+## 3. Facts, revisions, extraction ledger
 
 ```sql
 CREATE TABLE facts (
@@ -91,11 +144,20 @@ CREATE TABLE extraction_log (
 );
 ```
 
-`extraction_log` is both the extraction ledger and the concurrency claim. The
-rowid watermark makes repeated SessionEnd events no-ops until new exchanges are
-indexed for that session.
+`source_exchange_ids`는 fact의 1차 provenance입니다. `fact_revisions`는 기존 문장을
+삭제하지 않고 수정/진화를 기록합니다. deactivate는 `is_active=0`과 vector 제거를
+같이 수행하고, restore는 검색 가능한 vector 상태를 재구성합니다.
 
-## Ontology
+`extraction_log` 불변식:
+
+1. `session_id`당 한 행
+2. 한 시점에 하나의 유효 `claim_owner`
+3. `rowid > last_exchange_rowid`만 추출 가능
+4. fact/provenance/saved count/watermark는 같은 transaction에서 commit
+5. 새 row가 없는 같은 session 재실행은 model call 0의 no-op
+6. 만료 claim은 duplicate ledger row 없이 pending으로 복귀
+
+## 4. Ontology와 relations
 
 ```sql
 CREATE TABLE ontology_domains (
@@ -125,16 +187,67 @@ CREATE TABLE ontology_relations (
 );
 ```
 
-The `(source_fact_id, relation_type, target_fact_id)` triple is unique.
+`(source_fact_id, relation_type, target_fact_id)`는 unique입니다. 양 endpoint는 존재해야
+합니다. 서로 다른 두 project fact를 직접 연결하는 relation은 import와 mutation
+경계에서 거부합니다. global↔project와 same-project edge는 허용합니다.
 
-## Vector indexes
+## 5. Vector indexes
 
-All sqlite-vec virtual tables use `int8[384]` embeddings:
+sqlite-vec의 384차원 int8 테이블:
 
 - `vec_exchanges`
 - `vec_facts`
 - `vec_facts_kr`
 - `vec_categories`
 
-Conventional indexes cover timestamps, session/project/archive lookups, tool
-lookups, active facts and scopes, ontology membership, and relation endpoints.
+`embedding_version`은 다른 모델/양자화 공간의 vector 비교를 막습니다. fact edit는
+text/vector를 transaction으로 교체하고 ontology classification을 pending으로
+되돌립니다. Korean vector를 분리해 같은 언어 retrieval을 보강합니다.
+
+## 6. Scope predicate
+
+| 요청 | 사실 predicate |
+| --- | --- |
+| 기본 fact list/API | `scope_type = 'global'` |
+| explicit project | `scope_type = 'global' OR scope_project = :canonical_project` |
+| explicit global | global만 |
+| explicit all | project predicate 없음, active만 |
+| graph project | project + global + classified + active |
+| graph global | global + classified + active |
+| graph all | 모든 classified active fact |
+
+project fact는 absolute canonical `scope_project`를 가져야 하고 global fact는
+`NULL`이어야 합니다. traversal은 seed뿐 아니라 매 hop에 같은 predicate를 적용합니다.
+
+## 7. Mutation transaction
+
+`src/fact-management.ts`가 CLI와 HTTP mutation의 단일 service입니다.
+
+| 작업 | 같은 transaction에서 지켜야 할 것 |
+| --- | --- |
+| edit | revision 추가, text 변경, vector 교체, ontology reset |
+| deactivate | active=0, 관련 searchable vector 제거 |
+| restore | active=1, embedding/vector 재생성 |
+| hard delete | relation, vector, revision, fact를 dependency 순서로 제거 |
+
+hard delete는 full UUID와 명시적 confirmation이 없으면 시작하지 않습니다.
+`status`, `analyze`, search/MCP read, graph API는 read-only입니다.
+
+## 8. 인덱스와 성능 의도
+
+conventional index는 session/project/archive/timestamp, active fact scope, ontology
+membership, relation endpoints, revisions, consolidation keyset pagination을 덮습니다.
+FTS/vector가 모두 없는 상태에서는 조용히 빈 결과를 반환하지 않고 readiness 또는
+fallback 상태를 노출해야 합니다.
+
+## 9. 데이터 재생성 경계
+
+| 데이터 | 원본/파생 | 재생성 |
+| --- | --- | --- |
+| `$CODEX_HOME/sessions` | 원본 | Memex가 생성/수정하지 않음 |
+| conversation archive | 파생 증거 사본 | rollout에서 재동기화 가능 |
+| exchanges/FTS/vector | 파생 index | archive/rollout에서 재구축 가능 |
+| facts/revisions | model-backed 파생 지식 | provenance와 정책에 따라 재추출 가능 |
+| ontology/relations | fact에서 파생 | 재분류/재탐지 가능 |
+| injection ledger/log | 운영 파생 상태 | 삭제 시 dedup/관측 연속성만 초기화 |
+| recall_events/provenance flags | self-ingestion 방지 증거 | source rollout만으로는 hook receipt를 복원할 수 없으므로 보존 |

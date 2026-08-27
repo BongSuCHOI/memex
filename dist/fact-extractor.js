@@ -16,6 +16,11 @@ export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-te
   session-ephemeral details ("user is currently editing file X" is NOT a fact)
 - Capture problem→solution lessons as "pattern"
   (e.g., "X error in this project is caused by Y and fixed by Z")
+- Treat only content present in the evidence block as evidence. Never reconstruct
+  or infer a decision from content marked as excluded Memex recall output.
+- Human assertions and explicitly labeled trusted tool evidence are primary
+  evidence. Assistant synthesis and Memex recall are context only and must not
+  support, reinforce, contradict, or raise confidence for a fact.
 
 ## scope determination
 - project: specific files/paths/DB/API/framework/business logic
@@ -63,7 +68,7 @@ const TRIVIAL_USER_PATTERN = /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|g
  * Filters harness artifacts (local command output), bare slash commands,
  * and trivial acknowledgements — they waste LLM calls and produce noise facts.
  */
-export function isSubstantiveExchange(userMessage, assistantMessage) {
+export function isSubstantiveExchange(userMessage, assistantMessage, hasLearnableToolEvidence = false) {
     const user = (userMessage ?? '').trim();
     const assistant = (assistantMessage ?? '').trim();
     if (!user)
@@ -78,10 +83,10 @@ export function isSubstantiveExchange(userMessage, assistantMessage) {
     if (/^\/[\w:-]+$/.test(user))
         return false;
     // Trivial acknowledgement with no substantive reply
-    if (TRIVIAL_USER_PATTERN.test(user) && assistant.length < 200)
+    if (TRIVIAL_USER_PATTERN.test(user) && !hasLearnableToolEvidence)
         return false;
     // Near-empty prompt with a near-empty answer
-    if (user.length < 5 && assistant.length < 80)
+    if (user.length < 5 && !hasLearnableToolEvidence)
         return false;
     return true;
 }
@@ -126,7 +131,7 @@ function maxLlmCallsPerSession() {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
 }
 // Self-referential repos whose conversations must NOT be extracted (e.g.
-// memory-bank's own monitoring/cron sessions — extracting them creates noise
+// Memex's own monitoring/cron sessions — extracting them creates noise
 // facts and an endless feedback loop). Comma-separated cwd paths, env-overridable.
 // 🚨 제외 목록은 **단일 소스**(getExtractionConfig)에서 온다. 여기서 따로 파싱하면
 // pending SQL 필터와 이 판정이 갈라져, 제외 대상이 선정된 뒤에야 걸러지거나(슬롯 낭비)
@@ -137,7 +142,7 @@ function isExcludedProject(project) {
         return false;
     const EXCLUDE_PROJECTS = getExtractionConfig().excludeProjects;
     // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
-    // '/…/memory-bank' 가 '/…/memory-bank-x' 같은 별개 프로젝트를 삼켜, 그 세션이
+    // A raw prefix such as '/…/memory-bank' can swallow a distinct sibling project,
     // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
     // pending SQL 필터는 exact 매칭이라 선정은 되고 여기서만 걸러져 무음이었다.
     return EXCLUDE_PROJECTS.some((p) => project === p || project.startsWith(`${p}/`));
@@ -145,20 +150,33 @@ function isExcludedProject(project) {
 export function buildExtractionPrompt(exchanges) {
     return exchanges.map((ex, i) => {
         const userSnippet = ex.user_message.slice(0, 1000);
-        const assistantSnippet = ex.assistant_message.slice(0, 1000);
-        return `### Exchange ${i + 1}\nUser: ${userSnippet}\nAssistant: ${assistantSnippet}`;
+        const trustedTools = (ex.tool_evidence ?? [])
+            .filter((tool) => tool.learnable === 1 || tool.learnable === true)
+            .filter((tool) => tool.source_type !== 'memex_recall' && tool.tool_result)
+            .map((tool) => `${tool.source_type}/${tool.tool_name}: ${String(tool.tool_result).slice(0, 1000)}`);
+        const toolBlock = trustedTools.length > 0
+            ? `\nTrusted tool evidence:\n${trustedTools.join('\n')}`
+            : '';
+        return `### Exchange ${i + 1}\nHuman assertion: ${userSnippet}${toolBlock}\nAssistant: [assistant synthesis excluded from learnable evidence]`;
     }).join('\n\n');
 }
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(db, sessionId, stats, renewLease, options) {
     const exchanges = db.prepare(`
-    SELECT id, user_message, assistant_message
+    SELECT id, user_message, assistant_message, assistant_learnable, has_memex_recall
     FROM exchanges
     WHERE session_id = ?
       ${options?.onlyAfterRowid != null ? 'AND rowid > ?' : ''}
     ORDER BY timestamp ASC
   `).all(...(options?.onlyAfterRowid != null ? [sessionId, options.onlyAfterRowid] : [sessionId]));
-    const substantive = exchanges.filter(ex => isSubstantiveExchange(ex.user_message, ex.assistant_message));
+    const selectToolEvidence = db.prepare(`
+    SELECT tool_name, tool_result, source_type, learnable
+    FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp, id
+  `);
+    for (const exchange of exchanges) {
+        exchange.tool_evidence = selectToolEvidence.all(exchange.id);
+    }
+    const substantive = exchanges.filter(ex => isSubstantiveExchange(ex.user_message, '', ex.tool_evidence?.some((tool) => tool.learnable === 1 && !!tool.tool_result) ?? false));
     if (substantive.length === 0)
         return [];
     const batches = [];
@@ -327,7 +345,7 @@ export function failureConsumesBudget(kind) {
 }
 /** Claim a session, process unhandled rows, and atomically record completion. */
 export async function runFactExtraction(db, sessionId, project, opts) {
-    // Skip self-referential repos (memory-bank's own monitoring sessions) — mark
+    // Skip self-referential repos (Memex's own monitoring sessions) — mark
     // as processed with zero facts so they are never re-attempted, no LLM calls.
     if (isExcludedProject(project)) {
         // 🚨 마커가 **실제로 써졌는지**를 반환값이 구분해야 한다. 삼키고 'excluded_project'

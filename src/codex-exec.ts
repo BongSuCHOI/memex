@@ -176,7 +176,7 @@ function runChild(bin: string, args: string[], cwd: string, prompt: string, time
 export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
   if (process.env[INNER_GUARD_ENV] === '1') {
     throw new Error(
-      `memory-bank: ${INNER_GUARD_ENV}=1 — refusing nested codex exec (hook/plugin recursion guard)`,
+      `memex: ${INNER_GUARD_ENV}=1 — refusing nested codex exec (hook/plugin recursion guard)`,
     );
   }
   const bin = opts.codexBin || process.env.MEMORY_BANK_CODEX_BIN || 'codex';

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, ex
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { syncConversations } from '../src/sync.js';
+import { projectStorageKey } from '../src/project-identity.js';
 import Database from 'better-sqlite3';
 
 // Sync consumes Codex rollout transcripts found recursively under the session
@@ -72,7 +73,7 @@ describe('sync command', () => {
     expect(result.copied).toBe(1);
     expect(result.skipped).toBe(0);
 
-    const destFile = join(destDir, 'project-a', 'rollout-one.jsonl');
+    const destFile = join(destDir, projectStorageKey('/x/project-a'), 'rollout-one.jsonl');
     expect(statSync(destFile).isFile()).toBe(true);
     expect(src).toContain('rollout-one.jsonl');
   });
@@ -130,13 +131,30 @@ describe('sync command', () => {
     writeRollout('a-excl', '/x/project-a');
     writeRollout('b-keep', '/x/project-b');
 
-    process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS = 'project-a';
+    // CX-02: exclusion list is exact-match on the canonical project path;
+    // a basename entry must not exclude an unrelated same-named project.
+    process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS = '/x/project-a';
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
     delete process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS;
 
     expect(result.copied).toBe(1);
-    expect(existsSync(join(destDir, 'project-a'))).toBe(false);
-    expect(existsSync(join(destDir, 'project-b', 'rollout-b-keep.jsonl'))).toBe(true);
+    expect(existsSync(join(destDir, projectStorageKey('/x/project-a')))).toBe(false);
+    expect(existsSync(join(destDir, projectStorageKey('/x/project-b'), 'rollout-b-keep.jsonl'))).toBe(true);
+    // basename-only entry does NOT match the canonical path: the previously
+    // excluded project-a AND the new /y/other both get copied now.
+    writeRollout('c-basename', '/y/other');
+    process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS = 'other';
+    const result2 = await syncConversations(sourceDir, destDir, { skipIndex: true });
+    delete process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS;
+    expect(result2.copied).toBe(2);
+    expect(existsSync(join(destDir, projectStorageKey('/y/other')))).toBe(true);
+
+    // canonical exact-match entry DOES exclude its own project only.
+    writeRollout('d-other2', '/y/other');
+    process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS = '/y/other';
+    const result3 = await syncConversations(sourceDir, destDir, { skipIndex: true });
+    delete process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS;
+    expect(result3.copied).toBe(0);
   });
 
   it('should skip indexing conversations with DO NOT INDEX marker', async () => {

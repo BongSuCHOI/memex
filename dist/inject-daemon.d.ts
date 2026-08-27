@@ -1,3 +1,4 @@
+import net from 'node:net';
 /**
  * Warm inject daemon — a unix-socket sidecar inside the long-lived MCP server.
  *
@@ -19,4 +20,4 @@
  *    never throws into the MCP server.
  */
 export declare function injectSocketPath(): string;
-export declare function startInjectDaemon(): void;
+export declare function startInjectDaemon(): net.Server;

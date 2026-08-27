@@ -150,7 +150,7 @@ function runChild(bin, args, cwd, prompt, timeoutMs) {
  */
 export async function runCodex(opts = {}) {
     if (process.env[INNER_GUARD_ENV] === '1') {
-        throw new Error(`memory-bank: ${INNER_GUARD_ENV}=1 — refusing nested codex exec (hook/plugin recursion guard)`);
+        throw new Error(`memex: ${INNER_GUARD_ENV}=1 — refusing nested codex exec (hook/plugin recursion guard)`);
     }
     const bin = opts.codexBin || process.env.MEMORY_BANK_CODEX_BIN || 'codex';
     const timeoutMs = opts.timeoutMs ?? 180_000;

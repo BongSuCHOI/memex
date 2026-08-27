@@ -7170,12 +7170,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs10, exportName) {
+    function addFormats(ajv, list, fs9, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs10[f]);
+        ajv.addFormat(f, fs9[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -18320,8 +18320,8 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 import net from "node:net";
-import fs7 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path5 from "node:path";
 
 // src/paths.ts
 import os2 from "os";
@@ -18351,24 +18351,17 @@ function isInternalContextMessage(text) {
 }
 
 // src/paths.ts
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
 function getMemoryBankHome() {
-  const dir = process.env.MEMORY_BANK_HOME || process.env.MEMORY_BANK_CONFIG_DIR || (process.env.XDG_CONFIG_HOME ? path2.join(process.env.XDG_CONFIG_HOME, "memory-bank") : path2.join(os2.homedir(), ".config", "memory-bank"));
-  return ensureDir(dir);
+  return process.env.MEMORY_BANK_HOME || process.env.MEMORY_BANK_CONFIG_DIR || (process.env.XDG_CONFIG_HOME ? path2.join(process.env.XDG_CONFIG_HOME, "memory-bank") : path2.join(os2.homedir(), ".config", "memory-bank"));
 }
 function getArchiveDir() {
   if (process.env.TEST_ARCHIVE_DIR) {
-    return ensureDir(process.env.TEST_ARCHIVE_DIR);
+    return process.env.TEST_ARCHIVE_DIR;
   }
-  return ensureDir(path2.join(getMemoryBankHome(), "conversation-archive"));
+  return path2.join(getMemoryBankHome(), "conversation-archive");
 }
 function getIndexDir() {
-  return ensureDir(path2.join(getMemoryBankHome(), "conversation-index"));
+  return path2.join(getMemoryBankHome(), "conversation-index");
 }
 function getDbPath() {
   if (process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH) {
@@ -18376,12 +18369,21 @@ function getDbPath() {
   }
   return path2.join(getIndexDir(), "db.sqlite");
 }
+function ensureIndexDir() {
+  const dir = getIndexDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function ensureDbDir() {
+  const dbDir = path2.dirname(getDbPath());
+  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+  return dbDir;
+}
 var LLM_WORKDIR_BASENAME = "memory-bank-llm";
 
 // src/db.ts
 import Database from "better-sqlite3";
-import path3 from "path";
-import fs2 from "fs";
+import { createHash, randomUUID } from "node:crypto";
 import * as sqliteVec from "sqlite-vec";
 
 // src/embeddings.ts
@@ -18508,10 +18510,7 @@ function l2DistanceToSimilarity(distance) {
 }
 function initDatabase() {
   const dbPath = getDbPath();
-  const dbDir = path3.dirname(dbPath);
-  if (!fs2.existsSync(dbDir)) {
-    fs2.mkdirSync(dbDir, { recursive: true });
-  }
+  ensureDbDir();
   const db = new Database(dbPath);
   sqliteVec.load(db);
   db.pragma("journal_mode = WAL");
@@ -18539,9 +18538,51 @@ function initDatabase() {
       thinking_level TEXT,
       thinking_disabled BOOLEAN,
       thinking_triggers TEXT,
-      embedding_version INTEGER NOT NULL DEFAULT 0
+      embedding_version INTEGER NOT NULL DEFAULT 0,
+      provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
+      assistant_learnable BOOLEAN NOT NULL DEFAULT 0,
+      has_memex_recall BOOLEAN NOT NULL DEFAULT 0
     )
   `);
+  const exchangeColumns = new Set(
+    db.prepare("PRAGMA table_info(exchanges)").all().map((r) => r.name)
+  );
+  if (!exchangeColumns.has("provenance")) {
+    db.exec(`ALTER TABLE exchanges ADD COLUMN provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]'`);
+  }
+  if (!exchangeColumns.has("assistant_learnable")) {
+    db.exec("ALTER TABLE exchanges ADD COLUMN assistant_learnable BOOLEAN NOT NULL DEFAULT 0");
+  }
+  if (!exchangeColumns.has("has_memex_recall")) {
+    db.exec("ALTER TABLE exchanges ADD COLUMN has_memex_recall BOOLEAN NOT NULL DEFAULT 0");
+  }
+  db.prepare("UPDATE exchanges SET assistant_learnable = 0 WHERE assistant_learnable <> 0").run();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recall_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      fact_ids TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'memex_recall'
+        CHECK(source_type = 'memex_recall'),
+      learnable BOOLEAN NOT NULL DEFAULT 0 CHECK(learnable = 0),
+      status TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(status IN ('prepared','emitted')),
+      created_at TEXT NOT NULL,
+      emitted_at TEXT
+    )
+  `);
+  const recallColumns = new Set(
+    db.prepare("PRAGMA table_info(recall_events)").all().map((r) => r.name)
+  );
+  if (!recallColumns.has("status")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN status TEXT NOT NULL DEFAULT 'prepared'");
+  }
+  if (!recallColumns.has("emitted_at")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN emitted_at TEXT");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)");
   db.exec(`
     CREATE TABLE IF NOT EXISTS tool_calls (
       id TEXT PRIMARY KEY,
@@ -18551,9 +18592,21 @@ function initDatabase() {
       tool_result TEXT,
       is_error BOOLEAN DEFAULT 0,
       timestamp TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'external_unverified'
+        CHECK(source_type IN ('repo_file','git_history','test_execution','external_unverified','memex_recall')),
+      learnable BOOLEAN NOT NULL DEFAULT 0,
       FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
     )
   `);
+  const toolColumns = new Set(
+    db.prepare("PRAGMA table_info(tool_calls)").all().map((r) => r.name)
+  );
+  if (!toolColumns.has("source_type")) {
+    db.exec("ALTER TABLE tool_calls ADD COLUMN source_type TEXT NOT NULL DEFAULT 'external_unverified'");
+  }
+  if (!toolColumns.has("learnable")) {
+    db.exec("ALTER TABLE tool_calls ADD COLUMN learnable BOOLEAN NOT NULL DEFAULT 0");
+  }
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_exchanges USING vec0(
       id TEXT PRIMARY KEY,
@@ -18730,6 +18783,26 @@ function initDatabase() {
   `);
   return db;
 }
+function hashRecallPrompt(prompt) {
+  return createHash("sha256").update(prompt, "utf8").digest("hex");
+}
+function recordRecallEvent(db, event) {
+  if (!event.sessionId || event.factIds.length === 0) return null;
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO recall_events
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
+  `).run(
+    id,
+    event.sessionId,
+    event.project,
+    hashRecallPrompt(event.prompt),
+    JSON.stringify([...new Set(event.factIds)]),
+    (/* @__PURE__ */ new Date()).toISOString()
+  );
+  return id;
+}
 
 // src/fact-db.ts
 function vecParamFor(db, table, embedding) {
@@ -18776,6 +18849,58 @@ function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85)
     if (project && fact.scope_type === "project" && fact.scope_project !== project) continue;
     results.push({ fact, distance: vr.distance });
     if (results.length >= limit) break;
+  }
+  return results;
+}
+function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold = 0.85) {
+  const scopeProject = scope.type === "project" ? scope.project : null;
+  const scopeCount = scope.type === "global" ? db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?").get(EMBEDDING_VERSION).n : db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(scopeProject, EMBEDDING_VERSION).n;
+  if (scopeCount === 0) return [];
+  const fetchN = (table, n) => {
+    try {
+      const p = vecParamFor(db, table, embedding);
+      const rows = db.prepare(`
+        SELECT id, distance FROM ${table}
+        WHERE embedding MATCH ${p.sql} ORDER BY distance LIMIT ?
+      `).all(p.blob, n);
+      for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
+      return { rows, exhausted: rows.length < n };
+    } catch {
+      return { rows: [], exhausted: true };
+    }
+  };
+  const HARD_CAP = 1e5;
+  let fetchCount = Math.max(limit * 20, 200);
+  let results = [];
+  for (; ; ) {
+    const a = fetchN("vec_facts", fetchCount);
+    const b2 = fetchN("vec_facts_kr", fetchCount);
+    const best = /* @__PURE__ */ new Map();
+    for (const vr of [...a.rows, ...b2.rows]) {
+      const cur = best.get(vr.id);
+      if (cur === void 0 || vr.distance < cur) best.set(vr.id, vr.distance);
+    }
+    const merged = [...best.entries()].map(([id, distance]) => ({ id, distance })).sort((x2, y2) => x2.distance - y2.distance);
+    results = [];
+    for (const vr of merged) {
+      const similarity = l2DistanceToSimilarity(vr.distance);
+      if (similarity < threshold) continue;
+      const row = db.prepare(
+        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
+      ).get(vr.id, EMBEDDING_VERSION);
+      if (!row) continue;
+      const fact = rowToFact(row);
+      if (scope.type === "global") {
+        if (fact.scope_type !== "global") continue;
+      } else if (fact.scope_type !== "project" || fact.scope_project !== scopeProject) {
+        continue;
+      }
+      results.push({ fact, distance: vr.distance });
+      if (results.length >= limit) break;
+    }
+    const bothExhausted = a.exhausted && b2.exhausted;
+    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP) break;
+    fetchCount = Math.min(fetchCount * 4, HARD_CAP);
   }
   return results;
 }
@@ -18834,12 +18959,19 @@ function listCategories(db, domainId) {
   }
   return db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all();
 }
-function getFactsByCategory(db, categoryId) {
-  return db.prepare(
-    `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1 ORDER BY consolidated_count DESC`
-  ).all(categoryId).map(rowToFact2);
+function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
+  let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
+  const params = [categoryId];
+  if (scopeType === "global") {
+    query += ` AND scope_type = 'global'`;
+  } else if (scopeProject && scopeType !== "all") {
+    query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
+    params.push(scopeProject);
+  }
+  query += ` ORDER BY consolidated_count DESC`;
+  return db.prepare(query).all(...params).map(rowToFact2);
 }
-function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject) {
+function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType) {
   const visited = /* @__PURE__ */ new Set([factId]);
   const results = [];
   let frontier = [factId];
@@ -18868,6 +19000,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [targetId, rows] of outByNeighbour) {
         const fact = rowToFact2(rows[0]);
+        if (scopeType === "global" && fact.scope_type !== "global") continue;
         if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
@@ -18904,6 +19037,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [sourceId, rows] of inByNeighbour) {
         const fact = rowToFact2(rows[0]);
+        if (scopeType === "global" && fact.scope_type !== "global") continue;
         if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
@@ -18927,7 +19061,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
   results.sort((a, b2) => b2.relevance - a.relevance);
   return results;
 }
-function getOntologyTree(db) {
+function getOntologyTree(db, scopeProject, scopeType) {
   const domains = listDomains(db);
   const tree = [];
   for (const domain of domains) {
@@ -18937,10 +19071,14 @@ function getOntologyTree(db) {
       categories: []
     };
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id);
-      domainEntry.categories.push({ category, facts });
+      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+      if (facts.length > 0 || !scopeProject && !scopeType) {
+        domainEntry.categories.push({ category, facts });
+      }
     }
-    tree.push(domainEntry);
+    if (domainEntry.categories.length > 0 || !scopeProject && !scopeType) {
+      tree.push(domainEntry);
+    }
   }
   return tree;
 }
@@ -18978,11 +19116,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs4 from "fs";
+import fs3 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs3 from "fs";
+import fs2 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -18999,7 +19137,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs3.statSync(p);
+      return fs2.statSync(p);
     } catch {
       return null;
     }
@@ -19044,7 +19182,7 @@ function readArchiveFile(filePath) {
   if (!resolved) {
     throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), { code: "ENOENT" });
   }
-  const buf = fs3.readFileSync(resolved);
+  const buf = fs2.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -19053,27 +19191,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs3.createReadStream(filePath);
+    return fs2.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs3.createReadStream(resolved);
+      const source = fs2.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs3.readFileSync(resolved));
+    const content = requireZstdSync()(fs2.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs3.createReadStream(resolved);
+  return fs2.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs3.statSync(resolved);
+    return fs2.statSync(resolved);
   } catch {
     return null;
   }
@@ -19085,7 +19223,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs4.statSync(p);
+    const st = fs3.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -19117,7 +19255,7 @@ function validateISODate(dateStr, paramName) {
   }
 }
 async function searchConversations(query, options = {}) {
-  const { limit = 10, mode = "both", after, before } = options;
+  const { limit = 10, mode = "both", after, before, project } = options;
   if (after) validateISODate(after, "--after");
   if (before) validateISODate(before, "--before");
   const db = getSearchDb();
@@ -19125,6 +19263,10 @@ async function searchConversations(query, options = {}) {
   {
     const filterParts = [];
     const filterParams = [];
+    if (project) {
+      filterParts.push(`e.project = ?`);
+      filterParams.push(project);
+    }
     if (after) {
       filterParts.push(`e.timestamp >= ?`);
       filterParams.push(after);
@@ -19133,7 +19275,7 @@ async function searchConversations(query, options = {}) {
       filterParts.push(`e.timestamp <= ?`);
       filterParams.push(before);
     }
-    const timeClause = filterParts.length > 0 ? `AND ${filterParts.join(" AND ")}` : "";
+    const filterClause = filterParts.length > 0 ? `AND ${filterParts.join(" AND ")}` : "";
     const timeParams = filterParams;
     if (mode === "vector" || mode === "both") {
       await initEmbeddings();
@@ -19155,7 +19297,7 @@ async function searchConversations(query, options = {}) {
           WHERE vec.embedding MATCH ${vecParamSql(vecDtype2)}
             AND k = ?
             AND e.embedding_version = ?
-            ${timeClause}
+            ${filterClause}
           ORDER BY vec.distance ASC
         `);
         const rows = stmt.all(
@@ -19204,12 +19346,12 @@ async function searchConversations(query, options = {}) {
         try {
           const built = db.prepare(`SELECT value FROM fts_meta WHERE key='exchanges_fts_built'`).get();
           if (built?.value === "1") {
-            const mkFtsStmt = timeClause ? (orderBy) => db.prepare(`
+            const mkFtsStmt = filterClause ? (orderBy) => db.prepare(`
                   SELECT ${cols}, 0 as distance
                   FROM exchanges_fts AS fts
                   JOIN exchanges AS e ON e.rowid = fts.rowid
                   WHERE exchanges_fts MATCH ?
-                    ${timeClause}
+                    ${filterClause}
                   ORDER BY ${orderBy.replace("rowid", "fts.rowid")}
                   LIMIT ?
                 `) : (orderBy) => db.prepare(`
@@ -19239,7 +19381,7 @@ async function searchConversations(query, options = {}) {
                 const lim = rest[rest.length - 1];
                 const params = rest.slice(0, -1);
                 const stmt = n <= RANK_BUDGET ? rankedStmt : recentStmt;
-                if (timeClause) return stmt.all(expr, ...params, lim);
+                if (filterClause) return stmt.all(expr, ...params, lim);
                 const rows = stmt.all(expr, lim, lim);
                 if (rows.length < Math.min(n, lim)) {
                   const healStmt = db.prepare(`
@@ -19329,7 +19471,7 @@ async function searchConversations(query, options = {}) {
           SELECT ${cols}, 0 as distance
           FROM exchanges AS e
           WHERE (e.user_message LIKE ? ESCAPE '\\' OR e.assistant_message LIKE ? ESCAPE '\\')
-            ${timeClause}
+            ${filterClause}
           ORDER BY e.timestamp DESC
           LIMIT ?
         `);
@@ -19517,7 +19659,7 @@ async function getKnowledgeContext(query, project, limit = 5) {
       const catInfo = fact.ontology_category_id ? categoryMap.get(fact.ontology_category_id) : void 0;
       const domainName = catInfo ? domainMap.get(catInfo.domainId) ?? "Unclassified" : "Unclassified";
       const catName = catInfo ? catInfo.name : "Unclassified";
-      const related = getRelatedFacts(db, fact.id, 1);
+      const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project ?? null);
       const relatedFacts = related.map(({ fact: relFact, relation }) => ({
         fact: relFact.fact,
         relationType: relation.relation_type
@@ -19654,39 +19796,39 @@ function formatRepeatContext(matches) {
 }
 
 // src/inject-log.ts
-import fs5 from "fs";
-import path4 from "path";
+import fs4 from "fs";
+import path3 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path4.join(getIndexDir(), "logs");
-  if (!fs5.existsSync(dir)) {
-    fs5.mkdirSync(dir, { recursive: true });
+  const dir = path3.join(getIndexDir(), "logs");
+  if (!fs4.existsSync(dir)) {
+    fs4.mkdirSync(dir, { recursive: true });
   }
-  return path4.join(dir, "inject-context.jsonl");
+  return path3.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs5.statSync(logPath);
+      const stat = fs4.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs5.renameSync(logPath, `${logPath}.old`);
+        fs4.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs5.appendFileSync(logPath, line + "\n");
+    fs4.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
 
 // src/inject-ledger.ts
-import fs6 from "node:fs";
-import path5 from "node:path";
+import fs5 from "node:fs";
+import path4 from "node:path";
 var MAX_IDS = 400;
 var TTL_MS = 7 * 24 * 60 * 60 * 1e3;
 function ledgerDir() {
-  return path5.join(getIndexDir(), "state", "inject-ledger");
+  return path4.join(getIndexDir(), "state", "inject-ledger");
 }
 function sanitizeSessionId(sessionId) {
   if (!sessionId) return null;
@@ -19694,13 +19836,13 @@ function sanitizeSessionId(sessionId) {
   return clean.length >= 4 ? clean : null;
 }
 function ledgerPath(cleanId) {
-  return path5.join(ledgerDir(), cleanId + ".json");
+  return path4.join(ledgerDir(), cleanId + ".json");
 }
 function loadLedger(sessionId) {
   const id = sanitizeSessionId(sessionId);
   if (!id) return /* @__PURE__ */ new Set();
   try {
-    const raw = fs6.readFileSync(ledgerPath(id), "utf8");
+    const raw = fs5.readFileSync(ledgerPath(id), "utf8");
     const arr = JSON.parse(raw);
     if (Array.isArray(arr)) return new Set(arr.filter((x2) => typeof x2 === "string"));
   } catch {
@@ -19712,13 +19854,13 @@ function appendLedger(sessionId, existing, newIds) {
   if (!id || newIds.length === 0) return;
   try {
     const dir = ledgerDir();
-    fs6.mkdirSync(dir, { recursive: true });
+    fs5.mkdirSync(dir, { recursive: true });
     const ordered = [...existing, ...newIds.filter((n) => !existing.has(n))];
     const bounded = ordered.length > MAX_IDS ? ordered.slice(ordered.length - MAX_IDS) : ordered;
     const p = ledgerPath(id);
     const tmp = p + ".tmp";
-    fs6.writeFileSync(tmp, JSON.stringify(bounded));
-    fs6.renameSync(tmp, p);
+    fs5.writeFileSync(tmp, JSON.stringify(bounded));
+    fs5.renameSync(tmp, p);
     pruneOldLedgers(dir);
   } catch {
   }
@@ -19726,11 +19868,11 @@ function appendLedger(sessionId, existing, newIds) {
 function pruneOldLedgers(dir) {
   try {
     const now = Date.now();
-    for (const f of fs6.readdirSync(dir)) {
+    for (const f of fs5.readdirSync(dir)) {
       if (!f.endsWith(".json")) continue;
-      const fp = path5.join(dir, f);
+      const fp = path4.join(dir, f);
       try {
-        if (now - fs6.statSync(fp).mtimeMs > TTL_MS) fs6.unlinkSync(fp);
+        if (now - fs5.statSync(fp).mtimeMs > TTL_MS) fs5.unlinkSync(fp);
       } catch {
       }
     }
@@ -19828,6 +19970,14 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         }
       }
       appendLedger(sessionId, ledger, injectedIds);
+      if (sessionId) {
+        recordRecallEvent(db, {
+          sessionId,
+          project,
+          prompt: userPrompt,
+          factIds: injectedIds
+        });
+      }
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",
@@ -19858,9 +20008,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
 
 // src/inject-daemon.ts
 function injectSocketPath() {
-  return path6.join(getIndexDir(), "inject-daemon.sock");
+  return path5.join(getIndexDir(), "inject-daemon.sock");
 }
 function startInjectDaemon() {
+  ensureIndexDir();
   const sockPath = injectSocketPath();
   const server2 = net.createServer((conn) => {
     let buf = "";
@@ -19901,7 +20052,7 @@ function startInjectDaemon() {
     probe.on("connect", () => probe.destroy());
     probe.on("error", () => {
       try {
-        fs7.unlinkSync(sockPath);
+        fs6.unlinkSync(sockPath);
         server2.listen(sockPath, onListen);
       } catch {
       }
@@ -19909,7 +20060,7 @@ function startInjectDaemon() {
   });
   const onListen = () => {
     try {
-      fs7.chmodSync(sockPath, 384);
+      fs6.chmodSync(sockPath, 384);
     } catch {
     }
     void initEmbeddings().catch(() => {
@@ -19920,6 +20071,7 @@ function startInjectDaemon() {
     server2.unref();
   } catch {
   }
+  return server2;
 }
 
 // node_modules/marked/lib/marked.esm.js
@@ -21393,6 +21545,17 @@ ${JSON.stringify(value, null, 2)}
   return output;
 }
 
+// src/project-identity.ts
+import path6 from "node:path";
+function canonicalizeProjectPath(cwd) {
+  if (typeof cwd !== "string") return "";
+  let p = cwd.trim();
+  if (!p) return "";
+  if (!path6.isAbsolute(p)) p = path6.resolve("/", p);
+  const resolved = path6.normalize(p);
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
 // src/llm.ts
 import path8 from "node:path";
 import os4 from "node:os";
@@ -21450,7 +21613,7 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs8 from "node:fs";
+import fs7 from "node:fs";
 import os3 from "node:os";
 import path7 from "node:path";
 var INNER_GUARD_ENV = "MEMORY_BANK_CODEX_EXEC_INNER";
@@ -21563,12 +21726,12 @@ function runChild(bin, args, cwd, prompt, timeoutMs) {
 async function runCodex(opts = {}) {
   if (process.env[INNER_GUARD_ENV] === "1") {
     throw new Error(
-      `memory-bank: ${INNER_GUARD_ENV}=1 \u2014 refusing nested codex exec (hook/plugin recursion guard)`
+      `memex: ${INNER_GUARD_ENV}=1 \u2014 refusing nested codex exec (hook/plugin recursion guard)`
     );
   }
   const bin = opts.codexBin || process.env.MEMORY_BANK_CODEX_BIN || "codex";
   const timeoutMs = opts.timeoutMs ?? 18e4;
-  const workdir = fs8.mkdtempSync(path7.join(os3.tmpdir(), "memory-bank-llm-"));
+  const workdir = fs7.mkdtempSync(path7.join(os3.tmpdir(), "memory-bank-llm-"));
   const outPath = path7.join(workdir, "last-message.txt");
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
@@ -21576,7 +21739,7 @@ async function runCodex(opts = {}) {
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
     let text = "";
     try {
-      text = fs8.readFileSync(outPath, "utf8").trim();
+      text = fs7.readFileSync(outPath, "utf8").trim();
     } catch {
     }
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
@@ -21588,7 +21751,7 @@ async function runCodex(opts = {}) {
     }
     return text;
   } finally {
-    fs8.rmSync(workdir, { recursive: true, force: true });
+    fs7.rmSync(workdir, { recursive: true, force: true });
   }
 }
 
@@ -21673,11 +21836,18 @@ You represent their past engineering decisions, preferences, and patterns.
 - 0.7-0.9: inferred from related decisions
 - 0.5-0.7: weak inference, needs verification
 - below 0.5: not enough information`;
-async function askAvatar(db, question, project) {
+async function askAvatar(db, question, project, scope) {
   await initEmbeddings();
   const questionEmbedding = await generateEmbedding(question, "query");
   const scopeProject = project ?? null;
-  const vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+  let vectorResults;
+  if (scope === "global") {
+    vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: "global" }, 10, 0.6);
+  } else if (scopeProject) {
+    vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
+  } else {
+    vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
+  }
   if (vectorResults.length === 0) {
     return {
       answer: "\uAD00\uB828\uB41C \uACFC\uAC70 \uACB0\uC815\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC544\uC9C1 \uCDA9\uBD84\uD55C \uAE30\uC5B5\uC774 \uC313\uC774\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
@@ -21695,8 +21865,9 @@ async function askAvatar(db, question, project) {
   const relatedDecisions = [];
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1);
+    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
     for (const { fact: relFact, relation } of related) {
+      if (scope === "global" && relFact.scope_type !== "global") continue;
       if (!expandedFactIds.has(relFact.id)) {
         expandedFactIds.add(relFact.id);
         relatedDecisions.push({ fact: relFact, relation: relation.relation_type });
@@ -21771,7 +21942,7 @@ async function askAvatar(db, question, project) {
 
 // src/mcp-server.ts
 import path9 from "path";
-import fs9 from "fs";
+import fs8 from "fs";
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
 var SearchInputSchema = external_exports.object({
@@ -21783,6 +21954,9 @@ var SearchInputSchema = external_exports.object({
   ),
   mode: SearchModeEnum.default("both").describe(
     'Search mode: "vector" for semantic similarity, "text" for exact matching, "both" for combined (default: "both"). Only used for single-concept searches.'
+  ),
+  project: external_exports.string().max(500).optional().describe(
+    "Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly."
   ),
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
   after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations after this date (YYYY-MM-DD format)"),
@@ -21796,9 +21970,11 @@ var ShowConversationInputSchema = external_exports.object({
   startLine: external_exports.number().int().min(1).optional().describe("Starting line number (1-indexed, inclusive). Omit to start from beginning."),
   endLine: external_exports.number().int().min(1).optional().describe("Ending line number (1-indexed, inclusive). Omit to read to end.")
 }).strict();
+var ScopeEnum = external_exports.enum(["project", "global", "all"]);
 var SearchFactsInputSchema = external_exports.object({
   query: external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
-  project: external_exports.string().max(500).optional(),
+  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
+  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"'),
   category: external_exports.enum(["decision", "preference", "pattern", "knowledge", "constraint"]).optional(),
   include_revisions: external_exports.boolean().default(false),
   limit: external_exports.number().int().min(1).max(50).default(10)
@@ -21806,12 +21982,30 @@ var SearchFactsInputSchema = external_exports.object({
 var SearchOntologyInputSchema = external_exports.object({
   domain: external_exports.string().optional().describe("Filter by domain name (case-insensitive partial match)"),
   category: external_exports.string().optional().describe("Filter by category name (case-insensitive partial match)"),
-  include_relations: external_exports.boolean().default(false).describe("Include 1-hop fact relations")
+  include_relations: external_exports.boolean().default(false).describe("Include 1-hop fact relations"),
+  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
+  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"')
 }).strict();
 var AskAvatarInputSchema = external_exports.object({
   question: external_exports.string().min(2, "Question must be at least 2 characters").max(1e4, "Question too long (max 10000 chars)").describe("Question to ask"),
-  project: external_exports.string().max(500).optional().describe("Project path to scope the search")
+  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
+  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"')
 }).strict();
+function resolveProjectScope(raw, tool, field = "project") {
+  const scope = raw.scope ?? "project";
+  if (scope === "global" || scope === "all") return { project: null, scope };
+  const value = (field === "current_project" ? raw.current_project : raw.project) ?? "";
+  if (!value.trim()) {
+    throw new Error(
+      JSON.stringify({
+        error: `${tool}: ${field} is required for project-scoped queries`,
+        expected: 'canonical absolute Codex thread cwd (session_meta.cwd), or scope: "global" | "all"',
+        example: { [field]: "/Users/me/work/app-a" }
+      })
+    );
+  }
+  return { project: canonicalizeProjectPath(value.trim()), scope };
+}
 function handleError(error2) {
   if (error2 instanceof Error) {
     return `Error: ${error2.message}`;
@@ -21820,8 +22014,8 @@ function handleError(error2) {
 }
 var server = new Server(
   {
-    name: "memory-bank",
-    version: "1.5.0-codex.1"
+    name: "memex",
+    version: "0.1.0"
   },
   {
     capabilities: {
@@ -21829,213 +22023,226 @@ var server = new Server(
     }
   }
 );
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "search",
-        description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              oneOf: [
-                { type: "string", minLength: 2 },
-                { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, maxItems: 5 }
-              ]
-            },
-            mode: { type: "string", enum: ["vector", "text", "both"], default: "both" },
-            limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
-            after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
+function getToolDefinitions() {
+  return [
+    {
+      name: "search",
+      description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            oneOf: [
+              { type: "string", minLength: 2 },
+              { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, maxItems: 5 }
+            ]
           },
-          required: ["query"],
-          additionalProperties: false
+          mode: { type: "string", enum: ["vector", "text", "both"], default: "both" },
+          project: { type: "string", description: "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global." },
+          limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
+          after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+          before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+          response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
         },
-        annotations: {
-          title: "Search Episodic Memory",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
+        required: ["query"],
+        additionalProperties: false
       },
-      {
-        name: "read",
-        description: `Read full conversations to extract detailed context after finding relevant results with search. Essential for understanding the complete rationale, evolution, and gotchas behind past decisions. Use startLine/endLine pagination for large conversations to avoid context bloat (line numbers are 1-indexed).`,
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string", minLength: 1 },
-            startLine: { type: "number", minimum: 1 },
-            endLine: { type: "number", minimum: 1 }
-          },
-          required: ["path"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Show Full Conversation",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "search_facts",
-        description: "Search extracted facts from past conversations. Returns project-scoped and global facts. Facts are long-term knowledge automatically extracted and consolidated from conversations.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string", minLength: 2, description: "Search query for facts" },
-            project: { type: "string", description: "Project path to scope the search (defaults to cwd)" },
-            category: {
-              type: "string",
-              enum: ["decision", "preference", "pattern", "knowledge", "constraint"],
-              description: "Filter by fact category"
-            },
-            include_revisions: { type: "boolean", description: "Include revision history", default: false },
-            limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Max results" }
-          },
-          required: ["query"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Search Facts",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "search_ontology",
-        description: "Browse the ontology hierarchy (Domain > Category > Facts). Use to understand how past decisions are organized, or to find all facts in a specific domain/category.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            domain: { type: "string", description: "Filter by domain name (partial, case-insensitive)" },
-            category: { type: "string", description: "Filter by category name (partial, case-insensitive)" },
-            include_relations: { type: "boolean", default: false, description: "Include 1-hop relations for each fact" }
-          },
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Search Ontology",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "ask_avatar",
-        description: "Ask the user's technical alter ego a question. Returns an answer grounded in past decisions and preferences, with cited sources and confidence level.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            question: { type: "string", minLength: 2, description: "Question to ask" },
-            project: { type: "string", description: "Project path to scope the search (optional)" }
-          },
-          required: ["question"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Ask Avatar",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: false,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "trace_fact",
-        description: "Trace a fact back to its source conversations. Shows the original exchanges that led to a knowledge graph fact, providing full provenance and context.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string", minLength: 2, description: "Search query to find the fact to trace" },
-            project: { type: "string", description: "Project path to scope the search (optional)" },
-            limit: { type: "number", minimum: 1, maximum: 10, default: 3, description: "Max facts to trace" }
-          },
-          required: ["query"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Trace Fact Provenance",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "graph_stats",
-        description: "Get knowledge graph statistics: total facts, domains, categories, relations, and top domains by fact count. Useful for understanding what knowledge has been accumulated.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            project: { type: "string", description: "Project path to scope stats (optional, default: all)" }
-          },
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Knowledge Graph Stats",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "cross_project_insights",
-        description: "Find similar decisions and patterns from OTHER projects. Useful for knowledge transfer \u2014 see how similar problems were solved in different projects.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string", minLength: 2, description: "Topic or decision to find cross-project insights for" },
-            current_project: { type: "string", description: "Current project path (results from this project are excluded)" },
-            limit: { type: "number", minimum: 1, maximum: 20, default: 5, description: "Max results" }
-          },
-          required: ["query"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Cross-Project Insights",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
-      },
-      {
-        name: "explore_graph",
-        description: "Explore the knowledge graph starting from a fact or topic. Performs multi-hop traversal to discover indirectly connected knowledge, patterns, and decision chains.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string", minLength: 2, description: "Starting topic or fact to explore from" },
-            hops: { type: "number", minimum: 1, maximum: 3, default: 2, description: "Graph traversal depth (1-3 hops)" },
-            project: { type: "string", description: "Project scope (optional)" }
-          },
-          required: ["query"],
-          additionalProperties: false
-        },
-        annotations: {
-          title: "Explore Knowledge Graph",
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false
-        }
+      annotations: {
+        title: "Search Episodic Memory",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
       }
-    ]
-  };
+    },
+    {
+      name: "read",
+      description: `Read full conversations to extract detailed context after finding relevant results with search. Essential for understanding the complete rationale, evolution, and gotchas behind past decisions. Use startLine/endLine pagination for large conversations to avoid context bloat (line numbers are 1-indexed).`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", minLength: 1 },
+          startLine: { type: "number", minimum: 1 },
+          endLine: { type: "number", minimum: 1 }
+        },
+        required: ["path"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Show Full Conversation",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "search_facts",
+      description: "Search extracted facts from past conversations. Returns project-scoped and global facts. Facts are long-term knowledge automatically extracted and consolidated from conversations.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 2, description: "Search query for facts" },
+          project: { type: "string", description: "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global" (global facts only), or "all"' },
+          category: {
+            type: "string",
+            enum: ["decision", "preference", "pattern", "knowledge", "constraint"],
+            description: "Filter by fact category"
+          },
+          include_revisions: { type: "boolean", description: "Include revision history", default: false },
+          limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Max results" }
+        },
+        required: ["query"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Search Facts",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "search_ontology",
+      description: "Browse the ontology hierarchy (Domain > Category > Facts). Use to understand how past decisions are organized, or to find all facts in a specific domain/category.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", description: "Filter by domain name (partial, case-insensitive)" },
+          category: { type: "string", description: "Filter by category name (partial, case-insensitive)" },
+          include_relations: { type: "boolean", default: false, description: "Include 1-hop relations for each fact" },
+          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+        },
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Search Ontology",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "ask_avatar",
+      description: "Ask the user's technical alter ego a question. Returns an answer grounded in past decisions and preferences, with cited sources and confidence level.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          question: { type: "string", minLength: 2, description: "Question to ask" },
+          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+        },
+        required: ["question"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Ask Avatar",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "trace_fact",
+      description: "Trace a fact back to its source conversations. Shows the original exchanges that led to a knowledge graph fact, providing full provenance and context.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 2, description: "Search query to find the fact to trace" },
+          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' },
+          limit: { type: "number", minimum: 1, maximum: 10, default: 3, description: "Max facts to trace" }
+        },
+        required: ["query"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Trace Fact Provenance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "graph_stats",
+      description: "Get knowledge graph statistics: total facts, domains, categories, relations, and top domains by fact count. Useful for understanding what knowledge has been accumulated.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+        },
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Knowledge Graph Stats",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "cross_project_insights",
+      description: "Find similar decisions and patterns from OTHER projects. Useful for knowledge transfer \u2014 see how similar problems were solved in different projects.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 2, description: "Topic or decision to find cross-project insights for" },
+          current_project: { type: "string", description: "Canonical absolute Codex thread cwd to exclude (required)." },
+          scope: { type: "string", enum: ["project"], description: "cross_project_insights always excludes the given current_project; pass its cwd explicitly." },
+          limit: { type: "number", minimum: 1, maximum: 20, default: 5, description: "Max results" }
+        },
+        required: ["query", "current_project"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Cross-Project Insights",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    },
+    {
+      name: "explore_graph",
+      description: "Explore the knowledge graph starting from a fact or topic. Performs multi-hop traversal to discover indirectly connected knowledge, patterns, and decision chains.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 2, description: "Starting topic or fact to explore from" },
+          hops: { type: "number", minimum: 1, maximum: 3, default: 2, description: "Graph traversal depth (1-3 hops)" },
+          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
+          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+        },
+        required: ["query"],
+        additionalProperties: false
+      },
+      annotations: {
+        title: "Explore Knowledge Graph",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      }
+    }
+  ];
+}
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return { tools: getToolDefinitions() };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  return handleToolCall(name, args ?? {});
+});
+async function handleToolCall(name, args) {
   try {
-    const { name, arguments: args } = request.params;
     if (name === "search") {
       const params = SearchInputSchema.parse(args);
       let resultText;
@@ -22043,7 +22250,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const options = {
           limit: params.limit,
           after: params.after,
-          before: params.before
+          before: params.before,
+          project: params.project
         };
         const results = await searchMultipleConcepts(params.query, options);
         if (params.response_format === "json") {
@@ -22064,7 +22272,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           mode: params.mode,
           limit: params.limit,
           after: params.after,
-          before: params.before
+          before: params.before,
+          project: params.project
         };
         const results = await searchConversations(params.query, options);
         if (params.response_format === "json") {
@@ -22084,8 +22293,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } else {
           resultText = await formatResults(results);
           try {
-            const knowledgeCtx = await getKnowledgeContext(params.query, null, 3);
-            resultText += formatKnowledgeContext(knowledgeCtx);
+            if (params.project) {
+              const knowledgeCtx = await getKnowledgeContext(params.query, params.project, 3);
+              resultText += formatKnowledgeContext(knowledgeCtx);
+            }
           } catch {
           }
         }
@@ -22109,13 +22320,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs9.realpathSync(resolvedFile);
+      const realFile = fs8.realpathSync(resolvedFile);
       const allowedRoots = [
         getArchiveDir(),
         sessionsRoot()
       ].map((root) => {
         try {
-          return fs9.realpathSync(root);
+          return fs8.realpathSync(root);
         } catch {
           return path9.resolve(root);
         }
@@ -22143,20 +22354,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
-      const currentProject = params.project || process.cwd();
+      const scopeInfo = resolveProjectScope(params, "search_facts");
+      const scopeFilter = scopeInfo.scope;
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchSimilarFacts(db, queryEmbedding, currentProject, params.limit);
+        let results = searchSimilarFacts(db, queryEmbedding, scopeInfo.project, params.limit);
+        if (scopeFilter === "global") {
+          results = results.filter((r) => r.fact.scope_type === "global");
+        }
         let filtered = results;
         if (params.category) {
           filtered = filtered.filter((r) => r.fact.category === params.category);
         }
+        const scopeLabel = scopeFilter === "project" ? scopeInfo.project : `${scopeFilter} facts only`;
         let output = `# Facts Search Results
 
 Query: "${params.query}"
-Project: ${currentProject}
+Scope: ${scopeLabel}
 Results: ${filtered.length}
 
 `;
@@ -22192,7 +22408,7 @@ Results: ${filtered.length}
               }
             }
           }
-          const related = getRelatedFacts(db, fact.id, 1);
+          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
           if (related.length > 0) {
             output += `- Related:
 `;
@@ -22217,9 +22433,10 @@ Results: ${filtered.length}
     }
     if (name === "search_ontology") {
       const params = SearchOntologyInputSchema.parse(args);
+      const scopeInfo = resolveProjectScope(params, "search_ontology");
       try {
         const db = initDatabase();
-        const tree = getOntologyTree(db);
+        const tree = getOntologyTree(db, scopeInfo.project, scopeInfo.scope);
         const domainFilter = params.domain?.toLowerCase();
         const categoryFilter = params.category?.toLowerCase();
         const filtered = tree.filter((entry) => {
@@ -22259,7 +22476,7 @@ Results: ${filtered.length}
               output += `  - ID: ${fact.id} | Confirmed: ${fact.consolidated_count}x | ${fact.created_at.slice(0, 10)}
 `;
               if (params.include_relations) {
-                const related = getRelatedFacts(db, fact.id, 1);
+                const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
                     output += `  - \u2194 [${relation.relation_type}] "${relFact.fact}"
@@ -22282,10 +22499,10 @@ Results: ${filtered.length}
     }
     if (name === "ask_avatar") {
       const params = AskAvatarInputSchema.parse(args);
-      const project = params.project || process.cwd();
+      const avatarScope = resolveProjectScope(params, "ask_avatar");
       try {
         const db = initDatabase();
-        const result = await askAvatar(db, params.question, project);
+        const result = await askAvatar(db, params.question, avatarScope.project ?? void 0, avatarScope.scope);
         db.close();
         const confidenceLabel = result.confidence >= 0.9 ? "HIGH" : result.confidence >= 0.7 ? "MEDIUM" : result.confidence >= 0.5 ? "LOW" : "INSUFFICIENT";
         let output = `# Avatar Response
@@ -22333,14 +22550,18 @@ Results: ${filtered.length}
       const params = external_exports.object({
         query: external_exports.string().min(2),
         project: external_exports.string().optional(),
+        scope: ScopeEnum.optional(),
         limit: external_exports.number().int().min(1).max(10).default(3)
       }).strict().parse(args);
-      const currentProject = params.project || process.cwd();
+      const traceScope = resolveProjectScope(params, "trace_fact");
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchSimilarFacts(db, queryEmbedding, currentProject, params.limit, 0.5);
+        let results = searchSimilarFacts(db, queryEmbedding, traceScope.project, params.limit, 0.5);
+        if (traceScope.scope === "global") {
+          results = results.filter((r) => r.fact.scope_type === "global");
+        }
         if (results.length === 0) {
           return { content: [{ type: "text", text: "No matching facts found to trace." }] };
         }
@@ -22396,7 +22617,7 @@ _Source exchanges not available._
             }
             output += "\n";
           }
-          const related = getRelatedFacts(db, fact.id, 1);
+          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, traceScope.project, traceScope.scope);
           if (related.length > 0) {
             output += `### Related Facts (1-hop)
 
@@ -22419,29 +22640,63 @@ _Source exchanges not available._
       }
     }
     if (name === "graph_stats") {
-      external_exports.object({
-        project: external_exports.string().max(500).optional()
+      const gs = external_exports.object({
+        project: external_exports.string().max(500).optional(),
+        scope: ScopeEnum.optional()
       }).strict().parse(args);
+      const gsScope = resolveProjectScope(gs, "graph_stats");
       const db = initDatabase();
       try {
-        const totalFacts = db.prepare("SELECT COUNT(*) as count FROM facts WHERE is_active = 1").get().count;
-        const totalDomains = db.prepare("SELECT COUNT(*) as count FROM ontology_domains").get().count;
-        const totalCategories = db.prepare("SELECT COUNT(*) as count FROM ontology_categories").get().count;
-        const totalRelations = db.prepare("SELECT COUNT(*) as count FROM ontology_relations").get().count;
-        const totalRevisions = db.prepare("SELECT COUNT(*) as count FROM fact_revisions").get().count;
+        const factWhere = gsScope.scope === "global" ? "f.is_active = 1 AND f.scope_type = 'global'" : gsScope.project ? "f.is_active = 1 AND (f.scope_type = 'global' OR f.scope_project = ?)" : "f.is_active = 1";
+        const factArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project] : [];
+        const totalFacts = db.prepare(`SELECT COUNT(*) as count FROM facts f WHERE ${factWhere}`).get(...factArgs).count;
+        const totalDomains = db.prepare(`
+          SELECT COUNT(DISTINCT d.id) as count
+          FROM ontology_domains d
+          JOIN ontology_categories c ON c.domain_id = d.id
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
+        `).get(...factArgs).count;
+        const totalCategories = db.prepare(`
+          SELECT COUNT(DISTINCT c.id) as count
+          FROM ontology_categories c
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
+        `).get(...factArgs).count;
+        const relWhere = gsScope.scope === "global" ? "s.is_active = 1 AND t.is_active = 1 AND s.scope_type = 'global' AND t.scope_type = 'global'" : gsScope.project ? "s.is_active = 1 AND t.is_active = 1 AND (s.scope_type = 'global' OR s.scope_project = ?) AND (t.scope_type = 'global' OR t.scope_project = ?)" : "s.is_active = 1 AND t.is_active = 1";
+        const relArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project, gsScope.project] : [];
+        const totalRelations = db.prepare(`
+          SELECT COUNT(*) as count
+          FROM ontology_relations r
+          JOIN facts s ON r.source_fact_id = s.id
+          JOIN facts t ON r.target_fact_id = t.id
+          WHERE ${relWhere}
+        `).get(...relArgs).count;
+        const totalRevisions = db.prepare(`
+          SELECT COUNT(*) as count
+          FROM fact_revisions fr
+          JOIN facts f ON fr.fact_id = f.id
+          WHERE ${factWhere}
+        `).get(...factArgs).count;
         const categoryBreakdown = db.prepare(
-          "SELECT category, COUNT(*) as count FROM facts WHERE is_active = 1 GROUP BY category ORDER BY count DESC"
-        ).all();
+          `SELECT f.category, COUNT(*) as count FROM facts f WHERE ${factWhere} GROUP BY f.category ORDER BY count DESC`
+        ).all(...factArgs);
         const topDomains = db.prepare(`
           SELECT d.name, COUNT(f.id) as fact_count
           FROM ontology_domains d
           JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id AND f.is_active = 1
+          JOIN facts f ON f.ontology_category_id = c.id
+          WHERE ${factWhere}
           GROUP BY d.id ORDER BY fact_count DESC LIMIT 10
-        `).all();
-        const relationBreakdown = db.prepare(
-          "SELECT relation_type, COUNT(*) as count FROM ontology_relations GROUP BY relation_type ORDER BY count DESC"
-        ).all();
+        `).all(...factArgs);
+        const relationBreakdown = db.prepare(`
+          SELECT r.relation_type, COUNT(*) as count
+          FROM ontology_relations r
+          JOIN facts s ON r.source_fact_id = s.id
+          JOIN facts t ON r.target_fact_id = t.id
+          WHERE ${relWhere}
+          GROUP BY r.relation_type ORDER BY count DESC
+        `).all(...relArgs);
         let output = `# Knowledge Graph Statistics
 
 `;
@@ -22494,6 +22749,7 @@ _Source exchanges not available._
       const params = external_exports.object({
         query: external_exports.string().min(2),
         current_project: external_exports.string().optional(),
+        scope: ScopeEnum.optional(),
         limit: external_exports.number().int().min(1).max(20).default(5)
       }).strict().parse(args);
       await initEmbeddings();
@@ -22501,7 +22757,8 @@ _Source exchanges not available._
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const allResults = searchAllFacts(db, queryEmbedding, params.limit * 3, 0.5);
-        const currentProject = params.current_project || process.cwd();
+        const cxScope = resolveProjectScope(params, "cross_project_insights", "current_project");
+        const currentProject = cxScope.project ?? "";
         const crossProjectResults = allResults.filter(
           (r) => r.fact.scope_type === "project" && r.fact.scope_project !== currentProject
         ).slice(0, params.limit);
@@ -22542,13 +22799,19 @@ Excluding: ${currentProject}
       const params = external_exports.object({
         query: external_exports.string().min(2),
         hops: external_exports.number().int().min(1).max(3).default(2),
-        project: external_exports.string().optional()
+        project: external_exports.string().optional(),
+        scope: ScopeEnum.optional()
       }).strict().parse(args);
+      const egScope = resolveProjectScope(params, "explore_graph");
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const seedFacts = searchSimilarFacts(db, queryEmbedding, params.project ?? null, 3, 0.5);
+        let seedFacts = searchSimilarFacts(db, queryEmbedding, egScope.project, 3, 0.5);
+        if (egScope.scope === "global") {
+          seedFacts = seedFacts.filter((r) => r.fact.scope_type === "global");
+        }
+        const seedIds = new Set(seedFacts.map((r) => r.fact.id));
         if (seedFacts.length === 0) {
           return { content: [{ type: "text", text: `No facts found related to "${params.query}" to start graph exploration.` }] };
         }
@@ -22573,7 +22836,16 @@ Seed: "${params.query}" | Depth: ${params.hops} hops
 
 `;
           allDiscovered.add(seedFact.id);
-          const related = getRelatedFacts(db, seedFact.id, params.hops);
+          const related = getRelatedFacts(
+            db,
+            seedFact.id,
+            params.hops,
+            0.6,
+            0.2,
+            egScope.project,
+            egScope.scope
+          ).slice(0, 20);
+          void seedIds;
           if (related.length === 0) {
             output += `_No connected facts found._
 
@@ -22622,14 +22894,21 @@ _Total unique facts discovered: ${allDiscovered.size}_
       isError: true
     };
   }
-});
+}
 async function main() {
   console.error("Episodic Memory MCP server running via stdio");
   startInjectDaemon();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
-main().catch((error2) => {
-  console.error("Server error:", error2);
-  process.exit(1);
-});
+var isDirectRun = process.argv[1] && (process.argv[1].endsWith("mcp-server.js") || process.argv[1].endsWith("mcp-server"));
+if (isDirectRun || process.env.MEMORY_BANK_MCP_AUTOSTART === "1") {
+  main().catch((error2) => {
+    console.error("Server error:", error2);
+    process.exit(1);
+  });
+}
+export {
+  getToolDefinitions,
+  handleToolCall
+};

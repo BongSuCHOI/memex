@@ -1,0 +1,3 @@
+{"timestamp": "2026-08-20T01:00:00.000Z", "type": "session_meta", "payload": {"id": "0f8f2c1e-base-b-0001-2222-3333-444455556666", "session_id": "0f8f2c1e-base-b-0001-2222-3333-444455556666", "timestamp": "2026-08-20T01:00:00.000Z", "cwd": "/tmp/mb-fixture/team-b/shared", "originator": "codex-tui", "cli_version": "0.149.1", "source": "cli", "thread_source": "user"}}
+{"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "decision for team-b: use Postgres B tuning"}]}}
+{"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Noted: project team-b uses Postgres with team-b-specific tuning."}]}}

@@ -6,6 +6,7 @@ export interface SearchOptions {
     mode?: 'vector' | 'text' | 'both';
     after?: string;
     before?: string;
+    project?: string;
 }
 export declare function searchConversations(query: string, options?: SearchOptions): Promise<SearchResult[]>;
 export declare function formatResults(results: Array<SearchResult & {

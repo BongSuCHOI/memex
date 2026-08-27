@@ -1,13 +1,13 @@
 import { syncConversations } from './sync.js';
 import { getArchiveDir, getSessionsRoot, getMemoryBankHome } from './paths.js';
-import { parseLockMeta, decideTakeover } from './version-guard.js';
+import { parseLockMeta, decideTakeover, isSyncCliCommand } from './version-guard.js';
 import path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import fs from 'fs';
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Usage: memory-bank sync [--background]
+Usage: memex sync [--background]
 
 Sync conversations from Codex session rollouts to archive and index them.
 
@@ -24,13 +24,13 @@ OPTIONS:
 
 EXAMPLES:
   # Sync all new conversations
-  memory-bank sync
+  memex sync
 
   # Sync in background (for hooks)
-  memory-bank sync --background
+  memex sync --background
 
   # Use in a Codex SessionEnd hook:
-  # hooks.json -> "command": "node cli/memory-bank.js sync --background"
+  # hooks.json -> "command": "node cli/memex.js sync --background"
 `);
     process.exit(0);
 }
@@ -86,11 +86,11 @@ function __pidAlive(pid) {
     }
 }
 /** Pid-recycling guard: only treat the holder as "our" process if its command
- * line is actually a memory-bank sync-cli. A recycled pid must not be killed. */
+ * line is actually a Memex sync CLI. A recycled pid must not be killed. */
 function __isSyncCliProcess(pid) {
     try {
         const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' });
-        return cmd.includes('memory-bank') && cmd.includes('sync-cli');
+        return isSyncCliCommand(cmd);
     }
     catch {
         return false;

@@ -98,10 +98,11 @@ describe('analyze', () => {
       INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, is_sidechain, session_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    // Project A: 2 conversations, 2 sessions, 3 exchanges across 2 months
-    insert.run('e1', 'proj-a', '2026-05-01T10:00:00Z', 'q1', 'a1', convA, 1, 2, 0, 'sess-1');
-    insert.run('e2', 'proj-a', '2026-05-02T10:00:00Z', 'q2', 'a2', convA, 3, 4, 0, 'sess-1');
-    insert.run('e3', 'proj-a', '2026-06-01T10:00:00Z', 'q3', 'a3', convB, 1, 2, 0, 'sess-2');
+    // Project A: 2 conversations, 2 sessions, 3 exchanges across 2 months.
+    // CX-02: exchanges.project is the canonical absolute cwd.
+    insert.run('e1', '/tmp/proj-a', '2026-05-01T10:00:00Z', 'q1', 'a1', convA, 1, 2, 0, 'sess-1');
+    insert.run('e2', '/tmp/proj-a', '2026-05-02T10:00:00Z', 'q2', 'a2', convA, 3, 4, 0, 'sess-1');
+    insert.run('e3', '/tmp/proj-a', '2026-06-01T10:00:00Z', 'q3', 'a3', convB, 1, 2, 0, 'sess-2');
     // Project B: two rollout files in one session
     const convC = join(testDir, 'rollout-2026-06-15-33333333-3333-3333-3333-333333333333.jsonl');
     const continuedConv = join(testDir, 'rollout-2026-06-15-44444444-4444-4444-4444-444444444444.jsonl');
@@ -119,7 +120,7 @@ describe('analyze', () => {
 
     // Facts: 2 for project A (cwd and basename forms), 1 global, 1 inactive
     db.prepare(`INSERT INTO facts VALUES ('f1', 'Fact one', 'decision', 'project', '/tmp/proj-a', 1, 'cat-1')`).run();
-    db.prepare(`INSERT INTO facts VALUES ('f2', 'Fact two', 'pattern', 'project', 'proj-a', 1, 'cat-1')`).run();
+    db.prepare(`INSERT INTO facts VALUES ('f2', 'Fact two', 'pattern', 'project', '/tmp/proj-a', 1, 'cat-1')`).run();
     db.prepare(`INSERT INTO facts VALUES ('f3', 'Fact three', 'preference', 'global', NULL, 1, NULL)`).run();
     db.prepare(`INSERT INTO facts VALUES ('f4', 'Old fact', 'decision', 'project', '/tmp/proj-a', 0, NULL)`).run();
 
@@ -159,8 +160,8 @@ describe('analyze', () => {
     // Domains
     expect(report.domains).toEqual([{ domain: 'Infrastructure', facts: 2 }]);
 
-    // Projects: A first (more exchanges), facts matched via cwd basename
-    expect(report.projects[0].project).toBe('proj-a');
+    // Projects: A first (more exchanges); facts join on the canonical path
+    expect(report.projects[0].project).toBe('/tmp/proj-a');
     expect(report.projects[0].conversations).toBe(2);
     expect(report.projects[0].sessions).toBe(2);
     expect(report.projects[0].exchanges).toBe(3);
@@ -176,7 +177,7 @@ describe('analyze', () => {
 
     // Recommendations mention pending extraction and missing summaries
     expect(report.recommendations.some(r => r.includes('backfill-extract-worker'))).toBe(true);
-    expect(report.recommendations.some(r => r.includes('memory-bank sync'))).toBe(true);
+    expect(report.recommendations.some(r => r.includes('memex sync'))).toBe(true);
   });
 
   it('recommends nothing when coverage is complete', async () => {

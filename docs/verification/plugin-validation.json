@@ -1,0 +1,114 @@
+{
+  "kind": "plugin-validation-receipt",
+  "recordedAt": "2026-08-27T02:03:04.645Z",
+  "environment": {
+    "codexCli": "codex-cli 0.149.1",
+    "node": "v26.7.0",
+    "platform": "darwin arm64"
+  },
+  "verdict": "PASS-WITH-NOTES (version-bound)",
+  "validator": {
+    "available": false,
+    "command": "codex plugin validate --help",
+    "exitCode": 2,
+    "observed": "error: unrecognized subcommand 'validate'",
+    "policy": "Codex CLI lacks the command; the acceptance SSOT authorizes the isolated substitute contract below for this version only."
+  },
+  "checks": [
+    {
+      "name": "manifest schema and plugin hook discovery",
+      "status": "PASS",
+      "observed": {
+        "name": "memex",
+        "version": "0.1.0",
+        "hooks": [
+          "SessionEnd",
+          "SessionStart",
+          "UserPromptSubmit"
+        ]
+      }
+    },
+    {
+      "name": "isolated marketplace add",
+      "status": "PASS",
+      "observed": "memex-validator"
+    },
+    {
+      "name": "isolated plugin add installedPath",
+      "status": "PASS",
+      "observed": "/private/tmp/memex-plugin-validate-HXFkvt/codex-home/plugins/cache/memex-validator/memex/0.1.0"
+    },
+    {
+      "name": "Codex cache identity",
+      "status": "PASS",
+      "observed": "/private/tmp/memex-plugin-validate-HXFkvt/codex-home/plugins/cache/memex-validator/memex/0.1.0"
+    },
+    {
+      "name": "production dependency packaging",
+      "status": "PASS",
+      "observed": {
+        "changed": true,
+        "packages": 177,
+        "method": "local copy, no npm install/network"
+      }
+    },
+    {
+      "name": "MCP manifest installed-root resolution",
+      "status": "PASS",
+      "observed": "/private/tmp/memex-plugin-validate-HXFkvt/codex-home/plugins/cache/memex-validator/memex/0.1.0/cli/runtime-exec.js"
+    },
+    {
+      "name": "MCP initialize and tools/list",
+      "status": "PASS",
+      "observed": [
+        "ask_avatar",
+        "cross_project_insights",
+        "explore_graph",
+        "graph_stats",
+        "read",
+        "search",
+        "search_facts",
+        "search_ontology",
+        "trace_fact"
+      ]
+    },
+    {
+      "name": "MCP tools/call graph_stats",
+      "status": "PASS",
+      "observed": "graph_stats"
+    },
+    {
+      "name": "skill frontmatter",
+      "status": "PASS",
+      "observed": [
+        "analyzing-all-conversations",
+        "remembering-conversations",
+        "show-memex-dashboard"
+      ]
+    },
+    {
+      "name": "installed Web UI assets",
+      "status": "PASS",
+      "observed": [
+        "ui/server.cjs",
+        "ui/relations/index.html",
+        "ui/relations/app.js"
+      ]
+    },
+    {
+      "name": "isolated registration cleanup",
+      "status": "PASS",
+      "observed": {
+        "plugin_absent": true,
+        "marketplace_absent": true,
+        "temp_root_absent": true
+      }
+    }
+  ],
+  "cleanup": {
+    "plugin_absent": true,
+    "marketplace_absent": true,
+    "temp_root_absent": true
+  },
+  "conclusion": "The formal validator command is unavailable in this exact CLI version; every pre-authorized installed-artifact substitute check passed. Re-run the formal validator when a future CLI exposes it."
+}

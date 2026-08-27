@@ -7,7 +7,7 @@ import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance
 type FactVecTable = 'vec_facts' | 'vec_facts_kr' | 'vec_categories';
 
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
-function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]) {
+export function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]) {
   const dt = getVecTableDtype(db, table);
   return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
 }
@@ -28,6 +28,7 @@ interface UpdateFactParams {
   fact?: string;
   embedding?: number[] | null;
   consolidated_count_increment?: boolean;
+  source_exchange_ids?: string[];
 }
 
 interface InsertRevisionParams {
@@ -111,6 +112,10 @@ export function updateFact(db: Database.Database, id: string, params: UpdateFact
   }
   if (params.consolidated_count_increment) {
     updates.push('consolidated_count = consolidated_count + 1');
+  }
+  if (params.source_exchange_ids !== undefined) {
+    updates.push('source_exchange_ids = ?');
+    values.push(JSON.stringify([...new Set(params.source_exchange_ids)]));
   }
 
   values.push(id);

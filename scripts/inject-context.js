@@ -58,6 +58,16 @@ function emitContext(context) {
   }) + '\n');
 }
 
+async function markRecallEmitted(sessionId, prompt) {
+  if (!sessionId || !prompt) return;
+  try {
+    const { initDatabase, markRecallEventEmitted } = await import(path.join(__dirname, '../dist/db.js'));
+    const db = initDatabase();
+    try { markRecallEventEmitted(db, { sessionId, prompt }); } finally { db.close(); }
+  } catch (error) {
+    process.stderr.write(`inject-context: recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
 /** Ask the warm daemon; resolve null (not reject) on ANY failure so the caller
  * falls back — the hook must never break a user prompt. */
 function askDaemon(prompt, cwd, sessionId) {
@@ -113,12 +123,20 @@ async function main() {
   if (!cwd) cwd = process.env.CWD || process.cwd();
   if (!sessionId) sessionId = process.env.SESSION_ID || '';
 
+  // CX-01: privacy-safe event observation (event/ts/session/cwd only).
+  try {
+    const { recordHookEvent } = await import(path.join(__dirname, '../dist/observe-hook-event.js'));
+    recordHookEvent('UserPromptSubmit', { sessionId, cwd });
+  } catch { /* observation is best-effort */ }
   if (!prompt || prompt.length < 20) return; // not worth an injection
 
   // FAST PATH — warm daemon inside a running MCP server.
   const daemonContext = await askDaemon(prompt, cwd, sessionId);
   if (daemonContext !== null) {
-    if (daemonContext) emitContext(daemonContext);
+    if (daemonContext) {
+      emitContext(daemonContext);
+      await markRecallEmitted(sessionId, prompt);
+    }
     return;
   }
 
@@ -126,7 +144,10 @@ async function main() {
   try {
     const { computeInjectContext } = await import(path.join(__dirname, '../dist/inject-core.js'));
     const context = await computeInjectContext(prompt, cwd, 'fallback', sessionId || undefined);
-    if (context) emitContext(context);
+    if (context) {
+      emitContext(context);
+      await markRecallEmitted(sessionId, prompt);
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     process.stderr.write(`inject-context: error: ${msg}\n`);

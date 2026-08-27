@@ -1,104 +1,190 @@
-# Memory Bank for Codex
+# Memex
 
-Memory Bank는 로컬 Codex 롤아웃 세션을 검색 가능한 장기 메모리로
-변환합니다. user/assistant exchange를 보관·인덱싱하고, Codex CLI로 장기
-facts를 추출하며, MCP 도구와 로컬 대시보드로 결과를 제공합니다.
+[![Release](https://img.shields.io/badge/release-0.1.0-2563eb)](CHANGELOG.md)
+[![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## 핵심 기능
+> 흩어진 Codex 대화를 모으고, 지식을 증류하고, 연결하고, 인덱싱해서
+> 필요한 순간 다시 꺼내 쓰는 로컬 우선 개인 지식 시스템.
 
-- `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` 수집
-- subagent·harness context 제외
-- 로컬 embedding + FTS5 기반 대화 검색
-- facts·ontology·provenance·cross-project insight
-- prompt context 주입과 SessionEnd facts 추출
-- MCP 도구 9개와 포트 3847의 로컬 대시보드
+Memex는 Codex rollout을 검색 가능한 대화 archive, durable fact, ontology 기반
+knowledge graph, 다음 작업에 재사용할 bounded context로 바꿉니다.
 
-모델 작업은 전부 로컬에 로그인된 Codex CLI를 사용합니다. 외부 모델 SDK나
-API key가 필요 없으며 기본 모델은 `gpt-5.6-luna`입니다.
+[English](README.md) · [문서 지도](docs/README.md) ·
+[설치와 운영](docs/GUIDE.md) · [아키텍처](docs/ARCHITECTURE.md) ·
+[스키마](docs/SCHEMA.md)
 
-## 요구 사항과 빌드
+이 프로젝트는 MIT 라이선스의
+[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank)와
+그 upstream인
+[`obra/episodic-memory`](https://github.com/obra/episodic-memory)에서 파생된
+독립 Codex-native 프로젝트입니다. Claude Code 호환 계층은 포함하지 않습니다.
 
-- Node.js 22.15 이상
-- Codex CLI 0.149 이상
+## 왜 0.1.0인가
 
-```bash
-cd /path/to/memory-bank-codex
-npm install
-npm run build
+기능 수가 적어서가 아니라 독립 공개 저장소의 첫 릴리스이기 때문입니다. Marketplace,
+Codex host adapter, 설치 계약이 안정화됐다고 선언하는 시점을 `1.0.0`으로 남겨두고,
+현재 완성된 기능은 `0.1.0`부터 실제 사용자 검증을 받습니다.
+
+## 주요 기능
+
+- vector, FTS5/BM25, hybrid conversation search
+- LLM 호출 없는 deterministic full-history analysis
+- incremental fact extraction, consolidation, revision, provenance
+- domain/category ontology와 typed knowledge graph
+- project/global/explicit all-project scope isolation
+- bounded RAG context injection과 session deduplication
+- compressed `.jsonl.zst` archive
+- 9개 MCP tools와 3개 Codex skills
+- Facts, Pipeline, 3D Knowledge Galaxy를 포함한 loopback Web UI
+- Codex-native SessionStart/UserPromptSubmit/SessionEnd hooks
+
+## 구조
+
+```mermaid
+flowchart LR
+    R[Codex rollout JSONL] --> S[Sync and parser]
+    S --> A[Local archive]
+    S --> C[(Conversation index)]
+    C --> X[Fact extraction]
+    X --> F[(Facts and revisions)]
+    F --> G[(Ontology and relations)]
+    C --> Q[Hybrid retrieval]
+    F --> Q
+    G --> Q
+    Q --> M[MCP and skills]
+    Q --> H[Context injection]
+    C --> UI[Loopback Web UI]
+    F --> UI
+    G --> UI
 ```
 
-의존성 설치, MCP 등록, Codex 설정 변경은 자동으로 수행하지 않습니다.
+원본 rollout은 read-only입니다. 자세한 데이터 흐름은
+[ARCHITECTURE.md](docs/ARCHITECTURE.md), fact/graph 동작은
+[FACT-LIFECYCLE.md](docs/FACT-LIFECYCLE.md)와
+[KNOWLEDGE-GRAPH.md](docs/KNOWLEDGE-GRAPH.md)를 참조하세요.
 
-## Codex 구성
+## 권장 설치
 
-- `.codex-plugin/plugin.json`: native plugin manifest
-- `.mcp.json`: Memory Bank MCP server
-- `hooks.json`: `SessionStart`, `UserPromptSubmit`, `SessionEnd`
-- `skills/`: 과거 대화 검색, 전체 대화 분석, 대시보드 실행
-
-체크아웃 개발은 이 저장소에서 Codex를 열어 `.mcp.json`과 `hooks.json`을
-사용합니다. 개인 plugin 설치는 Codex marketplace 명령을 통해 수행하고,
-plugin cache는 직접 수정하지 마세요.
-
-## 등록부터 해제까지
-
-로컬 marketplace 생성, plugin 등록, 첫 동기화, MCP 확인, dashboard 실행,
-plugin·marketplace 해제와 선택적 DB 삭제까지의 전체 절차는
-[운영·아키텍처 가이드](docs/GUIDE-KR.md)에 정리되어 있습니다.
-
-등록과 해제의 핵심 명령은 다음과 같습니다. 먼저 가이드의 marketplace
-구조를 준비해야 합니다.
+요구 사항: Node.js 22.15+, 인증된 Codex CLI, macOS 또는 Linux.
 
 ```bash
-codex plugin marketplace add "/absolute/path/to/memory-bank-marketplace" --json
-codex plugin add memory-bank@memory-bank-local --json
-
-# 새 Codex thread에서 사용한 뒤 해제
-codex plugin remove memory-bank@memory-bank-local --json
-codex plugin marketplace remove memory-bank-local --json
+codex plugin marketplace add BongSuCHOI/memex
+codex plugin add memex@memex
 ```
 
-plugin 제거는 `~/.config/memory-bank`의 DB나 원본 Codex rollouts를 자동으로
-삭제하지 않습니다.
+이 두 명령이 일반 사용자의 전체 설치입니다. manifest, MCP, 3 skills, lifecycle
+hooks, CLI/UI launcher가 함께 설치됩니다. 첫 실행에는 Node의 `npx`가 최신
+`BongSuCHOI/memex#main` runtime과 native dependency를 격리 cache에 준비하므로 조금
+더 걸릴 수 있습니다. clone/build는 필요하지 않습니다.
 
-## CLI
+## 설치 후 1회 onboarding
+
+설치가 끝나면 **Codex를 재시작**합니다. 터미널에서 읽기 쉬운 명령을 위해 현재 shell에
+다음 함수를 정의한 뒤 기존 session history를 순서대로 준비합니다.
 
 ```bash
-node cli/memory-bank.js sync
-node cli/memory-bank.js search "React 인증"
-node cli/memory-bank.js stats
-node cli/memory-bank.js analyze
+memex() { npx --yes --package=github:BongSuCHOI/memex#main memex "$@"; }
+
+memex setup
+memex sync
+memex backfill extract --foreground
+memex backfill ontology --foreground
+memex backfill embeddings --foreground
+memex status
 ```
 
-기본 데이터 경로는 `~/.config/memory-bank`입니다.
+`memex setup`은 Codex의 실제 `memories` feature 상태를 확인합니다. built-in Memory가
+켜져 있으면 double-memory/conflicting-memory 위험과 OFF 권장을 보여주며, 대화형
+terminal에서는 동의를 묻습니다. 비대화형 실행은 절대 자동으로 끄지 않고 명시적 승인인
+`memex setup --disable-codex-memory`가 있을 때만 Codex 자체
+`codex features disable memories`를 호출한 뒤 OFF 상태를 재검증합니다.
 
-| 변수 | 용도 |
-| --- | --- |
-| `MEMORY_BANK_HOME` | Memory Bank 데이터 루트 변경 |
-| `MEMORY_BANK_CONFIG_DIR` | 테스트용 데이터 루트 alias |
-| `XDG_CONFIG_HOME` | `$XDG_CONFIG_HOME/memory-bank` 사용 |
-| `MEMORY_BANK_DB_PATH` | SQLite DB 경로만 변경 |
-| `MEMORY_BANK_SESSIONS_DIR` | Codex 롤아웃 루트 변경 |
-| `MEMORY_BANK_CODEX_MODEL` | 모든 모델 작업의 모델; 기본 `gpt-5.6-luna` |
-| `MEMORY_BANK_CODEX_BIN` | 대체 Codex 실행 파일 |
+대화량과 local model extraction에 따라 수분 이상 걸릴 수 있습니다. 최초 실행은
+완료를 직접 확인할 수 있는 `--foreground`를 권장합니다. `--background`의 started
+메시지는 완료가 아니므로 `memex status`의 pending count를 확인해야 합니다.
+`sync`는 idempotent하므로 다시 실행해도 안전합니다.
 
-## 검증
+Memex hook/MCP가 꺼낸 기억은 event별 `memex_recall` provenance로 기록됩니다. 경계는
+turn 전체가 아니라 evidence별입니다. 같은 turn에서도 human assertion과 allowlist를
+통과한 local repo/file, Git history, test execution 결과는 학습 가능하지만 Memex 결과,
+외부/unknown tool output, assistant-generated synthesis는 학습하지 않습니다. 전체
+exchange는 conversation search에 남으므로 self-ingestion loop를 차단하면서 repo
+evidence에 근거한 fact evolution은 계속됩니다.
+
+## 사용
+
+```bash
+memex search "SQLite를 선택한 이유"
+memex search --both "인증 마이그레이션"
+memex stats
+memex analyze --top 30 --out ~/memex-report.md
+memex status
+```
+
+MCP tools:
+
+```text
+search, read, search_facts, search_ontology, ask_avatar,
+trace_fact, explore_graph, cross_project_insights, graph_stats
+```
+
+Web UI:
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex-ui
+# http://localhost:3847
+```
+
+`/` conversations, `/facts` fact management, `/graph` 3D graph,
+`/pipeline` readiness를 제공합니다.
+
+## 업데이트
+
+```bash
+memex update --dry-run
+memex update
+```
+
+Git marketplace snapshot을 갱신하고 plugin을 최신 상태로 재설치합니다. Runtime은
+항상 최신 main을 대상으로 하며, update는 skills/hooks/MCP metadata까지 맞춥니다.
+완료 후 Codex를 재시작합니다. 기존 Memex data는 보존됩니다.
+
+## 해제
+
+Marketplace plugin hooks는 plugin 제거와 함께 사라집니다. 과거/manual
+`setup-hooks`를 썼다면 fingerprinted entry만 먼저 제거합니다.
+
+```bash
+npx --yes --package=github:BongSuCHOI/memex#main memex remove-hooks --dry-run
+npx --yes --package=github:BongSuCHOI/memex#main memex remove-hooks
+codex plugin remove memex@memex --json
+codex plugin marketplace remove memex --json
+```
+
+해제는 Codex rollout과 Memex derived data를 보존합니다. 데이터 경로와 보존 정책은
+[운영 가이드](docs/GUIDE.md#uninstall-and-data-retention)를 참조하세요.
+
+## 검증과 기여
 
 ```bash
 npm run typecheck
 npm run build
 npm test
+npm run test:marketplace
+npm run test:package
 node --test test/codex-slice.test.mjs
+node --test test/*slice.test.mjs
+node scripts/validate-plugin.mjs
 ```
 
-현재 스키마는 `docs/SCHEMA.md`에 정리되어 있습니다.
+clone, `npm ci`, build는 일반 설치가 아니라 개발/기여 시에만 사용합니다.
 
-MCP·CLI 기능표, hooks의 사용 시점, 증분 추출과 idempotency 로직, 모델 격리
-경계 및 Mermaid 다이어그램은 [운영·아키텍처 가이드](docs/GUIDE-KR.md)를
-참고하세요.
+변경 전 [AGENTS.md](AGENTS.md)의 invariant와
+[문서 책임 지도](docs/README.md)를 확인하세요. 최신 검증 경계는
+[VERIFICATION.md](docs/VERIFICATION.md)에 있습니다.
 
-## 라이선스와 출처
+## 라이선스
 
-MIT. 이 Codex-native 프로젝트는
-[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank)에서
-파생되었습니다. 저작자 표시는 `LICENSE`와 Git history를 따릅니다.
+MIT. 계보와 third-party attribution은 [LINEAGE.md](docs/LINEAGE.md)와
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있습니다.

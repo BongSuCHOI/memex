@@ -1,0 +1,1 @@
+{"timestamp": "2026-08-20T01:00:00.000Z", "type": "session_meta", "payload": {"id": "0f8f2c1e-empty-0001-2222-3333-444455556666", "session_id": "0f8f2c1e-empty-0001-2222-3333-444455556666", "timestamp": "2026-08-20T01:00:00.000Z", "cwd": "/tmp/mb-fixture/team-a/shared", "originator": "codex-tui", "cli_version": "0.149.1", "source": "cli", "thread_source": "user"}}

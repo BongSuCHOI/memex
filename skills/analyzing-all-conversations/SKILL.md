@@ -1,68 +1,50 @@
 ---
 name: analyzing-all-conversations
-description: Use when the user asks to analyze, organize, or report on their ENTIRE conversation history — e.g. "모든 대화 분석", "대화내역 정리", "전체 대화 리포트", "대화 분석 리포트", "analyze all conversations", "summarize my conversation history". Produces a coverage-checked, organized report of all archived conversations (projects, decisions, patterns, activity timeline, gaps) and kicks off backfill for unanalyzed sessions.
+description: Produce a coverage-checked report of the entire Memex conversation corpus when the user asks to analyze, organize, or summarize all Codex history. Use deterministic totals first and label unfinished backfill honestly.
 ---
 
 # Analyzing All Conversations
 
-**Core principle:** Numbers come from the deterministic engine (`memory-bank analyze`), meaning comes from fact/ontology search. Never fill gaps with guesses — report actual coverage numbers.
+Resolve `PLUGIN_ROOT` as two directories above this skill directory.
 
-## Step 0 — Locate the plugin root
+## Establish coverage
 
-`PLUGIN_ROOT` is two directories up from this skill's base directory
-(the directory containing `cli/`, `scripts/`, `skills/`).
-
-## Step 1 — Run the deterministic analysis (read-only)
+Run the deterministic, read-only report before interpreting the corpus:
 
 ```bash
-node "$PLUGIN_ROOT/cli/memory-bank.js" analyze
+node "$PLUGIN_ROOT/cli/runtime-exec.js" memex analyze --json
 ```
 
-Options: `--top <n>` (projects, default 15), `--months <n>` (timeline, default 12),
-`--json` (for scripting), `--out <file>` (save report).
+Use its conversation/session/exchange/project/date totals, extraction and
+summary coverage, fact counts, domains, project rollups, timeline, and
+recommendations. Never recreate those numbers from sampled search results.
 
-This returns, without any LLM calls:
-- **Coverage** — conversations / sessions / exchanges / projects / date range
-- **Pipeline coverage** — fact extraction (done/pending %) and summaries (done/missing %)
-- **Facts** — active count, by category, by scope
-- **Top knowledge domains** (ontology)
-- **Per-project rollups** — conversations, sessions, exchanges, facts, activity range
-- **Monthly activity timeline**
-- **Recommendations** — which backfills to run
+## Close or disclose gaps
 
-## Step 2 — Fill analysis gaps (backfill, run in background)
+If requested and recommended by the report, start only the relevant explicit
+backfill:
 
-If the report recommends backfill:
+```bash
+node "$PLUGIN_ROOT/cli/runtime-exec.js" memex backfill extract --background
+node "$PLUGIN_ROOT/cli/runtime-exec.js" memex backfill ontology --background
+node "$PLUGIN_ROOT/cli/runtime-exec.js" memex sync
+```
 
-| Gap | Action |
-|-----|--------|
-| Pending fact extraction | `node "$PLUGIN_ROOT/scripts/backfill-extract-worker.js" --max 500` — run in background. Uses the local codex CLI (CodexExec). Lock-protected and idempotent: safe to start, exits immediately if another worker is already running. |
-| Missing summaries | `node "$PLUGIN_ROOT/cli/memory-bank.js" sync` — generates up to 10 summaries per run; repeated syncs (each session start) drain the queue gradually. |
+A started background worker is `진행 중`, not complete. Re-run `status --json`
+only when the user needs a settled coverage result; otherwise report the exact
+pending counts and log path.
 
-**Do NOT wait for backfills to finish.** They are long-running background work.
-Report them as "진행 중 (백그라운드)" with the log location
-(`~/.config/memory-bank/conversation-index/backfill-extract.log`), never as "완료".
+## Add meaning
 
-## Step 3 — Synthesize the organized report
+Use `graph_stats` for the scoped graph overview, `search_facts` for representative
+decisions/patterns/constraints, and `cross_project_insights` only with an explicit
+canonical current project. Produce the report in the user's language with:
 
-Enrich the numbers with meaning using MCP tools (do not re-derive numbers by hand):
+1. overall corpus and date range;
+2. extraction/summary coverage;
+3. project rollups and representative knowledge;
+4. domain/category distribution;
+5. activity timeline;
+6. remaining gaps and actions actually started.
 
-- `graph_stats` — knowledge graph overview (domains, relations)
-- `search_facts` with `category: "decision"` / `"pattern"` / `"constraint"` — representative facts for the top projects
-- `cross_project_insights` — transferable lessons relevant to the current project
-
-Then present the final report in the **user's language** (Korean → 존댓말) with this structure:
-
-1. **전체 개요** — 대화/세션/exchange 수, 기간, 프로젝트 수
-2. **분석 커버리지** — extraction/summary 커버리지 표. 백필을 시작했다면 "완료된 것"과 "백그라운드 진행 중인 것"을 명확히 구분
-3. **프로젝트별 정리** — top 프로젝트 표 + 프로젝트별 핵심 결정/패턴 1–2줄
-4. **핵심 지식** — 도메인 분포 + 대표 facts (category별)
-5. **활동 타임라인** — 월별 추이 요약
-6. **남은 공백과 조치** — 미분석 세션 수, 실행한/권장하는 backfill
-
-## Rules
-
-- **Never claim full coverage unless pending == 0 and missing summaries == 0.** Always report actual N/M numbers.
-- Backfill started ≠ analysis complete — report scope honestly (foreground done / background running).
-- Everything here is additive: `analyze` is read-only; backfill workers only add facts/summaries, never delete.
-- Keep the report to roughly one page unless the user asks for more depth. Detail belongs in `--out` files.
+Do not claim full coverage unless every required pending/missing counter is zero.

@@ -14,7 +14,7 @@ for (let i = 0; i < args.length; i++) {
     format = args[++i] as 'markdown' | 'html';
   } else if (arg === '--help' || arg === '-h') {
     console.log(`
-Usage: memory-bank show [OPTIONS] <file>
+Usage: memex show [OPTIONS] <file>
 
 Display a conversation from a JSONL file in a human-readable format.
 
@@ -24,13 +24,13 @@ OPTIONS:
 
 EXAMPLES:
   # Show conversation as markdown
-  memory-bank show conversation.jsonl
+  memex show conversation.jsonl
 
   # Generate HTML for browser viewing
-  memory-bank show --format html conversation.jsonl > output.html
+  memex show --format html conversation.jsonl > output.html
 
   # View with pipe
-  memory-bank show conversation.jsonl | less
+  memex show conversation.jsonl | less
 `);
     process.exit(0);
   } else if (!filePath) {
@@ -40,8 +40,8 @@ EXAMPLES:
 
 if (!filePath) {
   console.error('Error: No file specified');
-  console.error('Usage: memory-bank show [OPTIONS] <file>');
-  console.error('Try: memory-bank show --help');
+  console.error('Usage: memex show [OPTIONS] <file>');
+  console.error('Try: memex show --help');
   process.exit(1);
 }
 
