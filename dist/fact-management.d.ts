@@ -36,6 +36,29 @@ export interface EditResult {
     ontologyPending: boolean;
     affectedRelations: number;
 }
+export interface FactMutationSource {
+    exchangeId?: string;
+    exchangeIds?: string[];
+}
+export interface MutateFactMeaningOptions {
+    factId: string;
+    newText: string;
+    reason?: string;
+    source?: FactMutationSource;
+    lineageMode?: 'preserve-identity';
+    expectedPreviousFact?: string;
+    consolidatedCountIncrement?: boolean;
+    deactivateFactIds?: string[];
+}
+export interface SemanticMutationResult extends EditResult {
+    deactivatedFactIds: string[];
+}
+/**
+ * Replace one fact's meaning while preserving its identity and revision chain.
+ * Embedding generation happens before the write; every durable generation
+ * transition and invalidation commits in one transaction.
+ */
+export declare function mutateFactMeaning(db: Database.Database, opts: MutateFactMeaningOptions): Promise<SemanticMutationResult>;
 /**
  * Edit a fact's text. One transaction covers:
  *   revision(old/new/reason) -> text update -> fresh embedding + vector swap ->

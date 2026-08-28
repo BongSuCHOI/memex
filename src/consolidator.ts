@@ -9,8 +9,8 @@ import {
   searchSimilarFactsSameScope,
   updateFact,
   deactivateFact,
-  insertRevision,
 } from './fact-db.js';
+import { mutateFactMeaning } from './fact-management.js';
 
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -97,7 +97,7 @@ async function consolidateOne(
   // fact. This also means no single fact (a transiently non-JSON response, or a
   // deliberately "poison" candidate) can hold the cursor and starve the backlog.
   if (!result) return { called: true, verdict: 'none' };
-  applyConsolidationResult(db, closest.fact, newFact, result);
+  await applyConsolidationResult(db, closest.fact, newFact, result);
   return { called: true, verdict: result.relation };
 }
 
@@ -112,8 +112,8 @@ export async function consolidateFacts(
   project: string,
   lastConsolidatedAt: string,
 ): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number }> {
-  // No initEmbeddings() — consolidation uses stored vectors + the LLM, never the
-  // local embedding model (see consolidateAllPending).
+  // Candidate retrieval uses stored vectors. A semantic verdict lazily creates
+  // the replacement embedding through mutateFactMeaning; no eager model init.
   const newFacts = getNewFactsSince(db, project, lastConsolidatedAt);
   let llmCalls = 0, merged = 0, contradictions = 0, evolutions = 0;
   for (const newFact of newFacts) {
@@ -143,8 +143,8 @@ export async function consolidateFacts(
  * consolidate worker calls this once while holding the global lock, instead of
  * looping consolidateFacts per project — which reprocessed shared global facts
  * once per project (up to `MAX_LLM_CALLS × projectCount` calls) and, for
- * INDEPENDENT/CONTRADICTION verdicts (new fact stays active), kept re-comparing
- * the same global fact every pass.
+ * INDEPENDENT verdicts (both facts stay active), kept re-comparing the same
+ * global fact every pass.
  *
  * Each fact is compared within its own scope: a project fact against its
  * project + global (via its scope_project), a global fact against the whole
@@ -156,11 +156,9 @@ export async function consolidateAllPending(
   db: Database.Database,
   since: { createdAt: string; id: string } | null,
 ): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number; llmCalls: number; cursor: { createdAt: string; id: string } | null }> {
-  // NOTE: no initEmbeddings() here — consolidation never generates an embedding.
-  // It compares facts using their ALREADY-STORED vectors (searchSimilarFactsSameScope
-  // does a vec MATCH on the stored blob) and an LLM (callMemoryModel). Loading the local
-  // embedding model was a ~1s no-op on every run, wasteful because the consolidate
-  // worker is spawned on every SessionStart — most runs have an empty backlog.
+  // Candidate comparison uses ALREADY-STORED vectors and an LLM. Do not eagerly
+  // initialize embeddings: only EVOLUTION/CONTRADICTION needs a replacement
+  // vector, and mutateFactMeaning initializes the model lazily for that verdict.
   const newFacts = getAllNewFactsSince(db, since);
   let llmCalls = 0;
   let merged = 0;
@@ -242,12 +240,12 @@ export async function consolidateAllPending(
   return { processed, merged, contradictions, evolutions, llmCalls, cursor };
 }
 
-export function applyConsolidationResult(
+export async function applyConsolidationResult(
   db: Database.Database,
   existingFact: Fact,
   newFact: Fact,
   result: ConsolidationResult,
-): void {
+): Promise<void> {
   // Normalize merged_fact: treat empty/whitespace-only as absent
   const mergedFact = result.merged_fact?.trim() || null;
   const mergedSources = [...new Set([
@@ -266,33 +264,28 @@ export function applyConsolidationResult(
       break;
 
     case 'CONTRADICTION':
-      deactivateFact(db, existingFact.id);
-      insertRevision(db, {
-        fact_id: existingFact.id,
-        previous_fact: existingFact.fact,
-        new_fact: mergedFact || newFact.fact,
+      await mutateFactMeaning(db, {
+        factId: existingFact.id,
+        newText: mergedFact || newFact.fact,
         reason: result.reason,
-        source_exchange_id: newEvidenceSource,
+        source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
+        lineageMode: 'preserve-identity',
+        expectedPreviousFact: existingFact.fact,
+        deactivateFactIds: [newFact.id],
       });
-      if (mergedFact) {
-        updateFact(db, newFact.id, { fact: mergedFact });
-      }
       break;
 
     case 'EVOLUTION':
-      insertRevision(db, {
-        fact_id: existingFact.id,
-        previous_fact: existingFact.fact,
-        new_fact: mergedFact || newFact.fact,
+      await mutateFactMeaning(db, {
+        factId: existingFact.id,
+        newText: mergedFact || newFact.fact,
         reason: result.reason,
-        source_exchange_id: newEvidenceSource,
+        source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
+        lineageMode: 'preserve-identity',
+        expectedPreviousFact: existingFact.fact,
+        consolidatedCountIncrement: true,
+        deactivateFactIds: [newFact.id],
       });
-      updateFact(db, existingFact.id, {
-        fact: mergedFact || newFact.fact,
-        consolidated_count_increment: true,
-        source_exchange_ids: mergedSources,
-      });
-      deactivateFact(db, newFact.id);
       break;
 
     case 'INDEPENDENT':

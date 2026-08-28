@@ -136,7 +136,8 @@ MCP, Web UI에 반복 적용합니다.
 - extraction은 session 단위 claim lease와 `last_exchange_rowid`를 사용한다.
 - 사실/출처/saved count/watermark는 같은 commit 경계에 있다.
 - failure는 claim 만료 후 retry 가능하며 동일 session no-new-row는 model call 0이다.
-- fact mutation은 revision/vector/ontology 상태를 한 transaction에서 바꾼다.
+- semantic fact mutation은 existing identity를 유지하고 revision, stored embedding,
+  primary/KR vector, ontology, relation 상태를 한 transaction에서 전환한다.
 - injection ledger는 bounded/TTL/atomic/fail-open이다. ledger 실패가 prompt를 막지 않는다.
 - `memex update`는 Git marketplace refresh 후 plugin cache를 remove/add하고 data를
   보존한다. reinstall 실패 시 exact recovery command를 출력한다.

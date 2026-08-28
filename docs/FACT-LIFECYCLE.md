@@ -100,12 +100,18 @@ fact 저장은 성공했는데 watermark가 실패하거나 그 반대가 되는
 | 판정 | 동작 | 보존 증거 |
 | --- | --- | --- |
 | DUPLICATE | existing fact 유지, count/source 추가 | 기존 ID와 모든 source |
-| CONTRADICTION | 기존 문장을 새 현재 상태로 교체 | revision reason/source, relation |
+| CONTRADICTION | existing ID의 문장을 새 현재 상태로 교체, new fact 비활성화 | current ID의 predecessor revision/source |
 | EVOLUTION | 더 최신/구체 fact로 갱신 | previous/new revision, source |
 | INDEPENDENT | 두 fact 모두 유지 | 개별 provenance |
 
 consolidation은 같은 scope eligibility 안에서 candidate를 비교합니다. 서로 다른 project의
 사실을 하나로 합쳐 scope를 누출하지 않습니다.
+
+EVOLUTION과 CONTRADICTION은 모두 `mutateFactMeaning()`을 사용합니다. current identity는
+existing fact ID로 유지하며, revision 추가, text와 stored embedding 교체, primary vector
+교체, KR text/vector 무효화, ontology pending reset, 기존 relation 제거, 병합 대상 fact
+비활성화를 한 transaction에서 commit합니다. embedding 생성이나 transaction 내부 단계가
+실패하면 기존 semantic generation 전체가 유지됩니다.
 
 ## 6. ontology와 relation 후처리
 
@@ -129,8 +135,9 @@ flowchart LR
     Gate --> Cascade[Relations -> vectors -> revisions -> fact]
 ```
 
-CLI와 Web UI는 같은 `fact-management` transaction service를 호출합니다. UI가 별도
-shortcut으로 DB를 갱신하지 않습니다.
+CLI/Web UI의 manual edit와 consolidation의 EVOLUTION/CONTRADICTION은 같은
+`fact-management.mutateFactMeaning()` transaction service를 호출합니다. UI나 자동
+consolidation이 text만 바꾸는 shortcut을 갖지 않습니다.
 
 ## 8. provenance
 
@@ -152,10 +159,10 @@ source archive가 data root 밖을 가리키면 read하지 않습니다. provena
 prompt에 주입됐는지 기록하여 그 결과 agent echo가 새 fact의 독립 evidence로
 재사용되지 않게 합니다.
 
-EVOLUTION/DUPLICATE consolidation은 새 trusted evidence의
-`source_exchange_ids`를 기존 fact에 합치고 revision에 새 evidence source를 남깁니다.
-따라서 recall 횟수는 confidence/support를 올리지 않지만, repo 관찰로 SQLite→PostgreSQL
-변화가 확인되면 provenance를 보존한 진화가 가능합니다.
+EVOLUTION/CONTRADICTION/DUPLICATE consolidation은 새 trusted evidence의
+`source_exchange_ids`를 기존 fact에 합칩니다. EVOLUTION과 CONTRADICTION은 revision에도
+새 evidence source를 남깁니다. 따라서 recall 횟수는 confidence/support를 올리지 않지만,
+repo 관찰로 SQLite→PostgreSQL 변화가 확인되면 provenance를 보존한 진화가 가능합니다.
 
 ## 9. 성공/실패 판정 예
 

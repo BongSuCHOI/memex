@@ -671,13 +671,13 @@ node --test test/*slice.test.mjs
 
 - [x] 1. SessionEnd worker 회귀 수정
 - [x] 2. conversation exclusion policy SSOT
-- [ ] 3. semantic fact mutation service
+- [x] 3. semantic fact mutation service
 - [ ] 4. shell evidence locality proof
 - [ ] 5. revision/tombstone-aware sync
 - [ ] 6. ingestion/dirty consolidation queue
 - [ ] 7. 모든 vector generation/version
 - [ ] 8. scope-aware search SSOT
-- [ ] 9. current fact lineage
+- [x] 9. current fact lineage
 - [ ] 10. shared initialized Web UI DB factory
 - [ ] 11. missing primary fact vector self-heal
 - [ ] 12. precise source exchange attribution

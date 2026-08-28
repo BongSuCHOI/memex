@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,12 @@ import {
 import { buildExtractionPrompt } from "../src/fact-extractor.js";
 import { insertFact, getActiveFacts, getRevisions } from "../src/fact-db.js";
 import { applyConsolidationResult } from "../src/consolidator.js";
+
+vi.mock("../src/embeddings.js", () => ({
+  EMBEDDING_VERSION: 73,
+  initEmbeddings: vi.fn(async () => undefined),
+  generateEmbedding: vi.fn(async () => new Array(384).fill(0.75)),
+}));
 
 describe("Memex recall provenance", () => {
   let tmp = "";
@@ -481,7 +487,7 @@ describe("Memex recall provenance", () => {
     ).toBeTruthy();
   });
 
-  it("trusted repo evidence can evolve an old recalled fact without using recall or assistant text", () => {
+  it("trusted repo evidence can evolve an old recalled fact without using recall or assistant text", async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-evolution-provenance-"));
     process.env.TEST_DB_PATH = path.join(tmp, "index.sqlite");
     db = initDatabase();
@@ -555,7 +561,7 @@ describe("Memex recall provenance", () => {
       (id) => getActiveFacts(db!).find((fact) => fact.id === id)!,
     );
 
-    applyConsolidationResult(db, oldFact, newFact, {
+    await applyConsolidationResult(db, oldFact, newFact, {
       relation: "EVOLUTION",
       merged_fact: "Project database is PostgreSQL",
       reason: "Repository configuration now points to PostgreSQL",

@@ -9,5 +9,6 @@ export * from './summarizer.js';
 export * from './paths.js';
 export * from './fact-db.js';
 export * from './fact-extractor.js';
+export * from './fact-management.js';
 export * from './consolidator.js';
 export * from './llm.js';

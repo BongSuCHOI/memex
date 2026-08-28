@@ -42,6 +42,103 @@ export function showFact(db, id) {
     catch { /* unparseable provenance */ }
     return { ...fact, revisions: getRevisions(db, id), sources };
 }
+function parseSourceExchangeIds(raw) {
+    if (!raw)
+        return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) {
+        throw new Error('fact source_exchange_ids must be a JSON string array');
+    }
+    return parsed;
+}
+function deactivateWithinTransaction(db, id) {
+    const result = db.prepare('UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ? AND is_active = 1').run(new Date().toISOString(), id);
+    if (result.changes === 0)
+        throw new Error(`no active fact with id: ${id}`);
+    if (tableExists(db, 'vec_facts'))
+        db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
+    if (tableExists(db, 'vec_facts_kr'))
+        db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
+}
+/**
+ * Replace one fact's meaning while preserving its identity and revision chain.
+ * Embedding generation happens before the write; every durable generation
+ * transition and invalidation commits in one transaction.
+ */
+export async function mutateFactMeaning(db, opts) {
+    if (opts.lineageMode && opts.lineageMode !== 'preserve-identity') {
+        throw new Error(`unsupported fact lineage mode: ${opts.lineageMode}`);
+    }
+    const newText = String(opts.newText || '').trim();
+    if (newText.length < 4)
+        throw new Error('new fact text too short (min 4 chars)');
+    const exists = db.prepare('SELECT 1 FROM facts WHERE id = ?').get(opts.factId);
+    if (!exists)
+        throw new Error(`fact not found: ${opts.factId}`);
+    if (!tableExists(db, 'vec_facts')) {
+        throw new Error('semantic fact mutation requires an initialized vec_facts table');
+    }
+    const embedding = await generateEmbedding(newText, 'passage');
+    const embBuffer = Buffer.from(new Float32Array(embedding).buffer);
+    const vp = vecParamFor(db, 'vec_facts', embedding);
+    const deactivateFactIds = [...new Set(opts.deactivateFactIds ?? [])]
+        .filter((id) => id !== opts.factId);
+    const tx = db.transaction(() => {
+        const current = db.prepare('SELECT fact, source_exchange_ids FROM facts WHERE id = ?').get(opts.factId);
+        if (!current)
+            throw new Error(`fact not found: ${opts.factId}`);
+        if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
+            throw new Error(`fact changed before semantic mutation: ${opts.factId}`);
+        }
+        const sourceExchangeIds = [...new Set([
+                ...parseSourceExchangeIds(current.source_exchange_ids),
+                ...(opts.source?.exchangeIds ?? []),
+            ])];
+        const revisionId = insertRevision(db, {
+            fact_id: opts.factId,
+            previous_fact: current.fact,
+            new_fact: newText,
+            reason: opts.reason ?? null,
+            source_exchange_id: opts.source?.exchangeId ?? null,
+        });
+        const countUpdate = opts.consolidatedCountIncrement
+            ? ', consolidated_count = consolidated_count + 1'
+            : '';
+        db.prepare(`
+      UPDATE facts
+      SET fact = ?, source_exchange_ids = ?, embedding = ?, updated_at = ?, embedding_version = ?,
+          ontology_category_id = NULL, fact_kr = NULL,
+          ontology_attempts = 0, consolidation_attempts = 0, ontology_last_attempt_at = NULL
+          ${countUpdate}
+      WHERE id = ?
+    `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, new Date().toISOString(), EMBEDDING_VERSION, opts.factId);
+        db.prepare('DELETE FROM vec_facts WHERE id = ?').run(opts.factId);
+        db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(opts.factId, vp.blob);
+        if (tableExists(db, 'vec_facts_kr')) {
+            db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(opts.factId);
+        }
+        let affectedRelations = 0;
+        if (tableExists(db, 'ontology_relations')) {
+            const rel = db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(opts.factId, opts.factId);
+            affectedRelations = Number(rel?.c ?? 0);
+            if (affectedRelations > 0) {
+                db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(opts.factId, opts.factId);
+            }
+        }
+        for (const id of deactivateFactIds)
+            deactivateWithinTransaction(db, id);
+        return { revisionId, affectedRelations };
+    });
+    const result = tx();
+    return {
+        id: opts.factId,
+        revisionId: result.revisionId,
+        embeddingRefreshed: true,
+        ontologyPending: true,
+        affectedRelations: result.affectedRelations,
+        deactivatedFactIds: deactivateFactIds,
+    };
+}
 /**
  * Edit a fact's text. One transaction covers:
  *   revision(old/new/reason) -> text update -> fresh embedding + vector swap ->
@@ -49,56 +146,13 @@ export function showFact(db, id) {
  * Any failure rolls everything back.
  */
 export async function editFact(db, id, opts) {
-    const row = db.prepare('SELECT fact FROM facts WHERE id = ?').get(id);
-    if (!row)
-        throw new Error(`fact not found: ${id}`);
-    const newText = String(opts.text || '').trim();
-    if (newText.length < 4)
-        throw new Error('new fact text too short (min 4 chars)');
-    const embedding = await generateEmbedding(newText, 'passage');
-    const vp = vecParamFor(db, 'vec_facts', embedding);
-    const embBuffer = Buffer.from(new Float32Array(embedding).buffer);
-    const tx = db.transaction(() => {
-        const now = new Date().toISOString();
-        const revisionId = insertRevision(db, {
-            fact_id: id,
-            previous_fact: row.fact,
-            new_fact: newText,
-            reason: opts.reason ?? null,
-            source_exchange_id: opts.sourceExchangeId ?? null,
-        });
-        db.prepare(`
-      UPDATE facts
-      SET fact = ?, embedding = ?, updated_at = ?, embedding_version = ?,
-          ontology_category_id = NULL, fact_kr = NULL,
-          ontology_attempts = 0, consolidation_attempts = 0, ontology_last_attempt_at = NULL
-      WHERE id = ?
-    `).run(newText, embBuffer, now, EMBEDDING_VERSION, id);
-        if (tableExists(db, 'vec_facts')) {
-            db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
-            db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(id, vp.blob);
-        }
-        if (tableExists(db, 'vec_facts_kr')) {
-            db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
-        }
-        let affectedRelations = 0;
-        if (tableExists(db, 'ontology_relations')) {
-            const rel = db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(id, id);
-            affectedRelations = Number(rel?.c ?? 0);
-            if (affectedRelations > 0) {
-                db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(id, id);
-            }
-        }
-        return { revisionId, affectedRelations };
+    return mutateFactMeaning(db, {
+        factId: id,
+        newText: opts.text,
+        reason: opts.reason,
+        source: { exchangeId: opts.sourceExchangeId },
+        lineageMode: 'preserve-identity',
     });
-    const r = tx();
-    return {
-        id,
-        revisionId: r.revisionId,
-        embeddingRefreshed: tableExists(db, 'vec_facts'),
-        ontologyPending: true,
-        affectedRelations: r.affectedRelations,
-    };
 }
 /** Deactivate (default delete). Removes from search/vector immediately. */
 export function deactivateFactTransactional(db, id) {

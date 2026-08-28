@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initDatabase } from '../src/db.js';
 import { insertFact, getFactsByProject, getActiveFacts, getTopFacts } from '../src/fact-db.js';
 import { applyConsolidationResult } from '../src/consolidator.js';
@@ -9,6 +9,11 @@ import os from 'os';
 import Database from 'better-sqlite3';
 
 const restoreConsole = suppressConsole();
+
+vi.mock('../src/embeddings.js', () => ({
+  EMBEDDING_VERSION: 73,
+  generateEmbedding: vi.fn(async () => new Array(384).fill(0.75)),
+}));
 
 describe('Fact System Integration', () => {
   let db: Database.Database;
@@ -43,12 +48,12 @@ describe('Fact System Integration', () => {
     expect(factsB.map(f => f.fact)).not.toContain('ProjectA: use Riverpod');
   });
 
-  it('should handle full DUPLICATE consolidation flow', () => {
+  it('should handle full DUPLICATE consolidation flow', async () => {
     const id1 = insertFact(db, { fact: 'Named export 사용', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
     const id2 = insertFact(db, { fact: 'Named export만 사용한다', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
 
     const facts = getActiveFacts(db);
-    applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
+    await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
       relation: 'DUPLICATE', merged_fact: '', reason: 'same content',
     });
 
@@ -57,26 +62,27 @@ describe('Fact System Integration', () => {
     expect(active[0].consolidated_count).toBe(2);
   });
 
-  it('should handle full CONTRADICTION consolidation flow', () => {
+  it('should handle full CONTRADICTION consolidation flow', async () => {
     const id1 = insertFact(db, { fact: 'Zustand 사용', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
     const id2 = insertFact(db, { fact: 'React Context 사용으로 변경', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
 
     const facts = getActiveFacts(db);
-    applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
+    await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
       relation: 'CONTRADICTION', merged_fact: 'React Context로 상태 관리 변경', reason: 'tech stack change',
     });
 
     const active = getFactsByProject(db, '/proj');
     expect(active).toHaveLength(1);
+    expect(active[0].id).toBe(id1);
     expect(active[0].fact).toBe('React Context로 상태 관리 변경');
   });
 
-  it('should handle full EVOLUTION consolidation flow', () => {
+  it('should handle full EVOLUTION consolidation flow', async () => {
     const id1 = insertFact(db, { fact: 'API v1 사용', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
     const id2 = insertFact(db, { fact: 'API v2로 마이그레이션 완료', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
 
     const facts = getActiveFacts(db);
-    applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
+    await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
       relation: 'EVOLUTION', merged_fact: 'API v2 사용 중 (v1에서 마이그레이션)', reason: 'version upgrade',
     });
 

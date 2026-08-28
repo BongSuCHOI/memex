@@ -22,8 +22,8 @@ export declare function consolidateFacts(db: Database.Database, project: string,
  * consolidate worker calls this once while holding the global lock, instead of
  * looping consolidateFacts per project — which reprocessed shared global facts
  * once per project (up to `MAX_LLM_CALLS × projectCount` calls) and, for
- * INDEPENDENT/CONTRADICTION verdicts (new fact stays active), kept re-comparing
- * the same global fact every pass.
+ * INDEPENDENT verdicts (both facts stay active), kept re-comparing the same
+ * global fact every pass.
  *
  * Each fact is compared within its own scope: a project fact against its
  * project + global (via its scope_project), a global fact against the whole
@@ -45,4 +45,4 @@ export declare function consolidateAllPending(db: Database.Database, since: {
         id: string;
     } | null;
 }>;
-export declare function applyConsolidationResult(db: Database.Database, existingFact: Fact, newFact: Fact, result: ConsolidationResult): void;
+export declare function applyConsolidationResult(db: Database.Database, existingFact: Fact, newFact: Fact, result: ConsolidationResult): Promise<void>;

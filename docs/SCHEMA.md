@@ -232,17 +232,23 @@ project fact는 absolute canonical `scope_project`를 가져야 하고 global fa
 
 ## 7. Mutation transaction
 
-`src/fact-management.ts`가 CLI와 HTTP mutation의 단일 service입니다.
+`src/fact-management.ts`가 manual edit와 자동 semantic mutation의 단일 service입니다.
+`mutateFactMeaning()`은 existing fact ID를 current identity로 유지합니다.
 
 | 작업 | 같은 transaction에서 지켜야 할 것 |
 | --- | --- |
-| edit | revision 추가, text 변경, vector 교체, ontology reset |
+| semantic edit/evolution/contradiction | revision 추가, text/stored embedding/primary vector 교체, KR·ontology·relation 무효화, 병합 대상 비활성화 |
 | deactivate | active=0, 관련 searchable vector 제거 |
 | restore | active=1, embedding/vector 재생성 |
 | hard delete | relation, vector, revision, fact를 dependency 순서로 제거 |
 
 hard delete는 full UUID와 명시적 confirmation이 없으면 시작하지 않습니다.
 `status`, `analyze`, search/MCP read, graph API는 read-only입니다.
+
+semantic mutation은 replacement embedding을 먼저 준비한 뒤 위 durable state를 한
+transaction에서 전환합니다. CONTRADICTION은 새 row를 current identity로 승격하지 않고
+existing fact ID를 갱신하므로, current fact에서 `fact_revisions.fact_id`를 직접 따라
+predecessor를 조회할 수 있습니다.
 
 ## 8. 인덱스와 성능 의도
 
