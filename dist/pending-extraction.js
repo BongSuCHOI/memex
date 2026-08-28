@@ -11,29 +11,31 @@
  * session start forever, for nothing.
  */
 import { fileURLToPath } from "node:url";
+import { llmWorkdirCwdSql } from "./paths.js";
 function boundedInt(raw, def, cap) {
-    if (raw === undefined || !/^\d+$/.test(raw.trim()))
-        return def;
-    const n = parseInt(raw.trim(), 10);
-    return Number.isFinite(n) && n >= 1 && n <= cap ? n : def;
+   if (raw === undefined || !/^\d+$/.test(raw.trim())) return def;
+   const n = parseInt(raw.trim(), 10);
+   return Number.isFinite(n) && n >= 1 && n <= cap ? n : def;
 }
 /** Env-derived config, identical for the worker and the hook. */
 export function getExtractionConfig() {
-    const excludeProjects = (process.env.BACKFILL_EXCLUDE_PROJECTS ||
-        // This plugin's own repo root, derived from module location — never a
-        // hardcoded personal path. Trailing slashes are stripped below anyway.
-        fileURLToPath(new URL("..", import.meta.url)))
-        .split(",")
-        .map((s) => s.trim())
-        // 후행 슬래시 제거 — 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위 경로가
-        // 배제에서 풀린다. 소비자(SQL 필터·isExcludedProject)가 같은 값을 봐야 한다.
-        .map((s) => s.replace(/\/+$/, ""))
-        .filter(Boolean);
-    // Default 2: 1-exchange sessions are overwhelmingly automated-worker /
-    // monitoring noise that yields no durable facts. Interpolated into SQL →
-    // boundedInt (not bare parseInt) so garbage can't reach the query text.
-    const minExchanges = boundedInt(process.env.BACKFILL_MIN_EXCHANGES, 2, 1000);
-    return { minExchanges, excludeProjects };
+   const excludeProjects = (
+      process.env.BACKFILL_EXCLUDE_PROJECTS ||
+      // This plugin's own repo root, derived from module location — never a
+      // hardcoded personal path. Trailing slashes are stripped below anyway.
+      fileURLToPath(new URL("..", import.meta.url))
+   )
+      .split(",")
+      .map((s) => s.trim())
+      // 후행 슬래시 제거 — 남겨두면 경계 매칭이 `p + '/'` 로 '//' 를 만들어 하위 경로가
+      // 배제에서 풀린다. 소비자(SQL 필터·isExcludedProject)가 같은 값을 봐야 한다.
+      .map((s) => s.replace(/\/+$/, ""))
+      .filter(Boolean);
+   // Default 2: 1-exchange sessions are overwhelmingly automated-worker /
+   // monitoring noise that yields no durable facts. Interpolated into SQL →
+   // boundedInt (not bare parseInt) so garbage can't reach the query text.
+   const minExchanges = boundedInt(process.env.BACKFILL_MIN_EXCHANGES, 2, 1000);
+   return { minExchanges, excludeProjects };
 }
 /**
  * extraction_log.extracted 의 상태 코드 (음수는 전부 "fact 0건"의 사유 구분).
@@ -51,11 +53,11 @@ export function getExtractionConfig() {
  * (공급자 장애는 애초에 행을 쓰지 않고 이연한다 — 예산 소모 없이 회복 시 재개.)
  */
 export const EXTRACTION_STATE = {
-    SEED: -1,
-    PERMANENT: -2,
-    /** 처리 중 선점(claim). 리스 만료 후에는 pending 으로 되돌아온다. */
-    CLAIMED: -3,
-    RETRIABLE_INTERNAL: -4,
+   SEED: -1,
+   PERMANENT: -2,
+   /** 처리 중 선점(claim). 리스 만료 후에는 pending 으로 되돌아온다. */
+   CLAIMED: -3,
+   RETRIABLE_INTERNAL: -4,
 };
 /** 내부 실패 재시도 예산 — 소진하면 PERMANENT 로 승격(무한 재시도 방지). */
 export const MAX_INTERNAL_RETRIES = 3;
@@ -79,10 +81,12 @@ export const CLAIM_LEASE_MINUTES = 30;
  * 전부에 영향(Codex R23, 실측 재현: 1시간 만료 claim 이 fresh=1).
  */
 export function freshClaimPredicate(alias = "extraction_log") {
-    // 손상 타임스탬프는 "살아있지 않다"로 판정한다(COALESCE). 그러지 않으면 NULL 비교가
-    // 3치논리로 번져 `NOT (fresh)` 가 NULL 이 되고, hook 변형 선점이 조용히 실패한다.
-    return (`${alias}.extracted = ${EXTRACTION_STATE.CLAIMED}` +
-        ` AND COALESCE(datetime(${alias}.processed_at) > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'), 0)`);
+   // 손상 타임스탬프는 "살아있지 않다"로 판정한다(COALESCE). 그러지 않으면 NULL 비교가
+   // 3치논리로 번져 `NOT (fresh)` 가 NULL 이 되고, hook 변형 선점이 조용히 실패한다.
+   return (
+      `${alias}.extracted = ${EXTRACTION_STATE.CLAIMED}` +
+      ` AND COALESCE(datetime(${alias}.processed_at) > datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'), 0)`
+   );
 }
 /**
  * 세션 선점 SQL — **LLM 호출 전에** 실행해 중복 추출을 구조적으로 차단한다.
@@ -101,28 +105,29 @@ export function freshClaimPredicate(alias = "extraction_log") {
  * 실행 후 `changes === 1` 이어야 소유권 획득이다(0 이면 타 라이터 소유 → skip).
  */
 export function claimSessionSql(variant) {
-    const owned = variant === "worker"
-        ? // pending 이었던 상태만: 재시도 대상(-4), 리스 만료 claim, 또는 settled 마커
-            // 위에 resume suffix 가 쌓인 세션(워터마크가 뒤처짐) — pending 쿼리가
-            // watermark 분기로 선정하는 세션을 실제로 집을 수 있어야 한다.
-            `extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}` +
-                // 🚨 손상 타임스탬프(NULL·파싱 불가)도 회수 대상이다. pending 쿼리는 그런 행을
-                //    이미 회수 대상으로 보는데 여기서만 선점이 실패하면, 세션이 **pending 인데
-                //    처리 불가**가 되어 매 run 슬롯만 먹는다(무한 재선정). `IS NULL` 로 명시.
-                ` OR (extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}` +
-                ` AND (datetime(extraction_log.processed_at) IS NULL` +
-                `      OR datetime(extraction_log.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')))` +
-                ` OR (extraction_log.extracted >= 0` +
-                ` AND extraction_log.last_exchange_rowid < (` +
-                `   SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x` +
-                `   WHERE x.session_id = extraction_log.session_id))`
-        : // 살아있는 claim 이 아니면 무엇이든 선점 가능
-            `NOT (${freshClaimPredicate()})`;
-    // 🚨 소유권 토큰(claim_owner)이 없으면 "내 claim 만 건드린다"는 계약을 SQL 로
-    // 표현할 수 없다 — `extracted = -3` 은 **상태**만 보므로 A 의 롤백이 B 의 살아있는
-    // claim 을 지우거나 덮어써 상호배제가 깨진다(Codex R7 HIGH-2).
-    // 파라미터 순서: (session_id, processed_at, claim_owner)
-    return `
+   const owned =
+      variant === "worker"
+         ? // pending 이었던 상태만: 재시도 대상(-4), 리스 만료 claim, 또는 settled 마커
+           // 위에 resume suffix 가 쌓인 세션(워터마크가 뒤처짐) — pending 쿼리가
+           // watermark 분기로 선정하는 세션을 실제로 집을 수 있어야 한다.
+           `extraction_log.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}` +
+           // 🚨 손상 타임스탬프(NULL·파싱 불가)도 회수 대상이다. pending 쿼리는 그런 행을
+           //    이미 회수 대상으로 보는데 여기서만 선점이 실패하면, 세션이 **pending 인데
+           //    처리 불가**가 되어 매 run 슬롯만 먹는다(무한 재선정). `IS NULL` 로 명시.
+           ` OR (extraction_log.extracted = ${EXTRACTION_STATE.CLAIMED}` +
+           ` AND (datetime(extraction_log.processed_at) IS NULL` +
+           `      OR datetime(extraction_log.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes')))` +
+           ` OR (extraction_log.extracted >= 0` +
+           ` AND extraction_log.last_exchange_rowid < (` +
+           `   SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x` +
+           `   WHERE x.session_id = extraction_log.session_id))`
+         : // 살아있는 claim 이 아니면 무엇이든 선점 가능
+           `NOT (${freshClaimPredicate()})`;
+   // 🚨 소유권 토큰(claim_owner)이 없으면 "내 claim 만 건드린다"는 계약을 SQL 로
+   // 표현할 수 없다 — `extracted = -3` 은 **상태**만 보므로 A 의 롤백이 B 의 살아있는
+   // claim 을 지우거나 덮어써 상호배제가 깨진다(Codex R7 HIGH-2).
+   // 파라미터 순서: (session_id, processed_at, claim_owner)
+   return `
     INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
     VALUES (?, ?, ${EXTRACTION_STATE.CLAIMED}, 0, ?)
     ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
@@ -138,7 +143,7 @@ export function claimSessionSql(variant) {
  * `changes === 0` 이면 이미 claim 을 잃은 것이므로 즉시 중단해야 중복이 안 생긴다.
  */
 export function renewClaimSql() {
-    return `UPDATE extraction_log SET processed_at = ?
+   return `UPDATE extraction_log SET processed_at = ?
           WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`;
 }
 /**
@@ -147,10 +152,10 @@ export function renewClaimSql() {
  * 자기 claim(-3)과 이전 재시도(-4)만 갱신 대상이다.
  */
 export function failureMarkerUpsertSql() {
-    // 파라미터: (session_id, processed_at, extracted, saved, claim_owner)
-    // 내가 쥔 claim 위에서만 실패 마커를 남긴다 — 다른 라이터의 확정 마커(성공/seed/
-    // 영구)도, **다른 라이터의 claim** 도 덮지 않는다.
-    return `
+   // 파라미터: (session_id, processed_at, extracted, saved, claim_owner)
+   // 내가 쥔 claim 위에서만 실패 마커를 남긴다 — 다른 라이터의 확정 마커(성공/seed/
+   // 영구)도, **다른 라이터의 claim** 도 덮지 않는다.
+   return `
     INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
     VALUES (?, ?, ?, ?, NULL)
     ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
@@ -166,26 +171,26 @@ export function failureMarkerUpsertSql() {
  * Columns: sid, ts, n.
  */
 export function pendingExtractionCoreQuery(cfg) {
-    const exTerms = cfg.excludeProjects;
-    // `x.session_id IS NOT NULL` is load-bearing: one NULL inside NOT IN makes the
-    // whole predicate NULL (3-valued logic) → zero pending sessions → silent drain.
-    const exClause = `AND e.session_id NOT IN (
+   const exTerms = cfg.excludeProjects;
+   // `x.session_id IS NOT NULL` is load-bearing: one NULL inside NOT IN makes the
+   // whole predicate NULL (3-valued logic) → zero pending sessions → silent drain.
+   const exClause = `AND e.session_id NOT IN (
       SELECT DISTINCT x.session_id FROM exchanges x
       WHERE x.session_id IS NOT NULL
-        AND (x.cwd LIKE '%/memory-bank-llm'
+        AND (${llmWorkdirCwdSql("x.cwd")}
       ${exTerms.length ? "OR " + exTerms.map(() => "x.cwd = ?").join(" OR ") : ""})
     )`;
-    // FACT-LIFECYCLE 계약: extraction_log.last_exchange_rowid 이후에 rowid 가 더 큰
-    // exchange 가 생기면(settled 마커라도) 세션은 다시 pending 이다. 이 조건이 없으면
-    // resume 으로 교환이 늘어난 세션의 suffix 가 영구 추출 누락된다.
-    //   - SEED(-1)는 제외한다: 과거 batch run 이 `last_exchange_rowid = 0` 으로 심는다
-    //     (backfill-extract-worker seedFromExistingFacts) — watermark 분기에 넣으면
-    //     seed 세션 전체가 재추출 큐로 돌아온다. seed 의 suffix 는 SessionEnd 훅이
-    //     담당한다(훅 variant 는 확정 마커 위에서도 선점 가능).
-    //   - 살아있는 claim(-3, fresh)도 watermark 분기에서 제외한다: 다른 러너가 처리
-    //     중이다. stale claim 은 위의 회수 분기가 이미 pending 으로 만든다.
-    // extraction_log.session_id 는 PRIMARY KEY 이므로 LEFT JOIN 결과는 세션당 최대 1행.
-    const sql = `
+   // FACT-LIFECYCLE 계약: extraction_log.last_exchange_rowid 이후에 rowid 가 더 큰
+   // exchange 가 생기면(settled 마커라도) 세션은 다시 pending 이다. 이 조건이 없으면
+   // resume 으로 교환이 늘어난 세션의 suffix 가 영구 추출 누락된다.
+   //   - SEED(-1)는 제외한다: 과거 batch run 이 `last_exchange_rowid = 0` 으로 심는다
+   //     (backfill-extract-worker seedFromExistingFacts) — watermark 분기에 넣으면
+   //     seed 세션 전체가 재추출 큐로 돌아온다. seed 의 suffix 는 SessionEnd 훅이
+   //     담당한다(훅 variant 는 확정 마커 위에서도 선점 가능).
+   //   - 살아있는 claim(-3, fresh)도 watermark 분기에서 제외한다: 다른 러너가 처리
+   //     중이다. stale claim 은 위의 회수 분기가 이미 pending 으로 만든다.
+   // extraction_log.session_id 는 PRIMARY KEY 이므로 LEFT JOIN 결과는 세션당 최대 1행.
+   const sql = `
     SELECT e.session_id AS sid, MAX(e.timestamp) AS ts, COUNT(*) AS n
     FROM exchanges e
     LEFT JOIN extraction_log l ON l.session_id = e.session_id
@@ -219,5 +224,5 @@ export function pendingExtractionCoreQuery(cfg) {
       ${exClause}
     GROUP BY e.session_id
     HAVING COUNT(*) >= ${cfg.minExchanges}`;
-    return { sql, params: exTerms };
+   return { sql, params: exTerms };
 }

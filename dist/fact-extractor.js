@@ -2,6 +2,7 @@ import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
 import { insertFact } from "./fact-db.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
+import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -163,6 +164,11 @@ function maxLlmCallsPerSession() {
 // 파일 헤더가 명시한 "두 소비자는 동일 술어" 계약이 그것이다.
 function isExcludedProject(project) {
     if (!project) return false;
+    // Reserved LLM worker workdir (basename or mkdtemp `memory-bank-llm-XXXXXX`
+    // suffix form) is excluded regardless of the env list — the SessionEnd hook
+    // path reaches runFactExtraction without passing the pending SQL gate, so
+    // this is the only cwd guard on that entry point.
+    if (isLlmWorkdirPath(project)) return true;
     const EXCLUDE_PROJECTS = getExtractionConfig().excludeProjects;
     // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
     // A raw prefix such as '/…/memory-bank' can swallow a distinct sibling project,

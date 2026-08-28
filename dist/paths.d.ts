@@ -51,15 +51,36 @@ export { sessionsRoot as getSessionsRoot };
  */
 export declare const LLM_WORKDIR_BASENAME = "memory-bank-llm";
 /**
+ * True for the reserved headless-worker working directory, in either shape it
+ * exists as: the plain basename (`…/memory-bank-llm`) or the mkdtemp form
+ * codex-exec.ts actually creates (`<tmpdir>/memory-bank-llm-XXXXXX` — six
+ * random suffix characters). Matched on the FINAL path segment only, so a
+ * mid-slug mention (`-Users-x-memory-bank-llm-docs`) never excludes a real
+ * project. Consumers: sync/indexer/verify exclusion (TS) and, through
+ * llmWorkdirCwdSql, the extraction gate SQL — keep the shapes identical.
+ */
+export declare function isLlmWorkdirPath(project: string): boolean;
+/**
+ * SQLite predicate equivalent of isLlmWorkdirPath for exchanges.cwd, shared by
+ * pendingExtractionCoreQuery and pipeline-status so the reserved workdir shape
+ * cannot drift between the selection and status consumers again. Returns a
+ * parenthesized clause; `column` defaults to the worker queries' alias.
+ */
+export declare function llmWorkdirCwdSql(column?: string): string;
+/**
  * True if a canonical project must be skipped by indexing/sync.
  *
  * CX-02: `project` is the canonical absolute cwd. The user list is an
  * exact-match on that canonical path (a basename entry can no longer
  * accidentally exclude an unrelated same-named project). The built-in rule
- * still excludes the reserved LLM worker workdir, matched on the final path
- * segment so both `.../memory-bank-llm` and legacy slug forms stay covered.
+ * still excludes the reserved LLM worker workdir in both shapes (plain
+ * basename and the mkdtemp `memory-bank-llm-XXXXXX` suffix form — see
+ * isLlmWorkdirPath).
  */
-export declare function isExcludedProject(project: string, excluded?: string[]): boolean;
+export declare function isExcludedProject(
+ project: string,
+ excluded?: string[],
+): boolean;
 /**
  * Exact leading text of the plugin's own LLM worker prompts (CodexExec era).
  * Sessions from BEFORE the fixed workdir existed ran their worker prompts
@@ -76,7 +97,9 @@ export declare const WORKER_PROMPT_PREFIXES: readonly string[];
  * such an exchange is ephemeral worker state, never knowledge, and must not
  * be indexed (searchable) regardless of which project slug it sits under.
  */
-export declare function isWorkerPromptMessage(userMessage: string | null | undefined): boolean;
+export declare function isWorkerPromptMessage(
+ userMessage: string | null | undefined,
+): boolean;
 /**
  * Get list of projects to exclude from indexing
  * Configurable via env var or config file
