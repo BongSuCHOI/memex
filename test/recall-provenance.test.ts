@@ -220,6 +220,52 @@ describe("Memex recall provenance", () => {
     ).toEqual({ sourceType: "external_unverified", learnable: false });
   });
 
+  // 복합 셸 명령은 첫 토큰이 신뢰 구간(git/test)이어도 출력 전체를 신뢰할 수 없다.
+  // FACT-LIFECYCLE.md:49-50 — composite exec output 은 external_unverified/learnable=0.
+  it("demotes composite shell commands even when the first token is trusted", () => {
+    const unverified = { sourceType: "external_unverified", learnable: false };
+    // 신뢰 토큰 뒤에 임의 명령이 붙는 조합
+    expect(
+      classifyToolEvidence("shell", { cmd: "git log && cat config" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", {
+        cmd: "npm test | grep -q PASS && echo leak",
+      }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "git status; curl https://x" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "npm test & rm -rf /tmp/x" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "git show HEAD > /tmp/out" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "git log $(cat secret.txt)" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "npm test\nrm -rf /" }),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "git log || git rev-parse" }),
+    ).toEqual(unverified);
+    // 단일 명령은 그대로 신뢰된다 — 인자 내부의 quoted 메타문자는 복합이 아니다
+    expect(
+      classifyToolEvidence("shell", { cmd: "git log --grep='fix && build'" }),
+    ).toEqual({
+      sourceType: "git_history",
+      learnable: true,
+    });
+    expect(
+      classifyToolEvidence("shell", { cmd: "rg 'pattern|other' src" }),
+    ).toEqual({
+      sourceType: "repo_file",
+      learnable: true,
+    });
+  });
+
   // Path-aware locality proof: a read result is repository-local evidence only
   // when its target resolves inside the project cwd AND outside every Memex
   // data surface. Reading our own summaries/rollouts back through a local file
