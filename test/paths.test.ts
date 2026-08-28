@@ -76,13 +76,17 @@ describe("paths", () => {
       expect(getMemexHome()).toBe(path.join(os.homedir(), ".config", "memex"));
     });
 
-    it("deprecated getMemoryBankHome alias resolves the same root", async () => {
+    it("deprecated memory-bank aliases resolve the same Memex root", async () => {
       delete process.env.MEMEX_HOME;
       process.env.MEMORY_BANK_HOME = path.join(tmpDir, "legacy");
-      const { getMemexHome, getMemoryBankHome } = await import(
-        "../src/paths.js"
-      );
+      const {
+        getMemexHome,
+        getMemoryBankHome,
+        ensureMemexHome,
+        ensureMemoryBankHome,
+      } = await import("../src/paths.js");
       expect(getMemoryBankHome()).toBe(getMemexHome());
+      expect(ensureMemoryBankHome()).toBe(ensureMemexHome());
     });
 
     it("detectLegacyDataRoot recognizes a pre-v0.2 memory-bank layout", async () => {
@@ -218,7 +222,7 @@ describe("paths", () => {
       const { isExcludedProject } = await import("../src/paths.js");
       expect(
         isExcludedProject(
-          "/private/var/folders/ms/q41xyz/T/memory-bank-llm",
+          "/private/var/folders/ms/q41xyz/T/memex-llm",
           [],
         ),
       ).toBe(true);
@@ -226,24 +230,24 @@ describe("paths", () => {
 
     it("should exclude nested temporary LLM workdir paths (built-in, CX-02 canonical)", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
-      expect(isExcludedProject("/tmp/03lvGlu1k7/memory-bank-llm", [])).toBe(
+      expect(isExcludedProject("/tmp/03lvGlu1k7/memex-llm", [])).toBe(
         true,
       );
     });
 
     it("should exclude the bare workdir basename (built-in)", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
-      expect(isExcludedProject("memory-bank-llm", [])).toBe(true);
+      expect(isExcludedProject("memex-llm", [])).toBe(true);
     });
 
     it("should exclude the mkdtemp suffix form codex-exec actually creates", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
-      // fs.mkdtempSync(path.join(os.tmpdir(), "memory-bank-llm-")) appends six
+      // fs.mkdtempSync(path.join(os.tmpdir(), "memex-llm-")) appends six
       // random characters — the reserved-name guard must cover that shape too.
-      expect(isExcludedProject("/tmp/memory-bank-llm-a1b2c3", [])).toBe(true);
+      expect(isExcludedProject("/tmp/memex-llm-a1b2c3", [])).toBe(true);
       expect(
         isExcludedProject(
-          "/private/var/folders/ms/q41xyz/T/memory-bank-llm-9x8y7z",
+          "/private/var/folders/ms/q41xyz/T/memex-llm-9x8y7z",
           [],
         ),
       ).toBe(true);
@@ -262,18 +266,17 @@ describe("paths", () => {
 
     it("should not exclude names merely containing the workdir basename mid-slug", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
-      expect(isExcludedProject("-Users-x-memory-bank-llm-docs", [])).toBe(
+      expect(isExcludedProject("-Users-x-memex-llm-docs", [])).toBe(
         false,
       );
     });
 
-    it("should exclude a last segment in the reserved memory-bank-llm-* namespace", async () => {
+    it("should exclude current and historical reserved workdir namespaces", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
       // Reserved prefix (mkdtemp form protection) — documented trade-off: any
-      // directory literally named memory-bank-llm-* is treated as reserved.
-      expect(isExcludedProject("/tmp/real/memory-bank-llm-docs", [])).toBe(
-        true,
-      );
+      // Current namespace and legacy in-flight workers are both excluded.
+      expect(isExcludedProject("/tmp/real/memex-llm-docs", [])).toBe(true);
+      expect(isExcludedProject("/tmp/real/memory-bank-llm-docs", [])).toBe(true);
     });
 
     it("should honor the user-configured exact-match list", async () => {

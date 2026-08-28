@@ -646,7 +646,8 @@ export function insertExchange(
   const recall = exchange.sessionId
     ? db
         .prepare(
-          "SELECT 1 FROM recall_events WHERE session_id = ? AND prompt_hash = ?",
+          `SELECT 1 FROM recall_events
+           WHERE session_id = ? AND prompt_hash = ? AND status = 'emitted'`,
         )
         .get(exchange.sessionId, promptHash) !== undefined
     : false;

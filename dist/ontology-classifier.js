@@ -18,10 +18,11 @@ export const MAX_CLASSIFY_ATTEMPTS = 3;
 // this cosine-similar to the fact embedding, assign it WITHOUT an LLM call.
 //
 // Disabled by default because a fixed similarity threshold is corpus-specific.
-// Set MEMORY_BANK_ONTOLOGY_DET_GATE to a measured value in (0,1) only after
+// Set MEMEX_ONTOLOGY_DET_GATE to a measured value in (0,1) only after
 // validating it against the current taxonomy.
 function detGate() {
-    const raw = process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
+    const raw = process.env.MEMEX_ONTOLOGY_DET_GATE
+        ?? process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
     const v = raw ? Number(raw) : NaN;
     return Number.isFinite(v) && v > 0 && v < 1 ? v : Number.POSITIVE_INFINITY;
 }

@@ -21,14 +21,18 @@ stateDiagram-v2
 
 기본 입력은 `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`입니다. parser는
 `session_meta`, user/assistant message, tool call/result를 교환 단위로 조립합니다.
+user/assistant turn은 `response_item`의 `message` role에서만 조립하며 `event_msg`는
+`user_message` 형태의 payload를 포함해 transport noise로 무시합니다. 지원 근거가 없는
+구형 shape를 추측해 human evidence로 승격하지 않습니다.
 다음 입력은 knowledge corpus에서 제외됩니다.
 
 - subagent/worker thread
 - tool-only 또는 빈 main conversation
-- Memex 자체 isolated model prompt/worker workdir — 예약 basename `memory-bank-llm`과
-  `codex exec`가 실제 생성하는 mkdtemp 접미사 형태(`memory-bank-llm-XXXXXX`) 모두.
-  마지막 경로 세그먼트 기준이므로 basename이 중간에 포함된 slug(`-Users-x-memory-bank-llm-docs`)
-  은 실제 프로젝트로 유지되고, `memory-bank-llm-*`로 시작하는 세그먼트는 예약 네임스페이스로 제외된다
+- Memex 자체 isolated model prompt/worker workdir — 예약 basename `memex-llm`과
+  `codex exec`가 실제 생성하는 mkdtemp 접미사 형태(`memex-llm-XXXXXX`) 모두.
+  마지막 경로 세그먼트 기준이므로 basename이 중간에 포함된 slug는 실제 프로젝트로
+  유지된다. 이전 버전의 `memory-bank-llm[-*]`도 레거시 worker rollout 유입 방지를
+  위해 제외 판정만 유지한다.
 - 사용자가 exact canonical path로 제외한 project
 
 malformed 한 줄은 해당 줄의 오류로 격리하며 전체 archive discovery를 중단하지 않습니다.
@@ -108,10 +112,11 @@ context는 Codex 0.149.1 계약의 `continue: true`와
 context를 반환하기 전에 retrieval core는 `recall_events`에
 `session_id + SHA-256(human prompt) + injected fact IDs` receipt를 기록합니다. receipt
 저장 실패는 fail-closed이며 context를 반환하지 않습니다. SessionEnd indexing은 같은
-prompt hash를 가진 exchange에 `memex_recall` provenance와
+prompt hash를 가진 `status=emitted` receipt의 exchange에 `memex_recall` provenance와
 `assistant_learnable=0`을 부여합니다. 각 event는 계산 시 `prepared`, hook이 stdout에
 쓴 뒤 `emitted`로 바뀝니다. 동일 prompt 반복은 별도 event ID를 가집니다. Codex host의
 실제 consumption은 현재 hook 계약으로 관측하지 못하므로 status로 주장하지 않습니다.
+`prepared`만 남은 event는 context emission 증거가 없으므로 exchange를 taint하지 않습니다.
 
 MCP `mcp__memex__*` result는 call 단위 `memex_recall/learnable=0`입니다. parser는
 `call_id`로 모든 tool result를 원 호출에 연결하고, sibling local repo/Git/test result는
@@ -122,6 +127,8 @@ MCP `mcp__memex__*` result는 call 단위 `memex_recall/learnable=0`입니다. p
 종료 직후 rollout 파일이 계속 쓰일 수 있으므로 size/mtime quiet window를 확인합니다.
 안정된 nonempty main rollout만 extraction 대상으로 삼습니다. 성공 evidence가 없으면
 watermark와 export success 상태를 기록하지 않습니다.
+privacy-safe hook observation은 stdin을 읽은 직후 정확히 한 번 기록하며, 정상 extraction
+경로가 같은 `SessionEnd` event를 중복 기록하지 않습니다.
 
 ## 6. 동기화와 import/export
 
@@ -156,7 +163,7 @@ fact version과 일치할 때만 import합니다. inactive fact도 relation endp
 export합니다.
 
 `recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
-import는 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
+import는 emitted receipt와 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
 `assistant_learnable=0`, `has_memex_recall=1`을 다시 적용하므로 conversation reindex와
 receipt import의 실행 순서가 바뀌어도 safety provenance가 복구됩니다.
 반면 `extraction_log.last_exchange_rowid`는 각 local DB의 `exchanges.rowid`에 종속되고,

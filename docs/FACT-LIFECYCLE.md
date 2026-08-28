@@ -78,7 +78,7 @@ Git/test/read command만 learnable입니다. wrapper, 알 수 없는 target, pro
 fail-closed 처리합니다. project 내부의 denied data root 관측은 source label만 유지하고
 `learnable=0`입니다.
 
-긴 session은 `MEMORY_BANK_MAX_EXTRACT_CALLS` 범위에서 전체 시간대를 고르게 샘플링한
+긴 session은 `MEMEX_MAX_EXTRACT_CALLS` 범위에서 전체 시간대를 고르게 샘플링한
 batch를 사용합니다. model output은 구조/enum/숫자 confidence를 검증하고 confidence
 0.7 미만을 저장하지 않습니다. 각 candidate는 직접 근거가 된 batch 내 exchange의
 1-based `source_exchange_indices`를 하나 이상 반환해야 합니다. 서버는 모든 index가

@@ -14,7 +14,7 @@ const scenarios: Array<{ result?: string; throws?: unknown; noResultMessage?: bo
 let queryCalls = 0;
 
 vi.mock('../src/codex-exec.js', () => ({
-  INNER_GUARD_ENV: 'MEMORY_BANK_CODEX_EXEC_INNER',
+  INNER_GUARD_ENV: 'MEMEX_CODEX_EXEC_INNER',
   runCodex: (_args: unknown) => {
     const scenario = scenarios[Math.min(queryCalls, scenarios.length - 1)];
     queryCalls++;

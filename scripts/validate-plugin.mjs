@@ -238,7 +238,7 @@ function mcpHandshake(installedRoot) {
       cwd: installedRoot,
       env: {
         ...ENV,
-        MEMORY_BANK_PLUGIN_ROOT: installedRoot,
+        MEMEX_PLUGIN_ROOT: installedRoot,
         TEST_DB_PATH: path.join(MEMORY_HOME, "conversation-index", "db.sqlite"),
       },
       input:

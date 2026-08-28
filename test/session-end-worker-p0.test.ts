@@ -100,10 +100,10 @@ describe("P0 SessionEnd worker runtime", () => {
       cwd: process.cwd(),
       env: {
         ...env,
-        MEMORY_BANK_PLUGIN_ROOT: process.cwd(),
-        MEMORY_BANK_STABILIZE_POLL_MS: "5",
-        MEMORY_BANK_STABILIZE_QUIET_MS: "10",
-        MEMORY_BANK_STABILIZE_MAX_WAIT_MS: "1000",
+        MEMEX_PLUGIN_ROOT: process.cwd(),
+        MEMEX_STABILIZE_POLL_MS: "5",
+        MEMEX_STABILIZE_QUIET_MS: "10",
+        MEMEX_STABILIZE_MAX_WAIT_MS: "1000",
       },
       input: JSON.stringify({
         transcript_path: transcript,

@@ -138,10 +138,10 @@ async function measurePage(cdp, url) {
   }
 }
 
-export async function probeGraphBrowser({ url, iterations = 3, chromePath = process.env.MEMORY_BANK_CHROME_PATH || DEFAULT_CHROME }) {
+export async function probeGraphBrowser({ url, iterations = 3, chromePath = process.env.MEMEX_CHROME_PATH || process.env.MEMORY_BANK_CHROME_PATH || DEFAULT_CHROME }) {
   if (!url) throw new Error('url is required');
   if (!fs.existsSync(chromePath)) throw new Error(`Google Chrome not found: ${chromePath}`);
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bank-chrome-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-chrome-'));
   const proc = spawn(chromePath, [
     '--headless=new',
     '--remote-debugging-port=0',

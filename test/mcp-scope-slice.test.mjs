@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 
 const REPO = path.resolve(new URL(".", import.meta.url).pathname, "..");
-process.env.MEMORY_BANK_PLUGIN_ROOT = REPO; // MCP server cwd == plugin root
+process.env.MEMEX_PLUGIN_ROOT = REPO; // MCP server cwd == plugin root
 
 function seedDb(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mb-cx03-"));

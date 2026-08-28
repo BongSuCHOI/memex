@@ -20,10 +20,9 @@
  *   migration itself is auditable and retryable evidence is preserved.
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { getMemexHome } from "./paths.js";
+import { detectLegacyDataRoot, getMemexHome } from "./paths.js";
 const MEMEX_SUBDIRS = [
     "conversation-archive",
     "conversation-index",
@@ -115,28 +114,7 @@ function containsMemexData(root) {
 }
 export function migrateHome(opts = {}) {
     const target = getMemexHome();
-    const source = opts.from ??
-        (() => {
-            // Reuse paths.detectLegacyDataRoot logic inline to avoid importing
-            // test-only side effects: same precedence chain, same recognition rule.
-            if (process.env.MEMEX_HOME ||
-                process.env.MEMORY_BANK_HOME ||
-                process.env.MEMORY_BANK_CONFIG_DIR) {
-                return null;
-            }
-            const base = process.env.XDG_CONFIG_HOME || os.homedir();
-            const legacyDir = path.join(base, "memory-bank");
-            try {
-                const entries = fs.readdirSync(legacyDir);
-                return entries.includes("conversation-archive") ||
-                    entries.includes("conversation-index")
-                    ? legacyDir
-                    : null;
-            }
-            catch {
-                return null;
-            }
-        })();
+    const source = opts.from ?? detectLegacyDataRoot();
     if (!source || !isDirectory(source)) {
         throw new Error("No legacy data root detected. Pass it explicitly: memex migrate-home --from ~/.config/memory-bank");
     }

@@ -142,7 +142,7 @@ function startServer(port) {
       MEMORY_BANK_DB_PATH: "",
       TEST_DB_PATH: "",
       XDG_CONFIG_HOME,
-      MEMORY_BANK_PLUGIN_ROOT: ROOT,
+      MEMEX_PLUGIN_ROOT: ROOT,
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],

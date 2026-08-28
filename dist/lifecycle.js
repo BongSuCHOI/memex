@@ -62,8 +62,10 @@ export function registrationPath() {
     return path.join(dataRoot(), "lifecycle-registration.json");
 }
 export function pluginRoot() {
-    return process.env.MEMORY_BANK_PLUGIN_ROOT
-        ? path.resolve(process.env.MEMORY_BANK_PLUGIN_ROOT)
+    const override = process.env.MEMEX_PLUGIN_ROOT
+        || process.env.MEMORY_BANK_PLUGIN_ROOT;
+    return override
+        ? path.resolve(override)
         : path.resolve(HERE, "..");
 }
 export function fingerprintOf(command) {

@@ -43,6 +43,12 @@ describe("Memex recall provenance", () => {
       prompt,
       factIds: ["fact-sqlite"],
     });
+    expect(
+      markRecallEventEmitted(db, {
+        sessionId: "session-recall-1",
+        prompt,
+      }),
+    ).toBe(true);
     insertExchange(
       db,
       {
@@ -126,6 +132,46 @@ describe("Memex recall provenance", () => {
     const promptText = buildExtractionPrompt([row]);
     expect(promptText).toContain("Let us use PostgreSQL");
     expect(promptText).not.toContain("I will update the persistence layer");
+  });
+
+  it("taints an exchange only after its prepared recall receipt is emitted", () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-recall-status-"));
+    process.env.TEST_DB_PATH = path.join(tmp, "index.sqlite");
+    db = initDatabase();
+    const prompt = "Recall the deployment decision.";
+    const event = {
+      sessionId: "session-recall-status",
+      project: "/tmp/project",
+      prompt,
+      factIds: ["fact-deploy"],
+    };
+    recordRecallEvent(db, event);
+    const exchange = {
+      id: "exchange-recall-status",
+      project: "/tmp/project",
+      timestamp: "2026-08-29T00:00:00Z",
+      userMessage: prompt,
+      assistantMessage: "Prepared receipt response.",
+      archivePath: "/tmp/rollout.jsonl",
+      lineStart: 1,
+      lineEnd: 2,
+      sessionId: event.sessionId,
+    };
+
+    insertExchange(db, exchange, Array(384).fill(0));
+    expect(
+      db.prepare(
+        "SELECT has_memex_recall FROM exchanges WHERE id = ?",
+      ).get(exchange.id),
+    ).toEqual({ has_memex_recall: 0 });
+
+    expect(markRecallEventEmitted(db, event)).toBe(true);
+    insertExchange(db, exchange, Array(384).fill(0));
+    expect(
+      db.prepare(
+        "SELECT has_memex_recall FROM exchanges WHERE id = ?",
+      ).get(exchange.id),
+    ).toEqual({ has_memex_recall: 1 });
   });
 
   it("taints only Memex tool evidence while retaining trusted local tool evidence", () => {
@@ -457,7 +503,7 @@ describe("Memex recall provenance", () => {
       );
       const tmpScript = path.join(
         os.tmpdir(),
-        "memory-bank-llm",
+        "memex-llm",
         "last-message.txt",
       );
       const outside = path.join(os.tmpdir(), "other-repo", "a.ts");
@@ -522,7 +568,7 @@ describe("Memex recall provenance", () => {
         classifyToolEvidence(
           "functions__exec_command",
           { cmd: "npm test" },
-          { cwd: path.join(os.tmpdir(), "memory-bank-llm", "model-work") },
+          { cwd: path.join(os.tmpdir(), "memex-llm", "model-work") },
         ),
       ).toEqual({ sourceType: "test_execution", learnable: false });
 

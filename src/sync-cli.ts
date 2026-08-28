@@ -1,5 +1,5 @@
 import { syncConversations } from './sync.js';
-import { getArchiveDir, getSessionsRoot, getMemoryBankHome } from './paths.js';
+import { getArchiveDir, getSessionsRoot, getMemexHome } from './paths.js';
 import { parseLockMeta, decideTakeover, isSyncCliCommand } from './version-guard.js';
 import path from 'path';
 import { spawn, execFileSync } from 'child_process';
@@ -73,9 +73,10 @@ if (isBackground) {
 // preempted regardless of version (normal incremental sync completes in
 // minutes; 6h means wedged).
 const __lockDir = path.join(
-  process.env.MEMORY_BANK_RUN_LOCKS_DIR
-    || path.join(getMemoryBankHome(), 'run-locks'),
-  'memory-bank-sync.lock',
+  process.env.MEMEX_RUN_LOCKS_DIR
+    || process.env.MEMORY_BANK_RUN_LOCKS_DIR
+    || path.join(getMemexHome(), 'run-locks'),
+  'memex-sync.lock',
 );
 const __pidFile = path.join(__lockDir, 'pid');
 const WEDGE_MAX_MS = 6 * 60 * 60 * 1000;

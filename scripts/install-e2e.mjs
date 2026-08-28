@@ -9,14 +9,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TEMP = fs.mkdtempSync('/tmp/mb-install-e2e-');
+const TEMP = fs.mkdtempSync('/tmp/memex-install-e2e-');
 const CODEX_HOME = path.join(TEMP, 'codex-home');
-const MEMORY_BANK_HOME = path.join(TEMP, 'memory-bank-home');
+const MEMEX_HOME = path.join(TEMP, 'memex-home');
 const MARKET = path.join(TEMP, 'marketplace');
 const SOURCE = path.join(MARKET, 'plugins', 'memex');
 const MARKET_NAME = 'memex-installer-e2e';
 const PLUGIN_ID = `memex@${MARKET_NAME}`;
-const RUN_MARKER = `MB-INSTALL-E2E-${crypto.randomBytes(16).toString('hex')}`;
+const RUN_MARKER = `MEMEX-INSTALL-E2E-${crypto.randomBytes(16).toString('hex')}`;
 const USER_HOOKS = path.join(os.homedir(), '.codex', 'hooks.json');
 const USER_CONFIG = path.join(os.homedir(), '.codex', 'config.toml');
 const USER_DATA_ROOT = path.join(os.homedir(), '.config', 'memory-bank');
@@ -81,7 +81,7 @@ const userBefore = {
   plugins: normalizeRegistry(['plugin', 'list', '--json']),
   marketplaces: normalizeRegistry(['plugin', 'marketplace', 'list', '--json']),
 };
-const environment = { ...process.env, CODEX_HOME, MEMORY_BANK_HOME };
+const environment = { ...process.env, CODEX_HOME, MEMEX_HOME };
 const installerArgs = [
   path.join(REPO, 'scripts', 'install-memex.mjs'),
   '--marketplace', MARKET,
@@ -108,7 +108,7 @@ try {
   const dry = run(process.execPath, [...installerArgs, '--dry-run'], { cwd: REPO, env: environment, timeout: 120_000 });
   const dryState = {
     hooks_absent: !fs.existsSync(path.join(CODEX_HOME, 'hooks.json')),
-    data_absent: !fs.existsSync(MEMORY_BANK_HOME),
+    data_absent: !fs.existsSync(MEMEX_HOME),
     plugin_absent: json('codex', ['plugin', 'list', '--json'], { env: environment }).installed.length === 0,
     marketplace_absent: json('codex', ['plugin', 'marketplace', 'list', '--json'], { env: environment }).marketplaces.length === 0,
     completion_observed: dry.stdout.includes('Install dry-run complete — nothing was changed.'),
@@ -134,7 +134,7 @@ try {
     mcp_nine_tools: /MCP handshake.*9 tools/.test(real.stdout),
     doctor_passed: /doctor gate.*critical checks ok/.test(real.stdout),
     first_sync_completed: /foreground first sync.*sync complete/.test(real.stdout),
-    indexed_marker_in_temp_data: treeContains(MEMORY_BANK_HOME, RUN_MARKER),
+    indexed_marker_in_temp_data: treeContains(MEMEX_HOME, RUN_MARKER),
   };
   if (!Object.values(realState).every(Boolean)) throw new Error(`real install assertion failed: ${JSON.stringify(realState)}`);
 
@@ -154,18 +154,18 @@ try {
   if (!Object.values(idempotentState).every(Boolean)) throw new Error(`idempotency failed: ${JSON.stringify(idempotentState)}`);
 
   run(process.execPath, [path.join(installedRoot, 'cli', 'memex.js'), 'remove-hooks'], {
-    env: { ...environment, MEMORY_BANK_PLUGIN_ROOT: installedRoot },
+    env: { ...environment, MEMEX_PLUGIN_ROOT: installedRoot },
   });
   run('codex', ['plugin', 'remove', PLUGIN_ID, '--json'], { env: environment });
   run('codex', ['plugin', 'marketplace', 'remove', MARKET_NAME, '--json'], { env: environment });
-  fs.rmSync(MEMORY_BANK_HOME, { recursive: true, force: true });
+  fs.rmSync(MEMEX_HOME, { recursive: true, force: true });
   fs.rmSync(MARKET, { recursive: true, force: true });
   const cleanupState = {
     owned_hooks_absent: !fs.existsSync(hooksFile)
       || !fs.readFileSync(hooksFile, 'utf8').includes('_memoryBank'),
     plugin_absent: json('codex', ['plugin', 'list', '--json'], { env: environment }).installed.length === 0,
     marketplace_absent: json('codex', ['plugin', 'marketplace', 'list', '--json'], { env: environment }).marketplaces.length === 0,
-    data_absent: !fs.existsSync(MEMORY_BANK_HOME),
+    data_absent: !fs.existsSync(MEMEX_HOME),
     source_checkout_preserved: fs.existsSync(path.join(REPO, 'package.json')),
   };
   if (!Object.values(cleanupState).every(Boolean)) throw new Error(`cleanup failed: ${JSON.stringify(cleanupState)}`);
@@ -208,7 +208,7 @@ try {
     try {
       if (installedRoot && fs.existsSync(path.join(CODEX_HOME, 'hooks.json'))) {
         spawnSync(process.execPath, [path.join(installedRoot, 'cli', 'memex.js'), 'remove-hooks'], {
-          env: { ...environment, MEMORY_BANK_PLUGIN_ROOT: installedRoot }, encoding: 'utf8',
+          env: { ...environment, MEMEX_PLUGIN_ROOT: installedRoot }, encoding: 'utf8',
         });
       }
       spawnSync('codex', ['plugin', 'remove', PLUGIN_ID, '--json'], { env: environment, encoding: 'utf8' });

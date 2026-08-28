@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
-process.env.MEMORY_BANK_PLUGIN_ROOT = REPO;
+process.env.MEMEX_PLUGIN_ROOT = REPO;
 
 function seedArchive(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-cx11-'));
@@ -92,7 +92,7 @@ test('graph and facts surfaces render fact text as text, never as markup', async
 test('model-child rollouts are not self-ingested (worker prompt guard + recursion guard)', async (t) => {
   const paths = await import(path.join(REPO, 'dist/paths.js'));
   assert.equal(paths.isWorkerPromptMessage('You are an expert at extracting long-term facts from conversations.\nTRANSCRIPT...'), true);
-  assert.equal(paths.isExcludedProject('/tmp/abc/memory-bank-llm', []), true);
+  assert.equal(paths.isExcludedProject('/tmp/abc/memex-llm', []), true);
   assert.equal(paths.isExcludedProject('/tmp/my-app', []), false);
   const execMod = await import(path.join(REPO, 'dist/codex-exec.js'));
   assert.ok(execMod.INNER_GUARD_ENV, 'recursion guard contract present');
@@ -101,8 +101,8 @@ test('model-child rollouts are not self-ingested (worker prompt guard + recursio
 test('hook observation log stays redacted (no prompt/fact content)', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-cx11-log-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  process.env.MEMORY_BANK_HOME = dir;
-  t.after(() => { delete process.env.MEMORY_BANK_HOME; });
+  process.env.MEMEX_HOME = dir;
+  t.after(() => { delete process.env.MEMEX_HOME; });
   const { recordHookEvent } = await import(path.join(REPO, 'dist/observe-hook-event.js'));
   recordHookEvent('UserPromptSubmit', { sessionId: 's1', cwd: '/p' });
   const log = fs.readFileSync(path.join(dir, 'logs', 'hook-events.jsonl'), 'utf8');

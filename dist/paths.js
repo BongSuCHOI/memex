@@ -60,7 +60,7 @@ export function detectLegacyDataRoot() {
         process.env.MEMORY_BANK_CONFIG_DIR) {
         return null;
     }
-    const base = process.env.XDG_CONFIG_HOME || os.homedir();
+    const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
     const legacy = path.join(base, "memory-bank");
     try {
         const entries = fs.readdirSync(legacy);
@@ -82,13 +82,13 @@ export function getArchiveDir() {
     if (process.env.TEST_ARCHIVE_DIR) {
         return process.env.TEST_ARCHIVE_DIR;
     }
-    return path.join(getMemoryBankHome(), "conversation-archive");
+    return path.join(getMemexHome(), "conversation-archive");
 }
 /**
  * Get conversation index directory (pure getter).
  */
 export function getIndexDir() {
-    return path.join(getMemoryBankHome(), "conversation-index");
+    return path.join(getMemexHome(), "conversation-index");
 }
 /**
  * Get database path (pure getter).
@@ -106,11 +106,15 @@ export function getDbPath() {
 /**
  * Write helpers (explicit directory creation for write paths only).
  */
-export function ensureMemoryBankHome() {
-    const dir = getMemoryBankHome();
+export function ensureMemexHome() {
+    const dir = getMemexHome();
     if (!fs.existsSync(dir))
         fs.mkdirSync(dir, { recursive: true });
     return dir;
+}
+/** @deprecated Use {@link ensureMemexHome}. */
+export function ensureMemoryBankHome() {
+    return ensureMemexHome();
 }
 export function ensureArchiveDir() {
     const dir = getArchiveDir();
@@ -138,8 +142,9 @@ export function getExcludeConfigPath() {
 }
 /**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
- * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. TEST_SESSIONS_DIR /
- * MEMORY_BANK_SESSIONS_DIR override for tests and custom installs.
+ * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
+ * the current override; the historical MEMORY_BANK_SESSIONS_DIR remains a
+ * read-only compatibility fallback.
  */
 export { sessionsRoot as getSessionsRoot };
 /**
@@ -149,22 +154,23 @@ export { sessionsRoot as getSessionsRoot };
  * persists under this name anymore. The reserved name still prevents an
  * accidentally persisted worker rollout from entering the index.
  */
-export const LLM_WORKDIR_BASENAME = "memory-bank-llm";
+export const LLM_WORKDIR_BASENAME = "memex-llm";
+const LEGACY_LLM_WORKDIR_BASENAME = "memory-bank-llm";
 /**
  * True for the reserved headless-worker working directory, in either shape it
- * exists as: the plain basename (`…/memory-bank-llm`) or the mkdtemp form
- * codex-exec.ts actually creates (`<tmpdir>/memory-bank-llm-XXXXXX` — six
- * random suffix characters). Matched on the FINAL path segment only, so a
- * mid-slug mention (`-Users-x-memory-bank-llm-docs`) never excludes a real
- * project. Consumers: sync/indexer/verify exclusion (TS) and, through
- * llmWorkdirCwdSql, the extraction gate SQL — keep the shapes identical.
+ * exists as: the plain basename (`…/memex-llm`) or the mkdtemp form
+ * codex-exec.ts creates (`<tmpdir>/memex-llm-XXXXXX`). The historical
+ * `memory-bank-llm` shapes stay excluded so an older in-flight worker cannot
+ * be ingested. Matched on the FINAL path segment only. Consumers:
+ * sync/indexer/verify exclusion (TS) and, through llmWorkdirCwdSql, the
+ * extraction gate SQL — keep the shapes identical.
  */
 export function isLlmWorkdirPath(project) {
     const segments = project.split("/").filter(Boolean);
     const last = segments[segments.length - 1];
     if (!last)
         return false;
-    return (last === LLM_WORKDIR_BASENAME || last.startsWith(`${LLM_WORKDIR_BASENAME}-`));
+    return [LLM_WORKDIR_BASENAME, LEGACY_LLM_WORKDIR_BASENAME].some((basename) => last === basename || last.startsWith(`${basename}-`));
 }
 /**
  * SQLite predicate equivalent of isLlmWorkdirPath for exchanges.cwd, shared by
@@ -173,7 +179,7 @@ export function isLlmWorkdirPath(project) {
  * parenthesized clause; `column` defaults to the worker queries' alias.
  */
 export function llmWorkdirCwdSql(column = "x.cwd") {
-    return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%')`;
+    return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%' OR ${column} LIKE '%/${LEGACY_LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LEGACY_LLM_WORKDIR_BASENAME}-%')`;
 }
 /**
  * True if a canonical project must be skipped by indexing/sync.
@@ -182,7 +188,7 @@ export function llmWorkdirCwdSql(column = "x.cwd") {
  * exact-match on that canonical path (a basename entry can no longer
  * accidentally exclude an unrelated same-named project). The built-in rule
  * still excludes the reserved LLM worker workdir in both shapes (plain
- * basename and the mkdtemp `memory-bank-llm-XXXXXX` suffix form — see
+ * basename and the mkdtemp `memex-llm-XXXXXX` suffix form — see
  * isLlmWorkdirPath).
  */
 export function isExcludedProject(project, excluded) {

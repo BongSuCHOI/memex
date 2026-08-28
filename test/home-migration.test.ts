@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -38,6 +38,8 @@ function setEnv(precedence: { xdg?: string }): void {
   delete process.env.MEMORY_BANK_CONFIG_DIR;
   if (precedence.xdg) {
     process.env.XDG_CONFIG_HOME = precedence.xdg;
+  } else {
+    delete process.env.XDG_CONFIG_HOME;
   }
 }
 
@@ -47,6 +49,7 @@ describe("home migration", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     Object.keys(process.env).forEach((key) => {
       if (!(key in originalEnv)) delete process.env[key];
     });
@@ -144,6 +147,22 @@ describe("home migration", () => {
     setEnv({ xdg: xdgConfig });
     const { detectLegacyDataRoot } = await import("../src/paths.js");
     expect(detectLegacyDataRoot()).toBe(legacy);
+  });
+
+  it("detects ~/.config/memory-bank when XDG_CONFIG_HOME is unset", async () => {
+    const fakeHome = path.join(tmpDir, "home");
+    vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+    setEnv({});
+    const legacy = path.join(fakeHome, ".config", "memory-bank");
+    fs.mkdirSync(path.join(legacy, "conversation-index"), { recursive: true });
+
+    const { detectLegacyDataRoot } = await import("../src/paths.js");
+    expect(detectLegacyDataRoot()).toBe(legacy);
+
+    const { migrateHome } = await import("../src/home-migration.js");
+    const plan = migrateHome({ dryRun: true });
+    expect(plan.sourceRoot).toBe(legacy);
+    expect(plan.targetRoot).toBe(path.join(fakeHome, ".config", "memex"));
   });
 
   it("detectLegacyDataRoot returns null for empty dirs or explicit overrides", async () => {

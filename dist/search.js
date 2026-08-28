@@ -12,7 +12,8 @@ import { readArchiveFile, createArchiveReadStream, statArchiveFile } from './arc
 // overhead (~3-4ms/call). Keyed by resolved DB path AND file identity
 // (dev:inode) — a path-only key would keep serving a stale handle after the
 // DB file is unlinked/recreated (rebuild/restore), returning deleted rows and
-// missing new ones. Test overrides (TEST_DB_PATH / MEMORY_BANK_DB_PATH)
+// missing new ones. Test overrides (TEST_DB_PATH / MEMEX_DB_PATH; the
+// historical MEMORY_BANK_DB_PATH remains a compatibility fallback).
 // switching mid-process also get a fresh handle. Short-lived CLI processes
 // release the handle at exit.
 let cachedSearchDb = null;

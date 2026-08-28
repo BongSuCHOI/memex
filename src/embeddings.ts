@@ -21,7 +21,9 @@ import { pipeline, FeatureExtractionPipeline } from '@xenova/transformers';
 const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
 
 export const EMBEDDING_MODEL =
-  process.env.MEMORY_BANK_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+  process.env.MEMEX_EMBEDDING_MODEL
+  || process.env.MEMORY_BANK_EMBEDDING_MODEL
+  || DEFAULT_EMBEDDING_MODEL;
 
 /**
  * Curated model → version map:
@@ -29,7 +31,7 @@ export const EMBEDDING_MODEL =
  *   2 = paraphrase-multilingual-MiniLM-L12-v2 (rejected — anisotropy)
  *   3 = multilingual-e5-small (query/passage prefixes)
  *
- * The version is DERIVED from the model so a MEMORY_BANK_EMBEDDING_MODEL
+ * The version is DERIVED from the model so a MEMEX_EMBEDDING_MODEL
  * override can never poison stored vectors: an unknown model gets its own
  * deterministic version (1000+), so switching back later re-embeds those
  * rows instead of silently mixing incompatible vector spaces.

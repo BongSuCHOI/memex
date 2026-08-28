@@ -17,13 +17,15 @@ const ZST_SUFFIX = ".zst";
  * Cap for decompressed archive bytes — a hostile high-ratio `.zst` file
  * ("compression bomb") must not be able to exhaust process memory. Real
  * conversation files decompress to a few MB. Reads fail loudly when exceeded.
- * Override (mainly for tests): MEMORY_BANK_MAX_DECOMPRESSED_BYTES.
+ * Override (mainly for tests): MEMEX_MAX_DECOMPRESSED_BYTES.
  */
 const DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024; // 256 MiB
 
 function maxDecompressedBytes(): number {
   const parsed = parseInt(
-    process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || "",
+    process.env.MEMEX_MAX_DECOMPRESSED_BYTES
+      || process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES
+      || "",
     10,
   );
   // Only allow tightening — raising the cap would defeat the bomb protection.

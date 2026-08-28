@@ -514,9 +514,12 @@ function importRecallEvents(db: Database.Database, payloadDirs: string[], result
           .run(event.emitted_at ?? event.created_at, event.id);
         result.updatedRecallEvents++;
       }
-      // A DB/archive rebuild may index the exchange before its durable receipt
-      // arrives. Re-apply the same conservative taint rule used by insertExchange
-      // so cross-device/recovery ordering cannot make recalled synthesis learnable.
+      // A prepared receipt proves durable intent, not stdout emission. Only an
+      // emitted receipt can mark an exchange as recalled; this matches
+      // insertExchange while preserving order independence across sync/rebuild.
+      const stored = db.prepare("SELECT status FROM recall_events WHERE id = ?")
+        .get(event.id) as { status: "prepared" | "emitted" } | undefined;
+      if (stored?.status !== "emitted") continue;
       const exchanges = db.prepare(
         "SELECT id, user_message, provenance FROM exchanges WHERE session_id = ?",
       ).all(event.session_id) as Array<{ id: string; user_message: string; provenance: string }>;

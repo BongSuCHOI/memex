@@ -92,8 +92,10 @@ export function registrationPath(): string {
 }
 
 export function pluginRoot(): string {
-  return process.env.MEMORY_BANK_PLUGIN_ROOT
-    ? path.resolve(process.env.MEMORY_BANK_PLUGIN_ROOT)
+  const override = process.env.MEMEX_PLUGIN_ROOT
+    || process.env.MEMORY_BANK_PLUGIN_ROOT;
+  return override
+    ? path.resolve(override)
     : path.resolve(HERE, "..");
 }
 

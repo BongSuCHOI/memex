@@ -11,10 +11,10 @@ import {
 /**
  * LLM workdir cwd 게이트 회귀 테스트.
  *
- * 결함(2026-08-28): codex-exec.ts는 fs.mkdtempSync(tmpdir, "memory-bank-llm-")로
- * <tmpdir>/memory-bank-llm-XXXXXX (접미사 6자) 워크디렉터를 만드는데, 세 곳의
+ * 결함(2026-08-28): codex-exec.ts는 fs.mkdtempSync(tmpdir, "memex-llm-")로
+ * <tmpdir>/memex-llm-XXXXXX (접미사 6자) 워크디렉터를 만드는데, 세 곳의
  * 예약-이름 술어(paths.ts isExcludedProject의 마지막 세그먼트 === 일치,
- * pendingExtractionCoreQuery와 pipeline-status의 `LIKE '%/memory-bank-llm'`)는
+ * pendingExtractionCoreQuery와 pipeline-status의 `LIKE '%/memex-llm'`)는
  * 정확한 basename만 매칭해 실제 생성 형태를 놓쳤다. 일단 실제로 인덱싱되는
  * worker rollout(cwd가 접미사 형태)은 어느 게이트로도 제외되지 않는다.
  *
@@ -70,10 +70,10 @@ afterEach(() => {
 });
 
 describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)", () => {
-  it("basename 형태(.../memory-bank-llm)의 세션은 pending에서 제외된다", () => {
+  it("basename 형태(.../memex-llm)의 세션은 pending에서 제외된다", () => {
     const db = makeDb();
     try {
-      seedSession(db, "sess-plain", 3, "/tmp/x/memory-bank-llm");
+      seedSession(db, "sess-plain", 3, "/tmp/x/memex-llm");
       seedSession(db, "sess-normal", 3, "/tmp/real-project");
       const ids = pendingIds(db);
       expect(ids).toContain("sess-normal");
@@ -83,10 +83,10 @@ describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)"
     }
   });
 
-  it("mkdtemp 접미사 형태(memory-bank-llm-XXXXXX)의 세션도 pending에서 제외된다", () => {
+  it("mkdtemp 접미사 형태(memex-llm-XXXXXX)의 세션도 pending에서 제외된다", () => {
     const db = makeDb();
     try {
-      seedSession(db, "sess-mkdtemp", 3, "/tmp/memory-bank-llm-a1b2c3");
+      seedSession(db, "sess-mkdtemp", 3, "/tmp/memex-llm-a1b2c3");
       seedSession(db, "sess-normal", 3, "/tmp/real-project");
       const ids = pendingIds(db);
       expect(ids).toContain("sess-normal");
@@ -103,7 +103,7 @@ describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)"
       seedSession(db, "sess-mixed", 2, "/tmp/real-project");
       db.prepare(
         "UPDATE exchanges SET cwd = ? WHERE session_id = ? AND id = (SELECT MAX(id) FROM exchanges WHERE session_id = ?)",
-      ).run("/tmp/memory-bank-llm-xyz9k1", "sess-mixed", "sess-mixed");
+      ).run("/tmp/memex-llm-xyz9k1", "sess-mixed", "sess-mixed");
       const ids = pendingIds(db);
       expect(ids).not.toContain("sess-mixed");
     } finally {
@@ -115,13 +115,15 @@ describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)"
     const db = makeDb();
     try {
       // 아카이브 slug 형태: 하나의 세그먼트 안에 basename이 중간 포함 — 실제 프로젝트
-      seedSession(db, "sess-slug", 3, "/tmp/-Users-x-memory-bank-llm-docs");
-      // 반면 마지막 세그먼트 자체가 memory-bank-llm- 접두사로 시작하면 예약
+      seedSession(db, "sess-slug", 3, "/tmp/-Users-x-memex-llm-docs");
+      // 반면 마지막 세그먼트 자체가 memex-llm- 접두사로 시작하면 예약
       // 네임스페이스로 제외한다(mkdtemp 폼 보호 — 문서화된 트레이드오프).
-      seedSession(db, "sess-reserved", 3, "/tmp/real/memory-bank-llm-docs");
+      seedSession(db, "sess-reserved", 3, "/tmp/real/memex-llm-docs");
+      seedSession(db, "sess-legacy", 3, "/tmp/memory-bank-llm-old123");
       const ids = pendingIds(db);
       expect(ids).toContain("sess-slug");
       expect(ids).not.toContain("sess-reserved");
+      expect(ids).not.toContain("sess-legacy");
     } finally {
       db.close();
     }

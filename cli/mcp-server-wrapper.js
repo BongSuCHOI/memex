@@ -16,7 +16,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PLUGIN_ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT || join(__dirname, '..');
+const PLUGIN_ROOT = process.env.MEMEX_PLUGIN_ROOT
+  || process.env.MEMORY_BANK_PLUGIN_ROOT
+  || join(__dirname, '..');
 const MCP_SERVER = join(PLUGIN_ROOT, 'dist', 'mcp-server.js');
 const require = createRequire(import.meta.url);
 
@@ -45,7 +47,7 @@ const child = spawn(process.execPath, [MCP_SERVER], {
   cwd: PLUGIN_ROOT,
   stdio: 'inherit',
   shell: false,
-  env: { ...process.env, MEMORY_BANK_MCP_AUTOSTART: '1' },
+  env: { ...process.env, MEMEX_MCP_AUTOSTART: '1' },
 });
 
 process.on('SIGTERM', () => child.kill('SIGTERM'));

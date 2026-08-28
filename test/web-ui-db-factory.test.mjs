@@ -25,7 +25,7 @@ function startUi(dbPath, port) {
     env: {
       ...process.env,
       MEMEX_DB_PATH: dbPath,
-      MEMORY_BANK_PLUGIN_ROOT: REPO,
+      MEMEX_PLUGIN_ROOT: REPO,
       PORT: String(port),
     },
     stdio: ["ignore", "pipe", "pipe"],

@@ -160,7 +160,7 @@ try {
         ...process.env,
         CODEX_HOME,
         MEMEX_HOME: DATA_ROOT,
-        MEMORY_BANK_PLUGIN_ROOT: installedRoot,
+        MEMEX_PLUGIN_ROOT: installedRoot,
       },
     },
   );

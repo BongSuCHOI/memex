@@ -13,7 +13,7 @@ test('inject daemon creates its index directory on a fresh data root', async () 
     import net from 'node:net';
     import path from 'node:path';
     import { startInjectDaemon } from './dist/inject-daemon.js';
-    const socketPath = path.join(process.env.MEMORY_BANK_HOME, 'conversation-index', 'inject-daemon.sock');
+    const socketPath = path.join(process.env.MEMEX_HOME, 'conversation-index', 'inject-daemon.sock');
     const timer = setTimeout(() => { console.error('socket timeout'); process.exit(2); }, 3000);
     const connect = () => {
       const socket = net.connect(socketPath);
@@ -30,7 +30,7 @@ test('inject daemon creates its index directory on a fresh data root', async () 
     const result = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
         cwd: path.resolve('.'),
-        env: { ...process.env, MEMORY_BANK_HOME: root, TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite') },
+        env: { ...process.env, MEMEX_HOME: root, TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite') },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stderr = '';

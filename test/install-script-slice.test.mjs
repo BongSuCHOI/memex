@@ -60,7 +60,7 @@ process.exit(2);
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
       CODEX_HOME: codexHome,
-      MEMORY_BANK_HOME: memoryHome,
+      MEMEX_HOME: memoryHome,
       FAKE_CODEX_STATE: statePath,
       FAKE_INSTALLED_ROOT: installed,
       FAKE_SOURCE_ROOT: path.join(market, 'plugins', 'memex'),

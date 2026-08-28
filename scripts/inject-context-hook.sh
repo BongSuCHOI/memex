@@ -4,5 +4,5 @@
 # resolution is added so the injector finds repo-relative assets.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export MEMORY_BANK_PLUGIN_ROOT="$ROOT"
+export MEMEX_PLUGIN_ROOT="$ROOT"
 exec node "$ROOT/scripts/inject-context.js"

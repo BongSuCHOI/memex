@@ -52,9 +52,12 @@ const meta = (extra = {}) => ({
   payload: { id: 'thr-1', session_id: 'sess-1', cwd: '/tmp/proj', source: 'cli', ...extra },
 });
 
-test('sessionsRoot honors MEMORY_BANK_SESSIONS_DIR then TEST_SESSIONS_DIR then CODEX_HOME', () => {
-  process.env.MEMORY_BANK_SESSIONS_DIR = '/a';
-  assert.equal(sessionsRoot(), '/a');
+test('sessionsRoot prefers MEMEX_SESSIONS_DIR and keeps the historical fallback', () => {
+  process.env.MEMORY_BANK_SESSIONS_DIR = '/legacy';
+  process.env.MEMEX_SESSIONS_DIR = '/current';
+  assert.equal(sessionsRoot(), '/current');
+  delete process.env.MEMEX_SESSIONS_DIR;
+  assert.equal(sessionsRoot(), '/legacy');
   delete process.env.MEMORY_BANK_SESSIONS_DIR;
   process.env.TEST_SESSIONS_DIR = '/b';
   assert.equal(sessionsRoot(), '/b');
@@ -108,6 +111,21 @@ test('turn assembly excludes reasoning/system and collects tool calls', async ()
   const all = JSON.stringify(exchanges);
   assert.ok(!all.includes('reasoning-summary-marker'));
   assert.ok(!all.includes('<environment_context>'));
+});
+
+test('event_msg user_message is transport noise, not an alternate user-turn schema', async () => {
+  const lines = [
+    meta(),
+    { type: 'event_msg', payload: { type: 'user_message', message: 'legacy ghost prompt' } },
+    { type: 'event_msg', payload: { type: 'agent_message', message: 'legacy ghost answer' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'real prompt' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'real answer' }] } },
+  ];
+  const { exchanges } = await parseRolloutStream(rolloutStream(lines), { archivePath: 'event-msg-noise' });
+  assert.equal(exchanges.length, 1);
+  assert.equal(exchanges[0].userMessage, 'real prompt');
+  assert.equal(exchanges[0].assistantMessage, 'real answer');
+  assert.ok(!JSON.stringify(exchanges).includes('legacy ghost'));
 });
 
 test('readRolloutMeta returns header metadata cheaply and flags subagents', async () => {
@@ -193,6 +211,7 @@ test('parseConversation stamps project and cwd from meta', async () => {
 });
 
 test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-luna', () => {
+  delete process.env.MEMEX_CODEX_MODEL;
   delete process.env.MEMORY_BANK_CODEX_MODEL;
   const args = buildCodexExecArgs({ workdir: '/w' });
   assert.deepEqual(args.slice(0, 8), ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--skip-git-repo-check', '-C']);
@@ -205,10 +224,14 @@ test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-
   const withModel = buildCodexExecArgs({ workdir: '/w', model: ' gpt-5.7-mini ' });
   assert.equal(withModel[withModel.indexOf('-m') + 1], 'gpt-5.7-mini');
 
-  // MEMORY_BANK_CODEX_MODEL env wins over the default.
-  process.env.MEMORY_BANK_CODEX_MODEL = 'env-model';
+  // Current namespace wins over the historical compatibility override.
+  process.env.MEMORY_BANK_CODEX_MODEL = 'legacy-model';
+  process.env.MEMEX_CODEX_MODEL = 'env-model';
   const envModel = buildCodexExecArgs({ workdir: '/w' });
   assert.equal(envModel[envModel.indexOf('-m') + 1], 'env-model');
+  delete process.env.MEMEX_CODEX_MODEL;
+  const legacyModel = buildCodexExecArgs({ workdir: '/w' });
+  assert.equal(legacyModel[legacyModel.indexOf('-m') + 1], 'legacy-model');
   delete process.env.MEMORY_BANK_CODEX_MODEL;
 });
 
@@ -304,10 +327,11 @@ function makeHookFixture(name) {
 
 const hookEnv = (root) => ({
   ...process.env,
-  MEMORY_BANK_PLUGIN_ROOT: root,
-  MEMORY_BANK_STABILIZE_POLL_MS: '25',
-  MEMORY_BANK_STABILIZE_QUIET_MS: '60',
-  MEMORY_BANK_STABILIZE_MAX_WAIT_MS: '3000',
+  MEMEX_PLUGIN_ROOT: root,
+  MEMEX_HOME: path.join(root, 'memex-home'),
+  MEMEX_STABILIZE_POLL_MS: '25',
+  MEMEX_STABILIZE_QUIET_MS: '60',
+  MEMEX_STABILIZE_MAX_WAIT_MS: '3000',
 });
 
 test('session-end hook: empty rollout skips worker (no marker, no export)', async () => {
@@ -340,6 +364,21 @@ test('session-end hook: export strictly after extraction evidence; failure block
   assert.equal(rFail.status, 0);
   assert.ok(rFail.stderr.includes('no completion marker'));
   assert.equal(fs.readFileSync(failCase.order, 'utf8'), 'extract\n');
+});
+
+test('session-end hook records exactly one SessionEnd event on the normal path', async () => {
+  const fx = makeHookFixture('rollout-observation-ok.jsonl');
+  const env = hookEnv(fx.root);
+  const result = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
+    input: JSON.stringify({ transcript_path: fx.tp, session_id: 'observed-session', cwd: '/observed' }),
+    env,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  const log = path.join(env.MEMEX_HOME, 'logs', 'hook-events.jsonl');
+  const events = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse)
+    .filter((entry) => entry.event === 'SessionEnd' && entry.session_id === 'observed-session');
+  assert.equal(events.length, 1);
 });
 
 test('session-end hook: exit-0 with ERROR token blocks export despite success-shaped line', async () => {

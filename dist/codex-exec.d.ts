@@ -1,5 +1,5 @@
 /** Set to '1' inside any codex exec child we spawn. Nested calls refuse. */
-export declare const INNER_GUARD_ENV = "MEMORY_BANK_CODEX_EXEC_INNER";
+export declare const INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 /** Official default memory-model id used when no override is provided. */
 export declare const DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 export interface CodexExecOptions {
@@ -7,8 +7,8 @@ export interface CodexExecOptions {
     userMessage?: string;
     timeoutMs?: number;
     codexBin?: string;
-    /** Explicit model override; when absent, MEMORY_BANK_CODEX_MODEL env, then
-     *  DEFAULT_CODEX_MODEL (gpt-5.6-luna) applies. Always forwarded via -m. */
+    /** Explicit model override; when absent, MEMEX_CODEX_MODEL (then its
+     *  historical compatibility alias), then DEFAULT_CODEX_MODEL applies. */
     model?: string | null;
 }
 /** Pure arg builder — unit-tested without spawning anything. */

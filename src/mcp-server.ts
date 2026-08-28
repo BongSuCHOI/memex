@@ -1558,14 +1558,18 @@ async function main() {
 }
 
 // Run the Server — only when this file is the entry process (direct run or
-// spawned by cli/mcp-server-wrapper.js with MEMORY_BANK_MCP_AUTOSTART=1).
+// spawned by cli/mcp-server-wrapper.js with MEMEX_MCP_AUTOSTART=1).
 // Library/test imports must not start a stdio server or inject daemon.
 const isDirectRun =
   process.argv[1] &&
   (process.argv[1].endsWith("mcp-server.js") ||
     process.argv[1].endsWith("mcp-server"));
 
-if (isDirectRun || process.env.MEMORY_BANK_MCP_AUTOSTART === "1") {
+if (
+  isDirectRun
+  || process.env.MEMEX_MCP_AUTOSTART === "1"
+  || process.env.MEMORY_BANK_MCP_AUTOSTART === "1"
+) {
   main().catch((error) => {
     console.error("Server error:", error);
     process.exit(1);

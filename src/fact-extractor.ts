@@ -163,7 +163,12 @@ export function selectSpreadBatches<T>(batches: T[], maxBatches: number): T[] {
 }
 
 function maxLlmCallsPerSession(): number {
-  const parsed = parseInt(process.env.MEMORY_BANK_MAX_EXTRACT_CALLS || "", 10);
+  const parsed = parseInt(
+    process.env.MEMEX_MAX_EXTRACT_CALLS
+      || process.env.MEMORY_BANK_MAX_EXTRACT_CALLS
+      || "",
+    10,
+  );
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
 }
 
@@ -177,14 +182,14 @@ function maxLlmCallsPerSession(): number {
 
 function isExcludedProject(project: string | null | undefined): boolean {
   if (!project) return false;
-  // Reserved LLM worker workdir (basename or mkdtemp `memory-bank-llm-XXXXXX`
+  // Reserved LLM worker workdir (basename or mkdtemp `memex-llm-XXXXXX`
   // suffix form) is excluded regardless of the env list — the SessionEnd hook
   // path reaches runFactExtraction without passing the pending SQL gate, so
   // this is the only cwd guard on that entry point.
   if (isLlmWorkdirPath(project)) return true;
   const EXCLUDE_PROJECTS = getExtractionConfig().excludeProjects;
   // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
-  // A raw prefix such as '/…/memory-bank' can swallow a distinct sibling project,
+  // A raw prefix such as '/…/memex' can swallow a distinct sibling project,
   // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
   // pending SQL 필터는 exact 매칭이라 선정은 되고 여기서만 걸러져 무음이었다.
   return EXCLUDE_PROJECTS.some(

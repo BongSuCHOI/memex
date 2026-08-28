@@ -18,8 +18,10 @@ import { fileURLToPath } from 'node:url';
 import { readHookStdin, waitForFileStable } from './hook-stdin.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = process.env.MEMORY_BANK_PLUGIN_ROOT
-  ? path.resolve(process.env.MEMORY_BANK_PLUGIN_ROOT)
+const PLUGIN_ROOT_OVERRIDE = process.env.MEMEX_PLUGIN_ROOT
+  || process.env.MEMORY_BANK_PLUGIN_ROOT;
+const ROOT = PLUGIN_ROOT_OVERRIDE
+  ? path.resolve(PLUGIN_ROOT_OVERRIDE)
   : path.resolve(HERE, '..');
 
 function runNode(script, { input = '', env = {}, timeoutMs }) {
@@ -79,16 +81,10 @@ async function main() {
     console.error('[session-end-hook] no transcript_path in hook stdin; skipping extraction');
     return;
   }
-  // CX-01: privacy-safe event observation (event/ts/session/cwd only).
-  try {
-    const { recordHookEvent } = await import('../dist/observe-hook-event.js');
-    recordHookEvent('SessionEnd', { sessionId: hook.sessionId || '', cwd: hook.cwd || '' });
-  } catch { /* observation is best-effort */ }
-
   const stability = await waitForFileStable(tp, {
-    pollMs: Number(process.env.MEMORY_BANK_STABILIZE_POLL_MS || 250),
-    quietMs: Number(process.env.MEMORY_BANK_STABILIZE_QUIET_MS || 1500),
-    maxWaitMs: Number(process.env.MEMORY_BANK_STABILIZE_MAX_WAIT_MS || 30000),
+    pollMs: Number(process.env.MEMEX_STABILIZE_POLL_MS || process.env.MEMORY_BANK_STABILIZE_POLL_MS || 250),
+    quietMs: Number(process.env.MEMEX_STABILIZE_QUIET_MS || process.env.MEMORY_BANK_STABILIZE_QUIET_MS || 1500),
+    maxWaitMs: Number(process.env.MEMEX_STABILIZE_MAX_WAIT_MS || process.env.MEMORY_BANK_STABILIZE_MAX_WAIT_MS || 30000),
   });
   if (stability !== 'stable') {
     console.error(`[session-end-hook] transcript not stable (${stability}); refusing to mark completion`);
@@ -127,7 +123,7 @@ async function main() {
   // is observable here (the old hook only queued a detached pid).
   const extract = await runNode(path.join(ROOT, 'scripts', 'fact-extract-worker.js'), {
     env: { SESSION_ID: hook.sessionId || '', CWD: projectCwd, MB_TRANSCRIPT_PATH: tp },
-    timeoutMs: Number(process.env.MEMORY_BANK_EXTRACT_TIMEOUT_MS || 600000),
+    timeoutMs: Number(process.env.MEMEX_EXTRACT_TIMEOUT_MS || process.env.MEMORY_BANK_EXTRACT_TIMEOUT_MS || 600000),
   });
   // The real worker exits 0 even for ERROR/FATAL/SKIPPED outcomes, so exit
   // code alone is not evidence. Require the canonical success line AND the

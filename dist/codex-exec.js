@@ -10,14 +10,16 @@
 //   --skip-git-repo-check  allows running inside the throwaway workdir
 //   -C <mktemp workdir>    never touches the caller's repository
 //   -o <file>              capture final agent message deterministically
-// Model selection precedence: explicit option > MEMORY_BANK_CODEX_MODEL env
-// > DEFAULT_CODEX_MODEL (gpt-5.6-luna). Never hardcode other ids here.
+// Model selection precedence: explicit option > MEMEX_CODEX_MODEL env >
+// historical MEMORY_BANK_CODEX_MODEL compatibility env > DEFAULT_CODEX_MODEL
+// (gpt-5.6-luna). Never hardcode other ids here.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 /** Set to '1' inside any codex exec child we spawn. Nested calls refuse. */
-export const INNER_GUARD_ENV = 'MEMORY_BANK_CODEX_EXEC_INNER';
+export const INNER_GUARD_ENV = 'MEMEX_CODEX_EXEC_INNER';
+const LEGACY_INNER_GUARD_ENV = 'MEMORY_BANK_CODEX_EXEC_INNER';
 /** Official default memory-model id used when no override is provided. */
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
 function buildPrompt(systemPrompt, userMessage) {
@@ -36,7 +38,11 @@ export function buildCodexExecArgs(opts) {
         '--skip-git-repo-check',
         '-C', opts.workdir,
     ];
-    const model = opts.model != null ? opts.model : process.env.MEMORY_BANK_CODEX_MODEL || DEFAULT_CODEX_MODEL;
+    const model = opts.model != null
+        ? opts.model
+        : process.env.MEMEX_CODEX_MODEL
+            || process.env.MEMORY_BANK_CODEX_MODEL
+            || DEFAULT_CODEX_MODEL;
     const trimmed = model ? String(model).trim() : '';
     if (trimmed)
         args.push('-m', trimmed);
@@ -149,12 +155,16 @@ function runChild(bin, args, cwd, prompt, timeoutMs) {
  * exit with no recoverable answer.
  */
 export async function runCodex(opts = {}) {
-    if (process.env[INNER_GUARD_ENV] === '1') {
+    if (process.env[INNER_GUARD_ENV] === '1'
+        || process.env[LEGACY_INNER_GUARD_ENV] === '1') {
         throw new Error(`memex: ${INNER_GUARD_ENV}=1 — refusing nested codex exec (hook/plugin recursion guard)`);
     }
-    const bin = opts.codexBin || process.env.MEMORY_BANK_CODEX_BIN || 'codex';
+    const bin = opts.codexBin
+        || process.env.MEMEX_CODEX_BIN
+        || process.env.MEMORY_BANK_CODEX_BIN
+        || 'codex';
     const timeoutMs = opts.timeoutMs ?? 180_000;
-    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bank-llm-'));
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-llm-'));
     const outPath = path.join(workdir, 'last-message.txt');
     try {
         const prompt = buildPrompt(opts.systemPrompt || '', opts.userMessage || '');

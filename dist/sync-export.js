@@ -3,10 +3,10 @@ import path from 'path';
 import os from 'os';
 import { randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
-import { getMemoryBankHome } from './paths.js';
+import { getMemexHome } from './paths.js';
 const SYNC_DIR_NAME = 'sync';
 export function getSyncDir() {
-    const dir = path.join(getMemoryBankHome(), 'conversation-index', SYNC_DIR_NAME);
+    const dir = path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME);
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
     }

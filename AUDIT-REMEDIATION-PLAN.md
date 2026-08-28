@@ -517,10 +517,10 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 
 ### F. 소규모 drift cleanup
 
-1. SessionEnd 정상 경로의 `recordHookEvent('SessionEnd', ...)` 중복 호출 제거. event 정확히 1회 기록.
-2. historical home migration autodetect가 XDG 미설정 시 실제 기본 legacy 경로 `~/.config/memory-bank`를 탐지하는지 정리.
-3. 구형 `event_msg.user_message` rollout compatibility 설명과 실제 parser dispatch 일치 여부 확인·정리.
-4. `recall_events.prepared`를 exchange recall 판정에 포함할지 결정. 현재는 emitted 여부와 무관하게 taint될 수 있으며 안전 방향 false-positive다.
+1. [x] SessionEnd 정상 경로의 `recordHookEvent('SessionEnd', ...)` 중복 호출 제거. event 정확히 1회 기록.
+2. [x] historical home migration autodetect가 XDG 미설정 시 실제 기본 legacy 경로 `~/.config/memory-bank`를 탐지하도록 정리. 현재 쓰기 대상과 기본 홈은 `MEMEX_HOME`/`~/.config/memex`이고, `memory-bank`는 명시적 migration 입력과 과거 환경변수 호환 경계에서만 취급.
+3. [x] `event_msg.user_message`는 transport noise로 무시하고 canonical `response_item`만 user turn으로 처리하는 실제 parser dispatch에 설명과 회귀 테스트를 일치시킴.
+4. [x] `recall_events.prepared`는 아직 방출 증거가 아니므로 exchange recall 판정에 포함하지 않음. `emitted` receipt만 `has_memex_recall=1`을 적용하며 prepared→emitted 전이를 DB insert와 sync import 양쪽에서 검증.
 5. [x] archive 최신 + DB 삭제 상태에서 `sync`가 unchanged archive도 재색인하도록 Section E recovery 계약과 일치시킴.
 
 ## 7. 회귀 테스트 계약 — 총 17개
@@ -545,8 +545,8 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 13. [x] durable prepared receipt 저장 실패 시 실제 context가 미주입되고 dedup ledger도 오염되지 않는지 확인.
 14. [x] `parseConversationFile()`로 basename이 같은 서로 다른 canonical cwd 두 개를 처리해 identity가 충돌하지 않는지 확인.
 15. [x] low-level `createRelation()`에 서로 다른 project↔project edge를 직접 넣어도 거부되는지 확인.
-16. DB 삭제 + archive 유지 상태가 승인된 recovery 계약대로 복구되는지 확인.
-17. 정상 SessionEnd event가 정확히 1회 기록되는지 확인.
+16. [x] DB 삭제 + archive 유지 상태가 승인된 recovery 계약대로 복구되는지 확인.
+17. [x] 정상 SessionEnd event가 정확히 1회 기록되는지 확인.
 
 테스트 원칙:
 
@@ -690,7 +690,7 @@ node --test test/*slice.test.mjs
 - [x] C. `parseConversationFile()` canonical identity
 - [x] D. `createRelation()` final invariant
 - [x] E. Sync/rebuild 계약 정합성
-- [ ] F. 소규모 drift 5건
+- [x] F. 소규모 drift 5건
 
 ### Phase 3
 

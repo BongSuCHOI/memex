@@ -234,8 +234,8 @@ function verifyMcpHandshake(root) {
         cwd: root,
         env: {
           ...process.env,
-          MEMORY_BANK_PLUGIN_ROOT: root,
-          MEMORY_BANK_HOME: temp,
+          MEMEX_PLUGIN_ROOT: root,
+          MEMEX_HOME: temp,
           TEST_DB_PATH: path.join(temp, "conversation-index", "db.sqlite"),
         },
         input,
@@ -484,7 +484,7 @@ try {
     process.execPath,
     [path.join(installedRoot, "cli", "memex.js"), "doctor", "--json"],
     {
-      env: { ...process.env, MEMORY_BANK_PLUGIN_ROOT: installedRoot },
+      env: { ...process.env, MEMEX_PLUGIN_ROOT: installedRoot },
     },
   );
   const checks = Array.isArray(doctor.checks) ? doctor.checks : [];
@@ -510,7 +510,7 @@ try {
     process.execPath,
     [path.join(installedRoot, "cli", "memex.js"), "sync"],
     {
-      env: { ...process.env, MEMORY_BANK_PLUGIN_ROOT: installedRoot },
+      env: { ...process.env, MEMEX_PLUGIN_ROOT: installedRoot },
       timeout: 30 * 60 * 1000,
     },
   );
@@ -520,7 +520,7 @@ try {
     process.execPath,
     [path.join(installedRoot, "cli", "memex.js"), "status"],
     {
-      env: { ...process.env, MEMORY_BANK_PLUGIN_ROOT: installedRoot },
+      env: { ...process.env, MEMEX_PLUGIN_ROOT: installedRoot },
     },
   );
   ok("pipeline status", status.stdout.trim().split("\n").slice(-3).join(" | "));

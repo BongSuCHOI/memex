@@ -198,10 +198,10 @@ test("gate-excluded sessions report as excluded, not pending (CX-04 status/worke
     { session: "s5" },
   ]);
   db.prepare(
-    `UPDATE exchanges SET cwd = '/tmp/x/memory-bank-llm' WHERE session_id = 's4'`,
+    `UPDATE exchanges SET cwd = '/tmp/x/memex-llm' WHERE session_id = 's4'`,
   ).run();
   db.prepare(
-    `UPDATE exchanges SET cwd = '/tmp/memory-bank-llm-a1b2c3' WHERE session_id = 's5'`,
+    `UPDATE exchanges SET cwd = '/tmp/memex-llm-a1b2c3' WHERE session_id = 's5'`,
   ).run();
   db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
     SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();

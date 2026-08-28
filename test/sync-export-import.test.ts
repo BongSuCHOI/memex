@@ -105,6 +105,72 @@ describe('sync-export/import', () => {
     expect(result.newDomains).toBe(0);
   });
 
+  it('applies imported recall provenance only after the receipt is emitted', async () => {
+    const { getSyncDir } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { hashRecallPrompt, initDatabase, insertExchange } = await import('../src/db.js');
+    const syncDir = getSyncDir();
+    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+    const prompt = 'Recall the deployment policy.';
+    const now = '2026-08-29T00:00:00.000Z';
+    const event = {
+      id: 'sync-recall-status',
+      session_id: 'sync-recall-session',
+      project: '/tmp/project',
+      prompt_hash: hashRecallPrompt(prompt),
+      fact_ids: '["fact-deploy"]',
+      source_type: 'memex_recall',
+      learnable: 0,
+      status: 'prepared',
+      created_at: now,
+      emitted_at: null,
+    };
+    const db = initDatabase();
+    try {
+      insertExchange(db, {
+        id: 'sync-recall-exchange',
+        project: '/tmp/project',
+        timestamp: now,
+        userMessage: prompt,
+        assistantMessage: 'Response',
+        archivePath: '/tmp/archive.jsonl',
+        lineStart: 1,
+        lineEnd: 2,
+        sessionId: event.session_id,
+      }, new Array(384).fill(0));
+    } finally {
+      db.close();
+    }
+    fs.writeFileSync(
+      path.join(syncDir, 'recall-events.jsonl'),
+      JSON.stringify(event) + '\n',
+    );
+
+    expect((await importFromSync()).newRecallEvents).toBe(1);
+    let check = initDatabase();
+    try {
+      expect(check.prepare(
+        'SELECT has_memex_recall FROM exchanges WHERE id = ?',
+      ).get('sync-recall-exchange')).toEqual({ has_memex_recall: 0 });
+    } finally {
+      check.close();
+    }
+
+    fs.writeFileSync(
+      path.join(syncDir, 'recall-events.jsonl'),
+      JSON.stringify({ ...event, status: 'emitted', emitted_at: now }) + '\n',
+    );
+    expect((await importFromSync()).updatedRecallEvents).toBe(1);
+    check = initDatabase();
+    try {
+      expect(check.prepare(
+        'SELECT has_memex_recall FROM exchanges WHERE id = ?',
+      ).get('sync-recall-exchange')).toEqual({ has_memex_recall: 1 });
+    } finally {
+      check.close();
+    }
+  });
+
   it('should import facts from JSONL files', async () => {
     // Create sync files manually
     const { getSyncDir } = await import('../src/sync-export.js');

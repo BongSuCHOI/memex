@@ -4,7 +4,8 @@
 
 `ui/server.cjs`는 기본 `127.0.0.1:3847`에 bind합니다. 외부 interface에 공개하지
 않습니다. 모든 화면은 CLI와 같은 data-root 우선순위(`MEMEX_HOME` → historical
-`MEMORY_BANK_*` overrides → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`)로 해석한
+`MEMEX_*` overrides → historical `MEMORY_BANK_*` compatibility fallbacks →
+`$XDG_CONFIG_HOME/memex` → `~/.config/memex`)로 해석한
 local SQLite를 읽고, Facts mutation만 guarded HTTP POST를 통해 `fact-management`
 service에 전달합니다. UI가 비어 있거나 API가 DB unavailable을 반환하면 `memex home`
 출력과 UI process의 override 환경 변수가 같은 root를 가리키는지 먼저 확인합니다.

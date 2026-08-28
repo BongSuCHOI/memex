@@ -506,7 +506,8 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
     const promptHash = hashRecallPrompt(exchange.userMessage);
     const recall = exchange.sessionId
         ? db
-            .prepare("SELECT 1 FROM recall_events WHERE session_id = ? AND prompt_hash = ?")
+            .prepare(`SELECT 1 FROM recall_events
+           WHERE session_id = ? AND prompt_hash = ? AND status = 'emitted'`)
             .get(exchange.sessionId, promptHash) !== undefined
         : false;
     const classifiedTools = (exchange.toolCalls ?? []).map((call) => ({

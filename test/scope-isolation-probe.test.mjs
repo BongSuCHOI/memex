@@ -10,7 +10,7 @@ import { insertFact } from '../dist/fact-db.js';
 
 test('Phase 1 Probe: Project Scope Isolation & Graph Leaks', async (t) => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-scope-probe-'));
-  process.env.MEMORY_BANK_HOME = tmpDir;
+  process.env.MEMEX_HOME = tmpDir;
 
   const db = initDatabase();
 

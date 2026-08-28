@@ -4,8 +4,8 @@
 //   node scripts/lifecycle-e2e.mjs --tier offline
 //   node scripts/lifecycle-e2e.mjs --tier authenticated
 //
-// Both tiers run inside a fresh mktemp root: CODEX_HOME, MEMORY_BANK_HOME,
-// local marketplace and a staged plugin copy. The user's real ~/.codex,
+// Both tiers run inside a fresh mktemp root: CODEX_HOME, MEMEX_HOME, local
+// marketplace and a staged plugin copy. The user's real ~/.codex,
 // ~/.config/memory-bank and the Memex DB are only ever READ (hash snapshots)
 // and are verified byte-identical after the run.
 //
@@ -178,7 +178,7 @@ const ENV = {
   ...process.env,
   CODEX_HOME,
   MEMEX_HOME: MB_HOME,
-  MEMORY_BANK_PLUGIN_ROOT: PLUGIN,
+  MEMEX_PLUGIN_ROOT: PLUGIN,
 };
 const MB = (cmd, extraEnv = {}) =>
   spawnSync(process.execPath, [path.join(REPO, "cli", "memex.js"), ...cmd], {
@@ -219,7 +219,7 @@ async function main() {
     }
     ACTIVE_PLUGIN = fs.realpathSync(added.installedPath);
     const packaged = materializePluginDependencies(REPO, ACTIVE_PLUGIN);
-    ENV.MEMORY_BANK_PLUGIN_ROOT = ACTIVE_PLUGIN;
+    ENV.MEMEX_PLUGIN_ROOT = ACTIVE_PLUGIN;
     return `registered ${PLUGIN_ID} at ${ACTIVE_PLUGIN}; packaged ${packaged.packages} production dependencies`;
   });
 
@@ -517,8 +517,8 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
             }),
             env: {
               ...ENV,
-              MEMORY_BANK_STABILIZE_QUIET_MS: "200",
-              MEMORY_BANK_STABILIZE_POLL_MS: "50",
+              MEMEX_STABILIZE_QUIET_MS: "200",
+              MEMEX_STABILIZE_POLL_MS: "50",
               BACKFILL_MIN_EXCHANGES: "1",
             },
             encoding: "utf8",

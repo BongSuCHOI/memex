@@ -31,8 +31,8 @@ function isolatedEnv(t) {
   );
   const env = {
     CODEX_HOME: codexHome,
-    MEMORY_BANK_HOME: mbHome,
-    MEMORY_BANK_PLUGIN_ROOT: pluginRoot,
+    MEMEX_HOME: mbHome,
+    MEMEX_PLUGIN_ROOT: pluginRoot,
   };
   const prev = {};
   for (const k of Object.keys(env)) { prev[k] = process.env[k]; process.env[k] = env[k]; }
@@ -126,11 +126,11 @@ test('doctor distinguishes missing build vs configured lifecycle', (t) => {
   const before = doctor();
   assert.equal(before.overall, 'FAIL'); // no dist in fake plugin root
 
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'dist'), { recursive: true });
-  fs.writeFileSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'dist', 'db.js'), '');
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, '.codex-plugin'), { recursive: true });
-  fs.writeFileSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), '{}');
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'node_modules'), { recursive: true });
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist', 'db.js'), '');
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), '{}');
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true });
 
   setupHooks();
   const after = doctor();
@@ -143,14 +143,14 @@ test('doctor distinguishes missing build vs configured lifecycle', (t) => {
 
 test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.json', (t) => {
   const { env } = isolatedEnv(t);
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'dist'), { recursive: true });
-  fs.writeFileSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'dist', 'db.js'), '');
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, '.codex-plugin'), { recursive: true });
-  fs.writeFileSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), JSON.stringify({ hooks: './hooks.json' }));
-  fs.writeFileSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'hooks.json'), JSON.stringify({
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist', 'db.js'), '');
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), JSON.stringify({ hooks: './hooks.json' }));
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'hooks.json'), JSON.stringify({
     hooks: { SessionStart: [{}], UserPromptSubmit: [{}], SessionEnd: [{}] },
   }));
-  fs.mkdirSync(path.join(env.MEMORY_BANK_PLUGIN_ROOT, 'node_modules'), { recursive: true });
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true });
 
   const report = doctor();
   const lifecycle = report.json.find((check) => check.name === 'lifecycle-configured');

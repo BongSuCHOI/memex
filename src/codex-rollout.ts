@@ -9,11 +9,11 @@
 //   event_msg / turn_context / world_state / compacted / token_count ...
 //
 // Turn-assembly contract (head gate):
-//   - user turn   <- response_item message role=user (event_msg.user_message
-//                    is accepted defensively for older layouts)
+//   - user turn   <- response_item message role=user
 //   - agent turn  <- response_item message role=assistant
 //   - tool use    <- response_item custom_tool_call | function_call
-//   - reasoning / developer / system records are never part of a turn.
+//   - event_msg (including user_message-shaped payloads), reasoning,
+//     developer, and system records are never part of a turn.
 // Subagent isolation: session_meta.parent_thread_id set, or source/thread_source
 // marked subagent -> the whole file is flagged and skipped by callers.
 import readline from "node:readline";
