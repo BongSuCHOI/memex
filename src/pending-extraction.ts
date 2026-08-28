@@ -202,10 +202,10 @@ export function pendingExtractionCoreQuery(cfg: ExtractionConfig): {
    // FACT-LIFECYCLE 계약: extraction_log.last_exchange_rowid 이후에 rowid 가 더 큰
    // exchange 가 생기면(settled 마커라도) 세션은 다시 pending 이다. 이 조건이 없으면
    // resume 으로 교환이 늘어난 세션의 suffix 가 영구 추출 누락된다.
-   //   - SEED(-1)는 제외한다: 과거 batch run 이 `last_exchange_rowid = 0` 으로 심는다
-   //     (backfill-extract-worker seedFromExistingFacts) — watermark 분기에 넣으면
-   //     seed 세션 전체가 재추출 큐로 돌아온다. seed 의 suffix 는 SessionEnd 훅이
-   //     담당한다(훅 variant 는 확정 마커 위에서도 선점 가능).
+   //   - SEED(-1)는 제외한다: seed 마커는 seed 시점의 세션 MAX(rowid)로 심인다
+   //     (backfill-extract-worker seedFromExistingFacts). watermark 분기에 넣으면
+   //     suffix 가 붙은 seed 세션이 백필 재추출 큐로 돌아온다 — seed 이후의
+   //     suffix 는 SessionEnd 훅이 담당한다(훅 variant 는 확정 마커 위에서도 선점 가능).
    //   - 살아있는 claim(-3, fresh)도 watermark 분기에서 제외한다: 다른 러너가 처리
    //     중이다. stale claim 은 위의 회수 분기가 이미 pending 으로 만든다.
    // extraction_log.session_id 는 PRIMARY KEY 이므로 LEFT JOIN 결과는 세션당 최대 1행.
@@ -228,8 +228,9 @@ export function pendingExtractionCoreQuery(cfg: ExtractionConfig): {
             -- 제공하던 "판정 불가 = 회수 대상" 의미를 명시적으로 보존한다.
             AND COALESCE(datetime(l.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'), 1))
           -- settled(성공) 마커라도 워터마크가 뒤처지면 새 suffix 가 있다.
-          --   · SEED(-1) 는 제외: seed 마커는 워터마크가 뒤처질 수 있어 넣으면
-          --     과거 batch 전체가 재추출 큐로 돌아온다. suffix 는 훅이 담당.
+          --   · SEED(-1) 는 제외: seed 마커는 seed 시점의 세션 MAX(rowid)로 심이고
+          --     그 이후 suffix 의 추출은 SessionEnd 훅이 담당한다. watermark 분기에
+          --     넣으면 suffix 가 붙은 seed 세션이 백필 큐로 되돌아온다.
           --   · PERMANENT(-2) 도 제외: failureMarkerUpsertSql 은 워터마크를
           --     갱신하지 않아(항상 claim 시점의 0) 넣으면 영구 실패 세션이
           --     매 run 무한 재시도된다(R3 큐 물림). suffix 재시도는 훅 경로만.

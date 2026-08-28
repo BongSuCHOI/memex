@@ -32,6 +32,10 @@ export interface StageCounters {
   excludedBelowMin: number;
   /** …of which in excluded/LLM-workdir projects. */
   excludedProject: number;
+  /** Sessions whose marker is SEED(-1) or a terminal PERMANENT(-2) failure —
+   * the worker's pending query excludes both, so they are never pending
+   * work; they stay visible here instead of inflating pending. */
+  deferred: number;
   /** The configured min-exchange gate value, shown for actionability. */
   gateMinExchanges: number;
   claimed: number;
@@ -127,6 +131,7 @@ export function getPipelineStatus(
         excluded: 0,
         excludedBelowMin: 0,
         excludedProject: 0,
+        deferred: 0,
         gateMinExchanges: extractionGate.minExchanges,
         claimed: 0,
         failedPermanent: 0,
@@ -171,6 +176,7 @@ export function getPipelineStatus(
       excluded: 0,
       excludedBelowMin: 0,
       excludedProject: 0,
+      deferred: 0,
       gateMinExchanges: extractionGate.minExchanges,
       claimed: 0,
       failedPermanent: 0,
@@ -287,13 +293,42 @@ export function getPipelineStatus(
       };
       const excludedSessions = Number(gateRow.c);
 
+      // Terminal markers the worker's pending query deliberately never
+      // re-picks: SEED(-1) always, and PERMANENT(-2) unless its watermark
+      // happens to be covered (that covered shape already counts as settled).
+      // Subtracting them keeps pending meaning exactly "work the pipeline
+      // will actually do" while the states stay visible under their own name.
+      const deferredSessions = count(
+        db,
+        `
+        SELECT COUNT(*) AS c FROM (
+          SELECT DISTINCT e.session_id
+          FROM exchanges e
+          JOIN extraction_log l ON l.session_id = e.session_id
+          WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+            AND (
+              l.extracted = ?
+              OR (l.extracted = ?
+                  AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
+                       WHERE x.session_id = e.session_id)
+                      > COALESCE(l.last_exchange_rowid, -1))
+            )
+        )`,
+        EXTRACTION_STATE.SEED,
+        EXTRACTION_STATE.PERMANENT,
+      );
+
       extraction = {
         total,
         done,
-        pending: Math.max(0, total - settledSessions - excludedSessions),
+        pending: Math.max(
+          0,
+          total - settledSessions - excludedSessions - deferredSessions,
+        ),
         excluded: excludedSessions,
         excludedBelowMin: Number(gateRow.belowMin),
         excludedProject: Number(gateRow.byProject),
+        deferred: deferredSessions,
         gateMinExchanges: extractionGate.minExchanges,
         claimed: claimedFresh,
         failedPermanent: permanent,
@@ -402,6 +437,7 @@ export function formatPipelineStatus(s: PipelineStatus): string {
     `${ex.done} done`,
     `${ex.pending} pending`,
     `${ex.excluded} excluded`,
+    `${ex.deferred} deferred`,
     `${ex.claimed} claimed`,
     `${ex.failedPermanent} permanent-failed`,
   ];
@@ -412,6 +448,10 @@ export function formatPipelineStatus(s: PipelineStatus): string {
   if (ex.excluded > 0)
     lines.push(
       `  excluded: intentionally skipped by extraction policy — ${ex.excludedBelowMin} below min-exchanges (BACKFILL_MIN_EXCHANGES=${ex.gateMinExchanges}), ${ex.excludedProject} excluded projects`,
+    );
+  if (ex.deferred > 0)
+    lines.push(
+      `  deferred: seeded or permanently-failed sessions the extraction worker never re-picks — ${ex.deferred}`,
     );
   if (ex.lastSuccessAt) lines.push(`  last success: ${ex.lastSuccessAt}`);
   if (ex.lastErrorAt) lines.push(`  last failure: ${ex.lastErrorAt}`);

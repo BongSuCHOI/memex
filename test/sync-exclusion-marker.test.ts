@@ -38,7 +38,9 @@ const UUID_3 = "01a00003-aaaa-4bbb-8ccc-ccccccccccc3";
 
 function rollout(
   sessionId: string,
-  opts: { markerIn?: "user-message" | "tool-result" | "none" },
+  opts: {
+    markerIn?: "user-message" | "tool-result" | "assistant-message" | "none";
+  },
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -90,7 +92,15 @@ function rollout(
       payload: {
         type: "message",
         role: "assistant",
-        content: [{ type: "text", text: "결정을 반영했습니다." }],
+        content: [
+          {
+            type: "text",
+            text:
+              opts.markerIn === "assistant-message"
+                ? `${MARKER} (assistant가 인용한 문자열일 뿐이다)`
+                : "결정을 반영했습니다.",
+          },
+        ],
       },
     }),
   );
@@ -169,6 +179,30 @@ describe("sync exclusion markers honor user messages only", () => {
     expect(countSummaries(dest)).toBe(1);
   });
 
+  it("indexes a session whose marker appears only in an assistant message", async () => {
+    const source = path.join(testDir!, "sessions-assistant-marker");
+    const dest = path.join(testDir!, "archive-assistant-marker");
+    fs.mkdirSync(source, { recursive: true });
+    writeRollout(source, UUID_1, { markerIn: "assistant-message" });
+    useIsolatedDb();
+
+    const result = await syncConversations(source, dest);
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.indexed).toBe(1);
+
+    const db = initDatabase();
+    try {
+      const n = (
+        db.prepare("SELECT COUNT(*) AS n FROM exchanges").get() as { n: number }
+      ).n;
+      expect(n).toBe(1);
+    } finally {
+      db.close();
+    }
+    expect(countSummaries(dest)).toBe(1);
+  });
+
   it("excludes a session when the marker appears in a user message", async () => {
     const source = path.join(testDir!, "sessions-user-marker");
     const dest = path.join(testDir!, "archive-user-marker");
@@ -205,6 +239,7 @@ describe("sync exclusion markers honor user messages only", () => {
     fs.mkdirSync(source, { recursive: true });
     const sourceFile = writeRollout(source, UUID_3, { markerIn: "none" });
     useIsolatedDb();
+    let excludedFactId: string | undefined;
 
     const first = await syncConversations(source, dest);
     expect(first.errors).toHaveLength(0);
@@ -239,6 +274,7 @@ describe("sync exclusion markers honor user messages only", () => {
         source_exchange_ids: [exchange.id],
         embedding: Array.from({ length: 384 }, () => 0.01),
       });
+      excludedFactId = excludedFact;
       const retainedFact = insertFact(db, {
         fact: "다른 대화의 결정",
         category: "decision",
@@ -306,6 +342,13 @@ describe("sync exclusion markers honor user messages only", () => {
             .get() as { n: number }
         ).n,
       ).toBe(0);
+      // Purged exchange-derived facts are tombstoned so a stale multi-device
+      // sync snapshot cannot resurrect them later.
+      expect(
+        check
+          .prepare("SELECT reason FROM fact_tombstones WHERE fact_id = ?")
+          .get(excludedFactId),
+      ).toEqual({ reason: "source_conversation_excluded" });
     } finally {
       check.close();
     }

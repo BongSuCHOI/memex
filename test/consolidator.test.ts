@@ -122,6 +122,25 @@ describe('Consolidator', () => {
       expect(db.prepare('SELECT COUNT(*) AS c FROM fact_revisions').get()).toEqual({ c: 0 });
     });
 
+    it('rolls back the whole DUPLICATE merge when deactivation fails mid-transaction', async () => {
+      const id1 = insertFact(db, { fact: 'Same decision A', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: new Array(384).fill(0.1) });
+      const id2 = insertFact(db, { fact: 'Same decision B', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: new Array(384).fill(0.2) });
+      db.exec(`CREATE TRIGGER block_dup_deactivate BEFORE UPDATE ON facts WHEN NEW.is_active = 0 BEGIN SELECT RAISE(ABORT, 'blocked dup deactivate'); END`);
+      const before = db.prepare('SELECT fact, is_active FROM facts WHERE id IN (?, ?) ORDER BY id').all(id1, id2);
+      const facts = getActiveFacts(db);
+
+      await expect(applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
+        relation: 'DUPLICATE', merged_fact: '', reason: 'same content',
+      })).rejects.toThrow(/blocked dup deactivate/);
+
+      // The survivor's count/provenance update and the duplicate's
+      // deactivation are one transaction — a mid-branch failure must leave
+      // both facts exactly as before (no merged count on an active duplicate).
+      expect(db.prepare('SELECT fact, is_active FROM facts WHERE id IN (?, ?) ORDER BY id').all(id1, id2)).toEqual(before);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM vec_facts').get()).toEqual({ c: 2 });
+      expect(db.prepare('SELECT consolidated_count FROM facts WHERE id = ?').get(id1)).toEqual({ consolidated_count: 1 });
+    });
+
     it('should use newFact.fact when merged_fact is empty on CONTRADICTION', async () => {
       const id1 = insertFact(db, { fact: 'Old approach', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
       const id2 = insertFact(db, { fact: 'New approach', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });

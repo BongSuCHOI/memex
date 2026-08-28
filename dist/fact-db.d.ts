@@ -18,7 +18,6 @@ interface InsertFactParams {
     embedding_kr?: number[] | null;
 }
 interface UpdateFactParams {
-    fact?: string;
     embedding?: number[] | null;
     consolidated_count_increment?: boolean;
     source_exchange_ids?: string[];

@@ -34,7 +34,6 @@ interface InsertFactParams {
 }
 
 interface UpdateFactParams {
-  fact?: string;
   embedding?: number[] | null;
   consolidated_count_increment?: boolean;
   source_exchange_ids?: string[];
@@ -131,15 +130,19 @@ export function updateFact(
   id: string,
   params: UpdateFactParams,
 ): void {
+  // Fact text is semantic state — changing it must swap every derived
+  // generation (embedding, vectors, KR, ontology, relations, revision) in one
+  // commit. That is the semantic mutation service's contract; this low-level
+  // updater must never grow a text-only shortcut again.
+  if ("fact" in params) {
+    throw new Error(
+      "updateFact cannot change fact text — use the semantic mutation service (fact-management.mutateFactMeaning)",
+    );
+  }
   const now = new Date().toISOString();
   const updates: string[] = ["updated_at = ?"];
   const values: unknown[] = [now];
 
-  if (params.fact !== undefined) {
-    updates.push("fact = ?");
-    values.push(params.fact);
-    updates.push("needs_consolidation = 1");
-  }
   if (params.embedding !== undefined) {
     updates.push("embedding = ?");
     values.push(

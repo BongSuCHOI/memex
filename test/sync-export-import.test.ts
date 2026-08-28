@@ -611,4 +611,142 @@ describe('sync-export/import', () => {
       db.close();
     }
   });
+
+  // Exact-time ties must resolve identically on every device: canonical key
+  // order (inactive first, then lexical field order), and a deletion event
+  // beats a fact with the same timestamp. docs/CONVERSATION-LIFECYCLE.md §sync.
+  describe('exact-time tie-break determinism', () => {
+    const tie = '2026-08-28T03:00:00.000Z';
+    const makeTieFact = (fact: string, is_active: 0 | 1) => ({
+      id: 'tie-break-fact',
+      fact,
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: '[]',
+      created_at: tie,
+      updated_at: tie,
+      consolidated_count: 1,
+      is_active,
+      ontology_category_id: null,
+    });
+
+    async function seedLocalFact(): Promise<void> {
+      const { initDatabase } = await import('../src/db.js');
+      process.env.MEMEX_DB_PATH = path.join(tmpDir, 'tie.sqlite');
+      const db = initDatabase();
+      try {
+        db.prepare(`
+          INSERT INTO facts
+            (id, fact, category, scope_type, scope_project, source_exchange_ids,
+             created_at, updated_at, consolidated_count, is_active)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run('tie-break-fact', 'Alpha decision', 'decision', 'global', null, '[]', tie, tie, 1, 1);
+      } finally {
+        db.close();
+      }
+    }
+
+    it('picks the lexically-greater canonical key on an exact-time tie', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      await seedLocalFact();
+
+      // "Zulu..." sorts after "Alpha..." — the remote payload wins the tie.
+      fs.writeFileSync(
+        path.join(getSyncDir(), 'facts.jsonl'),
+        JSON.stringify(makeTieFact('Zulu decision', 1)) + '\n',
+      );
+      const imported = await importFromSync();
+      expect(imported.updatedFacts).toBe(1);
+
+      const db = initDatabase();
+      try {
+        expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('tie-break-fact'))
+          .toEqual({ fact: 'Zulu decision', is_active: 1 });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('keeps the local fact when its canonical key wins the tie', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      await seedLocalFact();
+
+      // "Aardvark..." sorts before "Alpha..." — the local fact keeps winning,
+      // no matter which device imports first.
+      fs.writeFileSync(
+        path.join(getSyncDir(), 'facts.jsonl'),
+        JSON.stringify(makeTieFact('Aardvark decision', 1)) + '\n',
+      );
+      const imported = await importFromSync();
+      expect(imported.updatedFacts).toBe(0);
+
+      const db = initDatabase();
+      try {
+        expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('tie-break-fact'))
+          .toEqual({ fact: 'Alpha decision', is_active: 1 });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('prefers the inactive state on an exact-time tie', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      await seedLocalFact();
+
+      // Inactive wins the tie even when the text sorts lower.
+      fs.writeFileSync(
+        path.join(getSyncDir(), 'facts.jsonl'),
+        JSON.stringify(makeTieFact('Aardvark decision', 0)) + '\n',
+      );
+      const imported = await importFromSync();
+      expect(imported.updatedFacts).toBe(1);
+
+      const db = initDatabase();
+      try {
+        expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('tie-break-fact'))
+          .toEqual({ fact: 'Aardvark decision', is_active: 0 });
+        expect(db.prepare('SELECT COUNT(*) AS n FROM vec_facts WHERE id = ?').get('tie-break-fact'))
+          .toEqual({ n: 0 });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('lets a simultaneous tombstone beat a fact with the same updated_at', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      await seedLocalFact();
+
+      // A real export always writes facts.jsonl (empty when the only event
+      // is the hard delete), plus the tombstone payload.
+      fs.writeFileSync(path.join(getSyncDir(), 'facts.jsonl'), '');
+      fs.writeFileSync(
+        path.join(getSyncDir(), 'fact-tombstones.jsonl'),
+        JSON.stringify({
+          fact_id: 'tie-break-fact',
+          deleted_at: tie,
+          reason: 'hard_delete',
+        }) + '\n',
+      );
+      const imported = await importFromSync();
+      expect(imported.deletedFacts).toBe(1);
+
+      const db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('tie-break-fact')).toBeUndefined();
+        expect(db.prepare('SELECT reason FROM fact_tombstones WHERE fact_id = ?').get('tie-break-fact'))
+          .toEqual({ reason: 'hard_delete' });
+      } finally {
+        db.close();
+      }
+    });
+  });
 });

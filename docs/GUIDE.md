@@ -260,11 +260,13 @@ body-size guard를 통과한 뒤 CLI와 같은 transactional service를 사용�
 
 ```text
 ~/.config/memex/
-├── conversation-archive/
+├── lifecycle-registration.json
+├── logs/                    # hook-events.jsonl 등 훅 관측 로그
+├── conversation-archive/    # rollout 원문 스냅샷
 └── conversation-index/
-    ├── db.sqlite
-    ├── logs/
-    └── lifecycle-registration.json
+    ├── db.sqlite            # 파생 인덱스·facts·graph (재구성 가능)
+    ├── sync/                # multi-device sync snapshot (durable state 포함)
+    └── logs/                # injection/fact-extract/reembed 수행 로그
 ```
 
 우선순위: `MEMEX_HOME` → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
@@ -345,9 +347,9 @@ memex home --json
 
 Memex가 생성하는 데이터는 모두 이 data root 안에 있습니다:
 
-- `memex.db` — 관측·facts·graph 등 파생 SQLite DB (재구성 가능)
-- `archives/` — rollout에서 유래한 원문 스냅샷 (재구성 가능)
-- `logs/` — 백필 수행 기록 (재구성 가능)
+- `conversation-index/db.sqlite` — 관측·facts·graph 등 파생 SQLite DB (재구성 가능)
+- `conversation-archive/` — rollout에서 유래한 원문 스냅샷 (재구성 가능)
+- `logs/` — 훅 이벤트·백필 수행 기록 (재구성 가능)
 - Web UI 소켓/임시 파일
 
 전체 삭제(복구 불가, 재동기화 시 처음부터 다시 추출):

@@ -208,13 +208,24 @@ describe('Fact CRUD', () => {
     expect(revisions[0].new_fact).toBe('Updated fact');
   });
 
-  it('should update fact text and increment consolidated_count', () => {
+  it('rejects fact-text changes — text mutations go through the semantic mutation service', () => {
     const id = insertFact(db, { fact: 'V1 fact', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: ['ex1'], embedding: null });
 
-    updateFact(db, id, { fact: 'V2 fact', consolidated_count_increment: true });
+    expect(() =>
+      updateFact(db, id, { fact: 'V2 fact' } as unknown as Parameters<typeof updateFact>[2]),
+    ).toThrow(/mutateFactMeaning/);
+    expect(getActiveFacts(db)[0].fact).toBe('V1 fact');
+    expect(getActiveFacts(db)[0].consolidated_count).toBe(1);
+  });
+
+  it('updates count and provenance without touching fact text', () => {
+    const id = insertFact(db, { fact: 'V1 fact', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: ['ex1'], embedding: null });
+
+    updateFact(db, id, { consolidated_count_increment: true, source_exchange_ids: ['ex2'] });
     const facts = getActiveFacts(db);
-    expect(facts[0].fact).toBe('V2 fact');
+    expect(facts[0].fact).toBe('V1 fact');
     expect(facts[0].consolidated_count).toBe(2);
+    expect(facts[0].source_exchange_ids).toEqual(['ex2']);
   });
 
   it('should return top facts ordered by consolidated_count', () => {

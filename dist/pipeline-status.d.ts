@@ -8,6 +8,10 @@ export interface StageCounters {
     excludedBelowMin: number;
     /** …of which in excluded/LLM-workdir projects. */
     excludedProject: number;
+    /** Sessions whose marker is SEED(-1) or a terminal PERMANENT(-2) failure —
+     * the worker's pending query excludes both, so they are never pending
+     * work; they stay visible here instead of inflating pending. */
+    deferred: number;
     /** The configured min-exchange gate value, shown for actionability. */
     gateMinExchanges: number;
     claimed: number;

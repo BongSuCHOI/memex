@@ -22,6 +22,10 @@ import {
 import { syncConversations } from "../src/sync.js";
 import { initDatabase } from "../src/db.js";
 import { repairIndex } from "../src/verify.js";
+import {
+  canonicalizeProjectPath,
+  projectStorageKey,
+} from "../src/project-identity.js";
 
 const SESSION_ID = "01a00005-aaaa-4bbb-8ccc-ccccccccccc5";
 const MARKER =
@@ -247,5 +251,111 @@ describe("same rollout excluded identically across sync and index entrypoints", 
     expect(values[1]).toEqual(values[0]);
     expect(values[2]).toEqual(values[0]);
     expect(values[3]).toEqual(values[0]);
+  });
+});
+
+describe("indexUnprocessed archive-copy re-verification", () => {
+  it("does not index a rollout whose archived copy carries the user marker", async () => {
+    // The other entrypoints re-judge the archived copy before indexing it;
+    // indexUnprocessed must do the same — an out-of-band archive replacement
+    // must not smuggle content past the exclusion policy.
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-archive-swap-"));
+    const sessions = path.join(tmp, "sessions");
+    const archive = path.join(tmp, "archive");
+    const dbPath = path.join(tmp, "db.sqlite");
+    fs.mkdirSync(sessions, { recursive: true });
+    // Clean source rollout — any exclusion must come from the archive copy.
+    fs.writeFileSync(
+      path.join(sessions, `rollout-2026-08-28T00-00-00-${SESSION_ID}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: SESSION_ID, cwd: "/tmp/entrypoint-policy" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "아카이브 스왑 방어 확인용 세션" },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "확인했다." }],
+          },
+        }),
+      ].join("\n") + "\n",
+    );
+    // Out-of-band archive copy carrying the marker, kept "newer" so the
+    // archive keeps it instead of re-copying the clean source.
+    const archiveDir = path.join(
+      archive,
+      projectStorageKey(canonicalizeProjectPath("/tmp/entrypoint-policy")),
+    );
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const archiveCopy = path.join(
+      archiveDir,
+      `rollout-2026-08-28T00-00-00-${SESSION_ID}.jsonl`,
+    );
+    fs.writeFileSync(archiveCopy, [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: SESSION_ID, cwd: "/tmp/entrypoint-policy" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `${MARKER}\n이 대화는 인덱싱하지 마세요.`,
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "확인했다." }],
+        },
+      }),
+    ].join("\n") + "\n");
+    const future = new Date(Date.now() + 2_000);
+    fs.utimesSync(archiveCopy, future, future);
+
+    process.env.TEST_SESSIONS_DIR = sessions;
+    process.env.TEST_ARCHIVE_DIR = archive;
+    process.env.MEMEX_DB_PATH = dbPath;
+    try {
+      await indexUnprocessed(1, false);
+
+      const db = initDatabase();
+      try {
+        expect(
+          (db.prepare("SELECT COUNT(*) AS n FROM exchanges").get() as { n: number }).n,
+        ).toBe(0);
+        expect(
+          (db.prepare("SELECT COUNT(*) AS n FROM vec_exchanges").get() as { n: number }).n,
+        ).toBe(0);
+      } finally {
+        db.close();
+      }
+    } finally {
+      delete process.env.TEST_SESSIONS_DIR;
+      delete process.env.TEST_ARCHIVE_DIR;
+      delete process.env.MEMEX_DB_PATH;
+      if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+      tmp = undefined;
+    }
   });
 });

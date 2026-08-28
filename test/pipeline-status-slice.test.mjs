@@ -165,6 +165,39 @@ test("permanent extraction failure blocks fact-ready", async (t) => {
   db.close();
 });
 
+test("seed and terminal-failure markers are deferred, not pending", async (t) => {
+  const { db } = await seed(t, [
+    { session: "s1" },
+    { session: "s2" },
+    { session: "s3" },
+  ]);
+  // SEED(-1): backfill seeded existing facts; the worker never picks it.
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    VALUES ('s1','2026-08-26T01:00:00Z', -1, -1, 0)`).run();
+  // PERMANENT(-2) with the REAL failure-path shape: failureMarkerUpsertSql
+  // never writes a watermark, so last_exchange_rowid stays 0.
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    VALUES ('s2','2026-08-26T01:00:00Z', -2, 0, 0)`).run();
+  // A PERMANENT marker with a covered watermark stays settled — it is
+  // neither done (not a success) nor pending nor deferred.
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's3','2026-08-26T01:00:00Z', -2, 0, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's3'`).run();
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.extraction.total, 3);
+  assert.equal(st.extraction.done, 0);
+  // pending means "work the pipeline will actually do" — SEED and
+  // terminal-failure sessions are deliberately never picked by the worker.
+  assert.equal(st.extraction.pending, 0);
+  assert.equal(st.extraction.deferred, 2);
+  assert.equal(st.extraction.failedPermanent, 2);
+  assert.match(formatPipelineStatus(st), /0 done, 0 pending/);
+  db.close();
+});
+
 test("stale claim lease recovers to pending; fresh claim counts as claimed", async (t) => {
   const { db } = await seed(t, [{ session: "s1" }]);
   // Fresh claim (now): claimed=1, pending=0 (lease alive)

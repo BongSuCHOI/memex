@@ -57,7 +57,8 @@ user-role 제외 마커의 의미는 **conversation-wide**입니다. marker가 �
 archive 사본은 보존하지만, 기존 exchange/tool call, FTS/vector, session extraction/recall ledger,
 summary, 그리고 해당 exchange를 evidence로 사용한 fact/revision/vector/relation은
 제거합니다. 여러 source가 합쳐진 fact도 문장 일부의 출처를 분리 증명할 수 없으므로
-fact 전체를 제거합니다.
+fact 전체를 제거합니다. 제거된 fact는 tombstone(`source_conversation_excluded`)으로
+기록해 오래된 multi-device sync snapshot이 부활시키지 못합니다.
 
 ## 3. project identity와 archive key
 
@@ -186,6 +187,8 @@ archive, sync JSONL까지 모두 삭제한 경우 facts/revisions/recall receipt
   워커가 실제로 처리할 적격 세션만 계산하고, 정책상 제외된 세션(min-exchange gate,
   excluded project/LLM workdir)은 `excluded`로 별도 표시한다 — 상태 표시와 워커 선정 술어가
   같은 게이트(pendingExtractionCoreQuery의 minExchanges/excludeProjects)를 공유한다.
+  워커가 영원히 다시 집지 않는 세션(seed marker(-1), 워터마크가 덮이지 않는 permanent
+  failure(-2))은 `deferred`로 별도 계상해 pending을 부풀리지 않는다.
   `done`은 성공 marker뿐 아니라 `last_exchange_rowid`가 현재 session의 최대 exchange
   rowid를 덮을 때만 증가한다. 따라서 resume suffix가 추가된 session은 기존 성공 marker가
   있어도 `done`에서 빠지고 `pending`에만 포함된다.

@@ -612,6 +612,40 @@ describe("Memex recall provenance", () => {
     }
   });
 
+  // Runtime model workdirs are mkdtemp'd as `<tmpdir>/memex-llm-XXXXXX` — a
+  // SIBLING of the plain `memex-llm` denied root, not a child. The evidence
+  // layer must deny that shape too (same basename-vs-mkdtemp bug class that
+  // once leaked worker-prompt exchanges into the index), and a shell workdir
+  // that disagrees with the project cwd is unprovable and fails closed.
+  it("demotes the mkdtemp model-workdir shape and workdir/cwd mismatches", () => {
+    const project = path.join(os.tmpdir(), "memex-selfread-virtual-project");
+    const workdir = path.join(os.tmpdir(), "memex-llm-a1b2c3");
+
+    expect(
+      classifyToolEvidence(
+        "functions__exec_command",
+        { cmd: "npm test" },
+        { cwd: workdir },
+      ),
+    ).toEqual({ sourceType: "test_execution", learnable: false });
+    expect(
+      classifyToolEvidence(
+        "read_file",
+        { path: path.join(workdir, "last-message.txt") },
+        { cwd: workdir },
+      ),
+    ).toEqual({ sourceType: "repo_file", learnable: false });
+
+    const other = path.join(os.tmpdir(), "memex-evidence-other-cwd");
+    expect(
+      classifyToolEvidence(
+        "functions__exec_command",
+        { cmd: "npm test", workdir: other },
+        { cwd: project },
+      ),
+    ).toEqual({ sourceType: "external_unverified", learnable: false });
+  });
+
   it("keeps archived-summary reads out of the extraction prompt end to end", () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-summary-laundering-"));
     process.env.TEST_DB_PATH = path.join(tmp, "index.sqlite");

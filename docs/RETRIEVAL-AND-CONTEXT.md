@@ -127,6 +127,7 @@ injection JSONL status:
 - `no-match`: eligible result 없음
 - `deduped`: 관련 fact는 있었지만 이미 session에 주입됨
 - `skipped`: prompt/시간 budget 정책으로 건너뜀
+- `no-session-provenance`: session 신원이 없어 durable recall receipt를 남길 수 없음 — provenance 계약상 주입하지 않음
 - `error`: retrieval/output failure
 
 각 행은 prompt 본문 대신 길이, candidate/injected/deduped 수, chars, duration, warm/cold

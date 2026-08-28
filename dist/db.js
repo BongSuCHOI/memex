@@ -631,6 +631,25 @@ function deniedEvidenceRoots() {
     }
     return [...new Set(roots)].filter((r) => r && r !== "/");
 }
+/** Ephemeral model workdirs are mkdtemp'd as `<tmpdir>/memex-llm-XXXXXX` — a
+ * SIBLING of the plain `memex-llm` denied root, so root containment alone
+ * cannot see them. Deny the whole basename family scoped to the temp dir
+ * (the same basename-vs-mkdtemp bug class that once leaked worker prompts
+ * into the index) without touching projects that merely live under the temp
+ * tree. */
+function isLlmWorkdirEvidencePath(canonical) {
+    if (!canonical)
+        return false;
+    const tmp = canonicalizePath(os.tmpdir());
+    if (!tmp || canonical === tmp || !canonical.startsWith(tmp + path.sep)) {
+        return false;
+    }
+    const segment = canonical
+        .slice(tmp.length + path.sep.length)
+        .split(path.sep)[0];
+    return (segment === LLM_WORKDIR_BASENAME ||
+        segment.startsWith(`${LLM_WORKDIR_BASENAME}-`));
+}
 /** Resolve symlinks through the longest existing ancestor. This also gives a
  * stable canonical path for commands that name a not-yet-created file. */
 function canonicalizePath(value) {
@@ -709,6 +728,9 @@ function repoReadVerdict(toolInput, ctx) {
     for (const target of targets) {
         if (!target)
             return demote();
+        if (isLlmWorkdirEvidencePath(target)) {
+            return { sourceType: "repo_file", learnable: false };
+        }
         for (const root of denied) {
             if (isInside(target, root)) {
                 return { sourceType: "repo_file", learnable: false };
@@ -1057,6 +1079,9 @@ function shellEvidenceVerdict(toolInput, words, ctx) {
             : expandShellPath(effectiveCwd, target);
         if (!canonical || !isInside(canonical, projectRoot))
             return unverified;
+        if (isLlmWorkdirEvidencePath(canonical)) {
+            return { sourceType: spec.sourceType, learnable: false };
+        }
         if (denied.some((root) => isInside(canonical, root))) {
             return { sourceType: spec.sourceType, learnable: false };
         }

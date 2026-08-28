@@ -7,9 +7,8 @@ import {
   getPendingConsolidationFacts,
   searchFactsByScope,
   updateFact,
-  deactivateFact,
 } from './fact-db.js';
-import { mutateFactMeaning } from './fact-management.js';
+import { deactivateFactTransactional, mutateFactMeaning } from './fact-management.js';
 
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -247,11 +246,17 @@ export async function applyConsolidationResult(
 
   switch (result.relation) {
     case 'DUPLICATE':
-      updateFact(db, existingFact.id, {
-        consolidated_count_increment: true,
-        source_exchange_ids: mergedSources,
-      });
-      deactivateFact(db, newFact.id);
+      // One transaction: the survivor's count/provenance update and the
+      // duplicate's deactivation are a single semantic step (SCHEMA §7 —
+      // derived state never straddles commits). updateFact's inner vec
+      // transaction nests as a savepoint inside this one.
+      db.transaction(() => {
+        updateFact(db, existingFact.id, {
+          consolidated_count_increment: true,
+          source_exchange_ids: mergedSources,
+        });
+        deactivateFactTransactional(db, newFact.id);
+      })();
       break;
 
     case 'CONTRADICTION':

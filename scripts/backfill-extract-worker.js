@@ -134,7 +134,13 @@ function seedFromExistingFacts(db) {
   if (exchangeIds.size === 0) return 0;
 
   const sessionStmt = db.prepare(
-    "SELECT session_id, MAX(rowid) AS max_rowid FROM exchanges WHERE id = ?",
+    "SELECT session_id FROM exchanges WHERE id = ?",
+  );
+  // FACT-LIFECYCLE 계약: seed 마커의 워터마크는 **세션** MAX(rowid)다. 개별
+  // exchange 의 rowid 를 심으면 그 이후의 이미 fact 화된 suffix 가 SessionEnd
+  // 재추출 멱등 게이트를 통과해 다시 LLM 배치로 들어간다.
+  const watermarkStmt = db.prepare(
+    "SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM exchanges WHERE session_id = ?",
   );
   const insertStmt = db.prepare(`
     INSERT OR IGNORE INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
@@ -149,9 +155,10 @@ function seedFromExistingFacts(db) {
       const sid = row?.session_id;
       if (sid && !seen.has(sid)) {
         seen.add(sid);
-        // seed 마커에도 워터마크를 기록한다 — 그렇지 않으면 이 세션은
-        // last_exchange_rowid = 0 으로 남아 resume suffix 추출 대상 판정이 불가능하다.
-        if (insertStmt.run(sid, now, row?.max_rowid ?? 0).changes > 0) seeded++;
+        // seed 마커에도 워터마크를 기록한다 — seed 시점까지의 세션 전체가
+        // 이미 fact 화되어 있으므로 세션 MAX(rowid)로 덮는다. 이후 붙는
+        // resume suffix 는 SessionEnd 훅이 담당한다.
+        if (insertStmt.run(sid, now, watermarkStmt.get(sid).max_rowid).changes > 0) seeded++;
       }
     }
   });

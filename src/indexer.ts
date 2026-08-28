@@ -411,6 +411,25 @@ export async function indexUnprocessed(
     // Archive if needed (a current plain or compressed copy counts)
     archiveIfStale(sourcePath, archivePath);
 
+    // Defense-in-depth parity with the other entrypoints: judge the copy that
+    // will actually be summarized and searched, not just the source rollout —
+    // an out-of-band archive replacement must not smuggle content in.
+    if (eligibility.eligible) {
+      eligibility = await getConversationEligibility({
+        filePath: archivePath,
+        project,
+        isSubagent: false,
+        excludedProjects,
+      });
+    }
+    if (!eligibility.eligible) {
+      purgeConversationFromIndex(db, {
+        archivePath,
+        sessionId: meta && typeof meta.id === "string" ? meta.id : null,
+      });
+      continue;
+    }
+
     // Parse and check
     const exchanges = await parseConversation(sourcePath, project, archivePath);
     if (exchanges.length === 0) continue;
