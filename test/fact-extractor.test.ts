@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  EXTRACTION_SYSTEM_PROMPT,
   buildExtractionPrompt,
   isSubstantiveExchange,
   normalizeFactText,
@@ -47,6 +48,13 @@ describe('Fact Extractor', () => {
       const prompt = buildExtractionPrompt(exchanges);
       expect(prompt).toContain('<script>');
       expect(prompt).not.toContain('```json');
+    });
+  });
+
+  describe('source exchange attribution contract', () => {
+    it('requires model output to cite one or more 1-based exchange indices', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('"source_exchange_indices": [1]');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('1-based');
     });
   });
 

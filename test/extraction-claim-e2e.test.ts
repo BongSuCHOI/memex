@@ -11,10 +11,13 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
  */
 
 let calls = 0;
+let sourceIndicesPerFact: number[][] | null = null;
+let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callMemoryModel: async () => { calls++; await new Promise(r => setTimeout(r, 60));
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
-      ({ fact: `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9 }))); } }));
+      ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
+        source_exchange_indices: sourceIndicesPerFact?.[i] ?? [1] }))); } }));
 let factsPerCall = 1;
 let embedCalls = 0;
 let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)
@@ -33,7 +36,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMORY_BANK_CONFIG_DIR = tmp;
   process.env.MEMORY_BANK_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; factsPerCall = 1; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -44,6 +47,63 @@ beforeEach(async () => {
 afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMORY_BANK_CONFIG_DIR; delete process.env.MEMORY_BANK_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
+  it('각 fact에는 모델이 지목한 source exchange UUID만 저장한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    factsPerCall = 2;
+    sourceIndicesPerFact = [[1], [2]];
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    const rows = db.prepare(
+      "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%' ORDER BY fact",
+    ).all() as Array<{ fact: string; source_exchange_ids: string }>;
+    expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
+      ['dup-probe-1-0', ['e0']],
+      ['dup-probe-1-1', ['e1']],
+    ]);
+  });
+
+  it('source exchange index 누락·범위 이탈 fact는 저장하지 않고 중복 index는 정규화한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    factsPerCall = 4;
+    sourceIndicesPerFact = [[], [0], [3], [2, 2]];
+
+    const result = await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(result.extracted).toBe(1);
+    const rows = db.prepare(
+      "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%'",
+    ).all() as Array<{ fact: string; source_exchange_ids: string }>;
+    expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
+      ['dup-probe-1-3', ['e1']],
+    ]);
+  });
+
+  it('같은 fact가 여러 배치에서 재추출되면 각 배치의 검증된 source UUID를 합친다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (let i = 2; i < 6; i++) {
+      insert.run(
+        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
+        `교환 ${i}에서 프로젝트 전반에 같은 상태관리 결정을 명시합니다.`,
+        'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
+      );
+    }
+    factNameForCall = () => 'cross-batch-fact';
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    const row = db.prepare(
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact'",
+    ).get() as { source_exchange_ids: string };
+    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e5']);
+  });
+
   it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
 

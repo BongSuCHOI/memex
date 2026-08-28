@@ -33,6 +33,9 @@ export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-te
 - Human assertions and explicitly labeled trusted tool evidence are primary
   evidence. Assistant synthesis and Memex recall are context only and must not
   support, reinforce, contradict, or raise confidence for a fact.
+- Every fact must cite the non-empty, 1-based source_exchange_indices of the
+  exchanges that directly support it. Do not cite an exchange only because it
+  appeared in the same batch.
 
 ## scope determination
 - project: specific files/paths/DB/API/framework/business logic
@@ -45,7 +48,8 @@ export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-te
     "fact_kr": "사용자는 상태 관리에 Riverpod을 사용한다",
     "category": "decision",
     "scope_type": "project",
-    "confidence": 0.9
+    "confidence": 0.9,
+    "source_exchange_indices": [1]
   }
 ]
 
@@ -223,6 +227,34 @@ export function buildExtractionPrompt(
     .join("\n\n");
 }
 
+type ExtractedFactCandidate = Omit<ExtractedFact, "source_exchange_ids"> & {
+  source_exchange_indices?: unknown;
+};
+
+/** Validate model-provided 1-based indices and resolve them to real exchange UUIDs. */
+function resolveSourceExchangeIds(
+  sourceExchangeIndices: unknown,
+  exchanges: Array<{ id: string }>,
+): string[] | null {
+  if (!Array.isArray(sourceExchangeIndices) || sourceExchangeIndices.length === 0) {
+    return null;
+  }
+
+  const resolved = new Set<string>();
+  for (const index of sourceExchangeIndices) {
+    if (
+      typeof index !== "number" ||
+      !Number.isInteger(index) ||
+      index < 1 ||
+      index > exchanges.length
+    ) {
+      return null;
+    }
+    resolved.add(exchanges[index - 1].id);
+  }
+  return [...resolved];
+}
+
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(
   db: Database.Database,
@@ -285,31 +317,53 @@ export async function extractFactsFromExchanges(
   const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
 
   const allFacts: ExtractedFact[] = [];
-  const seen = new Set<string>();
+  const factIndexByKey = new Map<string, number>();
   // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
   const transientFailures: unknown[] = [];
 
   for (let b = 0; b < selectedBatches.length; b++) {
     if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
 
-    const prompt = buildExtractionPrompt(selectedBatches[b]);
+    const batch = selectedBatches[b];
+    const prompt = buildExtractionPrompt(batch);
     renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
 
     try {
       const response = await callMemoryModel(EXTRACTION_SYSTEM_PROMPT, prompt);
-      const extracted = parseJsonResponse<ExtractedFact[]>(response);
+      const extracted = parseJsonResponse<ExtractedFactCandidate[]>(response);
 
       if (extracted && Array.isArray(extracted)) {
         for (const fact of extracted) {
           if (typeof fact?.fact !== "string" || fact.fact.trim() === "")
             continue;
           if (!passesConfidenceGate(fact.confidence)) continue;
+          const sourceExchangeIds = resolveSourceExchangeIds(
+            fact.source_exchange_indices,
+            batch,
+          );
+          if (!sourceExchangeIds) continue;
+          const key = normalizeFactText(fact.fact);
+          const existingIndex = factIndexByKey.get(key);
+          if (existingIndex !== undefined) {
+            allFacts[existingIndex].source_exchange_ids = [
+              ...new Set([
+                ...(allFacts[existingIndex].source_exchange_ids ?? []),
+                ...sourceExchangeIds,
+              ]),
+            ];
+            continue;
+          }
           if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
 
-          const key = normalizeFactText(fact.fact);
-          if (seen.has(key)) continue; // cross-batch duplicate within this session
-          seen.add(key);
-          allFacts.push(fact);
+          factIndexByKey.set(key, allFacts.length);
+          allFacts.push({
+            fact: fact.fact,
+            fact_kr: fact.fact_kr,
+            category: fact.category,
+            scope_type: fact.scope_type,
+            confidence: fact.confidence,
+            source_exchange_ids: sourceExchangeIds,
+          });
         }
       }
     } catch (error) {
@@ -392,7 +446,7 @@ export async function saveExtractedFacts(
           category: p.fact.category,
           scope_type: p.fact.scope_type,
           scope_project: p.fact.scope_type === "project" ? project : null,
-          source_exchange_ids: sourceExchangeIds,
+          source_exchange_ids: p.fact.source_exchange_ids ?? sourceExchangeIds,
           embedding: p.embedding,
           fact_kr: p.fact.fact_kr ?? null,
           embedding_kr: p.embeddingKr,
@@ -741,23 +795,12 @@ export async function runFactExtraction(
     renewLease();
 
     if (facts.length > 0) {
-      const exchangeIds = (
-        db
-          .prepare(
-            `SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid != null ? " AND rowid > ?" : ""}`,
-          )
-          .all(
-            ...(onlyAfterRowid != null
-              ? [sessionId, onlyAfterRowid]
-              : [sessionId]),
-          ) as Array<{ id: string }>
-      ).map((r) => r.id);
       saved = (
         await saveExtractedFacts(
           db,
           facts,
           project,
-          exchangeIds,
+          [],
           renewLease,
           writeCompletionMarker,
         )

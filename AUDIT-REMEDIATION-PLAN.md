@@ -680,13 +680,13 @@ node --test test/*slice.test.mjs
 - [x] 9. current fact lineage
 - [x] 10. shared initialized Web UI DB factory
 - [x] 11. missing primary fact vector self-heal
-- [ ] 12. precise source exchange attribution
+- [x] 12. precise source exchange attribution
 - [ ] 13. pipeline counter semantics
 
 ### Phase 2
 
 - [ ] A. Injection write ordering
-- [ ] B. Fact confidence 문서 정정
+- [x] B. Fact confidence 문서 정정
 - [ ] C. `parseConversationFile()` canonical identity
 - [ ] D. `createRelation()` final invariant
 - [x] E. Sync/rebuild 계약 정합성

@@ -109,6 +109,8 @@ export interface ExtractedFact {
   category: FactCategory;
   scope_type: FactScopeType;
   confidence: number;
+  /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
+  source_exchange_ids?: string[];
 }
 
 export interface ConsolidationResult {

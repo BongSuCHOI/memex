@@ -4,8 +4,10 @@
 
 Fact는 대화 전체 요약이 아니라 이후 작업에서 재사용할 가치가 있는 원자적 장기
 지식입니다. 기본 category는 decision, preference, pattern, knowledge, constraint이며
-각 fact는 scope, confidence, source exchanges, embedding, ontology category를 가집니다.
-Fact는 실행 규칙이 아니며 Codex 권한이나 hook을 변경하지 않습니다.
+각 persisted fact는 scope, source exchanges, embedding, ontology category를 가집니다.
+confidence는 model이 반환한 extraction-time candidate를 0.7 threshold로 거르는 데만
+사용하며 fact schema에는 저장하지 않습니다. Fact는 실행 규칙이 아니며 Codex 권한이나
+hook을 변경하지 않습니다.
 
 ## 2. 상태 전이
 
@@ -78,8 +80,11 @@ fail-closed 처리합니다. project 내부의 denied data root 관측은 source
 
 긴 session은 `MEMORY_BANK_MAX_EXTRACT_CALLS` 범위에서 전체 시간대를 고르게 샘플링한
 batch를 사용합니다. model output은 구조/enum/숫자 confidence를 검증하고 confidence
-0.7 미만을 저장하지 않습니다. 같은 session batch 사이의 normalized duplicate도
-저장 전에 제거합니다.
+0.7 미만을 저장하지 않습니다. 각 candidate는 직접 근거가 된 batch 내 exchange의
+1-based `source_exchange_indices`를 하나 이상 반환해야 합니다. 서버는 모든 index가
+해당 batch 범위 안인지 검증한 뒤 실제 exchange UUID로 변환하며, 누락되거나 유효하지
+않은 candidate는 저장하지 않습니다. 같은 session의 여러 batch에서 normalized duplicate가
+나오면 fact는 하나만 저장하되 각 batch에서 검증된 source UUID는 합칩니다.
 
 ## 4. claim과 atomic commit
 
@@ -173,6 +178,10 @@ source archive가 data root 밖을 가리키면 read하지 않습니다. provena
 `recall_events`는 fact provenance와 반대 방향의 안전 장치입니다. 기존 fact가 어느
 prompt에 주입됐는지 기록하여 그 결과 agent echo가 새 fact의 독립 evidence로
 재사용되지 않게 합니다.
+
+추출 시 fact의 `source_exchange_ids`에는 model이 해당 candidate의 직접 근거로 지목하고
+서버가 검증한 exchange UUID만 들어갑니다. 같은 extraction run의 batch나 session suffix에
+포함됐다는 이유만으로 모든 exchange를 일괄 귀속하지 않습니다.
 
 EVOLUTION/CONTRADICTION/DUPLICATE consolidation은 새 trusted evidence의
 `source_exchange_ids`를 기존 fact에 합칩니다. EVOLUTION과 CONTRADICTION은 revision에도
