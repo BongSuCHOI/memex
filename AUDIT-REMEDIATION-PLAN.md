@@ -527,18 +527,18 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 
 ### 기존 감사가 제안한 12개
 
-1. `SESSION_ID`와 실제 indexed exchange가 있는 상태에서 `fact-extract-worker.js`를 직접 실행하고 canonical success line 확인.
-2. 같은 rollout을 `sync`, `index`, `indexSession`, `indexUnprocessed` 네 경로로 넣어 user exclusion 결과 동일성 확인.
-3. 이미 색인된 session에 `DO NOT INDEX`가 뒤늦게 추가됐을 때 승인된 정책대로 purge 또는 retain되는지 확인.
-4. shell `grep /outside`, `git -C /outside`, `npm --prefix /outside test`가 `learnable=false`인지 확인.
-5. EVOLUTION 뒤 fact text, stored embedding, `vec_facts`, ontology pending, relations가 한 semantic generation인지 확인.
-6. CONTRADICTION 뒤 현재 active fact에서 predecessor revision을 trace할 수 있는지 확인.
-7. embedding version 상승 뒤 `vec_categories`까지 reembed되는지 확인.
-8. current-version fact에서 `vec_facts` row만 삭제해도 maintenance가 복구하는지 확인.
-9. 수백 개의 가까운 project fact 사이에 global fact를 넣고 `search_facts(scope=global)`가 찾는지 확인.
-10. 다른 기기에서 과거 `created_at` fact를 import한 뒤 consolidation 대상이 되는지 확인.
-11. 같은 ID fact의 newer edit/deactivate가 sync를 통해 다른 DB에 반영되는지 확인.
-12. Web UI `/api/facts-mutate`에서 edit/deactivate/restore를 실제 vec0 DB로 E2E 실행.
+1. [x] `SESSION_ID`와 실제 indexed exchange가 있는 상태에서 `fact-extract-worker.js`를 직접 실행하고 canonical success line 확인.
+2. [x] 같은 rollout을 `sync`, `index`, `indexSession`, `indexUnprocessed` 네 경로로 넣어 user exclusion 결과 동일성 확인.
+3. [x] 이미 색인된 session에 `DO NOT INDEX`가 뒤늦게 추가됐을 때 승인된 정책대로 purge 또는 retain되는지 확인.
+4. [x] shell `grep /outside`, `git -C /outside`, `npm --prefix /outside test`가 `learnable=false`인지 확인.
+5. [x] EVOLUTION 뒤 fact text, stored embedding, `vec_facts`, ontology pending, relations가 한 semantic generation인지 확인.
+6. [x] CONTRADICTION 뒤 현재 active fact에서 predecessor revision을 trace할 수 있는지 확인.
+7. [x] embedding version 상승 뒤 `vec_categories`까지 reembed되는지 확인.
+8. [x] current-version fact에서 `vec_facts` row만 삭제해도 maintenance가 복구하는지 확인.
+9. [x] 수백 개의 가까운 project fact 사이에 global fact를 넣고 `search_facts(scope=global)`가 찾는지 확인.
+10. [x] 다른 기기에서 과거 `created_at` fact를 import한 뒤 consolidation 대상이 되는지 확인.
+11. [x] 같은 ID fact의 newer edit/deactivate가 sync를 통해 다른 DB에 반영되는지 확인.
+12. [x] Web UI `/api/facts-mutate`에서 edit/deactivate/restore를 실제 vec0 DB로 E2E 실행.
 
 ### 후속 답변이 추가한 5개
 
@@ -694,10 +694,10 @@ node --test test/*slice.test.mjs
 
 ### Phase 3
 
-- [ ] 회귀 시나리오 1~17 전부 관측
-- [ ] required checks 통과
-- [ ] 변경 표면별 Manual QA 완료
-- [ ] temporary state 완전 cleanup
+- [x] 회귀 시나리오 1~17 전부 관측
+- [x] required checks 통과
+- [x] 변경 표면별 Manual QA 완료
+- [x] temporary state 완전 cleanup
 
 ### Phase 4
 
