@@ -174,98 +174,110 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
   const db = initDatabase();
   let embeddingsReady = false;
+  const failures: Error[] = [];
 
-  // Remove orphaned entries first
-  for (const orphan of issues.orphaned) {
-    console.log(`Removing orphaned entry: ${orphan.uuid}`);
-    deleteExchange(db, orphan.uuid);
-  }
-
-  // Re-index missing and outdated conversations
-  const toReindex = [
-    ...issues.missing.map((m) => m.path),
-    ...issues.outdated.map((o) => o.path),
-  ];
-
-  for (const conversationPath of toReindex) {
-    console.log(`Re-indexing: ${conversationPath}`);
-    try {
-      // CX-02: project identity comes from the rollout's own session_meta.cwd
-      // (canonical absolute path), never from the archive storage key — the
-      // storage directory name is a derived collision-free label, not identity
-      // evidence. Subagent threads never reach the index, matching sync.
-      const { meta, isSubagent } = await readRolloutMeta(conversationPath);
-      if (isSubagent) {
-        console.log(`  Skipped (subagent thread)`);
-        continue;
-      }
-      const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
-      const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
-      const eligibility = await getConversationEligibility({
-        filePath: conversationPath,
-        project,
-        isSubagent,
-        excludedProjects: getExcludedProjects(),
-      });
-      if (!eligibility.eligible) {
-        if (eligibility.reason === "user_excluded") {
-          purgeConversationFromIndex(db, {
-            archivePath: conversationPath,
-            sessionId:
-              meta && typeof meta.id === "string" ? meta.id : null,
-          });
-          console.log(`  Purged (user-excluded conversation)`);
-        } else {
-          console.log(`  Skipped (${eligibility.reason})`);
-        }
-        continue;
-      }
-      if (!embeddingsReady) {
-        await initEmbeddings();
-        embeddingsReady = true;
-      }
-
-      // Parse conversation
-      const exchanges = await parseConversation(
-        conversationPath,
-        project,
-        conversationPath,
-      );
-
-      if (exchanges.length === 0) {
-        console.log(`  Skipped (no exchanges)`);
-        continue;
-      }
-
-      // Generate/update summary
-      const summaryPath = conversationPath.replace(".jsonl", "-summary.txt");
-      const summary = await summarizeConversation(exchanges);
-      fs.writeFileSync(summaryPath, summary, "utf-8");
-      console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
-
-      // Index exchanges
-      for (const exchange of exchanges) {
-        const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-        const embedding = await generateExchangeEmbedding(
-          exchange.userMessage,
-          exchange.assistantMessage,
-          toolNames,
-        );
-        insertExchange(db, exchange, embedding, toolNames);
-      }
-
-      console.log(`  Indexed ${exchanges.length} exchanges`);
-    } catch (error) {
-      console.error(`Failed to re-index ${conversationPath}:`, error);
+  try {
+    // Remove orphaned entries first
+    for (const orphan of issues.orphaned) {
+      console.log(`Removing orphaned entry: ${orphan.uuid}`);
+      deleteExchange(db, orphan.uuid);
     }
-  }
 
-  db.close();
+    // Re-index missing and outdated conversations
+    const toReindex = [
+      ...issues.missing.map((m) => m.path),
+      ...issues.outdated.map((o) => o.path),
+    ];
+
+    for (const conversationPath of toReindex) {
+      console.log(`Re-indexing: ${conversationPath}`);
+      try {
+        // CX-02: project identity comes from the rollout's own session_meta.cwd
+        // (canonical absolute path), never from the archive storage key — the
+        // storage directory name is a derived collision-free label, not identity
+        // evidence. Subagent threads never reach the index, matching sync.
+        const { meta, isSubagent } = await readRolloutMeta(conversationPath);
+        if (isSubagent) {
+          console.log(`  Skipped (subagent thread)`);
+          continue;
+        }
+        const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
+        const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
+        const eligibility = await getConversationEligibility({
+          filePath: conversationPath,
+          project,
+          isSubagent,
+          excludedProjects: getExcludedProjects(),
+        });
+        if (!eligibility.eligible) {
+          if (eligibility.reason === "user_excluded") {
+            purgeConversationFromIndex(db, {
+              archivePath: conversationPath,
+              sessionId:
+                meta && typeof meta.id === "string" ? meta.id : null,
+            });
+            console.log(`  Purged (user-excluded conversation)`);
+          } else {
+            console.log(`  Skipped (${eligibility.reason})`);
+          }
+          continue;
+        }
+        if (!embeddingsReady) {
+          await initEmbeddings();
+          embeddingsReady = true;
+        }
+
+        // Parse conversation
+        const exchanges = await parseConversation(
+          conversationPath,
+          project,
+          conversationPath,
+        );
+
+        if (exchanges.length === 0) {
+          console.log(`  Skipped (no exchanges)`);
+          continue;
+        }
+
+        // Generate/update summary
+        const summaryPath = conversationPath.replace(".jsonl", "-summary.txt");
+        const summary = await summarizeConversation(exchanges);
+        fs.writeFileSync(summaryPath, summary, "utf-8");
+        console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+
+        // Index exchanges
+        for (const exchange of exchanges) {
+          const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
+          const embedding = await generateExchangeEmbedding(
+            exchange.userMessage,
+            exchange.assistantMessage,
+            toolNames,
+          );
+          insertExchange(db, exchange, embedding, toolNames);
+        }
+
+        console.log(`  Indexed ${exchanges.length} exchanges`);
+      } catch (error) {
+        const cause = error instanceof Error ? error : new Error(String(error));
+        console.error(`Failed to re-index ${conversationPath}:`, cause);
+        failures.push(new Error(`${conversationPath}: ${cause.message}`, { cause }));
+      }
+    }
+  } finally {
+    db.close();
+  }
 
   // Report corrupted files (manual intervention needed)
   if (issues.corrupted.length > 0) {
     console.log("\n⚠️  Corrupted files (manual review needed):");
     issues.corrupted.forEach((c) => console.log(`  ${c.path}: ${c.error}`));
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `Repair failed for ${failures.length} conversation(s)`,
+    );
   }
 
   console.log("✅ Repair complete.");

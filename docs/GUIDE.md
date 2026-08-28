@@ -310,6 +310,8 @@ node scripts/validate-plugin.mjs
   `$XDG_CACHE_HOME/memex/npm-mcp`이며 미설정 시 `~/.cache/memex/npm-mcp`
 - stale socket: 소유 process가 없는 Memex data-root socket만 제거
 - project 충돌: `memex migrate-projects --dry-run`의 evidence/count/backup 확인
+- `--repair` 실패: 성공한 file은 유지되지만 하나라도 재색인에 실패하면 실패 경로를
+  출력하고 non-zero로 종료합니다. 원인을 수정한 뒤 같은 명령을 재실행합니다.
 
 Codex CLI 0.149.1에는 formal `plugin validate` subcommand가 없습니다.
 `scripts/validate-plugin.mjs`는 isolated marketplace/cache/MCP/skills/hooks/UI/cleanup

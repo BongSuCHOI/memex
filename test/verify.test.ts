@@ -1,4 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const repairMocks = vi.hoisted(() => ({
+  summarizeConversation: vi.fn(async () => 'repair test summary'),
+}));
+
+vi.mock('../src/embeddings.js', () => ({
+  initEmbeddings: vi.fn(async () => undefined),
+  generateExchangeEmbedding: vi.fn(async () => new Array(384).fill(0.01)),
+  generateEmbedding: vi.fn(async () => new Array(384).fill(0.01)),
+  EMBEDDING_VERSION: 999,
+}));
+
+vi.mock('../src/summarizer.js', () => ({
+  summarizeConversation: repairMocks.summarizeConversation,
+}));
 import { verifyIndex, repairIndex, VerificationResult } from '../src/verify.js';
 import { suppressConsole } from './test-utils.js';
 import fs from 'fs';
@@ -16,6 +31,8 @@ describe('verifyIndex', () => {
   const dbPath = path.join(testDir, '.config', 'memory-bank', 'conversation-index', 'db.sqlite');
 
   beforeEach(() => {
+    repairMocks.summarizeConversation.mockReset();
+    repairMocks.summarizeConversation.mockResolvedValue('repair test summary');
     // Create test directories
     fs.mkdirSync(path.join(testDir, '.config', 'memory-bank', 'conversation-index'), { recursive: true });
     fs.mkdirSync(archiveDir, { recursive: true });
@@ -260,13 +277,12 @@ describe('repairIndex', () => {
     const embedding = new Array(384).fill(0.1);
     insertExchange(db, exchange, embedding);
 
-    // Get the last_indexed timestamp
-    const beforeRow = db.prepare(`SELECT last_indexed FROM exchanges WHERE id = ?`).get('outdated-repair-1') as any;
-    const beforeIndexed = beforeRow.last_indexed;
+    // Make the indexed timestamp deterministically older than the file without
+    // fixed sleeps or filesystem timestamp luck.
+    const beforeIndexed = Date.now() - 10_000;
+    db.prepare('UPDATE exchanges SET last_indexed = ? WHERE id = ?')
+      .run(beforeIndexed, 'outdated-repair-1');
     db.close();
-
-    // Wait a bit, then modify the file
-    await new Promise(resolve => setTimeout(resolve, 10));
 
     // Update the conversation file (add new exchange)
     const updatedMessages = [
@@ -279,9 +295,6 @@ describe('repairIndex', () => {
     // Verify detects outdated
     const issues = await verifyIndex();
     expect(issues.outdated.length).toBe(1);
-
-    // Wait a bit to ensure different timestamp
-    await new Promise(resolve => setTimeout(resolve, 10));
 
     // Run repair
     await repairIndex(issues);
@@ -296,5 +309,24 @@ describe('repairIndex', () => {
     expect(verifyAfter.outdated.length).toBe(0);
 
     dbAfter.close();
+  });
+
+  it('propagates re-index failures instead of reporting repair success', async () => {
+    const projectArchive = path.join(archiveDir, 'test-project');
+    fs.mkdirSync(projectArchive, { recursive: true });
+    const conversationPath = path.join(projectArchive, 'failed-repair.jsonl');
+    fs.writeFileSync(conversationPath, [
+      JSON.stringify({ type: 'session_meta', payload: { id: 'thr-failed-repair', cwd: '/x/test-project' } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Repair me' }] } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Attempt repair' }] } }),
+    ].join('\n'));
+    repairMocks.summarizeConversation.mockRejectedValueOnce(new Error('summary unavailable'));
+
+    await expect(repairIndex({
+      missing: [{ path: conversationPath, reason: 'No summary file' }],
+      orphaned: [],
+      outdated: [],
+      corrupted: [],
+    })).rejects.toThrow(/repair failed for 1 conversation/i);
   });
 });
