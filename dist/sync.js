@@ -1,75 +1,10 @@
 import fs from "fs";
 import path from "path";
-import readline from "node:readline";
-import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
-import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, ensureArchiveDir, } from "./paths.js";
-import { archiveFileExists, statArchiveFile, createArchiveReadStream, } from "./archive-io.js";
+import { getExcludedProjects, isWorkerPromptMessage, ensureArchiveDir, } from "./paths.js";
+import { archiveFileExists, statArchiveFile, } from "./archive-io.js";
 import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT, } from "./project-identity.js";
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath, } from "./codex-rollout.js";
-// An exclusion marker is a USER-level instruction to keep a conversation out
-// of the index (typed in chat, or placed in AGENTS.md so it arrives inside a
-// user_instructions/environment_context block). It is honored only when it
-// appears in a user-role message payload — never in tool results, assistant
-// output, or other recorded fields. Scanning raw file bytes instead caused
-// memex-development sessions to exclude themselves whenever the agent merely
-// read this file's own source (observed: 2 large dev sessions silently
-// dropped because their transcripts contained marker strings inside tool
-// results).
-const EXCLUSION_MARKERS = [
-    "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
-    "Only use NO_INSIGHTS_FOUND",
-    SUMMARIZER_CONTEXT_MARKER,
-];
-/**
- * True when an exclusion marker appears in a user-role message payload of the
- * rollout. Line-level scan (not full exchange parsing) so that internal
- * context blocks (<user_instructions>/<environment_context>) are still
- * honored even though parseRolloutStream filters them out of exchanges.
- * Undecidable (unreadable/unparsable) files are NOT excluded.
- */
-async function conversationIsExcluded(filePath) {
-    const stream = createArchiveReadStream(filePath);
-    try {
-        const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-        for await (const line of rl) {
-            if (!line.trim())
-                continue;
-            let rec;
-            try {
-                rec = JSON.parse(line);
-            }
-            catch {
-                continue; // malformed line — excluded only by intact user messages
-            }
-            const p = rec?.payload;
-            if (rec?.type !== "response_item" ||
-                !p ||
-                p.type !== "message" ||
-                p.role !== "user") {
-                continue;
-            }
-            const text = typeof p.content === "string"
-                ? p.content
-                : Array.isArray(p.content)
-                    ? p.content
-                        .filter((c) => c && typeof c.text === "string")
-                        .map((c) => c.text)
-                        .join("\n")
-                    : "";
-            if (EXCLUSION_MARKERS.some((marker) => text.includes(marker))) {
-                return true;
-            }
-        }
-        return false;
-    }
-    catch {
-        // If we can't read or scan the file, don't exclude it
-        return false;
-    }
-    finally {
-        stream.destroy();
-    }
-}
+import { getConversationEligibility, purgeConversationFromIndex, } from "./conversation-policy.js";
 function copyIfNewer(src, dest) {
     // Ensure destination directory exists
     const destDir = path.dirname(dest);
@@ -119,6 +54,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
     // Collect files to index and summarize
     const filesToIndex = [];
     const filesToSummarize = [];
+    const filesToPurge = [];
     // Walk Codex session rollouts. Layout is recursive (YYYY/MM/DD), and the
     // project key is derived from each session's own cwd in session_meta —
     // the archive keeps its <project>/<file>.jsonl contract on disk.
@@ -126,14 +62,19 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
     for (const srcFile of discoverSessionFiles(sourceDir)) {
         try {
             const { meta, isSubagent } = await readRolloutMeta(srcFile);
-            // Subagent / child threads are harness plumbing, never knowledge.
-            if (isSubagent)
-                continue;
             const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
             // CX-02: project identity is the canonical absolute cwd; the archive
             // directory uses a collision-free storage key derived from it.
             const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
-            if (isExcludedProject(project, excludedProjects)) {
+            let eligibility = await getConversationEligibility({
+                filePath: srcFile,
+                project,
+                isSubagent,
+                excludedProjects,
+            });
+            if (!eligibility.eligible && eligibility.reason === "subagent")
+                continue;
+            if (!eligibility.eligible && eligibility.reason === "excluded_project") {
                 console.error(`\nSkipping excluded project: ${project}`);
                 continue;
             }
@@ -141,17 +82,31 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             const wasCopied = copyIfNewer(srcFile, destFile);
             if (wasCopied) {
                 result.copied++;
-                filesToIndex.push({ path: destFile, project });
             }
             else {
                 result.skipped++;
             }
+            if (eligibility.eligible) {
+                eligibility = await getConversationEligibility({
+                    filePath: destFile,
+                    project,
+                    isSubagent: false,
+                    excludedProjects,
+                });
+            }
+            const sessionId = meta && typeof meta.id === "string"
+                ? meta.id
+                : extractSessionIdFromPath(destFile);
+            if (!eligibility.eligible) {
+                filesToPurge.push({ path: destFile, sessionId });
+                continue;
+            }
+            if (wasCopied)
+                filesToIndex.push({ path: destFile, project });
             // Check if this file needs a summary (whether newly copied or existing)
             if (!options.skipSummaries) {
                 const summaryPath = destFile.replace(".jsonl", "-summary.txt");
-                if (!archiveFileExists(summaryPath) &&
-                    !(await conversationIsExcluded(destFile))) {
-                    const sessionId = extractSessionIdFromPath(destFile);
+                if (!archiveFileExists(summaryPath)) {
                     if (sessionId) {
                         filesToSummarize.push({ path: destFile, sessionId, project });
                     }
@@ -165,37 +120,51 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             });
         }
     }
-    // Index copied files (unless skipIndex is set)
-    if (!options.skipIndex && filesToIndex.length > 0) {
+    // Purge user-excluded conversations even when no newly copied file needs
+    // indexing. This makes a marker added later conversation-wide.
+    if (filesToPurge.length > 0 ||
+        (!options.skipIndex && filesToIndex.length > 0)) {
         const { initDatabase, insertExchange } = await import("./db.js");
-        const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
-        const { parseConversation } = await import("./parser.js");
         const db = initDatabase();
-        await initEmbeddings();
-        for (const { path: file, project } of filesToIndex) {
+        for (const excluded of filesToPurge) {
             try {
-                // Check for user-level DO NOT INDEX exclusion marker
-                if (await conversationIsExcluded(file)) {
-                    continue; // Skip indexing but file is already copied
-                }
-                // CX-02: project = canonical absolute cwd (carried from the rollout
-                // header), never the archive directory name.
-                const exchanges = await parseConversation(file, project, file);
-                for (const exchange of exchanges) {
-                    // Worker-prompt exchange = ephemeral state, not knowledge — never index.
-                    if (isWorkerPromptMessage(exchange.userMessage))
-                        continue;
-                    const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-                    const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                    insertExchange(db, exchange, embedding, toolNames);
-                }
-                result.indexed++;
+                purgeConversationFromIndex(db, {
+                    archivePath: excluded.path,
+                    sessionId: excluded.sessionId,
+                });
             }
             catch (error) {
                 result.errors.push({
-                    file,
+                    file: excluded.path,
                     error: error instanceof Error ? error.message : String(error),
                 });
+            }
+        }
+        if (!options.skipIndex && filesToIndex.length > 0) {
+            const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
+            const { parseConversation } = await import("./parser.js");
+            await initEmbeddings();
+            for (const { path: file, project } of filesToIndex) {
+                try {
+                    // CX-02: project = canonical absolute cwd (carried from the rollout
+                    // header), never the archive directory name.
+                    const exchanges = await parseConversation(file, project, file);
+                    for (const exchange of exchanges) {
+                        // Worker-prompt exchange = ephemeral state, not knowledge — never index.
+                        if (isWorkerPromptMessage(exchange.userMessage))
+                            continue;
+                        const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
+                        const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
+                        insertExchange(db, exchange, embedding, toolNames);
+                    }
+                    result.indexed++;
+                }
+                catch (error) {
+                    result.errors.push({
+                        file,
+                        error: error instanceof Error ? error.message : String(error),
+                    });
+                }
             }
         }
         db.close();

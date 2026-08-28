@@ -8,7 +8,6 @@ import { ConversationExchange } from "./types.js";
 import {
   getArchiveDir,
   getExcludedProjects,
-  isExcludedProject,
   isWorkerPromptMessage,
   getSessionsRoot,
 } from "./paths.js";
@@ -23,6 +22,10 @@ import {
   statArchiveFile,
   atomicCopyFileSync,
 } from "./archive-io.js";
+import {
+  getConversationEligibility,
+  purgeConversationFromIndex,
+} from "./conversation-policy.js";
 
 /**
  * Copy source → archive unless a current copy (plain or .zst) already exists.
@@ -73,9 +76,6 @@ export async function indexConversations(
   console.log("Initializing database...");
   const db = initDatabase();
 
-  console.log("Loading embedding model...");
-  await initEmbeddings();
-
   if (noSummaries) {
     console.log("⚠️  Running in no-summaries mode (skipping AI summaries)");
   }
@@ -106,12 +106,18 @@ export async function indexConversations(
     // Header pre-parse routes sessions cheaply: subagent threads and excluded
     // projects never reach the archive; project = session's own cwd basename.
     const { meta, isSubagent } = await readRolloutMeta(sourcePath);
-    if (isSubagent) continue;
     const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
     // CX-02: project identity is the canonical absolute cwd; archive dir uses
     // the collision-free storageKey.
     const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
-    if (isExcludedProject(project, excludedProjects)) {
+    let eligibility = await getConversationEligibility({
+      filePath: sourcePath,
+      project,
+      isSubagent,
+      excludedProjects,
+    });
+    if (!eligibility.eligible && eligibility.reason === "subagent") continue;
+    if (!eligibility.eligible && eligibility.reason === "excluded_project") {
       console.log(`\nSkipping excluded project: ${project}`);
       continue;
     }
@@ -125,6 +131,22 @@ export async function indexConversations(
     // Copy to archive (skip when a current plain or compressed copy exists)
     if (archiveIfStale(sourcePath, archivePath)) {
       console.log(`  Archived: ${project}/${fileName}`);
+    }
+    if (eligibility.eligible) {
+      eligibility = await getConversationEligibility({
+        filePath: archivePath,
+        project,
+        isSubagent: false,
+        excludedProjects,
+      });
+    }
+    if (!eligibility.eligible) {
+      purgeConversationFromIndex(db, {
+        archivePath,
+        sessionId: meta && typeof meta.id === "string" ? meta.id : null,
+      });
+      console.log(`  Excluded by user marker: ${project}/${fileName}`);
+      continue;
     }
 
     // Parse conversation
@@ -141,6 +163,11 @@ export async function indexConversations(
       summaryPath: archivePath.replace(".jsonl", "-summary.txt"),
       exchanges,
     });
+  }
+
+  if (toProcess.length > 0) {
+    console.log("Loading embedding model...");
+    await initEmbeddings();
   }
 
   // Batch summarize conversations in parallel (unless --no-summaries)
@@ -227,19 +254,28 @@ export async function indexSession(
     path.basename(p).includes(sessionId),
   );
   let found = false;
+  const excludedProjects = getExcludedProjects();
 
   for (const sourcePath of candidates) {
     const { meta, isSubagent } = await readRolloutMeta(sourcePath);
-    if (isSubagent) continue; // harness plumbing, never knowledge
-
-    found = true;
     const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
     // CX-02: canonical absolute cwd as project identity.
     const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
+    let eligibility = await getConversationEligibility({
+      filePath: sourcePath,
+      project,
+      isSubagent,
+      excludedProjects,
+    });
+    if (!eligibility.eligible && eligibility.reason === "subagent") continue;
+    found = true;
+    if (!eligibility.eligible && eligibility.reason === "excluded_project") {
+      console.log(`Skipping excluded project: ${project}`);
+      break;
+    }
     const fileName = path.basename(sourcePath);
 
     const db = initDatabase();
-    await initEmbeddings();
 
     const projectArchive = path.join(ARCHIVE_DIR, projectStorageKey(project));
     fs.mkdirSync(projectArchive, { recursive: true });
@@ -248,6 +284,24 @@ export async function indexSession(
 
     // Archive
     archiveIfStale(sourcePath, archivePath);
+    if (eligibility.eligible) {
+      eligibility = await getConversationEligibility({
+        filePath: archivePath,
+        project,
+        isSubagent: false,
+        excludedProjects,
+      });
+    }
+    if (!eligibility.eligible) {
+      purgeConversationFromIndex(db, {
+        archivePath,
+        sessionId: meta && typeof meta.id === "string" ? meta.id : sessionId,
+      });
+      console.log(`Excluded session ${sessionId} by user marker`);
+      db.close();
+      break;
+    }
+    await initEmbeddings();
 
     // Parse and summarize
     const exchanges = await parseConversation(sourcePath, project, archivePath);
@@ -297,7 +351,6 @@ export async function indexUnprocessed(
     console.log("⚠️  Running in no-summaries mode (skipping AI summaries)");
 
   const db = initDatabase();
-  await initEmbeddings();
 
   const SESSIONS_DIR = getSessionsRoot();
   const ARCHIVE_DIR = getArchiveDir();
@@ -319,16 +372,31 @@ export async function indexUnprocessed(
   // and will be retried on the next run once the transcript completes.
   for (const sourcePath of discoverSessionFiles(SESSIONS_DIR)) {
     const { meta, isSubagent } = await readRolloutMeta(sourcePath);
-    if (isSubagent) continue;
     const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
     // CX-02: canonical absolute cwd as project identity.
     const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
-    if (isExcludedProject(project, excludedProjects)) continue;
+    let eligibility = await getConversationEligibility({
+      filePath: sourcePath,
+      project,
+      isSubagent,
+      excludedProjects,
+    });
+    if (!eligibility.eligible && eligibility.reason !== "user_excluded") continue;
 
     const fileName = path.basename(sourcePath);
     const projectArchive = path.join(ARCHIVE_DIR, projectStorageKey(project));
     const archivePath = path.join(projectArchive, fileName);
     const summaryPath = archivePath.replace(".jsonl", "-summary.txt");
+
+    if (!eligibility.eligible) {
+      fs.mkdirSync(projectArchive, { recursive: true });
+      archiveIfStale(sourcePath, archivePath);
+      purgeConversationFromIndex(db, {
+        archivePath,
+        sessionId: meta && typeof meta.id === "string" ? meta.id : null,
+      });
+      continue;
+    }
 
     // Check if already indexed in database
     const alreadyIndexed = db
@@ -361,6 +429,8 @@ export async function indexUnprocessed(
     db.close();
     return;
   }
+
+  await initEmbeddings();
 
   console.log(`Found ${unprocessed.length} unprocessed conversations`);
 

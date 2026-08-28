@@ -22,6 +22,7 @@ vi.mock("../src/summarizer.js", async () => {
 
 import { syncConversations } from "../src/sync.js";
 import { initDatabase } from "../src/db.js";
+import { insertFact, insertRevision } from "../src/fact-db.js";
 
 let testDir: string | undefined;
 const origDbPath = process.env.MEMEX_DB_PATH;
@@ -33,6 +34,7 @@ const CWD = "/tmp/sync-marker-fixture/proj-x";
 // 8-4-4-4-12 hex format to find a rollout's session id.
 const UUID_1 = "01a00001-aaaa-4bbb-8ccc-ccccccccccc1";
 const UUID_2 = "01a00002-aaaa-4bbb-8ccc-ccccccccccc2";
+const UUID_3 = "01a00003-aaaa-4bbb-8ccc-ccccccccccc3";
 
 function rollout(
   sessionId: string,
@@ -194,6 +196,119 @@ describe("sync exclusion markers honor user messages only", () => {
         .readdirSync(dest, { recursive: true })
         .some((f) => String(f).endsWith(".jsonl")),
     ).toBe(true);
+    expect(countSummaries(dest)).toBe(0);
+  });
+
+  it("purges an already indexed conversation when a user adds the marker later", async () => {
+    const source = path.join(testDir!, "sessions-late-marker");
+    const dest = path.join(testDir!, "archive-late-marker");
+    fs.mkdirSync(source, { recursive: true });
+    const sourceFile = writeRollout(source, UUID_3, { markerIn: "none" });
+    useIsolatedDb();
+
+    const first = await syncConversations(source, dest);
+    expect(first.errors).toHaveLength(0);
+    expect(first.indexed).toBe(1);
+    expect(countSummaries(dest)).toBe(1);
+
+    const db = initDatabase();
+    try {
+      const exchange = db
+        .prepare("SELECT id FROM exchanges WHERE session_id = ?")
+        .get(UUID_3) as { id: string };
+      db.prepare(`
+        INSERT INTO tool_calls
+          (id, exchange_id, tool_name, timestamp)
+        VALUES ('late-tool', ?, 'read_file', ?)
+      `).run(exchange.id, new Date().toISOString());
+      db.prepare(`
+        INSERT INTO extraction_log
+          (session_id, processed_at, extracted, saved, last_exchange_rowid)
+        VALUES (?, ?, 1, 1, 1)
+      `).run(UUID_3, new Date().toISOString());
+      db.prepare(`
+        INSERT INTO recall_events
+          (id, session_id, project, prompt_hash, fact_ids, created_at)
+        VALUES ('late-recall', ?, ?, 'hash', '[]', ?)
+      `).run(UUID_3, CWD, new Date().toISOString());
+      const excludedFact = insertFact(db, {
+        fact: "이 대화에서만 나온 비공개 결정",
+        category: "decision",
+        scope_type: "project",
+        scope_project: CWD,
+        source_exchange_ids: [exchange.id],
+        embedding: Array.from({ length: 384 }, () => 0.01),
+      });
+      const retainedFact = insertFact(db, {
+        fact: "다른 대화의 결정",
+        category: "decision",
+        scope_type: "project",
+        scope_project: CWD,
+        source_exchange_ids: ["other-exchange"],
+        embedding: null,
+      });
+      insertRevision(db, {
+        fact_id: excludedFact,
+        previous_fact: "이전 비공개 결정",
+        new_fact: "이 대화에서만 나온 비공개 결정",
+        reason: "excluded source revision",
+        source_exchange_id: exchange.id,
+      });
+      db.prepare(`
+        INSERT INTO ontology_relations
+          (id, source_fact_id, relation_type, target_fact_id, created_at)
+        VALUES ('late-relation', ?, 'SUPPORTS', ?, ?)
+      `).run(excludedFact, retainedFact, new Date().toISOString());
+    } finally {
+      db.close();
+    }
+
+    fs.writeFileSync(sourceFile, rollout(UUID_3, { markerIn: "user-message" }));
+    const later = new Date(Date.now() + 2_000);
+    fs.utimesSync(sourceFile, later, later);
+
+    const second = await syncConversations(source, dest);
+    expect(second.errors).toHaveLength(0);
+    expect(second.indexed).toBe(0);
+
+    const check = initDatabase();
+    try {
+      for (const table of [
+        "exchanges",
+        "vec_exchanges",
+        "tool_calls",
+        "extraction_log",
+        "recall_events",
+        "fact_revisions",
+        "ontology_relations",
+      ]) {
+        const n = (
+          check.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+            n: number;
+          }
+        ).n;
+        expect(n, `${table} should be purged`).toBe(0);
+      }
+      expect(
+        (check.prepare("SELECT COUNT(*) AS n FROM facts").get() as { n: number }).n,
+      ).toBe(1);
+      expect(
+        (check.prepare("SELECT COUNT(*) AS n FROM vec_facts").get() as {
+          n: number;
+        }).n,
+      ).toBe(0);
+      expect(
+        (
+          check
+            .prepare(
+              "SELECT COUNT(*) AS n FROM exchanges_fts WHERE exchanges_fts MATCH 'PostgreSQL'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(0);
+    } finally {
+      check.close();
+    }
     expect(countSummaries(dest)).toBe(0);
   });
 });

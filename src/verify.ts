@@ -17,6 +17,10 @@ import {
   canonicalizeProjectPath,
   UNKNOWN_PROJECT,
 } from "./project-identity.js";
+import {
+  getConversationEligibility,
+  purgeConversationFromIndex,
+} from "./conversation-policy.js";
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -51,6 +55,8 @@ export async function verifyIndex(): Promise<VerificationResult> {
   let totalChecked = 0;
 
   for (const project of projects) {
+    // Historical archives may still use a plain project directory name.
+    // Per-file canonical policy below handles current collision-free keys.
     if (isExcludedProject(project, excludedProjects)) {
       console.log("\nSkipping excluded project: " + project);
       continue;
@@ -80,6 +86,23 @@ export async function verifyIndex(): Promise<VerificationResult> {
       }
 
       const conversationPath = path.join(projectPath, file);
+      const { meta, isSubagent } = await readRolloutMeta(conversationPath);
+      const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
+      const canonicalProject = cwd
+        ? canonicalizeProjectPath(cwd)
+        : UNKNOWN_PROJECT;
+      const eligibility = await getConversationEligibility({
+        filePath: conversationPath,
+        project: canonicalProject,
+        isSubagent,
+        excludedProjects,
+      });
+      if (!eligibility.eligible) {
+        // Verification remains read-only. Ineligible archives are not summary
+        // defects; ingestion/reindex entrypoints own conversation-wide purge.
+        foundFiles.add(conversationPath);
+        continue;
+      }
       foundFiles.add(conversationPath);
 
       const summaryPath = conversationPath.replace(".jsonl", "-summary.txt");
@@ -150,7 +173,7 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
   const { summarizeConversation } = await import("./summarizer.js");
 
   const db = initDatabase();
-  await initEmbeddings();
+  let embeddingsReady = false;
 
   // Remove orphaned entries first
   for (const orphan of issues.orphaned) {
@@ -178,6 +201,29 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
       }
       const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
       const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
+      const eligibility = await getConversationEligibility({
+        filePath: conversationPath,
+        project,
+        isSubagent,
+        excludedProjects: getExcludedProjects(),
+      });
+      if (!eligibility.eligible) {
+        if (eligibility.reason === "user_excluded") {
+          purgeConversationFromIndex(db, {
+            archivePath: conversationPath,
+            sessionId:
+              meta && typeof meta.id === "string" ? meta.id : null,
+          });
+          console.log(`  Purged (user-excluded conversation)`);
+        } else {
+          console.log(`  Skipped (${eligibility.reason})`);
+        }
+        continue;
+      }
+      if (!embeddingsReady) {
+        await initEmbeddings();
+        embeddingsReady = true;
+      }
 
       // Parse conversation
       const exchanges = await parseConversation(

@@ -48,6 +48,14 @@ AGENTS.md(`user_instructions`/`environment_context` 블록로 기록됨)에 넣�
 스스로 인덱스에서 빠지는 현상)를 이 계약이 차단하며, 회귀 테스트는
 `sync-exclusion-marker.test.ts`가 소유합니다.
 
+user-role 제외 마커의 의미는 **conversation-wide**입니다. marker가 처음 발견된
+시점과 무관하게 `sync`, `index-all`/`rebuild`, `index-session`, `index-cleanup`은 같은
+`conversation-policy` 판정을 사용합니다. source rollout은 변경하지 않고 rebuild 가능한
+archive 사본은 보존하지만, 기존 exchange/tool call, FTS/vector, session extraction/recall ledger,
+summary, 그리고 해당 exchange를 evidence로 사용한 fact/revision/vector/relation은
+제거합니다. 여러 source가 합쳐진 fact도 문장 일부의 출처를 분리 증명할 수 없으므로
+fact 전체를 제거합니다.
+
 ## 3. project identity와 archive key
 
 ```text

@@ -102,6 +102,10 @@ CREATE TABLE recall_events (
   `learnable=1` tool result만 prompt에 넣는다.
 - recall event는 context 계산 시 `prepared`, hook stdout emit 후 `emitted`다. Codex가
   실제 소비했는지는 host receipt가 없어 별도 주장하지 않는다.
+- user-role conversation exclusion은 conversation-wide purge다. `exchanges` 삭제 trigger가
+  `exchanges_fts`를 정리하고, policy service가 `tool_calls`, `vec_exchanges`, session
+  `extraction_log`/`recall_events`, summary와 해당 source exchange를 참조하는
+  fact/revision/vector/relation을 함께 제거한다. source rollout과 archive 사본은 보존한다.
 
 `exchanges_fts`는 user/assistant text의 external-content FTS5 테이블입니다.
 insert/update/delete trigger가 동기화하며 `fts_meta`의 rebuild-ready 상태가 없으면

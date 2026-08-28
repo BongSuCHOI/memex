@@ -43,6 +43,8 @@ async function main() {
 
   log(`worker: extracting session=${sessionId} project=${project}`);
 
+  let db;
+
   // 미인덱싱 세션 보호(2026-08-28 감사 ②): 세션-end 훅은 rollout 을 검증한 뒤
   // 워커를 띄우지만, 워커가 읽는 것은 SQLite 이다. SessionStart 의 백그라운드 sync 가
   // 아직 이 rollout 을 인덱싱하지 못했다면 exchange 가 0 건이고, 여기서 추출을 진행하면
