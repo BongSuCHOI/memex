@@ -559,6 +559,39 @@ export function initDatabase(): Database.Database {
     )
   `);
 
+  // Relation scope is a final database write invariant, not a caller policy.
+  // Different project facts may never have a direct edge; global↔project and
+  // same-project edges remain valid. Guard both new rows and endpoint rewrites
+  // so sync/import or future low-level writers cannot bypass createRelation().
+  const crossProjectRelationPredicate = `
+    EXISTS (
+      SELECT 1
+      FROM facts AS source
+      JOIN facts AS target
+        ON source.id = NEW.source_fact_id
+       AND target.id = NEW.target_fact_id
+      WHERE source.scope_type = 'project'
+        AND target.scope_type = 'project'
+        AND source.scope_project IS NOT target.scope_project
+    )
+  `;
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ontology_relations_scope_insert_guard
+    BEFORE INSERT ON ontology_relations
+    WHEN ${crossProjectRelationPredicate}
+    BEGIN
+      SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+    END
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ontology_relations_scope_update_guard
+    BEFORE UPDATE OF source_fact_id, target_fact_id ON ontology_relations
+    WHEN ${crossProjectRelationPredicate}
+    BEGIN
+      SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+    END
+  `);
+
   // Exact relation triples are unique; different relation types between the
   // same pair remain valid.
   db.exec(`

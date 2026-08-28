@@ -252,6 +252,9 @@ text/vector를 transaction으로 교체하고 ontology classification을 pending
 
 project fact는 absolute canonical `scope_project`를 가져야 하고 global fact는
 `NULL`이어야 합니다. traversal은 seed뿐 아니라 매 hop에 같은 predicate를 적용합니다.
+`ontology_relations`는 두 endpoint가 모두 project scope이면서 `scope_project`가 다르면
+INSERT와 endpoint UPDATE를 DB trigger에서 거부합니다. 같은 project끼리와 global↔project
+edge는 허용하며, caller의 사전 scope filtering은 이 최종 write invariant를 대체하지 않습니다.
 
 ## 7. Mutation transaction
 

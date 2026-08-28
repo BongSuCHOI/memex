@@ -69,7 +69,9 @@ project로 새는 구현은 허용하지 않습니다. cycle은 visited set으�
 - `cross_project_insights`: current project를 명시하고 그 project를 결과에서 제외
 
 서로 다른 project fact의 direct edge는 금지합니다. global fact가 여러 project의 공통
-제약으로 연결되는 것은 허용합니다.
+제약으로 연결되는 것은 허용합니다. 이 규칙은 caller filtering이 아니라
+`ontology_relations`의 INSERT와 endpoint UPDATE trigger가 최종 write boundary에서
+강제하므로 low-level `createRelation()`, sync/import, raw SQL writer가 우회할 수 없습니다.
 
 ## 6. graph API
 

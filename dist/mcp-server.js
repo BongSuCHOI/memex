@@ -18844,6 +18844,34 @@ function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  const crossProjectRelationPredicate = `
+    EXISTS (
+      SELECT 1
+      FROM facts AS source
+      JOIN facts AS target
+        ON source.id = NEW.source_fact_id
+       AND target.id = NEW.target_fact_id
+      WHERE source.scope_type = 'project'
+        AND target.scope_type = 'project'
+        AND source.scope_project IS NOT target.scope_project
+    )
+  `;
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ontology_relations_scope_insert_guard
+    BEFORE INSERT ON ontology_relations
+    WHEN ${crossProjectRelationPredicate}
+    BEGIN
+      SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+    END
+  `);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS ontology_relations_scope_update_guard
+    BEFORE UPDATE OF source_fact_id, target_fact_id ON ontology_relations
+    WHEN ${crossProjectRelationPredicate}
+    BEGIN
+      SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+    END
+  `);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_relations_triple
     ON ontology_relations(source_fact_id, relation_type, target_fact_id)

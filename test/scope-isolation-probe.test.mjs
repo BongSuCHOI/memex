@@ -54,8 +54,11 @@ test('Phase 1 Probe: Project Scope Isolation & Graph Leaks', async (t) => {
     source_exchange_ids: ['ex-a1'],
   });
 
-  // Cross-relation (A -> B relation should NOT leak when scoping to A)
-  createRelation(db, factAId, 'CONTRADICTS', factBId, 'Different caching engines');
+  // Cross-project edges are rejected at the final relation write boundary.
+  assert.throws(
+    () => createRelation(db, factAId, 'CONTRADICTS', factBId, 'Different caching engines'),
+    /cross-project/i,
+  );
 
   await t.test('Conversation search with project scoping isolates results', async () => {
     const resultsA = await searchConversations('caching', { project: '/path/to/project-A', mode: 'text' });
@@ -67,13 +70,12 @@ test('Phase 1 Probe: Project Scope Isolation & Graph Leaks', async (t) => {
     assert.equal(resultsB[0].exchange.project, '/path/to/project-B');
   });
 
-  await t.test('getRelatedFacts with scopeProject prevents cross-project hop leaks', async () => {
+  await t.test('rejected cross-project writes leave no traversal path in any scope', async () => {
     const relatedA = getRelatedFacts(db, factAId, 1, 0.6, 0.2, '/path/to/project-A');
     assert.equal(relatedA.length, 0, 'Cross-project target factB must not be returned');
 
     const relatedAll = getRelatedFacts(db, factAId, 1, 0.6, 0.2, null);
-    assert.equal(relatedAll.length, 1);
-    assert.equal(relatedAll[0].fact.id, factBId);
+    assert.equal(relatedAll.length, 0, 'Rejected edge must not exist even for explicit all-project traversal');
   });
 
   await t.test('getOntologyTree with scopeType=global excludes project-private facts', async () => {
