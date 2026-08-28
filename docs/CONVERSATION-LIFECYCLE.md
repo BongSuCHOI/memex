@@ -134,7 +134,10 @@ import는 외부 데이터 경계입니다. global↔project와 same-project rel
 - injection log: status, prompt length, candidates, injected/deduped/chars, duration, path
 - error log: import/Node-level failure
 - `memex doctor`: dependency/build/hook configured/observed/trust/MCP contract
-- `memex status`: conversation/fact/graph readiness와 backlog를 분리
+- `memex status`: conversation/fact/graph readiness와 backlog를 분리. extraction pending은
+  워커가 실제로 처리할 적격 세션만 계산하고, 정책상 제외된 세션(min-exchange gate,
+  excluded project/LLM workdir)은 `excluded`로 별도 표시한다 — 상태 표시와 워커 선정 술어가
+  같은 게이트(pendingExtractionCoreQuery의 minExchanges/excludeProjects)를 공유한다.
 
 로그가 없으면 hook 미실행과 no-match를 구분할 수 없습니다. `doctor`와 injection
 status를 함께 봅니다.

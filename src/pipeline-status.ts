@@ -11,12 +11,24 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { getDbPath, getArchiveDir, getMemexHome } from "./paths.js";
-import { EXTRACTION_STATE, freshClaimPredicate } from "./pending-extraction.js";
+import {
+  EXTRACTION_STATE,
+  freshClaimPredicate,
+  getExtractionConfig,
+} from "./pending-extraction.js";
 
 export interface StageCounters {
   total: number;
   done: number;
   pending: number;
+  /** Sessions the worker deliberately never picks (policy gate, not work). */
+  excluded: number;
+  /** …of which below BACKFILL_MIN_EXCHANGES. */
+  excludedBelowMin: number;
+  /** …of which in excluded/LLM-workdir projects. */
+  excludedProject: number;
+  /** The configured min-exchange gate value, shown for actionability. */
+  gateMinExchanges: number;
   claimed: number;
   failedPermanent: number;
   retriable: number;
@@ -86,6 +98,9 @@ export function getPipelineStatus(
 ): PipelineStatus {
   const dbPath = opts.dbPath ?? getDbPath();
   const dbExists = fs.existsSync(dbPath);
+  // Worker eligibility config — shared source with backfill-extract-worker
+  // (pendingExtractionCoreQuery) so status counts what the pipeline does.
+  const extractionGate = getExtractionConfig();
 
   // Lifecycle observation log lives outside the DB and is always safe to read.
   const lifecycleLastEventAt: Partial<Record<string, string>> =
@@ -104,6 +119,10 @@ export function getPipelineStatus(
         total: 0,
         done: 0,
         pending: 0,
+        excluded: 0,
+        excludedBelowMin: 0,
+        excludedProject: 0,
+        gateMinExchanges: extractionGate.minExchanges,
         claimed: 0,
         failedPermanent: 0,
         retriable: 0,
@@ -151,6 +170,10 @@ export function getPipelineStatus(
       total: 0,
       done: 0,
       pending: 0,
+      excluded: 0,
+      excludedBelowMin: 0,
+      excludedProject: 0,
+      gateMinExchanges: extractionGate.minExchanges,
       claimed: 0,
       failedPermanent: 0,
       retriable: 0,
@@ -217,10 +240,51 @@ export function getPipelineStatus(
         FROM extraction_log`)
         .get() as { lastOk: string | null; lastErr: string | null };
 
+      // Sessions the worker deliberately never picks: markerless sessions
+      // below BACKFILL_MIN_EXCHANGES or in excluded/LLM-workdir projects.
+      // Mirrors pendingExtractionCoreQuery's gate (including its any-exchange
+      // cwd pollution check) so pending means exactly "work the pipeline will
+      // actually do" — excluded sessions stay visible under their own name.
+      const exTerms: string[] = extractionGate.excludeProjects;
+      const pollutionClause = `x.cwd LIKE '%/memory-bank-llm'${
+        exTerms.length
+          ? " OR " + exTerms.map(() => "x.cwd = ?").join(" OR ")
+          : ""
+      }`;
+      const gateRow = db
+        .prepare(
+          `
+        SELECT COUNT(*) AS c,
+               COALESCE(SUM(g.polluted), 0) AS byProject,
+               COALESCE(SUM(1 - g.polluted), 0) AS belowMin
+        FROM (
+          SELECT e.session_id,
+                 (SELECT MAX(CASE WHEN ${pollutionClause} THEN 1 ELSE 0 END)
+                    FROM exchanges x WHERE x.session_id = e.session_id) AS polluted,
+                 COUNT(*) AS n
+          FROM exchanges e
+          LEFT JOIN extraction_log l ON l.session_id = e.session_id
+          WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
+            AND l.session_id IS NULL
+          GROUP BY e.session_id
+          HAVING COUNT(*) < ? OR polluted = 1
+        ) g`,
+        )
+        .get(...exTerms, extractionGate.minExchanges) as {
+        c: number;
+        byProject: number;
+        belowMin: number;
+      };
+      const excludedSessions = Number(gateRow.c);
+
       extraction = {
         total,
         done,
-        pending: Math.max(0, total - settledSessions),
+        pending: Math.max(0, total - settledSessions - excludedSessions),
+        excluded: excludedSessions,
+        excludedBelowMin: Number(gateRow.belowMin),
+        excludedProject: Number(gateRow.byProject),
+        gateMinExchanges: extractionGate.minExchanges,
         claimed: claimedFresh,
         failedPermanent: permanent,
         retriable,
@@ -328,6 +392,7 @@ export function formatPipelineStatus(s: PipelineStatus): string {
   const parts = [
     `${ex.done} done`,
     `${ex.pending} pending`,
+    `${ex.excluded} excluded`,
     `${ex.claimed} claimed`,
     `${ex.failedPermanent} permanent-failed`,
   ];
@@ -335,6 +400,10 @@ export function formatPipelineStatus(s: PipelineStatus): string {
   lines.push(
     `Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`,
   );
+  if (ex.excluded > 0)
+    lines.push(
+      `  excluded: intentionally skipped by extraction policy — ${ex.excludedBelowMin} below min-exchanges (BACKFILL_MIN_EXCHANGES=${ex.gateMinExchanges}), ${ex.excludedProject} excluded projects`,
+    );
   if (ex.lastSuccessAt) lines.push(`  last success: ${ex.lastSuccessAt}`);
   if (ex.lastErrorAt) lines.push(`  last failure: ${ex.lastErrorAt}`);
 

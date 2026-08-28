@@ -24,7 +24,7 @@ async function seed(t, rows) {
   db.exec(`CREATE TABLE exchanges (
     id TEXT PRIMARY KEY, project TEXT, timestamp TEXT, user_message TEXT,
     assistant_message TEXT, archive_path TEXT, line_start INTEGER, line_end INTEGER,
-    is_sidechain INTEGER DEFAULT 0, session_id TEXT);
+    is_sidechain INTEGER DEFAULT 0, session_id TEXT, cwd TEXT);
   CREATE TABLE extraction_log (
     session_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL,
     extracted INTEGER NOT NULL DEFAULT 0, saved INTEGER NOT NULL DEFAULT 0,
@@ -57,7 +57,13 @@ test("fresh data root reports EMPTY with all readiness flags false", async (t) =
 });
 
 test("synced-but-unextracted: conversation-ready yes, fact/graph no", async (t) => {
-  const { db, dbPath } = await seed(t, [{ session: "s1" }, { session: "s2" }]);
+  // 각 세션 2 exchanges — min-exchange gate(기본 2)를 통과하는 적격 세션으로 만든다.
+  const { db, dbPath } = await seed(t, [
+    { session: "s1" },
+    { session: "s1" },
+    { session: "s2" },
+    { session: "s2" },
+  ]);
   const { getPipelineStatus } = await import(
     path.join(REPO, "dist/pipeline-status.js")
   );
@@ -126,5 +132,47 @@ test("stale claim lease recovers to pending; fresh claim counts as claimed", asy
   let st = mod.getPipelineStatus();
   assert.equal(st.extraction.claimed, 1);
   assert.equal(st.readiness.factReady, false);
+  db.close();
+});
+
+test("gate-excluded sessions report as excluded, not pending (CX-04 status/worker predicate alignment)", async (t) => {
+  process.env.BACKFILL_MIN_EXCHANGES = "2";
+  t.after(() => {
+    delete process.env.BACKFILL_MIN_EXCHANGES;
+  });
+  // s1: 2 exchanges + settled marker (eligible, done)
+  // s2: 1 exchange, no marker → excluded (below min-exchanges)
+  // s3: 2 exchanges, no marker → eligible pending
+  // s4: 1 exchange in an LLM workdir cwd → excluded (project/workdir pollution)
+  const { db } = await seed(t, [
+    { session: "s1" },
+    { session: "s1" },
+    { session: "s2" },
+    { session: "s3" },
+    { session: "s3" },
+    { session: "s4" },
+  ]);
+  db.prepare(
+    `UPDATE exchanges SET cwd = '/tmp/x/memory-bank-llm' WHERE session_id = 's4'`,
+  ).run();
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.extraction.total, 4);
+  assert.equal(st.extraction.done, 1);
+  assert.equal(st.extraction.pending, 1); // s3 only
+  assert.equal(st.extraction.excluded, 2); // s2 (below min) + s4 (workdir)
+  assert.equal(st.extraction.excludedBelowMin, 1);
+  assert.equal(st.extraction.excludedProject, 1);
+  assert.equal(st.extraction.gateMinExchanges, 2);
+  assert.equal(st.readiness.factReady, false);
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("2 excluded"), text);
+  assert.ok(text.includes("intentionally skipped"), text);
+  assert.ok(text.includes("1 below min-exchanges"), text);
+  assert.ok(text.includes("1 excluded projects"), text);
   db.close();
 });
