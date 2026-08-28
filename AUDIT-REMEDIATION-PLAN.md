@@ -679,7 +679,7 @@ node --test test/*slice.test.mjs
 - [x] 8. scope-aware search SSOT
 - [x] 9. current fact lineage
 - [x] 10. shared initialized Web UI DB factory
-- [ ] 11. missing primary fact vector self-heal
+- [x] 11. missing primary fact vector self-heal
 - [ ] 12. precise source exchange attribution
 - [ ] 13. pipeline counter semantics
 
