@@ -675,8 +675,8 @@ node --test test/*slice.test.mjs
 - [x] 4. shell evidence locality proof
 - [x] 5. revision/tombstone-aware sync
 - [x] 6. ingestion/dirty consolidation queue
-- [ ] 7. 모든 vector generation/version
-- [ ] 8. scope-aware search SSOT
+- [x] 7. 모든 vector generation/version
+- [x] 8. scope-aware search SSOT
 - [x] 9. current fact lineage
 - [ ] 10. shared initialized Web UI DB factory
 - [ ] 11. missing primary fact vector self-heal
