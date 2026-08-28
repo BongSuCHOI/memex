@@ -218,7 +218,11 @@ mutateFactMeaning({ factId, newText, reason, source, lineageMode })
 → single commit
 ```
 
-이 primitive를 manual edit, EVOLUTION, CONTRADICTION, sync update, 향후 automatic correction의 공통 SSOT로 사용한다.
+이 primitive를 manual edit, EVOLUTION, CONTRADICTION의 공통 SSOT로 사용한다. sync
+update는 원격 semantic generation을 그대로 복제하는 별도 reconcile 경로다 —
+mutateFactMeaning은 fact_kr을 무효화하고 로컬 시각의 revision을 새로 만들어 원격
+generation identity(updated_at)를 훼손하므로, replication은 원격 상태를 기록하고
+revision을 data로 수입한다.
 
 핵심 invariant:
 
@@ -701,10 +705,50 @@ node --test test/*slice.test.mjs
 
 ### Phase 4
 
-- [ ] full consistency audit 완료
-- [ ] 새 P0/P1 없음
-- [ ] 문서↔코드↔테스트 invariant 일치
-- [ ] 남은 `NOT_PROVEN`과 residual risk 명시
+- [x] full consistency audit 완료
+- [x] 새 P0/P1 없음
+- [x] 문서↔코드↔테스트 invariant 일치
+- [x] 남은 `NOT_PROVEN`과 residual risk 명시
+
+### Phase 4 감사 결과 (2026-08-29)
+
+방법: Section 8의 7개 영역(Conversation/Evidence/Fact/Sync/Injection/Lifecycle/Generation)을
+독립 감사로 문서↔코드↔테스트 3계층 대조하고, 실제 저장 상태는 live DB 복사본에 프로덕션
+마이그레이션을 적용한 뒤 generation 불변식을 측정했다.
+
+수정된 감사 finding (회귀 테스트 동반):
+
+- P1 — evidence layer의 model workdir denied root가 실제 mkdtemp shape
+  (`<tmpdir>/memex-llm-XXXXXX`)을 놓쳐 fail-closed demotion이 그 shape에서 성립하지 않았다.
+  denied predicate를 basename family로 확장하고 shell/파일 tool 회귀 테스트를 추가했다.
+- P2 — `fact-db.updateFact()`의 dormant text 분기 제거(fail-loud 가드), consolidator
+  DUPLICATE 경로를 단일 transaction으로 통합(`deactivateFactTransactional`).
+- P2 — `indexUnprocessed`가 archive 사본 재검증 없이 source 판정만 하던 방어선 비대칭 제거,
+  exclusion purge의 `source_conversation_excluded` tombstone을 문서(SCHEMA/CONVERSATION-LIFECYCLE)와
+  회귀 테스트로 관측, assistant 출력 속 marker 미제외 leg 테스트 추가.
+- P2 — GUIDE의 존재하지 않는 `memex.db`/`archives/` 경로명과 저장소 트리
+  (`lifecycle-registration.json` 위치, `logs/`·`sync/` 누락) 정정, RETRIEVAL의 inject log
+  status 목록에 `no-session-provenance` 추가.
+- P2 — `memex status` pending에 워커가 영원히 집지 않는 SEED/PERMANENT 세션이 포함되던
+  계약 위반 제거(`deferred` 카운터 분리), seed 마커 watermark를 세션 MAX(rowid)로
+  고정해 FACT-LIFECYCLE 문서와 일치, sync exact-time tie-break 4건 회귀 테스트 추가.
+
+저장 상태 측정: orphan/stale/누락 벡터 0, 교차 프로젝트 관계 0, dangling 엔드포인트 0,
+settled watermark 전부 현재, recall 전이 준수(5/5 emitted, taint 0). 마이그레이션은
+row 손실 없이 additive로 적용됨. 설계된 마이그레이션 후속: legacy fact가 dirty queue에
+재진입하고(48건) legacy category가 재임베드 대상이 된다(12건) — 자가 치유 대상.
+
+남은 residual risk와 `NOT_PROVEN`:
+
+- 실제 배포 환경에서 SessionEnd 훅이 발화하는 것은 저장 로그만으로 `NOT_PROVEN` —
+  현재 진행 중인 세션은 아직 종료되지 않았고 로그의 SessionEnd 항목은 과거 테스트
+  잔여물(s1~s4)뿐이다. 훅 경로 자체는 codex-slice/session-end-worker-p0 테스트로 관측됨.
+- 과거 테스트 실행이 사용자 hook-events.jsonl에 fixture 이벤트(s1~s4, 2026-08-28)를
+  남겼다. 현재 테스트는 격리된 MEMEX_HOME을 사용하며 Phase 3 이후 재오염 없음을 확인.
+- `markRecallEventEmitted` 실패 시 receipt가 `prepared`로 남아 해당 exchange의 taint
+  flag가 생기지 않는 경로는 설계된 fail-safe다(의도적으로 수정하지 않음).
+- `fact-consolidate-cursor.txt`는 어떤 코드도 참조하지 않는 죽은 잔여 파일이다(파생 데이터,
+  무해).
 
 ## 11. 최종 목표
 
