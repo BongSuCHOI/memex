@@ -1568,7 +1568,6 @@ const isDirectRun =
 if (
   isDirectRun
   || process.env.MEMEX_MCP_AUTOSTART === "1"
-  || process.env.MEMORY_BANK_MCP_AUTOSTART === "1"
 ) {
   main().catch((error) => {
     console.error("Server error:", error);

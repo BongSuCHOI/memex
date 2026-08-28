@@ -1,19 +1,6 @@
 import { sessionsRoot } from "./codex-rollout.js";
 export declare function getMemexHome(): string;
 /**
- * @deprecated Historical name kept as a thin alias so pre-existing importers
- * (`dist/paths.js`) keep resolving the SAME root during the transition.
- * New code must call {@link getMemexHome}.
- */
-export declare function getMemoryBankHome(): string;
-/**
- * Read-only detection of a pre-v0.2 data root created by an older install.
- * Used by `memex doctor`, onboarding status checks, and `memex migrate-home`
- * to surface (never auto-execute) a pending migration. Returns null when the
- * legacy default location holds no recognizable Memex data.
- */
-export declare function detectLegacyDataRoot(): string | null;
-/**
  * Get conversation archive directory (pure getter).
  */
 export declare function getArchiveDir(): string;
@@ -29,8 +16,6 @@ export declare function getDbPath(): string;
  * Write helpers (explicit directory creation for write paths only).
  */
 export declare function ensureMemexHome(): string;
-/** @deprecated Use {@link ensureMemexHome}. */
-export declare function ensureMemoryBankHome(): string;
 export declare function ensureArchiveDir(): string;
 export declare function ensureIndexDir(): string;
 export declare function ensureDbDir(): string;
@@ -41,8 +26,7 @@ export declare function getExcludeConfigPath(): string;
 /**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
- * the current override; the historical MEMORY_BANK_SESSIONS_DIR remains a
- * read-only compatibility fallback.
+ * the optional explicit override; TEST_SESSIONS_DIR is used by tests.
  */
 export { sessionsRoot as getSessionsRoot };
 /**
@@ -56,9 +40,8 @@ export declare const LLM_WORKDIR_BASENAME = "memex-llm";
 /**
  * True for the reserved headless-worker working directory, in either shape it
  * exists as: the plain basename (`…/memex-llm`) or the mkdtemp form
- * codex-exec.ts creates (`<tmpdir>/memex-llm-XXXXXX`). The historical
- * `memory-bank-llm` shapes stay excluded so an older in-flight worker cannot
- * be ingested. Matched on the FINAL path segment only. Consumers:
+ * codex-exec.ts creates (`<tmpdir>/memex-llm-XXXXXX`). Matched on the FINAL
+ * path segment only. Consumers:
  * sync/indexer/verify exclusion (TS) and, through llmWorkdirCwdSql, the
  * extraction gate SQL — keep the shapes identical.
  */

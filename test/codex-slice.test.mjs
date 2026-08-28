@@ -52,13 +52,10 @@ const meta = (extra = {}) => ({
   payload: { id: 'thr-1', session_id: 'sess-1', cwd: '/tmp/proj', source: 'cli', ...extra },
 });
 
-test('sessionsRoot prefers MEMEX_SESSIONS_DIR and keeps the historical fallback', () => {
-  process.env.MEMORY_BANK_SESSIONS_DIR = '/legacy';
+test('sessionsRoot uses the canonical overrides and Codex default', () => {
   process.env.MEMEX_SESSIONS_DIR = '/current';
   assert.equal(sessionsRoot(), '/current');
   delete process.env.MEMEX_SESSIONS_DIR;
-  assert.equal(sessionsRoot(), '/legacy');
-  delete process.env.MEMORY_BANK_SESSIONS_DIR;
   process.env.TEST_SESSIONS_DIR = '/b';
   assert.equal(sessionsRoot(), '/b');
   delete process.env.TEST_SESSIONS_DIR;
@@ -212,7 +209,6 @@ test('parseConversation stamps project and cwd from meta', async () => {
 
 test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-luna', () => {
   delete process.env.MEMEX_CODEX_MODEL;
-  delete process.env.MEMORY_BANK_CODEX_MODEL;
   const args = buildCodexExecArgs({ workdir: '/w' });
   assert.deepEqual(args.slice(0, 8), ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--skip-git-repo-check', '-C']);
   const mi = args.indexOf('-m');
@@ -224,15 +220,11 @@ test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-
   const withModel = buildCodexExecArgs({ workdir: '/w', model: ' gpt-5.7-mini ' });
   assert.equal(withModel[withModel.indexOf('-m') + 1], 'gpt-5.7-mini');
 
-  // Current namespace wins over the historical compatibility override.
-  process.env.MEMORY_BANK_CODEX_MODEL = 'legacy-model';
+  // Explicit environment override is used when no option is supplied.
   process.env.MEMEX_CODEX_MODEL = 'env-model';
   const envModel = buildCodexExecArgs({ workdir: '/w' });
   assert.equal(envModel[envModel.indexOf('-m') + 1], 'env-model');
   delete process.env.MEMEX_CODEX_MODEL;
-  const legacyModel = buildCodexExecArgs({ workdir: '/w' });
-  assert.equal(legacyModel[legacyModel.indexOf('-m') + 1], 'legacy-model');
-  delete process.env.MEMORY_BANK_CODEX_MODEL;
 });
 
 test('AGY-3: fallback parser handles item.completed agent_message shape', () => {

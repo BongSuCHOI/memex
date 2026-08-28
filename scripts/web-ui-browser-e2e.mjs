@@ -8,9 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CHROME =
-  process.env.MEMORY_BANK_CHROME_PATH ||
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const evidenceArg = process.argv.indexOf("--evidence-dir");
 const EVIDENCE =
   evidenceArg >= 0
@@ -137,9 +135,6 @@ function startServer(port) {
       ...process.env,
       MEMEX_HOME: "",
       MEMEX_DB_PATH: "",
-      MEMORY_BANK_HOME: "",
-      MEMORY_BANK_CONFIG_DIR: "",
-      MEMORY_BANK_DB_PATH: "",
       TEST_DB_PATH: "",
       XDG_CONFIG_HOME,
       MEMEX_PLUGIN_ROOT: ROOT,
@@ -333,9 +328,6 @@ try {
   fs.mkdirSync(EVIDENCE, { recursive: true });
   process.env.MEMEX_HOME = "";
   process.env.MEMEX_DB_PATH = "";
-  process.env.MEMORY_BANK_HOME = "";
-  process.env.MEMORY_BANK_CONFIG_DIR = "";
-  process.env.MEMORY_BANK_DB_PATH = "";
   process.env.TEST_DB_PATH = "";
   process.env.XDG_CONFIG_HOME = XDG_CONFIG_HOME;
   const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));

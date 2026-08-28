@@ -7,14 +7,14 @@ let tmpDir: string;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inject-ledger-'));
-  process.env.MEMORY_BANK_CONFIG_DIR = tmpDir;
+  process.env.MEMEX_HOME = tmpDir;
 });
 afterEach(() => {
-  delete process.env.MEMORY_BANK_CONFIG_DIR;
+  delete process.env.MEMEX_HOME;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-// 동적 import: MEMORY_BANK_CONFIG_DIR 설정 후 로드 (paths 는 호출 시 평가라 순서 무관하지만 명시)
+// 동적 import: MEMEX_HOME 설정 후 로드
 async function ledger() {
   return await import('../src/inject-ledger.js');
 }

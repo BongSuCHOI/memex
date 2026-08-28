@@ -22,7 +22,7 @@ export function llmWorkdir(): string {
 
 /** 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지. */
 function retryBudget(): number {
-  const raw = process.env.MEMEX_LLM_RETRIES ?? process.env.MEMORY_BANK_LLM_RETRIES;
+  const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
   return 2; // 기본 총 3회 시도
 }
@@ -35,8 +35,7 @@ function retryBudget(): number {
 const MAX_BACKOFF_BASE_MS = 5_000;
 const MAX_BACKOFF_MS = 30_000;
 function backoffMs(attempt: number): number {
-  const raw = process.env.MEMEX_LLM_RETRY_BASE_MS
-    ?? process.env.MEMORY_BANK_LLM_RETRY_BASE_MS;
+  const raw = process.env.MEMEX_LLM_RETRY_BASE_MS;
   const parsed = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
   const base = Math.min(parsed, MAX_BACKOFF_BASE_MS);
   return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
@@ -47,16 +46,13 @@ const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : 
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
- * Model resolution: MEMEX_CODEX_MODEL, its historical compatibility alias,
- * then codex-exec's central default (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
+ * Model resolution: MEMEX_CODEX_MODEL, then codex-exec's central default
+ * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
  * The resolved id is always forwarded via -m.
  */
 async function callOnce(systemPrompt: string, userMessage: string, _maxTokens: number): Promise<string> {
-  const model = process.env.MEMEX_CODEX_MODEL
-    || process.env.MEMORY_BANK_CODEX_MODEL
-    || null;
-  const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS
-    ?? process.env.MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS;
+  const model = process.env.MEMEX_CODEX_MODEL || null;
+  const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
     timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
   return runCodex({ systemPrompt, userMessage, model, timeoutMs });

@@ -119,11 +119,9 @@ describe("extraction gate: reserved LLM workdir cwd (basename + mkdtemp suffix)"
       // 반면 마지막 세그먼트 자체가 memex-llm- 접두사로 시작하면 예약
       // 네임스페이스로 제외한다(mkdtemp 폼 보호 — 문서화된 트레이드오프).
       seedSession(db, "sess-reserved", 3, "/tmp/real/memex-llm-docs");
-      seedSession(db, "sess-legacy", 3, "/tmp/memory-bank-llm-old123");
       const ids = pendingIds(db);
       expect(ids).toContain("sess-slug");
       expect(ids).not.toContain("sess-reserved");
-      expect(ids).not.toContain("sess-legacy");
     } finally {
       db.close();
     }

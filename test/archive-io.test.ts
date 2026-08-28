@@ -21,7 +21,7 @@ describe('archive-io', () => {
   let testDir: string;
 
   beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), 'memory-bank-archive-io-'));
+    testDir = mkdtempSync(join(tmpdir(), 'memex-archive-io-'));
   });
 
   afterEach(() => {
@@ -135,21 +135,21 @@ describe('archive-io', () => {
 
   describe('decompression bomb cap', () => {
     afterEach(() => {
-      delete process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES;
+      delete process.env.MEMEX_MAX_DECOMPRESSED_BYTES;
     });
 
     it.runIf(hasZstd)('readArchiveFile rejects content beyond the byte cap', () => {
       const plain = join(testDir, 'bomb.jsonl');
       // 1KB of highly-compressible content, cap set to 64 bytes
       writeFileSync(plain + '.zst', zstdCompressSync!(Buffer.from('a'.repeat(1024), 'utf-8')));
-      process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES = '64';
+      process.env.MEMEX_MAX_DECOMPRESSED_BYTES = '64';
       expect(() => readArchiveFile(plain)).toThrow();
     });
 
     it.runIf(hasZstd)('createArchiveReadStream errors instead of streaming beyond the cap', async () => {
       const plain = join(testDir, 'bomb-stream.jsonl');
       writeFileSync(plain + '.zst', zstdCompressSync!(Buffer.from('b'.repeat(4096), 'utf-8')));
-      process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES = '128';
+      process.env.MEMEX_MAX_DECOMPRESSED_BYTES = '128';
 
       const rl = readline.createInterface({
         input: createArchiveReadStream(plain),
@@ -163,7 +163,7 @@ describe('archive-io', () => {
     it.runIf(hasZstd)('content under the cap streams normally', async () => {
       const plain = join(testDir, 'small.jsonl');
       writeFileSync(plain + '.zst', zstdCompressSync!(Buffer.from('ok-line\n', 'utf-8')));
-      process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES = '1024';
+      process.env.MEMEX_MAX_DECOMPRESSED_BYTES = '1024';
       const rl = readline.createInterface({
         input: createArchiveReadStream(plain),
         crlfDelay: Infinity,

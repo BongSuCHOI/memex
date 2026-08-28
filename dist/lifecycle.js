@@ -8,7 +8,7 @@
  *  - Registered commands use ABSOLUTE paths resolved at setup time.
  *    `${PLUGIN_ROOT}` is not assumed to expand inside Codex hooks.
  *  - Ownership: every Memex entry carries a fingerprint marker comment
- *    field `"_memoryBank": true` plus the exact command string recorded in
+ *    field `"_memex": true` plus the exact command string recorded in
  *    lifecycle-registration.json under the Memex data root. remove only
  *    touches entries whose command matches a registered fingerprint; foreign
  *    entries are preserved byte-for-byte (2-space JSON indent, key order kept).
@@ -43,7 +43,7 @@ export const LIFECYCLE_COMMANDS = {
     UserPromptSubmit: [{ script: "scripts/inject-context-hook.sh" }],
     SessionEnd: [{ script: "scripts/session-end-hook.js" }],
 };
-const OWNERSHIP_KEY = "_memoryBank";
+const OWNERSHIP_KEY = "_memex";
 function codexHome() {
     return process.env.CODEX_HOME
         ? path.resolve(process.env.CODEX_HOME)
@@ -53,7 +53,7 @@ export function hooksFilePath() {
     return path.join(codexHome(), "hooks.json");
 }
 export function dataRoot() {
-    // Single-source resolution (MEMEX_HOME > MEMORY_BANK_* compat > XDG > default).
+    // Single-source resolution (MEMEX_HOME > XDG > default).
     const dir = getMemexHome();
     fs.mkdirSync(dir, { recursive: true });
     return dir;
@@ -62,8 +62,7 @@ export function registrationPath() {
     return path.join(dataRoot(), "lifecycle-registration.json");
 }
 export function pluginRoot() {
-    const override = process.env.MEMEX_PLUGIN_ROOT
-        || process.env.MEMORY_BANK_PLUGIN_ROOT;
+    const override = process.env.MEMEX_PLUGIN_ROOT;
     return override
         ? path.resolve(override)
         : path.resolve(HERE, "..");

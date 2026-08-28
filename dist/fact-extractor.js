@@ -139,9 +139,7 @@ export function selectSpreadBatches(batches, maxBatches) {
     return selected;
 }
 function maxLlmCallsPerSession() {
-    const parsed = parseInt(process.env.MEMEX_MAX_EXTRACT_CALLS
-        || process.env.MEMORY_BANK_MAX_EXTRACT_CALLS
-        || "", 10);
+    const parsed = parseInt(process.env.MEMEX_MAX_EXTRACT_CALLS || "", 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
 }
 // Self-referential repos whose conversations must NOT be extracted (e.g.

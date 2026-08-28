@@ -26,29 +26,22 @@ layer.
 - Extraction claims, fact writes, saved counts, and watermark advancement must
   either commit together or remain retryable.
 - Model-backed work runs only through the local Codex CLI. The default is
-  `gpt-5.6-luna`; `MEMORY_BANK_CODEX_MODEL` remains the compatibility override.
+  `gpt-5.6-luna`; `MEMEX_CODEX_MODEL` is the explicit model override.
 - Headless model calls are ephemeral, read-only, isolated from repository rules
   and user plugins, and protected against recursive Memex invocation.
 
-## Storage and compatibility
+## Storage
 
 The public product name, package, plugin, MCP server, CLI, UI, and skills are
-`memex`. The canonical data root is `MEMEX_HOME` when set, then the historical
-variables as read-only compatibility fallbacks for pre-v0.2 installs:
+`memex`. The canonical data root is resolved in this order:
 
-1. `MEMEX_HOME` (current)
-2. `MEMORY_BANK_HOME` (historical, honored read-only)
-3. `MEMORY_BANK_CONFIG_DIR` (historical, honored read-only)
-4. `$XDG_CONFIG_HOME/memex`
-5. `~/.config/memex` (default)
+1. `MEMEX_HOME`
+2. `$XDG_CONFIG_HOME/memex`
+3. `~/.config/memex` (default)
 
-The explicit data migration is introduced via `memex migrate-home`, which
-copies legacy `~/.config/memory-bank` data into the current root and verifies
-SQLite integrity and row-count parity before succeeding. The source directory
-is never deleted or mutated by that command; cleanup remains a separate,
-manual step. Never silently move, copy, merge, or delete durable data outside
-this explicitly invoked migration. Do not introduce new legacy runtime
-adapters for Claude Code, OMC, Superpowers, or other agents.
+The repository is Codex-native and uses only this canonical storage namespace.
+Do not add compatibility adapters for other agents or historical storage
+layouts. Never silently move, copy, merge, or delete durable data.
 
 ## Plugin and lifecycle boundaries
 

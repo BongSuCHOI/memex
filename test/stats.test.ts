@@ -11,7 +11,7 @@ describe('stats command', () => {
   let dbPath: string;
 
   beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), 'memory-bank-stats-test-'));
+    testDir = mkdtempSync(join(tmpdir(), 'memex-stats-test-'));
     dbPath = join(testDir, 'test.db');
   });
 

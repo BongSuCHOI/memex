@@ -17,7 +17,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const PLUGIN_ROOT = process.env.MEMEX_PLUGIN_ROOT
-  || process.env.MEMORY_BANK_PLUGIN_ROOT
   || join(__dirname, '..');
 const MCP_SERVER = join(PLUGIN_ROOT, 'dist', 'mcp-server.js');
 const require = createRequire(import.meta.url);

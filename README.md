@@ -22,7 +22,7 @@ Memex is an independent Codex-native project derived from the MIT-licensed
 which descends from
 [`obra/episodic-memory`](https://github.com/obra/episodic-memory). It preserves
 the knowledge-system capabilities, not Claude Code compatibility code. See
-[lineage and migration](docs/LINEAGE.md).
+[lineage](docs/LINEAGE.md).
 
 ## Why 0.1.0?
 
@@ -278,15 +278,11 @@ data-deletion walkthrough including partial reset options.
 The default derived data root is `~/.config/memex`. Resolution order:
 
 1. `MEMEX_HOME`
-2. `MEMORY_BANK_HOME` (historical, honored read-only)
-3. `MEMORY_BANK_CONFIG_DIR` (historical, honored read-only)
-4. `$XDG_CONFIG_HOME/memex`
-5. `~/.config/memex`
+2. `$XDG_CONFIG_HOME/memex`
+3. `~/.config/memex`
 
-Pre-v0.2 installs that still hold data under the historical `memory-bank`
-namespace are migrated explicitly with `memex migrate-home` (copy → verify →
-succeed; the source directory is never deleted). The naming is historical
-storage compatibility, not a Claude runtime adapter.
+Memex uses this canonical storage namespace only; the source Codex rollouts
+remain read-only.
 See [schema](docs/SCHEMA.md) and [security boundaries](docs/ARCHITECTURE.md).
 
 ## Verification

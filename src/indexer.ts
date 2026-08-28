@@ -48,8 +48,8 @@ import { EventEmitter } from "events";
 EventEmitter.defaultMaxListeners = 20;
 
 // Session discovery (recursive rollout walk) lives in codex-rollout.ts;
-// MEMEX_SESSIONS_DIR overrides the sessions root; TEST_SESSIONS_DIR and the
-// historical MEMORY_BANK_SESSIONS_DIR remain test/compatibility fallbacks.
+// MEMEX_SESSIONS_DIR overrides the sessions root; TEST_SESSIONS_DIR is used by
+// tests.
 
 // Process items in batches with limited concurrency
 export async function processBatch<T, R>(

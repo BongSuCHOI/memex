@@ -231,7 +231,7 @@ describe('ontology-classifier', () => {
     });
 
     it('should assign deterministically (no LLM call) when the gate is OPTED IN and cleared', async () => {
-      process.env.MEMORY_BANK_ONTOLOGY_DET_GATE = '0.93';
+      process.env.MEMEX_ONTOLOGY_DET_GATE = '0.93';
       try {
         const embeddingArr = new Array(384).fill(0.1);
         insertTestFact(db, 'fact-det', 'Use Riverpod for Flutter state', embeddingArr);
@@ -248,7 +248,7 @@ describe('ontology-classifier', () => {
         const row = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get('fact-det') as { ontology_category_id: string };
         expect(row.ontology_category_id).toBe(category.id);
       } finally {
-        delete process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
+        delete process.env.MEMEX_ONTOLOGY_DET_GATE;
       }
     });
 
@@ -795,7 +795,7 @@ describe('ontology-classifier', () => {
     });
 
     it('routes gate-clearing facts through the deterministic path without LLM (opt-in)', async () => {
-      process.env.MEMORY_BANK_ONTOLOGY_DET_GATE = '0.93';
+      process.env.MEMEX_ONTOLOGY_DET_GATE = '0.93';
       try {
         const embeddingArr = new Array(384).fill(0.1);
         insertTestFact(db, 'd-0', 'State management fact', embeddingArr);
@@ -810,7 +810,7 @@ describe('ontology-classifier', () => {
         expect(result.deterministic).toEqual(['d-0']);
         expect(callMemoryModel).not.toHaveBeenCalled();
       } finally {
-        delete process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
+        delete process.env.MEMEX_ONTOLOGY_DET_GATE;
       }
     });
   });

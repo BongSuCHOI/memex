@@ -82,8 +82,8 @@ describe('decideTakeover', () => {
 describe('isSyncCliCommand', () => {
   it('recognizes only current Memex cache workers', () => {
     expect(isSyncCliCommand('node /Users/u/.codex/plugins/cache/local/memex/0.1.0/dist/sync-cli.js')).toBe(true);
-    expect(isSyncCliCommand('node /Users/u/.codex/plugins/cache/local/memory-bank/1.5.0/dist/sync-cli.js')).toBe(false);
-    expect(isSyncCliCommand('node /Users/u/Projects/memory-bank-codex/dist/sync-cli.js')).toBe(false);
+    expect(isSyncCliCommand('node /Users/u/.codex/plugins/cache/local/other-plugin/1.5.0/dist/sync-cli.js')).toBe(false);
+    expect(isSyncCliCommand('node /Users/u/Projects/other-codex/dist/sync-cli.js')).toBe(false);
     expect(isSyncCliCommand('node /some/other/app/sync-cli.js')).toBe(false);
     expect(isSyncCliCommand('grep memex sync-cli')).toBe(false);
   });
@@ -108,8 +108,8 @@ describe('staleWorkerVersion', () => {
   });
 
   it('never matches unrelated processes or dev checkouts', () => {
-    expect(staleWorkerVersion('node /Users/u/Project/Codex/memory-bank/dist/sync-cli.js', '1.4.4')).toBeNull();
+    expect(staleWorkerVersion('node /Users/u/Project/Codex/other-app/dist/sync-cli.js', '1.4.4')).toBeNull();
     expect(staleWorkerVersion('node /some/other/app/sync-cli.js', '1.4.4')).toBeNull();
-    expect(staleWorkerVersion('grep memory-bank', '1.4.4')).toBeNull();
+    expect(staleWorkerVersion('grep unrelated', '1.4.4')).toBeNull();
   });
 });

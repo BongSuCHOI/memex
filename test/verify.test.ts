@@ -27,14 +27,14 @@ const restoreConsole = suppressConsole();
 
 describe('verifyIndex', () => {
   const testDir = path.join(os.tmpdir(), 'conversation-search-test-' + Date.now());
-  const archiveDir = path.join(testDir, '.config', 'memory-bank', 'conversation-archive');
-  const dbPath = path.join(testDir, '.config', 'memory-bank', 'conversation-index', 'db.sqlite');
+  const archiveDir = path.join(testDir, '.config', 'memex', 'conversation-archive');
+  const dbPath = path.join(testDir, '.config', 'memex', 'conversation-index', 'db.sqlite');
 
   beforeEach(() => {
     repairMocks.summarizeConversation.mockReset();
     repairMocks.summarizeConversation.mockResolvedValue('repair test summary');
     // Create test directories
-    fs.mkdirSync(path.join(testDir, '.config', 'memory-bank', 'conversation-index'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, '.config', 'memex', 'conversation-index'), { recursive: true });
     fs.mkdirSync(archiveDir, { recursive: true });
 
     // Override environment paths for testing
@@ -187,12 +187,12 @@ describe('verifyIndex', () => {
 
 describe('repairIndex', () => {
   const testDir = path.join(os.tmpdir(), 'conversation-repair-test-' + Date.now());
-  const archiveDir = path.join(testDir, '.config', 'memory-bank', 'conversation-archive');
-  const dbPath = path.join(testDir, '.config', 'memory-bank', 'conversation-index', 'db.sqlite');
+  const archiveDir = path.join(testDir, '.config', 'memex', 'conversation-archive');
+  const dbPath = path.join(testDir, '.config', 'memex', 'conversation-index', 'db.sqlite');
 
   beforeEach(() => {
     // Create test directories
-    fs.mkdirSync(path.join(testDir, '.config', 'memory-bank', 'conversation-index'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, '.config', 'memex', 'conversation-index'), { recursive: true });
     fs.mkdirSync(archiveDir, { recursive: true });
 
     // Override environment paths for testing

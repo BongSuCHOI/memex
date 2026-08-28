@@ -38,9 +38,8 @@ adapter를 제품 정체성/배포 경계로 사용하지 않는다는 뜻입니
 | Claude MCP registration | `.codex-plugin/plugin.json` + `.mcp.json` |
 | Claude plugin skills | Codex plugin `skills/` |
 
-Claude Code, OMC, Superpowers runtime fallback은 없습니다. 다만 기존 Memex 이전 설치의
-사용자 데이터를 파괴하지 않기 위해 `MEMORY_BANK_*`와 `~/.config/memory-bank` storage
-namespace는 지속 호환 식별자로 남깁니다.
+Claude Code, OMC, Superpowers runtime fallback은 없습니다. Memex는 Codex용
+독립 저장소이므로 현재 canonical Memex storage namespace만 사용합니다.
 
 ## 4. 독립 프로젝트의 변경 기준
 

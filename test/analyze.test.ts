@@ -53,7 +53,7 @@ describe("analyze", () => {
   let dbPath: string;
 
   beforeEach(() => {
-    testDir = mkdtempSync(join(tmpdir(), "memory-bank-analyze-test-"));
+    testDir = mkdtempSync(join(tmpdir(), "memex-analyze-test-"));
     dbPath = join(testDir, "test.db");
   });
 

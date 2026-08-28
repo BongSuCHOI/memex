@@ -29,7 +29,6 @@ import { getSearchDb, searchMultipleConcepts } from "../src/search.js";
 const RELATED_ARCHIVE = "/fixtures/react-router.jsonl";
 const originalDbEnv = {
   MEMEX_DB_PATH: process.env.MEMEX_DB_PATH,
-  MEMORY_BANK_DB_PATH: process.env.MEMORY_BANK_DB_PATH,
   TEST_DB_PATH: process.env.TEST_DB_PATH,
 };
 let testDir: string | undefined;
@@ -38,7 +37,7 @@ describe("multi-concept search", () => {
   beforeAll(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), "memex-multi-concept-"));
     // The current override has highest precedence, so this test cannot fall
-    // through to a caller's live Memex DB even when historical env vars exist.
+    // through to a caller's live Memex DB.
     process.env.MEMEX_DB_PATH = path.join(testDir, "test.db");
 
     const db = initDatabase();

@@ -6,7 +6,7 @@
 //
 // Both tiers run inside a fresh mktemp root: CODEX_HOME, MEMEX_HOME, local
 // marketplace and a staged plugin copy. The user's real ~/.codex,
-// ~/.config/memory-bank and the Memex DB are only ever READ (hash snapshots)
+// ~/.config/memex and the Memex DB are only ever READ (hash snapshots)
 // and are verified byte-identical after the run.
 //
 // offline        — setup/remove idempotency, foreign-entry preservation,
@@ -152,7 +152,7 @@ try {
 // User-environment fingerprints (read-only).
 const USER_HOOKS = path.join(os.homedir(), ".codex", "hooks.json");
 const USER_CONFIG = path.join(os.homedir(), ".codex", "config.toml");
-const USER_DATA_ROOT = path.join(os.homedir(), ".config", "memory-bank");
+const USER_DATA_ROOT = path.join(os.homedir(), ".config", "memex");
 const before = {};
 before.hooks = fs.existsSync(USER_HOOKS) ? sha256(USER_HOOKS) : "ABSENT";
 before.config = fs.existsSync(USER_CONFIG) ? sha256(USER_CONFIG) : "ABSENT";
@@ -192,7 +192,7 @@ async function main() {
     const f = path.join(CODEX_HOME, "hooks.json");
     if (fs.existsSync(f)) {
       const txt = fs.readFileSync(f, "utf8");
-      if (txt.includes("_memoryBank"))
+      if (txt.includes("_memex"))
         throw new Error("unexpected Memex entries before setup");
     }
     return "clean temp codex home";
@@ -240,7 +240,7 @@ async function main() {
     if (r.status !== 0) throw new Error(r.stderr);
     const file = path.join(CODEX_HOME, "hooks.json");
     const after1 = fs.readFileSync(file, "utf8");
-    const owned1 = (after1.match(/_memoryBank/g) || []).length;
+    const owned1 = (after1.match(/_memex/g) || []).length;
     if (owned1 !== 6)
       throw new Error(`expected 6 owned entries, got ${owned1}`);
 
@@ -671,7 +671,7 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
     }
     const ownedHooksAbsent =
       hooks !== null &&
-      !JSON.stringify(hooks).includes("_memoryBank") &&
+      !JSON.stringify(hooks).includes("_memex") &&
       Boolean(hooks.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command);
     if (!ownedHooksAbsent)
       errors.push("owned hooks remain or foreign hook was lost");

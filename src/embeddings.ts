@@ -22,7 +22,6 @@ const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
 
 export const EMBEDDING_MODEL =
   process.env.MEMEX_EMBEDDING_MODEL
-  || process.env.MEMORY_BANK_EMBEDDING_MODEL
   || DEFAULT_EMBEDDING_MODEL;
 
 /**

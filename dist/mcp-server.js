@@ -18333,8 +18333,6 @@ import os from "node:os";
 import path from "node:path";
 function sessionsRoot() {
   if (process.env.MEMEX_SESSIONS_DIR) return process.env.MEMEX_SESSIONS_DIR;
-  if (process.env.MEMORY_BANK_SESSIONS_DIR)
-    return process.env.MEMORY_BANK_SESSIONS_DIR;
   if (process.env.TEST_SESSIONS_DIR) return process.env.TEST_SESSIONS_DIR;
   const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   return path.join(home, "sessions");
@@ -18355,7 +18353,7 @@ function isInternalContextMessage(text) {
 // src/paths.ts
 var MEMEX_DEFAULT_BASENAME = "memex";
 function getMemexHome() {
-  const home = process.env.MEMEX_HOME || process.env.MEMORY_BANK_HOME || process.env.MEMORY_BANK_CONFIG_DIR;
+  const home = process.env.MEMEX_HOME;
   if (home) return home;
   return process.env.XDG_CONFIG_HOME ? path2.join(process.env.XDG_CONFIG_HOME, MEMEX_DEFAULT_BASENAME) : path2.join(os2.homedir(), ".config", MEMEX_DEFAULT_BASENAME);
 }
@@ -18369,7 +18367,7 @@ function getIndexDir() {
   return path2.join(getMemexHome(), "conversation-index");
 }
 function getDbPath() {
-  const dbOverride = process.env.MEMEX_DB_PATH || process.env.MEMORY_BANK_DB_PATH || process.env.TEST_DB_PATH;
+  const dbOverride = process.env.MEMEX_DB_PATH || process.env.TEST_DB_PATH;
   if (dbOverride) return dbOverride;
   return path2.join(getIndexDir(), "db.sqlite");
 }
@@ -18395,7 +18393,7 @@ import * as sqliteVec from "sqlite-vec";
 // src/embeddings.ts
 import { pipeline } from "@xenova/transformers";
 var DEFAULT_EMBEDDING_MODEL = "Xenova/multilingual-e5-small";
-var EMBEDDING_MODEL = process.env.MEMEX_EMBEDDING_MODEL || process.env.MEMORY_BANK_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+var EMBEDDING_MODEL = process.env.MEMEX_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
 var KNOWN_MODEL_VERSIONS = {
   "Xenova/all-MiniLM-L6-v2": 1,
   "Xenova/paraphrase-multilingual-MiniLM-L12-v2": 2,
@@ -19231,7 +19229,7 @@ var ZST_SUFFIX = ".zst";
 var DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 function maxDecompressedBytes() {
   const parsed = parseInt(
-    process.env.MEMEX_MAX_DECOMPRESSED_BYTES || process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || "",
+    process.env.MEMEX_MAX_DECOMPRESSED_BYTES || "",
     10
   );
   if (Number.isFinite(parsed) && parsed > 0 && parsed <= DEFAULT_MAX_DECOMPRESSED_BYTES) {
@@ -21773,7 +21771,6 @@ import fs8 from "node:fs";
 import os3 from "node:os";
 import path8 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
-var LEGACY_INNER_GUARD_ENV = "MEMORY_BANK_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 function buildPrompt(systemPrompt, userMessage) {
   return systemPrompt ? `${systemPrompt}
@@ -21794,7 +21791,7 @@ function buildCodexExecArgs(opts) {
     "-C",
     opts.workdir
   ];
-  const model = opts.model != null ? opts.model : process.env.MEMEX_CODEX_MODEL || process.env.MEMORY_BANK_CODEX_MODEL || DEFAULT_CODEX_MODEL;
+  const model = opts.model != null ? opts.model : process.env.MEMEX_CODEX_MODEL || DEFAULT_CODEX_MODEL;
   const trimmed = model ? String(model).trim() : "";
   if (trimmed) args.push("-m", trimmed);
   if (opts.outputLast) args.push("-o", opts.outputLast);
@@ -21881,12 +21878,12 @@ function runChild(bin, args, cwd, prompt, timeoutMs) {
   });
 }
 async function runCodex(opts = {}) {
-  if (process.env[INNER_GUARD_ENV] === "1" || process.env[LEGACY_INNER_GUARD_ENV] === "1") {
+  if (process.env[INNER_GUARD_ENV] === "1") {
     throw new Error(
       `memex: ${INNER_GUARD_ENV}=1 \u2014 refusing nested codex exec (hook/plugin recursion guard)`
     );
   }
-  const bin = opts.codexBin || process.env.MEMEX_CODEX_BIN || process.env.MEMORY_BANK_CODEX_BIN || "codex";
+  const bin = opts.codexBin || process.env.MEMEX_CODEX_BIN || "codex";
   const timeoutMs = opts.timeoutMs ?? 18e4;
   const workdir = fs8.mkdtempSync(path8.join(os3.tmpdir(), "memex-llm-"));
   const outPath = path8.join(workdir, "last-message.txt");
@@ -21915,22 +21912,22 @@ async function runCodex(opts = {}) {
 // src/llm.ts
 var LLM_WORKDIR = path9.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
-  const raw = process.env.MEMEX_LLM_RETRIES ?? process.env.MEMORY_BANK_LLM_RETRIES;
+  const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
   return 2;
 }
 var MAX_BACKOFF_BASE_MS = 5e3;
 var MAX_BACKOFF_MS = 3e4;
 function backoffMs(attempt) {
-  const raw = process.env.MEMEX_LLM_RETRY_BASE_MS ?? process.env.MEMORY_BANK_LLM_RETRY_BASE_MS;
+  const raw = process.env.MEMEX_LLM_RETRY_BASE_MS;
   const parsed = raw != null && /^\d+$/.test(raw.trim()) ? parseInt(raw.trim(), 10) : 500;
   const base = Math.min(parsed, MAX_BACKOFF_BASE_MS);
   return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 async function callOnce(systemPrompt, userMessage, _maxTokens) {
-  const model = process.env.MEMEX_CODEX_MODEL || process.env.MEMORY_BANK_CODEX_MODEL || null;
-  const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS ?? process.env.MEMORY_BANK_CODEX_EXEC_TIMEOUT_MS;
+  const model = process.env.MEMEX_CODEX_MODEL || null;
+  const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
   return runCodex({ systemPrompt, userMessage, model, timeoutMs });
 }
@@ -23314,7 +23311,7 @@ async function main() {
   await server.connect(transport);
 }
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("mcp-server.js") || process.argv[1].endsWith("mcp-server"));
-if (isDirectRun || process.env.MEMEX_MCP_AUTOSTART === "1" || process.env.MEMORY_BANK_MCP_AUTOSTART === "1") {
+if (isDirectRun || process.env.MEMEX_MCP_AUTOSTART === "1") {
   main().catch((error2) => {
     console.error("Server error:", error2);
     process.exit(1);

@@ -19,10 +19,10 @@ describe('sync-export/import', () => {
   let restoreConsole: () => void;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bank-sync-'));
-    process.env.MEMORY_BANK_CONFIG_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-sync-'));
+    process.env.MEMEX_HOME = tmpDir;
     delete process.env.TEST_DB_PATH;
-    delete process.env.MEMORY_BANK_DB_PATH;
+    delete process.env.MEMEX_DB_PATH;
     restoreConsole = suppressConsole();
   });
 
@@ -374,7 +374,7 @@ describe('sync-export/import', () => {
     const createdAt = '2026-08-28T00:00:00.000Z';
     const updatedAt = '2026-08-28T01:00:00.000Z';
 
-    process.env.MEMORY_BANK_DB_PATH = sourceDbPath;
+    process.env.MEMEX_DB_PATH = sourceDbPath;
     let db = initDatabase();
     try {
       db.prepare(`
@@ -409,7 +409,7 @@ describe('sync-export/import', () => {
     expect(exported.facts).toBe(1);
     expect(exported.revisions).toBe(1);
 
-    process.env.MEMORY_BANK_DB_PATH = targetDbPath;
+    process.env.MEMEX_DB_PATH = targetDbPath;
     db = initDatabase();
     try {
       db.prepare(`
@@ -468,7 +468,7 @@ describe('sync-export/import', () => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(factId, 'Delete everywhere', 'decision', 'global', null, '[]', now, now, 1, 1);
 
-    process.env.MEMORY_BANK_DB_PATH = sourceDbPath;
+    process.env.MEMEX_DB_PATH = sourceDbPath;
     let db = initDatabase();
     try {
       insertFact(db);
@@ -488,7 +488,7 @@ describe('sync-export/import', () => {
     expect(exported.tombstones).toBe(1);
     expect(exported.recallEvents).toBe(1);
 
-    process.env.MEMORY_BANK_DB_PATH = targetDbPath;
+    process.env.MEMEX_DB_PATH = targetDbPath;
     db = initDatabase();
     try {
       insertFact(db);

@@ -9,13 +9,10 @@ const os = require("os");
 const { pathToFileURL } = require("url");
 const PLUGIN_ROOT =
   process.env.MEMEX_PLUGIN_ROOT ||
-  process.env.MEMORY_BANK_PLUGIN_ROOT ||
   process.env.PLUGIN_ROOT ||
   path.resolve(__dirname, "..");
 const MEMEX_HOME =
   process.env.MEMEX_HOME ||
-  process.env.MEMORY_BANK_HOME ||
-  process.env.MEMORY_BANK_CONFIG_DIR ||
   path.join(
     process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
     "memex",
@@ -23,7 +20,6 @@ const MEMEX_HOME =
 
 const DB_PATH =
   process.env.MEMEX_DB_PATH ||
-  process.env.MEMORY_BANK_DB_PATH ||
   process.env.TEST_DB_PATH ||
   path.join(MEMEX_HOME, "conversation-index", "db.sqlite");
 const PORT = parseInt(String(process.env.PORT || 3847), 10);
@@ -824,9 +820,7 @@ const server = http.createServer((req, res) => {
 
 // CX-06/CX-11: private data must never leave the machine — loopback bind is
 // the default and there is no flag that widens it.
-const BIND = process.env.MEMEX_BIND
-  || process.env.MEMORY_BANK_BIND
-  || "127.0.0.1";
+const BIND = process.env.MEMEX_BIND || "127.0.0.1";
 if (BIND !== "127.0.0.1" && BIND !== "localhost") {
   console.error(
     `Refusing to bind ${BIND}: this UI serves private facts on loopback only.`,

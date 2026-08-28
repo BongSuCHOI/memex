@@ -24,11 +24,9 @@ import path from "node:path";
 
 /** Root directory that holds Codex rollout sessions (recursive layout). */
 export function sessionsRoot(): string {
-  // MEMEX_SESSIONS_DIR is the current namespace; the historical variable stays
-  // honored read-only for existing custom installs.
+  // MEMEX_SESSIONS_DIR is the optional explicit override; TEST_SESSIONS_DIR
+  // is used by tests.
   if (process.env.MEMEX_SESSIONS_DIR) return process.env.MEMEX_SESSIONS_DIR;
-  if (process.env.MEMORY_BANK_SESSIONS_DIR)
-    return process.env.MEMORY_BANK_SESSIONS_DIR;
   if (process.env.TEST_SESSIONS_DIR) return process.env.TEST_SESSIONS_DIR;
   const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   return path.join(home, "sessions");

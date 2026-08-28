@@ -73,9 +73,7 @@ if (isBackground) {
 // preempted regardless of version (normal incremental sync completes in
 // minutes; 6h means wedged).
 const __lockDir = path.join(
-  process.env.MEMEX_RUN_LOCKS_DIR
-    || process.env.MEMORY_BANK_RUN_LOCKS_DIR
-    || path.join(getMemexHome(), 'run-locks'),
+  process.env.MEMEX_RUN_LOCKS_DIR || path.join(getMemexHome(), 'run-locks'),
   'memex-sync.lock',
 );
 const __pidFile = path.join(__lockDir, 'pid');

@@ -6,10 +6,6 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ### Added
 
-- `memex migrate-home` (with `--from`, `--dry-run`, `--json`) copies a legacy
-  data root to the current one, verifies SQLite integrity and row-count parity,
-  and writes receipts under `logs/home-migration.json`. The source directory is
-  never deleted or mutated; cleanup stays manual.
 - `memex home [--json]` prints the resolved data-root exact path.
 - `memex backfill all` runs extract → ontology → embeddings sequentially in one
   command, stopping at first failure with idempotent-resume guidance.
@@ -19,25 +15,23 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
   `--dry-run` supported. No global installs, no user-project package-manager
   calls.
 - Data-deletion walkthrough in docs/GUIDE.md covering full wipe, derived-only
-  reset, scoped fact deletion, legacy-path caution, and rollout safety.
+  reset, scoped fact deletion, and rollout safety.
 
 ### Changed
 
 - `memex-ui` now resolves its default SQLite root under
-  `$XDG_CONFIG_HOME/memex` or `~/.config/memex`, matching the CLI instead of
-  incorrectly probing the removed `memory-bank` default namespace.
+  `$XDG_CONFIG_HOME/memex` or `~/.config/memex`, matching the CLI.
 - Onboarding docs (README.md, README-KR.md, docs/GUIDE.md) now present the
   one-time `setup --install-cli` shim as the default path to a terminal `memex`
   command and drop the npx shell-function workaround; clarified that in-session
   features need only plugin registration + Codex restart.
-- Data root resolution prefers `MEMEX_HOME`; historical `MEMORY_BANK_HOME` and
-  `MEMORY_BANK_CONFIG_DIR` remain read-only compatibility fallbacks before
-  `$XDG_CONFIG_HOME/memex` and `~/.config/memex` defaults.
+- Data root resolution uses `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex` and
+  `~/.config/memex` as the default.
 - `memex backfill <target>` now runs in the foreground by default with exit-code
   propagation; background execution is opt-in via `--background`, and
   `--foreground` is accepted as a deprecated no-op for older scripts.
-- Documentation updated for the new root resolution order, explicit migration,
-  foreground backfill, CLI shim onboarding, and deletion guide
+- Documentation updated for the canonical root resolution order, foreground
+  backfill, CLI shim onboarding, and deletion guide
   (README.md, README-KR.md, docs/GUIDE.md, docs/SCHEMA.md).
 
 ## 0.1.0 - 2026-08-27
@@ -48,14 +42,12 @@ contracts remain intentionally pre-1.0.
 
 ### Product identity
 
-- Renamed the public package, Codex plugin, MCP server, CLI, UI, installer, and
-  dashboard skill from Memory Bank to Memex.
+- Public package, Codex plugin, MCP server, CLI, UI, installer, and dashboard
+  skill use Memex naming.
 - Promoted the Codex-native implementation from a conversion branch to the
   project's primary `main` line.
 - Replaced conversion plans and superseded audits with maintainable product,
   architecture, lifecycle, schema, operations, lineage, and verification docs.
-- Retained the historical `MEMORY_BANK_*` environment namespace and
-  `~/.config/memory-bank` data root to avoid silently relocating durable data.
 
 ### Codex-native runtime
 

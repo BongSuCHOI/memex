@@ -164,9 +164,7 @@ export function selectSpreadBatches<T>(batches: T[], maxBatches: number): T[] {
 
 function maxLlmCallsPerSession(): number {
   const parsed = parseInt(
-    process.env.MEMEX_MAX_EXTRACT_CALLS
-      || process.env.MEMORY_BANK_MAX_EXTRACT_CALLS
-      || "",
+    process.env.MEMEX_MAX_EXTRACT_CALLS || "",
     10,
   );
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;

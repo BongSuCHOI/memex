@@ -7,8 +7,8 @@ export interface CodexExecOptions {
     userMessage?: string;
     timeoutMs?: number;
     codexBin?: string;
-    /** Explicit model override; when absent, MEMEX_CODEX_MODEL (then its
-     *  historical compatibility alias), then DEFAULT_CODEX_MODEL applies. */
+    /** Explicit model override; when absent, MEMEX_CODEX_MODEL then
+     *  DEFAULT_CODEX_MODEL applies. */
     model?: string | null;
 }
 /** Pure arg builder — unit-tested without spawning anything. */

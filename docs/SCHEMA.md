@@ -3,15 +3,11 @@
 schema의 최종 소유자는 `src/db.ts`입니다. 기본 DB는
 `~/.config/memex/conversation-index/db.sqlite`이며 우선순위는 다음과 같습니다.
 
-1. `MEMEX_HOME` — 현재 표준 오버라이드
-2. `MEMORY_BANK_HOME` / `MEMORY_BANK_CONFIG_DIR` — 기존 설치 호환(read-only)
-3. `$XDG_CONFIG_HOME/memex`
-4. `~/.config/memex` (기본)
+1. `MEMEX_HOME` — 표준 오버라이드
+2. `$XDG_CONFIG_HOME/memex`
+3. `~/.config/memex` (기본)
 
-DB 경로는 별도로 `MEMEX_DB_PATH`가 최우선이며 `MEMORY_BANK_DB_PATH`는 동일한
-호환 의미로 읽기 전용으로 존중합니다. 기존 memory-bank 네임스페이스의 durable
-data는 자동 이동하지 않습니다. `memex migrate-home` 커맨드로 명시적으로
-복사→검증 후 전환할 수 있습니다.
+DB 경로는 별도로 `MEMEX_DB_PATH`가 최우선입니다.
 
 ## 1. 관계 개요
 

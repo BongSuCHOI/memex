@@ -4,83 +4,20 @@ import fs from "fs";
 import { sessionsRoot } from "./codex-rollout.js";
 
 /**
- * Ensure a directory exists, creating it if necessary
- */
-function ensureDir(dir: string): string {
- if (!fs.existsSync(dir)) {
-  fs.mkdirSync(dir, { recursive: true });
- }
- return dir;
-}
-
-/**
  * Memex data root resolver (pure getter — never mutates filesystem).
  *
  * Precedence:
- * 1. MEMEX_HOME                — explicit root (current product namespace)
- * 2. MEMORY_BANK_HOME          — historical install override, honored read-only
- * 3. MEMORY_BANK_CONFIG_DIR    — historical install override, honored read-only
- * 4. XDG_CONFIG_HOME/memex
- * 5. ~/.config/memex           — default
- *
- * Storage-history contract: durable data created before v0.2 lives under a
- * "memory-bank" directory. It is never silently moved, copied, merged, or
- * deleted. Existing installs migrate explicitly via `memex migrate-home`
- * (see src/home-migration.ts); until they run it, their root keeps resolving
- * through one of the two historical variables above.
+ * 1. MEMEX_HOME                — explicit root
+ * 2. XDG_CONFIG_HOME/memex
+ * 3. ~/.config/memex           — default
  */
 const MEMEX_DEFAULT_BASENAME = "memex";
 export function getMemexHome(): string {
- const home =
-  process.env.MEMEX_HOME ||
-  process.env.MEMORY_BANK_HOME ||
-  process.env.MEMORY_BANK_CONFIG_DIR;
+ const home = process.env.MEMEX_HOME;
  if (home) return home;
  return process.env.XDG_CONFIG_HOME
   ? path.join(process.env.XDG_CONFIG_HOME, MEMEX_DEFAULT_BASENAME)
   : path.join(os.homedir(), ".config", MEMEX_DEFAULT_BASENAME);
-}
-
-/**
- * @deprecated Historical name kept as a thin alias so pre-existing importers
- * (`dist/paths.js`) keep resolving the SAME root during the transition.
- * New code must call {@link getMemexHome}.
- */
-export function getMemoryBankHome(): string {
- return getMemexHome();
-}
-
-/**
- * Read-only detection of a pre-v0.2 data root created by an older install.
- * Used by `memex doctor`, onboarding status checks, and `memex migrate-home`
- * to surface (never auto-execute) a pending migration. Returns null when the
- * legacy default location holds no recognizable Memex data.
- */
-export function detectLegacyDataRoot(): string | null {
- // An explicit root override means the user already controls placement;
- // legacy-default probing could then produce a misleading suggestion.
- if (
-  process.env.MEMEX_HOME ||
-  process.env.MEMORY_BANK_HOME ||
-  process.env.MEMORY_BANK_CONFIG_DIR
- ) {
-  return null;
- }
- const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
- const legacy = path.join(base, "memory-bank");
- try {
-  const entries = fs.readdirSync(legacy);
-  // Recognize the layout only by its derived-data subdirectories.
-  if (
-   entries.includes("conversation-archive") ||
-   entries.includes("conversation-index")
-  ) {
-   return legacy;
-  }
- } catch {
-  /* missing/unreadable — not a legacy root */
- }
- return null;
 }
 
 /**
@@ -104,12 +41,7 @@ export function getIndexDir(): string {
  * Get database path (pure getter).
  */
 export function getDbPath(): string {
- // MEMEX_DB_PATH is the current namespace; MEMORY_BANK_DB_PATH stays honored
- // read-only for existing installs (same precedence as the data root).
- const dbOverride =
-  process.env.MEMEX_DB_PATH ||
-  process.env.MEMORY_BANK_DB_PATH ||
-  process.env.TEST_DB_PATH;
+ const dbOverride = process.env.MEMEX_DB_PATH || process.env.TEST_DB_PATH;
  if (dbOverride) return dbOverride;
  return path.join(getIndexDir(), "db.sqlite");
 }
@@ -121,11 +53,6 @@ export function ensureMemexHome(): string {
  const dir = getMemexHome();
  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
  return dir;
-}
-
-/** @deprecated Use {@link ensureMemexHome}. */
-export function ensureMemoryBankHome(): string {
- return ensureMemexHome();
 }
 
 export function ensureArchiveDir(): string {
@@ -156,8 +83,7 @@ export function getExcludeConfigPath(): string {
 /**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
- * the current override; the historical MEMORY_BANK_SESSIONS_DIR remains a
- * read-only compatibility fallback.
+ * the optional explicit override; TEST_SESSIONS_DIR is used by tests.
  */
 export { sessionsRoot as getSessionsRoot };
 
@@ -169,14 +95,12 @@ export { sessionsRoot as getSessionsRoot };
  * accidentally persisted worker rollout from entering the index.
  */
 export const LLM_WORKDIR_BASENAME = "memex-llm";
-const LEGACY_LLM_WORKDIR_BASENAME = "memory-bank-llm";
 
 /**
  * True for the reserved headless-worker working directory, in either shape it
  * exists as: the plain basename (`…/memex-llm`) or the mkdtemp form
- * codex-exec.ts creates (`<tmpdir>/memex-llm-XXXXXX`). The historical
- * `memory-bank-llm` shapes stay excluded so an older in-flight worker cannot
- * be ingested. Matched on the FINAL path segment only. Consumers:
+ * codex-exec.ts creates (`<tmpdir>/memex-llm-XXXXXX`). Matched on the FINAL
+ * path segment only. Consumers:
  * sync/indexer/verify exclusion (TS) and, through llmWorkdirCwdSql, the
  * extraction gate SQL — keep the shapes identical.
  */
@@ -184,9 +108,7 @@ export function isLlmWorkdirPath(project: string): boolean {
  const segments = project.split("/").filter(Boolean);
  const last = segments[segments.length - 1];
  if (!last) return false;
- return [LLM_WORKDIR_BASENAME, LEGACY_LLM_WORKDIR_BASENAME].some(
-  (basename) => last === basename || last.startsWith(`${basename}-`),
- );
+ return last === LLM_WORKDIR_BASENAME || last.startsWith(`${LLM_WORKDIR_BASENAME}-`);
 }
 
 /**
@@ -196,7 +118,7 @@ export function isLlmWorkdirPath(project: string): boolean {
  * parenthesized clause; `column` defaults to the worker queries' alias.
  */
 export function llmWorkdirCwdSql(column = "x.cwd"): string {
- return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%' OR ${column} LIKE '%/${LEGACY_LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LEGACY_LLM_WORKDIR_BASENAME}-%')`;
+ return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%')`;
 }
 
 /**

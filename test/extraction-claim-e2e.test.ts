@@ -34,8 +34,8 @@ vi.mock('../src/ontology-classifier.js', async (io) => ({ ...(await io<typeof im
 let tmp: string; let db: import('better-sqlite3').Database;
 beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
-  process.env.MEMORY_BANK_CONFIG_DIR = tmp;
-  process.env.MEMORY_BANK_DB_PATH = path.join(tmp, 't.sqlite');
+  process.env.MEMEX_HOME = tmp;
+  process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
   calls = 0; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
@@ -44,7 +44,7 @@ beforeEach(async () => {
     'Flutter 상태관리를 Riverpod 과 Bloc 중 무엇으로 할지 결정해야 합니다. 이유도 알려주세요.',
     'Riverpod 을 권장합니다. 컴파일 타임 안전성과 테스트 용이성 때문입니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
 });
-afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMORY_BANK_CONFIG_DIR; delete process.env.MEMORY_BANK_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
+afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
   it('각 fact에는 모델이 지목한 source exchange UUID만 저장한다', async () => {

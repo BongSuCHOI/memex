@@ -83,7 +83,7 @@ test('installer rejects a broken installed-root MCP and rolls back registrations
   const state = JSON.parse(fs.readFileSync(f.statePath, 'utf8'));
   assert.deepEqual(state, { marketplace: false, plugin: false });
   const hooks = path.join(f.codexHome, 'hooks.json');
-  assert.equal(fs.existsSync(hooks) && fs.readFileSync(hooks, 'utf8').includes('_memoryBank'), false);
+  assert.equal(fs.existsSync(hooks) && fs.readFileSync(hooks, 'utf8').includes('_memex'), false);
 });
 
 test('installer uses the authoritative installed root for MCP, plugin hooks, sync and status', (t) => {

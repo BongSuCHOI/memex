@@ -82,8 +82,8 @@ describe("워커 ↔ dist 계약", () => {
           timeout: 30_000,
           env: {
             ...process.env,
-            MEMORY_BANK_CONFIG_DIR: tmp,
-            MEMORY_BANK_DB_PATH: path.join(tmp, "t.sqlite"),
+            MEMEX_HOME: tmp,
+            MEMEX_DB_PATH: path.join(tmp, "t.sqlite"),
           },
         },
       );

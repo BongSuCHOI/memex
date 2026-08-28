@@ -173,16 +173,16 @@ test('hook handlers record privacy-safe observation events', async (t) => {
 
 test('commandFor separates script and args without path.join corruption and handles spaced roots', async () => {
   const { commandFor } = await import(path.join(REPO, 'dist/lifecycle.js'));
-  const rootWithSpaces = '/Users/test user/my plugins/memory bank';
+  const rootWithSpaces = '/Users/test user/my plugins/memex plugin';
   const cmd = commandFor(rootWithSpaces, {
     script: 'scripts/worker.js',
     args: ['--flag', 'value with space'],
   });
-  assert.equal(cmd, 'node "/Users/test user/my plugins/memory bank/scripts/worker.js" --flag "value with space"');
+  assert.equal(cmd, 'node "/Users/test user/my plugins/memex plugin/scripts/worker.js" --flag "value with space"');
 
   const shCmd = commandFor(rootWithSpaces, {
     script: 'scripts/hook.sh',
     args: ['--dry-run'],
   });
-  assert.equal(shCmd, 'bash "/Users/test user/my plugins/memory bank/scripts/hook.sh" --dry-run');
+  assert.equal(shCmd, 'bash "/Users/test user/my plugins/memex plugin/scripts/hook.sh" --dry-run');
 });

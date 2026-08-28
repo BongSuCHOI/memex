@@ -79,15 +79,15 @@ async function setupDb() {
 
 beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-extract-retry-'));
-  process.env.MEMORY_BANK_CONFIG_DIR = tmpDir;
-  process.env.MEMORY_BANK_DB_PATH = path.join(tmpDir, 'test.sqlite');
+  process.env.MEMEX_HOME = tmpDir;
+  process.env.MEMEX_DB_PATH = path.join(tmpDir, 'test.sqlite');
   llmBehavior.mode = 'ok';
   db = await setupDb();
 });
 afterEach(() => {
   try { db?.close(); } catch { /* already closed */ }
-  delete process.env.MEMORY_BANK_CONFIG_DIR;
-  delete process.env.MEMORY_BANK_DB_PATH;
+  delete process.env.MEMEX_HOME;
+  delete process.env.MEMEX_DB_PATH;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -217,13 +217,13 @@ describe('R5: 마커 쓰기 견고성', () => {
 /**
  * R20 — 제외 판정의 경로 경계.
  *
- * raw prefix 로 비교하면 형제 프로젝트가 함께 배제된다: '/…/memory-bank' 가
- * '/…/memory-bank-sibling' 을 삼켜 그 프로젝트 세션이 영구 0/0 마커를 받고 fact 가
+ * raw prefix 로 비교하면 형제 프로젝트가 함께 배제된다: '/…/project-a' 가
+ * '/…/project-a-sibling' 을 삼켜 그 프로젝트 세션이 영구 0/0 마커를 받고 fact 가
  * 영영 추출되지 않았다(실측 적격 8세션 전건). pending SQL 은 exact 매칭이라 선정은
  * 되고 여기서만 걸러져 **무음**이었다.
  */
 const EX_BASE = path.join(os.tmpdir(), 'r20-exclude');
-const SELF_PROJECT = path.join(EX_BASE, 'memory-bank');
+const SELF_PROJECT = path.join(EX_BASE, 'project-a');
 
 describe('R20: 제외 판정은 경로 경계로', () => {
   beforeEach(() => {
@@ -239,9 +239,9 @@ describe('R20: 제외 판정은 경로 경계로', () => {
   it('형제 프로젝트를 배제하지 않는다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'ok';
-    const sibling = path.join(EX_BASE, 'memory-bank-sibling');
+    const sibling = path.join(EX_BASE, 'project-a-sibling');
     const res = await runFactExtraction(db, SESSION, sibling);
-    expect(res.skipped, 'memory-bank-sibling 은 별개 프로젝트다 — 배제되면 안 된다').toBeUndefined();
+    expect(res.skipped, 'project-a-sibling 은 별개 프로젝트다 — 배제되면 안 된다').toBeUndefined();
     expect(res.saved, '정상 추출돼야 한다').toBeGreaterThan(0);
   });
 

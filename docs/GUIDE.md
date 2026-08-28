@@ -267,24 +267,9 @@ body-size guard를 통과한 뒤 CLI와 같은 transactional service를 사용�
     └── lifecycle-registration.json
 ```
 
-우선순위: `MEMEX_HOME` → `MEMORY_BANK_HOME`(호환) → `MEMORY_BANK_CONFIG_DIR`
-(호환) → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
-
-기존 설치가 여전히 `~/.config/memory-bank/`에 데이터를 두고 있다면 런타임은
-그 디렉터리를 건드리지 않고 새 root를 바라봅니다. 데이터 이전은 명령어로
-명시적으로 수행합니다:
-
-```bash
-memex migrate-home            # 감지된 legacy root에서 copy → verify → switch
-memex migrate-home --dry-run  # 쓰기 없이 계획만 출력
-memex home --json             # 해석된 data root 확인 (JSON)
-```
-
-마이그레이션은 source를 절대 삭제하지 않으며 SQLite integrity_check와
-row-count 비교로 무결성을 검증한 뒤 receipts(`<new>/logs/home-migration.json`)를
-남깁니다. 검증 완료 후 필요하면 수동으로 옛 디렉터리를 정리합니다.
-이 namespace 규칙은 Claude runtime 호환 계층이 아닙니다. 원본 Codex rollout은
-항상 read-only입니다.
+우선순위: `MEMEX_HOME` → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
+`memex home --json`으로 현재 data root를 확인할 수 있습니다. 원본 Codex
+rollout은 항상 read-only입니다.
 
 ## 10. 업데이트
 
@@ -350,9 +335,8 @@ codex plugin marketplace remove memex-local --json
 
 plugin 제거만으로는 데이터가 남습니다. 완전히 삭제하려면 아래 순서를 따릅니다.
 
-먼저 실제 데이터 위치를 확인합니다. `MEMEX_HOME`, `MEMORY_BANK_HOME`,
-`MEMORY_BANK_CONFIG_DIR` 중 설정된 값이 우선 적용됩니다(과거 변수는 하위 호환용
-read-only fallback).
+먼저 실제 데이터 위치를 확인합니다. `MEMEX_HOME`이 설정되어 있으면 우선
+적용되고, 없으면 `$XDG_CONFIG_HOME/memex` 또는 `~/.config/memex`를 사용합니다.
 
 ```bash
 memex home            # 현재 data root exact path 출력
@@ -363,7 +347,7 @@ Memex가 생성하는 데이터는 모두 이 data root 안에 있습니다:
 
 - `memex.db` — 관측·facts·graph 등 파생 SQLite DB (재구성 가능)
 - `archives/` — rollout에서 유래한 원문 스냅샷 (재구성 가능)
-- `logs/` — 백필 수행 기록, migration receipts (재구성 가능)
+- `logs/` — 백필 수행 기록 (재구성 가능)
 - Web UI 소켓/임시 파일
 
 전체 삭제(복구 불가, 재동기화 시 처음부터 다시 추출):
@@ -388,7 +372,4 @@ rm -rf "$(memex home)"
 
 - **삭제 대상은 Memex 파생 데이터뿐**입니다. `$CODEX_HOME/sessions` rollout은
   절대 삭제·수정하지 않습니다(원본 대화 기록이며 Memex의 유일한 근원).
-- legacy 경로(`~/.config/memory-bank`)를 쓰던 설치는 `memex home`이 해당 폴더를
-  가리킬 수 있습니다. 반드시 출력된 exact path만 삭제하고, 이후 정리는 수동으로
-  판단합니다(`memex migrate-home` 후 남은 구폴더 포함).
 - dry-run 없이 되돌릴 수 없으므로, 필요 시 사전에 data root 폴더를 통째로 백업합니다.

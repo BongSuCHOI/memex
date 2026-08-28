@@ -18,9 +18,7 @@ const ZST_SUFFIX = ".zst";
  */
 const DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024; // 256 MiB
 function maxDecompressedBytes() {
-    const parsed = parseInt(process.env.MEMEX_MAX_DECOMPRESSED_BYTES
-        || process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES
-        || "", 10);
+    const parsed = parseInt(process.env.MEMEX_MAX_DECOMPRESSED_BYTES || "", 10);
     // Only allow tightening — raising the cap would defeat the bomb protection.
     if (Number.isFinite(parsed) &&
         parsed > 0 &&

@@ -31,8 +31,7 @@ user/assistant turn은 `response_item`의 `message` role에서만 조립하며 `
 - Memex 자체 isolated model prompt/worker workdir — 예약 basename `memex-llm`과
   `codex exec`가 실제 생성하는 mkdtemp 접미사 형태(`memex-llm-XXXXXX`) 모두.
   마지막 경로 세그먼트 기준이므로 basename이 중간에 포함된 slug는 실제 프로젝트로
-  유지된다. 이전 버전의 `memory-bank-llm[-*]`도 레거시 worker rollout 유입 방지를
-  위해 제외 판정만 유지한다.
+  유지된다.
 - 사용자가 exact canonical path로 제외한 project
 
 malformed 한 줄은 해당 줄의 오류로 격리하며 전체 archive discovery를 중단하지 않습니다.

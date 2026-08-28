@@ -30,11 +30,11 @@ async function llm() {
 beforeEach(() => {
   scenarios.length = 0;
   queryCalls = 0;
-  process.env.MEMORY_BANK_LLM_RETRY_BASE_MS = '0'; // 테스트에서 백오프 대기 없음
+  process.env.MEMEX_LLM_RETRY_BASE_MS = '0'; // 테스트에서 백오프 대기 없음
 });
 afterEach(() => {
-  delete process.env.MEMORY_BANK_LLM_RETRY_BASE_MS;
-  delete process.env.MEMORY_BANK_LLM_RETRIES;
+  delete process.env.MEMEX_LLM_RETRY_BASE_MS;
+  delete process.env.MEMEX_LLM_RETRIES;
 });
 
 describe('callMemoryModel 재시도/복구', () => {
@@ -55,7 +55,7 @@ describe('callMemoryModel 재시도/복구', () => {
 
   it('AC2: 재시도를 소진하면 빈 문자열이 아니라 throw 한다 (fail-loud)', async () => {
     const { callMemoryModel } = await llm();
-    process.env.MEMORY_BANK_LLM_RETRIES = '2';
+    process.env.MEMEX_LLM_RETRIES = '2';
     scenarios.push({ result: '' }); // 매번 빈 응답
     await expect(callMemoryModel('sys', 'user')).rejects.toThrow(/empty response/i);
     expect(queryCalls).toBe(3); // 1 + 재시도 2
@@ -63,7 +63,7 @@ describe('callMemoryModel 재시도/복구', () => {
 
   it('AC2b: transient 에러(503)도 재시도 후 throw 한다', async () => {
     const { callMemoryModel } = await llm();
-    process.env.MEMORY_BANK_LLM_RETRIES = '1';
+    process.env.MEMEX_LLM_RETRIES = '1';
     scenarios.push({ throws: Object.assign(new Error('service unavailable'), { status: 503 }) });
     await expect(callMemoryModel('sys', 'user')).rejects.toThrow(/service unavailable/);
     expect(queryCalls).toBe(2); // 1 + 재시도 1
@@ -81,7 +81,7 @@ describe('callMemoryModel 재시도/복구', () => {
 
   it('AC3: deterministic 에러는 재시도하지 않고 즉시 throw 한다 (예산 낭비 차단)', async () => {
     const { callMemoryModel } = await llm();
-    process.env.MEMORY_BANK_LLM_RETRIES = '3';
+    process.env.MEMEX_LLM_RETRIES = '3';
     scenarios.push({ throws: Object.assign(new Error('prompt is too long'), { status: 413 }) });
     await expect(callMemoryModel('sys', 'user')).rejects.toThrow(/too long/);
     expect(queryCalls).toBe(1); // 재시도 없음
@@ -89,7 +89,7 @@ describe('callMemoryModel 재시도/복구', () => {
 
   it('재시도 횟수는 env 로 조절되고 0 이면 재시도하지 않는다', async () => {
     const { callMemoryModel } = await llm();
-    process.env.MEMORY_BANK_LLM_RETRIES = '0';
+    process.env.MEMEX_LLM_RETRIES = '0';
     scenarios.push({ result: '' });
     await expect(callMemoryModel('sys', 'user')).rejects.toThrow();
     expect(queryCalls).toBe(1);
@@ -97,8 +97,8 @@ describe('callMemoryModel 재시도/복구', () => {
 
   it('백오프는 상한이 있다 — 오타 하나로 워커가 정지하지 않는다 (Codex MEDIUM)', async () => {
     const { callMemoryModel } = await import('../src/llm.js');
-    process.env.MEMORY_BANK_LLM_RETRY_BASE_MS = '500000'; // 오타 시나리오: 500초
-    process.env.MEMORY_BANK_LLM_RETRIES = '1';
+    process.env.MEMEX_LLM_RETRY_BASE_MS = '500000'; // 오타 시나리오: 500초
+    process.env.MEMEX_LLM_RETRIES = '1';
     scenarios.push({ result: '' }, { result: 'ok' });
     const t0 = Date.now();
     await callMemoryModel('sys', 'user');

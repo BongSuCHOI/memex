@@ -10,15 +10,12 @@ describe("paths", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-bank-paths-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "memex-paths-"));
     // Clear all relevant env vars before each test
     delete process.env.MEMEX_HOME;
     delete process.env.MEMEX_DB_PATH;
-    delete process.env.MEMORY_BANK_CONFIG_DIR;
-    delete process.env.MEMORY_BANK_HOME;
     delete process.env.XDG_CONFIG_HOME;
     delete process.env.TEST_ARCHIVE_DIR;
-    delete process.env.MEMORY_BANK_DB_PATH;
     delete process.env.TEST_DB_PATH;
     delete process.env.CONVERSATION_SEARCH_EXCLUDE_PROJECTS;
   });
@@ -35,32 +32,13 @@ describe("paths", () => {
   describe("getMemexHome", () => {
     it("should use MEMEX_HOME when set (highest priority)", async () => {
       const homeDir = path.join(tmpDir, "home");
-      process.env.MEMORY_BANK_HOME = path.join(tmpDir, "legacy-ignored");
       process.env.MEMEX_HOME = homeDir;
       const { getMemexHome } = await import("../src/paths.js");
       expect(getMemexHome()).toBe(homeDir);
     });
 
-    it("should honor historical MEMORY_BANK_HOME next (compat, read-only)", async () => {
-      delete process.env.MEMEX_HOME;
-      const legacyHome = path.join(tmpDir, "legacy-home");
-      process.env.MEMORY_BANK_HOME = legacyHome;
-      const { getMemexHome } = await import("../src/paths.js");
-      expect(getMemexHome()).toBe(legacyHome);
-    });
-
-    it("should use MEMORY_BANK_CONFIG_DIR when only it is set", async () => {
-      delete process.env.MEMEX_HOME;
-      const configDir = path.join(tmpDir, "custom-config");
-      process.env.MEMORY_BANK_CONFIG_DIR = configDir;
-      const { getMemexHome } = await import("../src/paths.js");
-      expect(getMemexHome()).toBe(configDir);
-    });
-
     it("should use XDG_CONFIG_HOME/memex when set", async () => {
       delete process.env.MEMEX_HOME;
-      delete process.env.MEMORY_BANK_HOME;
-      delete process.env.MEMORY_BANK_CONFIG_DIR;
       const xdgDir = path.join(tmpDir, "xdg");
       process.env.XDG_CONFIG_HOME = xdgDir;
       const { getMemexHome } = await import("../src/paths.js");
@@ -69,43 +47,11 @@ describe("paths", () => {
 
     it("should default to ~/.config/memex", async () => {
       delete process.env.MEMEX_HOME;
-      delete process.env.MEMORY_BANK_HOME;
-      delete process.env.MEMORY_BANK_CONFIG_DIR;
       delete process.env.XDG_CONFIG_HOME;
       const { getMemexHome } = await import("../src/paths.js");
       expect(getMemexHome()).toBe(path.join(os.homedir(), ".config", "memex"));
     });
 
-    it("deprecated memory-bank aliases resolve the same Memex root", async () => {
-      delete process.env.MEMEX_HOME;
-      process.env.MEMORY_BANK_HOME = path.join(tmpDir, "legacy");
-      const {
-        getMemexHome,
-        getMemoryBankHome,
-        ensureMemexHome,
-        ensureMemoryBankHome,
-      } = await import("../src/paths.js");
-      expect(getMemoryBankHome()).toBe(getMemexHome());
-      expect(ensureMemoryBankHome()).toBe(ensureMemexHome());
-    });
-
-    it("detectLegacyDataRoot recognizes a pre-v0.2 memory-bank layout", async () => {
-      const legacyRoot = path.join(tmpDir, "memory-bank");
-      fs.mkdirSync(path.join(legacyRoot, "conversation-index"), {
-        recursive: true,
-      });
-      const XDG = tmpDir;
-      process.env.XDG_CONFIG_HOME = XDG;
-      const { detectLegacyDataRoot } = await import("../src/paths.js");
-      expect(detectLegacyDataRoot()).toBe(legacyRoot);
-    });
-
-    it("detectLegacyDataRoot returns null without derived-data subdirs", async () => {
-      fs.mkdirSync(path.join(tmpDir, "memory-bank"), { recursive: true });
-      process.env.XDG_CONFIG_HOME = tmpDir;
-      const { detectLegacyDataRoot } = await import("../src/paths.js");
-      expect(detectLegacyDataRoot()).toBeNull();
-    });
   });
 
   describe("getArchiveDir", () => {
@@ -122,9 +68,9 @@ describe("paths", () => {
       expect(fs.existsSync(archiveDir)).toBe(true);
     });
 
-    it("should use memory-bank/conversation-archive by default", async () => {
+    it("should use memex/conversation-archive by default", async () => {
       const configDir = path.join(tmpDir, "config");
-      process.env.MEMORY_BANK_CONFIG_DIR = configDir;
+      process.env.MEMEX_HOME = configDir;
       const { getArchiveDir } = await import("../src/paths.js");
       const result = getArchiveDir();
       expect(result).toBe(path.join(configDir, "conversation-archive"));
@@ -132,9 +78,9 @@ describe("paths", () => {
   });
 
   describe("getDbPath", () => {
-    it("should use MEMORY_BANK_DB_PATH when set", async () => {
+    it("should use MEMEX_DB_PATH when set", async () => {
       const dbPath = path.join(tmpDir, "custom.sqlite");
-      process.env.MEMORY_BANK_DB_PATH = dbPath;
+      process.env.MEMEX_DB_PATH = dbPath;
       const { getDbPath } = await import("../src/paths.js");
       expect(getDbPath()).toBe(dbPath);
     });
@@ -146,11 +92,11 @@ describe("paths", () => {
       expect(getDbPath()).toBe(dbPath);
     });
 
-    it("should prefer MEMEX_DB_PATH over MEMORY_BANK_DB_PATH", async () => {
+    it("should prefer MEMEX_DB_PATH over TEST_DB_PATH", async () => {
       const memexPath = path.join(tmpDir, "memex.sqlite");
-      const legacyPath = path.join(tmpDir, "legacy.sqlite");
+      const testPath = path.join(tmpDir, "test.sqlite");
       process.env.MEMEX_DB_PATH = memexPath;
-      process.env.MEMORY_BANK_DB_PATH = legacyPath;
+      process.env.TEST_DB_PATH = testPath;
       const { getDbPath } = await import("../src/paths.js");
       expect(getDbPath()).toBe(memexPath);
     });
@@ -158,7 +104,7 @@ describe("paths", () => {
 
   describe("getExcludedProjects", () => {
     it("should return empty array when no config", async () => {
-      process.env.MEMORY_BANK_CONFIG_DIR = tmpDir;
+      process.env.MEMEX_HOME = tmpDir;
       const { getExcludedProjects } = await import("../src/paths.js");
       expect(getExcludedProjects()).toEqual([]);
     });
@@ -176,7 +122,7 @@ describe("paths", () => {
 
     it("should read from exclude.txt config file", async () => {
       const configDir = path.join(tmpDir, "config");
-      process.env.MEMORY_BANK_CONFIG_DIR = configDir;
+      process.env.MEMEX_HOME = configDir;
       // Need to create the index dir structure
       const indexDir = path.join(configDir, "conversation-index");
       fs.mkdirSync(indexDir, { recursive: true });
@@ -205,7 +151,7 @@ describe("paths", () => {
 
     it("should ignore comments and empty lines in exclude.txt", async () => {
       const configDir = path.join(tmpDir, "config");
-      process.env.MEMORY_BANK_CONFIG_DIR = configDir;
+      process.env.MEMEX_HOME = configDir;
       const indexDir = path.join(configDir, "conversation-index");
       fs.mkdirSync(indexDir, { recursive: true });
       fs.writeFileSync(
@@ -259,7 +205,7 @@ describe("paths", () => {
         false,
       );
       // Repo dir itself is not the worker slug
-      expect(isExcludedProject("-Users-example-Project-memory-bank", [])).toBe(
+      expect(isExcludedProject("-Users-example-Project-memex", [])).toBe(
         false,
       );
     });
@@ -271,12 +217,11 @@ describe("paths", () => {
       );
     });
 
-    it("should exclude current and historical reserved workdir namespaces", async () => {
+    it("should exclude the reserved workdir namespace", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
       // Reserved prefix (mkdtemp form protection) — documented trade-off: any
-      // Current namespace and legacy in-flight workers are both excluded.
+      // current in-flight worker is excluded.
       expect(isExcludedProject("/tmp/real/memex-llm-docs", [])).toBe(true);
-      expect(isExcludedProject("/tmp/real/memory-bank-llm-docs", [])).toBe(true);
     });
 
     it("should honor the user-configured exact-match list", async () => {

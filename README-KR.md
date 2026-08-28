@@ -160,12 +160,10 @@ Git marketplace snapshot을 갱신하고 plugin을 최신 상태로 재설치합
 
 ## 데이터 위치
 
-기본 derived data root는 `~/.config/memex`입니다. 우선순위:
-`MEMEX_HOME` → `MEMORY_BANK_HOME`(호환, read-only) → `MEMORY_BANK_CONFIG_DIR`
-(호환) → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
-
-기존 설치가 역사적 `memory-bank` 네임스페이스에 데이터를 두고 있다면 명령어로
-명시적 마이그레이션합니다. 소스 디렉터리는 절대 삭제되지 않습니다.
+기본 derived data root는 `~/.config/memex`입니다. 우선순위는
+`MEMEX_HOME` → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`입니다.
+Memex는 이 표준 저장소 네임스페이스만 사용하며 Codex rollout 원본은
+항상 read-only로 유지합니다.
 자세한 내용은 [SCHEMA](docs/SCHEMA.md)를 참조하세요.
 
 ## 해제

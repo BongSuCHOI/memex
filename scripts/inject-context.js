@@ -48,8 +48,6 @@ function injectSocketPath() {
   // Mirrors paths.ts getIndexDir() without importing the heavy dist chain.
   const base =
     process.env.MEMEX_HOME ||
-    process.env.MEMORY_BANK_HOME ||
-    process.env.MEMORY_BANK_CONFIG_DIR ||
     path.join(
       process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
       "memex",

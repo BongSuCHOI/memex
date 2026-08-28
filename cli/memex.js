@@ -50,7 +50,6 @@ COMMANDS:
   doctor      Diagnose dependency/build/lifecycle configuration (read-only)
   migrate-projects  Re-derive project identity from cwd evidence (CX-02 migration)
   home        Print the resolved Memex data root (read-only)
-  migrate-home  Copy durable data from a legacy memory-bank root into the current root
   status      Show pipeline readiness per stage (read-only)
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|delete
@@ -125,7 +124,7 @@ async function main() {
           );
         }
         console.log(
-          `Existing non-Memory-Bank entries preserved: ${result.diff.preservedForeignEntries}`,
+          `Existing non-Memex entries preserved: ${result.diff.preservedForeignEntries}`,
         );
         if (dryRun) {
           console.log("No files changed.");
@@ -148,7 +147,7 @@ async function main() {
           `${dryRun ? "[dry-run] Would remove" : "Removed"}: ${result.removed} Memex hook entr${result.removed === 1 ? "y" : "ies"}`,
         );
         console.log(
-          `Non-Memory-Bank entries preserved: ${result.preservedForeignEntries}`,
+          `Non-Memex entries preserved: ${result.preservedForeignEntries}`,
         );
         if (!dryRun)
           console.log("Memex data root and Codex rollouts untouched.");
@@ -346,82 +345,12 @@ async function main() {
       case "home": {
         // Read-only: print the resolved data root. This is the authoritative
         // answer for uninstall/backup paths that need the EXACT directory.
-        const { getMemexHome, detectLegacyDataRoot } = await import(
-          join(distDir, "paths.js")
-        );
+        const { getMemexHome } = await import(join(distDir, "paths.js"));
         const root = getMemexHome();
         if (args.includes("--json")) {
-          console.log(
-            JSON.stringify({
-              home: root,
-              pendingMigrationFrom: detectLegacyDataRoot(),
-            }),
-          );
+          console.log(JSON.stringify({ home: root }));
         } else {
           console.log(root);
-          const legacy = detectLegacyDataRoot();
-          if (legacy) {
-            console.error(
-              `NOTE: pre-v0.2 data still lives at ${legacy}. Run 'memex migrate-home' to bring it over.`,
-            );
-          }
-        }
-        break;
-      }
-
-      case "migrate-home": {
-        if (args.includes("--help") || args.includes("-h")) {
-          console.log(
-            "Usage: memex migrate-home [--from <path>] [--dry-run] [--json]",
-          );
-          console.log("");
-          console.log(
-            "Copy durable Memex data from a legacy memory-bank root into the current",
-          );
-          console.log(
-            "data root (memex home). Copy → verify → succeed; the source is never",
-          );
-          console.log(
-            "deleted or mutated. Verifies SQLite integrity and row-count parity.",
-          );
-          break;
-        }
-        const { migrateHome } = await import(
-          join(distDir, "home-migration.js")
-        );
-        const fromIdx = args.indexOf("--from");
-        const from = fromIdx >= 0 ? args[fromIdx + 1] : undefined;
-        try {
-          const r = migrateHome({ from, dryRun: args.includes("--dry-run") });
-          if (args.includes("--json")) {
-            console.log(JSON.stringify(r));
-          } else if (r.dryRun) {
-            console.log(`DRY-RUN — nothing was written.`);
-            console.log(`  source: ${r.sourceRoot}`);
-            console.log(`  target: ${r.targetRoot}`);
-            console.log(
-              `  would copy ${r.filesCopied} files / ${r.bytesCopied.toLocaleString()} bytes across ${r.dirsCopied.length} subdirs`,
-            );
-          } else {
-            console.log("Migration complete and verified.");
-            console.log(`  source: ${r.sourceRoot} (left untouched)`);
-            console.log(`  target: ${r.targetRoot}`);
-            console.log(
-              `  copied: ${r.filesCopied} files / ${r.bytesCopied.toLocaleString()} bytes`,
-            );
-            console.log(
-              `  sqlite integrity_check: ${r.sqliteIntegrityChecked ? "OK" : "n/a (no index DB)"}`,
-            );
-            for (const row of r.rowsCompared) {
-              console.log(`  rows ${row.table}: ${row.source} → ${row.target}`);
-            }
-            console.log(
-              "Next: restart Codex, then run `memex status` to confirm readiness.",
-            );
-          }
-        } catch (e) {
-          console.error(`migrate-home failed: ${e.message}`);
-          process.exitCode = 1;
         }
         break;
       }

@@ -518,7 +518,7 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 ### F. 소규모 drift cleanup
 
 1. [x] SessionEnd 정상 경로의 `recordHookEvent('SessionEnd', ...)` 중복 호출 제거. event 정확히 1회 기록.
-2. [x] historical home migration autodetect가 XDG 미설정 시 실제 기본 legacy 경로 `~/.config/memory-bank`를 탐지하도록 정리. 현재 쓰기 대상과 기본 홈은 `MEMEX_HOME`/`~/.config/memex`이고, `memory-bank`는 명시적 migration 입력과 과거 환경변수 호환 경계에서만 취급.
+2. [x] 독립 Codex 저장소이므로 historical home migration autodetect와 legacy storage compatibility 경계를 제거. 현재 쓰기 대상과 기본 홈은 `MEMEX_HOME`/`~/.config/memex`로 고정.
 3. [x] `event_msg.user_message`는 transport noise로 무시하고 canonical `response_item`만 user turn으로 처리하는 실제 parser dispatch에 설명과 회귀 테스트를 일치시킴.
 4. [x] `recall_events.prepared`는 아직 방출 증거가 아니므로 exchange recall 판정에 포함하지 않음. `emitted` receipt만 `has_memex_recall=1`을 적용하며 prepared→emitted 전이를 DB insert와 sync import 양쪽에서 검증.
 5. [x] archive 최신 + DB 삭제 상태에서 `sync`가 unchanged archive도 재색인하도록 Section E recovery 계약과 일치시킴.

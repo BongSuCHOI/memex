@@ -9,8 +9,8 @@ describe('inject-log', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-bank-inject-log-'));
-    process.env.MEMORY_BANK_CONFIG_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-inject-log-'));
+    process.env.MEMEX_HOME = tmpDir;
   });
 
   afterEach(() => {
@@ -71,7 +71,7 @@ describe('inject-log', () => {
     // Point config dir at a path whose parent is a file — mkdir will fail internally.
     const blocker = path.join(tmpDir, 'blocker');
     fs.writeFileSync(blocker, 'file');
-    process.env.MEMORY_BANK_CONFIG_DIR = path.join(blocker, 'nested');
+    process.env.MEMEX_HOME = path.join(blocker, 'nested');
 
     expect(() => appendInjectLog({ status: 'skipped' })).not.toThrow();
   });

@@ -24,8 +24,6 @@ const REPO = path.resolve(
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const DATA_ROOT =
   process.env.MEMEX_HOME ||
-  process.env.MEMORY_BANK_HOME ||
-  process.env.MEMORY_BANK_CONFIG_DIR ||
   path.join(
     process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
     "memex",

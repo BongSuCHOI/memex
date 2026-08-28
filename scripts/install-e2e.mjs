@@ -19,7 +19,7 @@ const PLUGIN_ID = `memex@${MARKET_NAME}`;
 const RUN_MARKER = `MEMEX-INSTALL-E2E-${crypto.randomBytes(16).toString('hex')}`;
 const USER_HOOKS = path.join(os.homedir(), '.codex', 'hooks.json');
 const USER_CONFIG = path.join(os.homedir(), '.codex', 'config.toml');
-const USER_DATA_ROOT = path.join(os.homedir(), '.config', 'memory-bank');
+const USER_DATA_ROOT = path.join(os.homedir(), '.config', 'memex');
 const sha256 = (file) => fs.existsSync(file)
   ? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
   : 'ABSENT';
@@ -162,7 +162,7 @@ try {
   fs.rmSync(MARKET, { recursive: true, force: true });
   const cleanupState = {
     owned_hooks_absent: !fs.existsSync(hooksFile)
-      || !fs.readFileSync(hooksFile, 'utf8').includes('_memoryBank'),
+      || !fs.readFileSync(hooksFile, 'utf8').includes('_memex'),
     plugin_absent: json('codex', ['plugin', 'list', '--json'], { env: environment }).installed.length === 0,
     marketplace_absent: json('codex', ['plugin', 'marketplace', 'list', '--json'], { env: environment }).marketplaces.length === 0,
     data_absent: !fs.existsSync(MEMEX_HOME),
