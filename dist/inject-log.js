@@ -1,6 +1,6 @@
-import fs from 'fs';
-import path from 'path';
-import { getIndexDir } from './paths.js';
+import fs from "fs";
+import path from "path";
+import { getIndexDir } from "./paths.js";
 /**
  * Observability log for the UserPromptSubmit context injection pipeline.
  *
@@ -13,11 +13,11 @@ import { getIndexDir } from './paths.js';
  */
 const MAX_LOG_BYTES = 5 * 1024 * 1024; // rotate at 5MB
 export function getInjectLogPath() {
-    const dir = path.join(getIndexDir(), 'logs');
+    const dir = path.join(getIndexDir(), "logs");
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
     }
-    return path.join(dir, 'inject-context.jsonl');
+    return path.join(dir, "inject-context.jsonl");
 }
 /**
  * Append a single JSONL entry to the injection log.
@@ -37,7 +37,7 @@ export function appendInjectLog(entry) {
             // No existing log — nothing to rotate.
         }
         const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
-        fs.appendFileSync(logPath, line + '\n');
+        fs.appendFileSync(logPath, line + "\n");
     }
     catch {
         // Best-effort only: observability must not break injection.

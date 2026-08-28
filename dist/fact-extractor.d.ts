@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3';
-import type { ExtractedFact } from './types.js';
+import Database from "better-sqlite3";
+import type { ExtractedFact } from "./types.js";
 export declare const EXTRACTION_SYSTEM_PROMPT = "You are an expert at extracting long-term facts from conversations.\n\n## Rules\n- 1 fact = 1 sentence (concise)\n- Ignore trivial exchanges (greetings, \"yes\", \"thanks\")\n- Code snippets are NOT facts - extract only decisions/patterns\n- No duplicate facts within the same batch\n- Prefer durable facts (decisions, conventions, constraints, lessons) over\n  session-ephemeral details (\"user is currently editing file X\" is NOT a fact)\n- Capture problem\u2192solution lessons as \"pattern\"\n  (e.g., \"X error in this project is caused by Y and fixed by Z\")\n- Treat only content present in the evidence block as evidence. Never reconstruct\n  or infer a decision from content marked as excluded Memex recall output.\n- Human assertions and explicitly labeled trusted tool evidence are primary\n  evidence. Assistant synthesis and Memex recall are context only and must not\n  support, reinforce, contradict, or raise confidence for a fact.\n\n## scope determination\n- project: specific files/paths/DB/API/framework/business logic\n- global: coding style, language/response format, common tool usage\n\n## Output format (JSON array)\n[\n  {\n    \"fact\": \"User uses Riverpod for state management\",\n    \"fact_kr\": \"\uC0AC\uC6A9\uC790\uB294 \uC0C1\uD0DC \uAD00\uB9AC\uC5D0 Riverpod\uC744 \uC0AC\uC6A9\uD55C\uB2E4\",\n    \"category\": \"decision\",\n    \"scope_type\": \"project\",\n    \"confidence\": 0.9\n  }\n]\n\n## fact_kr rules\n- Natural Korean translation of \"fact\"\n- Keep technical terms (API/tool/framework names, file paths, commands) in English\n\n## category choices\n- decision: architecture/technology decisions\n- preference: user preferences\n- pattern: repeated patterns\n- knowledge: project knowledge\n- constraint: constraints\n\n## confidence criteria\n- 0.9+: explicit decision/declaration\n- 0.7-0.9: inferred from behavior\n- Below 0.7: do not extract";
 /** 선점(claim)을 잃어 작업을 중단할 때 던진다. 호출자는 이것을 실패가 아니라
  *  "다른 러너가 이 세션을 가져갔다"로 읽어야 한다 — 예산을 소모하지 않는다. */
@@ -56,7 +56,7 @@ export declare function saveExtractedFacts(db: Database.Database, facts: Extract
  * 즉 예산이 조용히 타들어가는 동안 로그는 "곧 재시도됨"이라고 말했다(Codex R12 HIGH).
  * 분류를 4분류로 맞추고 라우팅 술어까지 같은 모듈에 둬서 둘이 어긋날 수 없게 한다.
  */
-export type ExtractionFailureKind = 'handoff' | 'provider_transient' | 'provider_deterministic' | 'internal';
+export type ExtractionFailureKind = "handoff" | "provider_transient" | "provider_deterministic" | "internal";
 export declare function classifyExtractionFailure(err: unknown): ExtractionFailureKind;
 /**
  * 소비자 보고·집계 표 — 라벨·문구뿐 아니라 **카운터 버킷과 예산 소모 여부까지** 여기서
@@ -70,7 +70,7 @@ export declare function classifyExtractionFailure(err: unknown): ExtractionFailu
 export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
     label: string;
     note: string;
-    bucket: 'handoff' | 'transient' | 'budget';
+    bucket: "handoff" | "transient" | "budget";
     consumesBudget: boolean;
     escalate: boolean;
 }>;
@@ -81,9 +81,9 @@ export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
 export declare function failureConsumesBudget(kind: ExtractionFailureKind): boolean;
 /** Claim a session, process unhandled rows, and atomically record completion. */
 export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, opts?: {
-    claimVariant?: 'worker' | 'hook';
+    claimVariant?: "worker" | "hook";
 }): Promise<{
     extracted: number;
     saved: number;
-    skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project' | 'excluded_project_unmarked';
+    skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked";
 }>;

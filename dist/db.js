@@ -634,6 +634,55 @@ function commandTouchesDeniedRoot(command) {
     const normalized = command.replace(/~/g, os.homedir());
     return deniedEvidenceRoots().some((root) => normalized.includes(root));
 }
+/**
+ * 복합 셸 명령 판정 (FACT-LIFECYCLE.md:49-50).
+ *
+ * `git log && cat config` 처럼 신뢰 구간(git/test) 뒤에 임의 명령이 붙으면, 출력 전체가
+ * 신뢰 증거로 승격되어 비-증거 내용이 학습된다. 메타문자(`&&`, `||`, `;`, `|`, `&`,
+ * 개행, 커맨드 치환, 리다이렉트)가 **unquoted** 위치에 하나라도 있으면 복합으로 본다.
+ * quote 상태를 추적해 `echo "a && b"` 같은 문자열 인자 내부는 단일 명령으로 취급한다.
+ * 판정은 보수적이되 fail-closed 방향(모호 → 복합 → external_unverified)으로 간다.
+ */
+function isCompositeShellCommand(command) {
+    let quote = null;
+    let escaped = false;
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (ch === "\\" && quote === '"') {
+            escaped = true;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote)
+                quote = null;
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            continue;
+        }
+        if (ch === "\\") {
+            escaped = true;
+            continue;
+        }
+        // 커맨드 치환 (backtick 또는 $( )
+        if (ch === "`" || ch === "$")
+            return true;
+        if (ch === "&&" && command[i + 1] === "&")
+            return true;
+        if (ch === "|" && command[i + 1] === "|")
+            return true;
+        if (ch === "|" || ch === ";" || ch === "&" || ch === "\n" || ch === "\r")
+            return true;
+        if (ch === ">" || ch === "<")
+            return true; // 리다이렉션도 출력 신뢰성을 깬다
+    }
+    return false;
+}
 function commandText(input) {
     if (typeof input === "string")
         return input;
@@ -658,6 +707,11 @@ export function classifyToolEvidence(toolName, toolInput, ctx) {
     const command = commandText(toolInput).trim();
     if (!command ||
         /(^|\s)(curl|wget|ssh|scp|sftp)\b|https?:\/\/|\bgh\s+api\b/i.test(command)) {
+        return { sourceType: "external_unverified", learnable: false };
+    }
+    // 복합 명령은 첫 토큰이 git/test 여도 출력 전체를 신뢰할 수 없다 —
+    // FACT-LIFECYCLE.md:49-50 에 따라 external_unverified 로 강등한다.
+    if (isCompositeShellCommand(command)) {
         return { sourceType: "external_unverified", learnable: false };
     }
     if (/^git\s+(status|log|show|diff|rev-parse|branch)(\s|$)/.test(command)) {

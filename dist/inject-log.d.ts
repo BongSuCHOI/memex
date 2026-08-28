@@ -1,7 +1,7 @@
 export interface InjectLogEntry {
     ts: string;
     /** 'deduped': 후보 전부가 이 세션에서 이미 주입됨 → 재주입 0 (토큰 절약 관측용). */
-    status: 'injected' | 'no-match' | 'skipped' | 'error' | 'deduped';
+    status: "injected" | "no-match" | "skipped" | "error" | "deduped" | "no-session-provenance";
     project?: string;
     prompt_len?: number;
     candidates?: number;
@@ -13,7 +13,7 @@ export interface InjectLogEntry {
     duration_ms?: number;
     error?: string;
     /** Which execution path served this injection: warm MCP-server daemon or cold fallback. */
-    via?: 'daemon' | 'fallback';
+    via?: "daemon" | "fallback";
 }
 export declare function getInjectLogPath(): string;
 /**
@@ -21,4 +21,4 @@ export declare function getInjectLogPath(): string;
  * Rotates to `.old` (replacing any previous rotation) when the log exceeds 5MB.
  * Never throws.
  */
-export declare function appendInjectLog(entry: Omit<InjectLogEntry, 'ts'>): void;
+export declare function appendInjectLog(entry: Omit<InjectLogEntry, "ts">): void;

@@ -18823,7 +18823,8 @@ function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85)
     ).get(vr.id, EMBEDDING_VERSION);
     if (!row) continue;
     const fact = rowToFact(row);
-    if (project && fact.scope_type === "project" && fact.scope_project !== project) continue;
+    if (project && fact.scope_type === "project" && fact.scope_project !== project)
+      continue;
     results.push({ fact, distance: vr.distance });
     if (results.length >= limit) break;
   }
@@ -18831,7 +18832,11 @@ function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85)
 }
 function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold = 0.85) {
   const scopeProject = scope.type === "project" ? scope.project : null;
-  const scopeCount = scope.type === "global" ? db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?").get(EMBEDDING_VERSION).n : db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(scopeProject, EMBEDDING_VERSION).n;
+  const scopeCount = scope.type === "global" ? db.prepare(
+    "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?"
+  ).get(EMBEDDING_VERSION).n : db.prepare(
+    "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?"
+  ).get(scopeProject, EMBEDDING_VERSION).n;
   if (scopeCount === 0) return [];
   const fetchN = (table, n) => {
     try {
@@ -18876,7 +18881,8 @@ function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold 
       if (results.length >= limit) break;
     }
     const bothExhausted = a.exhausted && b2.exhausted;
-    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP) break;
+    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP)
+      break;
     fetchCount = Math.min(fetchCount * 4, HARD_CAP);
   }
   return results;
@@ -18890,12 +18896,15 @@ function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
     ORDER BY distance
     LIMIT ?
   `).all(pAll.blob, limit * 2);
-  for (const r of vecResults) r.distance = normalizeVecDistance(r.distance, pAll.dt);
+  for (const r of vecResults)
+    r.distance = normalizeVecDistance(r.distance, pAll.dt);
   const results = [];
   for (const vr of vecResults) {
     const similarity = l2DistanceToSimilarity(vr.distance);
     if (similarity < threshold) continue;
-    const row = db.prepare("SELECT * FROM facts WHERE id = ? AND is_active = 1").get(vr.id);
+    const row = db.prepare(
+      "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
+    ).get(vr.id, EMBEDDING_VERSION);
     if (!row) continue;
     results.push({ fact: rowToFact(row), distance: vr.distance });
     if (results.length >= limit) break;
@@ -18906,9 +18915,25 @@ function rowToFact(row) {
   const embeddingRaw = row["embedding"];
   let embedding = null;
   if (embeddingRaw instanceof Buffer) {
-    embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
+    embedding = new Float32Array(
+      embeddingRaw.buffer,
+      embeddingRaw.byteOffset,
+      embeddingRaw.byteLength / 4
+    );
   } else if (embeddingRaw instanceof Uint8Array) {
-    embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
+    embedding = new Float32Array(
+      embeddingRaw.buffer,
+      embeddingRaw.byteOffset,
+      embeddingRaw.byteLength / 4
+    );
+  }
+  let sourceExchangeIds = [];
+  if (row["source_exchange_ids"]) {
+    try {
+      const parsed = JSON.parse(row["source_exchange_ids"]);
+      if (Array.isArray(parsed)) sourceExchangeIds = parsed;
+    } catch {
+    }
   }
   return {
     id: row["id"],
@@ -18916,7 +18941,7 @@ function rowToFact(row) {
     category: row["category"],
     scope_type: row["scope_type"],
     scope_project: row["scope_project"] ?? null,
-    source_exchange_ids: row["source_exchange_ids"] ? JSON.parse(row["source_exchange_ids"]) : [],
+    source_exchange_ids: sourceExchangeIds,
     embedding,
     created_at: row["created_at"],
     updated_at: row["updated_at"],
@@ -19103,7 +19128,10 @@ import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
 var DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 function maxDecompressedBytes() {
-  const parsed = parseInt(process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || "", 10);
+  const parsed = parseInt(
+    process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || "",
+    10
+  );
   if (Number.isFinite(parsed) && parsed > 0 && parsed <= DEFAULT_MAX_DECOMPRESSED_BYTES) {
     return parsed;
   }
@@ -19138,7 +19166,9 @@ function createByteLimit(maxBytes) {
     transform(chunk, _enc, callback) {
       total += chunk.length;
       if (total > maxBytes) {
-        callback(new Error(`Decompressed archive exceeds ${maxBytes} byte limit`));
+        callback(
+          new Error(`Decompressed archive exceeds ${maxBytes} byte limit`)
+        );
         return;
       }
       callback(null, chunk);
@@ -19157,7 +19187,9 @@ function requireZstdSync() {
 function readArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), { code: "ENOENT" });
+    throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), {
+      code: "ENOENT"
+    });
   }
   const buf = fs2.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
@@ -19871,7 +19903,21 @@ function truncateFact(text) {
 async function computeInjectContext(userPrompt, project, via, sessionId) {
   const t0 = Date.now();
   if (!userPrompt || userPrompt.length < 20) {
-    appendInjectLog({ status: "skipped", project, prompt_len: userPrompt?.length ?? 0, via });
+    appendInjectLog({
+      status: "skipped",
+      project,
+      prompt_len: userPrompt?.length ?? 0,
+      via
+    });
+    return "";
+  }
+  if (!sessionId) {
+    appendInjectLog({
+      status: "no-session-provenance",
+      project,
+      prompt_len: userPrompt.length,
+      via
+    });
     return "";
   }
   try {
@@ -19898,13 +19944,18 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         return "";
       }
       const seenIds = new Set(results.map((r) => r.fact.id));
-      const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
+      const expandedFacts = [
+        ...results.map((r) => ({ fact: r.fact, note: "" }))
+      ];
       for (const { fact } of results.slice(0, 3)) {
         const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
         for (const { fact: relFact, relation } of related) {
           if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
-            expandedFacts.push({ fact: relFact, note: `[${relation.relation_type}]` });
+            expandedFacts.push({
+              fact: relFact,
+              note: `[${relation.relation_type}]`
+            });
           }
         }
       }
@@ -19930,18 +19981,31 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
       for (const { fact, note } of fresh) {
         const dateStr = fact.created_at.slice(0, 10);
         const line = `- ${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
-        if (blockChars + line.length > BLOCK_CHAR_BUDGET && injectedIds.length > 0) break;
+        if (blockChars + line.length > BLOCK_CHAR_BUDGET && injectedIds.length > 0)
+          break;
         lines.push(line);
         blockChars += line.length + 1;
         injectedIds.push(fact.id);
       }
       if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
         try {
-          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, { embedding, db });
-          const repeatCtx = formatRepeatContext(repeats);
+          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
+            embedding,
+            db
+          });
+          let repeatCtx = formatRepeatContext(repeats);
           if (repeatCtx) {
-            lines.push("");
-            lines.push(repeatCtx);
+            const remaining = BLOCK_CHAR_BUDGET - blockChars;
+            if (remaining <= 0) {
+            } else {
+              if (repeatCtx.length > remaining) {
+                repeatCtx = repeatCtx.slice(0, Math.max(0, remaining - 1)) + "\u2026";
+              }
+              if (repeatCtx.trim().length > 0) {
+                lines.push("");
+                lines.push(repeatCtx);
+              }
+            }
           }
         } catch {
         }
@@ -21928,22 +21992,34 @@ var SearchInputSchema = external_exports.object({
     "Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly."
   ),
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
-  after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations after this date (YYYY-MM-DD format)"),
-  before: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe("Only return conversations before this date (YYYY-MM-DD format)"),
+  after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe(
+    "Only return conversations after this date (YYYY-MM-DD format)"
+  ),
+  before: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe(
+    "Only return conversations before this date (YYYY-MM-DD format)"
+  ),
   response_format: ResponseFormatEnum.default("markdown").describe(
     'Output format: "markdown" for human-readable or "json" for machine-readable (default: "markdown")'
   )
 }).strict();
 var ShowConversationInputSchema = external_exports.object({
   path: external_exports.string().min(1, "Path is required").describe("Absolute path to the JSONL conversation file to display"),
-  startLine: external_exports.number().int().min(1).optional().describe("Starting line number (1-indexed, inclusive). Omit to start from beginning."),
-  endLine: external_exports.number().int().min(1).optional().describe("Ending line number (1-indexed, inclusive). Omit to read to end.")
+  startLine: external_exports.number().int().min(1).optional().describe(
+    "Starting line number (1-indexed, inclusive). Omit to start from beginning."
+  ),
+  endLine: external_exports.number().int().min(1).optional().describe(
+    "Ending line number (1-indexed, inclusive). Omit to read to end."
+  )
 }).strict();
 var ScopeEnum = external_exports.enum(["project", "global", "all"]);
 var SearchFactsInputSchema = external_exports.object({
   query: external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
-  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
-  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"'),
+  project: external_exports.string().max(500).optional().describe(
+    "Canonical absolute Codex thread cwd (required unless scope is global/all)"
+  ),
+  scope: ScopeEnum.optional().describe(
+    '"project" (default, requires project), "global" (global facts only), or "all"'
+  ),
   category: external_exports.enum(["decision", "preference", "pattern", "knowledge", "constraint"]).optional(),
   include_revisions: external_exports.boolean().default(false),
   limit: external_exports.number().int().min(1).max(50).default(10)
@@ -21952,13 +22028,21 @@ var SearchOntologyInputSchema = external_exports.object({
   domain: external_exports.string().optional().describe("Filter by domain name (case-insensitive partial match)"),
   category: external_exports.string().optional().describe("Filter by category name (case-insensitive partial match)"),
   include_relations: external_exports.boolean().default(false).describe("Include 1-hop fact relations"),
-  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
-  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"')
+  project: external_exports.string().max(500).optional().describe(
+    "Canonical absolute Codex thread cwd (required unless scope is global/all)"
+  ),
+  scope: ScopeEnum.optional().describe(
+    '"project" (default, requires project), "global" (global facts only), or "all"'
+  )
 }).strict();
 var AskAvatarInputSchema = external_exports.object({
   question: external_exports.string().min(2, "Question must be at least 2 characters").max(1e4, "Question too long (max 10000 chars)").describe("Question to ask"),
-  project: external_exports.string().max(500).optional().describe("Canonical absolute Codex thread cwd (required unless scope is global/all)"),
-  scope: ScopeEnum.optional().describe('"project" (default, requires project), "global" (global facts only), or "all"')
+  project: external_exports.string().max(500).optional().describe(
+    "Canonical absolute Codex thread cwd (required unless scope is global/all)"
+  ),
+  scope: ScopeEnum.optional().describe(
+    '"project" (default, requires project), "global" (global facts only), or "all"'
+  )
 }).strict();
 function resolveProjectScope(raw, tool, field = "project") {
   const scope = raw.scope ?? "project";
@@ -22002,16 +22086,33 @@ function getToolDefinitions() {
         properties: {
           query: {
             oneOf: [
-              { type: "string", minLength: 2 },
-              { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, maxItems: 5 }
+              { type: "string", minLength: 2, maxLength: 1e4 },
+              {
+                type: "array",
+                items: { type: "string", minLength: 2, maxLength: 1e4 },
+                minItems: 2,
+                maxItems: 5
+              }
             ]
           },
-          mode: { type: "string", enum: ["vector", "text", "both"], default: "both" },
-          project: { type: "string", description: "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global." },
+          mode: {
+            type: "string",
+            enum: ["vector", "text", "both"],
+            default: "both"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global."
+          },
           limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
           after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
           before: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-          response_format: { type: "string", enum: ["markdown", "json"], default: "markdown" }
+          response_format: {
+            type: "string",
+            enum: ["markdown", "json"],
+            default: "markdown"
+          }
         },
         required: ["query"],
         additionalProperties: false
@@ -22051,16 +22152,45 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", minLength: 2, description: "Search query for facts" },
-          project: { type: "string", description: "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global" (global facts only), or "all"' },
+          query: {
+            type: "string",
+            minLength: 2,
+            maxLength: 1e4,
+            description: "Search query for facts"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global" (global facts only), or "all"'
+          },
           category: {
             type: "string",
-            enum: ["decision", "preference", "pattern", "knowledge", "constraint"],
+            enum: [
+              "decision",
+              "preference",
+              "pattern",
+              "knowledge",
+              "constraint"
+            ],
             description: "Filter by fact category"
           },
-          include_revisions: { type: "boolean", description: "Include revision history", default: false },
-          limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Max results" }
+          include_revisions: {
+            type: "boolean",
+            description: "Include revision history",
+            default: false
+          },
+          limit: {
+            type: "number",
+            minimum: 1,
+            maximum: 50,
+            default: 10,
+            description: "Max results"
+          }
         },
         required: ["query"],
         additionalProperties: false
@@ -22079,11 +22209,29 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          domain: { type: "string", description: "Filter by domain name (partial, case-insensitive)" },
-          category: { type: "string", description: "Filter by category name (partial, case-insensitive)" },
-          include_relations: { type: "boolean", default: false, description: "Include 1-hop relations for each fact" },
-          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+          domain: {
+            type: "string",
+            description: "Filter by domain name (partial, case-insensitive)"
+          },
+          category: {
+            type: "string",
+            description: "Filter by category name (partial, case-insensitive)"
+          },
+          include_relations: {
+            type: "boolean",
+            default: false,
+            description: "Include 1-hop relations for each fact"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global", or "all"'
+          }
         },
         additionalProperties: false
       },
@@ -22101,9 +22249,22 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          question: { type: "string", minLength: 2, description: "Question to ask" },
-          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+          question: {
+            type: "string",
+            minLength: 2,
+            maxLength: 1e4,
+            description: "Question to ask"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global", or "all"'
+          }
         },
         required: ["question"],
         additionalProperties: false
@@ -22122,10 +22283,29 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", minLength: 2, description: "Search query to find the fact to trace" },
-          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' },
-          limit: { type: "number", minimum: 1, maximum: 10, default: 3, description: "Max facts to trace" }
+          query: {
+            type: "string",
+            minLength: 2,
+            maxLength: 1e4,
+            description: "Search query to find the fact to trace"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global", or "all"'
+          },
+          limit: {
+            type: "number",
+            minimum: 1,
+            maximum: 10,
+            default: 3,
+            description: "Max facts to trace"
+          }
         },
         required: ["query"],
         additionalProperties: false
@@ -22144,8 +22324,16 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global", or "all"'
+          }
         },
         additionalProperties: false
       },
@@ -22163,10 +22351,29 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", minLength: 2, description: "Topic or decision to find cross-project insights for" },
-          current_project: { type: "string", description: "Canonical absolute Codex thread cwd to exclude (required)." },
-          scope: { type: "string", enum: ["project"], description: "cross_project_insights always excludes the given current_project; pass its cwd explicitly." },
-          limit: { type: "number", minimum: 1, maximum: 20, default: 5, description: "Max results" }
+          query: {
+            type: "string",
+            minLength: 2,
+            maxLength: 1e4,
+            description: "Topic or decision to find cross-project insights for"
+          },
+          current_project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd to exclude (required)."
+          },
+          scope: {
+            type: "string",
+            enum: ["project"],
+            description: "cross_project_insights always excludes the given current_project; pass its cwd explicitly."
+          },
+          limit: {
+            type: "number",
+            minimum: 1,
+            maximum: 20,
+            default: 5,
+            description: "Max results"
+          }
         },
         required: ["query", "current_project"],
         additionalProperties: false
@@ -22185,10 +22392,29 @@ function getToolDefinitions() {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", minLength: 2, description: "Starting topic or fact to explore from" },
-          hops: { type: "number", minimum: 1, maximum: 3, default: 2, description: "Graph traversal depth (1-3 hops)" },
-          project: { type: "string", description: "Canonical absolute Codex thread cwd. Required unless scope is global/all." },
-          scope: { type: "string", enum: ["project", "global", "all"], description: '"project" (default, requires project), "global", or "all"' }
+          query: {
+            type: "string",
+            minLength: 2,
+            maxLength: 1e4,
+            description: "Starting topic or fact to explore from"
+          },
+          hops: {
+            type: "number",
+            minimum: 1,
+            maximum: 3,
+            default: 2,
+            description: "Graph traversal depth (1-3 hops)"
+          },
+          project: {
+            type: "string",
+            maxLength: 500,
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+          },
+          scope: {
+            type: "string",
+            enum: ["project", "global", "all"],
+            description: '"project" (default, requires project), "global", or "all"'
+          }
         },
         required: ["query"],
         additionalProperties: false
@@ -22263,7 +22489,11 @@ async function handleToolCall(name, args) {
           resultText = await formatResults(results);
           try {
             if (params.project) {
-              const knowledgeCtx = await getKnowledgeContext(params.query, params.project, 3);
+              const knowledgeCtx = await getKnowledgeContext(
+                params.query,
+                params.project,
+                3
+              );
               resultText += formatKnowledgeContext(knowledgeCtx);
             }
           } catch {
@@ -22290,10 +22520,7 @@ async function handleToolCall(name, args) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
       const realFile = fs8.realpathSync(resolvedFile);
-      const allowedRoots = [
-        getArchiveDir(),
-        sessionsRoot()
-      ].map((root) => {
+      const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
           return fs8.realpathSync(root);
         } catch {
@@ -22304,7 +22531,9 @@ async function handleToolCall(name, args) {
         (root) => realFile === root || realFile.startsWith(root + path9.sep)
       );
       if (!isAllowed) {
-        throw new Error("Access denied: path is outside the conversation archive");
+        throw new Error(
+          "Access denied: path is outside the conversation archive"
+        );
       }
       const jsonlContent = readArchiveFile(realFile);
       const markdownContent = formatConversationAsMarkdown(
@@ -22329,13 +22558,20 @@ async function handleToolCall(name, args) {
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(db, queryEmbedding, scopeInfo.project, params.limit);
+        let results = searchSimilarFacts(
+          db,
+          queryEmbedding,
+          scopeInfo.project,
+          params.limit
+        );
         if (scopeFilter === "global") {
           results = results.filter((r) => r.fact.scope_type === "global");
         }
         let filtered = results;
         if (params.category) {
-          filtered = filtered.filter((r) => r.fact.category === params.category);
+          filtered = filtered.filter(
+            (r) => r.fact.category === params.category
+          );
         }
         const scopeLabel = scopeFilter === "project" ? scopeInfo.project : `${scopeFilter} facts only`;
         let output = `# Facts Search Results
@@ -22351,7 +22587,12 @@ Results: ${filtered.length}
         const allDomains = listDomains(db);
         const allCategories = listCategories(db);
         const domainMap = new Map(allDomains.map((d2) => [d2.id, d2.name]));
-        const catMap = new Map(allCategories.map((c) => [c.id, { name: c.name, domainId: c.domain_id }]));
+        const catMap = new Map(
+          allCategories.map((c) => [
+            c.id,
+            { name: c.name, domainId: c.domain_id }
+          ])
+        );
         for (const { fact, distance } of filtered) {
           const similarity = (1 - distance * distance / 2).toFixed(3);
           const catInfo = fact.ontology_category_id ? catMap.get(fact.ontology_category_id) : void 0;
@@ -22377,7 +22618,15 @@ Results: ${filtered.length}
               }
             }
           }
-          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
+          const related = getRelatedFacts(
+            db,
+            fact.id,
+            1,
+            0.6,
+            0.2,
+            scopeInfo.project,
+            scopeInfo.scope
+          );
           if (related.length > 0) {
             output += `- Related:
 `;
@@ -22401,7 +22650,9 @@ Results: ${filtered.length}
       }
     }
     if (name === "search_ontology") {
-      const params = SearchOntologyInputSchema.parse(args);
+      const params = SearchOntologyInputSchema.parse(
+        args
+      );
       const scopeInfo = resolveProjectScope(params, "search_ontology");
       try {
         const db = initDatabase();
@@ -22409,7 +22660,8 @@ Results: ${filtered.length}
         const domainFilter = params.domain?.toLowerCase();
         const categoryFilter = params.category?.toLowerCase();
         const filtered = tree.filter((entry) => {
-          if (domainFilter && !entry.domain.name.toLowerCase().includes(domainFilter)) return false;
+          if (domainFilter && !entry.domain.name.toLowerCase().includes(domainFilter))
+            return false;
           return true;
         });
         let output = `# Ontology Tree
@@ -22425,7 +22677,8 @@ Results: ${filtered.length}
 `;
           output += "\n";
           const filteredCategories = categories.filter(({ category }) => {
-            if (categoryFilter && !category.name.toLowerCase().includes(categoryFilter)) return false;
+            if (categoryFilter && !category.name.toLowerCase().includes(categoryFilter))
+              return false;
             return true;
           });
           if (filteredCategories.length === 0) {
@@ -22445,7 +22698,15 @@ Results: ${filtered.length}
               output += `  - ID: ${fact.id} | Confirmed: ${fact.consolidated_count}x | ${fact.created_at.slice(0, 10)}
 `;
               if (params.include_relations) {
-                const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeInfo.project, scopeInfo.scope);
+                const related = getRelatedFacts(
+                  db,
+                  fact.id,
+                  1,
+                  0.6,
+                  0.2,
+                  scopeInfo.project,
+                  scopeInfo.scope
+                );
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
                     output += `  - \u2194 [${relation.relation_type}] "${relFact.fact}"
@@ -22471,7 +22732,12 @@ Results: ${filtered.length}
       const avatarScope = resolveProjectScope(params, "ask_avatar");
       try {
         const db = initDatabase();
-        const result = await askAvatar(db, params.question, avatarScope.project ?? void 0, avatarScope.scope);
+        const result = await askAvatar(
+          db,
+          params.question,
+          avatarScope.project ?? void 0,
+          avatarScope.scope
+        );
         db.close();
         const confidenceLabel = result.confidence >= 0.9 ? "HIGH" : result.confidence >= 0.7 ? "MEDIUM" : result.confidence >= 0.5 ? "LOW" : "INSUFFICIENT";
         let output = `# Avatar Response
@@ -22517,8 +22783,8 @@ Results: ${filtered.length}
     }
     if (name === "trace_fact") {
       const params = external_exports.object({
-        query: external_exports.string().min(2),
-        project: external_exports.string().optional(),
+        query: external_exports.string().min(2).max(1e4),
+        project: external_exports.string().max(500).optional(),
         scope: ScopeEnum.optional(),
         limit: external_exports.number().int().min(1).max(10).default(3)
       }).strict().parse(args);
@@ -22527,12 +22793,22 @@ Results: ${filtered.length}
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(db, queryEmbedding, traceScope.project, params.limit, 0.5);
+        let results = searchSimilarFacts(
+          db,
+          queryEmbedding,
+          traceScope.project,
+          params.limit,
+          0.5
+        );
         if (traceScope.scope === "global") {
           results = results.filter((r) => r.fact.scope_type === "global");
         }
         if (results.length === 0) {
-          return { content: [{ type: "text", text: "No matching facts found to trace." }] };
+          return {
+            content: [
+              { type: "text", text: "No matching facts found to trace." }
+            ]
+          };
         }
         let output = `# Fact Provenance Trace
 
@@ -22586,7 +22862,15 @@ _Source exchanges not available._
             }
             output += "\n";
           }
-          const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, traceScope.project, traceScope.scope);
+          const related = getRelatedFacts(
+            db,
+            fact.id,
+            1,
+            0.6,
+            0.2,
+            traceScope.project,
+            traceScope.scope
+          );
           if (related.length > 0) {
             output += `### Related Facts (1-hop)
 
@@ -22687,7 +22971,8 @@ _Source exchanges not available._
           output += `## Fact Categories
 
 `;
-          for (const { category, count } of categoryBreakdown) output += `- ${category}: ${count}
+          for (const { category, count } of categoryBreakdown)
+            output += `- ${category}: ${count}
 `;
           output += "\n";
         }
@@ -22695,7 +22980,8 @@ _Source exchanges not available._
           output += `## Top Domains
 
 `;
-          for (const { name: dn, fact_count } of topDomains) output += `- ${dn}: ${fact_count} facts
+          for (const { name: dn, fact_count } of topDomains)
+            output += `- ${dn}: ${fact_count} facts
 `;
           output += "\n";
         }
@@ -22703,36 +22989,56 @@ _Source exchanges not available._
           output += `## Relation Types
 
 `;
-          for (const { relation_type, count } of relationBreakdown) output += `- ${relation_type}: ${count}
+          for (const { relation_type, count } of relationBreakdown)
+            output += `- ${relation_type}: ${count}
 `;
           output += "\n";
         }
         return { content: [{ type: "text", text: output }] };
       } catch (error2) {
-        return { content: [{ type: "text", text: handleError(error2) }], isError: true };
+        return {
+          content: [{ type: "text", text: handleError(error2) }],
+          isError: true
+        };
       } finally {
         db.close();
       }
     }
     if (name === "cross_project_insights") {
       const params = external_exports.object({
-        query: external_exports.string().min(2),
-        current_project: external_exports.string().optional(),
-        scope: ScopeEnum.optional(),
+        query: external_exports.string().min(2).max(1e4),
+        current_project: external_exports.string().max(500).optional(),
+        scope: external_exports.enum(["project"]).optional(),
         limit: external_exports.number().int().min(1).max(20).default(5)
       }).strict().parse(args);
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const allResults = searchAllFacts(db, queryEmbedding, params.limit * 3, 0.5);
-        const cxScope = resolveProjectScope(params, "cross_project_insights", "current_project");
+        const allResults = searchAllFacts(
+          db,
+          queryEmbedding,
+          params.limit * 3,
+          0.5
+        );
+        const cxScope = resolveProjectScope(
+          params,
+          "cross_project_insights",
+          "current_project"
+        );
         const currentProject = cxScope.project ?? "";
         const crossProjectResults = allResults.filter(
           (r) => r.fact.scope_type === "project" && r.fact.scope_project !== currentProject
         ).slice(0, params.limit);
         if (crossProjectResults.length === 0) {
-          return { content: [{ type: "text", text: `No cross-project insights found for "${params.query}". Similar decisions may not exist in other projects yet.` }] };
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No cross-project insights found for "${params.query}". Similar decisions may not exist in other projects yet.`
+              }
+            ]
+          };
         }
         const byProject = /* @__PURE__ */ new Map();
         for (const { fact, distance } of crossProjectResults) {
@@ -22751,7 +23057,9 @@ Excluding: ${currentProject}
 
 `;
           for (const { fact, distance } of facts) {
-            const similarity = Math.round((1 - distance * distance / 2) * 100);
+            const similarity = Math.round(
+              (1 - distance * distance / 2) * 100
+            );
             output += `- **[${fact.category}]** ${fact.fact} _(${similarity}% relevant, ${fact.created_at.slice(0, 10)})_
 `;
           }
@@ -22759,16 +23067,19 @@ Excluding: ${currentProject}
         }
         return { content: [{ type: "text", text: output }] };
       } catch (error2) {
-        return { content: [{ type: "text", text: handleError(error2) }], isError: true };
+        return {
+          content: [{ type: "text", text: handleError(error2) }],
+          isError: true
+        };
       } finally {
         db.close();
       }
     }
     if (name === "explore_graph") {
       const params = external_exports.object({
-        query: external_exports.string().min(2),
+        query: external_exports.string().min(2).max(1e4),
         hops: external_exports.number().int().min(1).max(3).default(2),
-        project: external_exports.string().optional(),
+        project: external_exports.string().max(500).optional(),
         scope: ScopeEnum.optional()
       }).strict().parse(args);
       const egScope = resolveProjectScope(params, "explore_graph");
@@ -22776,18 +23087,36 @@ Excluding: ${currentProject}
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let seedFacts = searchSimilarFacts(db, queryEmbedding, egScope.project, 3, 0.5);
+        let seedFacts = searchSimilarFacts(
+          db,
+          queryEmbedding,
+          egScope.project,
+          3,
+          0.5
+        );
         if (egScope.scope === "global") {
           seedFacts = seedFacts.filter((r) => r.fact.scope_type === "global");
         }
         const seedIds = new Set(seedFacts.map((r) => r.fact.id));
         if (seedFacts.length === 0) {
-          return { content: [{ type: "text", text: `No facts found related to "${params.query}" to start graph exploration.` }] };
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No facts found related to "${params.query}" to start graph exploration.`
+              }
+            ]
+          };
         }
         const domains = listDomains(db);
         const categories = listCategories(db);
         const domainMap = new Map(domains.map((d2) => [d2.id, d2.name]));
-        const categoryMap = new Map(categories.map((c) => [c.id, { name: c.name, domainId: c.domain_id }]));
+        const categoryMap = new Map(
+          categories.map((c) => [
+            c.id,
+            { name: c.name, domainId: c.domain_id }
+          ])
+        );
         let output = `# Knowledge Graph Exploration
 
 Seed: "${params.query}" | Depth: ${params.hops} hops
@@ -22846,7 +23175,10 @@ _Total unique facts discovered: ${allDiscovered.size}_
 `;
         return { content: [{ type: "text", text: output }] };
       } catch (error2) {
-        return { content: [{ type: "text", text: handleError(error2) }], isError: true };
+        return {
+          content: [{ type: "text", text: handleError(error2) }],
+          isError: true
+        };
       } finally {
         db.close();
       }

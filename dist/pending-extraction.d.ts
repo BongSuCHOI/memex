@@ -76,7 +76,7 @@ export declare function freshClaimPredicate(alias?: string): string;
  *    claim 만은 존중한다.
  * 실행 후 `changes === 1` 이어야 소유권 획득이다(0 이면 타 라이터 소유 → skip).
  */
-export declare function claimSessionSql(variant: 'worker' | 'hook'): string;
+export declare function claimSessionSql(variant: "worker" | "hook"): string;
 /**
  * 리스 갱신(heartbeat). 파라미터: (processed_at, session_id, claim_owner)
  *

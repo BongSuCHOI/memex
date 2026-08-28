@@ -1,6 +1,6 @@
-import { randomUUID } from 'crypto';
-import { EMBEDDING_VERSION } from './embeddings.js';
-import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
+import { randomUUID } from "crypto";
+import { EMBEDDING_VERSION } from "./embeddings.js";
+import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity, } from "./db.js";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export function vecParamFor(db, table, embedding) {
     const dt = getVecTableDtype(db, table);
@@ -12,21 +12,23 @@ export function insertFact(db, params) {
     db.prepare(`
     INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
-  `).run(id, params.fact, params.category, params.scope_type, params.scope_project, JSON.stringify(params.source_exchange_ids), params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION);
+  `).run(id, params.fact, params.category, params.scope_type, params.scope_project, JSON.stringify(params.source_exchange_ids), params.embedding
+        ? Buffer.from(new Float32Array(params.embedding).buffer)
+        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION);
     // Insert into vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
-        const p = vecParamFor(db, 'vec_facts', params.embedding);
+        const p = vecParamFor(db, "vec_facts", params.embedding);
         const upsertVec = db.transaction((vecId, buf) => {
-            db.prepare('DELETE FROM vec_facts WHERE id = ?').run(vecId);
+            db.prepare("DELETE FROM vec_facts WHERE id = ?").run(vecId);
             db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`).run(vecId, buf);
         });
         upsertVec(id, p.blob);
     }
     // Korean-text vector index (same-language matching for Korean queries)
     if (params.embedding_kr) {
-        const pk = vecParamFor(db, 'vec_facts_kr', params.embedding_kr);
+        const pk = vecParamFor(db, "vec_facts_kr", params.embedding_kr);
         const upsertVecKr = db.transaction((vecId, buf) => {
-            db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(vecId);
+            db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(vecId);
             db.prepare(`INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${pk.sql})`).run(vecId, buf);
         });
         upsertVecKr(id, pk.blob);
@@ -34,60 +36,64 @@ export function insertFact(db, params) {
     return id;
 }
 export function getActiveFacts(db) {
-    return db.prepare('SELECT * FROM facts WHERE is_active = 1 ORDER BY consolidated_count DESC')
-        .all()
-        .map(rowToFact);
+    return db
+        .prepare("SELECT * FROM facts WHERE is_active = 1 ORDER BY consolidated_count DESC")
+        .all().map(rowToFact);
 }
 export function getFactsByProject(db, project) {
-    return db.prepare(`
+    return db
+        .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY consolidated_count DESC
-  `).all(project).map(rowToFact);
+  `)
+        .all(project).map(rowToFact);
 }
 export function updateFact(db, id, params) {
     const now = new Date().toISOString();
-    const updates = ['updated_at = ?'];
+    const updates = ["updated_at = ?"];
     const values = [now];
     if (params.fact !== undefined) {
-        updates.push('fact = ?');
+        updates.push("fact = ?");
         values.push(params.fact);
     }
     if (params.embedding !== undefined) {
-        updates.push('embedding = ?');
-        values.push(params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null);
+        updates.push("embedding = ?");
+        values.push(params.embedding
+            ? Buffer.from(new Float32Array(params.embedding).buffer)
+            : null);
     }
     if (params.consolidated_count_increment) {
-        updates.push('consolidated_count = consolidated_count + 1');
+        updates.push("consolidated_count = consolidated_count + 1");
     }
     if (params.source_exchange_ids !== undefined) {
-        updates.push('source_exchange_ids = ?');
+        updates.push("source_exchange_ids = ?");
         values.push(JSON.stringify([...new Set(params.source_exchange_ids)]));
     }
     values.push(id);
-    db.prepare(`UPDATE facts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    db.prepare(`UPDATE facts SET ${updates.join(", ")} WHERE id = ?`).run(...values);
     // Update vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
-        const p = vecParamFor(db, 'vec_facts', params.embedding);
+        const p = vecParamFor(db, "vec_facts", params.embedding);
         const upsertVec = db.transaction((vecId, buf) => {
-            db.prepare('DELETE FROM vec_facts WHERE id = ?').run(vecId);
+            db.prepare("DELETE FROM vec_facts WHERE id = ?").run(vecId);
             db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`).run(vecId, buf);
         });
         upsertVec(id, p.blob);
     }
 }
 export function deactivateFact(db, id) {
-    db.prepare('UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+    db.prepare("UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
     // Deactivated facts must not occupy vector index slots
-    db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
-    db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
+    db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
+    db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
 }
 export function deleteFact(db, id) {
-    db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
-    db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
-    db.prepare('DELETE FROM fact_revisions WHERE fact_id = ?').run(id);
-    db.prepare('DELETE FROM facts WHERE id = ?').run(id);
+    db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
+    db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
+    db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(id);
+    db.prepare("DELETE FROM facts WHERE id = ?").run(id);
 }
 export function insertRevision(db, params) {
     const id = randomUUID();
@@ -98,7 +104,9 @@ export function insertRevision(db, params) {
     return id;
 }
 export function getRevisions(db, factId) {
-    return db.prepare('SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC').all(factId);
+    return db
+        .prepare("SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC")
+        .all(factId);
 }
 export function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85) {
     // Search both language indexes: the query language is unknown, and
@@ -114,12 +122,14 @@ export function searchSimilarFacts(db, embedding, project, limit = 5, threshold 
     const fetch = (table) => {
         try {
             const p = vecParamFor(db, table, embedding);
-            const rows = db.prepare(`
+            const rows = db
+                .prepare(`
         SELECT id, distance FROM ${table}
         WHERE embedding MATCH ${p.sql}
         ORDER BY distance
         LIMIT ?
-      `).all(p.blob, candidateFetch);
+      `)
+                .all(p.blob, candidateFetch);
             for (const r of rows)
                 r.distance = normalizeVecDistance(r.distance, p.dt);
             return rows;
@@ -129,7 +139,7 @@ export function searchSimilarFacts(db, embedding, project, limit = 5, threshold 
         }
     };
     const best = new Map();
-    for (const vr of [...fetch('vec_facts'), ...fetch('vec_facts_kr')]) {
+    for (const vr of [...fetch("vec_facts"), ...fetch("vec_facts_kr")]) {
         const cur = best.get(vr.id);
         if (cur === undefined || vr.distance < cur)
             best.set(vr.id, vr.distance);
@@ -146,12 +156,16 @@ export function searchSimilarFacts(db, embedding, project, limit = 5, threshold 
         // embedding_version filter: during a model migration the vector tables
         // can still hold old-model rows; comparing them against a current-model
         // query embedding silently misranks. Skip until the worker upgrades them.
-        const row = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?').get(vr.id, EMBEDDING_VERSION);
+        const row = db
+            .prepare("SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?")
+            .get(vr.id, EMBEDDING_VERSION);
         if (!row)
             continue;
         const fact = rowToFact(row);
         // Scope filter: same project or global only
-        if (project && fact.scope_type === 'project' && fact.scope_project !== project)
+        if (project &&
+            fact.scope_type === "project" &&
+            fact.scope_project !== project)
             continue;
         results.push({ fact, distance: vr.distance });
         if (results.length >= limit)
@@ -172,11 +186,15 @@ export function searchSimilarFacts(db, embedding, project, limit = 5, threshold 
  *        { type:'project', project } → that project's own facts only (no global).
  */
 export function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold = 0.85) {
-    const scopeProject = scope.type === 'project' ? scope.project : null;
+    const scopeProject = scope.type === "project" ? scope.project : null;
     // Early out only if the scope is genuinely empty (nothing to match against).
-    const scopeCount = scope.type === 'global'
-        ? db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?").get(EMBEDDING_VERSION).n
-        : db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(scopeProject, EMBEDDING_VERSION).n;
+    const scopeCount = scope.type === "global"
+        ? db
+            .prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?")
+            .get(EMBEDDING_VERSION).n
+        : db
+            .prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?")
+            .get(scopeProject, EMBEDDING_VERSION).n;
     if (scopeCount === 0)
         return [];
     // fetchN returns rows AND whether the index returned fewer than requested
@@ -188,10 +206,12 @@ export function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, thr
     const fetchN = (table, n) => {
         try {
             const p = vecParamFor(db, table, embedding);
-            const rows = db.prepare(`
+            const rows = db
+                .prepare(`
         SELECT id, distance FROM ${table}
         WHERE embedding MATCH ${p.sql} ORDER BY distance LIMIT ?
-      `).all(p.blob, n);
+      `)
+                .all(p.blob, n);
             // Normalize ×127-scaled int8 distances BEFORE the cross-table merge.
             for (const r of rows)
                 r.distance = normalizeVecDistance(r.distance, p.dt);
@@ -205,29 +225,34 @@ export function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, thr
     let fetchCount = Math.max(limit * 20, 200);
     let results = [];
     for (;;) {
-        const a = fetchN('vec_facts', fetchCount);
-        const b = fetchN('vec_facts_kr', fetchCount);
+        const a = fetchN("vec_facts", fetchCount);
+        const b = fetchN("vec_facts_kr", fetchCount);
         const best = new Map();
         for (const vr of [...a.rows, ...b.rows]) {
             const cur = best.get(vr.id);
             if (cur === undefined || vr.distance < cur)
                 best.set(vr.id, vr.distance);
         }
-        const merged = [...best.entries()].map(([id, distance]) => ({ id, distance })).sort((x, y) => x.distance - y.distance);
+        const merged = [...best.entries()]
+            .map(([id, distance]) => ({ id, distance }))
+            .sort((x, y) => x.distance - y.distance);
         results = [];
         for (const vr of merged) {
             const similarity = l2DistanceToSimilarity(vr.distance);
             if (similarity < threshold)
                 continue;
-            const row = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?').get(vr.id, EMBEDDING_VERSION);
+            const row = db
+                .prepare("SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?")
+                .get(vr.id, EMBEDDING_VERSION);
             if (!row)
                 continue;
             const fact = rowToFact(row);
-            if (scope.type === 'global') {
-                if (fact.scope_type !== 'global')
+            if (scope.type === "global") {
+                if (fact.scope_type !== "global")
                     continue;
             }
-            else if (fact.scope_type !== 'project' || fact.scope_project !== scopeProject) {
+            else if (fact.scope_type !== "project" ||
+                fact.scope_project !== scopeProject) {
                 continue;
             }
             results.push({ fact, distance: vr.distance });
@@ -267,20 +292,24 @@ export function getTopFacts(db, project, limit = 10) {
         + CASE WHEN updated_at >= ? THEN 5 WHEN updated_at >= ? THEN 3 WHEN updated_at >= ? THEN 1 ELSE 0 END
         + CASE WHEN scope_type = 'project' AND scope_project = ? THEN 2 ELSE 0 END
       ) as relevance_score`;
-    const projectRows = db.prepare(`
+    const projectRows = db
+        .prepare(`
     SELECT *, ${scoreExpr}
     FROM facts
     WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ?
     ORDER BY relevance_score DESC
     LIMIT ?
-  `).all(d7, d30, d90, project, project, limit);
-    const globalRows = db.prepare(`
+  `)
+        .all(d7, d30, d90, project, project, limit);
+    const globalRows = db
+        .prepare(`
     SELECT *, ${scoreExpr}
     FROM facts
     WHERE is_active = 1 AND scope_type = 'global'
     ORDER BY relevance_score DESC
     LIMIT ?
-  `).all(d7, d30, d90, project, limit);
+  `)
+        .all(d7, d30, d90, project, limit);
     const reserved = Math.ceil(limit / 2);
     const guaranteed = projectRows.slice(0, reserved);
     const rest = [...projectRows.slice(reserved), ...globalRows]
@@ -291,13 +320,15 @@ export function getTopFacts(db, project, limit = 10) {
         .map(rowToFact);
 }
 export function getNewFactsSince(db, project, since) {
-    return db.prepare(`
+    return db
+        .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND created_at > ?
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY created_at ASC
-  `).all(since, project).map(rowToFact);
+  `)
+        .all(since, project).map(rowToFact);
 }
 /**
  * All active facts after a KEYSET cursor `(createdAt, id)`, EVERY scope/project,
@@ -324,30 +355,36 @@ export function getAllNewFactsSince(db, cursor, limit = 2000) {
     // (is_active, created_at, id) serves both the filter and the ORDER BY without
     // a temp sort.
     if (!cursor) {
-        return db.prepare(`
+        return db
+            .prepare(`
       SELECT * FROM facts WHERE is_active = 1 ORDER BY created_at ASC, id ASC LIMIT ?
-    `).all(limit).map(rowToFact);
+    `)
+            .all(limit).map(rowToFact);
     }
-    return db.prepare(`
+    return db
+        .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND (created_at > ? OR (created_at = ? AND id > ?))
     ORDER BY created_at ASC, id ASC LIMIT ?
-  `).all(cursor.createdAt, cursor.createdAt, cursor.id, limit).map(rowToFact);
+  `)
+        .all(cursor.createdAt, cursor.createdAt, cursor.id, limit).map(rowToFact);
 }
 /**
  * Search facts across ALL projects (no scope filter).
  * Used for cross-project knowledge transfer.
  */
 export function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
-    const pAll = vecParamFor(db, 'vec_facts', embedding);
-    const vecResults = db.prepare(`
+    const pAll = vecParamFor(db, "vec_facts", embedding);
+    const vecResults = db
+        .prepare(`
     SELECT id, distance
     FROM vec_facts
     WHERE embedding MATCH ${pAll.sql}
     ORDER BY distance
     LIMIT ?
-  `).all(pAll.blob, limit * 2);
+  `)
+        .all(pAll.blob, limit * 2);
     for (const r of vecResults)
         r.distance = normalizeVecDistance(r.distance, pAll.dt);
     const results = [];
@@ -355,7 +392,9 @@ export function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
         const similarity = l2DistanceToSimilarity(vr.distance);
         if (similarity < threshold)
             continue;
-        const row = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1').get(vr.id);
+        const row = db
+            .prepare("SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?")
+            .get(vr.id, EMBEDDING_VERSION);
         if (!row)
             continue;
         results.push({ fact: rowToFact(row), distance: vr.distance });
@@ -365,7 +404,7 @@ export function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
     return results;
 }
 function rowToFact(row) {
-    const embeddingRaw = row['embedding'];
+    const embeddingRaw = row["embedding"];
     let embedding = null;
     if (embeddingRaw instanceof Buffer) {
         embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
@@ -373,20 +412,30 @@ function rowToFact(row) {
     else if (embeddingRaw instanceof Uint8Array) {
         embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
     }
+    // 손상된 JSON 은 fact 조회 전체를 죽이지 않는다 — provenance 만 비우고 계속한다.
+    let sourceExchangeIds = [];
+    if (row["source_exchange_ids"]) {
+        try {
+            const parsed = JSON.parse(row["source_exchange_ids"]);
+            if (Array.isArray(parsed))
+                sourceExchangeIds = parsed;
+        }
+        catch {
+            // malformed provenance — 빈 배열로 대체
+        }
+    }
     return {
-        id: row['id'],
-        fact: row['fact'],
-        category: row['category'],
-        scope_type: row['scope_type'],
-        scope_project: row['scope_project'] ?? null,
-        source_exchange_ids: row['source_exchange_ids']
-            ? JSON.parse(row['source_exchange_ids'])
-            : [],
+        id: row["id"],
+        fact: row["fact"],
+        category: row["category"],
+        scope_type: row["scope_type"],
+        scope_project: row["scope_project"] ?? null,
+        source_exchange_ids: sourceExchangeIds,
         embedding,
-        created_at: row['created_at'],
-        updated_at: row['updated_at'],
-        consolidated_count: row['consolidated_count'],
-        is_active: Boolean(row['is_active']),
-        ontology_category_id: row['ontology_category_id'] ?? null,
+        created_at: row["created_at"],
+        updated_at: row["updated_at"],
+        consolidated_count: row["consolidated_count"],
+        is_active: Boolean(row["is_active"]),
+        ontology_category_id: row["ontology_category_id"] ?? null,
     };
 }

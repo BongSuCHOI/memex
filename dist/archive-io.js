@@ -1,6 +1,6 @@
-import fs from 'fs';
-import { Readable, Transform, pipeline } from 'stream';
-import * as zlib from 'node:zlib';
+import fs from "fs";
+import { Readable, Transform, pipeline } from "stream";
+import * as zlib from "node:zlib";
 /**
  * Transparent access to archived conversation files.
  *
@@ -9,7 +9,7 @@ import * as zlib from 'node:zlib';
  * canonical `.jsonl` paths, so every read path must resolve either variant.
  * Node >= 22.15 ships zstd support in node:zlib — no extra dependency.
  */
-const ZST_SUFFIX = '.zst';
+const ZST_SUFFIX = ".zst";
 /**
  * Cap for decompressed archive bytes — a hostile high-ratio `.zst` file
  * ("compression bomb") must not be able to exhaust process memory. Real
@@ -18,9 +18,11 @@ const ZST_SUFFIX = '.zst';
  */
 const DEFAULT_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024; // 256 MiB
 function maxDecompressedBytes() {
-    const parsed = parseInt(process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || '', 10);
+    const parsed = parseInt(process.env.MEMORY_BANK_MAX_DECOMPRESSED_BYTES || "", 10);
     // Only allow tightening — raising the cap would defeat the bomb protection.
-    if (Number.isFinite(parsed) && parsed > 0 && parsed <= DEFAULT_MAX_DECOMPRESSED_BYTES) {
+    if (Number.isFinite(parsed) &&
+        parsed > 0 &&
+        parsed <= DEFAULT_MAX_DECOMPRESSED_BYTES) {
         return parsed;
     }
     return DEFAULT_MAX_DECOMPRESSED_BYTES;
@@ -29,7 +31,9 @@ function maxDecompressedBytes() {
 const zstd = zlib;
 /** Strip a trailing `.zst` so archive filenames compare in canonical form. */
 export function canonicalArchiveName(fileName) {
-    return fileName.endsWith(ZST_SUFFIX) ? fileName.slice(0, -ZST_SUFFIX.length) : fileName;
+    return fileName.endsWith(ZST_SUFFIX)
+        ? fileName.slice(0, -ZST_SUFFIX.length)
+        : fileName;
 }
 /**
  * Resolve the on-disk file for an archive path, trying both the plain and
@@ -71,6 +75,27 @@ export function resolveArchiveFile(filePath) {
 export function archiveFileExists(filePath) {
     return resolveArchiveFile(filePath) !== null;
 }
+/**
+ * 원자적 아카이브 복사 (CONVERSATION-LIFECYCLE.md:11 "Archived: atomic copy").
+ * 직접 copyFileSync 를 쓰면 복사 도중 크래시가 잘린 아카이브를 남기고, mtime 이
+ * 새로워져 "최신"으로 오인된다. 임시 파일 + 같은 파일시스템 rename 으로 방어한다.
+ */
+export function atomicCopyFileSync(sourcePath, archivePath) {
+    const tempDest = `${archivePath}.tmp.${process.pid}`;
+    try {
+        fs.copyFileSync(sourcePath, tempDest);
+        fs.renameSync(tempDest, archivePath); // atomic on same filesystem
+    }
+    catch (e) {
+        try {
+            fs.unlinkSync(tempDest);
+        }
+        catch {
+            /* best-effort cleanup */
+        }
+        throw e;
+    }
+}
 /** Pass-through Transform that aborts once total bytes exceed the cap. */
 function createByteLimit(maxBytes) {
     let total = 0;
@@ -88,7 +113,7 @@ function createByteLimit(maxBytes) {
 function requireZstdSync() {
     const decompress = zstd.zstdDecompressSync;
     if (!decompress) {
-        throw new Error('Archive file is zstd-compressed but this Node runtime has no zstd support (need Node >= 22.15)');
+        throw new Error("Archive file is zstd-compressed but this Node runtime has no zstd support (need Node >= 22.15)");
     }
     return (buf) => decompress(buf, { maxOutputLength: maxDecompressedBytes() });
 }
@@ -96,13 +121,15 @@ function requireZstdSync() {
 export function readArchiveFile(filePath) {
     const resolved = resolveArchiveFile(filePath);
     if (!resolved) {
-        throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), { code: 'ENOENT' });
+        throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), {
+            code: "ENOENT",
+        });
     }
     const buf = fs.readFileSync(resolved);
     if (resolved.endsWith(ZST_SUFFIX)) {
-        return requireZstdSync()(buf).toString('utf-8');
+        return requireZstdSync()(buf).toString("utf-8");
     }
-    return buf.toString('utf-8');
+    return buf.toString("utf-8");
 }
 /**
  * Create a readable stream over an archive file, transparently decompressing
@@ -124,7 +151,9 @@ export function createArchiveReadStream(filePath) {
             const source = fs.createReadStream(resolved);
             const decompress = zstd.createZstdDecompress();
             const limiter = createByteLimit(maxDecompressedBytes());
-            pipeline(source, decompress, limiter, () => { });
+            pipeline(source, decompress, limiter, () => {
+                /* error surfaces on the returned stream */
+            });
             return limiter;
         }
         // Fallback: decompress in memory (capped via maxOutputLength)

@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
-import type { Fact, FactRevision } from './types.js';
-type FactVecTable = 'vec_facts' | 'vec_facts_kr' | 'vec_categories';
+import Database from "better-sqlite3";
+import type { Fact, FactRevision } from "./types.js";
+type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
     sql: string;
@@ -55,9 +55,9 @@ export declare function searchSimilarFacts(db: Database.Database, embedding: num
  *        { type:'project', project } → that project's own facts only (no global).
  */
 export declare function searchSimilarFactsSameScope(db: Database.Database, embedding: number[], scope: {
-    type: 'global';
+    type: "global";
 } | {
-    type: 'project';
+    type: "project";
     project: string;
 }, limit?: number, threshold?: number): Array<{
     fact: Fact;
@@ -108,4 +108,3 @@ export declare function searchAllFacts(db: Database.Database, embedding: number[
     fact: Fact;
     distance: number;
 }>;
-export {};

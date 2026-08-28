@@ -15,6 +15,7 @@ export declare function getToolDefinitions(): ({
                 oneOf: ({
                     type: string;
                     minLength: number;
+                    maxLength: number;
                     items?: undefined;
                     minItems?: undefined;
                     maxItems?: undefined;
@@ -23,13 +24,16 @@ export declare function getToolDefinitions(): ({
                     items: {
                         type: string;
                         minLength: number;
+                        maxLength: number;
                     };
                     minItems: number;
                     maxItems: number;
                     minLength?: undefined;
+                    maxLength?: undefined;
                 })[];
                 type?: undefined;
                 minLength?: undefined;
+                maxLength?: undefined;
                 description?: undefined;
             };
             mode: {
@@ -39,6 +43,7 @@ export declare function getToolDefinitions(): ({
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             limit: {
@@ -136,11 +141,13 @@ export declare function getToolDefinitions(): ({
             query: {
                 type: string;
                 minLength: number;
+                maxLength: number;
                 description: string;
                 oneOf?: undefined;
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -210,6 +217,7 @@ export declare function getToolDefinitions(): ({
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -250,10 +258,12 @@ export declare function getToolDefinitions(): ({
             question: {
                 type: string;
                 minLength: number;
+                maxLength: number;
                 description: string;
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -296,11 +306,13 @@ export declare function getToolDefinitions(): ({
             query: {
                 type: string;
                 minLength: number;
+                maxLength: number;
                 description: string;
                 oneOf?: undefined;
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -348,6 +360,7 @@ export declare function getToolDefinitions(): ({
         properties: {
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -391,11 +404,13 @@ export declare function getToolDefinitions(): ({
             query: {
                 type: string;
                 minLength: number;
+                maxLength: number;
                 description: string;
                 oneOf?: undefined;
             };
             current_project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {
@@ -444,6 +459,7 @@ export declare function getToolDefinitions(): ({
             query: {
                 type: string;
                 minLength: number;
+                maxLength: number;
                 description: string;
                 oneOf?: undefined;
             };
@@ -456,6 +472,7 @@ export declare function getToolDefinitions(): ({
             };
             project: {
                 type: string;
+                maxLength: number;
                 description: string;
             };
             scope: {

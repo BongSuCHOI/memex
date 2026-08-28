@@ -1,5 +1,5 @@
-import fs from 'fs';
-import { Readable } from 'stream';
+import fs from "fs";
+import { Readable } from "stream";
 /** Strip a trailing `.zst` so archive filenames compare in canonical form. */
 export declare function canonicalArchiveName(fileName: string): string;
 /**
@@ -12,6 +12,12 @@ export declare function canonicalArchiveName(fileName: string): string;
 export declare function resolveArchiveFile(filePath: string): string | null;
 /** Whether an archive file exists in either plain or compressed form. */
 export declare function archiveFileExists(filePath: string): boolean;
+/**
+ * 원자적 아카이브 복사 (CONVERSATION-LIFECYCLE.md:11 "Archived: atomic copy").
+ * 직접 copyFileSync 를 쓰면 복사 도중 크래시가 잘린 아카이브를 남기고, mtime 이
+ * 새로워져 "최신"으로 오인된다. 임시 파일 + 같은 파일시스템 rename 으로 방어한다.
+ */
+export declare function atomicCopyFileSync(sourcePath: string, archivePath: string): void;
 /** Read an archive file as UTF-8, transparently decompressing `.zst`. */
 export declare function readArchiveFile(filePath: string): string;
 /**
