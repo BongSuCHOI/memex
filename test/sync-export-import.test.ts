@@ -264,4 +264,251 @@ describe('sync-export/import', () => {
       db.close();
     }
   });
+
+  it('reconciles a newer inactive fact and its revision instead of skipping the existing id', async () => {
+    const { initDatabase } = await import('../src/db.js');
+    const { exportForSync } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const sourceDbPath = path.join(tmpDir, 'source.sqlite');
+    const targetDbPath = path.join(tmpDir, 'target.sqlite');
+    const createdAt = '2026-08-28T00:00:00.000Z';
+    const updatedAt = '2026-08-28T01:00:00.000Z';
+
+    process.env.MEMORY_BANK_DB_PATH = sourceDbPath;
+    let db = initDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO facts
+          (id, fact, category, scope_type, scope_project, source_exchange_ids,
+           created_at, updated_at, consolidated_count, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'shared-fact', 'New current truth', 'decision', 'global', null, '["ex-new"]',
+        createdAt, updatedAt, 2, 0,
+      );
+      db.prepare(`
+        INSERT INTO fact_revisions
+          (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'revision-1', 'shared-fact', 'Old truth', 'New current truth',
+        'remote edit', 'ex-new', updatedAt,
+      );
+      db.prepare(`
+        INSERT INTO ontology_relations
+          (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        'inactive-relation', 'shared-fact', 'SUPPORTS', 'shared-fact',
+        'inactive endpoint stays referentially complete', updatedAt,
+      );
+    } finally {
+      db.close();
+    }
+    const exported = exportForSync();
+    expect(exported.facts).toBe(1);
+    expect(exported.revisions).toBe(1);
+
+    process.env.MEMORY_BANK_DB_PATH = targetDbPath;
+    db = initDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO facts
+          (id, fact, category, scope_type, scope_project, source_exchange_ids,
+           created_at, updated_at, consolidated_count, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'shared-fact', 'Old truth', 'decision', 'global', null, '["ex-old"]',
+        createdAt, createdAt, 1, 1,
+      );
+    } finally {
+      db.close();
+    }
+
+    const imported = await importFromSync();
+    expect(imported.updatedFacts).toBe(1);
+    expect(imported.newRevisions).toBe(1);
+    expect(imported.newRelations).toBe(1);
+
+    db = initDatabase();
+    try {
+      expect(db.prepare(
+        'SELECT fact, source_exchange_ids, updated_at, is_active FROM facts WHERE id = ?',
+      ).get('shared-fact')).toEqual({
+        fact: 'New current truth',
+        source_exchange_ids: '["ex-new"]',
+        updated_at: updatedAt,
+        is_active: 0,
+      });
+      expect(db.prepare(
+        'SELECT previous_fact, new_fact FROM fact_revisions WHERE id = ?',
+      ).get('revision-1')).toEqual({ previous_fact: 'Old truth', new_fact: 'New current truth' });
+      expect(db.prepare(
+        'SELECT source_fact_id, target_fact_id FROM ontology_relations WHERE id = ?',
+      ).get('inactive-relation')).toEqual({ source_fact_id: 'shared-fact', target_fact_id: 'shared-fact' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('propagates hard-delete tombstones and durable recall receipts', async () => {
+    const { initDatabase, hashRecallPrompt } = await import('../src/db.js');
+    const { hardDeleteFact } = await import('../src/fact-management.js');
+    const { exportForSync } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const sourceDbPath = path.join(tmpDir, 'source-delete.sqlite');
+    const targetDbPath = path.join(tmpDir, 'target-delete.sqlite');
+    const factId = '11111111-1111-4111-8111-111111111111';
+    const now = '2026-08-28T02:00:00.000Z';
+    const recalledPrompt = 'prompt that received recalled context';
+    const insertFact = (db: ReturnType<typeof initDatabase>) => db.prepare(`
+      INSERT INTO facts
+        (id, fact, category, scope_type, scope_project, source_exchange_ids,
+         created_at, updated_at, consolidated_count, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(factId, 'Delete everywhere', 'decision', 'global', null, '[]', now, now, 1, 1);
+
+    process.env.MEMORY_BANK_DB_PATH = sourceDbPath;
+    let db = initDatabase();
+    try {
+      insertFact(db);
+      db.prepare(`
+        INSERT INTO recall_events
+          (id, session_id, project, prompt_hash, fact_ids, status, created_at, emitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'recall-1', 'session-1', '/tmp/project', hashRecallPrompt(recalledPrompt),
+        `["${factId}"]`, 'emitted', now, now,
+      );
+      hardDeleteFact(db, factId, { confirm: true });
+    } finally {
+      db.close();
+    }
+    const exported = exportForSync();
+    expect(exported.tombstones).toBe(1);
+    expect(exported.recallEvents).toBe(1);
+
+    process.env.MEMORY_BANK_DB_PATH = targetDbPath;
+    db = initDatabase();
+    try {
+      insertFact(db);
+      db.prepare(`
+        INSERT INTO exchanges
+          (id, project, timestamp, user_message, assistant_message, archive_path,
+           line_start, line_end, session_id, provenance, assistant_learnable, has_memex_recall)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'recalled-exchange', '/tmp/project', now, recalledPrompt, 'derived response',
+        '/tmp/archive.jsonl', 1, 2, 'session-1',
+        '["human_assertion","assistant_generated"]', 0, 0,
+      );
+    } finally {
+      db.close();
+    }
+
+    const imported = await importFromSync();
+    expect(imported.deletedFacts).toBe(1);
+    expect(imported.newRecallEvents).toBe(1);
+
+    db = initDatabase();
+    try {
+      expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get(factId)).toBeUndefined();
+      expect(db.prepare('SELECT fact_id FROM fact_tombstones WHERE fact_id = ?').get(factId)).toEqual({ fact_id: factId });
+      expect(db.prepare('SELECT status FROM recall_events WHERE id = ?').get('recall-1')).toEqual({ status: 'emitted' });
+      const exchange = db.prepare(
+        'SELECT provenance, assistant_learnable, has_memex_recall FROM exchanges WHERE id = ?',
+      ).get('recalled-exchange') as { provenance: string; assistant_learnable: number; has_memex_recall: number };
+      expect(JSON.parse(exchange.provenance)).toContain('memex_recall');
+      expect(exchange.assistant_learnable).toBe(0);
+      expect(exchange.has_memex_recall).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps a strictly newer local fact when an older payload arrives', async () => {
+    const { initDatabase } = await import('../src/db.js');
+    const { getSyncDir } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const syncDir = getSyncDir();
+    const older = '2026-08-28T00:00:00.000Z';
+    const newer = '2026-08-28T03:00:00.000Z';
+    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+      id: 'stale-fact', fact: 'Stale remote truth', category: 'decision',
+      scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+      created_at: older, updated_at: older, consolidated_count: 1,
+      is_active: 0, ontology_category_id: null,
+    }) + '\n');
+
+    const db = initDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO facts
+          (id, fact, category, scope_type, scope_project, source_exchange_ids,
+           created_at, updated_at, consolidated_count, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('stale-fact', 'Newer local truth', 'decision', 'global', null, '[]', older, newer, 1, 1);
+    } finally {
+      db.close();
+    }
+
+    const imported = await importFromSync();
+    expect(imported.updatedFacts).toBe(0);
+    const check = initDatabase();
+    try {
+      expect(check.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('stale-fact'))
+        .toEqual({ fact: 'Newer local truth', is_active: 1 });
+    } finally {
+      check.close();
+    }
+  });
+
+  it('merges disjoint device snapshots without last-writer overwrite', async () => {
+    const { getSyncDir } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const devicesDir = path.join(getSyncDir(), 'devices');
+    const deviceA = path.join(devicesDir, 'device-a');
+    const deviceB = path.join(devicesDir, 'device-b');
+    fs.mkdirSync(deviceA, { recursive: true });
+    fs.mkdirSync(deviceB, { recursive: true });
+    const makeFact = (fact: string, updated_at: string, is_active: 0 | 1) => ({
+      id: 'multi-device-fact', fact, category: 'decision',
+      scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+      created_at: '2026-08-28T00:00:00.000Z', updated_at,
+      consolidated_count: 1, is_active, ontology_category_id: null,
+    });
+    fs.writeFileSync(
+      path.join(deviceA, 'facts.jsonl'),
+      JSON.stringify(makeFact('Older device truth', '2026-08-28T01:00:00.000Z', 1)) + '\n',
+    );
+    fs.writeFileSync(
+      path.join(deviceA, 'ontology-relations.jsonl'),
+      JSON.stringify({
+        id: 'stale-device-relation', source_fact_id: 'multi-device-fact',
+        relation_type: 'SUPPORTS', target_fact_id: 'multi-device-fact',
+        reasoning: 'belongs to old endpoint generation',
+        created_at: '2026-08-28T01:00:00.000Z',
+        source_fact_updated_at: '2026-08-28T01:00:00.000Z',
+        target_fact_updated_at: '2026-08-28T01:00:00.000Z',
+      }) + '\n',
+    );
+    fs.writeFileSync(
+      path.join(deviceB, 'facts.jsonl'),
+      JSON.stringify(makeFact('Newer device truth', '2026-08-28T02:00:00.000Z', 0)) + '\n',
+    );
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(1);
+    expect(imported.newRelations).toBe(0);
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('multi-device-fact'))
+        .toEqual({ fact: 'Newer device truth', is_active: 0 });
+      expect(db.prepare('SELECT 1 FROM ontology_relations WHERE id = ?').get('stale-device-relation'))
+        .toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
 });

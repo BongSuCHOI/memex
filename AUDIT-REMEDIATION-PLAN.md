@@ -521,7 +521,7 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 2. historical home migration autodetect가 XDG 미설정 시 실제 기본 legacy 경로 `~/.config/memory-bank`를 탐지하는지 정리.
 3. 구형 `event_msg.user_message` rollout compatibility 설명과 실제 parser dispatch 일치 여부 확인·정리.
 4. `recall_events.prepared`를 exchange recall 판정에 포함할지 결정. 현재는 emitted 여부와 무관하게 taint될 수 있으며 안전 방향 false-positive다.
-5. archive 최신 + DB 삭제 상태에서 `sync`가 새 파일만 재색인하는 현재 동작을 Section E의 공식 recovery 계약에 맞춤.
+5. [x] archive 최신 + DB 삭제 상태에서 `sync`가 unchanged archive도 재색인하도록 Section E recovery 계약과 일치시킴.
 
 ## 7. 회귀 테스트 계약 — 총 17개
 
@@ -673,7 +673,7 @@ node --test test/*slice.test.mjs
 - [x] 2. conversation exclusion policy SSOT
 - [x] 3. semantic fact mutation service
 - [x] 4. shell evidence locality proof
-- [ ] 5. revision/tombstone-aware sync
+- [x] 5. revision/tombstone-aware sync
 - [ ] 6. ingestion/dirty consolidation queue
 - [ ] 7. 모든 vector generation/version
 - [ ] 8. scope-aware search SSOT
@@ -689,7 +689,7 @@ node --test test/*slice.test.mjs
 - [ ] B. Fact confidence 문서 정정
 - [ ] C. `parseConversationFile()` canonical identity
 - [ ] D. `createRelation()` final invariant
-- [ ] E. Sync/rebuild 계약 정합성
+- [x] E. Sync/rebuild 계약 정합성
 - [ ] F. 소규모 drift 5건
 
 ### Phase 3

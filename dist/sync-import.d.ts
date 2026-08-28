@@ -1,11 +1,20 @@
-/**
- * Import facts and ontology from sync/ JSONL files into local DB.
- * Only inserts records that don't already exist (by ID).
- * Generates embeddings for new facts.
- */
-export declare function importFromSync(): Promise<{
+export interface SyncImportResult {
     newFacts: number;
+    updatedFacts: number;
+    deletedFacts: number;
+    newRevisions: number;
+    newTombstones: number;
+    newRecallEvents: number;
+    updatedRecallEvents: number;
     newDomains: number;
     newCategories: number;
     newRelations: number;
-}>;
+}
+/**
+ * Reconcile protocol-v2 sync files into the local DB.
+ *
+ * Conflict order: event timestamp, then a deterministic canonical fact key;
+ * hard-delete tombstones win exact-time ties. Source-created timestamps remain
+ * historical data and are never used as local processing cursors.
+ */
+export declare function importFromSync(): Promise<SyncImportResult>;

@@ -129,15 +129,42 @@ sequenceDiagram
     participant E as Export archive
     participant B as Device B
     participant D as Device B DB
-    A->>E: export facts/domains/categories/relations
+    A->>E: export facts/revisions/tombstones/recall/ontology
     B->>E: SessionStart reads import payload
-    B->>B: validate enums, paths, FKs, endpoints, scope edges
-    B->>D: transactional upsert valid records
+    B->>B: validate JSON boundary, paths, FKs, endpoints, scope edges
+    B->>D: timestamp + deterministic-key reconciliation
     B-->>E: leave malformed records uncommitted/reported
 ```
 
 import는 외부 데이터 경계입니다. global↔project와 same-project relation은 허용하지만,
 서로 다른 두 project fact의 직접 relation은 거부합니다.
+
+sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
+`fact_tombstones`, `recall_events`, ontology domain/category/relation을 내보냅니다.
+각 local DB는 `sync_meta.device_id`를 한 번 생성하고 `sync/devices/<device_id>/`만
+소유해 다른 기기의 snapshot을 overwrite하지 않습니다. root JSONL은 v1 reader를 위한
+호환 mirror이며, v2 import는 root와 모든 device snapshot을 합쳐 판정합니다.
+fact 충돌은 `updated_at`이 최신인 event가 이기며, 같은 timestamp는 canonical fact key로
+결정합니다. hard-delete tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다
+strictly newer fact만 restore/edit event로 인정합니다. imported fact text는 local current
+embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction입니다. fact update는
+기존 endpoint relation을 무효화한 뒤 현재 export relation만 다시 연결하므로 stale edge가
+남지 않습니다. relation payload는 양 endpoint의 `updated_at`을 함께 기록하며, chosen current
+fact version과 일치할 때만 import합니다. inactive fact도 relation endpoint 완전성을 위해
+export합니다.
+
+`recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
+import는 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
+`assistant_learnable=0`, `has_memex_recall=1`을 다시 적용하므로 conversation reindex와
+receipt import의 실행 순서가 바뀌어도 safety provenance가 복구됩니다.
+반면 `extraction_log.last_exchange_rowid`는 각 local DB의 `exchanges.rowid`에 종속되고,
+consolidation cursor/attempt는 local processing state이므로 기기 간 복사하지 않습니다.
+
+DB 파일만 삭제되고 archive/source rollout은 남은 복구에서는 `memex sync`가 unchanged
+archive도 전부 다시 index합니다. 이후 SessionStart sync import가 protocol v2 durable state를
+복원하고 maintenance/backfill이 local processing state를 재생성합니다. source rollout,
+archive, sync JSONL까지 모두 삭제한 경우 facts/revisions/recall receipt의 완전 복구는
+불가능하며, 사전 data-root backup이 필요합니다.
 
 ## 7. 관측 가능성
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { syncConversations } from '../src/sync.js';
@@ -194,5 +194,24 @@ describe('sync command', () => {
     dbCheck.close();
 
     expect(count.count).toBe(1); // Only normal conversation indexed
+  });
+
+  it('reindexes current archives when the database was deleted', async () => {
+    writeRollout('recover', '/x/recovery-project');
+    const first = await syncConversations(sourceDir, destDir, { skipSummaries: true });
+    expect(first.indexed).toBe(1);
+
+    unlinkSync(dbPath);
+    const recovered = await syncConversations(sourceDir, destDir, { skipSummaries: true });
+    expect(recovered.copied).toBe(0);
+    expect(recovered.skipped).toBe(1);
+    expect(recovered.indexed).toBe(1);
+
+    const dbCheck = new Database(dbPath, { readonly: true });
+    try {
+      expect(dbCheck.prepare('SELECT COUNT(*) AS count FROM exchanges').get()).toEqual({ count: 1 });
+    } finally {
+      dbCheck.close();
+    }
   });
 });

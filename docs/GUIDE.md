@@ -373,8 +373,11 @@ rm -rf "$(memex home)"
 
 부분 삭제:
 
-- derived index/graph만 초기화하고 원문 보존 → data root 안의 `memex.db`만 삭제.
-  다음 sync/backfill에서 archives로부터 다시 구축됩니다.
+- derived SQLite index만 초기화하고 원문·sync state 보존 → data root 안의 실제 DB
+  path만 삭제. 다음 `memex sync`가 unchanged archive/source rollout까지 다시 index하고,
+  다음 SessionStart가 facts/revisions/tombstones/recall receipts를 sync JSONL에서 import한 뒤
+  maintenance/backfill이 local processing state를 재생성합니다. `extraction_log`와
+  consolidation cursor는 local rowid/처리 순서 상태이므로 sync하지 않습니다.
 - 특정 프로젝트의 facts만 제거 → scope를 지정해 CLI/MCP delete 계열 도구 사용
   (근원 rollout은 건드리지 않음). 세부 방법은 `docs/FACT-LIFECYCLE.md` 참조.
 

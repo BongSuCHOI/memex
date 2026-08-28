@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { getExcludedProjects, isWorkerPromptMessage, ensureArchiveDir, } from "./paths.js";
+import { getExcludedProjects, isWorkerPromptMessage, ensureArchiveDir, getDbPath, } from "./paths.js";
 import { archiveFileExists, statArchiveFile, } from "./archive-io.js";
 import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT, } from "./project-identity.js";
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath, } from "./codex-rollout.js";
@@ -40,6 +40,10 @@ function copyIfNewer(src, dest) {
 }
 export async function syncConversations(sourceDir, destDir, options = {}) {
     const targetArchiveDir = destDir || ensureArchiveDir();
+    // Recovery contract: when only the derived SQLite DB was removed, current
+    // archive copies are still authoritative inputs. Re-index every eligible
+    // rollout even when copyIfNewer correctly reports the archive as unchanged.
+    const recoverMissingDatabase = !options.skipIndex && !fs.existsSync(getDbPath());
     const result = {
         copied: 0,
         skipped: 0,
@@ -101,8 +105,9 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                 filesToPurge.push({ path: destFile, sessionId });
                 continue;
             }
-            if (wasCopied)
+            if (wasCopied || recoverMissingDatabase) {
                 filesToIndex.push({ path: destFile, project });
+            }
             // Check if this file needs a summary (whether newly copied or existing)
             if (!options.skipSummaries) {
                 const summaryPath = destFile.replace(".jsonl", "-summary.txt");

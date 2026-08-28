@@ -77,10 +77,7 @@ export declare function llmWorkdirCwdSql(column?: string): string;
  * basename and the mkdtemp `memory-bank-llm-XXXXXX` suffix form — see
  * isLlmWorkdirPath).
  */
-export declare function isExcludedProject(
- project: string,
- excluded?: string[],
-): boolean;
+export declare function isExcludedProject(project: string, excluded?: string[]): boolean;
 /**
  * Exact leading text of the plugin's own LLM worker prompts (CodexExec era).
  * Sessions from BEFORE the fixed workdir existed ran their worker prompts
@@ -97,9 +94,7 @@ export declare const WORKER_PROMPT_PREFIXES: readonly string[];
  * such an exchange is ephemeral worker state, never knowledge, and must not
  * be indexed (searchable) regardless of which project slug it sits under.
  */
-export declare function isWorkerPromptMessage(
- userMessage: string | null | undefined,
-): boolean;
+export declare function isWorkerPromptMessage(userMessage: string | null | undefined): boolean;
 /**
  * Get list of projects to exclude from indexing
  * Configurable via env var or config file

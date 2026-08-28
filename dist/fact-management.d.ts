@@ -86,6 +86,7 @@ export interface HardDeleteImpact {
     revisions: number;
     relations: number;
 }
+export declare function recordFactTombstone(db: Database.Database, id: string, reason?: string | null, deletedAt?: string): void;
 export declare function hardDeleteImpact(db: Database.Database, id: string): HardDeleteImpact;
 /** Hard delete: exact UUID + explicit confirm required. One transaction. */
 export declare function hardDeleteFact(db: Database.Database, id: string, opts: {

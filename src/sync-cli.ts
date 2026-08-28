@@ -20,6 +20,8 @@ This command:
 
 Only processes files that are new or have been modified since last sync.
 Safe to run multiple times - subsequent runs are fast no-ops.
+If the local SQLite database is missing, current archive copies are re-indexed
+even when their source rollouts have not changed.
 
 OPTIONS:
   --background    Run sync in background (for hooks, returns immediately)

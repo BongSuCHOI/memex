@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
 import { getMemoryBankHome } from './paths.js';
 
@@ -14,55 +15,118 @@ export function getSyncDir(): string {
   return dir;
 }
 
+export interface SyncExportResult {
+  facts: number;
+  revisions: number;
+  tombstones: number;
+  recallEvents: number;
+  domains: number;
+  categories: number;
+  relations: number;
+}
+
 /**
- * Export facts, ontology domains/categories, and relations to JSONL files.
- * These files are small (~90KB) and safe for cloud sync (cc-sync, iCloud, etc).
- * The local SQLite DB (544MB) should NOT be synced — it's rebuilt from these + JSONL archives.
+ * Export current and historical fact state, durable recall receipts, ontology
+ * domains/categories, and relations to JSONL files.
+ * These JSONL files are durable cross-device state; the large local SQLite
+ * index is not copied. Conversation indexes rebuild from rollouts/archives,
+ * while facts, revisions, tombstones, and recall receipts reconcile from here.
  */
-export function exportForSync(): { facts: number; domains: number; categories: number; relations: number } {
+export function exportForSync(): SyncExportResult {
   const db = initDatabase();
   const syncDir = getSyncDir();
 
   try {
-    // Export facts (fact_kr included so other devices can build Korean vectors)
+    let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get() as
+      | { value: string }
+      | undefined;
+    if (!device) {
+      const value = randomUUID();
+      db.prepare("INSERT INTO sync_meta (key, value) VALUES ('device_id', ?)").run(value);
+      device = { value };
+    }
+    const deviceDir = path.join(syncDir, 'devices', device.value);
+    fs.mkdirSync(deviceDir, { recursive: true });
+    const writeJsonl = (name: string, rows: unknown[]) => {
+      const body = rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+      // Device-owned v2 snapshot is authoritative for multi-writer merge.
+      fs.writeFileSync(path.join(deviceDir, name), body);
+      // Root mirror preserves v1 readers during the protocol transition.
+      fs.writeFileSync(path.join(syncDir, name), body);
+    };
+
+    // Export active and inactive facts. is_active is a revision-bearing state;
+    // filtering it here would make deactivation impossible to reconcile.
     const facts = db.prepare(`
       SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-             created_at, updated_at, consolidated_count, ontology_category_id
-      FROM facts WHERE is_active = 1
+             created_at, updated_at, consolidated_count, is_active, ontology_category_id
+      FROM facts ORDER BY id
     `).all() as Array<Record<string, unknown>>;
 
-    const factsPath = path.join(syncDir, 'facts.jsonl');
-    const factsLines = facts.map(f => JSON.stringify(f));
-    fs.writeFileSync(factsPath, factsLines.join('\n') + '\n');
+    writeJsonl('facts.jsonl', facts);
+
+    const revisions = db.prepare(`
+      SELECT id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at
+      FROM fact_revisions ORDER BY id
+    `).all() as Array<Record<string, unknown>>;
+    writeJsonl('fact-revisions.jsonl', revisions);
+
+    const tombstones = db.prepare(`
+      SELECT fact_id, deleted_at, reason FROM fact_tombstones ORDER BY fact_id
+    `).all() as Array<Record<string, unknown>>;
+    writeJsonl('fact-tombstones.jsonl', tombstones);
+
+    // recall_events cannot be reconstructed from source rollouts. Export the
+    // durable receipt so recalled context stays non-learnable after migration.
+    const recallEvents = db.prepare(`
+      SELECT id, session_id, project, prompt_hash, fact_ids, source_type,
+             learnable, status, created_at, emitted_at
+      FROM recall_events ORDER BY id
+    `).all() as Array<Record<string, unknown>>;
+    writeJsonl('recall-events.jsonl', recallEvents);
 
     // Export domains
     const domains = db.prepare('SELECT * FROM ontology_domains').all();
-    const domainsPath = path.join(syncDir, 'ontology-domains.jsonl');
-    fs.writeFileSync(domainsPath, domains.map(d => JSON.stringify(d)).join('\n') + '\n');
+    writeJsonl('ontology-domains.jsonl', domains);
 
     // Export categories
     const categories = db.prepare('SELECT * FROM ontology_categories').all();
-    const categoriesPath = path.join(syncDir, 'ontology-categories.jsonl');
-    fs.writeFileSync(categoriesPath, categories.map(c => JSON.stringify(c)).join('\n') + '\n');
+    writeJsonl('ontology-categories.jsonl', categories);
 
     // Export relations
-    const relations = db.prepare('SELECT * FROM ontology_relations').all();
-    const relationsPath = path.join(syncDir, 'ontology-relations.jsonl');
-    fs.writeFileSync(relationsPath, relations.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const relations = db.prepare(`
+      SELECT r.*, sf.updated_at AS source_fact_updated_at,
+             tf.updated_at AS target_fact_updated_at
+      FROM ontology_relations r
+      JOIN facts sf ON sf.id = r.source_fact_id
+      JOIN facts tf ON tf.id = r.target_fact_id
+      ORDER BY r.id
+    `).all();
+    writeJsonl('ontology-relations.jsonl', relations);
 
     // Export metadata
     const meta = {
+      protocol_version: 2,
+      device_id: device.value,
       exported_at: new Date().toISOString(),
       hostname: os.hostname(),
       facts_count: facts.length,
+      revisions_count: revisions.length,
+      tombstones_count: tombstones.length,
+      recall_events_count: recallEvents.length,
       domains_count: domains.length,
       categories_count: categories.length,
       relations_count: relations.length,
     };
-    fs.writeFileSync(path.join(syncDir, 'meta.json'), JSON.stringify(meta, null, 2));
+    const metaBody = JSON.stringify(meta, null, 2);
+    fs.writeFileSync(path.join(deviceDir, 'meta.json'), metaBody);
+    fs.writeFileSync(path.join(syncDir, 'meta.json'), metaBody);
 
     return {
       facts: facts.length,
+      revisions: revisions.length,
+      tombstones: tombstones.length,
+      recallEvents: recallEvents.length,
       domains: domains.length,
       categories: categories.length,
       relations: relations.length,

@@ -184,10 +184,17 @@ export function deactivateFact(db: Database.Database, id: string): void {
 }
 
 export function deleteFact(db: Database.Database, id: string): void {
-  db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
-  db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
-  db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(id);
-  db.prepare("DELETE FROM facts WHERE id = ?").run(id);
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO fact_tombstones (fact_id, deleted_at, reason)
+      VALUES (?, ?, 'legacy_delete')
+      ON CONFLICT(fact_id) DO UPDATE SET deleted_at = excluded.deleted_at, reason = excluded.reason
+    `).run(id, new Date().toISOString());
+    db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
+    db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
+    db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(id);
+    db.prepare("DELETE FROM facts WHERE id = ?").run(id);
+  })();
 }
 
 export function insertRevision(

@@ -335,6 +335,26 @@ export function initDatabase() {
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_revisions_fact ON fact_revisions(fact_id)
   `);
+    // Durable hard-delete events. Facts are otherwise absent after deletion, so
+    // cross-device reconciliation needs a separately syncable tombstone to keep
+    // an older device from resurrecting a deleted row.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_tombstones (
+      fact_id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL,
+      reason TEXT
+    )
+  `);
+    // Local writer identity for multi-device sync snapshots. The DB is local,
+    // so each device gets a disjoint snapshot directory and never overwrites a
+    // peer's state. Losing the DB creates a new identity; old snapshots remain
+    // valid inputs until normal retention is introduced explicitly.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS sync_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
     // vec_facts virtual table (sqlite-vec)
     db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_facts USING vec0(

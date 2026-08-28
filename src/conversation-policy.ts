@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import { createArchiveReadStream } from "./archive-io.js";
 import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
+import { recordFactTombstone } from "./fact-management.js";
 
 export const USER_EXCLUSION_MARKERS = [
   "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
@@ -176,6 +177,7 @@ export function purgeConversationFromIndex(
     );
     const deleteFact = db.prepare("DELETE FROM facts WHERE id = ?");
     for (const factId of factIds) {
+      recordFactTombstone(db, factId, "source_conversation_excluded");
       deleteRelation.run(factId, factId);
       deleteFactVector.run(factId);
       deleteFactVectorKr.run(factId);

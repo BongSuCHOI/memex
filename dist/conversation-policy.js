@@ -3,6 +3,7 @@ import readline from "node:readline";
 import { createArchiveReadStream } from "./archive-io.js";
 import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
+import { recordFactTombstone } from "./fact-management.js";
 export const USER_EXCLUSION_MARKERS = [
     "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
     "Only use NO_INSIGHTS_FOUND",
@@ -129,6 +130,7 @@ export function purgeConversationFromIndex(db, input) {
         const deleteRevisions = db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?");
         const deleteFact = db.prepare("DELETE FROM facts WHERE id = ?");
         for (const factId of factIds) {
+            recordFactTombstone(db, factId, "source_conversation_excluded");
             deleteRelation.run(factId, factId);
             deleteFactVector.run(factId);
             deleteFactVectorKr.run(factId);

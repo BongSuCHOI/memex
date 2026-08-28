@@ -21,6 +21,7 @@ erDiagram
     RECALL_EVENTS }o--|| EXCHANGES : matches_prompt
     EXCHANGES }o--o{ FACTS : provenance
     FACTS ||--o{ FACT_REVISIONS : evolves
+    FACTS ||..o| FACT_TOMBSTONES : deleted_as
     ONTOLOGY_DOMAINS ||--o{ ONTOLOGY_CATEGORIES : contains
     ONTOLOGY_CATEGORIES ||--o{ FACTS : classifies
     FACTS ||--o{ ONTOLOGY_RELATIONS : source
@@ -144,6 +145,17 @@ CREATE TABLE fact_revisions (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE fact_tombstones (
+  fact_id TEXT PRIMARY KEY,
+  deleted_at TEXT NOT NULL,
+  reason TEXT
+);
+
+CREATE TABLE sync_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE extraction_log (
   session_id TEXT PRIMARY KEY,
   processed_at TEXT NOT NULL,
@@ -158,6 +170,11 @@ CREATE TABLE extraction_log (
 `source_exchange_ids`는 fact의 1차 provenance입니다. `fact_revisions`는 기존 문장을
 삭제하지 않고 수정/진화를 기록합니다. deactivate는 `is_active=0`과 vector 제거를
 같이 수행하고, restore는 검색 가능한 vector 상태를 재구성합니다.
+hard delete는 fact/revision/relation/vector를 지우기 전에 `fact_tombstones`를 같은
+transaction에 기록합니다. tombstone은 FK를 갖지 않는 의도적 deletion event이며,
+cross-device sync가 오래된 fact snapshot을 되살리지 못하게 합니다.
+`sync_meta.device_id`는 local DB의 snapshot writer identity입니다. 각 writer가 별도
+directory를 소유하므로 offline device export가 peer snapshot을 덮어쓰지 않습니다.
 
 `extraction_log` 불변식:
 
@@ -240,7 +257,7 @@ project fact는 absolute canonical `scope_project`를 가져야 하고 global fa
 | semantic edit/evolution/contradiction | revision 추가, text/stored embedding/primary vector 교체, KR·ontology·relation 무효화, 병합 대상 비활성화 |
 | deactivate | active=0, 관련 searchable vector 제거 |
 | restore | active=1, embedding/vector 재생성 |
-| hard delete | relation, vector, revision, fact를 dependency 순서로 제거 |
+| hard delete | tombstone 기록 후 relation, vector, revision, fact를 dependency 순서로 제거 |
 
 hard delete는 full UUID와 명시적 confirmation이 없으면 시작하지 않습니다.
 `status`, `analyze`, search/MCP read, graph API는 read-only입니다.
@@ -264,7 +281,7 @@ fallback 상태를 노출해야 합니다.
 | `$CODEX_HOME/sessions` | 원본 | Memex가 생성/수정하지 않음 |
 | conversation archive | 파생 증거 사본 | rollout에서 재동기화 가능 |
 | exchanges/FTS/vector | 파생 index | archive/rollout에서 재구축 가능 |
-| facts/revisions | model-backed 파생 지식 | provenance와 정책에 따라 재추출 가능 |
+| facts/revisions/tombstones | model-backed durable state | sync JSONL 또는 data-root backup 필요; rollout 재추출만으로 동일 lineage/deletion 복원 불가 |
 | ontology/relations | fact에서 파생 | 재분류/재탐지 가능 |
 | injection ledger/log | 운영 파생 상태 | 삭제 시 dedup/관측 연속성만 초기화 |
-| recall_events/provenance flags | self-ingestion 방지 증거 | source rollout만으로는 hook receipt를 복원할 수 없으므로 보존 |
+| recall_events/provenance flags | self-ingestion 방지 증거 | source rollout만으로는 hook receipt를 복원할 수 없으므로 sync JSONL 또는 DB backup으로 보존 |

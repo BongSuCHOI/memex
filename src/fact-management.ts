@@ -310,6 +310,22 @@ export interface HardDeleteImpact {
   relations: number;
 }
 
+export function recordFactTombstone(
+  db: Database.Database,
+  id: string,
+  reason: string | null = null,
+  deletedAt = new Date().toISOString(),
+): void {
+  db.prepare(`
+    INSERT INTO fact_tombstones (fact_id, deleted_at, reason)
+    VALUES (?, ?, ?)
+    ON CONFLICT(fact_id) DO UPDATE SET
+      deleted_at = excluded.deleted_at,
+      reason = excluded.reason
+    WHERE excluded.deleted_at > fact_tombstones.deleted_at
+  `).run(id, deletedAt, reason);
+}
+
 export function hardDeleteImpact(db: Database.Database, id: string): HardDeleteImpact {
   const exists = !!db.prepare('SELECT 1 FROM facts WHERE id = ?').get(id);
   const revisions = Number((db.prepare('SELECT COUNT(*) AS c FROM fact_revisions WHERE fact_id = ?').get(id) as { c: number }).c);
@@ -327,6 +343,7 @@ export function hardDeleteFact(db: Database.Database, id: string, opts: { confir
   const impact = hardDeleteImpact(db, id);
   if (!impact.exists) throw new Error(`fact not found: ${id}`);
   const tx = db.transaction(() => {
+    recordFactTombstone(db, id, 'hard_delete');
     if (tableExists(db, 'vec_facts')) db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
     if (tableExists(db, 'vec_facts_kr')) db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
     db.prepare('DELETE FROM fact_revisions WHERE fact_id = ?').run(id);
