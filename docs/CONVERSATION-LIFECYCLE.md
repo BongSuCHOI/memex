@@ -36,6 +36,15 @@ compaction payload)는 어떤 형태로든 exchange로 재조립되지 않습니
 recalled fact나 agent synthesis를 human evidence처럼 다시 유입시키는 self-ingestion을
 이 계약이 차단하며, 회귀 테스트는 `compacted-thread.jsonl` fixture가 소유합니다.
 
+제외 마커(`DO NOT INDEX`, `NO_INSIGHTS_FOUND`, summarizer context marker)는
+**user-role message 페이로드 안에서만** 유효합니다 — 채팅에 직접 입력하거나
+AGENTS.md(`user_instructions`/`environment_context` 블록로 기록됨)에 넣은 지시가
+여기 해당합니다. tool 결과·assistant 출력·그 외 기록 필드에 등장하는 동일 문자열은
+개발 중 소스코드나 문서를 읽은 흔적일 뿐이며 세션 제외 근거가 되지 않습니다.
+이 전사적 raw substring 검사가 만든 self-exclusion 루프(memex 개발 세션이
+스스로 인덱스에서 빠지는 현상)를 이 계약이 차단하며, 회귀 테스트는
+`sync-exclusion-marker.test.ts`가 소유합니다.
+
 ## 3. project identity와 archive key
 
 ```text

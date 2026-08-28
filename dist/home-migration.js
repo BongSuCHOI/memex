@@ -32,7 +32,8 @@ const MEMEX_SUBDIRS = [
 function isDirectory(dir) {
     try {
         return fs.statSync(dir).isDirectory();
-    } catch {
+    }
+    catch {
         return false;
     }
 }
@@ -44,7 +45,8 @@ function treeStats(root) {
         let entries = [];
         try {
             entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
+        }
+        catch {
             return;
         }
         for (const e of entries) {
@@ -55,11 +57,13 @@ function treeStats(root) {
             }
             if (e.isDirectory()) {
                 visit(p);
-            } else if (e.isFile()) {
+            }
+            else if (e.isFile()) {
                 files++;
                 try {
                     bytes += fs.statSync(p).size;
-                } catch {
+                }
+                catch {
                     /* unreadable transient file */
                 }
             }
@@ -70,53 +74,54 @@ function treeStats(root) {
 }
 /** Read-only row count for one table in a SQLite DB. Returns null when missing/unreadable. */
 function sqliteRowCount(dbPath, table) {
-    if (!dbPath || !fs.existsSync(dbPath)) return null;
+    if (!dbPath || !fs.existsSync(dbPath))
+        return null;
     try {
         // Statically imported so the compiled ESM keeps working; better-sqlite3
         // is a declared production dependency and always resolvable here.
         const db = new Database(dbPath, { readonly: true });
         try {
             const present = db
-                .prepare(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-                )
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
                 .get(table);
-            if (!present) return null;
-            const row = db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get();
+            if (!present)
+                return null;
+            const row = db
+                .prepare(`SELECT COUNT(*) AS c FROM ${table}`)
+                .get();
             return row ? Number(row.c) : null;
-        } finally {
+        }
+        finally {
             db.close();
         }
-    } catch {
+    }
+    catch {
         return null;
     }
 }
 /** True if the directory contains any recognizable Memex derived-data subdir/file. */
 function containsMemexData(root) {
-    if (!isDirectory(root)) return false;
+    if (!isDirectory(root))
+        return false;
     const names = new Set();
     try {
         for (const entry of fs.readdirSync(root, { withFileTypes: true }))
             names.add(entry.name);
-    } catch {
+    }
+    catch {
         return false;
     }
-    return ["conversation-archive", "conversation-index"].some((sub) =>
-        names.has(sub),
-    );
+    return ["conversation-archive", "conversation-index"].some((sub) => names.has(sub));
 }
 export function migrateHome(opts = {}) {
     const target = getMemexHome();
-    const source =
-        opts.from ??
+    const source = opts.from ??
         (() => {
             // Reuse paths.detectLegacyDataRoot logic inline to avoid importing
             // test-only side effects: same precedence chain, same recognition rule.
-            if (
-                process.env.MEMEX_HOME ||
+            if (process.env.MEMEX_HOME ||
                 process.env.MEMORY_BANK_HOME ||
-                process.env.MEMORY_BANK_CONFIG_DIR
-            ) {
+                process.env.MEMORY_BANK_CONFIG_DIR) {
                 return null;
             }
             const base = process.env.XDG_CONFIG_HOME || os.homedir();
@@ -127,36 +132,25 @@ export function migrateHome(opts = {}) {
                     entries.includes("conversation-index")
                     ? legacyDir
                     : null;
-            } catch {
+            }
+            catch {
                 return null;
             }
         })();
     if (!source || !isDirectory(source)) {
-        throw new Error(
-            "No legacy data root detected. Pass it explicitly: memex migrate-home --from ~/.config/memory-bank",
-        );
+        throw new Error("No legacy data root detected. Pass it explicitly: memex migrate-home --from ~/.config/memory-bank");
     }
     const resolvedSource = path.resolve(source);
     if (resolvedSource === path.resolve(target)) {
-        throw new Error(
-            "Source and target are the same directory — nothing to migrate.",
-        );
+        throw new Error("Source and target are the same directory — nothing to migrate.");
     }
-    const dirsExisting = MEMEX_SUBDIRS.filter((sub) =>
-        isDirectory(path.join(resolvedSource, sub)),
-    );
-    if (
-        dirsExisting.length === 0 &&
-        !isDirectory(path.join(resolvedSource, "logs"))
-    ) {
-        throw new Error(
-            `Source has no recognizable Memex subdirectories (${dirsExisting.join(", ")}) — refusing.`,
-        );
+    const dirsExisting = MEMEX_SUBDIRS.filter((sub) => isDirectory(path.join(resolvedSource, sub)));
+    if (dirsExisting.length === 0 &&
+        !isDirectory(path.join(resolvedSource, "logs"))) {
+        throw new Error(`Source has no recognizable Memex subdirectories (${dirsExisting.join(", ")}) — refusing.`);
     }
     if (containsMemexData(target)) {
-        throw new Error(
-            `Target ${target} already contains Memex data — refusing to merge. Resolve manually first.`,
-        );
+        throw new Error(`Target ${target} already contains Memex data — refusing to merge. Resolve manually first.`);
     }
     // Dry-run report: sizes are estimated from the source tree.
     const stats = treeStats(resolvedSource);
@@ -184,14 +178,10 @@ export function migrateHome(opts = {}) {
     // Content verification pass 1: byte/file parity between source and target.
     const copiedStats = treeStats(target);
     if (copiedStats.files !== stats.files) {
-        throw new Error(
-            `Verification failed: copied file count mismatch (src ${stats.files} vs dst ${copiedStats.files}).`,
-        );
+        throw new Error(`Verification failed: copied file count mismatch (src ${stats.files} vs dst ${copiedStats.files}).`);
     }
     if (copiedStats.bytes !== stats.bytes) {
-        throw new Error(
-            `Verification failed: copied byte total mismatch (src ${stats.bytes} vs dst ${copiedStats.bytes}).`,
-        );
+        throw new Error(`Verification failed: copied byte total mismatch (src ${stats.bytes} vs dst ${copiedStats.bytes}).`);
     }
     // Content verification pass 2: real SQLite integrity check plus row-count
     // comparison against the ORIGINAL database (never mutating either).
@@ -201,7 +191,8 @@ export function migrateHome(opts = {}) {
     for (const rel of ["conversation-index/db.sqlite"]) {
         const srcDbPath = path.join(resolvedSource, rel);
         const dstDbPath = path.join(target, rel);
-        if (!fs.existsSync(srcDbPath)) continue;
+        if (!fs.existsSync(srcDbPath))
+            continue;
         try {
             const dst = new Database(dstDbPath, { readonly: true });
             try {
@@ -210,18 +201,16 @@ export function migrateHome(opts = {}) {
                     ? String(res[0]?.integrity_check ?? "").toUpperCase()
                     : String(res).toUpperCase();
                 if (!okFirst.includes("OK")) {
-                    throw new Error(
-                        `SQLite integrity_check failed: ${String(res).slice(0, 300)}`,
-                    );
+                    throw new Error(`SQLite integrity_check failed: ${String(res).slice(0, 300)}`);
                 }
                 integrityOk = true;
-            } finally {
+            }
+            finally {
                 dst.close();
             }
-        } catch (err) {
-            throw new Error(
-                `SQLite verification failed for ${rel}: ${err.message}`,
-            );
+        }
+        catch (err) {
+            throw new Error(`SQLite verification failed for ${rel}: ${err.message}`);
         }
         for (const table of tables) {
             rowsCompared.push({
@@ -231,34 +220,23 @@ export function migrateHome(opts = {}) {
             });
         }
     }
-    const rowMismatch = rowsCompared.find(
-        (r) => r.source >= 0 && r.target >= 0 && r.source !== r.target,
-    );
+    const rowMismatch = rowsCompared.find((r) => r.source >= 0 && r.target >= 0 && r.source !== r.target);
     if (rowMismatch) {
-        throw new Error(
-            `Row-count mismatch on '${rowMismatch.table}' (source=${rowMismatch.source}, target=${rowMismatch.target}).`,
-        );
+        throw new Error(`Row-count mismatch on '${rowMismatch.table}' (source=${rowMismatch.source}, target=${rowMismatch.target}).`);
     }
     // Audit trail inside the NEW root only. The OLD root stays untouched.
     const logDir = path.join(target, "logs");
     fs.mkdirSync(logDir, { recursive: true });
-    fs.writeFileSync(
-        path.join(logDir, "home-migration.json"),
-        JSON.stringify(
-            {
-                kind: "memex-home-migration",
-                recordedAt: new Date().toISOString(),
-                from: resolvedSource,
-                to: path.resolve(target),
-                files: copiedStats.files,
-                bytes: copiedStats.bytes,
-                sqliteIntegrityOk: integrityOk,
-                rows: rowsCompared,
-            },
-            null,
-            2,
-        ) + "\n",
-    );
+    fs.writeFileSync(path.join(logDir, "home-migration.json"), JSON.stringify({
+        kind: "memex-home-migration",
+        recordedAt: new Date().toISOString(),
+        from: resolvedSource,
+        to: path.resolve(target),
+        files: copiedStats.files,
+        bytes: copiedStats.bytes,
+        sqliteIntegrityOk: integrityOk,
+        rows: rowsCompared,
+    }, null, 2) + "\n");
     return {
         status: "ok",
         dryRun: false,

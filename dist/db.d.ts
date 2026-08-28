@@ -5,23 +5,14 @@ export declare const VEC_INT8_SCALE = 127;
 /** Authoritative dtype of any vec0 table — read from the ACTUAL schema in
  * sqlite_master (never a flag), so readers/writers can never disagree with a
  * Unknown/absent tables default to int8, matching the schema below. */
-export declare function getVecTableDtype(
-   db: Database.Database,
-   table: string,
-): VecDtype;
+export declare function getVecTableDtype(db: Database.Database, table: string): VecDtype;
 export declare function getVecDtype(db: Database.Database): VecDtype;
 /** Convert a float embedding to the blob matching the table dtype. */
-export declare function embeddingToVecBlob(
-   embedding: number[],
-   dtype: VecDtype,
-): Buffer;
+export declare function embeddingToVecBlob(embedding: number[], dtype: VecDtype): Buffer;
 /** SQL placeholder for a vec_exchanges MATCH/INSERT param under the dtype. */
 export declare function vecParamSql(dtype: VecDtype): string;
 /** Normalize a vec KNN distance back to float32 scale (int8 distances are ×127). */
-export declare function normalizeVecDistance(
-   distance: number,
-   dtype: VecDtype,
-): number;
+export declare function normalizeVecDistance(distance: number, dtype: VecDtype): number;
 /**
  * Convert a (float32-scale) L2 distance between UNIT vectors to cosine
  * similarity. e5 embeddings are L2-normalized, so ‖a-b‖² = 2(1 - cos) and
@@ -33,12 +24,7 @@ export declare function normalizeVecDistance(
  */
 export declare function l2DistanceToSimilarity(distance: number): number;
 export declare function initDatabase(): Database.Database;
-export declare function insertExchange(
-   db: Database.Database,
-   exchange: ConversationExchange,
-   embedding: number[],
-   _toolNames?: string[],
-): void;
+export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
 export declare function isMemexRecallToolName(toolName: string): boolean;
 /**
  * Optional context that lets the trust classifier prove WHERE an observation
@@ -47,40 +33,27 @@ export declare function isMemexRecallToolName(toolName: string): boolean;
  * canonical project working directory AND outside every Memex data surface.
  */
 export interface ToolEvidenceContext {
-   /** Canonical project cwd of the exchange, when known. */
-   cwd?: string | null;
+    /** Canonical project cwd of the exchange, when known. */
+    cwd?: string | null;
 }
-export declare function classifyToolEvidence(
-   toolName: string,
-   toolInput?: unknown,
-   ctx?: ToolEvidenceContext,
-): {
-   sourceType: EvidenceSourceType;
-   learnable: boolean;
+export declare function classifyToolEvidence(toolName: string, toolInput?: unknown, ctx?: ToolEvidenceContext): {
+    sourceType: EvidenceSourceType;
+    learnable: boolean;
 };
 export declare function hashRecallPrompt(prompt: string): string;
-export declare function recordRecallEvent(
-   db: Database.Database,
-   event: {
-      sessionId: string;
-      project: string;
-      prompt: string;
-      factIds: string[];
-   },
-): string | null;
-export declare function markRecallEventEmitted(
-   db: Database.Database,
-   event: {
-      sessionId: string;
-      prompt: string;
-   },
-): boolean;
+export declare function recordRecallEvent(db: Database.Database, event: {
+    sessionId: string;
+    project: string;
+    prompt: string;
+    factIds: string[];
+}): string | null;
+export declare function markRecallEventEmitted(db: Database.Database, event: {
+    sessionId: string;
+    prompt: string;
+}): boolean;
 export declare function getAllExchanges(db: Database.Database): Array<{
-   id: string;
-   archivePath: string;
+    id: string;
+    archivePath: string;
 }>;
-export declare function getFileLastIndexed(
-   db: Database.Database,
-   archivePath: string,
-): number | null;
+export declare function getFileLastIndexed(db: Database.Database, archivePath: string): number | null;
 export declare function deleteExchange(db: Database.Database, id: string): void;

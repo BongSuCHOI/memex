@@ -1,23 +1,73 @@
-import fs from 'fs';
-import path from 'path';
-import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, ensureArchiveDir } from './paths.js';
-import { archiveFileExists, readArchiveFile, statArchiveFile } from './archive-io.js';
-import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT } from './project-identity.js';
-import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath } from './codex-rollout.js';
+import fs from "fs";
+import path from "path";
+import readline from "node:readline";
+import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
+import { getExcludedProjects, isExcludedProject, isWorkerPromptMessage, ensureArchiveDir, } from "./paths.js";
+import { archiveFileExists, statArchiveFile, createArchiveReadStream, } from "./archive-io.js";
+import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT, } from "./project-identity.js";
+import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath, } from "./codex-rollout.js";
+// An exclusion marker is a USER-level instruction to keep a conversation out
+// of the index (typed in chat, or placed in AGENTS.md so it arrives inside a
+// user_instructions/environment_context block). It is honored only when it
+// appears in a user-role message payload — never in tool results, assistant
+// output, or other recorded fields. Scanning raw file bytes instead caused
+// memex-development sessions to exclude themselves whenever the agent merely
+// read this file's own source (observed: 2 large dev sessions silently
+// dropped because their transcripts contained marker strings inside tool
+// results).
 const EXCLUSION_MARKERS = [
-    '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
-    'Only use NO_INSIGHTS_FOUND',
+    "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
+    "Only use NO_INSIGHTS_FOUND",
     SUMMARIZER_CONTEXT_MARKER,
 ];
-function shouldSkipConversation(filePath) {
+/**
+ * True when an exclusion marker appears in a user-role message payload of the
+ * rollout. Line-level scan (not full exchange parsing) so that internal
+ * context blocks (<user_instructions>/<environment_context>) are still
+ * honored even though parseRolloutStream filters them out of exchanges.
+ * Undecidable (unreadable/unparsable) files are NOT excluded.
+ */
+async function conversationIsExcluded(filePath) {
+    const stream = createArchiveReadStream(filePath);
     try {
-        const content = readArchiveFile(filePath);
-        return EXCLUSION_MARKERS.some(marker => content.includes(marker));
-    }
-    catch (error) {
-        // If we can't read the file, don't skip it
+        const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+        for await (const line of rl) {
+            if (!line.trim())
+                continue;
+            let rec;
+            try {
+                rec = JSON.parse(line);
+            }
+            catch {
+                continue; // malformed line — excluded only by intact user messages
+            }
+            const p = rec?.payload;
+            if (rec?.type !== "response_item" ||
+                !p ||
+                p.type !== "message" ||
+                p.role !== "user") {
+                continue;
+            }
+            const text = typeof p.content === "string"
+                ? p.content
+                : Array.isArray(p.content)
+                    ? p.content
+                        .filter((c) => c && typeof c.text === "string")
+                        .map((c) => c.text)
+                        .join("\n")
+                    : "";
+            if (EXCLUSION_MARKERS.some((marker) => text.includes(marker))) {
+                return true;
+            }
+        }
         return false;
+    }
+    catch {
+        // If we can't read or scan the file, don't exclude it
+        return false;
+    }
+    finally {
+        stream.destroy();
     }
 }
 function copyIfNewer(src, dest) {
@@ -37,7 +87,7 @@ function copyIfNewer(src, dest) {
         }
     }
     // Atomic copy: temp file + rename
-    const tempDest = dest + '.tmp.' + process.pid;
+    const tempDest = dest + ".tmp." + process.pid;
     try {
         fs.copyFileSync(src, tempDest);
         fs.renameSync(tempDest, dest); // Atomic on same filesystem
@@ -46,7 +96,9 @@ function copyIfNewer(src, dest) {
         try {
             fs.unlinkSync(tempDest);
         }
-        catch { /* cleanup best effort */ }
+        catch {
+            /* cleanup best effort */
+        }
         throw e;
     }
     return true;
@@ -58,7 +110,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
         skipped: 0,
         indexed: 0,
         summarized: 0,
-        errors: []
+        errors: [],
     };
     // Ensure source directory exists
     if (!fs.existsSync(sourceDir)) {
@@ -77,7 +129,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             // Subagent / child threads are harness plumbing, never knowledge.
             if (isSubagent)
                 continue;
-            const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
+            const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
             // CX-02: project identity is the canonical absolute cwd; the archive
             // directory uses a collision-free storage key derived from it.
             const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
@@ -96,8 +148,9 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             }
             // Check if this file needs a summary (whether newly copied or existing)
             if (!options.skipSummaries) {
-                const summaryPath = destFile.replace('.jsonl', '-summary.txt');
-                if (!archiveFileExists(summaryPath) && !shouldSkipConversation(destFile)) {
+                const summaryPath = destFile.replace(".jsonl", "-summary.txt");
+                if (!archiveFileExists(summaryPath) &&
+                    !(await conversationIsExcluded(destFile))) {
                     const sessionId = extractSessionIdFromPath(destFile);
                     if (sessionId) {
                         filesToSummarize.push({ path: destFile, sessionId, project });
@@ -108,21 +161,21 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
         catch (error) {
             result.errors.push({
                 file: srcFile,
-                error: error instanceof Error ? error.message : String(error)
+                error: error instanceof Error ? error.message : String(error),
             });
         }
     }
     // Index copied files (unless skipIndex is set)
     if (!options.skipIndex && filesToIndex.length > 0) {
-        const { initDatabase, insertExchange } = await import('./db.js');
-        const { initEmbeddings, generateExchangeEmbedding } = await import('./embeddings.js');
-        const { parseConversation } = await import('./parser.js');
+        const { initDatabase, insertExchange } = await import("./db.js");
+        const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
+        const { parseConversation } = await import("./parser.js");
         const db = initDatabase();
         await initEmbeddings();
         for (const { path: file, project } of filesToIndex) {
             try {
-                // Check for DO NOT INDEX marker
-                if (shouldSkipConversation(file)) {
+                // Check for user-level DO NOT INDEX exclusion marker
+                if (await conversationIsExcluded(file)) {
                     continue; // Skip indexing but file is already copied
                 }
                 // CX-02: project = canonical absolute cwd (carried from the rollout
@@ -132,7 +185,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                     // Worker-prompt exchange = ephemeral state, not knowledge — never index.
                     if (isWorkerPromptMessage(exchange.userMessage))
                         continue;
-                    const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+                    const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
                     const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
                     insertExchange(db, exchange, embedding, toolNames);
                 }
@@ -141,7 +194,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             catch (error) {
                 result.errors.push({
                     file,
-                    error: error instanceof Error ? error.message : String(error)
+                    error: error instanceof Error ? error.message : String(error),
                 });
             }
         }
@@ -149,8 +202,8 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
     }
     // Generate summaries for files that need them
     if (!options.skipSummaries && filesToSummarize.length > 0) {
-        const { parseConversation } = await import('./parser.js');
-        const { summarizeConversation } = await import('./summarizer.js');
+        const { parseConversation } = await import("./parser.js");
+        const { summarizeConversation } = await import("./summarizer.js");
         const summaryLimit = options.summaryLimit ?? 10;
         const toSummarize = filesToSummarize.slice(0, summaryLimit);
         const remaining = filesToSummarize.length - toSummarize.length;
@@ -166,14 +219,14 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                 }
                 console.error(`  Summarizing ${path.basename(filePath)} (${exchanges.length} exchanges)...`);
                 const summary = await summarizeConversation(exchanges);
-                const summaryPath = filePath.replace('.jsonl', '-summary.txt');
-                fs.writeFileSync(summaryPath, summary, 'utf-8');
+                const summaryPath = filePath.replace(".jsonl", "-summary.txt");
+                fs.writeFileSync(summaryPath, summary, "utf-8");
                 result.summarized++;
             }
             catch (error) {
                 result.errors.push({
                     file: filePath,
-                    error: `Summary generation failed: ${error instanceof Error ? error.message : String(error)}`
+                    error: `Summary generation failed: ${error instanceof Error ? error.message : String(error)}`,
                 });
             }
         }

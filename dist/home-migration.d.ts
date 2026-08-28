@@ -21,6 +21,4 @@ export interface MigrateHomeResult {
         target: number;
     }[];
 }
-export declare function migrateHome(
-    opts?: MigrateHomeOptions,
-): MigrateHomeResult;
+export declare function migrateHome(opts?: MigrateHomeOptions): MigrateHomeResult;

@@ -16,25 +16,25 @@ export function observationLogPath() {
 }
 export function recordHookEvent(event, info) {
     try {
-        const line =
-            JSON.stringify({
-                ts: new Date().toISOString(),
-                event,
-                session_id:
-                    typeof info.sessionId === "string" ? info.sessionId : "",
-                cwd: typeof info.cwd === "string" ? info.cwd : "",
-            }) + "\n";
+        const line = JSON.stringify({
+            ts: new Date().toISOString(),
+            event,
+            session_id: typeof info.sessionId === "string" ? info.sessionId : "",
+            cwd: typeof info.cwd === "string" ? info.cwd : "",
+        }) + "\n";
         const file = observationLogPath();
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.appendFileSync(file, line);
-    } catch {
+    }
+    catch {
         // Observation must never break the hook pipeline.
     }
 }
 export function lastObserved(event) {
     try {
         const file = observationLogPath();
-        if (!fs.existsSync(file)) return null;
+        if (!fs.existsSync(file))
+            return null;
         const lines = fs
             .readFileSync(file, "utf8")
             .trim()
@@ -45,19 +45,19 @@ export function lastObserved(event) {
                 const rec = JSON.parse(lines[i]);
                 if (rec.event === event && typeof rec.ts === "string")
                     return rec.ts;
-            } catch {
+            }
+            catch {
                 /* skip malformed */
             }
         }
-    } catch {
+    }
+    catch {
         /* ignore */
     }
     return null;
 }
-if (
-    process.argv[1] &&
-    path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+if (process.argv[1] &&
+    path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     // Manual invocation: node dist/observe-hook-event.js <event>
     recordHookEvent(process.argv[2] || "Unknown", {});
 }
