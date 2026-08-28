@@ -4,7 +4,15 @@ import { insertFact } from "./fact-db.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { randomUUID } from "node:crypto";
-import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, freshClaimPredicate, getExtractionConfig, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from "./pending-extraction.js";
+import {
+    claimSessionSql,
+    renewClaimSql,
+    failureMarkerUpsertSql,
+    freshClaimPredicate,
+    getExtractionConfig,
+    EXTRACTION_STATE,
+    MAX_INTERNAL_RETRIES,
+} from "./pending-extraction.js";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 ## Rules
@@ -65,32 +73,36 @@ const MAX_FACTS_PER_SESSION = 20; // configurable-ok
 const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
 const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call budget
 /** Trivial acknowledgements (EN/KR) that carry no extractable signal. */
-const TRIVIAL_USER_PATTERN = /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|great|done|go|proceed|continue|응|넵?|네|예|아니오?|ㅇㅇ|ㅇㅋ|ㄱㄱ|좋아요?|그래|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?)[.!~\s]*$/i;
+const TRIVIAL_USER_PATTERN =
+    /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|great|done|go|proceed|continue|응|넵?|네|예|아니오?|ㅇㅇ|ㅇㅋ|ㄱㄱ|좋아요?|그래|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?)[.!~\s]*$/i;
 /**
  * Whether an exchange is worth sending to the extraction LLM.
  * Filters harness artifacts (local command output), bare slash commands,
  * and trivial acknowledgements — they waste LLM calls and produce noise facts.
  */
-export function isSubstantiveExchange(userMessage, assistantMessage, hasLearnableToolEvidence = false) {
+export function isSubstantiveExchange(
+    userMessage,
+    assistantMessage,
+    hasLearnableToolEvidence = false,
+) {
     const user = (userMessage ?? "").trim();
     const assistant = (assistantMessage ?? "").trim();
-    if (!user)
-        return false;
+    if (!user) return false;
     // Harness/system artifacts injected as user turns, not human input
-    if (user.startsWith("<local-command-stdout>") ||
+    if (
+        user.startsWith("<local-command-stdout>") ||
         user.startsWith("<local-command-caveat>") ||
         user.startsWith("<command-name>") ||
-        user.startsWith("Caveat:"))
+        user.startsWith("Caveat:")
+    )
         return false;
     // Bare slash commands like /clear, /model, /codex:review
-    if (/^\/[\w:-]+$/.test(user))
-        return false;
+    if (/^\/[\w:-]+$/.test(user)) return false;
     // Trivial acknowledgement with no substantive reply
     if (TRIVIAL_USER_PATTERN.test(user) && !hasLearnableToolEvidence)
         return false;
     // Near-empty prompt with a near-empty answer
-    if (user.length < 5 && !hasLearnableToolEvidence)
-        return false;
+    if (user.length < 5 && !hasLearnableToolEvidence) return false;
     return true;
 }
 /** Normalize fact text for cross-batch duplicate detection within a session. */
@@ -107,9 +119,11 @@ export function normalizeFactText(fact) {
  * facts from malformed LLM output.
  */
 export function passesConfidenceGate(confidence) {
-    return (typeof confidence === "number" &&
+    return (
+        typeof confidence === "number" &&
         !Number.isNaN(confidence) &&
-        confidence >= CONFIDENCE_THRESHOLD);
+        confidence >= CONFIDENCE_THRESHOLD
+    );
 }
 /**
  * Cap LLM calls for long sessions by picking evenly spread batches, so the
@@ -117,10 +131,8 @@ export function passesConfidenceGate(confidence) {
  * only the head.
  */
 export function selectSpreadBatches(batches, maxBatches) {
-    if (batches.length <= maxBatches)
-        return batches;
-    if (maxBatches <= 1)
-        return [batches[0]];
+    if (batches.length <= maxBatches) return batches;
+    if (maxBatches <= 1) return [batches[0]];
     const selected = [];
     const step = (batches.length - 1) / (maxBatches - 1);
     const used = new Set();
@@ -134,8 +146,13 @@ export function selectSpreadBatches(batches, maxBatches) {
     return selected;
 }
 function maxLlmCallsPerSession() {
-    const parsed = parseInt(process.env.MEMORY_BANK_MAX_EXTRACT_CALLS || "", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
+    const parsed = parseInt(
+        process.env.MEMORY_BANK_MAX_EXTRACT_CALLS || "",
+        10,
+    );
+    return Number.isFinite(parsed) && parsed > 0
+        ? parsed
+        : DEFAULT_MAX_LLM_CALLS;
 }
 // Self-referential repos whose conversations must NOT be extracted (e.g.
 // Memex's own monitoring/cron sessions — extracting them creates noise
@@ -145,32 +162,48 @@ function maxLlmCallsPerSession() {
 // 정규화가 한쪽에만 적용된다(R22 MEDIUM — 후행 슬래시 수정이 이쪽에만 들어갔었다).
 // 파일 헤더가 명시한 "두 소비자는 동일 술어" 계약이 그것이다.
 function isExcludedProject(project) {
-    if (!project)
-        return false;
+    if (!project) return false;
     const EXCLUDE_PROJECTS = getExtractionConfig().excludeProjects;
     // 🚨 경로 **경계**로 비교한다. raw prefix 면 형제 프로젝트가 함께 배제된다 —
     // A raw prefix such as '/…/memory-bank' can swallow a distinct sibling project,
     // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
     // pending SQL 필터는 exact 매칭이라 선정은 되고 여기서만 걸러져 무음이었다.
-    return EXCLUDE_PROJECTS.some((p) => project === p || project.startsWith(`${p}/`));
+    return EXCLUDE_PROJECTS.some(
+        (p) => project === p || project.startsWith(`${p}/`),
+    );
 }
 export function buildExtractionPrompt(exchanges) {
     return exchanges
         .map((ex, i) => {
-        const userSnippet = ex.user_message.slice(0, 1000);
-        const trustedTools = (ex.tool_evidence ?? [])
-            .filter((tool) => tool.learnable === 1 || tool.learnable === true)
-            .filter((tool) => tool.source_type !== "memex_recall" && tool.tool_result)
-            .map((tool) => `${tool.source_type}/${tool.tool_name}: ${String(tool.tool_result).slice(0, 1000)}`);
-        const toolBlock = trustedTools.length > 0
-            ? `\nTrusted tool evidence:\n${trustedTools.join("\n")}`
-            : "";
-        return `### Exchange ${i + 1}\nHuman assertion: ${userSnippet}${toolBlock}\nAssistant: [assistant synthesis excluded from learnable evidence]`;
-    })
+            const userSnippet = ex.user_message.slice(0, 1000);
+            const trustedTools = (ex.tool_evidence ?? [])
+                .filter(
+                    (tool) => tool.learnable === 1 || tool.learnable === true,
+                )
+                .filter(
+                    (tool) =>
+                        tool.source_type !== "memex_recall" && tool.tool_result,
+                )
+                .map(
+                    (tool) =>
+                        `${tool.source_type}/${tool.tool_name}: ${String(tool.tool_result).slice(0, 1000)}`,
+                );
+            const toolBlock =
+                trustedTools.length > 0
+                    ? `\nTrusted tool evidence:\n${trustedTools.join("\n")}`
+                    : "";
+            return `### Exchange ${i + 1}\nHuman assertion: ${userSnippet}${toolBlock}\nAssistant: [assistant synthesis excluded from learnable evidence]`;
+        })
         .join("\n\n");
 }
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
-export async function extractFactsFromExchanges(db, sessionId, stats, renewLease, options) {
+export async function extractFactsFromExchanges(
+    db,
+    sessionId,
+    stats,
+    renewLease,
+    options,
+) {
     const exchanges = db
         .prepare(`
     SELECT id, user_message, assistant_message, assistant_learnable, has_memex_recall
@@ -179,9 +212,11 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
       ${options?.onlyAfterRowid == null ? "" : "AND rowid > ?"}
     ORDER BY timestamp ASC
   `)
-        .all(...(options?.onlyAfterRowid == null
-        ? [sessionId]
-        : [sessionId, options.onlyAfterRowid]));
+        .all(
+            ...(options?.onlyAfterRowid == null
+                ? [sessionId]
+                : [sessionId, options.onlyAfterRowid]),
+        );
     const selectToolEvidence = db.prepare(`
     SELECT tool_name, tool_result, source_type, learnable
     FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp, id
@@ -189,43 +224,54 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     for (const exchange of exchanges) {
         exchange.tool_evidence = selectToolEvidence.all(exchange.id);
     }
-    const substantive = exchanges.filter((ex) => isSubstantiveExchange(ex.user_message, "", ex.tool_evidence?.some((tool) => tool.learnable === 1 && !!tool.tool_result) ?? false));
-    if (substantive.length === 0)
-        return [];
+    const substantive = exchanges.filter((ex) =>
+        isSubstantiveExchange(
+            ex.user_message,
+            "",
+            ex.tool_evidence?.some(
+                (tool) => tool.learnable === 1 && !!tool.tool_result,
+            ) ?? false,
+        ),
+    );
+    if (substantive.length === 0) return [];
     const batches = [];
     for (let i = 0; i < substantive.length; i += BATCH_SIZE) {
         batches.push(substantive.slice(i, i + BATCH_SIZE));
     }
-    const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
+    const selectedBatches = selectSpreadBatches(
+        batches,
+        maxLlmCallsPerSession(),
+    );
     const allFacts = [];
     const seen = new Set();
     // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
     const transientFailures = [];
     for (let b = 0; b < selectedBatches.length; b++) {
-        if (allFacts.length >= MAX_FACTS_PER_SESSION)
-            break;
+        if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
         const prompt = buildExtractionPrompt(selectedBatches[b]);
         renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
-            const response = await callMemoryModel(EXTRACTION_SYSTEM_PROMPT, prompt);
+            const response = await callMemoryModel(
+                EXTRACTION_SYSTEM_PROMPT,
+                prompt,
+            );
             const extracted = parseJsonResponse(response);
             if (extracted && Array.isArray(extracted)) {
                 for (const fact of extracted) {
-                    if (typeof fact?.fact !== "string" || fact.fact.trim() === "")
+                    if (
+                        typeof fact?.fact !== "string" ||
+                        fact.fact.trim() === ""
+                    )
                         continue;
-                    if (!passesConfidenceGate(fact.confidence))
-                        continue;
-                    if (allFacts.length >= MAX_FACTS_PER_SESSION)
-                        break;
+                    if (!passesConfidenceGate(fact.confidence)) continue;
+                    if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
                     const key = normalizeFactText(fact.fact);
-                    if (seen.has(key))
-                        continue; // cross-batch duplicate within this session
+                    if (seen.has(key)) continue; // cross-batch duplicate within this session
                     seen.add(key);
                     allFacts.push(fact);
                 }
             }
-        }
-        catch (error) {
+        } catch (error) {
             // 실패를 3분류한다 — 예전에는 전부 삼켜서, 공급자 장애로 한 건도 못 뽑은
             // 세션이 extraction_log 에 '완료(0건)'로 기록되고 pending 쿼리에서 영구 제외됐다
             // (그 대화의 fact 는 영원히 추출되지 않음 = 데이터 손실).
@@ -244,13 +290,17 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                 // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
                 // 단 폐기를 **기록**한다(dead-letter): 조용히 버리면 그 교환들의 fact 가
                 // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
-                if (stats)
-                    stats.droppedBatches += 1;
-                console.error(`Batch ${b} extraction failed (deterministic — batch dropped, recorded):`, error);
-            }
-            else {
+                if (stats) stats.droppedBatches += 1;
+                console.error(
+                    `Batch ${b} extraction failed (deterministic — batch dropped, recorded):`,
+                    error,
+                );
+            } else {
                 transientFailures.push(error);
-                console.error(`Batch ${b} extraction failed (${cls} — session deferred, will retry):`, error);
+                console.error(
+                    `Batch ${b} extraction failed (${cls} — session deferred, will retry):`,
+                    error,
+                );
             }
         }
     }
@@ -262,7 +312,14 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     return allFacts;
 }
 /** Save facts and the completion marker in one transaction. */
-export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, renewLease, commitMarker) {
+export async function saveExtractedFacts(
+    db,
+    facts,
+    project,
+    sourceExchangeIds,
+    renewLease,
+    commitMarker,
+) {
     await initEmbeddings();
     // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
     const prepared = [];
@@ -271,7 +328,9 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
         prepared.push({
             fact,
             embedding: await generateEmbedding(fact.fact),
-            embeddingKr: fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null,
+            embeddingKr: fact.fact_kr
+                ? await generateEmbedding(fact.fact_kr)
+                : null,
         });
     }
     // 2단계(동기·원자적): fact 삽입 + 완료 마커를 한 트랜잭션으로. 마커가 0행이면
@@ -279,25 +338,29 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     const savedIds = [];
     const commit = db.transaction(() => {
         for (const p of prepared) {
-            savedIds.push(insertFact(db, {
-                fact: p.fact.fact,
-                category: p.fact.category,
-                scope_type: p.fact.scope_type,
-                scope_project: p.fact.scope_type === "project" ? project : null,
-                source_exchange_ids: sourceExchangeIds,
-                embedding: p.embedding,
-                fact_kr: p.fact.fact_kr ?? null,
-                embedding_kr: p.embeddingKr,
-            }));
+            savedIds.push(
+                insertFact(db, {
+                    fact: p.fact.fact,
+                    category: p.fact.category,
+                    scope_type: p.fact.scope_type,
+                    scope_project:
+                        p.fact.scope_type === "project" ? project : null,
+                    source_exchange_ids: sourceExchangeIds,
+                    embedding: p.embedding,
+                    fact_kr: p.fact.fact_kr ?? null,
+                    embedding_kr: p.embeddingKr,
+                }),
+            );
         }
         if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
-            throw new ClaimLostError("완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).");
+            throw new ClaimLostError(
+                "완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).",
+            );
         }
     });
     try {
         commit();
-    }
-    catch (e) {
+    } catch (e) {
         savedIds.length = 0; // 롤백됐으므로 호출자에게 저장 0건으로 보고
         throw e;
     }
@@ -305,16 +368,17 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     for (let i = 0; i < savedIds.length; i++) {
         try {
             await classifyAndLinkFact(db, savedIds[i], prepared[i].embedding);
-        }
-        catch (err) {
-            console.error(`Ontology pipeline failed for fact ${savedIds[i]}:`, err);
+        } catch (err) {
+            console.error(
+                `Ontology pipeline failed for fact ${savedIds[i]}:`,
+                err,
+            );
         }
     }
     return savedIds;
 }
 export function classifyExtractionFailure(err) {
-    if (err instanceof ClaimLostError)
-        return "handoff";
+    if (err instanceof ClaimLostError) return "handoff";
     if (err instanceof LlmCallError) {
         return classifyLlmError(err) === "deterministic"
             ? "provider_deterministic"
@@ -405,17 +469,22 @@ export async function runFactExtraction(db, sessionId, project, opts) {
                 .run(sessionId, new Date().toISOString(), sessionId);
             markerWritten = res.changes > 0;
             if (!markerWritten) {
-                console.error(`extraction: session ${sessionId} 제외 마커를 쓰지 않았습니다 — 다른 러너가 선점 중`);
+                console.error(
+                    `extraction: session ${sessionId} 제외 마커를 쓰지 않았습니다 — 다른 러너가 선점 중`,
+                );
             }
-        }
-        catch (e) {
-            console.error(`extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: ` +
-                `${e instanceof Error ? e.message : String(e)}`);
+        } catch (e) {
+            console.error(
+                `extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: ` +
+                    `${e instanceof Error ? e.message : String(e)}`,
+            );
         }
         return {
             extracted: 0,
             saved: 0,
-            skipped: markerWritten ? "excluded_project" : "excluded_project_unmarked",
+            skipped: markerWritten
+                ? "excluded_project"
+                : "excluded_project_unmarked",
         };
     }
     // 🚨 동일 재실행 게이트(비용 최적화): 성공 상태 마커 + last_exchange_rowid 이후
@@ -424,16 +493,21 @@ export async function runFactExtraction(db, sessionId, project, opts) {
     // 방금 완료한 최신 워터마크를 반영할 수 있다(UPDATE 는 이 컬럼을 건드리지 않음).
     {
         const marker = db
-            .prepare("SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?")
+            .prepare(
+                "SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?",
+            )
             .get(sessionId);
-        const settled = !!marker &&
+        const settled =
+            !!marker &&
             typeof marker.extracted === "number" &&
             (marker.extracted >= 0 ||
                 marker.extracted === -1 ||
                 marker.extracted === -2);
         if (settled && marker) {
             const maxRow = db
-                .prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?")
+                .prepare(
+                    "SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?",
+                )
                 .get(sessionId).m;
             if (maxRow <= (marker.last_exchange_rowid ?? 0)) {
                 // 멱등 no-op: LLM 호출 없이 종료 — 중복 facts 도 생기지 않는다.
@@ -453,13 +527,17 @@ export async function runFactExtraction(db, sessionId, project, opts) {
     let holdsClaim = false;
     try {
         preClaim = db
-            .prepare("SELECT extracted, saved FROM extraction_log WHERE session_id = ?")
+            .prepare(
+                "SELECT extracted, saved FROM extraction_log WHERE session_id = ?",
+            )
             .get(sessionId);
         const claimed = db
             .prepare(claimSessionSql(opts?.claimVariant ?? "hook"))
             .run(sessionId, new Date().toISOString(), owner).changes;
         if (claimed === 0) {
-            console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
+            console.error(
+                `extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`,
+            );
             return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
         }
         holdsClaim = true;
@@ -467,20 +545,23 @@ export async function runFactExtraction(db, sessionId, project, opts) {
         // 않으므로, gate 이후 다른 러너가 방금 기록한 최신 last_exchange_rowid 를 그대로
         // 읽는다. 이후 신규 rows 만 LLM 배치 후보가 된다.
         const claimedRow = db
-            .prepare("SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?")
+            .prepare(
+                "SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?",
+            )
             .get(sessionId);
         onlyAfterRowid =
             typeof claimedRow?.last_exchange_rowid === "number" &&
-                claimedRow.last_exchange_rowid > 0
+            claimedRow.last_exchange_rowid > 0
                 ? claimedRow.last_exchange_rowid
                 : undefined;
-    }
-    catch (e) {
+    } catch (e) {
         // 🚨 fresh-schema 계약: extraction_log 는 initDatabase 가 항상 보장한다.
         // 스키마 오류를 포함한 모든 claim 실패는 예산 소모 없이 보류(claim_error)만
         // 한다 — legacy ALTER/진행 분기는 없다.
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
+        console.error(
+            `extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`,
+        );
         return { extracted: 0, saved: 0, skipped: "claim_error" };
     }
     /**
@@ -488,49 +569,58 @@ export async function runFactExtraction(db, sessionId, project, opts) {
      * 계속 진행하면 새 소유자와 중복 작업이 된다.
      */
     const renewLease = () => {
-        if (!holdsClaim)
-            return;
+        if (!holdsClaim) return;
         const renewed = db
             .prepare(renewClaimSql())
             .run(new Date().toISOString(), sessionId, owner).changes;
         if (renewed === 0) {
             holdsClaim = false; // 남의 행이 되었으므로 롤백도 하지 않는다
-            throw new ClaimLostError(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
+            throw new ClaimLostError(
+                `claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`,
+            );
         }
     };
     /** 내 claim 만 되돌린다 — 소유권 토큰으로 다른 러너의 claim 을 건드리지 않는다. */
     const releaseClaim = () => {
-        if (!holdsClaim)
-            return;
+        if (!holdsClaim) return;
         try {
             if (preClaim) {
-                db.prepare("UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL " +
-                    `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(preClaim.extracted, preClaim.saved, sessionId, owner);
+                db.prepare(
+                    "UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL " +
+                        `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
+                ).run(preClaim.extracted, preClaim.saved, sessionId, owner);
+            } else {
+                db.prepare(
+                    `DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
+                ).run(sessionId, owner);
             }
-            else {
-                db.prepare(`DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(sessionId, owner);
-            }
-        }
-        catch {
+        } catch {
             /* best-effort release; the original extraction error is preserved */
         }
     };
     /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
     const writeInternalFailureMarker = (kind = "internal") => {
-        if (!holdsClaim)
-            return;
+        if (!holdsClaim) return;
         try {
-            const attempts = (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL
-                ? preClaim.saved
-                : 0) + 1;
+            const attempts =
+                (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL
+                    ? preClaim.saved
+                    : 0) + 1;
             const exhausted = attempts >= MAX_INTERNAL_RETRIES;
-            db.prepare(failureMarkerUpsertSql()).run(sessionId, new Date().toISOString(), exhausted
-                ? EXTRACTION_STATE.PERMANENT
-                : EXTRACTION_STATE.RETRIABLE_INTERNAL, exhausted ? 0 : attempts, owner);
-            console.error(`extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
-                `${exhausted ? " — 예산 소진, 영구 마커로 승격" : " — 다음 run 재시도"}) — ${FAILURE_REPORT[kind].note}`);
-        }
-        catch {
+            db.prepare(failureMarkerUpsertSql()).run(
+                sessionId,
+                new Date().toISOString(),
+                exhausted
+                    ? EXTRACTION_STATE.PERMANENT
+                    : EXTRACTION_STATE.RETRIABLE_INTERNAL,
+                exhausted ? 0 : attempts,
+                owner,
+            );
+            console.error(
+                `extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
+                    `${exhausted ? " — 예산 소진, 영구 마커로 승격" : " — 다음 run 재시도"}) — ${FAILURE_REPORT[kind].note}`,
+            );
+        } catch {
             /* best-effort */
         }
     };
@@ -538,23 +628,42 @@ export async function runFactExtraction(db, sessionId, project, opts) {
     let facts;
     let saved = 0;
     try {
-        facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease, {
-            onlyAfterRowid,
-        });
+        facts = await extractFactsFromExchanges(
+            db,
+            sessionId,
+            stats,
+            renewLease,
+            {
+                onlyAfterRowid,
+            },
+        );
         // 🚨 저장 **직전** 소유권을 재확인한다. 마지막 갱신 이후에 claim 을 빼앗겼다면
         // (배치가 1개뿐이면 갱신도 1회뿐이라 창이 넓다) 여기서 멈춰야 한다 — 그대로
         // 저장하면 새 소유자와 함께 fact 를 두 벌 쓰게 된다.
         renewLease();
         if (facts.length > 0) {
             const exchangeIds = db
-                .prepare(`SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid == null ? "" : " AND rowid > ?"}`)
-                .all(...(onlyAfterRowid == null
-                ? [sessionId]
-                : [sessionId, onlyAfterRowid])).map((r) => r.id);
-            saved = (await saveExtractedFacts(db, facts, project, exchangeIds, renewLease, writeCompletionMarker)).length;
+                .prepare(
+                    `SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid == null ? "" : " AND rowid > ?"}`,
+                )
+                .all(
+                    ...(onlyAfterRowid == null
+                        ? [sessionId]
+                        : [sessionId, onlyAfterRowid]),
+                )
+                .map((r) => r.id);
+            saved = (
+                await saveExtractedFacts(
+                    db,
+                    facts,
+                    project,
+                    exchangeIds,
+                    renewLease,
+                    writeCompletionMarker,
+                )
+            ).length;
         }
-    }
-    catch (e) {
+    } catch (e) {
         // 실패를 분류한다 — 이 판정을 워커가 아니라 **선점 소유자**가 내려야
         // 소유권 토큰으로 안전하게 마커를 쓸 수 있다(호출자 간 로직 중복도 사라진다).
         //  · 공급자 실패(LlmCallError, transient/unknown) → claim 해제 후 rethrow.
@@ -564,12 +673,12 @@ export async function runFactExtraction(db, sessionId, project, opts) {
         const kind = classifyExtractionFailure(e);
         if (kind === "handoff") {
             // 남의 행이므로 해제할 것도 기록할 것도 없다(SQL 가드가 이미 0행이지만 계약을 코드로).
-            console.error(`extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`);
-        }
-        else if (failureConsumesBudget(kind)) {
+            console.error(
+                `extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`,
+            );
+        } else if (failureConsumesBudget(kind)) {
             writeInternalFailureMarker(kind); // deterministic 거절 · 내부 실패 — 예산 소모
-        }
-        else {
+        } else {
             releaseClaim(); // 공급자 일시 실패 — 예산 미소모, 즉시 재시도
         }
         throw e;
@@ -581,7 +690,9 @@ export async function runFactExtraction(db, sessionId, project, opts) {
         // 워터마크: 처리 시점의 세션 MAX(rowid). 완료 마커와 같은 문장에서 기록돼
         // 마커·워터마크가 항상 한 세트로 커밋된다.
         const watermark = db
-            .prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?")
+            .prepare(
+                "SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?",
+            )
             .get(sessionId).m;
         const res = db
             .prepare(`
@@ -590,23 +701,36 @@ export async function runFactExtraction(db, sessionId, project, opts) {
           last_exchange_rowid = ?, claim_owner = NULL
       WHERE session_id = ? AND claim_owner = ?
     `)
-            .run(now, extracted, savedCount, stats.droppedBatches, watermark, sessionId, owner);
+            .run(
+                now,
+                extracted,
+                savedCount,
+                stats.droppedBatches,
+                watermark,
+                sessionId,
+                owner,
+            );
         if (stats.droppedBatches > 0 && res.changes > 0) {
-            console.error(`extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
-                `(deterministic LLM failures — those exchanges produced no facts; ` +
-                `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`);
+            console.error(
+                `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
+                    `(deterministic LLM failures — those exchanges produced no facts; ` +
+                    `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
+            );
         }
         return res.changes; // 0 = 소유권 상실 → 호출자가 롤백/표면화
     }
     if (facts.length === 0) {
         try {
             if (writeCompletionMarker(0, 0) === 0 && holdsClaim) {
-                console.error(`extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`);
+                console.error(
+                    `extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`,
+                );
             }
-        }
-        catch (e) {
-            console.error(`extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
-                `${e instanceof Error ? e.message : String(e)}`);
+        } catch (e) {
+            console.error(
+                `extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
+                    `${e instanceof Error ? e.message : String(e)}`,
+            );
         }
     }
     return { extracted: facts.length, saved };

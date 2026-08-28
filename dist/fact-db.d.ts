@@ -2,45 +2,71 @@ import Database from "better-sqlite3";
 import type { Fact, FactRevision } from "./types.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
-export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
-    sql: string;
-    blob: Buffer<ArrayBufferLike>;
-    dt: import("./db.js").VecDtype;
+export declare function vecParamFor(
+   db: Database.Database,
+   table: FactVecTable,
+   embedding: number[],
+): {
+   sql: string;
+   blob: Buffer<ArrayBufferLike>;
+   dt: import("./db.js").VecDtype;
 };
 interface InsertFactParams {
-    fact: string;
-    category: string;
-    scope_type: string;
-    scope_project: string | null;
-    source_exchange_ids: string[];
-    embedding: number[] | null;
-    fact_kr?: string | null;
-    embedding_kr?: number[] | null;
+   fact: string;
+   category: string;
+   scope_type: string;
+   scope_project: string | null;
+   source_exchange_ids: string[];
+   embedding: number[] | null;
+   fact_kr?: string | null;
+   embedding_kr?: number[] | null;
 }
 interface UpdateFactParams {
-    fact?: string;
-    embedding?: number[] | null;
-    consolidated_count_increment?: boolean;
-    source_exchange_ids?: string[];
+   fact?: string;
+   embedding?: number[] | null;
+   consolidated_count_increment?: boolean;
+   source_exchange_ids?: string[];
 }
 interface InsertRevisionParams {
-    fact_id: string;
-    previous_fact: string;
-    new_fact: string;
-    reason: string | null;
-    source_exchange_id: string | null;
+   fact_id: string;
+   previous_fact: string;
+   new_fact: string;
+   reason: string | null;
+   source_exchange_id: string | null;
 }
-export declare function insertFact(db: Database.Database, params: InsertFactParams): string;
+export declare function insertFact(
+   db: Database.Database,
+   params: InsertFactParams,
+): string;
 export declare function getActiveFacts(db: Database.Database): Fact[];
-export declare function getFactsByProject(db: Database.Database, project: string): Fact[];
-export declare function updateFact(db: Database.Database, id: string, params: UpdateFactParams): void;
+export declare function getFactsByProject(
+   db: Database.Database,
+   project: string,
+): Fact[];
+export declare function updateFact(
+   db: Database.Database,
+   id: string,
+   params: UpdateFactParams,
+): void;
 export declare function deactivateFact(db: Database.Database, id: string): void;
 export declare function deleteFact(db: Database.Database, id: string): void;
-export declare function insertRevision(db: Database.Database, params: InsertRevisionParams): string;
-export declare function getRevisions(db: Database.Database, factId: string): FactRevision[];
-export declare function searchSimilarFacts(db: Database.Database, embedding: number[], project: string | null, limit?: number, threshold?: number): Array<{
-    fact: Fact;
-    distance: number;
+export declare function insertRevision(
+   db: Database.Database,
+   params: InsertRevisionParams,
+): string;
+export declare function getRevisions(
+   db: Database.Database,
+   factId: string,
+): FactRevision[];
+export declare function searchSimilarFacts(
+   db: Database.Database,
+   embedding: number[],
+   project: string | null,
+   limit?: number,
+   threshold?: number,
+): Array<{
+   fact: Fact;
+   distance: number;
 }>;
 /**
  * Nearest active facts restricted to EXACTLY one scope — used by consolidation
@@ -54,14 +80,22 @@ export declare function searchSimilarFacts(db: Database.Database, embedding: num
  * scope: { type:'global' } → global facts only.
  *        { type:'project', project } → that project's own facts only (no global).
  */
-export declare function searchSimilarFactsSameScope(db: Database.Database, embedding: number[], scope: {
-    type: "global";
-} | {
-    type: "project";
-    project: string;
-}, limit?: number, threshold?: number): Array<{
-    fact: Fact;
-    distance: number;
+export declare function searchSimilarFactsSameScope(
+   db: Database.Database,
+   embedding: number[],
+   scope:
+      | {
+           type: "global";
+        }
+      | {
+           type: "project";
+           project: string;
+        },
+   limit?: number,
+   threshold?: number,
+): Array<{
+   fact: Fact;
+   distance: number;
 }>;
 /**
  * Get top facts using a relevance score that combines:
@@ -77,8 +111,16 @@ export declare function searchSimilarFactsSameScope(db: Database.Database, embed
  * global facts otherwise outscore any newly extracted project fact (count=1)
  * forever, so project context would never surface in injection.
  */
-export declare function getTopFacts(db: Database.Database, project: string, limit?: number): Fact[];
-export declare function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[];
+export declare function getTopFacts(
+   db: Database.Database,
+   project: string,
+   limit?: number,
+): Fact[];
+export declare function getNewFactsSince(
+   db: Database.Database,
+   project: string,
+   since: string,
+): Fact[];
 /**
  * All active facts after a KEYSET cursor `(createdAt, id)`, EVERY scope/project,
  * each row once, ordered by (created_at, id). The composite key is what makes
@@ -96,15 +138,24 @@ export declare function getNewFactsSince(db: Database.Database, project: string,
  * not an exhaustive guarantee, so this is accepted rather than adding a
  * full re-scan on every import.
  */
-export declare function getAllNewFactsSince(db: Database.Database, cursor: {
-    createdAt: string;
-    id: string;
-} | null, limit?: number): Fact[];
+export declare function getAllNewFactsSince(
+   db: Database.Database,
+   cursor: {
+      createdAt: string;
+      id: string;
+   } | null,
+   limit?: number,
+): Fact[];
 /**
  * Search facts across ALL projects (no scope filter).
  * Used for cross-project knowledge transfer.
  */
-export declare function searchAllFacts(db: Database.Database, embedding: number[], limit?: number, threshold?: number): Array<{
-    fact: Fact;
-    distance: number;
+export declare function searchAllFacts(
+   db: Database.Database,
+   embedding: number[],
+   limit?: number,
+   threshold?: number,
+): Array<{
+   fact: Fact;
+   distance: number;
 }>;

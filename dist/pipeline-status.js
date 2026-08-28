@@ -10,11 +10,19 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { getDbPath, getArchiveDir, getMemexHome } from "./paths.js";
-import { EXTRACTION_STATE, freshClaimPredicate } from "./pending-extraction.js";
+import {
+    EXTRACTION_STATE,
+    freshClaimPredicate,
+    getExtractionConfig,
+} from "./pending-extraction.js";
 function tableExists(db, name) {
-    return (db
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
-        .get(name) !== undefined);
+    return (
+        db
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            )
+            .get(name) !== undefined
+    );
 }
 function count(db, sql, ...params) {
     const row = db.prepare(sql).get(...params);
@@ -27,15 +35,12 @@ function countArchiveFiles(archiveDir) {
         let entries = [];
         try {
             entries = fs.readdirSync(dir, { withFileTypes: true });
-        }
-        catch {
+        } catch {
             return;
         }
         for (const e of entries) {
-            if (e.isDirectory())
-                walk(path.join(dir, e.name));
-            else if (e.isFile() && e.name.endsWith(".jsonl"))
-                n++;
+            if (e.isDirectory()) walk(path.join(dir, e.name));
+            else if (e.isFile() && e.name.endsWith(".jsonl")) n++;
         }
     };
     walk(archiveDir);
@@ -44,6 +49,9 @@ function countArchiveFiles(archiveDir) {
 export function getPipelineStatus(opts = {}) {
     const dbPath = opts.dbPath ?? getDbPath();
     const dbExists = fs.existsSync(dbPath);
+    // Worker eligibility config — shared source with backfill-extract-worker
+    // (pendingExtractionCoreQuery) so status counts what the pipeline does.
+    const extractionGate = getExtractionConfig();
     // Lifecycle observation log lives outside the DB and is always safe to read.
     const lifecycleLastEventAt = readHookEvents();
     if (!dbExists) {
@@ -59,6 +67,10 @@ export function getPipelineStatus(opts = {}) {
                 total: 0,
                 done: 0,
                 pending: 0,
+                excluded: 0,
+                excludedBelowMin: 0,
+                excludedProject: 0,
+                gateMinExchanges: extractionGate.minExchanges,
                 claimed: 0,
                 failedPermanent: 0,
                 retriable: 0,
@@ -81,8 +93,7 @@ export function getPipelineStatus(opts = {}) {
     let vecReadable = true;
     try {
         sqliteVec.load(db);
-    }
-    catch {
+    } catch {
         vecReadable = false;
     }
     try {
@@ -94,13 +105,20 @@ export function getPipelineStatus(opts = {}) {
             ? count(db, "SELECT COUNT(*) AS c FROM exchanges")
             : 0;
         const sessionsIndexed = hasExchanges
-            ? count(db, "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0")
+            ? count(
+                  db,
+                  "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0",
+              )
             : 0;
         // ── Extraction stage counters ────────────────────────────────────────
         let extraction = {
             total: 0,
             done: 0,
             pending: 0,
+            excluded: 0,
+            excludedBelowMin: 0,
+            excludedProject: 0,
+            gateMinExchanges: extractionGate.minExchanges,
             claimed: 0,
             failedPermanent: 0,
             retriable: 0,
@@ -108,18 +126,38 @@ export function getPipelineStatus(opts = {}) {
             lastErrorAt: null,
         };
         if (hasExchanges && hasExtractionLog) {
-            const total = count(db, "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0");
+            const total = count(
+                db,
+                "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0",
+            );
             // done = settled success rows (extracted >= 0).
-            const done = count(db, `
+            const done = count(
+                db,
+                `
         SELECT COUNT(*) AS c FROM extraction_log
-        WHERE extracted >= 0`);
-            const permanent = count(db, "SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?", EXTRACTION_STATE.PERMANENT);
-            const retriable = count(db, `SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?
-        AND saved < 3`, EXTRACTION_STATE.RETRIABLE_INTERNAL);
-            const claimedFresh = count(db, `SELECT COUNT(*) AS c FROM extraction_log
-        WHERE extracted = ? AND ${freshClaimPredicate()}`, EXTRACTION_STATE.CLAIMED);
+        WHERE extracted >= 0`,
+            );
+            const permanent = count(
+                db,
+                "SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?",
+                EXTRACTION_STATE.PERMANENT,
+            );
+            const retriable = count(
+                db,
+                `SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?
+        AND saved < 3`,
+                EXTRACTION_STATE.RETRIABLE_INTERNAL,
+            );
+            const claimedFresh = count(
+                db,
+                `SELECT COUNT(*) AS c FROM extraction_log
+        WHERE extracted = ? AND ${freshClaimPredicate()}`,
+                EXTRACTION_STATE.CLAIMED,
+            );
             // Pending = sessions with exchanges lacking a settled extraction_log row.
-            const settledSessions = count(db, `
+            const settledSessions = count(
+                db,
+                `
         SELECT COUNT(*) AS c FROM (
           SELECT DISTINCT e.session_id
           FROM exchanges e
@@ -135,7 +173,10 @@ export function getPipelineStatus(opts = {}) {
                  WHERE x.session_id = e.session_id)
                 <= COALESCE((SELECT l.last_exchange_rowid FROM extraction_log l
                              WHERE l.session_id = e.session_id), -1)
-        )`, EXTRACTION_STATE.PERMANENT, EXTRACTION_STATE.CLAIMED);
+        )`,
+                EXTRACTION_STATE.PERMANENT,
+                EXTRACTION_STATE.CLAIMED,
+            );
             const times = db
                 .prepare(`
         SELECT
@@ -143,10 +184,47 @@ export function getPipelineStatus(opts = {}) {
           MAX(CASE WHEN extracted < 0 THEN processed_at END) AS lastErr
         FROM extraction_log`)
                 .get();
+            // Sessions the worker deliberately never picks: markerless sessions
+            // below BACKFILL_MIN_EXCHANGES or in excluded/LLM-workdir projects.
+            // Mirrors pendingExtractionCoreQuery's gate (including its any-exchange
+            // cwd pollution check) so pending means exactly "work the pipeline will
+            // actually do" — excluded sessions stay visible under their own name.
+            const exTerms = extractionGate.excludeProjects;
+            const pollutionClause = `x.cwd LIKE '%/memory-bank-llm'${
+                exTerms.length
+                    ? " OR " + exTerms.map(() => "x.cwd = ?").join(" OR ")
+                    : ""
+            }`;
+            const gateRow = db
+                .prepare(`
+        SELECT COUNT(*) AS c,
+               COALESCE(SUM(g.polluted), 0) AS byProject,
+               COALESCE(SUM(1 - g.polluted), 0) AS belowMin
+        FROM (
+          SELECT e.session_id,
+                 (SELECT MAX(CASE WHEN ${pollutionClause} THEN 1 ELSE 0 END)
+                    FROM exchanges x WHERE x.session_id = e.session_id) AS polluted,
+                 COUNT(*) AS n
+          FROM exchanges e
+          LEFT JOIN extraction_log l ON l.session_id = e.session_id
+          WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
+            AND l.session_id IS NULL
+          GROUP BY e.session_id
+          HAVING COUNT(*) < ? OR polluted = 1
+        ) g`)
+                .get(...exTerms, extractionGate.minExchanges);
+            const excludedSessions = Number(gateRow.c);
             extraction = {
                 total,
                 done,
-                pending: Math.max(0, total - settledSessions),
+                pending: Math.max(
+                    0,
+                    total - settledSessions - excludedSessions,
+                ),
+                excluded: excludedSessions,
+                excludedBelowMin: Number(gateRow.belowMin),
+                excludedProject: Number(gateRow.byProject),
+                gateMinExchanges: extractionGate.minExchanges,
                 claimed: claimedFresh,
                 failedPermanent: permanent,
                 retriable,
@@ -159,26 +237,39 @@ export function getPipelineStatus(opts = {}) {
         const ontology = { classifiedFacts: 0, pendingFacts: 0 };
         let relations = 0;
         if (hasFacts) {
-            embeddings.activeFacts = count(db, "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1");
+            embeddings.activeFacts = count(
+                db,
+                "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1",
+            );
             if (vecReadable && tableExists(db, "vec_facts")) {
-                embeddings.factVectorsPending = count(db, `
+                embeddings.factVectorsPending = count(
+                    db,
+                    `
           SELECT COUNT(*) AS c FROM facts f
           WHERE f.is_active = 1
-            AND NOT EXISTS (SELECT 1 FROM vec_facts v WHERE v.id = f.id)`);
-            }
-            else {
+            AND NOT EXISTS (SELECT 1 FROM vec_facts v WHERE v.id = f.id)`,
+                );
+            } else {
                 // Extension missing or table absent: report every active fact as
                 // vector-pending instead of crashing the read-only report.
                 embeddings.factVectorsPending = embeddings.activeFacts;
             }
-            ontology.classifiedFacts = count(db, "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1 AND ontology_category_id IS NOT NULL");
-            ontology.pendingFacts = embeddings.activeFacts - ontology.classifiedFacts;
+            ontology.classifiedFacts = count(
+                db,
+                "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1 AND ontology_category_id IS NOT NULL",
+            );
+            ontology.pendingFacts =
+                embeddings.activeFacts - ontology.classifiedFacts;
         }
         if (hasRelations)
-            relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
+            relations = count(
+                db,
+                "SELECT COUNT(*) AS c FROM ontology_relations",
+            );
         const archiveFiles = countArchiveFiles(getArchiveDir());
         const conversationReady = exchanges > 0;
-        const factReady = conversationReady &&
+        const factReady =
+            conversationReady &&
             extraction.pending === 0 &&
             extraction.claimed === 0 &&
             extraction.failedPermanent === 0 &&
@@ -199,8 +290,7 @@ export function getPipelineStatus(opts = {}) {
             lifecycleLastEventAt,
             readiness: { conversationReady, factReady, graphReady },
         };
-    }
-    finally {
+    } finally {
         db.close();
     }
 }
@@ -220,13 +310,11 @@ function readHookEvents() {
                 const rec = JSON.parse(line);
                 if (rec.event && typeof rec.ts === "string")
                     out[rec.event] = rec.ts;
-            }
-            catch {
+            } catch {
                 /* skip malformed */
             }
         }
-    }
-    catch {
+    } catch {
         /* no log yet */
     }
     return out;
@@ -234,35 +322,51 @@ function readHookEvents() {
 export function formatPipelineStatus(s) {
     const lines = [];
     if (s.dataRootEmpty)
-        lines.push("Data root: EMPTY (no index database yet — run: memex sync)");
+        lines.push(
+            "Data root: EMPTY (no index database yet — run: memex sync)",
+        );
     else
-        lines.push(`Conversations: ${s.conversations.ready ? "READY" : "EMPTY"} (${s.conversations.sessionsIndexed} sessions / ${s.conversations.exchanges} exchanges / ${s.conversations.archiveFiles} archived rollouts)`);
+        lines.push(
+            `Conversations: ${s.conversations.ready ? "READY" : "EMPTY"} (${s.conversations.sessionsIndexed} sessions / ${s.conversations.exchanges} exchanges / ${s.conversations.archiveFiles} archived rollouts)`,
+        );
     const ex = s.extraction;
     const parts = [
         `${ex.done} done`,
         `${ex.pending} pending`,
+        `${ex.excluded} excluded`,
         `${ex.claimed} claimed`,
         `${ex.failedPermanent} permanent-failed`,
     ];
-    if (ex.retriable > 0)
-        parts.push(`${ex.retriable} retriable`);
-    lines.push(`Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`);
-    if (ex.lastSuccessAt)
-        lines.push(`  last success: ${ex.lastSuccessAt}`);
-    if (ex.lastErrorAt)
-        lines.push(`  last failure: ${ex.lastErrorAt}`);
-    lines.push(`Embeddings: ${s.embeddings.factVectorsPending === 0 ? "READY" : "PENDING"} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`);
-    lines.push(`Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`);
+    if (ex.retriable > 0) parts.push(`${ex.retriable} retriable`);
+    lines.push(
+        `Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`,
+    );
+    if (ex.excluded > 0)
+        lines.push(
+            `  excluded: intentionally skipped by extraction policy — ${ex.excludedBelowMin} below min-exchanges (BACKFILL_MIN_EXCHANGES=${ex.gateMinExchanges}), ${ex.excludedProject} excluded projects`,
+        );
+    if (ex.lastSuccessAt) lines.push(`  last success: ${ex.lastSuccessAt}`);
+    if (ex.lastErrorAt) lines.push(`  last failure: ${ex.lastErrorAt}`);
+    lines.push(
+        `Embeddings: ${s.embeddings.factVectorsPending === 0 ? "READY" : "PENDING"} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`,
+    );
+    lines.push(
+        `Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`,
+    );
     lines.push(`Relations: ${s.relations}`);
     for (const [ev, ts] of Object.entries(s.lifecycleLastEventAt)) {
         lines.push(`Lifecycle ${ev}: observed ${ts}`);
     }
     lines.push("");
-    lines.push(`conversation-ready: ${s.readiness.conversationReady ? "YES" : "NO"}`);
+    lines.push(
+        `conversation-ready: ${s.readiness.conversationReady ? "YES" : "NO"}`,
+    );
     lines.push(`fact-ready:         ${s.readiness.factReady ? "YES" : "NO"}`);
     lines.push(`graph-ready:        ${s.readiness.graphReady ? "YES" : "NO"}`);
     if (!s.readiness.factReady && s.extraction.failedPermanent > 0) {
-        lines.push("NOTE: permanent extraction failures exist — overall readiness stays PARTIAL until they are resolved.");
+        lines.push(
+            "NOTE: permanent extraction failures exist — overall readiness stays PARTIAL until they are resolved.",
+        );
     }
     return lines.join("\n");
 }

@@ -2,6 +2,14 @@ export interface StageCounters {
     total: number;
     done: number;
     pending: number;
+    /** Sessions the worker deliberately never picks (policy gate, not work). */
+    excluded: number;
+    /** …of which below BACKFILL_MIN_EXCHANGES. */
+    excludedBelowMin: number;
+    /** …of which in excluded/LLM-workdir projects. */
+    excludedProject: number;
+    /** The configured min-exchange gate value, shown for actionability. */
+    gateMinExchanges: number;
     claimed: number;
     failedPermanent: number;
     retriable: number;
