@@ -1,7 +1,7 @@
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
-import { getPendingConsolidationFacts, searchSimilarFactsSameScope, updateFact, deactivateFact, } from './fact-db.js';
+import { getPendingConsolidationFacts, searchFactsByScope, updateFact, deactivateFact, } from './fact-db.js';
 import { mutateFactMeaning } from './fact-management.js';
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -51,11 +51,11 @@ async function consolidateOne(db, newFact) {
     const scope = newFact.scope_type === 'global'
         ? { type: 'global' }
         : newFact.scope_project
-            ? { type: 'project', project: newFact.scope_project }
+            ? { type: 'exact-project', project: newFact.scope_project }
             : null;
     if (!scope)
         return { called: false, verdict: 'none' };
-    const candidates = searchSimilarFactsSameScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD)
+    const candidates = searchFactsByScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD)
         .filter((s) => s.fact.id !== newFact.id);
     if (candidates.length === 0)
         return { called: false, verdict: 'none' };

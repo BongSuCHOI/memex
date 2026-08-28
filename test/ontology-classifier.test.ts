@@ -1002,6 +1002,20 @@ describe('ontology-classifier', () => {
       expect(callMemoryModel).not.toHaveBeenCalled();
     });
 
+    it('does not compare a global fact with project-private candidates', async () => {
+      const embeddingArr = new Array(384).fill(0.1);
+      insertTestFact(db, 'project-private', 'Private project decision', embeddingArr, '/private-project');
+
+      await detectRelations(db, makeFact({
+        id: 'global-new',
+        scope_type: 'global',
+        scope_project: null,
+        embedding: new Float32Array(embeddingArr),
+      }));
+
+      expect(callMemoryModel).not.toHaveBeenCalled();
+    });
+
     it('should detect SUPPORTS relation between similar facts', async () => {
       const embeddingArr = new Array(384).fill(0.1);
       insertTestFact(db, 'existing-1', 'Always use strict TypeScript mode', embeddingArr);

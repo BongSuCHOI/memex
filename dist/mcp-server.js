@@ -18892,9 +18892,24 @@ function getRevisions(db, factId) {
     "SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC"
   ).all(factId);
 }
-function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85) {
-  const candidateFetch = Math.max(limit * 2, 50);
-  const fetch = (table) => {
+function factMatchesSearch(fact, scope, filters) {
+  if (filters.category && fact.category !== filters.category) return false;
+  switch (scope.type) {
+    case "global":
+      return fact.scope_type === "global";
+    case "all":
+      return true;
+    case "project":
+      return fact.scope_type === "global" || fact.scope_type === "project" && fact.scope_project === scope.project;
+    case "exact-project":
+      return fact.scope_type === "project" && fact.scope_project === scope.project;
+    case "other-projects":
+      return fact.scope_type === "project" && fact.scope_project !== scope.project;
+  }
+}
+function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
+  if (limit <= 0) return [];
+  const fetch = (table, count) => {
     try {
       const p = vecParamFor(db, table, embedding);
       const rows = db.prepare(`
@@ -18902,62 +18917,39 @@ function searchSimilarFacts(db, embedding, project, limit = 5, threshold = 0.85)
         WHERE embedding MATCH ${p.sql}
         ORDER BY distance
         LIMIT ?
-      `).all(p.blob, candidateFetch);
+      `).all(p.blob, count);
       for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
-      return rows;
-    } catch {
-      return [];
-    }
-  };
-  const best = /* @__PURE__ */ new Map();
-  for (const vr of [...fetch("vec_facts"), ...fetch("vec_facts_kr")]) {
-    const cur = best.get(vr.id);
-    if (cur === void 0 || vr.distance < cur) best.set(vr.id, vr.distance);
-  }
-  const merged = [...best.entries()].map(([id, distance]) => ({ id, distance })).sort((a, b2) => a.distance - b2.distance);
-  const results = [];
-  for (const vr of merged) {
-    const similarity = l2DistanceToSimilarity(vr.distance);
-    if (similarity < threshold) continue;
-    const row = db.prepare(
-      "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
-    ).get(vr.id, EMBEDDING_VERSION);
-    if (!row) continue;
-    const fact = rowToFact(row);
-    if (project && fact.scope_type === "project" && fact.scope_project !== project)
-      continue;
-    results.push({ fact, distance: vr.distance });
-    if (results.length >= limit) break;
-  }
-  return results;
-}
-function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold = 0.85) {
-  const scopeProject = scope.type === "project" ? scope.project : null;
-  const scopeCount = scope.type === "global" ? db.prepare(
-    "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?"
-  ).get(EMBEDDING_VERSION).n : db.prepare(
-    "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?"
-  ).get(scopeProject, EMBEDDING_VERSION).n;
-  if (scopeCount === 0) return [];
-  const fetchN = (table, n) => {
-    try {
-      const p = vecParamFor(db, table, embedding);
-      const rows = db.prepare(`
-        SELECT id, distance FROM ${table}
-        WHERE embedding MATCH ${p.sql} ORDER BY distance LIMIT ?
-      `).all(p.blob, n);
-      for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
-      return { rows, exhausted: rows.length < n };
+      return { rows, exhausted: rows.length < count };
     } catch {
       return { rows: [], exhausted: true };
     }
   };
-  const HARD_CAP = 1e5;
-  let fetchCount = Math.max(limit * 20, 200);
+  const factCache = /* @__PURE__ */ new Map();
+  const loadFact = (id) => {
+    if (factCache.has(id)) return factCache.get(id) ?? null;
+    const row = db.prepare(
+      "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
+    ).get(id, EMBEDDING_VERSION);
+    const fact = row ? rowToFact(row) : null;
+    factCache.set(id, fact);
+    return fact;
+  };
+  const vectorRowCount = (table) => {
+    try {
+      return db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
+    } catch {
+      return 0;
+    }
+  };
+  const maxVectorRows = Math.max(
+    vectorRowCount("vec_facts"),
+    vectorRowCount("vec_facts_kr")
+  );
+  let fetchCount = Math.max(limit * 4, 50);
   let results = [];
   for (; ; ) {
-    const a = fetchN("vec_facts", fetchCount);
-    const b2 = fetchN("vec_facts_kr", fetchCount);
+    const a = fetch("vec_facts", fetchCount);
+    const b2 = fetch("vec_facts_kr", fetchCount);
     const best = /* @__PURE__ */ new Map();
     for (const vr of [...a.rows, ...b2.rows]) {
       const cur = best.get(vr.id);
@@ -18967,48 +18959,16 @@ function searchSimilarFactsSameScope(db, embedding, scope, limit = 5, threshold 
     results = [];
     for (const vr of merged) {
       const similarity = l2DistanceToSimilarity(vr.distance);
-      if (similarity < threshold) continue;
-      const row = db.prepare(
-        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
-      ).get(vr.id, EMBEDDING_VERSION);
-      if (!row) continue;
-      const fact = rowToFact(row);
-      if (scope.type === "global") {
-        if (fact.scope_type !== "global") continue;
-      } else if (fact.scope_type !== "project" || fact.scope_project !== scopeProject) {
-        continue;
-      }
+      if (similarity < threshold) break;
+      const fact = loadFact(vr.id);
+      if (!fact || !factMatchesSearch(fact, scope, filters)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
     }
-    const bothExhausted = a.exhausted && b2.exhausted;
-    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP)
-      break;
-    fetchCount = Math.min(fetchCount * 4, HARD_CAP);
-  }
-  return results;
-}
-function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
-  const pAll = vecParamFor(db, "vec_facts", embedding);
-  const vecResults = db.prepare(`
-    SELECT id, distance
-    FROM vec_facts
-    WHERE embedding MATCH ${pAll.sql}
-    ORDER BY distance
-    LIMIT ?
-  `).all(pAll.blob, limit * 2);
-  for (const r of vecResults)
-    r.distance = normalizeVecDistance(r.distance, pAll.dt);
-  const results = [];
-  for (const vr of vecResults) {
-    const similarity = l2DistanceToSimilarity(vr.distance);
-    if (similarity < threshold) continue;
-    const row = db.prepare(
-      "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?"
-    ).get(vr.id, EMBEDDING_VERSION);
-    if (!row) continue;
-    results.push({ fact: rowToFact(row), distance: vr.distance });
-    if (results.length >= limit) break;
+    if (results.length >= limit || a.exhausted && b2.exhausted) break;
+    const nextFetchCount = Math.min(fetchCount * 4, maxVectorRows + 1);
+    if (nextFetchCount <= fetchCount) break;
+    fetchCount = nextFetchCount;
   }
   return results;
 }
@@ -19755,7 +19715,13 @@ async function getKnowledgeContext(query, project, limit = 5) {
   const db = initDatabase();
   try {
     const queryEmbedding = await generateEmbedding(query, "query");
-    const factResults = searchSimilarFacts(db, queryEmbedding, project ?? null, limit, 0.6);
+    const factResults = searchFactsByScope(
+      db,
+      queryEmbedding,
+      project ? { type: "project", project } : { type: "all" },
+      limit,
+      0.6
+    );
     if (factResults.length === 0) {
       return { facts: [] };
     }
@@ -20027,7 +19993,13 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
     const baseline = await queryBaseline(embedding);
     const db = getSearchDb();
     {
-      const candidates = searchSimilarFacts(db, embedding, project, TOP_K, 0);
+      const candidates = searchFactsByScope(
+        db,
+        embedding,
+        { type: "project", project },
+        TOP_K,
+        0
+      );
       const results = candidates.filter((r) => {
         const similarity = l2DistanceToSimilarity(r.distance);
         return similarity - baseline >= BASELINE_MARGIN;
@@ -21982,14 +21954,8 @@ async function askAvatar(db, question, project, scope) {
   await initEmbeddings();
   const questionEmbedding = await generateEmbedding(question, "query");
   const scopeProject = project ?? null;
-  let vectorResults;
-  if (scope === "global") {
-    vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: "global" }, 10, 0.6);
-  } else if (scopeProject) {
-    vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
-  } else {
-    vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
-  }
+  const factScope = scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" };
+  const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
   if (vectorResults.length === 0) {
     return {
       answer: "\uAD00\uB828\uB41C \uACFC\uAC70 \uACB0\uC815\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC544\uC9C1 \uCDA9\uBD84\uD55C \uAE30\uC5B5\uC774 \uC313\uC774\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
@@ -22153,6 +22119,11 @@ var AskAvatarInputSchema = external_exports.object({
     '"project" (default, requires project), "global" (global facts only), or "all"'
   )
 }).strict();
+function toFactSearchScope(resolved) {
+  if (resolved.scope === "global") return { type: "global" };
+  if (resolved.scope === "all") return { type: "all" };
+  return { type: "project", project: resolved.project };
+}
 function resolveProjectScope(raw, tool, field = "project") {
   const scope = raw.scope ?? "project";
   if (scope === "global" || scope === "all") return { project: null, scope };
@@ -22667,30 +22638,23 @@ async function handleToolCall(name, args) {
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(
+        const results = searchFactsByScope(
           db,
           queryEmbedding,
-          scopeInfo.project,
-          params.limit
+          toFactSearchScope(scopeInfo),
+          params.limit,
+          0.85,
+          { category: params.category }
         );
-        if (scopeFilter === "global") {
-          results = results.filter((r) => r.fact.scope_type === "global");
-        }
-        let filtered = results;
-        if (params.category) {
-          filtered = filtered.filter(
-            (r) => r.fact.category === params.category
-          );
-        }
         const scopeLabel = scopeFilter === "project" ? scopeInfo.project : `${scopeFilter} facts only`;
         let output = `# Facts Search Results
 
 Query: "${params.query}"
 Scope: ${scopeLabel}
-Results: ${filtered.length}
+Results: ${results.length}
 
 `;
-        if (filtered.length === 0) {
+        if (results.length === 0) {
           output += "_No matching facts found._\n";
         }
         const allDomains = listDomains(db);
@@ -22702,7 +22666,7 @@ Results: ${filtered.length}
             { name: c.name, domainId: c.domain_id }
           ])
         );
-        for (const { fact, distance } of filtered) {
+        for (const { fact, distance } of results) {
           const similarity = (1 - distance * distance / 2).toFixed(3);
           const catInfo = fact.ontology_category_id ? catMap.get(fact.ontology_category_id) : void 0;
           const domainName = catInfo ? domainMap.get(catInfo.domainId) ?? "" : "";
@@ -22902,16 +22866,13 @@ Results: ${filtered.length}
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(
+        const results = searchFactsByScope(
           db,
           queryEmbedding,
-          traceScope.project,
+          toFactSearchScope(traceScope),
           params.limit,
           0.5
         );
-        if (traceScope.scope === "global") {
-          results = results.filter((r) => r.fact.scope_type === "global");
-        }
         if (results.length === 0) {
           return {
             content: [
@@ -23120,25 +23081,26 @@ _Source exchanges not available._
         scope: external_exports.enum(["project"]).optional(),
         limit: external_exports.number().int().min(1).max(20).default(5)
       }).strict().parse(args);
+      const cxScope = resolveProjectScope(
+        params,
+        "cross_project_insights",
+        "current_project"
+      );
+      if (cxScope.scope !== "project") {
+        throw new Error("cross_project_insights requires project scope");
+      }
+      const currentProject = cxScope.project;
       await initEmbeddings();
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const allResults = searchAllFacts(
+        const crossProjectResults = searchFactsByScope(
           db,
           queryEmbedding,
-          params.limit * 3,
+          { type: "other-projects", project: currentProject },
+          params.limit,
           0.5
         );
-        const cxScope = resolveProjectScope(
-          params,
-          "cross_project_insights",
-          "current_project"
-        );
-        const currentProject = cxScope.project ?? "";
-        const crossProjectResults = allResults.filter(
-          (r) => r.fact.scope_type === "project" && r.fact.scope_project !== currentProject
-        ).slice(0, params.limit);
         if (crossProjectResults.length === 0) {
           return {
             content: [
@@ -23196,16 +23158,13 @@ Excluding: ${currentProject}
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let seedFacts = searchSimilarFacts(
+        const seedFacts = searchFactsByScope(
           db,
           queryEmbedding,
-          egScope.project,
+          toFactSearchScope(egScope),
           3,
           0.5
         );
-        if (egScope.scope === "global") {
-          seedFacts = seedFacts.filter((r) => r.fact.scope_type === "global");
-        }
         const seedIds = new Set(seedFacts.map((r) => r.fact.id));
         if (seedFacts.length === 0) {
           return {

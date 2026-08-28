@@ -16,7 +16,7 @@ describe("MCP Facts Tool", () => {
 
   it("should import fact-db functions", () => {
     const content = fs.readFileSync("src/mcp-server.ts", "utf-8");
-    expect(content).toContain("searchSimilarFacts");
+    expect(content).toContain("searchFactsByScope");
     expect(content).toContain("getRevisions");
   });
 

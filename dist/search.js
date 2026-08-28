@@ -1,7 +1,7 @@
 import { initDatabase, getVecDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
 import { getDbPath } from './paths.js';
 import { initEmbeddings, generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
-import { searchSimilarFacts } from './fact-db.js';
+import { searchFactsByScope } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
 import fs from 'fs';
 import readline from 'readline';
@@ -603,7 +603,7 @@ export async function getKnowledgeContext(query, project, limit = 5) {
     const db = initDatabase();
     try {
         const queryEmbedding = await generateEmbedding(query, 'query');
-        const factResults = searchSimilarFacts(db, queryEmbedding, project ?? null, limit, 0.6);
+        const factResults = searchFactsByScope(db, queryEmbedding, project ? { type: 'project', project } : { type: 'all' }, limit, 0.6);
         if (factResults.length === 0) {
             return { facts: [] };
         }

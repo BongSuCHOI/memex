@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import type { Fact, FactRevision } from "./types.js";
+import type { Fact, FactCategory, FactRevision } from "./types.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
@@ -38,22 +38,42 @@ export declare function deactivateFact(db: Database.Database, id: string): void;
 export declare function deleteFact(db: Database.Database, id: string): void;
 export declare function insertRevision(db: Database.Database, params: InsertRevisionParams): string;
 export declare function getRevisions(db: Database.Database, factId: string): FactRevision[];
+export type FactSearchScope = {
+    type: "project";
+    project: string;
+} | {
+    type: "global";
+} | {
+    type: "all";
+} | {
+    type: "exact-project";
+    project: string;
+} | {
+    type: "other-projects";
+    project: string;
+};
+interface FactSearchFilters {
+    category?: FactCategory;
+}
+/**
+ * Scope-aware semantic fact search SSOT.
+ *
+ * Scope and optional category filters are applied before the caller's limit.
+ * sqlite-vec cannot join the fact metadata into MATCH, so the search grows its
+ * KNN window until it either collects enough eligible facts or exhausts both
+ * language indexes. This prevents a dense out-of-scope population from
+ * starving a valid project/global result.
+ */
+export declare function searchFactsByScope(db: Database.Database, embedding: number[], scope: FactSearchScope, limit?: number, threshold?: number, filters?: FactSearchFilters): Array<{
+    fact: Fact;
+    distance: number;
+}>;
+/** @deprecated Use searchFactsByScope with an explicit project/global/all scope. */
 export declare function searchSimilarFacts(db: Database.Database, embedding: number[], project: string | null, limit?: number, threshold?: number): Array<{
     fact: Fact;
     distance: number;
 }>;
-/**
- * Nearest active facts restricted to EXACTLY one scope — used by consolidation
- * so a project-private fact and a global fact can never be compared/merged
- * across the boundary (which would leak private text into global memory or let
- * one project mutate shared global facts). The scope filter is applied to the
- * FULL overfetched candidate list BEFORE truncation, so a same-scope match is
- * not starved out by closer out-of-scope rows (which the general
- * searchSimilarFacts truncates first).
- *
- * scope: { type:'global' } → global facts only.
- *        { type:'project', project } → that project's own facts only (no global).
- */
+/** @deprecated Use searchFactsByScope with global or exact-project scope. */
 export declare function searchSimilarFactsSameScope(db: Database.Database, embedding: number[], scope: {
     type: "global";
 } | {
@@ -85,10 +105,7 @@ export declare function getNewFactsSince(db: Database.Database, project: string,
  * persisted cursor. updated_at/id only provide deterministic bounded draining.
  */
 export declare function getPendingConsolidationFacts(db: Database.Database, limit?: number, project?: string): Fact[];
-/**
- * Search facts across ALL projects (no scope filter).
- * Used for cross-project knowledge transfer.
- */
+/** @deprecated Use searchFactsByScope with all scope. */
 export declare function searchAllFacts(db: Database.Database, embedding: number[], limit?: number, threshold?: number): Array<{
     fact: Fact;
     distance: number;

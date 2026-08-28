@@ -21,8 +21,10 @@ limit, project metadata는 결과 단계에서 일관되게 적용합니다.
 ## 2. RAG enrichment
 
 conversation search 결과는 관련 fact와 ontology context를 덧붙일 수 있습니다. 이때
-fact 검색은 현재 project/global scope gate를 통과하고 relation 확장은 1-hop으로
-제한합니다. archive line range가 함께 반환되어 원문 확인이 가능합니다.
+fact 검색은 단일 scope-aware search 경로에서 현재 project/global/all gate를 통과하고
+relation 확장은 1-hop으로 제한합니다. archive line range가 함께 반환되어 원문 확인이
+가능합니다. scope와 MCP의 optional category filter는 전체 KNN 후보에 먼저 적용하고
+그 뒤 caller limit으로 자릅니다.
 
 ## 3. UserPromptSubmit injection
 
@@ -55,11 +57,12 @@ warm과 cold 경로는 transport만 다르고 selection logic은 같습니다. d
 
 1. 짧거나 비정보성 prompt는 skip할 수 있다.
 2. query background baseline보다 충분히 높은 관련도만 통과한다.
-3. top fact에서 허용 scope의 typed relation을 1-hop 확장한다.
-4. session ledger에 이미 기록된 fact를 제거한다.
-5. fact별 text 길이와 전체 block budget을 적용한다.
-6. 낮은 relevance부터 제거해 budget 안에 맞춘다.
-7. 결과가 없으면 context를 출력하지 않는다.
+3. scope를 전체 KNN 후보에 먼저 적용한 뒤 caller limit으로 자른다.
+4. top fact에서 허용 scope의 typed relation을 1-hop 확장한다.
+5. session ledger에 이미 기록된 fact를 제거한다.
+6. fact별 text 길이와 전체 block budget을 적용한다.
+7. 낮은 relevance부터 제거해 budget 안에 맞춘다.
+8. 결과가 없으면 context를 출력하지 않는다.
 
 기본 block budget은 1,000 chars, fact별 최대는 160 chars입니다. session ledger는 최대
 400 ids와 7일 TTL을 가지며 atomic write하고 fail-open합니다. ledger 오류 때문에 사용자

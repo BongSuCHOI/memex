@@ -1,6 +1,6 @@
 import { getSearchDb } from "./search.js";
 import { l2DistanceToSimilarity } from "./db.js";
-import { searchSimilarFacts } from "./fact-db.js";
+import { searchFactsByScope } from "./fact-db.js";
 import { generateEmbedding, initEmbeddings, queryBaseline, } from "./embeddings.js";
 import { getRelatedFacts } from "./ontology-db.js";
 import { detectRepeat, formatRepeatContext } from "./repeat-detector.js";
@@ -77,7 +77,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId) 
         const db = getSearchDb();
         {
             // threshold 0: take top-k by distance, then gate by baseline margin below
-            const candidates = searchSimilarFacts(db, embedding, project, TOP_K, 0);
+            const candidates = searchFactsByScope(db, embedding, { type: "project", project }, TOP_K, 0);
             const results = candidates.filter((r) => {
                 const similarity = l2DistanceToSimilarity(r.distance);
                 return similarity - baseline >= BASELINE_MARGIN;

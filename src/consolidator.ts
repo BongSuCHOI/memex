@@ -5,7 +5,7 @@ import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
 import {
   getPendingConsolidationFacts,
-  searchSimilarFactsSameScope,
+  searchFactsByScope,
   updateFact,
   deactivateFact,
 } from './fact-db.js';
@@ -69,10 +69,10 @@ async function consolidateOne(
   const scope = newFact.scope_type === 'global'
     ? ({ type: 'global' } as const)
     : newFact.scope_project
-      ? ({ type: 'project', project: newFact.scope_project } as const)
+      ? ({ type: 'exact-project', project: newFact.scope_project } as const)
       : null;
   if (!scope) return { called: false, verdict: 'none' };
-  const candidates = searchSimilarFactsSameScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD)
+  const candidates = searchFactsByScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD)
     .filter((s) => s.fact.id !== newFact.id);
   if (candidates.length === 0) return { called: false, verdict: 'none' };
 

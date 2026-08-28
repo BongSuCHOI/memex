@@ -3,7 +3,7 @@ import { l2DistanceToSimilarity } from './db.js';
 import type { Fact, RelationType } from './types.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
-import { searchSimilarFacts } from './fact-db.js';
+import { searchFactsByScope } from './fact-db.js';
 import {
   listDomains,
   getDomainByName,
@@ -804,7 +804,10 @@ export async function detectRelations(
 
   const embeddingArray = Array.from(newFact.embedding);
   // e5 scale: related-but-distinct ~0.91, unrelated <=0.86 → 0.89 selects relation candidates
-  const similar = searchSimilarFacts(db, embeddingArray, newFact.scope_project, topK, 0.89);
+  const searchScope = newFact.scope_type === 'global'
+    ? ({ type: 'global' } as const)
+    : ({ type: 'project', project: newFact.scope_project as string } as const);
+  const similar = searchFactsByScope(db, embeddingArray, searchScope, topK, 0.89);
   const candidates = similar.filter((s) => s.fact.id !== newFact.id);
 
   for (const { fact: existingFact } of candidates) {

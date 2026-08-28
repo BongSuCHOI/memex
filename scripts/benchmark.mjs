@@ -457,7 +457,7 @@ async function main() {
     process.env.MEMEX_HOME = primary.home;
     process.env.TEST_DB_PATH = primary.dbPath;
     const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
-    const { insertFact, searchSimilarFacts } = await import(
+    const { insertFact, searchFactsByScope } = await import(
       path.join(ROOT, "dist", "fact-db.js")
     );
     const { createDomain, createCategory, createRelation, getRelatedFacts } =
@@ -549,10 +549,10 @@ async function main() {
       let facts = [];
       let started = performance.now();
       try {
-        facts = searchSimilarFacts(
+        facts = searchFactsByScope(
           db,
           embedding,
-          `/tmp/bench/proj-${i % 7}`,
+          { type: "project", project: `/tmp/bench/proj-${i % 7}` },
           5,
         );
       } catch {

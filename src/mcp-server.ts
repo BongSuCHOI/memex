@@ -26,7 +26,11 @@ import {
 import { formatConversationAsMarkdown } from "./show.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { initDatabase } from "./db.js";
-import { searchSimilarFacts, searchAllFacts, getRevisions } from "./fact-db.js";
+import {
+  searchFactsByScope,
+  getRevisions,
+  type FactSearchScope,
+} from "./fact-db.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import {
   getOntologyTree,
@@ -206,10 +210,15 @@ type AskAvatarInput = z.infer<typeof AskAvatarInputSchema>;
 // plugin-root facts into the user's project. The caller must pass the
 // canonical absolute Codex thread cwd, or an explicit global/all scope.
 
-interface ResolvedScope {
-  /** Canonical absolute project path; null for global/all scopes. */
-  project: string | null;
-  scope: "project" | "global" | "all";
+type ResolvedScope =
+  | { project: string; scope: "project" }
+  | { project: null; scope: "global" }
+  | { project: null; scope: "all" };
+
+function toFactSearchScope(resolved: ResolvedScope): FactSearchScope {
+  if (resolved.scope === "global") return { type: "global" };
+  if (resolved.scope === "all") return { type: "all" };
+  return { type: "project", project: resolved.project };
 }
 
 function resolveProjectScope(
@@ -814,31 +823,21 @@ export async function handleToolCall(
       const db = initDatabase();
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(
+        const results = searchFactsByScope(
           db,
           queryEmbedding,
-          scopeInfo.project,
+          toFactSearchScope(scopeInfo),
           params.limit,
+          0.85,
+          { category: params.category },
         );
-        if (scopeFilter === "global") {
-          // global-only: drop every project-scoped candidate.
-          results = results.filter((r) => r.fact.scope_type === "global");
-        }
-
-        // Apply the optional fact category filter.
-        let filtered = results;
-        if (params.category) {
-          filtered = filtered.filter(
-            (r) => r.fact.category === params.category,
-          );
-        }
         const scopeLabel =
           scopeFilter === "project"
             ? scopeInfo.project
             : `${scopeFilter} facts only`;
-        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nScope: ${scopeLabel}\nResults: ${filtered.length}\n\n`;
+        let output = `# Facts Search Results\n\nQuery: "${params.query}"\nScope: ${scopeLabel}\nResults: ${results.length}\n\n`;
 
-        if (filtered.length === 0) {
+        if (results.length === 0) {
           output += "_No matching facts found._\n";
         }
 
@@ -853,7 +852,7 @@ export async function handleToolCall(
           ]),
         );
 
-        for (const { fact, distance } of filtered) {
+        for (const { fact, distance } of results) {
           const similarity = (1 - (distance * distance) / 2).toFixed(3);
           const catInfo = fact.ontology_category_id
             ? catMap.get(fact.ontology_category_id)
@@ -1074,16 +1073,13 @@ export async function handleToolCall(
 
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let results = searchSimilarFacts(
+        const results = searchFactsByScope(
           db,
           queryEmbedding,
-          traceScope.project,
+          toFactSearchScope(traceScope),
           params.limit,
           0.5,
         );
-        if (traceScope.scope === "global") {
-          results = results.filter((r) => r.fact.scope_type === "global");
-        }
 
         if (results.length === 0) {
           return {
@@ -1335,32 +1331,29 @@ export async function handleToolCall(
         .strict()
         .parse(args);
 
+      // CX-03: current_project is required — never guess the active project.
+      const cxScope = resolveProjectScope(
+        params,
+        "cross_project_insights",
+        "current_project",
+      );
+      if (cxScope.scope !== "project") {
+        throw new Error("cross_project_insights requires project scope");
+      }
+      const currentProject = cxScope.project;
+
       await initEmbeddings();
       const db = initDatabase();
 
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const allResults = searchAllFacts(
+        const crossProjectResults = searchFactsByScope(
           db,
           queryEmbedding,
-          params.limit * 3,
+          { type: "other-projects", project: currentProject },
+          params.limit,
           0.5,
         );
-
-        // CX-03: current_project is required — never guess the active project.
-        const cxScope = resolveProjectScope(
-          params,
-          "cross_project_insights",
-          "current_project",
-        );
-        const currentProject = cxScope.project ?? "";
-        const crossProjectResults = allResults
-          .filter(
-            (r) =>
-              r.fact.scope_type === "project" &&
-              r.fact.scope_project !== currentProject,
-          )
-          .slice(0, params.limit);
 
         if (crossProjectResults.length === 0) {
           return {
@@ -1430,16 +1423,13 @@ export async function handleToolCall(
 
       try {
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        let seedFacts = searchSimilarFacts(
+        const seedFacts = searchFactsByScope(
           db,
           queryEmbedding,
-          egScope.project,
+          toFactSearchScope(egScope),
           3,
           0.5,
         );
-        if (egScope.scope === "global") {
-          seedFacts = seedFacts.filter((r) => r.fact.scope_type === "global");
-        }
         const seedIds = new Set(seedFacts.map((r) => r.fact.id));
 
         if (seedFacts.length === 0) {

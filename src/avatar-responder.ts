@@ -4,7 +4,7 @@ import type { AvatarResponse, Fact, RelationType } from './types.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
-import { searchSimilarFacts, searchSimilarFactsSameScope } from './fact-db.js';
+import { searchFactsByScope, type FactSearchScope } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
 
 const AVATAR_SYSTEM_PROMPT = `You are acting as the user's technical alter ego.
@@ -46,15 +46,17 @@ export async function askAvatar(
   const questionEmbedding = await generateEmbedding(question, 'query');
   const scopeProject = project ?? null;
 
-  // Step 1: Vector search for top-10 relevant facts
-  let vectorResults: Array<{ fact: Fact; distance: number }>;
-  if (scope === 'global') {
-    vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: 'global' }, 10, 0.6);
-  } else if (scopeProject) {
-    vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
-  } else {
-    vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
-  }
+  // Step 1: Vector search for top-10 relevant facts through the shared scope
+  // contract. Direct library callers without an explicit scope keep the
+  // historical behavior: project when provided, otherwise all.
+  const factScope: FactSearchScope = scope === 'global'
+    ? { type: 'global' }
+    : scope === 'all'
+      ? { type: 'all' }
+      : scopeProject
+        ? { type: 'project', project: scopeProject }
+        : { type: 'all' };
+  const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
 
   if (vectorResults.length === 0) {
     return {

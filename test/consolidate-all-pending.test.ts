@@ -150,29 +150,29 @@ describe('consolidateAllPending', () => {
     }
   });
 
-  it('searchSimilarFactsSameScope is not starved by many out-of-scope rows (scope gate before limit)', async () => {
+  it('scope-aware search is not starved by many out-of-scope rows (scope gate before limit)', async () => {
     // HIGH guard: the scope filter runs on the FULL overfetch, not after
     // truncation — so a same-project match survives a crowd of closer globals.
-    const { searchSimilarFactsSameScope } = await import('../src/fact-db.js');
+    const { searchFactsByScope } = await import('../src/fact-db.js');
     for (let i = 0; i < 40; i++) addFact(db, `global crowd ${i}`, 'global', null);
     addFact(db, 'proj target', 'project', '/projX');
 
-    const projHits = searchSimilarFactsSameScope(db, EMB, { type: 'project', project: '/projX' }, 5, 0.5);
+    const projHits = searchFactsByScope(db, EMB, { type: 'exact-project', project: '/projX' }, 5, 0.5);
     expect(projHits.length).toBe(1);
     expect(projHits[0].fact.fact).toBe('proj target');
     expect(projHits.every((h) => h.fact.scope_type === 'project')).toBe(true);
 
     // Global scope search returns only globals (never the project fact).
-    const globalHits = searchSimilarFactsSameScope(db, EMB, { type: 'global' }, 5, 0.5);
+    const globalHits = searchFactsByScope(db, EMB, { type: 'global' }, 5, 0.5);
     expect(globalHits.every((h) => h.fact.scope_type === 'global')).toBe(true);
   });
 
   it('pages past the initial overfetch (201+ out-of-scope rows) to reach an in-scope match', async () => {
-    const { searchSimilarFactsSameScope } = await import('../src/fact-db.js');
+    const { searchFactsByScope } = await import('../src/fact-db.js');
     for (let i = 0; i < 210; i++) addFact(db, `global crowd ${i}`, 'global', null); // > initial 200 fetch
     addFact(db, 'proj deep', 'project', '/projDeep');
 
-    const hits = searchSimilarFactsSameScope(db, EMB, { type: 'project', project: '/projDeep' }, 5, 0.5);
+    const hits = searchFactsByScope(db, EMB, { type: 'exact-project', project: '/projDeep' }, 5, 0.5);
     expect(hits.length).toBe(1);
     expect(hits[0].fact.fact).toBe('proj deep'); // found despite 210 closer globals
   });

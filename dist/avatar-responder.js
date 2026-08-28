@@ -2,7 +2,7 @@ import { l2DistanceToSimilarity } from './db.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { classifyLlmError } from './llm-error-class.js';
 import { generateEmbedding, initEmbeddings } from './embeddings.js';
-import { searchSimilarFacts, searchSimilarFactsSameScope } from './fact-db.js';
+import { searchFactsByScope } from './fact-db.js';
 import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
 const AVATAR_SYSTEM_PROMPT = `You are acting as the user's technical alter ego.
 You represent their past engineering decisions, preferences, and patterns.
@@ -29,17 +29,17 @@ export async function askAvatar(db, question, project, scope) {
     await initEmbeddings();
     const questionEmbedding = await generateEmbedding(question, 'query');
     const scopeProject = project ?? null;
-    // Step 1: Vector search for top-10 relevant facts
-    let vectorResults;
-    if (scope === 'global') {
-        vectorResults = searchSimilarFactsSameScope(db, questionEmbedding, { type: 'global' }, 10, 0.6);
-    }
-    else if (scopeProject) {
-        vectorResults = searchSimilarFacts(db, questionEmbedding, scopeProject, 10, 0.6);
-    }
-    else {
-        vectorResults = searchSimilarFacts(db, questionEmbedding, null, 10, 0.6);
-    }
+    // Step 1: Vector search for top-10 relevant facts through the shared scope
+    // contract. Direct library callers without an explicit scope keep the
+    // historical behavior: project when provided, otherwise all.
+    const factScope = scope === 'global'
+        ? { type: 'global' }
+        : scope === 'all'
+            ? { type: 'all' }
+            : scopeProject
+                ? { type: 'project', project: scopeProject }
+                : { type: 'all' };
+    const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
     if (vectorResults.length === 0) {
         return {
             answer: '관련된 과거 결정을 찾을 수 없습니다. 아직 충분한 기억이 쌓이지 않았습니다.',

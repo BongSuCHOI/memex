@@ -10,6 +10,7 @@ import {
   getRevisions,
   getTopFacts,
   getNewFactsSince,
+  searchFactsByScope,
 } from '../src/fact-db.js';
 import { suppressConsole } from './test-utils.js';
 import fs from 'fs';
@@ -236,5 +237,93 @@ describe('Fact CRUD', () => {
     const newFacts = getNewFactsSince(db, '/proj', past);
     expect(newFacts).toHaveLength(1);
     expect(newFacts[0].fact).toBe('New fact');
+  });
+});
+
+describe('Scope-aware fact search', () => {
+  let db: Database.Database;
+  const testDir = path.join(os.tmpdir(), 'fact-scope-search-' + Date.now());
+  const dbPath = path.join(testDir, 'test.db');
+  const embedding = new Array(384).fill(0.1);
+
+  beforeEach(() => {
+    fs.mkdirSync(testDir, { recursive: true });
+    process.env.TEST_DB_PATH = dbPath;
+    db = initDatabase();
+  });
+
+  afterEach(() => {
+    db.close();
+    delete process.env.TEST_DB_PATH;
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it('finds a global fact behind hundreds of closer project facts', () => {
+    for (let i = 0; i < 240; i++) {
+      insertFact(db, {
+        fact: `project crowd ${i}`,
+        category: 'decision',
+        scope_type: 'project',
+        scope_project: `/project-${i}`,
+        source_exchange_ids: [],
+        embedding,
+      });
+    }
+    insertFact(db, {
+      fact: 'global target',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.101),
+    });
+
+    const results = searchFactsByScope(db, embedding, { type: 'global' }, 5, 0.5);
+
+    expect(results.map(({ fact }) => fact.fact)).toEqual(['global target']);
+  });
+
+  it('applies category and scope filters before the result limit', () => {
+    for (let i = 0; i < 60; i++) {
+      insertFact(db, {
+        fact: `decision crowd ${i}`,
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: [],
+        embedding,
+      });
+    }
+    insertFact(db, {
+      fact: 'preference target',
+      category: 'preference',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.101),
+    });
+
+    const results = searchFactsByScope(
+      db,
+      embedding,
+      { type: 'global' },
+      1,
+      0.5,
+      { category: 'preference' },
+    );
+
+    expect(results.map(({ fact }) => fact.fact)).toEqual(['preference target']);
+  });
+
+  it('defines project as that project plus global, while all spans every project', () => {
+    insertFact(db, { fact: 'global', category: 'decision', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding });
+    insertFact(db, { fact: 'project A', category: 'decision', scope_type: 'project', scope_project: '/project-a', source_exchange_ids: [], embedding });
+    insertFact(db, { fact: 'project B', category: 'decision', scope_type: 'project', scope_project: '/project-b', source_exchange_ids: [], embedding });
+
+    const projectResults = searchFactsByScope(db, embedding, { type: 'project', project: '/project-a' }, 10, 0.5);
+    const allResults = searchFactsByScope(db, embedding, { type: 'all' }, 10, 0.5);
+
+    expect(projectResults.map(({ fact }) => fact.fact).sort()).toEqual(['global', 'project A']);
+    expect(allResults.map(({ fact }) => fact.fact).sort()).toEqual(['global', 'project A', 'project B']);
   });
 });

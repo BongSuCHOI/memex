@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
-import type { Fact, FactRevision } from "./types.js";
+import type { Fact, FactCategory, FactRevision } from "./types.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
   getVecTableDtype,
@@ -229,24 +229,71 @@ export function getRevisions(
     .all(factId) as FactRevision[];
 }
 
-export function searchSimilarFacts(
+export type FactSearchScope =
+  | { type: "project"; project: string }
+  | { type: "global" }
+  | { type: "all" }
+  // Internal exact-scope modes keep consolidation and cross-project discovery
+  // on the same search implementation without changing the public semantics
+  // above: project means that project plus global facts.
+  | { type: "exact-project"; project: string }
+  | { type: "other-projects"; project: string };
+
+interface FactSearchFilters {
+  category?: FactCategory;
+}
+
+function factMatchesSearch(
+  fact: Fact,
+  scope: FactSearchScope,
+  filters: FactSearchFilters,
+): boolean {
+  if (filters.category && fact.category !== filters.category) return false;
+
+  switch (scope.type) {
+    case "global":
+      return fact.scope_type === "global";
+    case "all":
+      return true;
+    case "project":
+      return (
+        fact.scope_type === "global" ||
+        (fact.scope_type === "project" && fact.scope_project === scope.project)
+      );
+    case "exact-project":
+      return (
+        fact.scope_type === "project" && fact.scope_project === scope.project
+      );
+    case "other-projects":
+      return (
+        fact.scope_type === "project" && fact.scope_project !== scope.project
+      );
+  }
+}
+
+/**
+ * Scope-aware semantic fact search SSOT.
+ *
+ * Scope and optional category filters are applied before the caller's limit.
+ * sqlite-vec cannot join the fact metadata into MATCH, so the search grows its
+ * KNN window until it either collects enough eligible facts or exhausts both
+ * language indexes. This prevents a dense out-of-scope population from
+ * starving a valid project/global result.
+ */
+export function searchFactsByScope(
   db: Database.Database,
   embedding: number[],
-  project: string | null,
+  scope: FactSearchScope,
   limit: number = 5,
   threshold: number = 0.85,
+  filters: FactSearchFilters = {},
 ): Array<{ fact: Fact; distance: number }> {
-  // Search both language indexes: the query language is unknown, and
-  // multilingual models score same-language pairs far higher than
-  // cross-language pairs. Keep the best (smallest) distance per fact id.
-  //
-  // Overfetch well beyond `limit`: the scope filter below runs AFTER the
-  // vector lookup, and in a multi-project DB the global top-N is easily
-  // dominated by other projects' facts — fetching only limit*2 starves the
-  // requested scope of candidates entirely.
-  const candidateFetch = Math.max(limit * 2, 50);
-  // Int8 distances come back ×127-scaled, so normalize before merging.
-  const fetch = (table: FactVecTable) => {
+  if (limit <= 0) return [];
+
+  const fetch = (
+    table: FactVecTable,
+    count: number,
+  ): { rows: Array<{ id: string; distance: number }>; exhausted: boolean } => {
     try {
       const p = vecParamFor(db, table, embedding);
       const rows = db
@@ -256,127 +303,48 @@ export function searchSimilarFacts(
         ORDER BY distance
         LIMIT ?
       `)
-        .all(p.blob, candidateFetch) as Array<{ id: string; distance: number }>;
+        .all(p.blob, count) as Array<{ id: string; distance: number }>;
       for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
-      return rows;
-    } catch {
-      return [];
-    }
-  };
-
-  const best = new Map<string, number>();
-  for (const vr of [...fetch("vec_facts"), ...fetch("vec_facts_kr")]) {
-    const cur = best.get(vr.id);
-    if (cur === undefined || vr.distance < cur) best.set(vr.id, vr.distance);
-  }
-  const merged = [...best.entries()]
-    .map(([id, distance]) => ({ id, distance }))
-    .sort((a, b) => a.distance - b.distance);
-
-  const results: Array<{ fact: Fact; distance: number }> = [];
-  for (const vr of merged) {
-    // L2 distance -> cosine similarity approximation
-    const similarity = l2DistanceToSimilarity(vr.distance);
-    if (similarity < threshold) continue;
-
-    // embedding_version filter: during a model migration the vector tables
-    // can still hold old-model rows; comparing them against a current-model
-    // query embedding silently misranks. Skip until the worker upgrades them.
-    const row = db
-      .prepare(
-        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
-      )
-      .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
-    if (!row) continue;
-
-    const fact = rowToFact(row);
-    // Scope filter: same project or global only
-    if (
-      project &&
-      fact.scope_type === "project" &&
-      fact.scope_project !== project
-    )
-      continue;
-
-    results.push({ fact, distance: vr.distance });
-    if (results.length >= limit) break;
-  }
-
-  return results;
-}
-
-/**
- * Nearest active facts restricted to EXACTLY one scope — used by consolidation
- * so a project-private fact and a global fact can never be compared/merged
- * across the boundary (which would leak private text into global memory or let
- * one project mutate shared global facts). The scope filter is applied to the
- * FULL overfetched candidate list BEFORE truncation, so a same-scope match is
- * not starved out by closer out-of-scope rows (which the general
- * searchSimilarFacts truncates first).
- *
- * scope: { type:'global' } → global facts only.
- *        { type:'project', project } → that project's own facts only (no global).
- */
-export function searchSimilarFactsSameScope(
-  db: Database.Database,
-  embedding: number[],
-  scope: { type: "global" } | { type: "project"; project: string },
-  limit: number = 5,
-  threshold: number = 0.85,
-): Array<{ fact: Fact; distance: number }> {
-  const scopeProject = scope.type === "project" ? scope.project : null;
-
-  // Early out only if the scope is genuinely empty (nothing to match against).
-  const scopeCount =
-    scope.type === "global"
-      ? (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?",
-            )
-            .get(EMBEDDING_VERSION) as { n: number }
-        ).n
-      : (
-          db
-            .prepare(
-              "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?",
-            )
-            .get(scopeProject, EMBEDDING_VERSION) as { n: number }
-        ).n;
-  if (scopeCount === 0) return [];
-
-  // fetchN returns rows AND whether the index returned fewer than requested
-  // (i.e. it was exhausted). We page on the VECTOR-TABLE row count, not the
-  // active-fact count: the vec tables can hold stale/old-version rows that rank
-  // ahead of a valid in-scope row and are only rejected later by the
-  // embedding_version filter, so bounding by active facts could stop before
-  // reaching the match. `exhausted` is the correct, index-size-independent stop.
-  const fetchN = (
-    table: FactVecTable,
-    n: number,
-  ): { rows: Array<{ id: string; distance: number }>; exhausted: boolean } => {
-    try {
-      const p = vecParamFor(db, table, embedding);
-      const rows = db
-        .prepare(`
-        SELECT id, distance FROM ${table}
-        WHERE embedding MATCH ${p.sql} ORDER BY distance LIMIT ?
-      `)
-        .all(p.blob, n) as Array<{ id: string; distance: number }>;
-      // Normalize ×127-scaled int8 distances BEFORE the cross-table merge.
-      for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
-      return { rows, exhausted: rows.length < n };
+      return { rows, exhausted: rows.length < count };
     } catch {
       return { rows: [], exhausted: true };
     }
   };
 
-  const HARD_CAP = 100_000; // safety ceiling so a pathological index can't loop unbounded
-  let fetchCount = Math.max(limit * 20, 200);
+  const factCache = new Map<string, Fact | null>();
+  const loadFact = (id: string): Fact | null => {
+    if (factCache.has(id)) return factCache.get(id) ?? null;
+    const row = db
+      .prepare(
+        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
+      )
+      .get(id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
+    const fact = row ? rowToFact(row) : null;
+    factCache.set(id, fact);
+    return fact;
+  };
+
+  const vectorRowCount = (table: FactVecTable): number => {
+    try {
+      return (
+        db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          count: number;
+        }
+      ).count;
+    } catch {
+      return 0;
+    }
+  };
+  const maxVectorRows = Math.max(
+    vectorRowCount("vec_facts"),
+    vectorRowCount("vec_facts_kr"),
+  );
+
+  let fetchCount = Math.max(limit * 4, 50);
   let results: Array<{ fact: Fact; distance: number }> = [];
   for (;;) {
-    const a = fetchN("vec_facts", fetchCount);
-    const b = fetchN("vec_facts_kr", fetchCount);
+    const a = fetch("vec_facts", fetchCount);
+    const b = fetch("vec_facts_kr", fetchCount);
     const best = new Map<string, number>();
     for (const vr of [...a.rows, ...b.rows]) {
       const cur = best.get(vr.id);
@@ -389,34 +357,49 @@ export function searchSimilarFactsSameScope(
     results = [];
     for (const vr of merged) {
       const similarity = l2DistanceToSimilarity(vr.distance);
-      if (similarity < threshold) continue;
-      const row = db
-        .prepare(
-          "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
-        )
-        .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
-      if (!row) continue;
-      const fact = rowToFact(row);
-      if (scope.type === "global") {
-        if (fact.scope_type !== "global") continue;
-      } else if (
-        fact.scope_type !== "project" ||
-        fact.scope_project !== scopeProject
-      ) {
-        continue;
-      }
+      if (similarity < threshold) break;
+      const fact = loadFact(vr.id);
+      if (!fact || !factMatchesSearch(fact, scope, filters)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
     }
 
-    // Stop when we have enough, both indexes are exhausted, or we hit the cap.
-    const bothExhausted = a.exhausted && b.exhausted;
-    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP)
-      break;
-    fetchCount = Math.min(fetchCount * 4, HARD_CAP);
+    if (results.length >= limit || (a.exhausted && b.exhausted)) break;
+    const nextFetchCount = Math.min(fetchCount * 4, maxVectorRows + 1);
+    if (nextFetchCount <= fetchCount) break;
+    fetchCount = nextFetchCount;
   }
 
   return results;
+}
+
+/** @deprecated Use searchFactsByScope with an explicit project/global/all scope. */
+export function searchSimilarFacts(
+  db: Database.Database,
+  embedding: number[],
+  project: string | null,
+  limit: number = 5,
+  threshold: number = 0.85,
+): Array<{ fact: Fact; distance: number }> {
+  const scope: FactSearchScope = project
+    ? { type: "project", project }
+    : { type: "all" };
+  return searchFactsByScope(db, embedding, scope, limit, threshold);
+}
+
+/** @deprecated Use searchFactsByScope with global or exact-project scope. */
+export function searchSimilarFactsSameScope(
+  db: Database.Database,
+  embedding: number[],
+  scope: { type: "global" } | { type: "project"; project: string },
+  limit: number = 5,
+  threshold: number = 0.85,
+): Array<{ fact: Fact; distance: number }> {
+  const exactScope: FactSearchScope =
+    scope.type === "global"
+      ? scope
+      : { type: "exact-project", project: scope.project };
+  return searchFactsByScope(db, embedding, exactScope, limit, threshold);
 }
 
 /**
@@ -528,46 +511,14 @@ export function getPendingConsolidationFacts(
   ).map(rowToFact);
 }
 
-/**
- * Search facts across ALL projects (no scope filter).
- * Used for cross-project knowledge transfer.
- */
+/** @deprecated Use searchFactsByScope with all scope. */
 export function searchAllFacts(
   db: Database.Database,
   embedding: number[],
   limit: number = 10,
   threshold: number = 0.6,
 ): Array<{ fact: Fact; distance: number }> {
-  const pAll = vecParamFor(db, "vec_facts", embedding);
-  const vecResults = db
-    .prepare(`
-    SELECT id, distance
-    FROM vec_facts
-    WHERE embedding MATCH ${pAll.sql}
-    ORDER BY distance
-    LIMIT ?
-  `)
-    .all(pAll.blob, limit * 2) as Array<{ id: string; distance: number }>;
-  for (const r of vecResults)
-    r.distance = normalizeVecDistance(r.distance, pAll.dt);
-
-  const results: Array<{ fact: Fact; distance: number }> = [];
-  for (const vr of vecResults) {
-    const similarity = l2DistanceToSimilarity(vr.distance);
-    if (similarity < threshold) continue;
-
-    const row = db
-      .prepare(
-        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
-      )
-      .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
-    if (!row) continue;
-
-    results.push({ fact: rowToFact(row), distance: vr.distance });
-    if (results.length >= limit) break;
-  }
-
-  return results;
+  return searchFactsByScope(db, embedding, { type: "all" }, limit, threshold);
 }
 
 function rowToFact(row: Record<string, unknown>): Fact {
