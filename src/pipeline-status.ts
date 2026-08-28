@@ -183,12 +183,22 @@ export function getPipelineStatus(
         db,
         "SELECT COUNT(DISTINCT session_id) AS c FROM exchanges WHERE session_id IS NOT NULL AND is_sidechain = 0",
       );
-      // done = settled success rows (extracted >= 0).
+      // done = successful sessions whose watermark covers every current
+      // exchange. A successful marker with a newer resume suffix is pending,
+      // not simultaneously done (the same watermark contract as the worker).
       const done = count(
         db,
         `
-        SELECT COUNT(*) AS c FROM extraction_log
-        WHERE extracted >= 0`,
+        SELECT COUNT(*) AS c FROM (
+          SELECT DISTINCT e.session_id
+          FROM exchanges e
+          JOIN extraction_log l ON l.session_id = e.session_id
+          WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+            AND l.extracted >= 0
+            AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
+                 WHERE x.session_id = e.session_id)
+                <= l.last_exchange_rowid
+        )`,
       );
       const permanent = count(
         db,

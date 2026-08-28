@@ -123,7 +123,9 @@ memex status --json
 - `backfill all`: 각 backlog 단계를 순서대로 실행 — `extract`(durable fact 추출),
   `ontology`(fact 분류와 graph 구조 생성), `embeddings`(누락된 semantic vector 생성).
   단일 단계만 실행하려면 `memex backfill <extract|ontology|embeddings>` 사용
-- `status`: conversation/fact/graph readiness와 pending count 확인
+- `status`: conversation/fact/graph readiness와 pending count 확인. extraction `done`은
+  성공 marker의 watermark가 현재 session 끝까지 도달한 경우만 세며, 새 suffix가 생긴
+  session은 `pending`에만 포함
 
 `backfill`은 기본적으로 foreground로 실행되어 완료가 직접 관측되고, 첫 실패 단계에서
 멈춥니다(단계는 idempotent하므로 `memex backfill all`을 다시 실행해 이어갈 수

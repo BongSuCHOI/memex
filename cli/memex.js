@@ -427,6 +427,20 @@ async function main() {
       }
 
       case "status": {
+        if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
+          console.log(`Usage: memex status [--json]
+
+Show read-only conversation, fact, and graph pipeline readiness.
+
+Options:
+  --json  Print the same pipeline counters as JSON`);
+          break;
+        }
+        if (args.length > 1 || (args.length === 1 && args[0] !== "--json")) {
+          console.error("Usage: memex status [--json]");
+          process.exitCode = 1;
+          break;
+        }
         const { getPipelineStatus, formatPipelineStatus } = await import(
           join(distDir, "pipeline-status.js")
         );

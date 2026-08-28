@@ -178,6 +178,9 @@ archive, sync JSONL까지 모두 삭제한 경우 facts/revisions/recall receipt
   워커가 실제로 처리할 적격 세션만 계산하고, 정책상 제외된 세션(min-exchange gate,
   excluded project/LLM workdir)은 `excluded`로 별도 표시한다 — 상태 표시와 워커 선정 술어가
   같은 게이트(pendingExtractionCoreQuery의 minExchanges/excludeProjects)를 공유한다.
+  `done`은 성공 marker뿐 아니라 `last_exchange_rowid`가 현재 session의 최대 exchange
+  rowid를 덮을 때만 증가한다. 따라서 resume suffix가 추가된 session은 기존 성공 marker가
+  있어도 `done`에서 빠지고 `pending`에만 포함된다.
 
 로그가 없으면 hook 미실행과 no-match를 구분할 수 없습니다. `doctor`와 injection
 status를 함께 봅니다.

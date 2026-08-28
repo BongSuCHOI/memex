@@ -27,6 +27,11 @@ flowchart LR
     Pipeline --> PA[/api/pipeline-status]
 ```
 
+`/api/pipeline-status`의 extraction `done`과 `pending`은 겹치지 않습니다. `done`은 성공
+marker의 watermark가 현재 session 끝까지 도달한 경우이고, 이후 resume suffix가 생기면
+그 session은 `pending`으로만 이동합니다. `/pipeline`의 raw JSON과 readiness 판정은 이
+동일한 현재-watermark 의미를 사용합니다.
+
 ## 3. Knowledge Galaxy 데이터
 
 Galaxy는 live `/api/graph-data`를 사용합니다. 기본은 `scope=global`이며 project/all은

@@ -8,8 +8,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 const REPO = path.resolve(new URL(".", import.meta.url).pathname, "..");
+const CLI = path.join(REPO, "cli", "memex.js");
 
 async function seed(t, rows) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mb-cx04-"));
@@ -54,6 +56,26 @@ test("fresh data root reports EMPTY with all readiness flags false", async (t) =
     graphReady: false,
   });
   assert.ok(formatPipelineStatus(st).includes("EMPTY"));
+});
+
+test("status CLI documents its options and rejects unknown arguments", (t) => {
+  const memexHome = fs.mkdtempSync(path.join(os.tmpdir(), "memex-status-cli-"));
+  t.after(() => fs.rmSync(memexHome, { recursive: true, force: true }));
+  const env = { ...process.env, MEMEX_HOME: memexHome };
+
+  const help = spawnSync(process.execPath, [CLI, "status", "--help"], {
+    env,
+    encoding: "utf8",
+  });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Usage: memex status \[--json\]/);
+
+  const bad = spawnSync(process.execPath, [CLI, "status", "unexpected"], {
+    env,
+    encoding: "utf8",
+  });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /Usage: memex status \[--json\]/);
 });
 
 test("synced-but-unextracted: conversation-ready yes, fact/graph no", async (t) => {
@@ -106,6 +128,27 @@ test("extraction complete: fact-ready yes; ontology pending keeps graph no", asy
   assert.equal(st.extraction.pending, 0);
   assert.equal(st.embeddings.factVectorsPending, 1); // no vector yet -> fact-ready stays off
   assert.equal(st.ontology.pendingFacts, 1);
+  db.close();
+});
+
+test("settled marker with a newer exchange is pending, not done", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();
+  db.prepare(`INSERT INTO exchanges
+    (id, project, timestamp, user_message, assistant_message, session_id)
+    VALUES ('new-suffix', '/tmp/p', '2026-08-26T02:00:00Z', 'new q', 'new a', 's1')`).run();
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+
+  assert.equal(st.extraction.total, 1);
+  assert.equal(st.extraction.done, 0);
+  assert.equal(st.extraction.pending, 1);
+  assert.equal(st.extraction.done + st.extraction.pending, 1);
+  assert.match(formatPipelineStatus(st), /0 done, 1 pending/);
   db.close();
 });
 

@@ -681,7 +681,7 @@ node --test test/*slice.test.mjs
 - [x] 10. shared initialized Web UI DB factory
 - [x] 11. missing primary fact vector self-heal
 - [x] 12. precise source exchange attribution
-- [ ] 13. pipeline counter semantics
+- [x] 13. pipeline counter semantics
 
 ### Phase 2
 
