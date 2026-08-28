@@ -165,13 +165,42 @@ export { sessionsRoot as getSessionsRoot };
 export const LLM_WORKDIR_BASENAME = "memory-bank-llm";
 
 /**
+ * True for the reserved headless-worker working directory, in either shape it
+ * exists as: the plain basename (`…/memory-bank-llm`) or the mkdtemp form
+ * codex-exec.ts actually creates (`<tmpdir>/memory-bank-llm-XXXXXX` — six
+ * random suffix characters). Matched on the FINAL path segment only, so a
+ * mid-slug mention (`-Users-x-memory-bank-llm-docs`) never excludes a real
+ * project. Consumers: sync/indexer/verify exclusion (TS) and, through
+ * llmWorkdirCwdSql, the extraction gate SQL — keep the shapes identical.
+ */
+export function isLlmWorkdirPath(project: string): boolean {
+ const segments = project.split("/").filter(Boolean);
+ const last = segments[segments.length - 1];
+ if (!last) return false;
+ return (
+  last === LLM_WORKDIR_BASENAME || last.startsWith(`${LLM_WORKDIR_BASENAME}-`)
+ );
+}
+
+/**
+ * SQLite predicate equivalent of isLlmWorkdirPath for exchanges.cwd, shared by
+ * pendingExtractionCoreQuery and pipeline-status so the reserved workdir shape
+ * cannot drift between the selection and status consumers again. Returns a
+ * parenthesized clause; `column` defaults to the worker queries' alias.
+ */
+export function llmWorkdirCwdSql(column = "x.cwd"): string {
+ return `(${column} LIKE '%/${LLM_WORKDIR_BASENAME}' OR ${column} LIKE '%/${LLM_WORKDIR_BASENAME}-%')`;
+}
+
+/**
  * True if a canonical project must be skipped by indexing/sync.
  *
  * CX-02: `project` is the canonical absolute cwd. The user list is an
  * exact-match on that canonical path (a basename entry can no longer
  * accidentally exclude an unrelated same-named project). The built-in rule
- * still excludes the reserved LLM worker workdir, matched on the final path
- * segment so both `.../memory-bank-llm` and legacy slug forms stay covered.
+ * still excludes the reserved LLM worker workdir in both shapes (plain
+ * basename and the mkdtemp `memory-bank-llm-XXXXXX` suffix form — see
+ * isLlmWorkdirPath).
  */
 export function isExcludedProject(
  project: string,
@@ -179,9 +208,8 @@ export function isExcludedProject(
 ): boolean {
  const list = excluded ?? getExcludedProjects();
  if (list.includes(project)) return true;
- // Built-in: the plugin's own headless worker workdir basename.
- const segments = project.split("/").filter(Boolean);
- return segments[segments.length - 1] === LLM_WORKDIR_BASENAME;
+ // Built-in: the plugin's own headless worker workdir.
+ return isLlmWorkdirPath(project);
 }
 
 /**

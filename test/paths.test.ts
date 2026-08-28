@@ -236,6 +236,19 @@ describe("paths", () => {
       expect(isExcludedProject("memory-bank-llm", [])).toBe(true);
     });
 
+    it("should exclude the mkdtemp suffix form codex-exec actually creates", async () => {
+      const { isExcludedProject } = await import("../src/paths.js");
+      // fs.mkdtempSync(path.join(os.tmpdir(), "memory-bank-llm-")) appends six
+      // random characters — the reserved-name guard must cover that shape too.
+      expect(isExcludedProject("/tmp/memory-bank-llm-a1b2c3", [])).toBe(true);
+      expect(
+        isExcludedProject(
+          "/private/var/folders/ms/q41xyz/T/memory-bank-llm-9x8y7z",
+          [],
+        ),
+      ).toBe(true);
+    });
+
     it("should not exclude ordinary projects", async () => {
       const { isExcludedProject } = await import("../src/paths.js");
       expect(isExcludedProject("-Users-example-Project-codex-sync", [])).toBe(
@@ -251,6 +264,15 @@ describe("paths", () => {
       const { isExcludedProject } = await import("../src/paths.js");
       expect(isExcludedProject("-Users-x-memory-bank-llm-docs", [])).toBe(
         false,
+      );
+    });
+
+    it("should exclude a last segment in the reserved memory-bank-llm-* namespace", async () => {
+      const { isExcludedProject } = await import("../src/paths.js");
+      // Reserved prefix (mkdtemp form protection) — documented trade-off: any
+      // directory literally named memory-bank-llm-* is treated as reserved.
+      expect(isExcludedProject("/tmp/real/memory-bank-llm-docs", [])).toBe(
+        true,
       );
     });
 

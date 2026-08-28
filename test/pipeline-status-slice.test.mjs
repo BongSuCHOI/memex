@@ -143,7 +143,8 @@ test("gate-excluded sessions report as excluded, not pending (CX-04 status/worke
   // s1: 2 exchanges + settled marker (eligible, done)
   // s2: 1 exchange, no marker → excluded (below min-exchanges)
   // s3: 2 exchanges, no marker → eligible pending
-  // s4: 1 exchange in an LLM workdir cwd → excluded (project/workdir pollution)
+  // s4: 1 exchange in an LLM workdir cwd (plain basename) → excluded (project)
+  // s5: 1 exchange in the mkdtemp suffix workdir shape → excluded (project)
   const { db } = await seed(t, [
     { session: "s1" },
     { session: "s1" },
@@ -151,9 +152,13 @@ test("gate-excluded sessions report as excluded, not pending (CX-04 status/worke
     { session: "s3" },
     { session: "s3" },
     { session: "s4" },
+    { session: "s5" },
   ]);
   db.prepare(
     `UPDATE exchanges SET cwd = '/tmp/x/memory-bank-llm' WHERE session_id = 's4'`,
+  ).run();
+  db.prepare(
+    `UPDATE exchanges SET cwd = '/tmp/memory-bank-llm-a1b2c3' WHERE session_id = 's5'`,
   ).run();
   db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
     SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();
@@ -161,18 +166,18 @@ test("gate-excluded sessions report as excluded, not pending (CX-04 status/worke
     path.join(REPO, "dist/pipeline-status.js")
   );
   const st = getPipelineStatus();
-  assert.equal(st.extraction.total, 4);
+  assert.equal(st.extraction.total, 5);
   assert.equal(st.extraction.done, 1);
   assert.equal(st.extraction.pending, 1); // s3 only
-  assert.equal(st.extraction.excluded, 2); // s2 (below min) + s4 (workdir)
+  assert.equal(st.extraction.excluded, 3); // s2 (below min) + s4 + s5 (workdir)
   assert.equal(st.extraction.excludedBelowMin, 1);
-  assert.equal(st.extraction.excludedProject, 1);
+  assert.equal(st.extraction.excludedProject, 2);
   assert.equal(st.extraction.gateMinExchanges, 2);
   assert.equal(st.readiness.factReady, false);
   const text = formatPipelineStatus(st);
-  assert.ok(text.includes("2 excluded"), text);
+  assert.ok(text.includes("3 excluded"), text);
   assert.ok(text.includes("intentionally skipped"), text);
   assert.ok(text.includes("1 below min-exchanges"), text);
-  assert.ok(text.includes("1 excluded projects"), text);
+  assert.ok(text.includes("2 excluded projects"), text);
   db.close();
 });

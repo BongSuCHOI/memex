@@ -25,7 +25,10 @@ stateDiagram-v2
 
 - subagent/worker thread
 - tool-only 또는 빈 main conversation
-- Memex 자체 isolated model prompt/worker workdir
+- Memex 자체 isolated model prompt/worker workdir — 예약 basename `memory-bank-llm`과
+  `codex exec`가 실제 생성하는 mkdtemp 접미사 형태(`memory-bank-llm-XXXXXX`) 모두.
+  마지막 경로 세그먼트 기준이므로 basename이 중간에 포함된 slug(`-Users-x-memory-bank-llm-docs`)
+  은 실제 프로젝트로 유지되고, `memory-bank-llm-*`로 시작하는 세그먼트는 예약 네임스페이스로 제외된다
 - 사용자가 exact canonical path로 제외한 project
 
 malformed 한 줄은 해당 줄의 오류로 격리하며 전체 archive discovery를 중단하지 않습니다.

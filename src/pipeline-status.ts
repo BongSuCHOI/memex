@@ -10,7 +10,12 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
-import { getDbPath, getArchiveDir, getMemexHome } from "./paths.js";
+import {
+  getDbPath,
+  getArchiveDir,
+  getMemexHome,
+  llmWorkdirCwdSql,
+} from "./paths.js";
 import {
   EXTRACTION_STATE,
   freshClaimPredicate,
@@ -246,7 +251,9 @@ export function getPipelineStatus(
       // cwd pollution check) so pending means exactly "work the pipeline will
       // actually do" — excluded sessions stay visible under their own name.
       const exTerms: string[] = extractionGate.excludeProjects;
-      const pollutionClause = `x.cwd LIKE '%/memory-bank-llm'${
+      // llmWorkdirCwdSql keeps status's pollution shape identical to the
+      // worker's (pendingExtractionCoreQuery) — basename + mkdtemp suffix form.
+      const pollutionClause = `${llmWorkdirCwdSql("x.cwd")}${
         exTerms.length
           ? " OR " + exTerms.map(() => "x.cwd = ?").join(" OR ")
           : ""
