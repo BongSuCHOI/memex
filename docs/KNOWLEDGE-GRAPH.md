@@ -36,6 +36,12 @@ fact는 정확히 한 category에 속할 수 있고 category는 정확히 한 do
 않습니다. edit는 의미가 바뀔 수 있으므로 기존 category를 신뢰하지 않고 pending으로
 되돌립니다.
 
+category candidate 검색은 category 이름과 설명의 vector를 사용합니다. 각 category는
+`embedding_version`을 가지며 vector write와 version stamp가 한 transaction에서
+커밋됩니다. 현재 embedding generation과 다른 category 또는 vector row가 누락된
+category가 하나라도 있으면 KNN을 실행하지 않고 bounded self-heal/re-embed를 먼저
+수행합니다. 따라서 model 변경 중 서로 다른 vector space의 distance를 비교하지 않습니다.
+
 ## 4. traversal
 
 `explore_graph`는 query에서 seed fact를 찾고 1–3 hop 관계를 확장합니다.

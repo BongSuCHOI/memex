@@ -511,9 +511,22 @@ export function initDatabase(): Database.Database {
       domain_id TEXT NOT NULL REFERENCES ontology_domains(id),
       name TEXT NOT NULL,
       description TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      embedding_version INTEGER NOT NULL DEFAULT 0
     )
   `);
+  const ontologyCategoryColumns = new Set(
+    (
+      db.prepare("PRAGMA table_info(ontology_categories)").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name),
+  );
+  if (!ontologyCategoryColumns.has("embedding_version")) {
+    db.exec(
+      "ALTER TABLE ontology_categories ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0",
+    );
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (

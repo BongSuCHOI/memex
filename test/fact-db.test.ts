@@ -68,6 +68,35 @@ describe('Facts DB Schema', () => {
     expect(colNames).toContain('needs_consolidation');
   });
 
+  it('tracks the embedding generation for ontology categories', () => {
+    const columns = db.prepare("PRAGMA table_info(ontology_categories)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain('embedding_version');
+  });
+
+  it('migrates legacy ontology categories into the pending embedding generation', () => {
+    db.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      fs.rmSync(dbPath + suffix, { force: true });
+    }
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE ontology_categories (
+        id TEXT PRIMARY KEY,
+        domain_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO ontology_categories VALUES ('legacy-category', 'legacy-domain', 'Legacy', NULL, '2000-01-01');
+    `);
+    legacy.close();
+
+    db = initDatabase();
+    expect(db.prepare(
+      'SELECT id, embedding_version FROM ontology_categories WHERE id = ?',
+    ).get('legacy-category')).toEqual({ id: 'legacy-category', embedding_version: 0 });
+  });
+
   it('migrates existing facts into the local consolidation queue', () => {
     db.close();
     for (const suffix of ['', '-wal', '-shm']) {

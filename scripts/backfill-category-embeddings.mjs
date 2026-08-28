@@ -5,23 +5,22 @@
  * categories into the prompt). New categories are embedded on creation
  * (ontology-classifier.ts); this covers the rows that predate that index.
  *
- * Idempotent and resumable: only embeds categories missing a vec_categories row.
+ * Idempotent and resumable: embeds categories with a stale or missing vector.
  * Usage: node scripts/backfill-category-embeddings.mjs
  */
 import { initDatabase } from '../dist/db.js';
-import { initEmbeddings, generateEmbedding } from '../dist/embeddings.js';
+import { initEmbeddings, generateEmbedding, EMBEDDING_VERSION } from '../dist/embeddings.js';
 import { upsertCategoryEmbedding } from '../dist/ontology-db.js';
+import { buildCategoryReembedPending } from '../dist/reembed-selector.js';
 
 const db = initDatabase();
 try {
   await initEmbeddings();
-  let existing = new Set();
-  try { existing = new Set(db.prepare('SELECT id FROM vec_categories').all().map((r) => r.id)); }
-  catch { /* table scan unsupported → treat all as missing */ }
-
-  const cats = db.prepare('SELECT id, name, description FROM ontology_categories')
-    .all().filter((c) => !existing.has(c.id));
-  console.log(`category embeddings: ${cats.length} to build (${existing.size} already indexed)`);
+  const { clause, params } = buildCategoryReembedPending(EMBEDDING_VERSION);
+  const cats = db.prepare(
+    `SELECT c.id, c.name, c.description FROM ontology_categories c WHERE ${clause}`,
+  ).all(...params);
+  console.log(`category embeddings: ${cats.length} to build`);
 
   let done = 0;
   for (const c of cats) {

@@ -4,10 +4,11 @@
  * Resumable re-embedding worker (detached background job).
  *
  * Upgrades stored vectors to the current embedding model (EMBEDDING_VERSION):
- *   1. facts:     rows with embedding_version != current → re-embed `fact`
+ *   1. categories: rows with stale/missing vec_categories → re-embed and stamp version.
+ *   2. facts:     rows with stale/missing vec_facts → re-embed `fact`
  *                 (facts.embedding + vec_facts), set version.
- *   2. facts KR:  rows with fact_kr but no vec_facts_kr row → embed fact_kr.
- *   3. exchanges: rows with embedding_version != current, OR rows whose
+ *   3. facts KR:  rows with fact_kr but no vec_facts_kr row → embed fact_kr.
+ *   4. exchanges: rows with embedding_version != current, OR rows whose
  *      vec_exchanges row is MISSING despite a current version stamp
  *      (stamp-vector mismatch self-heal) → re-embed
  *                 (exchanges.embedding + vec_exchanges), newest first.
@@ -24,7 +25,12 @@ import path from 'node:path';
 import { initDatabase, getVecDtype, getVecTableDtype, embeddingToVecBlob, vecParamSql } from '../dist/db.js';
 import { generateEmbedding, generateExchangeEmbedding, initEmbeddings, EMBEDDING_VERSION, EMBEDDING_MODEL } from '../dist/embeddings.js';
 import { getIndexDir } from '../dist/paths.js';
-import { buildReembedPending } from '../dist/reembed-selector.js';
+import { upsertCategoryEmbedding } from '../dist/ontology-db.js';
+import {
+  buildCategoryReembedPending,
+  buildFactReembedPending,
+  buildReembedPending,
+} from '../dist/reembed-selector.js';
 
 const FACTS_ONLY = process.argv.includes('--facts-only');
 const maxExArg = process.argv.indexOf('--max-exchanges');
@@ -82,10 +88,29 @@ function releaseLock() {
   } catch { /* ignore */ }
 }
 
-async function reembedFacts(db) {
+async function reembedCategories(db) {
+  const { clause, params } = buildCategoryReembedPending(EMBEDDING_VERSION);
   const pending = db.prepare(
-    'SELECT id, fact, fact_kr FROM facts WHERE is_active = 1 AND embedding_version != ?'
-  ).all(EMBEDDING_VERSION);
+    `SELECT c.id, c.name, c.description FROM ontology_categories c WHERE ${clause}`,
+  ).all(...params);
+  if (pending.length) log(`categories: ${pending.length} rows to re-embed`);
+
+  let done = 0;
+  for (const row of pending) {
+    const text = row.description ? `${row.name}: ${row.description}` : row.name;
+    const embedding = await generateEmbedding(text, 'passage');
+    upsertCategoryEmbedding(db, row.id, embedding);
+    if (++done % 200 === 0) log(`categories: ${done}/${pending.length}`);
+  }
+  if (pending.length) log(`categories: done (${done})`);
+  return done;
+}
+
+async function reembedFacts(db) {
+  const { clause, params } = buildFactReembedPending(EMBEDDING_VERSION);
+  const pending = db.prepare(
+    `SELECT f.id, f.fact, f.fact_kr FROM facts f WHERE ${clause}`,
+  ).all(...params);
   if (pending.length) log(`facts: ${pending.length} rows to re-embed`);
 
   let done = 0;
@@ -221,6 +246,7 @@ async function main() {
   try {
     await initEmbeddings();
     db = initDatabase();
+    await reembedCategories(db);
     await reembedFacts(db);
     await embedKoreanFacts(db);
     if (!FACTS_ONLY) await reembedExchanges(db);

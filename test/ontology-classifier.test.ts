@@ -36,6 +36,7 @@ import {
   getRelationsForFact,
   getRelatedFacts,
   createRelation,
+  searchSimilarCategories,
   upsertCategoryEmbedding,
 } from '../src/ontology-db.js';
 import type { Fact } from '../src/types.js';
@@ -85,7 +86,8 @@ function initTestSchema(db: Database.Database) {
       domain_id TEXT NOT NULL,
       name TEXT NOT NULL COLLATE NOCASE,
       description TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      embedding_version INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,
@@ -810,6 +812,51 @@ describe('ontology-classifier', () => {
       } finally {
         delete process.env.MEMORY_BANK_ONTOLOGY_DET_GATE;
       }
+    });
+  });
+
+  describe('category vector generation', () => {
+    it('stamps the current embedding version with the vector write', () => {
+      const domain = createDomain(db, 'Frontend', 'FE');
+      const category = createCategory(db, domain.id, 'TypeScript', 'TS');
+
+      upsertCategoryEmbedding(db, category.id, new Array(384).fill(0.2));
+
+      expect(db.prepare('SELECT embedding_version FROM ontology_categories WHERE id = ?').get(category.id)).toEqual({
+        embedding_version: 2,
+      });
+    });
+
+    it('does not compare a query against stale-generation category vectors', () => {
+      const domain = createDomain(db, 'Frontend', 'FE');
+      const category = createCategory(db, domain.id, 'Legacy', 'old model');
+      upsertCategoryEmbedding(db, category.id, new Array(384).fill(0.2));
+      db.prepare('UPDATE ontology_categories SET embedding_version = 1 WHERE id = ?').run(category.id);
+
+      expect(searchSimilarCategories(db, new Array(384).fill(0.2))).toEqual([]);
+    });
+
+    it('self-heals stale-generation categories before candidate retrieval', async () => {
+      const embeddingArr = new Array(384).fill(0.1);
+      insertTestFact(db, 'generation-0', 'Generation test', embeddingArr);
+      const domain = createDomain(db, 'Existing', 'e');
+      const category = createCategory(db, domain.id, 'Legacy Category', 'old vector');
+      upsertCategoryEmbedding(db, category.id, new Array(384).fill(0.9));
+      db.prepare('UPDATE ontology_categories SET embedding_version = 1 WHERE id = ?').run(category.id);
+
+      (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([
+        { index: 0, domain: 'Existing', category: 'Legacy Category', is_new_domain: false, is_new_category: false },
+      ]);
+      (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('[]');
+
+      const result = await classifyFactsBatch(db, [
+        makeFact({ id: 'generation-0', fact: 'Generation test', embedding: new Float32Array(embeddingArr) }),
+      ]);
+
+      expect(result.classified).toEqual(['generation-0']);
+      expect(db.prepare('SELECT embedding_version FROM ontology_categories WHERE id = ?').get(category.id)).toEqual({
+        embedding_version: 2,
+      });
     });
   });
 

@@ -9,6 +9,7 @@ import type {
   DomainTree,
   Fact,
 } from './types.js';
+import { EMBEDDING_VERSION } from './embeddings.js';
 
 // === Domain CRUD ===
 
@@ -56,7 +57,7 @@ export function createCategory(
   db.prepare(
     `INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)`,
   ).run(id, domainId, name, description ?? null, now);
-  return { id, domain_id: domainId, name, description: description ?? null, created_at: now };
+  return { id, domain_id: domainId, name, description: description ?? null, created_at: now, embedding_version: 0 };
 }
 
 export function listCategories(
@@ -109,13 +110,20 @@ export function upsertCategoryEmbedding(
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM vec_categories WHERE id = ?').run(categoryId);
     db.prepare(`INSERT INTO vec_categories (id, embedding) VALUES (?, ${vecParamSql(dt)})`).run(categoryId, buf);
+    const updated = db.prepare('UPDATE ontology_categories SET embedding_version = ? WHERE id = ?')
+      .run(EMBEDDING_VERSION, categoryId);
+    if (updated.changes !== 1) throw new Error(`ontology category not found: ${categoryId}`);
   });
   tx();
 }
 
 export function deleteCategoryEmbedding(db: Database.Database, categoryId: string): void {
   try {
-    db.prepare('DELETE FROM vec_categories WHERE id = ?').run(categoryId);
+    const tx = db.transaction(() => {
+      db.prepare('DELETE FROM vec_categories WHERE id = ?').run(categoryId);
+      db.prepare('UPDATE ontology_categories SET embedding_version = 0 WHERE id = ?').run(categoryId);
+    });
+    tx();
   } catch { /* table may not exist on very old DBs */ }
 }
 
@@ -132,6 +140,21 @@ export function searchSimilarCategories(
 ): Array<{ category: OntologyCategory; domainName: string; distance: number }> {
   let hits: Array<{ id: string; distance: number }>;
   try {
+    const generationGap = db.prepare(`
+      SELECT 1
+      FROM ontology_categories c
+      LEFT JOIN vec_categories_rowids v ON v.id = c.id
+      WHERE c.embedding_version != ? OR v.id IS NULL
+      LIMIT 1
+    `).get(EMBEDDING_VERSION);
+    const staleVector = db.prepare(`
+      SELECT 1
+      FROM vec_categories_rowids v
+      LEFT JOIN ontology_categories c ON c.id = v.id
+      WHERE c.id IS NULL
+      LIMIT 1
+    `).get();
+    if (generationGap || staleVector) return [];
     const dt = getVecTableDtype(db, 'vec_categories');
     hits = db.prepare(`
       SELECT id, distance FROM vec_categories

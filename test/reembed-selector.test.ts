@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { buildReembedPending } from '../src/reembed-selector.js';
+import {
+  buildCategoryReembedPending,
+  buildFactReembedPending,
+  buildReembedPending,
+} from '../src/reembed-selector.js';
 
 // A tiny real vec0-backed DB so the NOT EXISTS set-diff against the vec0 shadow
 // `_rowids` table is exercised for real (not mocked) — that shadow table is the
@@ -71,5 +75,54 @@ describe('buildReembedPending', () => {
     const { clause, params } = buildReembedPending(3, []);
     const ids = (db.prepare(`SELECT e.id FROM exchanges e WHERE ${clause}`).all(...params) as Array<{ id: string }>).map((r) => r.id);
     expect(ids).toEqual(['novec']);
+  });
+});
+
+describe('vector generation pending selectors', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE facts (
+        id TEXT PRIMARY KEY,
+        is_active INTEGER NOT NULL,
+        embedding_version INTEGER NOT NULL
+      );
+      CREATE TABLE vec_facts_rowids (id TEXT PRIMARY KEY);
+      CREATE TABLE ontology_categories (
+        id TEXT PRIMARY KEY,
+        embedding_version INTEGER NOT NULL
+      );
+      CREATE TABLE vec_categories_rowids (id TEXT PRIMARY KEY);
+    `);
+  });
+
+  afterEach(() => db.close());
+
+  it('selects current-version active facts whose primary vector is missing', () => {
+    db.exec(`
+      INSERT INTO facts VALUES ('healthy', 1, 3), ('missing', 1, 3), ('stale', 1, 2), ('inactive', 0, 2);
+      INSERT INTO vec_facts_rowids VALUES ('healthy'), ('stale');
+    `);
+    const { clause, params } = buildFactReembedPending(3);
+
+    expect(db.prepare(`SELECT f.id FROM facts f WHERE ${clause} ORDER BY f.id`).all(...params)).toEqual([
+      { id: 'missing' },
+      { id: 'stale' },
+    ]);
+  });
+
+  it('selects stale or missing category vectors after an embedding version change', () => {
+    db.exec(`
+      INSERT INTO ontology_categories VALUES ('healthy', 3), ('missing', 3), ('stale', 2);
+      INSERT INTO vec_categories_rowids VALUES ('healthy'), ('stale');
+    `);
+    const { clause, params } = buildCategoryReembedPending(3);
+
+    expect(db.prepare(`SELECT c.id FROM ontology_categories c WHERE ${clause} ORDER BY c.id`).all(...params)).toEqual([
+      { id: 'missing' },
+      { id: 'stale' },
+    ]);
   });
 });

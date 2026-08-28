@@ -18,7 +18,11 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
-import { buildReembedPending } from '../dist/reembed-selector.js';
+import {
+  buildCategoryReembedPending,
+  buildFactReembedPending,
+  buildReembedPending,
+} from '../dist/reembed-selector.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -63,20 +67,24 @@ async function main() {
       }
     };
 
-    // 2. Auto-resume vector upgrades: stale-version embeddings, Korean-vector
-    // gaps, and missing exchange vectors (single source: buildReembedPending).
+    // 2. Auto-resume vector upgrades: stale/missing category, fact, Korean,
+    // and exchange vectors (selectors are the shared generation contract).
     try {
       const { EMBEDDING_VERSION } = await import('../dist/embeddings.js');
+      const { clause: factClause, params: factParams } = buildFactReembedPending(EMBEDDING_VERSION);
       const pendingFact = db.prepare(`
-        SELECT 1 FROM facts f WHERE f.is_active = 1 AND (
-          f.embedding_version != ?
-          OR (f.fact_kr IS NOT NULL AND f.fact_kr != ''
+        SELECT 1 FROM facts f WHERE (${factClause})
+          OR (f.is_active = 1 AND f.fact_kr IS NOT NULL AND f.fact_kr != ''
               AND NOT EXISTS (SELECT 1 FROM vec_facts_kr_rowids v WHERE v.id = f.id))
-        ) LIMIT 1
-      `).get(EMBEDDING_VERSION);
+        LIMIT 1
+      `).get(...factParams);
+      const { clause: categoryClause, params: categoryParams } = buildCategoryReembedPending(EMBEDDING_VERSION);
+      const pendingCategory = db.prepare(
+        `SELECT 1 FROM ontology_categories c WHERE ${categoryClause} LIMIT 1`,
+      ).get(...categoryParams);
       const { clause, params } = buildReembedPending(EMBEDDING_VERSION);
       const pendingEx = db.prepare(`SELECT 1 FROM exchanges e WHERE ${clause} LIMIT 1`).get(...params);
-      if (pendingFact || pendingEx) spawnDetached('reembed-worker.js');
+      if (pendingCategory || pendingFact || pendingEx) spawnDetached('reembed-worker.js');
     } catch {
       // Non-fatal: re-embedding resumes on a later session
     }

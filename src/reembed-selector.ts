@@ -39,3 +39,29 @@ export function buildReembedPending(
   for (const p of prefixes) params.push(p.length, p);
   return { clause, params };
 }
+
+/** Select active facts whose primary vector is stale or missing. */
+export function buildFactReembedPending(
+  currentEmbeddingVersion: number,
+): { clause: string; params: number[] } {
+  return {
+    clause: `f.is_active = 1 AND (
+      f.embedding_version != ?
+      OR NOT EXISTS (SELECT 1 FROM vec_facts_rowids v WHERE v.id = f.id)
+    )`,
+    params: [currentEmbeddingVersion],
+  };
+}
+
+/** Select ontology categories whose vector is stale or missing. */
+export function buildCategoryReembedPending(
+  currentEmbeddingVersion: number,
+): { clause: string; params: number[] } {
+  return {
+    clause: `(
+      c.embedding_version != ?
+      OR NOT EXISTS (SELECT 1 FROM vec_categories_rowids v WHERE v.id = c.id)
+    )`,
+    params: [currentEmbeddingVersion],
+  };
+}

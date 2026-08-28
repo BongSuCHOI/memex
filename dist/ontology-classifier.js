@@ -1,6 +1,6 @@
 import { l2DistanceToSimilarity } from './db.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
-import { generateEmbedding } from './embeddings.js';
+import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
 import { searchSimilarFacts } from './fact-db.js';
 import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelation, searchSimilarCategories, upsertCategoryEmbedding, } from './ontology-db.js';
 // Nearest existing categories presented per fact as reuse candidates —
@@ -139,8 +139,9 @@ function categoryEmbeddingText(name, description) {
     return description ? `${name}: ${description}` : name;
 }
 /**
- * Bounded self-repair of the category vec index: embed categories that lack
- * a vec_categories row (created while the embedding runtime was down —
+ * Bounded self-repair of the category vec index: embed categories whose
+ * vec_categories row is missing or belongs to an older embedding generation
+ * (created while the embedding runtime was down or before a model upgrade —
  * applyClassification logs-and-continues on index failure). Without this,
  * the starvation guard below would dead-lock all future classification
  * behind a manual backfill-category-embeddings run. Local embeddings only,
@@ -157,16 +158,19 @@ async function healCategoryIndex(db, limit = 100) {
         const live = db.prepare('SELECT COUNT(*) AS n FROM ontology_categories').get().n;
         return { added: 0, purged: 0, missingRemaining: live, staleRemaining: 0, blocked: 'scan' };
     }
-    const liveRows = db.prepare('SELECT id, name, description FROM ontology_categories').all();
-    const liveIds = new Set(liveRows.map((r) => r.id));
-    // Purge STALE vec rows (ids whose category was deleted): they are derived
+    const liveRows = db.prepare('SELECT id, name, description, embedding_version FROM ontology_categories').all();
+    const liveById = new Map(liveRows.map((row) => [row.id, row]));
+    // Purge STALE vec rows (deleted category or old embedding generation): they are derived
     // index residue, and enough of them near a query crowd every live
     // candidate out of the LIMIT-k window — adding the missing row alone
     // cannot fix retrieval. Bounded like the add side; the REMAINDER is
     // reported so the caller keeps refusing until the residue is gone (a
     // partial purge can still dilute top-k with stale hits that the search
     // filters into missing candidate slots).
-    const staleAll = [...indexed].filter((id) => !liveIds.has(id));
+    const staleAll = [...indexed].filter((id) => {
+        const category = liveById.get(id);
+        return !category || category.embedding_version !== EMBEDDING_VERSION;
+    });
     let purged = 0;
     let blocked = null;
     for (const id of staleAll) {
@@ -181,7 +185,7 @@ async function healCategoryIndex(db, limit = 100) {
         if (purged >= limit)
             break;
     }
-    const missingAll = liveRows.filter((c) => !indexed.has(c.id));
+    const missingAll = liveRows.filter((category) => !indexed.has(category.id) || category.embedding_version !== EMBEDDING_VERSION);
     const missing = missingAll.slice(0, limit);
     let added = 0;
     for (const c of missing) {
@@ -282,9 +286,10 @@ async function categoryHits(db, fact, k) {
         let needHeal = false;
         try {
             const vecIds = new Set(db.prepare('SELECT id FROM vec_categories').all().map((r) => r.id));
-            const liveIds = db.prepare('SELECT id FROM ontology_categories').all().map((r) => r.id);
+            const liveRows = db.prepare('SELECT id, embedding_version FROM ontology_categories').all();
+            const liveIds = liveRows.map((r) => r.id);
             const liveSet = new Set(liveIds);
-            const missingExists = liveIds.some((id) => !vecIds.has(id));
+            const missingExists = liveRows.some((category) => !vecIds.has(category.id) || category.embedding_version !== EMBEDDING_VERSION);
             let staleExists = false;
             for (const id of vecIds) {
                 if (!liveSet.has(id)) {

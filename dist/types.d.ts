@@ -98,6 +98,7 @@ export interface OntologyCategory {
     name: string;
     description: string | null;
     created_at: string;
+    embedding_version: number;
 }
 export type RelationType = 'INFLUENCES' | 'SUPERSEDES' | 'SUPPORTS' | 'CONTRADICTS';
 export interface OntologyRelation {

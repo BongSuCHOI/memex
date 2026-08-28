@@ -26,3 +26,13 @@ export declare function buildReembedPending(currentEmbeddingVersion: number, pre
     clause: string;
     params: Array<number | string>;
 };
+/** Select active facts whose primary vector is stale or missing. */
+export declare function buildFactReembedPending(currentEmbeddingVersion: number): {
+    clause: string;
+    params: number[];
+};
+/** Select ontology categories whose vector is stale or missing. */
+export declare function buildCategoryReembedPending(currentEmbeddingVersion: number): {
+    clause: string;
+    params: number[];
+};

@@ -201,7 +201,8 @@ CREATE TABLE ontology_categories (
   domain_id TEXT NOT NULL REFERENCES ontology_domains(id),
   name TEXT NOT NULL,
   description TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  embedding_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE ontology_relations (
@@ -229,7 +230,11 @@ sqlite-vec의 384차원 int8 테이블:
 - `vec_facts_kr`
 - `vec_categories`
 
-`embedding_version`은 다른 모델/양자화 공간의 vector 비교를 막습니다. fact edit는
+`embedding_version`은 exchange, fact, ontology category가 어느 embedding generation에
+속하는지 기록해 다른 모델/양자화 공간의 vector 비교를 막습니다. category vector
+write와 version stamp는 한 transaction이며, 검색은 taxonomy 전체가 현재 generation으로
+정합한 경우에만 KNN을 실행합니다. SessionStart maintenance는 stale 또는 missing
+`vec_categories`와 `vec_facts`를 같은 re-embed worker로 복구합니다. fact edit는
 text/vector를 transaction으로 교체하고 ontology classification을 pending으로
 되돌립니다. Korean vector를 분리해 같은 언어 retrieval을 보강합니다.
 
