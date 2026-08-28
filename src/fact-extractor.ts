@@ -1,15 +1,20 @@
-import Database from 'better-sqlite3';
-import type { ExtractedFact } from './types.js';
-import { callMemoryModel, parseJsonResponse } from './llm.js';
-import { classifyLlmError, LlmCallError } from './llm-error-class.js';
-import { insertFact } from './fact-db.js';
-import { generateEmbedding, initEmbeddings } from './embeddings.js';
-import { classifyAndLinkFact } from './ontology-classifier.js';
-import { randomUUID } from 'node:crypto';
+import Database from "better-sqlite3";
+import type { ExtractedFact } from "./types.js";
+import { callMemoryModel, parseJsonResponse } from "./llm.js";
+import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
+import { insertFact } from "./fact-db.js";
+import { generateEmbedding, initEmbeddings } from "./embeddings.js";
+import { classifyAndLinkFact } from "./ontology-classifier.js";
+import { randomUUID } from "node:crypto";
 import {
-  claimSessionSql, renewClaimSql, failureMarkerUpsertSql, freshClaimPredicate,
-  getExtractionConfig, EXTRACTION_STATE, MAX_INTERNAL_RETRIES,
-} from './pending-extraction.js';
+  claimSessionSql,
+  renewClaimSql,
+  failureMarkerUpsertSql,
+  freshClaimPredicate,
+  getExtractionConfig,
+  EXTRACTION_STATE,
+  MAX_INTERNAL_RETRIES,
+} from "./pending-extraction.js";
 
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
@@ -62,7 +67,10 @@ export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-te
 /** 선점(claim)을 잃어 작업을 중단할 때 던진다. 호출자는 이것을 실패가 아니라
  *  "다른 러너가 이 세션을 가져갔다"로 읽어야 한다 — 예산을 소모하지 않는다. */
 export class ClaimLostError extends Error {
-  constructor(message: string) { super(message); this.name = 'ClaimLostError'; }
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaimLostError";
+  }
 }
 
 const BATCH_SIZE = 5; // configurable-ok
@@ -71,7 +79,8 @@ const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
 const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call budget
 
 /** Trivial acknowledgements (EN/KR) that carry no extractable signal. */
-const TRIVIAL_USER_PATTERN = /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|great|done|go|proceed|continue|응|넵?|네|예|아니오?|ㅇㅇ|ㅇㅋ|ㄱㄱ|좋아요?|그래|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?)[.!~\s]*$/i;
+const TRIVIAL_USER_PATTERN =
+  /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|great|done|go|proceed|continue|응|넵?|네|예|아니오?|ㅇㅇ|ㅇㅋ|ㄱㄱ|좋아요?|그래|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?)[.!~\s]*$/i;
 
 /**
  * Whether an exchange is worth sending to the extraction LLM.
@@ -83,21 +92,23 @@ export function isSubstantiveExchange(
   assistantMessage: string,
   hasLearnableToolEvidence = false,
 ): boolean {
-  const user = (userMessage ?? '').trim();
-  const assistant = (assistantMessage ?? '').trim();
+  const user = (userMessage ?? "").trim();
+  const assistant = (assistantMessage ?? "").trim();
 
   if (!user) return false;
   // Harness/system artifacts injected as user turns, not human input
   if (
-    user.startsWith('<local-command-stdout>') ||
-    user.startsWith('<local-command-caveat>') ||
-    user.startsWith('<command-name>') ||
-    user.startsWith('Caveat:')
-  ) return false;
+    user.startsWith("<local-command-stdout>") ||
+    user.startsWith("<local-command-caveat>") ||
+    user.startsWith("<command-name>") ||
+    user.startsWith("Caveat:")
+  )
+    return false;
   // Bare slash commands like /clear, /model, /codex:review
   if (/^\/[\w:-]+$/.test(user)) return false;
   // Trivial acknowledgement with no substantive reply
-  if (TRIVIAL_USER_PATTERN.test(user) && !hasLearnableToolEvidence) return false;
+  if (TRIVIAL_USER_PATTERN.test(user) && !hasLearnableToolEvidence)
+    return false;
   // Near-empty prompt with a near-empty answer
   if (user.length < 5 && !hasLearnableToolEvidence) return false;
   return true;
@@ -105,7 +116,11 @@ export function isSubstantiveExchange(
 
 /** Normalize fact text for cross-batch duplicate detection within a session. */
 export function normalizeFactText(fact: string): string {
-  return fact.toLowerCase().replace(/\s+/g, ' ').replace(/[.!。]+$/g, '').trim();
+  return fact
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.!。]+$/g, "")
+    .trim();
 }
 
 /**
@@ -114,9 +129,11 @@ export function normalizeFactText(fact: string): string {
  * facts from malformed LLM output.
  */
 export function passesConfidenceGate(confidence: unknown): boolean {
-  return typeof confidence === 'number'
-    && !Number.isNaN(confidence)
-    && confidence >= CONFIDENCE_THRESHOLD;
+  return (
+    typeof confidence === "number" &&
+    !Number.isNaN(confidence) &&
+    confidence >= CONFIDENCE_THRESHOLD
+  );
 }
 
 /**
@@ -141,7 +158,7 @@ export function selectSpreadBatches<T>(batches: T[], maxBatches: number): T[] {
 }
 
 function maxLlmCallsPerSession(): number {
-  const parsed = parseInt(process.env.MEMORY_BANK_MAX_EXTRACT_CALLS || '', 10);
+  const parsed = parseInt(process.env.MEMORY_BANK_MAX_EXTRACT_CALLS || "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
 }
 
@@ -160,7 +177,9 @@ function isExcludedProject(project: string | null | undefined): boolean {
   // A raw prefix such as '/…/memory-bank' can swallow a distinct sibling project,
   // 영구 0/0 마커를 받고 fact 가 영원히 추출되지 않았다(실측: 적격 8세션 전건 손실).
   // pending SQL 필터는 exact 매칭이라 선정은 되고 여기서만 걸러져 무음이었다.
-  return EXCLUDE_PROJECTS.some((p) => project === p || project.startsWith(`${p}/`));
+  return EXCLUDE_PROJECTS.some(
+    (p) => project === p || project.startsWith(`${p}/`),
+  );
 }
 
 export function buildExtractionPrompt(
@@ -177,17 +196,25 @@ export function buildExtractionPrompt(
     }>;
   }>,
 ): string {
-  return exchanges.map((ex, i) => {
-    const userSnippet = ex.user_message.slice(0, 1000);
-    const trustedTools = (ex.tool_evidence ?? [])
-      .filter((tool) => tool.learnable === 1 || tool.learnable === true)
-      .filter((tool) => tool.source_type !== 'memex_recall' && tool.tool_result)
-      .map((tool) => `${tool.source_type}/${tool.tool_name}: ${String(tool.tool_result).slice(0, 1000)}`);
-    const toolBlock = trustedTools.length > 0
-      ? `\nTrusted tool evidence:\n${trustedTools.join('\n')}`
-      : '';
-    return `### Exchange ${i + 1}\nHuman assertion: ${userSnippet}${toolBlock}\nAssistant: [assistant synthesis excluded from learnable evidence]`;
-  }).join('\n\n');
+  return exchanges
+    .map((ex, i) => {
+      const userSnippet = ex.user_message.slice(0, 1000);
+      const trustedTools = (ex.tool_evidence ?? [])
+        .filter((tool) => tool.learnable === 1 || tool.learnable === true)
+        .filter(
+          (tool) => tool.source_type !== "memex_recall" && tool.tool_result,
+        )
+        .map(
+          (tool) =>
+            `${tool.source_type}/${tool.tool_name}: ${String(tool.tool_result).slice(0, 1000)}`,
+        );
+      const toolBlock =
+        trustedTools.length > 0
+          ? `\nTrusted tool evidence:\n${trustedTools.join("\n")}`
+          : "";
+      return `### Exchange ${i + 1}\nHuman assertion: ${userSnippet}${toolBlock}\nAssistant: [assistant synthesis excluded from learnable evidence]`;
+    })
+    .join("\n\n");
 }
 
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
@@ -198,13 +225,19 @@ export async function extractFactsFromExchanges(
   renewLease?: () => void,
   options?: { onlyAfterRowid?: number },
 ): Promise<ExtractedFact[]> {
-  const exchanges = db.prepare(`
+  const exchanges = db
+    .prepare(`
     SELECT id, user_message, assistant_message, assistant_learnable, has_memex_recall
     FROM exchanges
     WHERE session_id = ?
-      ${options?.onlyAfterRowid != null ? 'AND rowid > ?' : ''}
+      ${options?.onlyAfterRowid != null ? "AND rowid > ?" : ""}
     ORDER BY timestamp ASC
-  `).all(...(options?.onlyAfterRowid != null ? [sessionId, options.onlyAfterRowid] : [sessionId])) as Array<{
+  `)
+    .all(
+      ...(options?.onlyAfterRowid != null
+        ? [sessionId, options.onlyAfterRowid]
+        : [sessionId]),
+    ) as Array<{
     id: string;
     user_message: string;
     assistant_message: string;
@@ -223,14 +256,18 @@ export async function extractFactsFromExchanges(
     FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp, id
   `);
   for (const exchange of exchanges) {
-    exchange.tool_evidence = selectToolEvidence.all(exchange.id) as typeof exchange.tool_evidence;
+    exchange.tool_evidence = selectToolEvidence.all(
+      exchange.id,
+    ) as typeof exchange.tool_evidence;
   }
 
-  const substantive = exchanges.filter(
-    ex => isSubstantiveExchange(
+  const substantive = exchanges.filter((ex) =>
+    isSubstantiveExchange(
       ex.user_message,
-      '',
-      ex.tool_evidence?.some((tool) => tool.learnable === 1 && !!tool.tool_result) ?? false,
+      "",
+      ex.tool_evidence?.some(
+        (tool) => tool.learnable === 1 && !!tool.tool_result,
+      ) ?? false,
     ),
   );
   if (substantive.length === 0) return [];
@@ -258,7 +295,8 @@ export async function extractFactsFromExchanges(
 
       if (extracted && Array.isArray(extracted)) {
         for (const fact of extracted) {
-          if (typeof fact?.fact !== 'string' || fact.fact.trim() === '') continue;
+          if (typeof fact?.fact !== "string" || fact.fact.trim() === "")
+            continue;
           if (!passesConfidenceGate(fact.confidence)) continue;
           if (allFacts.length >= MAX_FACTS_PER_SESSION) break;
 
@@ -282,16 +320,22 @@ export async function extractFactsFromExchanges(
       // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
       //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
       const cls = classifyLlmError(error);
-      if (cls === 'deterministic') {
+      if (cls === "deterministic") {
         // 요청 자체가 잘못됨(400/413/max_tokens): 같은 입력은 같은 결과이므로 이
         // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
         // 단 폐기를 **기록**한다(dead-letter): 조용히 버리면 그 교환들의 fact 가
         // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
         if (stats) stats.droppedBatches += 1;
-        console.error(`Batch ${b} extraction failed (deterministic — batch dropped, recorded):`, error);
+        console.error(
+          `Batch ${b} extraction failed (deterministic — batch dropped, recorded):`,
+          error,
+        );
       } else {
         transientFailures.push(error);
-        console.error(`Batch ${b} extraction failed (${cls} — session deferred, will retry):`, error);
+        console.error(
+          `Batch ${b} extraction failed (${cls} — session deferred, will retry):`,
+          error,
+        );
       }
     }
   }
@@ -317,7 +361,11 @@ export async function saveExtractedFacts(
   await initEmbeddings();
 
   // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
-  const prepared: Array<{ fact: ExtractedFact; embedding: number[]; embeddingKr: number[] | null }> = [];
+  const prepared: Array<{
+    fact: ExtractedFact;
+    embedding: number[];
+    embeddingKr: number[] | null;
+  }> = [];
   for (const fact of facts) {
     renewLease?.(); // 잃었으면 여기서 중단 — 비싼 임베딩을 더 돌리지 않는다
     prepared.push({
@@ -332,20 +380,22 @@ export async function saveExtractedFacts(
   const savedIds: string[] = [];
   const commit = db.transaction(() => {
     for (const p of prepared) {
-      savedIds.push(insertFact(db, {
-        fact: p.fact.fact,
-        category: p.fact.category,
-        scope_type: p.fact.scope_type,
-        scope_project: p.fact.scope_type === 'project' ? project : null,
-        source_exchange_ids: sourceExchangeIds,
-        embedding: p.embedding,
-        fact_kr: p.fact.fact_kr ?? null,
-        embedding_kr: p.embeddingKr,
-      }));
+      savedIds.push(
+        insertFact(db, {
+          fact: p.fact.fact,
+          category: p.fact.category,
+          scope_type: p.fact.scope_type,
+          scope_project: p.fact.scope_type === "project" ? project : null,
+          source_exchange_ids: sourceExchangeIds,
+          embedding: p.embedding,
+          fact_kr: p.fact.fact_kr ?? null,
+          embedding_kr: p.embeddingKr,
+        }),
+      );
     }
     if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
       throw new ClaimLostError(
-        '완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).',
+        "완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).",
       );
     }
   });
@@ -379,22 +429,24 @@ export async function saveExtractedFacts(
  * 분류를 4분류로 맞추고 라우팅 술어까지 같은 모듈에 둬서 둘이 어긋날 수 없게 한다.
  */
 export type ExtractionFailureKind =
-  | 'handoff'                // 다른 러너가 인수 — 실패 아님. 예산 무관, 경보 아님
-  | 'provider_transient'     // 장애·빈응답·rate limit — 예산 미소모, 다음 run 재시도
+  | "handoff" // 다른 러너가 인수 — 실패 아님. 예산 무관, 경보 아님
+  | "provider_transient" // 장애·빈응답·rate limit — 예산 미소모, 다음 run 재시도
   // ⚠️ 현재 이 파이프라인에서는 **도달하지 않는다**: 배치 루프가 deterministic 거절을
   //    드롭(dropped_batches)하고 transient 만 모아 던지므로, catch 에 오는 LlmCallError
   //    는 항상 non-deterministic 이다. 유일한 다른 LLM 경로(classifyAndLinkFact)는 자체
   //    catch 로 전량 삼킨다. 분류를 남겨두는 이유는 **라우팅 계약을 명시**하기 위함이며
   //    (도달하게 되면 예산을 소모하는 것이 맞다), 도달 여부는 테스트가 주장하지 않는다.
-  | 'provider_deterministic' // 요청 자체가 거절됨 — 재시도 무의미, 예산 소모
-  | 'internal';              // 런타임·DB·파서 — 예산 소모 + 운영 점검 대상
+  | "provider_deterministic" // 요청 자체가 거절됨 — 재시도 무의미, 예산 소모
+  | "internal"; // 런타임·DB·파서 — 예산 소모 + 운영 점검 대상
 
 export function classifyExtractionFailure(err: unknown): ExtractionFailureKind {
-  if (err instanceof ClaimLostError) return 'handoff';
+  if (err instanceof ClaimLostError) return "handoff";
   if (err instanceof LlmCallError) {
-    return classifyLlmError(err) === 'deterministic' ? 'provider_deterministic' : 'provider_transient';
+    return classifyLlmError(err) === "deterministic"
+      ? "provider_deterministic"
+      : "provider_transient";
   }
-  return 'internal';
+  return "internal";
 }
 
 /**
@@ -406,27 +458,43 @@ export function classifyExtractionFailure(err: unknown): ExtractionFailureKind {
  * "INTERNAL failures — 런타임/DB 점검 필요" 경보가 일반 예산 회계로 대체돼 사라졌던
  * 것을 이 플래그로 복원한다(Codex R13 MEDIUM — 내가 만든 회귀).
  */
-export const FAILURE_REPORT: Record<ExtractionFailureKind, {
-  label: string; note: string;
-  bucket: 'handoff' | 'transient' | 'budget';
-  consumesBudget: boolean;
-  escalate: boolean;
-}> = {
+export const FAILURE_REPORT: Record<
+  ExtractionFailureKind,
+  {
+    label: string;
+    note: string;
+    bucket: "handoff" | "transient" | "budget";
+    consumesBudget: boolean;
+    escalate: boolean;
+  }
+> = {
   handoff: {
-    label: 'HANDOFF', note: '다른 러너가 인수 — 실패 아님',
-    bucket: 'handoff', consumesBudget: false, escalate: false,
+    label: "HANDOFF",
+    note: "다른 러너가 인수 — 실패 아님",
+    bucket: "handoff",
+    consumesBudget: false,
+    escalate: false,
   },
   provider_transient: {
-    label: 'ERROR', note: '공급자 일시 실패 — 예산 미소모, 다음 run 재시도',
-    bucket: 'transient', consumesBudget: false, escalate: false,
+    label: "ERROR",
+    note: "공급자 일시 실패 — 예산 미소모, 다음 run 재시도",
+    bucket: "transient",
+    consumesBudget: false,
+    escalate: false,
   },
   provider_deterministic: {
-    label: 'ERROR', note: '요청 거절 — 재시도 무의미, 예산 소모(반복 시 영구 제외)',
-    bucket: 'budget', consumesBudget: true, escalate: false,
+    label: "ERROR",
+    note: "요청 거절 — 재시도 무의미, 예산 소모(반복 시 영구 제외)",
+    bucket: "budget",
+    consumesBudget: true,
+    escalate: false,
   },
   internal: {
-    label: 'ERROR', note: '런타임/DB 점검 필요 — 예산 소모',
-    bucket: 'budget', consumesBudget: true, escalate: true,
+    label: "ERROR",
+    note: "런타임/DB 점검 필요 — 예산 소모",
+    bucket: "budget",
+    consumesBudget: true,
+    escalate: true,
   },
 };
 
@@ -440,14 +508,21 @@ export function failureConsumesBudget(kind: ExtractionFailureKind): boolean {
   return FAILURE_REPORT[kind].consumesBudget;
 }
 
-
 /** Claim a session, process unhandled rows, and atomically record completion. */
 export async function runFactExtraction(
   db: Database.Database,
   sessionId: string,
   project: string,
-  opts?: { claimVariant?: 'worker' | 'hook' },
-): Promise<{ extracted: number; saved: number; skipped?: 'claim_not_acquired' | 'claim_error' | 'excluded_project' | 'excluded_project_unmarked' }> {
+  opts?: { claimVariant?: "worker" | "hook" },
+): Promise<{
+  extracted: number;
+  saved: number;
+  skipped?:
+    | "claim_not_acquired"
+    | "claim_error"
+    | "excluded_project"
+    | "excluded_project_unmarked";
+}> {
   // Skip self-referential repos (Memex's own monitoring sessions) — mark
   // as processed with zero facts so they are never re-attempted, no LLM calls.
   if (isExcludedProject(project)) {
@@ -466,13 +541,19 @@ export async function runFactExtraction(
       // 만료된 claim 은 죽은 소유자의 것이므로 회수 대상이다. `<> CLAIMED` 로 두면
       // 만료 claim 까지 존중해 그 세션이 마커를 영원히 못 받고 매 run 재선정된다
       // (R22 HIGH, 5/5 run 진전 0). 코드베이스의 다른 모든 경로와 같은 술어를 쓴다.
-      const res = db.prepare(`
-        INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-        VALUES (?, ?, 0, 0)
+      const res = db
+        .prepare(`
+        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+        VALUES (?, ?, 0, 0, (SELECT COALESCE(MAX(rowid), 0) FROM exchanges x WHERE x.session_id = ?))
         ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-          extracted = 0, saved = 0
+          extracted = 0, saved = 0,
+          -- settled 마커의 워터마크가 뒤처지면 pending 쿼리의 watermark 분기가
+          -- 다시 집는다 — 제외 마커는 세션 전체를 커버해야 한다.
+          last_exchange_rowid = (SELECT COALESCE(MAX(rowid), 0) FROM exchanges x
+                                 WHERE x.session_id = extraction_log.session_id)
         WHERE NOT (${freshClaimPredicate()})
-      `).run(sessionId, new Date().toISOString());
+      `)
+        .run(sessionId, new Date().toISOString(), sessionId);
       markerWritten = res.changes > 0;
       if (!markerWritten) {
         console.error(
@@ -481,13 +562,14 @@ export async function runFactExtraction(
       }
     } catch (e) {
       console.error(
-        `extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: `
-        + `${e instanceof Error ? e.message : String(e)}`,
+        `extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
       );
     }
     return {
-      extracted: 0, saved: 0,
-      skipped: markerWritten ? 'excluded_project' : 'excluded_project_unmarked',
+      extracted: 0,
+      saved: 0,
+      skipped: markerWritten ? "excluded_project" : "excluded_project_unmarked",
     };
   }
   // 🚨 동일 재실행 게이트(비용 최적화): 성공 상태 마커 + last_exchange_rowid 이후
@@ -495,13 +577,27 @@ export async function runFactExtraction(
   // claim 성공 직후의 post-claim watermark read 가 소유한다 — 이 값은 다른 러너가
   // 방금 완료한 최신 워터마크를 반영할 수 있다(UPDATE 는 이 컬럼을 건드리지 않음).
   {
-    const marker = db.prepare('SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?')
-      .get(sessionId) as { extracted?: number; last_exchange_rowid?: number } | undefined;
-    const settled = !!marker && typeof marker.extracted === 'number'
-      && (marker.extracted >= 0 || marker.extracted === -1 || marker.extracted === -2);
+    const marker = db
+      .prepare(
+        "SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?",
+      )
+      .get(sessionId) as
+      | { extracted?: number; last_exchange_rowid?: number }
+      | undefined;
+    const settled =
+      !!marker &&
+      typeof marker.extracted === "number" &&
+      (marker.extracted >= 0 ||
+        marker.extracted === -1 ||
+        marker.extracted === -2);
     if (settled && marker) {
-      const maxRow = (db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?')
-        .get(sessionId) as { m: number }).m;
+      const maxRow = (
+        db
+          .prepare(
+            "SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?",
+          )
+          .get(sessionId) as { m: number }
+      ).m;
       if (maxRow <= (marker.last_exchange_rowid ?? 0)) {
         // 멱등 no-op: LLM 호출 없이 종료 — 중복 facts 도 생기지 않는다.
         return { extracted: 0, saved: 0 };
@@ -521,30 +617,43 @@ export async function runFactExtraction(
   let preClaim: { extracted: number; saved: number } | undefined;
   let holdsClaim = false;
   try {
-    preClaim = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
+    preClaim = db
+      .prepare(
+        "SELECT extracted, saved FROM extraction_log WHERE session_id = ?",
+      )
       .get(sessionId) as { extracted: number; saved: number } | undefined;
-    const claimed = db.prepare(claimSessionSql(opts?.claimVariant ?? 'hook'))
+    const claimed = db
+      .prepare(claimSessionSql(opts?.claimVariant ?? "hook"))
       .run(sessionId, new Date().toISOString(), owner).changes;
     if (claimed === 0) {
-      console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
-      return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' };
+      console.error(
+        `extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`,
+      );
+      return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
     }
     holdsClaim = true;
     // 🚨 post-claim watermark read — race 소유 지점. 내 UPDATE 는 이 컬럼을 건드리지
     // 않으므로, gate 이후 다른 러너가 방금 기록한 최신 last_exchange_rowid 를 그대로
     // 읽는다. 이후 신규 rows 만 LLM 배치 후보가 된다.
-    const claimedRow = db.prepare('SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?')
+    const claimedRow = db
+      .prepare(
+        "SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?",
+      )
       .get(sessionId) as { last_exchange_rowid?: number } | undefined;
-    onlyAfterRowid = typeof claimedRow?.last_exchange_rowid === 'number' && claimedRow.last_exchange_rowid > 0
-      ? claimedRow.last_exchange_rowid
-      : undefined;
+    onlyAfterRowid =
+      typeof claimedRow?.last_exchange_rowid === "number" &&
+      claimedRow.last_exchange_rowid > 0
+        ? claimedRow.last_exchange_rowid
+        : undefined;
   } catch (e) {
     // 🚨 fresh-schema 계약: extraction_log 는 initDatabase 가 항상 보장한다.
     // 스키마 오류를 포함한 모든 claim 실패는 예산 소모 없이 보류(claim_error)만
     // 한다 — legacy ALTER/진행 분기는 없다.
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
-    return { extracted: 0, saved: 0, skipped: 'claim_error' };
+    console.error(
+      `extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`,
+    );
+    return { extracted: 0, saved: 0, skipped: "claim_error" };
   }
 
   /**
@@ -553,11 +662,14 @@ export async function runFactExtraction(
    */
   const renewLease = () => {
     if (!holdsClaim) return;
-    const renewed = db.prepare(renewClaimSql())
+    const renewed = db
+      .prepare(renewClaimSql())
       .run(new Date().toISOString(), sessionId, owner).changes;
     if (renewed === 0) {
       holdsClaim = false; // 남의 행이 되었으므로 롤백도 하지 않는다
-      throw new ClaimLostError(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
+      throw new ClaimLostError(
+        `claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`,
+      );
     }
   };
 
@@ -567,40 +679,55 @@ export async function runFactExtraction(
     try {
       if (preClaim) {
         db.prepare(
-          'UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL '
-          + `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
+          "UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL " +
+            `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
         ).run(preClaim.extracted, preClaim.saved, sessionId, owner);
       } else {
         db.prepare(
           `DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`,
         ).run(sessionId, owner);
       }
-    } catch { /* best-effort release; the original extraction error is preserved */ }
+    } catch {
+      /* best-effort release; the original extraction error is preserved */
+    }
   };
 
   /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
-  const writeInternalFailureMarker = (kind: ExtractionFailureKind = 'internal') => {
+  const writeInternalFailureMarker = (
+    kind: ExtractionFailureKind = "internal",
+  ) => {
     if (!holdsClaim) return;
     try {
-      const attempts = (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL ? preClaim.saved : 0) + 1;
+      const attempts =
+        (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL
+          ? preClaim.saved
+          : 0) + 1;
       const exhausted = attempts >= MAX_INTERNAL_RETRIES;
       db.prepare(failureMarkerUpsertSql()).run(
-        sessionId, new Date().toISOString(),
-        exhausted ? EXTRACTION_STATE.PERMANENT : EXTRACTION_STATE.RETRIABLE_INTERNAL,
-        exhausted ? 0 : attempts, owner,
+        sessionId,
+        new Date().toISOString(),
+        exhausted
+          ? EXTRACTION_STATE.PERMANENT
+          : EXTRACTION_STATE.RETRIABLE_INTERNAL,
+        exhausted ? 0 : attempts,
+        owner,
       );
       console.error(
-        `extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}`
-        + `${exhausted ? ' — 예산 소진, 영구 마커로 승격' : ' — 다음 run 재시도'}) — ${FAILURE_REPORT[kind].note}`,
+        `extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
+          `${exhausted ? " — 예산 소진, 영구 마커로 승격" : " — 다음 run 재시도"}) — ${FAILURE_REPORT[kind].note}`,
       );
-    } catch { /* best-effort */ }
+    } catch {
+      /* best-effort */
+    }
   };
 
   const stats = { droppedBatches: 0 };
   let facts: ExtractedFact[];
   let saved = 0;
   try {
-    facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease, { onlyAfterRowid });
+    facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease, {
+      onlyAfterRowid,
+    });
 
     // 🚨 저장 **직전** 소유권을 재확인한다. 마지막 갱신 이후에 claim 을 빼앗겼다면
     // (배치가 1개뿐이면 갱신도 1회뿐이라 창이 넓다) 여기서 멈춰야 한다 — 그대로
@@ -608,12 +735,27 @@ export async function runFactExtraction(
     renewLease();
 
     if (facts.length > 0) {
-      const exchangeIds = (db.prepare(
-        `SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid != null ? ' AND rowid > ?' : ''}`
-      ).all(...(onlyAfterRowid != null ? [sessionId, onlyAfterRowid] : [sessionId])) as Array<{ id: string }>).map(r => r.id);
-      saved = (await saveExtractedFacts(
-        db, facts, project, exchangeIds, renewLease, writeCompletionMarker,
-      )).length;
+      const exchangeIds = (
+        db
+          .prepare(
+            `SELECT id FROM exchanges WHERE session_id = ?${onlyAfterRowid != null ? " AND rowid > ?" : ""}`,
+          )
+          .all(
+            ...(onlyAfterRowid != null
+              ? [sessionId, onlyAfterRowid]
+              : [sessionId]),
+          ) as Array<{ id: string }>
+      ).map((r) => r.id);
+      saved = (
+        await saveExtractedFacts(
+          db,
+          facts,
+          project,
+          exchangeIds,
+          renewLease,
+          writeCompletionMarker,
+        )
+      ).length;
     }
   } catch (e) {
     // 실패를 분류한다 — 이 판정을 워커가 아니라 **선점 소유자**가 내려야
@@ -623,36 +765,56 @@ export async function runFactExtraction(
     //  · 내부 실패(임베딩/DB/파서) → 재시도 예산 마커(-4, 소진 시 -2) 후 rethrow.
     // 분류·라우팅을 소비자와 **같은 함수**로 판정한다(문구와 동작이 어긋나지 않게).
     const kind = classifyExtractionFailure(e);
-    if (kind === 'handoff') {
+    if (kind === "handoff") {
       // 남의 행이므로 해제할 것도 기록할 것도 없다(SQL 가드가 이미 0행이지만 계약을 코드로).
-      console.error(`extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`);
+      console.error(
+        `extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`,
+      );
     } else if (failureConsumesBudget(kind)) {
       writeInternalFailureMarker(kind); // deterministic 거절 · 내부 실패 — 예산 소모
     } else {
-      releaseClaim();                   // 공급자 일시 실패 — 예산 미소모, 즉시 재시도
+      releaseClaim(); // 공급자 일시 실패 — 예산 미소모, 즉시 재시도
     }
     throw e;
   }
 
   // 완료 마커 — saveExtractedFacts 의 트랜잭션 안에서 호출된다(원자적 커밋).
   // fact 가 0건이면 트랜잭션이 없으므로 여기서 직접 호출한다.
-  function writeCompletionMarker(extracted: number, savedCount: number): number {
+  function writeCompletionMarker(
+    extracted: number,
+    savedCount: number,
+  ): number {
     const now = new Date().toISOString();
     // 워터마크: 처리 시점의 세션 MAX(rowid). 완료 마커와 같은 문장에서 기록돼
     // 마커·워터마크가 항상 한 세트로 커밋된다.
-    const watermark = (db.prepare('SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?')
-      .get(sessionId) as { m: number }).m;
-    const res = db.prepare(`
+    const watermark = (
+      db
+        .prepare(
+          "SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?",
+        )
+        .get(sessionId) as { m: number }
+    ).m;
+    const res = db
+      .prepare(`
       UPDATE extraction_log
       SET processed_at = ?, extracted = ?, saved = ?, dropped_batches = ?,
           last_exchange_rowid = ?, claim_owner = NULL
       WHERE session_id = ? AND claim_owner = ?
-    `).run(now, extracted, savedCount, stats.droppedBatches, watermark, sessionId, owner);
+    `)
+      .run(
+        now,
+        extracted,
+        savedCount,
+        stats.droppedBatches,
+        watermark,
+        sessionId,
+        owner,
+      );
     if (stats.droppedBatches > 0 && res.changes > 0) {
       console.error(
-        `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) `
-        + `(deterministic LLM failures — those exchanges produced no facts; `
-        + `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
+        `extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
+          `(deterministic LLM failures — those exchanges produced no facts; ` +
+          `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`,
       );
     }
     return res.changes; // 0 = 소유권 상실 → 호출자가 롤백/표면화
@@ -661,12 +823,14 @@ export async function runFactExtraction(
   if (facts.length === 0) {
     try {
       if (writeCompletionMarker(0, 0) === 0 && holdsClaim) {
-        console.error(`extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`);
+        console.error(
+          `extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`,
+        );
       }
     } catch (e) {
       console.error(
-        `extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: `
-        + `${e instanceof Error ? e.message : String(e)}`,
+        `extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
+          `${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }

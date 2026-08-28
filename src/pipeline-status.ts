@@ -199,6 +199,12 @@ export function getPipelineStatus(
                 AND (l.extracted >= 0 OR l.extracted = ?
                 OR (l.extracted = ? AND ${freshClaimPredicate("l")}))
             )
+            -- settled 마커라도 워터마크가 뒤처지면 새 suffix 가 있는 것이므로
+            -- 아직 완료가 아니다(pendingExtractionCoreQuery 의 watermark 분기와 동일).
+            AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
+                 WHERE x.session_id = e.session_id)
+                <= COALESCE((SELECT l.last_exchange_rowid FROM extraction_log l
+                             WHERE l.session_id = e.session_id), -1)
         )`,
         EXTRACTION_STATE.PERMANENT,
         EXTRACTION_STATE.CLAIMED,
@@ -224,8 +230,8 @@ export function getPipelineStatus(
     }
 
     // ── Embeddings / ontology / relations ────────────────────────────────
-    let embeddings = { activeFacts: 0, factVectorsPending: 0 };
-    let ontology = { classifiedFacts: 0, pendingFacts: 0 };
+    const embeddings = { activeFacts: 0, factVectorsPending: 0 };
+    const ontology = { classifiedFacts: 0, pendingFacts: 0 };
     let relations = 0;
     if (hasFacts) {
       embeddings.activeFacts = count(

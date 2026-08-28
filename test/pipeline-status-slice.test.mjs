@@ -2,24 +2,24 @@
 // Gate: fresh root EMPTY; sync-equivalent state => conversation-ready yes,
 // fact/graph no; backfill-equivalent completion => ready; permanent failure
 // keeps readiness off. status must be read-only (DB bytes unchanged).
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import crypto from 'node:crypto';
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
 
-const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
+const REPO = path.resolve(new URL(".", import.meta.url).pathname, "..");
 
 async function seed(t, rows) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-cx04-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mb-cx04-"));
   t.after(() => {
     delete process.env.TEST_DB_PATH;
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  const dbPath = path.join(dir, 'db.sqlite');
+  const dbPath = path.join(dir, "db.sqlite");
   process.env.TEST_DB_PATH = dbPath;
-  const { default: Database } = await import('better-sqlite3');
+  const { default: Database } = await import("better-sqlite3");
   const db = new Database(dbPath);
   db.exec(`CREATE TABLE exchanges (
     id TEXT PRIMARY KEY, project TEXT, timestamp TEXT, user_message TEXT,
@@ -39,24 +39,38 @@ async function seed(t, rows) {
   return { db, dbPath, dir };
 }
 
-test('fresh data root reports EMPTY with all readiness flags false', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-cx04-empty-'));
+test("fresh data root reports EMPTY with all readiness flags false", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mb-cx04-empty-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  process.env.TEST_DB_PATH = path.join(dir, 'missing.sqlite');
-  const { getPipelineStatus, formatPipelineStatus } = await import(path.join(REPO, 'dist/pipeline-status.js'));
+  process.env.TEST_DB_PATH = path.join(dir, "missing.sqlite");
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
   const st = getPipelineStatus();
   assert.equal(st.dataRootEmpty, true);
-  assert.deepEqual(st.readiness, { conversationReady: false, factReady: false, graphReady: false });
-  assert.ok(formatPipelineStatus(st).includes('EMPTY'));
+  assert.deepEqual(st.readiness, {
+    conversationReady: false,
+    factReady: false,
+    graphReady: false,
+  });
+  assert.ok(formatPipelineStatus(st).includes("EMPTY"));
 });
 
-test('synced-but-unextracted: conversation-ready yes, fact/graph no', async (t) => {
-  const { db, dbPath } = await seed(t, [{ session: 's1' }, { session: 's2' }]);
-  const { getPipelineStatus } = await import(path.join(REPO, 'dist/pipeline-status.js'));
-  const before = crypto.createHash('sha256').update(fs.readFileSync(dbPath)).digest('hex');
+test("synced-but-unextracted: conversation-ready yes, fact/graph no", async (t) => {
+  const { db, dbPath } = await seed(t, [{ session: "s1" }, { session: "s2" }]);
+  const { getPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const before = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(dbPath))
+    .digest("hex");
   const st = getPipelineStatus();
-  const after = crypto.createHash('sha256').update(fs.readFileSync(dbPath)).digest('hex');
-  assert.equal(before, after, 'status mutated the database');
+  const after = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(dbPath))
+    .digest("hex");
+  assert.equal(before, after, "status mutated the database");
   db.close();
 
   assert.equal(st.readiness.conversationReady, true);
@@ -66,8 +80,8 @@ test('synced-but-unextracted: conversation-ready yes, fact/graph no', async (t) 
   assert.equal(st.extraction.pending, 2);
 });
 
-test('extraction complete: fact-ready yes; ontology pending keeps graph no', async (t) => {
-  const { db } = await seed(t, [{ session: 's1' }]);
+test("extraction complete: fact-ready yes; ontology pending keeps graph no", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
   db.exec(`CREATE TABLE facts (
     id TEXT PRIMARY KEY, fact TEXT, category TEXT, scope_type TEXT,
     scope_project TEXT, is_active INTEGER, ontology_category_id TEXT);`);
@@ -75,10 +89,13 @@ test('extraction complete: fact-ready yes; ontology pending keeps graph no', asy
   // vector-pending (sqlite-vec module not loadable outside the app runtime).
   db.prepare(`INSERT INTO facts (id, fact, category, scope_type, scope_project, is_active)
     VALUES ('f1','fact','decision','project','/tmp/p',1)`).run();
-  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-    VALUES ('s1','2026-08-26T01:00:00Z', 1, 1)`).run();
+  // 워터마크가 세션의 max(rowid) 를 덮어야 settled 로 인정된다 (CX-04 pending 정의).
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();
   // vec_facts table absent in this fixture -> embeddings pending = active facts
-  const { getPipelineStatus } = await import(path.join(REPO, 'dist/pipeline-status.js'));
+  const { getPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
   const st = getPipelineStatus();
   assert.equal(st.extraction.pending, 0);
   assert.equal(st.embeddings.factVectorsPending, 1); // no vector yet -> fact-ready stays off
@@ -86,23 +103,26 @@ test('extraction complete: fact-ready yes; ontology pending keeps graph no', asy
   db.close();
 });
 
-test('permanent extraction failure blocks fact-ready', async (t) => {
-  const { db } = await seed(t, [{ session: 's1' }]);
-  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved)
-    VALUES ('s1','2026-08-26T01:00:00Z', -2, 0)`).run(); // PERMANENT
-  const { getPipelineStatus } = await import(path.join(REPO, 'dist/pipeline-status.js'));
+test("permanent extraction failure blocks fact-ready", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's1','2026-08-26T01:00:00Z', -2, 0, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run(); // PERMANENT
+  const { getPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
   const st = getPipelineStatus();
   assert.equal(st.extraction.failedPermanent, 1);
   assert.equal(st.readiness.factReady, false);
   db.close();
 });
 
-test('stale claim lease recovers to pending; fresh claim counts as claimed', async (t) => {
-  const { db } = await seed(t, [{ session: 's1' }]);
+test("stale claim lease recovers to pending; fresh claim counts as claimed", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
   // Fresh claim (now): claimed=1, pending=0 (lease alive)
+  // claim 행은 워터마크가 0 이라도 살아있는 리스면 pending 이 아니다.
   db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
     VALUES ('s1', ?, -3, 0, 'worker-x')`).run(new Date().toISOString());
-  const mod = await import(path.join(REPO, 'dist/pipeline-status.js'));
+  const mod = await import(path.join(REPO, "dist/pipeline-status.js"));
   let st = mod.getPipelineStatus();
   assert.equal(st.extraction.claimed, 1);
   assert.equal(st.readiness.factReady, false);

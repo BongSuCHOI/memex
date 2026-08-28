@@ -32,6 +32,18 @@ SessionEnd 또는 backlog worker가 session claim을 획득한 뒤
 bare command, 짧은 acknowledgement, harness artifact, Memex worker prompt 같은 trivial
 exchange는 model call 전에 제거합니다.
 
+backfill 대기열은 `extraction_log`의 settled 상태만으로 완료를 판정하지 않습니다.
+settled(성공) 마커의 `last_exchange_rowid`가 세션의 `MAX(rowid)`보다 뒤처지면 resume으로
+늘어난 suffix를 위해 다시 pending으로 돌아오고, worker claim도 그 세션을 선점할 수
+있습니다. 단 SEED(-1, 과거 batch 재추출 방지)와 PERMANENT(-2, 무한 재시도 방지)는
+워터마크가 뒤처져도 제외되며, suffix 재시작은 SessionEnd 훅 경로가 담당합니다.
+살아있는 claim(-3)은 다른 러너가 처리 중이므로 제외됩니다.
+`backfill-extract-worker`가 심는 seed 마커는 `last_exchange_rowid = MAX(rowid)`를
+함께 기록합니다. SessionEnd extraction은 SQLite만 읽으므로, 백그라운드 sync가 아직
+이 rollout을 인덱싱하지 못한 경우(exchanges 0건 + transcript 파싱 결과 비어있지 않음)
+성공 마커를 쓰지 않고 `SKIPPED (not_indexed)`로 이연하며, 이 세션은 sync 완료 후
+backfill이 회수합니다. transcript 파싱에 실패하면 증명 불가로 fail-closed 이연합니다.
+
 provenance는 turn taint가 아니라 evidence source 단위입니다.
 
 | source | learnable |
