@@ -176,6 +176,11 @@ shell/exec 입력에 network command가 섞이면 전체 result를 안전하게
 `external_unverified`로 분류합니다. generated artifact를 향후 허용하려면 source별
 validator와 회귀 테스트를 먼저 추가하고 allowlist를 좁게 확장합니다.
 
+allowlisted shell/exec도 command 이름만으로 신뢰하지 않습니다. exchange cwd, tool
+`workdir`/`cwd`, `git -C`, `npm --prefix`, 관측 target을 canonicalize하고 symlink까지
+해결한 뒤 모두 project cwd 내부일 때만 학습합니다. wrapper나 target이 불명확하거나
+project 밖 경로, pipeline, redirect, command substitution이 있으면 fail-closed입니다.
+
 경로가 증명되는 파일 관측이어도 대상이 `MEMEX_HOME`(archive/index/DB),
 `$CODEX_HOME/sessions`, 임시 model workdir 안에 있으면 Memex 자료의 재독입(self
 재섭취)이므로 `learnable=0`으로 강등합니다. project cwd 밖 경로나 대상을 특정할 수

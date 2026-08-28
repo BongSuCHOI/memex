@@ -672,7 +672,7 @@ node --test test/*slice.test.mjs
 - [x] 1. SessionEnd worker 회귀 수정
 - [x] 2. conversation exclusion policy SSOT
 - [x] 3. semantic fact mutation service
-- [ ] 4. shell evidence locality proof
+- [x] 4. shell evidence locality proof
 - [ ] 5. revision/tombstone-aware sync
 - [ ] 6. ingestion/dirty consolidation queue
 - [ ] 7. 모든 vector generation/version

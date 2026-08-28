@@ -144,6 +144,7 @@ describe("Memex recall provenance", () => {
         lineStart: 1,
         lineEnd: 5,
         sessionId: "session-tool-1",
+        cwd: "/tmp/project",
         toolCalls: [
           {
             id: "call-1",
@@ -210,11 +211,20 @@ describe("Memex recall provenance", () => {
   });
 
   it("trust classifier separates local evidence from network and generated output", () => {
+    const project = "/tmp/project";
     expect(
-      classifyToolEvidence("shell", { cmd: "git log -1 --oneline" }),
+      classifyToolEvidence(
+        "shell",
+        { cmd: "git log -1 --oneline" },
+        { cwd: project },
+      ),
     ).toEqual({ sourceType: "git_history", learnable: true });
     expect(
-      classifyToolEvidence("functions__exec_command", { cmd: "npm test" }),
+      classifyToolEvidence(
+        "functions__exec_command",
+        { cmd: "npm test" },
+        { cwd: project },
+      ),
     ).toEqual({ sourceType: "test_execution", learnable: true });
     expect(
       classifyToolEvidence("shell", { cmd: "curl https://example.com/config" }),
@@ -229,47 +239,190 @@ describe("Memex recall provenance", () => {
   // 복합 셸 명령은 첫 토큰이 신뢰 구간(git/test)이어도 출력 전체를 신뢰할 수 없다.
   // FACT-LIFECYCLE.md:49-50 — composite exec output 은 external_unverified/learnable=0.
   it("demotes composite shell commands even when the first token is trusted", () => {
+    const ctx = { cwd: "/tmp/project" };
     const unverified = { sourceType: "external_unverified", learnable: false };
     // 신뢰 토큰 뒤에 임의 명령이 붙는 조합
     expect(
-      classifyToolEvidence("shell", { cmd: "git log && cat config" }),
+      classifyToolEvidence("shell", { cmd: "git log && cat config" }, ctx),
     ).toEqual(unverified);
     expect(
       classifyToolEvidence("shell", {
         cmd: "npm test | grep -q PASS && echo leak",
-      }),
+      }, ctx),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "git status; curl https://x" }),
+      classifyToolEvidence("shell", { cmd: "git status; curl https://x" }, ctx),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "npm test & rm -rf /tmp/x" }),
+      classifyToolEvidence("shell", { cmd: "npm test & rm -rf /tmp/x" }, ctx),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "git show HEAD > /tmp/out" }),
+      classifyToolEvidence("shell", { cmd: "git show HEAD > /tmp/out" }, ctx),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "git log $(cat secret.txt)" }),
+      classifyToolEvidence("shell", { cmd: "git log $(cat secret.txt)" }, ctx),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "npm test\nrm -rf /" }),
+      classifyToolEvidence(
+        "shell",
+        { cmd: 'git log --grep="$(cat ../secret.txt)"' },
+        ctx,
+      ),
     ).toEqual(unverified);
     expect(
-      classifyToolEvidence("shell", { cmd: "git log || git rev-parse" }),
+      classifyToolEvidence("shell", { cmd: "npm test\nrm -rf /" }, ctx),
+    ).toEqual(unverified);
+    expect(
+      classifyToolEvidence("shell", { cmd: "git log || git rev-parse" }, ctx),
     ).toEqual(unverified);
     // 단일 명령은 그대로 신뢰된다 — 인자 내부의 quoted 메타문자는 복합이 아니다
     expect(
-      classifyToolEvidence("shell", { cmd: "git log --grep='fix && build'" }),
+      classifyToolEvidence("shell", { cmd: "git log --grep='fix && build'" }, ctx),
     ).toEqual({
       sourceType: "git_history",
       learnable: true,
     });
     expect(
-      classifyToolEvidence("shell", { cmd: "rg 'pattern|other' src" }),
+      classifyToolEvidence("shell", { cmd: "rg 'pattern|other' src" }, ctx),
     ).toEqual({
       sourceType: "repo_file",
       learnable: true,
     });
+  });
+
+  it("requires cwd-locality proof for every trusted shell observation", () => {
+    const project = fs.mkdtempSync(
+      path.join(os.tmpdir(), "memex-shell-locality-project-"),
+    );
+    const outside = fs.mkdtempSync(
+      path.join(os.tmpdir(), "memex-shell-locality-outside-"),
+    );
+    const insidePackage = path.join(project, "packages", "app");
+    fs.mkdirSync(insidePackage, { recursive: true });
+    fs.symlinkSync(outside, path.join(project, "linked-outside"));
+    const unverified = { sourceType: "external_unverified", learnable: false };
+    const ctx = { cwd: project };
+
+    try {
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: `grep needle ${path.join(outside, "secret.txt")}` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: `grep needle ../${path.basename(outside)}/secret.txt` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "grep needle ~other-user/secret.txt" },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "grep needle {src,../outside}/secret.txt" },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: `jq . ${path.join(outside, "external.json")}` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence("shell", { cmd: `find ${outside} -type f` }, ctx),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: `git -C ${outside} log -1` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "functions__exec_command",
+          { cmd: `npm --prefix ${outside} test` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "grep needle linked-outside/secret.txt" },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "read_file",
+          { path: "linked-outside/secret.txt" },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "functions__exec_command",
+          { cmd: "git log -1", workdir: outside },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence("shell", { cmd: "grep needle" }, ctx),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: `/bin/zsh -lc 'git -C ${outside} log'` },
+          ctx,
+        ),
+      ).toEqual(unverified);
+      expect(
+        classifyToolEvidence("shell", { cmd: "git log -1" }),
+      ).toEqual(unverified);
+
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "grep needle src/config.ts" },
+          ctx,
+        ),
+      ).toEqual({ sourceType: "repo_file", learnable: true });
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "git -C packages/app log -1" },
+          ctx,
+        ),
+      ).toEqual({ sourceType: "git_history", learnable: true });
+      expect(
+        classifyToolEvidence(
+          "functions__exec_command",
+          { cmd: "npm --prefix packages/app test" },
+          ctx,
+        ),
+      ).toEqual({ sourceType: "test_execution", learnable: true });
+      expect(
+        classifyToolEvidence(
+          "functions__exec_command",
+          { cmd: "npm test", workdir: insidePackage },
+          ctx,
+        ),
+      ).toEqual({ sourceType: "test_execution", learnable: true });
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   // Path-aware locality proof: a read result is repository-local evidence only
@@ -342,14 +495,36 @@ describe("Memex recall provenance", () => {
         ),
       ).toEqual({ sourceType: "repo_file", learnable: false });
 
-      // Shell-based listing over denied surfaces loses learnability as well.
+      // Shell-based listing outside the project fails the locality proof even
+      // when that target is also a denied Memex data surface.
       expect(
         classifyToolEvidence(
           "shell",
           { cmd: `ls ${summaryPath}` },
           { cwd: project },
         ),
+      ).toEqual({ sourceType: "external_unverified", learnable: false });
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "ls archive/proj/conv-summary.txt" },
+          { cwd: memexHome },
+        ),
       ).toEqual({ sourceType: "repo_file", learnable: false });
+      expect(
+        classifyToolEvidence(
+          "shell",
+          { cmd: "git log -1" },
+          { cwd: sessionsDir },
+        ),
+      ).toEqual({ sourceType: "git_history", learnable: false });
+      expect(
+        classifyToolEvidence(
+          "functions__exec_command",
+          { cmd: "npm test" },
+          { cwd: path.join(os.tmpdir(), "memory-bank-llm", "model-work") },
+        ),
+      ).toEqual({ sourceType: "test_execution", learnable: false });
 
       // Legitimate in-project reads stay trusted (regression guard).
       expect(
@@ -379,10 +554,10 @@ describe("Memex recall provenance", () => {
         sourceType: "external_unverified",
         learnable: false,
       });
-      // ...but legacy callers without a ctx keep the previous contract.
+      // Missing project identity cannot prove locality for any file surface.
       expect(
         classifyToolEvidence("read_file", { path: "/any/where.txt" }),
-      ).toEqual({ sourceType: "repo_file", learnable: true });
+      ).toEqual({ sourceType: "external_unverified", learnable: false });
     } finally {
       delete process.env.MEMEX_HOME;
       delete process.env.MEMEX_SESSIONS_DIR;
@@ -503,6 +678,7 @@ describe("Memex recall provenance", () => {
         lineStart: 1,
         lineEnd: 8,
         sessionId: "evolution-session",
+        cwd: "/tmp/project",
         toolCalls: [
           {
             id: "evolution-recall",

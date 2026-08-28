@@ -68,6 +68,14 @@ archive/index/DB), `$CODEX_HOME/sessions`, 임시 model workdir 안의 관측은
 유지한 채 `learnable=0`으로 강등됩니다. 이 경계가 없으면 self 요약·rollout을 로컬 파일
 tool로 다시 읽어 assistant synthesis나 recall이 repository evidence로 세탁됩니다.
 
+shell/exec evidence도 같은 locality proof를 통과해야 합니다. exchange의 canonical cwd와
+tool의 `workdir`/`cwd`, `git -C`, `npm --prefix`, command target을 symlink-resolved path로
+정규화합니다. 모든 effective cwd와 target이 project cwd 안에 있음을 증명한 bounded
+Git/test/read command만 learnable입니다. wrapper, 알 수 없는 target, project 밖 상대·절대
+경로, pipeline, redirect, command substitution은 `external_unverified/learnable=0`으로
+fail-closed 처리합니다. project 내부의 denied data root 관측은 source label만 유지하고
+`learnable=0`입니다.
+
 긴 session은 `MEMORY_BANK_MAX_EXTRACT_CALLS` 범위에서 전체 시간대를 고르게 샘플링한
 batch를 사용합니다. model output은 구조/enum/숫자 confidence를 검증하고 confidence
 0.7 미만을 저장하지 않습니다. 같은 session batch 사이의 normalized duplicate도

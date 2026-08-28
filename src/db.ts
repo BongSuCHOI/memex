@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import type { ConversationExchange, EvidenceSourceType } from "./types.js";
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "path";
 import * as sqliteVec from "sqlite-vec";
 import {
@@ -706,11 +707,8 @@ function deniedEvidenceRoots(): string[] {
   const roots: string[] = [];
   const push = (p?: string | null) => {
     if (!p) return;
-    try {
-      roots.push(path.resolve(p));
-    } catch {
-      /* unresolvable — skip */
-    }
+    const canonical = canonicalizePath(p);
+    if (canonical) roots.push(canonical);
   };
   try {
     // MEMEX_HOME root covers archive/, index/, and the SQLite DB in one hop.
@@ -725,9 +723,29 @@ function deniedEvidenceRoots(): string[] {
   return [...new Set(roots)].filter((r) => r && r !== "/");
 }
 
+/** Resolve symlinks through the longest existing ancestor. This also gives a
+ * stable canonical path for commands that name a not-yet-created file. */
+function canonicalizePath(value: string): string | null {
+  try {
+    const resolved = path.resolve(value);
+    const suffix: string[] = [];
+    let cursor = resolved;
+    while (!fs.existsSync(cursor)) {
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return null;
+      suffix.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+    return path.resolve(fs.realpathSync.native(cursor), ...suffix);
+  } catch {
+    return null;
+  }
+}
+
 function isInside(child: string, ancestor: string): boolean {
-  const c = path.resolve(child);
-  return c === ancestor || c.startsWith(ancestor + path.sep);
+  const c = canonicalizePath(child);
+  const a = canonicalizePath(ancestor);
+  return !!c && !!a && (c === a || c.startsWith(a + path.sep));
 }
 
 /** Extract candidate target paths from common repo-read tool input shapes. */
@@ -753,9 +771,8 @@ function readTargetPaths(input: unknown): string[] {
   return out;
 }
 
-/** Path-aware verdict for a repo-local observation. ctx.cwd turns locality
- * into a proof requirement; without it only the data-root denylist applies
- * (backward-compatible for callers that cannot supply a cwd). */
+/** Path-aware verdict for a repo-local observation. Missing project identity,
+ * missing target, or any target outside the canonical cwd fails closed. */
 function repoReadVerdict(
   toolInput: unknown,
   ctx?: ToolEvidenceContext,
@@ -767,40 +784,29 @@ function repoReadVerdict(
     sourceType: "external_unverified",
     learnable: false,
   });
+  if (!ctx?.cwd) return demote();
   const denied = deniedEvidenceRoots();
-  const base = ctx?.cwd ? ctx.cwd : process.cwd();
-  const targets = readTargetPaths(toolInput).map((target) =>
-    path.resolve(base, target),
-  );
+  const base = canonicalizePath(ctx.cwd);
+  const targets = base
+    ? readTargetPaths(toolInput).map((target) =>
+        canonicalizePath(path.resolve(base, target)),
+      )
+    : [];
 
   // Step 1 — locality proof: with a project context, every observation must
   // land inside the canonical project working directory to count as a
   // repository-local observation at all.
-  let locallyProven = !ctx?.cwd || targets.length > 0;
-  if (ctx?.cwd) {
-    let projectRoot: string;
-    try {
-      projectRoot = path.resolve(ctx.cwd);
-    } catch {
-      locallyProven = false;
-    }
-    if (
-      locallyProven &&
-      targets.some((target) => !isInside(target, projectRoot))
-    ) {
-      locallyProven = false;
-    }
-    // Fail closed when locality is unprovable (no extractable target path).
-    if (targets.length === 0) locallyProven = false;
-  } else {
-    // Legacy callers cannot prove locality; keep their previous contract.
-    locallyProven = true;
-  }
+  const projectRoot = canonicalizePath(ctx.cwd);
+  const locallyProven =
+    !!projectRoot &&
+    targets.length > 0 &&
+    targets.every((target) => !!target && isInside(target, projectRoot));
   if (!locallyProven) return demote();
 
   // Step 2 — denied data surfaces: even inside the project, readings from
   // Memex-owned data roots stay non-learnable (label kept, learning flipped).
   for (const target of targets) {
+    if (!target) return demote();
     for (const root of denied) {
       if (isInside(target, root)) {
         return { sourceType: "repo_file", learnable: false };
@@ -809,12 +815,6 @@ function repoReadVerdict(
   }
 
   return { sourceType: "repo_file", learnable: true };
-}
-
-/** True when a shell command references any denied evidence root. */
-function commandTouchesDeniedRoot(command: string): boolean {
-  const normalized = command.replace(/~/g, os.homedir());
-  return deniedEvidenceRoots().some((root) => normalized.includes(root));
 }
 
 /**
@@ -841,6 +841,7 @@ function isCompositeShellCommand(command: string): boolean {
     }
     if (quote) {
       if (ch === quote) quote = null;
+      else if (quote === '"' && (ch === "$" || ch === "`")) return true;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -853,6 +854,7 @@ function isCompositeShellCommand(command: string): boolean {
     }
     // 커맨드 치환 (backtick 또는 $( )
     if (ch === "`" || ch === "$") return true;
+    if (ch === "{" || ch === "}") return true; // target-changing brace expansion
     if (ch === "&&" && command[i + 1] === "&") return true;
     if (ch === "|" && command[i + 1] === "|") return true;
     if (ch === "|" || ch === ";" || ch === "&" || ch === "\n" || ch === "\r")
@@ -871,6 +873,289 @@ function commandText(input: unknown): string {
     : typeof cmd === "string"
       ? cmd
       : "";
+}
+
+function shellWords(command: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let started = false;
+  for (const ch of command) {
+    if (escaped) {
+      word += ch;
+      escaped = false;
+      started = true;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else word += ch;
+      started = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        words.push(word);
+        word = "";
+        started = false;
+      }
+      continue;
+    }
+    word += ch;
+    started = true;
+  }
+  if (quote || escaped) return null;
+  if (started) words.push(word);
+  return words.length > 0 ? words : null;
+}
+
+function commandWords(input: unknown, command: string): string[] | null {
+  if (input && typeof input === "object") {
+    const cmd = (input as { cmd?: unknown }).cmd;
+    if (Array.isArray(cmd)) {
+      return cmd.length > 0 && cmd.every((part) => typeof part === "string")
+        ? (cmd as string[])
+        : null;
+    }
+  }
+  return shellWords(command);
+}
+
+function shellWorkingDirectory(
+  input: unknown,
+  projectRoot: string,
+): string | null {
+  if (!input || typeof input !== "object") return projectRoot;
+  const record = input as Record<string, unknown>;
+  const values = [record.workdir, record.cwd].filter(
+    (value): value is string => typeof value === "string" && !!value.trim(),
+  );
+  if (new Set(values).size > 1) return null;
+  return canonicalizePath(path.resolve(projectRoot, values[0] ?? "."));
+}
+
+function expandShellPath(base: string, target: string): string | null {
+  if (!target || target === "-") return null;
+  if (target.startsWith("~") && target !== "~" && !target.startsWith("~/")) {
+    return null; // ~user expansion cannot be proven against this process home
+  }
+  const expanded =
+    target === "~" || target.startsWith(`~${path.sep}`)
+      ? path.join(os.homedir(), target.slice(2))
+      : target;
+  return canonicalizePath(path.resolve(base, expanded));
+}
+
+function looksPathLike(value: string): boolean {
+  return (
+    value === "." ||
+    value === ".." ||
+    value === "~" ||
+    path.isAbsolute(value) ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    value.startsWith("~/") ||
+    value.includes(path.sep)
+  );
+}
+
+function pathLikeArguments(words: string[]): string[] {
+  const paths: string[] = [];
+  for (const word of words) {
+    const value = word.startsWith("-") && word.includes("=")
+      ? word.slice(word.indexOf("=") + 1)
+      : word;
+    if (looksPathLike(value)) paths.push(value);
+  }
+  return paths;
+}
+
+type ShellEvidenceSpec = {
+  sourceType: EvidenceSourceType;
+  targets: string[];
+};
+
+const TRUSTED_GIT_SUBCOMMANDS = new Set([
+  "status",
+  "log",
+  "show",
+  "diff",
+  "rev-parse",
+  "branch",
+]);
+
+function gitEvidenceSpec(words: string[], base: string): ShellEvidenceSpec | null {
+  let index = 1;
+  let gitCwd = base;
+  while (index < words.length) {
+    const word = words[index]!;
+    if (word === "-C") {
+      const target = words[index + 1];
+      if (!target) return null;
+      const resolved = expandShellPath(gitCwd, target);
+      if (!resolved) return null;
+      gitCwd = resolved;
+      index += 2;
+      continue;
+    }
+    if (word.startsWith("-C") && word.length > 2) {
+      const resolved = expandShellPath(gitCwd, word.slice(2));
+      if (!resolved) return null;
+      gitCwd = resolved;
+      index++;
+      continue;
+    }
+    if (["--no-pager", "--literal-pathspecs", "--no-replace-objects"].includes(word)) {
+      index++;
+      continue;
+    }
+    if (word.startsWith("-")) return null;
+    break;
+  }
+  const subcommand = words[index];
+  if (!subcommand || !TRUSTED_GIT_SUBCOMMANDS.has(subcommand)) return null;
+  return {
+    sourceType: "git_history",
+    targets: [gitCwd, ...pathLikeArguments(words.slice(index + 1))],
+  };
+}
+
+function npmTestEvidenceSpec(
+  words: string[],
+  base: string,
+): ShellEvidenceSpec | null {
+  let index = 1;
+  let prefix = base;
+  while (index < words.length) {
+    const word = words[index]!;
+    if (word === "--prefix") {
+      const target = words[index + 1];
+      if (!target) return null;
+      const resolved = expandShellPath(base, target);
+      if (!resolved) return null;
+      prefix = resolved;
+      index += 2;
+      continue;
+    }
+    if (word.startsWith("--prefix=")) {
+      const resolved = expandShellPath(base, word.slice("--prefix=".length));
+      if (!resolved) return null;
+      prefix = resolved;
+      index++;
+      continue;
+    }
+    break;
+  }
+  if (words[index] === "run" && words[index + 1] === "test") index += 2;
+  else if (words[index] === "test") index++;
+  else return null;
+  return {
+    sourceType: "test_execution",
+    targets: [prefix, ...pathLikeArguments(words.slice(index))],
+  };
+}
+
+function readCommandTargets(program: string, args: string[]): string[] | null {
+  if (program === "find") {
+    if (args.some((arg) => /^(?:-exec|-execdir|-ok|-okdir|-delete|-fls|-fprint|-fprintf)$/.test(arg))) {
+      return null;
+    }
+    const roots: string[] = [];
+    for (const arg of args) {
+      if (arg.startsWith("-") || arg === "!" || arg === "(") break;
+      roots.push(arg);
+    }
+    return roots.length > 0 ? roots : null;
+  }
+  const operands = args.filter((arg) => arg === "-" || !arg.startsWith("-"));
+  if (program === "ls") return operands.length > 0 ? operands : ["."];
+  if (program === "stat") return operands.length > 0 ? operands : null;
+  if (program === "jq") return operands.length > 1 ? operands.slice(1) : null;
+  // grep/rg: first positional operand is the expression; remaining operands
+  // are observation targets. stdin-only searches are intentionally untrusted.
+  return operands.length > 1 ? operands.slice(1) : null;
+}
+
+function shellEvidenceSpec(words: string[], base: string): ShellEvidenceSpec | null {
+  const program = words[0];
+  if (!program) return null;
+  if (program === "git") return gitEvidenceSpec(words, base);
+  if (program === "npm") return npmTestEvidenceSpec(words, base);
+  if (["pnpm", "yarn", "bun"].includes(program)) {
+    const commandIndex = words[1] === "run" ? 2 : 1;
+    if (words[commandIndex] !== "test") return null;
+    return {
+      sourceType: "test_execution",
+      targets: [base, ...pathLikeArguments(words.slice(commandIndex + 1))],
+    };
+  }
+  if (
+    (program === "node" && words[1] === "--test") ||
+    (program === "vitest") ||
+    (program === "npx" && words[1] === "vitest") ||
+    program === "pytest" ||
+    (program === "cargo" && words[1] === "test") ||
+    (program === "go" && words[1] === "test")
+  ) {
+    return {
+      sourceType: "test_execution",
+      targets: [base, ...pathLikeArguments(words.slice(1))],
+    };
+  }
+  if (["rg", "grep", "find", "ls", "stat", "jq"].includes(program)) {
+    if ((program === "rg" || program === "grep") && words.includes("--pre")) {
+      return null;
+    }
+    const targets = readCommandTargets(program, words.slice(1));
+    if (!targets) return null;
+    return {
+      sourceType: "repo_file",
+      targets: [...targets, ...pathLikeArguments(words.slice(1))],
+    };
+  }
+  return null;
+}
+
+function shellEvidenceVerdict(
+  toolInput: unknown,
+  words: string[],
+  ctx?: ToolEvidenceContext,
+): { sourceType: EvidenceSourceType; learnable: boolean } {
+  const unverified = {
+    sourceType: "external_unverified" as const,
+    learnable: false,
+  };
+  if (!ctx?.cwd) return unverified;
+  const projectRoot = canonicalizePath(ctx.cwd);
+  if (!projectRoot) return unverified;
+  const effectiveCwd = shellWorkingDirectory(toolInput, projectRoot);
+  if (!effectiveCwd || !isInside(effectiveCwd, projectRoot)) return unverified;
+  const spec = shellEvidenceSpec(words, effectiveCwd);
+  if (!spec) return unverified;
+
+  const denied = deniedEvidenceRoots();
+  const targets = [effectiveCwd, ...spec.targets];
+  for (const target of targets) {
+    const canonical = path.isAbsolute(target)
+      ? canonicalizePath(target)
+      : expandShellPath(effectiveCwd, target);
+    if (!canonical || !isInside(canonical, projectRoot)) return unverified;
+    if (denied.some((root) => isInside(canonical, root))) {
+      return { sourceType: spec.sourceType, learnable: false };
+    }
+  }
+  return { sourceType: spec.sourceType, learnable: true };
 }
 
 export function classifyToolEvidence(
@@ -901,25 +1186,10 @@ export function classifyToolEvidence(
   if (isCompositeShellCommand(command)) {
     return { sourceType: "external_unverified", learnable: false };
   }
-  if (/^git\s+(status|log|show|diff|rev-parse|branch)(\s|$)/.test(command)) {
-    return { sourceType: "git_history", learnable: true };
-  }
-  if (
-    /^(npm|pnpm|yarn|bun)\s+(run\s+)?test(\s|$)|^node\s+--test(\s|$)|^(npx\s+)?vitest(\s|$)|^(pytest|cargo\s+test|go\s+test)(\s|$)/.test(
-      command,
-    )
-  ) {
-    return { sourceType: "test_execution", learnable: true };
-  }
-  if (/^(rg|grep|find|ls|stat|jq)(\s|$)/.test(command)) {
-    if (commandTouchesDeniedRoot(command)) {
-      // Reading our own archives/rollouts/temp outputs through a shell is the
-      // same laundering vector as reading them through read tools — demote.
-      return { sourceType: "repo_file", learnable: false };
-    }
-    return { sourceType: "repo_file", learnable: true };
-  }
-  return { sourceType: "external_unverified", learnable: false };
+  const words = commandWords(toolInput, command);
+  return words
+    ? shellEvidenceVerdict(toolInput, words, ctx)
+    : { sourceType: "external_unverified", learnable: false };
 }
 
 export function hashRecallPrompt(prompt: string): string {
