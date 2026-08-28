@@ -1,12 +1,16 @@
-import { getSearchDb } from './search.js';
-import { l2DistanceToSimilarity } from './db.js';
-import { searchSimilarFacts } from './fact-db.js';
-import { generateEmbedding, initEmbeddings, queryBaseline } from './embeddings.js';
-import { getRelatedFacts } from './ontology-db.js';
-import { detectRepeat, formatRepeatContext } from './repeat-detector.js';
-import { appendInjectLog } from './inject-log.js';
-import { loadLedger, appendLedger } from './inject-ledger.js';
-import { recordRecallEvent } from './db.js';
+import { getSearchDb } from "./search.js";
+import { l2DistanceToSimilarity } from "./db.js";
+import { searchSimilarFacts } from "./fact-db.js";
+import {
+  generateEmbedding,
+  initEmbeddings,
+  queryBaseline,
+} from "./embeddings.js";
+import { getRelatedFacts } from "./ontology-db.js";
+import { detectRepeat, formatRepeatContext } from "./repeat-detector.js";
+import { appendInjectLog } from "./inject-log.js";
+import { loadLedger, appendLedger } from "./inject-ledger.js";
+import { recordRecallEvent } from "./db.js";
 
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
@@ -28,8 +32,8 @@ const BLOCK_CHAR_BUDGET = 1000;
 const REPEAT_ELAPSED_BUDGET_MS = 700;
 
 function truncateFact(text: string): string {
-  const t = text.replace(/\s+/g, ' ').trim();
-  return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + '…' : t;
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + "…" : t;
 }
 
 /**
@@ -44,22 +48,41 @@ function truncateFact(text: string): string {
  *    ~2.3s dominated by model load) used when no MCP server is running.
  *
  * `via` tags the inject log so the two paths stay distinguishable.
+ *
+ * Provenance 계약(RETRIEVAL-AND-CONTEXT.md:43-48): 컨텍스트 발행 **전**에 durable
+ * `prepared` recall 영수증이 있어야 한다. sessionId 없는 호출은 recall_events 행을
+ * 남길 수 없어 provenance 가 단절되므로, fact 주입 자체를 생략한다(fail-closed).
+ * "one recall must not taint sibling tools" 불변식의 추적 가능성이 이 영수증에 의존한다.
  */
 export async function computeInjectContext(
   userPrompt: string,
   project: string,
-  via: 'daemon' | 'fallback',
+  via: "daemon" | "fallback",
   sessionId?: string,
 ): Promise<string> {
   const t0 = Date.now();
   if (!userPrompt || userPrompt.length < 20) {
-    appendInjectLog({ status: 'skipped', project, prompt_len: userPrompt?.length ?? 0, via });
-    return '';
+    appendInjectLog({
+      status: "skipped",
+      project,
+      prompt_len: userPrompt?.length ?? 0,
+      via,
+    });
+    return "";
+  }
+  if (!sessionId) {
+    appendInjectLog({
+      status: "no-session-provenance",
+      project,
+      prompt_len: userPrompt.length,
+      via,
+    });
+    return "";
   }
 
   try {
     await initEmbeddings();
-    const embedding = await generateEmbedding(userPrompt, 'query');
+    const embedding = await generateEmbedding(userPrompt, "query");
     const baseline = await queryBaseline(embedding);
 
     // Cached long-lived handle (file-identity checked) — initDatabase()'s
@@ -76,21 +99,34 @@ export async function computeInjectContext(
 
       if (results.length === 0) {
         appendInjectLog({
-          status: 'no-match', project, prompt_len: userPrompt.length,
-          candidates: candidates.length, injected: 0, duration_ms: Date.now() - t0, via,
+          status: "no-match",
+          project,
+          prompt_len: userPrompt.length,
+          candidates: candidates.length,
+          injected: 0,
+          duration_ms: Date.now() - t0,
+          via,
         });
-        return '';
+        return "";
       }
 
       // Expand with 1-hop relations
       const seenIds = new Set(results.map((r) => r.fact.id));
-      const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: '' }))];
+      const expandedFacts = [
+        ...results.map((r) => ({ fact: r.fact, note: "" })),
+      ];
       for (const { fact } of results.slice(0, 3)) {
         const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
         for (const { fact: relFact, relation } of related) {
-          if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
+          if (
+            !seenIds.has(relFact.id) &&
+            expandedFacts.length < MAX_CONTEXT_FACTS
+          ) {
             seenIds.add(relFact.id);
-            expandedFacts.push({ fact: relFact, note: `[${relation.relation_type}]` });
+            expandedFacts.push({
+              fact: relFact,
+              note: `[${relation.relation_type}]`,
+            });
           }
         }
       }
@@ -102,22 +138,31 @@ export async function computeInjectContext(
       const dedupedCount = expandedFacts.length - fresh.length;
       if (fresh.length === 0) {
         appendInjectLog({
-          status: 'deduped', project, prompt_len: userPrompt.length,
-          candidates: candidates.length, injected: 0, deduped: dedupedCount,
-          duration_ms: Date.now() - t0, via,
+          status: "deduped",
+          project,
+          prompt_len: userPrompt.length,
+          candidates: candidates.length,
+          injected: 0,
+          deduped: dedupedCount,
+          duration_ms: Date.now() - t0,
+          via,
         });
-        return '';
+        return "";
       }
 
       // Format context block — fact 당 160자 절단 + 블록 1,000자 예산
       // (하위 관련도부터 탈락: fresh 는 관련도순이므로 뒤에서 끊긴다)
-      const lines = ['📌 관련 과거 결정:'];
+      const lines = ["📌 관련 과거 결정:"];
       let blockChars = lines[0].length;
       const injectedIds: string[] = [];
       for (const { fact, note } of fresh) {
         const dateStr = fact.created_at.slice(0, 10);
-        const line = `- ${note ? note + ' ' : ''}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
-        if (blockChars + line.length > BLOCK_CHAR_BUDGET && injectedIds.length > 0) break;
+        const line = `- ${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
+        if (
+          blockChars + line.length > BLOCK_CHAR_BUDGET &&
+          injectedIds.length > 0
+        )
+          break;
         lines.push(line);
         blockChars += line.length + 1;
         injectedIds.push(fact.id);
@@ -125,15 +170,33 @@ export async function computeInjectContext(
 
       // Detect repeated prompts (best-effort). 동기 sqlite 검색이라 시작 후엔
       // 선점 불가 — 주입이 이미 예산을 소진했으면 시작 자체를 생략 (tail 상한).
+      // repeat 컨텍스트도 블록 예산 안에 포함된다(RETRIEVAL-AND-CONTEXT.md:60-64):
+      // 남은 예산을 넘으면 절단하고, 예산이 사실상 없으면 생략한다.
       if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
         try {
-          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, { embedding, db });
-          const repeatCtx = formatRepeatContext(repeats);
+          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
+            embedding,
+            db,
+          });
+          let repeatCtx = formatRepeatContext(repeats);
           if (repeatCtx) {
-            lines.push('');
-            lines.push(repeatCtx);
+            const remaining = BLOCK_CHAR_BUDGET - blockChars;
+            if (remaining <= 0) {
+              // 예산 소진 — repeat 를 생략한다.
+            } else {
+              if (repeatCtx.length > remaining) {
+                repeatCtx =
+                  repeatCtx.slice(0, Math.max(0, remaining - 1)) + "…";
+              }
+              if (repeatCtx.trim().length > 0) {
+                lines.push("");
+                lines.push(repeatCtx);
+              }
+            }
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
       }
 
       appendLedger(sessionId, ledger, injectedIds);
@@ -145,21 +208,30 @@ export async function computeInjectContext(
           factIds: injectedIds,
         });
       }
-      const block = lines.join('\n') + '\n';
+      const block = lines.join("\n") + "\n";
       appendInjectLog({
-        status: 'injected', project, prompt_len: userPrompt.length,
-        candidates: candidates.length, injected: injectedIds.length,
-        deduped: dedupedCount, chars: block.length,
-        duration_ms: Date.now() - t0, via,
+        status: "injected",
+        project,
+        prompt_len: userPrompt.length,
+        candidates: candidates.length,
+        injected: injectedIds.length,
+        deduped: dedupedCount,
+        chars: block.length,
+        duration_ms: Date.now() - t0,
+        via,
       });
       return block;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     appendInjectLog({
-      status: 'error', project, prompt_len: userPrompt.length,
-      duration_ms: Date.now() - t0, error: message.slice(0, 300), via,
+      status: "error",
+      project,
+      prompt_len: userPrompt.length,
+      duration_ms: Date.now() - t0,
+      error: message.slice(0, 300),
+      via,
     });
-    return ''; // non-fatal: never disrupt the user's prompt
+    return ""; // non-fatal: never disrupt the user's prompt
   }
 }

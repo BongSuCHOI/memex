@@ -1,6 +1,6 @@
-import fs from 'fs';
-import path from 'path';
-import { getIndexDir } from './paths.js';
+import fs from "fs";
+import path from "path";
+import { getIndexDir } from "./paths.js";
 
 /**
  * Observability log for the UserPromptSubmit context injection pipeline.
@@ -16,29 +16,35 @@ import { getIndexDir } from './paths.js';
 const MAX_LOG_BYTES = 5 * 1024 * 1024; // rotate at 5MB
 
 export interface InjectLogEntry {
-  ts: string;
-  /** 'deduped': 후보 전부가 이 세션에서 이미 주입됨 → 재주입 0 (토큰 절약 관측용). */
-  status: 'injected' | 'no-match' | 'skipped' | 'error' | 'deduped';
-  project?: string;
-  prompt_len?: number;
-  candidates?: number;
-  injected?: number;
-  /** 세션 원장 dedup 으로 걸러진 fact 수 — 절감량이 로그로 상시 측정된다. */
-  deduped?: number;
-  /** 실제 주입된 블록 크기(자) — 토큰 비용 관측용 (~chars/3 tok). */
-  chars?: number;
-  duration_ms?: number;
-  error?: string;
-  /** Which execution path served this injection: warm MCP-server daemon or cold fallback. */
-  via?: 'daemon' | 'fallback';
+ ts: string;
+ /** 'deduped': 후보 전부가 이 세션에서 이미 주입됨 → 재주입 0 (토큰 절약 관측용). */
+ status:
+  | "injected"
+  | "no-match"
+  | "skipped"
+  | "error"
+  | "deduped"
+  | "no-session-provenance";
+ project?: string;
+ prompt_len?: number;
+ candidates?: number;
+ injected?: number;
+ /** 세션 원장 dedup 으로 걸러진 fact 수 — 절감량이 로그로 상시 측정된다. */
+ deduped?: number;
+ /** 실제 주입된 블록 크기(자) — 토큰 비용 관측용 (~chars/3 tok). */
+ chars?: number;
+ duration_ms?: number;
+ error?: string;
+ /** Which execution path served this injection: warm MCP-server daemon or cold fallback. */
+ via?: "daemon" | "fallback";
 }
 
 export function getInjectLogPath(): string {
-  const dir = path.join(getIndexDir(), 'logs');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return path.join(dir, 'inject-context.jsonl');
+ const dir = path.join(getIndexDir(), "logs");
+ if (!fs.existsSync(dir)) {
+  fs.mkdirSync(dir, { recursive: true });
+ }
+ return path.join(dir, "inject-context.jsonl");
 }
 
 /**
@@ -46,22 +52,22 @@ export function getInjectLogPath(): string {
  * Rotates to `.old` (replacing any previous rotation) when the log exceeds 5MB.
  * Never throws.
  */
-export function appendInjectLog(entry: Omit<InjectLogEntry, 'ts'>): void {
+export function appendInjectLog(entry: Omit<InjectLogEntry, "ts">): void {
+ try {
+  const logPath = getInjectLogPath();
+
   try {
-    const logPath = getInjectLogPath();
-
-    try {
-      const stat = fs.statSync(logPath);
-      if (stat.size > MAX_LOG_BYTES) {
-        fs.renameSync(logPath, `${logPath}.old`);
-      }
-    } catch {
-      // No existing log — nothing to rotate.
-    }
-
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
-    fs.appendFileSync(logPath, line + '\n');
+   const stat = fs.statSync(logPath);
+   if (stat.size > MAX_LOG_BYTES) {
+    fs.renameSync(logPath, `${logPath}.old`);
+   }
   } catch {
-    // Best-effort only: observability must not break injection.
+   // No existing log — nothing to rotate.
   }
+
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
+  fs.appendFileSync(logPath, line + "\n");
+ } catch {
+  // Best-effort only: observability must not break injection.
+ }
 }

@@ -68,6 +68,9 @@ prompt가 실패해서는 안 되지만 오류는 log에 남아야 합니다.
 dedup ledger는 best-effort 운영 상태이지만 recall provenance receipt는 학습 경계입니다.
 실제 context를 주입하기 전에 durable `prepared` write가 성공해야 합니다. hook이 stdout에
 쓴 뒤 `emitted`로 전환하며, host가 실제 소비했다는 `consumed` 주장은 하지 않습니다.
+sessionId가 없는 주입 요청은 durable `prepared` write를 남길 수 없으므로 주입 자체를
+생략합니다(`no-session-provenance` 로그). provenance 없이 context를 emission하는
+경로는 존재하지 않습니다.
 
 ## 5. 검색 가능하지만 학습 불가
 
