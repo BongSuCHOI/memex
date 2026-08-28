@@ -135,3 +135,71 @@ describe('SessionStart missing primary fact vector self-heal', () => {
     }
   });
 });
+
+describe('SessionStart stale category vector self-heal', () => {
+  it('re-embeds a stale-generation category through the maintenance → reembed worker path', () => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-reembed-maintenance-'));
+    const memexHome = path.join(sandbox, 'home');
+    const dbPath = path.join(memexHome, 'conversation-index', 'db.sqlite');
+    writeRuntimeFixture();
+
+    const previousHome = process.env.MEMEX_HOME;
+    const previousDb = process.env.MEMEX_DB_PATH;
+    process.env.MEMEX_HOME = memexHome;
+    process.env.MEMEX_DB_PATH = dbPath;
+    try {
+      const db = initDatabase();
+      db.prepare(
+        "INSERT INTO ontology_domains (id, name) VALUES ('fixture-domain', 'Fixture Domain')",
+      ).run();
+      // embedding_version 0 = stale generation (never embedded with the
+      // current model) — the category selector must see it as pending.
+      db.prepare(`
+        INSERT INTO ontology_categories (id, domain_id, name, description, created_at, embedding_version)
+        VALUES ('fixture-category', 'fixture-domain', 'Fixture Category', 'fixture description', ?, 0)
+      `).run(new Date().toISOString());
+      db.close();
+    } finally {
+      if (previousHome === undefined) delete process.env.MEMEX_HOME;
+      else process.env.MEMEX_HOME = previousHome;
+      if (previousDb === undefined) delete process.env.MEMEX_DB_PATH;
+      else process.env.MEMEX_DB_PATH = previousDb;
+    }
+
+    const maintenance = spawnSync(
+      process.execPath,
+      [path.join(sandbox, 'scripts', 'session-start-maintenance.js')],
+      {
+        cwd: sandbox,
+        env: { ...process.env, MEMEX_HOME: memexHome, MEMEX_DB_PATH: dbPath },
+        encoding: 'utf8',
+        timeout: 15_000,
+      },
+    );
+    expect(maintenance.status).toBe(0);
+    expect(maintenance.stderr).toBe('');
+
+    const check = new Database(dbPath, { readonly: true });
+    sqliteVec.load(check);
+    try {
+      expect(check.prepare(`
+        SELECT c.embedding_version,
+               EXISTS(SELECT 1 FROM vec_categories_rowids v WHERE v.id = c.id) AS has_vector
+        FROM ontology_categories c WHERE c.id = 'fixture-category'
+      `).get()).toEqual({
+        embedding_version: EMBEDDING_VERSION,
+        has_vector: 1,
+      });
+    } finally {
+      check.close();
+    }
+
+    // The reembed worker's own log proves the category branch (not some other
+    // repair) performed the upgrade.
+    const log = fs.readFileSync(
+      path.join(memexHome, 'conversation-index', 'reembed.log'),
+      'utf8',
+    );
+    expect(log).toContain('categories: done (1)');
+  });
+});

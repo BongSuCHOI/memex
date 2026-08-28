@@ -19,6 +19,7 @@ import {
   indexSession,
   indexUnprocessed,
 } from "../src/indexer.js";
+import { syncConversations } from "../src/sync.js";
 import { initDatabase } from "../src/db.js";
 import { repairIndex } from "../src/verify.js";
 
@@ -120,5 +121,131 @@ describe("conversation exclusion policy across index entrypoints", () => {
           .filter((entry) => String(entry).endsWith("-summary.txt"))
       : [];
     expect(summaries).toHaveLength(0);
+  });
+});
+
+describe("same rollout excluded identically across sync and index entrypoints", () => {
+  function countSummaries(dir: string): number {
+    if (!fs.existsSync(dir)) return 0;
+    return fs
+      .readdirSync(dir, { recursive: true })
+      .filter((entry) => String(entry).endsWith("-summary.txt"))
+      .length;
+  }
+
+  it("sync, indexConversations, indexSession, and indexUnprocessed all exclude the identical rollout", async () => {
+    // Each entrypoint gets a fresh home but byte-identical rollout content, so
+    // any divergence in exclusion behavior is attributable to the entrypoint.
+    const rolloutLines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: SESSION_ID, cwd: "/tmp/entrypoint-policy" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `${MARKER}\n이 세션은 PostgreSQL 결정을 담고 있지만 색인하지 않는다.`,
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [
+            { type: "output_text", text: "PostgreSQL 결정을 확인했다." },
+          ],
+        },
+      }),
+    ].join("\n") + "\n";
+
+    const outcomes: Record<
+      string,
+      { exchanges: number; vecExchanges: number; fts: number; summaries: number }
+    > = {};
+
+    for (const entry of [
+      "sync",
+      "indexConversations",
+      "indexSession",
+      "indexUnprocessed",
+    ] as const) {
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-exclusion-sameness-"));
+      const sessions = path.join(tmp, "sessions");
+      const archive = path.join(tmp, "archive");
+      const dbPath = path.join(tmp, "db.sqlite");
+      fs.mkdirSync(sessions, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessions, `rollout-2026-08-28T00-00-00-${SESSION_ID}.jsonl`),
+        rolloutLines,
+      );
+      process.env.TEST_SESSIONS_DIR = sessions;
+      process.env.TEST_ARCHIVE_DIR = archive;
+      process.env.MEMEX_DB_PATH = dbPath;
+      try {
+        if (entry === "sync") {
+          await syncConversations(sessions, archive);
+        } else if (entry === "indexConversations") {
+          await indexConversations(undefined, undefined, 1, false);
+        } else if (entry === "indexSession") {
+          await indexSession(SESSION_ID, 1, false);
+        } else {
+          await indexUnprocessed(1, false);
+        }
+
+        const db = initDatabase();
+        try {
+          outcomes[entry] = {
+            exchanges: (
+              db.prepare("SELECT COUNT(*) AS n FROM exchanges").get() as {
+                n: number;
+              }
+            ).n,
+            vecExchanges: (
+              db.prepare("SELECT COUNT(*) AS n FROM vec_exchanges").get() as {
+                n: number;
+              }
+            ).n,
+            fts: (
+              db
+                .prepare(
+                  "SELECT COUNT(*) AS n FROM exchanges_fts WHERE exchanges_fts MATCH 'PostgreSQL'",
+                )
+                .get() as { n: number }
+            ).n,
+            summaries: countSummaries(archive),
+          };
+        } finally {
+          db.close();
+        }
+      } finally {
+        delete process.env.TEST_SESSIONS_DIR;
+        delete process.env.TEST_ARCHIVE_DIR;
+        delete process.env.MEMEX_DB_PATH;
+        if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+        tmp = undefined;
+      }
+    }
+
+    // Every entrypoint must produce the identical excluded outcome — no
+    // exchange rows, no vectors, no FTS hits, no summaries.
+    const values = Object.values(outcomes);
+    expect(values).toHaveLength(4);
+    expect(values[0]).toEqual({
+      exchanges: 0,
+      vecExchanges: 0,
+      fts: 0,
+      summaries: 0,
+    });
+    expect(values[1]).toEqual(values[0]);
+    expect(values[2]).toEqual(values[0]);
+    expect(values[3]).toEqual(values[0]);
   });
 });
