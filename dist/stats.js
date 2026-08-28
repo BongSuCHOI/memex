@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
 import { getDbPath } from './paths.js';
 import { archiveFileExists } from './archive-io.js';
+import { openReadDb } from './db.js';
 export async function getIndexStats(dbPath) {
     const resolvedDbPath = dbPath || getDbPath();
     // Check if database exists
@@ -14,7 +14,7 @@ export async function getIndexStats(dbPath) {
             projectCount: 0,
         };
     }
-    const db = new Database(resolvedDbPath, { readonly: true });
+    const db = openReadDb(resolvedDbPath);
     try {
         // Check if tables exist
         const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();

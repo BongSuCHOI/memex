@@ -23,6 +23,10 @@ export declare function normalizeVecDistance(distance: number, dtype: VecDtype):
  * (run it through normalizeVecDistance first for int8 tables).
  */
 export declare function l2DistanceToSimilarity(distance: number): number;
+/** Open an existing database read-only with sqlite-vec registered. */
+export declare function openReadDb(dbPath?: string): Database.Database;
+/** Open a writable database with sqlite-vec and writer pragmas registered. */
+export declare function openWriteDb(dbPath?: string): Database.Database;
 export declare function initDatabase(): Database.Database;
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
 export declare function isMemexRecallToolName(toolName: string): boolean;

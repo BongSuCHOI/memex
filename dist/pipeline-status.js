@@ -7,8 +7,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
+import { openReadDb } from "./db.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
 import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
 function tableExists(db, name) {
@@ -83,15 +82,7 @@ export function getPipelineStatus(opts = {}) {
             },
         };
     }
-    const db = new Database(dbPath, { readonly: true });
-    // vec0 virtual tables need the sqlite-vec module even for plain reads.
-    let vecReadable = true;
-    try {
-        sqliteVec.load(db);
-    }
-    catch {
-        vecReadable = false;
-    }
+    const db = openReadDb(dbPath);
     try {
         const hasExchanges = tableExists(db, "exchanges");
         const hasExtractionLog = tableExists(db, "extraction_log");
@@ -205,15 +196,14 @@ export function getPipelineStatus(opts = {}) {
         let relations = 0;
         if (hasFacts) {
             embeddings.activeFacts = count(db, "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1");
-            if (vecReadable && tableExists(db, "vec_facts")) {
+            if (tableExists(db, "vec_facts")) {
                 embeddings.factVectorsPending = count(db, `
           SELECT COUNT(*) AS c FROM facts f
           WHERE f.is_active = 1
             AND NOT EXISTS (SELECT 1 FROM vec_facts v WHERE v.id = f.id)`);
             }
             else {
-                // Extension missing or table absent: report every active fact as
-                // vector-pending instead of crashing the read-only report.
+                // Missing table: report every active fact as vector-pending.
                 embeddings.factVectorsPending = embeddings.activeFacts;
             }
             ontology.classifiedFacts = count(db, "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1 AND ontology_category_id IS NOT NULL");

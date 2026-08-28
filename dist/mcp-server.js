@@ -3257,8 +3257,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path10) {
-      let input = path10;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3663,8 +3663,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path10 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
+        const path11 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7170,12 +7170,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs9, exportName) {
+    function addFormats(ajv, list, fs10, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs9[f]);
+        ajv.addFormat(f, fs10[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7661,8 +7661,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path10, errorMaps, issueData } = params;
-  const fullPath = [...path10, ...issueData.path || []];
+  const { data, path: path11, errorMaps, issueData } = params;
+  const fullPath = [...path11, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7778,11 +7778,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path10, key) {
+  constructor(parent, value, path11, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path10;
+    this._path = path11;
     this._key = key;
   }
   get path() {
@@ -11420,10 +11420,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11743,11 +11743,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -18320,8 +18320,8 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 import net from "node:net";
-import fs6 from "node:fs";
-import path5 from "node:path";
+import fs7 from "node:fs";
+import path6 from "node:path";
 
 // src/paths.ts
 import os2 from "os";
@@ -18391,6 +18391,8 @@ var LLM_WORKDIR_BASENAME = "memory-bank-llm";
 // src/db.ts
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import fs2 from "node:fs";
+import path3 from "path";
 import * as sqliteVec from "sqlite-vec";
 
 // src/embeddings.ts
@@ -18521,15 +18523,29 @@ function normalizeVecDistance(distance, dtype) {
 function l2DistanceToSimilarity(distance) {
   return 1 - distance * distance / 2;
 }
+function initializeConnection(db, mode) {
+  try {
+    sqliteVec.load(db);
+    db.pragma("busy_timeout = 5000");
+    if (mode === "write") {
+      db.pragma("journal_mode = WAL");
+      db.pragma("journal_size_limit = 67108864");
+      db.pragma("recursive_triggers = ON");
+    }
+    return db;
+  } catch (error2) {
+    db.close();
+    throw error2;
+  }
+}
+function openWriteDb(dbPath = getDbPath()) {
+  fs2.mkdirSync(path3.dirname(dbPath), { recursive: true });
+  return initializeConnection(new Database(dbPath), "write");
+}
 function initDatabase() {
   const dbPath = getDbPath();
   ensureDbDir();
-  const db = new Database(dbPath);
-  sqliteVec.load(db);
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("journal_size_limit = 67108864");
-  db.pragma("recursive_triggers = ON");
+  const db = openWriteDb(dbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
@@ -19179,11 +19195,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs3 from "fs";
+import fs4 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs2 from "fs";
+import fs3 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -19203,7 +19219,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs2.statSync(p);
+      return fs3.statSync(p);
     } catch {
       return null;
     }
@@ -19252,7 +19268,7 @@ function readArchiveFile(filePath) {
       code: "ENOENT"
     });
   }
-  const buf = fs2.readFileSync(resolved);
+  const buf = fs3.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -19261,27 +19277,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs2.createReadStream(filePath);
+    return fs3.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs2.createReadStream(resolved);
+      const source = fs3.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs2.readFileSync(resolved));
+    const content = requireZstdSync()(fs3.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs2.createReadStream(resolved);
+  return fs3.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs2.statSync(resolved);
+    return fs3.statSync(resolved);
   } catch {
     return null;
   }
@@ -19293,7 +19309,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs3.statSync(p);
+    const st = fs4.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -19872,39 +19888,39 @@ function formatRepeatContext(matches) {
 }
 
 // src/inject-log.ts
-import fs4 from "fs";
-import path3 from "path";
+import fs5 from "fs";
+import path4 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path3.join(getIndexDir(), "logs");
-  if (!fs4.existsSync(dir)) {
-    fs4.mkdirSync(dir, { recursive: true });
+  const dir = path4.join(getIndexDir(), "logs");
+  if (!fs5.existsSync(dir)) {
+    fs5.mkdirSync(dir, { recursive: true });
   }
-  return path3.join(dir, "inject-context.jsonl");
+  return path4.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs4.statSync(logPath);
+      const stat = fs5.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs4.renameSync(logPath, `${logPath}.old`);
+        fs5.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs4.appendFileSync(logPath, line + "\n");
+    fs5.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
 
 // src/inject-ledger.ts
-import fs5 from "node:fs";
-import path4 from "node:path";
+import fs6 from "node:fs";
+import path5 from "node:path";
 var MAX_IDS = 400;
 var TTL_MS = 7 * 24 * 60 * 60 * 1e3;
 function ledgerDir() {
-  return path4.join(getIndexDir(), "state", "inject-ledger");
+  return path5.join(getIndexDir(), "state", "inject-ledger");
 }
 function sanitizeSessionId(sessionId) {
   if (!sessionId) return null;
@@ -19912,13 +19928,13 @@ function sanitizeSessionId(sessionId) {
   return clean.length >= 4 ? clean : null;
 }
 function ledgerPath(cleanId) {
-  return path4.join(ledgerDir(), cleanId + ".json");
+  return path5.join(ledgerDir(), cleanId + ".json");
 }
 function loadLedger(sessionId) {
   const id = sanitizeSessionId(sessionId);
   if (!id) return /* @__PURE__ */ new Set();
   try {
-    const raw = fs5.readFileSync(ledgerPath(id), "utf8");
+    const raw = fs6.readFileSync(ledgerPath(id), "utf8");
     const arr = JSON.parse(raw);
     if (Array.isArray(arr)) return new Set(arr.filter((x2) => typeof x2 === "string"));
   } catch {
@@ -19930,13 +19946,13 @@ function appendLedger(sessionId, existing, newIds) {
   if (!id || newIds.length === 0) return;
   try {
     const dir = ledgerDir();
-    fs5.mkdirSync(dir, { recursive: true });
+    fs6.mkdirSync(dir, { recursive: true });
     const ordered = [...existing, ...newIds.filter((n) => !existing.has(n))];
     const bounded = ordered.length > MAX_IDS ? ordered.slice(ordered.length - MAX_IDS) : ordered;
     const p = ledgerPath(id);
     const tmp = p + ".tmp";
-    fs5.writeFileSync(tmp, JSON.stringify(bounded));
-    fs5.renameSync(tmp, p);
+    fs6.writeFileSync(tmp, JSON.stringify(bounded));
+    fs6.renameSync(tmp, p);
     pruneOldLedgers(dir);
   } catch {
   }
@@ -19944,11 +19960,11 @@ function appendLedger(sessionId, existing, newIds) {
 function pruneOldLedgers(dir) {
   try {
     const now = Date.now();
-    for (const f of fs5.readdirSync(dir)) {
+    for (const f of fs6.readdirSync(dir)) {
       if (!f.endsWith(".json")) continue;
-      const fp = path4.join(dir, f);
+      const fp = path5.join(dir, f);
       try {
-        if (now - fs5.statSync(fp).mtimeMs > TTL_MS) fs5.unlinkSync(fp);
+        if (now - fs6.statSync(fp).mtimeMs > TTL_MS) fs6.unlinkSync(fp);
       } catch {
       }
     }
@@ -20122,7 +20138,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
 
 // src/inject-daemon.ts
 function injectSocketPath() {
-  return path5.join(getIndexDir(), "inject-daemon.sock");
+  return path6.join(getIndexDir(), "inject-daemon.sock");
 }
 function startInjectDaemon() {
   ensureIndexDir();
@@ -20166,7 +20182,7 @@ function startInjectDaemon() {
     probe.on("connect", () => probe.destroy());
     probe.on("error", () => {
       try {
-        fs6.unlinkSync(sockPath);
+        fs7.unlinkSync(sockPath);
         server2.listen(sockPath, onListen);
       } catch {
       }
@@ -20174,7 +20190,7 @@ function startInjectDaemon() {
   });
   const onListen = () => {
     try {
-      fs6.chmodSync(sockPath, 384);
+      fs7.chmodSync(sockPath, 384);
     } catch {
     }
     void initEmbeddings().catch(() => {
@@ -21660,18 +21676,18 @@ ${JSON.stringify(value, null, 2)}
 }
 
 // src/project-identity.ts
-import path6 from "node:path";
+import path7 from "node:path";
 function canonicalizeProjectPath(cwd) {
   if (typeof cwd !== "string") return "";
   let p = cwd.trim();
   if (!p) return "";
-  if (!path6.isAbsolute(p)) p = path6.resolve("/", p);
-  const resolved = path6.normalize(p);
+  if (!path7.isAbsolute(p)) p = path7.resolve("/", p);
+  const resolved = path7.normalize(p);
   return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
 }
 
 // src/llm.ts
-import path8 from "node:path";
+import path9 from "node:path";
 import os4 from "node:os";
 
 // src/llm-error-class.ts
@@ -21727,9 +21743,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs7 from "node:fs";
+import fs8 from "node:fs";
 import os3 from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 var INNER_GUARD_ENV = "MEMORY_BANK_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 function buildPrompt(systemPrompt, userMessage) {
@@ -21845,15 +21861,15 @@ async function runCodex(opts = {}) {
   }
   const bin = opts.codexBin || process.env.MEMORY_BANK_CODEX_BIN || "codex";
   const timeoutMs = opts.timeoutMs ?? 18e4;
-  const workdir = fs7.mkdtempSync(path7.join(os3.tmpdir(), "memory-bank-llm-"));
-  const outPath = path7.join(workdir, "last-message.txt");
+  const workdir = fs8.mkdtempSync(path8.join(os3.tmpdir(), "memory-bank-llm-"));
+  const outPath = path8.join(workdir, "last-message.txt");
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
     const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath });
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
     let text = "";
     try {
-      text = fs7.readFileSync(outPath, "utf8").trim();
+      text = fs8.readFileSync(outPath, "utf8").trim();
     } catch {
     }
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
@@ -21865,12 +21881,12 @@ async function runCodex(opts = {}) {
     }
     return text;
   } finally {
-    fs7.rmSync(workdir, { recursive: true, force: true });
+    fs8.rmSync(workdir, { recursive: true, force: true });
   }
 }
 
 // src/llm.ts
-var LLM_WORKDIR = path8.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path9.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMORY_BANK_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -22049,8 +22065,8 @@ async function askAvatar(db, question, project, scope) {
 }
 
 // src/mcp-server.ts
-import path9 from "path";
-import fs8 from "fs";
+import path10 from "path";
+import fs9 from "fs";
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
 var SearchInputSchema = external_exports.object({
@@ -22591,7 +22607,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path9.resolve(params.path);
+      const resolvedPath = path10.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -22599,16 +22615,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs8.realpathSync(resolvedFile);
+      const realFile = fs9.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs8.realpathSync(root);
+          return fs9.realpathSync(root);
         } catch {
-          return path9.resolve(root);
+          return path10.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path9.sep)
+        (root) => realFile === root || realFile.startsWith(root + path10.sep)
       );
       if (!isAllowed) {
         throw new Error(

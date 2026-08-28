@@ -103,36 +103,56 @@ export function l2DistanceToSimilarity(distance: number): number {
   return 1 - (distance * distance) / 2;
 }
 
+/**
+ * Install every connection-local runtime invariant. sqlite-vec registration
+ * belongs to a connection, not the database file, so production callers must
+ * use the factories below before touching vec0 tables.
+ */
+function initializeConnection(
+  db: Database.Database,
+  mode: "read" | "write",
+): Database.Database {
+  try {
+    sqliteVec.load(db);
+    db.pragma("busy_timeout = 5000");
+    if (mode === "write") {
+      db.pragma("journal_mode = WAL");
+      // Cap the -wal file so it is truncated back after each checkpoint. The
+      // default (-1 = unlimited) allowed unbounded growth while long-lived MCP
+      // readers delayed checkpoints. Apply it to every writer connection.
+      db.pragma("journal_size_limit = 67108864");
+      // REPLACE-induced deletes only fire the exchanges_fts cleanup trigger
+      // when recursive triggers are enabled on the writing connection.
+      db.pragma("recursive_triggers = ON");
+    }
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+/** Open an existing database read-only with sqlite-vec registered. */
+export function openReadDb(dbPath: string = getDbPath()): Database.Database {
+  return initializeConnection(
+    new Database(dbPath, { readonly: true, fileMustExist: true }),
+    "read",
+  );
+}
+
+/** Open a writable database with sqlite-vec and writer pragmas registered. */
+export function openWriteDb(dbPath: string = getDbPath()): Database.Database {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  return initializeConnection(new Database(dbPath), "write");
+}
+
 export function initDatabase(): Database.Database {
   const dbPath = getDbPath();
 
   // Ensure directory exists
   ensureDbDir();
 
-  const db = new Database(dbPath);
-
-  // Load sqlite-vec extension
-  sqliteVec.load(db);
-
-  // Enable WAL mode for better concurrency
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-  // Cap the -wal file so it is truncated back after each checkpoint. The default
-  // (-1 = unlimited) let the WAL grow WITHOUT BOUND under this workload: many
-  // long-lived MCP-server readers (one per session) keep a read mark active
-  // almost continuously, so SQLite's auto-checkpoint can rarely advance past the
-  // oldest reader and the file only ever grew — observed live at 1.4 GB, which
-  // crawled the re-embed drain from ~13 to ~3 rows/s. Applied on EVERY connection
-  // (every worker + the MCP server), so no single writer can bloat the WAL no
-  // matter which path is active. 64 MiB is far above normal working-set needs; it
-  // only reclaims runaway file space after checkpoints.
-  db.pragma("journal_size_limit = 67108864");
-  // Required so the exchanges_fts AFTER DELETE trigger fires when an exchange is
-  // re-indexed via `INSERT OR REPLACE` (the REPLACE-induced delete does NOT fire
-  // delete triggers unless recursive_triggers is on — verified: without it a
-  // re-indexed exchange leaves a stale FTS row). Keeps the external-content FTS
-  // index consistent with the source table on every write path.
-  db.pragma("recursive_triggers = ON");
+  const db = openWriteDb(dbPath);
 
   // Create exchanges table
   db.exec(`

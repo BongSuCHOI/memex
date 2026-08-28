@@ -1,7 +1,7 @@
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { getDbPath } from './paths.js';
+import { openReadDb } from './db.js';
 import { canonicalArchiveName } from './archive-io.js';
 import { canonicalizeProjectPath } from './project-identity.js';
 import {
@@ -97,8 +97,7 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
   }
   if (!dbExists) return emptyReport();
 
-  const db = new Database(dbPath, { readonly: true });
-  db.pragma('busy_timeout = 5000');
+  const db = openReadDb(dbPath);
 
   try {
     const tables = new Set(

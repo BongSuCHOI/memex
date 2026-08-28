@@ -339,17 +339,17 @@ try {
   process.env.TEST_DB_PATH = "";
   process.env.XDG_CONFIG_HOME = XDG_CONFIG_HOME;
   const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
+  const { insertFact } = await import(path.join(ROOT, "dist", "fact-db.js"));
   const db = initDatabase();
-  const now = new Date().toISOString();
-  db.prepare(
-    "INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, created_at, updated_at, is_active) VALUES (?, ?, ?, 'global', NULL, '[]', ?, ?, 1)",
-  ).run(
-    "00000000-0000-4000-8000-000000000001",
-    MALICIOUS,
-    "decision",
-    now,
-    now,
-  );
+  const factId = insertFact(db, {
+    fact: MALICIOUS,
+    category: "decision",
+    scope_type: "global",
+    scope_project: null,
+    source_exchange_ids: [],
+    embedding: new Array(384).fill(0.1),
+    embedding_version: 1,
+  });
   db.close();
 
   const port = await freePort();
@@ -369,6 +369,41 @@ try {
     ),
     "facts.png",
     true,
+  );
+  const mutations = await pageProbe(
+    cdp,
+    base + "/facts",
+    `new Promise((resolve,reject)=>{
+      const deadline=setTimeout(()=>reject(new Error('mutation surface timeout')),30000);
+      const waitDom=(predicate)=>new Promise((ok)=>{
+        const done=()=>{if(predicate()){observer?.disconnect();ok();return true}return false};
+        let observer=null;
+        if(done())return;
+        observer=new MutationObserver(done);
+        observer.observe(document.querySelector('#rows'),{childList:true,subtree:true,characterData:true});
+      });
+      (async()=>{
+        await waitDom(()=>[...document.querySelectorAll('#rows button')].some(b=>b.textContent==='Edit'));
+        [...document.querySelectorAll('#rows button')].find(b=>b.textContent==='Edit').click();
+        document.querySelector('#editText').value='The Web UI mutation path uses an initialized vec0 connection.';
+        document.querySelector('#editReason').value='browser E2E';
+        const edited=waitDom(()=>document.querySelector('#rows td.fact')?.textContent.includes('initialized vec0 connection'));
+        document.querySelector('#editSave').click();
+        await edited;
+        document.querySelector('#all').checked=true;
+        const inactive=waitDom(()=>document.querySelector('#rows td:first-child')?.textContent==='inactive');
+        [...document.querySelectorAll('#rows button')].find(b=>b.textContent==='Deactivate').click();
+        document.querySelector('#confirmYes').click();
+        await inactive;
+        const active=waitDom(()=>document.querySelector('#rows td:first-child')?.textContent==='active');
+        [...document.querySelectorAll('#rows button')].find(b=>b.textContent==='Restore').click();
+        await active;
+        clearTimeout(deadline);
+        resolve({factId:${JSON.stringify(factId)},factText:document.querySelector('#rows td.fact')?.textContent,state:document.querySelector('#rows td:first-child')?.textContent,error:document.querySelector('#err')?.textContent});
+      })().catch(reject);
+    })`,
+    "facts-mutations.png",
+    false,
   );
   const pipeline = await pageProbe(
     cdp,
@@ -405,6 +440,16 @@ try {
     );
   }
   if (
+    mutations.factId !== factId ||
+    mutations.state !== "active" ||
+    !mutations.factText.includes("initialized vec0 connection") ||
+    mutations.error
+  ) {
+    throw new Error(
+      "Facts mutation assertion failed: " + JSON.stringify(mutations),
+    );
+  }
+  if (
     graph.facts !== "0" ||
     !graph.emptyState ||
     !graph.pipelineLink ||
@@ -436,6 +481,7 @@ try {
         verdict: "PASS",
         checks: {
           facts,
+          mutations,
           pipeline,
           graphEmpty: graph,
           runtimeErrors: cdp.runtimeErrors,

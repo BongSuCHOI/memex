@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
 import { getDbPath } from './paths.js';
 import { archiveFileExists } from './archive-io.js';
+import { openReadDb } from './db.js';
 
 export interface IndexStats {
   totalConversations: number;
@@ -31,7 +31,7 @@ export async function getIndexStats(dbPath?: string): Promise<IndexStats> {
     };
   }
 
-  const db = new Database(resolvedDbPath, { readonly: true });
+  const db = openReadDb(resolvedDbPath);
 
   try {
     // Check if tables exist

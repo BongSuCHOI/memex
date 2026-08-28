@@ -6,19 +6,11 @@
 const http = require("http");
 const path = require("path");
 const os = require("os");
+const { pathToFileURL } = require("url");
 const PLUGIN_ROOT =
   process.env.MEMORY_BANK_PLUGIN_ROOT ||
   process.env.PLUGIN_ROOT ||
   path.resolve(__dirname, "..");
-// Standard resolution walks up from ui/ to <root>/node_modules and beyond,
-// so this works both inside the repository and inside npm/npx store layouts
-// where dependencies are hoisted next to the package directory.
-let Database;
-try {
-  Database = require("better-sqlite3");
-} catch {
-  Database = require(path.join(PLUGIN_ROOT, "node_modules/better-sqlite3"));
-}
 const MEMORY_BANK_HOME =
   process.env.MEMEX_HOME ||
   process.env.MEMORY_BANK_HOME ||
@@ -78,14 +70,21 @@ function canonicalProject(p) {
   return r;
 }
 
-let db;
-try {
-  db = new Database(DB_PATH, { readonly: true });
-} catch (e) {
-  db = null;
-  console.error(
-    `DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors.`,
-  );
+let db = null;
+let dbFactories = null;
+
+async function initializeDatabaseConnections() {
+  try {
+    dbFactories = await import(
+      pathToFileURL(path.join(PLUGIN_ROOT, "dist", "db.js")).href,
+    );
+    db = dbFactories.openReadDb(DB_PATH);
+  } catch (e) {
+    db = null;
+    console.error(
+      `DB open failed: ${DB_PATH}\n${e.message}\nDashboard APIs will return errors.`,
+    );
+  }
 }
 
 function ensureDb() {
@@ -682,7 +681,9 @@ function handleFactsMutation(req, res, _url) {
         });
         return;
       }
-      const fm = require(path.join(PLUGIN_ROOT, "dist", "fact-management.js"));
+      const fm = await import(
+        pathToFileURL(path.join(PLUGIN_ROOT, "dist", "fact-management.js")).href,
+      );
       dbw = openWritableDb();
       if (action === "edit") {
         const r = await fm.editFact(dbw, String(parsed.id || ""), {
@@ -723,14 +724,11 @@ function handleFactsMutation(req, res, _url) {
   });
 }
 
-let writableDbMemo = null;
 function openWritableDb() {
   if (!db) throw new Error(`Conversation DB unavailable: ${DB_PATH}`);
-  // Single writer connection reused across mutations (transaction owner is
-  // fact-management's transaction itself).
-  if (!writableDbMemo || !writableDbMemo.open)
-    writableDbMemo = new Database(DB_PATH);
-  return writableDbMemo;
+  if (!dbFactories)
+    throw new Error("Database connection factory unavailable");
+  return dbFactories.openWriteDb(DB_PATH);
 }
 
 const server = http.createServer((req, res) => {
@@ -832,8 +830,10 @@ if (BIND !== "127.0.0.1" && BIND !== "localhost") {
   );
   process.exit(1);
 }
-server.listen(PORT, BIND, () => {
-  console.log(`Memex UI: http://localhost:${PORT}`);
+initializeDatabaseConnections().then(() => {
+  server.listen(PORT, BIND, () => {
+    console.log(`Memex UI: http://localhost:${PORT}`);
+  });
 });
 process.on("SIGINT", () => {
   if (db) db.close();

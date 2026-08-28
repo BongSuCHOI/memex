@@ -4,26 +4,10 @@
  * Uses the local codex CLI (CodexExec) — no API key involved.
  * Run: node scripts/translate-facts.mjs
  */
-import Database from "better-sqlite3";
-import path from "path";
-import os from "os";
 import { runCodex } from "../dist/codex-exec.js";
+import { openWriteDb } from "../dist/db.js";
 
-const memexHome =
-  process.env.MEMEX_HOME ||
-  process.env.MEMORY_BANK_HOME ||
-  process.env.MEMORY_BANK_CONFIG_DIR ||
-  path.join(
-    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
-    "memex",
-  );
-const DB_PATH =
-  process.env.MEMEX_DB_PATH ||
-  process.env.MEMORY_BANK_DB_PATH ||
-  process.env.TEST_DB_PATH ||
-  path.join(memexHome, "conversation-index", "db.sqlite");
-
-const db = new Database(DB_PATH);
+const db = openWriteDb();
 
 // Get untranslated facts
 const untranslated = db

@@ -9,6 +9,10 @@ local SQLite를 읽고, Facts mutation만 guarded HTTP POST를 통해 `fact-mana
 service에 전달합니다. UI가 비어 있거나 API가 DB unavailable을 반환하면 `memex home`
 출력과 UI process의 override 환경 변수가 같은 root를 가리키는지 먼저 확인합니다.
 
+읽기와 mutation 쓰기 connection은 모두 `db.ts`의 `openReadDb()` / `openWriteDb()`를
+사용합니다. 두 factory는 connection-local `sqlite-vec` module과 공통 pragma를 먼저
+설치하므로 Web UI mutation도 CLI와 동일한 vec0 초기화 계약을 따릅니다.
+
 ## 2. 화면 구조
 
 ```mermaid
@@ -69,7 +73,7 @@ malformed를 같은 빈 화면으로 처리하지 않습니다.
 
 `/api/facts-mutate`는 POST-only, JSON content type, same-origin, body size limit,
 action schema, UUID/confirmation gate를 검사합니다. HTML은 사용자 text를 escape하며
-CLI와 동일한 transaction service를 사용합니다.
+CLI와 동일한 transaction service 및 initialized writable connection을 사용합니다.
 
 ## 7. 수동 QA 체크리스트
 
@@ -80,4 +84,5 @@ CLI와 동일한 transaction service를 사용합니다.
 5. keyboard로 nav/search/fact action에 접근할 수 있다.
 6. malicious fact text가 HTML/JS로 실행되지 않는다.
 7. non-POST, wrong origin/content type, oversized mutation이 거부된다.
-8. 종료 후 browser/server/listener/temp profile이 남지 않는다.
+8. 실제 vec0 DB에서 edit → deactivate → restore가 UI를 통해 완료된다.
+9. 종료 후 browser/server/listener/temp profile이 남지 않는다.

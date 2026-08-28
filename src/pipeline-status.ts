@@ -8,8 +8,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
+import type Database from "better-sqlite3";
+import { openReadDb } from "./db.js";
 import {
   getDbPath,
   getArchiveDir,
@@ -146,14 +146,7 @@ export function getPipelineStatus(
     };
   }
 
-  const db = new Database(dbPath, { readonly: true });
-  // vec0 virtual tables need the sqlite-vec module even for plain reads.
-  let vecReadable = true;
-  try {
-    sqliteVec.load(db);
-  } catch {
-    vecReadable = false;
-  }
+  const db = openReadDb(dbPath);
   try {
     const hasExchanges = tableExists(db, "exchanges");
     const hasExtractionLog = tableExists(db, "extraction_log");
@@ -309,7 +302,7 @@ export function getPipelineStatus(
         db,
         "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1",
       );
-      if (vecReadable && tableExists(db, "vec_facts")) {
+      if (tableExists(db, "vec_facts")) {
         embeddings.factVectorsPending = count(
           db,
           `
@@ -318,8 +311,7 @@ export function getPipelineStatus(
             AND NOT EXISTS (SELECT 1 FROM vec_facts v WHERE v.id = f.id)`,
         );
       } else {
-        // Extension missing or table absent: report every active fact as
-        // vector-pending instead of crashing the read-only report.
+        // Missing table: report every active fact as vector-pending.
         embeddings.factVectorsPending = embeddings.activeFacts;
       }
       ontology.classifiedFacts = count(
