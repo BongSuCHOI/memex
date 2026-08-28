@@ -6,7 +6,9 @@
 `cli/runtime-exec.js`가 `npx`를 통해 최신 `github:BongSuCHOI/memex#main` package의
 `memex-mcp-server`를 실행합니다. Package 내부 wrapper가 실제 bundled server와
 native runtime dependency를 확인합니다. 사용자 project/global prefix는 변경하지
-않으며 npm isolated cache만 사용합니다. 첫 cache 준비가 Codex의 기본 10초 MCP 시작
+않으며 MCP는 SessionStart hook의 동시 `npx` 실행과 Git cache가 충돌하지 않도록
+`$XDG_CACHE_HOME/memex/npm-mcp`(기본 `~/.cache/memex/npm-mcp`) 전용 cache를
+사용합니다. 첫 cache 준비가 Codex의 기본 10초 MCP 시작
 제한을 넘을 수 있어 manifest는 `startup_timeout_sec`를 300초로 지정합니다.
 
 모든 도구는 local data만 읽습니다. `ask_avatar`만 저장된 근거를 합성하기 위해 local

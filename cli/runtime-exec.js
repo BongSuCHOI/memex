@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 
 const RUNTIME_PACKAGE = 'github:BongSuCHOI/memex#main';
 const ALLOWED_BINARIES = new Set([
@@ -19,10 +21,16 @@ if (!ALLOWED_BINARIES.has(binary)) {
   process.exit(2);
 }
 
+const childEnv = { ...process.env, MEMEX_RUNTIME_PACKAGE: RUNTIME_PACKAGE };
+if (binary === 'memex-mcp-server') {
+  const cacheRoot = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+  childEnv.npm_config_cache = path.join(cacheRoot, 'memex', 'npm-mcp');
+}
+
 const child = spawn('npx', ['--yes', `--package=${RUNTIME_PACKAGE}`, binary, ...args], {
   stdio: 'inherit',
   shell: false,
-  env: { ...process.env, MEMEX_RUNTIME_PACKAGE: RUNTIME_PACKAGE },
+  env: childEnv,
 });
 
 process.on('SIGTERM', () => child.kill('SIGTERM'));

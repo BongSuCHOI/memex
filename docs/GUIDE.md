@@ -306,7 +306,8 @@ node scripts/validate-plugin.mjs
 - plugin configured지만 observed 없음: Codex 재시작, hook trust, observation log 확인
 - injection 없음: `injected|no-match|deduped|skipped|error` 상태 확인
 - MCP 실패: 설치된 `.mcp.json`의 `startup_timeout_sec = 300`, `runtime-exec`, npm
-  cache, packaged wrapper, 9-tool handshake 확인
+  cache, packaged wrapper, 9-tool handshake 확인. MCP 전용 npm cache는
+  `$XDG_CACHE_HOME/memex/npm-mcp`이며 미설정 시 `~/.cache/memex/npm-mcp`
 - stale socket: 소유 process가 없는 Memex data-root socket만 제거
 - project 충돌: `memex migrate-projects --dry-run`의 evidence/count/backup 확인
 
