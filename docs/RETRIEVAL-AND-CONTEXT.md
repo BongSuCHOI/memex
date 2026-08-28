@@ -45,6 +45,8 @@ sequenceDiagram
     R->>L: remove already injected fact IDs
     R->>R: relevance gate + 1-hop expansion + token budget
     R->>P: prepared(event id, session, prompt hash, fact IDs)
+    P-->>R: durable event id
+    R->>L: append injected fact IDs
     R-->>H: context or no-match
     H-->>C: additionalContext
     H->>P: emitted
@@ -71,6 +73,9 @@ prompt가 실패해서는 안 되지만 오류는 log에 남아야 합니다.
 dedup ledger는 best-effort 운영 상태이지만 recall provenance receipt는 학습 경계입니다.
 실제 context를 주입하기 전에 durable `prepared` write가 성공해야 합니다. hook이 stdout에
 쓴 뒤 `emitted`로 전환하며, host가 실제 소비했다는 `consumed` 주장은 하지 않습니다.
+`prepared` write가 실패하면 context를 반환하지 않고 ledger도 갱신하지 않아 다음 prompt가
+안전하게 재시도할 수 있습니다. receipt가 성공한 뒤의 ledger write 실패는 dedup 최적화만
+잃으며 context와 provenance의 정합성에는 영향을 주지 않습니다.
 sessionId가 없는 주입 요청은 durable `prepared` write를 남길 수 없으므로 주입 자체를
 생략합니다(`no-session-provenance` 로그). provenance 없이 context를 emission하는
 경로는 존재하지 않습니다.

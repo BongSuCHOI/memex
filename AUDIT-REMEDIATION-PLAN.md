@@ -542,7 +542,7 @@ const project = cwd ? path.basename(cwd) : 'unknown';
 
 ### 후속 답변이 추가한 5개
 
-13. durable prepared receipt 저장 실패 시 실제 context가 미주입되고 dedup ledger도 오염되지 않는지 확인.
+13. [x] durable prepared receipt 저장 실패 시 실제 context가 미주입되고 dedup ledger도 오염되지 않는지 확인.
 14. `parseConversationFile()`로 basename이 같은 서로 다른 canonical cwd 두 개를 처리해 identity가 충돌하지 않는지 확인.
 15. low-level `createRelation()`에 서로 다른 project↔project edge를 직접 넣어도 거부되는지 확인.
 16. DB 삭제 + archive 유지 상태가 승인된 recovery 계약대로 복구되는지 확인.
@@ -685,7 +685,7 @@ node --test test/*slice.test.mjs
 
 ### Phase 2
 
-- [ ] A. Injection write ordering
+- [x] A. Injection write ordering
 - [x] B. Fact confidence 문서 정정
 - [ ] C. `parseConversationFile()` canonical identity
 - [ ] D. `createRelation()` final invariant

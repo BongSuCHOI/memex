@@ -205,15 +205,19 @@ export async function computeInjectContext(
         }
       }
 
-      appendLedger(sessionId, ledger, injectedIds);
-      if (sessionId) {
-        recordRecallEvent(db, {
-          sessionId,
-          project,
-          prompt: userPrompt,
-          factIds: injectedIds,
-        });
+      // Provenance is the fail-closed durability gate; the dedup ledger is
+      // only best-effort operational state. Writing the ledger first would
+      // suppress a later retry when the prepared receipt fails to persist.
+      const recallEventId = recordRecallEvent(db, {
+        sessionId,
+        project,
+        prompt: userPrompt,
+        factIds: injectedIds,
+      });
+      if (!recallEventId) {
+        throw new Error("Failed to persist prepared recall receipt");
       }
+      appendLedger(sessionId, ledger, injectedIds);
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",

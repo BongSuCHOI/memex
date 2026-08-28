@@ -20099,15 +20099,16 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         } catch {
         }
       }
-      appendLedger(sessionId, ledger, injectedIds);
-      if (sessionId) {
-        recordRecallEvent(db, {
-          sessionId,
-          project,
-          prompt: userPrompt,
-          factIds: injectedIds
-        });
+      const recallEventId = recordRecallEvent(db, {
+        sessionId,
+        project,
+        prompt: userPrompt,
+        factIds: injectedIds
+      });
+      if (!recallEventId) {
+        throw new Error("Failed to persist prepared recall receipt");
       }
+      appendLedger(sessionId, ledger, injectedIds);
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",
