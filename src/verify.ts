@@ -1,9 +1,22 @@
-import fs from 'fs';
-import path from 'path';
-import { parseConversation } from './parser.js';
-import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
-import { getArchiveDir, getExcludedProjects, isExcludedProject } from './paths.js';
-import { archiveFileExists, canonicalArchiveName, statArchiveFile } from './archive-io.js';
+import fs from "fs";
+import path from "path";
+import { parseConversation } from "./parser.js";
+import { initDatabase, getAllExchanges, getFileLastIndexed } from "./db.js";
+import {
+  getArchiveDir,
+  getExcludedProjects,
+  isExcludedProject,
+} from "./paths.js";
+import {
+  archiveFileExists,
+  canonicalArchiveName,
+  statArchiveFile,
+} from "./archive-io.js";
+import { readRolloutMeta } from "./codex-rollout.js";
+import {
+  canonicalizeProjectPath,
+  UNKNOWN_PROJECT,
+} from "./project-identity.js";
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -17,7 +30,7 @@ export async function verifyIndex(): Promise<VerificationResult> {
     missing: [],
     orphaned: [],
     outdated: [],
-    corrupted: []
+    corrupted: [],
   };
 
   const archiveDir = getArchiveDir();
@@ -50,11 +63,14 @@ export async function verifyIndex(): Promise<VerificationResult> {
 
     // Archive files may be compressed out-of-band (.jsonl.zst) — canonicalize
     // to the .jsonl name the database stores.
-    const files = [...new Set(
-      fs.readdirSync(projectPath)
-        .filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.zst'))
-        .map(f => canonicalArchiveName(f)),
-    )];
+    const files = [
+      ...new Set(
+        fs
+          .readdirSync(projectPath)
+          .filter((f) => f.endsWith(".jsonl") || f.endsWith(".jsonl.zst"))
+          .map((f) => canonicalArchiveName(f)),
+      ),
+    ];
 
     for (const file of files) {
       totalChecked++;
@@ -66,11 +82,14 @@ export async function verifyIndex(): Promise<VerificationResult> {
       const conversationPath = path.join(projectPath, file);
       foundFiles.add(conversationPath);
 
-      const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+      const summaryPath = conversationPath.replace(".jsonl", "-summary.txt");
 
       // Check for missing summary
       if (!archiveFileExists(summaryPath)) {
-        result.missing.push({ path: conversationPath, reason: 'No summary file' });
+        result.missing.push({
+          path: conversationPath,
+          reason: "No summary file",
+        });
         continue;
       }
 
@@ -82,7 +101,7 @@ export async function verifyIndex(): Promise<VerificationResult> {
           result.outdated.push({
             path: conversationPath,
             fileTime: fileStat.mtimeMs,
-            dbTime: lastIndexed
+            dbTime: lastIndexed,
           });
         }
       }
@@ -93,7 +112,7 @@ export async function verifyIndex(): Promise<VerificationResult> {
       } catch (error) {
         result.corrupted.push({
           path: conversationPath,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -109,7 +128,7 @@ export async function verifyIndex(): Promise<VerificationResult> {
     if (!foundFiles.has(exchange.archivePath)) {
       result.orphaned.push({
         uuid: exchange.id,
-        path: exchange.archivePath
+        path: exchange.archivePath,
       });
     }
   }
@@ -118,13 +137,17 @@ export async function verifyIndex(): Promise<VerificationResult> {
 }
 
 export async function repairIndex(issues: VerificationResult): Promise<void> {
-  console.log('Repairing index...');
+  console.log("Repairing index...");
 
   // To avoid circular dependencies, we import the indexer functions dynamically
-  const { initDatabase, insertExchange, deleteExchange } = await import('./db.js');
-  const { parseConversation } = await import('./parser.js');
-  const { initEmbeddings, generateExchangeEmbedding } = await import('./embeddings.js');
-  const { summarizeConversation } = await import('./summarizer.js');
+  const { initDatabase, insertExchange, deleteExchange } = await import(
+    "./db.js"
+  );
+  const { parseConversation } = await import("./parser.js");
+  const { initEmbeddings, generateExchangeEmbedding } = await import(
+    "./embeddings.js"
+  );
+  const { summarizeConversation } = await import("./summarizer.js");
 
   const db = initDatabase();
   await initEmbeddings();
@@ -137,20 +160,31 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
   // Re-index missing and outdated conversations
   const toReindex = [
-    ...issues.missing.map(m => m.path),
-    ...issues.outdated.map(o => o.path)
+    ...issues.missing.map((m) => m.path),
+    ...issues.outdated.map((o) => o.path),
   ];
 
   for (const conversationPath of toReindex) {
     console.log(`Re-indexing: ${conversationPath}`);
     try {
-      // Extract project name from path
-      const archiveDir = getArchiveDir();
-      const relativePath = conversationPath.replace(archiveDir + path.sep, '');
-      const project = relativePath.split(path.sep)[0];
+      // CX-02: project identity comes from the rollout's own session_meta.cwd
+      // (canonical absolute path), never from the archive storage key — the
+      // storage directory name is a derived collision-free label, not identity
+      // evidence. Subagent threads never reach the index, matching sync.
+      const { meta, isSubagent } = await readRolloutMeta(conversationPath);
+      if (isSubagent) {
+        console.log(`  Skipped (subagent thread)`);
+        continue;
+      }
+      const cwd = meta && typeof meta.cwd === "string" ? meta.cwd : "";
+      const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
 
       // Parse conversation
-      const exchanges = await parseConversation(conversationPath, project, conversationPath);
+      const exchanges = await parseConversation(
+        conversationPath,
+        project,
+        conversationPath,
+      );
 
       if (exchanges.length === 0) {
         console.log(`  Skipped (no exchanges)`);
@@ -158,18 +192,18 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
       }
 
       // Generate/update summary
-      const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+      const summaryPath = conversationPath.replace(".jsonl", "-summary.txt");
       const summary = await summarizeConversation(exchanges);
-      fs.writeFileSync(summaryPath, summary, 'utf-8');
+      fs.writeFileSync(summaryPath, summary, "utf-8");
       console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
 
       // Index exchanges
       for (const exchange of exchanges) {
-        const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
+        const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
         const embedding = await generateExchangeEmbedding(
           exchange.userMessage,
           exchange.assistantMessage,
-          toolNames
+          toolNames,
         );
         insertExchange(db, exchange, embedding, toolNames);
       }
@@ -184,9 +218,9 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
 
   // Report corrupted files (manual intervention needed)
   if (issues.corrupted.length > 0) {
-    console.log('\n⚠️  Corrupted files (manual review needed):');
-    issues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
+    console.log("\n⚠️  Corrupted files (manual review needed):");
+    issues.corrupted.forEach((c) => console.log(`  ${c.path}: ${c.error}`));
   }
 
-  console.log('✅ Repair complete.');
+  console.log("✅ Repair complete.");
 }
