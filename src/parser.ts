@@ -3,11 +3,13 @@
 // Turn assembly lives in codex-rollout.ts (rollout JSONL -> normalized
 // user/agent exchanges). This module preserves the public parse API consumed
 // by sync/indexer/search and adds transparent .zst archive support on top.
-import fs from 'node:fs';
-import path from 'node:path';
 import { ConversationExchange } from './types.js';
 import { createArchiveReadStream } from './archive-io.js';
 import { parseRolloutStream } from './codex-rollout.js';
+import {
+  canonicalizeProjectPath,
+  UNKNOWN_PROJECT,
+} from './project-identity.js';
 
 export async function parseConversation(
   filePath: string,
@@ -43,7 +45,7 @@ export async function parseConversationFile(filePath: string): Promise<{
       archivePath: filePath,
     });
     const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-    const project = cwd ? path.basename(cwd) : 'unknown';
+    const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
     for (const e of exchanges) {
       const rec = e as Record<string, unknown>;
       rec.project = project;

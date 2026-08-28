@@ -1,6 +1,6 @@
-import path from 'node:path';
 import { createArchiveReadStream } from './archive-io.js';
 import { parseRolloutStream } from './codex-rollout.js';
+import { canonicalizeProjectPath, UNKNOWN_PROJECT, } from './project-identity.js';
 export async function parseConversation(filePath, projectName, archivePath) {
     const fileStream = createArchiveReadStream(filePath);
     try {
@@ -30,7 +30,7 @@ export async function parseConversationFile(filePath) {
             archivePath: filePath,
         });
         const cwd = meta && typeof meta.cwd === 'string' ? meta.cwd : '';
-        const project = cwd ? path.basename(cwd) : 'unknown';
+        const project = cwd ? canonicalizeProjectPath(cwd) : UNKNOWN_PROJECT;
         for (const e of exchanges) {
             const rec = e;
             rec.project = project;

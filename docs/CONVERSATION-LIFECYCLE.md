@@ -64,7 +64,9 @@ storage  = safeBasename(identity) + "--" + shortHash(identity)
 ```
 
 identity와 storage key를 분리하므로 `/team-a/app`과 `/team-b/app`은 basename이 같아도
-archive/DB/analyze 전 구간에서 충돌하지 않습니다.
+archive/DB/analyze 전 구간에서 충돌하지 않습니다. sync/index 경로뿐 아니라 public
+`parseConversationFile()` convenience wrapper도 같은 canonical identity SSOT를 사용하며,
+basename은 표시 이름이나 storage key의 일부로만 사용합니다.
 
 ## 4. archive와 index
 

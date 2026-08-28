@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseConversationFile } from '../src/parser.js';
 import { getFixturePath } from './test-utils.js';
 
@@ -9,7 +12,7 @@ describe('Parser - Codex rollout', () => {
     const result = await parseConversationFile(codexFixture);
     expect(result).toBeDefined();
     expect(result.exchanges).toBeDefined();
-    expect(result.project).toBe('fixtures');
+    expect(result.project).toBe('/workspaces/fixtures');
   });
 
   it('should extract metadata from session_meta onto every exchange', async () => {
@@ -47,9 +50,43 @@ describe('Parser - Codex rollout', () => {
     expect(all).not.toContain('<codex_internal_context>');
   });
 
-  it('should derive project key from session cwd basename', () => {
-    // Covered by the project assertion above; kept explicit as a contract.
-    expect('fixtures').toBe('fixtures');
+  it('keeps same-basename projects distinct by canonical session cwd', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-parser-identity-'));
+    const writeRollout = (name: string, sessionId: string, cwd: string) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, [
+        JSON.stringify({
+          type: 'session_meta',
+          payload: { id: sessionId, session_id: sessionId, cwd, source: 'cli' },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Question' }] },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Answer' }] },
+        }),
+      ].join('\n') + '\n');
+      return file;
+    };
+
+    try {
+      const first = await parseConversationFile(
+        writeRollout('rollout-a.jsonl', 'session-a', '/work/team-a/shared/'),
+      );
+      const second = await parseConversationFile(
+        writeRollout('rollout-b.jsonl', 'session-b', '/work/team-b/shared'),
+      );
+
+      expect(first.project).toBe('/work/team-a/shared');
+      expect(second.project).toBe('/work/team-b/shared');
+      expect(first.project).not.toBe(second.project);
+      expect(first.exchanges.every((exchange) => exchange.project === first.project)).toBe(true);
+      expect(second.exchanges.every((exchange) => exchange.project === second.project)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
