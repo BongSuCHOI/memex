@@ -421,26 +421,26 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
               source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
               consolidated_count = ?, is_active = ?, ontology_category_id = ?,
               embedding_version = ?, ontology_attempts = 0, consolidation_attempts = 0,
-              ontology_last_attempt_at = NULL
+              needs_consolidation = ?, ontology_last_attempt_at = NULL
             WHERE id = ?
           `).run(
             fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.id,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.id,
           );
         } else {
           db.prepare(`
             INSERT INTO facts
               (id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
                embedding, created_at, updated_at, consolidated_count, is_active,
-               ontology_category_id, embedding_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ontology_category_id, embedding_version, needs_consolidation)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             fact.id, fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
           );
         }
 

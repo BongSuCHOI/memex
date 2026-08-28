@@ -20,7 +20,7 @@ vi.mock('../src/embeddings.js', () => ({
 
 import { callMemoryModel, parseJsonResponse } from '../src/llm.js';
 import { initDatabase } from '../src/db.js';
-import { insertFact, getAllNewFactsSince } from '../src/fact-db.js';
+import { insertFact, getPendingConsolidationFacts } from '../src/fact-db.js';
 import { consolidateAllPending, isTransientLlmError, classifyLlmError } from '../src/consolidator.js';
 
 const restoreConsole = suppressConsole();
@@ -54,12 +54,12 @@ describe('consolidateAllPending', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('getAllNewFactsSince spans every scope/project (not just one)', () => {
+  it('getPendingConsolidationFacts spans every scope/project (not just one)', () => {
     addFact(db, 'proj A fact', 'project', '/projA');
     addFact(db, 'proj B fact', 'project', '/projB');
     addFact(db, 'global fact', 'global', null);
 
-    const all = getAllNewFactsSince(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const all = getPendingConsolidationFacts(db);
     const scopes = all.map((f) => `${f.scope_type}:${f.scope_project ?? '-'}`).sort();
     expect(all).toHaveLength(3);
     expect(scopes).toEqual(['global:-', 'project:/projA', 'project:/projB']);
@@ -71,7 +71,7 @@ describe('consolidateAllPending', () => {
     addFact(db, 'shared global decision', 'global', null);
     for (let i = 0; i < 5; i++) addFact(db, `proj ${i} decision`, 'project', `/proj${i}`);
 
-    const result = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const result = await consolidateAllPending(db);
 
     // 6 facts, each compared at most once; the single budget caps total calls.
     const MAX = 10;
@@ -85,17 +85,16 @@ describe('consolidateAllPending', () => {
     // 20 mutually-similar facts, one budget of 10 → at most 10 calls total.
     for (let i = 0; i < 20; i++) addFact(db, `similar fact ${i}`, 'global', null);
 
-    const result = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const result = await consolidateAllPending(db);
 
     expect(result.llmCalls).toBeLessThanOrEqual(10);
     expect((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(10);
   });
 
-  it('returns zero work when nothing is newer than `since`', async () => {
+  it('returns zero work when the dirty queue is empty', async () => {
     addFact(db, 'old fact', 'global', null);
-    const future = new Date(Date.now() + 60_000).toISOString();
-
-    const result = await consolidateAllPending(db, { createdAt: future, id: '' });
+    await consolidateAllPending(db);
+    const result = await consolidateAllPending(db);
 
     expect(result.processed).toBe(0);
     expect(callMemoryModel).not.toHaveBeenCalled();
@@ -112,7 +111,7 @@ describe('consolidateAllPending', () => {
       relation: 'CONTRADICTION', merged_fact: '', reason: 'conflict',
     });
 
-    await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    await consolidateAllPending(db);
 
     // Every callMemoryModel comparison prompt must exclude the project-private fact.
     for (const call of (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls) {
@@ -136,7 +135,7 @@ describe('consolidateAllPending', () => {
       relation: 'EVOLUTION', merged_fact: 'Uses vendor X with SECRET token', reason: 'newer',
     });
 
-    await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    await consolidateAllPending(db);
 
     // The global row keeps its original text and stays active — never rewritten
     // with the project-private secret, never deactivated.
@@ -178,15 +177,15 @@ describe('consolidateAllPending', () => {
     expect(hits[0].fact.fact).toBe('proj deep'); // found despite 210 closer globals
   });
 
-  it('unparseable output counts budget as a no-op (best-effort; not a cursor-holding error)', async () => {
+  it('unparseable output counts budget as a no-op (best-effort; not a queue-holding error)', async () => {
     // A call returning garbage spent budget (must count) but is treated as a
-    // no-op verdict — the cursor advances, so it cannot starve later facts.
+    // no-op verdict — the dirty item clears, so it cannot starve later facts.
     addFact(db, 'dup fact A', 'global', null);
     addFact(db, 'dup fact B', 'global', null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('not json at all');
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null); // unparseable
 
-    const result = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const result = await consolidateAllPending(db);
 
     expect(result.llmCalls).toBe((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length);
     expect(result.llmCalls).toBeGreaterThanOrEqual(1);
@@ -195,66 +194,56 @@ describe('consolidateAllPending', () => {
     expect(active.n).toBe(2);
   });
 
-  it('unparseable output is a no-op that ADVANCES the cursor (best-effort; no poison starvation)', async () => {
+  it('unparseable output clears dirty work (best-effort; no poison starvation)', async () => {
     const base = Date.parse('2020-01-01T00:00:00Z');
     insertFact(db, { fact: 'poison driver', category: 'decision', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: EMB });
     insertFact(db, { fact: 'clean later', category: 'decision', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: EMB });
     db.prepare("UPDATE facts SET created_at = ? WHERE fact = 'poison driver'").run(new Date(base).toISOString());
     db.prepare("UPDATE facts SET created_at = ? WHERE fact = 'clean later'").run(new Date(base + 1000).toISOString());
 
-    // Every comparison is unparseable → each is a no-op, cursor advances anyway.
+    // Every comparison is unparseable → each is a no-op, dirty work clears anyway.
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('not json');
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
 
-    const run = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const run = await consolidateAllPending(db);
 
-    // Both facts examined (no cursor hold), budget counted, and the run reached
+    // Both facts examined (no queue hold), budget counted, and the run reached
     // the end of the backlog — a non-JSON response cannot starve later facts.
     expect(run.llmCalls).toBe((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length);
-    expect(run.cursor).not.toBeNull();
-    expect(run.cursor!.createdAt >= new Date(base + 1000).toISOString()).toBe(true); // advanced past both
+    expect(run.remaining).toBe(0);
   });
 
-  it('drains a timestamp group LARGER than the budget across runs (keyset cursor, no stall)', async () => {
-    // Reviewer repro: 11+ similar active facts sharing ONE created_at. A
-    // created_at-only cursor stalls (lastExamined == first-unexamined timestamp),
-    // reprocessing the same 10 forever. The keyset (created_at, id) cursor must
-    // advance fact-by-fact so run 2 reaches the rest.
+  it('drains a timestamp group LARGER than the budget across runs (dirty queue, no stall)', async () => {
+    // 11+ similar active facts sharing ONE created_at must drain across runs.
+    // Queue membership is independent of that historical timestamp.
     const shared = '2020-06-01T00:00:00.000Z';
     for (let i = 0; i < 13; i++) {
       insertFact(db, { fact: `ts group ${i}`, category: 'decision', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: EMB });
     }
     db.prepare('UPDATE facts SET created_at = ?').run(shared); // all identical timestamp
 
-    const run1 = await consolidateAllPending(db, null);
-    expect(run1.cursor).not.toBeNull();
-    expect(run1.cursor!.createdAt).toBe(shared);
-    expect(run1.cursor!.id).not.toBe(''); // advanced to a specific fact within the group
+    const run1 = await consolidateAllPending(db);
+    expect(run1.remaining).toBeGreaterThan(0);
 
-    const run2 = await consolidateAllPending(db, run1.cursor);
-    // run 2 must make progress on the remaining facts, not repeat run 1's set.
+    const run2 = await consolidateAllPending(db);
     expect(run2.processed).toBeGreaterThan(0);
-    // After enough runs the whole group is examined (cursor reaches the last id).
-    let cursor = run2.cursor;
-    for (let r = 0; r < 3; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
-    const remaining = getAllNewFactsSince(db, cursor);
-    expect(remaining.length).toBe(0); // fully drained despite the shared timestamp
+    for (let r = 0; r < 3; r++) await consolidateAllPending(db);
+    expect(getPendingConsolidationFacts(db)).toHaveLength(0);
   });
 
-  it('getAllNewFactsSince honors a page limit (no full-table materialization)', () => {
+  it('getPendingConsolidationFacts honors a page limit (no full-table materialization)', () => {
     for (let i = 0; i < 50; i++) addFact(db, `page ${i}`, 'global', null);
-    const page = getAllNewFactsSince(db, null, 10);
+    const page = getPendingConsolidationFacts(db, 10);
     expect(page.length).toBe(10); // bounded, not all 50
   });
 
-  it('a TRANSIENT provider outage (503) holds the cursor forever — never skips, no attempt burned', async () => {
+  it('a TRANSIENT provider outage (503) holds dirty work — never skips, no attempt burned', async () => {
     for (let i = 0; i < 5; i++) addFact(db, `outage ${i}`, 'global', null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('503 overloaded'), { status: 503 }));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 5; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 5; r++) await consolidateAllPending(db);
 
-    expect(cursor).toBeNull(); // never advanced past the outage
+    expect(getPendingConsolidationFacts(db).length).toBeGreaterThan(0);
     const attempts = db.prepare("SELECT MAX(consolidation_attempts) AS m FROM facts").get() as { m: number };
     expect(attempts.m).toBe(0); // transient failures don't burn attempts
   });
@@ -264,8 +253,7 @@ describe('consolidateAllPending', () => {
     addFact(db, 'oversized sibling', 'global', null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('400 prompt too long'), { status: 400 }));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 4; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 4; r++) await consolidateAllPending(db);
 
     // 두 fact 는 같은 밀리초에 생성돼 created_at 이 동일하고, 커서 tiebreak 은
     // randomUUID 인 id 다 — 어느 쪽이 driver 가 되는지가 실행마다 달라진다.
@@ -276,18 +264,18 @@ describe('consolidateAllPending', () => {
       "SELECT MAX(consolidation_attempts) AS m FROM facts WHERE fact IN ('oversized driver', 'oversized sibling')"
     ).get() as { m: number }).m;
     expect(maxAttempts).toBeGreaterThanOrEqual(3); // MAX 까지 burn 되고 skip 됨
-    expect(cursor).not.toBeNull(); // advanced past the un-processable fact
+    const skipped = db.prepare('SELECT COUNT(*) AS n FROM facts WHERE needs_consolidation = 0').get() as { n: number };
+    expect(skipped.n).toBeGreaterThan(0);
   });
 
-  it('AUTH/config errors (401/403) hold the cursor (correct — nothing succeeds until config is fixed)', async () => {
+  it('AUTH/config errors (401/403) hold dirty work (correct — nothing succeeds until config is fixed)', async () => {
     addFact(db, 'auth A', 'global', null);
     addFact(db, 'auth B', 'global', null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('401 unauthorized'), { status: 401 }));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 4; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 4; r++) await consolidateAllPending(db);
 
-    expect(cursor).toBeNull(); // held, not silently drained
+    expect(getPendingConsolidationFacts(db).length).toBeGreaterThan(0);
     const attempts = db.prepare("SELECT MAX(consolidation_attempts) AS m FROM facts").get() as { m: number };
     expect(attempts.m).toBe(0); // config failure burns no per-fact attempt
   });
@@ -322,15 +310,14 @@ describe('consolidateAllPending', () => {
     expect(isTransientLlmError(new Error('something weird'))).toBe(false); // unknown is not a recognized transient
   });
 
-  it('a recognized TRANSIENT outage holds the cursor (never skips the backlog)', async () => {
+  it('a recognized TRANSIENT outage holds dirty work (never skips the backlog)', async () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('down'), { status: 503 }));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 5; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 5; r++) await consolidateAllPending(db);
 
-    expect(cursor).toBeNull(); // 503 → transient → held, never silently skipped during an outage
+    expect(getPendingConsolidationFacts(db).length).toBeGreaterThan(0);
   });
 
   it('an UNKNOWN provider error HOLDS (unrecognized outage shapes must not drain)', async () => {
@@ -341,58 +328,70 @@ describe('consolidateAllPending', () => {
     // weird outage shape never silently drains the backlog.
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('API Error: 500 Internal Server Error'));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 8; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 8; r++) await consolidateAllPending(db);
 
-    expect(cursor).toBeNull(); // unknown → held, never advanced
+    expect(getPendingConsolidationFacts(db).length).toBeGreaterThan(0);
   });
 
-  it('a DETERMINISTIC per-request rejection is bounded — advances after MAX attempts', async () => {
+  it('a DETERMINISTIC per-request rejection is bounded — clears after MAX attempts', async () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
     // status 400 → deterministic → the fact itself is at fault → bounded skip.
     (callMemoryModel as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('bad request'), { status: 400 }));
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 8; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 8; r++) await consolidateAllPending(db);
 
-    // After MAX_CONSOLIDATION_ATTEMPTS the cursor advances past the un-processable
-    // fact so it can't wedge the backlog forever.
-    expect(cursor).not.toBeNull();
+    expect(getPendingConsolidationFacts(db)).toHaveLength(0);
   });
 
-  it('a NON-LLM internal error HOLDS (never advances the cursor on a code bug)', async () => {
+  it('a NON-LLM internal error HOLDS dirty work (never clears on a code bug)', async () => {
     addFact(db, 'mystery A', 'global', null);
     addFact(db, 'mystery B', 'global', null);
     // callMemoryModel resolves; the failure is in parsing (an internal bug, NOT an
     // LlmCallError) → must hold, never be treated as a skippable "bad fact".
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error('parser boom'); });
 
-    let cursor: { createdAt: string; id: string } | null = null;
-    for (let r = 0; r < 8; r++) cursor = (await consolidateAllPending(db, cursor)).cursor;
+    for (let r = 0; r < 8; r++) await consolidateAllPending(db);
 
-    expect(cursor).toBeNull(); // internal bug → held, not skipped
+    expect(getPendingConsolidationFacts(db).length).toBeGreaterThan(0);
   });
 
-  it('advances a persisted cursor so newer facts are reachable across runs (no starvation)', async () => {
-    // 15 similar global facts, budget 10 → run 1 processes the oldest 10 and
-    // advances the cursor; run 2 (since=cursor) reaches the remaining 5.
+  it('drains dirty facts across runs when the backlog exceeds the budget', async () => {
+    // 15 similar global facts, budget 10 → run 1 clears 10 and run 2 reaches
+    // the remaining dirty rows without a timestamp cursor.
     const base = Date.parse('2020-01-01T00:00:00Z');
     for (let i = 0; i < 15; i++) {
-      // distinct, strictly increasing timestamps so the cursor can advance safely
       const ts = new Date(base + i * 1000).toISOString();
       insertFact(db, { fact: `fact ${i}`, category: 'decision', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: EMB });
       db.prepare('UPDATE facts SET created_at = ? WHERE fact = ?').run(ts, `fact ${i}`);
     }
 
-    const run1 = await consolidateAllPending(db, { createdAt: '2000-01-01T00:00:00Z', id: '' });
+    const run1 = await consolidateAllPending(db);
     expect(run1.llmCalls).toBeLessThanOrEqual(10);
-    expect(run1.cursor).not.toBeNull();
-    expect(run1.cursor!.createdAt > '2000-01-01T00:00:00Z').toBe(true); // advanced
+    expect(run1.remaining).toBeGreaterThan(0);
 
-    const run2 = await consolidateAllPending(db, run1.cursor);
-    // run 2 starts strictly after run 1's cursor → reaches the remaining backlog
+    const run2 = await consolidateAllPending(db);
     expect(run2.processed).toBeGreaterThan(0);
-    expect(run2.cursor!.createdAt >= run1.cursor!.createdAt).toBe(true);
+    expect(run2.remaining).toBe(0);
+  });
+
+  it('processes a late-ingested fact even when its historical created_at predates prior work', async () => {
+    addFact(db, 'current local fact', 'global', null);
+    const first = await consolidateAllPending(db);
+    expect(first.processed).toBe(1);
+
+    insertFact(db, {
+      fact: 'late imported historical fact',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: EMB,
+    });
+    db.prepare("UPDATE facts SET created_at = '1999-01-01T00:00:00.000Z' WHERE fact = ?")
+      .run('late imported historical fact');
+
+    const second = await consolidateAllPending(db);
+    expect(second.processed).toBe(1);
   });
 });

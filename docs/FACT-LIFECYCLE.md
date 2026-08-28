@@ -115,6 +115,13 @@ fact 저장은 성공했는데 watermark가 실패하거나 그 반대가 되는
 consolidation은 같은 scope eligibility 안에서 candidate를 비교합니다. 서로 다른 project의
 사실을 하나로 합쳐 scope를 누출하지 않습니다.
 
+consolidation 대상은 `created_at` cursor가 아니라 local `needs_consolidation` dirty queue로
+선정합니다. extraction insert, sync-import, semantic edit, restore는 active fact를 dirty로
+등록하고, 성공적으로 검사한 정확한 `updated_at` generation만 queue에서 제거합니다.
+따라서 과거 `created_at`을 보존한 late sync-import도 누락되지 않습니다. transient/provider
+failure와 internal failure는 dirty 상태를 유지하며, deterministic per-fact rejection만 bounded
+attempt 뒤 searchable fact를 보존한 채 queue에서 제외합니다.
+
 EVOLUTION과 CONTRADICTION은 모두 `mutateFactMeaning()`을 사용합니다. current identity는
 existing fact ID로 유지하며, revision 추가, text와 stored embedding 교체, primary vector
 교체, KR text/vector 무효화, ontology pending reset, 기존 relation 제거, 병합 대상 fact

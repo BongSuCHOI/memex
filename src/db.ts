@@ -393,9 +393,27 @@ export function initDatabase(): Database.Database {
       embedding_version INTEGER NOT NULL DEFAULT 1,
       ontology_attempts INTEGER NOT NULL DEFAULT 0,
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
+      needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT
     )
   `);
+
+  // Consolidation processing order is local ingestion/mutation order, never the
+  // fact's historical created_at. Existing active rows must be examined once
+  // after this additive migration; inactive rows re-enter only when restored.
+  const factColumns = new Set(
+    (
+      db.prepare("PRAGMA table_info(facts)").all() as Array<{ name: string }>
+    ).map((r) => r.name),
+  );
+  if (!factColumns.has("needs_consolidation")) {
+    db.exec(
+      "ALTER TABLE facts ADD COLUMN needs_consolidation INTEGER NOT NULL DEFAULT 1",
+    );
+    db.prepare(
+      "UPDATE facts SET needs_consolidation = 0 WHERE is_active = 0",
+    ).run();
+  }
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
@@ -524,11 +542,11 @@ export function initDatabase(): Database.Database {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_facts_ontology ON facts(ontology_category_id)`,
   );
-  // Keyset pagination for the consolidation drain (getAllNewFactsSince): serves
-  // both `WHERE is_active = 1 AND (created_at, id) > cursor` and the
-  // `ORDER BY created_at, id` without a temp sort over the whole table.
+  // Durable local dirty queue for consolidation. updated_at is only a stable
+  // queue ordering key; membership comes exclusively from needs_consolidation.
   db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_facts_active_created_id ON facts(is_active, created_at, id)`,
+    `CREATE INDEX IF NOT EXISTS idx_facts_consolidation_queue
+     ON facts(is_active, needs_consolidation, updated_at, id)`,
   );
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_ontology_categories_domain ON ontology_categories(domain_id)`,

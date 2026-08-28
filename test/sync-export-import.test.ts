@@ -140,6 +140,40 @@ describe('sync-export/import', () => {
     expect(result.newRelations).toBe(1);
   });
 
+  it('queues a late historical sync fact for local consolidation', async () => {
+    const { getSyncDir } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const syncDir = getSyncDir();
+    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+      id: 'late-historical-fact',
+      fact: 'Historical truth imported after local processing',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: '[]',
+      created_at: '1999-01-01T00:00:00.000Z',
+      updated_at: '2026-08-28T02:00:00.000Z',
+      consolidated_count: 1,
+      is_active: 1,
+      ontology_category_id: null,
+    }) + '\n');
+
+    const result = await importFromSync();
+    expect(result.newFacts).toBe(1);
+    const db = initDatabase();
+    try {
+      expect(db.prepare(
+        'SELECT created_at, needs_consolidation FROM facts WHERE id = ?',
+      ).get('late-historical-fact')).toEqual({
+        created_at: '1999-01-01T00:00:00.000Z',
+        needs_consolidation: 1,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('should skip duplicate records on re-import', async () => {
     const { getSyncDir } = await import('../src/sync-export.js');
     const syncDir = getSyncDir();

@@ -138,6 +138,7 @@ export function updateFact(
   if (params.fact !== undefined) {
     updates.push("fact = ?");
     values.push(params.fact);
+    updates.push("needs_consolidation = 1");
   }
   if (params.embedding !== undefined) {
     updates.push("embedding = ?");
@@ -174,7 +175,7 @@ export function updateFact(
 }
 
 export function deactivateFact(db: Database.Database, id: string): void {
-  db.prepare("UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?").run(
+  db.prepare("UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ?").run(
     new Date().toISOString(),
     id,
   );
@@ -501,54 +502,29 @@ export function getNewFactsSince(
 }
 
 /**
- * All active facts after a KEYSET cursor `(createdAt, id)`, EVERY scope/project,
- * each row once, ordered by (created_at, id). The composite key is what makes
- * the consolidate cursor strictly monotonic PER FACT: ordering by created_at
- * alone stalls when a whole timestamp group is larger than the per-run budget
- * (the cursor can't advance into a shared timestamp without risking a skip), so
- * `id` is the unique tiebreaker that lets the drain progress one fact at a time.
- *
- * cursor null → from the beginning (all active facts).
- *
- * KNOWN LIMITATION (best-effort dedup): a fact IMPORTED mid-drain with an old
- * `created_at` that sorts before the current cursor is not re-driven by this
- * pass (it's still a similarity CANDIDATE for future facts, so a duplicate is
- * still caught opportunistically). Consolidation is a background convenience,
- * not an exhaustive guarantee, so this is accepted rather than adding a
- * full re-scan on every import.
+ * Local consolidation dirty queue. Membership is explicit and independent of
+ * historical fact timestamps, so a late sync import cannot land behind a
+ * persisted cursor. updated_at/id only provide deterministic bounded draining.
  */
-export function getAllNewFactsSince(
+export function getPendingConsolidationFacts(
   db: Database.Database,
-  cursor: { createdAt: string; id: string } | null,
   limit: number = 2000,
+  project?: string,
 ): Fact[] {
-  // Bounded page (keyset) — NEVER materialize the whole table: seeding from the
-  // beginning could otherwise pull tens of thousands of rows into memory in one
-  // query. The keyset cursor makes each run resume exactly where the last ended,
-  // so the backlog drains page-by-page. The idx_facts_active_created_id index
-  // (is_active, created_at, id) serves both the filter and the ORDER BY without
-  // a temp sort.
-  if (!cursor) {
-    return (
-      db
-        .prepare(`
-      SELECT * FROM facts WHERE is_active = 1 ORDER BY created_at ASC, id ASC LIMIT ?
-    `)
-        .all(limit) as Record<string, unknown>[]
-    ).map(rowToFact);
-  }
+  const scopeClause = project
+    ? " AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')"
+    : "";
+  const params: unknown[] = project ? [project, limit] : [limit];
   return (
     db
       .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
-      AND (created_at > ? OR (created_at = ? AND id > ?))
-    ORDER BY created_at ASC, id ASC LIMIT ?
+      AND needs_consolidation = 1
+      ${scopeClause}
+    ORDER BY updated_at ASC, id ASC LIMIT ?
   `)
-      .all(cursor.createdAt, cursor.createdAt, cursor.id, limit) as Record<
-      string,
-      unknown
-    >[]
+      .all(...params) as Record<string, unknown>[]
   ).map(rowToFact);
 }
 

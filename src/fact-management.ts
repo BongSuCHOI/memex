@@ -120,7 +120,7 @@ function parseSourceExchangeIds(raw: string | null): string[] {
 
 function deactivateWithinTransaction(db: Database.Database, id: string): void {
   const result = db.prepare(
-    'UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ? AND is_active = 1',
+    'UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ? AND is_active = 1',
   ).run(new Date().toISOString(), id);
   if (result.changes === 0) throw new Error(`no active fact with id: ${id}`);
   if (tableExists(db, 'vec_facts')) db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
@@ -180,7 +180,8 @@ export async function mutateFactMeaning(
       UPDATE facts
       SET fact = ?, source_exchange_ids = ?, embedding = ?, updated_at = ?, embedding_version = ?,
           ontology_category_id = NULL, fact_kr = NULL,
-          ontology_attempts = 0, consolidation_attempts = 0, ontology_last_attempt_at = NULL
+          ontology_attempts = 0, consolidation_attempts = 0, needs_consolidation = 1,
+          ontology_last_attempt_at = NULL
           ${countUpdate}
       WHERE id = ?
     `).run(
@@ -250,7 +251,7 @@ export async function editFact(
 /** Deactivate (default delete). Removes from search/vector immediately. */
 export function deactivateFactTransactional(db: Database.Database, id: string): { deactivated: true; removedFromVectorIndex: boolean } {
   const tx = db.transaction(() => {
-    const r = db.prepare('UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+    const r = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
     if (r.changes === 0) throw new Error(`no active fact with id: ${id} (not found or already inactive)`);
     let removed = false;
     if (tableExists(db, 'vec_facts')) {
@@ -271,7 +272,7 @@ export function restoreFact(db: Database.Database, id: string): { restored: true
       | { embedding: Buffer | null }
       | undefined;
     if (!row) throw new Error(`no inactive fact with id: ${id}`);
-    db.prepare('UPDATE facts SET is_active = 1, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+    db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
     let restored = false;
     if (row.embedding && tableExists(db, 'vec_facts')) {
       // The facts.embedding column stores float32 bytes; re-encode to the

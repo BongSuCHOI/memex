@@ -132,6 +132,7 @@ CREATE TABLE facts (
   embedding_version INTEGER NOT NULL DEFAULT 1,
   ontology_attempts INTEGER NOT NULL DEFAULT 0,
   consolidation_attempts INTEGER NOT NULL DEFAULT 0,
+  needs_consolidation INTEGER NOT NULL DEFAULT 1,
   ontology_last_attempt_at TEXT
 );
 
@@ -270,7 +271,7 @@ predecessor를 조회할 수 있습니다.
 ## 8. 인덱스와 성능 의도
 
 conventional index는 session/project/archive/timestamp, active fact scope, ontology
-membership, relation endpoints, revisions, consolidation keyset pagination을 덮습니다.
+membership, relation endpoints, revisions, consolidation dirty queue를 덮습니다.
 FTS/vector가 모두 없는 상태에서는 조용히 빈 결과를 반환하지 않고 readiness 또는
 fallback 상태를 노출해야 합니다.
 

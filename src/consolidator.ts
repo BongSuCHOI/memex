@@ -4,8 +4,7 @@ import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
 import {
-  getNewFactsSince,
-  getAllNewFactsSince,
+  getPendingConsolidationFacts,
   searchSimilarFactsSameScope,
   updateFact,
   deactivateFact,
@@ -29,9 +28,9 @@ export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine thei
 
 const MAX_LLM_CALLS = 10;
 // Cross-run retries for a driver fact whose comparison CALL keeps failing before
-// it is skipped (advanced past). A short/transient outage is retried (held) until
+// it is skipped (removed from the dirty queue). A short/transient outage is retried until
 // it recovers — a success resets the counter — while a persistently failing fact
-// reaches MAX and is skipped so it can't wedge the cursor. This spans runs on
+// reaches MAX and is skipped so it can't wedge the queue. This spans runs on
 // purpose: a real provider outage lasts across separate worker runs, which a
 // run-local counter cannot see.
 const MAX_CONSOLIDATION_ATTEMPTS = 3;
@@ -91,95 +90,52 @@ async function consolidateOne(
   const result = parseJsonResponse<ConsolidationResult>(response);
   // Unparseable output = the call happened (budget spent) but produced no usable
   // verdict. Treated as a no-op ('none'), NOT an error: consolidation is a
-  // best-effort background dedup, so we advance past this comparison rather than
-  // hold the cursor. The pair is not lost — both facts stay active, and the
+  // best-effort background dedup, so we clear this dirty item rather than hold
+  // the queue. The pair is not lost — both facts stay active, and the
   // comparison re-triggers whenever either is a driver/candidate for a future
   // fact. This also means no single fact (a transiently non-JSON response, or a
-  // deliberately "poison" candidate) can hold the cursor and starve the backlog.
+  // deliberately "poison" candidate) can hold the queue and starve the backlog.
   if (!result) return { called: true, verdict: 'none' };
   await applyConsolidationResult(db, closest.fact, newFact, result);
   return { called: true, verdict: result.relation };
 }
 
-/**
- * @deprecated Back-compat wrapper for the removed per-project consolidator.
- * Prefer `consolidateAllPending`. Now scope-isolated (via consolidateOne), so
- * it can no longer leak project-private text into global facts. Kept as a
- * public export so existing importers don't crash at module load.
- */
-export async function consolidateFacts(
-  db: Database.Database,
-  project: string,
-  lastConsolidatedAt: string,
-): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number }> {
-  // Candidate retrieval uses stored vectors. A semantic verdict lazily creates
-  // the replacement embedding through mutateFactMeaning; no eager model init.
-  const newFacts = getNewFactsSince(db, project, lastConsolidatedAt);
-  let llmCalls = 0, merged = 0, contradictions = 0, evolutions = 0;
-  for (const newFact of newFacts) {
-    if (llmCalls >= MAX_LLM_CALLS) break;
-    const stillActive = db.prepare('SELECT 1 FROM facts WHERE id = ? AND is_active = 1').get(newFact.id);
-    if (!stillActive) continue;
-    try {
-      const { called, verdict } = await consolidateOne(db, newFact);
-      if (called) llmCalls++; // count the CALL, not the verdict (malformed output still spent budget)
-      if (verdict === 'DUPLICATE') merged++;
-      else if (verdict === 'CONTRADICTION') contradictions++;
-      else if (verdict === 'EVOLUTION') evolutions++;
-    } catch (error) {
-      // A throw means callMemoryModel was reached and failed — that attempt still
-      // counts against the budget, otherwise a persistently-failing LLM would
-      // let this loop attempt a call for every one of N similar facts.
-      llmCalls++;
-      console.error(`Consolidation failed for fact ${newFact.id}:`, error);
-    }
-  }
-  return { processed: newFacts.length, merged, contradictions, evolutions };
+interface ConsolidationDrainResult {
+  processed: number;
+  merged: number;
+  contradictions: number;
+  evolutions: number;
+  llmCalls: number;
+  remaining: number;
 }
 
-/**
- * Consolidate the ENTIRE backlog in one pass: every new fact (any scope, any
- * project) processed exactly once, under a single shared LLM budget. The
- * consolidate worker calls this once while holding the global lock, instead of
- * looping consolidateFacts per project — which reprocessed shared global facts
- * once per project (up to `MAX_LLM_CALLS × projectCount` calls) and, for
- * INDEPENDENT verdicts (both facts stay active), kept re-comparing the same
- * global fact every pass.
- *
- * Each fact is compared within its own scope: a project fact against its
- * project + global (via its scope_project), a global fact against the whole
- * store (scope_project is null → no scope filter). Because a fact merged away
- * by an earlier comparison is deactivated, it neither reappears in this list
- * nor as a later candidate.
- */
-export async function consolidateAllPending(
+async function drainPending(
   db: Database.Database,
-  since: { createdAt: string; id: string } | null,
-): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number; llmCalls: number; cursor: { createdAt: string; id: string } | null }> {
+  project?: string,
+): Promise<ConsolidationDrainResult> {
   // Candidate comparison uses ALREADY-STORED vectors and an LLM. Do not eagerly
   // initialize embeddings: only EVOLUTION/CONTRADICTION needs a replacement
   // vector, and mutateFactMeaning initializes the model lazily for that verdict.
-  const newFacts = getAllNewFactsSince(db, since);
+  const newFacts = getPendingConsolidationFacts(db, 2000, project);
   let llmCalls = 0;
   let merged = 0;
   let contradictions = 0;
   let evolutions = 0;
   let processed = 0;
-  // KEYSET progress cursor `(created_at, id)`: the last fact FULLY examined this
-  // run. Persisted by the caller so the next run resumes strictly after it.
-  // Because (created_at, id) is unique, we can always advance to the last
-  // examined fact without risking a skip — even when a whole timestamp group is
-  // larger than the per-run budget (the pre-keyset created_at-only cursor
-  // stalled forever in that case and starved the rest of the backlog).
-  let cursor = since;
 
   for (let i = 0; i < newFacts.length; i++) {
     const newFact = newFacts[i];
-    if (llmCalls >= MAX_LLM_CALLS) break; // budget wall — cursor stays at the last examined fact
+    if (llmCalls >= MAX_LLM_CALLS) break;
 
-    // Re-read: an earlier comparison this run may have deactivated this fact.
-    const stillActive = db.prepare('SELECT 1 FROM facts WHERE id = ? AND is_active = 1').get(newFact.id);
-    if (stillActive) {
+    // Re-read the queue generation: an earlier comparison or concurrent edit
+    // may have deactivated or changed this fact after the bounded page loaded.
+    const current = db.prepare(
+      'SELECT is_active, updated_at FROM facts WHERE id = ?',
+    ).get(newFact.id) as { is_active: number; updated_at: string } | undefined;
+    if (current?.is_active === 1 && current.updated_at !== newFact.updated_at) {
+      continue; // newer generation stays dirty for the next run
+    }
+    if (current?.is_active === 1) {
       try {
         // Same-scope isolation + budget accounting via the shared helper.
         const { called, verdict } = await consolidateOne(db, newFact);
@@ -187,15 +143,17 @@ export async function consolidateAllPending(
         if (verdict === 'DUPLICATE') merged++;
         else if (verdict === 'CONTRADICTION') contradictions++;
         else if (verdict === 'EVOLUTION') evolutions++;
-        // Clear any prior failure count once this fact resolves successfully
-        // (the guard keeps this a no-op write for the common zero case).
-        db.prepare('UPDATE facts SET consolidation_attempts = 0 WHERE id = ? AND consolidation_attempts > 0').run(newFact.id);
+        // Clear only the exact generation examined. A concurrent import/edit
+        // changes updated_at and keeps the newer generation dirty for next run.
+        db.prepare(
+          'UPDATE facts SET needs_consolidation = 0, consolidation_attempts = 0 WHERE id = ? AND updated_at = ?',
+        ).run(newFact.id, newFact.updated_at);
       } catch (error) {
         llmCalls++;
         console.error(`Consolidation call failed for fact ${newFact.id}:`, error);
 
         // A non-LLM error (parser/DB/internal bug, NOT an LlmCallError) must NEVER
-        // advance the cursor — hold so the bug surfaces instead of silently
+        // clear the dirty flag — hold so the bug surfaces instead of silently
         // marking the fact processed and draining the backlog.
         if (!(error instanceof LlmCallError)) {
           break;
@@ -215,29 +173,62 @@ export async function consolidateAllPending(
         }
 
         // Deterministic per-fact rejection: ledger it and, after MAX attempts,
-        // SKIP (advance past it) so one un-processable fact can't wedge the
-        // cursor. Below MAX, hold so a mis-classified blip still gets a couple of
-        // retries. Advancing is safe: the fact stays active/searchable, it just
-        // isn't consolidated.
+        // SKIP (clear it) so one un-processable fact can't wedge the queue.
+        // Below MAX, hold so a mis-classified blip still gets a couple of
+        // retries. The fact stays active/searchable; only best-effort
+        // consolidation stops after the bounded deterministic failures.
         const attempts = (db.prepare(
-          'UPDATE facts SET consolidation_attempts = COALESCE(consolidation_attempts, 0) + 1 WHERE id = ? RETURNING consolidation_attempts'
-        ).get(newFact.id) as { consolidation_attempts: number } | undefined)?.consolidation_attempts ?? 0;
+          'UPDATE facts SET consolidation_attempts = COALESCE(consolidation_attempts, 0) + 1 WHERE id = ? AND updated_at = ? RETURNING consolidation_attempts'
+        ).get(newFact.id, newFact.updated_at) as { consolidation_attempts: number } | undefined)?.consolidation_attempts ?? 0;
         if (attempts >= MAX_CONSOLIDATION_ATTEMPTS) {
           console.error(`Consolidation skip fact ${newFact.id} after ${attempts} deterministic failures`);
+          db.prepare(
+            'UPDATE facts SET needs_consolidation = 0 WHERE id = ? AND updated_at = ?',
+          ).run(newFact.id, newFact.updated_at);
           processed++;
-          cursor = { createdAt: newFact.created_at, id: newFact.id };
           continue;
         }
         break; // hold — retry this fact next run
       }
     }
-    // Fully examined (including a no-op / no-candidate / no-embedding fact — none
-    // of which need reprocessing as a driver): advance the keyset cursor past it.
+    // Fully examined (including a no-op / no-candidate / no-embedding fact).
     processed++;
-    cursor = { createdAt: newFact.created_at, id: newFact.id };
   }
 
-  return { processed, merged, contradictions, evolutions, llmCalls, cursor };
+  const scopeClause = project
+    ? " AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')"
+    : '';
+  const remaining = Number((db.prepare(
+    `SELECT COUNT(*) AS n FROM facts
+     WHERE is_active = 1 AND needs_consolidation = 1${scopeClause}`,
+  ).get(...(project ? [project] : [])) as { n: number }).n);
+  return { processed, merged, contradictions, evolutions, llmCalls, remaining };
+}
+
+/**
+ * @deprecated Back-compat wrapper for the removed per-project consolidator.
+ * The timestamp argument is intentionally ignored: queue membership follows
+ * local ingestion and semantic mutation, never historical created_at.
+ */
+export async function consolidateFacts(
+  db: Database.Database,
+  project: string,
+  _lastConsolidatedAt: string,
+): Promise<{ processed: number; merged: number; contradictions: number; evolutions: number }> {
+  const result = await drainPending(db, project);
+  return {
+    processed: result.processed,
+    merged: result.merged,
+    contradictions: result.contradictions,
+    evolutions: result.evolutions,
+  };
+}
+
+/** Drain the durable local dirty queue across every project and global scope. */
+export async function consolidateAllPending(
+  db: Database.Database,
+): Promise<ConsolidationDrainResult> {
+  return drainPending(db);
 }
 
 export async function applyConsolidationResult(

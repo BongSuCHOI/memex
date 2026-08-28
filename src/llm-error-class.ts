@@ -30,7 +30,7 @@ export function extractStatus(x: unknown): number | undefined {
  * Wraps a rejection from the LLM provider call (callMemoryModel) so the drain loop can
  * tell a provider error apart from an internal bug (parser/DB/mutation). ONLY a
  * provider error is eligible for classification + bounded skip; an internal
- * error must hold, never advance the cursor.
+ * error must hold dirty work, never clear it.
  */
 export class LlmCallError extends Error {
   readonly reason: unknown;
@@ -65,12 +65,12 @@ export class EmptyLlmResponseError extends Error {
 /**
  * Classify a callMemoryModel rejection into three states so the drain loop can satisfy
  * BOTH "an outage must never silently skip the backlog" AND "one un-processable
- * fact must never wedge the cursor forever" — a binary flag cannot do both under
- * a single monotonic cursor with imperfect error recognition:
+ * fact must never wedge the queue forever" — one retry rule cannot do both
+ * under imperfect error recognition:
  *
  *   - 'transient'     recognized outage/auth (429/5xx/401/403/404, rate-limit,
  *                     timeout, network...) or an empty response. The provider —
- *                     not the fact — is at fault, so the caller HOLDS the cursor
+ *                     not the fact — is at fault, so the caller HOLDS dirty work
  *                     and retries; it resumes cleanly on recovery, never
  *                     skipping during an outage however long it lasts.
  *   - 'deterministic' recognized per-request rejection (400/413/422, too-long,

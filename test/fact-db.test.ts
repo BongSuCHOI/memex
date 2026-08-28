@@ -65,6 +65,49 @@ describe('Facts DB Schema', () => {
     expect(colNames).toContain('updated_at');
     expect(colNames).toContain('consolidated_count');
     expect(colNames).toContain('is_active');
+    expect(colNames).toContain('needs_consolidation');
+  });
+
+  it('migrates existing facts into the local consolidation queue', () => {
+    db.close();
+    for (const suffix of ['', '-wal', '-shm']) {
+      fs.rmSync(dbPath + suffix, { force: true });
+    }
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE facts (
+        id TEXT PRIMARY KEY,
+        fact TEXT NOT NULL,
+        category TEXT,
+        scope_type TEXT NOT NULL DEFAULT 'project',
+        scope_project TEXT,
+        source_exchange_ids TEXT,
+        embedding BLOB,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        consolidated_count INTEGER DEFAULT 1,
+        is_active INTEGER DEFAULT 1,
+        ontology_category_id TEXT,
+        fact_kr TEXT,
+        embedding_version INTEGER NOT NULL DEFAULT 1,
+        ontology_attempts INTEGER NOT NULL DEFAULT 0,
+        consolidation_attempts INTEGER NOT NULL DEFAULT 0,
+        ontology_last_attempt_at TEXT
+      );
+      INSERT INTO facts (id, fact, created_at, updated_at, is_active)
+      VALUES
+        ('active-old', 'Active legacy fact', '2000-01-01', '2000-01-01', 1),
+        ('inactive-old', 'Inactive legacy fact', '2000-01-01', '2000-01-01', 0);
+    `);
+    legacy.close();
+
+    db = initDatabase();
+    expect(db.prepare(
+      'SELECT id, needs_consolidation FROM facts ORDER BY id',
+    ).all()).toEqual([
+      { id: 'active-old', needs_consolidation: 1 },
+      { id: 'inactive-old', needs_consolidation: 0 },
+    ]);
   });
 });
 

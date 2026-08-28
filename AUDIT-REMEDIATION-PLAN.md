@@ -674,7 +674,7 @@ node --test test/*slice.test.mjs
 - [x] 3. semantic fact mutation service
 - [x] 4. shell evidence locality proof
 - [x] 5. revision/tombstone-aware sync
-- [ ] 6. ingestion/dirty consolidation queue
+- [x] 6. ingestion/dirty consolidation queue
 - [ ] 7. 모든 vector generation/version
 - [ ] 8. scope-aware search SSOT
 - [x] 9. current fact lineage

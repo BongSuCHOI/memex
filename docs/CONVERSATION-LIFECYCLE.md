@@ -158,7 +158,9 @@ import는 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
 `assistant_learnable=0`, `has_memex_recall=1`을 다시 적용하므로 conversation reindex와
 receipt import의 실행 순서가 바뀌어도 safety provenance가 복구됩니다.
 반면 `extraction_log.last_exchange_rowid`는 각 local DB의 `exchanges.rowid`에 종속되고,
-consolidation cursor/attempt는 local processing state이므로 기기 간 복사하지 않습니다.
+`needs_consolidation`/`consolidation_attempts`는 local processing state이므로 기기 간
+복사하지 않습니다. sync-import된 active fact는 source `created_at`과 무관하게 local dirty
+queue에 등록됩니다.
 
 DB 파일만 삭제되고 archive/source rollout은 남은 복구에서는 `memex sync`가 unchanged
 archive도 전부 다시 index합니다. 이후 SessionStart sync import가 protocol v2 durable state를

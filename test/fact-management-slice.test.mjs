@@ -37,7 +37,7 @@ async function setup(t) {
 test('edit writes revision + fresh embedding atomically; ontology goes observable-pending', async (t) => {
   const { db, id } = await setup(t);
   // classify first and set attempt counters so we can observe the pending transition
-  db.prepare("UPDATE facts SET ontology_category_id = 'cat-old', ontology_attempts = 2, consolidation_attempts = 1 WHERE id = ?").run(id);
+  db.prepare("UPDATE facts SET ontology_category_id = 'cat-old', ontology_attempts = 2, consolidation_attempts = 1, needs_consolidation = 0 WHERE id = ?").run(id);
 
   // create a relation to verify stale cleanup
   const { insertFact } = await import(path.join(REPO, 'dist/fact-db.js'));
@@ -64,12 +64,13 @@ test('edit writes revision + fresh embedding atomically; ontology goes observabl
   assert.equal(r.ontologyPending, true);
   assert.equal(r.affectedRelations, 1, 'Stale relation should be counted and removed');
 
-  const row = db.prepare('SELECT fact, embedding, ontology_category_id, ontology_attempts, consolidation_attempts FROM facts WHERE id = ?').get(id);
+  const row = db.prepare('SELECT fact, embedding, ontology_category_id, ontology_attempts, consolidation_attempts, needs_consolidation FROM facts WHERE id = ?').get(id);
   assert.ok(row.fact.startsWith('The API uses keyset'));
   assert.ok(row.embedding !== null, 'facts.embedding BLOB must be updated');
   assert.equal(row.ontology_category_id, null); // observable pending
   assert.equal(row.ontology_attempts, 0, 'ontology_attempts must be reset to 0');
   assert.equal(row.consolidation_attempts, 0, 'consolidation_attempts must be reset to 0');
+  assert.equal(row.needs_consolidation, 1, 'semantic edit must requeue consolidation');
 
   // Verify relations are cleaned up
   const remainingRel = db.prepare('SELECT COUNT(*) c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(id, id).c;
@@ -92,11 +93,17 @@ test('deactivate removes from search/vector; restore brings both back', async (t
   const fm = await import(path.join(REPO, 'dist/fact-management.js'));
 
   fm.deactivateFactTransactional(db, id);
-  assert.equal(db.prepare('SELECT is_active FROM facts WHERE id = ?').get(id).is_active, 0);
+  assert.deepEqual(db.prepare('SELECT is_active, needs_consolidation FROM facts WHERE id = ?').get(id), {
+    is_active: 0,
+    needs_consolidation: 0,
+  });
   assert.equal(db.prepare('SELECT COUNT(*) c FROM vec_facts WHERE id = ?').get(id).c, 0);
 
   fm.restoreFact(db, id);
-  assert.equal(db.prepare('SELECT is_active FROM facts WHERE id = ?').get(id).is_active, 1);
+  assert.deepEqual(db.prepare('SELECT is_active, needs_consolidation FROM facts WHERE id = ?').get(id), {
+    is_active: 1,
+    needs_consolidation: 1,
+  });
   assert.equal(db.prepare('SELECT COUNT(*) c FROM vec_facts WHERE id = ?').get(id).c, 1);
   db.close();
 });
