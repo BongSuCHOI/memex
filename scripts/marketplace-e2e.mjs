@@ -109,7 +109,8 @@ try {
   if (
     mcp?.command !== "node" ||
     mcp.args?.[0] !== "cli/runtime-exec.js" ||
-    mcp.args?.[1] !== "memex-mcp-server"
+    mcp.args?.[1] !== "memex-mcp-server" ||
+    mcp.startup_timeout_sec !== 300
   ) {
     throw new Error(
       "installed MCP manifest does not use the shared runtime launcher",
@@ -141,10 +142,12 @@ try {
     [path.join(installedRoot, "cli", "memex.js"), "--help"],
     { cwd: installedRoot },
   );
-  if (
-    !help.stdout.includes("sync        Sync conversations") ||
-    !help.stdout.includes("backfill    Run extraction")
-  ) {
+  const installedCommands = new Set(
+    (help.stdout.match(/^  [a-z][\w-]+(?=\s{2,})/gm) || []).map((line) =>
+      line.trim(),
+    ),
+  );
+  if (!installedCommands.has("sync") || !installedCommands.has("backfill")) {
     throw new Error("installed CLI help is incomplete");
   }
   const bad = spawnSync(

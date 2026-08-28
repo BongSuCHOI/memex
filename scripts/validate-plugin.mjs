@@ -170,7 +170,8 @@ function validateMcpManifest(installedRoot) {
     server.args[0] !== "cli/runtime-exec.js" ||
     server.args[1] !== "memex-mcp-server" ||
     server.args.length !== 2 ||
-    server.cwd !== "."
+    server.cwd !== "." ||
+    server.startup_timeout_sec !== 300
   ) {
     throw new Error("invalid .mcp.json memex server contract");
   }

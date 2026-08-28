@@ -160,4 +160,6 @@ Codex cache에는 manifest, skills, hook/MCP launcher가 설치됩니다. Depend
 `cli/runtime-exec.js`는 MCP와 hook 모두에서 `github:BongSuCHOI/memex#main`을 단일
 source spec으로 사용하고, `npx`가 실제 runtime과 native dependency를 npm isolated
 cache에서 실행합니다. 따라서 일반 사용에는 source checkout이나 build가 필요하지
-않습니다. 이 구조에서 검증된 `main`만 배포하는 것이 release safety boundary입니다.
+않습니다. MCP manifest의 300초 시작 제한은 첫 isolated-cache 준비가 Codex 기본
+10초 제한에 잘리는 것을 방지합니다. 이 구조에서 검증된 `main`만 배포하는 것이
+release safety boundary입니다.

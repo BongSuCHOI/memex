@@ -27,7 +27,7 @@ codex plugin add memex@memex
 `plugin add`는 Codex cache에 manifest, MCP declaration, skills, hooks, UI, CLI를
 설치합니다. dependency-free `cli/runtime-exec.js`가 MCP와 hook에서 공통으로 최신
 runtime을 실행합니다. 첫 호출은 npm cache와 native dependency 준비 때문에 평소보다
-오래 걸릴 수 있습니다.
+오래 걸릴 수 있으므로 MCP manifest는 첫 준비를 위한 시작 제한을 300초로 설정합니다.
 
 ## Manual local marketplace
 
@@ -305,7 +305,8 @@ node scripts/validate-plugin.mjs
 - runtime dependency 실패: Node/npm network 접근과 npm cache 권한을 확인한 뒤 재시작
 - plugin configured지만 observed 없음: Codex 재시작, hook trust, observation log 확인
 - injection 없음: `injected|no-match|deduped|skipped|error` 상태 확인
-- MCP 실패: `.mcp.json`, `runtime-exec`, npm cache, packaged wrapper, 9-tool handshake 확인
+- MCP 실패: 설치된 `.mcp.json`의 `startup_timeout_sec = 300`, `runtime-exec`, npm
+  cache, packaged wrapper, 9-tool handshake 확인
 - stale socket: 소유 process가 없는 Memex data-root socket만 제거
 - project 충돌: `memex migrate-projects --dry-run`의 evidence/count/backup 확인
 
