@@ -55,6 +55,34 @@ test('tools/list publishes project and scope for every scoped graph tool', async
   }
 });
 
+test('tools/list maxLength parity with handler validation limits', async () => {
+  const { getToolDefinitions } = await import(path.join(REPO, 'dist/mcp-server.js'));
+  const tools = new Map(getToolDefinitions().map((tool) => [tool.name, tool]));
+  const expectMax = (tool, prop, max) => {
+    const schema = tools.get(tool)?.inputSchema?.properties?.[prop];
+    assert.equal(schema?.maxLength, max, `${tool}.${prop} maxLength must be ${max}`);
+  };
+  expectMax('search', 'project', 500);
+  expectMax('search_facts', 'query', 10000);
+  expectMax('search_facts', 'project', 500);
+  expectMax('search_ontology', 'project', 500);
+  expectMax('ask_avatar', 'question', 10000);
+  expectMax('ask_avatar', 'project', 500);
+  expectMax('trace_fact', 'query', 10000);
+  expectMax('trace_fact', 'project', 500);
+  expectMax('graph_stats', 'project', 500);
+  expectMax('cross_project_insights', 'query', 10000);
+  expectMax('cross_project_insights', 'current_project', 500);
+  expectMax('explore_graph', 'query', 10000);
+  expectMax('explore_graph', 'project', 500);
+  // search.query is a oneOf: string branch and array-item branch both bounded.
+  const searchQuery = tools.get('search')?.inputSchema?.properties?.query;
+  assert.deepEqual(
+    searchQuery?.oneOf?.map((branch) => branch.maxLength ?? branch.items?.maxLength),
+    [10000, 10000],
+  );
+});
+
 test('search_facts without project or scope returns structured validation error (no cwd fallback)', async (t) => {
   await seedDb(t);
   const reply = await callTool('search_facts', { query: 'row-level security' });

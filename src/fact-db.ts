@@ -1,17 +1,26 @@
-import Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
-import type { Fact, FactRevision } from './types.js';
-import { EMBEDDING_VERSION } from './embeddings.js';
-import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
+import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
+import type { Fact, FactRevision } from "./types.js";
+import { EMBEDDING_VERSION } from "./embeddings.js";
+import {
+  getVecTableDtype,
+  embeddingToVecBlob,
+  vecParamSql,
+  normalizeVecDistance,
+  l2DistanceToSimilarity,
+} from "./db.js";
 
-type FactVecTable = 'vec_facts' | 'vec_facts_kr' | 'vec_categories';
+type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
-export function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]) {
+export function vecParamFor(
+  db: Database.Database,
+  table: FactVecTable,
+  embedding: number[],
+) {
   const dt = getVecTableDtype(db, table);
   return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
 }
-
 
 interface InsertFactParams {
   fact: string;
@@ -19,8 +28,8 @@ interface InsertFactParams {
   scope_type: string;
   scope_project: string | null;
   source_exchange_ids: string[];
-  embedding: number[] | null;  // number[] to match generateEmbedding() return type
-  fact_kr?: string | null;     // Korean translation — enables same-language matching for Korean queries
+  embedding: number[] | null; // number[] to match generateEmbedding() return type
+  fact_kr?: string | null; // Korean translation — enables same-language matching for Korean queries
   embedding_kr?: number[] | null;
 }
 
@@ -39,7 +48,10 @@ interface InsertRevisionParams {
   source_exchange_id: string | null;
 }
 
-export function insertFact(db: Database.Database, params: InsertFactParams): string {
+export function insertFact(
+  db: Database.Database,
+  params: InsertFactParams,
+): string {
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(`
@@ -52,7 +64,9 @@ export function insertFact(db: Database.Database, params: InsertFactParams): str
     params.scope_type,
     params.scope_project,
     JSON.stringify(params.source_exchange_ids),
-    params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null,
+    params.embedding
+      ? Buffer.from(new Float32Array(params.embedding).buffer)
+      : null,
     now,
     now,
     params.fact_kr ?? null,
@@ -61,20 +75,24 @@ export function insertFact(db: Database.Database, params: InsertFactParams): str
 
   // Insert into vector index (atomic DELETE+INSERT via transaction)
   if (params.embedding) {
-    const p = vecParamFor(db, 'vec_facts', params.embedding);
+    const p = vecParamFor(db, "vec_facts", params.embedding);
     const upsertVec = db.transaction((vecId: string, buf: Buffer) => {
-      db.prepare('DELETE FROM vec_facts WHERE id = ?').run(vecId);
-      db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`).run(vecId, buf);
+      db.prepare("DELETE FROM vec_facts WHERE id = ?").run(vecId);
+      db.prepare(
+        `INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`,
+      ).run(vecId, buf);
     });
     upsertVec(id, p.blob);
   }
 
   // Korean-text vector index (same-language matching for Korean queries)
   if (params.embedding_kr) {
-    const pk = vecParamFor(db, 'vec_facts_kr', params.embedding_kr);
+    const pk = vecParamFor(db, "vec_facts_kr", params.embedding_kr);
     const upsertVecKr = db.transaction((vecId: string, buf: Buffer) => {
-      db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(vecId);
-      db.prepare(`INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${pk.sql})`).run(vecId, buf);
+      db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(vecId);
+      db.prepare(
+        `INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${pk.sql})`,
+      ).run(vecId, buf);
     });
     upsertVecKr(id, pk.blob);
   }
@@ -83,85 +101,124 @@ export function insertFact(db: Database.Database, params: InsertFactParams): str
 }
 
 export function getActiveFacts(db: Database.Database): Fact[] {
-  return (db.prepare('SELECT * FROM facts WHERE is_active = 1 ORDER BY consolidated_count DESC')
-    .all() as Record<string, unknown>[])
-    .map(rowToFact);
+  return (
+    db
+      .prepare(
+        "SELECT * FROM facts WHERE is_active = 1 ORDER BY consolidated_count DESC",
+      )
+      .all() as Record<string, unknown>[]
+  ).map(rowToFact);
 }
 
-export function getFactsByProject(db: Database.Database, project: string): Fact[] {
-  return (db.prepare(`
+export function getFactsByProject(
+  db: Database.Database,
+  project: string,
+): Fact[] {
+  return (
+    db
+      .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY consolidated_count DESC
-  `).all(project) as Record<string, unknown>[]).map(rowToFact);
+  `)
+      .all(project) as Record<string, unknown>[]
+  ).map(rowToFact);
 }
 
-export function updateFact(db: Database.Database, id: string, params: UpdateFactParams): void {
+export function updateFact(
+  db: Database.Database,
+  id: string,
+  params: UpdateFactParams,
+): void {
   const now = new Date().toISOString();
-  const updates: string[] = ['updated_at = ?'];
+  const updates: string[] = ["updated_at = ?"];
   const values: unknown[] = [now];
 
   if (params.fact !== undefined) {
-    updates.push('fact = ?');
+    updates.push("fact = ?");
     values.push(params.fact);
   }
   if (params.embedding !== undefined) {
-    updates.push('embedding = ?');
-    values.push(params.embedding ? Buffer.from(new Float32Array(params.embedding).buffer) : null);
+    updates.push("embedding = ?");
+    values.push(
+      params.embedding
+        ? Buffer.from(new Float32Array(params.embedding).buffer)
+        : null,
+    );
   }
   if (params.consolidated_count_increment) {
-    updates.push('consolidated_count = consolidated_count + 1');
+    updates.push("consolidated_count = consolidated_count + 1");
   }
   if (params.source_exchange_ids !== undefined) {
-    updates.push('source_exchange_ids = ?');
+    updates.push("source_exchange_ids = ?");
     values.push(JSON.stringify([...new Set(params.source_exchange_ids)]));
   }
 
   values.push(id);
-  db.prepare(`UPDATE facts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  db.prepare(`UPDATE facts SET ${updates.join(", ")} WHERE id = ?`).run(
+    ...values,
+  );
 
   // Update vector index (atomic DELETE+INSERT via transaction)
   if (params.embedding) {
-    const p = vecParamFor(db, 'vec_facts', params.embedding);
+    const p = vecParamFor(db, "vec_facts", params.embedding);
     const upsertVec = db.transaction((vecId: string, buf: Buffer) => {
-      db.prepare('DELETE FROM vec_facts WHERE id = ?').run(vecId);
-      db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`).run(vecId, buf);
+      db.prepare("DELETE FROM vec_facts WHERE id = ?").run(vecId);
+      db.prepare(
+        `INSERT INTO vec_facts (id, embedding) VALUES (?, ${p.sql})`,
+      ).run(vecId, buf);
     });
     upsertVec(id, p.blob);
   }
 }
 
 export function deactivateFact(db: Database.Database, id: string): void {
-  db.prepare('UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?').run(
+  db.prepare("UPDATE facts SET is_active = 0, updated_at = ? WHERE id = ?").run(
     new Date().toISOString(),
     id,
   );
   // Deactivated facts must not occupy vector index slots
-  db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
-  db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
+  db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
+  db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
 }
 
 export function deleteFact(db: Database.Database, id: string): void {
-  db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
-  db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
-  db.prepare('DELETE FROM fact_revisions WHERE fact_id = ?').run(id);
-  db.prepare('DELETE FROM facts WHERE id = ?').run(id);
+  db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
+  db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
+  db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(id);
+  db.prepare("DELETE FROM facts WHERE id = ?").run(id);
 }
 
-export function insertRevision(db: Database.Database, params: InsertRevisionParams): string {
+export function insertRevision(
+  db: Database.Database,
+  params: InsertRevisionParams,
+): string {
   const id = randomUUID();
   db.prepare(`
     INSERT INTO fact_revisions (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, params.fact_id, params.previous_fact, params.new_fact, params.reason, params.source_exchange_id, new Date().toISOString());
+  `).run(
+    id,
+    params.fact_id,
+    params.previous_fact,
+    params.new_fact,
+    params.reason,
+    params.source_exchange_id,
+    new Date().toISOString(),
+  );
   return id;
 }
 
-export function getRevisions(db: Database.Database, factId: string): FactRevision[] {
-  return db.prepare(
-    'SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC'
-  ).all(factId) as FactRevision[];
+export function getRevisions(
+  db: Database.Database,
+  factId: string,
+): FactRevision[] {
+  return db
+    .prepare(
+      "SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC",
+    )
+    .all(factId) as FactRevision[];
 }
 
 export function searchSimilarFacts(
@@ -184,12 +241,14 @@ export function searchSimilarFacts(
   const fetch = (table: FactVecTable) => {
     try {
       const p = vecParamFor(db, table, embedding);
-      const rows = db.prepare(`
+      const rows = db
+        .prepare(`
         SELECT id, distance FROM ${table}
         WHERE embedding MATCH ${p.sql}
         ORDER BY distance
         LIMIT ?
-      `).all(p.blob, candidateFetch) as Array<{ id: string; distance: number }>;
+      `)
+        .all(p.blob, candidateFetch) as Array<{ id: string; distance: number }>;
       for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
       return rows;
     } catch {
@@ -198,7 +257,7 @@ export function searchSimilarFacts(
   };
 
   const best = new Map<string, number>();
-  for (const vr of [...fetch('vec_facts'), ...fetch('vec_facts_kr')]) {
+  for (const vr of [...fetch("vec_facts"), ...fetch("vec_facts_kr")]) {
     const cur = best.get(vr.id);
     if (cur === undefined || vr.distance < cur) best.set(vr.id, vr.distance);
   }
@@ -215,14 +274,21 @@ export function searchSimilarFacts(
     // embedding_version filter: during a model migration the vector tables
     // can still hold old-model rows; comparing them against a current-model
     // query embedding silently misranks. Skip until the worker upgrades them.
-    const row = db.prepare(
-      'SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?'
-    ).get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
+    const row = db
+      .prepare(
+        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
+      )
+      .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
     if (!row) continue;
 
     const fact = rowToFact(row);
     // Scope filter: same project or global only
-    if (project && fact.scope_type === 'project' && fact.scope_project !== project) continue;
+    if (
+      project &&
+      fact.scope_type === "project" &&
+      fact.scope_project !== project
+    )
+      continue;
 
     results.push({ fact, distance: vr.distance });
     if (results.length >= limit) break;
@@ -246,16 +312,29 @@ export function searchSimilarFacts(
 export function searchSimilarFactsSameScope(
   db: Database.Database,
   embedding: number[],
-  scope: { type: 'global' } | { type: 'project'; project: string },
+  scope: { type: "global" } | { type: "project"; project: string },
   limit: number = 5,
   threshold: number = 0.85,
 ): Array<{ fact: Fact; distance: number }> {
-  const scopeProject = scope.type === 'project' ? scope.project : null;
+  const scopeProject = scope.type === "project" ? scope.project : null;
 
   // Early out only if the scope is genuinely empty (nothing to match against).
-  const scopeCount = scope.type === 'global'
-    ? (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?").get(EMBEDDING_VERSION) as { n: number }).n
-    : (db.prepare("SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?").get(scopeProject, EMBEDDING_VERSION) as { n: number }).n;
+  const scopeCount =
+    scope.type === "global"
+      ? (
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'global' AND embedding_version = ?",
+            )
+            .get(EMBEDDING_VERSION) as { n: number }
+        ).n
+      : (
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ? AND embedding_version = ?",
+            )
+            .get(scopeProject, EMBEDDING_VERSION) as { n: number }
+        ).n;
   if (scopeCount === 0) return [];
 
   // fetchN returns rows AND whether the index returned fewer than requested
@@ -264,13 +343,18 @@ export function searchSimilarFactsSameScope(
   // ahead of a valid in-scope row and are only rejected later by the
   // embedding_version filter, so bounding by active facts could stop before
   // reaching the match. `exhausted` is the correct, index-size-independent stop.
-  const fetchN = (table: FactVecTable, n: number): { rows: Array<{ id: string; distance: number }>; exhausted: boolean } => {
+  const fetchN = (
+    table: FactVecTable,
+    n: number,
+  ): { rows: Array<{ id: string; distance: number }>; exhausted: boolean } => {
     try {
       const p = vecParamFor(db, table, embedding);
-      const rows = db.prepare(`
+      const rows = db
+        .prepare(`
         SELECT id, distance FROM ${table}
         WHERE embedding MATCH ${p.sql} ORDER BY distance LIMIT ?
-      `).all(p.blob, n) as Array<{ id: string; distance: number }>;
+      `)
+        .all(p.blob, n) as Array<{ id: string; distance: number }>;
       // Normalize ×127-scaled int8 distances BEFORE the cross-table merge.
       for (const r of rows) r.distance = normalizeVecDistance(r.distance, p.dt);
       return { rows, exhausted: rows.length < n };
@@ -283,27 +367,34 @@ export function searchSimilarFactsSameScope(
   let fetchCount = Math.max(limit * 20, 200);
   let results: Array<{ fact: Fact; distance: number }> = [];
   for (;;) {
-    const a = fetchN('vec_facts', fetchCount);
-    const b = fetchN('vec_facts_kr', fetchCount);
+    const a = fetchN("vec_facts", fetchCount);
+    const b = fetchN("vec_facts_kr", fetchCount);
     const best = new Map<string, number>();
     for (const vr of [...a.rows, ...b.rows]) {
       const cur = best.get(vr.id);
       if (cur === undefined || vr.distance < cur) best.set(vr.id, vr.distance);
     }
-    const merged = [...best.entries()].map(([id, distance]) => ({ id, distance })).sort((x, y) => x.distance - y.distance);
+    const merged = [...best.entries()]
+      .map(([id, distance]) => ({ id, distance }))
+      .sort((x, y) => x.distance - y.distance);
 
     results = [];
     for (const vr of merged) {
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) continue;
-      const row = db.prepare(
-        'SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?'
-      ).get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
+      const row = db
+        .prepare(
+          "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
+        )
+        .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
       if (!row) continue;
       const fact = rowToFact(row);
-      if (scope.type === 'global') {
-        if (fact.scope_type !== 'global') continue;
-      } else if (fact.scope_type !== 'project' || fact.scope_project !== scopeProject) {
+      if (scope.type === "global") {
+        if (fact.scope_type !== "global") continue;
+      } else if (
+        fact.scope_type !== "project" ||
+        fact.scope_project !== scopeProject
+      ) {
         continue;
       }
       results.push({ fact, distance: vr.distance });
@@ -312,7 +403,8 @@ export function searchSimilarFactsSameScope(
 
     // Stop when we have enough, both indexes are exhausted, or we hit the cap.
     const bothExhausted = a.exhausted && b.exhausted;
-    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP) break;
+    if (results.length >= limit || bothExhausted || fetchCount >= HARD_CAP)
+      break;
     fetchCount = Math.min(fetchCount * 4, HARD_CAP);
   }
 
@@ -333,7 +425,11 @@ export function searchSimilarFactsSameScope(
  * global facts otherwise outscore any newly extracted project fact (count=1)
  * forever, so project context would never surface in injection.
  */
-export function getTopFacts(db: Database.Database, project: string, limit: number = 10): Fact[] {
+export function getTopFacts(
+  db: Database.Database,
+  project: string,
+  limit: number = 10,
+): Fact[] {
   const now = new Date();
   const d7 = new Date(now.getTime() - 7 * 86400000).toISOString();
   const d30 = new Date(now.getTime() - 30 * 86400000).toISOString();
@@ -348,21 +444,25 @@ export function getTopFacts(db: Database.Database, project: string, limit: numbe
 
   type ScoredRow = Record<string, unknown> & { relevance_score: number };
 
-  const projectRows = db.prepare(`
+  const projectRows = db
+    .prepare(`
     SELECT *, ${scoreExpr}
     FROM facts
     WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ?
     ORDER BY relevance_score DESC
     LIMIT ?
-  `).all(d7, d30, d90, project, project, limit) as ScoredRow[];
+  `)
+    .all(d7, d30, d90, project, project, limit) as ScoredRow[];
 
-  const globalRows = db.prepare(`
+  const globalRows = db
+    .prepare(`
     SELECT *, ${scoreExpr}
     FROM facts
     WHERE is_active = 1 AND scope_type = 'global'
     ORDER BY relevance_score DESC
     LIMIT ?
-  `).all(d7, d30, d90, project, limit) as ScoredRow[];
+  `)
+    .all(d7, d30, d90, project, limit) as ScoredRow[];
 
   const reserved = Math.ceil(limit / 2);
   const guaranteed = projectRows.slice(0, reserved);
@@ -375,14 +475,22 @@ export function getTopFacts(db: Database.Database, project: string, limit: numbe
     .map(rowToFact);
 }
 
-export function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[] {
-  return (db.prepare(`
+export function getNewFactsSince(
+  db: Database.Database,
+  project: string,
+  since: string,
+): Fact[] {
+  return (
+    db
+      .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND created_at > ?
       AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
     ORDER BY created_at ASC
-  `).all(since, project) as Record<string, unknown>[]).map(rowToFact);
+  `)
+      .all(since, project) as Record<string, unknown>[]
+  ).map(rowToFact);
 }
 
 /**
@@ -414,16 +522,27 @@ export function getAllNewFactsSince(
   // (is_active, created_at, id) serves both the filter and the ORDER BY without
   // a temp sort.
   if (!cursor) {
-    return (db.prepare(`
+    return (
+      db
+        .prepare(`
       SELECT * FROM facts WHERE is_active = 1 ORDER BY created_at ASC, id ASC LIMIT ?
-    `).all(limit) as Record<string, unknown>[]).map(rowToFact);
+    `)
+        .all(limit) as Record<string, unknown>[]
+    ).map(rowToFact);
   }
-  return (db.prepare(`
+  return (
+    db
+      .prepare(`
     SELECT * FROM facts
     WHERE is_active = 1
       AND (created_at > ? OR (created_at = ? AND id > ?))
     ORDER BY created_at ASC, id ASC LIMIT ?
-  `).all(cursor.createdAt, cursor.createdAt, cursor.id, limit) as Record<string, unknown>[]).map(rowToFact);
+  `)
+      .all(cursor.createdAt, cursor.createdAt, cursor.id, limit) as Record<
+      string,
+      unknown
+    >[]
+  ).map(rowToFact);
 }
 
 /**
@@ -436,22 +555,29 @@ export function searchAllFacts(
   limit: number = 10,
   threshold: number = 0.6,
 ): Array<{ fact: Fact; distance: number }> {
-  const pAll = vecParamFor(db, 'vec_facts', embedding);
-  const vecResults = db.prepare(`
+  const pAll = vecParamFor(db, "vec_facts", embedding);
+  const vecResults = db
+    .prepare(`
     SELECT id, distance
     FROM vec_facts
     WHERE embedding MATCH ${pAll.sql}
     ORDER BY distance
     LIMIT ?
-  `).all(pAll.blob, limit * 2) as Array<{ id: string; distance: number }>;
-  for (const r of vecResults) r.distance = normalizeVecDistance(r.distance, pAll.dt);
+  `)
+    .all(pAll.blob, limit * 2) as Array<{ id: string; distance: number }>;
+  for (const r of vecResults)
+    r.distance = normalizeVecDistance(r.distance, pAll.dt);
 
   const results: Array<{ fact: Fact; distance: number }> = [];
   for (const vr of vecResults) {
     const similarity = l2DistanceToSimilarity(vr.distance);
     if (similarity < threshold) continue;
 
-    const row = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1').get(vr.id) as Record<string, unknown> | undefined;
+    const row = db
+      .prepare(
+        "SELECT * FROM facts WHERE id = ? AND is_active = 1 AND embedding_version = ?",
+      )
+      .get(vr.id, EMBEDDING_VERSION) as Record<string, unknown> | undefined;
     if (!row) continue;
 
     results.push({ fact: rowToFact(row), distance: vr.distance });
@@ -462,28 +588,46 @@ export function searchAllFacts(
 }
 
 function rowToFact(row: Record<string, unknown>): Fact {
-  const embeddingRaw = row['embedding'];
+  const embeddingRaw = row["embedding"];
   let embedding: Float32Array | null = null;
   if (embeddingRaw instanceof Buffer) {
-    embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
+    embedding = new Float32Array(
+      embeddingRaw.buffer,
+      embeddingRaw.byteOffset,
+      embeddingRaw.byteLength / 4,
+    );
   } else if (embeddingRaw instanceof Uint8Array) {
-    embedding = new Float32Array(embeddingRaw.buffer, embeddingRaw.byteOffset, embeddingRaw.byteLength / 4);
+    embedding = new Float32Array(
+      embeddingRaw.buffer,
+      embeddingRaw.byteOffset,
+      embeddingRaw.byteLength / 4,
+    );
+  }
+
+  // 손상된 JSON 은 fact 조회 전체를 죽이지 않는다 — provenance 만 비우고 계속한다.
+  let sourceExchangeIds: string[] = [];
+  if (row["source_exchange_ids"]) {
+    try {
+      const parsed = JSON.parse(row["source_exchange_ids"] as string);
+      if (Array.isArray(parsed)) sourceExchangeIds = parsed;
+    } catch {
+      // malformed provenance — 빈 배열로 대체
+    }
   }
 
   return {
-    id: row['id'] as string,
-    fact: row['fact'] as string,
-    category: row['category'] as Fact['category'],
-    scope_type: row['scope_type'] as Fact['scope_type'],
-    scope_project: (row['scope_project'] as string | null) ?? null,
-    source_exchange_ids: row['source_exchange_ids']
-      ? JSON.parse(row['source_exchange_ids'] as string)
-      : [],
+    id: row["id"] as string,
+    fact: row["fact"] as string,
+    category: row["category"] as Fact["category"],
+    scope_type: row["scope_type"] as Fact["scope_type"],
+    scope_project: (row["scope_project"] as string | null) ?? null,
+    source_exchange_ids: sourceExchangeIds,
     embedding,
-    created_at: row['created_at'] as string,
-    updated_at: row['updated_at'] as string,
-    consolidated_count: row['consolidated_count'] as number,
-    is_active: Boolean(row['is_active']),
-    ontology_category_id: (row['ontology_category_id'] as string | null) ?? null,
+    created_at: row["created_at"] as string,
+    updated_at: row["updated_at"] as string,
+    consolidated_count: row["consolidated_count"] as number,
+    is_active: Boolean(row["is_active"]),
+    ontology_category_id:
+      (row["ontology_category_id"] as string | null) ?? null,
   };
 }
