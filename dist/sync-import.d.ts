@@ -13,7 +13,8 @@ export interface SyncImportResult {
 /**
  * Reconcile protocol-v2 sync files into the local DB.
  *
- * Conflict order: event timestamp, then a deterministic canonical fact key;
+ * Conflict order: semantic event clock (semantic_updated_at; legacy payloads
+ * fall back to updated_at), then a deterministic canonical fact key;
  * hard-delete tombstones win exact-time ties. Source-created timestamps remain
  * historical data and are never used as local processing cursors.
  */
