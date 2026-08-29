@@ -327,6 +327,7 @@ describe('repairIndex', () => {
       orphaned: [],
       outdated: [],
       corrupted: [],
+      fkViolations: [],
     })).rejects.toThrow(/repair failed for 1 conversation/i);
   });
 });

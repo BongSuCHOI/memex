@@ -109,6 +109,7 @@ describe("repairIndex project identity", () => {
       orphaned: [],
       outdated: [],
       corrupted: [],
+      fkViolations: [],
     });
 
     const db = initDatabase();
@@ -143,6 +144,7 @@ describe("repairIndex project identity", () => {
       orphaned: [],
       outdated: [],
       corrupted: [],
+      fkViolations: [],
     });
 
     const db = initDatabase();

@@ -102,6 +102,7 @@ describe("conversation exclusion policy across index entrypoints", () => {
           orphaned: [],
           outdated: [],
           corrupted: [],
+          fkViolations: [],
         }),
     ],
   ];
