@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-30T02:40:00.000Z",
+  "recordedAt": "2026-08-30T05:10:00.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,8 +9,8 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/audit-remediation",
-    "codeSha": "6a0f324184ec636f5411f63d61acfe650f3290b1",
-    "note": "Evidence run at this SHA; only docs/receipt commits follow, runtime code unchanged."
+    "codeSha": "e069ab3ff6fb09a4f21d2c26f7b51cd406c612ff",
+    "note": "Evidence run at this SHA (faf57a0 fix + b5f8423 test + e069ab3 docs); only this receipt commit follows, runtime code unchanged. Supersedes the 6a0f324 receipt, which predates the reaudit P1 closures."
   },
   "verdict": "PASS",
   "gates": [
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "64 files / 547 tests passed"
+      "observed": "65 files / 572 tests passed"
     },
     {
       "name": "codex-slice",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.1.0.tgz 178 files / 684522 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
+      "observed": "memex-0.1.0.tgz 183 files / 695425 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
     },
     {
       "name": "lifecycle-e2e",
@@ -67,12 +67,8 @@
       "observed": "9/9 steps passed; cleanup inventory all true (plugin_registration_absent, owned_hooks_absent, temp_data_absent, test_workers_zero, inject_sockets_zero, test_listeners_zero, user_environment_isolated)"
     }
   ],
-  "regressionMatrix": {
-    "reference": "AUDIT_REMEDIATION_REAUDIT_REPORT.md §9 (T01-T18)",
-    "evidence": "AUDIT-REMEDIATION-PLAN.md '필수 회귀 테스트 매트릭스 T01-T18' — 13 mapped test files, 94 tests, all green"
-  },
-  "mergeGateChecklist": {
-    "reference": "AUDIT_REMEDIATION_REAUDIT_REPORT.md §10",
-    "result": "all 15 items verified and checked at this SHA"
+  "reauditClosures": {
+    "reference": "second reaudit (2026-08-30) — semantic/metadata merge, generation integrity manifest, parse snapshot TOCTOU, ontology parking CAS",
+    "result": "all 4 items closed at this SHA (faf57a0); P2 prune hardening included; regression tests added in b5f8423"
   }
 }
