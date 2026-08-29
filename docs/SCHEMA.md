@@ -28,6 +28,17 @@ erDiagram
 `source_exchange_ids`는 JSON 배열이므로 물리 FK는 아니지만 provenance API가 이
 논리 연결을 검증합니다.
 
+물리 FK(`tool_calls.exchange_id`, `fact_revisions.fact_id`,
+`ontology_relations` 양 endpoint, `ontology_categories.domain_id`)는 모든 Memex
+연결에서 강제됩니다. better-sqlite3의 연결 기본값이 FK ON이지만 이것을 드라이버
+기본값에 의존하지 않고 `initializeConnection`에서 `PRAGMA foreign_keys = ON`으로
+명시 선언합니다. 모든 삭제/이동 경로는 강제 FK 하에서 올바른 순서로 동작하고
+(tool_calls → vec → parent row, relations/revisions → facts), 부모-자식 이동은
+`PRAGMA defer_foreign_keys` transaction 안에서 수행합니다. FK 강제 이전 시대의
+외부 편집이 남긴 기존 orphan은 `memex index verify`가 `PRAGMA foreign_key_check`로
+검출하고, `--repair`는 parent가 없는 파생 child 행(tool_calls, fact_revisions,
+ontology_relations)만 제거합니다 — 그 외 테이블은 수동 검토 대상으로 보고합니다.
+
 ## 2. Conversation corpus
 
 ```sql

@@ -915,6 +915,65 @@ session_meta 없는 파일 폴백, T09 legacy rename + 참조 재작성 + 중복
 실패하는 것을 관측했고, vec 재삽입 dtype 버그(int8 재인코딩 누락)는 테스트가 실측으로
 잡아 수정했다.
 
+### Phase 5 — Retrieval & DB hardening (완료)
+
+리포트 P1-9·P2-1·P2-2·P2-3을 재검증했다. P1-9는 유효했다: conversation vector 검색은
+sqlite-vec `k = caller limit`을 먼저 적용하고 project/date/embedding_version filter를
+나중에 적용해(FTS 텍스트 경로는 이미 filter-then-limit) 다른 프로젝트의 가까운 행이
+창을 채우면 유효한 대상이 rank limit+1에서 사라졌다. P2-2도 유효했다: `src/index.ts`
+barrel의 `export * from './fact-db.js'`가 `insertFact/updateFact/deactivateFact/
+deleteFact/insertRevision`을 패키지 public surface로 노출했고, legacy `deleteFact`는
+relation 정리가 없었다. P2-3도 유효했다: `restoreFact`는 버전 검사 없이 저장 embedding을
+재삽입하고 `embedding_version`을 건드리지 않아, inactive 동안 model upgrade를 겪은 fact는
+restore 직후 검색에서 보이지 않았다(단, 현재 restoreFact의 프로덕션 호출 지점은 0개 —
+public API/미래 와이어링 관점의 결함).
+
+**P2-1 판정 불성립(사용자 승인 조정 방향)**: 리포트는 "FK enforcement가 실제로 꺼져
+있다"고 했지만 실측으로 반증됐다 — better-sqlite3 12.11.1은 모든 연결에서 FK를 기본 ON으로
+연다(bare connection과 `initDatabase()` 모두 `PRAGMA foreign_keys = 1`; 존재하지 않는
+endpoint로 relation 생성 → `FOREIGN KEY constraint failed`, 관계 있는 fact에 legacy
+deleteFact → 동일 실패). Phase 2의 createRelation FK failure 실증과 일치한다. 리포트의
+"orphan audit/cleanup → FK ON" 전제는 무의미하고 "FK를 갑자기 켜면 constraint error"
+시나리오도 성립하지 않는다(모든 삭제 경로가 이미 FK ON에서 검증됨). 사용자 결정에 따라
+리포트가 의도한 경화 가치만 채택했다.
+
+구현:
+
+- P1-9: conversation vector 검색에 fact 검색(`searchFactsByScope`)과 같은 expanding
+  KNN window — `max(limit*4, 50)`에서 시작, filter 통과 행이 limit을 채우거나 vec
+  index를 모두 고려할 때까지 ×4 확장(cap = vec 행 수 + 1), int8 dtype race 재시도 유지,
+  결과를 거리순 caller limit으로 절단(확장 창에서는 k가 출력 상한이 아니므로 명시 절단
+  필요 — 테스트가 실측으로 잡았다).
+- P2-2: barrel에서 fact-db raw writers 5개를 제외하고 read/search primitive + type만
+  explicit re-export. 내부 barrel 소비자는 0개, CLI/MCP는 raw mutation을 쓰지 않아 파급
+  없음. legacy `deleteFact`의 relation 정리는 추가하지 않음 — 호출자 0개, hard delete는
+  fact-management의 영향 보고 경로가 이미 담당.
+- P2-3: `restoreFact`를 async semantic operation으로 전환 — 저장 `embedding_version`이
+  현재와 같으면 저장 bytes 재사용(모델 호출 0), stale이면 현재 모델로 재임베딩 후
+  vector+stamp를 같은 commit에 복원. 결과에 `reembedded` 플래그 추가. vec_facts 부재
+  방어 가드는 유지.
+- P2-1(조정): `initializeConnection`에 `PRAGMA foreign_keys = ON` 명시 선언(런타임
+  delta 0, 드라이버 기본값 변경 방어), `verifyIndex`가 `PRAGMA foreign_key_check` 위반을
+  검출하는 `fkViolations` 필드 추가, `repairForeignKeyViolations`는 parent가 없는 파생
+  child 행(tool_calls/fact_revisions/ontology_relations)만 제거하고 그 외 테이블은 수동
+  검토 보고, verify/repair CLI 출력과 수리 트리거에 반영.
+
+추가 회귀 테스트 4종 12건: `test/conversation-search-window.test.ts`(target이 global
+rank limit+1인 project 검색, date 밖 후보가 top-k를 채우는 date 검색, 초기 창(50)보다
+많은 decoy로 확장 루프 자체 관측 — 결정론적 angle-vector embedding mock),
+`test/restore-embedding-version.test.ts`(stale restore 직후 검색 가능 + 재임베딩 1회,
+버전 일치 시 재사용 + 모델 호출 0, embedding 없는 fact 활성화),
+`test/public-api-surface.test.ts`(raw writers 부재 + read primitive 유지),
+`test/fk-enforcement.test.ts`(모든 연결 명시 pragma, exchange 삭제/purge 경로 후
+foreign_key_check 0행, FK OFF로 조성한 legacy orphan fixture 검출 + 수리). 재주입
+관측: k=limit 고정 → window 3건 전부 실패, 버전 검사 제거 → stale 케이스만 실패, `export *`
+복원 → raw-writer 노출 실패, repair no-op → legacy fixture 실패.
+
+`NOT_PROVEN` 잔여: (1) 명시 pragma 제거 재주입은 현재 런타임에서 관측 불가 — 드라이버
+기본값이 ON이라 동작이 동일하며, 해당 테스트는 미래 드라이버 기본값 변경을 방어하는
+계약 핀일 뿐 오늘의 회귀 신호가 아니다. (2) lazy exchange id 마이그레이션(Phase 4)과
+마찬가지로, foreign tooling이 만든 orphan은 verify 실행 전까지 검출되지 않는다.
+
 
 ## 11. 최종 목표
 

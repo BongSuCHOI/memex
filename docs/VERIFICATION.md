@@ -48,7 +48,7 @@ profile/cache. 실제 사용자 `$CODEX_HOME`과 data root에 run marker가 유�
 | Web UI | empty/populated, navigation/search/facts/provenance/graph/pipeline, rejection paths |
 | performance | repeated raw samples, correctness assertions, p50/p95, child maxRSS |
 | cleanup | 7 surfaces의 exact absence와 user-state isolation |
-| verify/repair | outdated 상태 해소, 실제 exchange 재색인, file별 실패 집계, 실패 시 CLI non-zero |
+| verify/repair | outdated 상태 해소, 실제 exchange 재색인, file별 실패 집계, 실패 시 CLI non-zero, `PRAGMA foreign_key_check` 위반 검출과 파생 child orphan 제거 |
 
 ## 5. Version boundary
 

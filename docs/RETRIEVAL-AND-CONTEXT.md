@@ -18,6 +18,14 @@ flowchart LR
 다중 query 배열은 모든 concept가 필요한 AND 성격의 semantic search입니다. date,
 limit, project metadata는 결과 단계에서 일관되게 적용합니다.
 
+conversation vector 검색은 fact 검색과 같은 expanding KNN window를 사용합니다.
+sqlite-vec의 `k`는 project/date/embedding_version filter가 적용되기 전에 후보를
+자르므로, 고정 `k = limit`에서는 무관한 행이 근접 순위를 채울 때 유효한 대상이
+보이지 않습니다. 검색은 `max(limit*4, 50)`에서 시작해 filter 통과 행이 limit을
+채우거나 vec index를 모두 고려할 때까지 창을 ×4로 확장합니다(cap = vec 행 수 + 1).
+결과는 거리순으로 caller limit으로 자릅니다. `text` lane의 filtered query는 이미
+filter-then-limit 형태입니다.
+
 ## 2. RAG enrichment
 
 conversation search 결과는 관련 fact와 ontology context를 덧붙일 수 있습니다. 이때

@@ -207,7 +207,12 @@ repo 관찰로 SQLite→PostgreSQL 변화가 확인되면 provenance를 보존�
 
 - 같은 session no-new-row 재실행에서 extracted/saved 0, model call 0
 - contradiction 후 current fact 1개와 revision 1개, 두 source 모두 추적 가능
-- deactivate 후 fact search/vector 결과에서 제외, restore 후 다시 검색 가능
+- deactivate 후 fact search/vector 결과에서 제외, restore 후 다시 검색 가능.
+  restore는 동기 semantic operation으로 저장 embedding의 `embedding_version`이
+  현재 모델과 같으면 그 vector를 재사용하고, inactive 동안 model upgrade가 있었으면
+  현재 모델로 재임베딩한 뒤 vector와 stamp를 같은 commit에 복원한다(재사용/재임베딩
+  여부는 결과로 보고된다). stale vector를 그대로 복원해 restore 직후 검색에서만
+  보이지 않는 상태는 결함이다.
 
 실패:
 
