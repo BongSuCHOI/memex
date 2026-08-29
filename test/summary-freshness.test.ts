@@ -31,7 +31,8 @@ vi.mock('../src/embeddings.js', async (io) => ({
   generateExchangeEmbedding: async () => Array.from({ length: 384 }, () => 0.01),
 }));
 
-import { indexSession, summaryNeedsRefresh } from '../src/indexer.js';
+import { summaryNeedsRefresh } from '../src/archive-io.js';
+import { indexSession } from '../src/indexer.js';
 
 const SESSION_ID = '02b00007-aaaa-4bbb-8ccc-ccccccccccc8';
 const PROJECT = '/tmp/summary-freshness/project';

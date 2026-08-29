@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, existsSync, unlinkSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync, statSync, utimesSync, existsSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { syncConversations } from '../src/sync.js';
 import { projectStorageKey } from '../src/project-identity.js';
 import Database from 'better-sqlite3';
+
+// 요약 내용은 LLM 결과라 테스트에서 결정론화한다 — freshness 판정(mtime)과
+// 재생성 여부가 이 테스트의 관찰 대상이다.
+vi.mock('../src/summarizer.js', () => ({
+  summarizeConversation: vi.fn(async (exchanges: unknown[]) => `summary of ${exchanges.length} exchange(s)`),
+}));
 
 // Sync consumes Codex rollout transcripts found recursively under the session
 // root. Project key = basename of session_meta.cwd; archive layout stays
@@ -194,6 +200,37 @@ describe('sync command', () => {
     dbCheck.close();
 
     expect(count.count).toBe(1); // Only normal conversation indexed
+  });
+
+  it('regenerates a stale summary when the archive grew (재감사 §6 — sync 경로)', async () => {
+    // syncConversations도 summaryNeedsRefresh를 써야 한다 — 존재 여부만 보던
+    // 이전 구현은 resume으로 자란 rollout의 요약을 영구히 stale로 두었다.
+    const src = writeRollout('fresh', '/x/project-a');
+    const first = await syncConversations(sourceDir, destDir);
+    expect(first.summarized).toBe(1);
+
+    const destFile = join(destDir, projectStorageKey('/x/project-a'), 'rollout-fresh.jsonl');
+    const summaryPath = destFile.replace('.jsonl', '-summary.txt');
+    expect(existsSync(summaryPath)).toBe(true);
+    const firstSummary = readFileSync(summaryPath, 'utf-8');
+
+    // rollout resume: 새 턴(user+assistant)이 붙어 archive가 자란다.
+    appendFileSync(
+      src,
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Follow-up' }] },
+      }) + '\n' +
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Follow-up answer' }] },
+      }) + '\n',
+      'utf-8',
+    );
+
+    const second = await syncConversations(sourceDir, destDir);
+    expect(second.summarized).toBe(1); // summary가 존재해도 stale면 재생성
+    expect(readFileSync(summaryPath, 'utf-8')).not.toBe(firstSummary);
   });
 
   it('reindexes current archives when the database was deleted', async () => {

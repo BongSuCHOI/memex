@@ -249,14 +249,23 @@ describe("SessionEnd extraction user exclusion gate (P1-1 / T01)", () => {
       expect(hook.stderr).not.toContain("no completion evidence");
 
       const syncDir = path.join(tmp, "conversation-index", "sync");
-      expect(fs.existsSync(path.join(syncDir, "meta.json"))).toBe(true);
+      // P1-1: the exporter commits one generation per device — read it back
+      // from there, not from the removed root mirror.
+      const deviceDir = path.join(syncDir, "devices", fs.readdirSync(path.join(syncDir, "devices"))[0]);
+      const genDir = path.join(
+        deviceDir,
+        "generations",
+        (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
+          .generation,
+      );
+      expect(fs.existsSync(path.join(genDir, "meta.json"))).toBe(true);
       const exportedFacts = fs
-        .readFileSync(path.join(syncDir, "facts.jsonl"), "utf8")
+        .readFileSync(path.join(genDir, "facts.jsonl"), "utf8")
         .split("\n")
         .filter((line) => line.trim());
       expect(exportedFacts, "purge 된 fact 는 payload 에 남지 않는다").toEqual([]);
       const exportedTombstones = fs
-        .readFileSync(path.join(syncDir, "fact-tombstones.jsonl"), "utf8")
+        .readFileSync(path.join(genDir, "fact-tombstones.jsonl"), "utf8")
         .split("\n")
         .filter((line) => line.trim())
         .map((line) => JSON.parse(line) as { fact_id: string; reason: string });

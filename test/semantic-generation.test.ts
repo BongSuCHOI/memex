@@ -60,9 +60,10 @@ vi.mock("../src/llm.js", async (io) => ({
 import { initDatabase } from "../src/db.js";
 import { getActiveFacts, getTopFacts, insertFact } from "../src/fact-db.js";
 import { mutateFactMeaning, StaleFactMutationError } from "../src/fact-management.js";
-import { classifyFactsBatch, detectRelations } from "../src/ontology-classifier.js";
+import { classifyFactsBatch, detectRelations, recordOntologyAttempt } from "../src/ontology-classifier.js";
+import { consolidateAllPending } from "../src/consolidator.js";
 import { importFromSync } from "../src/sync-import.js";
-import { getSyncDir } from "../src/sync-export.js";
+import { craftCommittedGeneration } from "./sync-fixture.js";
 
 let tmp: string;
 let db: Database.Database;
@@ -238,6 +239,35 @@ describe("T03: ontology classification generation race", () => {
     expect(row.ontology_category_id).toBeNull();
     expect(row.ontology_attempts).toBe(0); // stale은 시도 ledger를 태우지 않는다
     expect(row.semantic_generation).toBe(2);
+    // P1-8: stale 분류가 만든 taxonomy 행도 남지 않는다 — 생성과 할당은 같은
+    // transaction이고, stale 폐기 시 전부 롤백된다.
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM ontology_domains WHERE name = ?").get("Observability") as { n: number }).n,
+    ).toBe(0);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM ontology_categories WHERE name = ?").get("Metrics") as { n: number }).n,
+    ).toBe(0);
+  });
+});
+
+describe("ontology attempt ledger generation guard (재감사 P1-8)", () => {
+  it("a stale failure does not burn the NEW meaning's attempts", () => {
+    const id = insertFact(db, {
+      fact: "Retries use exponential backoff",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    // 이전 세대에 대한 실패 응답이 도착 — 새 의미의 ledger를 태우면 안 된다.
+    expect(recordOntologyAttempt(db, id, 99)).toBe(0);
+    expect(
+      (db.prepare("SELECT ontology_attempts FROM facts WHERE id = ?").get(id) as { ontology_attempts: number })
+        .ontology_attempts,
+    ).toBe(0);
+    // 현재 세대에 대한 실패는 정상 증가한다.
+    expect(recordOntologyAttempt(db, id, 1)).toBe(1);
   });
 });
 
@@ -349,10 +379,8 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       embedding: new Array(384).fill(0.05),
     });
 
-    const syncDir = getSyncDir();
-    fs.writeFileSync(
-      path.join(syncDir, "facts.jsonl"),
-      JSON.stringify({
+    craftCommittedGeneration("dev-a", {
+      "facts.jsonl": JSON.stringify({
         id: localId,
         fact: "The session store is Postgres",
         fact_kr: null,
@@ -366,7 +394,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
         is_active: 1,
         ontology_category_id: null,
       }) + "\n",
-    );
+    });
 
     embedGate.block = true;
     const importing = importFromSync();
@@ -395,10 +423,8 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       embedding: new Array(384).fill(0.05),
     });
 
-    const syncDir = getSyncDir();
-    fs.writeFileSync(
-      path.join(syncDir, "facts.jsonl"),
-      JSON.stringify({
+    craftCommittedGeneration("dev-a", {
+      "facts.jsonl": JSON.stringify({
         id: localId,
         fact: "A fact that will be excluded mid-await",
         fact_kr: null,
@@ -412,7 +438,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
         is_active: 1,
         ontology_category_id: null,
       }) + "\n",
-    );
+    });
 
     embedGate.block = true;
     const importing = importFromSync();
@@ -435,5 +461,126 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       .get(localId) as { fact: string; semantic_generation: number } | undefined;
     expect(row?.fact).toBe("A fact that will be excluded mid-await");
     expect(row?.semantic_generation).toBe(1);
+  });
+});
+
+describe("consolidation verdict generation race (재감사 P1-2)", () => {
+  const verdictPayload = (relation: "CONTRADICTION" | "EVOLUTION", merged: string): string =>
+    JSON.stringify({ relation, merged_fact: merged, reason: "llm verdict" });
+
+  function seedSimilarPair(): { firstId: string; secondId: string } {
+    const firstId = insertFact(db, {
+      fact: "Metrics are exported once per minute",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    const secondId = insertFact(db, {
+      fact: "Metrics are exported every sixty seconds",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    // second는 큐에서 빼고 candidate 역할만 수행하게 한다 — 그렇지 않으면
+    // stale 폐기 후 drain이 first의 새 의미를 정상적으로 재비교해버린다
+    // (올바른 시스템 동작이지만 이 테스트의 관찰 대상을 흐린다).
+    db.prepare("UPDATE facts SET needs_consolidation = 0 WHERE id = ?").run(secondId);
+    return { firstId, secondId };
+  }
+
+  for (const relation of ["CONTRADICTION", "EVOLUTION"] as const) {
+    it(`discards a stale ${relation} verdict — the compared fact mutated during the LLM wait`, async () => {
+      const { firstId, secondId } = seedSimilarPair();
+      const before = (id: string) =>
+        db.prepare("SELECT fact, is_active, semantic_generation, needs_consolidation FROM facts WHERE id = ?").get(id) as
+          { fact: string; is_active: number; semantic_generation: number; needs_consolidation: number };
+      const textOfSecond = before(secondId).fact;
+
+      llmGate.block = true;
+      llmGate.response = verdictPayload(relation, "Metrics are exported on demand");
+
+      const draining = consolidateAllPending(db);
+      await waitUntil(() => llmGate.release !== null, "consolidation LLM call to start");
+      // LLM 대기 중 비교 대상 중 하나(first)의 의미가 변이된다 — DUPLICATE와
+      // 달리 이전 구현은 CONTRADICTION/EVOLUTION에서 이 변이를 보지 못했다.
+      await mutateFactMeaning(db, { factId: firstId, newText: "Metrics are exported on demand" });
+      llmGate.release!();
+      const result = await draining;
+
+      // stale 판정: second는 수정되지도 비활성화되지도 않고, first는 변이 상태
+      // 그대로 dirty 유지된다(역할이 driver/candidate 중 무엇이든 동일).
+      expect(result.llmCalls).toBe(1);
+      const first = before(firstId);
+      const second = before(secondId);
+      expect(first.fact).toBe("Metrics are exported on demand");
+      expect(first.semantic_generation).toBe(2);
+      expect(first.is_active).toBe(1);
+      expect(first.needs_consolidation).toBe(1);
+      expect(second.fact).toBe(textOfSecond);
+      expect(second.is_active).toBe(1);
+      expect(second.semantic_generation).toBe(1);
+      // consolidation이 커밋한 흔적이 없다 — 변이 1건의 revision만 존재한다.
+      expect(
+        (db.prepare("SELECT COUNT(*) AS n FROM fact_revisions").get() as { n: number }).n,
+      ).toBe(1);
+    });
+  }
+
+  it("the semantic generation CAS catches a text round-trip that expectedPreviousFact misses", async () => {
+    const id = insertFact(db, {
+      fact: "The API version is v2",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    await mutateFactMeaning(db, { factId: id, newText: "The API version is v3" });
+    await mutateFactMeaning(db, { factId: id, newText: "The API version is v2" }); // 텍스트 복귀, 세대는 3
+
+    await expect(
+      mutateFactMeaning(db, {
+        factId: id,
+        newText: "The API version is v4",
+        expectedPreviousFact: "The API version is v2", // 텍스트는 우연히 일치
+        expectedSemanticGeneration: 1, // 그러나 세대가 다르다 — stale로 폐기
+      }),
+    ).rejects.toBeInstanceOf(StaleFactMutationError);
+  });
+});
+
+describe("restoreFact generation race (재감사 P1-2)", () => {
+  it("discards the restore when the fact changes meaning during the re-embed await", async () => {
+    const { restoreFact } = await import("../src/fact-management.js");
+    const id = insertFact(db, {
+      fact: "The cache TTL is five minutes",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    // 비활성화 + 모델 업그레이드 흉내(재임베딩 경로 강제).
+    db.prepare("UPDATE facts SET is_active = 0, embedding_version = 999 WHERE id = ?").run(id);
+
+    embedGate.block = true;
+    const restoring = restoreFact(db, id);
+    await waitUntil(() => embedGate.release !== null, "restore embedding to start");
+    // 재임베딩 대기 중 의미가 변이된다 — restore가 커밋하면 "B 문장 + A 벡터 +
+    // embedding_version=current" 조합이 되어 자가 치유가 못 본다.
+    await mutateFactMeaning(db, { factId: id, newText: "The cache TTL is ten minutes" });
+    embedGate.release!();
+
+    await expect(restoring).rejects.toBeInstanceOf(StaleFactMutationError);
+    const row = db
+      .prepare("SELECT fact, is_active, embedding_version, semantic_generation FROM facts WHERE id = ?")
+      .get(id) as { fact: string; is_active: number; embedding_version: number; semantic_generation: number };
+    expect(row.fact).toBe("The cache TTL is ten minutes"); // 동시 편집이 이긴다
+    expect(row.semantic_generation).toBe(2);
+    expect(row.is_active).toBe(0); // restore가 활성화하지 않는다
   });
 });

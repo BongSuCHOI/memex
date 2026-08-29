@@ -121,9 +121,23 @@ describe("P0 SessionEnd worker runtime", () => {
     });
     expect(hook.status).toBe(0);
     expect(hook.stderr).not.toContain("no completion evidence");
-    expect(
-      fs.existsSync(path.join(tmp, "conversation-index", "sync", "meta.json")),
-    ).toBe(true);
+    // P1-1: export commits one generation per device — probe it there.
+    {
+      const deviceDir = path.join(
+        tmp, "conversation-index", "sync", "devices",
+        fs.readdirSync(path.join(tmp, "conversation-index", "sync", "devices"))[0],
+      );
+      expect(
+        fs.existsSync(
+          path.join(
+            deviceDir, "generations",
+            (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
+              .generation,
+            "meta.json",
+          ),
+        ),
+      ).toBe(true);
+    }
     const log = fs.readFileSync(
       path.join(tmp, "conversation-index", "fact-extract.log"),
       "utf8",
@@ -336,9 +350,23 @@ describe("P0 worker full extraction through the real LLM path", () => {
     });
     expect(hook.status).toBe(0);
     expect(hook.stderr).not.toContain("no completion evidence");
-    expect(
-      fs.existsSync(path.join(home, "conversation-index", "sync", "meta.json")),
-    ).toBe(true);
+    // P1-1: export commits one generation per device — probe it there.
+    {
+      const deviceDir = path.join(
+        home, "conversation-index", "sync", "devices",
+        fs.readdirSync(path.join(home, "conversation-index", "sync", "devices"))[0],
+      );
+      expect(
+        fs.existsSync(
+          path.join(
+            deviceDir, "generations",
+            (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
+              .generation,
+            "meta.json",
+          ),
+        ),
+      ).toBe(true);
+    }
     const log = fs.readFileSync(
       path.join(home, "conversation-index", "fact-extract.log"),
       "utf8",

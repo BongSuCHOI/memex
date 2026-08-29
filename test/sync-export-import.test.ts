@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { suppressConsole } from './test-utils.js';
+import { craftCommittedGeneration, readCurrentGeneration } from './sync-fixture.js';
 
 // Mock embeddings (avoid loading the model)
 vi.mock('../src/embeddings.js', () => ({
@@ -82,17 +83,20 @@ describe('sync-export/import', () => {
     expect(result.categories).toBe(1);
     expect(result.relations).toBe(1);
 
-    // Verify files exist
+    // Verify the committed generation carries the payload — and that the
+    // root mirror is gone: committed generations are the whole protocol (P1-1).
     const { getSyncDir } = await import('../src/sync-export.js');
     const syncDir = getSyncDir();
-    expect(fs.existsSync(path.join(syncDir, 'facts.jsonl'))).toBe(true);
-    expect(fs.existsSync(path.join(syncDir, 'ontology-domains.jsonl'))).toBe(true);
-    expect(fs.existsSync(path.join(syncDir, 'ontology-categories.jsonl'))).toBe(true);
-    expect(fs.existsSync(path.join(syncDir, 'ontology-relations.jsonl'))).toBe(true);
-    expect(fs.existsSync(path.join(syncDir, 'meta.json'))).toBe(true);
+    const exportedDeviceDir = path.join(syncDir, 'devices', fs.readdirSync(path.join(syncDir, 'devices'))[0]);
+    const exportedGenDir = path.join(exportedDeviceDir, 'generations', readCurrentGeneration(exportedDeviceDir));
+    for (const name of ['facts.jsonl', 'ontology-domains.jsonl', 'ontology-categories.jsonl', 'ontology-relations.jsonl', 'meta.json']) {
+      expect(fs.existsSync(path.join(exportedGenDir, name)), name).toBe(true);
+    }
+    expect(fs.existsSync(path.join(syncDir, 'facts.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(syncDir, 'meta.json'))).toBe(false);
 
-    // Verify meta.json contents
-    const meta = JSON.parse(fs.readFileSync(path.join(syncDir, 'meta.json'), 'utf-8'));
+    // Verify meta.json contents (inside the committed generation)
+    const meta = JSON.parse(fs.readFileSync(path.join(exportedGenDir, 'meta.json'), 'utf-8'));
     expect(meta.facts_count).toBe(1);
     expect(meta.hostname).toBeTruthy();
     expect(meta.exported_at).toBeTruthy();
@@ -106,11 +110,8 @@ describe('sync-export/import', () => {
   });
 
   it('applies imported recall provenance only after the receipt is emitted', async () => {
-    const { getSyncDir } = await import('../src/sync-export.js');
     const { importFromSync } = await import('../src/sync-import.js');
     const { hashRecallPrompt, initDatabase, insertExchange } = await import('../src/db.js');
-    const syncDir = getSyncDir();
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
     const prompt = 'Recall the deployment policy.';
     const now = '2026-08-29T00:00:00.000Z';
     const event = {
@@ -141,10 +142,9 @@ describe('sync-export/import', () => {
     } finally {
       db.close();
     }
-    fs.writeFileSync(
-      path.join(syncDir, 'recall-events.jsonl'),
-      JSON.stringify(event) + '\n',
-    );
+    craftCommittedGeneration('dev-a', {
+      'recall-events.jsonl': JSON.stringify(event) + '\n',
+    });
 
     expect((await importFromSync()).newRecallEvents).toBe(1);
     let check = initDatabase();
@@ -156,10 +156,9 @@ describe('sync-export/import', () => {
       check.close();
     }
 
-    fs.writeFileSync(
-      path.join(syncDir, 'recall-events.jsonl'),
-      JSON.stringify({ ...event, status: 'emitted', emitted_at: now }) + '\n',
-    );
+    craftCommittedGeneration('dev-a', {
+      'recall-events.jsonl': JSON.stringify({ ...event, status: 'emitted', emitted_at: now }) + '\n',
+    });
     expect((await importFromSync()).updatedRecallEvents).toBe(1);
     check = initDatabase();
     try {
@@ -177,25 +176,23 @@ describe('sync-export/import', () => {
     const syncDir = getSyncDir();
     const now = new Date().toISOString();
 
-    fs.writeFileSync(path.join(syncDir, 'ontology-domains.jsonl'),
-      JSON.stringify({ id: 'imp-dom-1', name: 'Backend', description: 'Backend dev', created_at: now }) + '\n'
-    );
-    fs.writeFileSync(path.join(syncDir, 'ontology-categories.jsonl'),
-      JSON.stringify({ id: 'imp-cat-1', domain_id: 'imp-dom-1', name: 'API', description: 'API patterns', created_at: now }) + '\n'
-    );
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'),
-      JSON.stringify({
-        id: 'imp-fact-1', fact: 'Use REST for APIs', category: 'decision',
-        scope_type: 'project', scope_project: '/tmp/api-proj', source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: 'imp-cat-1'
-      }) + '\n'
-    );
-    fs.writeFileSync(path.join(syncDir, 'ontology-relations.jsonl'),
-      JSON.stringify({
-        id: 'imp-rel-1', source_fact_id: 'imp-fact-1', relation_type: 'INFLUENCES',
-        target_fact_id: 'imp-fact-1', reasoning: 'test', created_at: now
-      }) + '\n'
-    );
+    craftCommittedGeneration('dev-a', {
+      'ontology-domains.jsonl':
+        JSON.stringify({ id: 'imp-dom-1', name: 'Backend', description: 'Backend dev', created_at: now }) + '\n',
+      'ontology-categories.jsonl':
+        JSON.stringify({ id: 'imp-cat-1', domain_id: 'imp-dom-1', name: 'API', description: 'API patterns', created_at: now }) + '\n',
+      'facts.jsonl':
+        JSON.stringify({
+          id: 'imp-fact-1', fact: 'Use REST for APIs', category: 'decision',
+          scope_type: 'project', scope_project: '/tmp/api-proj', source_exchange_ids: '[]',
+          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: 'imp-cat-1'
+        }) + '\n',
+      'ontology-relations.jsonl':
+        JSON.stringify({
+          id: 'imp-rel-1', source_fact_id: 'imp-fact-1', relation_type: 'INFLUENCES',
+          target_fact_id: 'imp-fact-1', reasoning: 'test', created_at: now
+        }) + '\n',
+    });
 
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
@@ -210,20 +207,21 @@ describe('sync-export/import', () => {
     const { getSyncDir } = await import('../src/sync-export.js');
     const { importFromSync } = await import('../src/sync-import.js');
     const { initDatabase } = await import('../src/db.js');
-    const syncDir = getSyncDir();
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
-      id: 'late-historical-fact',
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
+        id: 'late-historical-fact',
       fact: 'Historical truth imported after local processing',
       category: 'decision',
       scope_type: 'global',
       scope_project: null,
       source_exchange_ids: '[]',
-      created_at: '1999-01-01T00:00:00.000Z',
-      updated_at: '2026-08-28T02:00:00.000Z',
-      consolidated_count: 1,
-      is_active: 1,
-      ontology_category_id: null,
-    }) + '\n');
+        created_at: '1999-01-01T00:00:00.000Z',
+        updated_at: '2026-08-28T02:00:00.000Z',
+        consolidated_count: 1,
+        is_active: 1,
+        ontology_category_id: null,
+      }) + '\n',
+    });
 
     const result = await importFromSync();
     expect(result.newFacts).toBe(1);
@@ -246,14 +244,15 @@ describe('sync-export/import', () => {
     const now = new Date().toISOString();
 
     const domainLine = JSON.stringify({ id: 'dup-dom', name: 'DevOps', description: 'DevOps', created_at: now });
-    fs.writeFileSync(path.join(syncDir, 'ontology-domains.jsonl'), domainLine + '\n');
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'),
-      JSON.stringify({
-        id: 'dup-fact', fact: 'Use Docker', category: 'decision',
-        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
-      }) + '\n'
-    );
+    craftCommittedGeneration('dev-a', {
+      'ontology-domains.jsonl': domainLine + '\n',
+      'facts.jsonl':
+        JSON.stringify({
+          id: 'dup-fact', fact: 'Use Docker', category: 'decision',
+          scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
+        }) + '\n',
+    });
 
     const { importFromSync } = await import('../src/sync-import.js');
 
@@ -273,18 +272,52 @@ describe('sync-export/import', () => {
     const syncDir = getSyncDir();
     const now = new Date().toISOString();
 
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'),
-      'not valid json\n' +
-      JSON.stringify({
-        id: 'valid-fact', fact: 'Valid fact', category: 'decision',
-        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
-      }) + '\n'
-    );
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl':
+        'not valid json\n' +
+        JSON.stringify({
+          id: 'valid-fact', fact: 'Valid fact', category: 'decision',
+          scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
+        }) + '\n',
+    });
 
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
     expect(result.newFacts).toBe(1); // Only the valid line
+  });
+
+  it('imports a remote fact whose ontology category is missing locally — ontology is an overlay', async () => {
+    // 재감사 P1-7: derived overlay가 불완전해도 의미 자체를 버리면 안 된다 —
+    // fact는 ontology_category_id=NULL로 import되어 재분류 대기가 된다.
+    const now = '2026-08-30T00:00:00.000Z';
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
+        id: 'overlay-fact', fact: 'Use CDN for static assets', category: 'decision',
+        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+        created_at: now, updated_at: now, semantic_updated_at: now,
+        consolidated_count: 1, is_active: 1,
+        ontology_category_id: 'cat-exists-only-on-the-other-device',
+      }) + '\n',
+    });
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(1);
+
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try {
+      expect(db.prepare(
+        'SELECT ontology_category_id, ontology_attempts, is_active FROM facts WHERE id = ?',
+      ).get('overlay-fact')).toEqual({
+        ontology_category_id: null,
+        ontology_attempts: 0,
+        is_active: 1,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('should round-trip export then import', async () => {
@@ -345,11 +378,13 @@ describe('sync-export/import', () => {
         created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
       },
     ];
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), facts.map((f) => JSON.stringify(f)).join('\n') + '\n');
-    fs.writeFileSync(path.join(syncDir, 'ontology-relations.jsonl'), JSON.stringify({
-      id: 'cross-project-relation', source_fact_id: 'scope-a-fact', relation_type: 'SUPPORTS',
-      target_fact_id: 'scope-b-fact', reasoning: 'must be rejected', created_at: now,
-    }) + '\n');
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': facts.map((f) => JSON.stringify(f)).join('\n') + '\n',
+      'ontology-relations.jsonl': JSON.stringify({
+        id: 'cross-project-relation', source_fact_id: 'scope-a-fact', relation_type: 'SUPPORTS',
+        target_fact_id: 'scope-b-fact', reasoning: 'must be rejected', created_at: now,
+      }) + '\n',
+    });
 
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
@@ -533,12 +568,14 @@ describe('sync-export/import', () => {
     const syncDir = getSyncDir();
     const older = '2026-08-28T00:00:00.000Z';
     const newer = '2026-08-28T03:00:00.000Z';
-    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
-      id: 'stale-fact', fact: 'Stale remote truth', category: 'decision',
-      scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-      created_at: older, updated_at: older, consolidated_count: 1,
-      is_active: 0, ontology_category_id: null,
-    }) + '\n');
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
+        id: 'stale-fact', fact: 'Stale remote truth', category: 'decision',
+        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+        created_at: older, updated_at: older, consolidated_count: 1,
+        is_active: 0, ontology_category_id: null,
+      }) + '\n',
+    });
 
     const db = initDatabase();
     try {
@@ -567,24 +604,15 @@ describe('sync-export/import', () => {
     const { getSyncDir } = await import('../src/sync-export.js');
     const { importFromSync } = await import('../src/sync-import.js');
     const { initDatabase } = await import('../src/db.js');
-    const devicesDir = path.join(getSyncDir(), 'devices');
-    const deviceA = path.join(devicesDir, 'device-a');
-    const deviceB = path.join(devicesDir, 'device-b');
-    fs.mkdirSync(deviceA, { recursive: true });
-    fs.mkdirSync(deviceB, { recursive: true });
     const makeFact = (fact: string, updated_at: string, is_active: 0 | 1) => ({
       id: 'multi-device-fact', fact, category: 'decision',
       scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
       created_at: '2026-08-28T00:00:00.000Z', updated_at,
       consolidated_count: 1, is_active, ontology_category_id: null,
     });
-    fs.writeFileSync(
-      path.join(deviceA, 'facts.jsonl'),
-      JSON.stringify(makeFact('Older device truth', '2026-08-28T01:00:00.000Z', 1)) + '\n',
-    );
-    fs.writeFileSync(
-      path.join(deviceA, 'ontology-relations.jsonl'),
-      JSON.stringify({
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': JSON.stringify(makeFact('Older device truth', '2026-08-28T01:00:00.000Z', 1)) + '\n',
+      'ontology-relations.jsonl': JSON.stringify({
         id: 'stale-device-relation', source_fact_id: 'multi-device-fact',
         relation_type: 'SUPPORTS', target_fact_id: 'multi-device-fact',
         reasoning: 'belongs to old endpoint generation',
@@ -592,11 +620,10 @@ describe('sync-export/import', () => {
         source_fact_updated_at: '2026-08-28T01:00:00.000Z',
         target_fact_updated_at: '2026-08-28T01:00:00.000Z',
       }) + '\n',
-    );
-    fs.writeFileSync(
-      path.join(deviceB, 'facts.jsonl'),
-      JSON.stringify(makeFact('Newer device truth', '2026-08-28T02:00:00.000Z', 0)) + '\n',
-    );
+    });
+    craftCommittedGeneration('device-b', {
+      'facts.jsonl': JSON.stringify(makeFact('Newer device truth', '2026-08-28T02:00:00.000Z', 0)) + '\n',
+    });
 
     const imported = await importFromSync();
     expect(imported.newFacts).toBe(1);
@@ -654,10 +681,9 @@ describe('sync-export/import', () => {
       await seedLocalFact();
 
       // "Zulu..." sorts after "Alpha..." — the remote payload wins the tie.
-      fs.writeFileSync(
-        path.join(getSyncDir(), 'facts.jsonl'),
-        JSON.stringify(makeTieFact('Zulu decision', 1)) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': JSON.stringify(makeTieFact('Zulu decision', 1)) + '\n',
+      });
       const imported = await importFromSync();
       expect(imported.updatedFacts).toBe(1);
 
@@ -678,10 +704,9 @@ describe('sync-export/import', () => {
 
       // "Aardvark..." sorts before "Alpha..." — the local fact keeps winning,
       // no matter which device imports first.
-      fs.writeFileSync(
-        path.join(getSyncDir(), 'facts.jsonl'),
-        JSON.stringify(makeTieFact('Aardvark decision', 1)) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': JSON.stringify(makeTieFact('Aardvark decision', 1)) + '\n',
+      });
       const imported = await importFromSync();
       expect(imported.updatedFacts).toBe(0);
 
@@ -701,10 +726,9 @@ describe('sync-export/import', () => {
       await seedLocalFact();
 
       // Inactive wins the tie even when the text sorts lower.
-      fs.writeFileSync(
-        path.join(getSyncDir(), 'facts.jsonl'),
-        JSON.stringify(makeTieFact('Aardvark decision', 0)) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': JSON.stringify(makeTieFact('Aardvark decision', 0)) + '\n',
+      });
       const imported = await importFromSync();
       expect(imported.updatedFacts).toBe(1);
 
@@ -727,15 +751,13 @@ describe('sync-export/import', () => {
 
       // A real export always writes facts.jsonl (empty when the only event
       // is the hard delete), plus the tombstone payload.
-      fs.writeFileSync(path.join(getSyncDir(), 'facts.jsonl'), '');
-      fs.writeFileSync(
-        path.join(getSyncDir(), 'fact-tombstones.jsonl'),
-        JSON.stringify({
+      craftCommittedGeneration('dev-a', {
+        'fact-tombstones.jsonl': JSON.stringify({
           fact_id: 'tie-break-fact',
           deleted_at: tie,
           reason: 'hard_delete',
         }) + '\n',
-      );
+      });
       const imported = await importFromSync();
       expect(imported.deletedFacts).toBe(1);
 
@@ -779,22 +801,22 @@ describe('sync-export/import', () => {
       }
 
       // B 기기 스냅샷: tombstone 은 모르고 더 새로 편집된 fact 만 담고 있다.
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
-        id: 'privacy-fact',
-        fact: 'Redis에서 세션 캐시를 사용한다',
-        fact_kr: null,
-        category: 'decision',
-        scope_type: 'global',
-        scope_project: null,
-        source_exchange_ids: '[]',
-        created_at: '2026-08-01T00:00:00.000Z',
-        updated_at: peerEdit,
-        consolidated_count: 1,
-        is_active: 1,
-        ontology_category_id: null,
-      }) + '\n');
-      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+      craftCommittedGeneration('dev-b', {
+        'facts.jsonl': JSON.stringify({
+          id: 'privacy-fact',
+          fact: 'Redis에서 세션 캐시를 사용한다',
+          fact_kr: null,
+          category: 'decision',
+          scope_type: 'global',
+          scope_project: null,
+          source_exchange_ids: '[]',
+          created_at: '2026-08-01T00:00:00.000Z',
+          updated_at: peerEdit,
+          consolidated_count: 1,
+          is_active: 1,
+          ontology_category_id: null,
+        }) + '\n',
+      });
 
       const imported = await importFromSync();
       expect(imported.newFacts).toBe(0);
@@ -821,12 +843,9 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
-      fs.writeFileSync(
-        path.join(syncDir, 'fact-tombstones.jsonl'),
-        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'fact-tombstones.jsonl': JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
+      });
 
       const imported = await importFromSync();
       expect(imported.deletedFacts).toBe(1);
@@ -854,22 +873,22 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
-        id: 'privacy-fact',
-        fact: 'Redis에서 세션 캐시를 사용한다',
-        fact_kr: null,
-        category: 'decision',
-        scope_type: 'global',
-        scope_project: null,
-        source_exchange_ids: '[]',
-        created_at: '2026-08-01T00:00:00.000Z',
-        updated_at: peerEdit,
-        consolidated_count: 1,
-        is_active: 1,
-        ontology_category_id: null,
-      }) + '\n');
-      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': JSON.stringify({
+          id: 'privacy-fact',
+          fact: 'Redis에서 세션 캐시를 사용한다',
+          fact_kr: null,
+          category: 'decision',
+          scope_type: 'global',
+          scope_project: null,
+          source_exchange_ids: '[]',
+          created_at: '2026-08-01T00:00:00.000Z',
+          updated_at: peerEdit,
+          consolidated_count: 1,
+          is_active: 1,
+          ontology_category_id: null,
+        }) + '\n',
+      });
 
       const imported = await importFromSync();
       expect(imported.newFacts).toBe(1);
@@ -895,12 +914,9 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
-      fs.writeFileSync(
-        path.join(syncDir, 'fact-tombstones.jsonl'),
-        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'fact-tombstones.jsonl': JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
+      });
 
       const imported = await importFromSync();
       expect(imported.deletedFacts).toBe(0);
@@ -928,12 +944,9 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
-      fs.writeFileSync(
-        path.join(syncDir, 'fact-tombstones.jsonl'),
-        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
-      );
+      craftCommittedGeneration('dev-a', {
+        'fact-tombstones.jsonl': JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
+      });
 
       await importFromSync();
 
@@ -966,22 +979,16 @@ describe('sync-export/import', () => {
       }
 
       // 두 기기 스냅샷: dev-A 의 privacy 제거(T1)와 dev-B 의 더 새로운 hard delete(T2).
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
-      fs.mkdirSync(path.join(syncDir, 'devices', 'dev-a'), { recursive: true });
-      fs.mkdirSync(path.join(syncDir, 'devices', 'dev-b'), { recursive: true });
-      fs.writeFileSync(
-        path.join(syncDir, 'devices', 'dev-a', 'fact-tombstones.jsonl'),
-        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
-      );
-      fs.writeFileSync(
-        path.join(syncDir, 'devices', 'dev-b', 'fact-tombstones.jsonl'),
-        JSON.stringify({
+      craftCommittedGeneration('dev-a', {
+        'fact-tombstones.jsonl': JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
+      });
+      craftCommittedGeneration('dev-b', {
+        'fact-tombstones.jsonl': JSON.stringify({
           fact_id: 'privacy-fact',
           deleted_at: peerEdit,
           reason: 'hard_delete',
         }) + '\n',
-      );
+      });
 
       const imported = await importFromSync();
       expect(imported.deletedFacts).toBe(1);
@@ -1024,10 +1031,10 @@ describe('sync-export/import', () => {
     }
 
     function writeRemoteFact(
-      syncDir: string,
       overrides: { id?: string; fact?: string; updatedAt?: string; semanticUpdatedAt?: string | null },
     ): void {
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+      craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
         id: overrides.id ?? 'clock-fact',
         fact: overrides.fact ?? 'Redis에서 세션 캐시를 사용한다',
         fact_kr: null,
@@ -1043,8 +1050,8 @@ describe('sync-export/import', () => {
         consolidated_count: 1,
         is_active: 1,
         ontology_category_id: null,
-      }) + '\n');
-      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+      }) + '\n',
+      });
     }
 
     it('T07: 로컬 의미 편집은 더 새로운 원격 metadata touch를 이긴다', async () => {
@@ -1064,8 +1071,7 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      writeRemoteFact(syncDir, {
+      writeRemoteFact({
         fact: 'Redis에서 세션 캐시를 사용한다',
         updatedAt: TOUCH_NEWER, // updated_at 만 더 새롭다 (metadata touch)
         semanticUpdatedAt: SEMANTIC_REMOTE_OLDER, // 의미는 더 오래됐다
@@ -1103,8 +1109,7 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      writeRemoteFact(syncDir, {
+      writeRemoteFact({
         fact: 'Postgres에서 세션 캐시를 사용한다',
         updatedAt: SEMANTIC_REMOTE_NEWER, // updated_at 은 로컬보다 오래됐다
         semanticUpdatedAt: SEMANTIC_REMOTE_NEWER, // 의미는 더 새롭다
@@ -1130,8 +1135,7 @@ describe('sync-export/import', () => {
       const { getSyncDir } = await import('../src/sync-export.js');
       const { importFromSync } = await import('../src/sync-import.js');
 
-      const syncDir = getSyncDir();
-      writeRemoteFact(syncDir, {
+      writeRemoteFact({
         id: 'fresh-remote-fact',
         fact: '완전히 새로 들어온 원격 fact',
         updatedAt: TOUCH_OLDER,
@@ -1169,8 +1173,7 @@ describe('sync-export/import', () => {
       }
 
       // 구버전(v2) payload — semantic_updated_at 필드 자체가 없다.
-      const syncDir = getSyncDir();
-      writeRemoteFact(syncDir, {
+      writeRemoteFact({
         fact: 'Postgres에서 세션 캐시를 사용한다',
         updatedAt: TOUCH_NEWER,
         semanticUpdatedAt: null, // 필드 생략
@@ -1206,11 +1209,9 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
       // relation payload: target 의 semantic stamp 가 로컬(편집 후)과 다르다 → 거부.
-      fs.writeFileSync(
-        path.join(syncDir, 'ontology-relations.jsonl'),
+      craftCommittedGeneration('dev-a', {
+        'ontology-relations.jsonl':
         JSON.stringify({
           id: 'rel-stale',
           source_fact_id: 'rel-src',
@@ -1223,8 +1224,7 @@ describe('sync-export/import', () => {
           source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
           target_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
         }) + '\n',
-      );
-
+      });
       await importFromSync();
       db = initDatabase();
       try {
@@ -1236,8 +1236,8 @@ describe('sync-export/import', () => {
       }
 
       // target 의 semantic stamp 가 현재와 일치하면 승인된다.
-      fs.writeFileSync(
-        path.join(syncDir, 'ontology-relations.jsonl'),
+      craftCommittedGeneration('dev-a', {
+        'ontology-relations.jsonl':
         JSON.stringify({
           id: 'rel-current',
           source_fact_id: 'rel-src',
@@ -1250,7 +1250,7 @@ describe('sync-export/import', () => {
           source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
           target_fact_semantic_updated_at: SEMANTIC_REMOTE_NEWER,
         }) + '\n',
-      );
+      });
       await importFromSync();
       db = initDatabase();
       try {
@@ -1276,11 +1276,9 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      const syncDir = getSyncDir();
-      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
       // 구버전 payload: semantic stamp 가 없고 updated_at stamp 만 있다 — 일치 → 승인.
-      fs.writeFileSync(
-        path.join(syncDir, 'ontology-relations.jsonl'),
+      craftCommittedGeneration('dev-a', {
+        'ontology-relations.jsonl':
         JSON.stringify({
           id: 'rel-legacy',
           source_fact_id: 'rel-src',
@@ -1291,7 +1289,7 @@ describe('sync-export/import', () => {
           source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
           target_fact_updated_at: SEMANTIC_REMOTE_OLDER,
         }) + '\n',
-      );
+      });
       await importFromSync();
       db = initDatabase();
       try {

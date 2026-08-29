@@ -147,8 +147,8 @@ describe('sync export generation atomicity (P2-5)', () => {
     expect(
       fs.existsSync(path.join(getSyncDir(), 'devices', deviceId(), 'facts.jsonl')),
     ).toBe(false);
-    // v1 root mirror stays refreshed for old readers.
-    expect(fs.existsSync(path.join(getSyncDir(), 'facts.jsonl'))).toBe(true);
+    // Root mirror is gone (P1-1): committed generations are the whole protocol.
+    expect(fs.existsSync(path.join(getSyncDir(), 'facts.jsonl'))).toBe(false);
   });
 
   it('import reads only the committed generation — crashed exports are ignored', async () => {
@@ -220,11 +220,12 @@ describe('malformed sync payload reporting (P2-7)', () => {
       is_active: 1,
       ontology_category_id: null,
     };
-    const syncDir = getSyncDir();
-    fs.writeFileSync(
-      path.join(syncDir, 'facts.jsonl'),
+    craftGeneration(
+      'dev-malformed',
+      'gen-malformed',
       JSON.stringify(valid) + '\n{broken json line\n',
     );
+    flipCurrent(path.join(getSyncDir(), 'devices', 'dev-malformed'), 'gen-malformed');
 
     const imported = await importFromSync();
     expect(imported.newFacts).toBe(1);
@@ -233,7 +234,7 @@ describe('malformed sync payload reporting (P2-7)', () => {
     expect(imported.malformedRows[0].line).toBe(2);
   });
 
-  it('reports a broken CURRENT manifest instead of silently skipping the device', async () => {
+  it('fails closed on a broken CURRENT manifest: the device snapshot is rejected and reported', async () => {
     const deviceDir = craftGeneration(
       'dev-c',
       'gen-broken',
@@ -243,11 +244,90 @@ describe('malformed sync payload reporting (P2-7)', () => {
     fs.writeFileSync(path.join(deviceDir, 'CURRENT'), '{ not json');
 
     const imported = await importFromSync();
-    // The device is skipped (fallback device root has no payload) — but the
-    // damage is reported, never silent.
+    // Fail-closed (P1-4): even though the generation directory is intact, an
+    // unreadable CURRENT means its commit point cannot be trusted — the whole
+    // device snapshot is skipped, never fallen back to older payloads.
     expect(imported.newFacts).toBe(0);
     expect(imported.malformedRows).toHaveLength(1);
     expect(imported.malformedRows[0].file.endsWith('CURRENT')).toBe(true);
+    expect(imported.malformedRows[0].error).toContain('rejected');
     expect(imported.malformedRows[0].error).toContain('unreadable');
+  });
+
+  it('fails closed when CURRENT names a generation that is missing', async () => {
+    const deviceDir = craftGeneration(
+      'dev-d',
+      'gen-vanished',
+      fixtureFact('fact-from-dev-d', 'fact behind a vanished generation'),
+    );
+    flipCurrent(deviceDir, 'gen-vanished');
+    fs.rmSync(path.join(deviceDir, 'generations', 'gen-vanished'), { recursive: true, force: true });
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(0);
+    expect(imported.malformedRows).toHaveLength(1);
+    expect(imported.malformedRows[0].error).toContain('rejected');
+  });
+});
+
+describe('generation reader pinning (재감사 P1-4)', () => {
+  it('rejects a whole committed generation when one required payload file is missing', async () => {
+    // A committed generation is set-atomic: a partially readable generation is
+    // a pruning/corruption symptom, and importing the surviving files as
+    // "empty tombstones, empty relations" would be a silent partial commit.
+    const deviceDir = craftGeneration(
+      'dev-e',
+      'gen-partial',
+      fixtureFact('fact-partial', 'fact inside an incomplete generation'),
+    );
+    flipCurrent(deviceDir, 'gen-partial');
+    fs.rmSync(path.join(deviceDir, 'generations', 'gen-partial', 'fact-tombstones.jsonl'));
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(0);
+    expect(imported.malformedRows).toHaveLength(1);
+    expect(imported.malformedRows[0].error).toContain('missing fact-tombstones.jsonl');
+    expect(imported.malformedRows[0].error).toContain('rejected');
+  });
+
+  it('ignores a stale root mirror when a committed generation exists (P1-1 regression)', async () => {
+    // The exporter used to refresh a per-file root mirror after committing the
+    // generation; a reader that consumed BOTH could see a mixed snapshot.
+    // The importer now trusts committed generations only.
+    craftGeneration('dev-f', 'gen-new', fixtureFact('fact-current', 'fact from the committed generation'));
+    flipCurrent(path.join(getSyncDir(), 'devices', 'dev-f'), 'gen-new');
+    const syncDir = getSyncDir();
+    fs.mkdirSync(syncDir, { recursive: true });
+    fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), fixtureFact('fact-stale-root', 'fact from a stale root mirror'));
+    fs.writeFileSync(
+      path.join(syncDir, 'fact-tombstones.jsonl'),
+      JSON.stringify({ fact_id: 'fact-current', deleted_at: '2026-08-30T01:00:00.000Z', reason: 'hard_delete' }) + '\n',
+    );
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(1); // the generation's fact, not the root's
+    expect(imported.malformedRows).toEqual([]);
+    const db2 = initDatabase();
+    try {
+      const present = db2.prepare('SELECT fact FROM facts WHERE id = ?').get('fact-current');
+      const rootFact = db2.prepare('SELECT fact FROM facts WHERE id = ?').get('fact-stale-root');
+      expect(present).toEqual({ fact: 'fact from the committed generation' });
+      expect(rootFact).toBeUndefined();
+    } finally {
+      db2.close();
+    }
+  });
+
+  it('ignores and reports legacy device-root payloads (device-root reading removed)', async () => {
+    const syncDir = getSyncDir();
+    const legacyDevice = path.join(syncDir, 'devices', 'dev-legacy');
+    fs.mkdirSync(legacyDevice, { recursive: true });
+    fs.writeFileSync(path.join(legacyDevice, 'facts.jsonl'), fixtureFact('fact-legacy-root', 'legacy device-root fact'));
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(0);
+    expect(imported.malformedRows).toHaveLength(1);
+    expect(imported.malformedRows[0].error).toContain('legacy device-root payload');
+    expect(imported.malformedRows[0].error).toContain('dev-legacy');
   });
 });

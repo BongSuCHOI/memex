@@ -129,6 +129,59 @@ describe("conversation exclusion policy across index entrypoints", () => {
   });
 });
 
+describe("worker-prompt exclusion survives every ingestion path (재감사 P2-11)", () => {
+  it("verify --repair indexes real exchanges but never re-indexes worker prompts", async () => {
+    // repair의 인라인 루프는 한때 worker-prompt 필터 없이 전체를 재삽입했다 —
+    // 이제 모든 진입점이 공용 ingestion SSOT을 거친다.
+    const fixture = makeFixture();
+    const file = fixture.file;
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: SESSION_ID, cwd: "/tmp/entrypoint-policy" },
+        }),
+        // 진짜 지식 exchange
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Which DB does the app use?" }] },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Postgres" }] },
+        }),
+        // plugin worker prompt exchange — ephemeral state, never knowledge
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: "You are an expert at extracting long-term facts from conversations.\n(extract)" }] },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "worker output" }] },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    await repairIndex({
+      missing: [{ path: file, reason: "No summary file" }],
+      orphaned: [],
+      outdated: [],
+      corrupted: [],
+      fkViolations: [],
+    });
+
+    const db = initDatabase();
+    try {
+      const rows = db.prepare("SELECT user_message FROM exchanges").all() as Array<{ user_message: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].user_message).toBe("Which DB does the app use?");
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("same rollout excluded identically across sync and index entrypoints", () => {
   function countSummaries(dir: string): number {
     if (!fs.existsSync(dir)) return 0;
