@@ -60,7 +60,12 @@ vi.mock("../src/llm.js", async (io) => ({
 import { initDatabase } from "../src/db.js";
 import { getActiveFacts, getTopFacts, insertFact } from "../src/fact-db.js";
 import { mutateFactMeaning, StaleFactMutationError } from "../src/fact-management.js";
-import { classifyFactsBatch, detectRelations, recordOntologyAttempt } from "../src/ontology-classifier.js";
+import {
+  classifyFactsBatch,
+  detectRelations,
+  recordOntologyAttempt,
+  persistFallbackClassification,
+} from "../src/ontology-classifier.js";
 import { consolidateAllPending } from "../src/consolidator.js";
 import { importFromSync } from "../src/sync-import.js";
 import { craftCommittedGeneration } from "./sync-fixture.js";
@@ -268,6 +273,41 @@ describe("ontology attempt ledger generation guard (재감사 P1-8)", () => {
     ).toBe(0);
     // 현재 세대에 대한 실패는 정상 증가한다.
     expect(recordOntologyAttempt(db, id, 1)).toBe(1);
+  });
+
+  it("fallback parking is pinned to the generation that exhausted its attempts (재감사 P1-8 보강)", async () => {
+    const { getCategoryByName } = await import("../src/ontology-db.js");
+    const id = insertFact(db, {
+      fact: "Deploys are blue-green",
+      category: "decision",
+      scope_type: "global",
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: new Array(384).fill(0.05),
+    });
+    // gen1에서 attempts를 MAX까지 태운다.
+    recordOntologyAttempt(db, id, 1);
+    recordOntologyAttempt(db, id, 1);
+    recordOntologyAttempt(db, id, 1);
+    // park 직전에 의미가 변이된다 — gen2, attempts 리셋.
+    await mutateFactMeaning(db, { factId: id, newText: "Deploys are canary rolling" });
+    // 옛 writer의 park 시도 — 새 의미가 박히면 안 된다.
+    persistFallbackClassification(db, id, 1);
+    const mutated = db
+      .prepare("SELECT ontology_category_id, ontology_attempts FROM facts WHERE id = ?")
+      .get(id) as { ontology_category_id: string | null; ontology_attempts: number };
+    expect(mutated.ontology_category_id).toBeNull(); // 새 의미는 분류 대기로 남는다
+    expect(mutated.ontology_attempts).toBe(0);
+    // 현재 세대(gen2)가 attempts를 채우면 park된다.
+    recordOntologyAttempt(db, id, 2);
+    recordOntologyAttempt(db, id, 2);
+    recordOntologyAttempt(db, id, 2);
+    persistFallbackClassification(db, id, 2);
+    const parked = db.prepare("SELECT ontology_category_id FROM facts WHERE id = ?").get(id) as
+      | { ontology_category_id: string | null }
+      | undefined;
+    const misc = getCategoryByName(db, "Misc")!;
+    expect(parked?.ontology_category_id).toBe(misc.id);
   });
 });
 

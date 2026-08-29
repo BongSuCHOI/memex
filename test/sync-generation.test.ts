@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exportForSync, getSyncDir } from '../src/sync-export.js';
+import { exportForSync, getSyncDir, pruneGenerations } from '../src/sync-export.js';
 import { importFromSync } from '../src/sync-import.js';
 import { initDatabase } from '../src/db.js';
 import { insertFact } from '../src/fact-db.js';
@@ -93,17 +94,34 @@ function craftGeneration(deviceId: string, generation: string, factsBody: string
   const deviceDir = path.join(getSyncDir(), 'devices', deviceId);
   const genDir = path.join(deviceDir, 'generations', generation);
   fs.mkdirSync(genDir, { recursive: true });
-  fs.writeFileSync(path.join(genDir, 'facts.jsonl'), factsBody);
-  for (const name of [
-    'fact-revisions.jsonl',
-    'fact-tombstones.jsonl',
-    'recall-events.jsonl',
-    'ontology-domains.jsonl',
-    'ontology-categories.jsonl',
-    'ontology-relations.jsonl',
-  ]) {
-    fs.writeFileSync(path.join(genDir, name), '');
+  const payloads: Record<string, string> = {
+    'facts.jsonl': factsBody,
+    'fact-revisions.jsonl': '',
+    'fact-tombstones.jsonl': '',
+    'recall-events.jsonl': '',
+    'ontology-domains.jsonl': '',
+    'ontology-categories.jsonl': '',
+    'ontology-relations.jsonl': '',
+  };
+  for (const [name, body] of Object.entries(payloads)) {
+    fs.writeFileSync(path.join(genDir, name), body);
   }
+  // integrity manifest(P1-4 보강) — importer가 fail-closed로 검증한다.
+  const rows = (content: string) => content.split('\n').filter((line) => line.trim() !== '').length;
+  const sha256 = (content: string) =>
+    createHash('sha256').update(content, 'utf8').digest('hex');
+  fs.writeFileSync(
+    path.join(genDir, 'meta.json'),
+    JSON.stringify({
+      protocol_version: 3,
+      generation,
+      device_id: deviceId,
+      exported_at: '2026-08-30T00:00:00.000Z',
+      files: Object.fromEntries(
+        Object.entries(payloads).map(([name, body]) => [name, { rows: rows(body), sha256: sha256(body) }]),
+      ),
+    }, null, 2),
+  );
   return deviceDir;
 }
 
@@ -205,8 +223,11 @@ describe('sync export generation atomicity (P2-5)', () => {
   });
 });
 
-describe('malformed sync payload reporting (P2-7)', () => {
-  it('imports valid rows and reports malformed rows with file and line', async () => {
+describe('malformed sync payload reporting (P2-7 → P1-4 fail-closed)', () => {
+  it('rejects the whole generation when a payload row is malformed', async () => {
+    // exporter만이 payload를 만든다 — malformed 행은 곧 부분 전송/손상이다.
+    // 유효 행만 살려 import하던 구 계약은 부분 commit을 허용했으므로, 이제
+    // generation 전체가 reject되고 손상 위치가 보고된다.
     const valid = {
       id: 'row-valid-fact',
       fact: 'valid imported fact',
@@ -228,10 +249,11 @@ describe('malformed sync payload reporting (P2-7)', () => {
     flipCurrent(path.join(getSyncDir(), 'devices', 'dev-malformed'), 'gen-malformed');
 
     const imported = await importFromSync();
-    expect(imported.newFacts).toBe(1);
+    expect(imported.newFacts).toBe(0);
     expect(imported.malformedRows).toHaveLength(1);
-    expect(imported.malformedRows[0].file.endsWith('facts.jsonl')).toBe(true);
-    expect(imported.malformedRows[0].line).toBe(2);
+    expect(imported.malformedRows[0].file.endsWith('CURRENT')).toBe(true);
+    expect(imported.malformedRows[0].error).toContain('facts.jsonl malformed JSON at line 2');
+    expect(imported.malformedRows[0].error).toContain('rejected');
   });
 
   it('fails closed on a broken CURRENT manifest: the device snapshot is rejected and reported', async () => {
@@ -329,5 +351,28 @@ describe('generation reader pinning (재감사 P1-4)', () => {
     expect(imported.malformedRows).toHaveLength(1);
     expect(imported.malformedRows[0].error).toContain('legacy device-root payload');
     expect(imported.malformedRows[0].error).toContain('dev-legacy');
+  });
+});
+
+describe('concurrent export pruning protects the live CURRENT (재감사 P2 hardening)', () => {
+  it('a stale exporter pruning with an old currentId never deletes the generation CURRENT names', () => {
+    const ids: string[] = [];
+    const utimesSync = require('node:fs').utimesSync as typeof import('node:fs').utimesSync;
+    for (let i = 0; i < 4; i++) {
+      seedFact(`prune probe fact ${i}`);
+      exportForSync();
+      ids.push(committedGeneration().id);
+      // mtime을 인위적으로 격리한다 — 동시 export들은 밀리초 단위로 겹친다.
+      const dir = path.join(getSyncDir(), 'devices', deviceId(), 'generations', ids[i]);
+      const t = new Date(Date.now() - (4 - i) * 60_000);
+      utimesSync(dir, t, t);
+    }
+    const generationsDir = path.join(getSyncDir(), 'devices', deviceId(), 'generations');
+    // 시간이 늦은 exporter가 자기 currentId(ids[1])로 prune한다 — CURRENT는 이미 ids[3].
+    pruneGenerations(generationsDir, ids[1]);
+    const remaining = fs.readdirSync(generationsDir).filter((n) => !n.endsWith('.tmp'));
+    expect(remaining).toContain(ids[3]); // live CURRENT — 결코 삭제되지 않는다
+    expect(remaining).toContain(ids[2]); // keep=2 유예 윈도우 유지
+    expect(remaining).not.toContain(ids[0]); // 윈도우 밖은 정리된다
   });
 });

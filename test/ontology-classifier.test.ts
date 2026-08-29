@@ -26,6 +26,7 @@ import {
   backfillClassifyBatch,
   parkExhaustedFacts,
   recordOntologyAttempt,
+  MAX_CLASSIFY_ATTEMPTS,
   persistFallbackClassification,
   MAX_CLASSIFY_ATTEMPTS,
 } from '../src/ontology-classifier.js';
@@ -295,6 +296,12 @@ describe('ontology-classifier', () => {
     it('persistFallbackClassification actually writes ontology_category_id', () => {
       const embeddingArr = new Array(384).fill(0.1);
       insertTestFact(db, 'fact-fb', 'Fallback test', embeddingArr);
+      // parking은 attempts 임계 조건을 포함한다(재감사 P1-8 보강) —
+      // MAX에 도달한 세대만 park된다.
+      db.prepare('UPDATE facts SET ontology_attempts = ? WHERE id = ?').run(
+        MAX_CLASSIFY_ATTEMPTS,
+        'fact-fb',
+      );
 
       persistFallbackClassification(db, 'fact-fb');
 

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getSyncDir } from '../src/sync-export.js';
+import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256 } from '../src/sync-export.js';
 
 export const SYNC_PAYLOAD_FILES = [
   'facts.jsonl',
@@ -35,6 +35,26 @@ export function craftCommittedGeneration(
   for (const name of SYNC_PAYLOAD_FILES) {
     fs.writeFileSync(path.join(genDir, name), payload[name] ?? '');
   }
+  // integrity manifest — importer fail-closed 검증 대상(P1-4 보강)
+  fs.writeFileSync(
+    path.join(genDir, 'meta.json'),
+    JSON.stringify(
+      {
+        protocol_version: 3,
+        generation: generationId,
+        device_id: deviceId,
+        exported_at: '2026-08-30T00:00:00.000Z',
+        files: Object.fromEntries(
+          SYNC_PAYLOAD_FILE_NAMES.map((name) => [
+            name,
+            { rows: countPayloadRows(payload[name] ?? ''), sha256: payloadSha256(payload[name] ?? '') },
+          ]),
+        ),
+      },
+      null,
+      2,
+    ),
+  );
   fs.writeFileSync(
     path.join(deviceDir, 'CURRENT'),
     JSON.stringify({ generation: generationId, exported_at: '2026-08-30T00:00:00.000Z' }),

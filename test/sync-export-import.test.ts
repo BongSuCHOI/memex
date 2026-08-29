@@ -109,6 +109,204 @@ describe('sync-export/import', () => {
     expect(result.newDomains).toBe(0);
   });
 
+  // 공통 시드: 로컬 fact를 넣고 반환된 실제 id/created_at으로 원격 payload를
+  // 맞춘다 — semanticConflictKey는 (is_active, fact, category, scope,
+  // created_at)이므로 tie 시나리오는 이 둘이 일치해야 한다.
+  async function seedLocalFact(opts: {
+    fact?: string;
+    sources: string[];
+    count?: number;
+    semanticAt?: string;
+  }): Promise<{ id: string; createdAt: string }> {
+    const { initDatabase } = await import('../src/db.js');
+    const { insertFact } = await import('../src/fact-db.js');
+    const db = initDatabase();
+    let id: string;
+    let createdAt: string;
+    try {
+      id = insertFact(db, {
+        fact: opts.fact ?? 'Metrics are exported once per minute',
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: opts.sources,
+        embedding: new Array(384).fill(0.05),
+      });
+      const row = db.prepare('SELECT created_at FROM facts WHERE id = ?').get(id) as { created_at: string };
+      createdAt = row.created_at;
+      const semanticAt = opts.semanticAt ?? '2026-08-30T00:00:00.000Z';
+      db.prepare(
+        'UPDATE facts SET semantic_updated_at = ?, updated_at = ?, consolidated_count = ?, needs_consolidation = 0 WHERE id = ?',
+      ).run(semanticAt, semanticAt, opts.count ?? 1, id);
+    } finally {
+      db.close();
+    }
+    return { id, createdAt };
+  }
+
+  function remoteFactPayload(opts: {
+    id: string;
+    createdAt: string;
+    fact?: string;
+    sources: string[];
+    count?: number;
+    semanticAt?: string;
+  }): string {
+    const semanticAt = opts.semanticAt ?? '2026-08-30T00:00:00.000Z';
+    return JSON.stringify({
+      id: opts.id,
+      fact: opts.fact ?? 'Metrics are exported once per minute',
+      fact_kr: null,
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: JSON.stringify(opts.sources),
+      created_at: opts.createdAt,
+      updated_at: semanticAt,
+      semantic_updated_at: semanticAt,
+      consolidated_count: opts.count ?? 1,
+      is_active: 1,
+      ontology_category_id: null,
+    }) + '\n';
+  }
+
+  it('a peer with fewer sources cannot regress local provenance on a semantic tie', async () => {
+    // 재감사 P1-1 보강 핵심 시나리오: 로컬은 DUPLICATE consolidation으로
+    // provenance를 union했고(ex-b), 원격은 여전히 [ex-a]다. semantic clock이
+    // 같으면(consolidation은 semantic event가 아니다) 구 lexical tie-break은
+    // ["ex-a"] 쪽이 이겨 ex-b provenance를 소실시켰다 — 그러면 conversation
+    // exclusion purge가 ex-b 연결 fact를 못 찾는다. 이제 metadata는
+    // monotone convergence다: union/max, 결코 회귀하지 않는다.
+    const { id, createdAt } = await seedLocalFact({ sources: ['ex-a', 'ex-b'], count: 2 });
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': remoteFactPayload({ id, createdAt, sources: ['ex-a'], count: 1 }),
+    });
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    await importFromSync();
+
+    const { initDatabase } = await import('../src/db.js');
+    const check = initDatabase();
+    try {
+      expect(check.prepare(
+        'SELECT source_exchange_ids, consolidated_count, semantic_generation, fact FROM facts WHERE id = ?',
+      ).get(id)).toEqual({
+        source_exchange_ids: '["ex-a","ex-b"]', // union — 결코 회귀하지 않는다
+        consolidated_count: 2, // max
+        semantic_generation: 1, // metadata merge는 semantic event가 아니다
+        fact: 'Metrics are exported once per minute',
+      });
+    } finally {
+      check.close();
+    }
+  });
+
+  it('metadata-only convergence does not touch vectors, relations or the consolidation queue', async () => {
+    const { id, createdAt } = await seedLocalFact({ sources: ['ex-a'], count: 1 });
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try {
+      db.prepare(`
+        INSERT INTO ontology_relations (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
+        VALUES ('conv-rel', ?, 'SUPPORTS', ?, 'must survive metadata merge', '2026-08-30T00:00:00.000Z')
+      `).run(id, id);
+    } finally {
+      db.close();
+    }
+
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': remoteFactPayload({ id, createdAt, sources: ['ex-a', 'ex-b'], count: 1 }),
+    });
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    const imported = await importFromSync();
+    expect(imported.updatedFacts).toBe(1);
+
+    const check = initDatabase();
+    try {
+      // metadata merge는 semantic event가 아니다 — relation 삭제, ontology
+      // reset, vector 재생성, dirty queue 재등록이 없어야 한다.
+      expect((check.prepare('SELECT COUNT(*) AS n FROM ontology_relations').get() as { n: number }).n).toBe(1);
+      expect((check.prepare('SELECT COUNT(*) AS n FROM vec_facts_rowids WHERE id = ?').get(id) as { n: number }).n).toBe(1);
+      expect(check.prepare('SELECT needs_consolidation, ontology_category_id FROM facts WHERE id = ?').get(id))
+        .toEqual({ needs_consolidation: 0, ontology_category_id: null });
+      expect(check.prepare('SELECT source_exchange_ids FROM facts WHERE id = ?').get(id))
+        .toEqual({ source_exchange_ids: '["ex-a","ex-b"]' });
+    } finally {
+      check.close();
+    }
+  });
+
+  it('a locally newer meaning still absorbs peer provenance monotonically', async () => {
+    // 로컬 의미 편집(T2, 더 새로움) + 원격은 옛 의미이지만 provenance가 더 풍부하다.
+    const { id, createdAt } = await seedLocalFact({
+      fact: 'Metrics are exported on demand',
+      sources: ['ex-a'],
+      count: 1,
+      semanticAt: '2026-08-31T00:00:00.000Z',
+    });
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': remoteFactPayload({
+        id,
+        createdAt,
+        fact: 'Metrics are exported once per minute',
+        sources: ['ex-a', 'ex-c'],
+        count: 3,
+        semanticAt: '2026-08-30T00:00:00.000Z',
+      }),
+    });
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    await importFromSync();
+
+    const { initDatabase } = await import('../src/db.js');
+    const check = initDatabase();
+    try {
+      expect(check.prepare(
+        'SELECT fact, source_exchange_ids, consolidated_count, semantic_generation FROM facts WHERE id = ?',
+      ).get(id)).toEqual({
+        fact: 'Metrics are exported on demand', // 로컬 의미 유지
+        source_exchange_ids: '["ex-a","ex-c"]', // peer provenance 수렴
+        consolidated_count: 3, // max
+        semantic_generation: 1,
+      });
+    } finally {
+      check.close();
+    }
+  });
+
+  it('a semantic replacement carries the merged provenance along with the new meaning', async () => {
+    // 원격 의미 편집이 더 새롭다 — replacement가 일어나도 로컬 provenance(ex-a)는
+    // 원격 승자 행에서 사라지지 않는다.
+    const { id, createdAt } = await seedLocalFact({ sources: ['ex-a'], count: 1 });
+    craftCommittedGeneration('dev-a', {
+      'facts.jsonl': remoteFactPayload({
+        id,
+        createdAt,
+        fact: 'Metrics are exported on demand',
+        sources: ['ex-c'],
+        count: 1,
+        semanticAt: '2026-08-31T00:00:00.000Z',
+      }),
+    });
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    await importFromSync();
+
+    const { initDatabase } = await import('../src/db.js');
+    const check = initDatabase();
+    try {
+      expect(check.prepare(
+        'SELECT fact, source_exchange_ids FROM facts WHERE id = ?',
+      ).get(id)).toEqual({
+        fact: 'Metrics are exported on demand',
+        source_exchange_ids: '["ex-a","ex-c"]',
+      });
+    } finally {
+      check.close();
+    }
+  });
+
   it('applies imported recall provenance only after the receipt is emitted', async () => {
     const { importFromSync } = await import('../src/sync-import.js');
     const { hashRecallPrompt, initDatabase, insertExchange } = await import('../src/db.js');
@@ -267,7 +465,10 @@ describe('sync-export/import', () => {
     expect(second.newFacts).toBe(0);
   });
 
-  it('should skip malformed JSONL lines', async () => {
+  it('fails closed on a malformed JSONL row — the whole generation is rejected', async () => {
+    // P1-4 보강: exporter만이 payload를 만들므로 malformed 행은 곧 손상이다.
+    // 유효 행만 골라 import하면(구 P2-7 계약) 부분 전송 generation이
+    // 조용히 부분 commit될 수 있다 — 이제 generation 전체를 reject한다.
     const { getSyncDir } = await import('../src/sync-export.js');
     const syncDir = getSyncDir();
     const now = new Date().toISOString();
@@ -284,7 +485,77 @@ describe('sync-export/import', () => {
 
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
-    expect(result.newFacts).toBe(1); // Only the valid line
+    expect(result.newFacts).toBe(0);
+    expect(result.malformedRows).toHaveLength(1);
+    // generation 거부는 하나의 이슈로 보고된다(CURRENT 기준) — 손상 파일명은
+    // 오류 본문에 들어간다.
+    expect(result.malformedRows[0].file.endsWith('CURRENT')).toBe(true);
+    expect(result.malformedRows[0].error).toContain('facts.jsonl malformed JSON at line 1');
+    expect(result.malformedRows[0].error).toContain('rejected');
+  });
+
+  it('rejects a generation whose payload does not match its integrity manifest', async () => {
+    // cloud sync가 generation 디렉터리를 파일 단위로 전송하는 동안 잘린
+    // tombstones 파일이 유효한 generation으로 읽히면 privacy tombstone이
+    // 누락된다 — hash/rows 불일치는 generation 전체 reject여야 한다.
+    const now = '2026-08-30T00:00:00.000Z';
+    const gen = craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
+        id: 'tamper-fact', fact: 'Tamper probe', category: 'decision',
+        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+      }) + '\n',
+      'fact-tombstones.jsonl': JSON.stringify({
+        fact_id: 'some-fact', deleted_at: now, reason: 'hard_delete',
+      }) + '\n',
+    });
+    // 부분 전송 흉내: tombstones 내용을 자른다(존재하지만 prefix만 도착).
+    fs.writeFileSync(path.join(gen.genDir, 'fact-tombstones.jsonl'), '');
+
+    const { importFromSync } = await import('../src/sync-import.js');
+    const result = await importFromSync();
+    expect(result.newFacts).toBe(0);
+    expect(result.malformedRows).toHaveLength(1);
+    expect(result.malformedRows[0].error).toContain('fact-tombstones.jsonl');
+    expect(result.malformedRows[0].error).toContain('rejected');
+  });
+
+  it('rejects a generation whose meta.json is missing or does not match CURRENT', async () => {
+    const now = '2026-08-30T00:00:00.000Z';
+    const gen = craftCommittedGeneration('dev-a', {
+      'facts.jsonl': JSON.stringify({
+        id: 'manifest-fact', fact: 'Manifest probe', category: 'decision',
+        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+      }) + '\n',
+    });
+    fs.unlinkSync(path.join(gen.genDir, 'meta.json'));
+    const missing = await import('../src/sync-import.js').then((m) => m.importFromSync());
+    expect(missing.newFacts).toBe(0);
+    expect(missing.malformedRows[0].error).toContain('missing meta.json');
+    expect(missing.malformedRows[0].error).toContain('rejected');
+
+    // meta.json이 CURRENT가 가리키는 generation과 다르면(전송 순서 어긋남) 거부.
+    const gen2 = craftCommittedGeneration('dev-b', {
+      'facts.jsonl': JSON.stringify({
+        id: 'manifest-fact-2', fact: 'Manifest probe 2', category: 'decision',
+        scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
+        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+      }) + '\n',
+    });
+    const manifestPath = path.join(gen2.genDir, 'meta.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    manifest.generation = 'a-different-generation-id';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    const mismatched = await import('../src/sync-import.js').then((m) => m.importFromSync());
+    expect(mismatched.newFacts).toBe(0);
+    // dev-a의 거부 이슈가 앞선다 — dev-b의 manifest 불일치 이슈를 찾아 단언한다.
+    const mismatchIssue = mismatched.malformedRows.find((row) =>
+      row.error.includes('does not match the CURRENT-named generation'),
+    );
+    expect(mismatchIssue).toBeTruthy();
+    expect(mismatchIssue!.error).toContain('dev-b');
+    expect(mismatchIssue!.error).toContain('rejected');
   });
 
   it('imports a remote fact whose ontology category is missing locally — ontology is an overlay', async () => {
@@ -471,7 +742,9 @@ describe('sync-export/import', () => {
         'SELECT fact, source_exchange_ids, updated_at, is_active FROM facts WHERE id = ?',
       ).get('shared-fact')).toEqual({
         fact: 'New current truth',
-        source_exchange_ids: '["ex-new"]',
+        // P1-1 보강: semantic replacement라도 provenance는 monotone union이다 —
+        // 로컬 증거(ex-old)가 원격 승자 행에서 사라지지 않는다.
+        source_exchange_ids: '["ex-new","ex-old"]',
         updated_at: updatedAt,
         is_active: 0,
       });

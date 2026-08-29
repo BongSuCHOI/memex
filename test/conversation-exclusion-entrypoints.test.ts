@@ -13,6 +13,11 @@ vi.mock("../src/embeddings.js", async () => ({
 vi.mock("../src/summarizer.js", async () => ({
   summarizeConversation: async () => "must not be generated",
 }));
+// parse 대상 검증을 위한 스파이 래퍼 — 실제 파서 동작은 유지한다.
+vi.mock("../src/parser.js", async (io) => {
+  const actual = await io<typeof import("../src/parser.js")>();
+  return { ...actual, parseConversation: vi.fn(actual.parseConversation) };
+});
 
 import {
   indexConversations,
@@ -22,6 +27,7 @@ import {
 import { syncConversations } from "../src/sync.js";
 import { initDatabase } from "../src/db.js";
 import { repairIndex } from "../src/verify.js";
+import { parseConversation } from "../src/parser.js";
 import {
   canonicalizeProjectPath,
   projectStorageKey,
@@ -410,6 +416,47 @@ describe("indexUnprocessed archive-copy re-verification", () => {
       delete process.env.MEMEX_DB_PATH;
       if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
       tmp = undefined;
+    }
+  });
+});
+
+describe("indexers parse the verified archive snapshot, never the live source (재감사 P1-9)", () => {
+  it("every index entrypoint opens the archive copy it just eligibility-checked", async () => {
+    // TOCTOU 계약: 검사한 snapshot = 읽은 snapshot = DB의 archive_path.
+    // live source rollout을 parse하면 copy 이후 붙은 제외 마커가 인덱스로
+    // 새어 들어갈 수 있다.
+    const fixture = makeFixture();
+    // spy는 파일 전체 테스트에서 누적된다 — 이 fixture의 호출만 검사한다.
+    (parseConversation as unknown as ReturnType<typeof vi.fn>).mockClear();
+    fs.writeFileSync(
+      fixture.file,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: SESSION_ID, cwd: "/tmp/entrypoint-policy" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Which DB does the app use?" }] },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Postgres" }] },
+        }),
+      ].join("\n") + "\n",
+    );
+
+    await indexConversations(undefined, undefined, 1, true);
+    await indexSession(SESSION_ID, 1, true);
+    await indexUnprocessed(1, true);
+
+    const calls = (parseConversation as unknown as ReturnType<typeof vi.fn>).mock.calls as
+      Array<[string, string, string]>;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const [readPath, , archivePath] of calls) {
+      // 첫 인자(실제로 여는 파일) == 세 번째 인자(기록되는 archive_path)
+      expect(readPath).toBe(archivePath);
+      expect(String(readPath)).toContain(fixture.archive);
     }
   });
 });
