@@ -112,6 +112,12 @@ FTS5 external-content table은 insert/update/delete trigger로 동기화됩니�
 384차원 int8 embedding과 `embedding_version`을 사용합니다. version이 다르면 동일
 검색 공간으로 섞지 않습니다.
 
+요약은 아카이브가 마지막 요약 이후 변경되지 않았을 때만 현재 것으로 인정한다(재감사
+§6 freshness). resume으로 rollout이 길어져 아카이브 mtime이 요약보다 새로워지면
+재색인 경로가 요약을 재생성한다 — 존재 여부만 검사하는 구동작은 잘린 요약을 영원히
+광고했다. 아카이브는 Memex가 소유하는 append-only 사본이므로 별도 fingerprint 상태
+없이 mtime 비교로 충분하다.
+
 ## 5. 세 이벤트의 책임
 
 ### SessionStart
@@ -119,14 +125,21 @@ FTS5 external-content table은 insert/update/delete trigger로 동기화됩니�
 ```mermaid
 flowchart LR
     S[SessionStart] --> D[Version drift check]
-    D --> Y[Background sync]
-    Y --> I[Sync import]
-    I --> M[Bounded maintenance]
+    S --> Y[Background sync]
+    S --> I[Sync import]
+    S --> M[Bounded maintenance]
 ```
 
-순서는 `src/lifecycle.ts`와 `hooks.json`이 함께 소유합니다. background 작업은 session
-시작을 막지 않습니다. sync import는 scope enum, canonical path, ontology FK,
-relation enum/endpoints/cross-project edge를 검증한 데이터만 기록합니다.
+네 명령은 `hooks.json`에서 서로 독립적인 async 항목이며 순서 보장은 없다 — 이것은
+문서화된 eventual-consistency 계약이지 ordered pipeline이 아니다(재감사 P2-4). 각
+명령은 다른 명령의 완료를 기다리지 않고, 완료 순서는 비결정적이다. 이 계약이
+성립하는 이유는 의존성이 없기 때문이다: `sync`는 rollout 아카이브와 색인만 만들고
+export를 수행하지 않으며, sync import는 다른 기기가 쓴 snapshot을 읽고, maintenance는
+로컬 DB 상태만 본다. import가 export와 동시에 실행돼도 generation snapshot(P2-5)이
+파일 집합의 일관성을 보장하므로 import는 항상 온전한 generation 중 하나만 읽는다.
+놓친 변경은 다음 SessionStart에서 eventual recovery된다. 각 명령은 session 시작을
+막지 않고, sync import는 scope enum, canonical path, ontology FK, relation
+enum/endpoints/cross-project edge를 검증한 데이터만 기록한다.
 
 ### UserPromptSubmit
 
@@ -178,8 +191,29 @@ import는 외부 데이터 경계입니다. global↔project와 same-project rel
 sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
 `fact_tombstones`, `recall_events`, ontology domain/category/relation을 내보냅니다.
 각 local DB는 `sync_meta.device_id`를 한 번 생성하고 `sync/devices/<device_id>/`만
-소유해 다른 기기의 snapshot을 overwrite하지 않습니다. root JSONL은 v1 reader를 위한
-호환 mirror이며, v2 import는 root와 모든 device snapshot을 합쳐 판정합니다.
+소유해 다른 기기의 snapshot을 overwrite하지 않습니다.
+
+한 export는 하나의 generation이다(재감사 P2-5): export는 단일 read transaction으로
+모든 행을 모으고, 파일 집합 전부를 `sync/devices/<device_id>/generations/<uuid>.tmp`에
+쓴 뒤 원자적 directory rename으로 commit하고, 마지막에 `CURRENT` manifest를 원자적으로
+교체한다. importer는 committed generation만 읽으므로 crash·cloud-sync 관측·동시 export
+어느 쪽도 facts=N+1/revisions=N 같은 혼합 snapshot을 만들 수 없다. importer가 기기당
+읽는 것은 CURRENT가 가리키는 generation 하나뿐이며(legacy v2 layout인 device root는
+CURRENT가 없을 때의 폴백), CURRENT가 깨진 경우 device root로 폴백하고 그 손상을
+`malformedRows`로 보고한다. export는 최신 2개 generation(current + 이전)만 유지하고
+1시간 넘은 `.tmp` 잔재를 정리한다. root JSONL은 v1 reader를 위한 호환 mirror로서
+generation commit 이후 파일 단위 원자 쓰기로 갱신된다 — 파일 전체는 항상 온전하지만
+파일 집합의 동시성은 보장하지 않는다(v1 compat surface는 set-atomic이 아님). v2
+import는 root mirror와 각 device의 committed generation을 합쳐 판정한다.
+
+export 성공/실패는 `sync/export-status.json`에 기록된다(재감사 P2-6). SessionEnd는
+export 실패로 lifecycle을 wedge하지 않지만, parent hook은 child 결과와 status를 검사해
+`EXPORT_FAILED`를 stderr에 남기고 `memex doctor`의 `sync-export` 체크가 마지막 시도를
+노출한다. 다음 SessionEnd export가 자연히 재시도하고 status를 덮어쓴다.
+
+import는 외부 데이터 경계이며 malformed 행을 조용히 버리지 않는다(재감사 P2-7): 유효
+행은 계속 import하되, parse에 실패한 행은 file/line/error와 함께 `malformedRows`로
+누적되어 hook의 stderr에 보고된다.
 fact 충돌은 semantic event clock(`semantic_updated_at`)이 최신인 event가 이기며,
 같은 시각은 canonical fact key로 결정합니다. 분류나 consolidation 확인 같은 비의미
 metadata 쓰기가 `updated_at`을 밀어도 상대의 의미 편집을 이기지 못하고, payload에
@@ -217,7 +251,9 @@ archive, sync JSONL까지 모두 삭제한 경우 facts/revisions/recall receipt
 - lifecycle observation: timestamp/event/session/cwd 같은 최소 메타데이터
 - injection log: status, prompt length, candidates, injected/deduped/chars, duration, path
 - error log: import/Node-level failure
-- `memex doctor`: dependency/build/hook configured/observed/trust/MCP contract
+- sync export status: `sync/export-status.json` — 마지막 export 시도의 ok/error/counts(재감사 P2-6)
+- sync import: malformed 행은 file:line/error로 hook stderr에 보고(재감사 P2-7)
+- `memex doctor`: dependency/build/hook configured/observed/trust/MCP contract/sync-export
 - `memex status`: conversation/fact/graph readiness와 backlog를 분리. extraction pending은
   워커가 실제로 처리할 적격 세션만 계산하고, 정책상 제외된 세션(min-exchange gate,
   excluded project/LLM workdir)은 `excluded`로 별도 표시한다 — 상태 표시와 워커 선정 술어가

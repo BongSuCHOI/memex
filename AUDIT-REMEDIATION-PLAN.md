@@ -974,6 +974,79 @@ foreign_key_check 0행, FK OFF로 조성한 legacy orphan fixture 검출 + 수�
 계약 핀일 뿐 오늘의 회귀 신호가 아니다. (2) lazy exchange id 마이그레이션(Phase 4)과
 마찬가지로, foreign tooling이 만든 orphan은 verify 실행 전까지 검출되지 않는다.
 
+### Phase 6 — Sync durability & observability (완료)
+
+리포트 P2-4·P2-5·P2-6·P2-7과 §6 freshness를 재검증했다. 네 항목 모두 사실 관계가
+유효했고 방향 충돌은 없었다.
+
+- P2-5: `exportForSync`가 facts→revisions→tombstones→recall→ontology→meta를
+  `fs.writeFileSync`로 순차 직접 덮어썼다 — read transaction도, 파일 집합 원자성도
+  없어 crash/동시 export/cloud-sync 관측이 혼합 snapshot(facts=N+1, revisions=N)을
+  만들 수 있었다.
+- P2-6: `sync-export-hook.js`는 오류를 stderr에 쓰고 exit 0으로 끝냈고, parent
+  `session-end-hook.js`는 child 반환값을 전혀 검사하지 않았다 — export 실패는
+  관측 불가능했다.
+- P2-7: `readJsonLines`의 JSON.parse catch가 malformed 행을 조용히 skip했고, 문서
+  (CONVERSATION-LIFECYCLE §6 sequence diagram)의 "uncommitted/reported" 주장과
+  런타임이 어긋났다.
+- P2-4: 문서가 drift→sync→sync-import→maintenance 순서를 ordered pipeline으로
+  기술했지만 hooks.json의 네 SessionStart 명령은 독립 async다.
+- freshness: 요약 생성이 존재 여부만 검사해서 resume으로 길어진 rollout의 잘린
+  요약이 영원히 재사용됐다(indexer 3곳).
+
+구현(리포트 권장 채택):
+
+- P2-5: 한 export = 한 generation. 단일 read transaction으로 모든 행을 모으고,
+  `sync/devices/<id>/generations/<uuid>.tmp`에 파일 집합 전부를 쓴 뒤 원자적
+  directory rename으로 commit하고, 마지막에 `CURRENT` manifest를 tmp+rename으로 원자
+  교체한다. importer는 device당 CURRENT가 가리키는 committed generation 하나만
+  읽는다(legacy v2 device root는 CURRENT 부재 시 폴백, 깨진 CURRENT는 device
+  skip + malformedRows 보고). root JSONL mirror는 v1 호환 surface로서 generation
+  commit 후 파일 단위 원자 쓰기로 갱신된다 — 전환 정책을 문서에 명시했다(mirror는
+  set-atomic이 아님). generation은 최신 2개만 유지하고 1시간 넘은 `.tmp`를 정리한다.
+  per-process tmp 이름으로 동시 export 간 rename 경합도 제거했다.
+- P2-6: `sync/export-status.json` durable status — sync-export-hook은 성공/실패
+  모두 기록(ok, at, error, counts)하고 exit 0을 유지한다. parent session-end-hook은
+  child code와 status를 검사해 `EXPORT_FAILED`를 stderr에 남기고(비정상 종료 시
+  parent가 status를 대신 기록), `memex doctor`에 `sync-export` 체크가 추가됐다.
+  다음 SessionEnd export가 자연히 재시도하고 status를 덮어쓴다.
+- P2-7: `readJsonLines`가 parse 실패 행을 file/line/error와 함께
+  `SyncImportResult.malformedRows`로 누적하고, sync-import-hook이 stderr에 행별로
+  보고한다. 유효 행은 계속 import된다.
+- P2-4: 리포트가 제시한 두 대안 중 "문서와 status semantics를 eventual-consistency로
+  수정"을 채택했다. 근거: `memex sync`는 export를 수행하지 않고(sync-cli는
+  syncConversations만 호출), import는 peer snapshot을 읽으며, maintenance는 로컬
+  상태만 본다 — 실제 순서 의존이 없어 coordinator는 직렬화 비용만 추가한다.
+  문서의 SessionStart 섹션을 독립 async 4단계 + eventual recovery 계약으로
+  재작성하고, hooks.json 표면(4개 독립 async / SessionEnd 단일 동기 체인)을 계약
+  테스트로 고정했다. "import가 이전 snapshot만 읽는" 비결정성의 날카로운 모서리는
+  P2-5 generation 원자성이 제거한다(항상 온전한 generation 중 하나를 읽음).
+- freshness: `summaryNeedsRefresh(archive, summary)` — 요약 부재 또는 아카이브
+  mtime > 요약 mtime이면 재생성. 아카이브는 Memex 소유 append-only 사본이므로 별도
+  fingerprint 상태 없이 mtime이 신뢰 가능한 변경 신호다. indexer의 요약 결정 3곳에
+  적용했다.
+
+추가 회귀 테스트 4종 15건: `test/sync-generation.test.ts`(generation layout/CURRENT
+명명, crash `.tmp`+미지정 generation 무시, CURRENT flip이 commit point임을 관측 —
+flip 전에는 완전히 쓰인 gen-2도 보이지 않음, malformed 행 file/line 보고, 깨진
+CURRENT 보고), `test/export-status.test.ts`(실제 자식 프로세스: 성공/실패 status
+기록, 실패 후 exit 0, 다음 lifecycle retry가 status를 덮어씀, parent 체인의
+EXPORT_FAILED stderr + 정상 종료 — sandbox에서 stub worker/파서/실패 export로 전체
+SessionEnd 체인을 구동), `test/summary-freshness.test.ts`(helper 3 케이스 +
+indexSession resume 재생성/무변경 미재생성 통합), `test/lifecycle-contract.test.ts`
+(hooks.json 독립 async 표면 고정). 재주입 관측: import가 CURRENT를 무시 → 3건 실패,
+malformed 무시 복원 → 보고 테스트 실패, 훅 status 기록 제거 → 2건 실패, exists-only
+요약 검사 복원 → 2건 실패, hooks.json async 제거 → 계약 테스트 실패. 테스트가 잡은
+구현 버그는 없었으나 테스트 자체의 async/await 누락과 snapshot no-op(자기 export
+재import는 reconcile에서 no-op)을 수정하며 배웠다.
+
+`NOT_PROVEN` 잔여: (1) root mirror는 v1 호환 surface로 파일 단위 원자성만 제공한다 —
+v1 reader의 파일 집합 동시성은 계약 밖이다(문서 명시). (2) generation prune(최신 2개
+유지) 동안 CURRENT를 읽고 느리게 읽는 importer가 2세대 이전을 참조하면 ENOENT가
+가능하다 — import는 CURRENT를 먼저 해석해 위험을 최소화하지만, 매우 긴 import 도중의
+동시 export 2회 경합은 관측하지 않았다. (3) `memex doctor`의 sync-export 체크는
+상태 파일만 읽는 단순 노출이며, CLI 전체 실행은 수동 QA로 관측했다.
+
 
 ## 11. 최종 목표
 
