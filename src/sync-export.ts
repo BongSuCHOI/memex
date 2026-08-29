@@ -57,9 +57,12 @@ export function exportForSync(): SyncExportResult {
 
     // Export active and inactive facts. is_active is a revision-bearing state;
     // filtering it here would make deactivation impossible to reconcile.
+    // semantic_updated_at carries the meaning clock (재감사 P1-3): peers must
+    // judge conflicts by the semantic event time, not by a polluted updated_at.
     const facts = db.prepare(`
       SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-             created_at, updated_at, consolidated_count, is_active, ontology_category_id
+             created_at, updated_at, consolidated_count, is_active, ontology_category_id,
+             semantic_updated_at
       FROM facts ORDER BY id
     `).all() as Array<Record<string, unknown>>;
 
@@ -94,9 +97,13 @@ export function exportForSync(): SyncExportResult {
     writeJsonl('ontology-categories.jsonl', categories);
 
     // Export relations
+    // 재감사 P1-3: endpoint version은 의미 세계의 semantic_updated_at으로 기록한다 —
+    // 구버전 reader를 위해 updated_at stamp는 유지한다(transition fallback).
     const relations = db.prepare(`
       SELECT r.*, sf.updated_at AS source_fact_updated_at,
-             tf.updated_at AS target_fact_updated_at
+             tf.updated_at AS target_fact_updated_at,
+             sf.semantic_updated_at AS source_fact_semantic_updated_at,
+             tf.semantic_updated_at AS target_fact_semantic_updated_at
       FROM ontology_relations r
       JOIN facts sf ON sf.id = r.source_fact_id
       JOIN facts tf ON tf.id = r.target_fact_id

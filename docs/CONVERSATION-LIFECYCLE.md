@@ -162,18 +162,22 @@ sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
 각 local DB는 `sync_meta.device_id`를 한 번 생성하고 `sync/devices/<device_id>/`만
 소유해 다른 기기의 snapshot을 overwrite하지 않습니다. root JSONL은 v1 reader를 위한
 호환 mirror이며, v2 import는 root와 모든 device snapshot을 합쳐 판정합니다.
-fact 충돌은 `updated_at`이 최신인 event가 이기며, 같은 timestamp는 canonical fact key로
-결정합니다. hard-delete tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다
-strictly newer fact만 restore/edit event로 인정합니다. 예외로
+fact 충돌은 semantic event clock(`semantic_updated_at`)이 최신인 event가 이기며,
+같은 시각은 canonical fact key로 결정합니다. 분류나 consolidation 확인 같은 비의미
+metadata 쓰기가 `updated_at`을 밀어도 상대의 의미 편집을 이기지 못하고, payload에
+`semantic_updated_at`이 없는 구버전은 `updated_at`으로 폴백합니다. hard-delete
+tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다 strictly newer
+semantic event만 restore/edit event로 인정합니다. 예외로
 `source_conversation_excluded` tombstone은 terminal privacy state입니다 — unexclude 또는
 re-consent event가 프로토콜에 존재하지 않으므로 timestamp와 무관하게 fact를 부활시키지
 않고, 더 새로운 peer edit보다 우선해 삭제를 전파하며, 더 새로운 non-privacy tombstone으로
 이유가 강등되지 않습니다. imported fact text는 local current
 embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction입니다. fact update는
 기존 endpoint relation을 무효화한 뒤 현재 export relation만 다시 연결하므로 stale edge가
-남지 않습니다. relation payload는 양 endpoint의 `updated_at`을 함께 기록하며, chosen current
-fact version과 일치할 때만 import합니다. inactive fact도 relation endpoint 완전성을 위해
-export합니다.
+남지 않습니다. relation payload는 양 endpoint의 `semantic_updated_at`을 함께 기록하며(구버전
+reader를 위한 `updated_at` stamp 병행), chosen current fact version과 일치할 때만
+import합니다 — payload에 semantic stamp가 없으면 기존 `updated_at` 검증으로 폴백합니다.
+inactive fact도 relation endpoint 완전성을 위해 export합니다.
 
 `recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
 import는 emitted receipt와 같은 `session_id + prompt_hash` exchange에 `memex_recall`,

@@ -27,6 +27,11 @@ interface SyncFact {
   source_exchange_ids: string;
   created_at: string;
   updated_at: string;
+  /**
+   * 재감사 P1-3: 의미 사건의 시각 — 충돌 판정의 기준 시계다. v3 이전 payload에는
+   * 필드가 없으므로 updated_at으로 폴백한다(구버전 peer와의 transition 동작).
+   */
+  semantic_updated_at: string;
   consolidated_count: number;
   is_active: 0 | 1;
   ontology_category_id: string | null;
@@ -163,7 +168,9 @@ function parseSyncFact(value: unknown): SyncFact | null {
     (value.is_active !== undefined && value.is_active !== 0 && value.is_active !== 1) ||
     (value.fact_kr !== undefined && value.fact_kr !== null && typeof value.fact_kr !== "string") ||
     (value.ontology_category_id !== undefined && value.ontology_category_id !== null &&
-      typeof value.ontology_category_id !== "string")
+      typeof value.ontology_category_id !== "string") ||
+    // semantic_updated_at은 선택 필드다(v2 payload엔 없다). 있으면 반드시 유효해야 한다.
+    (value.semantic_updated_at !== undefined && !isTimestamp(value.semantic_updated_at))
   ) return null;
   const scopeProject = canonicalScopeProject(value.scope_type, value.scope_project);
   if (scopeProject === undefined) return null;
@@ -177,6 +184,11 @@ function parseSyncFact(value: unknown): SyncFact | null {
     source_exchange_ids: value.source_exchange_ids,
     created_at: value.created_at,
     updated_at: value.updated_at,
+    // 의미 시계: payload가 주면 그것, 없으면(updated_at이 오염된 구버전 payload)
+    // 최선의 근사로 updated_at을 쓴다 — 구버전 peer와의 동작은 이전과 같다.
+    semantic_updated_at: isTimestamp(value.semantic_updated_at)
+      ? value.semantic_updated_at
+      : value.updated_at,
     consolidated_count: Number(value.consolidated_count),
     // Protocol v1 payloads omitted is_active because they exported active rows only.
     is_active: value.is_active === 0 ? 0 : 1,
@@ -263,8 +275,19 @@ function factConflictKey(fact: SyncFact): string {
 }
 
 function remoteFactWins(remote: SyncFact, local: SyncFact): boolean {
-  const time = compareTimestamps(remote.updated_at, local.updated_at);
+  // 재감사 P1-3: 충돌 시계는 semantic clock이다. 분류·confirmation 같은 비의미
+  // 메타데이터 쓰기가 updated_at을 밀어도 상대의 의미 편집을 이기지 못한다.
+  // 두 시계가 같으면(동일 semantic 사건) canonical fact key가 결정한다.
+  const time = compareTimestamps(remote.semantic_updated_at, local.semantic_updated_at);
   return time > 0 || (time === 0 && factConflictKey(remote) > factConflictKey(local));
+}
+
+/** DB 행의 의미 시계 — legacy/빈 값은 updated_at으로 폴백한다. */
+function localSemanticClock(row: Record<string, unknown>): string {
+  const value = row.semantic_updated_at;
+  return typeof value === "string" && value !== "" && isTimestamp(value)
+    ? value
+    : (row.updated_at as string);
 }
 
 function rowToSyncFact(row: Record<string, unknown>): SyncFact {
@@ -278,6 +301,7 @@ function rowToSyncFact(row: Record<string, unknown>): SyncFact {
     source_exchange_ids: (row.source_exchange_ids as string | null) ?? "[]",
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
+    semantic_updated_at: localSemanticClock(row),
     consolidated_count: Number(row.consolidated_count),
     is_active: Number(row.is_active) === 0 ? 0 : 1,
     ontology_category_id: (row.ontology_category_id as string | null) ?? null,
@@ -366,8 +390,10 @@ function importTombstones(db: Database.Database, payloadDirs: string[], result: 
   }
 
   for (const tombstone of byFact.values()) {
-    const localFact = db.prepare("SELECT updated_at FROM facts WHERE id = ?").get(tombstone.fact_id) as
-      | { updated_at: string }
+    const localFact = db.prepare(
+      "SELECT COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock, updated_at FROM facts WHERE id = ?",
+    ).get(tombstone.fact_id) as
+      | { semantic_clock: string; updated_at: string }
       | undefined;
     const localTombstone = db.prepare(
       "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
@@ -392,7 +418,11 @@ function importTombstones(db: Database.Database, payloadDirs: string[], result: 
     // A fact event strictly newer than the deletion is a later restore/edit —
     // except a conversation exclusion, which is terminal and propagates
     // conversation-wide regardless of stale peer edits.
-    if (!privacy && localFact && compareTimestamps(localFact.updated_at, tombstone.deleted_at) > 0) continue;
+    // A fact event strictly newer than the deletion is a later restore/edit —
+    // except a conversation exclusion, which is terminal and propagates
+    // conversation-wide regardless of stale peer edits. 비교 시계는 semantic
+    // clock이다(P1-3) — 삭제 이후의 메타데이터 touch는 삭제를 되돌리지 못한다.
+    if (!privacy && localFact && compareTimestamps(localFact.semantic_clock, tombstone.deleted_at) > 0) continue;
 
     const commit = db.transaction(() => {
       const existed = !!db.prepare("SELECT 1 FROM facts WHERE id = ?").get(tombstone.fact_id);
@@ -434,8 +464,9 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
     const localTombstone = db.prepare(
       "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
     ).get(fact.id) as { deleted_at: string; reason: string | null } | undefined;
-    // Hard delete wins a timestamp tie; only a strictly newer fact can restore.
-    if (localTombstone && compareTimestamps(localTombstone.deleted_at, fact.updated_at) >= 0) continue;
+    // Hard delete wins a timestamp tie; only a strictly newer semantic event can
+    // restore (재감사 P1-3 — 비의미 메타데이터 touch는 삭제를 이기지 못한다).
+    if (localTombstone && compareTimestamps(localTombstone.deleted_at, fact.semantic_updated_at) >= 0) continue;
     // A conversation-exclusion tombstone is terminal privacy state: without an
     // explicit un-exclude/re-consent event no newer fact event may resurrect it.
     if (localTombstone?.reason === PRIVACY_TOMBSTONE_REASON) continue;
@@ -443,7 +474,7 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
     const localRow = db.prepare(`
       SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active, ontology_category_id,
-             semantic_generation
+             semantic_generation, semantic_updated_at
       FROM facts WHERE id = ?
     `).get(fact.id) as Record<string, unknown> | undefined;
     if (localRow && !remoteFactWins(fact, rowToSyncFact(localRow))) continue;
@@ -466,12 +497,12 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
       const commit = db.transaction((): boolean => {
         // 재감사 P1-2: embedding await 동안 로컬 상태가 변했으면 이 reconcile은
         // 폐기한다 — 동시 사용자 편집이 remote stale state로 덮이는 것을 막는
-        // commit 직전 CAS다(T06의 절반; 충돌 시계 교체는 Phase 3).
+        // commit 직전 CAS다(T06의 절반; 충돌 시계는 이제 semantic clock이다).
         const tombstone = db.prepare(
           "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
         ).get(fact.id) as { deleted_at: string; reason: string | null } | undefined;
         if (tombstone && (tombstone.reason === PRIVACY_TOMBSTONE_REASON ||
-            compareTimestamps(tombstone.deleted_at, fact.updated_at) >= 0)) {
+            compareTimestamps(tombstone.deleted_at, fact.semantic_updated_at) >= 0)) {
           return false;
         }
         if (candidate.exists) {
@@ -488,7 +519,8 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
             fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.updated_at,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
+            fact.semantic_updated_at,
             fact.id, candidate.localGeneration,
           );
           if (claimed.changes === 0) return false;
@@ -505,7 +537,8 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
             fact.id, fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.updated_at,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
+            fact.semantic_updated_at,
           );
         }
 
@@ -629,14 +662,14 @@ function importRelations(db: Database.Database, payloadDirs: string[], result: S
         continue;
       }
       const source = db.prepare(
-        "SELECT scope_type, scope_project, updated_at FROM facts WHERE id = ?",
+        "SELECT scope_type, scope_project, updated_at, COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock FROM facts WHERE id = ?",
       ).get(value.source_fact_id) as
-        | { scope_type: string; scope_project: string | null; updated_at: string }
+        | { scope_type: string; scope_project: string | null; updated_at: string; semantic_clock: string }
         | undefined;
       const target = db.prepare(
-        "SELECT scope_type, scope_project, updated_at FROM facts WHERE id = ?",
+        "SELECT scope_type, scope_project, updated_at, COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock FROM facts WHERE id = ?",
       ).get(value.target_fact_id) as
-        | { scope_type: string; scope_project: string | null; updated_at: string }
+        | { scope_type: string; scope_project: string | null; updated_at: string; semantic_clock: string }
         | undefined;
       if (!source || !target ||
           (source.scope_type === "project" && target.scope_type === "project" &&
@@ -645,18 +678,21 @@ function importRelations(db: Database.Database, payloadDirs: string[], result: S
         continue;
       }
       const relationCreatedAt = isTimestamp(value.created_at) ? value.created_at : null;
-      const sourceVersion = isTimestamp(value.source_fact_updated_at)
-        ? value.source_fact_updated_at
-        : null;
-      const targetVersion = isTimestamp(value.target_fact_updated_at)
-        ? value.target_fact_updated_at
-        : null;
-      if (
-        (sourceVersion && compareTimestamps(sourceVersion, source.updated_at) !== 0) ||
-        (targetVersion && compareTimestamps(targetVersion, target.updated_at) !== 0) ||
-        (!sourceVersion && relationCreatedAt && compareTimestamps(relationCreatedAt, source.updated_at) < 0) ||
-        (!targetVersion && relationCreatedAt && compareTimestamps(relationCreatedAt, target.updated_at) < 0)
-      ) continue;
+      // 재감사 P1-3: endpoint version은 의미 세계의 시각으로 검증한다. payload가
+      // semantic stamp를 주면(신버전 exporter) 로컬 semantic clock과 비교하고,
+      // 없으면(구버전 payload) 기존 updated_at 검증을 그대로 쓴다 — transition
+      // 동안 구버전 peer의 relation은 이전과 같이 판정된다.
+      const sourceMatches = isTimestamp(value.source_fact_semantic_updated_at)
+        ? compareTimestamps(value.source_fact_semantic_updated_at, source.semantic_clock) === 0
+        : isTimestamp(value.source_fact_updated_at)
+          ? compareTimestamps(value.source_fact_updated_at, source.updated_at) === 0
+          : !relationCreatedAt || compareTimestamps(relationCreatedAt, source.updated_at) >= 0;
+      const targetMatches = isTimestamp(value.target_fact_semantic_updated_at)
+        ? compareTimestamps(value.target_fact_semantic_updated_at, target.semantic_clock) === 0
+        : isTimestamp(value.target_fact_updated_at)
+          ? compareTimestamps(value.target_fact_updated_at, target.updated_at) === 0
+          : !relationCreatedAt || compareTimestamps(relationCreatedAt, target.updated_at) >= 0;
+      if (!sourceMatches || !targetMatches) continue;
       try {
         db.prepare(`
           INSERT INTO ontology_relations
@@ -678,7 +714,8 @@ function importRelations(db: Database.Database, payloadDirs: string[], result: S
 /**
  * Reconcile protocol-v2 sync files into the local DB.
  *
- * Conflict order: event timestamp, then a deterministic canonical fact key;
+ * Conflict order: semantic event clock (semantic_updated_at; legacy payloads
+ * fall back to updated_at), then a deterministic canonical fact key;
  * hard-delete tombstones win exact-time ties. Source-created timestamps remain
  * historical data and are never used as local processing cursors.
  */

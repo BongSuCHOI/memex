@@ -430,10 +430,13 @@ export function getTopFacts(
   const d30 = new Date(now.getTime() - 30 * 86400000).toISOString();
   const d90 = new Date(now.getTime() - 90 * 86400000).toISOString();
 
+  // 재감사 P1-3: recency는 의미 사건의 시각으로 잰다 — 분류 같은 비의미
+  // 메타데이터 쓰기가 오래된 fact를 최근 사실처럼 보이게 하지 않는다.
+  const clockExpr = "COALESCE(NULLIF(semantic_updated_at, ''), updated_at)";
   const scoreExpr = `
       (
         CASE WHEN consolidated_count > 0 THEN (3.0 * (1.0 + LOG(consolidated_count + 1) / LOG(2))) ELSE 3.0 END
-        + CASE WHEN updated_at >= ? THEN 5 WHEN updated_at >= ? THEN 3 WHEN updated_at >= ? THEN 1 ELSE 0 END
+        + CASE WHEN ${clockExpr} >= ? THEN 5 WHEN ${clockExpr} >= ? THEN 3 WHEN ${clockExpr} >= ? THEN 1 ELSE 0 END
         + CASE WHEN scope_type = 'project' AND scope_project = ? THEN 2 ELSE 0 END
       ) as relevance_score`;
 

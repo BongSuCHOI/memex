@@ -177,7 +177,10 @@ CREATE TABLE extraction_log (
 `mutateFactMeaning`과 sync fact import 두 경로뿐이며, 두 경로 모두 세대를 올리고
 `semantic_updated_at`을 해당 의미 사건의 시각으로 갱신합니다. activate/deactivate/restore,
 ontology 분류, consolidation 확인 같은 비의미 쓰기는 세대를 올리지 않습니다.
-비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
+`semantic_updated_at`은 cross-device 충돌 판정의 시계이기도 합니다 — sync fact conflict,
+tombstone-vs-fact 판정, relation endpoint version 검증, `getTopFacts` recency가 모두
+이 시계(`updated_at` 폴백)를 사용하며, 비의미 metadata touch가 의미 편집을 이기지
+못합니다. 비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
 시작 시 세대를 캡처하고 최종 쓰기를 `WHERE semantic_generation = ?` CAS(또는 동일
 transaction 안의 재검증)로 수행합니다 — 0행이면 그 결과는 이전 의미의 것이므로
 폐기됩니다. "fact 의미가 바뀌면 그 의미에서 파생된 모든 representation은 같은
