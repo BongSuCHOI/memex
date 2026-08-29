@@ -140,7 +140,11 @@ threshold가 명시된 경우에만 사용하고, 기본은 model classification
 탐지는 `INFLUENCES`, `SUPPORTS`, `SUPERSEDES`, `CONTRADICTS`만 저장합니다.
 
 분류 실패 횟수/최근 시각을 기록해 무한 재시도를 막고 backlog 상태를 관측 가능하게
-합니다.
+합니다. attempt ledger도 세대 인지적이다(재감사 P1-8) — 이전 의미에 대한 실패 기록이
+변이 후의 새 의미의 attempts를 태우지 않으며, MAX 도달 parking은 현재 세대가 실제로
+실패했을 때만 적용됩니다. taxonomy row 생성과 fact의 분류 할당은 같은 transaction에서
+commit됩니다 — stale 분류가 폐기될 때 그 결과가 만든 domain/category도 함께 롤백되어
+taxonomy 오염이 남지 않습니다.
 
 ontology 분류, relation 생성, fact/KR 재임베딩 같은 비동기 파생 writer는 시작 시
 fact의 `semantic_generation`을 캡처하고 최종 쓰기를 그 세대에 대한 CAS로 수행합니다.
@@ -148,6 +152,13 @@ LLM/임베딩 대기 중에 의미가 변이되면(세대 상승) 그 결과는 
 pending을 유지하고(변이가 리셋), 관계는 생성되지 않고, stale 벡터는 쓰이지 않습니다.
 폐기된 시도는 분류 ledger를 태우지 않습니다. fact 의미가 바뀌면 그 의미에서 파생된
 모든 representation은 같은 세대를 가리키거나 invalid여야 합니다.
+
+exchange 재임베딩은 semantic 세대가 아니라 content hash로 CAS합니다. exchange ID는
+턴 성장에도 유지되는 stable identity라 같은 행의 내용이 in-place로 갱신될 수 있고,
+임베딩 대기 중 privacy purge가 행을 지우면 vec0 가상 테이블은 FK로 이를 막지 못합니다
+(재감사 P1-2). reembed commit은 대기 전 캡처한 (user turn, assistant turn, tool 이름)
+hash를 트랜잭션 안에서 재검증해, 내용이 변했거나 행이 사라졌으면 벡터 쓰기를
+통째로 폐기합니다 — 삭제된 대화의 벡터 행이 부활하는 일도 없습니다.
 
 ## 7. 사용자 수정
 
@@ -166,11 +177,20 @@ CLI/Web UI의 manual edit와 consolidation의 EVOLUTION/CONTRADICTION은 같은
 `fact-management.mutateFactMeaning()` transaction service를 호출합니다. UI나 자동
 consolidation이 text만 바꾸는 shortcut을 갖지 않습니다.
 
+restore는 모델 업그레이드로 stale이 된 저장 embedding을 재생성할 수 있다. 이 재임베딩
+await는 race window이므로 최종 commit은 `is_active=0 AND semantic_generation=캡처값`의
+CAS다(재감사 P1-2) — 대기 중 의미가 변이되거나 다른 경로가 활성화했으면 restore는
+`StaleFactMutationError`로 폐기되고, "B 문장 + A 벡터 + current 스탬프"라면 자가 치유로도
+발견할 수 없는 조합이 만들어지지 않는다.
+
 의미 변경은 fact의 `semantic_generation`을 올리고 `semantic_updated_at`을 갱신하는
-유일한 경로입니다(다른 하나는 sync fact import의 replication). consolidation
-DUPLICATE는 양 endpoint의 세대를 commit 시점에 재검증하고, drain의 queue 확인/clear도
-세대 토큰으로 수행합니다. 세대가 밀린 비교 판정은 `StaleFactMutationError`로 폐기되며
-대상 fact는 dirty queue에 남아 새 의미로 다시 비교됩니다.
+유일한 경로입니다(다른 하나는 sync fact import의 replication). consolidation 세
+판정(DUPLICATE/CONTRADICTION/EVOLUTION) 모두 양 endpoint의 세대를 commit 시점에
+재검증합니다 — DUPLICATE는 commit 직전 검사, CONTRADICTION/EVOLUTION은
+`expectedSemanticGeneration`(existing)과 비활성화 대상의 세대 CAS(driver)로, 하나라도
+밀리면 transaction 전체가 롤백됩니다(재감사 P1-2). drain의 queue 확인/clear도 세대
+토큰으로 수행합니다. 세대가 밀린 비교 판정은 `StaleFactMutationError`로 폐기되며 대상
+fact는 dirty queue에 남아 새 의미로 다시 비교됩니다.
 
 ## 8. provenance
 

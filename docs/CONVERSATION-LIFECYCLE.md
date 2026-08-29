@@ -53,7 +53,12 @@ AGENTS.md(`user_instructions`/`environment_context` 블록로 기록됨)에 넣�
 
 user-role 제외 마커의 의미는 **conversation-wide**입니다. marker가 처음 발견된
 시점과 무관하게 `sync`, `index-all`/`rebuild`, `index-session`, `index-cleanup`은 같은
-`conversation-policy` 판정을 사용합니다. source rollout은 변경하지 않고 rebuild 가능한
+`conversation-policy` 판정을 사용합니다. archive→index ingestion 그 자체도 하나의
+SSOT(`archive-ingestion.ingestArchiveExchanges`)로 통합되어 있어, desired-set
+reconciliation, worker-prompt 제외(플러그인 자체 LLM worker prompt는 ephemeral
+state라 지식이 아니다), 임베딩 생성, insert가 모든 진입점에서 동일한 순서로
+일어난다(재감사 P2-11 — `verify --repair`의 인라인 루프는 한때 worker-prompt
+필터 없이 재삽입했다). source rollout은 변경하지 않고 rebuild 가능한
 archive 사본은 보존하지만, 기존 exchange/tool call, FTS/vector, session extraction/recall ledger,
 summary, 그리고 해당 exchange를 evidence로 사용한 fact/revision/vector/relation은
 제거합니다. 여러 source가 합쳐진 fact도 문장 일부의 출처를 분리 증명할 수 없으므로
@@ -197,14 +202,20 @@ sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
 모든 행을 모으고, 파일 집합 전부를 `sync/devices/<device_id>/generations/<uuid>.tmp`에
 쓴 뒤 원자적 directory rename으로 commit하고, 마지막에 `CURRENT` manifest를 원자적으로
 교체한다. importer는 committed generation만 읽으므로 crash·cloud-sync 관측·동시 export
-어느 쪽도 facts=N+1/revisions=N 같은 혼합 snapshot을 만들 수 없다. importer가 기기당
-읽는 것은 CURRENT가 가리키는 generation 하나뿐이며(legacy v2 layout인 device root는
-CURRENT가 없을 때의 폴백), CURRENT가 깨진 경우 device root로 폴백하고 그 손상을
-`malformedRows`로 보고한다. export는 최신 2개 generation(current + 이전)만 유지하고
-1시간 넘은 `.tmp` 잔재를 정리한다. root JSONL은 v1 reader를 위한 호환 mirror로서
-generation commit 이후 파일 단위 원자 쓰기로 갱신된다 — 파일 전체는 항상 온전하지만
-파일 집합의 동시성은 보장하지 않는다(v1 compat surface는 set-atomic이 아님). v2
-import는 root mirror와 각 device의 committed generation을 합쳐 판정한다.
+어느 쪽도 facts=N+1/revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당
+CURRENT가 가리키는 generation 하나만 읽으며, 읽기 시작 시점에 generation의 필수 파일
+집합(facts/revisions/tombstones/recall-events/domains/categories/relations)을 전부
+메모리로 확립(pin)한 뒤 DB 변경에 들어간다(재감사 P1-4). 그래서 import 도중 pruning으로
+파일이 사라져도 그 파일을 "빈 데이터"로 해석하지 않고, 사라진 파일이 있으면 generation
+전체를 폐기하고 보고한다. CURRENT가 존재하지만 읽을 수 없거나, generation id가 없거나,
+가리키는 generation에 필수 파일이 결손이면 fail-closed다 — device snapshot 전체를
+거부하고 `malformedRows`로 보고하며, 이전 payload로 조용히 되돌아가지 않는다(재감사
+P1-10). CURRENT가 아예 없는 device는 committed generation이 없는 상태이며, 이전
+버전이 남긴 device-root payload는 더 이상 읽지 않고 잔존 시 보고한다(재감사 P1-1 —
+root mirror·device-root 읽기 경로는 제거되었다: 파일 단위로 갱신되는 비원자 mirror를
+원자적 generation과 함께 읽는 순간 generation의 set-atomicity가 무효화되기 때문).
+export는 최신 2개 generation(current + 이전)만 유지하고 1시간 넘은 `.tmp` 잔재를
+정리한다.
 
 export 성공/실패는 `sync/export-status.json`에 기록된다(재감사 P2-6). SessionEnd는
 export 실패로 lifecycle을 wedge하지 않지만, parent hook은 child 결과와 status를 검사해
@@ -229,7 +240,10 @@ embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction�
 남지 않습니다. relation payload는 양 endpoint의 `semantic_updated_at`을 함께 기록하며(구버전
 reader를 위한 `updated_at` stamp 병행), chosen current fact version과 일치할 때만
 import합니다 — payload에 semantic stamp가 없으면 기존 `updated_at` 검증으로 폴백합니다.
-inactive fact도 relation endpoint 완전성을 위해 export합니다.
+inactive fact도 relation endpoint 완전성을 위해 export합니다. ontology는 fact 위에 얹는
+파생 overlay다(재감사 P1-7): remote fact가 가리키는 category가 로컬에 없어도 fact 자체는
+import하며, `ontology_category_id=NULL`·attempts=0으로 재분류 대기 상태가 됩니다 —
+derived overlay의 결손이 primary 의미의 손실로 이어지지 않습니다.
 
 `recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
 import는 emitted receipt와 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
