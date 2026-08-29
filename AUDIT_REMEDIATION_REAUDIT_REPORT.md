@@ -501,35 +501,35 @@ codex/audit-remediation
 
 # 10. Merge Gate 체크리스트
 
-- [ ] P1-1 SessionEnd privacy exclusion이 extraction보다 먼저 실행된다.
+- [x] P1-1 SessionEnd privacy exclusion이 extraction보다 먼저 실행된다.
 
-- [ ] source_conversation_excluded tombstone은 명시적 unexclude 없이는 sync에서 부활하지 않는다.
+- [x] source_conversation_excluded tombstone은 명시적 unexclude 없이는 sync에서 부활하지 않는다.
 
-- [ ] semantic_generation/semantic_updated_at이 schema와 migration에 존재한다.
+- [x] semantic_generation/semantic_updated_at이 schema와 migration에 존재한다.
 
-- [ ] ontology, reembed, KR vector, relation, consolidation, sync import의 async write가 generation CAS를 사용한다.
+- [x] ontology, reembed, KR vector, relation, consolidation, sync import의 async write가 generation CAS를 사용한다.
 
-- [ ] sync winner가 generic updated_at이 아니라 semantic clock을 사용한다.
+- [x] sync winner가 generic updated_at이 아니라 semantic clock을 사용한다.
 
-- [ ] sync import가 embedding await 이후 local semantic generation을 다시 검증한다.
+- [x] sync import가 embedding await 이후 local semantic generation을 다시 검증한다.
 
-- [ ] exchange identity가 local archive path에 의존하지 않는다.
+- [x] exchange identity가 local archive path에 의존하지 않는다.
 
-- [ ] rollout 재색인이 exchange/tool desired set을 reconcile한다.
+- [x] rollout 재색인이 exchange/tool desired set을 reconcile한다.
 
-- [ ] backfill claimVariant worker가 실제 4번째 options 인자로 전달된다.
+- [x] backfill claimVariant worker가 실제 4번째 options 인자로 전달된다.
 
-- [ ] conversation vector search가 scope/date filter 전에 caller limit으로 잘리지 않는다.
+- [x] conversation vector search가 scope/date filter 전에 caller limit으로 잘리지 않는다.
 
-- [ ] foreign_keys=ON 이후 모든 삭제 경로/CASCADE가 통과하고 foreign_key_check가 0이다.
+- [x] foreign_keys=ON 이후 모든 삭제 경로/CASCADE가 통과하고 foreign_key_check가 0이다.
 
-- [ ] raw fact mutation primitive가 public package API에서 노출되지 않는다.
+- [x] raw fact mutation primitive가 public package API에서 노출되지 않는다.
 
-- [ ] restore된 stale-version fact가 즉시 current embedding generation을 가진다.
+- [x] restore된 stale-version fact가 즉시 current embedding generation을 가진다.
 
-- [ ] sync snapshot이 generation 단위 atomic commit을 사용한다.
+- [x] sync snapshot이 generation 단위 atomic commit을 사용한다.
 
-- [ ] 해당 merge 후보 SHA에서 build + test + package/runtime E2E 결과가 보존된다.
+- [x] 해당 merge 후보 SHA에서 build + test + package/runtime E2E 결과가 보존된다.
 
 # 11. 재감사에서 유지해도 되는 개선 사항
 

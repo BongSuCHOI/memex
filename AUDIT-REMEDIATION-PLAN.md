@@ -1076,10 +1076,35 @@ v1 reader의 파일 집합 동시성은 계약 밖이다(문서 명시). (2) gen
 
 증거 실행(HEAD `9e27593b9c116fb3aa335fa230b8229427e01c5b`, 2026-08-30): 매핑 대상 13개
 테스트 파일 전수 실행 — 13 files / 94 tests 전부 통과. 동일 트리에서 필수 게이트도
-모두 green: `npm run typecheck`, `npm run build`, `npm test`(60 files / 547 tests),
+모두 green: `npm run typecheck`, `npm run build`, `npm test`(64 files / 547 tests),
 `node --test test/codex-slice.test.mjs`(23), `node --test test/*slice.test.mjs`(91).
 리포트 §8 순서의 남은 단계는 merge gate 체크리스트의 최종 항목(package/runtime E2E
 증거 보존 + 최종 재감사 → main merge)뿐이다.
+
+### Merge Gate 체크리스트 (§10, 완료)
+
+리포트 §10의 15개 항목을 merge 후보 코드 트리(SHA
+`6a0f324184ec636f5411f63d61acfe650f3290b1`, 이후 커밋은 문서/수신뿐)에서
+항목별로 재검증했다. 충돌·실패 없이 **15/15 체크 표시**.
+
+- 항목 1–14는 각 remediation phase의 구현 + 회귀 테스트로 증명된다(T01–T18 매핑
+  테이블 참조): exclusion gate 순서(T01), terminal tombstone(T02),
+  schema/migration(db.ts:425-426, 454+), generation CAS 6곳(reembed worker,
+  ontology classify/relation, consolidator, sync import commit-time
+  sync-import.ts:584), semantic clock winner(remoteFactWins), exchange identity
+  (codex-rollout.ts:230 `mx:`), desired-set reconcile(sync/indexer/verify 3경로),
+  claimVariant 4번째 인자, expanding KNN window(search.ts:190-191), FK pragma +
+  foreign_key_check(db.ts:124, verify.ts:52), public barrel 정화(index.ts),
+  restore stamp 일치(fact-management.ts:321), generational
+  snapshot(sync-export.ts CURRENT flip).
+- 항목 15(merge 후보 SHA의 build/test/package/runtime E2E 증거 보존)는 이번에
+  실행해 `docs/verification/merge-gate.json` 수신으로 보존했다: typecheck/build,
+  vitest 64 files / 547 tests, codex-slice 23, slices 91, install-e2e PASS,
+  marketplace-e2e PASS(cleanup PASS), package-runtime-e2e PASS(memex-0.1.0.tgz,
+  9 MCP tools, onboarding 계약), lifecycle-e2e 9/9 + 7-surface cleanup 전부 true.
+- 재감사 보고서 §10 체크박스 15개를 모두 `[x]`로 표시하고 이 수신을 커밋에 포함했다.
+  리포트 §8의 마지막 단계인 "최종 재감사 → main merge"는 사람이 수행하는 리뷰/머지
+  행위로, 본 자동화 범위 밖이다(NOT_PROVEN 아님 — 위임된 결정).
 
 
 ## 11. 최종 목표
