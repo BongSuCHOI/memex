@@ -1047,6 +1047,40 @@ v1 reader의 파일 집합 동시성은 계약 밖이다(문서 명시). (2) gen
 동시 export 2회 경합은 관측하지 않았다. (3) `memex doctor`의 sync-export 체크는
 상태 파일만 읽는 단순 노출이며, CLI 전체 실행은 수동 QA로 관측했다.
 
+### 필수 회귀 테스트 매트릭스 T01–T18 (검증 완료)
+
+리포트 §9 매트릭스를 항목별로 Phase 1–6에서 만든 테스트와 대조했다. **18개 전 항목이
+이미 커버되며 커버리지 gap은 없었다** — 신규 테스트 없이 매핑 감사와 증거 실행으로
+완료된다. 매트릭스 시나리오 ↔ 테스트 매핑:
+
+| 항목 | 시나리오 → 검증 테스트 |
+| --- | --- |
+| T01 | 부분 인덱싱 세션 + 마지막 DO NOT INDEX → `session-end-exclusion-gate.test.ts` "purges before extraction, saves no fact, and exports only the privacy tombstone" — 추출 0(LLM canary 포함), exchanges/vec/FTS/facts/vec_facts 0, extraction_log 0, privacy tombstone 유지, export payload tombstone-only |
+| T02 | A exclude + B offline newer edit + A import → `sync-export-import.test.ts` "strictly newer offline peer edit은 privacy tombstone을 부활시키지 않는다 (T02)" (+ 강등 금지/전파/hard-delete 경계 6건) |
+| T03 | 분류 대기 중 semantic edit → `semantic-generation.test.ts` T03 "discards the classification when the meaning changes during the LLM call" — stale category write 0 |
+| T04 | embed(A) 중 A→B mutation → `reembed-generation-cas.test.ts` T04 — A의 stale EN vector가 B에 기록되지 않음(전체 vec swap 폐기) |
+| T05 | KR embed 대기 중 semantic edit + translation invalidation(fact_kr NULL화) → `reembed-generation-cas.test.ts` T05 — stale KR vector 기록 금지 |
+| T06 | remote embed 대기 중 local edit/tombstone → `semantic-generation.test.ts` T06 describe 2건 — remote stale update가 local edit을 덮지 않음 |
+| T07 | semantic clock vs metadata touch 양방향 → `sync-export-import.test.ts` T07 describe — semantic edit가 winner, clock 채택, 구버전 폴백, relation 검증 |
+| T08 | 같은 rollout, 다른 archive root → `exchange-identity.test.ts` T08 describe 3건 — 동일 logical exchange id |
+| T09 | assistant/tool 추가 후 reindex → `exchange-identity.test.ts` T09 describe 3건 — 최신 logical exchange만 존재 |
+| T10 | reindex 시 tool call 감소 → `exchange-identity.test.ts` T10 — 삭제된 tool call 잔존 0 |
+| T11 | select 후 SessionEnd settle → `extraction-claim-e2e.test.ts` "재감사 P1-8/T11" — claim_not_acquired, LLM 0, fact 0 (+ `backfill-worker-execution.test.ts` claimVariant 인자 계약/R18) |
+| T12 | target project hit at global rank limit+1 → `conversation-search-window.test.ts` "project-scoped search rescues..." |
+| T13 | 범위 밖 hits가 top-k 점유 → `conversation-search-window.test.ts` "date-filtered search rescues..." |
+| T14 | inactive stale version restore → `restore-embedding-version.test.ts` — 즉시 current vector/version으로 검색 가능 |
+| T15 | exchange/fact delete → `fk-enforcement.test.ts` — foreign_key_check 0 rows + legacy orphan 검출/수리 |
+| T16 | export 중간 crash → `sync-generation.test.ts` — incomplete/un-named generation import 금지, CURRENT flip이 commit point |
+| T17 | async lifecycle invocation → `lifecycle-contract.test.ts` — eventual-consistency 계약과 hooks.json 표면 일치(매트릭스가 허용한 문서 일치 트랙) |
+| T18 | resume 후 source 변경 → `summary-freshness.test.ts` — stale 판정 + 재생성 + 무변경 미재생성 |
+
+증거 실행(HEAD `9e27593b9c116fb3aa335fa230b8229427e01c5b`, 2026-08-30): 매핑 대상 13개
+테스트 파일 전수 실행 — 13 files / 94 tests 전부 통과. 동일 트리에서 필수 게이트도
+모두 green: `npm run typecheck`, `npm run build`, `npm test`(60 files / 547 tests),
+`node --test test/codex-slice.test.mjs`(23), `node --test test/*slice.test.mjs`(91).
+리포트 §8 순서의 남은 단계는 merge gate 체크리스트의 최종 항목(package/runtime E2E
+증거 보존 + 최종 재감사 → main merge)뿐이다.
+
 
 ## 11. 최종 목표
 
