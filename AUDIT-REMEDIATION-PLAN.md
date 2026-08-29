@@ -750,6 +750,58 @@ row 손실 없이 additive로 적용됨. 설계된 마이그레이션 후속: le
 - `fact-consolidate-cursor.txt`는 어떤 코드도 참조하지 않는 죽은 잔여 파일이다(파생 데이터,
   무해).
 
+## 재감사 remediation (2026-08-29, `AUDIT_REMEDIATION_REAUDIT_REPORT.md`)
+
+재감사 보고서의 remediation 순서(Section 8)를 따른다. 각 Phase 완료 시 이 절에 기록한다.
+
+### Phase 1 — Privacy & correctness gate (완료)
+
+리포트 P1-1·P1-7·P1-8을 현재 checkout에서 코드로 재검증한 뒤 수정했다. 리포트의
+사실 관계 세 건 모두 코드 추적으로 확인됐고, 방향 충돌은 없었다.
+
+**P1-1 SessionEnd 추출이 DO NOT INDEX를 우회** — `scripts/session-end-hook.js`는
+`getConversationEligibility()`를 호출하지 않고 곧바로 worker를 spawn 했고,
+`scripts/fact-extract-worker.js`도 user-level exclusion을 확인하지 않았다.
+수정: worker의 extraction gate에 `getConversationEligibility()`를 적용하고
+`user_excluded` 판정 시 **purge 먼저 → 추출 금지**로 순서를 고정했다. worker는
+canonical success line(`extracted=0 saved=0`)을 유지해 훅의 sync-export가 계속
+실행되고, 내보내는 payload는 privacy tombstone만 남는다. subagent는 훅 parse 가드가,
+excluded project는 `runFactExtraction`의 제외 마커 경로가 각자 소유한다.
+T01 회귀 테스트가 실제 worker+SessionEnd 훅 프로세스를 실행해 관측한다.
+
+**P1-7 privacy tombstone 부활** — `sync-import.ts`의 `importFacts`는 tombstone 사유를
+구분하지 않아 strictly newer fact가 `source_conversation_excluded` tombstone 위에서
+부활하고 tombstone을 지웠다. 수정: 해당 사유를 terminal privacy state로 구분한다.
+import는 이 tombstone으로 fact를 복원하지 않고(무시간), 더 새로운 peer edit을 지우며
+삭제를 대화 전반으로 전파하고(terminal propagation), 더 새로운 non-privacy tombstone으로
+사유가 강등되지 않으며(사유는 payload fold에서도 dominant), `deleted_at`은 monotone
+max로 기록된다. 상수 `PRIVACY_TOMBSTONE_REASON`을 `conversation-policy.ts`가 소유한다.
+
+**P1-8 backfill claimVariant 5번째 인자 손실** — `runFactExtraction`의 options는
+4번째 인자인데 `backfill-extract-worker.js`가 `{claimVariant:"worker"}`를 5번째로
+넘겨 JS가 무시했고, 런타임은 훅 변형으로 선점했다. `extraction-claim-e2e.test.ts`의
+동시성 테스트도 동일한 5-인자 형태라 결함을 검출하지 못했다. 수정: 4번째 options
+인자로 전달하고, 인자 위치를 캡처하는 실행 테스트와 worker 변형 선점 의미론(T11)을
+테스트로 고정했다.
+
+검증 시 확인한 근거 보충: 현재 `runFactExtraction`의 no-op 게이트(settled 마커 + 현재
+워터마크)와 pending 선정 조건이 대부분의 실무 노출을 흡수하므로, P1-8의 관측 가능한
+차이는 좁다(중복 fact가 아니라 계약 위반 수준). 리포트의 사실 관계와 수정 권고는
+그대로 유효하며, 이 기록은 영향 범위를 정직하게 좁혀 둔다.
+
+추가 회귀 테스트: `test/session-end-exclusion-gate.test.ts`(T01, 실제 프로세스 E2E),
+`test/sync-export-import.test.ts` terminal privacy tombstone 6건(T02),
+`test/extraction-claim-e2e.test.ts` T11 + 5-인자 계약 수정,
+`test/backfill-worker-execution.test.ts` 인자 위치 계약,
+`test/worker-dist-contract.test.ts` gate 심볼 계약. 세 결함 모두 결함 재주입 시
+해당 테스트가 실패하는 것을 관측했다.
+
+필수 체크: `npm run typecheck`, `npm run build`, `npm test`(53 files / 496 tests),
+`node --test test/codex-slice.test.mjs`(23), `node --test test/*slice.test.mjs`(91) 통과.
+Manual QA: T01 테스트가 실제 `scripts/fact-extract-worker.js`와
+`scripts/session-end-hook.js`를 자식 프로세스로 실행해 purge/추출 금지/export를 관측했다.
+
+
 ## 11. 최종 목표
 
 이번 작업은 개별 patch 모음이 아니라 다음 SSOT를 세우는 작업이다.
