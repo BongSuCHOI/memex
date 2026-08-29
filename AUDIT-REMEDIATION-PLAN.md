@@ -874,6 +874,47 @@ T07 양방향 테스트가 실패하는 것을 관측했다.
 오염된 시계다(폴백이 구버전 동작을 유지하는 한 해소되지 않음) — protocol 전환 완료
 후 폴백 제거는 별도 결정 사항으로 남긴다.
 
+### Phase 4 — Exchange identity (완료)
+
+리포트 P1-5·P1-6을 재검증했다. P1-5: `parseRolloutStream`의 교환 id가
+`md5(archivePath:userLine-assistantLine)`로 만들어졌다 — archivePath는 기기별
+local 경로라 같은 rollout을 다른 기기에서 재색인하면 다른 id가 생기고, tool
+output이 붙을 때마다 `assistantLine`이 갱신되어 자라는 turn의 id가 바뀌었다.
+P1-6: 재색인이 desired set 대조 없이 upsert만 해서 구 scheme의 growing-turn
+중복 행과 parse 사이에 사라진 tool_call이 잔존했고, `deleteExchange`는 tool_calls를
+지우지 않아 FK가 켜진 연결에서 constraint error(또는 고아)가 예고돼 있었다.
+리포트의 사실 관계는 유효했고 방향 충돌은 없었다.
+
+수정(리포트 권장 "stable(session_id + user_turn_key) + content generation 별도" 채택):
+
+- 교환 신원: `md5(session_id:user_line)` — 기기별 archive 경로와 assistant/tool 행
+  위치를 신원 재료에서 제거한다. user 행은 append-only rollout에서 불변이므로 turn이
+  자라도 같은 교환으로 upsert되고(content generation은 `line_end`/본문/벡터 갱신),
+  서로 다른 기기가 같은 rollout을 재색인하면 같은 id가 나온다. session_meta 없는
+  파일은 경로 독립 content 폴백 키를 쓴다. `mx` 접두사로 구 scheme과 네임스페이스
+  분리. archive 경로는 `archive_path` location metadata로만 남는다.
+- 재색인 desired-set reconciliation(`reconcileArchiveExchanges`, sync/index 3경로 +
+  verify repair에 연결): 같은 archive의 DB 행 집합과 새 파싱을 한 transaction으로
+  대조한다. line이 desired에 없으면 통합 삭제 primitive로 제거, line이 일치하는
+  legacy id 행은 canonical id로 rename하고 참조 전부(`tool_calls.exchange_id`,
+  `vec_exchanges.id`, `facts.source_exchange_ids`,
+  `fact_revisions.source_exchange_id`)를 재작성, 삭제된 교환을 참조하던 provenance
+  항목도 정리한다. rename은 `defer_foreign_keys`로 parent/children을 한 트랜잭션에서
+  옮긴다. legacy 마이그레이션은 재색인 시점에 lazy로 일어난다(전면 재작성 없이도
+  provenance가 끊기지 않는다).
+- `deleteExchange`를 통합 primitive로 완성(tool_calls + vec + exchange — FTS는
+  trigger). 기존 verify의 orphan 삭제 경로가 FK 켜진 연결에서 깨지던 잠재 결함도
+  함께 닫힌다(P2-1 예고분).
+- `insertExchange`의 tool_calls를 교환별 desired set으로 대체(delete 후 insert —
+  `INSERT OR REPLACE`만으로는 parse 사이에 사라진 call이 남았다).
+
+추가 회귀 테스트(`test/exchange-identity.test.ts` 7건): T08 경로 독립/성장 안정/
+session_meta 없는 파일 폴백, T09 legacy rename + 참조 재작성 + 중복 정리, desired 밖
+행 삭제, 실제 sync 재색인에서 논리 교환 1개 유지 + provenance 생존 + FTS/vector
+집합 동일성, T10 tool_calls 교환별 대체. 구 scheme으로 되돌린 재주입에서 T08 3건이
+실패하는 것을 관측했고, vec 재삽입 dtype 버그(int8 재인코딩 누락)는 테스트가 실측으로
+잡아 수정했다.
+
 
 ## 11. 최종 목표
 
