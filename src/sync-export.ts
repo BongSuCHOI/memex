@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
 import { getMemexHome } from './paths.js';
 
@@ -12,6 +12,31 @@ const CURRENT_MANIFEST = 'CURRENT';
  * readers that resolved CURRENT between two exports. */
 const GENERATIONS_TO_KEEP = 2;
 const EXPORT_STATUS_FILE = 'export-status.json';
+
+/** The payload files a committed generation must carry (meta.json excluded —
+ * it is the integrity manifest OF these files). */
+export const SYNC_PAYLOAD_FILE_NAMES = [
+  'facts.jsonl',
+  'fact-revisions.jsonl',
+  'fact-tombstones.jsonl',
+  'recall-events.jsonl',
+  'ontology-domains.jsonl',
+  'ontology-categories.jsonl',
+  'ontology-relations.jsonl',
+] as const;
+
+/** Non-empty JSONL lines — a generation manifest pins this count per file. */
+export function countPayloadRows(content: string): number {
+  return content.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+/** SHA-256 of the exact bytes a generation file carries. Cloud sync moves a
+ * generation directory file-by-file, so a locally-atomic rename proves
+ * nothing about what the peer device receives — the importer must verify
+ * content, not existence (재감사 P1-4 보강). */
+export function payloadSha256(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
 
 export function getSyncDir(): string {
   const dir = path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME);
@@ -71,17 +96,28 @@ function writeAtomic(target: string, body: string): void {
 }
 
 /** Delete old committed generations (keep current + one previous) and
- * crashed tmp dirs older than an hour. Old generations are immutable, so
- * removal cannot corrupt a reader that already resolved CURRENT. */
-function pruneGenerations(generationsDir: string, currentId: string): void {
+ * crashed tmp dirs older than an hour. Exported for the concurrency test
+ * suite; production callers pass this process's own current generation. */
+export function pruneGenerations(generationsDir: string, currentId: string): void {
+  // Concurrent-export hardening (재감사 P2): this process's currentId may be
+  // STALE by the time pruning runs — a faster exporter may have already
+  // flipped CURRENT. Re-read it and protect whichever generation it names so
+  // overlapping SessionEnd exports can never erode the readers' grace window.
+  let liveCurrent = currentId;
+  try {
+    liveCurrent = (JSON.parse(
+      fs.readFileSync(path.join(generationsDir, "..", CURRENT_MANIFEST), "utf8"),
+    ) as { generation?: string }).generation ?? currentId;
+  } catch { /* no readable CURRENT — protect this process's own */ }
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(generationsDir, { withFileTypes: true });
   } catch {
     return;
   }
+  const protectedIds = new Set([currentId, liveCurrent]);
   const previous = entries
-    .filter((e) => e.isDirectory() && !e.name.endsWith('.tmp') && e.name !== currentId)
+    .filter((e) => e.isDirectory() && !e.name.endsWith('.tmp') && !protectedIds.has(e.name))
     .map((e) => {
       try {
         return { name: e.name, mtimeMs: fs.statSync(path.join(generationsDir, e.name)).mtimeMs };
@@ -193,8 +229,22 @@ export function exportForSync(): SyncExportResult {
     const { facts, revisions, tombstones, recallEvents, domains, categories, relations } = readTx();
 
     const generationId = randomUUID();
+    const jsonl = (rows: unknown[]): string =>
+      rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
+    const payloadFiles: Record<string, string> = {
+      'facts.jsonl': jsonl(facts),
+      'fact-revisions.jsonl': jsonl(revisions),
+      'fact-tombstones.jsonl': jsonl(tombstones),
+      'recall-events.jsonl': jsonl(recallEvents),
+      'ontology-domains.jsonl': jsonl(domains),
+      'ontology-categories.jsonl': jsonl(categories),
+      'ontology-relations.jsonl': jsonl(relations),
+    };
+    // Integrity manifest (재감사 P1-4 보강): every payload file is pinned by
+    // row count and SHA-256, so an importer can fail closed on a partially
+    // synced or corrupted generation instead of silently reading a prefix.
     const meta = {
-      protocol_version: 2,
+      protocol_version: 3,
       generation: generationId,
       device_id: device.value,
       exported_at: new Date().toISOString(),
@@ -206,17 +256,15 @@ export function exportForSync(): SyncExportResult {
       domains_count: domains.length,
       categories_count: categories.length,
       relations_count: relations.length,
+      files: Object.fromEntries(
+        SYNC_PAYLOAD_FILE_NAMES.map((name) => [
+          name,
+          { rows: countPayloadRows(payloadFiles[name]), sha256: payloadSha256(payloadFiles[name]) },
+        ]),
+      ),
     };
-    const jsonl = (rows: unknown[]): string =>
-      rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
     const files: Record<string, string> = {
-      'facts.jsonl': jsonl(facts),
-      'fact-revisions.jsonl': jsonl(revisions),
-      'fact-tombstones.jsonl': jsonl(tombstones),
-      'recall-events.jsonl': jsonl(recallEvents),
-      'ontology-domains.jsonl': jsonl(domains),
-      'ontology-categories.jsonl': jsonl(categories),
-      'ontology-relations.jsonl': jsonl(relations),
+      ...payloadFiles,
       'meta.json': JSON.stringify(meta, null, 2),
     };
 

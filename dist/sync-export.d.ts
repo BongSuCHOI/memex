@@ -1,3 +1,13 @@
+/** The payload files a committed generation must carry (meta.json excluded —
+ * it is the integrity manifest OF these files). */
+export declare const SYNC_PAYLOAD_FILE_NAMES: readonly ["facts.jsonl", "fact-revisions.jsonl", "fact-tombstones.jsonl", "recall-events.jsonl", "ontology-domains.jsonl", "ontology-categories.jsonl", "ontology-relations.jsonl"];
+/** Non-empty JSONL lines — a generation manifest pins this count per file. */
+export declare function countPayloadRows(content: string): number;
+/** SHA-256 of the exact bytes a generation file carries. Cloud sync moves a
+ * generation directory file-by-file, so a locally-atomic rename proves
+ * nothing about what the peer device receives — the importer must verify
+ * content, not existence (재감사 P1-4 보강). */
+export declare function payloadSha256(content: string): string;
 export declare function getSyncDir(): string;
 export interface SyncExportResult {
     facts: number;
@@ -19,6 +29,10 @@ export interface ExportStatus {
 }
 export declare function readExportStatus(): ExportStatus | null;
 export declare function recordExportStatus(status: ExportStatus): void;
+/** Delete old committed generations (keep current + one previous) and
+ * crashed tmp dirs older than an hour. Exported for the concurrency test
+ * suite; production callers pass this process's own current generation. */
+export declare function pruneGenerations(generationsDir: string, currentId: string): void;
 /**
  * Export current and historical fact state, durable recall receipts, ontology
  * domains/categories, and relations to JSONL files.

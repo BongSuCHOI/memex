@@ -566,15 +566,35 @@ export function recordOntologyAttempt(
  * it NULL and eternally re-selected), this PERSISTS the assignment. The fact
  * stays fully searchable via vector/FTS; ontology is an overlay.
  *
- * Conditional write: parking only applies while the fact is still
- * unclassified — a concurrent path that classified it successfully must
- * never be overwritten by the fallback.
+ * Conditional write (재감사 P1-8 보강): parking is tied to the semantic
+ * generation the failures were recorded against AND the attempts threshold —
+ * a concurrent semantic mutation resets attempts and must never be parked by
+ * a stale writer's fallback. A caller that carries no generation gets the
+ * threshold-only condition.
  */
-export function persistFallbackClassification(db: Database.Database, factId: string): { domainId: string; categoryId: string } {
+export function persistFallbackClassification(
+  db: Database.Database,
+  factId: string,
+  expectedSemanticGeneration?: number,
+): { domainId: string; categoryId: string } {
   const fallback = ensureFallbackCategory(db);
-  db.prepare(
-    `UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ? AND ontology_category_id IS NULL`,
-  ).run(fallback.categoryId, new Date().toISOString(), factId);
+  const result =
+    expectedSemanticGeneration === undefined
+      ? db.prepare(
+          `UPDATE facts SET ontology_category_id = ?, updated_at = ?
+           WHERE id = ? AND ontology_category_id IS NULL
+             AND COALESCE(ontology_attempts, 0) >= ?`,
+        ).run(fallback.categoryId, new Date().toISOString(), factId, MAX_CLASSIFY_ATTEMPTS)
+      : db.prepare(
+          `UPDATE facts SET ontology_category_id = ?, updated_at = ?
+           WHERE id = ? AND semantic_generation = ? AND ontology_category_id IS NULL
+             AND COALESCE(ontology_attempts, 0) >= ?`,
+        ).run(fallback.categoryId, new Date().toISOString(), factId, expectedSemanticGeneration, MAX_CLASSIFY_ATTEMPTS);
+  if (result.changes === 0) {
+    // Lost the race (or already parked): the current meaning is not the one
+    // that exhausted its attempts — it stays pending for classification.
+    console.error(`ontology fallback parking skipped for fact ${factId}: state moved or attempts below threshold`);
+  }
   return fallback;
 }
 
@@ -835,9 +855,12 @@ export async function backfillClassifyBatch(
 
     const generationById = new Map(chunk.map((f) => [f.id, f.semantic_generation]));
     for (const id of result.failed) {
-      const attempts = recordOntologyAttempt(db, id, generationById.get(id));
+      const generation = generationById.get(id);
+      const attempts = recordOntologyAttempt(db, id, generation);
       if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
-        persistFallbackClassification(db, id);
+        // park CAS는 ledger와 같은 세대에 고정된다 — 대기 중 변이가 리셋한
+        // 새 의미가 옛 실패로 General/Misc에 박히지 않는다(재감사 P1-8).
+        persistFallbackClassification(db, id, generation ?? undefined);
         totals.fallback++;
       } else {
         totals.failed++;
@@ -990,7 +1013,7 @@ export async function classifyAndLinkFact(
         // 이 실패가 ledger로 남지 않는다(0행 → skip).
         const attempts = recordOntologyAttempt(db, factId, fact.semantic_generation);
         if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
-          persistFallbackClassification(db, factId);
+          persistFallbackClassification(db, factId, fact.semantic_generation);
         }
       } catch (ledgerError) {
         console.error(`Ontology attempt ledger failed for fact ${factId}:`, ledgerError);

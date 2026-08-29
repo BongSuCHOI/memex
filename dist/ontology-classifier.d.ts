@@ -49,11 +49,13 @@ export declare function recordOntologyAttempt(db: Database.Database, factId: str
  * it NULL and eternally re-selected), this PERSISTS the assignment. The fact
  * stays fully searchable via vector/FTS; ontology is an overlay.
  *
- * Conditional write: parking only applies while the fact is still
- * unclassified — a concurrent path that classified it successfully must
- * never be overwritten by the fallback.
+ * Conditional write (재감사 P1-8 보강): parking is tied to the semantic
+ * generation the failures were recorded against AND the attempts threshold —
+ * a concurrent semantic mutation resets attempts and must never be parked by
+ * a stale writer's fallback. A caller that carries no generation gets the
+ * threshold-only condition.
  */
-export declare function persistFallbackClassification(db: Database.Database, factId: string): {
+export declare function persistFallbackClassification(db: Database.Database, factId: string, expectedSemanticGeneration?: number): {
     domainId: string;
     categoryId: string;
 };

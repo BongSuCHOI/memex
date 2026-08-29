@@ -102,7 +102,10 @@ export async function indexConversations(limitToProject, maxConversations, concu
             continue;
         }
         // Parse conversation
-        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        // TOCTOU 방어(재감사 P1-9): 열어 읽는 파일은 반드시 방금 eligibility를
+        // 통과한 archive snapshot이어야 한다 — live source rollout이 아니다. source가
+        // 그 사이 자랐다면 다음 indexing pass가 새 archive를 다시 copy한다.
+        const exchanges = await parseConversation(archivePath, project, archivePath);
         if (exchanges.length === 0) {
             continue;
         }
@@ -205,7 +208,10 @@ export async function indexSession(sessionId, concurrency = 1, noSummaries = fal
             break;
         }
         // Parse and summarize
-        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        // TOCTOU 방어(재감사 P1-9): 열어 읽는 파일은 반드시 방금 eligibility를
+        // 통과한 archive snapshot이어야 한다 — live source rollout이 아니다. source가
+        // 그 사이 자랐다면 다음 indexing pass가 새 archive를 다시 copy한다.
+        const exchanges = await parseConversation(archivePath, project, archivePath);
         if (exchanges.length > 0) {
             // Generate summary (unless --no-summaries)
             const summaryPath = archivePath.replace(".jsonl", "-summary.txt");
@@ -294,7 +300,10 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
             continue;
         }
         // Parse and check
-        const exchanges = await parseConversation(sourcePath, project, archivePath);
+        // TOCTOU 방어(재감사 P1-9): 열어 읽는 파일은 반드시 방금 eligibility를
+        // 통과한 archive snapshot이어야 한다 — live source rollout이 아니다. source가
+        // 그 사이 자랐다면 다음 indexing pass가 새 archive를 다시 copy한다.
+        const exchanges = await parseConversation(archivePath, project, archivePath);
         if (exchanges.length === 0)
             continue;
         unprocessed.push({

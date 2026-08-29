@@ -13,7 +13,12 @@ import {
   initEmbeddings,
   EMBEDDING_VERSION,
 } from "./embeddings.js";
-import { getSyncDir } from "./sync-export.js";
+import {
+  getSyncDir,
+  SYNC_PAYLOAD_FILE_NAMES,
+  countPayloadRows,
+  payloadSha256,
+} from "./sync-export.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 
@@ -110,20 +115,80 @@ const GENERATIONS_DIR_NAME = "generations";
 const CURRENT_MANIFEST = "CURRENT";
 
 /**
- * The complete payload a committed generation must carry. A generation is a
- * set-atomic unit: if any one file is missing, the whole generation is
- * rejected instead of importing the survivors (재감사 P1-4 — reading a pruned
- * generation must fail loudly, never degrade into "that data was empty").
+ * The complete payload a committed generation must carry, INCLUDING the
+ * integrity manifest. A generation is a set-atomic unit: if any one file is
+ * missing, the whole generation is rejected instead of importing the
+ * survivors (재감사 P1-4 — reading a pruned generation must fail loudly,
+ * never degrade into "that data was empty").
  */
 const REQUIRED_PAYLOAD_FILES = [
-  "facts.jsonl",
-  "fact-revisions.jsonl",
-  "fact-tombstones.jsonl",
-  "recall-events.jsonl",
-  "ontology-domains.jsonl",
-  "ontology-categories.jsonl",
-  "ontology-relations.jsonl",
+  ...SYNC_PAYLOAD_FILE_NAMES,
+  "meta.json",
 ] as const;
+
+interface GenerationManifest {
+  protocol_version?: unknown;
+  generation?: unknown;
+  device_id?: unknown;
+  files?: Record<string, { rows?: unknown; sha256?: unknown }>;
+}
+
+/**
+ * Verify a pinned generation against its manifest (재감사 P1-4 보강): the
+ * manifest's generation/device must match the location CURRENT named, and
+ * every payload file must match its pinned row count and SHA-256 with every
+ * line parsing cleanly. Cloud sync moves a generation directory file-by-file
+ * — a locally-atomic rename proves nothing about what arrived here, and a
+ * partially synced tombstones file is a privacy boundary, so ANY mismatch
+ * rejects the whole generation. Returns the first integrity error, or null.
+ */
+function validateGenerationIntegrity(
+  deviceId: string,
+  generationId: string,
+  files: Map<string, string>,
+): string | null {
+  let manifest: GenerationManifest;
+  try {
+    manifest = JSON.parse(files.get("meta.json") as string) as GenerationManifest;
+  } catch (error) {
+    return `unreadable meta.json: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (manifest.protocol_version !== 3) {
+    return `unsupported protocol_version ${JSON.stringify(manifest.protocol_version ?? null)}`;
+  }
+  if (manifest.generation !== generationId) {
+    return `manifest generation ${JSON.stringify(manifest.generation ?? null)} does not match the CURRENT-named generation`;
+  }
+  if (manifest.device_id !== deviceId) {
+    return `manifest device_id ${JSON.stringify(manifest.device_id ?? null)} does not match the device directory`;
+  }
+  if (!manifest.files || typeof manifest.files !== "object") {
+    return "manifest has no files map";
+  }
+  for (const name of SYNC_PAYLOAD_FILE_NAMES) {
+    const spec = manifest.files[name];
+    if (!spec || typeof spec.rows !== "number" || typeof spec.sha256 !== "string") {
+      return `manifest has no integrity spec for ${name}`;
+    }
+    const content = files.get(name) as string;
+    if (countPayloadRows(content) !== spec.rows) {
+      return `${name} row count mismatch (manifest pins ${spec.rows}) — partially synced generation`;
+    }
+    if (payloadSha256(content) !== spec.sha256) {
+      return `${name} sha256 mismatch — partially synced or corrupted generation`;
+    }
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      try {
+        JSON.parse(lines[i]);
+      } catch {
+        return `${name} malformed JSON at line ${i + 1}`;
+      }
+    }
+  }
+  return null;
+}
 
 /** One committed generation, fully read into memory before any DB mutation.
  * Pinning the payload closes the slow-reader race: a later export's pruning
@@ -236,9 +301,17 @@ function collectCommittedGenerations(
       }
       files.set(name, fs.readFileSync(filePath, "utf8"));
     }
-    if (complete) {
-      pinned.push({ deviceId: entry.name, generationId: generation, source: genDir, files });
+    if (!complete) continue;
+    const integrityError = validateGenerationIntegrity(entry.name, generation, files);
+    if (integrityError) {
+      issues.push({
+        file: currentPath,
+        line: 0,
+        error: `generation ${generation} integrity check failed, device ${entry.name} snapshot rejected: ${integrityError}`,
+      });
+      continue;
     }
+    pinned.push({ deviceId: entry.name, generationId: generation, source: genDir, files });
   }
   return pinned;
 }
@@ -379,29 +452,50 @@ function parseRecallEvent(value: unknown): SyncRecallEvent | null {
   };
 }
 
-function factConflictKey(fact: SyncFact): string {
-  // Inactive state wins exact-time ties. Remaining fields use canonical JSON
-  // lexical order so every device independently selects the same winner.
+/** Semantic identity of a fact row — the ONLY fields that may decide a
+ * winner. Provenance (`source_exchange_ids`), `consolidated_count`,
+ * `fact_kr` and `ontology_category_id` are metadata/derived state: letting
+ * them decide a tie let a device with POORER provenance lexically beat a
+ * device whose DUPLICATE consolidation had unioned evidence in — and losing
+ * provenance breaks the privacy purge's fact lookup (재감사 P1-1 보강).
+ * Inactive state wins exact-time ties; remaining fields use canonical JSON
+ * lexical order so every device independently selects the same winner. */
+function semanticConflictKey(fact: SyncFact): string {
   return JSON.stringify([
     fact.is_active === 0 ? 1 : 0,
     fact.fact,
-    fact.fact_kr,
     fact.category,
     fact.scope_type,
     fact.scope_project,
-    fact.source_exchange_ids,
-    fact.consolidated_count,
-    fact.ontology_category_id,
     fact.created_at,
   ]);
 }
 
-function remoteFactWins(remote: SyncFact, local: SyncFact): boolean {
-  // 재감사 P1-3: 충돌 시계는 semantic clock이다. 분류·confirmation 같은 비의미
-  // 메타데이터 쓰기가 updated_at을 밀어도 상대의 의미 편집을 이기지 못한다.
-  // 두 시계가 같으면(동일 semantic 사건) canonical fact key가 결정한다.
-  const time = compareTimestamps(remote.semantic_updated_at, local.semantic_updated_at);
-  return time > 0 || (time === 0 && factConflictKey(remote) > factConflictKey(local));
+function parseFactSourceIds(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Monotone metadata convergence across devices: provenance is a SORTED
+ * union and consolidated_count a max — neither can ever regress, and neither
+ * is a semantic event (no generation bump, no relation invalidation, no
+ * vector regeneration). fact_kr/ontology adopt whichever side carries one
+ * (both derived/overlay state). `winner`'s derived fields are preferred. */
+function mergeFactMetadata(winner: SyncFact, other: SyncFact): SyncFact {
+  const sources = [
+    ...new Set([...parseFactSourceIds(winner.source_exchange_ids), ...parseFactSourceIds(other.source_exchange_ids)]),
+  ].sort();
+  return {
+    ...winner,
+    source_exchange_ids: JSON.stringify(sources),
+    consolidated_count: Math.max(winner.consolidated_count, other.consolidated_count),
+    fact_kr: winner.fact_kr ?? other.fact_kr,
+    ontology_category_id: winner.ontology_category_id ?? other.ontology_category_id,
+  };
 }
 
 /** DB 행의 의미 시계 — legacy/빈 값은 updated_at으로 폴백한다. */
@@ -568,14 +662,37 @@ function importTombstones(db: Database.Database, generations: PinnedGeneration[]
 }
 
 async function importFacts(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): Promise<void> {
-  const candidates: Array<{ fact: SyncFact; exists: boolean; localGeneration?: number }> = [];
+  type Candidate =
+    | { mode: "semantic"; fact: SyncFact; exists: boolean; localGeneration?: number }
+    | {
+        mode: "metadata";
+        id: string;
+        localGeneration: number;
+        sources: string;
+        count: number;
+        factKr: string | null;
+        ontologyCategoryId: string | null;
+      };
+  const candidates: Candidate[] = [];
   const remoteById = new Map<string, SyncFact>();
   for (const generation of generations) {
     for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
       const fact = parseSyncFact(value);
       if (!fact) continue;
+      // Fold remote rows per fact id: the SEMANTIC winner is picked by the
+      // semantic clock (ties by the semantic key), while metadata converges
+      // monotonically across every contributing generation.
       const previous = remoteById.get(fact.id);
-      if (!previous || remoteFactWins(fact, previous)) remoteById.set(fact.id, fact);
+      if (!previous) {
+        remoteById.set(fact.id, fact);
+        continue;
+      }
+      const time = compareTimestamps(fact.semantic_updated_at, previous.semantic_updated_at);
+      if (time > 0 || (time === 0 && semanticConflictKey(fact) >= semanticConflictKey(previous))) {
+        remoteById.set(fact.id, mergeFactMetadata(fact, previous));
+      } else {
+        remoteById.set(fact.id, mergeFactMetadata(previous, fact));
+      }
     }
   }
   for (const remote of remoteById.values()) {
@@ -605,17 +722,110 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
              semantic_generation, semantic_updated_at
       FROM facts WHERE id = ?
     `).get(fact.id) as Record<string, unknown> | undefined;
-    if (localRow && !remoteFactWins(fact, rowToSyncFact(localRow))) continue;
+    if (!localRow) {
+      candidates.push({ mode: "semantic", fact, exists: false });
+      continue;
+    }
+    const local = rowToSyncFact(localRow);
+    const localGeneration = Number(localRow.semantic_generation ?? 1);
+    // Monotone metadata convergence applies to EVERY outcome — even a locally
+    // newer semantic state must absorb the peer's provenance, and provenance
+    // must never regress to a peer with fewer sources.
+    const mergedSources = [
+      ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(fact.source_exchange_ids)]),
+    ].sort();
+    const mergedCount = Math.max(local.consolidated_count, fact.consolidated_count);
+    const sourcesChanged = JSON.stringify(mergedSources) !== JSON.stringify(parseFactSourceIds(local.source_exchange_ids).sort());
+    const countChanged = mergedCount !== local.consolidated_count;
+
+    const time = compareTimestamps(fact.semantic_updated_at, local.semantic_updated_at);
+    const localKey = semanticConflictKey(local);
+    const remoteKey = semanticConflictKey(fact);
+    const semanticWinner =
+      time > 0 ? "remote"
+      : time < 0 ? "local"
+      : remoteKey === localKey ? "tie-identical"
+      : remoteKey > localKey ? "remote"
+      : "local";
+
+    if (semanticWinner === "remote") {
+      // Strict semantic replacement — the remote meaning is the truth, and
+      // the merged (never-regressing) metadata rides along with it.
+      candidates.push({
+        mode: "semantic",
+        fact: { ...fact, source_exchange_ids: JSON.stringify(mergedSources), consolidated_count: mergedCount },
+        exists: true,
+        localGeneration,
+      });
+      continue;
+    }
+    if (semanticWinner === "tie-identical") {
+      // Same semantic clock AND same semantic content: this is NOT a conflict.
+      // Full-row replacement here would let metadata decide a winner and
+      // could regress provenance — only converge metadata, and do it without
+      // a semantic event (no generation bump, no relation invalidation, no
+      // ontology reset, no vector regeneration).
+      const factKr = local.fact_kr ?? fact.fact_kr;
+      const ontologyCategoryId = local.ontology_category_id ?? fact.ontology_category_id;
+      const krChanged = (factKr ?? null) !== (local.fact_kr ?? null);
+      const ontologyChanged = (ontologyCategoryId ?? null) !== (local.ontology_category_id ?? null);
+      if (!sourcesChanged && !countChanged && !krChanged && !ontologyChanged) continue;
+      candidates.push({
+        mode: "metadata",
+        id: fact.id,
+        localGeneration,
+        sources: JSON.stringify(mergedSources),
+        count: mergedCount,
+        factKr,
+        ontologyCategoryId,
+      });
+      continue;
+    }
+    // Local is the semantic winner: its meaning/derived state stand, but the
+    // peer's provenance still converges in monotonically.
+    if (!sourcesChanged && !countChanged) continue;
     candidates.push({
-      fact,
-      exists: !!localRow,
-      localGeneration: localRow ? Number(localRow.semantic_generation ?? 1) : undefined,
+      mode: "metadata",
+      id: fact.id,
+      localGeneration,
+      sources: JSON.stringify(mergedSources),
+      count: mergedCount,
+      factKr: local.fact_kr,
+      ontologyCategoryId: local.ontology_category_id,
     });
   }
   if (candidates.length === 0) return;
 
   await initEmbeddings();
   for (const candidate of candidates) {
+    if (candidate.mode === "metadata") {
+      // Metadata-only convergence: no await, but still CAS on the semantic
+      // generation — candidates queue behind OTHER candidates' embedding
+      // awaits, and a concurrent semantic edit must not be metadata-clobbered.
+      const commit = db.transaction((): boolean => {
+        const claimed = db.prepare(`
+          UPDATE facts SET
+            source_exchange_ids = ?, consolidated_count = ?,
+            fact_kr = COALESCE(fact_kr, ?),
+            ontology_category_id = COALESCE(ontology_category_id, ?),
+            updated_at = ?
+          WHERE id = ? AND semantic_generation = ?
+        `).run(
+          candidate.sources, candidate.count,
+          candidate.factKr, candidate.ontologyCategoryId,
+          new Date().toISOString(), candidate.id, candidate.localGeneration,
+        );
+        return claimed.changes > 0;
+      });
+      if (commit()) {
+        result.updatedFacts++;
+      } else {
+        console.error(
+          `sync-import: discarded stale metadata convergence for fact ${candidate.id} (local state changed)`,
+        );
+      }
+      continue;
+    }
     const { fact } = candidate;
     try {
       // Generate before the transaction. Failure leaves the whole fact
