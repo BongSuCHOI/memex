@@ -61,7 +61,9 @@ function initTestSchema(db: Database.Database) {
       fact_kr TEXT,
       embedding_version INTEGER NOT NULL DEFAULT 2,
       ontology_attempts INTEGER NOT NULL DEFAULT 0,
-      ontology_last_attempt_at TEXT
+      ontology_last_attempt_at TEXT,
+      semantic_generation INTEGER NOT NULL DEFAULT 1,
+      semantic_updated_at TEXT NOT NULL DEFAULT ''
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_facts USING vec0(
       id TEXT PRIMARY KEY,
