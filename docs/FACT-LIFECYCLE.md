@@ -141,8 +141,9 @@ threshold가 명시된 경우에만 사용하고, 기본은 model classification
 
 분류 실패 횟수/최근 시각을 기록해 무한 재시도를 막고 backlog 상태를 관측 가능하게
 합니다. attempt ledger도 세대 인지적이다(재감사 P1-8) — 이전 의미에 대한 실패 기록이
-변이 후의 새 의미의 attempts를 태우지 않으며, MAX 도달 parking은 현재 세대가 실제로
-실패했을 때만 적용됩니다. taxonomy row 생성과 fact의 분류 할당은 같은 transaction에서
+변이 후의 새 의미의 attempts를 태우지 않으며, MAX 도달 parking은 parking write 자체가
+`semantic_generation`과 attempts 임계 조건으로 CAS된다 — ledger 기록과 parking 사이에
+의미가 변이되면 새 의미는 General/Misc에 박히지 않고 분류 대기로 남습니다. taxonomy row 생성과 fact의 분류 할당은 같은 transaction에서
 commit됩니다 — stale 분류가 폐기될 때 그 결과가 만든 domain/category도 함께 롤백되어
 taxonomy 오염이 남지 않습니다.
 

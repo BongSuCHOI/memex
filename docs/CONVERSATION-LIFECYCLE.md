@@ -204,10 +204,17 @@ sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
 교체한다. importer는 committed generation만 읽으므로 crash·cloud-sync 관측·동시 export
 어느 쪽도 facts=N+1/revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당
 CURRENT가 가리키는 generation 하나만 읽으며, 읽기 시작 시점에 generation의 필수 파일
-집합(facts/revisions/tombstones/recall-events/domains/categories/relations)을 전부
-메모리로 확립(pin)한 뒤 DB 변경에 들어간다(재감사 P1-4). 그래서 import 도중 pruning으로
-파일이 사라져도 그 파일을 "빈 데이터"로 해석하지 않고, 사라진 파일이 있으면 generation
-전체를 폐기하고 보고한다. CURRENT가 존재하지만 읽을 수 없거나, generation id가 없거나,
+집합(facts/revisions/tombstones/recall-events/domains/categories/relations와 integrity
+manifest인 meta.json)을 전부 메모리로 확립(pin)한 뒤 DB 변경에 들어간다(재감사 P1-4).
+그래서 import 도중 pruning으로 파일이 사라져도 그 파일을 "빈 데이터"로 해석하지 않고,
+사라진 파일이 있으면 generation 전체를 폐기하고 보고한다. meta.json은 각 payload 파일의
+행 수와 SHA-256을 pin하므로, importer는 DB를 열기 전에 manifest의 generation/device
+일치와 모든 파일의 hash·행 수·전 행 JSON 유효성을 검증한다(재감사 P1-4 보강) —
+cloud sync가 generation 디렉터리를 파일 단위로 전송하는 동안 부분적으로 도착한
+generation은 존재 여부만으로는 탐지할 수 없고, tombstones의 부분 전송은 privacy
+경계이기 때문이다. 하나라도 불일치하면 generation 전체가 reject되고 보고된다. malformed
+행은 더 이상 "유효 행만 골라 import"하지 않는다(구 P2-7 계약의 fail-closed 전환) —
+exporter만이 payload를 만드므로 malformed 행은 곧 손상이다. CURRENT가 존재하지만 읽을 수 없거나, generation id가 없거나,
 가리키는 generation에 필수 파일이 결손이면 fail-closed다 — device snapshot 전체를
 거부하고 `malformedRows`로 보고하며, 이전 payload로 조용히 되돌아가지 않는다(재감사
 P1-10). CURRENT가 아예 없는 device는 committed generation이 없는 상태이며, 이전
@@ -237,7 +244,19 @@ re-consent event가 프로토콜에 존재하지 않으므로 timestamp와 무�
 이유가 강등되지 않습니다. imported fact text는 local current
 embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction입니다. fact update는
 기존 endpoint relation을 무효화한 뒤 현재 export relation만 다시 연결하므로 stale edge가
-남지 않습니다. relation payload는 양 endpoint의 `semantic_updated_at`을 함께 기록하며(구버전
+남지 않습니다.
+
+semantic winner와 metadata는 분리되어 수렴합니다(재감사 P1-1 보강). winner를 결정하는
+것은 semantic clock과 semantic content(is_active, fact, category, scope, created_at)
+뿐입니다 — provenance(source_exchange_ids), consolidated_count, fact_kr,
+ontology_category_id가 winner 결정에 들어가면, DUPLICATE consolidation으로 provenance를
+union한 기기가 lexical tie에서 더 가난한 기기에게 지고 evidence 연결이 소실됩니다.
+provenance는 모든 수렴 결과에서 sorted union으로, consolidated_count는 max로 monotone
+유지됩니다 — semantic clock이 앞선 쪽이 이기는 경우에도 상대의 provenance가 승자 행에서
+사라지지 않습니다. 두 기기의 semantic clock과 semantic content가 모두 같으면 그것은
+conflict가 아니므로 full-row replacement를 하지 않고 metadata만 수렴합니다 — 이때
+semantic_generation을 올리거나 relation을 무효화하거나 ontology를 리셋하거나 vector를
+재생성하지 않습니다. relation payload는 양 endpoint의 `semantic_updated_at`을 함께 기록하며(구버전
 reader를 위한 `updated_at` stamp 병행), chosen current fact version과 일치할 때만
 import합니다 — payload에 semantic stamp가 없으면 기존 `updated_at` 검증으로 폴백합니다.
 inactive fact도 relation endpoint 완전성을 위해 export합니다. ontology는 fact 위에 얹는
