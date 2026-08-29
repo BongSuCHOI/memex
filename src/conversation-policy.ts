@@ -12,6 +12,14 @@ export const USER_EXCLUSION_MARKERS = [
   SUMMARIZER_CONTEXT_MARKER,
 ] as const;
 
+/**
+ * Tombstone reason written when a conversation-wide user exclusion purges
+ * facts. This reason is terminal privacy state: sync import must never let a
+ * newer peer edit resurrect an excluded fact, because no un-exclude or
+ * re-consent event exists anywhere in the protocol.
+ */
+export const PRIVACY_TOMBSTONE_REASON = "source_conversation_excluded";
+
 export type ConversationIneligibilityReason =
   | "subagent"
   | "excluded_project"
@@ -177,7 +185,7 @@ export function purgeConversationFromIndex(
     );
     const deleteFact = db.prepare("DELETE FROM facts WHERE id = ?");
     for (const factId of factIds) {
-      recordFactTombstone(db, factId, "source_conversation_excluded");
+      recordFactTombstone(db, factId, PRIVACY_TOMBSTONE_REASON);
       deleteRelation.run(factId, factId);
       deleteFactVector.run(factId);
       deleteFactVectorKr.run(factId);

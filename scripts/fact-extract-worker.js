@@ -19,7 +19,19 @@ import {
   classifyExtractionFailure,
   FAILURE_REPORT,
 } from "../dist/fact-extractor.js";
-import { getIndexDir } from "../dist/paths.js";
+import {
+  ensureArchiveDir,
+  getExcludedProjects,
+  getIndexDir,
+} from "../dist/paths.js";
+import {
+  getConversationEligibility,
+  purgeConversationFromIndex,
+} from "../dist/conversation-policy.js";
+import {
+  canonicalizeProjectPath,
+  projectStorageKey,
+} from "../dist/project-identity.js";
 
 function log(line) {
   const msg = `[${new Date().toISOString()}] ${line}`;
@@ -54,6 +66,59 @@ async function main() {
   // 마커를 쓰지 않고 이연한다 — sync 가 인덱싱한 뒤 backfill 이 회수한다.
   try {
     db = initDatabase();
+
+    // 재감사 P1-1(2026-08-29): SessionEnd 추출 경로도 user-level exclusion 을 존중한다.
+    // sync/index/repair 는 getConversationEligibility 로 중앙화됐지만 이 워커만 우회해,
+    // 부분 인덱싱된 세션에서 마지막 user turn 이 DO NOT INDEX 를 선언하면 purge 보다
+    // 먼저 기존 pending exchange 에서 fact 를 만들고 내보냈다. 순서를 고정한다:
+    // marker 관측 → purge(exchange/fact/요약) → 추출 금지 → sync-export 는
+    // tombstone 만 남긴 payload 를 내보낸다. 이 성공줄은 SessionEnd 훅의 canonical
+    // evidence 계약을 유지해 훅이 export 를 계속 실행하게 한다.
+    //
+    // 여기서 행동하는 이유는 user_excluded 뿐이다 — subagent 는 훅의 parse 가드가,
+    // excluded_project 는 runFactExtraction 의 제외 마커 경로가 각자 소유한다.
+    if (transcriptPath && fs.existsSync(transcriptPath)) {
+      let userExcluded = false;
+      try {
+        const eligibility = await getConversationEligibility({
+          filePath: transcriptPath,
+          project,
+          isSubagent: false,
+          excludedProjects: getExcludedProjects(),
+        });
+        userExcluded =
+          !eligibility.eligible && eligibility.reason === "user_excluded";
+      } catch {
+        // 판정 불가 입력을 제외로 재분류하지 않는다 — SSOT 술어와 동일하게
+        // 읽기 실패는 기존 parse/오류 경로에 맡긴다.
+      }
+      if (userExcluded) {
+        // 요약 파일은 아카이브 사본 옆에 산다. 인덱싱된 적 있으면 exchange 의
+        // archive_path 가 권위이고, 한 번도 없으면 sync 의 destFile 계약
+        // (projectStorageKey + basename)으로 계산한다.
+        const archiveRow = db
+          .prepare(
+            "SELECT archive_path FROM exchanges WHERE session_id = ? AND archive_path IS NOT NULL LIMIT 1",
+          )
+          .get(sessionId);
+        const archivePath =
+          archiveRow?.archive_path ||
+          path.join(
+            ensureArchiveDir(),
+            projectStorageKey(canonicalizeProjectPath(project)),
+            path.basename(transcriptPath),
+          );
+        const purged = purgeConversationFromIndex(db, {
+          archivePath,
+          sessionId,
+        });
+        log(
+          `worker: session=${sessionId} extracted=0 saved=0 (user_excluded — purged before extraction: exchanges=${purged.exchanges} facts=${purged.facts} summaries=${purged.summaries})`,
+        );
+        return; // finally 에서 db.close
+      }
+    }
+
     const indexed = db
       .prepare("SELECT COUNT(*) AS c FROM exchanges WHERE session_id = ?")
       .get(sessionId).c;

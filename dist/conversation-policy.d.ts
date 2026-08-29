@@ -1,5 +1,12 @@
 import type Database from "better-sqlite3";
 export declare const USER_EXCLUSION_MARKERS: readonly ["<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>", "Only use NO_INSIGHTS_FOUND", "Context: This summary will be shown in a list to help users and Codex choose which conversations are relevant"];
+/**
+ * Tombstone reason written when a conversation-wide user exclusion purges
+ * facts. This reason is terminal privacy state: sync import must never let a
+ * newer peer edit resurrect an excluded fact, because no un-exclude or
+ * re-consent event exists anywhere in the protocol.
+ */
+export declare const PRIVACY_TOMBSTONE_REASON = "source_conversation_excluded";
 export type ConversationIneligibilityReason = "subagent" | "excluded_project" | "user_excluded";
 export type ConversationEligibility = {
     eligible: true;

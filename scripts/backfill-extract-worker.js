@@ -292,13 +292,11 @@ async function main() {
         // 선점은 runFactExtraction 이 단독 소유한다. 'worker' 변형은 자기가 pending
         // 으로 선정했던 상태일 때만 성공하므로, 선정 후 훅이 먼저 확정한 세션을
         // 덮어 재추출하는 중복 경로가 구조적으로 막힌다(Codex R6 HIGH).
-        const result = await runFactExtraction(
-          db,
-          next.sid,
-          project ?? "unknown",
-          undefined,
-          { claimVariant: "worker" },
-        );
+        // 🚨 options 는 4번째 인자다(재감사 P1-8). 5번째로 넘기면 JS 가 조용히
+        // 버려서 훅 변형으로 선점했다 — settled 마커 위를 덮는 의도 위반 계약.
+        const result = await runFactExtraction(db, next.sid, project ?? "unknown", {
+          claimVariant: "worker",
+        });
         // 🚨 claim 미획득은 "fact 0건 처리 완료"가 아니다. 구분하지 않으면 done++ 만
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
         // detached 워커의 stdio:'ignore' 로 폐기된다 — 무경보 기아(R18 독립 발견).

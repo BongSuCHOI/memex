@@ -60,6 +60,14 @@ summary, 그리고 해당 exchange를 evidence로 사용한 fact/revision/vector
 fact 전체를 제거합니다. 제거된 fact는 tombstone(`source_conversation_excluded`)으로
 기록해 오래된 multi-device sync snapshot이 부활시키지 못합니다.
 
+SessionEnd 추출 경로도 같은 정책을 적용합니다. fact-extract worker는 extraction gate에서
+transcript의 user 제외 마커를 `getConversationEligibility()`로 재확인하고, `user_excluded`
+판정이면 추출 전에 purge를 실행한 뒤 추출을 금지합니다. 따라서 부분 인덱싱된 세션에서
+마지막 user turn이 marker를 선언해도 fact가 만들어지기 전에 기존 인덱스가 먼저 제거되며,
+SessionEnd의 sync-export는 privacy tombstone만 남긴 payload를 내보냅니다
+(marker 관측 → purge → 추출 금지 → export 순서 고정). subagent는 훅의 parse 가드가,
+excluded project는 extraction의 제외 마커 경로가 각자 소유합니다.
+
 ## 3. project identity와 archive key
 
 ```text
@@ -125,8 +133,9 @@ MCP `mcp__memex__*` result는 call 단위 `memex_recall/learnable=0`입니다. p
 ### SessionEnd
 
 종료 직후 rollout 파일이 계속 쓰일 수 있으므로 size/mtime quiet window를 확인합니다.
-안정된 nonempty main rollout만 extraction 대상으로 삼습니다. 성공 evidence가 없으면
-watermark와 export success 상태를 기록하지 않습니다.
+안정된 nonempty main rollout만 extraction 대상으로 삼습니다. worker는 extraction 전에
+user exclusion gate를 통과하며(위의 conversation-wide exclusion 절 참조), 성공 evidence가
+없으면 watermark와 export success 상태를 기록하지 않습니다.
 privacy-safe hook observation은 stdin을 읽은 직후 정확히 한 번 기록하며, 정상 extraction
 경로가 같은 `SessionEnd` event를 중복 기록하지 않습니다.
 
@@ -155,7 +164,11 @@ sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
 호환 mirror이며, v2 import는 root와 모든 device snapshot을 합쳐 판정합니다.
 fact 충돌은 `updated_at`이 최신인 event가 이기며, 같은 timestamp는 canonical fact key로
 결정합니다. hard-delete tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다
-strictly newer fact만 restore/edit event로 인정합니다. imported fact text는 local current
+strictly newer fact만 restore/edit event로 인정합니다. 예외로
+`source_conversation_excluded` tombstone은 terminal privacy state입니다 — unexclude 또는
+re-consent event가 프로토콜에 존재하지 않으므로 timestamp와 무관하게 fact를 부활시키지
+않고, 더 새로운 peer edit보다 우선해 삭제를 전파하며, 더 새로운 non-privacy tombstone으로
+이유가 강등되지 않습니다. imported fact text는 local current
 embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction입니다. fact update는
 기존 endpoint relation을 무효화한 뒤 현재 export relation만 다시 연결하므로 stale edge가
 남지 않습니다. relation payload는 양 endpoint의 `updated_at`을 함께 기록하며, chosen current

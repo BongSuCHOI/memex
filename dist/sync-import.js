@@ -4,6 +4,7 @@ import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql, hashRe
 import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION, } from "./embeddings.js";
 import { getSyncDir } from "./sync-export.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
+import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 const ALLOWED_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -242,6 +243,25 @@ function importOntology(db, payloadDirs, result) {
         }
     }
 }
+/**
+ * Newest tombstone wins; a conversation exclusion is terminal privacy state
+ * with no un-consent event, so its reason dominates any non-privacy deletion
+ * regardless of timestamps while the timestamp stays monotone.
+ */
+function mergeTombstones(a, b) {
+    const privacy = a.reason === PRIVACY_TOMBSTONE_REASON ||
+        b.reason === PRIVACY_TOMBSTONE_REASON;
+    if (!privacy) {
+        return compareTimestamps(b.deleted_at, a.deleted_at) > 0 ? b : a;
+    }
+    return {
+        fact_id: b.fact_id,
+        deleted_at: compareTimestamps(a.deleted_at, b.deleted_at) > 0
+            ? a.deleted_at
+            : b.deleted_at,
+        reason: PRIVACY_TOMBSTONE_REASON,
+    };
+}
 function importTombstones(db, payloadDirs, result) {
     const byFact = new Map();
     for (const payloadDir of payloadDirs) {
@@ -250,27 +270,45 @@ function importTombstones(db, payloadDirs, result) {
             if (!row)
                 continue;
             const previous = byFact.get(row.fact_id);
-            if (!previous || compareTimestamps(row.deleted_at, previous.deleted_at) > 0) {
-                byFact.set(row.fact_id, row);
-            }
+            byFact.set(row.fact_id, previous ? mergeTombstones(previous, row) : row);
         }
     }
     for (const tombstone of byFact.values()) {
         const localFact = db.prepare("SELECT updated_at FROM facts WHERE id = ?").get(tombstone.fact_id);
-        const localTombstone = db.prepare("SELECT deleted_at FROM fact_tombstones WHERE fact_id = ?").get(tombstone.fact_id);
-        if (localTombstone && compareTimestamps(localTombstone.deleted_at, tombstone.deleted_at) >= 0)
-            continue;
-        // A fact event strictly newer than the deletion is a later restore/edit.
-        if (localFact && compareTimestamps(localFact.updated_at, tombstone.deleted_at) > 0)
+        const localTombstone = db.prepare("SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?").get(tombstone.fact_id);
+        const privacy = tombstone.reason === PRIVACY_TOMBSTONE_REASON;
+        if (localTombstone) {
+            if (localTombstone.reason === PRIVACY_TOMBSTONE_REASON) {
+                // Terminal local exclusion: nothing may downgrade it, and only a
+                // strictly newer privacy tombstone can extend it.
+                if (!privacy || compareTimestamps(localTombstone.deleted_at, tombstone.deleted_at) >= 0)
+                    continue;
+            }
+            else if (!privacy &&
+                compareTimestamps(localTombstone.deleted_at, tombstone.deleted_at) >= 0) {
+                continue;
+            }
+            // A privacy tombstone arriving over a non-privacy local tombstone falls
+            // through: the terminal reason strengthens the deletion.
+        }
+        // A fact event strictly newer than the deletion is a later restore/edit —
+        // except a conversation exclusion, which is terminal and propagates
+        // conversation-wide regardless of stale peer edits.
+        if (!privacy && localFact && compareTimestamps(localFact.updated_at, tombstone.deleted_at) > 0)
             continue;
         const commit = db.transaction(() => {
             const existed = !!db.prepare("SELECT 1 FROM facts WHERE id = ?").get(tombstone.fact_id);
             deleteFactState(db, tombstone.fact_id);
+            // Monotone: an existing tombstone never moves backwards in time.
+            const deletedAt = localTombstone &&
+                compareTimestamps(localTombstone.deleted_at, tombstone.deleted_at) > 0
+                ? localTombstone.deleted_at
+                : tombstone.deleted_at;
             db.prepare(`
         INSERT INTO fact_tombstones (fact_id, deleted_at, reason)
         VALUES (?, ?, ?)
         ON CONFLICT(fact_id) DO UPDATE SET deleted_at = excluded.deleted_at, reason = excluded.reason
-      `).run(tombstone.fact_id, tombstone.deleted_at, tombstone.reason);
+      `).run(tombstone.fact_id, deletedAt, tombstone.reason);
             return existed;
         });
         if (commit())
@@ -296,9 +334,13 @@ async function importFacts(db, payloadDirs, result) {
             !db.prepare("SELECT 1 FROM ontology_categories WHERE id = ?").get(fact.ontology_category_id)) {
             continue;
         }
-        const localTombstone = db.prepare("SELECT deleted_at FROM fact_tombstones WHERE fact_id = ?").get(fact.id);
+        const localTombstone = db.prepare("SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?").get(fact.id);
         // Hard delete wins a timestamp tie; only a strictly newer fact can restore.
         if (localTombstone && compareTimestamps(localTombstone.deleted_at, fact.updated_at) >= 0)
+            continue;
+        // A conversation-exclusion tombstone is terminal privacy state: without an
+        // explicit un-exclude/re-consent event no newer fact event may resurrect it.
+        if (localTombstone?.reason === PRIVACY_TOMBSTONE_REASON)
             continue;
         const localRow = db.prepare(`
       SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,

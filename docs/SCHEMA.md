@@ -173,6 +173,11 @@ CREATE TABLE extraction_log (
 hard delete는 fact/revision/relation/vector를 지우기 전에 `fact_tombstones`를 같은
 transaction에 기록합니다. tombstone은 FK를 갖지 않는 의도적 deletion event이며,
 cross-device sync가 오래된 fact snapshot을 되살리지 못하게 합니다.
+`reason = 'source_conversation_excluded'` tombstone은 terminal privacy state다.
+unexclude/re-consent event가 없으므로 sync import는 timestamp와 무관하게 이 사유의
+tombstone으로 fact를 복원하지 않고, 더 새로운 peer edit을 지우면서 삭제를 전파하며,
+이 사유를 더 새로운 non-privacy tombstone으로 강등하지 않는다. tombstone의
+`deleted_at`은 항상 monotone(max)으로 기록된다.
 `sync_meta.device_id`는 local DB의 snapshot writer identity입니다. 각 writer가 별도
 directory를 소유하므로 offline device export가 peer snapshot을 덮어쓰지 않습니다.
 
