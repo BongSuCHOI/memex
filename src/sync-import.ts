@@ -75,6 +75,15 @@ export interface SyncImportResult {
   newDomains: number;
   newCategories: number;
   newRelations: number;
+  /** P2-7: rows (or manifests) that could not be parsed, with their source
+   * location. Valid rows still import; the damage is never silent. */
+  malformedRows: PayloadIssue[];
+}
+
+export interface PayloadIssue {
+  file: string;
+  line: number;
+  error: string;
 }
 
 const ALLOWED_CATEGORIES = new Set([
@@ -95,6 +104,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+// P2-5: device snapshot layout — generations/<uuid>/ file sets committed by
+// the exporter's atomic rename, with CURRENT naming the committed generation.
+const GENERATIONS_DIR_NAME = "generations";
+const CURRENT_MANIFEST = "CURRENT";
+
 function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
@@ -113,28 +127,81 @@ function isStringArrayJson(value: unknown): value is string {
   }
 }
 
-function readJsonLines(filePath: string): unknown[] {
+function readJsonLines(filePath: string, issues: PayloadIssue[]): unknown[] {
   if (!fs.existsSync(filePath)) return [];
   const rows: unknown[] = [];
-  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+  const lines = fs.readFileSync(filePath, "utf8").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.trim()) continue;
     try {
       rows.push(JSON.parse(line) as unknown);
-    } catch {
-      // Malformed external rows remain uncommitted. A later complete sync can retry.
+    } catch (error) {
+      // P2-7: a malformed external row is skipped but reported with its
+      // source location — the docs' "uncommitted/reported" contract.
+      issues.push({
+        file: filePath,
+        line: i + 1,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return rows;
 }
 
-function getPayloadDirs(syncDir: string): string[] {
+/**
+ * P2-5: a device dir with a committed `CURRENT` manifest contributes exactly
+ * that one generation directory — a complete, atomically-renamed file set.
+ * Device dirs without `CURRENT` are legacy v2 snapshots read from the device
+ * root. A broken manifest falls back to the device root and is reported
+ * rather than silently skipping the device.
+ */
+function resolveDevicePayloadDir(
+  deviceDir: string,
+  issues: PayloadIssue[],
+): string {
+  const currentPath = path.join(deviceDir, CURRENT_MANIFEST);
+  if (!fs.existsSync(currentPath)) return deviceDir;
+  let generation: unknown;
+  try {
+    generation = (JSON.parse(fs.readFileSync(currentPath, "utf8")) as { generation?: unknown })
+      .generation;
+  } catch (error) {
+    issues.push({
+      file: currentPath,
+      line: 0,
+      error: `CURRENT manifest unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    return deviceDir;
+  }
+  if (typeof generation !== "string" || !generation) {
+    issues.push({
+      file: currentPath,
+      line: 0,
+      error: "CURRENT manifest has no generation id",
+    });
+    return deviceDir;
+  }
+  const genDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
+  if (!fs.existsSync(path.join(genDir, "facts.jsonl"))) {
+    issues.push({
+      file: currentPath,
+      line: 0,
+      error: `CURRENT names missing generation ${generation}`,
+    });
+    return deviceDir;
+  }
+  return genDir;
+}
+
+function getPayloadDirs(syncDir: string, issues: PayloadIssue[]): string[] {
   const dirs = [syncDir];
   const devicesDir = path.join(syncDir, "devices");
   if (!fs.existsSync(devicesDir)) return dirs;
   for (const entry of fs.readdirSync(devicesDir, { withFileTypes: true })
-    .filter((item) => item.isDirectory())
+    .filter((item) => item.isDirectory() && !item.name.endsWith(".tmp"))
     .sort((a, b) => a.name.localeCompare(b.name))) {
-    dirs.push(path.join(devicesDir, entry.name));
+    dirs.push(resolveDevicePayloadDir(path.join(devicesDir, entry.name), issues));
   }
   return dirs;
 }
@@ -319,7 +386,7 @@ function deleteFactState(db: Database.Database, factId: string): void {
 
 function importOntology(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-domains.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "ontology-domains.jsonl"), result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.name !== "string" || !value.name) continue;
       if (db.prepare("SELECT 1 FROM ontology_domains WHERE id = ?").get(value.id)) continue;
@@ -336,7 +403,7 @@ function importOntology(db: Database.Database, payloadDirs: string[], result: Sy
   }
 
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-categories.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "ontology-categories.jsonl"), result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.domain_id !== "string" || !value.domain_id ||
           typeof value.name !== "string" || !value.name) continue;
@@ -381,7 +448,7 @@ function mergeTombstones(a: SyncTombstone, b: SyncTombstone): SyncTombstone {
 function importTombstones(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
   const byFact = new Map<string, SyncTombstone>();
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "fact-tombstones.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "fact-tombstones.jsonl"), result.malformedRows)) {
       const row = parseTombstone(value);
       if (!row) continue;
       const previous = byFact.get(row.fact_id);
@@ -449,7 +516,7 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
   const candidates: Array<{ fact: SyncFact; exists: boolean; localGeneration?: number }> = [];
   const remoteById = new Map<string, SyncFact>();
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "facts.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "facts.jsonl"), result.malformedRows)) {
       const fact = parseSyncFact(value);
       if (!fact) continue;
       const previous = remoteById.get(fact.id);
@@ -581,7 +648,7 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
 
 function importRevisions(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "fact-revisions.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "fact-revisions.jsonl"), result.malformedRows)) {
       const revision = parseRevision(value);
       if (!revision || !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id) ||
           db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id)) continue;
@@ -600,7 +667,7 @@ function importRevisions(db: Database.Database, payloadDirs: string[], result: S
 
 function importRecallEvents(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "recall-events.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "recall-events.jsonl"), result.malformedRows)) {
       const event = parseRecallEvent(value);
       if (!event) continue;
       const existing = db.prepare("SELECT status FROM recall_events WHERE id = ?").get(event.id) as
@@ -654,7 +721,7 @@ function importRecallEvents(db: Database.Database, payloadDirs: string[], result
 
 function importRelations(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
   for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-relations.jsonl"))) {
+    for (const value of readJsonLines(path.join(payloadDir, "ontology-relations.jsonl"), result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.source_fact_id !== "string" || !value.source_fact_id ||
           typeof value.target_fact_id !== "string" || !value.target_fact_id ||
@@ -731,9 +798,10 @@ export async function importFromSync(): Promise<SyncImportResult> {
     newDomains: 0,
     newCategories: 0,
     newRelations: 0,
+    malformedRows: [],
   };
   const syncDir = getSyncDir();
-  const payloadDirs = getPayloadDirs(syncDir);
+  const payloadDirs = getPayloadDirs(syncDir, result.malformedRows);
   if (!payloadDirs.some((dir) => fs.existsSync(path.join(dir, "facts.jsonl")))) return result;
 
   const db = initDatabase();

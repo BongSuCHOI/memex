@@ -22,6 +22,25 @@ function archiveIfStale(sourcePath, archivePath) {
     atomicCopyFileSync(sourcePath, archivePath);
     return true;
 }
+/**
+ * Summary freshness (재감사 §6): a summary is current only while the archive
+ * has not changed since it was written. A resumed rollout grows the archive
+ * file, so its mtime then postdates the summary — regenerate instead of
+ * advertising the truncated summary forever. No extra state: the archive is
+ * Memex-owned and append-only, so mtime is a reliable change signal.
+ */
+export function summaryNeedsRefresh(archivePath, summaryPath) {
+    if (!archiveFileExists(summaryPath))
+        return true;
+    try {
+        const archive = statArchiveFile(archivePath);
+        const summary = fs.statSync(summaryPath);
+        return archive !== null && archive.mtimeMs > summary.mtimeMs;
+    }
+    catch {
+        return true;
+    }
+}
 // Concurrency headroom for parallel embedding/summary workers.
 // Increase max listeners for concurrent API calls
 import { EventEmitter } from "events";
@@ -120,7 +139,7 @@ export async function indexConversations(limitToProject, maxConversations, concu
     }
     // Batch summarize conversations in parallel (unless --no-summaries)
     if (!noSummaries) {
-        const needsSummary = toProcess.filter((c) => !archiveFileExists(c.summaryPath));
+        const needsSummary = toProcess.filter((c) => summaryNeedsRefresh(c.archivePath, c.summaryPath));
         if (needsSummary.length > 0) {
             console.log(`  Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...`);
             await processBatch(needsSummary, async (conv) => {
@@ -228,7 +247,7 @@ export async function indexSession(sessionId, concurrency = 1, noSummaries = fal
         if (exchanges.length > 0) {
             // Generate summary (unless --no-summaries)
             const summaryPath = archivePath.replace(".jsonl", "-summary.txt");
-            if (!noSummaries && !archiveFileExists(summaryPath)) {
+            if (!noSummaries && summaryNeedsRefresh(archivePath, summaryPath)) {
                 const summary = await summarizeConversation(exchanges);
                 fs.writeFileSync(summaryPath, summary, "utf-8");
                 console.log(`Summary: ${summary.split(/\s+/).length} words`);
@@ -346,7 +365,7 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
     console.log(`Found ${unprocessed.length} unprocessed conversations`);
     // Batch process summaries (unless --no-summaries)
     if (!noSummaries) {
-        const needsSummary = unprocessed.filter((c) => !archiveFileExists(c.summaryPath));
+        const needsSummary = unprocessed.filter((c) => summaryNeedsRefresh(c.archivePath, c.summaryPath));
         if (needsSummary.length > 0) {
             console.log(`Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...\n`);
             await processBatch(needsSummary, async (conv) => {

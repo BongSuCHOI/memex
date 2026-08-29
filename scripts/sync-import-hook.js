@@ -23,6 +23,15 @@ async function main() {
         `+${result.newDomains} domains, +${result.newRelations} relations`,
       );
     }
+    // P2-7: skipped malformed rows are reported, never silent.
+    for (const issue of result.malformedRows) {
+      console.error(
+        `sync-import: malformed row skipped at ${issue.file}:${issue.line} — ${issue.error}`,
+      );
+    }
+    if (result.malformedRows.length > 0) {
+      console.log(`sync-import: ${result.malformedRows.length} malformed row(s) skipped (see stderr)`);
+    }
   } catch (error) {
     // Non-fatal
     console.error('sync-import: Error:', error instanceof Error ? error.message : error);

@@ -45,6 +45,24 @@ function archiveIfStale(sourcePath: string, archivePath: string): boolean {
   return true;
 }
 
+/**
+ * Summary freshness (재감사 §6): a summary is current only while the archive
+ * has not changed since it was written. A resumed rollout grows the archive
+ * file, so its mtime then postdates the summary — regenerate instead of
+ * advertising the truncated summary forever. No extra state: the archive is
+ * Memex-owned and append-only, so mtime is a reliable change signal.
+ */
+export function summaryNeedsRefresh(archivePath: string, summaryPath: string): boolean {
+  if (!archiveFileExists(summaryPath)) return true;
+  try {
+    const archive = statArchiveFile(archivePath);
+    const summary = fs.statSync(summaryPath);
+    return archive !== null && archive.mtimeMs > summary.mtimeMs;
+  } catch {
+    return true;
+  }
+}
+
 // Concurrency headroom for parallel embedding/summary workers.
 
 // Increase max listeners for concurrent API calls
@@ -178,7 +196,7 @@ export async function indexConversations(
   // Batch summarize conversations in parallel (unless --no-summaries)
   if (!noSummaries) {
     const needsSummary = toProcess.filter(
-      (c) => !archiveFileExists(c.summaryPath),
+      (c) => summaryNeedsRefresh(c.archivePath, c.summaryPath),
     );
 
     if (needsSummary.length > 0) {
@@ -321,7 +339,7 @@ export async function indexSession(
     if (exchanges.length > 0) {
       // Generate summary (unless --no-summaries)
       const summaryPath = archivePath.replace(".jsonl", "-summary.txt");
-      if (!noSummaries && !archiveFileExists(summaryPath)) {
+      if (!noSummaries && summaryNeedsRefresh(archivePath, summaryPath)) {
         const summary = await summarizeConversation(exchanges);
         fs.writeFileSync(summaryPath, summary, "utf-8");
         console.log(`Summary: ${summary.split(/\s+/).length} words`);
@@ -475,7 +493,7 @@ export async function indexUnprocessed(
   // Batch process summaries (unless --no-summaries)
   if (!noSummaries) {
     const needsSummary = unprocessed.filter(
-      (c) => !archiveFileExists(c.summaryPath),
+      (c) => summaryNeedsRefresh(c.archivePath, c.summaryPath),
     );
     if (needsSummary.length > 0) {
       console.log(

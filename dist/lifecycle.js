@@ -24,6 +24,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved } from "./observe-hook-event.js";
 import { getMemexHome } from "./paths.js";
+import { readExportStatus } from "./sync-export.js";
 import { getInjectLogPath } from "./inject-log.js";
 const runtimeRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -517,6 +518,28 @@ export function doctor() {
             : "fail",
         detail: ".codex-plugin/plugin.json present (MCP servers declared there)",
     });
+    // P2-6: the last sync export attempt is recorded durably by the
+    // SessionEnd chain — a failed export must surface here instead of
+    // disappearing behind the hook's exit 0.
+    try {
+        const exportStatus = readExportStatus();
+        checks.push({
+            name: "sync-export",
+            status: !exportStatus ? "ok" : exportStatus.ok ? "ok" : "fail",
+            detail: !exportStatus
+                ? "no sync export recorded yet (first SessionEnd will write one)"
+                : exportStatus.ok
+                    ? `last export ok at ${exportStatus.at}`
+                    : `last export FAILED at ${exportStatus.at}: ${exportStatus.error ?? "unknown"}`,
+        });
+    }
+    catch {
+        checks.push({
+            name: "sync-export",
+            status: "warn",
+            detail: "unable to read sync export status",
+        });
+    }
     const hasFail = checks.some((c) => c.status === "fail");
     const allOk = checks.every((c) => c.status === "ok");
     return {

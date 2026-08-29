@@ -9,6 +9,14 @@ export interface SyncImportResult {
     newDomains: number;
     newCategories: number;
     newRelations: number;
+    /** P2-7: rows (or manifests) that could not be parsed, with their source
+     * location. Valid rows still import; the damage is never silent. */
+    malformedRows: PayloadIssue[];
+}
+export interface PayloadIssue {
+    file: string;
+    line: number;
+    error: string;
 }
 /**
  * Reconcile protocol-v2 sync files into the local DB.

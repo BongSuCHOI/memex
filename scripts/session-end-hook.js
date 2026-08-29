@@ -140,10 +140,32 @@ async function main() {
   }
 
   // Export/sync-out strictly AFTER successful extraction.
-  await runNode(path.join(ROOT, 'scripts', 'sync-export-hook.js'), {
+  // P2-6: the child never wedges the lifecycle, but its failure must not be
+  // silent — the durable export status decides, and the parent logs
+  // EXPORT_FAILED loudly on stderr while still exiting 0.
+  const exportResult = await runNode(path.join(ROOT, 'scripts', 'sync-export-hook.js'), {
     env: { SESSION_ID: hook.sessionId || '', CWD: projectCwd },
     timeoutMs: 120000,
   });
+  try {
+    const statusMod = await import('../dist/sync-export.js');
+    if (exportResult.code !== 0) {
+      // The child died before recording anything — record for it.
+      statusMod.recordExportStatus({
+        ok: false,
+        at: new Date().toISOString(),
+        error: `sync-export child exited with code ${exportResult.code}`,
+      });
+    }
+    const status = statusMod.readExportStatus();
+    if (exportResult.code !== 0 || (status && status.ok === false)) {
+      process.stderr.write(
+        `[session-end-hook] EXPORT_FAILED (code=${exportResult.code})` +
+        `${status && status.error ? `: ${status.error}` : ''}\n`,
+      );
+      if (exportResult.stderr.trim()) process.stderr.write(exportResult.stderr);
+    }
+  } catch { /* status surface is best-effort; never wedge SessionEnd */ }
 }
 
 main().then(
