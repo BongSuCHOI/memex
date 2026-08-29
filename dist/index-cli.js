@@ -43,11 +43,16 @@ async function main() {
                 console.log(`Orphaned entries: ${issues.orphaned.length}`);
                 console.log(`Outdated files: ${issues.outdated.length}`);
                 console.log(`Corrupted files: ${issues.corrupted.length}`);
+                console.log(`Foreign-key violations: ${issues.fkViolations.length}`);
+                if (issues.fkViolations.length > 0) {
+                    console.log('\nForeign-key violations (orphaned child rows):');
+                    issues.fkViolations.forEach(v => console.log(`  ${v.table} rowid=${v.rowid} references missing ${v.parent}#${v.fkid}`));
+                }
                 if (issues.missing.length > 0) {
                     console.log('\nMissing summaries:');
                     issues.missing.forEach(m => console.log(`  ${m.path}`));
                 }
-                if (issues.missing.length + issues.orphaned.length + issues.outdated.length + issues.corrupted.length > 0) {
+                if (issues.missing.length + issues.orphaned.length + issues.outdated.length + issues.corrupted.length + issues.fkViolations.length > 0) {
                     console.log('\nRun with --repair to fix these issues.');
                     process.exit(1);
                 }
@@ -58,7 +63,7 @@ async function main() {
             case 'repair':
                 console.log('Verifying conversation index...');
                 const repairIssues = await verifyIndex();
-                if (repairIssues.missing.length + repairIssues.orphaned.length + repairIssues.outdated.length > 0) {
+                if (repairIssues.missing.length + repairIssues.orphaned.length + repairIssues.outdated.length + repairIssues.fkViolations.length > 0) {
                     await repairIndex(repairIssues);
                 }
                 else {

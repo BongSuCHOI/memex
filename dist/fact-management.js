@@ -191,19 +191,42 @@ export function deactivateFactTransactional(db, id) {
     const removedFromVectorIndex = tx();
     return { deactivated: true, removedFromVectorIndex };
 }
-/** Restore an inactive fact and rebuild its vector from stored embedding. */
-export function restoreFact(db, id) {
+/**
+ * Restore an inactive fact and rebuild its vector. The stored embedding is
+ * reusable only when it was produced by the current model — search
+ * (searchFactsByScope) reads current-embedding_version rows exclusively, so a
+ * fact that aged through a model upgrade while inactive would otherwise be
+ * "restored" into an invisible state until the reembed worker ran. Stale
+ * versions are re-embedded with the current model and the vector + stamp are
+ * restored together in one commit.
+ */
+export async function restoreFact(db, id) {
+    const row = db
+        .prepare('SELECT fact, embedding, embedding_version FROM facts WHERE id = ? AND is_active = 0')
+        .get(id);
+    if (!row)
+        throw new Error(`no inactive fact with id: ${id}`);
+    let vector = null;
+    let reembedded = false;
+    if (row.embedding) {
+        const f32 = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
+        if (Number(row.embedding_version) === EMBEDDING_VERSION) {
+            // Same model version — the stored bytes are reusable as-is. (The facts
+            // table stores float32 bytes; re-encode to the vec table's dtype below.)
+            vector = Array.from(f32);
+        }
+        else {
+            // Model upgrade happened while inactive: a stale-model vector is
+            // incomparable with current-model queries. Re-embed before restoring.
+            vector = await generateEmbedding(row.fact, 'passage');
+            reembedded = true;
+        }
+    }
     const tx = db.transaction(() => {
-        const row = db.prepare('SELECT embedding FROM facts WHERE id = ? AND is_active = 0').get(id);
-        if (!row)
-            throw new Error(`no inactive fact with id: ${id}`);
-        db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
-        let restored = false;
-        if (row.embedding && tableExists(db, 'vec_facts')) {
-            // The facts.embedding column stores float32 bytes; re-encode to the
-            // vec table's dtype instead of inserting the raw blob.
-            const f32 = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
-            const vp = vecParamFor(db, 'vec_facts', Array.from(f32));
+        if (vector && tableExists(db, 'vec_facts')) {
+            const now = new Date().toISOString();
+            db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ?').run(now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id);
+            const vp = vecParamFor(db, 'vec_facts', vector);
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
             db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(id, vp.blob);
             // The KR translation vector has no stored source bytes (the facts table
@@ -213,12 +236,13 @@ export function restoreFact(db, id) {
             if (tableExists(db, 'vec_facts_kr')) {
                 db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
             }
-            restored = true;
+            return true;
         }
-        return restored;
+        db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+        return false;
     });
     const vectorRestored = tx();
-    return { restored: true, vectorRestored };
+    return { restored: true, vectorRestored, reembedded };
 }
 export function factHistory(db, id) {
     return getRevisions(db, id);

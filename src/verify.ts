@@ -1,9 +1,11 @@
 import fs from "fs";
 import path from "path";
+import type Database from "better-sqlite3";
 import { parseConversation } from "./parser.js";
 import { initDatabase, getAllExchanges, getFileLastIndexed } from "./db.js";
 import {
   getArchiveDir,
+  getDbPath,
   getExcludedProjects,
   isExcludedProject,
 } from "./paths.js";
@@ -27,6 +29,60 @@ export interface VerificationResult {
   orphaned: Array<{ uuid: string; path: string }>;
   outdated: Array<{ path: string; fileTime: number; dbTime: number }>;
   corrupted: Array<{ path: string; error: string }>;
+  fkViolations: Array<{
+    table: string;
+    rowid: number;
+    parent: string;
+    fkid: number;
+  }>;
+}
+
+/**
+ * FK violations are a database-file property, independent of the archive
+ * tree — audit them even when the archive dir is absent. FK enforcement is
+ * ON on every Memex connection (explicit pragma in initializeConnection), so
+ * violations can only predate Memex (foreign tooling, direct sqlite3 edits,
+ * or a pre-FK legacy file); PRAGMA foreign_key_check finds them all.
+ */
+function collectForeignKeyViolations(): VerificationResult["fkViolations"] {
+  const dbPath = getDbPath();
+  if (!fs.existsSync(dbPath)) return [];
+  const db = initDatabase();
+  try {
+    return db.pragma("foreign_key_check") as VerificationResult["fkViolations"];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Repair pass for FK violations: orphaned child rows are derived local data
+ * whose parent is gone, so removing them is the only safe repair. The three
+ * tables below are the schema's fact/exchange FK children; anything else is
+ * reported for manual review, never touched blindly. Returns the removed
+ * count.
+ */
+export function repairForeignKeyViolations(
+  db: Database.Database,
+  violations: VerificationResult["fkViolations"],
+): number {
+  let removed = 0;
+  for (const v of violations) {
+    if (
+      v.table !== "tool_calls" &&
+      v.table !== "fact_revisions" &&
+      v.table !== "ontology_relations"
+    ) {
+      console.log(
+        `  Unhandled FK child table ${v.table} (rowid=${v.rowid}, parent=${v.parent}) — manual review needed`,
+      );
+      continue;
+    }
+    db.prepare(`DELETE FROM ${v.table} WHERE rowid = ?`).run(v.rowid);
+    removed++;
+    console.log(`  Removed orphaned ${v.table} rowid=${v.rowid} (parent ${v.parent} missing)`);
+  }
+  return removed;
 }
 
 export async function verifyIndex(): Promise<VerificationResult> {
@@ -35,7 +91,10 @@ export async function verifyIndex(): Promise<VerificationResult> {
     orphaned: [],
     outdated: [],
     corrupted: [],
+    fkViolations: [],
   };
+
+  result.fkViolations = collectForeignKeyViolations();
 
   const archiveDir = getArchiveDir();
 
@@ -176,6 +235,16 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
   const failures: Error[] = [];
 
   try {
+    // Foreign-key violations (predate-Memex orphans from foreign tooling)
+    // first: leaving them would make every subsequent delete on the affected
+    // parents fail under enforced FKs.
+    if (issues.fkViolations.length > 0) {
+      console.log(
+        `Removing ${issues.fkViolations.length} foreign-key violation row(s)...`,
+      );
+      repairForeignKeyViolations(db, issues.fkViolations);
+    }
+
     // Remove orphaned entries first
     for (const orphan of issues.orphaned) {
       console.log(`Removing orphaned entry: ${orphan.uuid}`);

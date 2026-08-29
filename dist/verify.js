@@ -2,18 +2,61 @@ import fs from "fs";
 import path from "path";
 import { parseConversation } from "./parser.js";
 import { initDatabase, getAllExchanges, getFileLastIndexed } from "./db.js";
-import { getArchiveDir, getExcludedProjects, isExcludedProject, } from "./paths.js";
+import { getArchiveDir, getDbPath, getExcludedProjects, isExcludedProject, } from "./paths.js";
 import { archiveFileExists, canonicalArchiveName, statArchiveFile, } from "./archive-io.js";
 import { readRolloutMeta } from "./codex-rollout.js";
 import { canonicalizeProjectPath, UNKNOWN_PROJECT, } from "./project-identity.js";
 import { getConversationEligibility, purgeConversationFromIndex, } from "./conversation-policy.js";
+/**
+ * FK violations are a database-file property, independent of the archive
+ * tree — audit them even when the archive dir is absent. FK enforcement is
+ * ON on every Memex connection (explicit pragma in initializeConnection), so
+ * violations can only predate Memex (foreign tooling, direct sqlite3 edits,
+ * or a pre-FK legacy file); PRAGMA foreign_key_check finds them all.
+ */
+function collectForeignKeyViolations() {
+    const dbPath = getDbPath();
+    if (!fs.existsSync(dbPath))
+        return [];
+    const db = initDatabase();
+    try {
+        return db.pragma("foreign_key_check");
+    }
+    finally {
+        db.close();
+    }
+}
+/**
+ * Repair pass for FK violations: orphaned child rows are derived local data
+ * whose parent is gone, so removing them is the only safe repair. The three
+ * tables below are the schema's fact/exchange FK children; anything else is
+ * reported for manual review, never touched blindly. Returns the removed
+ * count.
+ */
+export function repairForeignKeyViolations(db, violations) {
+    let removed = 0;
+    for (const v of violations) {
+        if (v.table !== "tool_calls" &&
+            v.table !== "fact_revisions" &&
+            v.table !== "ontology_relations") {
+            console.log(`  Unhandled FK child table ${v.table} (rowid=${v.rowid}, parent=${v.parent}) — manual review needed`);
+            continue;
+        }
+        db.prepare(`DELETE FROM ${v.table} WHERE rowid = ?`).run(v.rowid);
+        removed++;
+        console.log(`  Removed orphaned ${v.table} rowid=${v.rowid} (parent ${v.parent} missing)`);
+    }
+    return removed;
+}
 export async function verifyIndex() {
     const result = {
         missing: [],
         orphaned: [],
         outdated: [],
         corrupted: [],
+        fkViolations: [],
     };
+    result.fkViolations = collectForeignKeyViolations();
     const archiveDir = getArchiveDir();
     // Track all files we find
     const foundFiles = new Set();
@@ -127,6 +170,13 @@ export async function repairIndex(issues) {
     let embeddingsReady = false;
     const failures = [];
     try {
+        // Foreign-key violations (predate-Memex orphans from foreign tooling)
+        // first: leaving them would make every subsequent delete on the affected
+        // parents fail under enforced FKs.
+        if (issues.fkViolations.length > 0) {
+            console.log(`Removing ${issues.fkViolations.length} foreign-key violation row(s)...`);
+            repairForeignKeyViolations(db, issues.fkViolations);
+        }
         // Remove orphaned entries first
         for (const orphan of issues.orphaned) {
             console.log(`Removing orphaned entry: ${orphan.uuid}`);

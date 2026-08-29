@@ -86,11 +86,20 @@ export declare function deactivateFactTransactional(db: Database.Database, id: s
     deactivated: true;
     removedFromVectorIndex: boolean;
 };
-/** Restore an inactive fact and rebuild its vector from stored embedding. */
-export declare function restoreFact(db: Database.Database, id: string): {
+/**
+ * Restore an inactive fact and rebuild its vector. The stored embedding is
+ * reusable only when it was produced by the current model — search
+ * (searchFactsByScope) reads current-embedding_version rows exclusively, so a
+ * fact that aged through a model upgrade while inactive would otherwise be
+ * "restored" into an invisible state until the reembed worker ran. Stale
+ * versions are re-embedded with the current model and the vector + stamp are
+ * restored together in one commit.
+ */
+export declare function restoreFact(db: Database.Database, id: string): Promise<{
     restored: true;
     vectorRestored: boolean;
-};
+    reembedded: boolean;
+}>;
 export declare function factHistory(db: Database.Database, id: string): Array<Record<string, unknown>>;
 export interface HardDeleteImpact {
     exists: boolean;

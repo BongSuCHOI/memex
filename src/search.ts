@@ -117,9 +117,28 @@ export async function searchConversations(
       await initEmbeddings();
       const queryEmbedding = await generateEmbedding(query, 'query');
 
+      // Expanding KNN window (mirrors searchFactsByScope): sqlite-vec's `k`
+      // caps the candidate set BEFORE the project/date/embedding_version
+      // filters run, so a fixed k = caller limit starves scoped or dated
+      // searches whenever unrelated rows own the nearest positions — the valid
+      // target sits at global rank limit+1 and is never seen. Grow k until the
+      // filters can fill `limit` or the whole index has been considered; the
+      // row-count cap bounds the worst case the same way fact search does.
+      const vecRowCount = (): number => {
+        try {
+          return (
+            db.prepare('SELECT COUNT(*) AS n FROM vec_exchanges').get() as {
+              n: number;
+            }
+          ).n;
+        } catch {
+          return 0; // vec table absent (fresh/legacy DB) — nothing to expand into
+        }
+      };
+
       // dtype-aware: int8 tables need vec_int8()-wrapped quantized query blobs,
       // and their distances come back ×127-scaled (normalized below).
-      const vecQuery = (vecDtype: 'float32' | 'int8'): ExchangeRow[] => {
+      const vecQuery = (vecDtype: 'float32' | 'int8', fetchCount: number): ExchangeRow[] => {
         const stmt = db.prepare(`
           SELECT
             e.id,
@@ -145,7 +164,7 @@ export async function searchConversations(
         // not upgraded yet (newest sessions are upgraded first).
         const rows = stmt.all(
           embeddingToVecBlob(queryEmbedding, vecDtype),
-          limit,
+          fetchCount,
           EMBEDDING_VERSION,
           ...timeParams
         ) as ExchangeRow[];
@@ -154,17 +173,28 @@ export async function searchConversations(
       };
 
       let vecDtype = getVecDtype(db);
-      try {
-        results = vecQuery(vecDtype);
-      } catch (e) {
-        // The int8 migration may have swapped the table dtype between our
-        // dtype read and the query (read path is not serialized by the swap
-        // lock). Retry once with a fresh dtype; rethrow anything else.
-        const fresh = getVecDtype(db);
-        if (fresh === vecDtype) throw e;
-        vecDtype = fresh;
-        results = vecQuery(vecDtype);
+      const maxRows = vecRowCount();
+      let fetchCount = Math.max(limit * 4, 50);
+      for (;;) {
+        try {
+          results = vecQuery(vecDtype, fetchCount);
+        } catch (e) {
+          // The int8 migration may have swapped the table dtype between our
+          // dtype read and the query (read path is not serialized by the swap
+          // lock). Retry once with a fresh dtype; rethrow anything else.
+          const fresh = getVecDtype(db);
+          if (fresh === vecDtype) throw e;
+          vecDtype = fresh;
+          results = vecQuery(vecDtype, fetchCount);
+        }
+        const nextFetchCount = Math.min(fetchCount * 4, maxRows + 1);
+        if (results.length >= limit || nextFetchCount <= fetchCount) break;
+        fetchCount = nextFetchCount;
       }
+      // The expanded window can pass more filtered rows than the caller asked
+      // for — k=fetchCount no longer doubles as the output cap (k=limit did).
+      // Rows are distance-sorted, so trimming keeps the nearest.
+      if (results.length > limit) results = results.slice(0, limit);
     }
 
     // In 'both' mode always run the text pass and merge: vector (semantic) and

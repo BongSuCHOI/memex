@@ -18522,6 +18522,7 @@ function initializeConnection(db, mode) {
   try {
     sqliteVec.load(db);
     db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
     if (mode === "write") {
       db.pragma("journal_mode = WAL");
       db.pragma("journal_size_limit = 67108864");
@@ -19408,7 +19409,14 @@ async function searchConversations(query, options = {}) {
     if (mode === "vector" || mode === "both") {
       await initEmbeddings();
       const queryEmbedding = await generateEmbedding(query, "query");
-      const vecQuery = (vecDtype2) => {
+      const vecRowCount = () => {
+        try {
+          return db.prepare("SELECT COUNT(*) AS n FROM vec_exchanges").get().n;
+        } catch {
+          return 0;
+        }
+      };
+      const vecQuery = (vecDtype2, fetchCount2) => {
         const stmt = db.prepare(`
           SELECT
             e.id,
@@ -19430,7 +19438,7 @@ async function searchConversations(query, options = {}) {
         `);
         const rows = stmt.all(
           embeddingToVecBlob(queryEmbedding, vecDtype2),
-          limit,
+          fetchCount2,
           EMBEDDING_VERSION,
           ...timeParams
         );
@@ -19438,14 +19446,22 @@ async function searchConversations(query, options = {}) {
         return rows;
       };
       let vecDtype = getVecDtype(db);
-      try {
-        results = vecQuery(vecDtype);
-      } catch (e) {
-        const fresh = getVecDtype(db);
-        if (fresh === vecDtype) throw e;
-        vecDtype = fresh;
-        results = vecQuery(vecDtype);
+      const maxRows = vecRowCount();
+      let fetchCount = Math.max(limit * 4, 50);
+      for (; ; ) {
+        try {
+          results = vecQuery(vecDtype, fetchCount);
+        } catch (e) {
+          const fresh = getVecDtype(db);
+          if (fresh === vecDtype) throw e;
+          vecDtype = fresh;
+          results = vecQuery(vecDtype, fetchCount);
+        }
+        const nextFetchCount = Math.min(fetchCount * 4, maxRows + 1);
+        if (results.length >= limit || nextFetchCount <= fetchCount) break;
+        fetchCount = nextFetchCount;
       }
+      if (results.length > limit) results = results.slice(0, limit);
     }
     if (mode === "text" || mode === "both") {
       const cols = `

@@ -79,6 +79,13 @@ function initializeConnection(db, mode) {
     try {
         sqliteVec.load(db);
         db.pragma("busy_timeout = 5000");
+        // FK enforcement happens to be better-sqlite3's connection default, but
+        // that is a driver default, not our invariant. Declare it explicitly so
+        // the schema's REFERENCES clauses stay enforced regardless of driver
+        // changes. Every delete/rename path is ordered for it (tool_calls → vec →
+        // parent row; relations/revisions → facts); parent/child moves run inside
+        // PRAGMA defer_foreign_keys transactions.
+        db.pragma("foreign_keys = ON");
         if (mode === "write") {
             db.pragma("journal_mode = WAL");
             // Cap the -wal file so it is truncated back after each checkpoint. The
