@@ -801,6 +801,43 @@ max로 기록된다. 상수 `PRIVACY_TOMBSTONE_REASON`을 `conversation-policy.t
 Manual QA: T01 테스트가 실제 `scripts/fact-extract-worker.js`와
 `scripts/session-end-hook.js`를 자식 프로세스로 실행해 purge/추출 금지/export를 관측했다.
 
+### Phase 2 — Semantic generation (완료)
+
+리포트 P1-2를 코드로 재검증한 결과, ontology 분류(`applyClassification`/`classifyFact`),
+relation 생성(`detectRelations`→`createRelation`), fact/KR 재임베딩
+(`scripts/reembed-worker.js`), sync fact import(`importFacts`의 embedding await 후
+무재검증 commit) 모두 세대 확인 없이 최종 쓰기를 했다. consolidation만
+`expectedPreviousFact`(text-identity CAS)과 dirty 큐의 세대 확인을 부분적으로 갖고
+있었다. 리포트의 사실 관계는 유효했고 방향 충돌은 없었다.
+
+수정(리포트 Section 7 아키텍처의 핵심 규칙 구현):
+
+- 스키마: `facts.semantic_generation INTEGER NOT NULL DEFAULT 1`과
+  `facts.semantic_updated_at TEXT NOT NULL DEFAULT ''` 추가(additive migration,
+  legacy 행은 세대 1 / `semantic_updated_at = updated_at` 백필).
+- 의미 변경 경로만 세대를 올린다: `mutateFactMeaning`(manual edit, consolidation
+  EVOLUTION/CONTRADICTION)과 sync fact import. activate/deactivate/restore, 분류,
+  DUPLICATE 확인 같은 비의미 쓰기는 세대를 올리지 않는다.
+- CAS 전환: `classifyFact`와 `createRelation`(양 endpoint 세대, 원자적 검증+삽입),
+  reembed worker의 EN/KR 경로(UPDATE-first CAS → 0행이면 vec 스왑 전체 폐기),
+  consolidation dirty 큐 확인/clear/attempts ledger를 `updated_at`에서
+  `semantic_generation`으로 전환, DUPLICATE 양 endpoint commit 시점 재검증,
+  sync import는 embedding await 후 commit 직전에 로컬 세대+tombstone을 재검증해
+  동시 편집 덮어쓰기를 막는다(T06의 CAS 절반 — 충돌 시계 교체는 Phase 3).
+- stale 결과 폐기는 실패가 아니다: `StaleFactMutationError` 타입 도입, 분류 batch에
+  `stale` 버킷 추가 — stale은 시도 ledger를 태우지 않고 폴백 parking도 하지 않는다.
+
+추가 회귀 테스트: `test/semantic-generation.test.ts`(세대 lifecycle, legacy migration,
+T03 분류 race, relation race 양 방향, sync import commit 직전 재검증 2건),
+`test/reembed-generation-cas.test.ts`(T04/T05 — worker를 자식 프로세스로 실행하고
+임베딩 게이트 스텁으로 대기 중 변이 재현). T03/T04는 CAS 제거 재주입 시 실패를
+관측했다. 테스트용 수동 스키마(`ontology-classifier.test.ts`)에도 새 컬럼을 반영했다.
+
+필수 체크: 이 문서 하단의 실행 기록 참조. 범위 결정: relation 행에 endpoint 세대를
+저장하는 확장은 이번 Phase에서 하지 않았다(리포트 merge gate는 CAS를 요구하고
+쓰기 시 원자적 재검증이 이를 충족한다) — relation 대상 세대 저장은 필요 시 별도
+스키마 확장으로 다룬다.
+
 
 ## 11. 최종 목표
 
