@@ -33,6 +33,26 @@ describe("워커 ↔ dist 계약", () => {
     }
   });
 
+  it("dist 가 SessionEnd 워커의 exclusion gate 심볼을 export 한다 (재감사 P1-1)", async () => {
+    const policy = await import("../dist/conversation-policy.js");
+    const identity = await import("../dist/project-identity.js");
+    const paths = await import("../dist/paths.js");
+    for (const [mod, sym] of [
+      [policy, "getConversationEligibility"],
+      [policy, "purgeConversationFromIndex"],
+      [policy, "isUserExcludedConversation"],
+      [identity, "canonicalizeProjectPath"],
+      [identity, "projectStorageKey"],
+      [paths, "ensureArchiveDir"],
+      [paths, "getExcludedProjects"],
+    ] as const) {
+      expect(
+        (mod as Record<string, unknown>)[sym],
+        `dist 에 ${sym} 없음 → SessionEnd 워커 gate 런타임 실패`,
+      ).toBeDefined();
+    }
+  });
+
   it("dist 의 보고 표가 필드까지 완전하다 (키만 있는 구버전 표 탐지)", async () => {
     const { FAILURE_REPORT } = await import("../dist/fact-extractor.js");
     const kinds = Object.keys(FAILURE_REPORT);

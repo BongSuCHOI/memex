@@ -749,4 +749,252 @@ describe('sync-export/import', () => {
       }
     });
   });
+
+  describe('terminal privacy tombstone (재감사 P1-7 / T02)', () => {
+    const PRIVACY = 'source_conversation_excluded';
+    const purge = '2026-08-29T00:00:00.000Z'; // A 기기의 conversation exclusion 시각
+    const peerEdit = '2026-08-29T12:00:00.000Z'; // tombstone 을 모르는 B 기기의 이후 편집
+
+    function writeRemoteFact(db: import('better-sqlite3').Database): void {
+      db.prepare(`
+        INSERT INTO facts
+          (id, fact, category, scope_type, scope_project, source_exchange_ids,
+           created_at, updated_at, consolidated_count, is_active)
+        VALUES ('privacy-fact', 'Redis에서 세션 캐시를 사용한다', 'decision', 'global', null, '[]',
+                '2026-08-01T00:00:00.000Z', ?, 1, 1)
+      `).run(peerEdit);
+    }
+
+    it('strictly newer offline peer edit은 privacy tombstone을 부활시키지 않는다 (T02)', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        db.prepare('INSERT INTO fact_tombstones (fact_id, deleted_at, reason) VALUES (?, ?, ?)')
+          .run('privacy-fact', purge, PRIVACY);
+      } finally {
+        db.close();
+      }
+
+      // B 기기 스냅샷: tombstone 은 모르고 더 새로 편집된 fact 만 담고 있다.
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+        id: 'privacy-fact',
+        fact: 'Redis에서 세션 캐시를 사용한다',
+        fact_kr: null,
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: '[]',
+        created_at: '2026-08-01T00:00:00.000Z',
+        updated_at: peerEdit,
+        consolidated_count: 1,
+        is_active: 1,
+        ontology_category_id: null,
+      }) + '\n');
+      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+
+      const imported = await importFromSync();
+      expect(imported.newFacts).toBe(0);
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('privacy-fact')).toBeUndefined();
+        expect(db.prepare('SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?').get('privacy-fact'))
+          .toEqual({ deleted_at: purge, reason: PRIVACY });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('privacy tombstone은 더 새로운 로컬 fact를 지우고 대화 전반으로 전파된다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        writeRemoteFact(db);
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      fs.writeFileSync(
+        path.join(syncDir, 'fact-tombstones.jsonl'),
+        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
+      );
+
+      const imported = await importFromSync();
+      expect(imported.deletedFacts).toBe(1);
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('privacy-fact')).toBeUndefined();
+        expect(db.prepare('SELECT reason FROM fact_tombstones WHERE fact_id = ?').get('privacy-fact'))
+          .toEqual({ reason: PRIVACY });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('hard-delete LWW는 유지된다: tombstone보다 엄격히 새 fact는 복원된다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        db.prepare('INSERT INTO fact_tombstones (fact_id, deleted_at, reason) VALUES (?, ?, ?)')
+          .run('privacy-fact', purge, 'hard_delete');
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+        id: 'privacy-fact',
+        fact: 'Redis에서 세션 캐시를 사용한다',
+        fact_kr: null,
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: '[]',
+        created_at: '2026-08-01T00:00:00.000Z',
+        updated_at: peerEdit,
+        consolidated_count: 1,
+        is_active: 1,
+        ontology_category_id: null,
+      }) + '\n');
+      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+
+      const imported = await importFromSync();
+      expect(imported.newFacts).toBe(1);
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('privacy-fact')).toBeDefined();
+        expect((db.prepare('SELECT COUNT(*) AS n FROM fact_tombstones').get() as { n: number }).n).toBe(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('hard-delete tombstone보다 최신 로컬 fact는 지워지지 않는다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        writeRemoteFact(db);
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      fs.writeFileSync(
+        path.join(syncDir, 'fact-tombstones.jsonl'),
+        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
+      );
+
+      const imported = await importFromSync();
+      expect(imported.deletedFacts).toBe(0);
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('privacy-fact')).toBeDefined();
+        expect((db.prepare('SELECT COUNT(*) AS n FROM fact_tombstones').get() as { n: number }).n).toBe(0);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('로컬 privacy tombstone은 더 새로운 비-privacy tombstone으로 강등되지 않는다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      const laterPurge = '2026-08-29T18:00:00.000Z';
+
+      let db = initDatabase();
+      try {
+        db.prepare('INSERT INTO fact_tombstones (fact_id, deleted_at, reason) VALUES (?, ?, ?)')
+          .run('privacy-fact', laterPurge, PRIVACY);
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      fs.writeFileSync(
+        path.join(syncDir, 'fact-tombstones.jsonl'),
+        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: 'hard_delete' }) + '\n',
+      );
+
+      await importFromSync();
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?').get('privacy-fact'))
+          .toEqual({ deleted_at: laterPurge, reason: PRIVACY });
+      } finally {
+        db.close();
+      }
+    });
+
+    it('payload 내 privacy tombstone은 더 새로운 hard-delete보다 이유에서 우선한다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+      const newestEdit = '2026-08-29T20:00:00.000Z';
+
+      let db = initDatabase();
+      try {
+        db.prepare(`
+          INSERT INTO facts
+            (id, fact, category, scope_type, scope_project, source_exchange_ids,
+             created_at, updated_at, consolidated_count, is_active)
+          VALUES ('privacy-fact', 'Redis에서 세션 캐시를 사용한다', 'decision', 'global', null, '[]',
+                  '2026-08-01T00:00:00.000Z', ?, 1, 1)
+        `).run(newestEdit);
+      } finally {
+        db.close();
+      }
+
+      // 두 기기 스냅샷: dev-A 의 privacy 제거(T1)와 dev-B 의 더 새로운 hard delete(T2).
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      fs.mkdirSync(path.join(syncDir, 'devices', 'dev-a'), { recursive: true });
+      fs.mkdirSync(path.join(syncDir, 'devices', 'dev-b'), { recursive: true });
+      fs.writeFileSync(
+        path.join(syncDir, 'devices', 'dev-a', 'fact-tombstones.jsonl'),
+        JSON.stringify({ fact_id: 'privacy-fact', deleted_at: purge, reason: PRIVACY }) + '\n',
+      );
+      fs.writeFileSync(
+        path.join(syncDir, 'devices', 'dev-b', 'fact-tombstones.jsonl'),
+        JSON.stringify({
+          fact_id: 'privacy-fact',
+          deleted_at: peerEdit,
+          reason: 'hard_delete',
+        }) + '\n',
+      );
+
+      const imported = await importFromSync();
+      expect(imported.deletedFacts).toBe(1);
+
+      db = initDatabase();
+      try {
+        expect(db.prepare('SELECT 1 FROM facts WHERE id = ?').get('privacy-fact')).toBeUndefined();
+        // terminal 이유는 유지되고 timestamp 는 monotone max 다.
+        expect(db.prepare('SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?').get('privacy-fact'))
+          .toEqual({ deleted_at: peerEdit, reason: PRIVACY });
+      } finally {
+        db.close();
+      }
+    });
+  });
 });

@@ -146,12 +146,56 @@ describe('claim E2E', () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const [a, b] = await Promise.all([
       runFactExtraction(db, 'S1', '/tmp/p'),
-      runFactExtraction(db, 'S1', '/tmp/p', undefined, { claimVariant: 'worker' }),
+      // options 는 4번째 인자다(재감사 P1-8). 5번째로 넘기면 JS 가 버려서
+      // 이 테스트가 hook-vs-hook 이 되어 worker 변형을 전혀 검증하지 못했다.
+      runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' }),
     ]);
     const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
     console.log(`  → 저장된 fact ${n}건, saved=(${a.saved},${b.saved}), LLM 호출 ${calls}회`);
     expect(n, '한쪽은 claim 에 막혀 skip 되어야 한다').toBeLessThanOrEqual(1);
     expect(Math.min(a.saved, b.saved)).toBe(0);
+  });
+
+  it('재감사 P1-8/T11: worker 변형은 훅이 정리한 세션을 다시 열지 않는다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+
+    // SessionEnd(hook 변형)가 세션을 settle한다 — 성공 마커 + 현재 워터마크.
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    const settledCalls = calls;
+    expect(settledCalls).toBe(1);
+
+    // backfill worker 변형: settled + 워터마크 현재 → no-op 게이트에서 종료 (LLM 0회).
+    const settled = await runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' });
+    expect(settled.skipped).toBeUndefined();
+    expect(calls).toBe(settledCalls);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
+
+    // seed 마커 위에 suffix 가 쌓인 상태: worker 변형은 선점을 거절한다 —
+    // seed suffix 의 재추출은 SessionEnd 훅이 담당한다는 설계 계약(pending-extraction).
+    // LLM 0회, fact 0건.
+    db.prepare(
+      "UPDATE extraction_log SET extracted = -1, saved = -1 WHERE session_id = 'S1'",
+    ).run();
+    db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      'e2', '/tmp/p', new Date(Date.now() + 1000).toISOString(),
+      '새 요구사항으로 Riverpod provider 범위를 화면 단위로 제한하기로 결정했습니다.',
+      '화면 단위 ProviderScope를 사용하면 테스트 격리가 명확해집니다.',
+      '/tmp/a2.jsonl', 11, 20, 'S1',
+    );
+    const refused = await runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' });
+    expect(refused.skipped).toBe('claim_not_acquired');
+    expect(calls).toBe(settledCalls);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
+
+    // 대조: hook 변형은 같은 상태에서 suffix 를 회수한다 — 변형이 동작을 바꾼다.
+    const hookRun = await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(hookRun.skipped).toBeUndefined();
+    expect(calls).toBe(settledCalls + 1);
   });
 
   it('R7 HIGH-1: 리스를 빼앗기면 즉시 중단해 중복 저장하지 않는다', async () => {

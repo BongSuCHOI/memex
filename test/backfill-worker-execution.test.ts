@@ -272,7 +272,47 @@ export const FAILURE_REPORT = {};
 `);
     const { out, code } = runWorker();
     expect(code, '격리 경로에서도 정상 종료').toBe(0);
-    // 삼키면 done 에도 buckets 에도 안 잡혀 "sessions 0" 으로 조용히 끝난다.
+    // 삼키면 done·buckets 어디에도 안 잡혀 요약이 과소계상된다.
     expect(out, '격리 건수가 표면화돼야 한다').toMatch(/isolated-exceptions 4/);
+  });
+
+  it('재감사 P1-8: claimVariant 를 4번째 options 인자로 전달한다 (인자 위치 계약)', () => {
+    writeStubs({ staleTable: false });
+    // runFactExtraction 이 받은 인자를 그대로 기록하는 스텁 — 호출 **형태**를 검증한다.
+    // 수정 전 소스는 { claimVariant:'worker' } 를 5번째 인자로 넘겨 JS 가 조용히
+    // 버렸고, 런타임은 훅 변형으로 선점했다. 이 테스트는 그 회귀를 잡는다.
+    const callsFile = path.join(sandbox, 'calls.jsonl');
+    fs.writeFileSync(path.join(sandbox, 'dist', 'fact-extractor.js'), `
+import fs from 'node:fs';
+export async function runFactExtraction(...args) {
+  fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n');
+  return { extracted: 0, saved: 0 };
+}
+export function classifyExtractionFailure() { return 'internal'; }
+export const FAILURE_REPORT = {
+  handoff: { label: 'HANDOFF', note: 'h', bucket: 'handoff', consumesBudget: false, escalate: false },
+  provider_transient: { label: 'ERROR', note: 't', bucket: 'transient', consumesBudget: false, escalate: false },
+  provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
+  internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
+};
+`);
+    const { code } = runWorker();
+    expect(code).toBe(0);
+
+    const calls = fs.readFileSync(callsFile, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as unknown[]);
+    expect(calls.length, '스텁 pending 쿼리가 내놓는 4개 세션 전부').toBe(4);
+    // concurrency 4 풀이라 기록 순서는 비결정적 — 세션 id 로 정렬해 비교한다.
+    const sorted = [...calls].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+    for (const [i, args] of sorted.entries()) {
+      expect(args, `${i + 1}번째 세션: options 자리 계약`).toEqual([
+        expect.anything(),
+        `s${i + 1}`,
+        'unknown',
+        { claimVariant: 'worker' },
+      ]);
+    }
   });
 });
