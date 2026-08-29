@@ -83,6 +83,18 @@ CREATE TABLE recall_events (
 );
 ```
 
+`exchanges.id`는 교환의 논리 신원입니다 — `md5(session_id:user_line)`로, 세션과 user
+turn 행 위치에서 결정론적으로 파생됩니다(구버전 DB의 행은 재색인 시 canonical id로
+rename된다). `archive_path`와 `line_end`는 신원 재료가 아니라 location/content
+metadata입니다. 재색인은 desired-set reconciliation을 수행합니다: 같은 archive의 행
+집합과 새 파싱을 대조해, desired 밖 행은 통합 삭제 primitive(tool_calls + vec + row,
+FTS는 trigger)로 제거하고, legacy id 행은 canonical id로 rename하며 참조
+(`tool_calls.exchange_id`, `vec_exchanges.id`, `facts.source_exchange_ids`,
+`fact_revisions.source_exchange_id`)를 재작성하고, 삭제된 교환을 참조하던 provenance
+항목도 정리합니다. `tool_calls`는 교환별 desired set으로 대체됩니다. cross-device로는
+같은 rollout의 재색인이 같은 교환 id를 만들어 fact provenance가 로컬 exchange와
+연결됩니다.
+
 중요한 불변식:
 
 - `project`는 canonical absolute `session_meta.cwd`다.

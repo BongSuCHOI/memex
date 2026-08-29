@@ -119,7 +119,7 @@ export async function verifyIndex() {
 export async function repairIndex(issues) {
     console.log("Repairing index...");
     // To avoid circular dependencies, we import the indexer functions dynamically
-    const { initDatabase, insertExchange, deleteExchange } = await import("./db.js");
+    const { initDatabase, insertExchange, deleteExchange, reconcileArchiveExchanges } = await import("./db.js");
     const { parseConversation } = await import("./parser.js");
     const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
     const { summarizeConversation } = await import("./summarizer.js");
@@ -186,6 +186,14 @@ export async function repairIndex(issues) {
                 fs.writeFileSync(summaryPath, summary, "utf-8");
                 console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
                 // Index exchanges
+                // 재감사 P1-6: 삽입 전 desired-set reconciliation.
+                reconcileArchiveExchanges(db, {
+                    archivePath: conversationPath,
+                    desired: exchanges.map((e) => ({
+                        id: e.id,
+                        lineStart: e.lineStart,
+                    })),
+                });
                 for (const exchange of exchanges) {
                     const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
                     const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);

@@ -129,7 +129,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
     // indexing. This makes a marker added later conversation-wide.
     if (filesToPurge.length > 0 ||
         (!options.skipIndex && filesToIndex.length > 0)) {
-        const { initDatabase, insertExchange } = await import("./db.js");
+        const { initDatabase, insertExchange, reconcileArchiveExchanges } = await import("./db.js");
         const db = initDatabase();
         for (const excluded of filesToPurge) {
             try {
@@ -154,6 +154,17 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                     // CX-02: project = canonical absolute cwd (carried from the rollout
                     // header), never the archive directory name.
                     const exchanges = await parseConversation(file, project, file);
+                    // 재감사 P1-6: 삽입 전에 이 archive의 desired set 과 DB 행 집합을
+                    // 대조한다 — legacy id rename(참조 재작성 포함)과 stale 행 삭제.
+                    reconcileArchiveExchanges(db, {
+                        archivePath: file,
+                        desired: exchanges
+                            .filter((e) => !isWorkerPromptMessage(e.userMessage))
+                            .map((e) => ({
+                            id: e.id,
+                            lineStart: e.lineStart,
+                        })),
+                    });
                     for (const exchange of exchanges) {
                         // Worker-prompt exchange = ephemeral state, not knowledge — never index.
                         if (isWorkerPromptMessage(exchange.userMessage))

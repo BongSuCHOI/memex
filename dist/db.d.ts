@@ -61,3 +61,25 @@ export declare function getAllExchanges(db: Database.Database): Array<{
 }>;
 export declare function getFileLastIndexed(db: Database.Database, archivePath: string): number | null;
 export declare function deleteExchange(db: Database.Database, id: string): void;
+export interface ReconcileArchiveResult {
+    renamed: number;
+    deleted: number;
+}
+/**
+ * 재감사 P1-6: 재색인 desired-set reconciliation. 새 파싱의 교환 집합(desired)과
+ * 같은 archive의 DB 행 집합을 transaction으로 대조한다.
+ *  - line 이 desired 에 없는 행 → 통합 삭제 primitive로 제거(stale state).
+ *  - line 이 일치하지만 id 가 legacy(archivePath 기반) 행 → canonical id 로
+ *    rename하고 모든 참조(tool_calls/vec/fact provenance/revision)를 재작성한다.
+ *  - id 가 이미 일치하는 행 → 그대로(insertExchange upsert가 내용을 갱신한다).
+ * 같은 line_start 에 행이 여러 개(구 scheme 의 growing-turn 중복)면, desired id 와
+ * 정확히 일치하는 행을 남기고 없으면 last_indexed 가 최신인 행을 rename한 뒤
+ * 나머지는 삭제한다. caller는 호출 뒤 desired 교환을 insertExchange 하면 된다.
+ */
+export declare function reconcileArchiveExchanges(db: Database.Database, input: {
+    archivePath: string;
+    desired: Array<{
+        id: string;
+        lineStart: number;
+    }>;
+}): ReconcileArchiveResult;

@@ -174,10 +174,24 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
             cur = null;
             return;
         }
-        const id = crypto
-            .createHash("md5")
-            .update(`${archivePath}:${cur.userLine}-${cur.assistantLine}`)
-            .digest("hex");
+        // 재감사 P1-5: 교환 신원은 (세션, user turn 행 위치)에서 결정론적으로
+        // 파생한다 — 기기별 archive 경로와 assistant/tool 행 위치는 신원 재료가
+        // 아니다(경로는 location metadata일 뿐이다). user 행은 append-only
+        // rollout에서 불변이므로 turn 이 자라도(assistant/tool 행 추가) 같은
+        // 교환으로 upsert 된다. assistant/tool 변화는 content generation이며
+        // insertExchange upsert가 반영한다. session_meta 없는 파일은 경로 독립인
+        // content 폴백 키를 쓴다. "mx" 접두사는 구 scheme(md5(archivePath:...))과의
+        // 우연한 충돌을 네임스페이스로 분리한다.
+        const sessionKey = meta ? String(meta.session_id ?? meta.id ?? "") : "";
+        const id = sessionKey
+            ? crypto
+                .createHash("md5")
+                .update(`mx:${sessionKey}:u${cur.userLine}`)
+                .digest("hex")
+            : crypto
+                .createHash("md5")
+                .update(`mx:u${cur.userLine}:${cur.userMessage}`)
+                .digest("hex");
         const toolCalls = cur.toolCalls.map((tc) => ({ ...tc, exchangeId: id }));
         exchanges.push({
             id,

@@ -1,6 +1,10 @@
 import fs from "fs";
 import path from "path";
-import { initDatabase, insertExchange } from "./db.js";
+import {
+  initDatabase,
+  insertExchange,
+  reconcileArchiveExchanges,
+} from "./db.js";
 import { parseConversation } from "./parser.js";
 import { initEmbeddings, generateExchangeEmbedding } from "./embeddings.js";
 import { summarizeConversation } from "./summarizer.js";
@@ -207,6 +211,13 @@ export async function indexConversations(
 
   // Now process embeddings and DB inserts (fast, sequential is fine)
   for (const conv of toProcess) {
+    // 재감사 P1-6: 삽입 전 desired-set reconciliation(legacy rename + stale 삭제).
+    reconcileArchiveExchanges(db, {
+      archivePath: conv.archivePath,
+      desired: conv.exchanges
+        .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
+        .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
+    });
     for (const exchange of conv.exchanges) {
       // The plugin's own worker-prompt sessions are ephemeral state, not
       // knowledge — never index them.
@@ -317,6 +328,13 @@ export async function indexSession(
       }
 
       // Index
+      // 재감사 P1-6: 삽입 전 desired-set reconciliation.
+      reconcileArchiveExchanges(db, {
+        archivePath,
+        desired: exchanges
+          .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
+          .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
+      });
       for (const exchange of exchanges) {
         if (isWorkerPromptMessage(exchange.userMessage)) continue; // worker prompt = ephemeral state, not knowledge
         const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
@@ -490,6 +508,13 @@ export async function indexUnprocessed(
   // Now index embeddings
   console.log(`\nIndexing embeddings...`);
   for (const conv of unprocessed) {
+    // 재감사 P1-6: 삽입 전 desired-set reconciliation.
+    reconcileArchiveExchanges(db, {
+      archivePath: conv.archivePath,
+      desired: conv.exchanges
+        .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
+        .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
+    });
     for (const exchange of conv.exchanges) {
       if (isWorkerPromptMessage(exchange.userMessage)) continue; // worker prompt = ephemeral state, not knowledge
       const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);

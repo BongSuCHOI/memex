@@ -584,9 +584,14 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         const vecDtype = getVecDtype(db);
         db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(exchange.id);
         db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ${vecParamSql(vecDtype)})`).run(exchange.id, embeddingToVecBlob(embedding, vecDtype));
+        // 재감사 P1-6: tool_calls 는 이 교환의 desired set 이다 — 재색인 시 새 set 을
+        // 넣기 전에 기존 set 을 지운다(INSERT OR REPLACE 만으로는 parse 사이에 사라진
+        // call 이 고아 증거로 남는다). tool_calls 행은 삽입 후 갱신되지 않으므로
+        // delete+insert 가 안전하다.
+        db.prepare("DELETE FROM tool_calls WHERE exchange_id = ?").run(exchange.id);
         if (exchange.toolCalls && exchange.toolCalls.length > 0) {
             const toolStmt = db.prepare(`
-        INSERT OR REPLACE INTO tool_calls
+        INSERT INTO tool_calls
         (id, exchange_id, tool_name, tool_input, tool_result, is_error, timestamp, source_type, learnable)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
@@ -1169,8 +1174,127 @@ export function getFileLastIndexed(db, archivePath) {
     return row.lastIndexed;
 }
 export function deleteExchange(db, id) {
+    // 재감사 P1-6: 통합 삭제 primitive다 — tool_calls(vec_exchanges, FTS는
+    // exchange 삭제 trigger가 정리)까지 같이 지우지 않으면 FK가 켜진 연결에서는
+    // constraint error가, 꺼진 연결에서는 고아 tool evidence가 남는다.
+    db.prepare(`DELETE FROM tool_calls WHERE exchange_id = ?`).run(id);
     // Delete from vector table
     db.prepare(`DELETE FROM vec_exchanges WHERE id = ?`).run(id);
     // Delete from main table
     db.prepare(`DELETE FROM exchanges WHERE id = ?`).run(id);
+}
+function renameExchangeWithin(db, oldId, newId) {
+    // fact provenance 재작성 — exchange id 는 facts.source_exchange_ids(JSON)와
+    // fact_revisions.source_exchange_id 에 참조된다.
+    const factRows = db
+        .prepare("SELECT id, source_exchange_ids FROM facts WHERE source_exchange_ids LIKE ?")
+        .all(`%${oldId}%`);
+    for (const fact of factRows) {
+        try {
+            const ids = JSON.parse(fact.source_exchange_ids);
+            if (Array.isArray(ids) && ids.includes(oldId)) {
+                db.prepare("UPDATE facts SET source_exchange_ids = ? WHERE id = ?").run(JSON.stringify([...new Set(ids.map((i) => (i === oldId ? newId : i)))]), fact.id);
+            }
+        }
+        catch {
+            // malformed provenance — rename 대상이 아니다
+        }
+    }
+    db.prepare("UPDATE fact_revisions SET source_exchange_id = ? WHERE source_exchange_id = ?").run(newId, oldId);
+    // vec0 virtual table은 UPDATE가 아닌 DELETE+INSERT로 옮긴다. SELECT 는
+    // 디코딩된 벡터를 돌려주므로 테이블 dtype 으로 재인코딩해야 한다.
+    const vec = db
+        .prepare("SELECT embedding FROM vec_exchanges WHERE id = ?")
+        .get(oldId);
+    if (vec) {
+        const dt = getVecTableDtype(db, "vec_exchanges");
+        db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(oldId);
+        db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ${vecParamSql(dt)})`).run(newId, embeddingToVecBlob(vec.embedding, dt));
+    }
+    db.prepare("UPDATE exchanges SET id = ? WHERE id = ?").run(newId, oldId);
+    db.prepare("UPDATE tool_calls SET exchange_id = ? WHERE exchange_id = ?").run(newId, oldId);
+}
+/**
+ * 재감사 P1-6: 재색인 desired-set reconciliation. 새 파싱의 교환 집합(desired)과
+ * 같은 archive의 DB 행 집합을 transaction으로 대조한다.
+ *  - line 이 desired 에 없는 행 → 통합 삭제 primitive로 제거(stale state).
+ *  - line 이 일치하지만 id 가 legacy(archivePath 기반) 행 → canonical id 로
+ *    rename하고 모든 참조(tool_calls/vec/fact provenance/revision)를 재작성한다.
+ *  - id 가 이미 일치하는 행 → 그대로(insertExchange upsert가 내용을 갱신한다).
+ * 같은 line_start 에 행이 여러 개(구 scheme 의 growing-turn 중복)면, desired id 와
+ * 정확히 일치하는 행을 남기고 없으면 last_indexed 가 최신인 행을 rename한 뒤
+ * 나머지는 삭제한다. caller는 호출 뒤 desired 교환을 insertExchange 하면 된다.
+ */
+export function reconcileArchiveExchanges(db, input) {
+    const desiredByLine = new Map(input.desired.map((d) => [d.lineStart, d.id]));
+    const rows = db
+        .prepare("SELECT id, line_start, last_indexed FROM exchanges WHERE archive_path = ?")
+        .all(input.archivePath);
+    const byLine = new Map();
+    for (const row of rows) {
+        const group = byLine.get(row.line_start) ?? [];
+        group.push({ id: row.id, last_indexed: row.last_indexed });
+        byLine.set(row.line_start, group);
+    }
+    const renames = [];
+    const deletions = [];
+    for (const [lineStart, group] of byLine) {
+        const desiredId = desiredByLine.get(lineStart);
+        if (desiredId === undefined) {
+            for (const row of group)
+                deletions.push(row.id);
+            continue;
+        }
+        const exact = group.find((row) => row.id === desiredId);
+        if (exact) {
+            // 이 행이 desired 이다 — 나머지 중복 행은 stale 다.
+            for (const row of group) {
+                if (row.id !== desiredId)
+                    deletions.push(row.id);
+            }
+            continue;
+        }
+        // legacy rename 대상은 가장 최근에 기록된 행(내용이 가장 완전하다).
+        const newest = [...group].sort((a, b) => b.last_indexed - a.last_indexed)[0];
+        renames.push([newest.id, desiredId]);
+        for (const row of group) {
+            if (row.id !== newest.id)
+                deletions.push(row.id);
+        }
+    }
+    // desired 에 있는데 DB 에 행이 아예 없는 line 은 rename/delete 대상이 아니다 —
+    // caller의 insertExchange 가 새로 넣는다.
+    if (renames.length === 0 && deletions.length === 0) {
+        return { renamed: 0, deleted: 0 };
+    }
+    const tx = db.transaction(() => {
+        // rename 은 parent(exchanges.id)와 children(tool_calls)을 한 transaction 에서
+        // 양방향으로 건드린다 — 즉시 FK 검사를 commit 까지 미룬다.
+        db.pragma("defer_foreign_keys = ON");
+        for (const [oldId, newId] of renames)
+            renameExchangeWithin(db, oldId, newId);
+        for (const id of deletions) {
+            // 삭제된 교환을 참조하는 provenance 도 정리한다 — 죽은 포인터를 남기면
+            // source trace 가 "resolvable 한 것처럼" 보이는 것 자체가 거짓이다.
+            const factRows = db
+                .prepare("SELECT id, source_exchange_ids FROM facts WHERE source_exchange_ids LIKE ?")
+                .all(`%${id}%`);
+            for (const fact of factRows) {
+                try {
+                    const ids = JSON.parse(fact.source_exchange_ids);
+                    if (Array.isArray(ids) && ids.includes(id)) {
+                        const next = ids.filter((i) => i !== id);
+                        db.prepare("UPDATE facts SET source_exchange_ids = ? WHERE id = ?").run(JSON.stringify([...new Set(next)]), fact.id);
+                    }
+                }
+                catch {
+                    // malformed provenance — 건드리지 않는다
+                }
+            }
+            db.prepare("UPDATE fact_revisions SET source_exchange_id = NULL WHERE source_exchange_id = ?").run(id);
+            deleteExchange(db, id);
+        }
+    });
+    tx.immediate();
+    return { renamed: renames.length, deleted: deletions.length };
 }

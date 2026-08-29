@@ -90,6 +90,24 @@ exchange upsert는 primary key 충돌 때 기존 row를 update하며 rowid를 �
 이 불변식이 깨지면 `last_exchange_rowid` 이후라는 extraction 조건이 과거 교환을 새
 데이터로 오인하므로 금지합니다.
 
+exchange id는 교환의 논리 신원으로, (세션, user turn 행 위치)에서 결정론적으로
+파생됩니다 — `md5(session_id:user_line)`. 기기별 archive 경로와 assistant/tool 행
+위치는 신원 재료가 아닙니다(경로는 `archive_path` 컬럼의 location metadata일 뿐).
+user 행은 append-only rollout에서 불변이므로 turn이 자라도(assistant/tool 행 추가)
+같은 교환으로 upsert되고, session_meta 없는 파일은 경로 독립인 content 폴백 키를
+씁니다. 이 결정론 덕에 서로 다른 기기가 같은 rollout을 재색인하면 같은 교환 id를
+만들고, cross-device fact provenance(`source_exchange_ids`)가 로컬 exchange와
+연결됩니다.
+
+재색인은 삽입 전에 desired-set reconciliation을 수행합니다. 같은 archive의 DB 행
+집합과 새 파싱의 교환 집합을 한 transaction으로 대조해, line이 desired에 없는 행은
+통합 삭제 primitive(tool_calls + vec + exchange, FTS는 trigger)로 제거하고, line이
+일치하지만 legacy(archive 경로 기반) id인 행은 canonical id로 rename하며 그 참조
+전부(tool_calls, vec row, facts.source_exchange_ids, fact_revisions.source_exchange_id)를
+재작성합니다. 삭제된 교환을 참조하던 provenance 항목도 함께 정리해 죽은 포인터를
+남기지 않습니다. tool_calls는 교환별 desired set으로 대체되므로 parse 사이에 사라진
+call이 고아 증거로 남지 않습니다.
+
 FTS5 external-content table은 insert/update/delete trigger로 동기화됩니다. vector는
 384차원 int8 embedding과 `embedding_version`을 사용합니다. version이 다르면 동일
 검색 공간으로 섞지 않습니다.
