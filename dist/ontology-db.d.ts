@@ -25,10 +25,27 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
     domainName: string;
     distance: number;
 }>;
-export declare function classifyFact(db: Database.Database, factId: string, categoryId: string): void;
+/**
+ * Persist a fact's ontology assignment. With `expectedSemanticGeneration`
+ * the write becomes a CAS against the fact's meaning generation
+ * (재감사 P1-2): a classification computed from an older meaning returns 0
+ * changes and the caller must discard the stale result instead of stamping
+ * it onto the newer meaning.
+ */
+export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number): number;
 export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];
-export declare function createRelation(db: Database.Database, sourceFactId: string, relationType: RelationType, targetFactId: string, reasoning?: string): OntologyRelation;
+export interface CreateRelationOptions {
+    /**
+     * 재감사 P1-2: async relation writers (LLM 왕복을 기다린 뒤 쓴다)가 캡처한
+     * 양 endpoint의 의미 세대. 제공되면 검증+삽입을 한 transaction으로 원자화하고,
+     * 한쪽이라도 세대가 밀렸으면 관계를 만들지 않고 null을 돌려준다 — 이전 의미를
+     * 근거로 한 edge가 새 의미에 붙는 것을 막는다.
+     */
+    expectedSourceGeneration?: number;
+    expectedTargetGeneration?: number;
+}
+export declare function createRelation(db: Database.Database, sourceFactId: string, relationType: RelationType, targetFactId: string, reasoning?: string, opts?: CreateRelationOptions): OntologyRelation | null;
 /**
  * Get related facts with relevance decay.
  *

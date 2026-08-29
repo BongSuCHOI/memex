@@ -416,7 +416,7 @@ function importTombstones(db: Database.Database, payloadDirs: string[], result: 
 }
 
 async function importFacts(db: Database.Database, payloadDirs: string[], result: SyncImportResult): Promise<void> {
-  const candidates: Array<{ fact: SyncFact; exists: boolean }> = [];
+  const candidates: Array<{ fact: SyncFact; exists: boolean; localGeneration?: number }> = [];
   const remoteById = new Map<string, SyncFact>();
   for (const payloadDir of payloadDirs) {
     for (const value of readJsonLines(path.join(payloadDir, "facts.jsonl"))) {
@@ -442,11 +442,16 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
 
     const localRow = db.prepare(`
       SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-             created_at, updated_at, consolidated_count, is_active, ontology_category_id
+             created_at, updated_at, consolidated_count, is_active, ontology_category_id,
+             semantic_generation
       FROM facts WHERE id = ?
     `).get(fact.id) as Record<string, unknown> | undefined;
     if (localRow && !remoteFactWins(fact, rowToSyncFact(localRow))) continue;
-    candidates.push({ fact, exists: !!localRow });
+    candidates.push({
+      fact,
+      exists: !!localRow,
+      localGeneration: localRow ? Number(localRow.semantic_generation ?? 1) : undefined,
+    });
   }
   if (candidates.length === 0) return;
 
@@ -458,39 +463,55 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
       // retryable instead of committing a permanently vectorless row.
       const embedding = await generateEmbedding(fact.fact);
       const embeddingKr = fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null;
-      const commit = db.transaction(() => {
-        db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
-          .run(fact.id, fact.id);
-        db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(fact.id);
+      const commit = db.transaction((): boolean => {
+        // 재감사 P1-2: embedding await 동안 로컬 상태가 변했으면 이 reconcile은
+        // 폐기한다 — 동시 사용자 편집이 remote stale state로 덮이는 것을 막는
+        // commit 직전 CAS다(T06의 절반; 충돌 시계 교체는 Phase 3).
+        const tombstone = db.prepare(
+          "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
+        ).get(fact.id) as { deleted_at: string; reason: string | null } | undefined;
+        if (tombstone && (tombstone.reason === PRIVACY_TOMBSTONE_REASON ||
+            compareTimestamps(tombstone.deleted_at, fact.updated_at) >= 0)) {
+          return false;
+        }
         if (candidate.exists) {
-          db.prepare(`
+          const claimed = db.prepare(`
             UPDATE facts SET
               fact = ?, fact_kr = ?, category = ?, scope_type = ?, scope_project = ?,
               source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
               consolidated_count = ?, is_active = ?, ontology_category_id = ?,
               embedding_version = ?, ontology_attempts = 0, consolidation_attempts = 0,
-              needs_consolidation = ?, ontology_last_attempt_at = NULL
-            WHERE id = ?
+              needs_consolidation = ?, ontology_last_attempt_at = NULL,
+              semantic_generation = semantic_generation + 1, semantic_updated_at = ?
+            WHERE id = ? AND semantic_generation = ?
           `).run(
             fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.id,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.updated_at,
+            fact.id, candidate.localGeneration,
           );
+          if (claimed.changes === 0) return false;
         } else {
+          if (db.prepare("SELECT 1 FROM facts WHERE id = ?").get(fact.id)) return false;
           db.prepare(`
             INSERT INTO facts
               (id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
                embedding, created_at, updated_at, consolidated_count, is_active,
-               ontology_category_id, embedding_version, needs_consolidation)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ontology_category_id, embedding_version, needs_consolidation,
+               semantic_generation, semantic_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
           `).run(
             fact.id, fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
             fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
             fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
+            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active, fact.updated_at,
           );
         }
+
+        db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
+          .run(fact.id, fact.id);
+        db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(fact.id);
 
         db.prepare("DELETE FROM vec_facts WHERE id = ?").run(fact.id);
         db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(fact.id);
@@ -506,8 +527,14 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
             ).run(fact.id, embeddingToVecBlob(embeddingKr, koreanDtype));
           }
         }
+        return true;
       });
-      commit();
+      if (!commit()) {
+        console.error(
+          `sync-import: discarded stale reconciliation for fact ${fact.id} (local state changed during embedding)`,
+        );
+        continue;
+      }
       if (candidate.exists) result.updatedFacts++;
       else result.newFacts++;
     } catch (error) {

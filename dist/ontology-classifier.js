@@ -2,6 +2,7 @@ import { l2DistanceToSimilarity } from './db.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
 import { searchFactsByScope } from './fact-db.js';
+import { StaleFactMutationError } from './fact-management.js';
 import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelation, searchSimilarCategories, upsertCategoryEmbedding, } from './ontology-db.js';
 // Nearest existing categories presented per fact as reuse candidates —
 // embedding top-K instead of dumping ALL categories (measured 1,612 ≈ 95K
@@ -355,7 +356,9 @@ async function categoryHits(db, fact, k) {
 /**
  * Deterministic reuse gate: if the nearest existing category clears the
  * measured similarity threshold, persist it directly — no LLM call. Returns
- * the assignment or null when the gate doesn't fire.
+ * the assignment or null when the gate doesn't fire. The assignment write is
+ * a generation CAS — a fact that changed meaning concurrently throws
+ * StaleFactMutationError and the caller discards the stale assignment.
  */
 function tryDeterministicAssign(db, fact, hits) {
     const top = hits[0];
@@ -363,7 +366,10 @@ function tryDeterministicAssign(db, fact, hits) {
         return null;
     if (l2ToCosine(top.distance) < detGate())
         return null;
-    classifyFact(db, fact.id, top.category.id);
+    const changed = classifyFact(db, fact.id, top.category.id, fact.semantic_generation);
+    if (fact.semantic_generation !== undefined && changed === 0) {
+        throw new StaleFactMutationError(`deterministic ontology assignment discarded: fact ${fact.id} changed meaning`);
+    }
     return { domainId: top.category.domain_id, categoryId: top.category.id };
 }
 /**
@@ -371,7 +377,7 @@ function tryDeterministicAssign(db, fact, hits) {
  * and embedding-indexing new ones — and persist the fact's assignment.
  * Shared by the single and batch classification paths.
  */
-async function applyClassification(db, factId, parsed) {
+async function applyClassification(db, factId, parsed, expectedSemanticGeneration) {
     // Sanitize LLM-proposed names/descriptions BEFORE persisting: whatever is
     // stored here is re-injected into every future classification prompt that
     // retrieves it as a candidate (taxonomy poisoning loop). An unusable name
@@ -402,7 +408,13 @@ async function applyClassification(db, factId, parsed) {
             console.error(`Category embedding failed for ${category.id}:`, error);
         }
     }
-    classifyFact(db, factId, category.id);
+    // 재감사 P1-2: LLM 왕복 동안 fact 의미가 바뀌었으면 이 분류는 이전 의미의
+    // 결과다 — 새 의미에 덮어 쓰지 않고 폐기한다(변이 자체가 ontology를
+    // pending으로 리셋하므로 새 의미는 다음 분류 대상이다).
+    const changed = classifyFact(db, factId, category.id, expectedSemanticGeneration);
+    if (expectedSemanticGeneration !== undefined && changed === 0) {
+        throw new StaleFactMutationError(`ontology classification discarded: fact ${factId} changed meaning during classification`);
+    }
     return { domainId: domain.id, categoryId: category.id };
 }
 /**
@@ -445,6 +457,11 @@ export async function classifyFactToOntology(db, fact) {
     const assigned = result.assignments.get(fact.id);
     if (assigned)
         return assigned;
+    if (result.stale.includes(fact.id)) {
+        // 재감사 P1-2: 의미가 대기 중에 바뀐 것이다 — 실패로 ledgers를 태우지
+        // 않고 호출자가 폐기하도록 타입으로 알린다.
+        throw new StaleFactMutationError(`ontology classify: fact ${fact.id} changed meaning during classification`);
+    }
     if (result.transient.includes(fact.id)) {
         throw new TransientLlmError('ontology classify: LLM call failed');
     }
@@ -477,6 +494,7 @@ export async function classifyFactsBatch(db, facts) {
     const remaining = [];
     const hitsByFact = new Map();
     const assignments = new Map();
+    const stale = [];
     const preTransient = [];
     const preFailed = [];
     for (const fact of facts) {
@@ -500,7 +518,18 @@ export async function classifyFactsBatch(db, facts) {
             }
             throw error;
         }
-        const det = tryDeterministicAssign(db, fact, hits);
+        let det;
+        try {
+            det = tryDeterministicAssign(db, fact, hits);
+        }
+        catch (error) {
+            if (error instanceof StaleFactMutationError) {
+                console.error(`Deterministic classification stale for fact ${fact.id}:`, error);
+                stale.push(fact.id);
+                continue;
+            }
+            throw error;
+        }
         if (det) {
             deterministic.push(fact.id);
             assignments.set(fact.id, det);
@@ -510,7 +539,7 @@ export async function classifyFactsBatch(db, facts) {
         remaining.push(fact);
     }
     if (remaining.length === 0) {
-        return { classified: [], deterministic, failed: preFailed, transient: preTransient, assignments };
+        return { classified: [], deterministic, failed: preFailed, transient: preTransient, stale, assignments };
     }
     const domains = listDomains(db);
     // Structured JSON payload, NOT concatenated prose sections: fact text is a
@@ -541,13 +570,13 @@ export async function classifyFactsBatch(db, facts) {
     }
     catch (error) {
         console.error(`Batch classification call failed (transient, no attempt burned):`, error);
-        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], assignments };
+        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], stale, assignments };
     }
     // The Agent SDK can end a stream without a result message, yielding '' —
     // that is a call-level (transient) failure, not the facts' fault.
     if (!response || response.trim() === '') {
         console.error('Batch classification returned an empty response (transient, no attempt burned)');
-        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], assignments };
+        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], stale, assignments };
     }
     const parsed = parseJsonResponse(response);
     // Index the response items; tolerate partial/malformed arrays — every fact
@@ -592,16 +621,21 @@ export async function classifyFactsBatch(db, facts) {
             continue;
         }
         try {
-            const applied = await applyClassification(db, fact.id, item);
+            const applied = await applyClassification(db, fact.id, item, fact.semantic_generation);
             assignments.set(fact.id, applied);
             classified.push(fact.id);
         }
         catch (error) {
+            if (error instanceof StaleFactMutationError) {
+                console.error(`Batch classification stale for fact ${fact.id}:`, error);
+                stale.push(fact.id);
+                continue;
+            }
             console.error(`Batch classification apply failed for fact ${fact.id}:`, error);
             failed.push(fact.id);
         }
     }
-    return { classified, deterministic, failed: [...preFailed, ...failed], transient: preTransient, assignments };
+    return { classified, deterministic, failed: [...preFailed, ...failed], transient: preTransient, stale, assignments };
 }
 // Hard per-call ceiling for direct backfillClassifyBatch callers: the worker
 // already chunks to BACKFILL_BATCH_SIZE (≤50), but a future script calling
@@ -696,11 +730,21 @@ topK = 2) {
             `New fact category: ${newFact.category}`,
             `Existing fact category: ${existingFact.category}`,
         ].join('\n');
+        // 재감사 P1-2: relation은 이전 의미의 문장을 근거로 만들어진다. LLM 왕복
+        // 동안 endpoint가 변이됐으면 원자적 CAS 검증에서 관계 생성이 거절된다.
+        const expectedSourceGeneration = newFact.semantic_generation;
+        const expectedTargetGeneration = existingFact.semantic_generation;
         try {
             const response = await callMemoryModel(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256);
             const result = parseJsonResponse(response);
             if (result && result.has_relation && result.relation_type) {
-                createRelation(db, newFact.id, result.relation_type, existingFact.id, result.reasoning);
+                const created = createRelation(db, newFact.id, result.relation_type, existingFact.id, result.reasoning, {
+                    expectedSourceGeneration,
+                    expectedTargetGeneration,
+                });
+                if (created === null) {
+                    console.error(`Relation detection stale for facts ${newFact.id} / ${existingFact.id}: an endpoint changed meaning during detection`);
+                }
             }
         }
         catch (error) {
@@ -736,7 +780,11 @@ export async function classifyAndLinkFact(db, factId, embedding) {
         // path: an outage is not the fact's fault, and mixing the two would let
         // one transient hiccup push a fact with prior content failures over the
         // parking cap.
-        if (error instanceof IndexRepairError) {
+        if (error instanceof StaleFactMutationError) {
+            // 재감사 P1-2: 의미가 분류 중에 바뀐 것이다. 변이가 ontology를 pending으로
+            // 리셋했으므로 새 의미는 다음 분류 대상 — 시도 ledger도 폴백 parking도 금지.
+        }
+        else if (error instanceof IndexRepairError) {
             // Infra corruption: no ledger burn (parking innocent facts in
             // General/Misc because the INDEX is broken would misfile them), but it
             // must not dissolve into silent success either — rethrown below, AFTER
@@ -800,6 +848,8 @@ function rowToFact(row) {
         updated_at: row['updated_at'],
         consolidated_count: row['consolidated_count'],
         is_active: Boolean(row['is_active']),
+        semantic_generation: Number(row['semantic_generation'] ?? 1),
+        semantic_updated_at: row['semantic_updated_at'] ?? null,
     };
 }
 export { generateEmbedding };

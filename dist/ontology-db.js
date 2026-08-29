@@ -123,8 +123,19 @@ export function searchSimilarCategories(db, embedding, k = 20) {
     return results;
 }
 // === Fact Classification ===
-export function classifyFact(db, factId, categoryId) {
-    db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`).run(categoryId, new Date().toISOString(), factId);
+/**
+ * Persist a fact's ontology assignment. With `expectedSemanticGeneration`
+ * the write becomes a CAS against the fact's meaning generation
+ * (재감사 P1-2): a classification computed from an older meaning returns 0
+ * changes and the caller must discard the stale result instead of stamping
+ * it onto the newer meaning.
+ */
+export function classifyFact(db, factId, categoryId, expectedSemanticGeneration) {
+    if (expectedSemanticGeneration === undefined) {
+        return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`).run(categoryId, new Date().toISOString(), factId).changes;
+    }
+    return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
+     WHERE id = ? AND semantic_generation = ?`).run(categoryId, new Date().toISOString(), factId, expectedSemanticGeneration).changes;
 }
 export function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
     let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
@@ -148,51 +159,67 @@ export function getFactsByDomain(db, domainId) {
         .all(domainId)
         .map(rowToFact);
 }
-// === Relation CRUD ===
-export function createRelation(db, sourceFactId, relationType, targetFactId, reasoning) {
-    // Idempotent on the TRIPLE (source, type, target) — matching the UNIQUE
-    // index. Retries (classification re-runs under a held-back
-    // IndexRepairError, backfill re-selection) must not stack duplicate rows
-    // of the SAME type; distinct relation TYPES between the same facts remain
-    // valid, user-visible graph data (a SUPPORTS b + a CONTRADICTS b) and are
-    // deliberately NOT collapsed — an LLM type-flap across retries therefore
-    // adds at most one row per type (bounded by the 4-type enum).
-    const existing = db
-        .prepare(`SELECT * FROM ontology_relations
-       WHERE source_fact_id = ? AND relation_type = ? AND target_fact_id = ?`)
-        .get(sourceFactId, relationType, targetFactId);
-    if (existing)
-        return existing;
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    try {
-        db.prepare(`INSERT INTO ontology_relations (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`).run(id, sourceFactId, relationType, targetFactId, reasoning ?? null, now);
-    }
-    catch (error) {
-        // Recover ONLY from the expected unique-constraint race (another process
-        // inserted the same triple between our check and insert) — any other
-        // failure (schema, CHECK violation, corruption) must surface, not be
-        // laundered into a fake winner lookup.
-        const code = error.code ?? '';
-        if (!code.startsWith('SQLITE_CONSTRAINT'))
-            throw error;
-        const winner = db
+export function createRelation(db, sourceFactId, relationType, targetFactId, reasoning, opts = {}) {
+    const insertTx = db.transaction(() => {
+        if (opts.expectedSourceGeneration !== undefined ||
+            opts.expectedTargetGeneration !== undefined) {
+            const genStmt = db.prepare('SELECT semantic_generation FROM facts WHERE id = ?');
+            const sourceGen = opts.expectedSourceGeneration === undefined
+                ? opts.expectedSourceGeneration
+                : genStmt.get(sourceFactId)?.semantic_generation;
+            const targetGen = opts.expectedTargetGeneration === undefined
+                ? opts.expectedTargetGeneration
+                : genStmt.get(targetFactId)?.semantic_generation;
+            if ((opts.expectedSourceGeneration !== undefined && sourceGen !== opts.expectedSourceGeneration) ||
+                (opts.expectedTargetGeneration !== undefined && targetGen !== opts.expectedTargetGeneration)) {
+                return null; // stale endpoint — discard the relation, not the newer meaning
+            }
+        }
+        // Idempotent on the TRIPLE (source, type, target) — matching the UNIQUE
+        // index. Retries (classification re-runs under a held-back
+        // IndexRepairError, backfill re-selection) must not stack duplicate rows
+        // of the SAME type; distinct relation TYPES between the same facts remain
+        // valid, user-visible graph data (a SUPPORTS b + a CONTRADICTS b) and are
+        // deliberately NOT collapsed — an LLM type-flap across retries therefore
+        // adds at most one row per type (bounded by the 4-type enum).
+        const existing = db
             .prepare(`SELECT * FROM ontology_relations
          WHERE source_fact_id = ? AND relation_type = ? AND target_fact_id = ?`)
             .get(sourceFactId, relationType, targetFactId);
-        if (winner)
-            return winner;
-        throw error;
-    }
-    return {
-        id,
-        source_fact_id: sourceFactId,
-        relation_type: relationType,
-        target_fact_id: targetFactId,
-        reasoning: reasoning ?? null,
-        created_at: now,
-    };
+        if (existing)
+            return existing;
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        try {
+            db.prepare(`INSERT INTO ontology_relations (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`).run(id, sourceFactId, relationType, targetFactId, reasoning ?? null, now);
+        }
+        catch (error) {
+            // Recover ONLY from the expected unique-constraint race (another process
+            // inserted the same triple between our check and insert) — any other
+            // failure (schema, CHECK violation, corruption) must surface, not be
+            // laundered into a fake winner lookup.
+            const code = error.code ?? '';
+            if (!code.startsWith('SQLITE_CONSTRAINT'))
+                throw error;
+            const winner = db
+                .prepare(`SELECT * FROM ontology_relations
+           WHERE source_fact_id = ? AND relation_type = ? AND target_fact_id = ?`)
+                .get(sourceFactId, relationType, targetFactId);
+            if (winner)
+                return winner;
+            throw error;
+        }
+        return {
+            id,
+            source_fact_id: sourceFactId,
+            relation_type: relationType,
+            target_fact_id: targetFactId,
+            reasoning: reasoning ?? null,
+            created_at: now,
+        };
+    });
+    return insertTx.immediate();
 }
 /**
  * Get related facts with relevance decay.
@@ -390,6 +417,8 @@ function rowToFact(row) {
         updated_at: row['updated_at'],
         consolidated_count: row['consolidated_count'],
         is_active: Boolean(row['is_active']),
+        semantic_generation: Number(row['semantic_generation'] ?? 1),
+        semantic_updated_at: row['semantic_updated_at'] ?? null,
     };
 }
 function rowToRelation(row) {

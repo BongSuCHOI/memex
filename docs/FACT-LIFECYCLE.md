@@ -142,6 +142,13 @@ threshold가 명시된 경우에만 사용하고, 기본은 model classification
 분류 실패 횟수/최근 시각을 기록해 무한 재시도를 막고 backlog 상태를 관측 가능하게
 합니다.
 
+ontology 분류, relation 생성, fact/KR 재임베딩 같은 비동기 파생 writer는 시작 시
+fact의 `semantic_generation`을 캡처하고 최종 쓰기를 그 세대에 대한 CAS로 수행합니다.
+LLM/임베딩 대기 중에 의미가 변이되면(세대 상승) 그 결과는 폐기됩니다 — 분류는
+pending을 유지하고(변이가 리셋), 관계는 생성되지 않고, stale 벡터는 쓰이지 않습니다.
+폐기된 시도는 분류 ledger를 태우지 않습니다. fact 의미가 바뀌면 그 의미에서 파생된
+모든 representation은 같은 세대를 가리키거나 invalid여야 합니다.
+
 ## 7. 사용자 수정
 
 ```mermaid
@@ -158,6 +165,12 @@ flowchart LR
 CLI/Web UI의 manual edit와 consolidation의 EVOLUTION/CONTRADICTION은 같은
 `fact-management.mutateFactMeaning()` transaction service를 호출합니다. UI나 자동
 consolidation이 text만 바꾸는 shortcut을 갖지 않습니다.
+
+의미 변경은 fact의 `semantic_generation`을 올리고 `semantic_updated_at`을 갱신하는
+유일한 경로입니다(다른 하나는 sync fact import의 replication). consolidation
+DUPLICATE는 양 endpoint의 세대를 commit 시점에 재검증하고, drain의 queue 확인/clear도
+세대 토큰으로 수행합니다. 세대가 밀린 비교 판정은 `StaleFactMutationError`로 폐기되며
+대상 fact는 dirty queue에 남아 새 의미로 다시 비교됩니다.
 
 ## 8. provenance
 

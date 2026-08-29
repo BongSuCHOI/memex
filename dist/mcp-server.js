@@ -18734,7 +18734,9 @@ function initDatabase() {
       ontology_attempts INTEGER NOT NULL DEFAULT 0,
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
-      ontology_last_attempt_at TEXT
+      ontology_last_attempt_at TEXT,
+      semantic_generation INTEGER NOT NULL DEFAULT 1,
+      semantic_updated_at TEXT NOT NULL DEFAULT ''
     )
   `);
   const factColumns = new Set(
@@ -18748,6 +18750,19 @@ function initDatabase() {
       "UPDATE facts SET needs_consolidation = 0 WHERE is_active = 0"
     ).run();
   }
+  if (!factColumns.has("semantic_generation")) {
+    db.exec(
+      "ALTER TABLE facts ADD COLUMN semantic_generation INTEGER NOT NULL DEFAULT 1"
+    );
+  }
+  if (!factColumns.has("semantic_updated_at")) {
+    db.exec(
+      "ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''"
+    );
+  }
+  db.prepare(
+    "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
+  ).run();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);
@@ -19047,7 +19062,9 @@ function rowToFact(row) {
     updated_at: row["updated_at"],
     consolidated_count: row["consolidated_count"],
     is_active: Boolean(row["is_active"]),
-    ontology_category_id: row["ontology_category_id"] ?? null
+    ontology_category_id: row["ontology_category_id"] ?? null,
+    semantic_generation: Number(row["semantic_generation"] ?? 1),
+    semantic_updated_at: row["semantic_updated_at"] ?? null
   };
 }
 
@@ -19203,7 +19220,9 @@ function rowToFact2(row) {
     created_at: row["created_at"],
     updated_at: row["updated_at"],
     consolidated_count: row["consolidated_count"],
-    is_active: Boolean(row["is_active"])
+    is_active: Boolean(row["is_active"]),
+    semantic_generation: Number(row["semantic_generation"] ?? 1),
+    semantic_updated_at: row["semantic_updated_at"] ?? null
   };
 }
 function rowToRelation(row) {

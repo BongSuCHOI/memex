@@ -323,7 +323,9 @@ export function initDatabase() {
       ontology_attempts INTEGER NOT NULL DEFAULT 0,
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
-      ontology_last_attempt_at TEXT
+      ontology_last_attempt_at TEXT,
+      semantic_generation INTEGER NOT NULL DEFAULT 1,
+      semantic_updated_at TEXT NOT NULL DEFAULT ''
     )
   `);
     // Consolidation processing order is local ingestion/mutation order, never the
@@ -334,6 +336,19 @@ export function initDatabase() {
         db.exec("ALTER TABLE facts ADD COLUMN needs_consolidation INTEGER NOT NULL DEFAULT 1");
         db.prepare("UPDATE facts SET needs_consolidation = 0 WHERE is_active = 0").run();
     }
+    // 재감사 P1-2: 의미 세대 토큰. 모든 의미 변경(mutateFactMeaning, sync fact
+    // import)이 generation을 올리고 semantic_updated_at을 갱신하며, 비동기 파생
+    // writer(ontology/reembed/KR vector/relation/consolidation/sync import)는
+    // 시작 시 캡처한 generation으로 최종 쓰기를 CAS한다 — 0행이면 stale 결과 폐기.
+    // legacy 행은 generation 1에서 시작하고 semantic_updated_at은 updated_at로
+    // 채운다(한 번만 채워지고 이후 writer가 항상 설정한다).
+    if (!factColumns.has("semantic_generation")) {
+        db.exec("ALTER TABLE facts ADD COLUMN semantic_generation INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!factColumns.has("semantic_updated_at")) {
+        db.exec("ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''");
+    }
+    db.prepare("UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''").run();
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);

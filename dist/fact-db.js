@@ -10,11 +10,11 @@ export function insertFact(db, params) {
     const id = randomUUID();
     const now = new Date().toISOString();
     db.prepare(`
-    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version, semantic_generation, semantic_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?)
   `).run(id, params.fact, params.category, params.scope_type, params.scope_project, JSON.stringify(params.source_exchange_ids), params.embedding
         ? Buffer.from(new Float32Array(params.embedding).buffer)
-        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION);
+        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION, now);
     // Insert into vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
         const p = vecParamFor(db, "vec_facts", params.embedding);
@@ -356,5 +356,7 @@ function rowToFact(row) {
         consolidated_count: row["consolidated_count"],
         is_active: Boolean(row["is_active"]),
         ontology_category_id: row["ontology_category_id"] ?? null,
+        semantic_generation: Number(row["semantic_generation"] ?? 1),
+        semantic_updated_at: row["semantic_updated_at"] ?? null,
     };
 }

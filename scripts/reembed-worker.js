@@ -109,11 +109,12 @@ async function reembedCategories(db) {
 async function reembedFacts(db) {
   const { clause, params } = buildFactReembedPending(EMBEDDING_VERSION);
   const pending = db.prepare(
-    `SELECT f.id, f.fact, f.fact_kr FROM facts f WHERE ${clause}`,
+    `SELECT f.id, f.fact, f.fact_kr, f.semantic_generation FROM facts f WHERE ${clause}`,
   ).all(...params);
   if (pending.length) log(`facts: ${pending.length} rows to re-embed`);
 
   let done = 0;
+  let stale = 0;
   for (const row of pending) {
     const emb = await generateEmbedding(row.fact);
     const buf = Buffer.from(new Float32Array(emb).buffer); // facts.embedding column stays float32 (canonical source)
@@ -121,22 +122,32 @@ async function reembedFacts(db) {
     // invalidates both, and vec_facts_kr rows are not version-tracked.
     const krEmb = row.fact_kr ? await generateEmbedding(row.fact_kr) : null;
     const tx = db.transaction(() => {
+      // 재감사 P1-2: 의미 세대 CAS — UPDATE가 0행이면 이 임베딩은 이전 의미의
+      // 것이고 변이가 이미 새 텍스트+벡터를 썼으므로 vec 스왑까지 통째로 폐기한다.
+      // 그대로 쓰면 "B 문장 + A 임베딩 + embedding_version=current" 조합이 된다.
+      const claimed = db.prepare('UPDATE facts SET embedding = ?, embedding_version = ? WHERE id = ? AND semantic_generation = ?')
+        .run(buf, EMBEDDING_VERSION, row.id, row.semantic_generation);
+      if (claimed.changes === 0) return false;
       // Read dtype inside the transaction so the blob matches the table.
       const dtF = getVecTableDtype(db, 'vec_facts');
       const dtK = getVecTableDtype(db, 'vec_facts_kr');
-      db.prepare('UPDATE facts SET embedding = ?, embedding_version = ? WHERE id = ?')
-        .run(buf, EMBEDDING_VERSION, row.id);
       db.prepare('DELETE FROM vec_facts WHERE id = ?').run(row.id);
       db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vecParamSql(dtF)})`).run(row.id, embeddingToVecBlob(emb, dtF));
       db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(row.id);
       if (krEmb) {
         db.prepare(`INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${vecParamSql(dtK)})`).run(row.id, embeddingToVecBlob(krEmb, dtK));
       }
+      return true;
     });
-    tx();
-    if (++done % 500 === 0) log(`facts: ${done}/${pending.length}`);
+    if (tx()) {
+      done++;
+    } else {
+      stale++;
+      log(`facts: stale discard for ${row.id} — semantic_generation moved during embed`);
+    }
+    if (done % 500 === 0) log(`facts: ${done}/${pending.length}`);
   }
-  if (pending.length) log(`facts: done (${done})`);
+  if (pending.length) log(`facts: done (${done})${stale ? `, stale discarded (${stale})` : ''}`);
   return done;
 }
 
@@ -147,22 +158,33 @@ async function embedKoreanFacts(db) {
   } catch { /* table scan unsupported → rebuild all */ }
 
   const rows = db.prepare(
-    "SELECT id, fact_kr FROM facts WHERE is_active = 1 AND fact_kr IS NOT NULL AND fact_kr != ''"
+    "SELECT id, fact_kr, semantic_generation FROM facts WHERE is_active = 1 AND fact_kr IS NOT NULL AND fact_kr != ''"
   ).all().filter((r) => !existing.has(r.id));
   if (rows.length) log(`facts-kr: ${rows.length} Korean vectors to build`);
 
   let done = 0;
+  let stale = 0;
   for (const row of rows) {
     const emb = await generateEmbedding(row.fact_kr);
     const tx = db.transaction(() => {
+      // 재감사 P1-2: KR 번역도 의미에서 파생된다 — 임베딩 대기 중 변이가
+      // generation을 올리고 fact_kr을 NULL로 무효화했으면 이 벡터는 쓰지 않는다.
+      const cur = db.prepare('SELECT semantic_generation, fact_kr FROM facts WHERE id = ?').get(row.id);
+      if (!cur || cur.semantic_generation !== row.semantic_generation || cur.fact_kr !== row.fact_kr) return false;
       const dtK = getVecTableDtype(db, 'vec_facts_kr');
       db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(row.id);
       db.prepare(`INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${vecParamSql(dtK)})`).run(row.id, embeddingToVecBlob(emb, dtK));
+      return true;
     });
-    tx();
-    if (++done % 500 === 0) log(`facts-kr: ${done}/${rows.length}`);
+    if (tx()) {
+      done++;
+    } else {
+      stale++;
+      log(`facts-kr: stale discard for ${row.id} — fact meaning/translation moved during embed`);
+    }
+    if (done % 500 === 0) log(`facts-kr: ${done}/${rows.length}`);
   }
-  if (rows.length) log(`facts-kr: done (${done})`);
+  if (rows.length) log(`facts-kr: done (${done})${stale ? `, stale discarded (${stale})` : ''}`);
   return done;
 }
 

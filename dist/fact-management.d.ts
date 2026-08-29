@@ -54,6 +54,17 @@ export interface SemanticMutationResult extends EditResult {
     deactivatedFactIds: string[];
 }
 /**
+ * Thrown when a semantic mutation loses a race: the fact's text changed
+ * between the caller's read and the mutation commit
+ * (`expectedPreviousFact` mismatch), or an async derived writer's final
+ * write found a newer semantic generation. The stale result must be
+ * discarded — callers treat this as "someone else moved the fact", not as
+ * an internal failure.
+ */
+export declare class StaleFactMutationError extends Error {
+    constructor(message: string);
+}
+/**
  * Replace one fact's meaning while preserving its identity and revision chain.
  * Embedding generation happens before the write; every durable generation
  * transition and invalidation commits in one transaction.

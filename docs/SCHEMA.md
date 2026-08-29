@@ -132,7 +132,9 @@ CREATE TABLE facts (
   ontology_attempts INTEGER NOT NULL DEFAULT 0,
   consolidation_attempts INTEGER NOT NULL DEFAULT 0,
   needs_consolidation INTEGER NOT NULL DEFAULT 1,
-  ontology_last_attempt_at TEXT
+  ontology_last_attempt_at TEXT,
+  semantic_generation INTEGER NOT NULL DEFAULT 1,
+  semantic_updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE fact_revisions (
@@ -170,6 +172,17 @@ CREATE TABLE extraction_log (
 `source_exchange_ids`는 fact의 1차 provenance입니다. `fact_revisions`는 기존 문장을
 삭제하지 않고 수정/진화를 기록합니다. deactivate는 `is_active=0`과 vector 제거를
 같이 수행하고, restore는 검색 가능한 vector 상태를 재구성합니다.
+
+`semantic_generation`은 fact 의미의 로컬 세대 토큰입니다. 의미 변경은
+`mutateFactMeaning`과 sync fact import 두 경로뿐이며, 두 경로 모두 세대를 올리고
+`semantic_updated_at`을 해당 의미 사건의 시각으로 갱신합니다. activate/deactivate/restore,
+ontology 분류, consolidation 확인 같은 비의미 쓰기는 세대를 올리지 않습니다.
+비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
+시작 시 세대를 캡처하고 최종 쓰기를 `WHERE semantic_generation = ?` CAS(또는 동일
+transaction 안의 재검증)로 수행합니다 — 0행이면 그 결과는 이전 의미의 것이므로
+폐기됩니다. "fact 의미가 바뀌면 그 의미에서 파생된 모든 representation은 같은
+세대를 가리키거나 invalid여야 한다"는 불변식의 enforcement 토큰입니다. legacy 행은
+migration에서 세대 1로 시작하고 `semantic_updated_at = updated_at`으로 채워집니다.
 hard delete는 fact/revision/relation/vector를 지우기 전에 `fact_tombstones`를 같은
 transaction에 기록합니다. tombstone은 FK를 갖지 않는 의도적 deletion event이며,
 cross-device sync가 오래된 fact snapshot을 되살리지 못하게 합니다.

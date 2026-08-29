@@ -109,6 +109,21 @@ export interface SemanticMutationResult extends EditResult {
   deactivatedFactIds: string[];
 }
 
+/**
+ * Thrown when a semantic mutation loses a race: the fact's text changed
+ * between the caller's read and the mutation commit
+ * (`expectedPreviousFact` mismatch), or an async derived writer's final
+ * write found a newer semantic generation. The stale result must be
+ * discarded — callers treat this as "someone else moved the fact", not as
+ * an internal failure.
+ */
+export class StaleFactMutationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StaleFactMutationError';
+  }
+}
+
 function parseSourceExchangeIds(raw: string | null): string[] {
   if (!raw) return [];
   const parsed: unknown = JSON.parse(raw);
@@ -155,11 +170,13 @@ export async function mutateFactMeaning(
 
   const tx = db.transaction(() => {
     const current = db.prepare(
-      'SELECT fact, source_exchange_ids FROM facts WHERE id = ?',
-    ).get(opts.factId) as { fact: string; source_exchange_ids: string | null } | undefined;
+      'SELECT fact, source_exchange_ids, semantic_generation FROM facts WHERE id = ?',
+    ).get(opts.factId) as { fact: string; source_exchange_ids: string | null; semantic_generation: number } | undefined;
     if (!current) throw new Error(`fact not found: ${opts.factId}`);
     if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
-      throw new Error(`fact changed before semantic mutation: ${opts.factId}`);
+      throw new StaleFactMutationError(
+        `fact changed before semantic mutation: ${opts.factId}`,
+      );
     }
 
     const sourceExchangeIds = [...new Set([
@@ -176,20 +193,25 @@ export async function mutateFactMeaning(
     const countUpdate = opts.consolidatedCountIncrement
       ? ', consolidated_count = consolidated_count + 1'
       : '';
+    const now = new Date().toISOString();
+    // 재감사 P1-2: 의미 변경은 semantic_generation을 올린다 — 이 커밋 이후
+    // 캡처된 구세대의 비동기 결과(분류/벡터/KR/관계)는 CAS에서 0행으로 폐기된다.
     db.prepare(`
       UPDATE facts
       SET fact = ?, source_exchange_ids = ?, embedding = ?, updated_at = ?, embedding_version = ?,
           ontology_category_id = NULL, fact_kr = NULL,
           ontology_attempts = 0, consolidation_attempts = 0, needs_consolidation = 1,
-          ontology_last_attempt_at = NULL
+          ontology_last_attempt_at = NULL,
+          semantic_generation = semantic_generation + 1, semantic_updated_at = ?
           ${countUpdate}
       WHERE id = ?
     `).run(
       newText,
       JSON.stringify(sourceExchangeIds),
       embBuffer,
-      new Date().toISOString(),
+      now,
       EMBEDDING_VERSION,
+      now,
       opts.factId,
     );
 

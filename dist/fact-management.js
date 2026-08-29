@@ -42,6 +42,20 @@ export function showFact(db, id) {
     catch { /* unparseable provenance */ }
     return { ...fact, revisions: getRevisions(db, id), sources };
 }
+/**
+ * Thrown when a semantic mutation loses a race: the fact's text changed
+ * between the caller's read and the mutation commit
+ * (`expectedPreviousFact` mismatch), or an async derived writer's final
+ * write found a newer semantic generation. The stale result must be
+ * discarded — callers treat this as "someone else moved the fact", not as
+ * an internal failure.
+ */
+export class StaleFactMutationError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'StaleFactMutationError';
+    }
+}
 function parseSourceExchangeIds(raw) {
     if (!raw)
         return [];
@@ -84,11 +98,11 @@ export async function mutateFactMeaning(db, opts) {
     const deactivateFactIds = [...new Set(opts.deactivateFactIds ?? [])]
         .filter((id) => id !== opts.factId);
     const tx = db.transaction(() => {
-        const current = db.prepare('SELECT fact, source_exchange_ids FROM facts WHERE id = ?').get(opts.factId);
+        const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation FROM facts WHERE id = ?').get(opts.factId);
         if (!current)
             throw new Error(`fact not found: ${opts.factId}`);
         if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
-            throw new Error(`fact changed before semantic mutation: ${opts.factId}`);
+            throw new StaleFactMutationError(`fact changed before semantic mutation: ${opts.factId}`);
         }
         const sourceExchangeIds = [...new Set([
                 ...parseSourceExchangeIds(current.source_exchange_ids),
@@ -104,15 +118,19 @@ export async function mutateFactMeaning(db, opts) {
         const countUpdate = opts.consolidatedCountIncrement
             ? ', consolidated_count = consolidated_count + 1'
             : '';
+        const now = new Date().toISOString();
+        // 재감사 P1-2: 의미 변경은 semantic_generation을 올린다 — 이 커밋 이후
+        // 캡처된 구세대의 비동기 결과(분류/벡터/KR/관계)는 CAS에서 0행으로 폐기된다.
         db.prepare(`
       UPDATE facts
       SET fact = ?, source_exchange_ids = ?, embedding = ?, updated_at = ?, embedding_version = ?,
           ontology_category_id = NULL, fact_kr = NULL,
           ontology_attempts = 0, consolidation_attempts = 0, needs_consolidation = 1,
-          ontology_last_attempt_at = NULL
+          ontology_last_attempt_at = NULL,
+          semantic_generation = semantic_generation + 1, semantic_updated_at = ?
           ${countUpdate}
       WHERE id = ?
-    `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, new Date().toISOString(), EMBEDDING_VERSION, opts.factId);
+    `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, now, EMBEDDING_VERSION, now, opts.factId);
         db.prepare('DELETE FROM vec_facts WHERE id = ?').run(opts.factId);
         db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(opts.factId, vp.blob);
         if (tableExists(db, 'vec_facts_kr')) {

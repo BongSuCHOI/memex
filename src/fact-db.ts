@@ -54,8 +54,8 @@ export function insertFact(
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version, semantic_generation, semantic_updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?)
   `).run(
     id,
     params.fact,
@@ -70,6 +70,7 @@ export function insertFact(
     now,
     params.fact_kr ?? null,
     EMBEDDING_VERSION,
+    now,
   );
 
   // Insert into vector index (atomic DELETE+INSERT via transaction)
@@ -566,5 +567,7 @@ function rowToFact(row: Record<string, unknown>): Fact {
     is_active: Boolean(row["is_active"]),
     ontology_category_id:
       (row["ontology_category_id"] as string | null) ?? null,
+    semantic_generation: Number(row["semantic_generation"] ?? 1),
+    semantic_updated_at: (row["semantic_updated_at"] as string | null) ?? null,
   };
 }

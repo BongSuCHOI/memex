@@ -89,6 +89,11 @@ export declare function classifyFactsBatch(db: Database.Database, facts: Fact[])
     deterministic: string[];
     failed: string[];
     transient: string[];
+    /**
+     * 재감사 P1-2: fact 의미가 분류 대기 중에 바뀐 건 — LLM 결과가 폐기됐고
+     * 시도 ledgers도 태우면 안 된다(새 의미가 다음 분류 대상이다).
+     */
+    stale: string[];
     /** fact id → persisted assignment, for callers that need the ids (single path). */
     assignments: Map<string, {
         domainId: string;

@@ -2,7 +2,7 @@ import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
 import { getPendingConsolidationFacts, searchFactsByScope, updateFact, } from './fact-db.js';
-import { deactivateFactTransactional, mutateFactMeaning } from './fact-management.js';
+import { deactivateFactTransactional, mutateFactMeaning, StaleFactMutationError } from './fact-management.js';
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
 ## Relationship types (choose one)
@@ -100,8 +100,10 @@ async function drainPending(db, project) {
             break;
         // Re-read the queue generation: an earlier comparison or concurrent edit
         // may have deactivated or changed this fact after the bounded page loaded.
-        const current = db.prepare('SELECT is_active, updated_at FROM facts WHERE id = ?').get(newFact.id);
-        if (current?.is_active === 1 && current.updated_at !== newFact.updated_at) {
+        // 재감사 P1-2: 세대 판정은 semantic_generation으로 한다 — 분류 같은 비의미
+        // 메타데이터 쓰기가 updated_at을 움직여도 큐 판정이 흔들리지 않는다.
+        const current = db.prepare('SELECT is_active, semantic_generation FROM facts WHERE id = ?').get(newFact.id);
+        if (current?.is_active === 1 && current.semantic_generation !== newFact.semantic_generation) {
             continue; // newer generation stays dirty for the next run
         }
         if (current?.is_active === 1) {
@@ -117,43 +119,51 @@ async function drainPending(db, project) {
                 else if (verdict === 'EVOLUTION')
                     evolutions++;
                 // Clear only the exact generation examined. A concurrent import/edit
-                // changes updated_at and keeps the newer generation dirty for next run.
-                db.prepare('UPDATE facts SET needs_consolidation = 0, consolidation_attempts = 0 WHERE id = ? AND updated_at = ?').run(newFact.id, newFact.updated_at);
+                // bumps semantic_generation and keeps the newer generation dirty for
+                // the next run.
+                db.prepare('UPDATE facts SET needs_consolidation = 0, consolidation_attempts = 0 WHERE id = ? AND semantic_generation = ?').run(newFact.id, newFact.semantic_generation);
             }
             catch (error) {
                 llmCalls++;
                 console.error(`Consolidation call failed for fact ${newFact.id}:`, error);
-                // A non-LLM error (parser/DB/internal bug, NOT an LlmCallError) must NEVER
-                // clear the dirty flag — hold so the bug surfaces instead of silently
-                // marking the fact processed and draining the backlog.
-                if (!(error instanceof LlmCallError)) {
+                if (error instanceof StaleFactMutationError) {
+                    // 재감사 P1-2: 비교 중 fact 의미가 바뀌었다 — 판정은 폐기됐고 dirty는
+                    // 유지된다(clear가 실행되지 않음). 내부 실패가 아니므로 큐를 멈추지 않고
+                    // 다음 run이 새 의미를 다시 비교한다.
+                }
+                else if (!(error instanceof LlmCallError)) {
+                    // A non-LLM error (parser/DB/internal bug, NOT an LlmCallError) must NEVER
+                    // clear the dirty flag — hold so the bug surfaces instead of silently
+                    // marking the fact processed and draining the backlog.
                     break;
                 }
-                // SKIP is reserved for a RECOGNIZED deterministic per-request rejection
-                // (400/413/422, too-long, max_tokens...) — the one case where the fact
-                // ITSELF is provably at fault. Transient (outage/auth) AND unknown both
-                // HOLD: an unrecognized provider error ("HTTP 500", "Error code: 503") is
-                // far more likely an unusual outage shape than a poison fact, so holding
-                // never drains the backlog during an outage. (Residual: a per-fact poison
-                // that never presents as a recognized deterministic error holds — but the
-                // global lock + budget mean it just stops, no flood, and the repeated
-                // fact id in the log makes it diagnosable.)
-                if (classifyLlmError(error) !== 'deterministic') {
+                else if (classifyLlmError(error) !== 'deterministic') {
+                    // SKIP is reserved for a RECOGNIZED deterministic per-request rejection
+                    // (400/413/422, too-long, max_tokens...) — the one case where the fact
+                    // ITSELF is provably at fault. Transient (outage/auth) AND unknown both
+                    // HOLD: an unrecognized provider error ("HTTP 500", "Error code: 503") is
+                    // far more likely an unusual outage shape than a poison fact, so holding
+                    // never drains the backlog during an outage. (Residual: a per-fact poison
+                    // that never presents as a recognized deterministic error holds — but the
+                    // global lock + budget mean it just stops, no flood, and the repeated
+                    // fact id in the log makes it diagnosable.)
                     break;
                 }
-                // Deterministic per-fact rejection: ledger it and, after MAX attempts,
-                // SKIP (clear it) so one un-processable fact can't wedge the queue.
-                // Below MAX, hold so a mis-classified blip still gets a couple of
-                // retries. The fact stays active/searchable; only best-effort
-                // consolidation stops after the bounded deterministic failures.
-                const attempts = db.prepare('UPDATE facts SET consolidation_attempts = COALESCE(consolidation_attempts, 0) + 1 WHERE id = ? AND updated_at = ? RETURNING consolidation_attempts').get(newFact.id, newFact.updated_at)?.consolidation_attempts ?? 0;
-                if (attempts >= MAX_CONSOLIDATION_ATTEMPTS) {
-                    console.error(`Consolidation skip fact ${newFact.id} after ${attempts} deterministic failures`);
-                    db.prepare('UPDATE facts SET needs_consolidation = 0 WHERE id = ? AND updated_at = ?').run(newFact.id, newFact.updated_at);
-                    processed++;
-                    continue;
+                else {
+                    // Deterministic per-fact rejection: ledger it and, after MAX attempts,
+                    // SKIP (clear it) so one un-processable fact can't wedge the queue.
+                    // Below MAX, hold so a mis-classified blip still gets a couple of
+                    // retries. The fact stays active/searchable; only best-effort
+                    // consolidation stops after the bounded deterministic failures.
+                    const attempts = db.prepare('UPDATE facts SET consolidation_attempts = COALESCE(consolidation_attempts, 0) + 1 WHERE id = ? AND semantic_generation = ? RETURNING consolidation_attempts').get(newFact.id, newFact.semantic_generation)?.consolidation_attempts ?? 0;
+                    if (attempts >= MAX_CONSOLIDATION_ATTEMPTS) {
+                        console.error(`Consolidation skip fact ${newFact.id} after ${attempts} deterministic failures`);
+                        db.prepare('UPDATE facts SET needs_consolidation = 0 WHERE id = ? AND semantic_generation = ?').run(newFact.id, newFact.semantic_generation);
+                        processed++;
+                        continue;
+                    }
+                    break; // hold — retry this fact next run
                 }
-                break; // hold — retry this fact next run
             }
         }
         // Fully examined (including a no-op / no-candidate / no-embedding fact).
@@ -193,19 +203,35 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
         ])];
     const newEvidenceSource = newFact.source_exchange_ids[0] ?? null;
     switch (result.relation) {
-        case 'DUPLICATE':
+        case 'DUPLICATE': {
             // One transaction: the survivor's count/provenance update and the
             // duplicate's deactivation are a single semantic step (SCHEMA §7 —
             // derived state never straddles commits). updateFact's inner vec
             // transaction nests as a savepoint inside this one.
-            db.transaction(() => {
+            // 재감사 P1-2: 비교에 쓴 의미가 아직 현재인지 commit 시점에 CAS한다 —
+            // LLM 왕복 동안 어느 쪽이든 변이됐으면 이 판정은 폐기된다(dirty 유지).
+            const apply = db.transaction(() => {
+                const genStmt = db.prepare('SELECT semantic_generation FROM facts WHERE id = ?');
+                const existingGen = genStmt.get(existingFact.id)
+                    ?.semantic_generation;
+                const newGen = genStmt.get(newFact.id)
+                    ?.semantic_generation;
+                if (existingGen !== existingFact.semantic_generation ||
+                    newGen !== newFact.semantic_generation) {
+                    return false;
+                }
                 updateFact(db, existingFact.id, {
                     consolidated_count_increment: true,
                     source_exchange_ids: mergedSources,
                 });
                 deactivateFactTransactional(db, newFact.id);
-            })();
+                return true;
+            });
+            if (!apply()) {
+                throw new StaleFactMutationError(`consolidation DUPLICATE discarded: fact ${existingFact.id} / ${newFact.id} changed meaning during comparison`);
+            }
             break;
+        }
         case 'CONTRADICTION':
             await mutateFactMeaning(db, {
                 factId: existingFact.id,

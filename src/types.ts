@@ -86,6 +86,16 @@ export interface Fact {
   consolidated_count: number;
   is_active: boolean;
   ontology_category_id?: string | null;
+  /**
+   * Local meaning-generation token: bumped by every semantic mutation
+   * (fact-management.mutateFactMeaning, sync fact import). Async derived
+   * writers capture it before their LLM/embedding work and CAS their final
+   * write on it — a stale result is discarded, never merged into the newer
+   * meaning. Rows predating the column start at 1.
+   */
+  semantic_generation?: number;
+  /** Timestamp of the semantic event that produced the current meaning. */
+  semantic_updated_at?: string | null;
 }
 
 export interface FactRevision {
