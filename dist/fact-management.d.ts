@@ -47,8 +47,18 @@ export interface MutateFactMeaningOptions {
     source?: FactMutationSource;
     lineageMode?: 'preserve-identity';
     expectedPreviousFact?: string;
+    /** Semantic CAS on the mutation target: the caller's comparison was made
+     * against this generation — a newer one means the verdict is stale. */
+    expectedSemanticGeneration?: number;
     consolidatedCountIncrement?: boolean;
-    deactivateFactIds?: string[];
+    /** Facts to deactivate in the same transaction, each with the semantic
+     * generation its deactivation was decided against. A fact whose generation
+     * moved (edit, sync import) must never be deactivated by a stale verdict —
+     * the whole mutation rolls back instead (재감사 P1-2). */
+    deactivateFacts?: Array<{
+        id: string;
+        expectedSemanticGeneration: number;
+    }>;
 }
 export interface SemanticMutationResult extends EditResult {
     deactivatedFactIds: string[];

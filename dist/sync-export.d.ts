@@ -32,8 +32,9 @@ export declare function recordExportStatus(status: ExportStatus): void;
  * rename, and only then does the `CURRENT` manifest flip atomically — so a
  * crash, a cloud-sync observer, or a concurrent export can never surface a
  * mixed snapshot (facts=N+1 with revisions=N). The importer reads committed
- * generations only. The root JSONL mirror (v1 reader compatibility) is
- * refreshed per-file after the generation commit; it is a compat surface, not
- * the authoritative device state.
+ * generations only. The former per-file root JSONL mirror is gone: the only
+ * readers are Memex v2 importers, and writing a non-atomic mirror beside an
+ * atomic generation re-opened the mixed-snapshot hole for the reader that
+ * also read it (재감사 P1-1). Committed generations are the whole protocol.
  */
 export declare function exportForSync(): SyncExportResult;

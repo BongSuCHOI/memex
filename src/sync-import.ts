@@ -109,6 +109,140 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const GENERATIONS_DIR_NAME = "generations";
 const CURRENT_MANIFEST = "CURRENT";
 
+/**
+ * The complete payload a committed generation must carry. A generation is a
+ * set-atomic unit: if any one file is missing, the whole generation is
+ * rejected instead of importing the survivors (재감사 P1-4 — reading a pruned
+ * generation must fail loudly, never degrade into "that data was empty").
+ */
+const REQUIRED_PAYLOAD_FILES = [
+  "facts.jsonl",
+  "fact-revisions.jsonl",
+  "fact-tombstones.jsonl",
+  "recall-events.jsonl",
+  "ontology-domains.jsonl",
+  "ontology-categories.jsonl",
+  "ontology-relations.jsonl",
+] as const;
+
+/** One committed generation, fully read into memory before any DB mutation.
+ * Pinning the payload closes the slow-reader race: a later export's pruning
+ * cannot remove data the importer is about to read, because there is nothing
+ * left to read from disk. */
+interface PinnedGeneration {
+  deviceId: string;
+  generationId: string;
+  /** Generation directory — used only for issue attribution. */
+  source: string;
+  files: Map<string, string>;
+}
+
+function parseFromPinned(
+  generation: PinnedGeneration,
+  name: string,
+  issues: PayloadIssue[],
+): unknown[] {
+  const content = generation.files.get(name);
+  if (content === undefined) return [];
+  const rows: unknown[] = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    try {
+      rows.push(JSON.parse(line) as unknown);
+    } catch (error) {
+      // P2-7: a malformed external row is skipped but reported with its
+      // source location — the docs' "uncommitted/reported" contract.
+      issues.push({
+        file: path.join(generation.source, name),
+        line: i + 1,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Collect every device's committed generation, fully pinned into memory.
+ *
+ * Contract (재감사 P1-1 / P1-4):
+ * - A device contributes exactly the generation its CURRENT manifest names —
+ *   committed by the exporter's atomic rename, so it is never a mixed set.
+ * - A CURRENT manifest that exists but is unreadable, malformed, or names a
+ *   generation missing required files FAILS CLOSED: the device snapshot is
+ *   skipped and the damage is reported. Falling back to an older payload
+ *   would silently time-travel an upgraded device backwards.
+ * - A device without a CURRENT manifest has no committed generation. Legacy
+ *   device-root payloads are no longer read (root-mirror/device-root
+ *   compatibility removed); their presence is reported, never imported.
+ */
+function collectCommittedGenerations(
+  syncDir: string,
+  issues: PayloadIssue[],
+): PinnedGeneration[] {
+  const devicesDir = path.join(syncDir, "devices");
+  if (!fs.existsSync(devicesDir)) return [];
+  const pinned: PinnedGeneration[] = [];
+  for (const entry of fs.readdirSync(devicesDir, { withFileTypes: true })
+    .filter((item) => item.isDirectory() && !item.name.endsWith(".tmp"))
+    .sort((a, b) => a.name.localeCompare(b.name))) {
+    const deviceDir = path.join(devicesDir, entry.name);
+    const currentPath = path.join(deviceDir, CURRENT_MANIFEST);
+    if (!fs.existsSync(currentPath)) {
+      if (fs.existsSync(path.join(deviceDir, "facts.jsonl"))) {
+        issues.push({
+          file: currentPath,
+          line: 0,
+          error: `device ${entry.name} has a legacy device-root payload but no CURRENT manifest; it is not read (device-root compatibility removed)`,
+        });
+      }
+      continue;
+    }
+    let generation: unknown;
+    try {
+      generation = (JSON.parse(fs.readFileSync(currentPath, "utf8")) as { generation?: unknown })
+        .generation;
+    } catch (error) {
+      issues.push({
+        file: currentPath,
+        line: 0,
+        error: `CURRENT manifest unreadable, device ${entry.name} snapshot rejected: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+    if (typeof generation !== "string" || !generation) {
+      issues.push({
+        file: currentPath,
+        line: 0,
+        error: `CURRENT manifest has no generation id, device ${entry.name} snapshot rejected`,
+      });
+      continue;
+    }
+    const genDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
+    const files = new Map<string, string>();
+    let complete = true;
+    for (const name of REQUIRED_PAYLOAD_FILES) {
+      const filePath = path.join(genDir, name);
+      if (!fs.existsSync(filePath)) {
+        issues.push({
+          file: currentPath,
+          line: 0,
+          error: `CURRENT names generation ${generation} missing ${name}, device ${entry.name} snapshot rejected`,
+        });
+        complete = false;
+        break;
+      }
+      files.set(name, fs.readFileSync(filePath, "utf8"));
+    }
+    if (complete) {
+      pinned.push({ deviceId: entry.name, generationId: generation, source: genDir, files });
+    }
+  }
+  return pinned;
+}
+
 function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
@@ -125,85 +259,6 @@ function isStringArrayJson(value: unknown): value is string {
   } catch {
     return false;
   }
-}
-
-function readJsonLines(filePath: string, issues: PayloadIssue[]): unknown[] {
-  if (!fs.existsSync(filePath)) return [];
-  const rows: unknown[] = [];
-  const lines = fs.readFileSync(filePath, "utf8").split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    try {
-      rows.push(JSON.parse(line) as unknown);
-    } catch (error) {
-      // P2-7: a malformed external row is skipped but reported with its
-      // source location — the docs' "uncommitted/reported" contract.
-      issues.push({
-        file: filePath,
-        line: i + 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return rows;
-}
-
-/**
- * P2-5: a device dir with a committed `CURRENT` manifest contributes exactly
- * that one generation directory — a complete, atomically-renamed file set.
- * Device dirs without `CURRENT` are legacy v2 snapshots read from the device
- * root. A broken manifest falls back to the device root and is reported
- * rather than silently skipping the device.
- */
-function resolveDevicePayloadDir(
-  deviceDir: string,
-  issues: PayloadIssue[],
-): string {
-  const currentPath = path.join(deviceDir, CURRENT_MANIFEST);
-  if (!fs.existsSync(currentPath)) return deviceDir;
-  let generation: unknown;
-  try {
-    generation = (JSON.parse(fs.readFileSync(currentPath, "utf8")) as { generation?: unknown })
-      .generation;
-  } catch (error) {
-    issues.push({
-      file: currentPath,
-      line: 0,
-      error: `CURRENT manifest unreadable: ${error instanceof Error ? error.message : String(error)}`,
-    });
-    return deviceDir;
-  }
-  if (typeof generation !== "string" || !generation) {
-    issues.push({
-      file: currentPath,
-      line: 0,
-      error: "CURRENT manifest has no generation id",
-    });
-    return deviceDir;
-  }
-  const genDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
-  if (!fs.existsSync(path.join(genDir, "facts.jsonl"))) {
-    issues.push({
-      file: currentPath,
-      line: 0,
-      error: `CURRENT names missing generation ${generation}`,
-    });
-    return deviceDir;
-  }
-  return genDir;
-}
-
-function getPayloadDirs(syncDir: string, issues: PayloadIssue[]): string[] {
-  const dirs = [syncDir];
-  const devicesDir = path.join(syncDir, "devices");
-  if (!fs.existsSync(devicesDir)) return dirs;
-  for (const entry of fs.readdirSync(devicesDir, { withFileTypes: true })
-    .filter((item) => item.isDirectory() && !item.name.endsWith(".tmp"))
-    .sort((a, b) => a.name.localeCompare(b.name))) {
-    dirs.push(resolveDevicePayloadDir(path.join(devicesDir, entry.name), issues));
-  }
-  return dirs;
 }
 
 function canonicalScopeProject(
@@ -384,9 +439,9 @@ function deleteFactState(db: Database.Database, factId: string): void {
   db.prepare("DELETE FROM facts WHERE id = ?").run(factId);
 }
 
-function importOntology(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-domains.jsonl"), result.malformedRows)) {
+function importOntology(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "ontology-domains.jsonl", result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.name !== "string" || !value.name) continue;
       if (db.prepare("SELECT 1 FROM ontology_domains WHERE id = ?").get(value.id)) continue;
@@ -402,8 +457,8 @@ function importOntology(db: Database.Database, payloadDirs: string[], result: Sy
     }
   }
 
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-categories.jsonl"), result.malformedRows)) {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "ontology-categories.jsonl", result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.domain_id !== "string" || !value.domain_id ||
           typeof value.name !== "string" || !value.name) continue;
@@ -445,10 +500,10 @@ function mergeTombstones(a: SyncTombstone, b: SyncTombstone): SyncTombstone {
   };
 }
 
-function importTombstones(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
+function importTombstones(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
   const byFact = new Map<string, SyncTombstone>();
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "fact-tombstones.jsonl"), result.malformedRows)) {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "fact-tombstones.jsonl", result.malformedRows)) {
       const row = parseTombstone(value);
       if (!row) continue;
       const previous = byFact.get(row.fact_id);
@@ -512,21 +567,27 @@ function importTombstones(db: Database.Database, payloadDirs: string[], result: 
   }
 }
 
-async function importFacts(db: Database.Database, payloadDirs: string[], result: SyncImportResult): Promise<void> {
+async function importFacts(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): Promise<void> {
   const candidates: Array<{ fact: SyncFact; exists: boolean; localGeneration?: number }> = [];
   const remoteById = new Map<string, SyncFact>();
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "facts.jsonl"), result.malformedRows)) {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
       const fact = parseSyncFact(value);
       if (!fact) continue;
       const previous = remoteById.get(fact.id);
       if (!previous || remoteFactWins(fact, previous)) remoteById.set(fact.id, fact);
     }
   }
-  for (const fact of remoteById.values()) {
-    if (fact.ontology_category_id &&
-        !db.prepare("SELECT 1 FROM ontology_categories WHERE id = ?").get(fact.ontology_category_id)) {
-      continue;
+  for (const remote of remoteById.values()) {
+    // 재감사 P1-7: ontology는 fact 위에 얹는 파생 overlay다 — 원격 category가
+    // 로컬에 없어도 의미 자체를 버리면 안 된다. NULL로 import해 재분류 대기
+    // 상태로 두고, 분류 백필이 overlay를 다시 채운다.
+    let fact = remote;
+    if (
+      fact.ontology_category_id &&
+      !db.prepare("SELECT 1 FROM ontology_categories WHERE id = ?").get(fact.ontology_category_id)
+    ) {
+      fact = { ...fact, ontology_category_id: null };
     }
     const localTombstone = db.prepare(
       "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
@@ -646,9 +707,9 @@ async function importFacts(db: Database.Database, payloadDirs: string[], result:
   }
 }
 
-function importRevisions(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "fact-revisions.jsonl"), result.malformedRows)) {
+function importRevisions(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "fact-revisions.jsonl", result.malformedRows)) {
       const revision = parseRevision(value);
       if (!revision || !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id) ||
           db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id)) continue;
@@ -665,9 +726,9 @@ function importRevisions(db: Database.Database, payloadDirs: string[], result: S
   }
 }
 
-function importRecallEvents(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "recall-events.jsonl"), result.malformedRows)) {
+function importRecallEvents(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "recall-events.jsonl", result.malformedRows)) {
       const event = parseRecallEvent(value);
       if (!event) continue;
       const existing = db.prepare("SELECT status FROM recall_events WHERE id = ?").get(event.id) as
@@ -719,9 +780,9 @@ function importRecallEvents(db: Database.Database, payloadDirs: string[], result
   }
 }
 
-function importRelations(db: Database.Database, payloadDirs: string[], result: SyncImportResult): void {
-  for (const payloadDir of payloadDirs) {
-    for (const value of readJsonLines(path.join(payloadDir, "ontology-relations.jsonl"), result.malformedRows)) {
+function importRelations(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
+  for (const generation of generations) {
+    for (const value of parseFromPinned(generation, "ontology-relations.jsonl", result.malformedRows)) {
       if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
           typeof value.source_fact_id !== "string" || !value.source_fact_id ||
           typeof value.target_fact_id !== "string" || !value.target_fact_id ||
@@ -781,6 +842,12 @@ function importRelations(db: Database.Database, payloadDirs: string[], result: S
 /**
  * Reconcile protocol-v2 sync files into the local DB.
  *
+ * Input contract (재감사 P1-1/P1-4): only committed device generations are
+ * read, each pinned fully into memory before any DB mutation. The former root
+ * JSONL mirror is no longer an input — mixing the exporter's per-file
+ * non-atomic mirror with set-atomic generations re-opened the mixed-snapshot
+ * hole the generations exist to close.
+ *
  * Conflict order: semantic event clock (semantic_updated_at; legacy payloads
  * fall back to updated_at), then a deterministic canonical fact key;
  * hard-delete tombstones win exact-time ties. Source-created timestamps remain
@@ -801,17 +868,17 @@ export async function importFromSync(): Promise<SyncImportResult> {
     malformedRows: [],
   };
   const syncDir = getSyncDir();
-  const payloadDirs = getPayloadDirs(syncDir, result.malformedRows);
-  if (!payloadDirs.some((dir) => fs.existsSync(path.join(dir, "facts.jsonl")))) return result;
+  const generations = collectCommittedGenerations(syncDir, result.malformedRows);
+  if (generations.length === 0) return result;
 
   const db = initDatabase();
   try {
-    importOntology(db, payloadDirs, result);
-    importTombstones(db, payloadDirs, result);
-    await importFacts(db, payloadDirs, result);
-    importRevisions(db, payloadDirs, result);
-    importRecallEvents(db, payloadDirs, result);
-    importRelations(db, payloadDirs, result);
+    importOntology(db, generations, result);
+    importTombstones(db, generations, result);
+    await importFacts(db, generations, result);
+    importRevisions(db, generations, result);
+    importRecallEvents(db, generations, result);
+    importRelations(db, generations, result);
     return result;
   } finally {
     db.close();

@@ -21,6 +21,12 @@ export interface PayloadIssue {
 /**
  * Reconcile protocol-v2 sync files into the local DB.
  *
+ * Input contract (재감사 P1-1/P1-4): only committed device generations are
+ * read, each pinned fully into memory before any DB mutation. The former root
+ * JSONL mirror is no longer an input — mixing the exporter's per-file
+ * non-atomic mirror with set-atomic generations re-opened the mixed-snapshot
+ * hole the generations exist to close.
+ *
  * Conflict order: semantic event clock (semantic_updated_at; legacy payloads
  * fall back to updated_at), then a deterministic canonical fact key;
  * hard-delete tombstones win exact-time ties. Source-created timestamps remain

@@ -23,6 +23,7 @@ import {
   getConversationEligibility,
   purgeConversationFromIndex,
 } from "./conversation-policy.js";
+import { ingestArchiveExchanges } from "./archive-ingestion.js";
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -222,16 +223,10 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
   console.log("Repairing index...");
 
   // To avoid circular dependencies, we import the indexer functions dynamically
-  const { initDatabase, insertExchange, deleteExchange, reconcileArchiveExchanges } =
-    await import("./db.js");
-  const { parseConversation } = await import("./parser.js");
-  const { initEmbeddings, generateExchangeEmbedding } = await import(
-    "./embeddings.js"
-  );
+  const { initDatabase, deleteExchange } = await import("./db.js");
   const { summarizeConversation } = await import("./summarizer.js");
 
   const db = initDatabase();
-  let embeddingsReady = false;
   const failures: Error[] = [];
 
   try {
@@ -290,10 +285,6 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
           }
           continue;
         }
-        if (!embeddingsReady) {
-          await initEmbeddings();
-          embeddingsReady = true;
-        }
 
         // Parse conversation
         const exchanges = await parseConversation(
@@ -313,26 +304,17 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
         fs.writeFileSync(summaryPath, summary, "utf-8");
         console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
 
-        // Index exchanges
-        // 재감사 P1-6: 삽입 전 desired-set reconciliation.
-        reconcileArchiveExchanges(db, {
-          archivePath: conversationPath,
-          desired: exchanges.map((e) => ({
-            id: e.id as string,
-            lineStart: e.lineStart as number,
-          })),
-        });
-        for (const exchange of exchanges) {
-          const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-          const embedding = await generateExchangeEmbedding(
-            exchange.userMessage,
-            exchange.assistantMessage,
-            toolNames,
-          );
-          insertExchange(db, exchange, embedding, toolNames);
-        }
+        // Index exchanges through the shared ingestion SSOT — repair must go
+        // through the same worker-prompt exclusion and desired-set
+        // reconciliation as every other entrypoint (재감사 P2-11: its inline
+        // loop once re-indexed worker prompts).
+        const indexed = await ingestArchiveExchanges(
+          db,
+          conversationPath,
+          exchanges,
+        );
 
-        console.log(`  Indexed ${exchanges.length} exchanges`);
+        console.log(`  Indexed ${indexed} exchanges`);
       } catch (error) {
         const cause = error instanceof Error ? error : new Error(String(error));
         console.error(`Failed to re-index ${conversationPath}:`, cause);

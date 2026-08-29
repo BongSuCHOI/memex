@@ -1,20 +1,15 @@
 import fs from "fs";
 import path from "path";
-import {
-  initDatabase,
-  insertExchange,
-  reconcileArchiveExchanges,
-} from "./db.js";
+import { initDatabase } from "./db.js";
 import { parseConversation } from "./parser.js";
-import { initEmbeddings, generateExchangeEmbedding } from "./embeddings.js";
 import { summarizeConversation } from "./summarizer.js";
 import { ConversationExchange } from "./types.js";
 import {
   getArchiveDir,
   getExcludedProjects,
-  isWorkerPromptMessage,
   getSessionsRoot,
 } from "./paths.js";
+import { ingestArchiveExchanges } from "./archive-ingestion.js";
 import { discoverSessionFiles, readRolloutMeta } from "./codex-rollout.js";
 import {
   canonicalizeProjectPath,
@@ -22,9 +17,9 @@ import {
   UNKNOWN_PROJECT,
 } from "./project-identity.js";
 import {
-  archiveFileExists,
   statArchiveFile,
   atomicCopyFileSync,
+  summaryNeedsRefresh,
 } from "./archive-io.js";
 import {
   getConversationEligibility,
@@ -43,24 +38,6 @@ function archiveIfStale(sourcePath: string, archivePath: string): boolean {
   // 원자적 복사 — 잘린 아카이브가 "최신"으로 남는 것을 방지한다(CX-11 계약).
   atomicCopyFileSync(sourcePath, archivePath);
   return true;
-}
-
-/**
- * Summary freshness (재감사 §6): a summary is current only while the archive
- * has not changed since it was written. A resumed rollout grows the archive
- * file, so its mtime then postdates the summary — regenerate instead of
- * advertising the truncated summary forever. No extra state: the archive is
- * Memex-owned and append-only, so mtime is a reliable change signal.
- */
-export function summaryNeedsRefresh(archivePath: string, summaryPath: string): boolean {
-  if (!archiveFileExists(summaryPath)) return true;
-  try {
-    const archive = statArchiveFile(archivePath);
-    const summary = fs.statSync(summaryPath);
-    return archive !== null && archive.mtimeMs > summary.mtimeMs;
-  } catch {
-    return true;
-  }
 }
 
 // Concurrency headroom for parallel embedding/summary workers.
@@ -188,11 +165,6 @@ export async function indexConversations(
     });
   }
 
-  if (toProcess.length > 0) {
-    console.log("Loading embedding model...");
-    await initEmbeddings();
-  }
-
   // Batch summarize conversations in parallel (unless --no-summaries)
   if (!noSummaries) {
     const needsSummary = toProcess.filter(
@@ -229,28 +201,9 @@ export async function indexConversations(
 
   // Now process embeddings and DB inserts (fast, sequential is fine)
   for (const conv of toProcess) {
-    // 재감사 P1-6: 삽입 전 desired-set reconciliation(legacy rename + stale 삭제).
-    reconcileArchiveExchanges(db, {
-      archivePath: conv.archivePath,
-      desired: conv.exchanges
-        .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
-        .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
-    });
-    for (const exchange of conv.exchanges) {
-      // The plugin's own worker-prompt sessions are ephemeral state, not
-      // knowledge — never index them.
-      if (isWorkerPromptMessage(exchange.userMessage)) continue;
-      const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-      const embedding = await generateExchangeEmbedding(
-        exchange.userMessage,
-        exchange.assistantMessage,
-        toolNames,
-      );
-
-      insertExchange(db, exchange, embedding, toolNames);
-    }
-
-    totalExchanges += conv.exchanges.length;
+    // 공용 ingestion SSOT — desired-set reconciliation과 worker-prompt exclusion은
+    // 모든 진입점에서 동일한 경로를 거친다(재감사 P1-6).
+    totalExchanges += await ingestArchiveExchanges(db, conv.archivePath, conv.exchanges);
     conversationsProcessed++;
 
     // Check if we hit the limit
@@ -331,8 +284,6 @@ export async function indexSession(
       db.close();
       break;
     }
-    await initEmbeddings();
-
     // Parse and summarize
     const exchanges = await parseConversation(sourcePath, project, archivePath);
 
@@ -346,23 +297,8 @@ export async function indexSession(
       }
 
       // Index
-      // 재감사 P1-6: 삽입 전 desired-set reconciliation.
-      reconcileArchiveExchanges(db, {
-        archivePath,
-        desired: exchanges
-          .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
-          .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
-      });
-      for (const exchange of exchanges) {
-        if (isWorkerPromptMessage(exchange.userMessage)) continue; // worker prompt = ephemeral state, not knowledge
-        const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-        const embedding = await generateExchangeEmbedding(
-          exchange.userMessage,
-          exchange.assistantMessage,
-          toolNames,
-        );
-        insertExchange(db, exchange, embedding, toolNames);
-      }
+      // 공용 ingestion SSOT(재감사 P1-6).
+      await ingestArchiveExchanges(db, archivePath, exchanges);
 
       console.log(
         `✅ Indexed session ${sessionId}: ${exchanges.length} exchanges`,
@@ -486,8 +422,6 @@ export async function indexUnprocessed(
     return;
   }
 
-  await initEmbeddings();
-
   console.log(`Found ${unprocessed.length} unprocessed conversations`);
 
   // Batch process summaries (unless --no-summaries)
@@ -526,23 +460,9 @@ export async function indexUnprocessed(
   // Now index embeddings
   console.log(`\nIndexing embeddings...`);
   for (const conv of unprocessed) {
-    // 재감사 P1-6: 삽입 전 desired-set reconciliation.
-    reconcileArchiveExchanges(db, {
-      archivePath: conv.archivePath,
-      desired: conv.exchanges
-        .filter((e) => !isWorkerPromptMessage(e.userMessage as string))
-        .map((e) => ({ id: e.id as string, lineStart: e.lineStart as number })),
-    });
-    for (const exchange of conv.exchanges) {
-      if (isWorkerPromptMessage(exchange.userMessage)) continue; // worker prompt = ephemeral state, not knowledge
-      const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-      const embedding = await generateExchangeEmbedding(
-        exchange.userMessage,
-        exchange.assistantMessage,
-        toolNames,
-      );
-      insertExchange(db, exchange, embedding, toolNames);
-    }
+    // 공용 ingestion SSOT — desired-set reconciliation과 worker-prompt exclusion은
+    // 모든 진입점에서 동일한 경로를 거친다(재감사 P1-6).
+    await ingestArchiveExchanges(db, conv.archivePath, conv.exchanges);
   }
 
   db.close();

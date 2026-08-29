@@ -36,8 +36,13 @@ export declare const DETECT_RELATION_SYSTEM_PROMPT = "You are analyzing relation
  * Record one failed classification attempt; returns the new attempt count.
  * When the count reaches MAX_CLASSIFY_ATTEMPTS the caller should persist the
  * fallback so the fact permanently leaves the backfill queue.
+ *
+ * 재감사 P1-8: the ledger is generation-aware. A failure recorded against an
+ * older meaning must never burn the NEW meaning's attempts (repeated stale
+ * responses could park an innocent fresh meaning in General/Misc without it
+ * ever being classified). A stale call returns 0 — the caller skips parking.
  */
-export declare function recordOntologyAttempt(db: Database.Database, factId: string): number;
+export declare function recordOntologyAttempt(db: Database.Database, factId: string, expectedSemanticGeneration?: number): number;
 /**
  * Park a fact in General/Misc. Unlike the pre-2026-07 behaviour (which built
  * the fallback rows but never wrote the fact's ontology_category_id — leaving

@@ -374,8 +374,16 @@ function tryDeterministicAssign(db, fact, hits) {
 }
 /**
  * Resolve a parsed LLM classification into (domain, category) rows — creating
- * and embedding-indexing new ones — and persist the fact's assignment.
+ * new ones — and persist the fact's assignment.
  * Shared by the single and batch classification paths.
+ *
+ * 재감사 P1-8: taxonomy creation and the fact's assignment commit ATOMICALLY.
+ * A stale classification (the fact changed meaning during the LLM round trip)
+ * must leave nothing behind — the previous order (create rows → embed → CAS
+ * the assignment) let the final CAS fail while the created domain/category
+ * survived as permanent taxonomy pollution. The only await (the new
+ * category's embedding) runs AFTER the commit: a missing category vector is
+ * derived state that healCategoryIndex repairs, never a correctness input.
  */
 async function applyClassification(db, factId, parsed, expectedSemanticGeneration) {
     // Sanitize LLM-proposed names/descriptions BEFORE persisting: whatever is
@@ -389,41 +397,70 @@ async function applyClassification(db, factId, parsed, expectedSemanticGeneratio
     }
     const domainDescription = typeof parsed.domain_description === 'string' ? oneLine(parsed.domain_description, MAX_DESCRIPTION_LEN) : undefined;
     const categoryDescription = typeof parsed.category_description === 'string' ? oneLine(parsed.category_description, MAX_DESCRIPTION_LEN) : undefined;
-    // Resolve or create domain
-    let domain = getDomainByName(db, domainName);
-    if (!domain) {
-        domain = createDomain(db, domainName, domainDescription);
-    }
-    // Resolve or create category
-    let category = getCategoryByName(db, categoryName, domain.id);
-    if (!category) {
-        category = createCategory(db, domain.id, categoryName, categoryDescription);
-        // Index the new category so future facts can retrieve it as a candidate
-        // (without this the candidate list could never grow → category sprawl).
+    const commit = db.transaction(() => {
+        // Same conditional shape as classifyFact's CAS: callers that carry no
+        // semantic generation (legacy) get the unconditional assignment; callers
+        // that do are rejected before any taxonomy row is created.
+        if (expectedSemanticGeneration !== undefined) {
+            const current = db.prepare('SELECT semantic_generation FROM facts WHERE id = ?').get(factId);
+            if (!current)
+                throw new Error(`ontology classify: fact not found: ${factId}`);
+            if (Number(current.semantic_generation ?? 1) !== expectedSemanticGeneration) {
+                throw new StaleFactMutationError(`ontology classification discarded: fact ${factId} changed meaning during classification`);
+            }
+        }
+        // Resolve or create domain
+        let domain = getDomainByName(db, domainName);
+        if (!domain) {
+            domain = createDomain(db, domainName, domainDescription);
+        }
+        // Resolve or create category
+        let category = getCategoryByName(db, categoryName, domain.id);
+        let newCategory = null;
+        if (!category) {
+            category = createCategory(db, domain.id, categoryName, categoryDescription);
+            newCategory = category;
+        }
+        // 의미 세대 CAS — 0행이면 stale 분류다: 위에서 만든 taxonomy 행과 함께
+        // 전부 롤백된다(같은 transaction).
+        const changed = classifyFact(db, factId, category.id, expectedSemanticGeneration);
+        if (expectedSemanticGeneration !== undefined && changed === 0) {
+            throw new StaleFactMutationError(`ontology classification discarded: fact ${factId} changed meaning during classification`);
+        }
+        return { domainId: domain.id, categoryId: category.id, newCategory };
+    });
+    const { domainId, categoryId, newCategory } = commit();
+    // Index a NEWLY COMMITTED category so future facts can retrieve it as a
+    // candidate (without this the candidate list could never grow → category
+    // sprawl). Failure is logged-and-continued: healCategoryIndex reconciles
+    // the missing vector on the next classification.
+    if (newCategory) {
         try {
-            const emb = await generateEmbedding(categoryEmbeddingText(category.name, category.description), 'passage');
-            upsertCategoryEmbedding(db, category.id, emb);
+            const emb = await generateEmbedding(categoryEmbeddingText(newCategory.name, newCategory.description), 'passage');
+            upsertCategoryEmbedding(db, newCategory.id, emb);
         }
         catch (error) {
-            console.error(`Category embedding failed for ${category.id}:`, error);
+            console.error(`Category embedding failed for ${newCategory.id}:`, error);
         }
     }
-    // 재감사 P1-2: LLM 왕복 동안 fact 의미가 바뀌었으면 이 분류는 이전 의미의
-    // 결과다 — 새 의미에 덮어 쓰지 않고 폐기한다(변이 자체가 ontology를
-    // pending으로 리셋하므로 새 의미는 다음 분류 대상이다).
-    const changed = classifyFact(db, factId, category.id, expectedSemanticGeneration);
-    if (expectedSemanticGeneration !== undefined && changed === 0) {
-        throw new StaleFactMutationError(`ontology classification discarded: fact ${factId} changed meaning during classification`);
-    }
-    return { domainId: domain.id, categoryId: category.id };
+    return { domainId, categoryId };
 }
 /**
  * Record one failed classification attempt; returns the new attempt count.
  * When the count reaches MAX_CLASSIFY_ATTEMPTS the caller should persist the
  * fallback so the fact permanently leaves the backfill queue.
+ *
+ * 재감사 P1-8: the ledger is generation-aware. A failure recorded against an
+ * older meaning must never burn the NEW meaning's attempts (repeated stale
+ * responses could park an innocent fresh meaning in General/Misc without it
+ * ever being classified). A stale call returns 0 — the caller skips parking.
  */
-export function recordOntologyAttempt(db, factId) {
-    db.prepare(`UPDATE facts SET ontology_attempts = COALESCE(ontology_attempts, 0) + 1, ontology_last_attempt_at = ? WHERE id = ?`).run(new Date().toISOString(), factId);
+export function recordOntologyAttempt(db, factId, expectedSemanticGeneration) {
+    const result = expectedSemanticGeneration === undefined
+        ? db.prepare(`UPDATE facts SET ontology_attempts = COALESCE(ontology_attempts, 0) + 1, ontology_last_attempt_at = ? WHERE id = ?`).run(new Date().toISOString(), factId)
+        : db.prepare(`UPDATE facts SET ontology_attempts = COALESCE(ontology_attempts, 0) + 1, ontology_last_attempt_at = ? WHERE id = ? AND semantic_generation = ?`).run(new Date().toISOString(), factId, expectedSemanticGeneration);
+    if (result.changes === 0)
+        return 0; // stale: the meaning moved; discard
     const row = db.prepare(`SELECT COALESCE(ontology_attempts, 0) AS n FROM facts WHERE id = ?`).get(factId);
     return row?.n ?? 0;
 }
@@ -659,8 +696,9 @@ export async function backfillClassifyBatch(db, factIds, opts = {}) {
     for (let start = 0; start < facts.length; start += BATCH_HARD_CAP) {
         const chunk = facts.slice(start, start + BATCH_HARD_CAP);
         const result = await classifyFactsBatch(db, chunk);
+        const generationById = new Map(chunk.map((f) => [f.id, f.semantic_generation]));
         for (const id of result.failed) {
-            const attempts = recordOntologyAttempt(db, id);
+            const attempts = recordOntologyAttempt(db, id, generationById.get(id));
             if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
                 persistFallbackClassification(db, id);
                 totals.fallback++;
@@ -795,7 +833,9 @@ export async function classifyAndLinkFact(db, factId, embedding) {
         }
         else if (!(error instanceof TransientLlmError)) {
             try {
-                const attempts = recordOntologyAttempt(db, factId);
+                // 세대 가드 ledger — 분류 대기 중 의미가 바뀐 fact의 새 의미에는
+                // 이 실패가 ledger로 남지 않는다(0행 → skip).
+                const attempts = recordOntologyAttempt(db, factId, fact.semantic_generation);
                 if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
                     persistFallbackClassification(db, factId);
                 }

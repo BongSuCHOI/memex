@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { getExcludedProjects, isWorkerPromptMessage, ensureArchiveDir, getDbPath, } from "./paths.js";
-import { archiveFileExists, statArchiveFile, } from "./archive-io.js";
+import { getExcludedProjects, ensureArchiveDir, getDbPath, } from "./paths.js";
+import { ingestArchiveExchanges } from "./archive-ingestion.js";
+import { statArchiveFile, summaryNeedsRefresh } from "./archive-io.js";
 import { canonicalizeProjectPath, projectStorageKey, UNKNOWN_PROJECT, } from "./project-identity.js";
 import { discoverSessionFiles, readRolloutMeta, extractSessionIdFromPath, } from "./codex-rollout.js";
 import { getConversationEligibility, purgeConversationFromIndex, } from "./conversation-policy.js";
@@ -108,10 +109,12 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             if (wasCopied || recoverMissingDatabase) {
                 filesToIndex.push({ path: destFile, project });
             }
-            // Check if this file needs a summary (whether newly copied or existing)
+            // Check if this file needs a summary (whether newly copied or existing).
+            // 재감사 P2-10: freshness 기준은 다른 진입점과 동일한 summaryNeedsRefresh다 —
+            // summary가 존재해도 archive가 resume으로 자라면 재생성한다.
             if (!options.skipSummaries) {
                 const summaryPath = destFile.replace(".jsonl", "-summary.txt");
-                if (!archiveFileExists(summaryPath)) {
+                if (summaryNeedsRefresh(destFile, summaryPath)) {
                     if (sessionId) {
                         filesToSummarize.push({ path: destFile, sessionId, project });
                     }
@@ -129,7 +132,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
     // indexing. This makes a marker added later conversation-wide.
     if (filesToPurge.length > 0 ||
         (!options.skipIndex && filesToIndex.length > 0)) {
-        const { initDatabase, insertExchange, reconcileArchiveExchanges } = await import("./db.js");
+        const { initDatabase } = await import("./db.js");
         const db = initDatabase();
         for (const excluded of filesToPurge) {
             try {
@@ -146,33 +149,15 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             }
         }
         if (!options.skipIndex && filesToIndex.length > 0) {
-            const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
             const { parseConversation } = await import("./parser.js");
-            await initEmbeddings();
             for (const { path: file, project } of filesToIndex) {
                 try {
                     // CX-02: project = canonical absolute cwd (carried from the rollout
                     // header), never the archive directory name.
                     const exchanges = await parseConversation(file, project, file);
-                    // 재감사 P1-6: 삽입 전에 이 archive의 desired set 과 DB 행 집합을
-                    // 대조한다 — legacy id rename(참조 재작성 포함)과 stale 행 삭제.
-                    reconcileArchiveExchanges(db, {
-                        archivePath: file,
-                        desired: exchanges
-                            .filter((e) => !isWorkerPromptMessage(e.userMessage))
-                            .map((e) => ({
-                            id: e.id,
-                            lineStart: e.lineStart,
-                        })),
-                    });
-                    for (const exchange of exchanges) {
-                        // Worker-prompt exchange = ephemeral state, not knowledge — never index.
-                        if (isWorkerPromptMessage(exchange.userMessage))
-                            continue;
-                        const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-                        const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                        insertExchange(db, exchange, embedding, toolNames);
-                    }
+                    // 공용 ingestion SSOT: desired-set reconciliation, worker-prompt
+                    // exclusion, embedding, insert가 한 경로에서 일어난다.
+                    await ingestArchiveExchanges(db, file, exchanges);
                     result.indexed++;
                 }
                 catch (error) {

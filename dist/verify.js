@@ -7,6 +7,7 @@ import { archiveFileExists, canonicalArchiveName, statArchiveFile, } from "./arc
 import { readRolloutMeta } from "./codex-rollout.js";
 import { canonicalizeProjectPath, UNKNOWN_PROJECT, } from "./project-identity.js";
 import { getConversationEligibility, purgeConversationFromIndex, } from "./conversation-policy.js";
+import { ingestArchiveExchanges } from "./archive-ingestion.js";
 /**
  * FK violations are a database-file property, independent of the archive
  * tree — audit them even when the archive dir is absent. FK enforcement is
@@ -162,12 +163,9 @@ export async function verifyIndex() {
 export async function repairIndex(issues) {
     console.log("Repairing index...");
     // To avoid circular dependencies, we import the indexer functions dynamically
-    const { initDatabase, insertExchange, deleteExchange, reconcileArchiveExchanges } = await import("./db.js");
-    const { parseConversation } = await import("./parser.js");
-    const { initEmbeddings, generateExchangeEmbedding } = await import("./embeddings.js");
+    const { initDatabase, deleteExchange } = await import("./db.js");
     const { summarizeConversation } = await import("./summarizer.js");
     const db = initDatabase();
-    let embeddingsReady = false;
     const failures = [];
     try {
         // Foreign-key violations (predate-Memex orphans from foreign tooling)
@@ -220,10 +218,6 @@ export async function repairIndex(issues) {
                     }
                     continue;
                 }
-                if (!embeddingsReady) {
-                    await initEmbeddings();
-                    embeddingsReady = true;
-                }
                 // Parse conversation
                 const exchanges = await parseConversation(conversationPath, project, conversationPath);
                 if (exchanges.length === 0) {
@@ -235,21 +229,12 @@ export async function repairIndex(issues) {
                 const summary = await summarizeConversation(exchanges);
                 fs.writeFileSync(summaryPath, summary, "utf-8");
                 console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
-                // Index exchanges
-                // 재감사 P1-6: 삽입 전 desired-set reconciliation.
-                reconcileArchiveExchanges(db, {
-                    archivePath: conversationPath,
-                    desired: exchanges.map((e) => ({
-                        id: e.id,
-                        lineStart: e.lineStart,
-                    })),
-                });
-                for (const exchange of exchanges) {
-                    const toolNames = exchange.toolCalls?.map((tc) => tc.toolName);
-                    const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
-                    insertExchange(db, exchange, embedding, toolNames);
-                }
-                console.log(`  Indexed ${exchanges.length} exchanges`);
+                // Index exchanges through the shared ingestion SSOT — repair must go
+                // through the same worker-prompt exclusion and desired-set
+                // reconciliation as every other entrypoint (재감사 P2-11: its inline
+                // loop once re-indexed worker prompts).
+                const indexed = await ingestArchiveExchanges(db, conversationPath, exchanges);
+                console.log(`  Indexed ${indexed} exchanges`);
             }
             catch (error) {
                 const cause = error instanceof Error ? error : new Error(String(error));

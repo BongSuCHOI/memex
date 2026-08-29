@@ -97,9 +97,10 @@ function pruneGenerations(generationsDir, currentId) {
  * rename, and only then does the `CURRENT` manifest flip atomically — so a
  * crash, a cloud-sync observer, or a concurrent export can never surface a
  * mixed snapshot (facts=N+1 with revisions=N). The importer reads committed
- * generations only. The root JSONL mirror (v1 reader compatibility) is
- * refreshed per-file after the generation commit; it is a compat surface, not
- * the authoritative device state.
+ * generations only. The former per-file root JSONL mirror is gone: the only
+ * readers are Memex v2 importers, and writing a non-atomic mirror beside an
+ * atomic generation re-opened the mixed-snapshot hole for the reader that
+ * also read it (재감사 P1-1). Committed generations are the whole protocol.
  */
 export function exportForSync() {
     const db = initDatabase();
@@ -196,12 +197,6 @@ export function exportForSync() {
         // The manifest flip is the commit point: before it, readers resolve the
         // previous generation; after it, this complete one.
         writeAtomic(path.join(deviceDir, CURRENT_MANIFEST), JSON.stringify({ generation: generationId, exported_at: meta.exported_at }, null, 2));
-        // Root mirror preserves v1 readers during the protocol transition. It is
-        // refreshed per-file (whole-file atomic) after the generation commit —
-        // the authoritative, set-atomic device state is the generation above.
-        for (const [name, body] of Object.entries(files)) {
-            writeAtomic(path.join(syncDir, name), body);
-        }
         pruneGenerations(generationsDir, generationId);
         return {
             facts: facts.length,

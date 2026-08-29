@@ -285,6 +285,10 @@ export async function applyConsolidationResult(
     }
 
     case 'CONTRADICTION':
+      // 재감사 P1-2: CONTRADICTION/EVOLUTION도 DUPLICATE와 같은 CAS 계약이다 —
+      // LLM 왕복 동안 어느 쪽이든 의미가 변이됐으면 이 판정은 폐기된다.
+      // expectedSemanticGeneration은 existing 쪽(expectedPreviousFact는 텍스트
+      // 우연 복귀를 못 잡는다), deactivateFacts의 세대 CAS는 driver 쪽을 지킨다.
       await mutateFactMeaning(db, {
         factId: existingFact.id,
         newText: mergedFact || newFact.fact,
@@ -292,7 +296,10 @@ export async function applyConsolidationResult(
         source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
         lineageMode: 'preserve-identity',
         expectedPreviousFact: existingFact.fact,
-        deactivateFactIds: [newFact.id],
+        expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
+        deactivateFacts: [
+          { id: newFact.id, expectedSemanticGeneration: newFact.semantic_generation ?? 1 },
+        ],
       });
       break;
 
@@ -304,8 +311,11 @@ export async function applyConsolidationResult(
         source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
         lineageMode: 'preserve-identity',
         expectedPreviousFact: existingFact.fact,
+        expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
         consolidatedCountIncrement: true,
-        deactivateFactIds: [newFact.id],
+        deactivateFacts: [
+          { id: newFact.id, expectedSemanticGeneration: newFact.semantic_generation ?? 1 },
+        ],
       });
       break;
 

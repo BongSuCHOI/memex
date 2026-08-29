@@ -65,10 +65,11 @@ function parseSourceExchangeIds(raw) {
     }
     return parsed;
 }
-function deactivateWithinTransaction(db, id) {
-    const result = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ? AND is_active = 1').run(new Date().toISOString(), id);
-    if (result.changes === 0)
-        throw new Error(`no active fact with id: ${id}`);
+function deactivateWithinTransaction(db, id, expectedSemanticGeneration) {
+    const result = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ? AND is_active = 1 AND semantic_generation = ?').run(new Date().toISOString(), id, expectedSemanticGeneration);
+    if (result.changes === 0) {
+        throw new StaleFactMutationError(`deactivation discarded: fact ${id} changed meaning or state during the comparison`);
+    }
     if (tableExists(db, 'vec_facts'))
         db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
     if (tableExists(db, 'vec_facts_kr'))
@@ -95,14 +96,24 @@ export async function mutateFactMeaning(db, opts) {
     const embedding = await generateEmbedding(newText, 'passage');
     const embBuffer = Buffer.from(new Float32Array(embedding).buffer);
     const vp = vecParamFor(db, 'vec_facts', embedding);
-    const deactivateFactIds = [...new Set(opts.deactivateFactIds ?? [])]
-        .filter((id) => id !== opts.factId);
+    const deactivateFacts = [];
+    const seenDeactivations = new Set();
+    for (const d of opts.deactivateFacts ?? []) {
+        if (d.id === opts.factId || seenDeactivations.has(d.id))
+            continue;
+        seenDeactivations.add(d.id);
+        deactivateFacts.push(d);
+    }
     const tx = db.transaction(() => {
         const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation FROM facts WHERE id = ?').get(opts.factId);
         if (!current)
             throw new Error(`fact not found: ${opts.factId}`);
         if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
             throw new StaleFactMutationError(`fact changed before semantic mutation: ${opts.factId}`);
+        }
+        if (opts.expectedSemanticGeneration !== undefined &&
+            current.semantic_generation !== opts.expectedSemanticGeneration) {
+            throw new StaleFactMutationError(`fact changed before semantic mutation: ${opts.factId} (semantic generation moved)`);
         }
         const sourceExchangeIds = [...new Set([
                 ...parseSourceExchangeIds(current.source_exchange_ids),
@@ -144,8 +155,8 @@ export async function mutateFactMeaning(db, opts) {
                 db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(opts.factId, opts.factId);
             }
         }
-        for (const id of deactivateFactIds)
-            deactivateWithinTransaction(db, id);
+        for (const d of deactivateFacts)
+            deactivateWithinTransaction(db, d.id, d.expectedSemanticGeneration);
         return { revisionId, affectedRelations };
     });
     const result = tx();
@@ -155,7 +166,7 @@ export async function mutateFactMeaning(db, opts) {
         embeddingRefreshed: true,
         ontologyPending: true,
         affectedRelations: result.affectedRelations,
-        deactivatedFactIds: deactivateFactIds,
+        deactivatedFactIds: deactivateFacts.map((d) => d.id),
     };
 }
 /**
@@ -202,7 +213,7 @@ export function deactivateFactTransactional(db, id) {
  */
 export async function restoreFact(db, id) {
     const row = db
-        .prepare('SELECT fact, embedding, embedding_version FROM facts WHERE id = ? AND is_active = 0')
+        .prepare('SELECT fact, embedding, embedding_version, semantic_generation FROM facts WHERE id = ? AND is_active = 0')
         .get(id);
     if (!row)
         throw new Error(`no inactive fact with id: ${id}`);
@@ -222,10 +233,17 @@ export async function restoreFact(db, id) {
             reembedded = true;
         }
     }
+    // 재감사 P1-2: the embedding await is a race window. If the fact's meaning
+    // changed (or it was restored by another path) while the new vector was
+    // being computed, committing would pair the OLD text's vector with the NEW
+    // text and stamp it embedding_version=current — a mismatch the self-heal
+    // can never see. CAS on (is_active, semantic_generation) and discard.
     const tx = db.transaction(() => {
         if (vector && tableExists(db, 'vec_facts')) {
             const now = new Date().toISOString();
-            db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ?').run(now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id);
+            const claimed = db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ?').run(now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id, row.semantic_generation);
+            if (claimed.changes === 0)
+                return 'stale';
             const vp = vecParamFor(db, 'vec_facts', vector);
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
             db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(id, vp.blob);
@@ -236,13 +254,16 @@ export async function restoreFact(db, id) {
             if (tableExists(db, 'vec_facts_kr')) {
                 db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
             }
-            return true;
+            return 'vector';
         }
-        db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
-        return false;
+        const claimed = db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ?').run(new Date().toISOString(), id, row.semantic_generation);
+        return claimed.changes === 0 ? 'stale' : 'plain';
     });
-    const vectorRestored = tx();
-    return { restored: true, vectorRestored, reembedded };
+    const outcome = tx();
+    if (outcome === 'stale') {
+        throw new StaleFactMutationError(`restore discarded: fact ${id} changed meaning or state during restore`);
+    }
+    return { restored: true, vectorRestored: outcome === 'vector', reembedded };
 }
 export function factHistory(db, id) {
     return getRevisions(db, id);

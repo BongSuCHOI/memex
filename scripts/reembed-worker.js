@@ -22,10 +22,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { initDatabase, getVecDtype, getVecTableDtype, embeddingToVecBlob, vecParamSql } from '../dist/db.js';
+import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql } from '../dist/db.js';
 import { generateEmbedding, generateExchangeEmbedding, initEmbeddings, EMBEDDING_VERSION, EMBEDDING_MODEL } from '../dist/embeddings.js';
 import { getIndexDir } from '../dist/paths.js';
 import { upsertCategoryEmbedding } from '../dist/ontology-db.js';
+import { commitExchangeReembed, exchangeContentHash } from '../dist/exchange-reembed.js';
 import {
   buildCategoryReembedPending,
   buildFactReembedPending,
@@ -218,6 +219,7 @@ async function reembedExchanges(db) {
   // the same row instead of drifting on a nondeterministic tool ordering.
   const toolStmt = db.prepare('SELECT tool_name FROM tool_calls WHERE exchange_id = ? ORDER BY rowid');
   let done = 0;
+  let stale = 0;
   let batchNo = 0;
   while (done < MAX_EXCHANGES) {
     const batch = db.prepare(`
@@ -230,27 +232,26 @@ async function reembedExchanges(db) {
 
     for (const row of batch) {
       const toolNames = toolStmt.all(row.id).map((t) => t.tool_name);
+      // Capture the content identity BEFORE the embedding await — the stable
+      // exchange id is legally updated in place (turn growth), and a privacy
+      // purge may delete the row mid-await. The commit CASes on this hash:
+      // content drift or a purged row discards the vector instead of writing
+      // a stale pair (재감사 P1-2).
+      const contentHash = exchangeContentHash(row.user_message, row.assistant_message, toolNames);
       const emb = await generateExchangeEmbedding(row.user_message, row.assistant_message, toolNames);
-      // dtype read INSIDE the write transaction: serializes against the int8
-      // schema that changed between read and write. exchanges.embedding has no
-      // reader in src/, so NULL it instead of duplicating ~1.5KB per row.
-      const tx = db.transaction(() => {
-        const vecDtype = getVecDtype(db);
-        const buf = embeddingToVecBlob(emb, vecDtype);
-        db.prepare('UPDATE exchanges SET embedding = NULL, embedding_version = ?, last_indexed = ? WHERE id = ?')
-          .run(EMBEDDING_VERSION, Date.now(), row.id);
-        db.prepare('DELETE FROM vec_exchanges WHERE id = ?').run(row.id);
-        db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ${vecParamSql(vecDtype)})`).run(row.id, buf);
-      });
-      // .immediate(): acquire the write lock before reading the vec schema.
-      tx.immediate();
-      done++;
+      const committed = commitExchangeReembed(db, row.id, contentHash, emb, EMBEDDING_VERSION, Date.now());
+      if (committed) {
+        done++;
+      } else {
+        stale++;
+        log(`exchanges: stale discard for ${row.id} — content changed or row purged during embed`);
+      }
     }
     if (++batchNo % WAL_CHECKPOINT_EVERY_BATCHES === 0) checkpointWal(db);
     log(`exchanges: ${done}/${Math.min(total, MAX_EXCHANGES)}`);
   }
   checkpointWal(db); // final fold-back before returning
-  log(`exchanges: done this run (${done}, remaining ${Math.max(0, total - done)})`);
+  log(`exchanges: done this run (${done}, remaining ${Math.max(0, total - done)})${stale ? `, stale discarded (${stale})` : ''}`);
   return done;
 }
 
