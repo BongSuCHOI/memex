@@ -58,7 +58,7 @@ vi.mock("../src/llm.js", async (io) => ({
 }));
 
 import { initDatabase } from "../src/db.js";
-import { getActiveFacts, insertFact } from "../src/fact-db.js";
+import { getActiveFacts, getTopFacts, insertFact } from "../src/fact-db.js";
 import { mutateFactMeaning, StaleFactMutationError } from "../src/fact-management.js";
 import { classifyFactsBatch, detectRelations } from "../src/ontology-classifier.js";
 import { importFromSync } from "../src/sync-import.js";
@@ -174,6 +174,28 @@ describe("semantic generation lifecycle", () => {
       .get("legacy-1") as { semantic_generation: number; semantic_updated_at: string };
     expect(row.semantic_generation).toBe(1);
     expect(row.semantic_updated_at).toBe("2026-06-01T00:00:00.000Z");
+  });
+});
+
+describe("getTopFacts recency uses the semantic clock (P1-3)", () => {
+  it("a semantically newer fact outranks one that was only metadata-touched", () => {
+    const project = "/tmp/semantic-gen/top-facts";
+    const now = Date.now();
+    const recent = new Date(now - 1 * 86400000).toISOString(); // 7일 이내 → 5점
+    const old = new Date(now - 80 * 86400000).toISOString(); // 30~90일 사이 → 1점
+    const insert = db.prepare(`
+      INSERT INTO facts
+        (id, fact, category, scope_type, scope_project, source_exchange_ids,
+         created_at, updated_at, consolidated_count, is_active, semantic_updated_at)
+      VALUES (?, ?, 'decision', 'project', ?, '[]', ?, ?, 1, 1, ?)
+    `);
+    // metadata touch: updated_at 은 최근, 의미는 오래됨.
+    insert.run("fact-meta", "A fact that was only reclassified", project, old, recent, old);
+    // semantic edit: 의미는 최근, updated_at 은 오래됨.
+    insert.run("fact-sem", "A fact whose meaning changed recently", project, recent, old, recent);
+
+    const top = getTopFacts(db, project, 2);
+    expect(top.map((f) => f.id)).toEqual(["fact-sem", "fact-meta"]);
   });
 });
 

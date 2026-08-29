@@ -997,4 +997,310 @@ describe('sync-export/import', () => {
       }
     });
   });
+
+  describe('semantic conflict clock (재감사 P1-3 / T07)', () => {
+    const SEMANTIC_LOCAL = '2026-08-29T02:00:00.000Z';
+    const SEMANTIC_REMOTE_OLDER = '2026-08-29T01:00:00.000Z';
+    const SEMANTIC_REMOTE_NEWER = '2026-08-29T03:00:00.000Z';
+    const TOUCH_NEWER = '2026-08-29T04:00:00.000Z';
+    const TOUCH_OLDER = '2026-08-29T00:30:00.000Z';
+
+    function insertLocalFact(
+      db: import('better-sqlite3').Database,
+      overrides: { id?: string; fact?: string; updatedAt?: string; semanticUpdatedAt?: string } = {},
+    ): void {
+      db.prepare(`
+        INSERT INTO facts
+          (id, fact, category, scope_type, scope_project, source_exchange_ids,
+           created_at, updated_at, consolidated_count, is_active, semantic_updated_at)
+        VALUES (?, ?, 'decision', 'global', null, '[]',
+                '2026-08-01T00:00:00.000Z', ?, 1, 1, ?)
+      `).run(
+        overrides.id ?? 'clock-fact',
+        overrides.fact ?? 'Redis에서 세션 캐시를 사용한다',
+        overrides.updatedAt ?? SEMANTIC_LOCAL,
+        overrides.semanticUpdatedAt ?? SEMANTIC_LOCAL,
+      );
+    }
+
+    function writeRemoteFact(
+      syncDir: string,
+      overrides: { id?: string; fact?: string; updatedAt?: string; semanticUpdatedAt?: string | null },
+    ): void {
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), JSON.stringify({
+        id: overrides.id ?? 'clock-fact',
+        fact: overrides.fact ?? 'Redis에서 세션 캐시를 사용한다',
+        fact_kr: null,
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: '[]',
+        created_at: '2026-08-01T00:00:00.000Z',
+        updated_at: overrides.updatedAt ?? TOUCH_NEWER,
+        semantic_updated_at: overrides.semanticUpdatedAt === null
+          ? undefined
+          : (overrides.semanticUpdatedAt ?? SEMANTIC_REMOTE_OLDER),
+        consolidated_count: 1,
+        is_active: 1,
+        ontology_category_id: null,
+      }) + '\n');
+      fs.writeFileSync(path.join(syncDir, 'fact-tombstones.jsonl'), '');
+    }
+
+    it('T07: 로컬 의미 편집은 더 새로운 원격 metadata touch를 이긴다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        // 로컬: 의미 편집(T2). 원격: 옛 문장(Redis)에 분류만 붙여 updated_at 만 T3.
+        insertLocalFact(db, {
+          fact: 'Postgres에서 세션 캐시를 사용한다',
+          updatedAt: SEMANTIC_LOCAL,
+          semanticUpdatedAt: SEMANTIC_LOCAL,
+        });
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      writeRemoteFact(syncDir, {
+        fact: 'Redis에서 세션 캐시를 사용한다',
+        updatedAt: TOUCH_NEWER, // updated_at 만 더 새롭다 (metadata touch)
+        semanticUpdatedAt: SEMANTIC_REMOTE_OLDER, // 의미는 더 오래됐다
+      });
+
+      const imported = await importFromSync();
+      expect(imported.updatedFacts).toBe(0);
+
+      db = initDatabase();
+      try {
+        const row = db
+          .prepare('SELECT fact, semantic_updated_at FROM facts WHERE id = ?')
+          .get('clock-fact') as { fact: string; semantic_updated_at: string };
+        expect(row.fact).toBe('Postgres에서 세션 캐시를 사용한다');
+        expect(row.semantic_updated_at).toBe(SEMANTIC_LOCAL);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('T07: 원격 의미 편집은 더 새로운 로컬 metadata touch를 이긴다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        // 로컬: 옛 의미(T1)에 metadata touch 만 updated_at T3 로 밀었다.
+        insertLocalFact(db, {
+          fact: 'Redis에서 세션 캐시를 사용한다',
+          updatedAt: TOUCH_NEWER,
+          semanticUpdatedAt: SEMANTIC_REMOTE_OLDER,
+        });
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      writeRemoteFact(syncDir, {
+        fact: 'Postgres에서 세션 캐시를 사용한다',
+        updatedAt: SEMANTIC_REMOTE_NEWER, // updated_at 은 로컬보다 오래됐다
+        semanticUpdatedAt: SEMANTIC_REMOTE_NEWER, // 의미는 더 새롭다
+      });
+
+      const imported = await importFromSync();
+      expect(imported.updatedFacts).toBe(1);
+
+      db = initDatabase();
+      try {
+        const row = db
+          .prepare('SELECT fact, semantic_updated_at FROM facts WHERE id = ?')
+          .get('clock-fact') as { fact: string; semantic_updated_at: string };
+        expect(row.fact).toBe('Postgres에서 세션 캐시를 사용한다');
+        expect(row.semantic_updated_at).toBe(SEMANTIC_REMOTE_NEWER);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('가져온 fact는 원격의 semantic clock을 채택한다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      const syncDir = getSyncDir();
+      writeRemoteFact(syncDir, {
+        id: 'fresh-remote-fact',
+        fact: '완전히 새로 들어온 원격 fact',
+        updatedAt: TOUCH_OLDER,
+        semanticUpdatedAt: SEMANTIC_REMOTE_NEWER,
+      });
+
+      await importFromSync();
+
+      const db = initDatabase();
+      try {
+        const row = db
+          .prepare('SELECT semantic_updated_at, updated_at FROM facts WHERE id = ?')
+          .get('fresh-remote-fact') as { semantic_updated_at: string; updated_at: string };
+        expect(row.semantic_updated_at).toBe(SEMANTIC_REMOTE_NEWER);
+        expect(row.updated_at).toBe(TOUCH_OLDER);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('semantic_updated_at이 없는 구버전 payload는 updated_at으로 폴백한다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        insertLocalFact(db, {
+          fact: 'Redis에서 세션 캐시를 사용한다',
+          updatedAt: SEMANTIC_LOCAL,
+          semanticUpdatedAt: SEMANTIC_LOCAL,
+        });
+      } finally {
+        db.close();
+      }
+
+      // 구버전(v2) payload — semantic_updated_at 필드 자체가 없다.
+      const syncDir = getSyncDir();
+      writeRemoteFact(syncDir, {
+        fact: 'Postgres에서 세션 캐시를 사용한다',
+        updatedAt: TOUCH_NEWER,
+        semanticUpdatedAt: null, // 필드 생략
+      });
+
+      const imported = await importFromSync();
+      // 폴백 시계 = updated_at 이므로 원격이 이긴다(구버전 동작 유지).
+      expect(imported.updatedFacts).toBe(1);
+
+      db = initDatabase();
+      try {
+        const row = db
+          .prepare('SELECT fact, semantic_updated_at FROM facts WHERE id = ?')
+          .get('clock-fact') as { fact: string; semantic_updated_at: string };
+        expect(row.fact).toBe('Postgres에서 세션 캐시를 사용한다');
+        expect(row.semantic_updated_at).toBe(TOUCH_NEWER);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('relation endpoint version은 semantic clock으로 검증된다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        // source: semantic T1 (원격과 동일), target: 로컬에서 의미 편집이 이미 일어남(T3).
+        insertLocalFact(db, { id: 'rel-src', fact: 'Source meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
+        insertLocalFact(db, { id: 'rel-tgt', fact: 'Target meaning edited locally', updatedAt: SEMANTIC_REMOTE_NEWER, semanticUpdatedAt: SEMANTIC_REMOTE_NEWER });
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      // relation payload: target 의 semantic stamp 가 로컬(편집 후)과 다르다 → 거부.
+      fs.writeFileSync(
+        path.join(syncDir, 'ontology-relations.jsonl'),
+        JSON.stringify({
+          id: 'rel-stale',
+          source_fact_id: 'rel-src',
+          relation_type: 'SUPPORTS',
+          target_fact_id: 'rel-tgt',
+          reasoning: 'stale anchor',
+          created_at: SEMANTIC_LOCAL,
+          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
+          target_fact_updated_at: SEMANTIC_REMOTE_OLDER,
+          source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
+          target_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
+        }) + '\n',
+      );
+
+      await importFromSync();
+      db = initDatabase();
+      try {
+        expect(
+          (db.prepare('SELECT COUNT(*) AS n FROM ontology_relations').get() as { n: number }).n,
+        ).toBe(0);
+      } finally {
+        db.close();
+      }
+
+      // target 의 semantic stamp 가 현재와 일치하면 승인된다.
+      fs.writeFileSync(
+        path.join(syncDir, 'ontology-relations.jsonl'),
+        JSON.stringify({
+          id: 'rel-current',
+          source_fact_id: 'rel-src',
+          relation_type: 'SUPPORTS',
+          target_fact_id: 'rel-tgt',
+          reasoning: 'current anchor',
+          created_at: SEMANTIC_REMOTE_NEWER,
+          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
+          target_fact_updated_at: SEMANTIC_REMOTE_NEWER,
+          source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
+          target_fact_semantic_updated_at: SEMANTIC_REMOTE_NEWER,
+        }) + '\n',
+      );
+      await importFromSync();
+      db = initDatabase();
+      try {
+        const relations = db
+          .prepare('SELECT id FROM ontology_relations')
+          .all() as Array<{ id: string }>;
+        expect(relations.map((r) => r.id)).toEqual(['rel-current']);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('semantic stamp가 없는 구버전 relation payload는 updated_at 검증을 유지한다', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { getSyncDir } = await import('../src/sync-export.js');
+      const { importFromSync } = await import('../src/sync-import.js');
+
+      let db = initDatabase();
+      try {
+        insertLocalFact(db, { id: 'rel-src', fact: 'Source meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
+        insertLocalFact(db, { id: 'rel-tgt', fact: 'Target meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
+      } finally {
+        db.close();
+      }
+
+      const syncDir = getSyncDir();
+      fs.writeFileSync(path.join(syncDir, 'facts.jsonl'), '');
+      // 구버전 payload: semantic stamp 가 없고 updated_at stamp 만 있다 — 일치 → 승인.
+      fs.writeFileSync(
+        path.join(syncDir, 'ontology-relations.jsonl'),
+        JSON.stringify({
+          id: 'rel-legacy',
+          source_fact_id: 'rel-src',
+          relation_type: 'SUPPORTS',
+          target_fact_id: 'rel-tgt',
+          reasoning: 'legacy anchor',
+          created_at: SEMANTIC_REMOTE_OLDER,
+          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
+          target_fact_updated_at: SEMANTIC_REMOTE_OLDER,
+        }) + '\n',
+      );
+      await importFromSync();
+      db = initDatabase();
+      try {
+        expect(
+          (db.prepare('SELECT COUNT(*) AS n FROM ontology_relations').get() as { n: number }).n,
+        ).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+  });
 });
