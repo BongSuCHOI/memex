@@ -361,7 +361,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
         scope_project: null,
         source_exchange_ids: "[]",
         created_at: "2026-08-01T00:00:00.000Z",
-        updated_at: "2026-08-29T12:00:00.000Z",
+        updated_at: "2999-01-01T00:00:00.000Z",
         consolidated_count: 1,
         is_active: 1,
         ontology_category_id: null,
@@ -382,7 +382,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       .get(localId) as { fact: string; semantic_generation: number; updated_at: string };
     expect(row.fact).toBe("The session store is SQLite");
     expect(row.semantic_generation).toBe(2); // 로컬 편집의 세대가 유지된다
-    expect(row.updated_at).not.toBe("2026-08-29T12:00:00.000Z"); // 원격 시각으로 덮이지 않는다
+    expect(row.updated_at).not.toBe("2999-01-01T00:00:00.000Z"); // 원격 시각으로 덮이지 않는다
   });
 
   it("discards the import when a privacy tombstone lands during the embedding await", async () => {
@@ -407,7 +407,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
         scope_project: null,
         source_exchange_ids: "[]",
         created_at: "2026-08-01T00:00:00.000Z",
-        updated_at: "2026-08-29T14:00:00.000Z",
+        updated_at: "2999-01-01T00:00:00.000Z",
         consolidated_count: 1,
         is_active: 1,
         ontology_category_id: null,
@@ -420,7 +420,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
     // 대기 중 대화 전체 exclusion purge가 tombstone을 남긴다(다른 프로세스 시나리오).
     db.prepare(
       "INSERT INTO fact_tombstones (fact_id, deleted_at, reason) VALUES (?, ?, ?)",
-    ).run(localId, "2026-08-29T14:30:00.000Z", "source_conversation_excluded");
+    ).run(localId, "2999-01-01T01:00:00.000Z", "source_conversation_excluded");
     embedGate.release!();
     const result = await importing;
 
