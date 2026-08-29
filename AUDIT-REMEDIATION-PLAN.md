@@ -838,6 +838,42 @@ T03 분류 race, relation race 양 방향, sync import commit 직전 재검증 2
 쓰기 시 원자적 재검증이 이를 충족한다) — relation 대상 세대 저장은 필요 시 별도
 스키마 확장으로 다룬다.
 
+### Phase 3 — Sync semantics (완료)
+
+리포트 P1-3·P1-4를 재검증했다. P1-3: `remoteFactWins`가 `updated_at`을 충돌 시계로
+쓰는데 분류(`classifyFact`), confirmation/provenance merge(`updateFact`),
+deactivate/restore 같은 비의미 쓰기도 `updated_at`을 갱신하므로, metadata refresh가
+실제 semantic edit를 이길 수 있었다. P1-4의 CAS 절반(commit 직전 로컬 세대 재검증)은
+Phase 2에서 이미 닫혔다. 리포트의 사실 관계는 유효했고 방향 충돌은 없었다.
+
+수정(충돌 판정의 기준 시계를 `semantic_updated_at`으로 교체):
+
+- export: `facts.jsonl`에 `semantic_updated_at`을, `ontology-relations.jsonl`에 양
+  endpoint의 `source/target_fact_semantic_updated_at`을 추가한다(구버전 reader를 위한
+  기존 `updated_at` stamp 유지 — additive, protocol version 유지).
+- `remoteFactWins`: `updated_at` → semantic clock 비교. 동일 시각은 기존 canonical
+  fact key로 결정한다. `semantic_updated_at`이 없는 구버전 payload는 `updated_at`
+  폴백(구버전 peer와의 transition 동작 유지).
+- import: 가져온 fact는 원격의 semantic clock을 채택하고 로컬 세대를 올린다.
+  tombstone-vs-fact 판정(importTombstones의 restore 가드, importFacts의 복원 가드와
+  commit 직전 재검증)도 semantic clock으로 판정한다 — 삭제 이후의 metadata touch는
+  삭제를 되돌리지 못한다.
+- relation import: endpoint version 검증을 semantic stamp(있으면 semantic clock과
+  비교) → legacy updated_at stamp(없으면 기존 동작) → created_at 폴백 순으로 전환.
+- `getTopFacts` recency 점수를 semantic clock으로 전환 — 분류 같은 비의미 쓰기가
+  오래된 fact를 최근 사실처럼 보이지 않게 한다(P1-3 영향 항목).
+
+추가 회귀 테스트(`test/sync-export-import.test.ts` semantic conflict clock describe +
+`test/semantic-generation.test.ts` recency): T07 양방향(로컬 의미 편집 vs 새로운 원격
+metadata touch, 원격 의미 편집 vs 새로운 로컬 metadata touch), 원격 semantic clock 채택,
+구버전 payload 폴백, relation endpoint semantic 검증 거부/승인, 구버전 relation 폴백,
+getTopFacts semantic recency. `remoteFactWins`를 `updated_at` 시계로 되돌린 재주입에서
+T07 양방향 테스트가 실패하는 것을 관측했다.
+
+`NOT_PROVEN` 잔여: semantic stamp가 없는 아주 오래된 peer의 `updated_at`은 여전히
+오염된 시계다(폴백이 구버전 동작을 유지하는 한 해소되지 않음) — protocol 전환 완료
+후 폴백 제거는 별도 결정 사항으로 남긴다.
+
 
 ## 11. 최종 목표
 
