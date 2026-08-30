@@ -2,18 +2,17 @@
 
 ## 1. 설계 목표
 
-Memex는 대화 원본, 파생 검색 인덱스, 장기 사실, 지식 그래프, 검색/주입 표면을
-분리합니다. 원본을 보존하면서 파생 계층은 재생성할 수 있고, 어떤 fact가 어디서
-왔는지 역추적할 수 있어야 합니다.
+Memex는 Codex 대화를 수집해 검색 가능한 conversation corpus와 장기 fact로 증류하고, 필요한 순간 다시 꺼내 쓰는 local-first memory layer입니다.
 
-핵심 원칙:
+핵심 원칙은 다음과 같습니다.
 
-1. Codex adapter만 rollout/hook/plugin 형식을 안다.
-2. core는 archive, exchange, fact, ontology, relation, scope를 다룬다.
-3. 원본 rollout은 read-only이며 DB는 파생 상태다.
-4. project identity는 canonical absolute cwd 하나다.
-5. model execution은 local Codex CLI 하나이며 ephemeral/read-only다.
-6. 모든 자동 lifecycle은 bounded, idempotent, observable해야 한다.
+1. Codex adapter만 rollout, hook, plugin 형식을 압니다.
+2. 원본 rollout은 read-only이며 archive와 DB는 재생성 가능한 로컬 계층입니다.
+3. fact의 **의미**, **활성 상태**, **provenance**는 서로 다른 수렴 규칙을 가집니다.
+4. ontology, KR translation, relation, vector는 local derived state입니다.
+5. multi-device sync는 durable state만 generation 단위로 전송합니다.
+6. 자동 lifecycle은 bounded, idempotent, observable해야 합니다.
+7. project identity는 canonical absolute cwd 하나로 통일합니다.
 
 ## 2. 논리 계층
 
@@ -27,142 +26,207 @@ flowchart TB
     end
 
     subgraph Core[Memex core]
-      Sync[Archive and sync]
-      Search[Conversation retrieval]
+      ArchiveIndex[Archive + indexing]
       Extract[Fact extraction]
-      Consolidate[Fact consolidation]
-      Ontology[Ontology and relations]
-      Inject[Context selection]
+      Consolidate[Consolidation]
+      Sync[Protocol v4 sync]
+      Retrieve[Retrieval + injection]
+      Ontology[Ontology + relations]
     end
 
-    subgraph Data[Local derived data]
-      Archive[(Archive)]
-      DB[(SQLite + FTS5 + sqlite-vec)]
-      Logs[(Ledgers and logs)]
+    subgraph Durable[Durable local/cross-device state]
+      Archive[(Conversation archive)]
+      Facts[(Facts + revisions + tombstones)]
+      Recall[(Recall receipts)]
+      Generations[(Sync generations)]
     end
 
-    subgraph Interfaces[User and agent interfaces]
+    subgraph Derived[Local derived state]
+      FTS[(FTS5)]
+      Vec[(sqlite-vec)]
+      KR[(fact_kr)]
+      Tax[(Ontology + relations)]
+    end
+
+    subgraph Interfaces[Interfaces]
       CLI[CLI]
       MCP[9 MCP tools]
       UI[Web UI]
       Galaxy[3D Galaxy]
     end
 
-    Rollout --> Sync
-    Hooks --> Sync
+    Rollout --> ArchiveIndex
+    Hooks --> ArchiveIndex
     Hooks --> Extract
-    Hooks --> Inject
+    Hooks --> Sync
+    Hooks --> Retrieve
     Exec --> Extract
     Exec --> Consolidate
     Exec --> Ontology
-    Sync --> Archive
-    Sync --> DB
-    Extract --> DB
-    Consolidate --> DB
-    Ontology --> DB
-    Inject --> Logs
-    DB --> Search
-    Search --> CLI
-    Search --> MCP
-    DB --> UI
-    DB --> Galaxy
+
+    ArchiveIndex --> Archive
+    ArchiveIndex --> FTS
+    ArchiveIndex --> Vec
+    Extract --> Facts
+    Consolidate --> Facts
+    Sync <--> Generations
+    Sync <--> Facts
+    Retrieve --> Facts
+    Retrieve --> FTS
+    Retrieve --> Vec
+    Ontology --> Tax
+    Facts --> KR
+    Facts --> Tax
+    Facts --> Vec
+
+    Retrieve --> CLI
+    Retrieve --> MCP
+    Facts --> UI
+    Tax --> Galaxy
 ```
 
-## 3. 주요 컴포넌트
+## 3. Fact 상태 모델
 
-| 컴포넌트 | 책임 | 금지 사항 |
-| --- | --- | --- |
-| `src/codex-rollout.ts` | sessions root, rollout discovery, host metadata | 다른 agent transcript 경로 fallback |
-| `src/parser.ts` | JSONL을 exchange/tool-call 모델로 변환 | 원본 수정, malformed 전체 중단 |
-| `src/sync.ts` | archive copy, incremental index orchestration | partial success를 완료로 기록 |
-| `src/db.ts` | schema/migration, FTS/vector capability | rowid를 바꾸는 replace update |
-| `src/fact-extractor.ts` | eligible exchange batching, fact 후보 생성 | watermark 선행 전진 |
-| `src/consolidator.ts` | duplicate/contradiction/evolution 판정 | provenance/revision 유실 |
-| `src/ontology-*.ts` | domain/category와 typed relation | scope를 무시한 edge 생성 |
-| `src/search.ts` | vector/text/hybrid conversation retrieval | incompatible embedding 혼합 |
-| `src/inject-*.ts` | warm/cold retrieval, gate, dedup, budget | prompt마다 동일 fact 재주입 |
-| `src/mcp-server.ts` | MCP schema, validation, tool dispatch | `process.cwd()` project 추측 |
-| `src/lifecycle.ts` | hook ownership/setup/remove/doctor | 다른 사용자의 hook 제거 |
-| `ui/server.cjs` | loopback API/UI와 guarded fact mutation | 외부 interface bind |
+하나의 fact row에는 서로 성격이 다른 상태가 함께 존재하지만, 충돌 규칙은 분리됩니다.
 
-## 4. End-to-end 데이터 흐름
+### Semantic axis
+
+의미를 구성하는 상태:
+
+- `fact`
+- `category`
+- `scope_type`
+- `scope_project`
+
+로컬 async writer의 stale-result 방지는 `semantic_generation`을 사용하고, cross-device winner는 `semantic_updated_at`으로 결정합니다.
+
+### Lifecycle axis
+
+활성 상태:
+
+- `is_active`
+
+로컬 stale-result 방지는 `lifecycle_generation`, cross-device winner는 `lifecycle_updated_at`을 사용합니다. 동일 시각의 tie는 privacy/search safety를 위해 inactive가 이깁니다.
+
+### Lineage axis
+
+- `source_exchange_ids` — 모든 기기와 concurrent writer의 값을 set union
+- `consolidated_count` — max
+
+lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 합니다.
+
+### Derived overlay
+
+- `fact_kr`
+- `ontology_category_id`
+- ontology domains/categories
+- typed relations
+- primary/KR/category vectors
+
+이 값들은 현재 semantic state에서 재구축할 수 있으며 protocol v4 payload에는 포함하지 않습니다.
+
+## 4. 주요 컴포넌트
+
+| 컴포넌트 | 책임 |
+| --- | --- |
+| `src/codex-rollout.ts` | sessions root, rollout discovery, host metadata |
+| `src/parser.ts` | JSONL → exchange/tool-call 모델 |
+| `src/sync.ts` | rollout archive와 incremental indexing orchestration |
+| `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
+| `src/fact-extractor.ts` | eligible evidence → fact 후보 |
+| `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
+| `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
+| `src/sync-export.ts` | durable generation export |
+| `src/sync-import.ts` | protocol v4 검증과 axis별 reconciliation |
+| `src/ontology-classifier.ts` | taxonomy classification, attempt/fallback 관리 |
+| `src/ontology-db.ts` | taxonomy epoch, category/relation persistence |
+| `src/search.ts` | vector/text/hybrid retrieval |
+| `src/inject-*.ts` | warm/cold retrieval, dedup, budget, recall receipt |
+| `src/mcp-server.ts` | MCP validation과 dispatch |
+| `ui/server.cjs` | loopback UI/API와 guarded fact mutation |
+
+## 5. End-to-end 흐름
 
 ```mermaid
 sequenceDiagram
     participant C as Codex session
     participant H as Memex hooks
-    participant S as Sync/index
+    participant A as Archive/index
     participant D as SQLite
     participant L as Local codex exec
-    participant R as Retrieval
+    participant S as Sync v4
 
     C->>H: SessionStart
-    H-->>S: background sync/import/maintenance
-    S->>D: archive metadata + exchanges + FTS/vector
-    C->>H: UserPromptSubmit(prompt, cwd, session)
-    H->>R: scoped retrieval
-    R->>D: conversation + fact + graph query
-    R-->>C: hookSpecificOutput.additionalContext
-    C->>H: SessionEnd(rollout path)
-    H->>D: claim new exchange rowids
-    H->>L: isolated extraction/classification/consolidation
-    L-->>H: structured candidates/decisions
-    H->>D: atomic facts + provenance + watermark
+    H-->>A: background sync/index
+    H-->>S: import committed peer generations
+    H-->>D: bounded maintenance
+
+    C->>H: UserPromptSubmit
+    H->>D: scoped conversation/fact retrieval
+    H-->>C: additionalContext + durable recall receipt
+
+    C->>H: SessionEnd
+    H->>D: claim new exchange rows
+    H->>L: extraction/consolidation/classification
+    L-->>H: structured results
+    H->>D: atomic fact/provenance/watermark commit
+    H->>S: export durable generation
 ```
 
-## 5. Identity와 scope
+SessionStart의 background sync, sync import, maintenance는 독립 async 작업입니다. 순서가 아니라 **eventual consistency**를 계약으로 삼고, 각 writer가 자체적으로 concurrency-safe해야 합니다.
 
-`session_meta.cwd`를 lexical normalize한 absolute path가 canonical project입니다.
-같은 basename의 두 경로는 서로 다른 project입니다. archive 저장 폴더는 사람이 읽기
-쉬운 basename과 hash를 조합하지만 identity로 사용하지 않습니다.
+## 6. Sync protocol v4
 
-```mermaid
-flowchart LR
-    P[Explicit project /work/a] --> PF[Project /work/a facts]
-    P --> GF[Global facts]
-    G[Explicit global] --> GF
-    A[Explicit all] --> PF
-    A --> Other[Other project facts]
-    A --> GF
+기기 간 이동하는 durable payload는 네 파일입니다.
+
+```text
+facts.jsonl
+fact-revisions.jsonl
+fact-tombstones.jsonl
+recall-events.jsonl
 ```
 
-scope는 seed 선택뿐 아니라 relation traversal의 모든 hop, sync import, fact API,
-MCP, Web UI에 반복 적용합니다.
+각 export는 `devices/<device-id>/generations/<uuid>/` 한 세대로 commit됩니다. `meta.json`은 protocol version, generation/device identity, payload별 row count와 SHA-256을 고정합니다. `CURRENT`가 새 generation을 가리키는 순간이 commit point입니다.
 
-## 6. 일관성과 장애 모델
+export 전체(snapshot → generation write → `CURRENT` flip → prune)는 **local SQLite `BEGIN IMMEDIATE` transaction**으로 같은 DB의 exporter를 직렬화합니다. cloud-sync 경로에 별도 lockfile을 두지 않습니다.
 
-- sync는 archive/index 각 결과를 관측하고 오류 목록을 반환한다.
-- exchange update는 row-preserving UPSERT다.
-- extraction은 session 단위 claim lease와 `last_exchange_rowid`를 사용한다.
-- 사실/출처/saved count/watermark는 같은 commit 경계에 있다.
-- failure는 claim 만료 후 retry 가능하며 동일 session no-new-row는 model call 0이다.
-- semantic fact mutation은 existing identity를 유지하고 revision, stored embedding,
-  primary/KR vector, ontology, relation 상태를 한 transaction에서 전환한다.
-- injection ledger는 bounded/TTL/atomic/fail-open이다. ledger 실패가 prompt를 막지 않는다.
-- `memex update`는 Git marketplace refresh 후 plugin cache를 remove/add하고 data를
-  보존한다. reinstall 실패 시 exact recovery command를 출력한다.
+importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다음을 fail-closed로 검증합니다.
 
-## 7. 보안과 신뢰 경계
+- protocol version = 4
+- `CURRENT`와 manifest generation 일치
+- device identity 일치
+- 필수 파일 존재
+- row count / SHA-256 일치
+- 모든 JSONL row가 JSON이며 v4 schema에 부합
+
+한 항목이라도 실패하면 그 device generation 전체를 적용하지 않습니다.
+
+## 7. 일관성과 장애 모델
+
+- exchange upsert는 rowid-preserving update입니다.
+- extraction의 fact/provenance/saved count/watermark는 같은 transaction에 있습니다.
+- semantic mutation은 revision, vectors, KR/ontology invalidation, relation cleanup을 하나의 commit으로 처리합니다.
+- async derived writer는 계산 전에 generation/epoch을 캡처하고 commit 시 다시 검증합니다.
+- consolidation은 semantic + lifecycle generation을 함께 CAS합니다.
+- replicated lifecycle은 원격 event time을 보존하며 commit transaction 안에서 LWW를 다시 판단합니다.
+- privacy purge는 taxonomy 전체를 invalidate하고 taxonomy epoch를 증가시켜 in-flight classifier를 폐기합니다.
+- 실패한 background 작업은 완료로 가장하지 않으며 다음 lifecycle에서 재시도할 수 있어야 합니다.
+
+## 8. 보안과 신뢰 경계
 
 | 경계 | 방어 |
 | --- | --- |
 | rollout/archive input | path confinement, bounded decompression, malformed-line isolation |
-| project/scope input | absolute canonical validation, enum validation, no cwd fallback |
-| SQLite | parameterized queries, foreign keys, transactions |
-| model call | ephemeral, ignore user config/rules, read-only sandbox, temp cwd, recursion guard |
-| MCP read | archive root confinement, schema validation |
-| Web mutation | loopback, POST-only, JSON, origin/content-type/body limit, service validation |
-| hooks | plugin manifest discovery; explicit fallback만 ownership fingerprint + receipt |
-| logs | prompt/fact 본문 대신 상태/길이/카운터 중심 redaction |
+| project/scope | canonical absolute path, explicit enum, no cwd guessing |
+| SQLite | parameterized query, FK enforcement, transactions/CAS |
+| sync payload | generation manifest, hash/count/schema fail-closed |
+| model call | isolated local `codex exec`, read-only sandbox, recursion guard |
+| retrieval evidence | provenance classification, Memex recall non-learnable |
+| Web mutation | loopback, same-origin POST JSON, body/schema guard |
+| logs | prompt/fact 본문 대신 상태·길이·카운터 중심 기록 |
 
-## 8. 배포 단위
+## 9. 배포 단위
 
-Codex cache에는 manifest, skills, hook/MCP launcher가 설치됩니다. Dependency-free
-`cli/runtime-exec.js`는 MCP와 hook 모두에서 `github:BongSuCHOI/memex#main`을 단일
-source spec으로 사용하고, `npx`가 실제 runtime과 native dependency를 npm isolated
-cache에서 실행합니다. 장기 실행 MCP는 SessionStart hook과 동시에 Git package를
-해석해도 충돌하지 않도록 `$XDG_CACHE_HOME/memex/npm-mcp`(기본
-`~/.cache/memex/npm-mcp`) 전용 cache를 사용합니다. 따라서 일반 사용에는 source checkout이나 build가 필요하지
-않습니다. MCP manifest의 300초 시작 제한은 첫 isolated-cache 준비가 Codex 기본
-10초 제한에 잘리는 것을 방지합니다. 이 구조에서 검증된 `main`만 배포하는 것이
-release safety boundary입니다.
+일반 사용자는 source checkout을 직접 build하지 않습니다. Codex plugin cache에는 manifest, skills, hook/MCP launcher가 설치되고 `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` runtime을 `npx` isolated cache에서 실행합니다.
+
+MCP는 `$XDG_CACHE_HOME/memex/npm-mcp`(기본 `~/.cache/memex/npm-mcp`) 전용 cache를 사용합니다. `main`이 runtime release channel이므로 **검증된 commit만 main에 들어가는 것**이 release safety boundary입니다.

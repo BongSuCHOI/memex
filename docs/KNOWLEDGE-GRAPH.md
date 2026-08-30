@@ -2,8 +2,7 @@
 
 ## 1. 모델
 
-Memex graph는 대화를 직접 node로 연결하는 그래프가 아니라, 대화에서 증류한 active
-fact를 ontology에 배치하고 fact 사이의 의미 관계를 연결한 그래프입니다.
+Memex graph는 대화 원문을 직접 node로 연결하지 않습니다. 대화에서 증류한 **active fact**를 ontology에 배치하고 fact 사이의 typed relation을 연결합니다.
 
 ```mermaid
 graph TD
@@ -17,90 +16,108 @@ graph TD
     F3 -->|SUPERSEDES| F1
 ```
 
-## 2. relation 의미
+## 2. Local-derived 계약
 
-| Relation | 질문 | 방향 의미 |
-| --- | --- | --- |
-| `INFLUENCES` | A가 B의 선택/형태에 영향을 주었는가 | A → B |
-| `SUPPORTS` | A가 B의 근거/제약을 강화하는가 | A → B |
-| `SUPERSEDES` | A가 B를 대체하는 더 최신 사실인가 | A → B |
-| `CONTRADICTS` | A와 B를 동시에 현재 사실로 보기 어려운가 | 저장 방향은 provenance, UI는 양방향 탐색 가능 |
+protocol v4에서 다음은 sync payload에 포함하지 않습니다.
 
-relation에는 reasoning과 생성 시각이 붙습니다. 단순 vector 유사도는 edge가 아닙니다.
-endpoint와 enum 검증을 통과한 관계만 저장됩니다.
+- ontology domains/categories
+- `ontology_category_id`
+- ontology relations
+- category vectors
 
-## 3. ontology 분류
+각 기기는 durable fact state에서 graph를 자체 재구축합니다. 이를 통해 taxonomy UUID 충돌과 private-derived taxonomy의 cross-device 전파를 구조적으로 피합니다.
 
-fact는 정확히 한 category에 속할 수 있고 category는 정확히 한 domain에 속합니다.
-분류되지 않은 active fact는 검색에는 나타날 수 있지만 ontology graph에는 포함되지
-않습니다. edit는 의미가 바뀔 수 있으므로 기존 category를 신뢰하지 않고 pending으로
-되돌립니다.
+## 3. Category 분류
 
-category candidate 검색은 category 이름과 설명의 vector를 사용합니다. 각 category는
-`embedding_version`을 가지며 vector write와 version stamp가 한 transaction에서
-커밋됩니다. 현재 embedding generation과 다른 category 또는 vector row가 누락된
-category가 하나라도 있으면 KNN을 실행하지 않고 bounded self-heal/re-embed를 먼저
-수행합니다. 따라서 model 변경 중 서로 다른 vector space의 distance를 비교하지 않습니다.
+active fact는 하나의 category에 속할 수 있고 category는 하나의 domain에 속합니다. 미분류 fact도 일반 fact 검색에는 나타날 수 있지만 ontology graph에는 아직 배치되지 않습니다.
 
-classification commit은 `semantic_generation` CAS와 함께 **전역 taxonomy epoch**
-(`taxonomy_state.epoch`)도 검증합니다(재감사 Privacy-P1 v4 본 회차). 분류기는
-LLM/embedding 대기 전에 epoch를 캡처하고, privacy purge가 taxonomy를 전면
-invalidate하면 같은 transaction에서 epoch를 1 올린다 — 대기 중 purge가 일어난 분류는
-`StaleFactMutationError`로 전체 폐기되며, 옛 candidate에서 유래한 domain/category
-행을 다시 만들지 못합니다. purge는 잔존 facts의 `ontology_category_id`와 attempt
-ledger(`ontology_attempts`/`ontology_last_attempt_at`)를 함께 리셋하므로 purge 뒤에는
-모든 공개 fact가 LLM 재분류 대기로 돌아갑니다(비용은 worker의 run당 상한으로 bounded).
+분류 candidate는 category 이름/설명의 vector index를 사용합니다. vector가 누락됐거나 embedding generation이 맞지 않으면 bounded self-heal을 먼저 수행해 서로 다른 vector space를 섞지 않습니다.
 
-## 4. traversal
+### Semantic CAS
 
-`explore_graph`는 query에서 seed fact를 찾고 1–3 hop 관계를 확장합니다.
+classifier는 fact의 `semantic_generation`을 캡처합니다. LLM/embedding await 중 fact 의미가 바뀌면 최종 assignment를 폐기합니다.
+
+### Taxonomy epoch
+
+privacy purge는 taxonomy 전체를 invalidate하므로 fact generation만으로는 stale classifier를 막을 수 없습니다. `taxonomy_state`의 global epoch을 별도로 사용합니다.
+
+```text
+classification start → capture epoch N
+privacy purge         → wipe taxonomy + epoch N+1
+old result returns    → epoch mismatch, discard
+```
+
+새 domain/category 생성과 fact assignment는 stale 결과가 taxonomy residue를 남기지 않도록 같은 commit 경계에서 처리합니다.
+
+## 4. Attempt ledger와 fallback
+
+반복적으로 분류할 수 없는 fact가 매 maintenance마다 LLM 호출을 소비하지 않도록 bounded attempt ledger를 둡니다. MAX에 도달한 같은 semantic generation만 General/Misc fallback으로 park할 수 있습니다.
+
+semantic mutation은 attempt ledger를 reset합니다. privacy purge도 surviving facts의 attempts/last-attempt를 reset하여 새 taxonomy에서 다시 분류할 수 있게 합니다.
+
+## 5. Relation
+
+허용 relation:
+
+| Relation | 의미 |
+| --- | --- |
+| `INFLUENCES` | source가 target의 선택/형태에 영향을 줌 |
+| `SUPPORTS` | source가 target을 강화하는 근거/제약 |
+| `SUPERSEDES` | source가 target을 대체하는 더 최신 사실 |
+| `CONTRADICTS` | 두 사실을 동시에 현재 상태로 보기 어려움 |
+
+단순 vector similarity는 relation이 아닙니다. relation writer는 양 endpoint의 semantic generation을 캡처해 LLM await 중 한쪽 의미가 바뀌면 stale edge를 생성하지 않습니다.
+
+`(source_fact_id, relation_type, target_fact_id)`는 unique입니다.
+
+## 6. Scope isolation
+
+- `project=/a` — `/a` facts + global facts
+- `scope=global` — global facts만
+- `scope=all` — explicit 요청일 때만 모든 project
+- `cross_project_insights` — current project를 제외한 다른 project 탐색
+
+서로 다른 두 project fact 사이의 direct edge는 금지합니다. global↔project edge는 허용합니다. traversal의 모든 hop에서 active와 scope를 다시 검사합니다.
+
+## 7. Traversal
+
+`explore_graph`는 scoped seed를 찾은 뒤 최대 1–3 hop relation을 확장합니다.
 
 ```mermaid
 flowchart LR
-    Q[Query] --> Seed[Scoped seed search]
-    Seed --> H1[Hop 1 relations]
-    H1 --> Gate1[Scope + active gate]
-    Gate1 --> H2[Hop 2 relations]
-    H2 --> Gate2[Scope + active gate]
-    Gate2 --> H3[Hop 3 relations]
-    H3 --> Result[Deduped paths + provenance]
+    Q[Query] --> S[Scoped seed]
+    S --> H1[Hop 1]
+    H1 --> G1[active + scope gate]
+    G1 --> H2[Hop 2]
+    H2 --> G2[active + scope gate]
+    G2 --> H3[Hop 3]
 ```
 
-각 hop은 active와 scope를 다시 검사합니다. seed만 project 범위이고 2-hop부터 다른
-project로 새는 구현은 허용하지 않습니다. cycle은 visited set으로 차단하며 max hops는
-3입니다.
+visited set으로 cycle을 차단합니다.
 
-## 5. scope isolation
+## 8. Privacy purge 이후 rebuild
 
-- `project=/a`: `/a` project fact + global fact
-- `scope=global`: global fact만
-- `scope=all`: 모든 project를 명시적으로 요청한 경우만
-- `cross_project_insights`: current project를 명시하고 그 project를 결과에서 제외
+`DO NOT INDEX` conversation purge는 private-derived taxonomy가 future classifier candidate로 남지 않도록 domains/categories/category vectors를 전부 지우고 taxonomy epoch을 올립니다.
 
-서로 다른 project fact의 direct edge는 금지합니다. global fact가 여러 project의 공통
-제약으로 연결되는 것은 허용합니다. 이 규칙은 caller filtering이 아니라
-`ontology_relations`의 INSERT와 endpoint UPDATE trigger가 최종 write boundary에서
-강제하므로 low-level `createRelation()`과 raw SQL writer가 우회할 수 없습니다. relation은
-protocol v4에서 sync payload에서 제외된 local derived state다 — 각 기기의 관계 생성기가
-자기 facts에서 재구성합니다.
+surviving public facts는:
 
-## 6. graph API
+```text
+ontology_category_id = NULL
+ontology_attempts = 0
+ontology_last_attempt_at = NULL
+```
 
-`/api/graph-data` 응답의 최상위 배열은 `domains`, `cats`, `facts`, `rel`입니다.
-각 fact는 category/scope/type/label과 UI에 필요한 최소 메타데이터를 포함하고 relation은
-source/target/type을 포함합니다. API boundary는 누락 배열을 오류로 처리하지만 네 배열이
-모두 빈 것은 정상 신규 설치 상태입니다.
+상태로 돌아가 다음 ontology backfill에서 재분류됩니다. 이 과정은 추가 LLM 비용을 만들 수 있지만 privacy correctness를 우선한 의도된 동작입니다.
 
-## 7. 품질 점검
+## 9. Graph health
 
-정상 graph:
+정상 graph의 기본 조건:
 
 - dangling category/fact/relation endpoint 0
-- 허용되지 않은 relation enum 0
-- cross-project direct edge 0
+- invalid relation enum 0
+- forbidden cross-project direct edge 0
 - inactive fact node 0
 - project query에서 다른 project fact 0
-- provenance 없는 fact는 health gap으로 표시
+- provenance 없는 fact는 health gap으로 보고
 
-`graph_stats`는 domain/category/fact/relation 수와 health를 제공하며, UI 숫자를 수작업으로
-재계산하는 대신 이 deterministic 결과를 사용합니다.
+`graph_stats`와 `/api/graph-data`는 이 local-derived graph 상태를 관측하는 public surface입니다.

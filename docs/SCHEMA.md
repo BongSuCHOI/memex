@@ -1,20 +1,20 @@
 # Memex SQLite 스키마와 불변식
 
-schema의 최종 소유자는 `src/db.ts`입니다. 기본 DB는
-`~/.config/memex/conversation-index/db.sqlite`이며 우선순위는 다음과 같습니다.
+schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
 
-1. `MEMEX_HOME` — 표준 오버라이드
-2. `$XDG_CONFIG_HOME/memex`
-3. `~/.config/memex` (기본)
+기본 DB:
 
-DB 경로는 별도로 `MEMEX_DB_PATH`가 최우선입니다.
+```text
+~/.config/memex/conversation-index/db.sqlite
+```
 
-## 1. 관계 개요
+우선순위는 `MEMEX_DB_PATH`(DB 직접 override), `MEMEX_HOME`, `$XDG_CONFIG_HOME/memex`, `~/.config/memex` 순으로 해석됩니다.
+
+## 1. 주요 관계
 
 ```mermaid
 erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
-    RECALL_EVENTS }o--|| EXCHANGES : matches_prompt
     EXCHANGES }o--o{ FACTS : provenance
     FACTS ||--o{ FACT_REVISIONS : evolves
     FACTS ||..o| FACT_TOMBSTONES : deleted_as
@@ -22,351 +22,188 @@ erDiagram
     ONTOLOGY_CATEGORIES ||--o{ FACTS : classifies
     FACTS ||--o{ ONTOLOGY_RELATIONS : source
     FACTS ||--o{ ONTOLOGY_RELATIONS : target
-    EXTRACTION_LOG ||--|| EXCHANGES : watermarks
 ```
 
-`source_exchange_ids`는 JSON 배열이므로 물리 FK는 아니지만 provenance API가 이
-논리 연결을 검증합니다.
+`source_exchange_ids`는 JSON array라 물리 FK가 아니며 privacy/provenance service가 논리 연결을 관리합니다.
 
-물리 FK(`tool_calls.exchange_id`, `fact_revisions.fact_id`,
-`ontology_relations` 양 endpoint, `ontology_categories.domain_id`)는 모든 Memex
-연결에서 강제됩니다. better-sqlite3의 연결 기본값이 FK ON이지만 이것을 드라이버
-기본값에 의존하지 않고 `initializeConnection`에서 `PRAGMA foreign_keys = ON`으로
-명시 선언합니다. 모든 삭제/이동 경로는 강제 FK 하에서 올바른 순서로 동작하고
-(tool_calls → vec → parent row, relations/revisions → facts), 부모-자식 이동은
-`PRAGMA defer_foreign_keys` transaction 안에서 수행합니다. FK 강제 이전 시대의
-외부 편집이 남긴 기존 orphan은 `memex index verify`가 `PRAGMA foreign_key_check`로
-검출하고, `--repair`는 parent가 없는 파생 child 행(tool_calls, fact_revisions,
-ontology_relations)만 제거합니다 — 그 외 테이블은 수동 검토 대상으로 보고합니다.
+SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 orphan은 verify 경로의 `PRAGMA foreign_key_check`로 검출합니다.
 
-## 2. Conversation corpus
+## 2. Conversation state
+
+주요 테이블:
+
+- `exchanges`
+- `tool_calls`
+- `recall_events`
+- `extraction_log`
+- summary/FTS metadata
+- `exchanges_fts`
+- `vec_exchanges`
+
+### Exchange identity
+
+exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니다. `archive_path`는 identity가 아니라 location metadata입니다.
+
+동일 exchange re-index는 rowid를 보존합니다. extraction watermark가 rowid를 기준으로 하므로 `INSERT OR REPLACE`처럼 rowid를 바꾸는 update는 금지합니다.
+
+### Provenance
+
+conversation/tool result는 source type과 learnable state를 저장합니다. `memex_recall`과 assistant synthesis는 searchable하더라도 fact evidence로 학습하지 않습니다.
+
+## 3. Facts
+
+핵심 컬럼:
 
 ```sql
-CREATE TABLE exchanges (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL,
-  timestamp TEXT NOT NULL,
-  user_message TEXT NOT NULL,
-  assistant_message TEXT NOT NULL,
-  archive_path TEXT NOT NULL,
-  line_start INTEGER NOT NULL,
-  line_end INTEGER NOT NULL,
-  embedding BLOB,
-  last_indexed INTEGER,
-  parent_uuid TEXT,
-  is_sidechain BOOLEAN DEFAULT 0,
-  session_id TEXT,
-  cwd TEXT,
-  git_branch TEXT,
-  codex_version TEXT,
-  thinking_level TEXT,
-  thinking_disabled BOOLEAN,
-  thinking_triggers TEXT,
-  embedding_version INTEGER NOT NULL DEFAULT 0,
-  provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
-  assistant_learnable BOOLEAN NOT NULL DEFAULT 0,
-  has_memex_recall BOOLEAN NOT NULL DEFAULT 0
-);
-
-CREATE TABLE tool_calls (
-  id TEXT PRIMARY KEY,
-  exchange_id TEXT NOT NULL REFERENCES exchanges(id),
-  tool_name TEXT NOT NULL,
-  tool_input TEXT,
-  tool_result TEXT,
-  is_error BOOLEAN DEFAULT 0,
-  timestamp TEXT NOT NULL,
-  source_type TEXT NOT NULL DEFAULT 'external_unverified',
-  learnable BOOLEAN NOT NULL DEFAULT 0
-);
-
-CREATE TABLE recall_events (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  project TEXT NOT NULL,
-  prompt_hash TEXT NOT NULL,
-  fact_ids TEXT NOT NULL,
-  source_type TEXT NOT NULL DEFAULT 'memex_recall',
-  learnable BOOLEAN NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'prepared',
-  created_at TEXT NOT NULL,
-  emitted_at TEXT
-);
+facts (
+  id,
+  fact,
+  category,
+  scope_type,
+  scope_project,
+  source_exchange_ids,
+  created_at,
+  updated_at,
+  consolidated_count,
+  is_active,
+  fact_kr,
+  ontology_category_id,
+  embedding_version,
+  ontology_attempts,
+  ontology_last_attempt_at,
+  consolidation_attempts,
+  needs_consolidation,
+  semantic_generation,
+  semantic_updated_at,
+  lifecycle_generation,
+  lifecycle_updated_at
+)
 ```
 
-`exchanges.id`는 교환의 논리 신원입니다 — `md5(session_id:user_line)`로, 세션과 user
-turn 행 위치에서 결정론적으로 파생됩니다(구버전 DB의 행은 재색인 시 canonical id로
-rename된다). `archive_path`와 `line_end`는 신원 재료가 아니라 location/content
-metadata입니다. 재색인은 desired-set reconciliation을 수행합니다: 같은 archive의 행
-집합과 새 파싱을 대조해, desired 밖 행은 통합 삭제 primitive(tool_calls + vec + row,
-FTS는 trigger)로 제거하고, legacy id 행은 canonical id로 rename하며 참조
-(`tool_calls.exchange_id`, `vec_exchanges.id`, `facts.source_exchange_ids`,
-`fact_revisions.source_exchange_id`)를 재작성하고, 삭제된 교환을 참조하던 provenance
-항목도 정리합니다. `tool_calls`는 교환별 desired set으로 대체됩니다. cross-device로는
-같은 rollout의 재색인이 같은 교환 id를 만들어 fact provenance가 로컬 exchange와
-연결됩니다.
+### Semantic fields
 
-중요한 불변식:
+`semantic_generation`은 local CAS token이며 의미 변경마다 증가합니다. `semantic_updated_at`은 cross-device semantic event clock입니다.
 
-- `project`는 canonical absolute `session_meta.cwd`다.
-- `archive_path`는 data root 안의 읽기 가능한 원본 사본을 가리킨다.
-- 동일 exchange re-index는 `INSERT ... ON CONFLICT DO UPDATE`로 rowid를 보존한다.
-- `line_start/end`는 provenance read의 재현 가능한 범위다.
-- sidechain/worker/internal prompt는 사용자 knowledge로 승격하지 않는다.
-- `provenance`는 `human_assertion`, `assistant_generated`, `repo_file`,
-  `git_history`, `test_execution`, `external_unverified`, `memex_recall`의 JSON 배열이다.
-- `tool_calls`마다 source/trust를 따로 저장한다. Memex sibling tool이 있어도
-  allowlisted repo/Git/test result의 `learnable=1`은 유지된다.
-- assistant synthesis는 recall 유무와 관계없이 기본 `assistant_learnable=0`이다.
-- FTS/vector search는 full exchange를 유지하지만 fact extraction은 human assertion과
-  `learnable=1` tool result만 prompt에 넣는다.
-- recall event는 context 계산 시 `prepared`, hook stdout emit 후 `emitted`다. exchange의
-  recall provenance에는 `emitted`만 사용하며 `prepared`는 taint하지 않는다. Codex가 실제
-  소비했는지는 host receipt가 없어 별도 주장하지 않는다.
-- user-role conversation exclusion은 conversation-wide purge다. `exchanges` 삭제 trigger가
-  `exchanges_fts`를 정리하고, policy service가 `tool_calls`, `vec_exchanges`, session
-  `extraction_log`/`recall_events`, summary와 해당 source exchange를 참조하는
-  fact/revision/vector/relation을 함께 제거한다. 제거된 fact는 `fact_tombstones`에
-  `source_conversation_excluded` 사유로 기록돼 오래된 sync snapshot이 부활시키지 못한다.
-  source rollout과 archive 사본은 보존한다.
+의미 변경은 revision과 derived-state invalidation을 같은 transaction에 포함해야 합니다.
 
-`exchanges_fts`는 user/assistant text의 external-content FTS5 테이블입니다.
-insert/update/delete trigger가 동기화하며 `fts_meta`의 rebuild-ready 상태가 없으면
-검색은 결과를 숨기지 않고 안전한 text fallback을 사용합니다.
+### Lifecycle fields
 
-## 3. Facts, revisions, extraction ledger
+`lifecycle_generation`은 local active/inactive CAS token입니다. `lifecycle_updated_at`은 cross-device lifecycle event clock입니다.
 
-```sql
-CREATE TABLE facts (
-  id TEXT PRIMARY KEY,
-  fact TEXT NOT NULL,
-  category TEXT,
-  scope_type TEXT NOT NULL DEFAULT 'project',
-  scope_project TEXT,
-  source_exchange_ids TEXT,
-  embedding BLOB,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  consolidated_count INTEGER DEFAULT 1,
-  is_active INTEGER DEFAULT 1,
-  ontology_category_id TEXT,
-  fact_kr TEXT,
-  embedding_version INTEGER NOT NULL DEFAULT 1,
-  ontology_attempts INTEGER NOT NULL DEFAULT 0,
-  consolidation_attempts INTEGER NOT NULL DEFAULT 0,
-  needs_consolidation INTEGER NOT NULL DEFAULT 1,
-  ontology_last_attempt_at TEXT,
-  semantic_generation INTEGER NOT NULL DEFAULT 1,
-  semantic_updated_at TEXT NOT NULL DEFAULT '',
-  lifecycle_generation INTEGER NOT NULL DEFAULT 1,
-  lifecycle_updated_at TEXT NOT NULL DEFAULT ''
-);
+semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 semantic clock을 건드리지 않습니다.
 
-CREATE TABLE fact_revisions (
-  id TEXT PRIMARY KEY,
-  fact_id TEXT NOT NULL REFERENCES facts(id),
-  previous_fact TEXT NOT NULL,
-  new_fact TEXT NOT NULL,
-  reason TEXT,
-  source_exchange_id TEXT,
-  created_at TEXT NOT NULL
-);
+### Lineage fields
 
-CREATE TABLE fact_tombstones (
-  fact_id TEXT PRIMARY KEY,
-  deleted_at TEXT NOT NULL,
-  reason TEXT
-);
+`source_exchange_ids`와 `consolidated_count`는 sync/concurrent writer에서 각각 union/max로 수렴합니다. 의미 winner의 metadata로 단순 덮어쓰지 않습니다.
 
-CREATE TABLE sync_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+## 4. Revisions와 tombstones
 
-CREATE TABLE extraction_log (
-  session_id TEXT PRIMARY KEY,
-  processed_at TEXT NOT NULL,
-  extracted INTEGER NOT NULL DEFAULT 0,
-  saved INTEGER NOT NULL DEFAULT 0,
-  dropped_batches INTEGER NOT NULL DEFAULT 0,
-  claim_owner TEXT,
-  last_exchange_rowid INTEGER NOT NULL DEFAULT 0
-);
+`fact_revisions`는 기존 fact identity의 의미 변화를 보존합니다.
+
+`fact_tombstones`는 hard-delete event이며 fact row가 없어져도 남아 stale peer snapshot의 resurrection을 막습니다.
+
+`reason = source_conversation_excluded`는 terminal privacy tombstone으로 취급합니다. 일반 newer lifecycle event만으로 복원하지 않습니다.
+
+## 5. Ontology
+
+주요 테이블:
+
+```text
+ontology_domains
+ontology_categories
+ontology_relations
+vec_categories
+taxonomy_state
 ```
 
-`source_exchange_ids`는 fact의 1차 provenance입니다. `fact_revisions`는 기존 문장을
-삭제하지 않고 수정/진화를 기록합니다. deactivate는 `is_active=0`과 vector 제거를
-같이 수행하고, restore는 검색 가능한 vector 상태를 재구성합니다.
-
-`semantic_generation`은 fact 의미의 로컬 세대 토큰입니다. 의미 변경은
-`mutateFactMeaning`과 sync fact import 두 경로뿐이며, 두 경로 모두 세대를 올리고
-`semantic_updated_at`을 해당 의미 사건의 시각으로 갱신합니다. deactivate/restore,
-ontology 분류, consolidation 확인은 세대를 올리지 않습니다.
-`semantic_updated_at`은 cross-device **semantic** 충돌 판정의 시계이기도 합니다 —
-sync fact conflict와 tombstone-vs-fact 판정이 이 시계(`updated_at` 폴백)를 사용하며,
-비의미 metadata touch가 의미 편집을 이기지 못합니다.
-
-`lifecycle_generation`/`lifecycle_updated_at`은 활성 상태의 독립 시계입니다(재감사
-P1-3 v4). deactivate/restore/sync lifecycle import는 `lifecycle_generation`을 올리고
-`lifecycle_updated_at`을 기록하며, semantic 편집은 이 시계를 건드리지 않습니다 —
-의미 축과 활성 축은 서로를 롤백하지 않고 독립 수렴합니다. embedding await가 있는
-async writer(restore, sync activate)는 semantic + lifecycle token 둘 다 CAS하고,
-sync의 lifecycle tie는 inactive 승리라는 결정적 규칙으로 모든 기기가 같은 결과를
-냅니다. **복제된 lifecycle event는 원격 사건의 시각을 그대로 저장합니다**(재감사
-P1-2 v4 본 회차) — import 당시의 로컬 벽시계로 기록하면 그 시각이 이후의 진짜
-restore를 영구히 거부하므로, `applyReplicatedLifecycle`은 commit transaction 안에서
-현재 행의 시계를 다시 읽어 LWW를 재판정한 뒤에만 `eventAt`을 기록합니다(상태가 같아도
-더 새로운 clock은 수렴하고, await 중 로컬 사건은 stale plan을 이기며, tombstone이
-있으면 적용하지 않습니다). consolidation 참가자는 `semantic_generation`과
-`lifecycle_generation`을 함께 CAS합니다(재감사 P1-4 v4 본 회차). 비동기 파생
-writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
-시작 시 세대를 캡처하고 최종 쓰기를 `WHERE semantic_generation = ?` CAS(또는 동일
-transaction 안의 재검증)로 수행합니다 — 0행이면 그 결과는 이전 의미의 것이므로
-폐기됩니다. "fact 의미가 바뀌면 그 의미에서 파생된 모든 representation은 같은
-세대를 가리키거나 invalid여야 한다"는 불변식의 enforcement 토큰입니다. legacy 행은
-migration에서 세대 1로 시작하고 `semantic_updated_at = updated_at`으로 채워집니다.
-hard delete는 fact/revision/relation/vector를 지우기 전에 `fact_tombstones`를 같은
-transaction에 기록합니다. tombstone은 FK를 갖지 않는 의도적 deletion event이며,
-cross-device sync가 오래된 fact snapshot을 되살리지 못하게 합니다.
-`reason = 'source_conversation_excluded'` tombstone은 terminal privacy state다.
-unexclude/re-consent event가 없으므로 sync import는 timestamp와 무관하게 이 사유의
-tombstone으로 fact를 복원하지 않고, 더 새로운 peer edit을 지우면서 삭제를 전파하며,
-이 사유를 더 새로운 non-privacy tombstone으로 강등하지 않는다. tombstone의
-`deleted_at`은 항상 monotone(max)으로 기록된다.
-`sync_meta.device_id`는 local DB의 snapshot writer identity입니다. 각 writer가 별도
-directory를 소유하므로 offline device export가 peer snapshot을 덮어쓰지 않습니다.
-
-`extraction_log` 불변식:
-
-1. `session_id`당 한 행
-2. 한 시점에 하나의 유효 `claim_owner`
-3. `rowid > last_exchange_rowid`만 추출 가능
-4. fact/provenance/saved count/watermark는 같은 transaction에서 commit
-5. 새 row가 없는 같은 session 재실행은 model call 0의 no-op
-6. 만료 claim은 duplicate ledger row 없이 pending으로 복귀
-
-## 4. Ontology와 relations
+`taxonomy_state`는 singleton epoch을 가집니다.
 
 ```sql
-CREATE TABLE ontology_domains (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE ontology_categories (
-  id TEXT PRIMARY KEY,
-  domain_id TEXT NOT NULL REFERENCES ontology_domains(id),
-  name TEXT NOT NULL,
-  description TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  embedding_version INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE ontology_relations (
-  id TEXT PRIMARY KEY,
-  source_fact_id TEXT NOT NULL REFERENCES facts(id),
-  relation_type TEXT NOT NULL CHECK (
-    relation_type IN ('INFLUENCES','SUPERSEDES','SUPPORTS','CONTRADICTS')
-  ),
-  target_fact_id TEXT NOT NULL REFERENCES facts(id),
-  reasoning TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE taxonomy_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   epoch INTEGER NOT NULL DEFAULT 1
 );
 ```
 
-`(source_fact_id, relation_type, target_fact_id)`는 unique입니다. 양 endpoint는 존재해야
-합니다. 서로 다른 두 project fact를 직접 연결하는 relation은 import와 mutation
-경계에서 거부합니다. global↔project와 same-project edge는 허용합니다.
+privacy purge가 taxonomy를 전면 invalidate할 때 같은 transaction에서 epoch도 증가합니다. classifier는 epoch을 캡처하고 commit 전에 검증하여 purge 전 candidate에서 계산된 결과가 taxonomy를 다시 만들지 못하게 합니다.
 
-`taxonomy_state.epoch`는 taxonomy 전면 invalidate(privacy purge)마다 1씩 올라가는
-전역 epoch입니다(재감사 Privacy-P1 v4 본 회차). 분류기는 LLM/embedding 대기 전에 이
-값을 캡처하고 최종 쓰기(`applyClassification`, deterministic gate, fallback parking)에서
-재판정합니다 — purge가 taxonomy를 지운 뒤 도착하는 stale LLM 결과는
-`StaleFactMutationError`로 폐기되며 private-derived taxonomy를 다시 만들지 못합니다.
-bump는 taxonomy 삭제와 같은 transaction 안에서 일어나므로 어느 관측자도 "wipe 없는
-epoch 이동" 또는 "epoch 이동 없는 wipe"을 볼 수 없습니다. 같은 purge 트랜잭션은
-잔존 facts의 `ontology_category_id = NULL`과 함께 `ontology_attempts = 0`,
-`ontology_last_attempt_at = NULL`도 리셋합니다(재감사 P2 v4 본 회차) — attempts가
-MAX에 도달한 잔존 fact도 worker 시작 시 즉시 General/Misc로 파킹되지 않고 새
-taxonomy로 재분류됩니다.
+ontology/relation/category vector는 protocol v4 local-derived state입니다.
 
-## 5. Vector indexes
+## 6. Vector tables
 
-sqlite-vec의 384차원 int8 테이블:
+대표 vec0 table:
 
-- `vec_exchanges`
-- `vec_facts`
-- `vec_facts_kr`
-- `vec_categories`
+```text
+vec_exchanges
+vec_facts
+vec_facts_kr
+vec_categories
+```
 
-`embedding_version`은 exchange, fact, ontology category가 어느 embedding generation에
-속하는지 기록해 다른 모델/양자화 공간의 vector 비교를 막습니다. category vector
-write와 version stamp는 한 transaction이며, 검색은 taxonomy 전체가 현재 generation으로
-정합한 경우에만 KNN을 실행합니다. SessionStart maintenance는 stale 또는 missing
-`vec_categories`와 `vec_facts`를 같은 re-embed worker로 복구합니다. fact edit는
-text/vector를 transaction으로 교체하고 ontology classification을 pending으로
-되돌립니다. Korean vector를 분리해 같은 언어 retrieval을 보강합니다.
+fresh DB는 int8 embedding storage를 사용하며 실제 sqlite schema에서 dtype을 확인합니다. float32/int8 blob을 flag 추정만으로 섞지 않습니다.
 
-## 6. Scope predicate
+vector는 물리 FK가 없을 수 있으므로 parent delete/semantic mutation 시 application transaction에서 명시적으로 정리합니다.
 
-| 요청 | 사실 predicate |
+## 7. Async writer CAS
+
+비동기 작업은 await 전에 input generation/content/epoch을 캡처합니다.
+
+| Writer | Guard |
 | --- | --- |
-| 기본 fact list/API | `scope_type = 'global'` |
-| explicit project | `scope_type = 'global' OR scope_project = :canonical_project` |
-| explicit global | global만 |
-| explicit all | project predicate 없음, active만 |
-| graph project | project + global + classified + active |
-| graph global | global + classified + active |
-| graph all | 모든 classified active fact |
+| fact semantic mutation | expected semantic generation (+ 필요한 lifecycle generation) |
+| restore | semantic + lifecycle generation |
+| consolidation | 양 participant semantic + lifecycle generation |
+| ontology classification | semantic generation + taxonomy epoch |
+| relation creation | 양 endpoint semantic generation |
+| fact/KR reembed | semantic generation/content |
+| exchange reembed | exchange content hash |
+| translation script | semantic generation + exact fact text |
 
-project fact는 absolute canonical `scope_project`를 가져야 하고 global fact는
-`NULL`이어야 합니다. traversal은 seed뿐 아니라 매 hop에 같은 predicate를 적용합니다.
-`ontology_relations`는 두 endpoint가 모두 project scope이면서 `scope_project`가 다르면
-INSERT와 endpoint UPDATE를 DB trigger에서 거부합니다. 같은 project끼리와 global↔project
-edge는 허용하며, caller의 사전 scope filtering은 이 최종 write invariant를 대체하지 않습니다.
+stale 결과는 새 상태와 merge하지 않고 폐기합니다.
 
-## 7. Mutation transaction
+## 8. Privacy purge transaction
 
-`src/fact-management.ts`가 manual edit와 자동 semantic mutation의 단일 service입니다.
-`mutateFactMeaning()`은 existing fact ID를 current identity로 유지합니다.
+conversation exclusion purge는 다음을 하나의 policy operation으로 다룹니다.
 
-| 작업 | 같은 transaction에서 지켜야 할 것 |
-| --- | --- |
-| semantic edit/evolution/contradiction | revision 추가, text/stored embedding/primary vector 교체, KR·ontology·relation 무효화, 병합 대상 비활성화 |
-| deactivate | active=0, lifecycle_generation 증가(재감사 P1-3 v4), 관련 searchable vector 제거 |
-| restore | active=1, lifecycle_generation 증가, semantic+lifecycle dual CAS 후 embedding/vector 재생성 |
-| hard delete | tombstone 기록 후 relation, vector, revision, fact를 dependency 순서로 제거 |
+- matching exchange/tool/vector/search state 삭제
+- 관련 fact/revision/relation/vector 제거
+- terminal privacy tombstone 기록
+- taxonomy domains/categories/category vectors 전면 invalidate
+- surviving fact ontology assignment/attempt ledger reset
+- taxonomy epoch 증가
 
-hard delete는 full UUID와 명시적 confirmation이 없으면 시작하지 않습니다.
-`status`, `analyze`, search/MCP read, graph API는 read-only입니다.
+원본 rollout과 archive snapshot은 이 DB transaction의 삭제 대상이 아닙니다.
 
-semantic mutation은 replacement embedding을 먼저 준비한 뒤 위 durable state를 한
-transaction에서 전환합니다. CONTRADICTION은 새 row를 current identity로 승격하지 않고
-existing fact ID를 갱신하므로, current fact에서 `fact_revisions.fact_id`를 직접 따라
-predecessor를 조회할 수 있습니다.
+## 9. Sync state
 
-## 8. 인덱스와 성능 의도
+`sync_meta.device_id`는 local DB writer identity입니다. 각 device는 자기 `sync/devices/<device-id>/` generation만 씁니다.
 
-conventional index는 session/project/archive/timestamp, active fact scope, ontology
-membership, relation endpoints, revisions, consolidation dirty queue를 덮습니다.
-FTS/vector가 모두 없는 상태에서는 조용히 빈 결과를 반환하지 않고 readiness 또는
-fallback 상태를 노출해야 합니다.
+protocol v4는 SQLite 파일을 복제하지 않습니다. JSONL generation으로 durable state만 교환합니다.
 
-## 9. 데이터 재생성 경계
+```text
+facts
+fact_revisions
+fact_tombstones
+recall_events
+```
 
-| 데이터 | 원본/파생 | 재생성 |
-| --- | --- | --- |
-| `$CODEX_HOME/sessions` | 원본 | Memex가 생성/수정하지 않음 |
-| conversation archive | 파생 증거 사본 | rollout에서 재동기화 가능 |
-| exchanges/FTS/vector | 파생 index | archive/rollout에서 재구축 가능 |
-| facts/revisions/tombstones | model-backed durable state | protocol v4 sync generation 또는 data-root backup 필요; rollout 재추출만으로 동일 lineage/deletion 복원 불가 |
-| ontology/relations | fact에서 파생 | 재분류/재탐지 가능 |
-| injection ledger/log | 운영 파생 상태 | 삭제 시 dedup/관측 연속성만 초기화 |
-| recall_events/provenance flags | self-ingestion 방지 증거 | source rollout만으로는 hook receipt를 복원할 수 없으므로 sync JSONL 또는 DB backup으로 보존 |
+`semantic_generation`/`lifecycle_generation`은 local CAS token이므로 cross-device version number로 사용하지 않습니다. 기기 간 conflict는 event timestamps로 판단합니다.
+
+## 10. Export serialization
+
+sync export는 같은 local DB의 exporters를 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화합니다. snapshot read부터 generation write, `CURRENT` flip, prune까지 같은 serialized export operation 안에서 처리합니다.
+
+이를 위해 sync directory에 stale-break lockfile을 두지 않습니다.
+
+## 11. 검증 불변식
+
+최소 health checks:
+
+- `PRAGMA foreign_key_check` 위반 0
+- active fact의 required semantic/lifecycle clocks 유효
+- deleted parent를 가리키는 derived vector/relation 0
+- relation endpoint/scope 규칙 만족
+- FTS readiness와 source row 정합
+- generation manifest hash/row/schema 검증 성공
+
+schema 변경 시 이 문서뿐 아니라 해당 lifecycle owner doc도 함께 갱신해야 합니다.

@@ -1,38 +1,30 @@
 # Memex 설치 및 운영 가이드
 
-이 문서는 공개 marketplace 등록부터 runtime 준비, 첫 동기화, CLI/MCP/UI 사용,
-업데이트, 진단, 해제까지의 현재 Codex-native 운영 계약입니다.
+이 문서는 처음 설치하는 사용자와 repository 기여자가 Memex를 안전하게 운영하는 데 필요한 현재 절차만 설명합니다.
 
-## 1. 요구 사항과 설치 경계
+## 1. 요구 사항
 
 - Node.js 22.15 이상
 - 로컬 인증이 완료된 Codex CLI
-- hook/Unix socket을 사용할 수 있는 macOS 또는 Linux
+- macOS 또는 Linux
+- plugin hook과 Unix socket을 사용할 수 있는 환경
 
-Memex는 native SQLite/vector/embedding 의존성을 사용합니다. Node에 포함된 `npx`가
-`github:BongSuCHOI/memex#main`의 최신 runtime을 npm isolated cache에 준비합니다.
-사용자 project를 clone/build하거나 global package를 설치하지 않습니다. Marketplace
-main은 곧 runtime release channel이므로 검증된 code만 merge해야 합니다.
+Memex는 native SQLite/vector/embedding 의존성을 사용합니다. 일반 설치에서는 source checkout을 직접 build하거나 global package를 설치할 필요가 없습니다.
 
-## 2. 권장 설치: repository marketplace
-
-저장소 루트의 `.agents/plugins/marketplace.json`이 공식 marketplace입니다. 일반
-사용자 설치는 다음 두 명령으로 끝납니다.
+## 2. 권장 설치
 
 ```bash
 codex plugin marketplace add BongSuCHOI/memex
 codex plugin add memex@memex
 ```
 
-`plugin add`는 Codex cache에 manifest, MCP declaration, skills, hooks, UI, CLI를
-설치합니다. dependency-free `cli/runtime-exec.js`가 MCP와 hook에서 공통으로 최신
-runtime을 실행합니다. 첫 호출은 npm cache와 native dependency 준비 때문에 평소보다
-오래 걸릴 수 있으므로 MCP manifest는 첫 준비를 위한 시작 제한을 300초로 설정합니다.
+plugin은 manifest, MCP declaration, 3개 skills, hooks, UI launcher를 Codex cache에 설치합니다. dependency-free `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` runtime을 `npx` isolated cache에서 실행합니다.
 
-## Manual local marketplace
+첫 실행은 native dependency와 npm cache 준비로 평소보다 오래 걸릴 수 있습니다. MCP manifest는 이를 고려해 startup timeout을 넉넉하게 둡니다.
 
-개발/기여/air-gapped validation에서는 checkout을 준비한 기존 외부 local marketplace
-방식도 유지합니다. 이 절은 일반 사용자 설치 경로가 아닙니다.
+### 개발용 local marketplace
+
+repository 자체를 수정하거나 air-gapped validation을 할 때만 local checkout을 사용합니다.
 
 ```bash
 git clone https://github.com/BongSuCHOI/memex.git
@@ -41,76 +33,34 @@ npm ci
 npm run build
 ```
 
-```text
-/absolute/path/memex-local-marketplace/
-├── .agents/plugins/marketplace.json
-└── plugins/
-    └── memex -> /absolute/path/memex
-```
+이 경로는 일반 사용자 설치 절차가 아닙니다.
 
-`marketplace.json`:
+## 3. CLI shim과 Codex Memory 충돌 점검
 
-```json
-{
-  "name": "memex-local",
-  "interface": { "displayName": "Memex Local" },
-  "plugins": [
-    {
-      "name": "memex",
-      "source": { "source": "local", "path": "./plugins/memex" },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Developer Tools"
-    }
-  ]
-}
-```
-
-```bash
-codex plugin marketplace add /absolute/path/memex-local-marketplace
-codex plugin add memex@memex-local
-
-node scripts/install-memex.mjs \
-  --marketplace /absolute/path/memex-local-marketplace \
-  --dry-run
-
-node scripts/install-memex.mjs \
-  --marketplace /absolute/path/memex-local-marketplace
-```
-
-## 4. Codex 재시작과 최초 onboarding
-
-설치 후 **Codex를 재시작**합니다. 이미 열린 session은 새 MCP server, skills, plugin
-hooks를 다시 로드하지 않습니다.
-
-첫 사용 전에 기존 Codex session history를 conversation → fact → ontology/vector
-순서로 준비합니다. 터미널에서 `memex` CLI를 직접 쓰려면 플러그인 등록만으로는 PATH에
-실행 파일이 생기지 않으므로, 다음 명령을 **한 번만** 실행해 영구 shim을 만듭니다:
+터미널에서 `memex` CLI를 직접 사용하려면 한 번만 shim을 설치합니다.
 
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex setup --install-cli
 ```
 
-`~/.local/bin/memex`가 생겨 이후 터미널에서 `memex`를 직접 실행할 수 있습니다.
-전역 설치는 하지 않으며, PATH 누락 시 안내를 출력합니다. 제거는
-`memex setup --uninstall-cli`(본 명령이 만든 파일만 삭제)입니다.
+기본 위치는 `~/.local/bin/memex`입니다. 제거는:
 
-### Built-in Memory 충돌 점검
+```bash
+memex setup --uninstall-cli
+```
 
-`memex setup`은 `codex features list`의 effective `memories` 상태를 읽습니다. 활성화된
-경우 Codex built-in Memory와 Memex가 같은 prompt에 서로 다른 기억을 주입할 수 있는
-double-memory/conflicting-memory 위험을 설명하고 OFF를 권장합니다.
+`memex setup`은 Codex built-in Memory의 effective 상태를 확인합니다. Memex와 built-in Memory가 동시에 같은 prompt에 다른 기억을 주입할 수 있으므로, 사용자는 필요하면 explicit approval로 built-in Memory를 비활성화할 수 있습니다.
 
-- 대화형 terminal: `Disable Codex built-in Memory now? [y/N]`에서 승인한 경우만 OFF
-- 비대화형 terminal: 상태만 보고하며 설정을 변경하지 않음
-- 명시적 자동화 승인: `memex setup --disable-codex-memory`
-- preview: `memex setup --dry-run`
+```bash
+memex setup --dry-run
+memex setup --disable-codex-memory
+```
 
-승인된 변경은 TOML을 Memex가 직접 편집하지 않고
-`codex features disable memories`로 수행하며, 다시 `features list`를 읽어 OFF를
-검증합니다. 설정 변경 뒤 Codex를 재시작합니다.
+설정 변경 후에는 Codex를 재시작합니다.
+
+## 4. 최초 onboarding
+
+Codex를 재시작한 뒤 기존 session history를 준비합니다.
 
 ```bash
 memex sync
@@ -119,35 +69,42 @@ memex status
 memex status --json
 ```
 
-- `sync`: `$CODEX_HOME/sessions` rollout을 읽고 archive/index/search corpus 생성
-- `backfill all`: 각 backlog 단계를 순서대로 실행 — `extract`(durable fact 추출),
-  `ontology`(fact 분류와 graph 구조 생성), `embeddings`(누락된 semantic vector 생성).
-  단일 단계만 실행하려면 `memex backfill <extract|ontology|embeddings>` 사용
-- `status`: conversation/fact/graph readiness와 pending count 확인. extraction `done`은
-  성공 marker의 watermark가 현재 session 끝까지 도달한 경우만 세며, 새 suffix가 생긴
-  session은 `pending`에만 포함
+- `memex sync` — `$CODEX_HOME/sessions` rollout을 archive/index/search corpus로 반영
+- `memex backfill extract` — durable fact 추출
+- `memex backfill ontology` — local ontology/relation 생성
+- `memex backfill embeddings` — 누락된 semantic vector 생성
+- `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
-`backfill`은 기본적으로 foreground로 실행되어 완료가 직접 관측되고, 첫 실패 단계에서
-멈춥니다(단계는 idempotent하므로 `memex backfill all`을 다시 실행해 이어갈 수
-있습니다). 대화 기록이 많거나 local Codex model이 fact를 추출하는 경우 수분 이상
-걸릴 수 있습니다. `--background`의 “started” 출력은 완료 증거가 아닙니다.
-`memex status`의 pending count를 확인해야 합니다.
+`backfill`은 기본 foreground 실행입니다. 실패하면 첫 실패 단계에서 멈추며 idempotent하므로 다시 실행할 수 있습니다. `--background`의 “started” 출력은 완료 증거가 아닙니다. `memex status`의 pending/readiness를 확인하십시오.
 
-`sync`는 idempotent하므로 onboarding 이후 다시 실행해도 안전합니다.
+### KR translation은 별도 수동 단계
+
+`fact_kr`는 local derived state이며 `backfill all`에 포함되지 않습니다. SessionStart마다 번역 LLM을 자동 실행하지 않습니다.
+
+원할 때 다음을 실행합니다.
+
+```bash
+node scripts/translate-facts.mjs
+```
+
+스크립트는 batch cardinality/type을 검증하고 fact의 semantic generation/text가 바뀌지 않은 경우에만 번역을 저장합니다.
+
+- 이 실행으로 `fact_kr`가 채워집니다.
+- `vec_facts_kr`는 이후 reembed maintenance 또는 다음 SessionStart에서 생성됩니다.
+
+한국어 fact vector가 즉시 필요하다면 번역 실행 후 maintenance/reembed가 한 번 실행됐는지 확인하십시오.
 
 ## 5. Lifecycle hooks
 
-Marketplace 설치의 기본은 `.codex-plugin/plugin.json`이 선언한
-`./hooks.json`입니다.
-
-| 이벤트 | 동작 | 실패 성격 |
+| 이벤트 | 주요 동작 | 성격 |
 | --- | --- | --- |
-| SessionStart | version drift → background sync → sync import → bounded maintenance | 비동기, session 시작을 차단하지 않음 |
-| UserPromptSubmit | scoped conversation/fact retrieval → relevance/dedup/budget → `additionalContext` | no-match는 무주입 |
-| SessionEnd | rollout 안정화/main-thread 판정 → incremental extraction → export | 증거 없는 실패는 watermark를 전진시키지 않음 |
+| SessionStart | version drift check, archive/index sync, sync import, bounded maintenance | 독립 async / eventual consistency |
+| UserPromptSubmit | scoped retrieval, relevance/dedup/budget, recall receipt, `additionalContext` | no-match는 무주입 |
+| SessionEnd | rollout 안정화, extraction/consolidation, durable sync export | 실패 시 watermark 선행 전진 금지 |
 
-plugin manifest hook를 지원하지 않는 별도/구형 host에서만 explicit fallback을
-사용합니다.
+SessionStart의 여러 작업은 ordered pipeline이 아닙니다. 서로 완료를 기다리지 않으며 concurrency-safe writer와 다음 SessionStart의 eventual recovery에 의존합니다.
+
+구형/별도 host에서 plugin-managed hook를 사용할 수 없을 때만 explicit fallback을 사용합니다.
 
 ```bash
 memex setup-hooks --dry-run
@@ -155,47 +112,9 @@ memex setup-hooks
 memex doctor --json
 ```
 
-fallback은 `$CODEX_HOME/hooks.json`의 fingerprinted Memex entry만 병합합니다.
-`remove-hooks`는 exact owned entry만 제거하고 다른 hook를 보존합니다. Marketplace
 plugin hooks와 fallback hooks를 동시에 활성화하지 마십시오.
 
-UserPromptSubmit이 실제 fact를 주입하면 `session_id`, human prompt hash, fact IDs를
-`recall_events`에 기록합니다. 이 receipt를 쓰지 못하면 context도 주입하지 않습니다.
-Memex MCP retrieval tool call도 같은 `memex_recall` provenance로 분류됩니다.
-
-trust는 “non-Memex”와 동의어가 아닙니다. call ID별 result를 다음처럼 분류합니다.
-
-| 분류 | 기본 학습 |
-| --- | --- |
-| local file/read/grep observation | 허용 (project cwd 내부 + Memex 데이터 루트·Codex sessions·model workdir 밖일 때만) |
-| bounded read-only Git history/status/diff | 허용 |
-| 명시적 test command 결과 | 허용 |
-| Memex MCP result | 금지 |
-| network URL/curl/wget, unknown MCP/tool, generated output | 금지 |
-| assistant conclusion | 금지 |
-
-shell/exec 입력에 network command가 섞이면 전체 result를 안전하게
-`external_unverified`로 분류합니다. generated artifact를 향후 허용하려면 source별
-validator와 회귀 테스트를 먼저 추가하고 allowlist를 좁게 확장합니다.
-
-allowlisted shell/exec도 command 이름만으로 신뢰하지 않습니다. exchange cwd, tool
-`workdir`/`cwd`, `git -C`, `npm --prefix`, 관측 target을 canonicalize하고 symlink까지
-해결한 뒤 모두 project cwd 내부일 때만 학습합니다. wrapper나 target이 불명확하거나
-project 밖 경로, pipeline, redirect, command substitution이 있으면 fail-closed입니다.
-
-경로가 증명되는 파일 관측이어도 대상이 `MEMEX_HOME`(archive/index/DB),
-`$CODEX_HOME/sessions`, 임시 model workdir 안에 있으면 Memex 자료의 재독입(self
-재섭취)이므로 `learnable=0`으로 강등합니다. project cwd 밖 경로나 대상을 특정할 수
-없는 관측은 repository evidence로 인정하지 않습니다.
-
-Codex의 unified `exec`처럼 한 tool result 안에 여러 내부 호출의 출력이 합쳐지고 각
-출력의 원 source를 안정적으로 역매핑할 수 없는 surface는 기본적으로
-`external_unverified/learnable=0`입니다. 개별 call ID가 있는 `read_file`, bounded
-Git/test command처럼 source를 독립적으로 귀속할 수 있을 때만 allowlist가 적용됩니다.
-따라서 하나의 Memex MCP call이 별도 sibling result를 taint하지는 않지만, provenance를
-분해할 수 없는 composite result를 추측으로 학습시키지도 않습니다.
-
-## 6. CLI 사용
+## 6. 검색과 분석
 
 ```bash
 memex search "인증 구조를 결정한 이유"
@@ -205,7 +124,9 @@ memex stats
 memex analyze --top 30 --out ~/memex-report.md
 ```
 
-Fact 관리:
+project-sensitive 명령과 MCP tool은 canonical absolute project 또는 explicit scope를 사용합니다. server process cwd를 project로 추측하지 않습니다.
+
+## 7. Fact 관리
 
 ```bash
 memex facts list
@@ -219,25 +140,29 @@ memex facts history --id <uuid>
 memex facts delete --id <full-uuid> --hard --yes
 ```
 
-기본 fact list는 global-only입니다. project path는 canonical absolute path여야 하며
-`all`은 명시적으로만 허용됩니다. hard delete는 full UUID, `--hard`, `--yes`가
-모두 필요합니다.
+- edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
+- deactivate/restore는 의미 편집과 독립적인 lifecycle event입니다.
+- hard delete는 full UUID, `--hard`, `--yes`가 모두 필요합니다.
 
-## 7. MCP와 skills
+## 8. MCP와 skills
 
-Codex를 재시작하면 `.mcp.json`의 `memex` server와 세 skills가 로드됩니다.
+Codex 재시작 후 `.mcp.json`의 `memex` server와 세 skills가 로드됩니다.
 
 ```text
-search, read, search_facts, search_ontology, ask_avatar,
-trace_fact, explore_graph, cross_project_insights, graph_stats
+search
+read
+search_facts
+search_ontology
+ask_avatar
+trace_fact
+explore_graph
+cross_project_insights
+graph_stats
 ```
 
-project-sensitive tool은 canonical absolute project 또는 명시적
-`scope: global|all`을 요구합니다. server process cwd로 project를 추측하지
-않습니다. 정확한 schema와 skill routing은
-[MCP-AND-SKILLS.md](MCP-AND-SKILLS.md)를 참조합니다.
+세부 schema와 routing은 [MCP-AND-SKILLS.md](MCP-AND-SKILLS.md)를 참조하십시오.
 
-## 8. Web UI와 3D Galaxy
+## 9. Web UI와 Knowledge Galaxy
 
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex-ui
@@ -246,132 +171,110 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 
 | URL | 역할 |
 | --- | --- |
-| `/` | project/conversation/search/exchange |
-| `/facts` | fact/revision/provenance/mutation |
-| `/graph?scope=global` | global facts 3D graph |
+| `/` | projects/conversations/search |
+| `/facts` | fact, revision, provenance, mutation |
+| `/graph?scope=global` | global graph |
 | `/graph?scope=project&project=/abs/path` | project + global graph |
-| `/graph?scope=all` | 명시적 전체 graph |
-| `/pipeline` | read-only readiness/backlog |
+| `/graph?scope=all` | explicit all-project graph |
+| `/pipeline` | readiness/backlog |
 
-서버는 loopback에만 bind합니다. mutation은 same-origin POST JSON, content-type,
-body-size guard를 통과한 뒤 CLI와 같은 transactional service를 사용합니다.
+UI server는 loopback에만 bind합니다. mutation은 same-origin POST JSON과 service-level validation을 통과합니다.
 
-## 9. 저장소와 개인정보
+## 10. 저장 위치와 sync
+
+기본 data root:
 
 ```text
 ~/.config/memex/
 ├── lifecycle-registration.json
-├── logs/                    # hook-events.jsonl 등 훅 관측 로그
-├── conversation-archive/    # rollout 원문 스냅샷
+├── logs/
+├── conversation-archive/
 └── conversation-index/
-    ├── db.sqlite            # 파생 인덱스·facts·graph (재구성 가능)
-    ├── sync/                # multi-device sync snapshot (durable state 포함)
-    └── logs/                # injection/fact-extract/reembed 수행 로그
+    ├── db.sqlite
+    ├── sync/
+    └── logs/
 ```
 
-우선순위: `MEMEX_HOME` → `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
-`memex home --json`으로 현재 data root를 확인할 수 있습니다. 원본 Codex
-rollout은 항상 read-only입니다.
+우선순위:
 
-## 10. 업데이트
+```text
+MEMEX_HOME
+→ XDG_CONFIG_HOME/memex
+→ ~/.config/memex
+```
+
+DB path는 별도로 `MEMEX_DB_PATH`가 우선할 수 있습니다.
+
+확인:
+
+```bash
+memex home
+memex home --json
+```
+
+### Sync에 포함되는 것
+
+protocol v4는 durable facts/revisions/tombstones/recall receipts만 sync합니다. KR translation, ontology, relation, vectors는 각 기기가 자체 rebuild합니다.
+
+## 11. DO NOT INDEX와 재분류 비용
+
+conversation exclusion이 적용되면 해당 conversation에서 유래한 Memex searchable/model-derived state를 purge합니다. private-derived taxonomy가 남지 않도록 taxonomy를 전면 invalidate하므로 surviving public facts도 ontology pending으로 돌아갑니다.
+
+따라서 다음 ontology backfill에서 분류 LLM 호출이 다시 발생할 수 있습니다. worker는 bounded batch/run으로 처리하며, 이는 privacy correctness를 위해 의도된 비용입니다.
+
+## 12. 업데이트
 
 ```bash
 memex update --dry-run
 memex update
 ```
 
-Git marketplace이면 snapshot을 먼저 upgrade하고, 현재 plugin을 remove/add해 skills,
-hooks, MCP metadata를 최신화합니다. Local marketplace는 현재 source를 다시 읽습니다.
-runtime launcher는 항상 최신 main을 대상으로 합니다. 완료 후 Codex를 재시작합니다.
-Memex data는 보존됩니다. version drift guard는 같은 Memex cache namespace의 stale
-background worker만 대상으로 합니다.
+Git marketplace에서는 marketplace snapshot을 갱신하고 plugin cache를 다시 설치합니다. Memex data root는 보존합니다. 완료 후 Codex를 재시작하십시오.
 
-## 11. 진단
+## 13. 진단
 
 ```bash
 memex doctor --json
 memex status --json
-npm run test:marketplace
-npm run test:package
 node scripts/validate-plugin.mjs
+node scripts/install-e2e.mjs
+node scripts/marketplace-e2e.mjs
+node scripts/package-runtime-e2e.mjs
+node scripts/lifecycle-e2e.mjs
 ```
 
-- runtime dependency 실패: Node/npm network 접근과 npm cache 권한을 확인한 뒤 재시작
-- plugin configured지만 observed 없음: Codex 재시작, hook trust, observation log 확인
-- injection 없음: `injected|no-match|deduped|skipped|error` 상태 확인
-- MCP 실패: 설치된 `.mcp.json`의 `startup_timeout_sec = 300`, `runtime-exec`, npm
-  cache, packaged wrapper, 9-tool handshake 확인. MCP 전용 npm cache는
-  `$XDG_CACHE_HOME/memex/npm-mcp`이며 미설정 시 `~/.cache/memex/npm-mcp`
-- stale socket: 소유 process가 없는 Memex data-root socket만 제거
-- project 충돌: `memex migrate-projects --dry-run`의 evidence/count/backup 확인
-- `--repair` 실패: 성공한 file은 유지되지만 하나라도 재색인에 실패하면 실패 경로를
-  출력하고 non-zero로 종료합니다. 원인을 수정한 뒤 같은 명령을 재실행합니다.
+자주 확인할 항목:
 
-Codex CLI 0.149.1에는 formal `plugin validate` subcommand가 없습니다.
-`scripts/validate-plugin.mjs`는 isolated marketplace/cache/MCP/skills/hooks/UI/cleanup
-계약을 검증하는 version-bound substitute이며 formal validator로 부르지 않습니다.
+- runtime 준비 실패 — Node/npm network, cache permission
+- MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
+- injection 없음 — `injected`, `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- stale socket — Memex-owned orphan socket만 정리
+- repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행
 
-## Uninstall and data retention
+검증 절차와 최신 merge-gate baseline은 [VERIFICATION.md](VERIFICATION.md)를 참조하십시오.
 
-Marketplace plugin hooks는 plugin 제거와 함께 사라집니다. explicit fallback을 사용한
-경우에만 먼저 owned hook를 제거합니다.
+## 14. 제거와 데이터 보존
 
 ```bash
-memex remove-hooks --dry-run
+memex remove-hooks --dry-run   # explicit fallback을 쓴 경우에만
 memex remove-hooks
 codex plugin remove memex@memex --json
 codex plugin marketplace remove memex --json
 ```
 
-외부 marketplace를 썼다면 실제 이름으로 selector를 바꿉니다.
+plugin 제거는 Memex data root나 `$CODEX_HOME/sessions`를 삭제하지 않습니다.
+
+전체 Memex data를 삭제하려면 **실제 path를 먼저 확인**하십시오.
 
 ```bash
-codex plugin remove memex@memex-local --json
-codex plugin marketplace remove memex-local --json
-```
-
-기본 해제는 `$CODEX_HOME/sessions`와 Memex data root를 보존합니다. derived data
-삭제가 필요하면 환경변수 해석 결과와 exact path를 먼저 확인한 뒤 별도 수행합니다.
-
-### 데이터 삭제 가이드
-
-plugin 제거만으로는 데이터가 남습니다. 완전히 삭제하려면 아래 순서를 따릅니다.
-
-먼저 실제 데이터 위치를 확인합니다. `MEMEX_HOME`이 설정되어 있으면 우선
-적용되고, 없으면 `$XDG_CONFIG_HOME/memex` 또는 `~/.config/memex`를 사용합니다.
-
-```bash
-memex home            # 현재 data root exact path 출력
+memex home
 memex home --json
 ```
 
-Memex가 생성하는 데이터는 모두 이 data root 안에 있습니다:
-
-- `conversation-index/db.sqlite` — 관측·facts·graph 등 파생 SQLite DB (재구성 가능)
-- `conversation-archive/` — rollout에서 유래한 원문 스냅샷 (재구성 가능)
-- `logs/` — 훅 이벤트·백필 수행 기록 (재구성 가능)
-- Web UI 소켓/임시 파일
-
-전체 삭제(복구 불가, 재동기화 시 처음부터 다시 추출):
+그 다음 필요할 때만:
 
 ```bash
-memex doctor          # 종료 전 상태 점검(선택)
 rm -rf "$(memex home)"
 ```
 
-부분 삭제:
-
-- derived SQLite index만 초기화하고 원문·sync state 보존 → data root 안의 실제 DB
-  path만 삭제. 다음 `memex sync`가 unchanged archive/source rollout까지 다시 index하고,
-  다음 SessionStart가 facts/revisions/tombstones/recall receipts를 sync JSONL에서 import한 뒤
-  maintenance/backfill이 local processing state를 재생성합니다. `extraction_log`와
-  `needs_consolidation`과 consolidation attempt는 local 처리 상태이므로 sync하지 않습니다.
-  imported active fact는 local dirty queue에 새로 등록됩니다.
-- 특정 프로젝트의 facts만 제거 → scope를 지정해 CLI/MCP delete 계열 도구 사용
-  (근원 rollout은 건드리지 않음). 세부 방법은 `docs/FACT-LIFECYCLE.md` 참조.
-
-주의사항:
-
-- **삭제 대상은 Memex 파생 데이터뿐**입니다. `$CODEX_HOME/sessions` rollout은
-  절대 삭제·수정하지 않습니다(원본 대화 기록이며 Memex의 유일한 근원).
-- dry-run 없이 되돌릴 수 없으므로, 필요 시 사전에 data root 폴더를 통째로 백업합니다.
+이 삭제는 Memex archive/index/facts/sync state를 제거합니다. 원본 Codex rollout인 `$CODEX_HOME/sessions`는 Memex가 삭제하거나 수정하지 않습니다.

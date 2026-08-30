@@ -4,116 +4,128 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-31
+
 ### Added
 
-- `memex home [--json]` prints the resolved data-root exact path.
-- `memex backfill all` runs extract → ontology → embeddings sequentially in one
-  command, stopping at first failure with idempotent-resume guidance.
-- `memex setup --install-cli` / `--uninstall-cli`: opt-in POSIX shim at
-  `~/.local/bin/memex` so the CLI works without an npx shell function. Only
-  Memex-owned files are created or removed; PATH misses are reported per shell;
-  `--dry-run` supported. No global installs, no user-project package-manager
-  calls.
-- Data-deletion walkthrough in docs/GUIDE.md covering full wipe, derived-only
-  reset, scoped fact deletion, and rollout safety.
+- Added `memex home [--json]` to print the resolved Memex data root.
+- Added opt-in terminal CLI shim management through
+  `memex setup --install-cli` / `--uninstall-cli`.
+- Added `memex backfill all` for sequential extract → ontology → embeddings
+  onboarding with idempotent retry behavior.
+- Added durable multi-device sync protocol v4 with committed generations,
+  integrity manifests, tombstones, and recall receipts.
+- Added independent semantic and lifecycle generations/clocks for durable facts.
+- Added local taxonomy epoch invalidation so in-flight classification cannot
+  recreate taxonomy after a privacy purge.
+- Added guarded manual KR fact translation with strict batch validation and
+  semantic CAS.
 
 ### Changed
 
-- `memex-ui` now resolves its default SQLite root under
-  `$XDG_CONFIG_HOME/memex` or `~/.config/memex`, matching the CLI.
-- Onboarding docs (README.md, README-KR.md, docs/GUIDE.md) now present the
-  one-time `setup --install-cli` shim as the default path to a terminal `memex`
-  command and drop the npx shell-function workaround; clarified that in-session
-  features need only plugin registration + Codex restart.
-- Data root resolution uses `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex` and
-  `~/.config/memex` as the default.
-- `memex backfill <target>` now runs in the foreground by default with exit-code
-  propagation; background execution is opt-in via `--background`, and
-  `--foreground` is accepted as a deprecated no-op for older scripts.
-- Documentation updated for the canonical root resolution order, foreground
-  backfill, CLI shim onboarding, and deletion guide
-  (README.md, README-KR.md, docs/GUIDE.md, docs/SCHEMA.md).
+- Fact reconciliation now treats **semantic**, **lifecycle**, and **lineage** as
+  independent axes instead of allowing one winner row to overwrite unrelated
+  state.
+- Cross-device lineage is monotonic: source exchange IDs are unioned and
+  consolidated counts use max, including brand-new remote inserts.
+- Replicated deactivate/restore events preserve their original remote event
+  timestamps and are revalidated at commit time.
+- Consolidation now discards stale model verdicts when either participant's
+  semantic or lifecycle generation changes.
+- Ontology, relations, KR translations, and vectors are local-derived state and
+  are excluded from the durable sync payload.
+- Privacy conversation exclusion now invalidates taxonomy state, resets
+  surviving classification attempts, and prevents stale peers from resurrecting
+  excluded facts.
+- Sync import is fail-closed at the generation boundary: required files,
+  manifest hashes, strict row shape, and identity are validated before DB
+  mutation.
+- Export serialization now uses the local SQLite database's process-owned
+  `BEGIN IMMEDIATE` transaction instead of a cloud-synced lockfile.
+- Exchange and fact-derived embedding/classification writers use commit-time
+  CAS/content revalidation to discard stale async results.
+- `memex backfill <target>` runs in the foreground by default; background mode is
+  explicit.
+- Data-root resolution is consistently `MEMEX_HOME` →
+  `$XDG_CONFIG_HOME/memex` → `~/.config/memex`.
+- Public README, Korean README, contributor rules, and owner documentation were
+  refreshed around the current protocol v4 architecture and operating model.
 
-## 0.1.0 - 2026-08-27
+### Fixed
 
-First independent Memex release. Versioned `0.1.0` because the product feature
-set is complete enough for public use while marketplace and Codex host-adapter
-contracts remain intentionally pre-1.0.
-
-### Product identity
-
-- Public package, Codex plugin, MCP server, CLI, UI, installer, and dashboard
-  skill use Memex naming.
-- Promoted the Codex-native implementation from a conversion branch to the
-  project's primary `main` line.
-- Replaced conversion plans and superseded audits with maintainable product,
-  architecture, lifecycle, schema, operations, lineage, and verification docs.
-
-### Codex-native runtime
-
-- Ingests only Codex rollout JSONL from `$CODEX_HOME/sessions` by default.
-- Uses canonical absolute rollout cwd as project identity and collision-safe
-  archive storage keys.
-- Runs summaries, extraction, classification, consolidation, and synthesis
-  through isolated local `codex exec`, defaulting to `gpt-5.6-luna`.
-- Recognizes only current `memex` cache paths when validating a live sync-lock
-  owner; pre-Memex package paths are not runtime ownership evidence.
-- Adds a repository marketplace installable through `codex plugin marketplace
-  add` and `codex plugin add`, with plugin-managed SessionStart,
-  UserPromptSubmit, and SessionEnd hooks.
-- Retains explicit fingerprinted hook setup/removal as a non-plugin fallback.
-- Adds clone-free runtime launch through one `npx` source of truth targeting
-  verified `main`, plus `memex update` for marketplace refresh and plugin
-  reinstall without touching durable data.
-- Adds `memex setup`, which detects Codex built-in `memories`, recommends
-  disabling the conflicting second memory system, and changes it only after
-  interactive or explicit CLI approval through Codex's own feature command.
-
-### Knowledge system
-
-- Conversation archive, vector/FTS/hybrid search, and deterministic full-history
-  analysis.
-- Incremental fact extraction with row-preserving watermarks, claim leases,
-  confidence gates, retryable failure states, and self-ingestion exclusion.
-- Adds durable per-event `memex_recall` prepared/emitted receipts and
-  evidence-level tool provenance. Human and allowlisted repo/Git/test evidence
-  remain learnable beside recall; Memex/external/unknown output and assistant
-  synthesis stay searchable but cannot reinforce facts.
-- Preserves new evidence IDs through duplicate/evolution consolidation so a
-  trusted repository observation can supersede an older recalled fact.
-- Duplicate, contradiction, and evolution consolidation with revision history.
-- Domain/category ontology, typed relations, scoped multi-hop traversal,
-  provenance, and cross-project insights.
-- Project/global/all scope enforcement across MCP, CLI, import, graph traversal,
-  Web UI, and context injection.
-- Transparent bounded `.jsonl.zst` archive reads.
-
-### Retrieval and interfaces
-
-- Nine MCP tools: `search`, `read`, `search_facts`, `search_ontology`,
-  `ask_avatar`, `trace_fact`, `explore_graph`, `cross_project_insights`, and
-  `graph_stats`.
-- Context injection with warm Unix-socket and cold local paths, relevance gate,
-  one-hop relation expansion, per-session dedup ledger, and token budget.
-- Transactional fact CLI/API operations with full-UUID hard-delete gating.
-- Loopback Conversations, Facts, Pipeline Health, and live 3D Knowledge Galaxy
-  interfaces, including empty-state and scoped graph handling.
+- Fixed remote→remote reconciliation where the semantic winner could
+  accidentally replace an independently newer lifecycle state.
+- Fixed replicated lifecycle events being stamped with local wall-clock time.
+- Fixed same-state newer lifecycle clocks being ignored.
+- Fixed stale lifecycle/consolidation operations committing after concurrent
+  deactivate/restore races.
+- Fixed fresh sync imports dropping provenance collected from non-winning peer
+  rows.
+- Fixed stale ontology classification recreating taxonomy after privacy purge.
+- Fixed privacy purge leaving ontology retry state permanently exhausted.
+- Fixed stale KR translations attaching to facts whose meaning changed during
+  translation.
+- Fixed export-lock ownership/stale-break races by removing the sync lockfile
+  design.
+- Fixed generation/reader integrity paths that could otherwise observe or apply
+  partial sync state.
 
 ### Verification
 
-- Codex rollout fixtures cover main, resumed, subagent, tool-only, malformed,
-  internal-context, worker, empty, and same-basename project cases.
-- Added isolated lifecycle, installer, MCP, scope, security, browser, cleanup,
-  and benchmark contracts.
-- Restricted npm packages to an explicit public-file allowlist so local agent
-  run state, token logs, and transient workspace artifacts cannot ship.
-- Codex CLI 0.149.1 does not expose a formal `plugin validate` subcommand; the
-  repository includes an isolated version-bound substitute and records this as
-  `PASS-WITH-NOTES`, not as a formal-validator result.
+The release gate covers:
 
-## Pre-Memex history
+- Typecheck: PASS
+- Build: PASS
+- Vitest: 68 files / 598 tests PASS
+- Codex slice: 23/23 PASS
+- All Node slices: 91/91 PASS
+- Install E2E: PASS
+- Marketplace E2E: PASS
+- Package-runtime E2E: PASS
+- Lifecycle E2E: PASS
 
-The Claude-to-Codex adapter conversion and upstream feature-parity work were
-completed before the 0.1.0 identity change. They are summarized in
-[docs/LINEAGE.md](docs/LINEAGE.md); superseded plans and transient agent
-receipts are intentionally not retained as user documentation.
+The raw release-candidate evidence is stored at
+`docs/verification/merge-gate.json`. Its `candidate.codeSha` is the only
+authoritative commit attribution; it is regenerated from the final clean
+committed baseline before release.
+
+## 0.1.0 - 2026-08-27
+
+First independent public Memex release.
+
+### Highlights
+
+- Codex-native ingestion of `$CODEX_HOME/sessions` rollout JSONL with
+  canonical project identity and read-only source handling.
+- Local conversation archive with vector, FTS5/BM25, and hybrid search.
+- Incremental durable fact extraction with provenance, confidence gating,
+  consolidation, revisions, and retry-safe watermarks.
+- Evidence-level trust model that keeps Memex recall and assistant synthesis
+  searchable without allowing self-reinforcing fact extraction.
+- Domain/category ontology, typed relations, scoped graph traversal, and
+  cross-project insights.
+- Bounded UserPromptSubmit context injection with relevance filtering and
+  per-session deduplication.
+- Nine MCP tools and three bundled Codex skills.
+- Loopback-only Web UI with conversations, facts, pipeline health, and 3D
+  Knowledge Galaxy.
+- Codex plugin marketplace installation, plugin-managed lifecycle hooks,
+  isolated runtime launcher, setup/update/doctor flows, and explicit fallback
+  hook management.
+- Project/global/all scope enforcement across CLI, MCP, graph traversal,
+  retrieval, UI, and import surfaces.
+- Isolated installer, lifecycle, MCP, browser, cleanup, packaging, and
+  performance verification infrastructure.
+
+Memex `0.1.0` is intentionally pre-1.0: the product is usable and substantially
+tested, while public marketplace and Codex host-adapter contracts may still
+evolve.
+
+## Project lineage
+
+Memex continues the MIT-licensed knowledge-system lineage of
+[`obra/episodic-memory`](https://github.com/obra/episodic-memory) and
+[`jung-wan-kim/memory-bank`](https://github.com/jung-wan-kim/memory-bank), while
+replacing the previous host adapter with a Codex-native implementation.
+
+See [docs/LINEAGE.md](docs/LINEAGE.md) for attribution and migration context.

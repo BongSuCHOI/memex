@@ -1,101 +1,145 @@
 # Memex contributor rules
 
-Memex is a Codex-native, local-first personal knowledge system. Runtime code,
-tests, documentation, examples, plugin metadata, and user-visible names must
-describe Memex and Codex. The repository is an independent continuation of
-earlier MIT-licensed memory-bank work; it is not a Claude Code compatibility
-layer.
+Memex is a Codex-native, local-first long-term memory system. This file contains
+repository-wide guardrails for humans and coding agents. Keep it short: detailed
+behavior belongs in the owner documents under `docs/`.
 
-## Product invariants
+## Core invariants
 
-- Treat `$CODEX_HOME/sessions` rollout JSONL as the only default conversation
-  source. Test fixtures and explicit user overrides are the only exceptions.
-- Never modify source Codex rollouts. Archives and indexes are derived local
-  data and must remain rebuildable.
-- Use canonical absolute `session_meta.cwd` as project identity. A storage
-  directory name is never identity evidence.
-- Project queries may see that project plus global facts. Global and all-project
-  access must be explicit. Apply scope at every graph hop and import boundary.
-- Preserve provenance from fact to source exchange and archive line range.
-- Preserve evidence-level provenance: human assertions and allowlisted local
-  repository/Git/test observations may be learnable; Memex recall,
-  external/unknown output, and agent-generated synthesis remain searchable but
-  are never learnable fact evidence. One recall must not taint sibling tools.
-- Preserve rowids when updating exchanges. Extraction watermarks depend on
-  `exchanges.rowid`; never use `INSERT OR REPLACE` there.
-- Extraction claims, fact writes, saved counts, and watermark advancement must
-  either commit together or remain retryable.
-- Model-backed work runs only through the local Codex CLI. The default is
-  `gpt-5.6-luna`; `MEMEX_CODEX_MODEL` is the explicit model override.
-- Headless model calls are ephemeral, read-only, isolated from repository rules
-  and user plugins, and protected against recursive Memex invocation.
+- `$CODEX_HOME/sessions` rollout JSONL is the default conversation source.
+  Never modify source rollouts; archive/index/database state is derived.
+- Canonical absolute `session_meta.cwd` is project identity. Do not infer
+  project identity from basename, archive path, display name, or process cwd.
+- Enforce project/global/all scope at every query, import, graph traversal, and
+  relation-write boundary.
+- Preserve exact fact provenance to source exchanges. Human assertions and
+  allowlisted local repo/Git/test observations may be learnable; Memex recall,
+  assistant synthesis, external/unknown output, and unverified generated output
+  are searchable but not learnable evidence.
+- Preserve `exchanges.rowid` on update. Extraction uses rowid watermarks.
+- Extraction claim, fact/provenance writes, saved counts, and watermark advance
+  must commit atomically or remain retryable.
+- Model-backed work uses isolated local `codex exec` only. Default model:
+  `gpt-5.6-luna`; override with `MEMEX_CODEX_MODEL`.
+- Automatic lifecycle work must be bounded, retry-safe, and observable.
 
-## Storage
+## Fact state and sync protocol v4
 
-The public product name, package, plugin, MCP server, CLI, UI, and skills are
-`memex`. The canonical data root is resolved in this order:
+Treat durable fact state as independent axes:
+
+- **semantic** — fact meaning/scope; guarded by `semantic_generation` and
+  `semantic_updated_at`
+- **lifecycle** — active/inactive; guarded by `lifecycle_generation` and
+  `lifecycle_updated_at`
+- **lineage** — `source_exchange_ids` and `consolidated_count`
+- **local-derived** — KR text, ontology, relations, vectors
+
+Do not collapse semantic and lifecycle into one clock.
+
+Lineage is monotonic:
+
+- `source_exchange_ids` → set union
+- `consolidated_count` → max
+
+This applies to both existing local facts and fresh remote inserts.
+
+Protocol v4 durable payload contains only:
+
+```text
+facts.jsonl
+fact-revisions.jsonl
+fact-tombstones.jsonl
+recall-events.jsonl
+meta.json
+```
+
+`fact_kr`, ontology/category assignments, relations, and vectors are local
+derived state and must not be synced as durable truth.
+
+Import must validate the complete pinned generation before DB mutation:
+required files, protocol/schema, row counts, identity, and SHA-256 manifest.
+Reject a damaged generation as a whole.
+
+Replicated lifecycle events preserve the remote event timestamp. Exact
+lifecycle timestamp ties resolve to inactive. Privacy tombstones with
+`reason = source_conversation_excluded` must not be resurrected by stale peers.
+
+Local exports are serialized with SQLite `BEGIN IMMEDIATE`. Do not reintroduce a
+cloud-synced lockfile or mtime-based stale-lock deletion.
+
+## Async/CAS rules
+
+Any model/embedding await can race with local mutation.
+
+- Fact-derived async writers must capture semantic generation and reject stale
+  results at commit time.
+- Lifecycle-sensitive operations must also validate lifecycle generation/state.
+- Consolidation verdicts require semantic + lifecycle CAS for participants.
+- Exchange re-embedding uses content identity/hash revalidation.
+- Taxonomy classification captures `taxonomy_state.epoch`; privacy purge bumps
+  the epoch and invalidates stale classification work.
+- Privacy purge resets surviving facts' ontology attempt ledger so they can be
+  reclassified from the remaining public corpus.
+- `scripts/translate-facts.mjs` is optional/manual local-derived work. Require
+  exact batch shape and semantic CAS; discard stale translations. Do not make
+  translation an automatic per-session cost without an explicit product change.
+
+## Conversation and privacy boundaries
+
+- Conversation exclusion markers are interpreted from user-role payloads, not
+  arbitrary raw substrings in tool/assistant content.
+- Compaction/replacement-history transport data is not fresh human evidence.
+- Subagent/internal/Memex-worker conversations are not promoted to user
+  knowledge.
+- Memex's own data root, Codex sessions, and model workdirs must not become
+  trusted repository evidence.
+- If a composite tool result cannot be attributed safely, fail closed to
+  non-learnable evidence.
+- Conversation exclusion purges dependent derived knowledge and emits terminal
+  privacy tombstones for removed facts.
+
+## Storage and plugin boundaries
+
+Data-root precedence:
 
 1. `MEMEX_HOME`
 2. `$XDG_CONFIG_HOME/memex`
-3. `~/.config/memex` (default)
+3. `~/.config/memex`
 
-The repository is Codex-native and uses only this canonical storage namespace.
-Do not add compatibility adapters for other agents or historical storage
-layouts. Never silently move, copy, merge, or delete durable data.
+Do not add legacy storage/other-agent compatibility without a new requirement.
+Never silently move, merge, or delete user durable data.
 
-## Plugin and lifecycle boundaries
+Public plugin surfaces include `.codex-plugin/plugin.json`, `.mcp.json`,
+`hooks.json`, `skills/`, and `cli/runtime-exec.js`.
 
-- `.codex-plugin/plugin.json`, `.mcp.json`, `hooks.json`, `skills/`, and
-  `cli/runtime-exec.js` are the public plugin surfaces.
-- `memex setup` may recommend disabling Codex built-in `memories`, but may call
-  `codex features disable memories` only after interactive or explicit CLI
-  approval. Never edit the user's Codex TOML directly for this setting.
-- Marketplace/plugin installation is an explicit user action. The plugin
-  manifest declares `hooks.json`; it may resolve the latest
-  `github:BongSuCHOI/memex#main` runtime through `npx` in npm's isolated cache.
-  It must not run package-manager installs inside user projects, register
-  plugins, install globally, or mutate user hook files merely because loaded.
-- `setup-hooks` is a non-plugin-host fallback and merges only Memex-owned
-  fingerprinted entries. Do not activate it together with plugin-managed hooks.
-  `remove-hooks` removes only exact owned entries and preserves user hooks,
-  Codex rollouts, and Memex data.
-- SessionStart performs drift check, background sync, sync import, and bounded
-  maintenance. UserPromptSubmit performs bounded context retrieval. SessionEnd
-  waits for a stable main rollout before incremental extraction and export.
-- The Web UI binds to loopback. Mutations use POST JSON, origin/content-type/body
-  guards, and the same transactional fact-management service as the CLI.
+- `memex setup` may disable Codex built-in `memories` only with interactive or
+  explicit CLI approval, using Codex's own feature command.
+- `setup-hooks` is an explicit fallback; do not enable it beside plugin-managed
+  hooks.
+- SessionStart jobs are independent async tasks with eventual consistency; do
+  not rely on a fixed completion order.
+- Web UI binds to loopback and uses the shared transactional fact service for
+  mutations.
 
 ## Documentation ownership
 
-- `README.md`: public overview and shortest successful path.
-- `README-KR.md`: Korean overview matching the same product contract.
-- `docs/GUIDE.md`: installation through removal and troubleshooting.
-- `docs/ARCHITECTURE.md`: component boundaries and end-to-end data flow.
-- `docs/SCHEMA.md`: persisted schema and database invariants.
-- `docs/CONVERSATION-LIFECYCLE.md`: rollout ingestion and hook lifecycle.
-- `docs/FACT-LIFECYCLE.md`: extraction, consolidation, revision, and deletion.
-- `docs/KNOWLEDGE-GRAPH.md`: ontology, relation, traversal, and scope rules.
-- `docs/RETRIEVAL-AND-CONTEXT.md`: search, RAG, injection, and dedup budgets.
-- `docs/VISUALIZATION.md`: Web UI and 3D Galaxy contracts.
-- `docs/MCP-AND-SKILLS.md`: MCP tool and skill usage contracts.
-- `docs/LINEAGE.md`: upstream attribution and host-adapter migration history.
-- `docs/VERIFICATION.md`: reproducible quality gates and version boundaries.
+Update the owner document in the same change when its behavior changes:
 
-When behavior changes, update its owner document in the same change. Historical
-plans, superseded failure reports, and one-off agent ledgers do not belong in
-the public documentation tree.
+- `README.md`, `README-KR.md` — public overview / shortest path
+- `docs/GUIDE.md` — installation and operations
+- `docs/ARCHITECTURE.md` — architecture and boundaries
+- `docs/CONVERSATION-LIFECYCLE.md` — ingestion and sync
+- `docs/FACT-LIFECYCLE.md` — extraction and fact state
+- `docs/KNOWLEDGE-GRAPH.md` — ontology and relations
+- `docs/RETRIEVAL-AND-CONTEXT.md` — search and injection
+- `docs/SCHEMA.md` — persisted schema/invariants
+- `docs/MCP-AND-SKILLS.md` — MCP and skills
+- `docs/VISUALIZATION.md` — Web UI
+- `docs/VERIFICATION.md` — gates and receipts
+- `docs/LINEAGE.md` — upstream/project lineage
 
-## Skill rules
-
-Every directory under `skills/` must contain a `SKILL.md` whose frontmatter
-`name` exactly matches the directory name. A skill must resolve the installed
-plugin root, use current `memex`/MCP surfaces, state mutation and scope effects,
-and never claim a background operation has completed without observing it.
-Keep detailed tool schemas in `skills/remembering-conversations/references/mcp-tools.md`
-and link to it instead of copying drifting schemas across skills.
-After changing a skill, run the `skill-creator` `quick_validate.py` helper for
-that skill and then validate the installed plugin artifact so discovery is
-checked in both the source tree and Codex cache layout.
+Raw verification receipts are evidence for the run they record. Do not edit old
+receipt values just to make them look current.
 
 ## Required checks
 
@@ -109,11 +153,19 @@ node --test test/codex-slice.test.mjs
 node --test test/*slice.test.mjs
 ```
 
-Manifest, hook, MCP, installer, or UI changes also require the nearest isolated
-end-to-end script and complete cleanup of temporary registrations, processes,
-databases, sockets, listeners, and caches. Use the formal Codex plugin validator
-when available; otherwise report the CLI version and run the repository's
-version-bound substitute without representing it as the formal validator.
+Run the nearest isolated E2E for installer/plugin/MCP/package/lifecycle/UI
+changes. Never weaken a failing test to obtain green output. Unobserved behavior
+is `NOT_PROVEN`, not `PASS`.
 
-Never weaken or delete a failing test to obtain green output. Never report
-`PASS` for an unobserved behavior; use `NOT_PROVEN` and name the missing proof.
+### Merge-gate receipt
+
+1. Finish and commit code/tests/generated artifacts/owner docs.
+2. Confirm a clean working tree.
+3. Run the required gate on that committed SHA.
+4. Write `docs/verification/merge-gate.json` with observed results and the exact
+   `candidate.codeSha`.
+5. Commit the receipt separately.
+
+If packaged/public files change after the latest receipt and the final release
+artifact should be considered fully verified, create a new clean baseline and
+regenerate the receipt.

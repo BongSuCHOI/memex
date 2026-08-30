@@ -2,147 +2,111 @@
 
 ## 1. 검색 lane
 
+Memex는 exact term과 semantic similarity를 함께 다룹니다.
+
 ```mermaid
 flowchart LR
-    Q[Query] --> V[Vector semantic search]
-    Q --> T[FTS5/BM25 text search]
+    Q[Query] --> V[Vector search]
+    Q --> T[FTS5/BM25]
     V --> H[Hybrid merge]
     T --> H
-    H --> D[Dedup/rank/filter]
+    H --> D[Scope/filter/dedup/rank]
     D --> C[Conversation results]
-    D --> F[Related facts]
-    F --> G[1-hop ontology context]
+    D --> F[Fact results]
+    F --> G[Optional graph context]
 ```
 
-`vector`는 의미 유사도, `text`는 정확한 용어/식별자, `both`는 두 lane을 합칩니다.
-다중 query 배열은 모든 concept가 필요한 AND 성격의 semantic search입니다. date,
-limit, project metadata는 결과 단계에서 일관되게 적용합니다.
+- `vector` — 의미 유사도
+- `text` — 정확한 용어·식별자
+- `both` — 두 lane을 합침
 
-conversation vector 검색은 fact 검색과 같은 expanding KNN window를 사용합니다.
-sqlite-vec의 `k`는 project/date/embedding_version filter가 적용되기 전에 후보를
-자르므로, 고정 `k = limit`에서는 무관한 행이 근접 순위를 채울 때 유효한 대상이
-보이지 않습니다. 검색은 `max(limit*4, 50)`에서 시작해 filter 통과 행이 limit을
-채우거나 vec index를 모두 고려할 때까지 창을 ×4로 확장합니다(cap = vec 행 수 + 1).
-결과는 거리순으로 caller limit으로 자릅니다. `text` lane의 filtered query는 이미
-filter-then-limit 형태입니다.
+scope/date/category filter는 caller limit보다 먼저 적용합니다.
 
-## 2. RAG enrichment
+## 2. Expanding KNN
 
-conversation search 결과는 관련 fact와 ontology context를 덧붙일 수 있습니다. 이때
-fact 검색은 단일 scope-aware search 경로에서 현재 project/global/all gate를 통과하고
-relation 확장은 1-hop으로 제한합니다. archive line range가 함께 반환되어 원문 확인이
-가능합니다. scope와 MCP의 optional category filter는 전체 KNN 후보에 먼저 적용하고
-그 뒤 caller limit으로 자릅니다.
+sqlite-vec의 KNN limit은 metadata filter보다 먼저 후보를 자를 수 있습니다. out-of-scope row가 상위 후보를 채우면 유효한 project fact가 보이지 않는 문제가 생기므로 Memex는 작은 window에서 시작해 필요한 수가 채워지거나 index를 소진할 때까지 window를 단계적으로 확장합니다.
 
-## 3. UserPromptSubmit injection
+conversation과 fact 검색은 같은 원칙을 사용합니다.
+
+## 3. Scope
+
+project-sensitive retrieval은 다음 중 하나를 명시합니다.
+
+- canonical absolute project path
+- `scope=global`
+- `scope=all`
+
+`process.cwd()`나 MCP server의 설치 경로를 project로 추측하지 않습니다. graph relation을 확장할 때도 각 hop에서 같은 scope gate를 다시 적용합니다.
+
+## 4. UserPromptSubmit injection
 
 ```mermaid
 sequenceDiagram
-    participant H as Thin hook
-    participant D as Warm daemon
+    participant H as Hook
     participant R as Retrieval core
-    participant L as Session ledger
-    participant P as Recall provenance
+    participant L as Session dedup ledger
+    participant P as Recall receipts
     participant C as Codex
-    H->>D: prompt/session/project
-    alt daemon available
-      D->>R: scoped query
-    else cold fallback
-      H->>R: local scoped query
-    end
+
+    H->>R: prompt + session + project
+    R->>R: retrieve, scope, relevance, budget
     R->>L: remove already injected fact IDs
-    R->>R: relevance gate + 1-hop expansion + token budget
-    R->>P: prepared(event id, session, prompt hash, fact IDs)
-    P-->>R: durable event id
-    R->>L: append injected fact IDs
-    R-->>H: context or no-match
+    R->>P: write prepared receipt
+    P-->>R: event id
+    R-->>H: context
     H-->>C: additionalContext
-    H->>P: emitted
+    H->>P: mark emitted
 ```
 
-warm과 cold 경로는 transport만 다르고 selection logic은 같습니다. daemon이 없다는
-이유로 scope나 budget이 달라지면 안 됩니다.
+warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
 
-## 4. 선택 규칙
+## 5. Selection 규칙
 
-1. 짧거나 비정보성 prompt는 skip할 수 있다.
-2. query background baseline보다 충분히 높은 관련도만 통과한다.
-3. scope를 전체 KNN 후보에 먼저 적용한 뒤 caller limit으로 자른다.
-4. top fact에서 허용 scope의 typed relation을 1-hop 확장한다.
-5. session ledger에 이미 기록된 fact를 제거한다.
-6. fact별 text 길이와 전체 block budget을 적용한다.
-7. 낮은 relevance부터 제거해 budget 안에 맞춘다.
-8. 결과가 없으면 context를 출력하지 않는다.
+1. 비정보성 prompt는 skip할 수 있습니다.
+2. relevance gate를 통과한 scoped result만 후보입니다.
+3. 이미 같은 session에 주입한 fact를 제거합니다.
+4. 필요하면 허용 scope relation을 1-hop 확장합니다.
+5. fact별 길이와 전체 char/token budget을 적용합니다.
+6. 결과가 없으면 context block을 만들지 않습니다.
 
-기본 block budget은 1,000 chars, fact별 최대는 160 chars입니다. session ledger는 최대
-400 ids와 7일 TTL을 가지며 atomic write하고 fail-open합니다. ledger 오류 때문에 사용자
-prompt가 실패해서는 안 되지만 오류는 log에 남아야 합니다.
+session dedup ledger는 운영 최적화라 fail-open이지만, recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 context를 주입하지 않습니다.
 
-dedup ledger는 best-effort 운영 상태이지만 recall provenance receipt는 학습 경계입니다.
-실제 context를 주입하기 전에 durable `prepared` write가 성공해야 합니다. hook이 stdout에
-쓴 뒤 `emitted`로 전환하며, host가 실제 소비했다는 `consumed` 주장은 하지 않습니다.
-`prepared` write가 실패하면 context를 반환하지 않고 ledger도 갱신하지 않아 다음 prompt가
-안전하게 재시도할 수 있습니다. receipt가 성공한 뒤의 ledger write 실패는 dedup 최적화만
-잃으며 context와 provenance의 정합성에는 영향을 주지 않습니다.
-sessionId가 없는 주입 요청은 durable `prepared` write를 남길 수 없으므로 주입 자체를
-생략합니다(`no-session-provenance` 로그). provenance 없이 context를 emission하는
-경로는 존재하지 않습니다.
+## 6. Recall provenance
 
-## 5. 검색 가능하지만 학습 불가
+Memex가 주입하거나 MCP로 반환한 기억은 다시 fact extraction evidence가 되면 안 됩니다.
 
-```mermaid
-flowchart LR
-    F[Existing fact] --> R[Hook or Memex MCP recall]
-    R --> A[Agent answer]
-    A --> S[Conversation FTS/vector search]
-    A -. assistant_generated .->|blocked| X[Fact extraction]
-    T[Trusted repo/Git/test result] --> X
-    H[Human prompt] --> S
-    H --> X
+```text
+memex_recall     → searchable, non-learnable
+assistant output → searchable, non-learnable
+trusted repo/git/test observation → 검증 후 learnable 가능
+human assertion  → learnable
 ```
 
-`memex_recall` exchange의 full text와 tool provenance는 검색·감사에 남습니다. fact
-extractor에는 human assertion과 allowlisted local repo/Git/test result만 전달됩니다.
-assistant synthesis, Memex tool result, network/unknown/generated output은 제외됩니다. 한
-turn의 Memex call은 sibling tool을 taint하지 않습니다.
+parser는 tool call ID로 결과를 분리합니다. 같은 turn에 Memex MCP call이 있어도 별도의 trusted repo/test result까지 자동으로 taint하지 않습니다.
 
-이 격리는 call ID와 독립 tool result가 있는 경우에 성립합니다. unified `exec`처럼 여러
-source의 출력이 하나의 result에 합쳐져 귀속을 증명할 수 없으면 전체 composite result를
-`external_unverified/learnable=0`으로 보수적으로 분류합니다.
+반대로 unified `exec`처럼 여러 source가 하나의 결과에 섞여 원 출처를 증명할 수 없으면 전체를 `external_unverified/learnable=0`으로 처리합니다.
 
-## 6. Codex hook 출력 계약
+## 7. Derived state와 retrieval
 
-Codex CLI 0.149.1에서 관측된 성공 shape:
+`fact_kr`, ontology, relation, vectors는 local derived state입니다. sync 직후 새 fact가 들어오면 durable fact 자체는 존재하지만 다음 maintenance가 derived indexes를 채우기 전까지 일부 검색/graph surface가 pending일 수 있습니다.
 
-```json
-{
-  "continue": true,
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "..."
-  }
-}
-```
+KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.mjs`를 실행해 `fact_kr`를 만든 뒤 reembed worker가 `vec_facts_kr`를 생성합니다.
 
-top-level `additionalContext`는 이 버전에서 소비되지 않습니다. host version이 바뀌면
-shape와 실제 model turn 반영을 함께 재검증합니다.
+## 8. Hook output contract
 
-## 7. 관측 상태
+성공한 UserPromptSubmit hook은 Codex가 요구하는 `hookSpecificOutput.additionalContext` shape를 사용합니다. host version이 바뀌면 output shape와 실제 model turn consumption을 함께 재검증해야 합니다.
 
-injection JSONL status:
+Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 실제로 context를 소비했다는 별도 receipt가 없다면 `consumed`를 주장하지 않습니다.
 
-- `injected`: context가 생성됨
-- `no-match`: eligible result 없음
-- `deduped`: 관련 fact는 있었지만 이미 session에 주입됨
-- `skipped`: prompt/시간 budget 정책으로 건너뜀
-- `no-session-provenance`: session 신원이 없어 durable recall receipt를 남길 수 없음 — provenance 계약상 주입하지 않음
-- `error`: retrieval/output failure
+## 9. 관측 상태
 
-각 행은 prompt 본문 대신 길이, candidate/injected/deduped 수, chars, duration, warm/cold
-경로를 기록합니다.
+대표 injection status:
 
-## 7. 정상 예
+- `injected`
+- `no-match`
+- `deduped`
+- `skipped`
+- `no-session-provenance`
+- `error`
 
-첫 질문에서는 관련 decision/constraint가 bounded block으로 추가되고, 같은 session의
-동일 주제 두 번째 질문에서는 `deduped`, context 0 bytes가 정상입니다. 다른 project의
-fact가 explicit all 없이 나타나거나 budget을 넘는 block이 생성되면 실패입니다.
+로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.
