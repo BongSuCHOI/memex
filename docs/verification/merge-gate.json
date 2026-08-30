@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-30T05:10:00.000Z",
+  "recordedAt": "2026-08-30T05:25:00.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,8 +9,8 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/audit-remediation",
-    "codeSha": "e069ab3ff6fb09a4f21d2c26f7b51cd406c612ff",
-    "note": "Evidence run at this SHA (faf57a0 fix + b5f8423 test + e069ab3 docs); only this receipt commit follows, runtime code unchanged. Supersedes the 6a0f324 receipt, which predates the reaudit P1 closures."
+    "codeSha": "d34d34be6b65085de21382fd6f31ea894a7e78a7",
+    "note": "Evidence run at this SHA (bcee3eb fix + 7b81d5f test + d34d34b docs); only this receipt commit follows, runtime code unchanged. Protocol v4: semantic/lifecycle/lineage state split, derived ontology+translation out of the sync payload, export serialization, strict v4 rows."
   },
   "verdict": "PASS",
   "gates": [
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "65 files / 572 tests passed"
+      "observed": "65 files / 579 tests passed"
     },
     {
       "name": "codex-slice",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.1.0.tgz 183 files / 695425 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
+      "observed": "memex-0.1.0.tgz 183 files / 699119 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
     },
     {
       "name": "lifecycle-e2e",
@@ -68,7 +68,7 @@
     }
   ],
   "reauditClosures": {
-    "reference": "second reaudit (2026-08-30) — semantic/metadata merge, generation integrity manifest, parse snapshot TOCTOU, ontology parking CAS",
-    "result": "all 4 items closed at this SHA (faf57a0); P2 prune hardening included; regression tests added in b5f8423"
+    "reference": "third reaudit (2026-08-30) — P1-1 cross-semantic overlay contamination, P1-2 commit-time provenance loss, P1-3 lifecycle clock, P1-4 taxonomy purge/sync privacy, P2 export CURRENT regression, P2 pinning ENOENT, P2 v3 row strictness, P2 doc drift; merge-blocker claim (duplicate import breaking the suite) was empirically refuted — the file runs 54/54 — and the duplicate was cleaned anyway",
+    "result": "all items closed at this SHA via protocol v4 state-model split; regression tests added in 7b81d5f"
   }
 }
