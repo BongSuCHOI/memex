@@ -157,7 +157,9 @@ CREATE TABLE facts (
   needs_consolidation INTEGER NOT NULL DEFAULT 1,
   ontology_last_attempt_at TEXT,
   semantic_generation INTEGER NOT NULL DEFAULT 1,
-  semantic_updated_at TEXT NOT NULL DEFAULT ''
+  semantic_updated_at TEXT NOT NULL DEFAULT '',
+  lifecycle_generation INTEGER NOT NULL DEFAULT 1,
+  lifecycle_updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE fact_revisions (
@@ -198,12 +200,19 @@ CREATE TABLE extraction_log (
 
 `semantic_generation`은 fact 의미의 로컬 세대 토큰입니다. 의미 변경은
 `mutateFactMeaning`과 sync fact import 두 경로뿐이며, 두 경로 모두 세대를 올리고
-`semantic_updated_at`을 해당 의미 사건의 시각으로 갱신합니다. activate/deactivate/restore,
-ontology 분류, consolidation 확인 같은 비의미 쓰기는 세대를 올리지 않습니다.
-`semantic_updated_at`은 cross-device 충돌 판정의 시계이기도 합니다 — sync fact conflict,
-tombstone-vs-fact 판정, relation endpoint version 검증, `getTopFacts` recency가 모두
-이 시계(`updated_at` 폴백)를 사용하며, 비의미 metadata touch가 의미 편집을 이기지
-못합니다. 비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
+`semantic_updated_at`을 해당 의미 사건의 시각으로 갱신합니다. deactivate/restore,
+ontology 분류, consolidation 확인은 세대를 올리지 않습니다.
+`semantic_updated_at`은 cross-device **semantic** 충돌 판정의 시계이기도 합니다 —
+sync fact conflict와 tombstone-vs-fact 판정이 이 시계(`updated_at` 폴백)를 사용하며,
+비의미 metadata touch가 의미 편집을 이기지 못합니다.
+
+`lifecycle_generation`/`lifecycle_updated_at`은 활성 상태의 독립 시계입니다(재감사
+P1-3 v4). deactivate/restore/sync lifecycle import는 `lifecycle_generation`을 올리고
+`lifecycle_updated_at`을 기록하며, semantic 편집은 이 시계를 건드리지 않습니다 —
+의미 축과 활성 축은 서로를 롤백하지 않고 독립 수렴합니다. embedding await가 있는
+async writer(restore, sync activate)는 semantic + lifecycle token 둘 다 CAS하고,
+sync의 lifecycle tie는 inactive 승리라는 결정적 규칙으로 모든 기기가 같은 결과를
+냅니다. 비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
 시작 시 세대를 캡처하고 최종 쓰기를 `WHERE semantic_generation = ?` CAS(또는 동일
 transaction 안의 재검증)로 수행합니다 — 0행이면 그 결과는 이전 의미의 것이므로
 폐기됩니다. "fact 의미가 바뀌면 그 의미에서 파생된 모든 representation은 같은
@@ -307,8 +316,8 @@ edge는 허용하며, caller의 사전 scope filtering은 이 최종 write invar
 | 작업 | 같은 transaction에서 지켜야 할 것 |
 | --- | --- |
 | semantic edit/evolution/contradiction | revision 추가, text/stored embedding/primary vector 교체, KR·ontology·relation 무효화, 병합 대상 비활성화 |
-| deactivate | active=0, 관련 searchable vector 제거 |
-| restore | active=1, embedding/vector 재생성 |
+| deactivate | active=0, lifecycle_generation 증가(재감사 P1-3 v4), 관련 searchable vector 제거 |
+| restore | active=1, lifecycle_generation 증가, semantic+lifecycle dual CAS 후 embedding/vector 재생성 |
 | hard delete | tombstone 기록 후 relation, vector, revision, fact를 dependency 순서로 제거 |
 
 hard delete는 full UUID와 명시적 confirmation이 없으면 시작하지 않습니다.
@@ -333,7 +342,7 @@ fallback 상태를 노출해야 합니다.
 | `$CODEX_HOME/sessions` | 원본 | Memex가 생성/수정하지 않음 |
 | conversation archive | 파생 증거 사본 | rollout에서 재동기화 가능 |
 | exchanges/FTS/vector | 파생 index | archive/rollout에서 재구축 가능 |
-| facts/revisions/tombstones | model-backed durable state | sync JSONL 또는 data-root backup 필요; rollout 재추출만으로 동일 lineage/deletion 복원 불가 |
+| facts/revisions/tombstones | model-backed durable state | protocol v4 sync generation 또는 data-root backup 필요; rollout 재추출만으로 동일 lineage/deletion 복원 불가 |
 | ontology/relations | fact에서 파생 | 재분류/재탐지 가능 |
 | injection ledger/log | 운영 파생 상태 | 삭제 시 dedup/관측 연속성만 초기화 |
 | recall_events/provenance flags | self-ingestion 방지 증거 | source rollout만으로는 hook receipt를 복원할 수 없으므로 sync JSONL 또는 DB backup으로 보존 |

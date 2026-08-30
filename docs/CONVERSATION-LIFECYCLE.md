@@ -183,38 +183,48 @@ sequenceDiagram
     participant E as Export archive
     participant B as Device B
     participant D as Device B DB
-    A->>E: export facts/revisions/tombstones/recall/ontology
+    A->>E: export facts/revisions/tombstones/recall (protocol v4)
     B->>E: SessionStart reads import payload
-    B->>B: validate JSON boundary, paths, FKs, endpoints, scope edges
-    B->>D: timestamp + deterministic-key reconciliation
-    B-->>E: leave malformed records uncommitted/reported
+    B->>B: validate manifest integrity, v4 row schema, paths, FKs
+    B->>D: semantic / lifecycle / lineage 축별 reconciliation
+    B-->>E: 손상 generation은 전부 reject하고 보고
 ```
 
-import는 외부 데이터 경계입니다. global↔project와 same-project relation은 허용하지만,
-서로 다른 두 project fact의 직접 relation은 거부합니다.
-
-sync protocol v2는 active/inactive fact, `fact_revisions`, hard-delete
-`fact_tombstones`, `recall_events`, ontology domain/category/relation을 내보냅니다.
-각 local DB는 `sync_meta.device_id`를 한 번 생성하고 `sync/devices/<device_id>/`만
-소유해 다른 기기의 snapshot을 overwrite하지 않습니다.
+import는 외부 데이터 경계입니다. sync protocol v4는 semantic/lifecycle/lineage를
+명시적으로 분리하며, **durable payload는 facts(active/inactive), `fact_revisions`,
+hard-delete `fact_tombstones`, `recall_events` 네 파일뿐입니다**. ontology
+domain/category/relation, KR 번역(`fact_kr`), vector, `ontology_category_id` overlay는
+**local derived state**로 각 기기가 자체 facts에서 재구축합니다(재감사 P1-4 v4) —
+private 대화에서 유래한 taxonomy가 sync로 유출·부활하는 경로 자체를 제거하고,
+cross-semantic-version overlay 오염(P1-1)과 taxonomy UUID 중복 문제를 구조적으로
+없앱니다. 각 local DB는 `sync_meta.device_id`를 한 번 생성하고
+`sync/devices/<device_id>/`만 소유해 다른 기기의 snapshot을 overwrite하지 않습니다.
 
 한 export는 하나의 generation이다(재감사 P2-5): export는 단일 read transaction으로
 모든 행을 모으고, 파일 집합 전부를 `sync/devices/<device_id>/generations/<uuid>.tmp`에
 쓴 뒤 원자적 directory rename으로 commit하고, 마지막에 `CURRENT` manifest를 원자적으로
-교체한다. importer는 committed generation만 읽으므로 crash·cloud-sync 관측·동시 export
-어느 쪽도 facts=N+1/revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당
-CURRENT가 가리키는 generation 하나만 읽으며, 읽기 시작 시점에 generation의 필수 파일
-집합(facts/revisions/tombstones/recall-events/domains/categories/relations와 integrity
-manifest인 meta.json)을 전부 메모리로 확립(pin)한 뒤 DB 변경에 들어간다(재감사 P1-4).
-그래서 import 도중 pruning으로 파일이 사라져도 그 파일을 "빈 데이터"로 해석하지 않고,
-사라진 파일이 있으면 generation 전체를 폐기하고 보고한다. meta.json은 각 payload 파일의
-행 수와 SHA-256을 pin하므로, importer는 DB를 열기 전에 manifest의 generation/device
-일치와 모든 파일의 hash·행 수·전 행 JSON 유효성을 검증한다(재감사 P1-4 보강) —
-cloud sync가 generation 디렉터리를 파일 단위로 전송하는 동안 부분적으로 도착한
-generation은 존재 여부만으로는 탐지할 수 없고, tombstones의 부분 전송은 privacy
-경계이기 때문이다. 하나라도 불일치하면 generation 전체가 reject되고 보고된다. malformed
-행은 더 이상 "유효 행만 골라 import"하지 않는다(구 P2-7 계약의 fail-closed 전환) —
-exporter만이 payload를 만드므로 malformed 행은 곧 손상이다. CURRENT가 존재하지만 읽을 수 없거나, generation id가 없거나,
+교체한다. export 전체(snapshot → generation commit → CURRENT flip → prune)는
+cross-process lock(`sync/export.lock`, O_EXCL + 15분 stale break)으로 직렬화된다(재감사
+P2 v4) — 잠금 없이는 늦게 끝난 exporter가 CURRENT를 더 오래된 snapshot으로 되돌릴 수
+있고, 그 사이에 import한 새 peer는 최신 durable state을 놓친다. 경합은
+`ExportLockedError`로 실패 처리되어 export-status에 기록되고 다음 SessionEnd가 재시도한다.
+importer는 committed generation만 읽으므로 crash·cloud-sync 관측 어느 쪽도 facts=N+1/
+revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당 CURRENT가 가리키는
+generation 하나만 읽으며, 읽기 시작 시점에 generation의 필수 파일 집합(facts/revisions/
+tombstones/recall-events와 integrity manifest인 meta.json)을 전부 메모리로 확립(pin)한
+뒤 DB 변경에 들어간다(재감사 P1-4). 결손과 읽기 실패(ENOENT)는 하나의 fail-closed
+경로로 통합되어 있다(재감사 P2 v4) — import 도중 pruning으로 파일이 사라지면 예외로
+전체 import가 죽는 게 아니라 그 device의 snapshot이 reject되고 보고된다. meta.json은
+각 payload 파일의 행 수와 SHA-256을 pin하므로, importer는 DB를 열기 전에 manifest의
+protocol_version(=4)/generation/device 일치와 모든 파일의 hash·행 수·전 행 JSON
+유효성을 검증한다(재감사 P1-4 보강) — cloud sync가 generation 디렉터리를 파일 단위로
+전송하는 동안 부분적으로 도착한 generation은 존재 여부만으로는 탐지할 수 없고,
+tombstones의 부분 전송은 privacy 경계이기 때문이다. 하나라도 불일치하면 generation 전체가
+reject되고 보고된다. 이는 malformed 행에도 동일하다(재감사 P2-7 → fail-closed 전환,
+v4에서 완성): exporter만이 payload를 만드므로 JSON 파싱 실패뿐 아니라 **row schema
+검증 실패(v4 필수 필드 결손·형 불일치)도 곧 손상이며**, 해당 행의 generation 전체가
+reject된다 — 구버전 폴백(semantic_updated_at 결측 시 updated_at 사용, is_active 기본값
+등)은 모두 제거되었다. CURRENT가 존재하지만 읽을 수 없거나, generation id가 없거나,
 가리키는 generation에 필수 파일이 결손이면 fail-closed다 — device snapshot 전체를
 거부하고 `malformedRows`로 보고하며, 이전 payload로 조용히 되돌아가지 않는다(재감사
 P1-10). CURRENT가 아예 없는 device는 committed generation이 없는 상태이며, 이전
@@ -222,47 +232,49 @@ P1-10). CURRENT가 아예 없는 device는 committed generation이 없는 상태
 root mirror·device-root 읽기 경로는 제거되었다: 파일 단위로 갱신되는 비원자 mirror를
 원자적 generation과 함께 읽는 순간 generation의 set-atomicity가 무효화되기 때문).
 export는 최신 2개 generation(current + 이전)만 유지하고 1시간 넘은 `.tmp` 잔재를
-정리한다.
+정리한다. prune은 실행 시점에 CURRENT를 다시 읽어 그 generation을 보호한다.
 
 export 성공/실패는 `sync/export-status.json`에 기록된다(재감사 P2-6). SessionEnd는
 export 실패로 lifecycle을 wedge하지 않지만, parent hook은 child 결과와 status를 검사해
 `EXPORT_FAILED`를 stderr에 남기고 `memex doctor`의 `sync-export` 체크가 마지막 시도를
 노출한다. 다음 SessionEnd export가 자연히 재시도하고 status를 덮어쓴다.
 
-import는 외부 데이터 경계이며 malformed 행을 조용히 버리지 않는다(재감사 P2-7): 유효
-행은 계속 import하되, parse에 실패한 행은 file/line/error와 함께 `malformedRows`로
-누적되어 hook의 stderr에 보고된다.
-fact 충돌은 semantic event clock(`semantic_updated_at`)이 최신인 event가 이기며,
-같은 시각은 canonical fact key로 결정합니다. 분류나 consolidation 확인 같은 비의미
-metadata 쓰기가 `updated_at`을 밀어도 상대의 의미 편집을 이기지 못하고, payload에
-`semantic_updated_at`이 없는 구버전은 `updated_at`으로 폴백합니다. hard-delete
-tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다 strictly newer
-semantic event만 restore/edit event로 인정합니다. 예외로
+fact 수렴은 세 개의 독립 축으로 판정합니다(재감사 P1-3 v4 — semantic/lifecycle/lineage
+상태 분리):
+
+- **semantic 축(의미)** — winner는 semantic event clock(`semantic_updated_at`)이
+  최신인 event이며, 같은 시각은 canonical fact key(fact, category, scope,
+  created_at의 canonical JSON 순서)로 결정합니다. `is_active`는 semantic key에
+  들어가지 않습니다. semantic 교체는 fact/category/scope와 파생 무효화(relation
+  삭제, `fact_kr=NULL`, `ontology_category_id=NULL`)만 쓰고 **`is_active`를 건드리지
+  않습니다**. 비의미 metadata 쓰기가 `updated_at`을 밀어도 의미 판정은 흔들리지
+  않습니다.
+- **lifecycle 축(활성)** — `is_active`는 자체 시계
+  (`lifecycle_generation`/`lifecycle_updated_at`)로 수렴합니다(재감사 P1-3 v4).
+  deactivate/restore는 semantic 시계를 움직이지 않고 lifecycle_generation을 올리며,
+  원격의 더 새로운 deactivate/restore는 각각 lifecycle 시계만으로 전파됩니다. 정확히
+  같은 시각의 tie는 **inactive가 이기는** 것이 모든 기기에서 동일한 결정적 규칙입니다.
+  semantic 편집과 활성 전환이 교차해도 서로를 롤백하지 않습니다 — "원격의 새 의미 +
+  로컬의 더 새로운 deactivate"는 `새 의미 + 비활성`으로 수렴합니다.
+- **lineage 축(provenance)** — `source_exchange_ids`는 sorted union,
+  `consolidated_count`는 max로 monotone 수렴합니다(재감사 P1-1 보강). 어느 시계가
+  이기든 상대의 provenance가 승자 행에서 사라지지 않으며, provenance/count merge는
+  어떤 generation도 올리지 않으므로 import commit은 **transaction 안에서 현재 행을
+  다시 읽어 union/max** 합니다(재감사 P1-2 v4) — embedding await 중에 일어난
+  consolidation의 provenance merge까지 흡수해 유실이 불가능합니다.
+
+hard-delete tombstone은 같은 timestamp의 fact보다 우선하고, tombstone보다 strictly
+newer semantic event만 restore/edit event로 인정합니다. 예외로
 `source_conversation_excluded` tombstone은 terminal privacy state입니다 — unexclude 또는
 re-consent event가 프로토콜에 존재하지 않으므로 timestamp와 무관하게 fact를 부활시키지
 않고, 더 새로운 peer edit보다 우선해 삭제를 전파하며, 더 새로운 non-privacy tombstone으로
-이유가 강등되지 않습니다. imported fact text는 local current
-embedding으로 다시 생성하며, fact row와 vector swap은 한 transaction입니다. fact update는
-기존 endpoint relation을 무효화한 뒤 현재 export relation만 다시 연결하므로 stale edge가
-남지 않습니다.
-
-semantic winner와 metadata는 분리되어 수렴합니다(재감사 P1-1 보강). winner를 결정하는
-것은 semantic clock과 semantic content(is_active, fact, category, scope, created_at)
-뿐입니다 — provenance(source_exchange_ids), consolidated_count, fact_kr,
-ontology_category_id가 winner 결정에 들어가면, DUPLICATE consolidation으로 provenance를
-union한 기기가 lexical tie에서 더 가난한 기기에게 지고 evidence 연결이 소실됩니다.
-provenance는 모든 수렴 결과에서 sorted union으로, consolidated_count는 max로 monotone
-유지됩니다 — semantic clock이 앞선 쪽이 이기는 경우에도 상대의 provenance가 승자 행에서
-사라지지 않습니다. 두 기기의 semantic clock과 semantic content가 모두 같으면 그것은
-conflict가 아니므로 full-row replacement를 하지 않고 metadata만 수렴합니다 — 이때
-semantic_generation을 올리거나 relation을 무효화하거나 ontology를 리셋하거나 vector를
-재생성하지 않습니다. relation payload는 양 endpoint의 `semantic_updated_at`을 함께 기록하며(구버전
-reader를 위한 `updated_at` stamp 병행), chosen current fact version과 일치할 때만
-import합니다 — payload에 semantic stamp가 없으면 기존 `updated_at` 검증으로 폴백합니다.
-inactive fact도 relation endpoint 완전성을 위해 export합니다. ontology는 fact 위에 얹는
-파생 overlay다(재감사 P1-7): remote fact가 가리키는 category가 로컬에 없어도 fact 자체는
-import하며, `ontology_category_id=NULL`·attempts=0으로 재분류 대기 상태가 됩니다 —
-derived overlay의 결손이 primary 의미의 손실로 이어지지 않습니다.
+이유가 강등되지 않습니다. imported fact text는 local current embedding으로 다시
+생성하며, fact row와 vector swap은 한 transaction입니다 — vector 가시성은 import
+시점의 **로컬** lifecycle 상태가 결정합니다(비활성 행은 벡터를 점유하지 않는다).
+relation과 taxonomy는 sync하지 않으므로 import가 relation을 연결하거나 분류를
+가져오는 일은 없습니다 — 로컬 분류 백필과 관계 생성이 공개 facts만으로 재구축합니다.
+KR 번역도 derived state입니다: 의미가 바뀐 fact는 `fact_kr`이 NULL로 무효화되고
+`scripts/translate-facts.mjs` 번역 백필이 `vec_facts_kr`과 함께 다시 채웁니다.
 
 `recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
 import는 emitted receipt와 같은 `session_id + prompt_hash` exchange에 `memex_recall`,
@@ -274,9 +286,9 @@ receipt import의 실행 순서가 바뀌어도 safety provenance가 복구됩�
 queue에 등록됩니다.
 
 DB 파일만 삭제되고 archive/source rollout은 남은 복구에서는 `memex sync`가 unchanged
-archive도 전부 다시 index합니다. 이후 SessionStart sync import가 protocol v2 durable state를
+archive도 전부 다시 index합니다. 이후 SessionStart sync import가 protocol v4 durable state를
 복원하고 maintenance/backfill이 local processing state를 재생성합니다. source rollout,
-archive, sync JSONL까지 모두 삭제한 경우 facts/revisions/recall receipt의 완전 복구는
+archive, sync generation까지 모두 삭제한 경우 facts/revisions/recall receipt의 완전 복구는
 불가능하며, 사전 data-root backup이 필요합니다.
 
 ## 7. 관측 가능성

@@ -71,7 +71,9 @@ project로 새는 구현은 허용하지 않습니다. cycle은 visited set으�
 서로 다른 project fact의 direct edge는 금지합니다. global fact가 여러 project의 공통
 제약으로 연결되는 것은 허용합니다. 이 규칙은 caller filtering이 아니라
 `ontology_relations`의 INSERT와 endpoint UPDATE trigger가 최종 write boundary에서
-강제하므로 low-level `createRelation()`, sync/import, raw SQL writer가 우회할 수 없습니다.
+강제하므로 low-level `createRelation()`과 raw SQL writer가 우회할 수 없습니다. relation은
+protocol v4에서 sync payload에서 제외된 local derived state다 — 각 기기의 관계 생성기가
+자기 facts에서 재구성합니다.
 
 ## 6. graph API
 

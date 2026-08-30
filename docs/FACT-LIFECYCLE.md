@@ -179,10 +179,24 @@ CLI/Web UI의 manual edit와 consolidation의 EVOLUTION/CONTRADICTION은 같은
 consolidation이 text만 바꾸는 shortcut을 갖지 않습니다.
 
 restore는 모델 업그레이드로 stale이 된 저장 embedding을 재생성할 수 있다. 이 재임베딩
-await는 race window이므로 최종 commit은 `is_active=0 AND semantic_generation=캡처값`의
-CAS다(재감사 P1-2) — 대기 중 의미가 변이되거나 다른 경로가 활성화했으면 restore는
+await는 race window이므로 최종 commit은
+`is_active=0 AND semantic_generation=캡처값 AND lifecycle_generation=캡처값`의 dual
+CAS다(재감사 P1-2, P1-3 v4) — 대기 중 의미가 변이되거나 다른 경로가 활성화/비활성화했으면
+restore는
 `StaleFactMutationError`로 폐기되고, "B 문장 + A 벡터 + current 스탬프"라면 자가 치유로도
 발견할 수 없는 조합이 만들어지지 않는다.
+
+deactivate/restore는 **lifecycle 사건**입니다(재감사 P1-3 v4). 두 경로 모두
+`lifecycle_generation`을 올리고 `lifecycle_updated_at`을 기록하며, semantic 시계는
+건드리지 않습니다 — 의미 편집과 활성 전환은 독립인 축이라 서로를 롤백하지 않고,
+sync는 이 시계로 deactivate/restore를 어느 기기로든 전파합니다(정확히 같은 시각의
+tie는 inactive 승리). sync import의 DUPLICATE provenance union도 commit 시점에 현재
+행을 다시 읽어 union/max하므로, 어떤 metadata 쓰기와 교차해도 provenance가
+유실되지 않습니다. 번역(`fact_kr`)과 taxonomy(`ontology_domains/categories`,
+`ontology_category_id`)는 derived state로 sync payload에서 제외되었고(v4), 의미가
+바뀐 fact는 로컬 번역 백필(`scripts/translate-facts.mjs`)과 분류 백필로 overlay를
+다시 채웁니다. privacy purge(`source_conversation_excluded`)는 taxonomy를 전면
+invalidate하고 잔존 facts의 overlay를 끊어 공개 facts만으로 재구축하게 합니다.
 
 의미 변경은 fact의 `semantic_generation`을 올리고 `semantic_updated_at`을 갱신하는
 유일한 경로입니다(다른 하나는 sync fact import의 replication). consolidation 세
