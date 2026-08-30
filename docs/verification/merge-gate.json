@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-30T05:25:00.000Z",
+  "recordedAt": "2026-08-30T13:32:49.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,8 +9,8 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/audit-remediation",
-    "codeSha": "d34d34be6b65085de21382fd6f31ea894a7e78a7",
-    "note": "Evidence run at this SHA (bcee3eb fix + 7b81d5f test + d34d34b docs); only this receipt commit follows, runtime code unchanged. Protocol v4: semantic/lifecycle/lineage state split, derived ontology+translation out of the sync payload, export serialization, strict v4 rows."
+    "codeSha": "ddae81806f98d21e2b004802cb9b1ec9f2bb15e3",
+    "note": "Evidence run with the fourth reaudit's fix set applied on top of ddae818 (working tree at run time): remote↔remote 3-axis fold (semantic/lifecycle winners independent), applyReplicatedLifecycle preserving the remote event time with commit-time LWW revalidation and same-state clock convergence, consolidation semantic+lifecycle dual CAS, global taxonomy epoch vs privacy purge, purge attempt-ledger reset, translation semantic CAS, export lock ownership nonce. Commit the fixes first; only this receipt commit follows, runtime code unchanged."
   },
   "verdict": "PASS",
   "gates": [
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "65 files / 579 tests passed"
+      "observed": "67 files / 594 tests passed"
     },
     {
       "name": "codex-slice",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.1.0.tgz 183 files / 699119 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
+      "observed": "memex-0.1.0.tgz 183 files / 707443 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
     },
     {
       "name": "lifecycle-e2e",
@@ -68,7 +68,7 @@
     }
   ],
   "reauditClosures": {
-    "reference": "third reaudit (2026-08-30) — P1-1 cross-semantic overlay contamination, P1-2 commit-time provenance loss, P1-3 lifecycle clock, P1-4 taxonomy purge/sync privacy, P2 export CURRENT regression, P2 pinning ENOENT, P2 v3 row strictness, P2 doc drift; merge-blocker claim (duplicate import breaking the suite) was empirically refuted — the file runs 54/54 — and the duplicate was cleaned anyway",
-    "result": "all items closed at this SHA via protocol v4 state-model split; regression tests added in 7b81d5f"
+    "reference": "fourth reaudit (2026-08-30) — P1-1 remote↔remote fold re-subordinated lifecycle to the semantic winner, P1-2 replicated lifecycle events stamped with local now, P1-3 same-state newer lifecycle clocks dropped and no commit-time LWW revalidation, P1-4 consolidation CAS blind to lifecycle generation, Privacy-P1 in-flight classification resurrecting purged taxonomy, P2 purge leaving the ontology attempt ledger exhausted, P2 translation recording stale meaning, P2 export lock release deleting a successor's lock",
+    "result": "all items closed in this working tree: RemoteAggregate fold + applyReplicatedLifecycle + dual CAS + taxonomy epoch + purge ledger reset + translation CAS + ownership-checked release; 15 regression tests added (5 sync fold/lifecycle, 3 consolidation race, 2 epoch/purge, 2 translation CAS, 3 lock ownership); discriminating power observed by running the P1-1 demo and the sync/consolidation suites against the pre-fix code"
   }
 }
