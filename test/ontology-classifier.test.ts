@@ -26,7 +26,6 @@ import {
   backfillClassifyBatch,
   parkExhaustedFacts,
   recordOntologyAttempt,
-  MAX_CLASSIFY_ATTEMPTS,
   persistFallbackClassification,
   MAX_CLASSIFY_ATTEMPTS,
 } from '../src/ontology-classifier.js';

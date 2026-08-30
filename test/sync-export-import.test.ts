@@ -40,9 +40,9 @@ describe('sync-export/import', () => {
     const { exportForSync } = await import('../src/sync-export.js');
     const result = exportForSync();
     expect(result.facts).toBe(0);
-    expect(result.domains).toBe(0);
-    expect(result.categories).toBe(0);
-    expect(result.relations).toBe(0);
+    expect(result.revisions).toBe(0);
+    expect(result.tombstones).toBe(0);
+    expect(result.recallEvents).toBe(0);
   });
 
   it('should create sync directory', async () => {
@@ -52,7 +52,7 @@ describe('sync-export/import', () => {
     expect(dir).toContain('sync');
   });
 
-  it('should export facts and ontology to JSONL', async () => {
+  it('should export facts to JSONL — ontology does not travel (v4)', async () => {
     const { initDatabase } = await import('../src/db.js');
     const db = initDatabase();
 
@@ -79,9 +79,8 @@ describe('sync-export/import', () => {
     const result = exportForSync();
 
     expect(result.facts).toBe(1);
-    expect(result.domains).toBe(1);
-    expect(result.categories).toBe(1);
-    expect(result.relations).toBe(1);
+    expect(result.revisions).toBe(0);
+    expect(result.tombstones).toBe(0);
 
     // Verify the committed generation carries the payload — and that the
     // root mirror is gone: committed generations are the whole protocol (P1-1).
@@ -89,8 +88,12 @@ describe('sync-export/import', () => {
     const syncDir = getSyncDir();
     const exportedDeviceDir = path.join(syncDir, 'devices', fs.readdirSync(path.join(syncDir, 'devices'))[0]);
     const exportedGenDir = path.join(exportedDeviceDir, 'generations', readCurrentGeneration(exportedDeviceDir));
-    for (const name of ['facts.jsonl', 'ontology-domains.jsonl', 'ontology-categories.jsonl', 'ontology-relations.jsonl', 'meta.json']) {
+    for (const name of ['facts.jsonl', 'fact-revisions.jsonl', 'fact-tombstones.jsonl', 'recall-events.jsonl', 'meta.json']) {
       expect(fs.existsSync(path.join(exportedGenDir, name)), name).toBe(true);
+    }
+    // Protocol v4: taxonomy/relations are derived state and never leave the device.
+    for (const name of ['ontology-domains.jsonl', 'ontology-categories.jsonl', 'ontology-relations.jsonl']) {
+      expect(fs.existsSync(path.join(exportedGenDir, name)), name).toBe(false);
     }
     expect(fs.existsSync(path.join(syncDir, 'facts.jsonl'))).toBe(false);
     expect(fs.existsSync(path.join(syncDir, 'meta.json'))).toBe(false);
@@ -98,6 +101,7 @@ describe('sync-export/import', () => {
     // Verify meta.json contents (inside the committed generation)
     const meta = JSON.parse(fs.readFileSync(path.join(exportedGenDir, 'meta.json'), 'utf-8'));
     expect(meta.facts_count).toBe(1);
+    expect(meta.protocol_version).toBe(4);
     expect(meta.hostname).toBeTruthy();
     expect(meta.exported_at).toBeTruthy();
   });
@@ -106,12 +110,12 @@ describe('sync-export/import', () => {
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
     expect(result.newFacts).toBe(0);
-    expect(result.newDomains).toBe(0);
+    expect(result.newRevisions).toBe(0);
   });
 
   // 공통 시드: 로컬 fact를 넣고 반환된 실제 id/created_at으로 원격 payload를
-  // 맞춘다 — semanticConflictKey는 (is_active, fact, category, scope,
-  // created_at)이므로 tie 시나리오는 이 둘이 일치해야 한다.
+  // 맞춘다 — semanticConflictKey는 (fact, category, scope, created_at)이므로
+  // tie 시나리오는 이 둘이 일치해야 한다.
   async function seedLocalFact(opts: {
     fact?: string;
     sources: string[];
@@ -151,12 +155,13 @@ describe('sync-export/import', () => {
     sources: string[];
     count?: number;
     semanticAt?: string;
+    is_active?: 0 | 1;
+    lifecycleAt?: string;
   }): string {
     const semanticAt = opts.semanticAt ?? '2026-08-30T00:00:00.000Z';
     return JSON.stringify({
       id: opts.id,
       fact: opts.fact ?? 'Metrics are exported once per minute',
-      fact_kr: null,
       category: 'decision',
       scope_type: 'global',
       scope_project: null,
@@ -164,9 +169,9 @@ describe('sync-export/import', () => {
       created_at: opts.createdAt,
       updated_at: semanticAt,
       semantic_updated_at: semanticAt,
+      lifecycle_updated_at: opts.lifecycleAt ?? semanticAt,
       consolidated_count: opts.count ?? 1,
-      is_active: 1,
-      ontology_category_id: null,
+      is_active: opts.is_active ?? 1,
     }) + '\n';
   }
 
@@ -368,37 +373,32 @@ describe('sync-export/import', () => {
     }
   });
 
-  it('should import facts from JSONL files', async () => {
-    // Create sync files manually
-    const { getSyncDir } = await import('../src/sync-export.js');
-    const syncDir = getSyncDir();
-    const now = new Date().toISOString();
+  it('should import facts from JSONL files (v4 carries no derived state)', async () => {
+    const now = '2026-08-30T00:00:00.000Z';
 
     craftCommittedGeneration('dev-a', {
-      'ontology-domains.jsonl':
-        JSON.stringify({ id: 'imp-dom-1', name: 'Backend', description: 'Backend dev', created_at: now }) + '\n',
-      'ontology-categories.jsonl':
-        JSON.stringify({ id: 'imp-cat-1', domain_id: 'imp-dom-1', name: 'API', description: 'API patterns', created_at: now }) + '\n',
       'facts.jsonl':
         JSON.stringify({
           id: 'imp-fact-1', fact: 'Use REST for APIs', category: 'decision',
           scope_type: 'project', scope_project: '/tmp/api-proj', source_exchange_ids: '[]',
-          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: 'imp-cat-1'
-        }) + '\n',
-      'ontology-relations.jsonl':
-        JSON.stringify({
-          id: 'imp-rel-1', source_fact_id: 'imp-fact-1', relation_type: 'INFLUENCES',
-          target_fact_id: 'imp-fact-1', reasoning: 'test', created_at: now
+          created_at: now, updated_at: now, semantic_updated_at: now,
+          lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
         }) + '\n',
     });
 
     const { importFromSync } = await import('../src/sync-import.js');
     const result = await importFromSync();
 
-    expect(result.newDomains).toBe(1);
-    expect(result.newCategories).toBe(1);
     expect(result.newFacts).toBe(1);
-    expect(result.newRelations).toBe(1);
+    // Derived overlay rebuilds locally: imported facts start unclassified.
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get('imp-fact-1'))
+        .toEqual({ ontology_category_id: null });
+    } finally {
+      db.close();
+    }
   });
 
   it('queues a late historical sync fact for local consolidation', async () => {
@@ -415,9 +415,10 @@ describe('sync-export/import', () => {
       source_exchange_ids: '[]',
         created_at: '1999-01-01T00:00:00.000Z',
         updated_at: '2026-08-28T02:00:00.000Z',
+        semantic_updated_at: '2026-08-28T02:00:00.000Z',
+        lifecycle_updated_at: '2026-08-28T02:00:00.000Z',
         consolidated_count: 1,
         is_active: 1,
-        ontology_category_id: null,
       }) + '\n',
     });
 
@@ -441,14 +442,13 @@ describe('sync-export/import', () => {
     const syncDir = getSyncDir();
     const now = new Date().toISOString();
 
-    const domainLine = JSON.stringify({ id: 'dup-dom', name: 'DevOps', description: 'DevOps', created_at: now });
     craftCommittedGeneration('dev-a', {
-      'ontology-domains.jsonl': domainLine + '\n',
       'facts.jsonl':
         JSON.stringify({
           id: 'dup-fact', fact: 'Use Docker', category: 'decision',
           scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
+          created_at: now, updated_at: now, semantic_updated_at: now,
+          lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
         }) + '\n',
     });
 
@@ -456,12 +456,10 @@ describe('sync-export/import', () => {
 
     // First import
     const first = await importFromSync();
-    expect(first.newDomains).toBe(1);
     expect(first.newFacts).toBe(1);
 
     // Second import - should skip duplicates
     const second = await importFromSync();
-    expect(second.newDomains).toBe(0);
     expect(second.newFacts).toBe(0);
   });
 
@@ -479,7 +477,8 @@ describe('sync-export/import', () => {
         JSON.stringify({
           id: 'valid-fact', fact: 'Valid fact', category: 'decision',
           scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-          created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null
+          created_at: now, updated_at: now, semantic_updated_at: now,
+          lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
         }) + '\n',
     });
 
@@ -503,7 +502,8 @@ describe('sync-export/import', () => {
       'facts.jsonl': JSON.stringify({
         id: 'tamper-fact', fact: 'Tamper probe', category: 'decision',
         scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+        created_at: now, updated_at: now, semantic_updated_at: now,
+        lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
       }) + '\n',
       'fact-tombstones.jsonl': JSON.stringify({
         fact_id: 'some-fact', deleted_at: now, reason: 'hard_delete',
@@ -526,13 +526,14 @@ describe('sync-export/import', () => {
       'facts.jsonl': JSON.stringify({
         id: 'manifest-fact', fact: 'Manifest probe', category: 'decision',
         scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+        created_at: now, updated_at: now, semantic_updated_at: now,
+        lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
       }) + '\n',
     });
     fs.unlinkSync(path.join(gen.genDir, 'meta.json'));
     const missing = await import('../src/sync-import.js').then((m) => m.importFromSync());
     expect(missing.newFacts).toBe(0);
-    expect(missing.malformedRows[0].error).toContain('missing meta.json');
+    expect(missing.malformedRows[0].error).toContain('unreadable meta.json');
     expect(missing.malformedRows[0].error).toContain('rejected');
 
     // meta.json이 CURRENT가 가리키는 generation과 다르면(전송 순서 어긋남) 거부.
@@ -540,7 +541,8 @@ describe('sync-export/import', () => {
       'facts.jsonl': JSON.stringify({
         id: 'manifest-fact-2', fact: 'Manifest probe 2', category: 'decision',
         scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
+        created_at: now, updated_at: now, semantic_updated_at: now,
+        lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
       }) + '\n',
     });
     const manifestPath = path.join(gen2.genDir, 'meta.json');
@@ -558,17 +560,16 @@ describe('sync-export/import', () => {
     expect(mismatchIssue!.error).toContain('rejected');
   });
 
-  it('imports a remote fact whose ontology category is missing locally — ontology is an overlay', async () => {
-    // 재감사 P1-7: derived overlay가 불완전해도 의미 자체를 버리면 안 된다 —
-    // fact는 ontology_category_id=NULL로 import되어 재분류 대기가 된다.
+  it('imported facts start with a NULL derived overlay for local reclassification (v4)', async () => {
+    // 재감사 P1-4 v4: ontology는 sync payload에서 완전히 제거되었다 — 원격
+    // 분류가 로컬 taxonomy와 무관해지고, overlay는 로컬 백필이 다시 채운다.
     const now = '2026-08-30T00:00:00.000Z';
     craftCommittedGeneration('dev-a', {
       'facts.jsonl': JSON.stringify({
         id: 'overlay-fact', fact: 'Use CDN for static assets', category: 'decision',
         scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
         created_at: now, updated_at: now, semantic_updated_at: now,
-        consolidated_count: 1, is_active: 1,
-        ontology_category_id: 'cat-exists-only-on-the-other-device',
+        lifecycle_updated_at: now, consolidated_count: 1, is_active: 1,
       }) + '\n',
     });
 
@@ -633,44 +634,6 @@ describe('sync-export/import', () => {
     }
   });
 
-  it('rejects imported relations whose project endpoints belong to different scopes', async () => {
-    const { getSyncDir } = await import('../src/sync-export.js');
-    const syncDir = getSyncDir();
-    const now = new Date().toISOString();
-    const facts = [
-      {
-        id: 'scope-a-fact', fact: 'Project A decision', category: 'decision',
-        scope_type: 'project', scope_project: '/tmp/team-a/shared', source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
-      },
-      {
-        id: 'scope-b-fact', fact: 'Project B decision', category: 'decision',
-        scope_type: 'project', scope_project: '/tmp/team-b/shared', source_exchange_ids: '[]',
-        created_at: now, updated_at: now, consolidated_count: 1, ontology_category_id: null,
-      },
-    ];
-    craftCommittedGeneration('dev-a', {
-      'facts.jsonl': facts.map((f) => JSON.stringify(f)).join('\n') + '\n',
-      'ontology-relations.jsonl': JSON.stringify({
-        id: 'cross-project-relation', source_fact_id: 'scope-a-fact', relation_type: 'SUPPORTS',
-        target_fact_id: 'scope-b-fact', reasoning: 'must be rejected', created_at: now,
-      }) + '\n',
-    });
-
-    const { importFromSync } = await import('../src/sync-import.js');
-    const result = await importFromSync();
-    expect(result.newFacts).toBe(2);
-    expect(result.newRelations).toBe(0);
-
-    const { initDatabase } = await import('../src/db.js');
-    const db = initDatabase();
-    try {
-      expect(db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE id = ?').get('cross-project-relation')).toEqual({ c: 0 });
-    } finally {
-      db.close();
-    }
-  });
-
   it('reconciles a newer inactive fact and its revision instead of skipping the existing id', async () => {
     const { initDatabase } = await import('../src/db.js');
     const { exportForSync } = await import('../src/sync-export.js');
@@ -700,14 +663,6 @@ describe('sync-export/import', () => {
         'revision-1', 'shared-fact', 'Old truth', 'New current truth',
         'remote edit', 'ex-new', updatedAt,
       );
-      db.prepare(`
-        INSERT INTO ontology_relations
-          (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        'inactive-relation', 'shared-fact', 'SUPPORTS', 'shared-fact',
-        'inactive endpoint stays referentially complete', updatedAt,
-      );
     } finally {
       db.close();
     }
@@ -732,28 +687,29 @@ describe('sync-export/import', () => {
     }
 
     const imported = await importFromSync();
-    expect(imported.updatedFacts).toBe(1);
+    // v4: semantic replacement(1) + lifecycle deactivate(1)가 독립 축으로 적용된다.
+    expect(imported.updatedFacts).toBe(2);
     expect(imported.newRevisions).toBe(1);
-    expect(imported.newRelations).toBe(1);
 
     db = initDatabase();
     try {
       expect(db.prepare(
-        'SELECT fact, source_exchange_ids, updated_at, is_active FROM facts WHERE id = ?',
+        'SELECT fact, source_exchange_ids, is_active FROM facts WHERE id = ?',
       ).get('shared-fact')).toEqual({
         fact: 'New current truth',
         // P1-1 보강: semantic replacement라도 provenance는 monotone union이다 —
         // 로컬 증거(ex-old)가 원격 승자 행에서 사라지지 않는다.
         source_exchange_ids: '["ex-new","ex-old"]',
-        updated_at: updatedAt,
+        // P1-3 v4: is_active는 lifecycle 축이 원격의 더 새로운 deactivate를
+        // 적용해 0으로 수렴한다 — semantic 교체가 is_active를 덮지 않는다.
         is_active: 0,
       });
+      // lifecycle deactivate는 로컬 행 touch 시각(updated_at)을 지금으로 기록한다.
+      const touched = db.prepare('SELECT updated_at FROM facts WHERE id = ?').get('shared-fact') as { updated_at: string };
+      expect(Date.parse(touched.updated_at)).toBeGreaterThan(Date.parse(updatedAt));
       expect(db.prepare(
         'SELECT previous_fact, new_fact FROM fact_revisions WHERE id = ?',
       ).get('revision-1')).toEqual({ previous_fact: 'Old truth', new_fact: 'New current truth' });
-      expect(db.prepare(
-        'SELECT source_fact_id, target_fact_id FROM ontology_relations WHERE id = ?',
-      ).get('inactive-relation')).toEqual({ source_fact_id: 'shared-fact', target_fact_id: 'shared-fact' });
     } finally {
       db.close();
     }
@@ -845,8 +801,8 @@ describe('sync-export/import', () => {
       'facts.jsonl': JSON.stringify({
         id: 'stale-fact', fact: 'Stale remote truth', category: 'decision',
         scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
-        created_at: older, updated_at: older, consolidated_count: 1,
-        is_active: 0, ontology_category_id: null,
+        created_at: older, updated_at: older, semantic_updated_at: older,
+        lifecycle_updated_at: older, consolidated_count: 1, is_active: 0,
       }) + '\n',
     });
 
@@ -881,18 +837,11 @@ describe('sync-export/import', () => {
       id: 'multi-device-fact', fact, category: 'decision',
       scope_type: 'global', scope_project: null, source_exchange_ids: '[]',
       created_at: '2026-08-28T00:00:00.000Z', updated_at,
-      consolidated_count: 1, is_active, ontology_category_id: null,
+      semantic_updated_at: updated_at, lifecycle_updated_at: updated_at,
+      consolidated_count: 1, is_active,
     });
     craftCommittedGeneration('device-a', {
       'facts.jsonl': JSON.stringify(makeFact('Older device truth', '2026-08-28T01:00:00.000Z', 1)) + '\n',
-      'ontology-relations.jsonl': JSON.stringify({
-        id: 'stale-device-relation', source_fact_id: 'multi-device-fact',
-        relation_type: 'SUPPORTS', target_fact_id: 'multi-device-fact',
-        reasoning: 'belongs to old endpoint generation',
-        created_at: '2026-08-28T01:00:00.000Z',
-        source_fact_updated_at: '2026-08-28T01:00:00.000Z',
-        target_fact_updated_at: '2026-08-28T01:00:00.000Z',
-      }) + '\n',
     });
     craftCommittedGeneration('device-b', {
       'facts.jsonl': JSON.stringify(makeFact('Newer device truth', '2026-08-28T02:00:00.000Z', 0)) + '\n',
@@ -900,13 +849,10 @@ describe('sync-export/import', () => {
 
     const imported = await importFromSync();
     expect(imported.newFacts).toBe(1);
-    expect(imported.newRelations).toBe(0);
     const db = initDatabase();
     try {
       expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('multi-device-fact'))
         .toEqual({ fact: 'Newer device truth', is_active: 0 });
-      expect(db.prepare('SELECT 1 FROM ontology_relations WHERE id = ?').get('stale-device-relation'))
-        .toBeUndefined();
     } finally {
       db.close();
     }
@@ -926,9 +872,10 @@ describe('sync-export/import', () => {
       source_exchange_ids: '[]',
       created_at: tie,
       updated_at: tie,
+      semantic_updated_at: tie,
+      lifecycle_updated_at: tie,
       consolidated_count: 1,
       is_active,
-      ontology_category_id: null,
     });
 
     async function seedLocalFact(): Promise<void> {
@@ -992,13 +939,15 @@ describe('sync-export/import', () => {
       }
     });
 
-    it('prefers the inactive state on an exact-time tie', async () => {
+    it('an exact-time tie resolves to inactive on the lifecycle axis, meaning untouched', async () => {
       const { initDatabase } = await import('../src/db.js');
       const { getSyncDir } = await import('../src/sync-export.js');
       const { importFromSync } = await import('../src/sync-import.js');
       await seedLocalFact();
 
-      // Inactive wins the tie even when the text sorts lower.
+      // 재감사 P1-3 v4: lifecycle tie는 inactive가 이긴다(안전한 기본값).
+      // 의미 축에서 'Aardvark' < 'Alpha'이므로 로컬 meaning은 유지되고,
+      // lifecycle 축에서만 deactivate가 적용된다 — 두 축이 독립임의 증명.
       craftCommittedGeneration('dev-a', {
         'facts.jsonl': JSON.stringify(makeTieFact('Aardvark decision', 0)) + '\n',
       });
@@ -1008,7 +957,7 @@ describe('sync-export/import', () => {
       const db = initDatabase();
       try {
         expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get('tie-break-fact'))
-          .toEqual({ fact: 'Aardvark decision', is_active: 0 });
+          .toEqual({ fact: 'Alpha decision', is_active: 0 });
         expect(db.prepare('SELECT COUNT(*) AS n FROM vec_facts WHERE id = ?').get('tie-break-fact'))
           .toEqual({ n: 0 });
       } finally {
@@ -1078,16 +1027,16 @@ describe('sync-export/import', () => {
         'facts.jsonl': JSON.stringify({
           id: 'privacy-fact',
           fact: 'Redis에서 세션 캐시를 사용한다',
-          fact_kr: null,
           category: 'decision',
           scope_type: 'global',
           scope_project: null,
           source_exchange_ids: '[]',
           created_at: '2026-08-01T00:00:00.000Z',
           updated_at: peerEdit,
+          semantic_updated_at: peerEdit,
+          lifecycle_updated_at: peerEdit,
           consolidated_count: 1,
           is_active: 1,
-          ontology_category_id: null,
         }) + '\n',
       });
 
@@ -1150,16 +1099,16 @@ describe('sync-export/import', () => {
         'facts.jsonl': JSON.stringify({
           id: 'privacy-fact',
           fact: 'Redis에서 세션 캐시를 사용한다',
-          fact_kr: null,
           category: 'decision',
           scope_type: 'global',
           scope_project: null,
           source_exchange_ids: '[]',
           created_at: '2026-08-01T00:00:00.000Z',
           updated_at: peerEdit,
+          semantic_updated_at: peerEdit,
+          lifecycle_updated_at: peerEdit,
           consolidated_count: 1,
           is_active: 1,
-          ontology_category_id: null,
         }) + '\n',
       });
 
@@ -1304,25 +1253,23 @@ describe('sync-export/import', () => {
     }
 
     function writeRemoteFact(
-      overrides: { id?: string; fact?: string; updatedAt?: string; semanticUpdatedAt?: string | null },
+      overrides: { id?: string; fact?: string; updatedAt?: string; semanticUpdatedAt?: string },
     ): void {
+      const semanticAt = overrides.semanticUpdatedAt ?? SEMANTIC_REMOTE_OLDER;
       craftCommittedGeneration('dev-a', {
       'facts.jsonl': JSON.stringify({
         id: overrides.id ?? 'clock-fact',
         fact: overrides.fact ?? 'Redis에서 세션 캐시를 사용한다',
-        fact_kr: null,
         category: 'decision',
         scope_type: 'global',
         scope_project: null,
         source_exchange_ids: '[]',
         created_at: '2026-08-01T00:00:00.000Z',
         updated_at: overrides.updatedAt ?? TOUCH_NEWER,
-        semantic_updated_at: overrides.semanticUpdatedAt === null
-          ? undefined
-          : (overrides.semanticUpdatedAt ?? SEMANTIC_REMOTE_OLDER),
+        semantic_updated_at: semanticAt,
+        lifecycle_updated_at: overrides.updatedAt ?? TOUCH_NEWER,
         consolidated_count: 1,
         is_active: 1,
-        ontology_category_id: null,
       }) + '\n',
       });
     }
@@ -1429,7 +1376,7 @@ describe('sync-export/import', () => {
       }
     });
 
-    it('semantic_updated_at이 없는 구버전 payload는 updated_at으로 폴백한다', async () => {
+    it('v4 payload는 semantic_updated_at 결측을 폴백하지 않고 generation을 reject한다', async () => {
       const { initDatabase } = await import('../src/db.js');
       const { getSyncDir } = await import('../src/sync-export.js');
       const { importFromSync } = await import('../src/sync-import.js');
@@ -1445,133 +1392,286 @@ describe('sync-export/import', () => {
         db.close();
       }
 
-      // 구버전(v2) payload — semantic_updated_at 필드 자체가 없다.
-      writeRemoteFact({
+      // v4 strict: 시계 필드가 없는 행은 구버전 입력이 아니라 손상이다 —
+      // updated_at 폴백 대신 generation 전체가 reject된다.
+      const remoteRow = JSON.parse(JSON.stringify({
+        id: 'clock-fact',
         fact: 'Postgres에서 세션 캐시를 사용한다',
-        updatedAt: TOUCH_NEWER,
-        semanticUpdatedAt: null, // 필드 생략
-      });
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: '[]',
+        created_at: '2026-08-01T00:00:00.000Z',
+        updated_at: TOUCH_NEWER,
+        lifecycle_updated_at: TOUCH_NEWER,
+        consolidated_count: 1,
+        is_active: 1,
+      }));
+      delete remoteRow.semantic_updated_at;
+      craftCommittedGeneration('dev-a', { 'facts.jsonl': JSON.stringify(remoteRow) + '\n' });
 
       const imported = await importFromSync();
-      // 폴백 시계 = updated_at 이므로 원격이 이긴다(구버전 동작 유지).
-      expect(imported.updatedFacts).toBe(1);
+      expect(imported.updatedFacts).toBe(0);
+      expect(imported.malformedRows).toHaveLength(1);
+      expect(imported.malformedRows[0].error).toContain('protocol v4 schema validation');
 
       db = initDatabase();
       try {
         const row = db
           .prepare('SELECT fact, semantic_updated_at FROM facts WHERE id = ?')
           .get('clock-fact') as { fact: string; semantic_updated_at: string };
-        expect(row.fact).toBe('Postgres에서 세션 캐시를 사용한다');
-        expect(row.semantic_updated_at).toBe(TOUCH_NEWER);
+        expect(row.fact).toBe('Redis에서 세션 캐시를 사용한다');
+        expect(row.semantic_updated_at).toBe(SEMANTIC_LOCAL);
       } finally {
         db.close();
       }
     });
 
-    it('relation endpoint version은 semantic clock으로 검증된다', async () => {
+
+  describe('independent lifecycle axis (재감사 P1-3 v4)', () => {
+    async function seedLocalFact(opts: {
+      fact?: string;
+      sources?: string[];
+      semanticAt?: string;
+      lifecycleAt?: string;
+      isActive?: 0 | 1;
+    }): Promise<{ id: string; createdAt: string }> {
       const { initDatabase } = await import('../src/db.js');
-      const { getSyncDir } = await import('../src/sync-export.js');
+      const { insertFact } = await import('../src/fact-db.js');
+      const db = initDatabase();
+      let id: string;
+      let createdAt: string;
+      try {
+        id = insertFact(db, {
+          fact: opts.fact ?? 'Metrics are exported once per minute',
+          category: 'decision',
+          scope_type: 'global',
+          scope_project: null,
+          source_exchange_ids: opts.sources ?? ['ex-a'],
+          embedding: new Array(384).fill(0.05),
+        });
+        const row = db.prepare('SELECT created_at FROM facts WHERE id = ?').get(id) as { created_at: string };
+        createdAt = row.created_at;
+        const semanticAt = opts.semanticAt ?? '2026-08-30T00:00:00.000Z';
+        const lifecycleAt = opts.lifecycleAt ?? semanticAt;
+        db.prepare(
+          'UPDATE facts SET semantic_updated_at = ?, updated_at = ?, lifecycle_updated_at = ?, is_active = ?, needs_consolidation = 0 WHERE id = ?',
+        ).run(semanticAt, semanticAt, lifecycleAt, opts.isActive ?? 1, id);
+        if (opts.isActive === 0) db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
+      } finally {
+        db.close();
+      }
+      return { id, createdAt };
+    }
+
+    function remotePayload(opts: {
+      id: string;
+      createdAt: string;
+      fact?: string;
+      sources?: string[];
+      semanticAt?: string;
+      lifecycleAt?: string;
+      is_active?: 0 | 1;
+    }): string {
+      const semanticAt = opts.semanticAt ?? '2026-08-30T00:00:00.000Z';
+      return JSON.stringify({
+        id: opts.id,
+        fact: opts.fact ?? 'Metrics are exported once per minute',
+        category: 'decision',
+        scope_type: 'global',
+        scope_project: null,
+        source_exchange_ids: JSON.stringify(opts.sources ?? ['ex-a']),
+        created_at: opts.createdAt,
+        updated_at: semanticAt,
+        semantic_updated_at: semanticAt,
+        lifecycle_updated_at: opts.lifecycleAt ?? semanticAt,
+        consolidated_count: 1,
+        is_active: opts.is_active ?? 1,
+      }) + '\n';
+    }
+
+    it('a remote deactivation propagates through the lifecycle clock alone', async () => {
+      // 로컬: T1 활성. 원격: 같은 의미, T5 deactivate. lifecycle 시계만 움직인다.
+      const { id, createdAt } = await seedLocalFact({
+        semanticAt: '2026-08-30T00:00:00.000Z',
+        lifecycleAt: '2026-08-30T00:00:00.000Z',
+      });
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': remotePayload({
+          id, createdAt, lifecycleAt: '2026-08-30T05:00:00.000Z', is_active: 0,
+        }),
+      });
+
       const { importFromSync } = await import('../src/sync-import.js');
+      const imported = await importFromSync();
 
-      let db = initDatabase();
-      try {
-        // source: semantic T1 (원격과 동일), target: 로컬에서 의미 편집이 이미 일어남(T3).
-        insertLocalFact(db, { id: 'rel-src', fact: 'Source meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
-        insertLocalFact(db, { id: 'rel-tgt', fact: 'Target meaning edited locally', updatedAt: SEMANTIC_REMOTE_NEWER, semanticUpdatedAt: SEMANTIC_REMOTE_NEWER });
-      } finally {
-        db.close();
-      }
-
-      // relation payload: target 의 semantic stamp 가 로컬(편집 후)과 다르다 → 거부.
-      craftCommittedGeneration('dev-a', {
-        'ontology-relations.jsonl':
-        JSON.stringify({
-          id: 'rel-stale',
-          source_fact_id: 'rel-src',
-          relation_type: 'SUPPORTS',
-          target_fact_id: 'rel-tgt',
-          reasoning: 'stale anchor',
-          created_at: SEMANTIC_LOCAL,
-          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
-          target_fact_updated_at: SEMANTIC_REMOTE_OLDER,
-          source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
-          target_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
-        }) + '\n',
-      });
-      await importFromSync();
-      db = initDatabase();
-      try {
-        expect(
-          (db.prepare('SELECT COUNT(*) AS n FROM ontology_relations').get() as { n: number }).n,
-        ).toBe(0);
-      } finally {
-        db.close();
-      }
-
-      // target 의 semantic stamp 가 현재와 일치하면 승인된다.
-      craftCommittedGeneration('dev-a', {
-        'ontology-relations.jsonl':
-        JSON.stringify({
-          id: 'rel-current',
-          source_fact_id: 'rel-src',
-          relation_type: 'SUPPORTS',
-          target_fact_id: 'rel-tgt',
-          reasoning: 'current anchor',
-          created_at: SEMANTIC_REMOTE_NEWER,
-          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
-          target_fact_updated_at: SEMANTIC_REMOTE_NEWER,
-          source_fact_semantic_updated_at: SEMANTIC_REMOTE_OLDER,
-          target_fact_semantic_updated_at: SEMANTIC_REMOTE_NEWER,
-        }) + '\n',
-      });
-      await importFromSync();
-      db = initDatabase();
-      try {
-        const relations = db
-          .prepare('SELECT id FROM ontology_relations')
-          .all() as Array<{ id: string }>;
-        expect(relations.map((r) => r.id)).toEqual(['rel-current']);
-      } finally {
-        db.close();
-      }
-    });
-
-    it('semantic stamp가 없는 구버전 relation payload는 updated_at 검증을 유지한다', async () => {
       const { initDatabase } = await import('../src/db.js');
-      const { getSyncDir } = await import('../src/sync-export.js');
-      const { importFromSync } = await import('../src/sync-import.js');
-
-      let db = initDatabase();
+      const db = initDatabase();
       try {
-        insertLocalFact(db, { id: 'rel-src', fact: 'Source meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
-        insertLocalFact(db, { id: 'rel-tgt', fact: 'Target meaning', updatedAt: SEMANTIC_REMOTE_OLDER, semanticUpdatedAt: SEMANTIC_REMOTE_OLDER });
-      } finally {
-        db.close();
-      }
-
-      // 구버전 payload: semantic stamp 가 없고 updated_at stamp 만 있다 — 일치 → 승인.
-      craftCommittedGeneration('dev-a', {
-        'ontology-relations.jsonl':
-        JSON.stringify({
-          id: 'rel-legacy',
-          source_fact_id: 'rel-src',
-          relation_type: 'SUPPORTS',
-          target_fact_id: 'rel-tgt',
-          reasoning: 'legacy anchor',
-          created_at: SEMANTIC_REMOTE_OLDER,
-          source_fact_updated_at: SEMANTIC_REMOTE_OLDER,
-          target_fact_updated_at: SEMANTIC_REMOTE_OLDER,
-        }) + '\n',
-      });
-      await importFromSync();
-      db = initDatabase();
-      try {
-        expect(
-          (db.prepare('SELECT COUNT(*) AS n FROM ontology_relations').get() as { n: number }).n,
-        ).toBe(1);
+        expect(imported.updatedFacts).toBe(1);
+        expect(db.prepare(
+          'SELECT fact, is_active, lifecycle_generation, semantic_generation FROM facts WHERE id = ?',
+        ).get(id)).toEqual({
+          fact: 'Metrics are exported once per minute',
+          is_active: 0,
+          lifecycle_generation: 2, // deactivate는 lifecycle 시계를 올린다
+          semantic_generation: 1,  // 의미는 변하지 않았다
+        });
+        expect((db.prepare('SELECT COUNT(*) AS n FROM vec_facts WHERE id = ?').get(id) as { n: number }).n).toBe(0);
       } finally {
         db.close();
       }
     });
+
+    it('a remote restore propagates and the fact becomes searchable again', async () => {
+      // A deactivate → sync → restore 시나리오의 수렴 절반: 로컬 비활성 행이
+      // 원격의 더 새로운 활성 이벤트를 받아 벡터와 함께 복원된다.
+      const { id, createdAt } = await seedLocalFact({
+        semanticAt: '2026-08-30T00:00:00.000Z',
+        lifecycleAt: '2026-08-30T01:00:00.000Z', // 로컬 deactivate가 T1에 일어났다
+        isActive: 0,
+      });
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': remotePayload({
+          id, createdAt, lifecycleAt: '2026-08-30T05:00:00.000Z', is_active: 1,
+        }),
+      });
+
+      const { importFromSync } = await import('../src/sync-import.js');
+      await importFromSync();
+
+      const { initDatabase } = await import('../src/db.js');
+      const db = initDatabase();
+      try {
+        expect(db.prepare(
+          'SELECT is_active, lifecycle_generation, embedding_version FROM facts WHERE id = ?',
+        ).get(id)).toEqual({
+          is_active: 1,
+          lifecycle_generation: 2,
+          embedding_version: 2, // mock의 현재 모델 버전
+        });
+        expect((db.prepare('SELECT COUNT(*) AS n FROM vec_facts WHERE id = ?').get(id) as { n: number }).n).toBe(1);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('a local lifecycle event survives a remote semantic win (Postgres + inactive)', async () => {
+      // 재감사 P1-3 v4의 핵심 시나리오: 원격이 의미를 편집했고(semantic 승자),
+      // 로컬이 그보다 나중에 deactivate했다(lifecycle 승자). 최종 수렴은
+      // "원격 의미 + 로컬 비활성" — 어느 축도 롤백하지 않는다.
+      const { id, createdAt } = await seedLocalFact({
+        fact: 'Redis에서 세션 캐시를 사용한다',
+        semanticAt: '2026-08-30T01:00:00.000Z',
+        lifecycleAt: '2026-08-30T09:00:00.000Z', // 로컬 deactivate가 의미 편집보다 나중
+        isActive: 0,
+      });
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': remotePayload({
+          id, createdAt,
+          fact: 'Postgres에서 세션 캐시를 사용한다',
+          semanticAt: '2026-08-30T05:00:00.000Z',
+          lifecycleAt: '2026-08-30T01:00:00.000Z',
+          is_active: 1,
+        }),
+      });
+
+      const { importFromSync } = await import('../src/sync-import.js');
+      await importFromSync();
+
+      const { initDatabase } = await import('../src/db.js');
+      const db = initDatabase();
+      try {
+        expect(db.prepare(
+          'SELECT fact, is_active, semantic_updated_at FROM facts WHERE id = ?',
+        ).get(id)).toEqual({
+          fact: 'Postgres에서 세션 캐시를 사용한다', // semantic 축: 원격 의미 수용
+          is_active: 0,                              // lifecycle 축: 로컬 deactivate 유지
+          semantic_updated_at: '2026-08-30T05:00:00.000Z',
+        });
+        // 비활성 fact는 벡터를 점유하지 않는다.
+        expect((db.prepare('SELECT COUNT(*) AS n FROM vec_facts WHERE id = ?').get(id) as { n: number }).n).toBe(0);
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  describe('commit-time live lineage merge (재감사 P1-2 v4)', () => {
+    it('absorbs a concurrent DUPLICATE provenance merge during the embedding await', async () => {
+      const { initDatabase } = await import('../src/db.js');
+      const { insertFact } = await import('../src/fact-db.js');
+      const { updateFact } = await import('../src/fact-db.js');
+      const { generateEmbedding } = await import('../src/embeddings.js');
+      const db = initDatabase();
+      let id: string;
+      let createdAt: string;
+      try {
+        id = insertFact(db, {
+          fact: 'Metrics are exported once per minute',
+          category: 'decision',
+          scope_type: 'global',
+          scope_project: null,
+          source_exchange_ids: ['ex-a'],
+          embedding: new Array(384).fill(0.05),
+        });
+        const row = db.prepare('SELECT created_at FROM facts WHERE id = ?').get(id) as { created_at: string };
+        createdAt = row.created_at;
+        db.prepare(
+          "UPDATE facts SET semantic_updated_at = '2026-08-30T00:00:00.000Z', updated_at = '2026-08-30T00:00:00.000Z', needs_consolidation = 0 WHERE id = ?",
+        ).run(id);
+      } finally {
+        db.close();
+      }
+
+      // 원격: 더 새로운 의미 + provenance [ex-c].
+      craftCommittedGeneration('dev-a', {
+        'facts.jsonl': remoteFactPayload({
+          id, createdAt,
+          fact: 'Metrics are exported on demand',
+          sources: ['ex-c'],
+          semanticAt: '2026-08-30T05:00:00.000Z',
+        }),
+      });
+
+      // import의 embedding await을 gate로 잡고, 그 사이 consolidation과 같은
+      // metadata 쓰기(semantic_generation 불변)가 provenance를 union한다.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(generateEmbedding).mockImplementationOnce(async () => {
+        await gate;
+        return new Array(384).fill(0.05);
+      });
+
+      const { importFromSync } = await import('../src/sync-import.js');
+      const pending = importFromSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const mid = initDatabase();
+      try {
+        updateFact(mid, id, {
+          consolidated_count_increment: true,
+          source_exchange_ids: ['ex-a', 'ex-b'], // DUPLICATE merge 흉내
+        });
+      } finally {
+        mid.close();
+      }
+      release();
+      await pending;
+
+      const check = initDatabase();
+      try {
+        expect(check.prepare(
+          'SELECT fact, source_exchange_ids, consolidated_count FROM facts WHERE id = ?',
+        ).get(id)).toEqual({
+          fact: 'Metrics are exported on demand',
+          // commit 시점 live union: ex-b는 결코 유실되지 않는다.
+          source_exchange_ids: '["ex-a","ex-b","ex-c"]',
+          consolidated_count: 2, // max(remote 1, current 1+1)
+        });
+      } finally {
+        check.close();
+      }
+    });
+  });
   });
 });

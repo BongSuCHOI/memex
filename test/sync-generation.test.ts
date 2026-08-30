@@ -83,9 +83,9 @@ function fixtureFact(id: string, fact: string): string {
     created_at: '2026-08-30T00:00:00.000Z',
     updated_at: '2026-08-30T00:00:00.000Z',
     semantic_updated_at: '2026-08-30T00:00:00.000Z',
+    lifecycle_updated_at: '2026-08-30T00:00:00.000Z',
     consolidated_count: 1,
     is_active: 1,
-    ontology_category_id: null,
   }) + '\n';
 }
 
@@ -99,9 +99,6 @@ function craftGeneration(deviceId: string, generation: string, factsBody: string
     'fact-revisions.jsonl': '',
     'fact-tombstones.jsonl': '',
     'recall-events.jsonl': '',
-    'ontology-domains.jsonl': '',
-    'ontology-categories.jsonl': '',
-    'ontology-relations.jsonl': '',
   };
   for (const [name, body] of Object.entries(payloads)) {
     fs.writeFileSync(path.join(genDir, name), body);
@@ -113,7 +110,7 @@ function craftGeneration(deviceId: string, generation: string, factsBody: string
   fs.writeFileSync(
     path.join(genDir, 'meta.json'),
     JSON.stringify({
-      protocol_version: 3,
+      protocol_version: 4,
       generation,
       device_id: deviceId,
       exported_at: '2026-08-30T00:00:00.000Z',
@@ -137,7 +134,7 @@ function localFactCount(): number {
 }
 
 describe('sync export generation atomicity (P2-5)', () => {
-  it('commits one generation, names it in CURRENT, and keeps the root mirror', () => {
+  it('commits one v4 generation, names it in CURRENT, and leaves no root mirror', () => {
     seedFact('generation contract fact');
     const result = exportForSync();
     expect(result.facts).toBe(1);
@@ -149,17 +146,25 @@ describe('sync export generation atomicity (P2-5)', () => {
       'fact-revisions.jsonl',
       'fact-tombstones.jsonl',
       'recall-events.jsonl',
-      'ontology-domains.jsonl',
-      'ontology-categories.jsonl',
-      'ontology-relations.jsonl',
       'meta.json',
     ]) {
       expect(fs.existsSync(path.join(genDir, name)), name).toBe(true);
     }
+    // Protocol v4: ontology/translation are LOCAL DERIVED state — they no
+    // longer travel (재감사 P1-4 v4), so they are not in the generation.
+    for (const name of [
+      'ontology-domains.jsonl',
+      'ontology-categories.jsonl',
+      'ontology-relations.jsonl',
+    ]) {
+      expect(fs.existsSync(path.join(genDir, name)), name).toBe(false);
+    }
     const meta = JSON.parse(fs.readFileSync(path.join(genDir, 'meta.json'), 'utf-8')) as {
       generation: string;
+      protocol_version: number;
     };
     expect(meta.generation).toBe(id);
+    expect(meta.protocol_version).toBe(4);
 
     // New layout never leaves a partial device-root payload set.
     expect(
@@ -237,9 +242,10 @@ describe('malformed sync payload reporting (P2-7 → P1-4 fail-closed)', () => {
       source_exchange_ids: '[]',
       created_at: '2026-08-30T00:00:00.000Z',
       updated_at: '2026-08-30T00:00:00.000Z',
+      semantic_updated_at: '2026-08-30T00:00:00.000Z',
+      lifecycle_updated_at: '2026-08-30T00:00:00.000Z',
       consolidated_count: 1,
       is_active: 1,
-      ontology_category_id: null,
     };
     craftGeneration(
       'dev-malformed',
@@ -308,7 +314,53 @@ describe('generation reader pinning (재감사 P1-4)', () => {
     const imported = await importFromSync();
     expect(imported.newFacts).toBe(0);
     expect(imported.malformedRows).toHaveLength(1);
-    expect(imported.malformedRows[0].error).toContain('missing fact-tombstones.jsonl');
+    expect(imported.malformedRows[0].error).toContain('unreadable fact-tombstones.jsonl');
+    expect(imported.malformedRows[0].error).toContain('rejected');
+  });
+
+  it('rejects a generation whose manifest declares an unsupported protocol version', async () => {
+    // Protocol v4: v3 payloads (ontology files, legacy-tolerant fact rows) are
+    // not readable — no legacy peers exist by decision.
+    const deviceDir = craftGeneration(
+      'dev-proto',
+      'gen-v3',
+      fixtureFact('fact-v3', 'fact written with protocol v3'),
+    );
+    flipCurrent(deviceDir, 'gen-v3');
+    const metaPath = path.join(deviceDir, 'generations', 'gen-v3', 'meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { protocol_version: number };
+    meta.protocol_version = 3;
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(0);
+    expect(imported.malformedRows).toHaveLength(1);
+    expect(imported.malformedRows[0].error).toContain('unsupported protocol_version 3');
+  });
+
+  it('rejects a whole generation when a fact row is schema-invalid (v4 strict rows)', async () => {
+    // JSON은 valid하지만 v4 row schema가 아닌 행(semantic/lifecycle 시계 결손)은
+    // 조용히 skip되지 않는다 — generation 전체 reject가 계약이다.
+    const invalidRow = JSON.stringify({
+      id: 'fact-no-clocks',
+      fact: 'fact missing its clocks',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: '[]',
+      created_at: '2026-08-30T00:00:00.000Z',
+      updated_at: '2026-08-30T00:00:00.000Z',
+      consolidated_count: 1,
+      is_active: 1,
+    }) + '\n';
+    craftGeneration('dev-schema', 'gen-schema', invalidRow);
+    flipCurrent(path.join(getSyncDir(), 'devices', 'dev-schema'), 'gen-schema');
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(0);
+    expect(imported.malformedRows).toHaveLength(1);
+    expect(imported.malformedRows[0].file.endsWith('facts.jsonl')).toBe(true);
+    expect(imported.malformedRows[0].error).toContain('protocol v4 schema validation');
     expect(imported.malformedRows[0].error).toContain('rejected');
   });
 
@@ -374,5 +426,50 @@ describe('concurrent export pruning protects the live CURRENT (재감사 P2 hard
     expect(remaining).toContain(ids[3]); // live CURRENT — 결코 삭제되지 않는다
     expect(remaining).toContain(ids[2]); // keep=2 유예 윈도우 유지
     expect(remaining).not.toContain(ids[0]); // 윈도우 밖은 정리된다
+  });
+});
+
+describe('cross-process export lock (재감사 P2 v4)', () => {
+  it('refuses to export while another export holds the lock, and never flips CURRENT', () => {
+    seedFact('lock probe fact');
+    const lockPath = path.join(getSyncDir(), 'export.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: new Date().toISOString() }));
+
+    let caught: unknown;
+    try {
+      exportForSync();
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as Error)?.name).toBe('ExportLockedError');
+    // 경합 export는 CURRENT를 건드리지 않는다(아직 첫 export가 없음).
+    expect(fs.existsSync(path.join(getSyncDir(), 'devices'))).toBe(false);
+    // lock 파일은 소유자 것이므로 유지된다.
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it('breaks a stale lock left by a crashed exporter and completes the export', () => {
+    const utimesSync = require('node:fs').utimesSync as typeof import('node:fs').utimesSync;
+    seedFact('stale lock probe fact');
+    const lockPath = path.join(getSyncDir(), 'export.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: '2026-08-30T00:00:00.000Z' }));
+    // 15분(stale threshold)보다 오래된 mtime — 잠금 보유자는 죽었다.
+    const old = new Date(Date.now() - 20 * 60_000);
+    utimesSync(lockPath, old, old);
+
+    const result = exportForSync();
+    expect(result.facts).toBe(1);
+    // 정상 완료 후 lock은 해제된다.
+    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(committedGeneration()).toBeTruthy();
+  });
+
+  it('releases the lock after a successful export so the next export can run', () => {
+    seedFact('lock release probe fact');
+    exportForSync();
+    const lockPath = path.join(getSyncDir(), 'export.lock');
+    expect(fs.existsSync(lockPath)).toBe(false);
+    // 연이은 export가 경합 없이 성공한다.
+    expect(exportForSync().facts).toBe(1);
   });
 });

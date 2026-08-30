@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import Database from 'better-sqlite3';
-import { initDatabase, insertExchange, deleteExchange, openReadDb } from '../src/db.js';
+import { initDatabase, insertExchange, deleteExchange, openReadDb, getVecTableDtype, embeddingToVecBlob, vecParamSql } from '../src/db.js';
 import { insertFact, insertRevision } from '../src/fact-db.js';
 import { createRelation } from '../src/ontology-db.js';
 import { purgeConversationFromIndex } from '../src/conversation-policy.js';
@@ -123,6 +123,67 @@ describe('foreign key enforcement (P2-1, adjusted: FK is already ON)', () => {
 
     expect((db.prepare('SELECT COUNT(*) c FROM facts WHERE id = ?').get(factA) as { c: number }).c).toBe(0);
     expect((db.prepare('SELECT COUNT(*) c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(factA, factA) as { c: number }).c).toBe(0);
+    expect(fkCheck(db)).toEqual([]);
+  });
+
+  it('privacy purge invalidates the whole derived taxonomy and rebuilds overlays from public facts (재감사 P1-4 v4)', () => {
+    const archivePath = '/tmp/archives/purge-taxonomy.jsonl';
+    const makeExchange = (id: string): ConversationExchange => ({
+      id,
+      project: '/proj/a',
+      timestamp: '2026-03-01T00:00:00.000Z',
+      userMessage: `question ${id}`,
+      assistantMessage: 'answer',
+      archivePath,
+      lineStart: 1,
+      lineEnd: 2,
+      sessionId: 'sess-purge-taxonomy',
+    });
+    insertExchange(db, makeExchange('purge-tax-ex'), new Array<number>(384).fill(0));
+
+    const purgedFact = insertFact(db, {
+      fact: 'private fact behind the exclusion',
+      category: 'general',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: ['purge-tax-ex'],
+      embedding: null,
+    });
+    const survivingFact = insertFact(db, {
+      fact: 'public fact that survives',
+      category: 'general',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: null,
+    });
+    // LLM이 private fact를 보고 만든 taxonomy — description과 벡터가 파생 증거다.
+    const now = '2026-03-01T00:00:00.000Z';
+    db.prepare(
+      "INSERT INTO ontology_domains (id, name, description, created_at) VALUES ('dom-private', 'Infra', 'derived from a private conversation', ?)",
+    ).run(now);
+    db.prepare(
+      "INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES ('cat-private', 'dom-private', 'Caching', 'derived description', ?)",
+    ).run(now);
+    const dtype = getVecTableDtype(db, 'vec_categories');
+    db.prepare(
+      `INSERT INTO vec_categories (id, embedding) VALUES ('cat-private', ${vecParamSql(dtype)})`,
+    ).run(embeddingToVecBlob(new Array(384).fill(0.01), dtype));
+    db.prepare('UPDATE facts SET ontology_category_id = ? WHERE id IN (?, ?)')
+      .run('cat-private', purgedFact, survivingFact);
+
+    purgeConversationFromIndex(db, { archivePath, sessionId: 'sess-purge-taxonomy' });
+
+    // taxonomy는 derived 상태이므로 전면 invalidate된다 — private 유래
+    // description/벡터가 잔존하면 purge 계약("model-derived state is removed")이
+    // 깨지고, sync로도 더 이상 전파되지 않는다(v4: taxonomy 비동행).
+    expect((db.prepare('SELECT COUNT(*) c FROM ontology_domains').get() as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) c FROM ontology_categories').get() as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) c FROM vec_categories').get() as { c: number }).c).toBe(0);
+    // 잔존 fact의 overlay는 끊긴다 — 분류 백필이 공개 facts만으로 재구축한다.
+    expect(db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get(survivingFact))
+      .toEqual({ ontology_category_id: null });
+    expect((db.prepare('SELECT COUNT(*) c FROM facts WHERE id = ?').get(purgedFact) as { c: number }).c).toBe(0);
     expect(fkCheck(db)).toEqual([]);
   });
 

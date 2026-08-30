@@ -423,16 +423,16 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       "facts.jsonl": JSON.stringify({
         id: localId,
         fact: "The session store is Postgres",
-        fact_kr: null,
         category: "decision",
         scope_type: "global",
         scope_project: null,
         source_exchange_ids: "[]",
         created_at: "2026-08-01T00:00:00.000Z",
         updated_at: "2999-01-01T00:00:00.000Z",
+        semantic_updated_at: "2999-01-01T00:00:00.000Z",
+        lifecycle_updated_at: "2999-01-01T00:00:00.000Z",
         consolidated_count: 1,
         is_active: 1,
-        ontology_category_id: null,
       }) + "\n",
     });
 
@@ -467,16 +467,16 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
       "facts.jsonl": JSON.stringify({
         id: localId,
         fact: "A fact that will be excluded mid-await",
-        fact_kr: null,
         category: "decision",
         scope_type: "global",
         scope_project: null,
         source_exchange_ids: "[]",
         created_at: "2026-08-01T00:00:00.000Z",
         updated_at: "2999-01-01T00:00:00.000Z",
+        semantic_updated_at: "2999-01-01T00:00:00.000Z",
+        lifecycle_updated_at: "2999-01-01T00:00:00.000Z",
         consolidated_count: 1,
         is_active: 1,
-        ontology_category_id: null,
       }) + "\n",
     });
 

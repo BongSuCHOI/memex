@@ -7,12 +7,32 @@ export const SYNC_PAYLOAD_FILES = [
   'fact-revisions.jsonl',
   'fact-tombstones.jsonl',
   'recall-events.jsonl',
-  'ontology-domains.jsonl',
-  'ontology-categories.jsonl',
-  'ontology-relations.jsonl',
 ] as const;
 
 export type SyncPayload = Partial<Record<(typeof SYNC_PAYLOAD_FILES)[number], string>>;
+
+const DEFAULT_FACT_AT = '2026-08-01T00:00:00.000Z';
+
+/** One protocol-v4 fact row with every required field filled (strict row
+ * validation rejects rows missing semantic_updated_at/lifecycle_updated_at/
+ * is_active). Override anything per test. */
+export function factRow(
+  overrides: { id: string; fact: string } & Partial<Record<string, unknown>>,
+): string {
+  return JSON.stringify({
+    category: 'knowledge',
+    scope_type: 'global',
+    scope_project: null,
+    source_exchange_ids: '[]',
+    created_at: DEFAULT_FACT_AT,
+    updated_at: DEFAULT_FACT_AT,
+    semantic_updated_at: DEFAULT_FACT_AT,
+    lifecycle_updated_at: DEFAULT_FACT_AT,
+    consolidated_count: 1,
+    is_active: 1,
+    ...overrides,
+  });
+}
 
 /**
  * Commit `payload` as one complete generation for `deviceId` — the only way
@@ -40,7 +60,7 @@ export function craftCommittedGeneration(
     path.join(genDir, 'meta.json'),
     JSON.stringify(
       {
-        protocol_version: 3,
+        protocol_version: 4,
         generation: generationId,
         device_id: deviceId,
         exported_at: '2026-08-30T00:00:00.000Z',
