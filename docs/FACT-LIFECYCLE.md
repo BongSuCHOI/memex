@@ -71,6 +71,32 @@ sequenceDiagram
 
 fact가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를 허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
 
+### Extraction evaluation
+
+Phase 0 평가 harness는 production의 `extractFactsFromExchanges()`와 동일한
+filter/batch/prompt/parser 경로를 사용하되 model call만 계측 가능한 seam으로 주입합니다.
+평가 경로는 `saveExtractedFacts()`나 `runFactExtraction()`을 호출하지 않으므로 fact,
+claim, `extraction_log`, watermark를 쓰지 않습니다.
+
+```bash
+# 17개 synthetic curated case의 현재 extractor 결과
+npm run eval:fact-extraction -- \
+  --out docs/verification/fact-extraction-baseline.json
+
+# 이후 extractor를 같은 fixture와 비교
+npm run eval:fact-extraction -- \
+  --baseline docs/verification/fact-extraction-baseline.json
+```
+
+실제 archive shadow mode는 SQLite를 `readonly` + `query_only`로 열고 명시한
+session만 평가합니다. 하지만 대화 본문이 configured Codex model로 전달되므로 별도
+사용자 승인이 필요합니다. 실제 session report는 기본적으로 ignored
+`.fact-extraction-eval/` 아래에 두며 repository receipt로 커밋하지 않습니다.
+
+평가 report는 case별 후보/오류 taxonomy와 함께 model call 수, prompt/output 문자 수,
+latency를 기록합니다. Codex JSONL에 `turn.completed.usage`가 있을 때만 token 수를
+`observed`로 기록하고, 없으면 추정값을 만들지 않고 `NOT_PROVEN`으로 남깁니다.
+
 ## 5. Consolidation
 
 | 판정 | 동작 |

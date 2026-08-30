@@ -38,12 +38,16 @@ export declare function buildExtractionPrompt(exchanges: Array<{
         learnable: number | boolean;
     }>;
 }>): string;
+export type FactExtractionModelCall = (systemPrompt: string, userMessage: string) => Promise<string>;
+export interface ExtractFactsOptions {
+    onlyAfterRowid?: number;
+    /** Evaluation seam: production callers use callMemoryModel by default. */
+    modelCall?: FactExtractionModelCall;
+}
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export declare function extractFactsFromExchanges(db: Database.Database, sessionId: string, stats?: {
     droppedBatches: number;
-}, renewLease?: () => void, options?: {
-    onlyAfterRowid?: number;
-}): Promise<ExtractedFact[]>;
+}, renewLease?: () => void, options?: ExtractFactsOptions): Promise<ExtractedFact[]>;
 /** Save facts and the completion marker in one transaction. */
 export declare function saveExtractedFacts(db: Database.Database, facts: ExtractedFact[], project: string, sourceExchangeIds: string[], renewLease?: () => void, commitMarker?: (extracted: number, saved: number) => number): Promise<string[]>;
 /**

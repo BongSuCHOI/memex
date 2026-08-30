@@ -34,6 +34,7 @@ node scripts/lifecycle-e2e.mjs
 | rollout ingestion | main/resumed/subagent/tool/malformed/worker fixture |
 | project isolation | archive, DB, search, MCP, graph, sync에서 동일 canonical scope |
 | extraction | retry/claim/no-new-row/atomic watermark |
+| extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |
 | fact mutation | semantic/lifecycle generation과 derived-state CAS |
 | sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
 | privacy | conversation purge, terminal tombstone, taxonomy epoch/in-flight race |
@@ -103,6 +104,7 @@ receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 �
 - `merge-gate.json` — 최신 merge gate candidate와 관측 결과
 - `benchmark.json` — 특정 benchmark run
 - `plugin-validation.json` — plugin/install validation artifact
+- `fact-extraction-baseline.json` — synthetic curated fixture에 대한 특정 model/prompt baseline
 
 파일이 존재한다고 현재성까지 보장되는 것은 아닙니다. candidate SHA와 실행 시점을 항상 확인하십시오.
 
@@ -119,6 +121,20 @@ darwin arm64
 host-specific behavior는 Codex version이 바뀌면 재검증합니다. repository-owned `scripts/validate-plugin.mjs`는 Memex의 validation harness이며, Codex가 제공하는 formal validator와 동일한 것으로 표현하지 않습니다.
 
 실제 Codex CLI를 사용하는 translation script 전체 run처럼 사용자 data/model 호출이 필요한 검증은 별도 실행 증거가 없으면 `NOT_PROVEN`으로 남겨야 합니다. SQL/CAS regression test가 통과했다는 사실과 실제 external/model invocation이 관측됐다는 주장은 구분합니다.
+
+fact extraction baseline도 같은 원칙을 적용합니다. committed
+`fact-extraction-baseline.json`은 synthetic fixture run의 raw evidence이며 future extractor의
+품질을 자동 보증하지 않습니다. `source.sha256`, `model`, `created_at`, `run_context`를
+확인하고 다음 명령으로 동일 fixture의 새 report를 비교합니다.
+
+```bash
+npm run eval:fact-extraction -- \
+  --baseline docs/verification/fact-extraction-baseline.json
+```
+
+실제 archive shadow evaluation은 user conversation을 model에 전송하므로 명시적 승인을
+받은 run만 수행합니다. report는 private-derived artifact로 취급해 ignored local path에
+보관하고, repository에는 aggregate 관측과 `PASS`/`FAIL`/`NOT_PROVEN` 판정만 기록합니다.
 
 ## 9. Release 원칙
 

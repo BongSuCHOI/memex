@@ -234,6 +234,17 @@ type ExtractedFactCandidate = Omit<ExtractedFact, "source_exchange_ids"> & {
   source_exchange_indices?: unknown;
 };
 
+export type FactExtractionModelCall = (
+  systemPrompt: string,
+  userMessage: string,
+) => Promise<string>;
+
+export interface ExtractFactsOptions {
+  onlyAfterRowid?: number;
+  /** Evaluation seam: production callers use callMemoryModel by default. */
+  modelCall?: FactExtractionModelCall;
+}
+
 /** Validate model-provided 1-based indices and resolve them to real exchange UUIDs. */
 function resolveSourceExchangeIds(
   sourceExchangeIndices: unknown,
@@ -264,7 +275,7 @@ export async function extractFactsFromExchanges(
   sessionId: string,
   stats?: { droppedBatches: number },
   renewLease?: () => void,
-  options?: { onlyAfterRowid?: number },
+  options?: ExtractFactsOptions,
 ): Promise<ExtractedFact[]> {
   const exchanges = db
     .prepare(`
@@ -318,6 +329,7 @@ export async function extractFactsFromExchanges(
     batches.push(substantive.slice(i, i + BATCH_SIZE));
   }
   const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
+  const modelCall = options?.modelCall ?? callMemoryModel;
 
   const allFacts: ExtractedFact[] = [];
   const factIndexByKey = new Map<string, number>();
@@ -332,7 +344,7 @@ export async function extractFactsFromExchanges(
     renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
 
     try {
-      const response = await callMemoryModel(EXTRACTION_SYSTEM_PROMPT, prompt);
+      const response = await modelCall(EXTRACTION_SYSTEM_PROMPT, prompt);
       const extracted = parseJsonResponse<ExtractedFactCandidate[]>(response);
 
       if (extracted && Array.isArray(extracted)) {

@@ -225,6 +225,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
         batches.push(substantive.slice(i, i + BATCH_SIZE));
     }
     const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
+    const modelCall = options?.modelCall ?? callMemoryModel;
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
@@ -236,7 +237,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
         const prompt = buildExtractionPrompt(batch);
         renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
-            const response = await callMemoryModel(EXTRACTION_SYSTEM_PROMPT, prompt);
+            const response = await modelCall(EXTRACTION_SYSTEM_PROMPT, prompt);
             const extracted = parseJsonResponse(response);
             if (extracted && Array.isArray(extracted)) {
                 for (const fact of extracted) {

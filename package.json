@@ -13,6 +13,7 @@
     "docs/",
     "scripts/",
     "skills/",
+    "test/fixtures/fact-extraction-cases.json",
     "ui/",
     "AGENTS.md",
     "CHANGELOG.md",
@@ -39,6 +40,7 @@
     "test:marketplace": "node scripts/marketplace-e2e.mjs",
     "test:package": "node scripts/package-runtime-e2e.mjs",
     "test:watch": "vitest",
+    "eval:fact-extraction": "npm run build --silent && node scripts/fact-extraction-eval.mjs",
     "pretest": "npm run build"
   },
   "keywords": [
