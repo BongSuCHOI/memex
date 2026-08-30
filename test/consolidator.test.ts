@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initDatabase } from '../src/db.js';
 import { insertFact, getActiveFacts } from '../src/fact-db.js';
 import { buildConsolidationPrompt, applyConsolidationResult } from '../src/consolidator.js';
+import { deactivateFactTransactional, restoreFact, StaleFactMutationError } from '../src/fact-management.js';
 import { createRelation } from '../src/ontology-db.js';
 import { EMBEDDING_VERSION } from '../src/embeddings.js';
 import { suppressConsole } from './test-utils.js';
@@ -57,6 +58,65 @@ describe('Consolidator', () => {
       const active = getActiveFacts(db);
       expect(active).toHaveLength(1);
       expect(active[0].consolidated_count).toBe(2);
+    });
+
+    // 재감사 P1-4(v4): consolidation은 ACTIVE 참가자끼리 판정한다 — LLM 왕복
+    // 동안 참가자의 lifecycle이 움직였으면(deactivate→restore) semantic
+    // generation은 그대로여도 verdict 전체가 stale이다.
+    it('discards a DUPLICATE verdict whose participant lifecycle moved during the comparison (P1-4 v4)', async () => {
+      const id1 = insertFact(db, { fact: 'Named export usage', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
+      const id2 = insertFact(db, { fact: 'Only use named exports', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
+
+      const facts = getActiveFacts(db);
+      const existing = facts.find(f => f.id === id1)!;
+      const dup = facts.find(f => f.id === id2)!;
+
+      // LLM-await churn: semantic_generation is untouched, lifecycle advances.
+      deactivateFactTransactional(db, id2);
+      await restoreFact(db, id2);
+
+      await expect(applyConsolidationResult(db, existing, dup, {
+        relation: 'DUPLICATE', merged_fact: '', reason: 'same content',
+      })).rejects.toThrow(StaleFactMutationError);
+      // The stale verdict deactivated nothing.
+      expect(getActiveFacts(db)).toHaveLength(2);
+    });
+
+    it('discards a CONTRADICTION verdict whose existing fact lifecycle moved during the comparison (P1-4 v4)', async () => {
+      const id1 = insertFact(db, { fact: 'Uses Zustand', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+      const id2 = insertFact(db, { fact: 'Switched to React Context', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+
+      const facts = getActiveFacts(db);
+      const existing = facts.find(f => f.id === id1)!;
+      const dup = facts.find(f => f.id === id2)!;
+
+      deactivateFactTransactional(db, id1);
+      await restoreFact(db, id1);
+
+      await expect(applyConsolidationResult(db, existing, dup, {
+        relation: 'CONTRADICTION', merged_fact: 'Changed state management to React Context', reason: 'tech stack change',
+      })).rejects.toThrow(StaleFactMutationError);
+      // Neither the meaning rewrite nor the participant deactivation landed.
+      const active = getActiveFacts(db);
+      expect(active).toHaveLength(2);
+      expect(active.find(f => f.id === id1)!.fact).toBe('Uses Zustand');
+    });
+
+    it('discards a CONTRADICTION verdict whose new-fact participant lifecycle moved during the comparison (P1-4 v4)', async () => {
+      const id1 = insertFact(db, { fact: 'Uses Zustand', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+      const id2 = insertFact(db, { fact: 'Switched to React Context', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+
+      const facts = getActiveFacts(db);
+      const existing = facts.find(f => f.id === id1)!;
+      const dup = facts.find(f => f.id === id2)!;
+
+      deactivateFactTransactional(db, id2);
+      await restoreFact(db, id2);
+
+      await expect(applyConsolidationResult(db, existing, dup, {
+        relation: 'CONTRADICTION', merged_fact: 'Changed state management to React Context', reason: 'tech stack change',
+      })).rejects.toThrow(StaleFactMutationError);
+      expect(getActiveFacts(db)).toHaveLength(2);
     });
 
     it('should handle CONTRADICTION - current identity keeps predecessor lineage', async () => {

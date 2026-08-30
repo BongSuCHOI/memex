@@ -858,6 +858,225 @@ describe('sync-export/import', () => {
     }
   });
 
+  // 재감사 P1-1(v4): remote↔remote fold는 축을 섞지 않는다 — semantic winner의
+  // 의미와 lifecycle winner의 활성 상태가 독립적으로 수렴해야 한다.
+  it('converges the remote semantic and lifecycle winners independently on an existing row (P1-1 v4)', async () => {
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const { id, createdAt } = await seedLocalFact({ fact: 'Base truth', sources: [], semanticAt: '2026-08-28T00:00:00.000Z' });
+    {
+      const db = initDatabase();
+      try {
+        db.prepare(
+          "UPDATE facts SET is_active = 1, lifecycle_updated_at = '2026-08-28T00:00:00.000Z' WHERE id = ?",
+        ).run(id);
+      } finally {
+        db.close();
+      }
+    }
+    // Device A edited the meaning most recently (semantic winner), device B
+    // deactivated most recently (lifecycle winner).
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt, fact: 'Postgres', sources: [],
+        semanticAt: '2026-08-28T10:00:00.000Z', lifecycleAt: '2026-08-28T01:00:00.000Z', is_active: 1,
+      }),
+    });
+    craftCommittedGeneration('device-b', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt, fact: 'Postgres', sources: [],
+        semanticAt: '2026-08-28T05:00:00.000Z', lifecycleAt: '2026-08-28T20:00:00.000Z', is_active: 0,
+      }),
+    });
+
+    await importFromSync();
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT fact, is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id))
+        .toEqual({ fact: 'Postgres', is_active: 0, lifecycle_updated_at: '2026-08-28T20:00:00.000Z' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('inserts a brand-new fact with the semantic winner meaning and the lifecycle winner state (P1-1 v4)', async () => {
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Postgres', sources: [],
+        semanticAt: '2026-08-28T10:00:00.000Z', lifecycleAt: '2026-08-28T01:00:00.000Z', is_active: 1,
+      }),
+    });
+    craftCommittedGeneration('device-b', {
+      'facts.jsonl': remoteFactPayload({
+        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Postgres', sources: [],
+        semanticAt: '2026-08-28T05:00:00.000Z', lifecycleAt: '2026-08-28T20:00:00.000Z', is_active: 0,
+      }),
+    });
+
+    const imported = await importFromSync();
+    expect(imported.newFacts).toBe(1);
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT fact, is_active, lifecycle_updated_at FROM facts WHERE id = ?').get('divergent-insert'))
+        .toEqual({ fact: 'Postgres', is_active: 0, lifecycle_updated_at: '2026-08-28T20:00:00.000Z' });
+      // Inactive rows never enter the vector index.
+      expect(db.prepare('SELECT 1 FROM vec_facts WHERE id = ?').get('divergent-insert')).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  // 재감사 P1-2(v4): 복제된 deactivate는 원격 사건 시각(T5)을 그대로 저장한다 —
+  // import 시점의 벽시계로 기록하면 이후 restore(T6)가 영구히 거부된다.
+  it('preserves the remote lifecycle event time on a late import so a later restore still propagates (P1-2 v4)', async () => {
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const id = 'two-hop-fact';
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt: '2026-08-28T00:00:00.000Z', fact: 'Redis', sources: [],
+        semanticAt: '2026-08-28T01:00:00.000Z', lifecycleAt: '2026-08-28T05:00:00.000Z', is_active: 0,
+      }),
+    });
+    await importFromSync();
+    {
+      const db = initDatabase();
+      try {
+        // The deactivate was imported LONG after it happened: the stored clock
+        // must be the event time, not the import wall clock.
+        expect(db.prepare('SELECT is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id))
+          .toEqual({ is_active: 0, lifecycle_updated_at: '2026-08-28T05:00:00.000Z' });
+      } finally {
+        db.close();
+      }
+    }
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt: '2026-08-28T00:00:00.000Z', fact: 'Redis', sources: [],
+        semanticAt: '2026-08-28T01:00:00.000Z', lifecycleAt: '2026-08-28T06:00:00.000Z', is_active: 1,
+      }),
+    }, { generationId: 'gen-two-hop-restore' });
+    await importFromSync();
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id))
+        .toEqual({ is_active: 1, lifecycle_updated_at: '2026-08-28T06:00:00.000Z' });
+    } finally {
+      db.close();
+    }
+  });
+
+  // 재감사 P1-3(v4): 상태가 같아도 lifecycle 시계는 수렴한다 — 그래야 이미
+  // 끝난 restore(T5)보다 오래된 deactivate(T3)가 뒤집지 못한다.
+  it('absorbs a same-state newer lifecycle clock and refuses an older opposing deactivate (P1-3 v4)', async () => {
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const { id, createdAt } = await seedLocalFact({ fact: 'Same state', sources: [], semanticAt: '2026-08-28T00:00:00.000Z' });
+    {
+      const db = initDatabase();
+      try {
+        db.prepare(
+          "UPDATE facts SET is_active = 1, lifecycle_updated_at = '2026-08-28T01:00:00.000Z' WHERE id = ?",
+        ).run(id);
+      } finally {
+        db.close();
+      }
+    }
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt, fact: 'Same state', sources: [],
+        semanticAt: '2026-08-28T00:00:00.000Z', lifecycleAt: '2026-08-28T05:00:00.000Z', is_active: 1,
+      }),
+    });
+    await importFromSync();
+    {
+      const db = initDatabase();
+      try {
+        expect(db.prepare('SELECT is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id))
+          .toEqual({ is_active: 1, lifecycle_updated_at: '2026-08-28T05:00:00.000Z' });
+      } finally {
+        db.close();
+      }
+    }
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt, fact: 'Same state', sources: [],
+        semanticAt: '2026-08-28T00:00:00.000Z', lifecycleAt: '2026-08-28T03:00:00.000Z', is_active: 0,
+      }),
+    }, { generationId: 'gen-absorb-stale-deactivate' });
+    await importFromSync();
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id))
+        .toEqual({ is_active: 1, lifecycle_updated_at: '2026-08-28T05:00:00.000Z' });
+    } finally {
+      db.close();
+    }
+  });
+
+  // 재감사 P1-3(v4): embedding await 동안 LOCAL lifecycle 사건이 일어나면 stale
+  // deactivate plan은 commit 직전 재판정에서 폐기된다.
+  it('discards a stale replicated deactivate when a local lifecycle event wins during the embedding await (P1-3 v4)', async () => {
+    const { importFromSync } = await import('../src/sync-import.js');
+    const { initDatabase } = await import('../src/db.js');
+    const { deactivateFactTransactional, restoreFact } = await import('../src/fact-management.js');
+    const { generateEmbedding } = await import('../src/embeddings.js');
+    const { id, createdAt } = await seedLocalFact({ fact: 'Base', sources: [], semanticAt: '2026-08-28T00:00:00.000Z' });
+    {
+      const db = initDatabase();
+      try {
+        db.prepare(
+          "UPDATE facts SET is_active = 1, lifecycle_updated_at = '2026-08-28T04:00:00.000Z' WHERE id = ?",
+        ).run(id);
+      } finally {
+        db.close();
+      }
+    }
+
+    // Gate the FIRST semantic embedding so the reconcile is suspended between
+    // plan and commit (microtask drain only — no timers).
+    let releaseEmbedding!: (value: number[]) => void;
+    const gated = new Promise<number[]>((resolve) => { releaseEmbedding = resolve; });
+    vi.mocked(generateEmbedding).mockImplementationOnce(() => gated);
+
+    craftCommittedGeneration('device-a', {
+      'facts.jsonl': remoteFactPayload({
+        id, createdAt, fact: 'Base v2', sources: [],
+        semanticAt: '2026-08-28T10:00:00.000Z', lifecycleAt: '2026-08-28T05:00:00.000Z', is_active: 0,
+      }),
+    });
+    const importPromise = importFromSync();
+    for (let i = 0; i < 1000 && vi.mocked(generateEmbedding).mock.calls.length === 0; i++) {
+      await Promise.resolve();
+      if (i % 32 === 31) await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(vi.mocked(generateEmbedding).mock.calls.length).toBeGreaterThan(0);
+
+    // Local lifecycle churn during the await: deactivate then restore — the
+    // local clock (real now) beats the remote T5 event.
+    {
+      const db = initDatabase();
+      try {
+        deactivateFactTransactional(db, id);
+        await restoreFact(db, id);
+      } finally {
+        db.close();
+      }
+    }
+    releaseEmbedding(new Array(384).fill(0.05));
+    await importPromise;
+
+    const db = initDatabase();
+    try {
+      expect(db.prepare('SELECT fact, is_active FROM facts WHERE id = ?').get(id))
+        .toEqual({ fact: 'Base v2', is_active: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
   // Exact-time ties must resolve identically on every device: canonical key
   // order (inactive first, then lexical field order), and a deletion event
   // beats a fact with the same timestamp. docs/CONVERSATION-LIFECYCLE.md §sync.
@@ -1298,7 +1517,10 @@ describe('sync-export/import', () => {
       });
 
       const imported = await importFromSync();
-      expect(imported.updatedFacts).toBe(0);
+      // 재감사 P1-3(v4): 의미는 지역 편집이 이기지만(아래 단언), 같은 상태의
+      // 더 새로운 lifecycle 시계(T4 metadata touch)는 이제 clock 수렴으로
+      // 흡수된다 — 카운터는 그 수렴 1건을 포함한다.
+      expect(imported.updatedFacts).toBe(1);
 
       db = initDatabase();
       try {

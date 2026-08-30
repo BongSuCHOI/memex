@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createTestDb, suppressConsole } from './test-utils.js';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { initDatabase } from '../src/db.js';
+import { purgeConversationFromIndex } from '../src/conversation-policy.js';
 
 // Mock LLM module
 vi.mock('../src/llm.js', () => ({
@@ -38,6 +43,7 @@ import {
   createRelation,
   searchSimilarCategories,
   upsertCategoryEmbedding,
+  getTaxonomyEpoch,
 } from '../src/ontology-db.js';
 import type { Fact } from '../src/types.js';
 
@@ -1148,5 +1154,112 @@ describe('ontology-classifier', () => {
       // Should not throw
       await classifyAndLinkFact(db, 'fact-err', embeddingArr);
     });
+  });
+});
+
+// 재감사 Privacy-P1/P2(v4): privacy purge와 분류기의 경합. purge는 taxonomy를
+// 전면 invalidate하므로, purge 전에 시작된 in-flight classification은 폐기돼야
+// 하고(전역 taxonomy epoch), 잔존 fact의 attempt ledger는 리셋돼야 한다.
+describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
+  let db: Database.Database;
+  let tmpDir: string;
+  let dbPath: string;
+
+  const insertExcludedConversation = (exchangeId: string, archivePath: string): void => {
+    db.prepare(
+      `INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
+       VALUES (?, 'proj', '2026-08-01T00:00:00.000Z', 'q', 'a', ?, 1, 2)`,
+    ).run(exchangeId, archivePath);
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-epoch-'));
+    dbPath = path.join(tmpDir, 'test.db');
+    process.env.TEST_DB_PATH = dbPath;
+    db = initDatabase();
+  });
+
+  afterEach(() => {
+    db.close();
+    delete process.env.TEST_DB_PATH;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('discards an in-flight classification whose taxonomy was invalidated by a purge mid-flight (Privacy-P1 v4)', async () => {
+    const { insertFact } = await import('../src/fact-db.js');
+    const archivePath = path.join(tmpDir, 'excluded.jsonl');
+    insertExcludedConversation('ex-purge', archivePath);
+    // The private fact is linked to the excluded conversation; the public fact
+    // survives the purge but loses its derived overlay.
+    insertFact(db, {
+      fact: 'private derived fact', category: 'knowledge', scope_type: 'global',
+      scope_project: null, source_exchange_ids: ['ex-purge'], embedding: new Array(384).fill(0.1),
+    });
+    const survivorId = insertFact(db, {
+      fact: 'public surviving fact', category: 'knowledge', scope_type: 'global',
+      scope_project: null, source_exchange_ids: [], embedding: new Array(384).fill(0.1),
+    });
+
+    const epochBefore = getTaxonomyEpoch(db);
+
+    // Gate the LLM call; classification for the survivor is in flight.
+    let release!: (value: string) => void;
+    const gated = new Promise<string>((resolve) => { release = resolve; });
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockImplementationOnce(() => gated);
+    (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([{
+      index: 0, domain: 'GhostDomain', category: 'Secrets', is_new_domain: true, is_new_category: true,
+    }]);
+
+    const run = backfillClassifyBatch(db, [survivorId]);
+    for (let i = 0; i < 1000 && (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length === 0; i++) {
+      await Promise.resolve();
+      if (i % 32 === 31) await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+
+    // The purge lands while the classification is suspended.
+    const purgeResult = purgeConversationFromIndex(db, { archivePath });
+    expect(purgeResult.facts).toBe(1);
+
+    release('{"batch":true}'); // raw LLM text; parseJsonResponse is mocked to the items below
+    const totals = await run;
+
+    // The stale result left NOTHING behind: no taxonomy rows re-created, the
+    // survivor stays pending, and the epoch moved exactly once.
+    expect(totals.classified).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM ontology_domains').get() as { c: number }).c).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM ontology_categories').get() as { c: number }).c).toBe(0);
+    const row = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get(survivorId) as { ontology_category_id: string | null };
+    expect(row.ontology_category_id).toBeNull();
+    expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+  });
+
+  it('resets the ontology attempt ledger so surviving facts are reclassified fresh after a purge (P2 v4)', async () => {
+    const { insertFact } = await import('../src/fact-db.js');
+    const archivePath = path.join(tmpDir, 'excluded-2.jsonl');
+    insertExcludedConversation('ex-purge-2', archivePath);
+    insertFact(db, {
+      fact: 'private derived fact 2', category: 'knowledge', scope_type: 'global',
+      scope_project: null, source_exchange_ids: ['ex-purge-2'], embedding: new Array(384).fill(0.1),
+    });
+    const survivorId = insertFact(db, {
+      fact: 'public surviving fact 2', category: 'knowledge', scope_type: 'global',
+      scope_project: null, source_exchange_ids: [], embedding: new Array(384).fill(0.1),
+    });
+    db.prepare('UPDATE facts SET ontology_category_id = ?, ontology_attempts = 3, ontology_last_attempt_at = ? WHERE id = ?')
+      .run('stale-cat', '2026-08-01T00:00:00.000Z', survivorId);
+
+    purgeConversationFromIndex(db, { archivePath });
+
+    const row = db.prepare(
+      'SELECT ontology_category_id, ontology_attempts, ontology_last_attempt_at FROM facts WHERE id = ?',
+    ).get(survivorId) as { ontology_category_id: string | null; ontology_attempts: number; ontology_last_attempt_at: string | null };
+    expect(row).toEqual({ ontology_category_id: null, ontology_attempts: 0, ontology_last_attempt_at: null });
+
+    // The survivor is pending for a FRESH LLM classification — the exhausted-
+    // attempt sweep must NOT park it in General/Misc without one.
+    expect(parkExhaustedFacts(db)).toBe(0);
+    const parked = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get(survivorId) as { ontology_category_id: string | null };
+    expect(parked.ontology_category_id).toBeNull();
   });
 });

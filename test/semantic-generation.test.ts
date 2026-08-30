@@ -444,7 +444,10 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
     embedGate.release!();
     const result = await importing;
 
-    expect(result.updatedFacts).toBe(0);
+    // 재감사 P1-3 v4: 원격 semantic 승자 판정은 CAS에서 폐기되지만(아래 단언),
+    // 같은 상태의 더 새로운 원격 lifecycle clock(2999)은 이제 clock 수렴으로
+    // 흡수된다 — updatedFacts는 그 수렴 1건을 포함한다.
+    expect(result.updatedFacts).toBe(1);
     const row = db
       .prepare("SELECT fact, semantic_generation, updated_at FROM facts WHERE id = ?")
       .get(localId) as { fact: string; semantic_generation: number; updated_at: string };
