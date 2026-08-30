@@ -33,18 +33,30 @@ export class ExportLockedError extends Error {
  * a faster one committed, and a new peer importing in between misses the
  * newer durable state. An O_EXCL lockfile with a stale-break keeps this
  * dependency-free; contention is a normal, retryable event, never a wedge.
+ *
+ * 재감사 P2(본 회차): the lock carries a per-acquisition nonce and release is
+ * ownership-checked. The old release removed the file unconditionally, so an
+ * exporter stalled past the stale window could delete the lock its successor
+ * legitimately holds and let a third exporter in.
  */
-function acquireExportLock(syncDir: string): void {
+export interface ExportLockOwner {
+  pid: number;
+  nonce: string;
+  acquiredAt: string;
+}
+
+export function acquireExportLock(syncDir: string): ExportLockOwner {
   const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
+  const owner: ExportLockOwner = { pid: process.pid, nonce: randomUUID(), acquiredAt: new Date().toISOString() };
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, 'wx');
       try {
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+        fs.writeSync(fd, JSON.stringify(owner));
       } finally {
         fs.closeSync(fd);
       }
-      return;
+      return owner;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       let brokeStale = false;
@@ -59,9 +71,20 @@ function acquireExportLock(syncDir: string): void {
   }
 }
 
-function releaseExportLock(syncDir: string): void {
+/** Remove the lockfile only when THIS acquisition still owns it. A holder
+ * that was stale-broken (or crashed and was replaced) must never delete its
+ * successor's lock. */
+export function releaseExportLock(syncDir: string, owner: ExportLockOwner): void {
+  const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
   try {
-    fs.rmSync(path.join(syncDir, EXPORT_LOCK_FILE), { force: true });
+    const raw = fs.readFileSync(lockPath, 'utf8');
+    const parsed = JSON.parse(raw) as Partial<ExportLockOwner> | null;
+    if (parsed?.nonce !== owner.nonce) return; // not ours anymore — leave the successor's lock alone
+  } catch {
+    return; // unreadable or already gone — nothing of ours to remove
+  }
+  try {
+    fs.rmSync(lockPath, { force: true });
   } catch { /* best-effort release; stale-break covers a crash here */ }
 }
 
@@ -213,7 +236,7 @@ export function pruneGenerations(generationsDir: string, currentId: string): voi
 export function exportForSync(): SyncExportResult {
   const db = initDatabase();
   const syncDir = getSyncDir();
-  acquireExportLock(syncDir);
+  const lockOwner = acquireExportLock(syncDir);
 
   try {
     let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get() as
@@ -326,7 +349,7 @@ export function exportForSync(): SyncExportResult {
       recallEvents: recallEvents.length,
     };
   } finally {
-    releaseExportLock(syncDir);
+    releaseExportLock(syncDir, lockOwner);
     db.close();
   }
 }

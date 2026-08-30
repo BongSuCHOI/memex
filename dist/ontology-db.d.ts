@@ -1,5 +1,16 @@
 import Database from 'better-sqlite3';
 import type { OntologyDomain, OntologyCategory, OntologyRelation, RelationType, DomainTree, Fact } from './types.js';
+/** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
+ * privacy purge). In-flight classification captures this value before its
+ * LLM/embedding awaits and re-checks it at commit: a stale result must leave
+ * nothing behind instead of re-creating private-derived taxonomy rows. The
+ * table is created lazily so hand-rolled test schemas and pre-existing
+ * databases work without a migration. */
+export declare function getTaxonomyEpoch(db: Database.Database): number;
+/** Advance the epoch by one. Must run INSIDE the invalidating transaction
+ * (the privacy purge) so classifiers can never observe the wipe without the
+ * epoch move, or the epoch move without the wipe. */
+export declare function bumpTaxonomyEpoch(db: Database.Database): void;
 export declare function createDomain(db: Database.Database, name: string, description?: string): OntologyDomain;
 export declare function listDomains(db: Database.Database): OntologyDomain[];
 export declare function getDomain(db: Database.Database, id: string): OntologyDomain | null;
@@ -32,7 +43,7 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
  * changes and the caller must discard the stale result instead of stamping
  * it onto the newer meaning.
  */
-export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number): number;
+export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): number;
 export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];
 export interface CreateRelationOptions {

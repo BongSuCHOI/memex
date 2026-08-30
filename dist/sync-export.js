@@ -23,26 +23,19 @@ export class ExportLockedError extends Error {
         this.name = 'ExportLockedError';
     }
 }
-/**
- * Cross-process export serialization (재감사 P2 v4). Snapshot → generation
- * write → CURRENT flip → prune must not interleave: without a lock a slower
- * exporter that started earlier flips CURRENT back to an older snapshot after
- * a faster one committed, and a new peer importing in between misses the
- * newer durable state. An O_EXCL lockfile with a stale-break keeps this
- * dependency-free; contention is a normal, retryable event, never a wedge.
- */
-function acquireExportLock(syncDir) {
+export function acquireExportLock(syncDir) {
     const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
+    const owner = { pid: process.pid, nonce: randomUUID(), acquiredAt: new Date().toISOString() };
     for (;;) {
         try {
             const fd = fs.openSync(lockPath, 'wx');
             try {
-                fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+                fs.writeSync(fd, JSON.stringify(owner));
             }
             finally {
                 fs.closeSync(fd);
             }
-            return;
+            return owner;
         }
         catch (error) {
             if (error.code !== 'EEXIST')
@@ -60,9 +53,22 @@ function acquireExportLock(syncDir) {
         }
     }
 }
-function releaseExportLock(syncDir) {
+/** Remove the lockfile only when THIS acquisition still owns it. A holder
+ * that was stale-broken (or crashed and was replaced) must never delete its
+ * successor's lock. */
+export function releaseExportLock(syncDir, owner) {
+    const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
     try {
-        fs.rmSync(path.join(syncDir, EXPORT_LOCK_FILE), { force: true });
+        const raw = fs.readFileSync(lockPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed?.nonce !== owner.nonce)
+            return; // not ours anymore — leave the successor's lock alone
+    }
+    catch {
+        return; // unreadable or already gone — nothing of ours to remove
+    }
+    try {
+        fs.rmSync(lockPath, { force: true });
     }
     catch { /* best-effort release; stale-break covers a crash here */ }
 }
@@ -192,7 +198,7 @@ export function pruneGenerations(generationsDir, currentId) {
 export function exportForSync() {
     const db = initDatabase();
     const syncDir = getSyncDir();
-    acquireExportLock(syncDir);
+    const lockOwner = acquireExportLock(syncDir);
     try {
         let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
         if (!device) {
@@ -287,7 +293,7 @@ export function exportForSync() {
         };
     }
     finally {
-        releaseExportLock(syncDir);
+        releaseExportLock(syncDir, lockOwner);
         db.close();
     }
 }

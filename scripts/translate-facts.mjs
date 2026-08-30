@@ -9,10 +9,12 @@ import { openWriteDb } from "../dist/db.js";
 
 const db = openWriteDb();
 
-// Get untranslated facts
+// Get untranslated facts. semantic_generation is captured with the text so the
+// write below is a CAS: a translation that lands after the fact changed
+// meaning must not be recorded against the NEW meaning (재감사 P2 v4).
 const untranslated = db
   .prepare(
-    "SELECT id, fact FROM facts WHERE is_active = 1 AND (fact_kr IS NULL OR fact_kr = '') ORDER BY consolidated_count DESC",
+    "SELECT id, fact, semantic_generation FROM facts WHERE is_active = 1 AND (fact_kr IS NULL OR fact_kr = '') ORDER BY consolidated_count DESC",
   )
   .all();
 
@@ -35,7 +37,14 @@ const CONCURRENCY = Math.min(
   ),
   20,
 );
-const updateStmt = db.prepare("UPDATE facts SET fact_kr = ? WHERE id = ?");
+// CAS write (재감사 P2 v4): the row must still carry the semantic generation
+// AND the exact text that was sent to the translator — otherwise the fact was
+// edited during the LLM await and the stale translation is discarded (the
+// next run re-translates the new meaning; the KR vector gap heal is unaffected
+// because fact_kr stays NULL).
+const updateStmt = db.prepare(
+  "UPDATE facts SET fact_kr = ? WHERE id = ? AND semantic_generation = ? AND fact = ?",
+);
 
 const batches = [];
 for (let i = 0; i < untranslated.length; i += BATCH)
@@ -69,12 +78,21 @@ ${JSON.stringify(texts)}`;
       console.error(`Batch ${idx + 1}: result is not a JSON array`);
       return;
     }
+    let staleCount = 0;
     const tx = db.transaction(() => {
       for (let j = 0; j < batch.length; j++) {
-        if (translated[j]) updateStmt.run(translated[j], batch[j].id);
+        if (!translated[j]) continue;
+        const src = batch[j];
+        const changed = updateStmt.run(translated[j], src.id, src.semantic_generation, src.fact);
+        if (changed.changes === 0) staleCount++;
       }
     });
     tx();
+    if (staleCount > 0) {
+      console.error(
+        `Batch ${idx + 1}: ${staleCount} translation(s) discarded (fact changed during translation) — re-run to translate the new meaning`,
+      );
+    }
     console.log(
       `Translated batch ${idx + 1}/${total} (${batch.length} facts) [done ${++done}/${total}]`,
     );

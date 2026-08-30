@@ -18843,6 +18843,12 @@ function initDatabase() {
     )
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS taxonomy_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      epoch INTEGER NOT NULL DEFAULT 1
+    )
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_categories (
       id TEXT PRIMARY KEY,
       domain_id TEXT NOT NULL REFERENCES ontology_domains(id),
@@ -19080,7 +19086,9 @@ function rowToFact(row) {
     is_active: Boolean(row["is_active"]),
     ontology_category_id: row["ontology_category_id"] ?? null,
     semantic_generation: Number(row["semantic_generation"] ?? 1),
-    semantic_updated_at: row["semantic_updated_at"] ?? null
+    semantic_updated_at: row["semantic_updated_at"] ?? null,
+    lifecycle_generation: Number(row["lifecycle_generation"] ?? 1),
+    lifecycle_updated_at: row["lifecycle_updated_at"] ?? null
   };
 }
 

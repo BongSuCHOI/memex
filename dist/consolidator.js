@@ -102,8 +102,12 @@ async function drainPending(db, project) {
         // may have deactivated or changed this fact after the bounded page loaded.
         // 재감사 P1-2: 세대 판정은 semantic_generation으로 한다 — 분류 같은 비의미
         // 메타데이터 쓰기가 updated_at을 움직여도 큐 판정이 흔들리지 않는다.
-        const current = db.prepare('SELECT is_active, semantic_generation FROM facts WHERE id = ?').get(newFact.id);
-        if (current?.is_active === 1 && current.semantic_generation !== newFact.semantic_generation) {
+        // 재감사 P1-4(v4): 활성 상태 판정은 lifecycle_generation으로도 한다 —
+        // deactivate→restore는 semantic_generation을 올리지 않지만, active
+        // 참가자에 내린 비교는 더 이상 유효하지 않다(다음 run이 재비교).
+        const current = db.prepare('SELECT is_active, semantic_generation, lifecycle_generation FROM facts WHERE id = ?').get(newFact.id);
+        if (current?.is_active === 1 && (current.semantic_generation !== newFact.semantic_generation ||
+            current.lifecycle_generation !== Number(newFact.lifecycle_generation ?? 1))) {
             continue; // newer generation stays dirty for the next run
         }
         if (current?.is_active === 1) {
@@ -215,13 +219,17 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
             // (semantic_generation을 올리지 않는 metadata 쓰기) 이 읽기가 그 결과를
             // 흡수해 monotone union이 어떤 교차 순서에서도 유실되지 않는다.
             const apply = db.transaction(() => {
-                const genStmt = db.prepare('SELECT semantic_generation, source_exchange_ids FROM facts WHERE id = ?');
+                // 재감사 P1-4(v4): lifecycle_generation까지 재판정한다 — 참가자가 LLM
+                // 왕복 동안 deactivate/restore 됐어도 semantic_generation은 그대로다.
+                const genStmt = db.prepare('SELECT semantic_generation, lifecycle_generation, source_exchange_ids FROM facts WHERE id = ?');
                 const existingNow = genStmt.get(existingFact.id);
-                const newGen = genStmt.get(newFact.id)
-                    ?.semantic_generation;
+                const newNow = genStmt.get(newFact.id);
                 if (!existingNow ||
                     existingNow.semantic_generation !== existingFact.semantic_generation ||
-                    newGen !== newFact.semantic_generation) {
+                    existingNow.lifecycle_generation !== Number(existingFact.lifecycle_generation ?? 1) ||
+                    !newNow ||
+                    newNow.semantic_generation !== newFact.semantic_generation ||
+                    newNow.lifecycle_generation !== Number(newFact.lifecycle_generation ?? 1)) {
                     return false;
                 }
                 let liveSources = newFact.source_exchange_ids;
@@ -252,6 +260,8 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
             // LLM 왕복 동안 어느 쪽이든 의미가 변이됐으면 이 판정은 폐기된다.
             // expectedSemanticGeneration은 existing 쪽(expectedPreviousFact는 텍스트
             // 우연 복귀를 못 잡는다), deactivateFacts의 세대 CAS는 driver 쪽을 지킨다.
+            // 재감사 P1-4(v4): 양쪽 참가자 모두 lifecycle_generation까지 CAS한다 —
+            // active 참가자끼리 내린 판정이므로 활성 상태가 움직이면 stale이다.
             await mutateFactMeaning(db, {
                 factId: existingFact.id,
                 newText: mergedFact || newFact.fact,
@@ -260,8 +270,13 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                 lineageMode: 'preserve-identity',
                 expectedPreviousFact: existingFact.fact,
                 expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
+                expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
                 deactivateFacts: [
-                    { id: newFact.id, expectedSemanticGeneration: newFact.semantic_generation ?? 1 },
+                    {
+                        id: newFact.id,
+                        expectedSemanticGeneration: newFact.semantic_generation ?? 1,
+                        expectedLifecycleGeneration: newFact.lifecycle_generation ?? 1,
+                    },
                 ],
             });
             break;
@@ -274,9 +289,14 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                 lineageMode: 'preserve-identity',
                 expectedPreviousFact: existingFact.fact,
                 expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
+                expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
                 consolidatedCountIncrement: true,
                 deactivateFacts: [
-                    { id: newFact.id, expectedSemanticGeneration: newFact.semantic_generation ?? 1 },
+                    {
+                        id: newFact.id,
+                        expectedSemanticGeneration: newFact.semantic_generation ?? 1,
+                        expectedLifecycleGeneration: newFact.lifecycle_generation ?? 1,
+                    },
                 ],
             });
             break;

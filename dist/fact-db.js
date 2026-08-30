@@ -361,5 +361,7 @@ function rowToFact(row) {
         ontology_category_id: row["ontology_category_id"] ?? null,
         semantic_generation: Number(row["semantic_generation"] ?? 1),
         semantic_updated_at: row["semantic_updated_at"] ?? null,
+        lifecycle_generation: Number(row["lifecycle_generation"] ?? 1),
+        lifecycle_updated_at: row["lifecycle_updated_at"] ?? null,
     };
 }

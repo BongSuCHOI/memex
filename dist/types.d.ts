@@ -70,6 +70,18 @@ export interface Fact {
     semantic_generation?: number;
     /** Timestamp of the semantic event that produced the current meaning. */
     semantic_updated_at?: string | null;
+    /**
+     * Local activation-generation token (재감사 P1-4 v4): bumped by every
+     * lifecycle transition (deactivate, restore, replicated lifecycle import).
+     * Consolidation captures it together with semantic_generation — a
+     * participant whose activation state moved during the comparison await
+     * invalidates the verdict even though the meaning is unchanged. Rows
+     * predating the column start at 1.
+     */
+    lifecycle_generation?: number;
+    /** Timestamp of the lifecycle event that produced the current activation
+     * state — replicated events keep their ORIGINAL remote event time. */
+    lifecycle_updated_at?: string | null;
 }
 export interface FactRevision {
     id: string;

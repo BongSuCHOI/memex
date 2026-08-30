@@ -3,6 +3,29 @@
 export declare class ExportLockedError extends Error {
     constructor();
 }
+/**
+ * Cross-process export serialization (재감사 P2 v4). Snapshot → generation
+ * write → CURRENT flip → prune must not interleave: without a lock a slower
+ * exporter that started earlier flips CURRENT back to an older snapshot after
+ * a faster one committed, and a new peer importing in between misses the
+ * newer durable state. An O_EXCL lockfile with a stale-break keeps this
+ * dependency-free; contention is a normal, retryable event, never a wedge.
+ *
+ * 재감사 P2(본 회차): the lock carries a per-acquisition nonce and release is
+ * ownership-checked. The old release removed the file unconditionally, so an
+ * exporter stalled past the stale window could delete the lock its successor
+ * legitimately holds and let a third exporter in.
+ */
+export interface ExportLockOwner {
+    pid: number;
+    nonce: string;
+    acquiredAt: string;
+}
+export declare function acquireExportLock(syncDir: string): ExportLockOwner;
+/** Remove the lockfile only when THIS acquisition still owns it. A holder
+ * that was stale-broken (or crashed and was replaced) must never delete its
+ * successor's lock. */
+export declare function releaseExportLock(syncDir: string, owner: ExportLockOwner): void;
 /** The payload files a committed generation must carry (meta.json excluded —
  * it is the integrity manifest OF these files). Protocol v4: ontology
  * domains/categories/relations and the KR translation are LOCAL DERIVED state

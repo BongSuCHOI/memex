@@ -453,6 +453,16 @@ export function initDatabase() {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+    // 재감사 Privacy-P1(v4): taxonomy 전면 invalidate(privacy purge)마다 1씩
+    // 올라가는 전역 epoch다. 분류기는 LLM 대기 전에 이 값을 캡처하고 커밋 시점에
+    // 재판정한다 — purge가 taxonomy를 지운 뒤 도착하는 stale LLM 결과가
+    // private-derived taxonomy를 다시 만들지 못하게 하는 CAS 토큰이다.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS taxonomy_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      epoch INTEGER NOT NULL DEFAULT 1
+    )
+  `);
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_categories (
       id TEXT PRIMARY KEY,

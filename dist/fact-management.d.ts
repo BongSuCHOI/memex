@@ -21,6 +21,10 @@ export interface FactRow {
     created_at: string;
     updated_at: string;
 }
+/** ISO timestamp LWW comparator (재감사 P1-2/P1-3 v4): shared by the local
+ * mutation paths and the sync lifecycle reconciliation so every surface
+ * orders lifecycle events identically. */
+export declare function compareTimestamps(a: string, b: string): number;
 export declare function listFacts(db: Database.Database, opts?: {
     project?: string | null;
     scope?: 'global' | 'all';
@@ -50,14 +54,22 @@ export interface MutateFactMeaningOptions {
     /** Semantic CAS on the mutation target: the caller's comparison was made
      * against this generation — a newer one means the verdict is stale. */
     expectedSemanticGeneration?: number;
+    /** Lifecycle CAS on the mutation target (재감사 P1-4 v4): consolidation
+     * compared ACTIVE participants — a participant whose lifecycle moved
+     * (deactivate/restore/replicated event) during the LLM await invalidates
+     * the verdict even though semantic_generation is unchanged. */
+    expectedLifecycleGeneration?: number;
     consolidatedCountIncrement?: boolean;
-    /** Facts to deactivate in the same transaction, each with the semantic
-     * generation its deactivation was decided against. A fact whose generation
-     * moved (edit, sync import) must never be deactivated by a stale verdict —
-     * the whole mutation rolls back instead (재감사 P1-2). */
+    /** Facts to deactivate in the same transaction, each with the semantic AND
+     * lifecycle generation its deactivation was decided against. A fact whose
+     * meaning moved (edit, sync import) OR whose activation state moved
+     * (deactivate/restore during the comparison await) must never be
+     * deactivated by a stale verdict — the whole mutation rolls back instead
+     * (재감사 P1-2, P1-4 v4). */
     deactivateFacts?: Array<{
         id: string;
         expectedSemanticGeneration: number;
+        expectedLifecycleGeneration?: number;
     }>;
 }
 export interface SemanticMutationResult extends EditResult {
@@ -98,20 +110,27 @@ export declare function deactivateFactTransactional(db: Database.Database, id: s
     deactivated: true;
     removedFromVectorIndex: boolean;
 };
-/**
- * Restore an inactive fact and rebuild its vector. The stored embedding is
- * reusable only when it was produced by the current model — search
- * (searchFactsByScope) reads current-embedding_version rows exclusively, so a
- * fact that aged through a model upgrade while inactive would otherwise be
- * "restored" into an invisible state until the reembed worker ran. Stale
- * versions are re-embedded with the current model and the vector + stamp are
- * restored together in one commit.
- */
 export declare function restoreFact(db: Database.Database, id: string): Promise<{
     restored: true;
     vectorRestored: boolean;
     reembedded: boolean;
 }>;
+export type ReplicatedLifecycleOutcome = 'applied' | 'moot';
+/**
+ * Apply a REPLICATED lifecycle event (재감사 P1-2/P1-3 v4). Replication is not
+ * a new event: the remote event's original clock (`eventAt`) is preserved —
+ * stamping local `now` here fabricated a future timestamp that permanently
+ * rejected every genuine older-clocked event behind it. The commit re-reads
+ * the live row and RE-JUDGES the LWW inside the transaction, so a local
+ * lifecycle event that lands during a vector-await race cannot be overwritten
+ * by a stale plan: a strictly newer remote clock wins, an exact tie resolves
+ * to INACTIVE (the safe default), and a same-state newer event converges the
+ * clock without rewriting activation state. Any tombstone makes the event
+ * moot — resurrecting a deleted fact is the SEMANTIC axis's job, never the
+ * lifecycle axis's. Local user actions keep using deactivate/restoreFact,
+ * which stamp `now` because they genuinely ARE new events.
+ */
+export declare function applyReplicatedLifecycle(db: Database.Database, id: string, desiredActive: 0 | 1, eventAt: string): Promise<ReplicatedLifecycleOutcome>;
 export declare function factHistory(db: Database.Database, id: string): Array<Record<string, unknown>>;
 export interface HardDeleteImpact {
     exists: boolean;

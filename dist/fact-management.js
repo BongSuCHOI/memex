@@ -3,6 +3,12 @@ import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
 function tableExists(db, name) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined;
 }
+/** ISO timestamp LWW comparator (재감사 P1-2/P1-3 v4): shared by the local
+ * mutation paths and the sync lifecycle reconciliation so every surface
+ * orders lifecycle events identically. */
+export function compareTimestamps(a, b) {
+    return Math.sign(Date.parse(a) - Date.parse(b));
+}
 export function listFacts(db, opts = {}) {
     const limit = Math.min(opts.limit ?? 50, 500);
     const offset = Math.max(opts.offset ?? 0, 0);
@@ -65,14 +71,21 @@ function parseSourceExchangeIds(raw) {
     }
     return parsed;
 }
-function deactivateWithinTransaction(db, id, expectedSemanticGeneration) {
+function deactivateWithinTransaction(db, id, expectedSemanticGeneration, expectedLifecycleGeneration) {
     // 재감사 P1-3(protocol v4): 비활성화는 lifecycle 사건이다 — semantic 시계는
     // 건드리지 않고 lifecycle_generation을 올려 sync lifecycle reconcile과
     // restore의 dual CAS가 이 전환을 순서 있게 본다. CAS 토큰은 판정 근거인
     // semantic_generation(merge verdict가 세운 의미)에 둔다.
-    const result = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 1 AND semantic_generation = ?').run(new Date().toISOString(), new Date().toISOString(), id, expectedSemanticGeneration);
+    // 재감사 P1-4(v4): consolidation은 active 참가자끼리 판정했다 — 참가자의
+    // lifecycle이 비교 await 중 움직였으면(deactivate→restore) semantic
+    // generation은 그대로여도 판정은 stale이다. 토큰을 제공한 호출자는 두
+    // 축 모두 CAS한다.
+    const result = db.prepare(`UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?
+     WHERE id = ? AND is_active = 1 AND semantic_generation = ?${expectedLifecycleGeneration !== undefined ? ' AND lifecycle_generation = ?' : ''}`).run(...(expectedLifecycleGeneration !== undefined
+        ? [new Date().toISOString(), new Date().toISOString(), id, expectedSemanticGeneration, expectedLifecycleGeneration]
+        : [new Date().toISOString(), new Date().toISOString(), id, expectedSemanticGeneration]));
     if (result.changes === 0) {
-        throw new StaleFactMutationError(`deactivation discarded: fact ${id} changed meaning or state during the comparison`);
+        throw new StaleFactMutationError(`deactivation discarded: fact ${id} changed meaning, state, or lifecycle during the comparison`);
     }
     if (tableExists(db, 'vec_facts'))
         db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
@@ -109,7 +122,7 @@ export async function mutateFactMeaning(db, opts) {
         deactivateFacts.push(d);
     }
     const tx = db.transaction(() => {
-        const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation FROM facts WHERE id = ?').get(opts.factId);
+        const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation, lifecycle_generation FROM facts WHERE id = ?').get(opts.factId);
         if (!current)
             throw new Error(`fact not found: ${opts.factId}`);
         if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
@@ -118,6 +131,13 @@ export async function mutateFactMeaning(db, opts) {
         if (opts.expectedSemanticGeneration !== undefined &&
             current.semantic_generation !== opts.expectedSemanticGeneration) {
             throw new StaleFactMutationError(`fact changed before semantic mutation: ${opts.factId} (semantic generation moved)`);
+        }
+        if (opts.expectedLifecycleGeneration !== undefined &&
+            current.lifecycle_generation !== opts.expectedLifecycleGeneration) {
+            // 재감사 P1-4(v4): 비교 대상이 LLM 왕복 동안 deactivate/restore 됐다 —
+            // active 참가자에 내린 판정은 폐기한다(의미를 다시 쓰고 vec을 재삽입하는
+            // stale verdict가 inactive fact의 vector 불변식을 깨는 것을 막는다).
+            throw new StaleFactMutationError(`fact changed before semantic mutation: ${opts.factId} (lifecycle generation moved)`);
         }
         const sourceExchangeIds = [...new Set([
                 ...parseSourceExchangeIds(current.source_exchange_ids),
@@ -159,8 +179,9 @@ export async function mutateFactMeaning(db, opts) {
                 db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(opts.factId, opts.factId);
             }
         }
-        for (const d of deactivateFacts)
-            deactivateWithinTransaction(db, d.id, d.expectedSemanticGeneration);
+        for (const d of deactivateFacts) {
+            deactivateWithinTransaction(db, d.id, d.expectedSemanticGeneration, d.expectedLifecycleGeneration);
+        }
         return { revisionId, affectedRelations };
     });
     const result = tx();
@@ -217,27 +238,38 @@ export function deactivateFactTransactional(db, id) {
  * versions are re-embedded with the current model and the vector + stamp are
  * restored together in one commit.
  */
+/** Vector prep shared by local restore and replicated activation. Returns the
+ * stored bytes when they were produced by the current model, `null` when the
+ * fact has no vector at all, and `undefined` when a re-embed (an await) is
+ * required — a stale-model vector is incomparable with current-model queries.
+ * The caller keeps the fast path synchronous (no await) so fire-and-forget
+ * callers observe completion deterministically. */
+function storedVectorIfCurrent(row) {
+    if (!row.embedding)
+        return null;
+    if (Number(row.embedding_version) === EMBEDDING_VERSION) {
+        // Same model version — the stored bytes are reusable as-is. (The facts
+        // table stores float32 bytes; re-encode to the vec table's dtype below.)
+        const f32 = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
+        return Array.from(f32);
+    }
+    return undefined; // model upgrade happened while inactive: re-embed
+}
 export async function restoreFact(db, id) {
     const row = db
         .prepare('SELECT fact, embedding, embedding_version, semantic_generation, lifecycle_generation FROM facts WHERE id = ? AND is_active = 0')
         .get(id);
     if (!row)
         throw new Error(`no inactive fact with id: ${id}`);
-    let vector = null;
+    let vector;
     let reembedded = false;
-    if (row.embedding) {
-        const f32 = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
-        if (Number(row.embedding_version) === EMBEDDING_VERSION) {
-            // Same model version — the stored bytes are reusable as-is. (The facts
-            // table stores float32 bytes; re-encode to the vec table's dtype below.)
-            vector = Array.from(f32);
-        }
-        else {
-            // Model upgrade happened while inactive: a stale-model vector is
-            // incomparable with current-model queries. Re-embed before restoring.
-            vector = await generateEmbedding(row.fact, 'passage');
-            reembedded = true;
-        }
+    const stored = storedVectorIfCurrent(row);
+    if (stored === undefined) {
+        vector = await generateEmbedding(row.fact, 'passage');
+        reembedded = true;
+    }
+    else {
+        vector = stored;
     }
     // 재감사 P1-2: the embedding await is a race window. If the fact's meaning
     // changed (or it was restored by another path) while the new vector was
@@ -273,6 +305,98 @@ export async function restoreFact(db, id) {
         throw new StaleFactMutationError(`restore discarded: fact ${id} changed meaning or state during restore`);
     }
     return { restored: true, vectorRestored: outcome === 'vector', reembedded };
+}
+/**
+ * Apply a REPLICATED lifecycle event (재감사 P1-2/P1-3 v4). Replication is not
+ * a new event: the remote event's original clock (`eventAt`) is preserved —
+ * stamping local `now` here fabricated a future timestamp that permanently
+ * rejected every genuine older-clocked event behind it. The commit re-reads
+ * the live row and RE-JUDGES the LWW inside the transaction, so a local
+ * lifecycle event that lands during a vector-await race cannot be overwritten
+ * by a stale plan: a strictly newer remote clock wins, an exact tie resolves
+ * to INACTIVE (the safe default), and a same-state newer event converges the
+ * clock without rewriting activation state. Any tombstone makes the event
+ * moot — resurrecting a deleted fact is the SEMANTIC axis's job, never the
+ * lifecycle axis's. Local user actions keep using deactivate/restoreFact,
+ * which stamp `now` because they genuinely ARE new events.
+ */
+export async function applyReplicatedLifecycle(db, id, desiredActive, eventAt) {
+    const preRow = db.prepare('SELECT is_active, lifecycle_updated_at FROM facts WHERE id = ?').get(id);
+    if (!preRow)
+        return 'moot';
+    const preCmp = compareTimestamps(eventAt, preRow.lifecycle_updated_at);
+    // Fast negative before any embedding work: the live row already carries a
+    // strictly newer lifecycle event (or an equal one — a tie only helps an
+    // arriving INACTIVE event over an active row).
+    if (preCmp < 0)
+        return 'moot';
+    if (preCmp === 0 && !(desiredActive === 0 && Number(preRow.is_active) === 1))
+        return 'moot';
+    // Vector prep happens BEFORE the transaction (activation only). The commit
+    // CAS re-reads the live row, so a meaning change during this await discards
+    // the stale vector instead of pairing old-text vectors with new text.
+    let capturedSemanticGeneration;
+    let vector = null;
+    if (desiredActive === 1 && Number(preRow.is_active) === 0) {
+        const src = db.prepare('SELECT fact, embedding, embedding_version, semantic_generation FROM facts WHERE id = ? AND is_active = 0').get(id);
+        if (!src)
+            return 'moot';
+        capturedSemanticGeneration = Number(src.semantic_generation);
+        const stored = storedVectorIfCurrent(src);
+        vector = stored === undefined ? await generateEmbedding(src.fact, 'passage') : stored;
+    }
+    const tx = db.transaction(() => {
+        const tombstone = db.prepare('SELECT reason FROM fact_tombstones WHERE fact_id = ?').get(id);
+        if (tombstone)
+            return 'moot';
+        const current = db.prepare('SELECT is_active, lifecycle_updated_at, semantic_generation FROM facts WHERE id = ?').get(id);
+        if (!current)
+            return 'moot';
+        const cmp = compareTimestamps(eventAt, current.lifecycle_updated_at);
+        const eventWins = cmp > 0 || (cmp === 0 && desiredActive === 0 && Number(current.is_active) === 1);
+        if (!eventWins)
+            return 'moot';
+        const touchedAt = new Date().toISOString(); // local row touch only — never the lifecycle clock
+        if (desiredActive === Number(current.is_active)) {
+            // Same state, newer event: converge the lifecycle clock so later peers
+            // order against the real event time. is_active never moved — no
+            // generation bump, no vector work.
+            db.prepare('UPDATE facts SET lifecycle_updated_at = ?, updated_at = ? WHERE id = ?').run(eventAt, touchedAt, id);
+            return 'applied';
+        }
+        if (desiredActive === 0) {
+            const claimed = db.prepare(`UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?
+         WHERE id = ? AND is_active = 1`).run(eventAt, touchedAt, id);
+            if (claimed.changes === 0)
+                return 'moot';
+            if (tableExists(db, 'vec_facts'))
+                db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
+            if (tableExists(db, 'vec_facts_kr'))
+                db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
+            return 'applied';
+        }
+        // Activation. The restored vector must belong to the CURRENT meaning: a
+        // semantic bump during the vector await makes this reconciliation moot —
+        // the next sync run re-delivers the snapshot and re-applies the event.
+        if (capturedSemanticGeneration !== undefined && Number(current.semantic_generation) !== capturedSemanticGeneration) {
+            return 'moot';
+        }
+        const claimed = db.prepare(`UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?
+       WHERE id = ? AND is_active = 0 AND semantic_generation = ?`).run(eventAt, touchedAt, id, capturedSemanticGeneration ?? Number(current.semantic_generation));
+        if (claimed.changes === 0)
+            return 'moot';
+        if (vector && tableExists(db, 'vec_facts')) {
+            const vp = vecParamFor(db, 'vec_facts', vector);
+            db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
+            db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(id, vp.blob);
+        }
+        // The KR translation vector has no stored source bytes; keep the KR side
+        // empty so the standard reembed gap detection regenerates it.
+        if (tableExists(db, 'vec_facts_kr'))
+            db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
+        return 'applied';
+    });
+    return tx();
 }
 export function factHistory(db, id) {
     return getRevisions(db, id);

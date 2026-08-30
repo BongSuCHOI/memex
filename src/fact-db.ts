@@ -572,5 +572,7 @@ function rowToFact(row: Record<string, unknown>): Fact {
       (row["ontology_category_id"] as string | null) ?? null,
     semantic_generation: Number(row["semantic_generation"] ?? 1),
     semantic_updated_at: (row["semantic_updated_at"] as string | null) ?? null,
+    lifecycle_generation: Number(row["lifecycle_generation"] ?? 1),
+    lifecycle_updated_at: (row["lifecycle_updated_at"] as string | null) ?? null,
   };
 }

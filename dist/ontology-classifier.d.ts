@@ -55,7 +55,7 @@ export declare function recordOntologyAttempt(db: Database.Database, factId: str
  * a stale writer's fallback. A caller that carries no generation gets the
  * threshold-only condition.
  */
-export declare function persistFallbackClassification(db: Database.Database, factId: string, expectedSemanticGeneration?: number): {
+export declare function persistFallbackClassification(db: Database.Database, factId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): {
     domainId: string;
     categoryId: string;
 };

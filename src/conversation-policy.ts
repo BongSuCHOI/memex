@@ -5,6 +5,7 @@ import { createArchiveReadStream } from "./archive-io.js";
 import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
 import { recordFactTombstone } from "./fact-management.js";
+import { bumpTaxonomyEpoch } from "./ontology-db.js";
 
 export const USER_EXCLUSION_MARKERS = [
   "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
@@ -210,7 +211,16 @@ export function purgeConversationFromIndex(
     db.prepare("DELETE FROM vec_categories").run();
     db.prepare("DELETE FROM ontology_categories").run();
     db.prepare("DELETE FROM ontology_domains").run();
-    db.prepare("UPDATE facts SET ontology_category_id = NULL").run();
+    // 재감사 P2(v4): attempt ledger까지 초기화해야 "전체 fact가 재분류 대기"가
+    // 성립한다 — attempts가 MAX인 잔존 fact는 worker 시작 시 LLM 없이 즉시
+    // General/Misc로 파킹되므로, 리셋 없이는 새 taxonomy로 재분류되지 않는다.
+    db.prepare(
+      "UPDATE facts SET ontology_category_id = NULL, ontology_attempts = 0, ontology_last_attempt_at = NULL",
+    ).run();
+    // 재감사 Privacy-P1(v4): purge 전에 시작된 in-flight classification은 이
+    // epoch로 폐기된다 — stale LLM 결과가 옛 candidate에서 유래한 taxonomy를
+    // 다시 만들지 못한다. bump는 taxonomy 삭제와 같은 transaction 안에 있다.
+    bumpTaxonomyEpoch(db);
     if (input.sessionId) {
       db.prepare("DELETE FROM extraction_log WHERE session_id = ?").run(
         input.sessionId,

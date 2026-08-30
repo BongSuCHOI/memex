@@ -5,7 +5,7 @@ import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION, } from "./embeddi
 import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256, } from "./sync-export.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
-import { restoreFact } from "./fact-management.js";
+import { applyReplicatedLifecycle, compareTimestamps } from "./fact-management.js";
 const ALLOWED_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -206,9 +206,6 @@ function collectCommittedGenerations(syncDir, issues) {
 function isTimestamp(value) {
     return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
-function compareTimestamps(a, b) {
-    return Math.sign(Date.parse(a) - Date.parse(b));
-}
 function isStringArrayJson(value) {
     if (typeof value !== "string")
         return false;
@@ -350,23 +347,6 @@ function parseFactSourceIds(raw) {
         return [];
     }
 }
-/** Monotone lineage metadata convergence across devices AND across semantic
- * versions: provenance is a SORTED union and consolidated_count a max —
- * neither can regress, and neither is a semantic or lifecycle event (no
- * generation bump, no relation invalidation, no vector regeneration).
- * 재감사 P1-1(v4): fact_kr/ontology no longer travel in the payload at all
- * (derived overlay rebuilds locally), so a cross-semantic-version fold cannot
- * contaminate derived state — there is nothing left to contaminate. */
-function mergeFactLineage(winner, other) {
-    const sources = [
-        ...new Set([...parseFactSourceIds(winner.source_exchange_ids), ...parseFactSourceIds(other.source_exchange_ids)]),
-    ].sort();
-    return {
-        ...winner,
-        source_exchange_ids: JSON.stringify(sources),
-        consolidated_count: Math.max(winner.consolidated_count, other.consolidated_count),
-    };
-}
 /** DB 행의 의미 시계 — legacy/빈 값은 updated_at으로 폴백한다. */
 function localSemanticClock(row) {
     const value = row.semantic_updated_at;
@@ -494,24 +474,40 @@ async function importFacts(db, generations, result) {
             const fact = parseSyncFact(value);
             if (!fact)
                 continue; // strict validation already rejected this generation
-            // Fold remote rows per fact id: the SEMANTIC winner is picked by the
-            // semantic clock (ties by the semantic key), while lineage metadata
-            // converges monotonically across every contributing generation.
-            const previous = remoteById.get(fact.id);
-            if (!previous) {
-                remoteById.set(fact.id, fact);
+            const agg = remoteById.get(fact.id);
+            if (!agg) {
+                remoteById.set(fact.id, {
+                    semanticWinner: fact,
+                    lifecycleWinner: fact,
+                    sources: fact.source_exchange_ids,
+                    consolidatedCount: fact.consolidated_count,
+                });
                 continue;
             }
-            const time = compareTimestamps(fact.semantic_updated_at, previous.semantic_updated_at);
-            if (time > 0 || (time === 0 && semanticConflictKey(fact) >= semanticConflictKey(previous))) {
-                remoteById.set(fact.id, mergeFactLineage(fact, previous));
+            // Semantic axis: the newest semantic clock picks the meaning; ties fall
+            // to the canonical semantic key (>= keeps the previous fold's rule that
+            // an equal-key incoming row wins).
+            const time = compareTimestamps(fact.semantic_updated_at, agg.semanticWinner.semantic_updated_at);
+            if (time > 0 || (time === 0 && semanticConflictKey(fact) >= semanticConflictKey(agg.semanticWinner))) {
+                agg.semanticWinner = fact;
             }
-            else {
-                remoteById.set(fact.id, mergeFactLineage(previous, fact));
+            // Lifecycle axis: the newest lifecycle clock picks activation; an exact
+            // tie between differing states resolves to INACTIVE (the safe default,
+            // deterministically on every device).
+            const lifecycle = compareTimestamps(fact.lifecycle_updated_at, agg.lifecycleWinner.lifecycle_updated_at);
+            if (lifecycle > 0 || (lifecycle === 0 && fact.is_active < agg.lifecycleWinner.is_active)) {
+                agg.lifecycleWinner = fact;
             }
+            // Lineage axis: monotone union/max across EVERY contributing row.
+            const merged = [
+                ...new Set([...parseFactSourceIds(agg.sources), ...parseFactSourceIds(fact.source_exchange_ids)]),
+            ].sort();
+            agg.sources = JSON.stringify(merged);
+            agg.consolidatedCount = Math.max(agg.consolidatedCount, fact.consolidated_count);
         }
     }
-    for (const remote of remoteById.values()) {
+    for (const agg of remoteById.values()) {
+        const remote = agg.semanticWinner;
         const localTombstone = db.prepare("SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?").get(remote.id);
         // Hard delete wins a timestamp tie; only a strictly newer semantic event can
         // restore (재감사 P1-3 — 비의미 메타데이터 touch는 삭제를 이기지 못한다).
@@ -529,9 +525,18 @@ async function importFacts(db, generations, result) {
     `).get(remote.id);
         const plan = {};
         if (!localRow) {
-            // New fact: the remote row carries both its meaning and its activation
-            // state — there is no local axis to conflict with.
-            plan.semantic = { mode: "insert", fact: remote };
+            // New fact: the meaning comes from the SEMANTIC winner while the
+            // activation state comes from the LIFECYCLE winner — a remote device
+            // that deactivated later must not be overridden by a device that edited
+            // later (재감사 P1-1 v4).
+            plan.semantic = {
+                mode: "insert",
+                fact: {
+                    ...remote,
+                    is_active: agg.lifecycleWinner.is_active,
+                    lifecycle_updated_at: agg.lifecycleWinner.lifecycle_updated_at,
+                },
+            };
             plans.set(remote.id, plan);
             continue;
         }
@@ -547,28 +552,29 @@ async function importFacts(db, generations, result) {
         // the lineage/lifecycle axes below may still have something to converge.
         // --- lineage axis: monotone union/max, judged against the CURRENT row ---
         const mergedSources = [
-            ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(remote.source_exchange_ids)]),
+            ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(agg.sources)]),
         ].sort();
-        const mergedCount = Math.max(local.consolidated_count, remote.consolidated_count);
+        const mergedCount = Math.max(local.consolidated_count, agg.consolidatedCount);
         const sourcesChanged = JSON.stringify(mergedSources) !== JSON.stringify(parseFactSourceIds(local.source_exchange_ids).sort());
         if (sourcesChanged || mergedCount !== local.consolidated_count) {
             plan.lineage = { sources: JSON.stringify(mergedSources), count: mergedCount };
         }
-        // --- lifecycle axis (재감사 P1-3 v4): activation only ---
-        // Newest lifecycle event wins; an exact tie resolves to INACTIVE (the safe
-        // default) deterministically on every device. Equal states converge
-        // silently — clock-only drift never rewrites anything.
-        const lifecycleTime = compareTimestamps(remote.lifecycle_updated_at, local.lifecycle_updated_at);
-        if (remote.is_active !== local.is_active) {
-            if (remote.is_active === 0) {
-                // Remote deactivated (newer, or an exact tie where inactive wins).
-                if (lifecycleTime >= 0)
-                    plan.lifecycle = { mode: "deactivate" };
-            }
-            else if (lifecycleTime > 0) {
-                // Remote restored strictly later than the local deactivation.
-                plan.lifecycle = { mode: "activate" };
-            }
+        // --- lifecycle axis (재감사 P1-3 v4): activation only, judged against the
+        // LIFECYCLE winner of the remotes — never the semantic winner's row. The
+        // newest lifecycle event wins even when the resulting STATE matches the
+        // local one (clock convergence); an exact tie resolves to INACTIVE.
+        const lifecycleTime = compareTimestamps(agg.lifecycleWinner.lifecycle_updated_at, local.lifecycle_updated_at);
+        if (lifecycleTime > 0) {
+            plan.lifecycle = {
+                desiredActive: agg.lifecycleWinner.is_active,
+                eventAt: agg.lifecycleWinner.lifecycle_updated_at,
+            };
+        }
+        else if (lifecycleTime === 0 && agg.lifecycleWinner.is_active === 0 && local.is_active === 1) {
+            plan.lifecycle = {
+                desiredActive: 0,
+                eventAt: agg.lifecycleWinner.lifecycle_updated_at,
+            };
         }
         if (plan.semantic || plan.lineage || plan.lifecycle)
             plans.set(remote.id, plan);
@@ -696,37 +702,20 @@ async function importFacts(db, generations, result) {
                 commit();
             }
             // --- lifecycle axis ---
-            if (plan.lifecycle?.mode === "deactivate") {
-                const commit = db.transaction(() => {
-                    const tombstone = db.prepare("SELECT reason FROM fact_tombstones WHERE fact_id = ?").get(factId);
-                    if (tombstone?.reason === PRIVACY_TOMBSTONE_REASON)
-                        return false;
-                    const claimed = db.prepare(`
-            UPDATE facts SET is_active = 0, needs_consolidation = 0,
-              lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?
-            WHERE id = ? AND is_active = 1
-          `).run(new Date().toISOString(), new Date().toISOString(), factId);
-                    if (claimed.changes === 0)
-                        return false;
-                    db.prepare("DELETE FROM vec_facts WHERE id = ?").run(factId);
-                    db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(factId);
-                    result.updatedFacts++;
-                    return true;
-                });
-                commit();
-            }
-            else if (plan.lifecycle?.mode === "activate") {
-                // Remote restore of a locally inactive fact: the same dual-CAS
-                // contract as restoreFact (semantic + lifecycle token) guards the
-                // embedding await, and the commit bumps the local lifecycle clock so
-                // later peers order against this activation.
+            // 재감사 P1-2/P1-3 v4: the plan carries the remote EVENT time; the
+            // commit re-judges the LWW against the live row inside its transaction.
+            // Replication preserves the original event clock (never local now), a
+            // same-state newer event converges the clock, and a lifecycle event
+            // that landed locally during the semantic embedding await cannot be
+            // overwritten by this stale plan.
+            if (plan.lifecycle) {
                 try {
-                    await restoreFact(db, factId);
-                    result.updatedFacts++;
+                    const outcome = await applyReplicatedLifecycle(db, factId, plan.lifecycle.desiredActive, plan.lifecycle.eventAt);
+                    if (outcome === "applied")
+                        result.updatedFacts++;
                 }
-                catch {
-                    // Already active, or a concurrent local lifecycle event won — the
-                    // state has converged; this reconciliation is simply moot.
+                catch (error) {
+                    console.error(`sync-import: failed to reconcile lifecycle for fact ${factId}:`, error instanceof Error ? error.message : error);
                 }
             }
         }

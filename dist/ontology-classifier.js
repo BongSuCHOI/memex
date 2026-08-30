@@ -3,7 +3,7 @@ import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
 import { searchFactsByScope } from './fact-db.js';
 import { StaleFactMutationError } from './fact-management.js';
-import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelation, searchSimilarCategories, upsertCategoryEmbedding, } from './ontology-db.js';
+import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelation, searchSimilarCategories, upsertCategoryEmbedding, getTaxonomyEpoch, } from './ontology-db.js';
 // Nearest existing categories presented per fact as reuse candidates —
 // embedding top-K instead of dumping ALL categories (measured 1,612 ≈ 95K
 // tokens); kept small so a 20-fact batch stays a few KB. The full domain
@@ -359,16 +359,19 @@ async function categoryHits(db, fact, k) {
  * the assignment or null when the gate doesn't fire. The assignment write is
  * a generation CAS — a fact that changed meaning concurrently throws
  * StaleFactMutationError and the caller discards the stale assignment.
+ * 재감사 Privacy-P1(v4): the write is also a taxonomy-epoch CAS — the hits
+ * were read before an await, and a purge that invalidated the taxonomy in
+ * between must leave no assignment behind.
  */
-function tryDeterministicAssign(db, fact, hits) {
+function tryDeterministicAssign(db, fact, hits, expectedTaxonomyEpoch) {
     const top = hits[0];
     if (!top)
         return null;
     if (l2ToCosine(top.distance) < detGate())
         return null;
-    const changed = classifyFact(db, fact.id, top.category.id, fact.semantic_generation);
-    if (fact.semantic_generation !== undefined && changed === 0) {
-        throw new StaleFactMutationError(`deterministic ontology assignment discarded: fact ${fact.id} changed meaning`);
+    const changed = classifyFact(db, fact.id, top.category.id, fact.semantic_generation, expectedTaxonomyEpoch);
+    if ((fact.semantic_generation !== undefined || expectedTaxonomyEpoch !== undefined) && changed === 0) {
+        throw new StaleFactMutationError(`deterministic ontology assignment discarded: fact ${fact.id} changed meaning or the taxonomy was invalidated`);
     }
     return { domainId: top.category.domain_id, categoryId: top.category.id };
 }
@@ -385,7 +388,7 @@ function tryDeterministicAssign(db, fact, hits) {
  * category's embedding) runs AFTER the commit: a missing category vector is
  * derived state that healCategoryIndex repairs, never a correctness input.
  */
-async function applyClassification(db, factId, parsed, expectedSemanticGeneration) {
+async function applyClassification(db, factId, parsed, expectedSemanticGeneration, expectedTaxonomyEpoch) {
     // Sanitize LLM-proposed names/descriptions BEFORE persisting: whatever is
     // stored here is re-injected into every future classification prompt that
     // retrieves it as a candidate (taxonomy poisoning loop). An unusable name
@@ -408,6 +411,13 @@ async function applyClassification(db, factId, parsed, expectedSemanticGeneratio
             if (Number(current.semantic_generation ?? 1) !== expectedSemanticGeneration) {
                 throw new StaleFactMutationError(`ontology classification discarded: fact ${factId} changed meaning during classification`);
             }
+        }
+        // 재감사 Privacy-P1(v4): taxonomy가 LLM 대기 중 invalidate됐으면(private
+        // purge) 이 결과는 폐기된다 — 옛 candidate로부터 유래한 domain/category
+        // 행은 다시 만들어지지 않는다. 검사는 taxonomy 생성보다 먼저, 같은
+        // transaction 안에서 이뤄진다.
+        if (expectedTaxonomyEpoch !== undefined && getTaxonomyEpoch(db) !== expectedTaxonomyEpoch) {
+            throw new StaleFactMutationError(`ontology classification discarded: taxonomy was invalidated during classification (fact ${factId})`);
         }
         // Resolve or create domain
         let domain = getDomainByName(db, domainName);
@@ -476,7 +486,13 @@ export function recordOntologyAttempt(db, factId, expectedSemanticGeneration) {
  * a stale writer's fallback. A caller that carries no generation gets the
  * threshold-only condition.
  */
-export function persistFallbackClassification(db, factId, expectedSemanticGeneration) {
+export function persistFallbackClassification(db, factId, expectedSemanticGeneration, expectedTaxonomyEpoch) {
+    // 재감사 Privacy-P1(v4): purge가 taxonomy를 invalidate했으면 stale 실패
+    // 경로의 parking도 폐기한다 — fact는 pending으로 남아 새 taxonomy로 재분류된다.
+    if (expectedTaxonomyEpoch !== undefined && getTaxonomyEpoch(db) !== expectedTaxonomyEpoch) {
+        console.error(`ontology fallback parking discarded for fact ${factId}: taxonomy was invalidated`);
+        return { domainId: '', categoryId: '' };
+    }
     const fallback = ensureFallbackCategory(db);
     const result = expectedSemanticGeneration === undefined
         ? db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
@@ -545,6 +561,10 @@ export async function classifyFactsBatch(db, facts) {
     const hitsByFact = new Map();
     const assignments = new Map();
     const stale = [];
+    // 재감사 Privacy-P1(v4): candidate 구성과 LLM 왕복보다 먼저 taxonomy epoch를
+    // 캡처한다 — 대기 중 privacy purge로 taxonomy가 invalidate됐으면 모든 결과가
+    // 폐기되고, private-derived taxonomy는 다시 만들어지지 않는다.
+    const expectedTaxonomyEpoch = getTaxonomyEpoch(db);
     const preTransient = [];
     const preFailed = [];
     for (const fact of facts) {
@@ -570,7 +590,7 @@ export async function classifyFactsBatch(db, facts) {
         }
         let det;
         try {
-            det = tryDeterministicAssign(db, fact, hits);
+            det = tryDeterministicAssign(db, fact, hits, expectedTaxonomyEpoch);
         }
         catch (error) {
             if (error instanceof StaleFactMutationError) {
@@ -671,7 +691,7 @@ export async function classifyFactsBatch(db, facts) {
             continue;
         }
         try {
-            const applied = await applyClassification(db, fact.id, item, fact.semantic_generation);
+            const applied = await applyClassification(db, fact.id, item, fact.semantic_generation, expectedTaxonomyEpoch);
             assignments.set(fact.id, applied);
             classified.push(fact.id);
         }
@@ -706,6 +726,8 @@ export async function backfillClassifyBatch(db, factIds, opts = {}) {
         .filter((r) => Boolean(r));
     const facts = rows.map((r) => rowToFact(r));
     const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0 };
+    // 재감사 Privacy-P1(v4): 폴백 parking도 taxonomy epoch로 가드한다.
+    const expectedTaxonomyEpoch = getTaxonomyEpoch(db);
     for (let start = 0; start < facts.length; start += BATCH_HARD_CAP) {
         const chunk = facts.slice(start, start + BATCH_HARD_CAP);
         const result = await classifyFactsBatch(db, chunk);
@@ -716,7 +738,7 @@ export async function backfillClassifyBatch(db, factIds, opts = {}) {
             if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
                 // park CAS는 ledger와 같은 세대에 고정된다 — 대기 중 변이가 리셋한
                 // 새 의미가 옛 실패로 General/Misc에 박히지 않는다(재감사 P1-8).
-                persistFallbackClassification(db, id, generation ?? undefined);
+                persistFallbackClassification(db, id, generation ?? undefined, expectedTaxonomyEpoch);
                 totals.fallback++;
             }
             else {
@@ -812,6 +834,9 @@ export async function classifyAndLinkFact(db, factId, embedding) {
     if (!row)
         return;
     const fact = rowToFact(row);
+    // 재감사 Privacy-P1(v4): 분류 await에 앞서 taxonomy epoch를 캡처한다 —
+    // purge 후 도착하는 stale 실패 경로의 parking을 막는다.
+    const expectedTaxonomyEpoch = getTaxonomyEpoch(db);
     // Re-attach embedding if provided (in case the row doesn't have it yet)
     if (embedding && !fact.embedding) {
         fact.embedding = new Float32Array(embedding);
@@ -853,7 +878,7 @@ export async function classifyAndLinkFact(db, factId, embedding) {
                 // 이 실패가 ledger로 남지 않는다(0행 → skip).
                 const attempts = recordOntologyAttempt(db, factId, fact.semantic_generation);
                 if (attempts >= MAX_CLASSIFY_ATTEMPTS) {
-                    persistFallbackClassification(db, factId, fact.semantic_generation);
+                    persistFallbackClassification(db, factId, fact.semantic_generation, expectedTaxonomyEpoch);
                 }
             }
             catch (ledgerError) {

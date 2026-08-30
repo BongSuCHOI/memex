@@ -11,6 +11,38 @@ import type {
 } from './types.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
 
+// === Taxonomy epoch (재감사 Privacy-P1 v4) ===
+
+/** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
+ * privacy purge). In-flight classification captures this value before its
+ * LLM/embedding awaits and re-checks it at commit: a stale result must leave
+ * nothing behind instead of re-creating private-derived taxonomy rows. The
+ * table is created lazily so hand-rolled test schemas and pre-existing
+ * databases work without a migration. */
+export function getTaxonomyEpoch(db: Database.Database): number {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS taxonomy_state (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       epoch INTEGER NOT NULL DEFAULT 1
+     )`,
+  );
+  const row = db.prepare('SELECT epoch FROM taxonomy_state WHERE id = 1').get() as
+    | { epoch: number }
+    | undefined;
+  return Number(row?.epoch ?? 1);
+}
+
+/** Advance the epoch by one. Must run INSIDE the invalidating transaction
+ * (the privacy purge) so classifiers can never observe the wipe without the
+ * epoch move, or the epoch move without the wipe. */
+export function bumpTaxonomyEpoch(db: Database.Database): void {
+  getTaxonomyEpoch(db); // ensure table exists before the upsert
+  db.prepare(
+    `INSERT INTO taxonomy_state (id, epoch) VALUES (1, 2)
+     ON CONFLICT(id) DO UPDATE SET epoch = epoch + 1`,
+  ).run();
+}
+
 // === Domain CRUD ===
 
 export function createDomain(
@@ -192,7 +224,14 @@ export function classifyFact(
   factId: string,
   categoryId: string,
   expectedSemanticGeneration?: number,
+  expectedTaxonomyEpoch?: number,
 ): number {
+  // 재감사 Privacy-P1(v4): epoch 캡처 이후 purge로 taxonomy가 invalidate됐으면
+  // 0행으로 폐기한다. 이 검사와 아래 UPDATE는 동기 실행이라 원자적이다 —
+  // 경계는 LLM/embedding await이고 캡처가 그 앞에 있다.
+  if (expectedTaxonomyEpoch !== undefined && getTaxonomyEpoch(db) !== expectedTaxonomyEpoch) {
+    return 0;
+  }
   if (expectedSemanticGeneration === undefined) {
     return db.prepare(
       `UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`,
