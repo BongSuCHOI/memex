@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-30T14:22:08.000Z",
+  "recordedAt": "2026-08-30T16:09:16.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,7 +9,7 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/audit-remediation",
-    "codeSha": "70f2ea4998941d8c185b53891f33e10e55728cca",
+    "codeSha": "570d2687df3bad02fa3f4ea7176adfec4e3cf850",
     "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, and owner documentation are unchanged after the evidence run."
   },
   "verdict": "PASS",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.1.0.tgz 184 files / 707994 bytes packed, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
+      "observed": "memex-0.2.0.tgz 184 files / 691403 bytes packed / 2719244 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit hook contract"
     },
     {
       "name": "lifecycle-e2e",
@@ -68,7 +68,7 @@
     }
   ],
   "reauditClosures": {
-    "reference": "fifth reaudit (2026-08-30) — P1 fresh remote insert dropped aggregate source_exchange_ids union and consolidated_count max; P2 merge-gate codeSha attribution; P2 translation batch cardinality/type validation; P2 export stale-break TOCTOU and cloud-synced root lock scope",
-    "result": "all items closed at codeSha 70f2ea4998941d8c185b53891f33e10e55728cca: fresh inserts persist RemoteAggregate lineage union/max, translation rejects a whole response unless cardinality and every non-empty string match the source batch, and export serialization uses the local device DB's process-owned SQLite transaction with no cloud-synced lock artifact or stat-to-unlink stale break; the P1 regression was observed failing before the fix (sources=[ex-a], count=1) and passing after it (sources=[ex-a,ex-b,ex-c], count=4)"
+    "reference": "v0.2.0 release baseline — fifth reaudit closures plus refreshed public, owner, and verification documentation and aligned package/plugin/MCP version surfaces",
+    "result": "PASS at codeSha 570d2687df3bad02fa3f4ea7176adfec4e3cf850: the fifth-reaudit fixes remain covered by the full test and slice gates; package, plugin manifest, built MCP server, README badges, and package-runtime artifact report v0.2.0; install, marketplace, package-runtime, and lifecycle E2Es all passed from the committed clean baseline"
   }
 }
