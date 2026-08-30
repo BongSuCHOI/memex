@@ -27,7 +27,9 @@ export declare function l2DistanceToSimilarity(distance: number): number;
 export declare function openReadDb(dbPath?: string): Database.Database;
 /** Open a writable database with sqlite-vec and writer pragmas registered. */
 export declare function openWriteDb(dbPath?: string): Database.Database;
-export declare function initDatabase(): Database.Database;
+export declare function initDatabase(options?: {
+    busyTimeoutMs?: number;
+}): Database.Database;
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
 export declare function isMemexRecallToolName(toolName: string): boolean;
 /**

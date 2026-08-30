@@ -204,13 +204,13 @@ cross-semantic-version overlay 오염(P1-1)과 taxonomy UUID 중복 문제를 �
 모든 행을 모으고, 파일 집합 전부를 `sync/devices/<device_id>/generations/<uuid>.tmp`에
 쓴 뒤 원자적 directory rename으로 commit하고, 마지막에 `CURRENT` manifest를 원자적으로
 교체한다. export 전체(snapshot → generation commit → CURRENT flip → prune)는
-cross-process lock(`sync/export.lock`, O_EXCL + 15분 stale break)으로 직렬화된다(재감사
-P2 v4) — 잠금 없이는 늦게 끝난 exporter가 CURRENT를 더 오래된 snapshot으로 되돌릴 수
-있고, 그 사이에 import한 새 peer는 최신 durable state을 놓친다. lockfile은 획득 시점의
-pid와 nonce를 기록하고 release는 **소유권 검증 후에만** 파일을 지운다(재감사 P2 v4
-본 회차) — stale break으로 후계자가 lock을 얻은 뒤 복귀한 이전 보유자의 release가
-후계자의 lock을 지워 세 번째 exporter가 끼어드는 경로를 닫는다. 경합은
-`ExportLockedError`로 실패 처리되어 export-status에 기록되고 다음 SessionEnd가 재시도한다.
+local DB의 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화된다(재감사 P2 v4 hardening) —
+잠금 없이는 늦게 끝난 exporter가 CURRENT를 더 오래된 snapshot으로 되돌릴 수 있고, 그
+사이에 import한 새 peer는 최신 durable state을 놓친다. DB는 곧 local device identity
+경계이므로 다른 device끼리는 경합하지 않고 cloud sync 경로에 lock artifact도 쓰지
+않습니다. process가 종료되면 SQLite가 잠금을 회수하므로 `stat → stale 판단 → unlink`
+사이 successor lock을 삭제하는 TOCTOU도 없습니다. 경합은 `ExportLockedError`로 실패
+처리되어 export-status에 기록되고 다음 SessionEnd가 재시도합니다.
 importer는 committed generation만 읽으므로 crash·cloud-sync 관측 어느 쪽도 facts=N+1/
 revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당 CURRENT가 가리키는
 generation 하나만 읽으며, 읽기 시작 시점에 generation의 필수 파일 집합(facts/revisions/

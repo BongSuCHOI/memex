@@ -429,47 +429,13 @@ describe('concurrent export pruning protects the live CURRENT (재감사 P2 hard
   });
 });
 
-describe('cross-process export lock (재감사 P2 v4)', () => {
-  it('refuses to export while another export holds the lock, and never flips CURRENT', () => {
-    seedFact('lock probe fact');
-    const lockPath = path.join(getSyncDir(), 'export.lock');
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: new Date().toISOString() }));
-
-    let caught: unknown;
-    try {
-      exportForSync();
-    } catch (error) {
-      caught = error;
-    }
-    expect((caught as Error)?.name).toBe('ExportLockedError');
-    // 경합 export는 CURRENT를 건드리지 않는다(아직 첫 export가 없음).
-    expect(fs.existsSync(path.join(getSyncDir(), 'devices'))).toBe(false);
-    // lock 파일은 소유자 것이므로 유지된다.
-    expect(fs.existsSync(lockPath)).toBe(true);
-  });
-
-  it('breaks a stale lock left by a crashed exporter and completes the export', () => {
-    const utimesSync = require('node:fs').utimesSync as typeof import('node:fs').utimesSync;
-    seedFact('stale lock probe fact');
-    const lockPath = path.join(getSyncDir(), 'export.lock');
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: '2026-08-30T00:00:00.000Z' }));
-    // 15분(stale threshold)보다 오래된 mtime — 잠금 보유자는 죽었다.
-    const old = new Date(Date.now() - 20 * 60_000);
-    utimesSync(lockPath, old, old);
-
-    const result = exportForSync();
-    expect(result.facts).toBe(1);
-    // 정상 완료 후 lock은 해제된다.
-    expect(fs.existsSync(lockPath)).toBe(false);
-    expect(committedGeneration()).toBeTruthy();
-  });
-
-  it('releases the lock after a successful export so the next export can run', () => {
+describe('local export transaction serialization (재감사 P2 hardening)', () => {
+  it('leaves no cloud-synced lock artifact and allows the next export after commit', () => {
     seedFact('lock release probe fact');
     exportForSync();
     const lockPath = path.join(getSyncDir(), 'export.lock');
     expect(fs.existsSync(lockPath)).toBe(false);
-    // 연이은 export가 경합 없이 성공한다.
+    // SQLite transaction ownership is released at commit, so the next export succeeds.
     expect(exportForSync().facts).toBe(1);
   });
 });

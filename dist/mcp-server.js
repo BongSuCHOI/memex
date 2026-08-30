@@ -18538,10 +18538,13 @@ function openWriteDb(dbPath = getDbPath()) {
   fs2.mkdirSync(path3.dirname(dbPath), { recursive: true });
   return initializeConnection(new Database(dbPath), "write");
 }
-function initDatabase() {
+function initDatabase(options = {}) {
   const dbPath = getDbPath();
   ensureDbDir();
   const db = openWriteDb(dbPath);
+  if (options.busyTimeoutMs !== void 0) {
+    db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,

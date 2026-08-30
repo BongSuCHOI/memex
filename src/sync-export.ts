@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { createHash, randomUUID } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import { initDatabase } from './db.js';
 import { getMemexHome } from './paths.js';
 
@@ -12,10 +13,6 @@ const CURRENT_MANIFEST = 'CURRENT';
  * readers that resolved CURRENT between two exports. */
 const GENERATIONS_TO_KEEP = 2;
 const EXPORT_STATUS_FILE = 'export-status.json';
-const EXPORT_LOCK_FILE = 'export.lock';
-/** A live export never legitimately holds the lock this long — exports are
- * bounded local work. Older than this means the holder crashed. */
-const EXPORT_LOCK_STALE_MS = 15 * 60 * 1000;
 
 /** Thrown when another process is mid-export. The SessionEnd hook records it
  * to export-status (visible to doctor) and the next session retries. */
@@ -26,66 +23,37 @@ export class ExportLockedError extends Error {
   }
 }
 
+function isSqliteLockError(error: unknown): boolean {
+  const code = (error as { code?: string }).code;
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
+}
+
 /**
- * Cross-process export serialization (재감사 P2 v4). Snapshot → generation
- * write → CURRENT flip → prune must not interleave: without a lock a slower
- * exporter that started earlier flips CURRENT back to an older snapshot after
- * a faster one committed, and a new peer importing in between misses the
- * newer durable state. An O_EXCL lockfile with a stale-break keeps this
- * dependency-free; contention is a normal, retryable event, never a wedge.
- *
- * 재감사 P2(본 회차): the lock carries a per-acquisition nonce and release is
- * ownership-checked. The old release removed the file unconditionally, so an
- * exporter stalled past the stale window could delete the lock its successor
- * legitimately holds and let a third exporter in.
+ * Serialize one local device's exporters with SQLite's process-owned write
+ * transaction. The local DB is the device identity boundary, so unrelated
+ * devices never contend and no lock artifact enters cloud sync. SQLite drops
+ * the lock automatically when a process exits; there is no stat→unlink stale
+ * break that can delete a successor's lock (재감사 P2 hardening).
  */
-export interface ExportLockOwner {
-  pid: number;
-  nonce: string;
-  acquiredAt: string;
-}
-
-export function acquireExportLock(syncDir: string): ExportLockOwner {
-  const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
-  const owner: ExportLockOwner = { pid: process.pid, nonce: randomUUID(), acquiredAt: new Date().toISOString() };
-  for (;;) {
-    try {
-      const fd = fs.openSync(lockPath, 'wx');
-      try {
-        fs.writeSync(fd, JSON.stringify(owner));
-      } finally {
-        fs.closeSync(fd);
-      }
-      return owner;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let brokeStale = false;
-      try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > EXPORT_LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { force: true });
-          brokeStale = true;
-        }
-      } catch { /* lock vanished between stat and break — retry */ }
-      if (!brokeStale) throw new ExportLockedError();
-    }
-  }
-}
-
-/** Remove the lockfile only when THIS acquisition still owns it. A holder
- * that was stale-broken (or crashed and was replaced) must never delete its
- * successor's lock. */
-export function releaseExportLock(syncDir: string, owner: ExportLockOwner): void {
-  const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
+export function withExportTransaction<T>(db: Database.Database, operation: () => T): T {
+  db.pragma('busy_timeout = 0');
   try {
-    const raw = fs.readFileSync(lockPath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<ExportLockOwner> | null;
-    if (parsed?.nonce !== owner.nonce) return; // not ours anymore — leave the successor's lock alone
-  } catch {
-    return; // unreadable or already gone — nothing of ours to remove
+    db.exec('BEGIN IMMEDIATE');
+  } catch (error) {
+    db.pragma('busy_timeout = 5000');
+    if (isSqliteLockError(error)) throw new ExportLockedError();
+    throw error;
   }
   try {
-    fs.rmSync(lockPath, { force: true });
-  } catch { /* best-effort release; stale-break covers a crash here */ }
+    const result = operation();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    if (db.inTransaction) db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.pragma('busy_timeout = 5000');
+  }
 }
 
 /** The payload files a committed generation must carry (meta.json excluded —
@@ -234,11 +202,19 @@ export function pruneGenerations(generationsDir: string, currentId: string): voi
  * also read it (재감사 P1-1). Committed generations are the whole protocol.
  */
 export function exportForSync(): SyncExportResult {
-  const db = initDatabase();
-  const syncDir = getSyncDir();
-  const lockOwner = acquireExportLock(syncDir);
-
+  let db: Database.Database;
   try {
+    // Export contention is a normal skip/retry condition. Use a zero timeout
+    // before schema guards run so a concurrent exporter cannot turn it into a
+    // five-second raw SQLITE_BUSY delay during init.
+    db = initDatabase({ busyTimeoutMs: 0 });
+  } catch (error) {
+    if (isSqliteLockError(error)) throw new ExportLockedError();
+    throw error;
+  }
+  const syncDir = getSyncDir();
+
+  const performExport = (): SyncExportResult => {
     let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get() as
       | { value: string }
       | undefined;
@@ -250,8 +226,9 @@ export function exportForSync(): SyncExportResult {
     const deviceDir = path.join(syncDir, 'devices', device.value);
     fs.mkdirSync(deviceDir, { recursive: true });
 
-    // One read transaction fixes the snapshot for every file in this
-    // generation — WAL readers see one consistent DB state throughout.
+    // The surrounding IMMEDIATE transaction fixes the snapshot for every file
+    // in this generation and serializes local exporters. This nested helper is
+    // a savepoint; WAL readers still see one consistent DB state throughout.
     const readTx = db.transaction(() => {
       // Export active and inactive facts. is_active is a revision-bearing state;
       // filtering it here would make deactivation impossible to reconcile.
@@ -348,8 +325,11 @@ export function exportForSync(): SyncExportResult {
       tombstones: tombstones.length,
       recallEvents: recallEvents.length,
     };
+  };
+
+  try {
+    return withExportTransaction(db, performExport);
   } finally {
-    releaseExportLock(syncDir, lockOwner);
     db.close();
   }
 }

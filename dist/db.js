@@ -112,11 +112,14 @@ export function openWriteDb(dbPath = getDbPath()) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     return initializeConnection(new Database(dbPath), "write");
 }
-export function initDatabase() {
+export function initDatabase(options = {}) {
     const dbPath = getDbPath();
     // Ensure directory exists
     ensureDbDir();
     const db = openWriteDb(dbPath);
+    if (options.busyTimeoutMs !== undefined) {
+        db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
+    }
     // Create exchanges table
     db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (

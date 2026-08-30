@@ -6,6 +6,7 @@
  */
 import { runCodex } from "../dist/codex-exec.js";
 import { openWriteDb } from "../dist/db.js";
+import { validateTranslationBatch } from "./translation-response.mjs";
 
 const db = openWriteDb();
 
@@ -74,16 +75,16 @@ ${JSON.stringify(texts)}`;
       console.error(`Batch ${idx + 1}: invalid JSON in result (${e.message})`);
       return;
     }
-    if (!Array.isArray(translated)) {
-      console.error(`Batch ${idx + 1}: result is not a JSON array`);
+    const validated = validateTranslationBatch(translated, batch.length);
+    if (!validated) {
+      console.error(`Batch ${idx + 1}: result must contain exactly ${batch.length} non-empty strings`);
       return;
     }
     let staleCount = 0;
     const tx = db.transaction(() => {
       for (let j = 0; j < batch.length; j++) {
-        if (!translated[j]) continue;
         const src = batch[j];
-        const changed = updateStmt.run(translated[j], src.id, src.semantic_generation, src.fact);
+        const changed = updateStmt.run(validated[j], src.id, src.semantic_generation, src.fact);
         if (changed.changes === 0) staleCount++;
       }
     });

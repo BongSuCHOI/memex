@@ -153,13 +153,16 @@ export function openWriteDb(dbPath: string = getDbPath()): Database.Database {
   return initializeConnection(new Database(dbPath), "write");
 }
 
-export function initDatabase(): Database.Database {
+export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database.Database {
   const dbPath = getDbPath();
 
   // Ensure directory exists
   ensureDbDir();
 
   const db = openWriteDb(dbPath);
+  if (options.busyTimeoutMs !== undefined) {
+    db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
+  }
 
   // Create exchanges table
   db.exec(`

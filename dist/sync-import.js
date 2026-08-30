@@ -533,6 +533,8 @@ async function importFacts(db, generations, result) {
                 mode: "insert",
                 fact: {
                     ...remote,
+                    source_exchange_ids: agg.sources,
+                    consolidated_count: agg.consolidatedCount,
                     is_active: agg.lifecycleWinner.is_active,
                     lifecycle_updated_at: agg.lifecycleWinner.lifecycle_updated_at,
                 },

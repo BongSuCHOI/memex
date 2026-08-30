@@ -904,13 +904,13 @@ describe('sync-export/import', () => {
     const { initDatabase } = await import('../src/db.js');
     craftCommittedGeneration('device-a', {
       'facts.jsonl': remoteFactPayload({
-        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Postgres', sources: [],
+        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Postgres', sources: ['ex-a'], count: 1,
         semanticAt: '2026-08-28T10:00:00.000Z', lifecycleAt: '2026-08-28T01:00:00.000Z', is_active: 1,
       }),
     });
     craftCommittedGeneration('device-b', {
       'facts.jsonl': remoteFactPayload({
-        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Postgres', sources: [],
+        id: 'divergent-insert', createdAt: '2026-08-28T00:00:00.000Z', fact: 'Redis', sources: ['ex-b', 'ex-c'], count: 4,
         semanticAt: '2026-08-28T05:00:00.000Z', lifecycleAt: '2026-08-28T20:00:00.000Z', is_active: 0,
       }),
     });
@@ -919,8 +919,15 @@ describe('sync-export/import', () => {
     expect(imported.newFacts).toBe(1);
     const db = initDatabase();
     try {
-      expect(db.prepare('SELECT fact, is_active, lifecycle_updated_at FROM facts WHERE id = ?').get('divergent-insert'))
-        .toEqual({ fact: 'Postgres', is_active: 0, lifecycle_updated_at: '2026-08-28T20:00:00.000Z' });
+      expect(db.prepare(
+        'SELECT fact, source_exchange_ids, consolidated_count, is_active, lifecycle_updated_at FROM facts WHERE id = ?',
+      ).get('divergent-insert')).toEqual({
+        fact: 'Postgres',
+        source_exchange_ids: '["ex-a","ex-b","ex-c"]',
+        consolidated_count: 4,
+        is_active: 0,
+        lifecycle_updated_at: '2026-08-28T20:00:00.000Z',
+      });
       // Inactive rows never enter the vector index.
       expect(db.prepare('SELECT 1 FROM vec_facts WHERE id = ?').get('divergent-insert')).toBeUndefined();
     } finally {

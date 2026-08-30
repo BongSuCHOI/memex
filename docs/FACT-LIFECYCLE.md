@@ -201,8 +201,9 @@ sync import의 DUPLICATE provenance union도 commit 시점에 현재
 유실되지 않습니다. 번역(`fact_kr`)과 taxonomy(`ontology_domains/categories`,
 `ontology_category_id`)는 derived state로 sync payload에서 제외되었고(v4), 의미가
 바뀐 fact는 로컬 번역 백필(`scripts/translate-facts.mjs` — 읽은 시점의
-`semantic_generation`+원문 텍스트 CAS로 기록, 재감사 P2 v4 본 회차)과 분류 백필로
-overlay를 다시 채웁니다. privacy purge(`source_conversation_excluded`)는 taxonomy를 전면
+`semantic_generation`+원문 텍스트 CAS로 기록하고 모델 응답의 항목 수·non-empty string
+shape가 요청 batch와 정확히 일치할 때만 batch 전체를 적용, 재감사 P2 v4 본 회차)과 분류
+백필로 overlay를 다시 채웁니다. privacy purge(`source_conversation_excluded`)는 taxonomy를 전면
 invalidate하고 잔존 facts의 overlay와 attempt ledger를 함께 리셋해 공개 facts만으로
 재구축하게 합니다(재감사 P2 v4 본 회차 — attempts가 MAX인 잔존 fact도 새 taxonomy로
 재분류된다).
@@ -249,6 +250,12 @@ EVOLUTION/CONTRADICTION/DUPLICATE consolidation은 새 trusted evidence의
 `source_exchange_ids`를 기존 fact에 합칩니다. EVOLUTION과 CONTRADICTION은 revision에도
 새 evidence source를 남깁니다. 따라서 recall 횟수는 confidence/support를 올리지 않지만,
 repo 관찰로 SQLite→PostgreSQL 변화가 확인되면 provenance를 보존한 진화가 가능합니다.
+
+sync import는 같은 fact의 모든 remote device row에서 `source_exchange_ids`를 union하고
+`consolidated_count`의 max를 취합니다. 이 aggregate lineage는 기존 local row를 갱신할
+때뿐 아니라 fact를 처음 insert할 때도 그대로 저장됩니다. 따라서 semantic winner 한
+device의 일부 provenance만 남아 privacy purge의 evidence 역추적이 누락되는 상태를 만들지
+않습니다.
 
 ## 9. 성공/실패 판정 예
 

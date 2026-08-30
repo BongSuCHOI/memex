@@ -694,6 +694,8 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
         mode: "insert",
         fact: {
           ...remote,
+          source_exchange_ids: agg.sources,
+          consolidated_count: agg.consolidatedCount,
           is_active: agg.lifecycleWinner.is_active,
           lifecycle_updated_at: agg.lifecycleWinner.lifecycle_updated_at,
         },
