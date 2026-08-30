@@ -206,7 +206,10 @@ cross-semantic-version overlay 오염(P1-1)과 taxonomy UUID 중복 문제를 �
 교체한다. export 전체(snapshot → generation commit → CURRENT flip → prune)는
 cross-process lock(`sync/export.lock`, O_EXCL + 15분 stale break)으로 직렬화된다(재감사
 P2 v4) — 잠금 없이는 늦게 끝난 exporter가 CURRENT를 더 오래된 snapshot으로 되돌릴 수
-있고, 그 사이에 import한 새 peer는 최신 durable state을 놓친다. 경합은
+있고, 그 사이에 import한 새 peer는 최신 durable state을 놓친다. lockfile은 획득 시점의
+pid와 nonce를 기록하고 release는 **소유권 검증 후에만** 파일을 지운다(재감사 P2 v4
+본 회차) — stale break으로 후계자가 lock을 얻은 뒤 복귀한 이전 보유자의 release가
+후계자의 lock을 지워 세 번째 exporter가 끼어드는 경로를 닫는다. 경합은
 `ExportLockedError`로 실패 처리되어 export-status에 기록되고 다음 SessionEnd가 재시도한다.
 importer는 committed generation만 읽으므로 crash·cloud-sync 관측 어느 쪽도 facts=N+1/
 revisions=N 같은 혼합 snapshot을 만들 수 없다. importer는 기기당 CURRENT가 가리키는
@@ -256,6 +259,21 @@ fact 수렴은 세 개의 독립 축으로 판정합니다(재감사 P1-3 v4 —
   같은 시각의 tie는 **inactive가 이기는** 것이 모든 기기에서 동일한 결정적 규칙입니다.
   semantic 편집과 활성 전환이 교차해도 서로를 롤백하지 않습니다 — "원격의 새 의미 +
   로컬의 더 새로운 deactivate"는 `새 의미 + 비활성`으로 수렴합니다.
+  이 수렴은 local과의 비교뿐 아니라 **remote↔remote fold 단계부터 축을 분리합니다**
+  (재감사 P1-1 v4): 여러 기기의 같은 fact는 `semanticWinner`(semantic clock 최신)와
+  `lifecycleWinner`(lifecycle clock 최신, tie는 inactive)를 독립 보존하고 lineage만
+  monotone으로 합치는 aggregate로 접힙니다 — semantic 최신 기기가 lifecycle 최신
+  기기의 deactivate를 삼켜버리는 경로가 없고, 새 fact insert도 semantic winner의
+  의미 + lifecycle winner의 활성 상태로 이뤄집니다.
+  복제된 lifecycle event는 **새 사건이 아니라 원래 사건의 복제**이므로
+  (재감사 P1-2 v4) `applyReplicatedLifecycle`이 원격 event 시각(`eventAt`)을 그대로
+  기록합니다 — import 당시의 로컬 벽시계로 기록하면 그 조작된 시각이 이후의 진짜
+  restore를 영구히 거부합니다. 최종 적용은 transaction 안에서 현재 행의
+  `lifecycle_updated_at`/`is_active`를 다시 읽어 LWW를 **재판정**합니다(재감사
+  P1-3 v4): embedding await 중에 일어난 로컬 lifecycle 사건은 stale plan을 이기고,
+  상태가 같아도 더 새로운 event clock은 수렴하며(이미 완료된 restore가 더 오래된
+  deactivate에 뒤집히지 않는다), tombstone이 있으면 lifecycle 축은 아무것도 하지
+  않습니다 — 삭제된 fact의 부활은 strictly newer semantic event의 전용 경로입니다.
 - **lineage 축(provenance)** — `source_exchange_ids`는 sorted union,
   `consolidated_count`는 max로 monotone 수렴합니다(재감사 P1-1 보강). 어느 시계가
   이기든 상대의 provenance가 승자 행에서 사라지지 않으며, provenance/count merge는
@@ -274,7 +292,11 @@ re-consent event가 프로토콜에 존재하지 않으므로 timestamp와 무�
 relation과 taxonomy는 sync하지 않으므로 import가 relation을 연결하거나 분류를
 가져오는 일은 없습니다 — 로컬 분류 백필과 관계 생성이 공개 facts만으로 재구축합니다.
 KR 번역도 derived state입니다: 의미가 바뀐 fact는 `fact_kr`이 NULL로 무효화되고
-`scripts/translate-facts.mjs` 번역 백필이 `vec_facts_kr`과 함께 다시 채웁니다.
+`scripts/translate-facts.mjs` 번역 백필이 읽은 시점의 `semantic_generation`과 원문
+텍스트를 CAS로 검증해 기록합니다(재감사 P2 v4 본 회차) — 번역 대기 중 의미가
+변경되면 stale 번역은 폐기되며 다음 run이 새 의미를 다시 번역합니다. KR vector는
+스크립트가 직접 만들지 않고 `fact_kr`-없는-`vec_facts_kr` gap 감지(SessionStart
+maintenance, reembed worker)가 채웁니다.
 
 `recall_events`는 rollout만으로 재구축할 수 없는 self-ingestion 안전 receipt라 sync합니다.
 import는 emitted receipt와 같은 `session_id + prompt_hash` exchange에 `memex_recall`,

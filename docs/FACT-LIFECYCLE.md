@@ -190,20 +190,34 @@ deactivate/restore는 **lifecycle 사건**입니다(재감사 P1-3 v4). 두 경�
 `lifecycle_generation`을 올리고 `lifecycle_updated_at`을 기록하며, semantic 시계는
 건드리지 않습니다 — 의미 편집과 활성 전환은 독립인 축이라 서로를 롤백하지 않고,
 sync는 이 시계로 deactivate/restore를 어느 기기로든 전파합니다(정확히 같은 시각의
-tie는 inactive 승리). sync import의 DUPLICATE provenance union도 commit 시점에 현재
+tie는 inactive 승리). **복제 방향은 `applyReplicatedLifecycle`이 담당합니다**(재감사
+P1-2/P1-3 v4 본 회차): 복제는 새 사건이 아니므로 원격 event 시각을 그대로 기록하고(로컬
+now를 스탬프하면 조작된 미래 시각이 진짜 restore를 영구히 거부한다), commit
+transaction 안에서 현재 행의 lifecycle 시계와 상태를 다시 읽어 LWW를 재판정합니다 —
+상태가 같아도 더 새로운 event clock은 수렴하고, await 중에 일어난 로컬 lifecycle
+사건은 stale plan을 이기며, tombstone이 있으면 lifecycle 축은 부활을 하지 않습니다.
+sync import의 DUPLICATE provenance union도 commit 시점에 현재
 행을 다시 읽어 union/max하므로, 어떤 metadata 쓰기와 교차해도 provenance가
 유실되지 않습니다. 번역(`fact_kr`)과 taxonomy(`ontology_domains/categories`,
 `ontology_category_id`)는 derived state로 sync payload에서 제외되었고(v4), 의미가
-바뀐 fact는 로컬 번역 백필(`scripts/translate-facts.mjs`)과 분류 백필로 overlay를
-다시 채웁니다. privacy purge(`source_conversation_excluded`)는 taxonomy를 전면
-invalidate하고 잔존 facts의 overlay를 끊어 공개 facts만으로 재구축하게 합니다.
+바뀐 fact는 로컬 번역 백필(`scripts/translate-facts.mjs` — 읽은 시점의
+`semantic_generation`+원문 텍스트 CAS로 기록, 재감사 P2 v4 본 회차)과 분류 백필로
+overlay를 다시 채웁니다. privacy purge(`source_conversation_excluded`)는 taxonomy를 전면
+invalidate하고 잔존 facts의 overlay와 attempt ledger를 함께 리셋해 공개 facts만으로
+재구축하게 합니다(재감사 P2 v4 본 회차 — attempts가 MAX인 잔존 fact도 새 taxonomy로
+재분류된다).
 
 의미 변경은 fact의 `semantic_generation`을 올리고 `semantic_updated_at`을 갱신하는
 유일한 경로입니다(다른 하나는 sync fact import의 replication). consolidation 세
 판정(DUPLICATE/CONTRADICTION/EVOLUTION) 모두 양 endpoint의 세대를 commit 시점에
 재검증합니다 — DUPLICATE는 commit 직전 검사, CONTRADICTION/EVOLUTION은
 `expectedSemanticGeneration`(existing)과 비활성화 대상의 세대 CAS(driver)로, 하나라도
-밀리면 transaction 전체가 롤백됩니다(재감사 P1-2). drain의 queue 확인/clear도 세대
+밀리면 transaction 전체가 롤백됩니다(재감사 P1-2). 재감사 P1-4 v4 본 회차부터 양
+참가자는 **`lifecycle_generation`까지 함께 CAS**합니다 — consolidation은 active
+참가자끼리 내린 판정이므로 LLM 왕복 중 deactivate→restore가 일어나면(semantic
+generation은 그대로) stale verdict가 대상을 다시 비활성화하거나 inactive fact에
+벡터를 재삽입하는 일이 없고, verdict 전체가 폐기되어 dirty queue에 남아 재평가됩니다.
+drain의 queue 확인/clear도 세대
 토큰으로 수행합니다. 세대가 밀린 비교 판정은 `StaleFactMutationError`로 폐기되며 대상
 fact는 dirty queue에 남아 새 의미로 다시 비교됩니다.
 

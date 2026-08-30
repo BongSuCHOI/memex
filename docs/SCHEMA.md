@@ -212,7 +212,14 @@ P1-3 v4). deactivate/restore/sync lifecycle import는 `lifecycle_generation`을 
 의미 축과 활성 축은 서로를 롤백하지 않고 독립 수렴합니다. embedding await가 있는
 async writer(restore, sync activate)는 semantic + lifecycle token 둘 다 CAS하고,
 sync의 lifecycle tie는 inactive 승리라는 결정적 규칙으로 모든 기기가 같은 결과를
-냅니다. 비동기 파생 writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
+냅니다. **복제된 lifecycle event는 원격 사건의 시각을 그대로 저장합니다**(재감사
+P1-2 v4 본 회차) — import 당시의 로컬 벽시계로 기록하면 그 시각이 이후의 진짜
+restore를 영구히 거부하므로, `applyReplicatedLifecycle`은 commit transaction 안에서
+현재 행의 시계를 다시 읽어 LWW를 재판정한 뒤에만 `eventAt`을 기록합니다(상태가 같아도
+더 새로운 clock은 수렴하고, await 중 로컬 사건은 stale plan을 이기며, tombstone이
+있으면 적용하지 않습니다). consolidation 참가자는 `semantic_generation`과
+`lifecycle_generation`을 함께 CAS합니다(재감사 P1-4 v4 본 회차). 비동기 파생
+writer(ontology 분류, 관계 생성, fact/KR 재임베딩, sync import)는
 시작 시 세대를 캡처하고 최종 쓰기를 `WHERE semantic_generation = ?` CAS(또는 동일
 transaction 안의 재검증)로 수행합니다 — 0행이면 그 결과는 이전 의미의 것이므로
 폐기됩니다. "fact 의미가 바뀌면 그 의미에서 파생된 모든 representation은 같은
@@ -267,11 +274,28 @@ CREATE TABLE ontology_relations (
   reasoning TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE taxonomy_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  epoch INTEGER NOT NULL DEFAULT 1
+);
 ```
 
 `(source_fact_id, relation_type, target_fact_id)`는 unique입니다. 양 endpoint는 존재해야
 합니다. 서로 다른 두 project fact를 직접 연결하는 relation은 import와 mutation
 경계에서 거부합니다. global↔project와 same-project edge는 허용합니다.
+
+`taxonomy_state.epoch`는 taxonomy 전면 invalidate(privacy purge)마다 1씩 올라가는
+전역 epoch입니다(재감사 Privacy-P1 v4 본 회차). 분류기는 LLM/embedding 대기 전에 이
+값을 캡처하고 최종 쓰기(`applyClassification`, deterministic gate, fallback parking)에서
+재판정합니다 — purge가 taxonomy를 지운 뒤 도착하는 stale LLM 결과는
+`StaleFactMutationError`로 폐기되며 private-derived taxonomy를 다시 만들지 못합니다.
+bump는 taxonomy 삭제와 같은 transaction 안에서 일어나므로 어느 관측자도 "wipe 없는
+epoch 이동" 또는 "epoch 이동 없는 wipe"을 볼 수 없습니다. 같은 purge 트랜잭션은
+잔존 facts의 `ontology_category_id = NULL`과 함께 `ontology_attempts = 0`,
+`ontology_last_attempt_at = NULL`도 리셋합니다(재감사 P2 v4 본 회차) — attempts가
+MAX에 도달한 잔존 fact도 worker 시작 시 즉시 General/Misc로 파킹되지 않고 새
+taxonomy로 재분류됩니다.
 
 ## 5. Vector indexes
 

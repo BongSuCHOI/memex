@@ -42,6 +42,15 @@ category candidate 검색은 category 이름과 설명의 vector를 사용합니
 category가 하나라도 있으면 KNN을 실행하지 않고 bounded self-heal/re-embed를 먼저
 수행합니다. 따라서 model 변경 중 서로 다른 vector space의 distance를 비교하지 않습니다.
 
+classification commit은 `semantic_generation` CAS와 함께 **전역 taxonomy epoch**
+(`taxonomy_state.epoch`)도 검증합니다(재감사 Privacy-P1 v4 본 회차). 분류기는
+LLM/embedding 대기 전에 epoch를 캡처하고, privacy purge가 taxonomy를 전면
+invalidate하면 같은 transaction에서 epoch를 1 올린다 — 대기 중 purge가 일어난 분류는
+`StaleFactMutationError`로 전체 폐기되며, 옛 candidate에서 유래한 domain/category
+행을 다시 만들지 못합니다. purge는 잔존 facts의 `ontology_category_id`와 attempt
+ledger(`ontology_attempts`/`ontology_last_attempt_at`)를 함께 리셋하므로 purge 뒤에는
+모든 공개 fact가 LLM 재분류 대기로 돌아갑니다(비용은 worker의 run당 상한으로 bounded).
+
 ## 4. traversal
 
 `explore_graph`는 query에서 seed fact를 찾고 1–3 hop 관계를 확장합니다.
