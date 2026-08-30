@@ -1,6 +1,14 @@
+/** Thrown when another process is mid-export. The SessionEnd hook records it
+ * to export-status (visible to doctor) and the next session retries. */
+export declare class ExportLockedError extends Error {
+    constructor();
+}
 /** The payload files a committed generation must carry (meta.json excluded —
- * it is the integrity manifest OF these files). */
-export declare const SYNC_PAYLOAD_FILE_NAMES: readonly ["facts.jsonl", "fact-revisions.jsonl", "fact-tombstones.jsonl", "recall-events.jsonl", "ontology-domains.jsonl", "ontology-categories.jsonl", "ontology-relations.jsonl"];
+ * it is the integrity manifest OF these files). Protocol v4: ontology
+ * domains/categories/relations and the KR translation are LOCAL DERIVED state
+ * — every device rebuilds them from its own facts, so they no longer travel,
+ * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
+export declare const SYNC_PAYLOAD_FILE_NAMES: readonly ["facts.jsonl", "fact-revisions.jsonl", "fact-tombstones.jsonl", "recall-events.jsonl"];
 /** Non-empty JSONL lines — a generation manifest pins this count per file. */
 export declare function countPayloadRows(content: string): number;
 /** SHA-256 of the exact bytes a generation file carries. Cloud sync moves a
@@ -14,9 +22,6 @@ export interface SyncExportResult {
     revisions: number;
     tombstones: number;
     recallEvents: number;
-    domains: number;
-    categories: number;
-    relations: number;
 }
 /** Durable record of the last sync export attempt (P2-6). SessionEnd must
  * never wedge on export, so failures live here — visible to stderr, the

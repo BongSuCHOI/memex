@@ -17,8 +17,7 @@ try {
   if (result.facts > 0 || result.tombstones > 0 || result.recallEvents > 0) {
     console.log(
       `sync-export: ${result.facts} facts, ${result.revisions} revisions, ` +
-      `${result.tombstones} tombstones, ${result.recallEvents} recall events, ` +
-      `${result.domains} domains, ${result.relations} relations`,
+      `${result.tombstones} tombstones, ${result.recallEvents} recall events`,
     );
   }
   try {

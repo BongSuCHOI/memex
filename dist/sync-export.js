@@ -11,16 +11,71 @@ const CURRENT_MANIFEST = 'CURRENT';
  * readers that resolved CURRENT between two exports. */
 const GENERATIONS_TO_KEEP = 2;
 const EXPORT_STATUS_FILE = 'export-status.json';
+const EXPORT_LOCK_FILE = 'export.lock';
+/** A live export never legitimately holds the lock this long — exports are
+ * bounded local work. Older than this means the holder crashed. */
+const EXPORT_LOCK_STALE_MS = 15 * 60 * 1000;
+/** Thrown when another process is mid-export. The SessionEnd hook records it
+ * to export-status (visible to doctor) and the next session retries. */
+export class ExportLockedError extends Error {
+    constructor() {
+        super('sync export skipped: another export is in progress');
+        this.name = 'ExportLockedError';
+    }
+}
+/**
+ * Cross-process export serialization (재감사 P2 v4). Snapshot → generation
+ * write → CURRENT flip → prune must not interleave: without a lock a slower
+ * exporter that started earlier flips CURRENT back to an older snapshot after
+ * a faster one committed, and a new peer importing in between misses the
+ * newer durable state. An O_EXCL lockfile with a stale-break keeps this
+ * dependency-free; contention is a normal, retryable event, never a wedge.
+ */
+function acquireExportLock(syncDir) {
+    const lockPath = path.join(syncDir, EXPORT_LOCK_FILE);
+    for (;;) {
+        try {
+            const fd = fs.openSync(lockPath, 'wx');
+            try {
+                fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+            }
+            finally {
+                fs.closeSync(fd);
+            }
+            return;
+        }
+        catch (error) {
+            if (error.code !== 'EEXIST')
+                throw error;
+            let brokeStale = false;
+            try {
+                if (Date.now() - fs.statSync(lockPath).mtimeMs > EXPORT_LOCK_STALE_MS) {
+                    fs.rmSync(lockPath, { force: true });
+                    brokeStale = true;
+                }
+            }
+            catch { /* lock vanished between stat and break — retry */ }
+            if (!brokeStale)
+                throw new ExportLockedError();
+        }
+    }
+}
+function releaseExportLock(syncDir) {
+    try {
+        fs.rmSync(path.join(syncDir, EXPORT_LOCK_FILE), { force: true });
+    }
+    catch { /* best-effort release; stale-break covers a crash here */ }
+}
 /** The payload files a committed generation must carry (meta.json excluded —
- * it is the integrity manifest OF these files). */
+ * it is the integrity manifest OF these files). Protocol v4: ontology
+ * domains/categories/relations and the KR translation are LOCAL DERIVED state
+ * — every device rebuilds them from its own facts, so they no longer travel,
+ * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
 export const SYNC_PAYLOAD_FILE_NAMES = [
     'facts.jsonl',
     'fact-revisions.jsonl',
     'fact-tombstones.jsonl',
     'recall-events.jsonl',
-    'ontology-domains.jsonl',
-    'ontology-categories.jsonl',
-    'ontology-relations.jsonl',
 ];
 /** Non-empty JSONL lines — a generation manifest pins this count per file. */
 export function countPayloadRows(content) {
@@ -137,6 +192,7 @@ export function pruneGenerations(generationsDir, currentId) {
 export function exportForSync() {
     const db = initDatabase();
     const syncDir = getSyncDir();
+    acquireExportLock(syncDir);
     try {
         let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
         if (!device) {
@@ -151,12 +207,15 @@ export function exportForSync() {
         const readTx = db.transaction(() => {
             // Export active and inactive facts. is_active is a revision-bearing state;
             // filtering it here would make deactivation impossible to reconcile.
-            // semantic_updated_at carries the meaning clock (재감사 P1-3): peers must
-            // judge conflicts by the semantic event time, not by a polluted updated_at.
+            // semantic_updated_at carries the meaning clock and lifecycle_updated_at
+            // the activation clock (재감사 P1-3 v4): peers judge each axis by its own
+            // event time, never by a polluted updated_at. fact_kr and
+            // ontology_category_id are derived overlay — they rebuild locally and do
+            // not travel (재감사 P1-4 v4).
             const facts = db.prepare(`
-        SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-               created_at, updated_at, consolidated_count, is_active, ontology_category_id,
-               semantic_updated_at
+        SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
+               created_at, updated_at, consolidated_count, is_active,
+               semantic_updated_at, lifecycle_updated_at
         FROM facts ORDER BY id
       `).all();
             const revisions = db.prepare(`
@@ -173,23 +232,9 @@ export function exportForSync() {
                learnable, status, created_at, emitted_at
         FROM recall_events ORDER BY id
       `).all();
-            const domains = db.prepare('SELECT * FROM ontology_domains').all();
-            const categories = db.prepare('SELECT * FROM ontology_categories').all();
-            // 재감사 P1-3: endpoint version은 의미 세계의 semantic_updated_at으로 기록한다 —
-            // 구버전 reader를 위해 updated_at stamp는 유지한다(transition fallback).
-            const relations = db.prepare(`
-        SELECT r.*, sf.updated_at AS source_fact_updated_at,
-               tf.updated_at AS target_fact_updated_at,
-               sf.semantic_updated_at AS source_fact_semantic_updated_at,
-               tf.semantic_updated_at AS target_fact_semantic_updated_at
-        FROM ontology_relations r
-        JOIN facts sf ON sf.id = r.source_fact_id
-        JOIN facts tf ON tf.id = r.target_fact_id
-        ORDER BY r.id
-      `).all();
-            return { facts, revisions, tombstones, recallEvents, domains, categories, relations };
+            return { facts, revisions, tombstones, recallEvents };
         });
-        const { facts, revisions, tombstones, recallEvents, domains, categories, relations } = readTx();
+        const { facts, revisions, tombstones, recallEvents } = readTx();
         const generationId = randomUUID();
         const jsonl = (rows) => rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
         const payloadFiles = {
@@ -197,15 +242,12 @@ export function exportForSync() {
             'fact-revisions.jsonl': jsonl(revisions),
             'fact-tombstones.jsonl': jsonl(tombstones),
             'recall-events.jsonl': jsonl(recallEvents),
-            'ontology-domains.jsonl': jsonl(domains),
-            'ontology-categories.jsonl': jsonl(categories),
-            'ontology-relations.jsonl': jsonl(relations),
         };
         // Integrity manifest (재감사 P1-4 보강): every payload file is pinned by
         // row count and SHA-256, so an importer can fail closed on a partially
         // synced or corrupted generation instead of silently reading a prefix.
         const meta = {
-            protocol_version: 3,
+            protocol_version: 4,
             generation: generationId,
             device_id: device.value,
             exported_at: new Date().toISOString(),
@@ -214,9 +256,6 @@ export function exportForSync() {
             revisions_count: revisions.length,
             tombstones_count: tombstones.length,
             recall_events_count: recallEvents.length,
-            domains_count: domains.length,
-            categories_count: categories.length,
-            relations_count: relations.length,
             files: Object.fromEntries(SYNC_PAYLOAD_FILE_NAMES.map((name) => [
                 name,
                 { rows: countPayloadRows(payloadFiles[name]), sha256: payloadSha256(payloadFiles[name]) },
@@ -245,12 +284,10 @@ export function exportForSync() {
             revisions: revisions.length,
             tombstones: tombstones.length,
             recallEvents: recallEvents.length,
-            domains: domains.length,
-            categories: categories.length,
-            relations: relations.length,
         };
     }
     finally {
+        releaseExportLock(syncDir);
         db.close();
     }
 }

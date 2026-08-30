@@ -18737,7 +18737,9 @@ function initDatabase() {
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
-      semantic_updated_at TEXT NOT NULL DEFAULT ''
+      semantic_updated_at TEXT NOT NULL DEFAULT '',
+      lifecycle_generation INTEGER NOT NULL DEFAULT 1,
+      lifecycle_updated_at TEXT NOT NULL DEFAULT ''
     )
   `);
   const factColumns = new Set(
@@ -18763,6 +18765,19 @@ function initDatabase() {
   }
   db.prepare(
     "UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''"
+  ).run();
+  if (!factColumns.has("lifecycle_generation")) {
+    db.exec(
+      "ALTER TABLE facts ADD COLUMN lifecycle_generation INTEGER NOT NULL DEFAULT 1"
+    );
+  }
+  if (!factColumns.has("lifecycle_updated_at")) {
+    db.exec(
+      "ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''"
+    );
+  }
+  db.prepare(
+    "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
   ).run();
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)

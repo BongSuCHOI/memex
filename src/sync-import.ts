@@ -21,25 +21,24 @@ import {
 } from "./sync-export.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
+import { restoreFact } from "./fact-management.js";
 
 interface SyncFact {
   id: string;
   fact: string;
-  fact_kr: string | null;
   category: string;
   scope_type: "project" | "global";
   scope_project: string | null;
   source_exchange_ids: string;
   created_at: string;
   updated_at: string;
-  /**
-   * 재감사 P1-3: 의미 사건의 시각 — 충돌 판정의 기준 시계다. v3 이전 payload에는
-   * 필드가 없으므로 updated_at으로 폴백한다(구버전 peer와의 transition 동작).
-   */
+  /** 재감사 P1-3: 의미 사건의 시각 — semantic 충돌 판정의 기준 시계다. */
   semantic_updated_at: string;
+  /** 재감사 P1-3(protocol v4): 활성 사건의 시각 — lifecycle 충돌 판정의 기준
+   * 시계다. 의미 편집과 활성 전환은 서로 독립인 축이다. */
+  lifecycle_updated_at: string;
   consolidated_count: number;
   is_active: 0 | 1;
-  ontology_category_id: string | null;
 }
 
 interface SyncTombstone {
@@ -77,11 +76,8 @@ export interface SyncImportResult {
   newTombstones: number;
   newRecallEvents: number;
   updatedRecallEvents: number;
-  newDomains: number;
-  newCategories: number;
-  newRelations: number;
   /** P2-7: rows (or manifests) that could not be parsed, with their source
-   * location. Valid rows still import; the damage is never silent. */
+   * location. Valid data still imports; the damage is never silent. */
   malformedRows: PayloadIssue[];
 }
 
@@ -97,12 +93,6 @@ const ALLOWED_CATEGORIES = new Set([
   "pattern",
   "knowledge",
   "constraint",
-]);
-const ALLOWED_RELATION_TYPES = new Set([
-  "SUPPORTS",
-  "INFLUENCES",
-  "SUPERSEDES",
-  "CONTRADICTS",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -153,7 +143,7 @@ function validateGenerationIntegrity(
   } catch (error) {
     return `unreadable meta.json: ${error instanceof Error ? error.message : String(error)}`;
   }
-  if (manifest.protocol_version !== 3) {
+  if (manifest.protocol_version !== 4) {
     return `unsupported protocol_version ${JSON.stringify(manifest.protocol_version ?? null)}`;
   }
   if (manifest.generation !== generationId) {
@@ -290,16 +280,23 @@ function collectCommittedGenerations(
     let complete = true;
     for (const name of REQUIRED_PAYLOAD_FILES) {
       const filePath = path.join(genDir, name);
-      if (!fs.existsSync(filePath)) {
+      try {
+        files.set(name, fs.readFileSync(filePath, "utf8"));
+      } catch (error) {
+        // 재감사 P2 v4: missing AND unreadable are the same fail-closed outcome.
+        // A generation pruned between the CURRENT read and this read must not
+        // escape as an exception — it is a per-device rejected snapshot with a
+        // reported issue, and other devices keep importing.
         issues.push({
           file: currentPath,
           line: 0,
-          error: `CURRENT names generation ${generation} missing ${name}, device ${entry.name} snapshot rejected`,
+          error: `CURRENT names generation ${generation} with unreadable ${name}, device ${entry.name} snapshot rejected: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         });
         complete = false;
         break;
       }
-      files.set(name, fs.readFileSync(filePath, "utf8"));
     }
     if (!complete) continue;
     const integrityError = validateGenerationIntegrity(entry.name, generation, files);
@@ -359,37 +356,26 @@ function parseSyncFact(value: unknown): SyncFact | null {
     (value.scope_type !== "project" && value.scope_type !== "global") ||
     !isStringArrayJson(value.source_exchange_ids) ||
     !isTimestamp(value.created_at) || !isTimestamp(value.updated_at) ||
+    !isTimestamp(value.semantic_updated_at) ||
+    !isTimestamp(value.lifecycle_updated_at) ||
     !Number.isInteger(value.consolidated_count) || Number(value.consolidated_count) < 0 ||
-    (value.is_active !== undefined && value.is_active !== 0 && value.is_active !== 1) ||
-    (value.fact_kr !== undefined && value.fact_kr !== null && typeof value.fact_kr !== "string") ||
-    (value.ontology_category_id !== undefined && value.ontology_category_id !== null &&
-      typeof value.ontology_category_id !== "string") ||
-    // semantic_updated_at은 선택 필드다(v2 payload엔 없다). 있으면 반드시 유효해야 한다.
-    (value.semantic_updated_at !== undefined && !isTimestamp(value.semantic_updated_at))
+    (value.is_active !== 0 && value.is_active !== 1)
   ) return null;
   const scopeProject = canonicalScopeProject(value.scope_type, value.scope_project);
   if (scopeProject === undefined) return null;
   return {
     id: value.id,
     fact: value.fact,
-    fact_kr: typeof value.fact_kr === "string" ? value.fact_kr : null,
     category: value.category,
     scope_type: value.scope_type,
     scope_project: scopeProject,
     source_exchange_ids: value.source_exchange_ids,
     created_at: value.created_at,
     updated_at: value.updated_at,
-    // 의미 시계: payload가 주면 그것, 없으면(updated_at이 오염된 구버전 payload)
-    // 최선의 근사로 updated_at을 쓴다 — 구버전 peer와의 동작은 이전과 같다.
-    semantic_updated_at: isTimestamp(value.semantic_updated_at)
-      ? value.semantic_updated_at
-      : value.updated_at,
+    semantic_updated_at: value.semantic_updated_at,
+    lifecycle_updated_at: value.lifecycle_updated_at,
     consolidated_count: Number(value.consolidated_count),
-    // Protocol v1 payloads omitted is_active because they exported active rows only.
     is_active: value.is_active === 0 ? 0 : 1,
-    ontology_category_id: typeof value.ontology_category_id === "string"
-      ? value.ontology_category_id
-      : null,
   };
 }
 
@@ -453,16 +439,17 @@ function parseRecallEvent(value: unknown): SyncRecallEvent | null {
 }
 
 /** Semantic identity of a fact row — the ONLY fields that may decide a
- * winner. Provenance (`source_exchange_ids`), `consolidated_count`,
- * `fact_kr` and `ontology_category_id` are metadata/derived state: letting
- * them decide a tie let a device with POORER provenance lexically beat a
- * device whose DUPLICATE consolidation had unioned evidence in — and losing
- * provenance breaks the privacy purge's fact lookup (재감사 P1-1 보강).
- * Inactive state wins exact-time ties; remaining fields use canonical JSON
- * lexical order so every device independently selects the same winner. */
+ * semantic winner. Provenance (`source_exchange_ids`) and `consolidated_count`
+ * are monotone lineage metadata: letting them decide a tie let a device with
+ * POORER provenance lexically beat a device whose DUPLICATE consolidation had
+ * unioned evidence in — and losing provenance breaks the privacy purge's fact
+ * lookup (재감사 P1-1 보강). `is_active` is deliberately absent (재감사
+ * P1-3 v4): activation is LIFECYCLE state with its own clock, not semantic
+ * content — it reconciles on the lifecycle axis, never by deciding a meaning
+ * tie. Remaining fields use canonical JSON lexical order so every device
+ * independently selects the same winner. */
 function semanticConflictKey(fact: SyncFact): string {
   return JSON.stringify([
-    fact.is_active === 0 ? 1 : 0,
     fact.fact,
     fact.category,
     fact.scope_type,
@@ -480,12 +467,14 @@ function parseFactSourceIds(raw: string): string[] {
   }
 }
 
-/** Monotone metadata convergence across devices: provenance is a SORTED
- * union and consolidated_count a max — neither can ever regress, and neither
- * is a semantic event (no generation bump, no relation invalidation, no
- * vector regeneration). fact_kr/ontology adopt whichever side carries one
- * (both derived/overlay state). `winner`'s derived fields are preferred. */
-function mergeFactMetadata(winner: SyncFact, other: SyncFact): SyncFact {
+/** Monotone lineage metadata convergence across devices AND across semantic
+ * versions: provenance is a SORTED union and consolidated_count a max —
+ * neither can regress, and neither is a semantic or lifecycle event (no
+ * generation bump, no relation invalidation, no vector regeneration).
+ * 재감사 P1-1(v4): fact_kr/ontology no longer travel in the payload at all
+ * (derived overlay rebuilds locally), so a cross-semantic-version fold cannot
+ * contaminate derived state — there is nothing left to contaminate. */
+function mergeFactLineage(winner: SyncFact, other: SyncFact): SyncFact {
   const sources = [
     ...new Set([...parseFactSourceIds(winner.source_exchange_ids), ...parseFactSourceIds(other.source_exchange_ids)]),
   ].sort();
@@ -493,8 +482,6 @@ function mergeFactMetadata(winner: SyncFact, other: SyncFact): SyncFact {
     ...winner,
     source_exchange_ids: JSON.stringify(sources),
     consolidated_count: Math.max(winner.consolidated_count, other.consolidated_count),
-    fact_kr: winner.fact_kr ?? other.fact_kr,
-    ontology_category_id: winner.ontology_category_id ?? other.ontology_category_id,
   };
 }
 
@@ -506,11 +493,23 @@ function localSemanticClock(row: Record<string, unknown>): string {
     : (row.updated_at as string);
 }
 
-function rowToSyncFact(row: Record<string, unknown>): SyncFact {
+/** DB 행의 활성 시계(재감사 P1-3 v4) — legacy/빈 값은 updated_at으로 폴백한다. */
+function localLifecycleClock(row: Record<string, unknown>): string {
+  const value = row.lifecycle_updated_at;
+  return typeof value === "string" && value !== "" && isTimestamp(value)
+    ? value
+    : (row.updated_at as string);
+}
+
+/** Local fact view for conflict judgment — the fields the semantic key,
+ * lineage merge, and lifecycle reconciliation read from the current row. */
+function localFactView(row: Record<string, unknown>): SyncFact & {
+  semantic_generation: number;
+  lifecycle_generation: number;
+} {
   return {
     id: row.id as string,
     fact: row.fact as string,
-    fact_kr: (row.fact_kr as string | null) ?? null,
     category: row.category as string,
     scope_type: row.scope_type as "project" | "global",
     scope_project: (row.scope_project as string | null) ?? null,
@@ -518,9 +517,11 @@ function rowToSyncFact(row: Record<string, unknown>): SyncFact {
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
     semantic_updated_at: localSemanticClock(row),
+    lifecycle_updated_at: localLifecycleClock(row),
     consolidated_count: Number(row.consolidated_count),
     is_active: Number(row.is_active) === 0 ? 0 : 1,
-    ontology_category_id: (row.ontology_category_id as string | null) ?? null,
+    semantic_generation: Number(row.semantic_generation ?? 1),
+    lifecycle_generation: Number(row.lifecycle_generation ?? 1),
   };
 }
 
@@ -531,45 +532,6 @@ function deleteFactState(db: Database.Database, factId: string): void {
     .run(factId, factId);
   db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(factId);
   db.prepare("DELETE FROM facts WHERE id = ?").run(factId);
-}
-
-function importOntology(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
-  for (const generation of generations) {
-    for (const value of parseFromPinned(generation, "ontology-domains.jsonl", result.malformedRows)) {
-      if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
-          typeof value.name !== "string" || !value.name) continue;
-      if (db.prepare("SELECT 1 FROM ontology_domains WHERE id = ?").get(value.id)) continue;
-      db.prepare(
-        "INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)",
-      ).run(
-        value.id,
-        value.name,
-        typeof value.description === "string" ? value.description : null,
-        isTimestamp(value.created_at) ? value.created_at : new Date().toISOString(),
-      );
-      result.newDomains++;
-    }
-  }
-
-  for (const generation of generations) {
-    for (const value of parseFromPinned(generation, "ontology-categories.jsonl", result.malformedRows)) {
-      if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
-          typeof value.domain_id !== "string" || !value.domain_id ||
-          typeof value.name !== "string" || !value.name) continue;
-      if (!db.prepare("SELECT 1 FROM ontology_domains WHERE id = ?").get(value.domain_id)) continue;
-      if (db.prepare("SELECT 1 FROM ontology_categories WHERE id = ?").get(value.id)) continue;
-      db.prepare(
-        "INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)",
-      ).run(
-        value.id,
-        value.domain_id,
-        value.name,
-        typeof value.description === "string" ? value.description : null,
-        isTimestamp(value.created_at) ? value.created_at : new Date().toISOString(),
-      );
-      result.newCategories++;
-    }
-  }
 }
 
 /**
@@ -662,26 +624,28 @@ function importTombstones(db: Database.Database, generations: PinnedGeneration[]
 }
 
 async function importFacts(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): Promise<void> {
-  type Candidate =
-    | { mode: "semantic"; fact: SyncFact; exists: boolean; localGeneration?: number }
-    | {
-        mode: "metadata";
-        id: string;
-        localGeneration: number;
-        sources: string;
-        count: number;
-        factKr: string | null;
-        ontologyCategoryId: string | null;
-      };
-  const candidates: Candidate[] = [];
+  // Per-fact plan: the semantic axis (meaning), the monotone lineage axis
+  // (provenance/count), and the lifecycle axis (activation) are judged and
+  // applied INDEPENDENTLY (재감사 P1-3 v4). A remote semantic win never
+  // rewrites is_active; a remote lifecycle win never rewrites meaning —
+  // "새 의미 + 더 최근 deactivate"는 어느 축도 롤백하지 않고 수렴한다.
+  type SemanticCandidate =
+    | { mode: "insert"; fact: SyncFact }
+    | { mode: "replace"; fact: SyncFact; localGeneration: number };
+  type FactPlan = {
+    semantic?: SemanticCandidate;
+    lineage?: { sources: string; count: number };
+    lifecycle?: { mode: "activate" | "deactivate" };
+  };
+  const plans = new Map<string, FactPlan>();
   const remoteById = new Map<string, SyncFact>();
   for (const generation of generations) {
     for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
       const fact = parseSyncFact(value);
-      if (!fact) continue;
+      if (!fact) continue; // strict validation already rejected this generation
       // Fold remote rows per fact id: the SEMANTIC winner is picked by the
-      // semantic clock (ties by the semantic key), while metadata converges
-      // monotonically across every contributing generation.
+      // semantic clock (ties by the semantic key), while lineage metadata
+      // converges monotonically across every contributing generation.
       const previous = remoteById.get(fact.id);
       if (!previous) {
         remoteById.set(fact.id, fact);
@@ -689,228 +653,257 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
       }
       const time = compareTimestamps(fact.semantic_updated_at, previous.semantic_updated_at);
       if (time > 0 || (time === 0 && semanticConflictKey(fact) >= semanticConflictKey(previous))) {
-        remoteById.set(fact.id, mergeFactMetadata(fact, previous));
+        remoteById.set(fact.id, mergeFactLineage(fact, previous));
       } else {
-        remoteById.set(fact.id, mergeFactMetadata(previous, fact));
+        remoteById.set(fact.id, mergeFactLineage(previous, fact));
       }
     }
   }
   for (const remote of remoteById.values()) {
-    // 재감사 P1-7: ontology는 fact 위에 얹는 파생 overlay다 — 원격 category가
-    // 로컬에 없어도 의미 자체를 버리면 안 된다. NULL로 import해 재분류 대기
-    // 상태로 두고, 분류 백필이 overlay를 다시 채운다.
-    let fact = remote;
-    if (
-      fact.ontology_category_id &&
-      !db.prepare("SELECT 1 FROM ontology_categories WHERE id = ?").get(fact.ontology_category_id)
-    ) {
-      fact = { ...fact, ontology_category_id: null };
-    }
     const localTombstone = db.prepare(
       "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
-    ).get(fact.id) as { deleted_at: string; reason: string | null } | undefined;
+    ).get(remote.id) as { deleted_at: string; reason: string | null } | undefined;
     // Hard delete wins a timestamp tie; only a strictly newer semantic event can
     // restore (재감사 P1-3 — 비의미 메타데이터 touch는 삭제를 이기지 못한다).
-    if (localTombstone && compareTimestamps(localTombstone.deleted_at, fact.semantic_updated_at) >= 0) continue;
+    if (localTombstone && compareTimestamps(localTombstone.deleted_at, remote.semantic_updated_at) >= 0) continue;
     // A conversation-exclusion tombstone is terminal privacy state: without an
     // explicit un-exclude/re-consent event no newer fact event may resurrect it.
     if (localTombstone?.reason === PRIVACY_TOMBSTONE_REASON) continue;
 
     const localRow = db.prepare(`
-      SELECT id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-             created_at, updated_at, consolidated_count, is_active, ontology_category_id,
-             semantic_generation, semantic_updated_at
+      SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
+             created_at, updated_at, consolidated_count, is_active,
+             semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at
       FROM facts WHERE id = ?
-    `).get(fact.id) as Record<string, unknown> | undefined;
+    `).get(remote.id) as Record<string, unknown> | undefined;
+
+    const plan: FactPlan = {};
     if (!localRow) {
-      candidates.push({ mode: "semantic", fact, exists: false });
+      // New fact: the remote row carries both its meaning and its activation
+      // state — there is no local axis to conflict with.
+      plan.semantic = { mode: "insert", fact: remote };
+      plans.set(remote.id, plan);
       continue;
     }
-    const local = rowToSyncFact(localRow);
-    const localGeneration = Number(localRow.semantic_generation ?? 1);
-    // Monotone metadata convergence applies to EVERY outcome — even a locally
-    // newer semantic state must absorb the peer's provenance, and provenance
-    // must never regress to a peer with fewer sources.
-    const mergedSources = [
-      ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(fact.source_exchange_ids)]),
-    ].sort();
-    const mergedCount = Math.max(local.consolidated_count, fact.consolidated_count);
-    const sourcesChanged = JSON.stringify(mergedSources) !== JSON.stringify(parseFactSourceIds(local.source_exchange_ids).sort());
-    const countChanged = mergedCount !== local.consolidated_count;
+    const local = localFactView(localRow);
 
-    const time = compareTimestamps(fact.semantic_updated_at, local.semantic_updated_at);
+    // --- semantic axis: meaning only ---
+    const semanticTime = compareTimestamps(remote.semantic_updated_at, local.semantic_updated_at);
     const localKey = semanticConflictKey(local);
-    const remoteKey = semanticConflictKey(fact);
-    const semanticWinner =
-      time > 0 ? "remote"
-      : time < 0 ? "local"
-      : remoteKey === localKey ? "tie-identical"
-      : remoteKey > localKey ? "remote"
-      : "local";
+    const remoteKey = semanticConflictKey(remote);
+    if (semanticTime > 0 || (semanticTime === 0 && remoteKey > localKey)) {
+      plan.semantic = { mode: "replace", fact: remote, localGeneration: local.semantic_generation };
+    }
+    // Same clock AND same semantic content (tie-identical) is not a conflict —
+    // the lineage/lifecycle axes below may still have something to converge.
 
-    if (semanticWinner === "remote") {
-      // Strict semantic replacement — the remote meaning is the truth, and
-      // the merged (never-regressing) metadata rides along with it.
-      candidates.push({
-        mode: "semantic",
-        fact: { ...fact, source_exchange_ids: JSON.stringify(mergedSources), consolidated_count: mergedCount },
-        exists: true,
-        localGeneration,
-      });
-      continue;
+    // --- lineage axis: monotone union/max, judged against the CURRENT row ---
+    const mergedSources = [
+      ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(remote.source_exchange_ids)]),
+    ].sort();
+    const mergedCount = Math.max(local.consolidated_count, remote.consolidated_count);
+    const sourcesChanged = JSON.stringify(mergedSources) !== JSON.stringify(parseFactSourceIds(local.source_exchange_ids).sort());
+    if (sourcesChanged || mergedCount !== local.consolidated_count) {
+      plan.lineage = { sources: JSON.stringify(mergedSources), count: mergedCount };
     }
-    if (semanticWinner === "tie-identical") {
-      // Same semantic clock AND same semantic content: this is NOT a conflict.
-      // Full-row replacement here would let metadata decide a winner and
-      // could regress provenance — only converge metadata, and do it without
-      // a semantic event (no generation bump, no relation invalidation, no
-      // ontology reset, no vector regeneration).
-      const factKr = local.fact_kr ?? fact.fact_kr;
-      const ontologyCategoryId = local.ontology_category_id ?? fact.ontology_category_id;
-      const krChanged = (factKr ?? null) !== (local.fact_kr ?? null);
-      const ontologyChanged = (ontologyCategoryId ?? null) !== (local.ontology_category_id ?? null);
-      if (!sourcesChanged && !countChanged && !krChanged && !ontologyChanged) continue;
-      candidates.push({
-        mode: "metadata",
-        id: fact.id,
-        localGeneration,
-        sources: JSON.stringify(mergedSources),
-        count: mergedCount,
-        factKr,
-        ontologyCategoryId,
-      });
-      continue;
+
+    // --- lifecycle axis (재감사 P1-3 v4): activation only ---
+    // Newest lifecycle event wins; an exact tie resolves to INACTIVE (the safe
+    // default) deterministically on every device. Equal states converge
+    // silently — clock-only drift never rewrites anything.
+    const lifecycleTime = compareTimestamps(remote.lifecycle_updated_at, local.lifecycle_updated_at);
+    if (remote.is_active !== local.is_active) {
+      if (remote.is_active === 0) {
+        // Remote deactivated (newer, or an exact tie where inactive wins).
+        if (lifecycleTime >= 0) plan.lifecycle = { mode: "deactivate" };
+      } else if (lifecycleTime > 0) {
+        // Remote restored strictly later than the local deactivation.
+        plan.lifecycle = { mode: "activate" };
+      }
     }
-    // Local is the semantic winner: its meaning/derived state stand, but the
-    // peer's provenance still converges in monotonically.
-    if (!sourcesChanged && !countChanged) continue;
-    candidates.push({
-      mode: "metadata",
-      id: fact.id,
-      localGeneration,
-      sources: JSON.stringify(mergedSources),
-      count: mergedCount,
-      factKr: local.fact_kr,
-      ontologyCategoryId: local.ontology_category_id,
-    });
+
+    if (plan.semantic || plan.lineage || plan.lifecycle) plans.set(remote.id, plan);
   }
-  if (candidates.length === 0) return;
+  if (plans.size === 0) return;
 
   await initEmbeddings();
-  for (const candidate of candidates) {
-    if (candidate.mode === "metadata") {
-      // Metadata-only convergence: no await, but still CAS on the semantic
-      // generation — candidates queue behind OTHER candidates' embedding
-      // awaits, and a concurrent semantic edit must not be metadata-clobbered.
-      const commit = db.transaction((): boolean => {
-        const claimed = db.prepare(`
-          UPDATE facts SET
-            source_exchange_ids = ?, consolidated_count = ?,
-            fact_kr = COALESCE(fact_kr, ?),
-            ontology_category_id = COALESCE(ontology_category_id, ?),
-            updated_at = ?
-          WHERE id = ? AND semantic_generation = ?
-        `).run(
-          candidate.sources, candidate.count,
-          candidate.factKr, candidate.ontologyCategoryId,
-          new Date().toISOString(), candidate.id, candidate.localGeneration,
-        );
-        return claimed.changes > 0;
-      });
-      if (commit()) {
-        result.updatedFacts++;
-      } else {
-        console.error(
-          `sync-import: discarded stale metadata convergence for fact ${candidate.id} (local state changed)`,
-        );
-      }
-      continue;
-    }
-    const { fact } = candidate;
+  for (const [factId, plan] of plans) {
     try {
-      // Generate before the transaction. Failure leaves the whole fact
-      // retryable instead of committing a permanently vectorless row.
-      const embedding = await generateEmbedding(fact.fact);
-      const embeddingKr = fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null;
-      const commit = db.transaction((): boolean => {
-        // 재감사 P1-2: embedding await 동안 로컬 상태가 변했으면 이 reconcile은
-        // 폐기한다 — 동시 사용자 편집이 remote stale state로 덮이는 것을 막는
-        // commit 직전 CAS다(T06의 절반; 충돌 시계는 이제 semantic clock이다).
-        const tombstone = db.prepare(
-          "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
-        ).get(fact.id) as { deleted_at: string; reason: string | null } | undefined;
-        if (tombstone && (tombstone.reason === PRIVACY_TOMBSTONE_REASON ||
-            compareTimestamps(tombstone.deleted_at, fact.semantic_updated_at) >= 0)) {
-          return false;
-        }
-        if (candidate.exists) {
-          const claimed = db.prepare(`
-            UPDATE facts SET
-              fact = ?, fact_kr = ?, category = ?, scope_type = ?, scope_project = ?,
-              source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
-              consolidated_count = ?, is_active = ?, ontology_category_id = ?,
-              embedding_version = ?, ontology_attempts = 0, consolidation_attempts = 0,
-              needs_consolidation = ?, ontology_last_attempt_at = NULL,
-              semantic_generation = semantic_generation + 1, semantic_updated_at = ?
-            WHERE id = ? AND semantic_generation = ?
-          `).run(
-            fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
-            fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
-            fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
-            fact.semantic_updated_at,
-            fact.id, candidate.localGeneration,
-          );
-          if (claimed.changes === 0) return false;
-        } else {
-          if (db.prepare("SELECT 1 FROM facts WHERE id = ?").get(fact.id)) return false;
-          db.prepare(`
-            INSERT INTO facts
-              (id, fact, fact_kr, category, scope_type, scope_project, source_exchange_ids,
-               embedding, created_at, updated_at, consolidated_count, is_active,
-               ontology_category_id, embedding_version, needs_consolidation,
-               semantic_generation, semantic_updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-          `).run(
-            fact.id, fact.fact, fact.fact_kr, fact.category, fact.scope_type, fact.scope_project,
-            fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
-            fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
-            fact.ontology_category_id, EMBEDDING_VERSION, fact.is_active,
-            fact.semantic_updated_at,
-          );
-        }
-
-        db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
-          .run(fact.id, fact.id);
-        db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(fact.id);
-
-        db.prepare("DELETE FROM vec_facts WHERE id = ?").run(fact.id);
-        db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(fact.id);
-        if (fact.is_active === 1) {
-          const primaryDtype = getVecTableDtype(db, "vec_facts");
-          db.prepare(
-            `INSERT INTO vec_facts (id, embedding) VALUES (?, ${vecParamSql(primaryDtype)})`,
-          ).run(fact.id, embeddingToVecBlob(embedding, primaryDtype));
-          if (fact.fact_kr && embeddingKr) {
-            const koreanDtype = getVecTableDtype(db, "vec_facts_kr");
-            db.prepare(
-              `INSERT INTO vec_facts_kr (id, embedding) VALUES (?, ${vecParamSql(koreanDtype)})`,
-            ).run(fact.id, embeddingToVecBlob(embeddingKr, koreanDtype));
+      // --- semantic axis: generate before the transaction; failure leaves the
+      // whole fact retryable instead of committing a vectorless row ---
+      const semantic = plan.semantic;
+      if (semantic) {
+        const fact = semantic.fact;
+        const embedding = await generateEmbedding(fact.fact);
+        const commit = db.transaction((): boolean => {
+          // 재감사 P1-2: embedding await 동안 tombstone이 생겼으면 이
+          // reconcile은 폐기한다 — commit 직전 재검사다.
+          const tombstone = db.prepare(
+            "SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?",
+          ).get(factId) as { deleted_at: string; reason: string | null } | undefined;
+          if (tombstone && (tombstone.reason === PRIVACY_TOMBSTONE_REASON ||
+              compareTimestamps(tombstone.deleted_at, fact.semantic_updated_at) >= 0)) {
+            return false;
           }
+          if (semantic.mode === "replace") {
+            // Commit-time live lineage (재감사 P1-2 v4): provenance/count
+            // merges bump NO generation, so the CAS token alone cannot see a
+            // concurrent DUPLICATE consolidation — re-read them inside this
+            // transaction and union/max so the merge is absorbed, never lost.
+            const current = db.prepare(
+              "SELECT source_exchange_ids, consolidated_count, is_active FROM facts WHERE id = ?",
+            ).get(factId) as
+              | { source_exchange_ids: string | null; consolidated_count: number; is_active: number }
+              | undefined;
+            if (!current) return false;
+            const liveSources = JSON.stringify([
+              ...new Set([
+                ...parseFactSourceIds(current.source_exchange_ids ?? "[]"),
+                ...parseFactSourceIds(fact.source_exchange_ids),
+              ]),
+            ].sort());
+            const liveCount = Math.max(Number(current.consolidated_count), fact.consolidated_count);
+            // 재감사 P1-3 v4: the local ACTIVATION state governs vector
+            // visibility and the consolidation flag — semantic import never
+            // rewrites is_active (that is the lifecycle axis's job).
+            const isActive = Number(current.is_active) === 0 ? 0 : 1;
+            const claimed = db.prepare(`
+              UPDATE facts SET
+                fact = ?, category = ?, scope_type = ?, scope_project = ?,
+                source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
+                consolidated_count = ?, embedding_version = ?,
+                ontology_category_id = NULL, fact_kr = NULL,
+                ontology_attempts = 0, consolidation_attempts = 0,
+                needs_consolidation = ?, ontology_last_attempt_at = NULL,
+                semantic_generation = semantic_generation + 1, semantic_updated_at = ?
+              WHERE id = ? AND semantic_generation = ?
+            `).run(
+              fact.fact, fact.category, fact.scope_type, fact.scope_project,
+              liveSources, Buffer.from(new Float32Array(embedding).buffer),
+              fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION,
+              isActive, fact.semantic_updated_at,
+              factId, semantic.localGeneration,
+            );
+            if (claimed.changes === 0) return false;
+            // The meaning changed — derived state built on the OLD meaning is
+            // invalid: relations are re-derived, the KR translation is
+            // re-derived by the translation backfill (derived overlay does
+            // not travel in the payload).
+            db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
+              .run(factId, factId);
+            db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(factId);
+            db.prepare("DELETE FROM vec_facts WHERE id = ?").run(factId);
+            db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(factId);
+            if (isActive === 1) {
+              const primaryDtype = getVecTableDtype(db, "vec_facts");
+              db.prepare(
+                `INSERT INTO vec_facts (id, embedding) VALUES (?, ${vecParamSql(primaryDtype)})`,
+              ).run(factId, embeddingToVecBlob(embedding, primaryDtype));
+            }
+          } else {
+            if (db.prepare("SELECT 1 FROM facts WHERE id = ?").get(factId)) return false;
+            db.prepare(`
+              INSERT INTO facts
+                (id, fact, category, scope_type, scope_project, source_exchange_ids,
+                 embedding, created_at, updated_at, consolidated_count, is_active,
+                 embedding_version, needs_consolidation,
+                 semantic_generation, semantic_updated_at,
+                 lifecycle_generation, lifecycle_updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?)
+            `).run(
+              fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project,
+              fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
+              fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active,
+              EMBEDDING_VERSION, fact.is_active,
+              fact.semantic_updated_at,
+              fact.lifecycle_updated_at,
+            );
+            // A strictly newer semantic event resurrected over a stale
+            // non-privacy tombstone — clear the inert deletion marker.
+            db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(factId);
+            if (fact.is_active === 1) {
+              const primaryDtype = getVecTableDtype(db, "vec_facts");
+              db.prepare(
+                `INSERT INTO vec_facts (id, embedding) VALUES (?, ${vecParamSql(primaryDtype)})`,
+              ).run(factId, embeddingToVecBlob(embedding, primaryDtype));
+            }
+          }
+          return true;
+        });
+        if (!commit()) {
+          console.error(
+            `sync-import: discarded stale reconciliation for fact ${factId} (local state changed during embedding)`,
+          );
+        } else if (semantic.mode === "replace") {
+          result.updatedFacts++;
+        } else {
+          result.newFacts++;
         }
-        return true;
-      });
-      if (!commit()) {
-        console.error(
-          `sync-import: discarded stale reconciliation for fact ${fact.id} (local state changed during embedding)`,
-        );
-        continue;
       }
-      if (candidate.exists) result.updatedFacts++;
-      else result.newFacts++;
+
+      // --- lineage axis: monotone union/max against the LIVE row in one
+      // transaction. Serialized writers make read-merge-write race-free; no
+      // generation token is involved, so nothing can invalidate the merge. ---
+      const lineage = plan.lineage;
+      if (lineage) {
+        const commit = db.transaction((): boolean => {
+          const current = db.prepare(
+            "SELECT source_exchange_ids, consolidated_count FROM facts WHERE id = ?",
+          ).get(factId) as { source_exchange_ids: string | null; consolidated_count: number } | undefined;
+          if (!current) return false;
+          const sources = JSON.stringify([
+            ...new Set([
+              ...parseFactSourceIds(current.source_exchange_ids ?? "[]"),
+              ...parseFactSourceIds(lineage.sources),
+            ]),
+          ].sort());
+          const count = Math.max(Number(current.consolidated_count), lineage.count);
+          if (sources === JSON.stringify(parseFactSourceIds(current.source_exchange_ids ?? "[]").sort()) &&
+              count === Number(current.consolidated_count)) return false;
+          db.prepare(
+            "UPDATE facts SET source_exchange_ids = ?, consolidated_count = ?, updated_at = ? WHERE id = ?",
+          ).run(sources, count, new Date().toISOString(), factId);
+          result.updatedFacts++;
+          return true;
+        });
+        commit();
+      }
+
+      // --- lifecycle axis ---
+      if (plan.lifecycle?.mode === "deactivate") {
+        const commit = db.transaction((): boolean => {
+          const tombstone = db.prepare(
+            "SELECT reason FROM fact_tombstones WHERE fact_id = ?",
+          ).get(factId) as { reason: string | null } | undefined;
+          if (tombstone?.reason === PRIVACY_TOMBSTONE_REASON) return false;
+          const claimed = db.prepare(`
+            UPDATE facts SET is_active = 0, needs_consolidation = 0,
+              lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?
+            WHERE id = ? AND is_active = 1
+          `).run(new Date().toISOString(), new Date().toISOString(), factId);
+          if (claimed.changes === 0) return false;
+          db.prepare("DELETE FROM vec_facts WHERE id = ?").run(factId);
+          db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(factId);
+          result.updatedFacts++;
+          return true;
+        });
+        commit();
+      } else if (plan.lifecycle?.mode === "activate") {
+        // Remote restore of a locally inactive fact: the same dual-CAS
+        // contract as restoreFact (semantic + lifecycle token) guards the
+        // embedding await, and the commit bumps the local lifecycle clock so
+        // later peers order against this activation.
+        try {
+          await restoreFact(db, factId);
+          result.updatedFacts++;
+        } catch {
+          // Already active, or a concurrent local lifecycle event won — the
+          // state has converged; this reconciliation is simply moot.
+        }
+      }
     } catch (error) {
       console.error(
-        `sync-import: failed to reconcile fact ${fact.id}:`,
+        `sync-import: failed to reconcile fact ${factId}:`,
         error instanceof Error ? error.message : error,
       );
     }
@@ -990,67 +983,62 @@ function importRecallEvents(db: Database.Database, generations: PinnedGeneration
   }
 }
 
-function importRelations(db: Database.Database, generations: PinnedGeneration[], result: SyncImportResult): void {
-  for (const generation of generations) {
-    for (const value of parseFromPinned(generation, "ontology-relations.jsonl", result.malformedRows)) {
-      if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
-          typeof value.source_fact_id !== "string" || !value.source_fact_id ||
-          typeof value.target_fact_id !== "string" || !value.target_fact_id ||
-          typeof value.relation_type !== "string" || !ALLOWED_RELATION_TYPES.has(value.relation_type)) {
-        continue;
-      }
-      const source = db.prepare(
-        "SELECT scope_type, scope_project, updated_at, COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock FROM facts WHERE id = ?",
-      ).get(value.source_fact_id) as
-        | { scope_type: string; scope_project: string | null; updated_at: string; semantic_clock: string }
-        | undefined;
-      const target = db.prepare(
-        "SELECT scope_type, scope_project, updated_at, COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock FROM facts WHERE id = ?",
-      ).get(value.target_fact_id) as
-        | { scope_type: string; scope_project: string | null; updated_at: string; semantic_clock: string }
-        | undefined;
-      if (!source || !target ||
-          (source.scope_type === "project" && target.scope_type === "project" &&
-           source.scope_project !== target.scope_project) ||
-          db.prepare("SELECT 1 FROM ontology_relations WHERE id = ?").get(value.id)) {
-        continue;
-      }
-      const relationCreatedAt = isTimestamp(value.created_at) ? value.created_at : null;
-      // 재감사 P1-3: endpoint version은 의미 세계의 시각으로 검증한다. payload가
-      // semantic stamp를 주면(신버전 exporter) 로컬 semantic clock과 비교하고,
-      // 없으면(구버전 payload) 기존 updated_at 검증을 그대로 쓴다 — transition
-      // 동안 구버전 peer의 relation은 이전과 같이 판정된다.
-      const sourceMatches = isTimestamp(value.source_fact_semantic_updated_at)
-        ? compareTimestamps(value.source_fact_semantic_updated_at, source.semantic_clock) === 0
-        : isTimestamp(value.source_fact_updated_at)
-          ? compareTimestamps(value.source_fact_updated_at, source.updated_at) === 0
-          : !relationCreatedAt || compareTimestamps(relationCreatedAt, source.updated_at) >= 0;
-      const targetMatches = isTimestamp(value.target_fact_semantic_updated_at)
-        ? compareTimestamps(value.target_fact_semantic_updated_at, target.semantic_clock) === 0
-        : isTimestamp(value.target_fact_updated_at)
-          ? compareTimestamps(value.target_fact_updated_at, target.updated_at) === 0
-          : !relationCreatedAt || compareTimestamps(relationCreatedAt, target.updated_at) >= 0;
-      if (!sourceMatches || !targetMatches) continue;
-      try {
-        db.prepare(`
-          INSERT INTO ontology_relations
-            (id, source_fact_id, relation_type, target_fact_id, reasoning, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).run(
-          value.id, value.source_fact_id, value.relation_type, value.target_fact_id,
-          typeof value.reasoning === "string" ? value.reasoning : null,
-          relationCreatedAt ?? new Date().toISOString(),
-        );
-        result.newRelations++;
-      } catch {
-        // Duplicate triple under a different id or another local invariant.
-      }
-    }
-  }
+function generationKey(generation: PinnedGeneration): string {
+  return `${generation.deviceId}/${generation.generationId}`;
 }
 
 /**
- * Reconcile protocol-v2 sync files into the local DB.
+ * v4 rows are validated STRICTLY before any import (protocol v4 + no legacy
+ * peers): a schema-invalid row is payload corruption — the exporter is the
+ * payload's only writer, and a fact row missing its semantic or lifecycle
+ * clock is exactly the ambiguity sync exists to eliminate. The row's whole
+ * generation is rejected (fail-closed, matching the manifest contract)
+ * instead of silently dropping the row and importing its survivors.
+ */
+const ROW_VALIDATORS: Array<{ file: string; validate: (value: unknown) => boolean }> = [
+  { file: "facts.jsonl", validate: (value) => parseSyncFact(value) !== null },
+  { file: "fact-revisions.jsonl", validate: (value) => parseRevision(value) !== null },
+  { file: "fact-tombstones.jsonl", validate: (value) => parseTombstone(value) !== null },
+  { file: "recall-events.jsonl", validate: (value) => parseRecallEvent(value) !== null },
+];
+
+function rejectInvalidRows(
+  generations: PinnedGeneration[],
+  issues: PayloadIssue[],
+): Set<string> {
+  const rejected = new Set<string>();
+  for (const generation of generations) {
+    for (const { file, validate } of ROW_VALIDATORS) {
+      const content = generation.files.get(file);
+      if (content === undefined) continue;
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line.trim()) continue;
+        let value: unknown;
+        try {
+          value = JSON.parse(line);
+        } catch {
+          continue; // already rejected by the integrity pass
+        }
+        if (!validate(value)) {
+          rejected.add(generationKey(generation));
+          issues.push({
+            file: path.join(generation.source, file),
+            line: i + 1,
+            error: `row failed protocol v4 schema validation, generation ${generation.generationId} rejected — a schema-invalid payload row is corruption, not legacy input`,
+          });
+          break;
+        }
+      }
+      if (rejected.has(generationKey(generation))) break;
+    }
+  }
+  return rejected;
+}
+
+/**
+ * Reconcile protocol-v4 sync files into the local DB.
  *
  * Input contract (재감사 P1-1/P1-4): only committed device generations are
  * read, each pinned fully into memory before any DB mutation. The former root
@@ -1058,10 +1046,19 @@ function importRelations(db: Database.Database, generations: PinnedGeneration[],
  * non-atomic mirror with set-atomic generations re-opened the mixed-snapshot
  * hole the generations exist to close.
  *
- * Conflict order: semantic event clock (semantic_updated_at; legacy payloads
- * fall back to updated_at), then a deterministic canonical fact key;
- * hard-delete tombstones win exact-time ties. Source-created timestamps remain
- * historical data and are never used as local processing cursors.
+ * v4 row schema is validated STRICTLY before any import: a schema-invalid row
+ * is payload corruption (the exporter is the payload's only writer and this
+ * repository has no legacy peers), so its whole generation is rejected —
+ * nothing from it imports and the damage is reported.
+ *
+ * Conflict order, per independent axis: the SEMANTIC axis judges meaning by
+ * the semantic event clock (semantic_updated_at) with a deterministic
+ * canonical fact key on exact ties; the LIFECYCLE axis judges activation by
+ * lifecycle_updated_at where an exact tie resolves to inactive (재감사
+ * P1-3 v4); lineage metadata (source_exchange_ids union, consolidated_count
+ * max) converges monotonically regardless of either clock. Hard-delete
+ * tombstones win exact-time ties. Source-created timestamps remain historical
+ * data and are never used as local processing cursors.
  */
 export async function importFromSync(): Promise<SyncImportResult> {
   const result: SyncImportResult = {
@@ -1072,23 +1069,23 @@ export async function importFromSync(): Promise<SyncImportResult> {
     newTombstones: 0,
     newRecallEvents: 0,
     updatedRecallEvents: 0,
-    newDomains: 0,
-    newCategories: 0,
-    newRelations: 0,
     malformedRows: [],
   };
   const syncDir = getSyncDir();
-  const generations = collectCommittedGenerations(syncDir, result.malformedRows);
+  const pinned = collectCommittedGenerations(syncDir, result.malformedRows);
+  if (pinned.length === 0) return result;
+  const rejected = rejectInvalidRows(pinned, result.malformedRows);
+  const generations = rejected.size === 0
+    ? pinned
+    : pinned.filter((generation) => !rejected.has(generationKey(generation)));
   if (generations.length === 0) return result;
 
   const db = initDatabase();
   try {
-    importOntology(db, generations, result);
     importTombstones(db, generations, result);
     await importFacts(db, generations, result);
     importRevisions(db, generations, result);
     importRecallEvents(db, generations, result);
-    importRelations(db, generations, result);
     return result;
   } finally {
     db.close();

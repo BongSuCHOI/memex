@@ -210,19 +210,34 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
             // transaction nests as a savepoint inside this one.
             // 재감사 P1-2: 비교에 쓴 의미가 아직 현재인지 commit 시점에 CAS한다 —
             // LLM 왕복 동안 어느 쪽이든 변이됐으면 이 판정은 폐기된다(dirty 유지).
+            // 재감사 P1-2(v4): provenance는 commit 시점에 live row를 다시 읽어
+            // union한다 — sync import가 LLM 왕복 동안 provenance를 union했어도
+            // (semantic_generation을 올리지 않는 metadata 쓰기) 이 읽기가 그 결과를
+            // 흡수해 monotone union이 어떤 교차 순서에서도 유실되지 않는다.
             const apply = db.transaction(() => {
-                const genStmt = db.prepare('SELECT semantic_generation FROM facts WHERE id = ?');
-                const existingGen = genStmt.get(existingFact.id)
-                    ?.semantic_generation;
+                const genStmt = db.prepare('SELECT semantic_generation, source_exchange_ids FROM facts WHERE id = ?');
+                const existingNow = genStmt.get(existingFact.id);
                 const newGen = genStmt.get(newFact.id)
                     ?.semantic_generation;
-                if (existingGen !== existingFact.semantic_generation ||
+                if (!existingNow ||
+                    existingNow.semantic_generation !== existingFact.semantic_generation ||
                     newGen !== newFact.semantic_generation) {
                     return false;
                 }
+                let liveSources = newFact.source_exchange_ids;
+                try {
+                    const parsed = JSON.parse(existingNow.source_exchange_ids ?? '[]');
+                    if (Array.isArray(parsed)) {
+                        liveSources = [...new Set([
+                                ...parsed.filter((id) => typeof id === 'string'),
+                                ...newFact.source_exchange_ids,
+                            ])];
+                    }
+                }
+                catch { /* unparseable local provenance — keep the new evidence side */ }
                 updateFact(db, existingFact.id, {
                     consolidated_count_increment: true,
-                    source_exchange_ids: mergedSources,
+                    source_exchange_ids: liveSources,
                 });
                 deactivateFactTransactional(db, newFact.id);
                 return true;

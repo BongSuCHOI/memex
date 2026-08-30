@@ -152,6 +152,16 @@ export function purgeConversationFromIndex(db, input) {
             deleteVector.run(exchangeId);
             deleteExchange.run(exchangeId);
         }
+        // 재감사 P1-4(protocol v4): taxonomy는 fact에서 파생된 model-derived
+        // 상태다 — LLM이 만든 domain/category description과 그 벡터는 제거된
+        // private 증거에서 유래했을 수 있고, purge 계약("searchable and
+        // model-derived state is removed")은 그 잔존을 허용하지 않는다. 전면
+        // invalidate하고 남은 facts의 overlay를 끊는다; 분류 백필이 공개 facts만으로
+        // taxonomy를 재구축한다(derived 상태이므로 재구축 가능).
+        db.prepare("DELETE FROM vec_categories").run();
+        db.prepare("DELETE FROM ontology_categories").run();
+        db.prepare("DELETE FROM ontology_domains").run();
+        db.prepare("UPDATE facts SET ontology_category_id = NULL").run();
         if (input.sessionId) {
             db.prepare("DELETE FROM extraction_log WHERE session_id = ?").run(input.sessionId);
             db.prepare("DELETE FROM recall_events WHERE session_id = ?").run(input.sessionId);

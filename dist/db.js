@@ -332,7 +332,9 @@ export function initDatabase() {
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
-      semantic_updated_at TEXT NOT NULL DEFAULT ''
+      semantic_updated_at TEXT NOT NULL DEFAULT '',
+      lifecycle_generation INTEGER NOT NULL DEFAULT 1,
+      lifecycle_updated_at TEXT NOT NULL DEFAULT ''
     )
   `);
     // Consolidation processing order is local ingestion/mutation order, never the
@@ -356,6 +358,20 @@ export function initDatabase() {
         db.exec("ALTER TABLE facts ADD COLUMN semantic_updated_at TEXT NOT NULL DEFAULT ''");
     }
     db.prepare("UPDATE facts SET semantic_updated_at = updated_at WHERE semantic_updated_at = ''").run();
+    // 재감사 P1-3(protocol v4): 활성 시계. is_active는 의미 state와 독립인
+    // lifecycle state다 — deactivate/restore/sync lifecycle import가 generation을
+    // 올리고 lifecycle_updated_at을 기록하며, embedding await가 있는 async
+    // writer(restore, sync activate)는 semantic + lifecycle token 둘 다 CAS한다.
+    // 의미 편집은 이 시계를 건드리지 않고, lifecycle 전환도 의미 시계를
+    // 건드리지 않는다 — "새 의미 + 더 최근 deactivate"가 어느 축도 롤백하지
+    // 않고 수렴한다. legacy 행은 generation 1에서 updated_at로 시작한다.
+    if (!factColumns.has("lifecycle_generation")) {
+        db.exec("ALTER TABLE facts ADD COLUMN lifecycle_generation INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!factColumns.has("lifecycle_updated_at")) {
+        db.exec("ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''");
+    }
+    db.prepare("UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''").run();
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);

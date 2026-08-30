@@ -91,7 +91,9 @@ export declare function editFact(db: Database.Database, id: string, opts: {
     reason?: string;
     sourceExchangeId?: string;
 }): Promise<EditResult>;
-/** Deactivate (default delete). Removes from search/vector immediately. */
+/** Deactivate (default delete). Removes from search/vector immediately.
+ * Lifecycle 전환이므로 lifecycle_generation을 올린다(재감사 P1-3 v4) — sync는
+ * 이 시계로 deactivate를 전파하고, restore은 이 토큰으로 await race를 폐기한다. */
 export declare function deactivateFactTransactional(db: Database.Database, id: string): {
     deactivated: true;
     removedFromVectorIndex: boolean;

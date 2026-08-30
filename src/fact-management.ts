@@ -145,9 +145,13 @@ function deactivateWithinTransaction(
   id: string,
   expectedSemanticGeneration: number,
 ): void {
+  // 재감사 P1-3(protocol v4): 비활성화는 lifecycle 사건이다 — semantic 시계는
+  // 건드리지 않고 lifecycle_generation을 올려 sync lifecycle reconcile과
+  // restore의 dual CAS가 이 전환을 순서 있게 본다. CAS 토큰은 판정 근거인
+  // semantic_generation(merge verdict가 세운 의미)에 둔다.
   const result = db.prepare(
-    'UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ? AND is_active = 1 AND semantic_generation = ?',
-  ).run(new Date().toISOString(), id, expectedSemanticGeneration);
+    'UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 1 AND semantic_generation = ?',
+  ).run(new Date().toISOString(), new Date().toISOString(), id, expectedSemanticGeneration);
   if (result.changes === 0) {
     throw new StaleFactMutationError(
       `deactivation discarded: fact ${id} changed meaning or state during the comparison`,
@@ -298,10 +302,12 @@ export async function editFact(
 }
 
 
-/** Deactivate (default delete). Removes from search/vector immediately. */
+/** Deactivate (default delete). Removes from search/vector immediately.
+ * Lifecycle 전환이므로 lifecycle_generation을 올린다(재감사 P1-3 v4) — sync는
+ * 이 시계로 deactivate를 전파하고, restore은 이 토큰으로 await race를 폐기한다. */
 export function deactivateFactTransactional(db: Database.Database, id: string): { deactivated: true; removedFromVectorIndex: boolean } {
   const tx = db.transaction(() => {
-    const r = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+    const r = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), id);
     if (r.changes === 0) throw new Error(`no active fact with id: ${id} (not found or already inactive)`);
     let removed = false;
     if (tableExists(db, 'vec_facts')) {
@@ -330,10 +336,10 @@ export async function restoreFact(
 ): Promise<{ restored: true; vectorRestored: boolean; reembedded: boolean }> {
   const row = db
     .prepare(
-      'SELECT fact, embedding, embedding_version, semantic_generation FROM facts WHERE id = ? AND is_active = 0',
+      'SELECT fact, embedding, embedding_version, semantic_generation, lifecycle_generation FROM facts WHERE id = ? AND is_active = 0',
     )
     .get(id) as
-    | { fact: string; embedding: Buffer | null; embedding_version: number; semantic_generation: number }
+    | { fact: string; embedding: Buffer | null; embedding_version: number; semantic_generation: number; lifecycle_generation: number }
     | undefined;
   if (!row) throw new Error(`no inactive fact with id: ${id}`);
 
@@ -363,12 +369,15 @@ export async function restoreFact(
   // being computed, committing would pair the OLD text's vector with the NEW
   // text and stamp it embedding_version=current — a mismatch the self-heal
   // can never see. CAS on (is_active, semantic_generation) and discard.
+  // 재감사 P1-3(protocol v4): restore은 lifecycle 전환이기도 하다 — lifecycle
+  // 토큰까지 검사해 await 중인 deactivate/remote lifecycle import를 존중하고,
+  // 커밋이 lifecycle_generation을 올려 다른 기기의 순서 판정을 가능하게 한다.
   const tx = db.transaction((): 'vector' | 'plain' | 'stale' => {
     if (vector && tableExists(db, 'vec_facts')) {
       const now = new Date().toISOString();
       const claimed = db.prepare(
-        'UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ?',
-      ).run(now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id, row.semantic_generation);
+        'UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ? AND lifecycle_generation = ?',
+      ).run(now, now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id, row.semantic_generation, row.lifecycle_generation);
       if (claimed.changes === 0) return 'stale';
       const vp = vecParamFor(db, 'vec_facts', vector);
       db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
@@ -383,8 +392,8 @@ export async function restoreFact(
       return 'vector';
     }
     const claimed = db.prepare(
-      'UPDATE facts SET is_active = 1, needs_consolidation = 1, updated_at = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ?',
-    ).run(new Date().toISOString(), id, row.semantic_generation);
+      'UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ? AND lifecycle_generation = ?',
+    ).run(new Date().toISOString(), new Date().toISOString(), id, row.semantic_generation, row.lifecycle_generation);
     return claimed.changes === 0 ? 'stale' : 'plain';
   });
   const outcome = tx();
