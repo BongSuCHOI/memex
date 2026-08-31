@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-31T02:58:56.000Z",
+  "recordedAt": "2026-08-31T03:58:00.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,7 +9,7 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "b617d6791f05d1f0277abd2b96c1150d7060b8f1",
+    "codeSha": "b16ae53a0fff741c6233064c5f10bb6d5d5f79d1",
     "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, and owner documentation are unchanged after the evidence run."
   },
   "verdict": "PASS",
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "69 files / 619 tests passed"
+      "observed": "69 files / 623 tests passed"
     },
     {
       "name": "codex-slice",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz 189 files / 714158 bytes packed / 2824066 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract"
+      "observed": "memex-0.2.0.tgz 189 files / 715158 bytes packed / 2827725 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; initial sandbox run hit registry ENOTFOUND, authorized network rerun passed"
     },
     {
       "name": "lifecycle-e2e",
@@ -68,7 +68,7 @@
     }
   ],
   "reauditClosures": {
-    "reference": "Fact extraction context/evidence grounding Phase 0+J, Phase 1+A+B partial / Phase 2+C+D, and Phase 3+E integration",
-    "result": "PASS at codeSha b617d6791f05d1f0277abd2b96c1150d7060b8f1: structured authoritative grounding and bounded semantic windows retain self-amplification leakage at zero in the 17-case synthetic evaluation; full tests, slice gates, installer, marketplace, package-runtime, and lifecycle E2Es passed from the committed clean integration baseline"
+    "reference": "Fact extraction context/evidence grounding Phase 0+J, Phase 1+A+B partial / Phase 2+C+D, Phase 3+E, and Phase 4+F integration",
+    "result": "PASS at codeSha b16ae53a0fff741c6233064c5f10bb6d5d5f79d1: incremental extraction exposes one bounded pre-watermark exchange as context-only, prevents prefix anchors and authoritative human/tool evidence reuse, resolves a new human ratification across the boundary with suffix-only lineage, and preserves claim/retry/atomic watermark behavior; full tests, slice gates, installer, marketplace, package-runtime, and lifecycle E2Es passed from the committed clean integration baseline"
   }
 }
