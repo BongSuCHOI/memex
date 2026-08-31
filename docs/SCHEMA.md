@@ -55,6 +55,10 @@ Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
 저장하지 않습니다. `facts.source_exchange_ids`만 검증된 authoritative exchange UUID
 lineage를 유지합니다. Context-only assistant/recall exchange를 이 배열에 넣지 않습니다.
 
+Phase 6 evaluation의 candidate/accepted/rejection/grounding/ratification counter도 process-local
+report diagnostics입니다. `extraction_log`, `facts`, protocol v4 payload에 새 telemetry column이나
+field를 추가하지 않습니다.
+
 ## 3. Facts
 
 핵심 컬럼:

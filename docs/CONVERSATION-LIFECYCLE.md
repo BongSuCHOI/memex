@@ -61,6 +61,19 @@ exchange ID는 `(session_id, user turn line)`에서 결정론적으로 파생되
 
 FTS5는 external-content trigger로 동기화하며 vector row는 현재 embedding generation과 같은 공간에서만 검색합니다.
 
+### Exchange의 visibility/authority 매핑
+
+| exchange content | Archive/FTS/vector | Extraction context | Fact evidence |
+| --- | --- | --- | --- |
+| human assertion/decision/correction/ratification | searchable | visible | validator 통과 시 허용 |
+| trusted local repo/git/test result | searchable | evidence block | 실제 tool provenance 일치 시 허용 |
+| ordinary assistant synthesis | searchable | context-only | 금지 |
+| recall-influenced assistant / Memex tool result | searchable | context-only | 금지 |
+| external/unknown output | archive/search 가능 | 기본 extraction envelope에서 제외 | 금지 |
+
+즉 `assistant_learnable = 0`은 검색 제외 표시가 아닙니다. `has_memex_recall = 1`도 assistant
+transcript를 FTS/vector에서 제거하지 않으며, extraction 단계에서 authority만 차단합니다.
+
 ## 5. Lifecycle hooks
 
 ### SessionStart
@@ -165,6 +178,11 @@ consolidated_count  = max
 로컬 row가 이미 있으면 최종 commit 직전에 **현재 live lineage를 다시 읽어** remote aggregate와 union/max합니다. embedding await 중 concurrent DUPLICATE consolidation이 provenance를 추가해도 잃지 않습니다.
 
 로컬 row가 없는 fresh insert도 semantic winner의 의미 + lifecycle winner의 상태 + aggregate lineage union/max를 조합합니다.
+
+이 union의 입력은 extractor가 검증한 authoritative `source_exchange_ids`뿐입니다. Assistant,
+recall, watermark prefix의 context dependency는 sync payload에 추가되지 않습니다. Conversation
+exclusion purge도 같은 authoritative lineage를 역참조하므로, context visibility를 durable
+lineage로 확장하지 않는 것이 sync 수렴과 privacy 삭제 의미를 동시에 보존합니다.
 
 ## 8. Replicated lifecycle
 

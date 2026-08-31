@@ -146,6 +146,7 @@ describe('Fact Extractor', () => {
         'RECALL_RATIFICATION',
         'RECALL_NO_NEW_HUMAN',
         'RECALL_NEW_ADOPTION',
+        'REPEATED_PREFERENCE_LINEAGE',
       ]) {
         expect(EXTRACTION_SYSTEM_PROMPT).toContain(gate);
       }

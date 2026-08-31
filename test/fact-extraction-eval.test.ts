@@ -184,6 +184,139 @@ describe("fact extraction evaluation fixture", () => {
     );
   });
 
+  it("reports exclusive candidate acceptance and rejection telemetry", async () => {
+    const fixture = parseFactExtractionFixture({
+      schema_version: 1,
+      name: "observability-fixture",
+      description: "Phase 6 candidate decision telemetry",
+      cases: [{
+        id: "candidate-decisions",
+        title: "candidate decisions",
+        tags: ["positive", "ratification", "verified_local", "repeated_signal"],
+        exchanges: [
+          {
+            id: "decision-1",
+            user_message: "Keep responses concise across projects.",
+            assistant_message: "I recommend Riverpod for this project.",
+            tool_evidence: [{
+              id: "tool-1",
+              tool_name: "read_file",
+              tool_result: "database = sqlite",
+              source_type: "repo_file",
+              learnable: true,
+              is_error: false,
+            }],
+          },
+          {
+            id: "decision-2",
+            user_message: "Yes, use it. Keep this concise too.",
+            assistant_message: "Proceeding with Riverpod.",
+          },
+        ],
+        expected: {
+          outcome: "facts",
+          facts: [
+            {
+              required_terms: ["riverpod"],
+              category: "decision",
+              scope_type: "project",
+              authoritative_exchange_ids: ["decision-2"],
+            },
+            {
+              required_terms: ["sqlite"],
+              category: "knowledge",
+              scope_type: "project",
+              authoritative_exchange_ids: ["decision-1"],
+            },
+            {
+              required_terms: ["concise"],
+              category: "preference",
+              scope_type: "global",
+              authoritative_exchange_ids: ["decision-1", "decision-2"],
+            },
+          ],
+        },
+      }],
+    });
+
+    const accepted = [
+      {
+        fact: "This project uses Riverpod.",
+        category: "decision",
+        scope_type: "project",
+        confidence: 0.95,
+        grounding_type: "explicit",
+        durable: true,
+        evidence: [{ exchange_index: 2, source: "human", kind: "ratification" }],
+        context_exchange_indices: [1],
+      },
+      {
+        fact: "This project uses SQLite.",
+        category: "knowledge",
+        scope_type: "project",
+        confidence: 0.95,
+        grounding_type: "verified",
+        durable: true,
+        evidence: [{
+          exchange_index: 1,
+          source: "tool",
+          kind: "repo_file",
+          tool_name: "read_file",
+          source_type: "repo_file",
+        }],
+      },
+      {
+        fact: "The user prefers concise responses across projects.",
+        category: "preference",
+        scope_type: "global",
+        confidence: 0.9,
+        grounding_type: "inferred",
+        durable: true,
+        evidence: [
+          { exchange_index: 1, source: "human", kind: "repeated_signal" },
+          { exchange_index: 2, source: "human", kind: "repeated_signal" },
+        ],
+      },
+    ];
+    const rejected = [
+      { ...accepted[0], fact: "Temporary choice.", durable: false },
+      {
+        ...accepted[0],
+        fact: "Assistant-only claim.",
+        evidence: [{ exchange_index: 1, source: "assistant", kind: "assertion" }],
+      },
+      {
+        ...accepted[2],
+        fact: "Weak inference.",
+        evidence: [{ exchange_index: 1, source: "human", kind: "repeated_signal" }],
+      },
+      { ...accepted[0], fact: "Low confidence.", confidence: 0.4 },
+      { ...accepted[0], fact: "" },
+    ];
+
+    const report = await evaluateFactExtractionFixture(fixture, {
+      model: "fixture-model",
+      invokeModel: async () => ({ text: JSON.stringify([...accepted, ...rejected]) }),
+    });
+
+    expect(report.summary).toMatchObject({
+      candidate_count: 8,
+      accepted_count: 3,
+      rejected_invalid_schema: 1,
+      rejected_invalid_evidence: 1,
+      rejected_not_durable: 1,
+      rejected_grounding_rule: 1,
+      rejected_confidence: 1,
+      grounding_explicit: 1,
+      grounding_verified: 1,
+      grounding_inferred: 1,
+      context_resolved_ratification: 1,
+    });
+    expect(report.cases[0].extraction_observability).toEqual(
+      expect.objectContaining({ candidate_count: 8, accepted_count: 3 }),
+    );
+  });
+
   it("reports per-case regressions and improvements against a baseline", () => {
     const baseline = {
       schema_version: 1,

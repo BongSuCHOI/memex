@@ -164,6 +164,32 @@ precision/positive recall/negative accuracy/ratification/verified-local 100%, se
 leakage 0, model call 17회를 관측했습니다. raw model report는 private-derived ignored artifact로만
 보관합니다.
 
+Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieval surface까지 연결합니다.
+
+- accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
+- overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
+- conversation exclusion purge는 authoritative source exchange에 연결된 fact와 derived state를 제거
+- recall-influenced assistant의 고유 text가 FTS와 vector conversation search 양쪽에서 검색됨
+- 검색된 row는 동시에 `assistant_learnable = 0`, `has_memex_recall = 1`을 유지
+- eval report의 candidate acceptance/rejection reason은 배타적으로 집계되며 production DB에는 미저장
+- grounding별 accepted count와 context-resolved human ratification count를 report에 기록
+
+동일 fixture SHA `f45b4f0a…5bcd6`의 최종 Luna run은 17/17 PASS, matched/observed
+11/11, false positive/self-amplification leakage 0을 관측했습니다. Candidate/accepted는 11/11,
+rejection 5종은 모두 0, accepted grounding은 explicit 8 / verified 2 / inferred 1,
+context-resolved ratification은 5였습니다. Phase 0 baseline 대비 improvement 8, regression 0이며
+raw report는 ignored `.fact-extraction-eval/`에만 보관합니다.
+
+승인된 read-only archive shadow는 Phase 0과 같은 3 sessions / 38 exchanges에서 execution error
+0, candidate/accepted 14/14를 관측했습니다. 로컬 수동 판정은 KEEP 12, cross-window semantic
+duplicate `DROP-noise` 2, `WRONG-category`/`WRONG-scope`/`DROP-unsupported` 0,
+unreferenced `MISS-important` at least 4 exchanges였습니다. Shadow report에는 expected label이
+없으므로 자동 `precision=0`은 품질 지표가 아니며 수동 taxonomy가 판정 근거입니다. Model call은
+12회, input/output token은 276,829/6,279, latency는 159.7s였습니다. 실행 전후 archive DB
+SHA-256은 모두
+`a476ec1c46b4dadf1cc3ce572f6b2adf06fdb58d7a5f4d8fc7fb7c6153e1d0bd`였습니다. Raw report와
+대화 원문은 ignored private artifact이고 production backfill은 실행하지 않았습니다.
+
 관련 좁은 gate:
 
 ```bash
@@ -174,6 +200,19 @@ npx vitest run \
   test/extraction-claim-e2e.test.ts \
   test/extraction-session-retry.test.ts \
   test/session-end-worker-p0.test.ts
+```
+
+G/H 연결 gate:
+
+```bash
+npx vitest run \
+  test/fact-extractor.test.ts \
+  test/extraction-claim-e2e.test.ts \
+  test/recall-provenance.test.ts \
+  test/sync-exclusion-marker.test.ts \
+  test/sync-export-import.test.ts \
+  test/conversation-search-window.test.ts \
+  test/fact-extraction-eval.test.ts
 ```
 
 ## 9. Release 원칙

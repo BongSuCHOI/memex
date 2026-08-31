@@ -53,6 +53,11 @@ First decide whether authoritative evidence directly supports the exact claim.
   same conclusion. Cite every distinct supporting exchange as repeated_signal evidence. Rephrasings
   of one question, repeated context-only text, one assistant suggestion, or one isolated action are
   not independent evidence. Context-only signals never count toward the minimum.
+- REPEATED_PREFERENCE_LINEAGE: imperative requests to use X, including "use X in other projects",
+  are behavioral signals rather than standalone explicit preference declarations. When multiple
+  independent requests converge on a durable preference, use inferred grounding and cite every
+  supporting human exchange as repeated_signal. Reserve explicit preference grounding for a human
+  who directly states the durable preference itself (for example, "I generally prefer X").
 
 ### GATE_2_DURABILITY
 Then decide whether the grounded claim will still help in a future task or session.
@@ -402,6 +407,21 @@ export function buildExtractionPrompt(exchanges) {
         }),
     }, null, 2);
 }
+export function createFactExtractionObservability() {
+    return {
+        candidate_count: 0,
+        accepted_count: 0,
+        rejected_invalid_schema: 0,
+        rejected_invalid_evidence: 0,
+        rejected_not_durable: 0,
+        rejected_grounding_rule: 0,
+        rejected_confidence: 0,
+        grounding_explicit: 0,
+        grounding_verified: 0,
+        grounding_inferred: 0,
+        context_resolved_ratification: 0,
+    };
+}
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -449,14 +469,10 @@ function validatedContextIndices(value, exchangeCount) {
     }
     return [...indices];
 }
-/**
- * Parse one untrusted model candidate and validate its declared evidence against
- * the actual exchange/tool rows selected from SQLite. Any invalid declaration
- * rejects the entire candidate; context-only rows never enter durable lineage.
- */
-export function validateExtractedFactCandidate(candidate, exchanges) {
+function validateExtractedFactCandidateDetailed(candidate, exchanges) {
+    const reject = (reason) => ({ accepted: false, reason });
     if (!isRecord(candidate))
-        return null;
+        return reject("invalid_schema");
     const fact = candidate.fact;
     const factKr = candidate.fact_kr;
     const category = candidate.category;
@@ -464,43 +480,54 @@ export function validateExtractedFactCandidate(candidate, exchanges) {
     const groundingType = candidate.grounding_type;
     const durable = candidate.durable;
     const confidence = candidate.confidence;
-    if (typeof fact !== "string" || fact.trim() === "")
-        return null;
-    if (factKr !== undefined && typeof factKr !== "string")
-        return null;
+    if (typeof fact !== "string" || fact.trim() === "") {
+        return reject("invalid_schema");
+    }
+    if (factKr !== undefined && typeof factKr !== "string") {
+        return reject("invalid_schema");
+    }
     if (typeof category !== "string" ||
         !FACT_CATEGORIES.has(category)) {
-        return null;
+        return reject("invalid_schema");
     }
     if (typeof scopeType !== "string" ||
         !FACT_SCOPES.has(scopeType)) {
-        return null;
+        return reject("invalid_schema");
     }
     if (typeof groundingType !== "string" ||
         !GROUNDING_TYPES.has(groundingType)) {
-        return null;
+        return reject("invalid_schema");
     }
-    if (durable !== true || !passesConfidenceGate(confidence))
-        return null;
+    if (typeof durable !== "boolean")
+        return reject("invalid_schema");
+    if (!durable)
+        return reject("not_durable");
+    if (typeof confidence !== "number" || !Number.isFinite(confidence)) {
+        return reject("invalid_schema");
+    }
+    if (!passesConfidenceGate(confidence)) {
+        return reject("confidence");
+    }
     const rawEvidence = candidate.evidence;
-    if (!Array.isArray(rawEvidence) || rawEvidence.length === 0)
-        return null;
+    if (!Array.isArray(rawEvidence) || rawEvidence.length === 0) {
+        return reject("invalid_evidence");
+    }
     const evidence = [];
     const authoritativeIds = new Set();
     let humanEvidenceCount = 0;
     let toolEvidenceCount = 0;
     for (const raw of rawEvidence) {
         if (!isRecord(raw) || !validExchangeIndex(raw.exchange_index, exchanges.length)) {
-            return null;
+            return reject("invalid_evidence");
         }
         const exchange = exchanges[raw.exchange_index - 1];
         if (!exchange || typeof raw.source !== "string" || typeof raw.kind !== "string") {
-            return null;
+            return reject("invalid_evidence");
         }
         if (raw.source === "human") {
             if (!HUMAN_EVIDENCE_KINDS.has(raw.kind) ||
                 !isEligibleHumanEvidence(exchange)) {
-                return null;
+                return reject("invalid_evidence");
             }
             evidence.push({
                 exchange_index: raw.exchange_index,
@@ -518,7 +545,7 @@ export function validateExtractedFactCandidate(candidate, exchanges) {
                 raw.tool_name.trim() === "" ||
                 typeof raw.source_type !== "string" ||
                 raw.source_type !== raw.kind) {
-                return null;
+                return reject("invalid_evidence");
             }
             const matchingTool = (exchange.tool_evidence ?? []).find((tool) => tool.tool_name === raw.tool_name &&
                 tool.source_type === raw.source_type &&
@@ -526,7 +553,7 @@ export function validateExtractedFactCandidate(candidate, exchanges) {
                 !isToolError(tool.is_error) &&
                 !!tool.tool_result);
             if (!matchingTool)
-                return null;
+                return reject("invalid_evidence");
             evidence.push({
                 exchange_index: raw.exchange_index,
                 source: "tool",
@@ -539,31 +566,58 @@ export function validateExtractedFactCandidate(candidate, exchanges) {
             continue;
         }
         // assistant, recall, external, and any unknown source fail closed.
-        return null;
+        return reject("invalid_evidence");
     }
-    if (groundingType === "explicit" && humanEvidenceCount < 1)
-        return null;
-    if (groundingType === "verified" && toolEvidenceCount < 1)
-        return null;
-    if (groundingType === "inferred" && authoritativeIds.size < 2)
-        return null;
+    if (groundingType === "explicit" && humanEvidenceCount < 1) {
+        return reject("grounding_rule");
+    }
+    if (groundingType === "verified" && toolEvidenceCount < 1) {
+        return reject("grounding_rule");
+    }
+    if (groundingType === "inferred" && authoritativeIds.size < 2) {
+        return reject("grounding_rule");
+    }
     const contextIndices = validatedContextIndices(candidate.context_exchange_indices, exchanges.length);
     if (!contextIndices)
-        return null;
+        return reject("invalid_evidence");
     return {
-        fact: fact.trim(),
-        ...(factKr !== undefined ? { fact_kr: factKr } : {}),
-        category: category,
-        scope_type: scopeType,
-        confidence: confidence,
-        grounding_type: groundingType,
-        durable: true,
-        evidence,
-        ...(candidate.context_exchange_indices !== undefined
-            ? { context_exchange_indices: contextIndices }
-            : {}),
-        source_exchange_ids: [...authoritativeIds],
+        accepted: true,
+        fact: {
+            fact: fact.trim(),
+            ...(factKr !== undefined ? { fact_kr: factKr } : {}),
+            category: category,
+            scope_type: scopeType,
+            confidence: confidence,
+            grounding_type: groundingType,
+            durable: true,
+            evidence,
+            ...(candidate.context_exchange_indices !== undefined
+                ? { context_exchange_indices: contextIndices }
+                : {}),
+            source_exchange_ids: [...authoritativeIds],
+        },
     };
+}
+export function validateExtractedFactCandidate(candidate, exchanges) {
+    const result = validateExtractedFactCandidateDetailed(candidate, exchanges);
+    return result.accepted ? result.fact : null;
+}
+function recordCandidateObservation(observability, result) {
+    if (!observability)
+        return;
+    observability.candidate_count += 1;
+    if (!result.accepted) {
+        observability[`rejected_${result.reason}`] += 1;
+        return;
+    }
+    observability.accepted_count += 1;
+    const grounding = result.fact.grounding_type;
+    if (grounding)
+        observability[`grounding_${grounding}`] += 1;
+    if ((result.fact.context_exchange_indices?.length ?? 0) > 0 &&
+        result.fact.evidence?.some((entry) => entry.kind === "ratification")) {
+        observability.context_resolved_ratification += 1;
+    }
 }
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(db, sessionId, stats, renewLease, options) {
@@ -627,8 +681,12 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             const extracted = parseJsonResponse(response);
             if (Array.isArray(extracted)) {
                 for (const candidate of extracted) {
-                    const fact = validateExtractedFactCandidate(candidate, window);
-                    if (!fact?.source_exchange_ids)
+                    const validation = validateExtractedFactCandidateDetailed(candidate, window);
+                    recordCandidateObservation(options?.observability, validation);
+                    if (!validation.accepted)
+                        continue;
+                    const fact = validation.fact;
+                    if (!fact.source_exchange_ids)
                         continue;
                     const sourceExchangeIds = fact.source_exchange_ids;
                     const key = normalizeFactText(fact.fact);

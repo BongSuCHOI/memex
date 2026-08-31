@@ -181,6 +181,14 @@ session만 평가합니다. 하지만 대화 본문이 configured Codex model로
 latency를 기록합니다. Codex JSONL에 `turn.completed.usage`가 있을 때만 token 수를
 `observed`로 기록하고, 없으면 추정값을 만들지 않고 `NOT_PROVEN`으로 남깁니다.
 
+Phase 6부터 같은 production validator가 eval-only in-memory accumulator에 candidate 판정을
+기록합니다. `candidate_count`는 model JSON array의 원소 수이고 `accepted_count`는 server
+validator를 통과한 candidate 수이므로, overlap dedup 이후의 `observed_fact_count`와 구분합니다.
+거절은 `invalid_schema`, `invalid_evidence`, `not_durable`, `grounding_rule`, `confidence` 중 정확히
+하나로 집계됩니다. accepted candidate는 explicit/verified/inferred grounding과, human
+ratification이 context index를 사용해 해석된 횟수를 별도로 기록합니다. Production extraction은
+accumulator를 전달하지 않으며 이 통계는 DB, extraction log, sync payload에 저장되지 않습니다.
+
 ## 5. Consolidation
 
 | 판정 | 동작 |

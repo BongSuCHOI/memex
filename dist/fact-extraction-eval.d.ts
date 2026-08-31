@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { type FactExtractionObservability } from "./fact-extractor.js";
 import type { EvidenceSourceType, ExtractedFact, FactCategory, FactScopeType } from "./types.js";
 export type EvaluationIssue = "DROP-noise" | "DROP-unsupported" | "MISS-important" | "WRONG-category" | "WRONG-provenance" | "WRONG-scope" | "EVAL-error";
 export interface FactExtractionEvalToolEvidence {
@@ -83,8 +84,9 @@ export interface FactExtractionEvaluationCaseReport {
     false_positive_count: number;
     execution_error?: string;
     calls: EvaluationCallReport[];
+    extraction_observability: FactExtractionObservability;
 }
-export interface EvaluationSummary {
+export interface EvaluationSummary extends FactExtractionObservability {
     case_count: number;
     passed_cases: number;
     failed_cases: number;

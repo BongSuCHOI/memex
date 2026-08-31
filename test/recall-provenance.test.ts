@@ -16,6 +16,7 @@ import {
 } from "../src/fact-extractor.js";
 import { insertFact, getActiveFacts, getRevisions } from "../src/fact-db.js";
 import { applyConsolidationResult } from "../src/consolidator.js";
+import { searchConversations } from "../src/search.js";
 
 vi.mock("../src/embeddings.js", () => ({
   EMBEDDING_VERSION: 73,
@@ -34,7 +35,7 @@ describe("Memex recall provenance", () => {
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("keeps recalled assistant text searchable but excludes it from learnable evidence", () => {
+  it("keeps recalled assistant text FTS/vector searchable but excludes it from learnable evidence", async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-recall-provenance-"));
     process.env.TEST_DB_PATH = path.join(tmp, "index.sqlite");
     db = initDatabase();
@@ -104,6 +105,21 @@ describe("Memex recall provenance", () => {
     `)
       .all();
     expect(searchable).toHaveLength(1);
+
+    const textResults = await searchConversations("SQLite", {
+      mode: "text",
+      project: "/tmp/project",
+    });
+    const vectorResults = await searchConversations("SQLite", {
+      mode: "vector",
+      project: "/tmp/project",
+    });
+    expect(textResults.map((result) => result.exchange.id)).toContain(
+      "exchange-recall-1",
+    );
+    expect(vectorResults.map((result) => result.exchange.id)).toContain(
+      "exchange-recall-1",
+    );
   });
 
   it("keeps ordinary assistant synthesis searchable but not learnable by default", () => {

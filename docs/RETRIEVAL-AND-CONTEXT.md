@@ -86,6 +86,19 @@ parser는 tool call ID로 결과를 분리합니다. 같은 turn에 Memex MCP ca
 
 반대로 unified `exec`처럼 여러 source가 하나의 결과에 섞여 원 출처를 증명할 수 없으면 전체를 `external_unverified/learnable=0`으로 처리합니다.
 
+### Searchability와 learnability의 독립성
+
+Conversation retrieval은 exchange의 `user_message`와 `assistant_message`를 모두 FTS5에
+색인하고, 두 본문을 함께 만든 exchange embedding을 vector lane에서 검색합니다. 따라서
+`assistant_learnable = 0`이거나 `has_memex_recall = 1`인 assistant text도 transcript로서는
+FTS/vector 검색 가능해야 합니다. 이 플래그는 extraction evidence authority를 제한할 뿐
+conversation index에서 assistant text를 제거하는 filter가 아닙니다.
+
+회귀 gate는 recall-influenced assistant에만 존재하는 용어가 text/vector 두 mode 모두에서 같은
+exchange를 반환하면서, DB row의 `assistant_learnable = 0`이 그대로인지 함께 확인합니다. 검색
+결과가 durable Fact evidence가 되는 것은 아니며, extractor는 별도의 typed evidence validator를
+계속 적용합니다.
+
 ## 7. Derived state와 retrieval
 
 `fact_kr`, ontology, relation, vectors는 local derived state입니다. sync 직후 새 fact가 들어오면 durable fact 자체는 존재하지만 다음 maintenance가 derived indexes를 채우기 전까지 일부 검색/graph surface가 pending일 수 있습니다.

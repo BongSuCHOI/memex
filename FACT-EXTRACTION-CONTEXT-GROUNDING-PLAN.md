@@ -2190,11 +2190,11 @@ Phase 0 baseline 대비 improvement 8개, regression 0개였으며 private-deriv
 
 ### 문서
 
-- [ ] `docs/FACT-LIFECYCLE.md`
-- [ ] `docs/RETRIEVAL-AND-CONTEXT.md`
-- [ ] `docs/CONVERSATION-LIFECYCLE.md`
-- [ ] `docs/SCHEMA.md` — persisted schema가 실제로 바뀔 경우
-- [ ] README는 public contract 변경이 있을 때만
+- [x] `docs/FACT-LIFECYCLE.md`
+- [x] `docs/RETRIEVAL-AND-CONTEXT.md`
+- [x] `docs/CONVERSATION-LIFECYCLE.md`
+- [x] `docs/SCHEMA.md` — 새 persisted field 없이 diagnostic 비영속성 명시
+- [x] README — public install/CLI contract 변경이 없어 변경 불필요로 판정
 
 ### observability
 
@@ -2213,6 +2213,101 @@ context_resolved_ratification
 ```
 
 production DB에 과도한 telemetry schema를 추가할 필요는 없다.
+
+### Phase 6+G+H+I+J 구현 기록 (2026-08-31)
+
+Production extractor의 public return과 validator API는 유지하면서, 내부 validation 결과를
+`accepted | rejected(reason)` discriminated union으로 좁혔다. Optional in-memory accumulator는
+eval harness만 전달하며 다음 exclusive counter를 case/summary report에 집계한다.
+
+```text
+candidate_count / accepted_count
+rejected_invalid_schema / rejected_invalid_evidence
+rejected_not_durable / rejected_grounding_rule / rejected_confidence
+grounding_explicit / grounding_verified / grounding_inferred
+context_resolved_ratification
+```
+
+`accepted_count`는 server validator 통과 candidate 수이고 `observed_fact_count`는 overlap dedup과
+safety cap 이후 unique result 수다. Production caller는 accumulator를 전달하지 않으므로
+`extraction_log`, fact schema, protocol v4 payload는 바뀌지 않았다.
+
+G/H 연결은 새 algorithm 대신 기존 durable consumer를 묶는 regression gate로 고정했다.
+
+```text
+typed evidence validator
+  -> authoritative source_exchange_ids only
+  -> window dedup / consolidation set union
+  -> privacy purge reverse lookup
+  -> sync union/max
+
+assistant/recall exchange
+  -> assistant_learnable=false
+  -> FTS(user + assistant) searchable
+  -> vector(user + assistant embedding) searchable
+  -> extraction에는 context-only
+```
+
+Recall-influenced assistant에만 있는 term이 FTS/vector public search에서 모두 반환되는 동시에
+`assistant_learnable=0`, `has_memex_recall=1`을 유지하는 회귀를 추가했다. Schema와 public
+README contract는 변경하지 않았고 context dependency persistence는 Optional Phase 7로 남겼다.
+
+동일 fixture SHA
+`f45b4f0aa5ecda45c4d16a426f12e7d62b8c04dc97e4db64d65ebcb9ed75bcd6`의 최종
+`gpt-5.6-luna` 관측:
+
+```text
+passed / failed:                 17 / 0
+matched / observed facts:       11 / 11
+precision / positive recall:    100% / 100%
+negative / ratification:        100% / 100%
+verified local recall:          100%
+false positive / leakage:       0 / 0
+candidate / accepted:           11 / 11
+rejected(all five reasons):     0
+grounding:                      explicit 8 / verified 2 / inferred 1
+context-resolved ratification:  5
+model calls:                    17
+input / output tokens:          335,300 / 2,489 (observed)
+total model latency:            115.6s
+```
+
+Phase 0 baseline 대비 improvement 8개, regression 0개다. 중간 평가 두 번에서
+`repeated-preference`가 마지막 행동형 요청 하나만 explicit lineage로 사용해 16/17이 재현됐고,
+scorer/fixture를 완화하지 않았다. `REPEATED_PREFERENCE_LINEAGE` prompt 계약으로 행동형 요청은
+repeated signal임을 명시한 뒤 inferred + 3개 authoritative lineage로 17/17을 회복했다. Raw
+reports는 ignored `.fact-extraction-eval/`에만 보관한다.
+
+같은 3개 non-Memex session / 38 exchanges에 대한 승인된 read-only archive shadow 재평가:
+
+```text
+execution errors:                    0
+candidate / accepted:               14 / 14
+manual KEEP:                        12
+manual DROP-noise:                   2 (cross-window semantic duplicates)
+manual WRONG-category / scope:       0 / 0
+manual DROP-unsupported:             0
+unreferenced MISS-important:         at least 4 exchanges
+grounding:                           explicit 14 / verified 0 / inferred 0
+rejected(all five reasons):          0
+model calls:                         12
+input / output tokens:               276,829 / 6,279 (observed)
+total model latency:                 159.7s
+```
+
+Phase 0 shadow의 32 candidates / KEEP 17 / DROP-noise 6 / WRONG-category 8 /
+WRONG-scope 1 / MISS-important at least 9와 비교하면, 일회성 audit 지시의 과대 추출은 사라지고
+중요 미추출 exchange도 감소했다. 남은 MISS는 marketplace 설치와 첫 sync/backfill onboarding을
+문서화하라는 product contract 계열이다. 후보 2건은 같은 저장소 승격 및 이름 변경 결정을
+인접하지 않은 window가 한·영으로 각각 생성한 의미 중복이며 server validator의 오류는 아니다.
+Shadow report에는 expected label이 없으므로 자동 `precision=0` 필드는 품질 판정에 사용하지 않고
+위 수동 taxonomy를 사용했다.
+
+Archive DB SHA-256은 실행 전후 모두
+`a476ec1c46b4dadf1cc3ce572f6b2adf06fdb58d7a5f4d8fc7fb7c6153e1d0bd`였다. 원문과 raw report는
+private ignored artifact로만 유지한다. 이 관측은 historical archive를 자동 재처리할 근거가
+아니므로 production backfill은 실행하지 않는다. 배포 후 운영자가 명시적으로 `memex backfill
+extract`를 선택하는 기존 계약을 유지한다.
 
 ---
 
@@ -2698,25 +2793,25 @@ self-amplification leakage = 0
 
 ## G. Provenance
 
-- [ ] `source_exchange_ids` 의미 유지
-- [ ] context-only IDs 저장 금지
-- [ ] consolidation union regression
-- [ ] privacy purge regression
-- [ ] sync regression
+- [x] `source_exchange_ids` 의미 유지
+- [x] context-only IDs 저장 금지
+- [x] consolidation union regression
+- [x] privacy purge regression
+- [x] sync regression
 
 ## H. Retrieval
 
-- [ ] assistant FTS/vector search regression
-- [ ] recall-influenced assistant searchable regression
-- [ ] learnable=false와 searchable=true 동시 보장
+- [x] assistant FTS/vector search regression
+- [x] recall-influenced assistant searchable regression
+- [x] learnable=false와 searchable=true 동시 보장
 
 ## I. Docs
 
-- [ ] FACT-LIFECYCLE
-- [ ] RETRIEVAL-AND-CONTEXT
-- [ ] CONVERSATION-LIFECYCLE
-- [ ] SCHEMA 필요 시
-- [ ] public README 필요 시
+- [x] FACT-LIFECYCLE
+- [x] RETRIEVAL-AND-CONTEXT
+- [x] CONVERSATION-LIFECYCLE
+- [x] SCHEMA — diagnostic 비영속성 확인/명시
+- [x] public README — public contract 변화 없어 변경 불필요
 
 ## J. Evaluation
 
@@ -3068,4 +3163,4 @@ P1 + P2
 - [x] 평가 fixture 먼저 작성 (Phase 0의 17-case fixture 재사용)
 - [x] assistant visibility와 evidence authority를 별도 code path로 구현
 - [x] server-side validation 없이 assistant visibility를 단독 merge하지 않음
-- [ ] 실제 archive shadow evaluation 후 production backfill 여부 결정
+- [x] 실제 archive shadow evaluation 후 production backfill 여부 결정 — 자동 실행하지 않고 기존 explicit operator backfill 계약 유지

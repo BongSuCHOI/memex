@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { extractFactsFromExchanges, } from "./fact-extractor.js";
+import { createFactExtractionObservability, extractFactsFromExchanges, } from "./fact-extractor.js";
 const FACT_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -329,7 +329,14 @@ function summarize(reports) {
         return ratio(selected.filter((entry) => entry.passed === true).length, selected.length);
     };
     const exploration = negatives.filter((entry) => entry.tags.includes("exploration"));
+    const extractionObservability = reports.reduce((total, entry) => {
+        for (const key of Object.keys(total)) {
+            total[key] += entry.extraction_observability[key];
+        }
+        return total;
+    }, createFactExtractionObservability());
     return {
+        ...extractionObservability,
         case_count: reports.length,
         passed_cases: curated.filter((entry) => entry.passed === true).length,
         failed_cases: curated.filter((entry) => entry.passed === false).length,
@@ -368,6 +375,7 @@ export async function evaluateFactExtractionFixture(fixture, options) {
     for (const testCase of fixture.cases) {
         const db = createCaseDatabase(testCase);
         const calls = [];
+        const extractionObservability = createFactExtractionObservability();
         let callIndex = 0;
         const modelCall = async (systemPrompt, userMessage) => {
             const currentCall = ++callIndex;
@@ -397,6 +405,7 @@ export async function evaluateFactExtractionFixture(fixture, options) {
             facts = await extractFactsFromExchanges(db, testCase.id, { droppedBatches: 0 }, undefined, {
                 onlyAfterRowid: testCase.watermark_after_exchange_index,
                 modelCall,
+                observability: extractionObservability,
             });
         }
         catch (error) {
@@ -428,6 +437,7 @@ export async function evaluateFactExtractionFixture(fixture, options) {
             false_positive_count: score.falsePositives,
             ...(executionError ? { execution_error: executionError } : {}),
             calls,
+            extraction_observability: extractionObservability,
         });
     }
     return {
@@ -472,10 +482,12 @@ export async function evaluateFactExtractionArchiveSessions(db, sessionIds, opti
                 false_positive_count: 0,
                 execution_error: "session was not found in the archive database",
                 calls: [],
+                extraction_observability: createFactExtractionObservability(),
             });
             continue;
         }
         const calls = [];
+        const extractionObservability = createFactExtractionObservability();
         let callIndex = 0;
         const modelCall = async (systemPrompt, userMessage) => {
             const currentCall = ++callIndex;
@@ -502,7 +514,7 @@ export async function evaluateFactExtractionArchiveSessions(db, sessionIds, opti
         let facts = [];
         let executionError;
         try {
-            facts = await extractFactsFromExchanges(db, sessionId, { droppedBatches: 0 }, undefined, { modelCall });
+            facts = await extractFactsFromExchanges(db, sessionId, { droppedBatches: 0 }, undefined, { modelCall, observability: extractionObservability });
         }
         catch (error) {
             executionError = error instanceof Error ? error.message : String(error);
@@ -522,6 +534,7 @@ export async function evaluateFactExtractionArchiveSessions(db, sessionIds, opti
             false_positive_count: 0,
             ...(executionError ? { execution_error: executionError } : {}),
             calls,
+            extraction_observability: extractionObservability,
         });
     }
     return {
