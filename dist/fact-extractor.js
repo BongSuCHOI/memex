@@ -85,20 +85,18 @@ export class ClaimLostError extends Error {
         this.name = "ClaimLostError";
     }
 }
-const BATCH_SIZE = 5; // configurable-ok
+const MAX_EXCHANGES_PER_WINDOW = 5; // configurable-ok
 const MAX_FACTS_PER_SESSION = 20; // configurable-ok
 const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
 const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call budget
-/** Trivial acknowledgements (EN/KR) that carry no extractable signal. */
-const TRIVIAL_USER_PATTERN = /^(ok(ay)?|yes|no|y|n|thanks?|thank you|good|nice|great|done|go|proceed|continue|응|넵?|네|예|아니오?|ㅇㅇ|ㅇㅋ|ㄱㄱ|좋아요?|그래|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?)[.!~\s]*$/i;
+/** Replies that may bridge context but should not trigger a model call alone. */
+const CONTEXT_ONLY_USER_PATTERN = /^(thanks?|thank you|done|go|proceed|continue|why|how|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?|왜|어떻게)[?.!~\s]*$/i;
 /**
- * Whether an exchange is worth sending to the extraction LLM.
- * Filters harness artifacts (local command output), bare slash commands,
- * and trivial acknowledgements — they waste LLM calls and produce noise facts.
+ * Whether an exchange may appear as semantic context. Short human replies stay
+ * visible; only empty/transport/housekeeping turns are removed.
  */
-export function isSubstantiveExchange(userMessage, assistantMessage, hasLearnableToolEvidence = false) {
+export function isContextEligibleExchange(userMessage) {
     const user = (userMessage ?? "").trim();
-    const assistant = (assistantMessage ?? "").trim();
     if (!user)
         return false;
     // Harness/system artifacts injected as user turns, not human input
@@ -110,15 +108,25 @@ export function isSubstantiveExchange(userMessage, assistantMessage, hasLearnabl
     // Bare slash commands like /clear, /model, /codex:review
     if (/^\/[\w:-]+$/.test(user))
         return false;
-    // Trivial acknowledgement with no substantive reply
-    if (TRIVIAL_USER_PATTERN.test(user) && !hasLearnableToolEvidence)
-        return false;
-    // Near-empty prompt with a near-empty answer
-    if (user.length < 5 && !hasLearnableToolEvidence)
-        return false;
     return true;
 }
-/** Normalize fact text for cross-batch duplicate detection within a session. */
+/**
+ * Whether an eligible exchange can justify an extraction call. Possible short
+ * ratification/correction remains an anchor; pure social or bridge text does
+ * not. Trusted local evidence always makes an eligible exchange an anchor.
+ */
+export function isCandidateAnchorExchange(userMessage, hasLearnableToolEvidence = false) {
+    if (!isContextEligibleExchange(userMessage))
+        return false;
+    if (hasLearnableToolEvidence)
+        return true;
+    return !CONTEXT_ONLY_USER_PATTERN.test(userMessage.trim());
+}
+/** @deprecated Use isCandidateAnchorExchange(); retained for package API compatibility. */
+export function isSubstantiveExchange(userMessage, _assistantMessage, hasLearnableToolEvidence = false) {
+    return isCandidateAnchorExchange(userMessage, hasLearnableToolEvidence);
+}
+/** Normalize fact text for cross-window duplicate detection within a session. */
 export function normalizeFactText(fact) {
     return fact
         .toLowerCase()
@@ -138,26 +146,30 @@ export function passesConfidenceGate(confidence) {
         confidence <= 1);
 }
 /**
- * Cap LLM calls for long sessions by picking evenly spread batches, so the
+ * Cap LLM calls for long sessions by picking evenly spread semantic windows, so the
  * beginning, middle, and end of a session are all represented instead of
  * only the head.
  */
-export function selectSpreadBatches(batches, maxBatches) {
-    if (batches.length <= maxBatches)
-        return batches;
-    if (maxBatches <= 1)
-        return [batches[0]];
+export function selectSpreadWindows(windows, maxWindows) {
+    if (windows.length <= maxWindows)
+        return windows;
+    if (maxWindows <= 1)
+        return [windows[0]];
     const selected = [];
-    const step = (batches.length - 1) / (maxBatches - 1);
+    const step = (windows.length - 1) / (maxWindows - 1);
     const used = new Set();
-    for (let i = 0; i < maxBatches; i++) {
+    for (let i = 0; i < maxWindows; i++) {
         const idx = Math.round(i * step);
         if (!used.has(idx)) {
             used.add(idx);
-            selected.push(batches[idx]);
+            selected.push(windows[idx]);
         }
     }
     return selected;
+}
+/** @deprecated Use selectSpreadWindows(); retained for package API compatibility. */
+export function selectSpreadBatches(batches, maxBatches) {
+    return selectSpreadWindows(batches, maxBatches);
 }
 function maxLlmCallsPerSession() {
     const parsed = parseInt(process.env.MEMEX_MAX_EXTRACT_CALLS || "", 10);
@@ -218,6 +230,63 @@ const TOOL_EVIDENCE_KINDS = new Set([
     "git_history",
     "test_execution",
 ]);
+function hasLearnableToolEvidence(exchange) {
+    return (exchange.tool_evidence ?? []).some((tool) => booleanFlag(tool.learnable) &&
+        !isToolError(tool.is_error) &&
+        TOOL_EVIDENCE_KINDS.has(tool.source_type) &&
+        !!tool.tool_result);
+}
+/**
+ * Build bounded windows from raw chronological adjacency. Ineligible transport
+ * rows split runs, so a removed artifact cannot make distant turns neighbors.
+ * Adjacent anchor ranges merge up to the size cap; later windows overlap only
+ * enough to retain each anchor's immediate context.
+ */
+export function buildExtractionWindows(exchanges) {
+    const windows = [];
+    let runStart = 0;
+    const appendRun = (start, end) => {
+        if (start >= end)
+            return;
+        const ranges = [];
+        let current;
+        for (let anchor = start; anchor < end; anchor++) {
+            const exchange = exchanges[anchor];
+            if (!isCandidateAnchorExchange(exchange.user_message, hasLearnableToolEvidence(exchange))) {
+                continue;
+            }
+            const candidate = {
+                start: Math.max(start, anchor - 1),
+                end: Math.min(end - 1, anchor + 1),
+            };
+            if (!current) {
+                current = candidate;
+                continue;
+            }
+            const mergedEnd = Math.max(current.end, candidate.end);
+            if (candidate.start <= current.end + 1 &&
+                mergedEnd - current.start + 1 <= MAX_EXCHANGES_PER_WINDOW) {
+                current.end = mergedEnd;
+                continue;
+            }
+            ranges.push(current);
+            current = candidate;
+        }
+        if (current)
+            ranges.push(current);
+        for (const range of ranges) {
+            windows.push(exchanges.slice(range.start, range.end + 1));
+        }
+    };
+    for (let index = 0; index <= exchanges.length; index++) {
+        if (index === exchanges.length ||
+            !isContextEligibleExchange(exchanges[index].user_message)) {
+            appendRun(runStart, index);
+            runStart = index + 1;
+        }
+    }
+    return windows;
+}
 function truncatePromptData(value, limit) {
     const text = value ?? "";
     if (text.length <= limit)
@@ -438,7 +507,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     FROM exchanges
     WHERE session_id = ?
       ${options?.onlyAfterRowid != null ? "AND rowid > ?" : ""}
-    ORDER BY timestamp ASC
+    ORDER BY timestamp ASC, rowid ASC
   `)
         .all(...(options?.onlyAfterRowid != null
         ? [sessionId, options.onlyAfterRowid]
@@ -450,31 +519,27 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     for (const exchange of exchanges) {
         exchange.tool_evidence = selectToolEvidence.all(exchange.id);
     }
-    const substantive = exchanges.filter((ex) => isSubstantiveExchange(ex.user_message, "", ex.tool_evidence?.some((tool) => tool.learnable === 1 && !!tool.tool_result) ?? false));
-    if (substantive.length === 0)
+    const windows = buildExtractionWindows(exchanges);
+    if (windows.length === 0)
         return [];
-    const batches = [];
-    for (let i = 0; i < substantive.length; i += BATCH_SIZE) {
-        batches.push(substantive.slice(i, i + BATCH_SIZE));
-    }
-    const selectedBatches = selectSpreadBatches(batches, maxLlmCallsPerSession());
+    const selectedWindows = selectSpreadWindows(windows, maxLlmCallsPerSession());
     const modelCall = options?.modelCall ?? callMemoryModel;
     const allFacts = [];
     const factIndexByKey = new Map();
-    // transient(공급자 장애·빈 응답)로 실패한 배치. >0 이면 이 세션은 "처리 완료"가 아니다.
+    // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
     const transientFailures = [];
-    for (let b = 0; b < selectedBatches.length; b++) {
+    for (let b = 0; b < selectedWindows.length; b++) {
         if (allFacts.length >= MAX_FACTS_PER_SESSION)
             break;
-        const batch = selectedBatches[b];
-        const prompt = buildExtractionPrompt(batch);
-        renewLease?.(); // 배치 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
+        const window = selectedWindows[b];
+        const prompt = buildExtractionPrompt(window);
+        renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
             const response = await modelCall(EXTRACTION_SYSTEM_PROMPT, prompt);
             const extracted = parseJsonResponse(response);
             if (Array.isArray(extracted)) {
                 for (const candidate of extracted) {
-                    const fact = validateExtractedFactCandidate(candidate, batch);
+                    const fact = validateExtractedFactCandidate(candidate, window);
                     if (!fact?.source_exchange_ids)
                         continue;
                     const sourceExchangeIds = fact.source_exchange_ids;
@@ -528,11 +593,11 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                 // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
                 if (stats)
                     stats.droppedBatches += 1;
-                console.error(`Batch ${b} extraction failed (deterministic — batch dropped, recorded):`, error);
+                console.error(`Window ${b} extraction failed (deterministic — window dropped, recorded):`, error);
             }
             else {
                 transientFailures.push(error);
-                console.error(`Batch ${b} extraction failed (${cls} — session deferred, will retry):`, error);
+                console.error(`Window ${b} extraction failed (${cls} — session deferred, will retry):`, error);
             }
         }
     }

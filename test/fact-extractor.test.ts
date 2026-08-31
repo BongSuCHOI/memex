@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   EXTRACTION_SYSTEM_PROMPT,
+  buildExtractionWindows,
   buildExtractionPrompt,
-  isSubstantiveExchange,
+  isCandidateAnchorExchange,
+  isContextEligibleExchange,
   normalizeFactText,
   passesConfidenceGate,
-  selectSpreadBatches,
+  selectSpreadWindows,
   validateExtractedFactCandidate,
 } from '../src/fact-extractor.js';
 
@@ -281,53 +283,103 @@ describe('Fact Extractor', () => {
     });
   });
 
-  describe('isSubstantiveExchange', () => {
-    it('rejects empty user messages', () => {
-      expect(isSubstantiveExchange('', 'long answer here')).toBe(false);
-      expect(isSubstantiveExchange('   ', 'long answer here')).toBe(false);
+  describe('context eligibility and candidate anchors', () => {
+    it('rejects empty user messages from context', () => {
+      expect(isContextEligibleExchange('')).toBe(false);
+      expect(isContextEligibleExchange('   ')).toBe(false);
     });
 
-    it('rejects harness artifacts injected as user turns', () => {
-      expect(isSubstantiveExchange('<local-command-stdout>output</local-command-stdout>', 'ack')).toBe(false);
-      expect(isSubstantiveExchange('<command-name>/clear</command-name>', 'ack')).toBe(false);
-      expect(isSubstantiveExchange('<local-command-caveat>Caveat text</local-command-caveat>', 'ack')).toBe(false);
-      expect(isSubstantiveExchange('Caveat: the messages below were generated...', 'ack')).toBe(false);
+    it('rejects harness artifacts injected as user turns from context', () => {
+      expect(isContextEligibleExchange('<local-command-stdout>output</local-command-stdout>')).toBe(false);
+      expect(isContextEligibleExchange('<command-name>/clear</command-name>')).toBe(false);
+      expect(isContextEligibleExchange('<local-command-caveat>Caveat text</local-command-caveat>')).toBe(false);
+      expect(isContextEligibleExchange('Caveat: the messages below were generated...')).toBe(false);
     });
 
-    it('rejects bare slash commands', () => {
-      expect(isSubstantiveExchange('/clear', 'Cleared.')).toBe(false);
-      expect(isSubstantiveExchange('/model', 'Set model')).toBe(false);
-      expect(isSubstantiveExchange('/codex:review', 'Running review')).toBe(false);
+    it('rejects bare slash commands from context', () => {
+      expect(isContextEligibleExchange('/clear')).toBe(false);
+      expect(isContextEligibleExchange('/model')).toBe(false);
+      expect(isContextEligibleExchange('/codex:review')).toBe(false);
     });
 
-    it('rejects trivial acknowledgements with short replies', () => {
-      expect(isSubstantiveExchange('ok', 'Done.')).toBe(false);
-      expect(isSubstantiveExchange('네', '완료했습니다.')).toBe(false);
-      expect(isSubstantiveExchange('고마워', '천만에요.')).toBe(false);
-      expect(isSubstantiveExchange('진행해줘', '진행합니다.')).toBe(false);
+    it('keeps short replies in context and anchors possible ratification', () => {
+      for (const reply of ['ok', 'yes', '응', '네', '좋아', '그래', '아니']) {
+        expect(isContextEligibleExchange(reply)).toBe(true);
+        expect(isCandidateAnchorExchange(reply)).toBe(true);
+      }
     });
 
-    it('does not use a substantive assistant reply as evidence', () => {
-      const longAnswer = 'A'.repeat(300);
-      expect(isSubstantiveExchange('ok', longAnswer)).toBe(false);
-      expect(isSubstantiveExchange('계속', longAnswer)).toBe(false);
+    it('keeps pure social and bridge replies as context without making them anchors', () => {
+      for (const reply of ['고마워', '감사합니다', '계속', '진행해줘', '왜?']) {
+        expect(isContextEligibleExchange(reply)).toBe(true);
+        expect(isCandidateAnchorExchange(reply)).toBe(false);
+      }
     });
 
-    it('keeps a short prompt only when trusted tool evidence exists', () => {
-      const longAnswer = 'The reason is that better-sqlite3 requires a native rebuild after install. '.repeat(3);
-      expect(isSubstantiveExchange('왜?', longAnswer)).toBe(false);
-      expect(isSubstantiveExchange('왜?', longAnswer, true)).toBe(true);
+    it('makes trusted tool evidence an anchor even when the human text is not substantive', () => {
+      expect(isCandidateAnchorExchange('왜?')).toBe(false);
+      expect(isCandidateAnchorExchange('왜?', true)).toBe(true);
     });
 
-    it('keeps normal exchanges', () => {
-      expect(isSubstantiveExchange(
-        'What should we use for state management?',
-        'I recommend Riverpod because it fits the existing architecture.',
-      )).toBe(true);
+    it('makes normal human exchanges candidate anchors', () => {
+      expect(isCandidateAnchorExchange('What should we use for state management?')).toBe(true);
     });
 
-    it('slash command with arguments is substantive', () => {
-      expect(isSubstantiveExchange('/team build the login feature', 'Starting team orchestration')).toBe(true);
+    it('keeps a slash command with arguments as context and an anchor', () => {
+      expect(isContextEligibleExchange('/team build the login feature')).toBe(true);
+      expect(isCandidateAnchorExchange('/team build the login feature')).toBe(true);
+    });
+  });
+
+  describe('buildExtractionWindows', () => {
+    const exchange = (id: number, user: string) => ({
+      id: `e${id}`,
+      user_message: user,
+      assistant_message: `assistant ${id}`,
+    });
+
+    it('preserves the immediate raw neighbor for short ratification', () => {
+      const windows = buildExtractionWindows([
+        exchange(0, 'Which state manager should we use?'),
+        exchange(1, '왜?'),
+        exchange(2, '응'),
+      ]);
+
+      expect(windows).toHaveLength(1);
+      expect(windows[0].map((item) => item.id)).toEqual(['e0', 'e1', 'e2']);
+    });
+
+    it('does not let an ineligible transport artifact bridge non-adjacent context', () => {
+      const windows = buildExtractionWindows([
+        exchange(0, 'Use Riverpod for this project.'),
+        exchange(1, '<local-command-stdout>transport</local-command-stdout>'),
+        exchange(2, '응'),
+      ]);
+
+      expect(windows.map((window) => window.map((item) => item.id))).toEqual([
+        ['e0'],
+        ['e2'],
+      ]);
+    });
+
+    it('builds bounded semantic windows and overlaps only for neighbor context', () => {
+      const windows = buildExtractionWindows(
+        Array.from({ length: 8 }, (_, index) => exchange(index, `Durable project decision ${index}`)),
+      );
+
+      expect(windows.map((window) => window.map((item) => item.id))).toEqual([
+        ['e0', 'e1', 'e2', 'e3', 'e4'],
+        ['e3', 'e4', 'e5', 'e6', 'e7'],
+      ]);
+      expect(windows.every((window) => window.length <= 5)).toBe(true);
+    });
+
+    it('returns no windows when exchanges contain context-only social replies', () => {
+      expect(buildExtractionWindows([
+        exchange(0, '고마워'),
+        exchange(1, '계속'),
+        exchange(2, '왜?'),
+      ])).toEqual([]);
     });
   });
 
@@ -343,15 +395,15 @@ describe('Fact Extractor', () => {
     });
   });
 
-  describe('selectSpreadBatches', () => {
-    it('returns all batches when under the cap', () => {
+  describe('selectSpreadWindows', () => {
+    it('returns all semantic windows when under the cap', () => {
       const batches = [[1], [2], [3]];
-      expect(selectSpreadBatches(batches, 5)).toEqual(batches);
+      expect(selectSpreadWindows(batches, 5)).toEqual(batches);
     });
 
-    it('caps to maxBatches while keeping first and last', () => {
+    it('caps semantic windows while keeping first and last', () => {
       const batches = Array.from({ length: 40 }, (_, i) => [i]);
-      const selected = selectSpreadBatches(batches, 12);
+      const selected = selectSpreadWindows(batches, 12);
       expect(selected).toHaveLength(12);
       expect(selected[0]).toEqual([0]);
       expect(selected[selected.length - 1]).toEqual([39]);
@@ -359,13 +411,13 @@ describe('Fact Extractor', () => {
 
     it('spreads selection across the whole range', () => {
       const batches = Array.from({ length: 100 }, (_, i) => i);
-      const selected = selectSpreadBatches(batches, 5);
+      const selected = selectSpreadWindows(batches, 5);
       expect(selected).toEqual([0, 25, 50, 74, 99]);
     });
 
     it('handles maxBatches of 1', () => {
       const batches = [1, 2, 3];
-      expect(selectSpreadBatches(batches, 1)).toEqual([1]);
+      expect(selectSpreadWindows(batches, 1)).toEqual([1]);
     });
   });
 });

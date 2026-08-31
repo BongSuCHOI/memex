@@ -80,9 +80,27 @@ assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불�
 candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
 exchange UUID에서만 생성되며 context index는 persisted lineage에 들어가지 않습니다.
 
-Phase 1/2에서는 기존 substantive filter와 5-exchange batching을 유지합니다. 짧은
-ratification의 anchor selection, semantic-adjacency window, watermark prefix는 각각
-Phase 3/4 범위입니다.
+### Context-aware selection과 semantic window
+
+Extraction 호출 여부와 input visibility는 별도 단계입니다.
+
+- `isContextEligibleExchange()`는 빈 turn, harness transport artifact, bare slash command만
+  제외합니다. 짧은 human reply와 pure social/bridge reply는 인접 문맥에 남습니다.
+- `isCandidateAnchorExchange()`는 durable candidate 가능성이 있는 human turn 또는 trusted
+  local tool evidence가 있는 turn만 LLM 호출 anchor로 삼습니다. `응/네/좋아/아니`처럼
+  승인·정정일 수 있는 짧은 reply는 anchor이고, `고마워/감사합니다/계속/왜?`처럼 단독
+  durable signal이 아닌 reply는 context-only neighbor입니다.
+- 각 anchor는 같은 raw-adjacency run의 직전·직후 1 exchange와 묶입니다. 인접 anchor
+  range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
+  window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
+  이웃으로 연결하지 않습니다.
+- `MEMEX_MAX_EXTRACT_CALLS`의 spread cap은 이 semantic window를 모두 만든 뒤 적용합니다.
+  겹친 window가 같은 fact를 다시 만들면 기존 session-level normalized-text dedup이
+  validated authoritative lineage를 set-union합니다.
+
+Phase 3은 watermark 이후 새 row 안에서만 위 window를 구성합니다. watermark 이전 prefix는
+아직 읽지 않으므로, 첫 신규 turn이 이전 처리 영역의 assistant를 가리키는 문제는 Phase 4
+범위로 남습니다.
 
 ## 4. Extraction commit
 
@@ -95,7 +113,7 @@ sequenceDiagram
 
     W->>L: claim session
     W->>E: rows after watermark
-    W->>W: filter + model + validate
+    W->>W: anchors + semantic windows + model + validate
     W->>F: BEGIN transaction
     W->>F: save/merge facts + provenance
     W->>L: saved count + watermark + release
@@ -107,7 +125,7 @@ fact가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진
 ### Extraction evaluation
 
 Phase 0 평가 harness는 production의 `extractFactsFromExchanges()`와 동일한
-filter/batch/prompt/parser 경로를 사용하되 model call만 계측 가능한 seam으로 주입합니다.
+anchor/window/prompt/parser 경로를 사용하되 model call만 계측 가능한 seam으로 주입합니다.
 평가 경로는 `saveExtractedFacts()`나 `runFactExtraction()`을 호출하지 않으므로 fact,
 claim, `extraction_log`, watermark를 쓰지 않습니다.
 

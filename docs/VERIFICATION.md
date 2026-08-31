@@ -136,7 +136,7 @@ npm run eval:fact-extraction -- \
 받은 run만 수행합니다. report는 private-derived artifact로 취급해 ignored local path에
 보관하고, repository에는 aggregate 관측과 `PASS`/`FAIL`/`NOT_PROVEN` 판정만 기록합니다.
 
-Phase 1/2 grounding contract의 최소 회귀 표면은 다음을 포함합니다.
+Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면은 다음을 포함합니다.
 
 - assistant/recall 본문이 JSON envelope의 context-only field에는 존재
 - assistant/recall/external evidence 선언은 server-side hard reject
@@ -144,6 +144,11 @@ Phase 1/2 grounding contract의 최소 회귀 표면은 다음을 포함합니�
 - inferred candidate는 서로 다른 authoritative exchange 2개 이상 필요
 - accepted `source_exchange_ids`에는 validated human/tool exchange UUID만 존재
 - recall 영향을 받은 assistant text는 conversation FTS에서 계속 검색 가능
+- short ratification은 candidate anchor이며 immediate raw neighbor와 같은 model window에 존재
+- pure social/bridge reply는 context eligible이지만 단독 model call을 유발하지 않음
+- transport artifact는 raw-adjacency run을 끊고, window는 최대 5 exchanges로 bounded
+- overlapping window의 duplicate fact는 normalized text로 합쳐지고 authoritative lineage는 union
+- `MEMEX_MAX_EXTRACT_CALLS`는 semantic window 생성 후 적용되며 claim/retry/watermark 계약은 유지
 
 관련 좁은 gate:
 

@@ -7,12 +7,19 @@ export declare class ClaimLostError extends Error {
     constructor(message: string);
 }
 /**
- * Whether an exchange is worth sending to the extraction LLM.
- * Filters harness artifacts (local command output), bare slash commands,
- * and trivial acknowledgements — they waste LLM calls and produce noise facts.
+ * Whether an exchange may appear as semantic context. Short human replies stay
+ * visible; only empty/transport/housekeeping turns are removed.
  */
-export declare function isSubstantiveExchange(userMessage: string, assistantMessage: string, hasLearnableToolEvidence?: boolean): boolean;
-/** Normalize fact text for cross-batch duplicate detection within a session. */
+export declare function isContextEligibleExchange(userMessage: string): boolean;
+/**
+ * Whether an eligible exchange can justify an extraction call. Possible short
+ * ratification/correction remains an anchor; pure social or bridge text does
+ * not. Trusted local evidence always makes an eligible exchange an anchor.
+ */
+export declare function isCandidateAnchorExchange(userMessage: string, hasLearnableToolEvidence?: boolean): boolean;
+/** @deprecated Use isCandidateAnchorExchange(); retained for package API compatibility. */
+export declare function isSubstantiveExchange(userMessage: string, _assistantMessage: string, hasLearnableToolEvidence?: boolean): boolean;
+/** Normalize fact text for cross-window duplicate detection within a session. */
 export declare function normalizeFactText(fact: string): string;
 /**
  * Confidence gate for extracted facts. Rejects missing/NaN confidence —
@@ -21,10 +28,12 @@ export declare function normalizeFactText(fact: string): string;
  */
 export declare function passesConfidenceGate(confidence: unknown): boolean;
 /**
- * Cap LLM calls for long sessions by picking evenly spread batches, so the
+ * Cap LLM calls for long sessions by picking evenly spread semantic windows, so the
  * beginning, middle, and end of a session are all represented instead of
  * only the head.
  */
+export declare function selectSpreadWindows<T>(windows: T[], maxWindows: number): T[];
+/** @deprecated Use selectSpreadWindows(); retained for package API compatibility. */
 export declare function selectSpreadBatches<T>(batches: T[], maxBatches: number): T[];
 export interface ExtractionToolEvidence {
     tool_name: string;
@@ -44,6 +53,13 @@ export interface ExtractionPromptExchange {
 export interface ExtractionValidationExchange extends ExtractionPromptExchange {
     id: string;
 }
+/**
+ * Build bounded windows from raw chronological adjacency. Ineligible transport
+ * rows split runs, so a removed artifact cannot make distant turns neighbors.
+ * Adjacent anchor ranges merge up to the size cap; later windows overlap only
+ * enough to retain each anchor's immediate context.
+ */
+export declare function buildExtractionWindows<T extends ExtractionPromptExchange>(exchanges: T[]): T[][];
 export declare function buildExtractionPrompt(exchanges: ExtractionPromptExchange[]): string;
 export type FactExtractionModelCall = (systemPrompt: string, userMessage: string) => Promise<string>;
 export interface ExtractFactsOptions {

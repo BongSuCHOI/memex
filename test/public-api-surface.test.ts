@@ -26,6 +26,11 @@ const FACT_READ_PRIMITIVES = [
   'searchAllFacts',
 ];
 
+const FACT_EXTRACTION_COMPATIBILITY_EXPORTS = [
+  'isSubstantiveExchange',
+  'selectSpreadBatches',
+];
+
 describe('package public API surface (P2-2)', () => {
   it('does not export raw fact mutation primitives', () => {
     const api = publicApi as unknown as Record<string, unknown>;
@@ -37,6 +42,13 @@ describe('package public API surface (P2-2)', () => {
   it('still exports the fact read/search primitives', () => {
     const api = publicApi as unknown as Record<string, unknown>;
     for (const name of FACT_READ_PRIMITIVES) {
+      expect(typeof api[name], `${name} must remain on the public surface`).toBe('function');
+    }
+  });
+
+  it('retains the pre-Phase-3 fact extraction helper exports', () => {
+    const api = publicApi as unknown as Record<string, unknown>;
+    for (const name of FACT_EXTRACTION_COMPATIBILITY_EXPORTS) {
       expect(typeof api[name], `${name} must remain on the public surface`).toBe('function');
     }
   });

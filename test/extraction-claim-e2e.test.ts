@@ -11,10 +11,11 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
  */
 
 let calls = 0;
+let promptWindows: Array<{ exchanges: Array<{ human_evidence: string }> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
-  callMemoryModel: async () => { calls++; await new Promise(r => setTimeout(r, 60));
+  callMemoryModel: async (_systemPrompt: string, userMessage: string) => { calls++; promptWindows.push(JSON.parse(userMessage)); await new Promise(r => setTimeout(r, 60));
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
       ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
         grounding_type: 'explicit', durable: true,
@@ -38,7 +39,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -46,7 +47,7 @@ beforeEach(async () => {
     'Flutter 상태관리를 Riverpod 과 Bloc 중 무엇으로 할지 결정해야 합니다. 이유도 알려주세요.',
     'Riverpod 을 권장합니다. 컴파일 타임 안전성과 테스트 용이성 때문입니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
 });
-afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
+afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; delete process.env.MEMEX_MAX_EXTRACT_CALLS; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
   it('각 fact에는 모델이 지목한 source exchange UUID만 저장한다', async () => {
@@ -81,7 +82,7 @@ describe('claim E2E', () => {
     ]);
   });
 
-  it('같은 fact가 여러 배치에서 재추출되면 각 배치의 검증된 source UUID를 합친다', async () => {
+  it('같은 fact가 겹치는 semantic window에서 재추출되면 검증된 source UUID를 합친다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const insert = db.prepare(`
       INSERT INTO exchanges
@@ -103,7 +104,48 @@ describe('claim E2E', () => {
     const row = db.prepare(
       "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact'",
     ).get() as { source_exchange_ids: string };
-    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e5']);
+    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e3']);
+    expect(promptWindows.map((window) => window.exchanges.length)).toEqual([5, 3]);
+  });
+
+  it('짧은 ratification anchor가 직전 raw exchange와 함께 모델에 전달된다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    db.prepare("UPDATE exchanges SET user_message = '왜?' WHERE id = 'e0'").run();
+    db.prepare("UPDATE exchanges SET user_message = '응' WHERE id = 'e1'").run();
+    sourceIndicesPerFact = [[2]];
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(calls).toBe(1);
+    expect(promptWindows[0].exchanges.map((exchange) => exchange.human_evidence)).toEqual(['왜?', '응']);
+    const row = db.prepare(
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-1-0'",
+    ).get() as { source_exchange_ids: string };
+    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e1']);
+  });
+
+  it('LLM call budget is applied after semantic windows are formed', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (let i = 2; i < 8; i++) {
+      insert.run(
+        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
+        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
+        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
+      );
+    }
+    process.env.MEMEX_MAX_EXTRACT_CALLS = '1';
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(calls).toBe(1);
+    expect(promptWindows).toHaveLength(1);
+    expect(promptWindows[0].exchanges).toHaveLength(5);
   });
 
   it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {

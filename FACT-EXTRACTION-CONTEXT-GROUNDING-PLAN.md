@@ -2006,17 +2006,64 @@ ratification 및 일부 correction/recall ratification 누락은 Phase 3 anchor/
 
 ### 작업
 
-- [ ] `isContextEligibleExchange()` 분리
-- [ ] `isCandidateAnchorExchange()` 분리
-- [ ] short ratification이 context에서 사라지지 않게 함
-- [ ] candidate anchor 주변 raw neighbor 포함
-- [ ] window overlap 중복 Fact는 기존 session dedup으로 처리
-- [ ] call budget accounting 유지
-- [ ] spread selection이 semantic window 기준으로 동작하도록 조정
+- [x] `isContextEligibleExchange()` 분리
+- [x] `isCandidateAnchorExchange()` 분리
+- [x] short ratification이 context에서 사라지지 않게 함
+- [x] candidate anchor 주변 raw neighbor 포함
+- [x] window overlap 중복 Fact는 기존 session dedup으로 처리
+- [x] call budget accounting 유지
+- [x] spread selection이 semantic window 기준으로 동작하도록 조정
 
 ### 완료 조건
 
 filtered list가 대화 adjacency를 파괴하지 않는다.
+
+### Phase 3 구현 기록 (2026-08-31)
+
+```text
+raw chronological exchanges after watermark
+  -> context eligibility runs (transport/bare-command boundary)
+  -> candidate anchors (short ratification + trusted local evidence 포함)
+  -> previous/next raw neighbor ranges
+  -> merge to bounded 5-exchange semantic windows
+  -> spread selection under existing per-session call budget
+  -> model + Phase 2 validator
+  -> normalized duplicate merge + authoritative lineage union
+```
+
+`응/네/좋아/그래/아니`는 승인·정정 가능 anchor로 유지한다. `고마워/감사합니다/계속/왜?`
+같은 pure social 또는 bridge reply는 context에는 남되 단독 호출을 만들지 않는다. 연속 anchor가
+5-exchange cap을 넘으면 다음 window가 직전·직후 neighbor 보존에 필요한 만큼 겹치며, model이
+같은 fact를 다시 출력해도 기존 session dedup이 검증된 UUID만 union한다.
+
+`MEMEX_MAX_EXTRACT_CALLS`는 raw exchange나 filtered batch가 아니라 완성된 semantic window에
+적용한다. claim/lease, deterministic drop accounting(`dropped_batches`), transient retry,
+transactional watermark 계약은 바꾸지 않았다. Watermark 이전 row는 아직 query하지 않으며
+Phase 4 prefix/context-only 제한은 의도적으로 이번 범위에서 제외했다.
+
+동일 17-case fixture의 `gpt-5.6-luna` model run 관측:
+
+```text
+passed / failed:                 14 / 3       (Phase 1+2: 12 / 5)
+matched durable facts:          8            (Phase 1+2: 6)
+positive fact recall:           72.7%        (Phase 1+2: 54.5%)
+negative no-fact accuracy:      100%         (Phase 1+2: 100%)
+ratification resolution:        80%          (Phase 1+2: 60%)
+verified local recall:          100%         (Phase 1+2 raw report: 50%*)
+precision:                      88.9%        (Phase 1+2: 75%)
+self-amplification leakage:     0            (Phase 1+2: 0)
+model calls:                    17           (Phase 1+2: 17)
+input/output tokens:            321,641 / 2,300 (observed)
+total model latency:            119.1s
+```
+
+`short-ratification`과 `batch-boundary-context`가 새로 통과했고 baseline 대비 회귀는 없었다.
+`watermark-boundary-ratification`도 통과했지만 suffix exchange 자체의 assistant response가
+SQLite를 다시 명시한 fixture 특성 덕분이므로, 이 결과는 Phase 4의 pre-watermark prefix
+fetch/evidence restriction을 증명하지 않는다. Phase 4 완료 표시는 그대로 미체크다.
+
+`*` Phase 1+2의 trusted-test candidate는 lexical scorer false negative였고 이후 punctuation
+normalization 회귀 수정으로 보정되었다. Phase 3 run에서는 repo/test 두 case 모두 실제 PASS다.
 
 ---
 
@@ -2553,11 +2600,11 @@ self-amplification leakage = 0
 
 ## E. Exchange selection
 
-- [ ] context eligible / candidate anchor 분리
-- [ ] pure social ack와 semantic ratification 가능 ack 분리
-- [ ] raw adjacency preservation
-- [ ] context neighbor inclusion
-- [ ] spread/call budget 재검토
+- [x] context eligible / candidate anchor 분리
+- [x] pure social ack와 semantic ratification 가능 ack 분리
+- [x] raw adjacency preservation
+- [x] context neighbor inclusion
+- [x] spread/call budget 재검토
 
 ## F. Watermark
 
