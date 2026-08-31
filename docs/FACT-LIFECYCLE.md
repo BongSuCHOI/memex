@@ -81,6 +81,30 @@ assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불�
 candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
 exchange UUID에서만 생성되며 context index는 persisted lineage에 들어가지 않습니다.
 
+### Precision과 durability policy
+
+`precision-durability-v1` extraction policy는 candidate를 다음 순서로 판정합니다.
+
+1. **Grounding** — explicit human, verified local tool, 또는 같은 결론을 독립적으로 지지하는
+   authoritative exchange 2개 이상의 inferred evidence인지 확인합니다.
+2. **Durability** — 다음 task/session에서도 재사용할 안정된 decision, constraint, knowledge,
+   preference, verified problem→solution pattern인지 확인합니다.
+3. **Category/scope** — 의미 기준 category와 보수적인 project/global scope를 정합니다.
+4. **Confidence** — 앞 gate를 모두 통과한 candidate에만 secondary threshold를 적용합니다.
+
+질문, 비교, 단순 관심사, brainstorming, 현재 진행, temporary state, 일회성 package/file/command
+요청은 Fact가 아닙니다. 특히 한 번의 행동을 global preference로 올리지 않으며, durable하지 않은
+signal을 project fact로 바꿔 저장하지도 않습니다. global scope는 명시적인 cross-project human
+statement 또는 복수의 독립된 cross-project human signal에만 허용합니다.
+
+현재 project state를 바로잡는 human correction은 stable knowledge가 될 수 있습니다. recall을
+assistant가 반복했을 뿐이면 authority가 없지만, human이 recalled choice를 이번 project에서 새로
+채택하면 새 project decision이 될 수 있습니다. 이때도 recall은 context일 뿐이고 새 ratification
+exchange만 durable lineage에 들어갑니다.
+
+Fact 개수 목표는 없습니다. `MAX_FACTS_PER_SESSION`은 과다 출력을 제한하는 safety cap이며 품질
+KPI가 아닙니다. 0개가 올바른 session은 `[]`가 정상 결과입니다.
+
 ### Context-aware selection과 semantic window
 
 Extraction 호출 여부와 input visibility는 별도 단계입니다.

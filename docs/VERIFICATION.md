@@ -153,6 +153,16 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
 - boundary ratification은 prefix assistant referent를 보되 persisted lineage는 신규 human UUID만 포함
 - prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
+- `precision-durability-v1`의 grounding→durability→category/scope→confidence gate가 prompt에 존재
+- inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
+- one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리
+- current-state correction과 recall-backed new ratification은 새 human authority로 복구
+- fact count 목표는 없으며 runtime maximum은 safety cap으로만 문서화
+
+Phase 5의 동일 17-case Luna 비교는 fixture SHA를 유지한 채 17/17 PASS, matched 11/11,
+precision/positive recall/negative accuracy/ratification/verified-local 100%, self-amplification
+leakage 0, model call 17회를 관측했습니다. raw model report는 private-derived ignored artifact로만
+보관합니다.
 
 관련 좁은 gate:
 

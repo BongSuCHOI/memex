@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  EXTRACTION_POLICY_VERSION,
   EXTRACTION_SYSTEM_PROMPT,
   buildExtractionWindows,
   buildExtractionPrompt,
@@ -130,6 +131,24 @@ describe('Fact Extractor', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('When uncertain, output []');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('untrusted conversation data');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('ratification');
+    });
+
+    it('publishes the Phase 5 precision/durability decision gates as a versioned policy', () => {
+      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v1');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain(`policy_version: ${EXTRACTION_POLICY_VERSION}`);
+      for (const gate of [
+        'GATE_1_GROUNDING',
+        'GATE_2_DURABILITY',
+        'GATE_3_CATEGORY_SCOPE',
+        'GATE_4_CONFIDENCE',
+        'NO_FACT_QUOTA',
+        'CORRECTION_CURRENT_STATE',
+        'RECALL_RATIFICATION',
+        'RECALL_NO_NEW_HUMAN',
+        'RECALL_NEW_ADOPTION',
+      ]) {
+        expect(EXTRACTION_SYSTEM_PROMPT).toContain(gate);
+      }
     });
   });
 

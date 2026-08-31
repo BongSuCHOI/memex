@@ -2123,13 +2123,66 @@ watermark 2→3 전진을 결정론적으로 검증한다. 구현 직전 해당 
 
 ### 작업
 
-- [ ] default `[]` 명시
-- [ ] negative extraction rules 추가
-- [ ] weak inference 금지
-- [ ] inferred grounding 최소 복수 evidence
-- [ ] project/global scope inference rule 강화
-- [ ] `confidence`를 secondary signal로 재정의
-- [ ] `MAX_FACTS_PER_SESSION`은 safety cap으로 유지하되 품질 KPI로 쓰지 않음
+- [x] default `[]` 명시
+- [x] negative extraction rules 추가
+- [x] weak inference 금지
+- [x] inferred grounding 최소 복수 evidence
+- [x] project/global scope inference rule 강화
+- [x] `confidence`를 secondary signal로 재정의
+- [x] `MAX_FACTS_PER_SESSION`은 safety cap으로 유지하되 품질 KPI로 쓰지 않음
+
+### Phase 5+B 나머지 구현 기록 (2026-08-31)
+
+`EXTRACTION_POLICY_VERSION = precision-durability-v1`로 prompt policy를 버전 고정하고,
+모든 candidate가 다음 순서를 통과하도록 계약을 명시했다.
+
+```text
+GATE_1_GROUNDING
+  -> explicit / verified / inferred authority와 evidence 독립성
+GATE_2_DURABILITY
+  -> 다음 task/session 재사용 가치; one-off request/action hard drop
+GATE_3_CATEGORY_SCOPE
+  -> decision/knowledge/preference/constraint/pattern 의미 기반 분류
+  -> project/global 보수적 승격
+GATE_4_CONFIDENCE
+  -> 앞 gate를 대체하지 않는 secondary telemetry
+NO_FACT_QUOTA
+  -> MAX_FACTS_PER_SESSION은 safety cap, fact-count 목표가 아님
+```
+
+질문·비교·관심사·brainstorming·현재 진행·일회성 package/file/command 요청은 durable Fact가
+아니며, 잘못된 global preference를 project fact로 강등 저장하지 않고 `[]`로 폐기한다. inferred는
+같은 결론을 독립적으로 지지하는 authoritative exchange 2개 이상과 모든 supporting exchange
+인용을 요구한다. global은 명시적 cross-project human statement 또는 복수의 독립된 cross-project
+human signal에만 허용한다.
+
+보수성 때문에 놓치기 쉬운 두 경계도 positive/negative 대조로 고정했다.
+
+- 현재 project architecture/behavior를 “X now, not Y”로 바로잡는 human correction은 temporary가
+  명시되지 않은 한 durable `knowledge`다.
+- recall/assistant 반복 뒤 새 human authority가 없으면 `[]`지만, 사용자가 recalled choice를 이번에도
+  쓰겠다고 새로 승인하면 현재 project `decision`이다. recall은 referent resolution에만 쓰고 새 human
+  ratification만 evidence/lineage에 들어간다.
+
+동일 SHA의 17-case fixture를 변경하지 않고 `gpt-5.6-luna` 비교를 실행한 최종 관측:
+
+```text
+passed / failed:                 17 / 0       (Phase 3: 14 / 3)
+matched durable facts:          11 / 11      (Phase 3: 8 / 11)
+positive fact recall:           100%         (Phase 3: 72.7%)
+negative no-fact accuracy:      100%         (Phase 3: 100%)
+ratification resolution:        100%         (Phase 3: 80%)
+verified local recall:          100%         (Phase 3: 100%)
+precision:                      100%         (Phase 3: 88.9%)
+self-amplification leakage:     0            (Phase 3: 0)
+false positives:                0
+model calls:                    17           (Phase 3: 17)
+input/output tokens:            337,245 / 2,520 (observed)
+total model latency:            120.6s
+```
+
+Phase 0 baseline 대비 improvement 8개, regression 0개였으며 private-derived raw report는
+`.fact-extraction-eval/curated-2026-08-31T07-39-39.002Z.json`에만 보관하고 커밋하지 않는다.
 
 ---
 
