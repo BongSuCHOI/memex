@@ -24,4 +24,11 @@ describe("MCP Facts Tool", () => {
     const content = fs.readFileSync("src/mcp-server.ts", "utf-8");
     expect(content).toMatch(/name\s*===\s*['"]search_facts['"]/);
   });
+
+  it("labels trace_fact context dependencies as non-authoritative", () => {
+    const content = fs.readFileSync("src/mcp-server.ts", "utf-8");
+    expect(content).toContain("Interpretive Context (Non-Authoritative)");
+    expect(content).toContain("helped resolve meaning but are not Fact evidence");
+    expect(content).toContain("fact_context_dependencies");
+  });
 });

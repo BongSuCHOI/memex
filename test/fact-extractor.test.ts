@@ -193,6 +193,10 @@ describe('Fact Extractor', () => {
       const accepted = validateExtractedFactCandidate(explicitCandidate, exchanges);
       expect(accepted).toEqual(expect.objectContaining({
         source_exchange_ids: ['e2'],
+        context_dependencies: [{
+          exchange_id: 'e1',
+          dependency_kind: 'assistant_context',
+        }],
         grounding_type: 'explicit',
         durable: true,
       }));
@@ -325,7 +329,22 @@ describe('Fact Extractor', () => {
         exchanges[1],
       ]);
       expect(accepted?.context_exchange_indices).toEqual([1]);
+      expect(accepted?.context_dependencies).toEqual([{
+        exchange_id: 'e1',
+        dependency_kind: 'watermark_prefix',
+      }]);
       expect(accepted?.source_exchange_ids).toEqual(['e2']);
+    });
+
+    it('derives recall-influenced context dependency kinds from server rows', () => {
+      const accepted = validateExtractedFactCandidate(explicitCandidate, [
+        { ...exchanges[0], has_memex_recall: 1 },
+        exchanges[1],
+      ]);
+      expect(accepted?.context_dependencies).toEqual([{
+        exchange_id: 'e1',
+        dependency_kind: 'recall_influenced_assistant',
+      }]);
     });
   });
 

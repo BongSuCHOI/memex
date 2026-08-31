@@ -48,6 +48,7 @@ export type FactCategory = 'decision' | 'preference' | 'pattern' | 'knowledge' |
 export type FactScopeType = 'global' | 'project';
 export type FactRelation = 'DUPLICATE' | 'CONTRADICTION' | 'EVOLUTION' | 'INDEPENDENT';
 export type FactGroundingType = 'explicit' | 'verified' | 'inferred';
+export type FactContextDependencyKind = 'assistant_context' | 'recall_influenced_assistant' | 'watermark_prefix' | 'conversation_context';
 export type FactEvidenceSource = 'human' | 'tool';
 export type HumanEvidenceKind = 'assertion' | 'decision' | 'correction' | 'ratification' | 'repeated_signal';
 export type ToolEvidenceKind = 'repo_file' | 'git_history' | 'test_execution';
@@ -59,6 +60,12 @@ export interface ExtractedFactEvidence {
     kind: HumanEvidenceKind | ToolEvidenceKind;
     tool_name?: string;
     source_type?: ToolEvidenceKind;
+}
+/** Server-resolved, non-authoritative context used to interpret a fact.
+ * This is local audit lineage and never substitutes for source_exchange_ids. */
+export interface FactContextDependency {
+    exchange_id: string;
+    dependency_kind: FactContextDependencyKind;
 }
 export interface Fact {
     id: string;
@@ -120,6 +127,8 @@ export interface ExtractedFact {
     durable?: boolean;
     evidence?: ExtractedFactEvidence[];
     context_exchange_indices?: number[];
+    /** Server-resolved local context lineage; model-supplied UUIDs are never accepted. */
+    context_dependencies?: FactContextDependency[];
     /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
     source_exchange_ids?: string[];
 }

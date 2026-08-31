@@ -99,6 +99,10 @@ exchange를 반환하면서, DB row의 `assistant_learnable = 0`이 그대로인
 결과가 durable Fact evidence가 되는 것은 아니며, extractor는 별도의 typed evidence validator를
 계속 적용합니다.
 
+검증된 extraction context는 `fact_context_dependencies`에 local audit lineage로 남을 수 있습니다.
+이는 “어떤 assistant/recall/prefix가 지시어 해석에 쓰였는가”를 추적하기 위한 정보이며 검색
+relevance, Fact authority, `source_exchange_ids`, recall learnability를 변경하지 않습니다.
+
 ## 7. Derived state와 retrieval
 
 `fact_kr`, ontology, relation, vectors는 local derived state입니다. sync 직후 새 fact가 들어오면 durable fact 자체는 존재하지만 다음 maintenance가 derived indexes를 채우기 전까지 일부 검색/graph surface가 pending일 수 있습니다.

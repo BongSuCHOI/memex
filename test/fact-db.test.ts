@@ -47,6 +47,37 @@ describe('Facts DB Schema', () => {
     expect(tables).toHaveLength(1);
   });
 
+  it('creates the local fact context dependency relation with cascading foreign keys', () => {
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_context_dependencies'",
+    ).all();
+    expect(tables).toHaveLength(1);
+    const foreignKeys = db.prepare(
+      'PRAGMA foreign_key_list(fact_context_dependencies)',
+    ).all() as Array<{
+      table: string;
+      from: string;
+      to: string;
+      on_update: string;
+      on_delete: string;
+    }>;
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'facts',
+        from: 'fact_id',
+        to: 'id',
+        on_delete: 'CASCADE',
+      }),
+      expect.objectContaining({
+        table: 'exchanges',
+        from: 'exchange_id',
+        to: 'id',
+        on_update: 'CASCADE',
+        on_delete: 'CASCADE',
+      }),
+    ]));
+  });
+
   it('should create vec_facts virtual table', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_facts'").all();
     expect(tables).toHaveLength(1);

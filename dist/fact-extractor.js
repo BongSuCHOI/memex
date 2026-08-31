@@ -1,6 +1,6 @@
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
-import { insertFact } from "./fact-db.js";
+import { insertFact, insertFactContextDependencies, } from "./fact-db.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
@@ -469,6 +469,31 @@ function validatedContextIndices(value, exchangeCount) {
     }
     return [...indices];
 }
+function contextDependencyFor(exchange) {
+    if (booleanFlag(exchange.context_only_due_to_watermark)) {
+        return {
+            exchange_id: exchange.id,
+            dependency_kind: "watermark_prefix",
+        };
+    }
+    if (booleanFlag(exchange.has_memex_recall) ||
+        (exchange.tool_evidence ?? []).some((tool) => tool.source_type === "memex_recall" && !isToolError(tool.is_error))) {
+        return {
+            exchange_id: exchange.id,
+            dependency_kind: "recall_influenced_assistant",
+        };
+    }
+    if (exchange.assistant_message.trim()) {
+        return {
+            exchange_id: exchange.id,
+            dependency_kind: "assistant_context",
+        };
+    }
+    return {
+        exchange_id: exchange.id,
+        dependency_kind: "conversation_context",
+    };
+}
 function validateExtractedFactCandidateDetailed(candidate, exchanges) {
     const reject = (reason) => ({ accepted: false, reason });
     if (!isRecord(candidate))
@@ -580,6 +605,10 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges) {
     const contextIndices = validatedContextIndices(candidate.context_exchange_indices, exchanges.length);
     if (!contextIndices)
         return reject("invalid_evidence");
+    const contextDependencies = contextIndices
+        .map((index) => exchanges[index - 1])
+        .filter((exchange) => exchange !== undefined && !authoritativeIds.has(exchange.id))
+        .map(contextDependencyFor);
     return {
         accepted: true,
         fact: {
@@ -593,6 +622,9 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges) {
             evidence,
             ...(candidate.context_exchange_indices !== undefined
                 ? { context_exchange_indices: contextIndices }
+                : {}),
+            ...(contextDependencies.length > 0
+                ? { context_dependencies: contextDependencies }
                 : {}),
             source_exchange_ids: [...authoritativeIds],
         },
@@ -698,6 +730,15 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                                 ...sourceExchangeIds,
                             ]),
                         ];
+                        allFacts[existingIndex].context_dependencies = [
+                            ...new Map([
+                                ...(allFacts[existingIndex].context_dependencies ?? []),
+                                ...(fact.context_dependencies ?? []),
+                            ].map((dependency) => [
+                                `${dependency.exchange_id}\u0000${dependency.dependency_kind}`,
+                                dependency,
+                            ])).values(),
+                        ];
                         continue;
                     }
                     if (allFacts.length >= MAX_FACTS_PER_SESSION)
@@ -713,6 +754,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                         durable: fact.durable,
                         evidence: fact.evidence,
                         context_exchange_indices: fact.context_exchange_indices,
+                        context_dependencies: fact.context_dependencies,
                         source_exchange_ids: sourceExchangeIds,
                     });
                 }
@@ -772,7 +814,7 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     const savedIds = [];
     const commit = db.transaction(() => {
         for (const p of prepared) {
-            savedIds.push(insertFact(db, {
+            const factId = insertFact(db, {
                 fact: p.fact.fact,
                 category: p.fact.category,
                 scope_type: p.fact.scope_type,
@@ -781,7 +823,9 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
                 embedding: p.embedding,
                 fact_kr: p.fact.fact_kr ?? null,
                 embedding_kr: p.embeddingKr,
-            }));
+            });
+            insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
+            savedIds.push(factId);
         }
         if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
             throw new ClaimLostError("완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).");

@@ -34,6 +34,7 @@ node scripts/lifecycle-e2e.mjs
 | rollout ingestion | main/resumed/subagent/tool/malformed/worker fixture |
 | project isolation | archive, DB, search, MCP, graph, sync에서 동일 canonical scope |
 | extraction | retry/claim/no-new-row/atomic watermark |
+| context dependency | server mapping, atomic save, consolidation union, edit/sync clear, privacy/FK cascade |
 | extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |
 | fact mutation | semantic/lifecycle generation과 derived-state CAS |
 | sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
@@ -173,6 +174,19 @@ Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieva
 - 검색된 row는 동시에 `assistant_learnable = 0`, `has_memex_recall = 1`을 유지
 - eval report의 candidate acceptance/rejection reason은 배타적으로 집계되며 production DB에는 미저장
 - grounding별 accepted count와 context-resolved human ratification count를 report에 기록
+
+Optional Phase 7 persistent context dependency gate는 authority 의미를 유지한 채 audit/UI 소비처를
+연결합니다.
+
+- validated `context_exchange_indices`만 server가 실제 exchange UUID와 dependency kind로 매핑
+- fact/context dependency/saved count/watermark가 한 extraction transaction에서 commit 또는 rollback
+- overlap 및 DUPLICATE/CONTRADICTION/EVOLUTION survivor가 context dependency를 set-union
+- manual semantic edit와 remote semantic replacement가 stale local context dependency를 제거
+- conversation exclusion이 excluded context에 의존한 fact도 terminal tombstone과 함께 purge
+- exchange canonical rename/delete와 fact hard delete 뒤 FK 정합성 유지
+- protocol v4 payload에 context dependency 파일/field가 추가되지 않음
+- Fact Detail과 `trace_fact`가 context를 non-authoritative로 명시
+- real Chrome 1440×900 Fact Detail에서 context kind/ID/authority가 보이고 overflow/runtime error가 없음
 
 동일 fixture SHA `f45b4f0a…5bcd6`의 최종 Luna run은 17/17 PASS, matched/observed
 11/11, false positive/self-amplification leakage 0을 관측했습니다. Candidate/accepted는 11/11,

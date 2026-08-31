@@ -18,6 +18,7 @@ let promptWindows: Array<{ exchanges: Array<{
   assistant_context_only?: { content: string };
 }> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
+let contextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callMemoryModel: async (_systemPrompt: string, userMessage: string) => { calls++; promptWindows.push(JSON.parse(userMessage)); await new Promise(r => setTimeout(r, 60));
@@ -25,7 +26,8 @@ vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm
       ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
         grounding_type: 'explicit', durable: true,
         evidence: (sourceIndicesPerFact?.[i] ?? [1]).map(exchange_index =>
-          ({ exchange_index, source: 'human', kind: 'assertion' })) }))); } }));
+          ({ exchange_index, source: 'human', kind: 'assertion' })),
+        context_exchange_indices: contextIndicesPerFact?.[i] ?? [] }))); } }));
 let factsPerCall = 1;
 let embedCalls = 0;
 let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)
@@ -44,7 +46,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -161,6 +163,7 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 21, 30, 'S1',
     );
     sourceIndicesPerFact = [[2]];
+    contextIndicesPerFact = [[1]];
     factNameForCall = () => fixture.expected.fact;
 
     await runFactExtraction(db, 'S1', '/tmp/p');
@@ -185,6 +188,14 @@ describe('claim E2E', () => {
     expect(JSON.parse(row.source_exchange_ids)).toEqual([
       fixture.expected.authoritative_exchange_id,
     ]);
+    expect(db.prepare(`
+      SELECT exchange_id, dependency_kind
+      FROM fact_context_dependencies
+      WHERE fact_id = (SELECT id FROM facts WHERE fact = ?)
+    `).all(fixture.expected.fact)).toEqual([{
+      exchange_id: 'e1',
+      dependency_kind: 'watermark_prefix',
+    }]);
     expect((db.prepare(
       'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
     ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid).toBe(3);
@@ -348,6 +359,8 @@ describe('claim E2E', () => {
   it('R9 HIGH: 마지막(유일) fact 구간에서 탈취돼도 저장이 남지 않는다 (원자적 커밋)', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     factsPerCall = 1;               // fact 1건 = 루프 꼬리 = 체크포인트 사각
+    sourceIndicesPerFact = [[2]];
+    contextIndicesPerFact = [[1]];  // fact와 함께 rollback될 context dependency
     stealAtEmbedCall = 1;           // 그 유일한 fact 의 임베딩 중 탈취
     stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
 
@@ -358,6 +371,9 @@ describe('claim E2E', () => {
     const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
     console.log(`  → 루프 꼬리 탈취: 저장된 fact ${n}건 (saved=${saved})`);
     expect(n, '탈취 후 남은 fact 는 새 소유자의 재추출과 중복된다').toBe(0);
+    expect((db.prepare(
+      'SELECT COUNT(*) AS n FROM fact_context_dependencies',
+    ).get() as { n: number }).n).toBe(0);
   });
 
   it('R10 MEDIUM: claim 이양은 ClaimLostError 로 구분돼 내부 실패로 오분류되지 않는다', async () => {

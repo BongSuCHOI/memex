@@ -486,7 +486,7 @@ export function getToolDefinitions() {
     {
       name: "trace_fact",
       description:
-        "Trace a fact back to its source conversations. Shows the original exchanges that led to a knowledge graph fact, providing full provenance and context.",
+        "Trace a fact to authoritative source conversations and separately labeled non-authoritative interpretive context.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1119,6 +1119,28 @@ export async function handleToolCall(
             }
           } else {
             output += `\n_Source exchanges not available._\n\n`;
+          }
+
+          const contextDependencies = db.prepare(`
+            SELECT d.exchange_id, d.dependency_kind,
+                   e.project, e.timestamp, e.assistant_message,
+                   e.archive_path, e.line_start, e.line_end
+            FROM fact_context_dependencies d
+            JOIN exchanges e ON e.id = d.exchange_id
+            WHERE d.fact_id = ?
+            ORDER BY d.created_at, d.exchange_id, d.dependency_kind
+          `).all(fact.id) as Array<Record<string, unknown>>;
+          if (contextDependencies.length > 0) {
+            output += `### Interpretive Context (Non-Authoritative)\n\n`;
+            output += `_These exchanges helped resolve meaning but are not Fact evidence._\n\n`;
+            for (const dependency of contextDependencies) {
+              const assistant = String(dependency["assistant_message"] ?? "")
+                .substring(0, 200)
+                .replace(/\s+/g, " ");
+              output += `- **[${dependency["dependency_kind"]}, ${dependency["project"]}, ${String(dependency["timestamp"]).slice(0, 10)}]**\n`;
+              output += `  Assistant context: "${assistant}..."\n`;
+              output += `  Lines ${dependency["line_start"]}-${dependency["line_end"]} in ${dependency["archive_path"]}\n\n`;
+            }
           }
 
           // Show ontology context

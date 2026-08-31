@@ -79,7 +79,9 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 
 assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불일치하는 선언은
 candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
-exchange UUID에서만 생성되며 context index는 persisted lineage에 들어가지 않습니다.
+exchange UUID에서만 생성됩니다. 검증된 context index는 server가 실제 exchange UUID와
+dependency kind로 변환해 local `fact_context_dependencies`에 저장하며, authoritative lineage에는
+들어가지 않습니다. model이 context UUID나 kind를 직접 정할 수 없습니다.
 
 ### Precision과 durability policy
 
@@ -148,12 +150,13 @@ sequenceDiagram
     W->>E: rows after watermark + previous 1 context-only row
     W->>W: anchors + semantic windows + model + validate
     W->>F: BEGIN transaction
-    W->>F: save/merge facts + provenance
+    W->>F: save/merge facts + provenance + context dependency
     W->>L: saved count + watermark + release
     W->>F: COMMIT
 ```
 
-fact가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를 허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
+fact/context dependency가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를
+허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
 
 ### Extraction evaluation
 
@@ -202,6 +205,10 @@ consolidation은 active participant를 대상으로 LLM 판단을 수행하므�
 
 DUPLICATE commit과 CONTRADICTION/EVOLUTION mutation은 semantic + lifecycle CAS를 사용해 deactivate→restore 같은 lifecycle churn 뒤 stale verdict가 다시 fact를 비활성화하지 못하게 합니다.
 
+DUPLICATE/CONTRADICTION/EVOLUTION 판정은 survivor에 participant의 local context dependency를
+set-union합니다. 이는 해석 경로를 보존할 뿐 `source_exchange_ids` provenance union의 authority를
+바꾸지 않습니다. INDEPENDENT는 각 fact의 context를 그대로 둡니다.
+
 ## 6. Semantic mutation
 
 manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를 공유합니다.
@@ -219,6 +226,8 @@ manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를
 - ontology attempt ledger reset
 - 기존 relation 제거
 - consolidation dirty state 갱신
+- manual semantic edit에서는 이전 의미의 stale context dependency 제거
+- consolidation semantic rewrite에서는 participant context dependency를 survivor에 union
 
 중간 단계가 실패하면 이전 semantic generation 전체를 유지합니다.
 
@@ -259,6 +268,10 @@ remote 여러 기기를 fold할 때도 이 규칙을 적용하고, local commit 
 
 이 provenance는 conversation exclusion purge가 어떤 fact를 제거해야 하는지 판단하는 privacy evidence이기도 하므로 유실해서는 안 됩니다.
 
+`fact_context_dependencies`는 이 cross-device lineage 축에 속하지 않습니다. protocol v4로
+동기화하지 않으며 remote semantic replacement가 local fact 의미를 바꾸면 이전 local context를
+제거합니다.
+
 ## 9. Ontology와 relation
 
 ontology와 relation은 protocol v4에서 **local derived state**입니다. 기기 간 UUID를 맞추려고 sync하지 않습니다.
@@ -294,7 +307,10 @@ fact text unchanged
 
 ## 11. Privacy purge와 taxonomy rebuild
 
-conversation exclusion purge는 private-derived taxonomy가 남아 후속 분류 prompt에 재등장하지 않게 ontology를 전면 invalidate합니다.
+conversation exclusion purge는 authoritative source뿐 아니라 제외된 context exchange에 의미상
+의존한 fact도 terminal tombstone과 함께 제거합니다. context가 truth authority는 아니어도 fact
+문구를 해석하는 데 사용됐고 private text를 노출할 수 있기 때문입니다. 이어서
+private-derived taxonomy가 후속 분류 prompt에 재등장하지 않게 ontology를 전면 invalidate합니다.
 
 - `ontology_domains`, `ontology_categories`, `vec_categories` 제거
 - surviving facts의 `ontology_category_id = NULL`
@@ -306,5 +322,8 @@ conversation exclusion purge는 private-derived taxonomy가 남아 후속 분류
 ## 12. Hard delete와 tombstone
 
 hard delete는 full UUID와 explicit confirmation을 요구합니다. fact를 실제로 지우기 전에 `fact_tombstones`에 deletion event를 기록합니다.
+
+삭제되는 fact의 `fact_context_dependencies`는 FK cascade로 함께 제거되며 dry-run impact에 해당
+row 수를 표시합니다.
 
 특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못합니다.

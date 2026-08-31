@@ -9,7 +9,13 @@
  * counts (revisions/relations/vectors) before removing anything.
  */
 import type Database from 'better-sqlite3';
-import { getRevisions, insertRevision, vecParamFor } from './fact-db.js';
+import {
+  clearFactContextDependencies,
+  getRevisions,
+  insertRevision,
+  mergeFactContextDependencies,
+  vecParamFor,
+} from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
 
 export interface FactRow {
@@ -85,7 +91,26 @@ export function showFact(db: Database.Database, id: string): Record<string, unkn
       ).all(...ids) as Array<Record<string, unknown>>;
     }
   } catch { /* unparseable provenance */ }
-  return { ...fact, revisions: getRevisions(db, id), sources };
+  const contextDependencies = tableExists(db, 'fact_context_dependencies')
+    ? db.prepare(`
+        SELECT d.exchange_id, d.dependency_kind, d.created_at,
+               'context_only' AS authority,
+               e.project, e.timestamp,
+               substr(e.user_message, 1, 200) AS user_message,
+               substr(e.assistant_message, 1, 200) AS assistant_message,
+               e.archive_path
+        FROM fact_context_dependencies d
+        JOIN exchanges e ON e.id = d.exchange_id
+        WHERE d.fact_id = ?
+        ORDER BY d.created_at, d.exchange_id, d.dependency_kind
+      `).all(id) as Array<Record<string, unknown>>
+    : [];
+  return {
+    ...fact,
+    revisions: getRevisions(db, id),
+    sources,
+    context_dependencies: contextDependencies,
+  };
 }
 
 export interface EditResult {
@@ -117,6 +142,9 @@ export interface MutateFactMeaningOptions {
    * the verdict even though semantic_generation is unchanged. */
   expectedLifecycleGeneration?: number;
   consolidatedCountIncrement?: boolean;
+  /** Consolidation preserves the target's context and unions these facts'
+   * local interpretive lineage. Other semantic rewrites clear stale context. */
+  mergeContextFromFactIds?: string[];
   /** Facts to deactivate in the same transaction, each with the semantic AND
    * lifecycle generation its deactivation was decided against. A fact whose
    * meaning moved (edit, sync import) OR whose activation state moved
@@ -283,6 +311,18 @@ export async function mutateFactMeaning(
       now,
       opts.factId,
     );
+
+    if (tableExists(db, 'fact_context_dependencies')) {
+      if ((opts.mergeContextFromFactIds?.length ?? 0) > 0) {
+        mergeFactContextDependencies(
+          db,
+          opts.factId,
+          opts.mergeContextFromFactIds ?? [],
+        );
+      } else {
+        clearFactContextDependencies(db, opts.factId);
+      }
+    }
 
     db.prepare('DELETE FROM vec_facts WHERE id = ?').run(opts.factId);
     db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(opts.factId, vp.blob);
@@ -568,6 +608,7 @@ export interface HardDeleteImpact {
   exists: boolean;
   revisions: number;
   relations: number;
+  contextDependencies: number;
 }
 
 export function recordFactTombstone(
@@ -593,7 +634,12 @@ export function hardDeleteImpact(db: Database.Database, id: string): HardDeleteI
   try {
     relations = Number((db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(id, id) as { c: number }).c);
   } catch { /* no relations table */ }
-  return { exists, revisions, relations };
+  const contextDependencies = tableExists(db, 'fact_context_dependencies')
+    ? Number((db.prepare(
+        'SELECT COUNT(*) AS c FROM fact_context_dependencies WHERE fact_id = ?',
+      ).get(id) as { c: number }).c)
+    : 0;
+  return { exists, revisions, relations, contextDependencies };
 }
 
 /** Hard delete: exact UUID + explicit confirm required. One transaction. */

@@ -46,6 +46,7 @@ flowchart TB
       Vec[(sqlite-vec)]
       KR[(fact_kr)]
       Tax[(Ontology + relations)]
+      Context[(Fact context dependencies)]
     end
 
     subgraph Interfaces[Interfaces]
@@ -68,7 +69,9 @@ flowchart TB
     ArchiveIndex --> FTS
     ArchiveIndex --> Vec
     Extract --> Facts
+    Extract --> Context
     Consolidate --> Facts
+    Consolidate --> Context
     Sync <--> Generations
     Sync <--> Facts
     Retrieve --> Facts
@@ -78,6 +81,8 @@ flowchart TB
     Facts --> KR
     Facts --> Tax
     Facts --> Vec
+    Context --> UI
+    Context --> MCP
 
     Retrieve --> CLI
     Retrieve --> MCP
@@ -122,8 +127,12 @@ lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 �
 - ontology domains/categories
 - typed relations
 - primary/KR/category vectors
+- `fact_context_dependencies` interpretive lineage
 
-이 값들은 현재 semantic state에서 재구축할 수 있으며 protocol v4 payload에는 포함하지 않습니다.
+`fact_context_dependencies`는 Fact 해석에 사용된 exchange를 로컬에서 감사하기 위한 별도
+관계입니다. authoritative evidence가 아니며 `source_exchange_ids`와 합치거나 protocol v4로
+동기화하지 않습니다. 나머지 derived 값처럼 semantic state와 local conversation corpus에
+종속됩니다.
 
 ## 4. 주요 컴포넌트
 
@@ -133,7 +142,7 @@ lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 �
 | `src/parser.ts` | JSONL → exchange/tool-call 모델 |
 | `src/sync.ts` | rollout archive와 incremental indexing orchestration |
 | `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
-| `src/fact-extractor.ts` | eligible evidence → fact 후보 |
+| `src/fact-extractor.ts` | eligible evidence → fact 후보, validated context index → local dependency |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
 | `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
 | `src/sync-export.ts` | durable generation export |
@@ -204,12 +213,13 @@ importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다�
 ## 7. 일관성과 장애 모델
 
 - exchange upsert는 rowid-preserving update입니다.
-- extraction의 fact/provenance/saved count/watermark는 같은 transaction에 있습니다.
-- semantic mutation은 revision, vectors, KR/ontology invalidation, relation cleanup을 하나의 commit으로 처리합니다.
+- extraction의 fact/provenance/context dependency/saved count/watermark는 같은 transaction에 있습니다.
+- semantic mutation은 revision, context dependency 정리, vectors, KR/ontology invalidation, relation cleanup을 하나의 commit으로 처리합니다.
 - async derived writer는 계산 전에 generation/epoch을 캡처하고 commit 시 다시 검증합니다.
 - consolidation은 semantic + lifecycle generation을 함께 CAS합니다.
 - replicated lifecycle은 원격 event time을 보존하며 commit transaction 안에서 LWW를 다시 판단합니다.
-- privacy purge는 taxonomy 전체를 invalidate하고 taxonomy epoch를 증가시켜 in-flight classifier를 폐기합니다.
+- privacy purge는 authoritative source뿐 아니라 excluded context에 의존한 fact도 제거하고,
+  taxonomy 전체를 invalidate하며 taxonomy epoch를 증가시켜 in-flight classifier를 폐기합니다.
 - 실패한 background 작업은 완료로 가장하지 않으며 다음 lifecycle에서 재시도할 수 있어야 합니다.
 
 ## 8. 보안과 신뢰 경계

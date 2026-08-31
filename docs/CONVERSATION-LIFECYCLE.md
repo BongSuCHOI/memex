@@ -56,7 +56,7 @@ exchange ID는 `(session_id, user turn line)`에서 결정론적으로 파생되
 
 - desired에 없는 기존 exchange 삭제
 - legacy ID를 canonical ID로 rename
-- `tool_calls`, vector row, fact provenance, revision source reference 갱신
+- `tool_calls`, vector row, fact provenance, revision source reference, fact context dependency 갱신
 - 사라진 tool call/죽은 provenance pointer 제거
 
 FTS5는 external-content trigger로 동기화하며 vector row는 현재 embedding generation과 같은 공간에서만 검색합니다.
@@ -121,6 +121,7 @@ meta.json   # integrity manifest
 - ontology domains/categories
 - ontology relations
 - `vec_*` tables
+- `fact_context_dependencies`
 
 ### Generation commit
 
@@ -181,8 +182,10 @@ consolidated_count  = max
 
 이 union의 입력은 extractor가 검증한 authoritative `source_exchange_ids`뿐입니다. Assistant,
 recall, watermark prefix의 context dependency는 sync payload에 추가되지 않습니다. Conversation
-exclusion purge도 같은 authoritative lineage를 역참조하므로, context visibility를 durable
-lineage로 확장하지 않는 것이 sync 수렴과 privacy 삭제 의미를 동시에 보존합니다.
+exclusion purge는 authoritative lineage와 local context dependency를 각각 역참조합니다. 따라서
+context visibility를 durable source lineage로 확장하지 않으면서도 excluded context에 의미상
+의존한 local fact를 안전하게 제거합니다. Remote semantic replacement는 sync되지 않은 이전
+local context dependency를 지워 새 의미에 stale 해석 경로가 붙지 않게 합니다.
 
 ## 8. Replicated lifecycle
 
@@ -201,7 +204,8 @@ conversation exclusion이 확인되면 해당 conversation에서 유래한 searc
 
 - exchanges/tool calls/FTS/vectors
 - extraction/recall ledger와 summary
-- 해당 exchange를 evidence로 사용한 facts/revisions/relations/vectors
+- 해당 exchange를 evidence 또는 interpretive context로 사용한 facts/revisions/relations/vectors
+- context-dependent fact의 terminal privacy tombstone과 context dependency FK cascade
 - terminal privacy tombstone (`source_conversation_excluded`)
 - ontology domains/categories/category vectors 전체 invalidate
 - surviving public facts의 `ontology_category_id`, attempt ledger reset
@@ -215,4 +219,7 @@ in-flight classifier는 시작 전에 taxonomy epoch을 캡처합니다. purge�
 
 archive/index는 재구축 가능해야 합니다. `verify --repair`와 일반 indexing entrypoint는 동일한 archive-ingestion SSOT를 사용해야 하며 worker/internal prompt exclusion, desired-set reconciliation, vector/FTS update 규칙을 우회하지 않습니다.
 
-sync durable state는 DB를 새로 만들더라도 peer generations에서 다시 import할 수 있습니다. 반면 ontology, KR translation, relation, vectors는 local derived state이므로 maintenance/backfill에서 재구성합니다.
+sync durable state는 DB를 새로 만들더라도 peer generations에서 다시 import할 수 있습니다. 반면
+ontology, KR translation, relation, vectors와 `fact_context_dependencies`는 local state입니다.
+Context dependency는 peer generation에서 재구성하지 않으며 새 local extraction/consolidation이
+만드는 해석 lineage만 유지합니다.

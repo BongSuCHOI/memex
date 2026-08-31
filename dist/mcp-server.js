@@ -18792,6 +18792,29 @@ function initDatabase(options = {}) {
     CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(is_active)
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_context_dependencies (
+      fact_id TEXT NOT NULL,
+      exchange_id TEXT NOT NULL,
+      dependency_kind TEXT NOT NULL CHECK (
+        dependency_kind IN (
+          'assistant_context',
+          'recall_influenced_assistant',
+          'watermark_prefix',
+          'conversation_context'
+        )
+      ),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+      FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+      FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+        ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_fact_context_exchange
+    ON fact_context_dependencies(exchange_id)
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,
       fact_id TEXT NOT NULL,
@@ -22539,7 +22562,7 @@ function getToolDefinitions() {
     },
     {
       name: "trace_fact",
-      description: "Trace a fact back to its source conversations. Shows the original exchanges that led to a knowledge graph fact, providing full provenance and context.",
+      description: "Trace a fact to authoritative source conversations and separately labeled non-authoritative interpretive context.",
       inputSchema: {
         type: "object",
         properties: {
@@ -23100,6 +23123,33 @@ Query: "${params.query}"
 _Source exchanges not available._
 
 `;
+          }
+          const contextDependencies = db.prepare(`
+            SELECT d.exchange_id, d.dependency_kind,
+                   e.project, e.timestamp, e.assistant_message,
+                   e.archive_path, e.line_start, e.line_end
+            FROM fact_context_dependencies d
+            JOIN exchanges e ON e.id = d.exchange_id
+            WHERE d.fact_id = ?
+            ORDER BY d.created_at, d.exchange_id, d.dependency_kind
+          `).all(fact.id);
+          if (contextDependencies.length > 0) {
+            output += `### Interpretive Context (Non-Authoritative)
+
+`;
+            output += `_These exchanges helped resolve meaning but are not Fact evidence._
+
+`;
+            for (const dependency of contextDependencies) {
+              const assistant = String(dependency["assistant_message"] ?? "").substring(0, 200).replace(/\s+/g, " ");
+              output += `- **[${dependency["dependency_kind"]}, ${dependency["project"]}, ${String(dependency["timestamp"]).slice(0, 10)}]**
+`;
+              output += `  Assistant context: "${assistant}..."
+`;
+              output += `  Lines ${dependency["line_start"]}-${dependency["line_end"]} in ${dependency["archive_path"]}
+
+`;
+            }
           }
           const revisions = getRevisions(db, fact.id);
           if (revisions.length > 0) {

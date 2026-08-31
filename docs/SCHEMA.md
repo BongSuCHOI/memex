@@ -16,6 +16,8 @@ schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세
 erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
     EXCHANGES }o--o{ FACTS : provenance
+    EXCHANGES ||--o{ FACT_CONTEXT_DEPENDENCIES : interpretive_context
+    FACTS ||--o{ FACT_CONTEXT_DEPENDENCIES : depends_on
     FACTS ||--o{ FACT_REVISIONS : evolves
     FACTS ||..o| FACT_TOMBSTONES : deleted_as
     ONTOLOGY_DOMAINS ||--o{ ONTOLOGY_CATEGORIES : contains
@@ -51,9 +53,27 @@ exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니
 conversation/tool result는 source type과 learnable state를 저장합니다. `memex_recall`과 assistant synthesis는 searchable하더라도 fact evidence로 학습하지 않습니다.
 
 Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
-`context_exchange_indices`는 validation/diagnostic data이며 SQLite durable schema에는
-저장하지 않습니다. `facts.source_exchange_ids`만 검증된 authoritative exchange UUID
-lineage를 유지합니다. Context-only assistant/recall exchange를 이 배열에 넣지 않습니다.
+`context_exchange_indices`는 server-side validation input입니다. 검증된 authoritative exchange
+UUID만 `facts.source_exchange_ids`에 들어가며 context-only assistant/recall exchange를 이 배열에
+넣지 않습니다. 검증된 context index는 model이 제공한 UUID/kind를 신뢰하지 않고 server가 실제
+exchange row와 대조해 `fact_context_dependencies`로 별도 저장합니다.
+
+```sql
+fact_context_dependencies (
+  fact_id,
+  exchange_id,
+  dependency_kind,
+  created_at,
+  PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+  FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+  FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+)
+```
+
+`dependency_kind`는 `assistant_context`, `recall_influenced_assistant`,
+`watermark_prefix`, `conversation_context` 중 하나입니다. 이 관계는 local persistent audit
+lineage이지만 fact truth의 authority가 아니며 protocol v4 durable payload가 아닙니다.
 
 Phase 6 evaluation의 candidate/accepted/rejection/grounding/ratification counter도 process-local
 report diagnostics입니다. `extraction_log`, `facts`, protocol v4 payload에 새 telemetry column이나
@@ -175,7 +195,8 @@ stale 결과는 새 상태와 merge하지 않고 폐기합니다.
 conversation exclusion purge는 다음을 하나의 policy operation으로 다룹니다.
 
 - matching exchange/tool/vector/search state 삭제
-- 관련 fact/revision/relation/vector 제거
+- authoritative source 또는 context dependency로 연결된 fact/revision/relation/vector 제거
+- `fact_context_dependencies` FK cascade 정리
 - terminal privacy tombstone 기록
 - taxonomy domains/categories/category vectors 전면 invalidate
 - surviving fact ontology assignment/attempt ledger reset
@@ -196,6 +217,10 @@ fact_tombstones
 recall_events
 ```
 
+`fact_context_dependencies`는 local conversation corpus에 종속된 interpretive lineage이므로
+export/import하지 않습니다. Remote semantic winner가 local fact 의미를 교체하면 이전 의미에
+붙은 stale context dependency를 제거합니다.
+
 `semantic_generation`/`lifecycle_generation`은 local CAS token이므로 cross-device version number로 사용하지 않습니다. 기기 간 conflict는 event timestamps로 판단합니다.
 
 ## 10. Export serialization
@@ -214,5 +239,6 @@ sync export는 같은 local DB의 exporters를 SQLite `BEGIN IMMEDIATE` transact
 - relation endpoint/scope 규칙 만족
 - FTS readiness와 source row 정합
 - generation manifest hash/row/schema 검증 성공
+- fact/exchange 삭제·exchange ID rename 뒤 context dependency FK 정합성 유지
 
 schema 변경 시 이 문서뿐 아니라 해당 lifecycle owner doc도 함께 갱신해야 합니다.

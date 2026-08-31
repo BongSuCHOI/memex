@@ -384,6 +384,32 @@ export function initDatabase(options = {}) {
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(is_active)
   `);
+    // Local persistent interpretive lineage. These rows explain which
+    // conversation context helped resolve a fact, but they are never
+    // authoritative evidence and never enter protocol v4 sync payloads.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_context_dependencies (
+      fact_id TEXT NOT NULL,
+      exchange_id TEXT NOT NULL,
+      dependency_kind TEXT NOT NULL CHECK (
+        dependency_kind IN (
+          'assistant_context',
+          'recall_influenced_assistant',
+          'watermark_prefix',
+          'conversation_context'
+        )
+      ),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+      FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+      FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+        ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_fact_context_exchange
+    ON fact_context_dependencies(exchange_id)
+  `);
     db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,

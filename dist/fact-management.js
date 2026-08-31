@@ -1,4 +1,4 @@
-import { getRevisions, insertRevision, vecParamFor } from './fact-db.js';
+import { clearFactContextDependencies, getRevisions, insertRevision, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
 function tableExists(db, name) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined;
@@ -46,7 +46,26 @@ export function showFact(db, id) {
         }
     }
     catch { /* unparseable provenance */ }
-    return { ...fact, revisions: getRevisions(db, id), sources };
+    const contextDependencies = tableExists(db, 'fact_context_dependencies')
+        ? db.prepare(`
+        SELECT d.exchange_id, d.dependency_kind, d.created_at,
+               'context_only' AS authority,
+               e.project, e.timestamp,
+               substr(e.user_message, 1, 200) AS user_message,
+               substr(e.assistant_message, 1, 200) AS assistant_message,
+               e.archive_path
+        FROM fact_context_dependencies d
+        JOIN exchanges e ON e.id = d.exchange_id
+        WHERE d.fact_id = ?
+        ORDER BY d.created_at, d.exchange_id, d.dependency_kind
+      `).all(id)
+        : [];
+    return {
+        ...fact,
+        revisions: getRevisions(db, id),
+        sources,
+        context_dependencies: contextDependencies,
+    };
 }
 /**
  * Thrown when a semantic mutation loses a race: the fact's text changed
@@ -166,6 +185,14 @@ export async function mutateFactMeaning(db, opts) {
           ${countUpdate}
       WHERE id = ?
     `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, now, EMBEDDING_VERSION, now, opts.factId);
+        if (tableExists(db, 'fact_context_dependencies')) {
+            if ((opts.mergeContextFromFactIds?.length ?? 0) > 0) {
+                mergeFactContextDependencies(db, opts.factId, opts.mergeContextFromFactIds ?? []);
+            }
+            else {
+                clearFactContextDependencies(db, opts.factId);
+            }
+        }
         db.prepare('DELETE FROM vec_facts WHERE id = ?').run(opts.factId);
         db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(opts.factId, vp.blob);
         if (tableExists(db, 'vec_facts_kr')) {
@@ -419,7 +446,10 @@ export function hardDeleteImpact(db, id) {
         relations = Number(db.prepare('SELECT COUNT(*) AS c FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').get(id, id).c);
     }
     catch { /* no relations table */ }
-    return { exists, revisions, relations };
+    const contextDependencies = tableExists(db, 'fact_context_dependencies')
+        ? Number(db.prepare('SELECT COUNT(*) AS c FROM fact_context_dependencies WHERE fact_id = ?').get(id).c)
+        : 0;
+    return { exists, revisions, relations, contextDependencies };
 }
 /** Hard delete: exact UUID + explicit confirm required. One transaction. */
 export function hardDeleteFact(db, id, opts) {

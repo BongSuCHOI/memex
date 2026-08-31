@@ -2313,13 +2313,40 @@ extract`를 선택하는 기존 계약을 유지한다.
 
 ## Optional Phase 7 — Persistent Context Dependency
 
-다음 요구가 생길 때만 진행:
+2026-08-31 사용자 요청으로 UI/audit/debugging 요구가 명시되어 구현을 진행했다.
 
-- UI에서 “이 Fact가 어떤 assistant proposition을 사용해 해석됐는지” 보여줘야 함
-- audit trace가 authoritative evidence 이상의 semantic dependency를 요구
-- debugging에 context lineage가 지속적으로 필요
+구현 완료 조건:
 
-그 전에는 schema 복잡도를 늘리지 않는다.
+- [x] UI에서 “이 Fact가 어떤 assistant proposition을 사용해 해석됐는지” 표시
+- [x] MCP audit trace에서 authoritative source와 semantic dependency 분리
+- [x] debugging용 context lineage를 local persistent table에 저장
+- [x] `source_exchange_ids`의 authoritative evidence 의미 유지
+- [x] protocol v4 payload 유지
+- [x] extraction transaction에 fact/context dependency/watermark 원자 commit
+- [x] consolidation survivor에 context dependency union
+- [x] manual edit/remote semantic replacement 시 stale dependency 제거
+- [x] privacy exclusion과 exchange rename/delete/hard delete 수명주기 연결
+
+구현 매핑:
+
+```text
+validated context_exchange_indices
+  -> server-resolved exchange UUID + dependency_kind
+  -> fact_context_dependencies (local, non-authoritative)
+  -> Fact Detail / trace_fact
+
+source_exchange_ids
+  -> authoritative evidence only
+  -> protocol v4 lineage union
+```
+
+`dependency_kind`는 `assistant_context`, `recall_influenced_assistant`,
+`watermark_prefix`, `conversation_context`로 제한한다. model이 UUID/kind를 직접 공급하지 않고,
+server가 validated window의 실제 exchange row에서 결정한다.
+
+별도 table을 선택한 이유는 context가 local semantic/audit dependency인 반면
+`source_exchange_ids`는 cross-device authoritative lineage이기 때문이다. Context table은 sync하지
+않고, remote semantic replacement에서는 이전 local 의미의 stale row를 제거한다.
 
 ---
 
