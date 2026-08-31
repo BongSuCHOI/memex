@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-31T13:58:45.000Z",
+  "recordedAt": "2026-08-31T18:48:32Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,8 +9,8 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "839174d8183b340b2e851e5a7c4e5116ebd007e9",
-    "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, and owner documentation are unchanged after the evidence run."
+    "codeSha": "7c970747873db106785544405e04b8c29141165d",
+    "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, owner documentation, and the committed curated report are unchanged after the evidence run."
   },
   "verdict": "PASS",
   "gates": [
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "69 files / 630 tests passed"
+      "observed": "69 files / 635 tests passed"
     },
     {
       "name": "codex-slice",
@@ -40,7 +40,19 @@
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
-      "observed": "93 pass / 0 fail"
+      "observed": "93 pass / 0 fail; isolated local rerun allowed the Unix-socket listener that the filesystem sandbox blocks with EPERM"
+    },
+    {
+      "name": "fact-extraction-curated",
+      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out docs/verification/fact-extraction-current.json",
+      "status": "PASS",
+      "observed": "same fixture SHA f45b4f0a...5bcd6; 17/17 cases, matched/observed 11/11, false positives 0, self-amplification leakage 0, explicit/verified/inferred 8/2/1, context-resolved ratification 5, regressions 0; committed raw report records clean production code SHA"
+    },
+    {
+      "name": "fact-extraction-shadow",
+      "command": "npm run eval:fact-extraction -- --session <approved-1> --session <approved-2> --session <approved-3> --out .fact-extraction-eval/shadow-severity-current.json",
+      "status": "PASS",
+      "observed": "read-only 3 sessions / 38 exchanges; candidate/accepted 16/14 with rejected_invalid_evidence 2 and execution errors 0; manual KEEP 11 / DROP-noise 3 / wrong category, scope, unsupported 0; archive DB SHA-256 unchanged before/after; raw report remains ignored private data"
     },
     {
       "name": "install-e2e",
@@ -58,23 +70,17 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz 189 files / 727164 bytes packed / 2867173 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; sandbox run stalled during npm package resolution, authorized isolated network rerun passed"
+      "observed": "memex-0.2.0.tgz 190 files / 734783 bytes packed / 2916606 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; authorized isolated network run completed npm package resolution"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "observed": "9/9 steps passed; cleanup inventory all true (plugin_registration_absent, owned_hooks_absent, temp_data_absent, test_workers_zero, inject_sockets_zero, test_listeners_zero, user_environment_isolated)"
-    },
-    {
-      "name": "web-ui-browser-e2e",
-      "command": "node scripts/web-ui-browser-e2e.mjs --evidence-dir /tmp/memex-phase7-committed-ui",
-      "status": "PASS",
-      "observed": "Google Chrome headless via CDP at 1440x900; Fact Detail labeled authoritative provenance + non-authoritative context and rendered context_only, assistant_context, and exchange ID without horizontal overflow, injected markup, or runtime errors"
     }
   ],
   "reauditClosures": {
-    "reference": "Fact extraction context/evidence grounding Phase 0+J, Phase 1+A+B partial / Phase 2+C+D, Phase 3+E, Phase 4+F, Phase 5+B remaining, Phase 6+G+H+I+J integration, and Optional Phase 7 persistent context dependency",
-    "result": "PASS at codeSha 839174d8183b340b2e851e5a7c4e5116ebd007e9: Phase 7 persists only server-validated context indices as local fact_context_dependencies with server-derived kinds while authoritative source_exchange_ids and protocol v4 remain unchanged. Extraction saves facts, dependencies, counts, and watermark atomically; consolidation unions context into its survivor; manual edits and remote semantic replacements clear stale context; privacy exclusion purges context-dependent facts with terminal tombstones; exchange rename/delete and hard delete preserve FK integrity. Fact Detail and trace_fact label interpretive context as non-authoritative. Full typecheck/build, 630 tests, 24 Codex slice tests, 93 complete slice tests, installer, marketplace, package-runtime, lifecycle, and real Chrome UI E2Es passed from the committed clean integration baseline"
+    "reference": "Fact extraction context/evidence grounding verification-review Severity remediation, excluding GitHub CI as requested",
+    "result": "PASS at codeSha 7c970747873db106785544405e04b8c29141165d: deterministic evidence binding now requires exact human supporting spans or exact trusted tool-call IDs plus result spans and claim-bearing overlap, so human-question and unrelated-tool semantic laundering fail closed. Incremental extraction preserves up to two pre-watermark context exchanges; proceed/continue variants anchor only with preceding watermark context; long human/tool inputs preserve head and tail. Context dependencies are limited to explicit ratification, preceding depth <= 2, and claim-bearing assistant/recall material, then labeled model-declared and server-resolved. Adversarial regressions, the committed 17-case Luna report, approved read-only shadow rerun and MISS classification, 635 tests, 24 Codex slice tests, 93 complete slice tests, installer, marketplace, package-runtime, and lifecycle E2Es all passed."
   }
 }
