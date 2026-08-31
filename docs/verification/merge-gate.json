@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-31T07:53:46.000Z",
+  "recordedAt": "2026-08-31T10:27:13.000Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.7.0",
@@ -9,7 +9,7 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "dd0c7f23a63508ac475d9ef01f9502d4f462f475",
+    "codeSha": "cbc50b4fcc99154f93e9bff9567963e0416b6bfa",
     "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, and owner documentation are unchanged after the evidence run."
   },
   "verdict": "PASS",
@@ -28,7 +28,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "69 files / 624 tests passed"
+      "observed": "69 files / 625 tests passed"
     },
     {
       "name": "codex-slice",
@@ -58,7 +58,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz 189 files / 719142 bytes packed / 2837734 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; sandbox run stalled during npm package resolution, authorized isolated network rerun passed"
+      "observed": "memex-0.2.0.tgz 189 files / 722216 bytes packed / 2848329 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; sandbox run stalled during npm package resolution, authorized isolated network rerun passed"
     },
     {
       "name": "lifecycle-e2e",
@@ -68,7 +68,7 @@
     }
   ],
   "reauditClosures": {
-    "reference": "Fact extraction context/evidence grounding Phase 0+J, Phase 1+A+B partial / Phase 2+C+D, Phase 3+E, Phase 4+F, and Phase 5+B remaining integration",
-    "result": "PASS at codeSha dd0c7f23a63508ac475d9ef01f9502d4f462f475: precision-durability-v1 enforces ordered grounding, durability, category/scope, and secondary-confidence gates; rejects questions, comparisons, interests, brainstorming, one-off requests/actions, weak inference, and unsupported global promotion; preserves current-state corrections and new human recall ratification; treats the fact maximum as a safety cap rather than a quota. The unchanged 17-case Luna fixture passed 17/17 with 11/11 durable facts, 100% precision/recall/negative/ratification/verified-local metrics, zero false positives, zero self-amplification leakage, and 17 model calls. Full tests, slice gates, installer, marketplace, package-runtime, and lifecycle E2Es passed from the committed clean integration baseline"
+    "reference": "Fact extraction context/evidence grounding Phase 0+J, Phase 1+A+B partial / Phase 2+C+D, Phase 3+E, Phase 4+F, Phase 5+B remaining, and Phase 6+G+H+I+J integration",
+    "result": "PASS at codeSha cbc50b4fcc99154f93e9bff9567963e0416b6bfa: eval-only typed validator observability reports exclusive candidate acceptance/rejection reasons, grounding counts, and context-resolved ratification without changing production DB or protocol v4. Authoritative source_exchange_ids remain isolated from context-only lineage through dedup, consolidation, privacy purge, and sync; recall-influenced assistant text is FTS/vector searchable while assistant_learnable remains false. The unchanged 17-case Luna fixture passed 17/17 with matched/observed 11/11, candidate/accepted 11/11, 100% precision/recall/negative/ratification/verified-local metrics, zero false positives and self-amplification leakage. The approved read-only 3-session/38-exchange archive shadow observed candidate/accepted 14/14 with manual KEEP 12, semantic duplicate noise 2, wrong category/scope/unsupported 0, at least 4 important unreferenced exchanges, and an unchanged archive DB SHA-256. Full tests, slice gates, installer, marketplace, package-runtime, and lifecycle E2Es passed from the committed clean integration baseline"
   }
 }
