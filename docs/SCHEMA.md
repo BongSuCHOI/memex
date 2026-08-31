@@ -55,8 +55,10 @@ conversation/tool result는 source type과 learnable state를 저장합니다. `
 Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
 `context_exchange_indices`는 server-side validation input입니다. 검증된 authoritative exchange
 UUID만 `facts.source_exchange_ids`에 들어가며 context-only assistant/recall exchange를 이 배열에
-넣지 않습니다. 검증된 context index는 model이 제공한 UUID/kind를 신뢰하지 않고 server가 실제
-exchange row와 대조해 `fact_context_dependencies`로 별도 저장합니다.
+넣지 않습니다. Human evidence의 exact `supporting_span`, tool evidence의 exact
+`tool_call_id`/`supporting_span`도 실제 row와 대조합니다. Context index는 model-declared input이며
+ratification보다 앞선 최대 2개 claim-bearing context라는 causal constraint를 통과한 경우에만
+server가 실제 exchange UUID/kind로 resolve해 `fact_context_dependencies`로 별도 저장합니다.
 
 ```sql
 fact_context_dependencies (

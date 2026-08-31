@@ -21,13 +21,35 @@ let sourceIndicesPerFact: number[][] | null = null;
 let contextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
-  callMemoryModel: async (_systemPrompt: string, userMessage: string) => { calls++; promptWindows.push(JSON.parse(userMessage)); await new Promise(r => setTimeout(r, 60));
-    return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
-      ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
-        grounding_type: 'explicit', durable: true,
-        evidence: (sourceIndicesPerFact?.[i] ?? [1]).map(exchange_index =>
-          ({ exchange_index, source: 'human', kind: 'assertion' })),
-        context_exchange_indices: contextIndicesPerFact?.[i] ?? [] }))); } }));
+  callMemoryModel: async (_systemPrompt: string, userMessage: string) => {
+    calls++;
+    const envelope = JSON.parse(userMessage);
+    promptWindows.push(envelope);
+    await new Promise(r => setTimeout(r, 60));
+    return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) => {
+      const sourceIndices = sourceIndicesPerFact?.[i] ?? [1];
+      const contextIndices = contextIndicesPerFact?.[i] ?? [];
+      const bindingText = contextIndices.length > 0
+        ? contextIndices.map(index => envelope.exchanges[index - 1].assistant_context_only.content).join(' ')
+        : sourceIndices.map(index => envelope.exchanges[index - 1]?.human_evidence ?? '').join(' ');
+      return {
+        fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`,
+        fact_kr: bindingText,
+        category: 'preference',
+        scope_type: 'project',
+        confidence: 0.9,
+        grounding_type: 'explicit',
+        durable: true,
+        evidence: sourceIndices.map(exchange_index => ({
+          exchange_index,
+          source: 'human',
+          kind: contextIndices.length > 0 ? 'ratification' : 'assertion',
+          supporting_span: envelope.exchanges[exchange_index - 1]?.human_evidence ?? '',
+        })),
+        context_exchange_indices: contextIndices,
+      };
+    }));
+  } }));
 let factsPerCall = 1;
 let embedCalls = 0;
 let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)
@@ -51,8 +73,8 @@ beforeEach(async () => {
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
   for (let i = 0; i < 2; i++) ins.run(`e${i}`, '/tmp/p', new Date().toISOString(),
-    'Flutter 상태관리를 Riverpod 과 Bloc 중 무엇으로 할지 결정해야 합니다. 이유도 알려주세요.',
-    'Riverpod 을 권장합니다. 컴파일 타임 안전성과 테스트 용이성 때문입니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
+    'Flutter 상태관리는 Riverpod으로 결정했습니다.',
+    'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
 });
 afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; delete process.env.MEMEX_MAX_EXTRACT_CALLS; fs.rmSync(tmp, {recursive:true,force:true}); });
 
@@ -120,6 +142,7 @@ describe('claim E2E', () => {
     db.prepare("UPDATE exchanges SET user_message = '왜?' WHERE id = 'e0'").run();
     db.prepare("UPDATE exchanges SET user_message = '응' WHERE id = 'e1'").run();
     sourceIndicesPerFact = [[2]];
+    contextIndicesPerFact = [[1]];
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 
@@ -162,15 +185,15 @@ describe('claim E2E', () => {
       fixture.suffix.user_message, fixture.suffix.assistant_message,
       '/tmp/a2.jsonl', 21, 30, 'S1',
     );
-    sourceIndicesPerFact = [[2]];
-    contextIndicesPerFact = [[1]];
+    sourceIndicesPerFact = [[3]];
+    contextIndicesPerFact = [[2]];
     factNameForCall = () => fixture.expected.fact;
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     expect(calls).toBe(1);
-    expect(promptWindows[0].exchanges).toHaveLength(2);
-    expect(promptWindows[0].exchanges[0]).toEqual(expect.objectContaining({
+    expect(promptWindows[0].exchanges).toHaveLength(3);
+    expect(promptWindows[0].exchanges[1]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: true,
       human_evidence: null,
       human_context_only: fixture.prefix.user_message,
@@ -178,7 +201,7 @@ describe('claim E2E', () => {
         content: fixture.prefix.assistant_message,
       }),
     }));
-    expect(promptWindows[0].exchanges[1]).toEqual(expect.objectContaining({
+    expect(promptWindows[0].exchanges[2]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: false,
       human_evidence: fixture.suffix.user_message,
     }));
@@ -251,14 +274,14 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 11, 20, 'S1',
     );
 
-    sourceIndicesPerFact = [[2]];
+    sourceIndicesPerFact = [[3]];
     await runFactExtraction(db, 'S1', '/tmp/p');
     expect(calls, '재개 세션은 새 exchange 배치에 대해 한 번만 호출해야 한다').toBe(2);
     expect(promptWindows[1].exchanges[0]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: true,
       human_evidence: null,
     }));
-    expect(promptWindows[1].exchanges[1]).toEqual(expect.objectContaining({
+    expect(promptWindows[1].exchanges[2]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: false,
       human_evidence: '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
     }));

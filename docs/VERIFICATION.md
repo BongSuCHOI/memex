@@ -141,7 +141,9 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 
 - assistant/recall 본문이 JSON envelope의 context-only field에는 존재
 - assistant/recall/external evidence 선언은 server-side hard reject
-- trusted tool 선언은 실제 DB `tool_name/source_type/learnable/is_error`와 일치해야 통과
+- human evidence는 exact supporting span, non-question, claim token binding을 모두 통과해야 함
+- trusted tool 선언은 실제 DB `tool_call_id/tool_name/source_type/learnable/is_error`, exact result
+  span, claim token binding과 일치해야 통과
 - inferred candidate는 서로 다른 authoritative exchange 2개 이상 필요
 - accepted `source_exchange_ids`에는 validated human/tool exchange UUID만 존재
 - recall 영향을 받은 assistant text는 conversation FTS에서 계속 검색 가능
@@ -150,11 +152,13 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - transport artifact는 raw-adjacency run을 끊고, window는 최대 5 exchanges로 bounded
 - overlapping window의 duplicate fact는 normalized text로 합쳐지고 authoritative lineage는 union
 - `MEMEX_MAX_EXTRACT_CALLS`는 semantic window 생성 후 적용되며 claim/retry/watermark 계약은 유지
-- watermark suffix가 있으면 직전 1개 prefix가 `context_only_due_to_watermark`로만 보임
+- watermark suffix가 있으면 직전 최대 2개 prefix가 `context_only_due_to_watermark`로만 보임
+- `진행해줘`/`proceed`/`continue`는 preceding watermark context가 있을 때만 conditional anchor
+- 긴 human/tool evidence는 head+tail 보존으로 뒤쪽 결정·검증 결과가 envelope에 남음
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
 - boundary ratification은 prefix assistant referent를 보되 persisted lineage는 신규 human UUID만 포함
 - prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
-- `precision-durability-v1`의 grounding→durability→category/scope→confidence gate가 prompt에 존재
+- `precision-durability-v2`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리
 - current-state correction과 recall-backed new ratification은 새 human authority로 복구
@@ -178,7 +182,8 @@ Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieva
 Optional Phase 7 persistent context dependency gate는 authority 의미를 유지한 채 audit/UI 소비처를
 연결합니다.
 
-- validated `context_exchange_indices`만 server가 실제 exchange UUID와 dependency kind로 매핑
+- explicit ratification의 preceding depth <= 2, claim-bearing context index만 server가 실제
+  exchange UUID와 dependency kind로 resolve
 - fact/context dependency/saved count/watermark가 한 extraction transaction에서 commit 또는 rollback
 - overlap 및 DUPLICATE/CONTRADICTION/EVOLUTION survivor가 context dependency를 set-union
 - manual semantic edit와 remote semantic replacement가 stale local context dependency를 제거

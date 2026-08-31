@@ -34,7 +34,12 @@ vi.mock('../src/llm.js', async (importOriginal) => {
       return JSON.stringify([
         { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9,
           grounding_type: 'explicit', durable: true,
-          evidence: [{ exchange_index: 1, source: 'human', kind: 'assertion' }] },
+          evidence: [{
+            exchange_index: 1,
+            source: 'human',
+            kind: 'assertion',
+            supporting_span: 'Riverpod',
+          }] },
       ]);
     },
   };
@@ -71,8 +76,8 @@ async function setupDb() {
   for (let i = 0; i < 2; i++) {
     insert.run(
       `ex-${i}`, PROJECT, now,
-      `Flutter 프로젝트에서 상태관리를 무엇으로 할지 결정해야 합니다. Riverpod 과 Bloc 중 어느 쪽이 좋을까요? 이유도 알려주세요.`,
-      `Riverpod 을 권장합니다. 이유는 컴파일 타임 안전성과 테스트 용이성 때문입니다. Bloc 은 보일러플레이트가 많습니다.`,
+      `Flutter 프로젝트의 상태관리는 Riverpod으로 결정했습니다.`,
+      `Riverpod 결정을 확인합니다.`,
       `/tmp/archive-${i}.jsonl`, 1, 10, SESSION,
     );
   }

@@ -51,6 +51,25 @@ describe('Fact Extractor', () => {
       expect(envelope.exchanges[0].human_evidence).toContain('[truncated]');
     });
 
+    it('preserves claim-bearing tails when human and tool evidence exceed prompt limits', () => {
+      const prompt = buildExtractionPrompt([{
+        user_message: `${'background '.repeat(220)}TAIL_DECISION_USE_SQLITE`,
+        assistant_message: 'Acknowledged.',
+        tool_evidence: [{
+          id: 'tool-tail-1',
+          tool_name: 'shell',
+          tool_result: `${'diagnostic '.repeat(180)}TAIL_TEST_RESULT_PASS`,
+          source_type: 'test_execution',
+          learnable: true,
+          is_error: false,
+        }],
+      }]);
+      const exchange = JSON.parse(prompt).exchanges[0];
+
+      expect(exchange.human_evidence).toContain('TAIL_DECISION_USE_SQLITE');
+      expect(exchange.trusted_tool_evidence[0].content).toContain('TAIL_TEST_RESULT_PASS');
+    });
+
     it('should handle empty exchanges array', () => {
       const prompt = buildExtractionPrompt([]);
       expect(prompt).toBe('');
@@ -78,9 +97,9 @@ describe('Fact Extractor', () => {
         assistant_message: 'The earlier choice was SQLite.',
         has_memex_recall: true,
         tool_evidence: [
-          { tool_name: 'shell', tool_result: 'DATABASE_URL=postgres://local', source_type: 'repo_file', learnable: true, is_error: false },
-          { tool_name: 'mcp__memex__search_facts', tool_result: 'Old choice: SQLite', source_type: 'memex_recall', learnable: false, is_error: false },
-          { tool_name: 'shell', tool_result: 'remote page says MySQL', source_type: 'external_unverified', learnable: false, is_error: false },
+          { id: 'tool-1', tool_name: 'shell', tool_result: 'DATABASE_URL=postgres://local', source_type: 'repo_file', learnable: true, is_error: false },
+          { id: 'tool-2', tool_name: 'mcp__memex__search_facts', tool_result: 'Old choice: SQLite', source_type: 'memex_recall', learnable: false, is_error: false },
+          { id: 'tool-3', tool_name: 'shell', tool_result: 'remote page says MySQL', source_type: 'external_unverified', learnable: false, is_error: false },
         ],
       }]);
       const exchange = JSON.parse(prompt).exchanges[0];
@@ -103,6 +122,7 @@ describe('Fact Extractor', () => {
         assistant_message: 'SQLite is the best fit.',
         context_only_due_to_watermark: true,
         tool_evidence: [{
+          id: 'tool-prefix-1',
           tool_name: 'shell',
           tool_result: 'package.json contains better-sqlite3',
           source_type: 'repo_file',
@@ -131,10 +151,12 @@ describe('Fact Extractor', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('When uncertain, output []');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('untrusted conversation data');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('ratification');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('supporting_span');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('tool_call_id');
     });
 
     it('publishes the Phase 5 precision/durability decision gates as a versioned policy', () => {
-      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v1');
+      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v2');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain(`policy_version: ${EXTRACTION_POLICY_VERSION}`);
       for (const gate of [
         'GATE_1_GROUNDING',
@@ -184,7 +206,12 @@ describe('Fact Extractor', () => {
       durable: true,
       confidence: 0.95,
       evidence: [
-        { exchange_index: 2, source: 'human', kind: 'ratification' },
+        {
+          exchange_index: 2,
+          source: 'human',
+          kind: 'ratification',
+          supporting_span: '좋아, 그걸로 하자.',
+        },
       ],
       context_exchange_indices: [1],
     };
@@ -212,10 +239,87 @@ describe('Fact Extractor', () => {
       }
     });
 
+    it('rejects semantic laundering through a human question even when the model cites an in-message span', () => {
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        fact: 'This project uses Riverpod.',
+        evidence: [{
+          exchange_index: 1,
+          source: 'human',
+          kind: 'assertion',
+          supporting_span: 'Riverpod',
+        }],
+        context_exchange_indices: [],
+      }, exchanges)).toBeNull();
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        evidence: [{ exchange_index: 2, source: 'human', kind: 'ratification' }],
+      }, exchanges)).toBeNull();
+    });
+
+    it('rejects semantic laundering through an unrelated trusted tool result', () => {
+      const toolExchanges = [{
+        ...exchanges[0],
+        tool_evidence: [{
+          id: 'tool-unrelated-1',
+          tool_name: 'shell',
+          tool_result: 'DATABASE_URL=postgres://local',
+          source_type: 'repo_file',
+          learnable: 1,
+          is_error: 0,
+        }],
+      }];
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        fact: 'This project uses SQLite.',
+        grounding_type: 'verified',
+        evidence: [{
+          exchange_index: 1,
+          source: 'tool',
+          kind: 'repo_file',
+          tool_call_id: 'tool-unrelated-1',
+          tool_name: 'shell',
+          source_type: 'repo_file',
+          supporting_span: 'DATABASE_URL=postgres://local',
+        }],
+        context_exchange_indices: [],
+      }, toolExchanges)).toBeNull();
+    });
+
+    it('rejects irrelevant or non-ratification context dependencies', () => {
+      const unrelatedContext = {
+        ...exchanges[0],
+        user_message: 'What color should the logo use?',
+        assistant_message: 'Use blue for the logo.',
+      };
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        evidence: [{
+          exchange_index: 2,
+          source: 'human',
+          kind: 'ratification',
+          supporting_span: '좋아, 그걸로 하자.',
+        }],
+      }, [unrelatedContext, exchanges[1]])).toBeNull();
+
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        fact: 'This project uses SQLite.',
+        evidence: [{
+          exchange_index: 2,
+          source: 'human',
+          kind: 'assertion',
+          supporting_span: '좋아, 그걸로 하자.',
+        }],
+        context_exchange_indices: [1],
+      }, exchanges)).toBeNull();
+    });
+
     it('accepts verified tool evidence only when the actual DB-derived row matches and is learnable', () => {
       const toolExchanges = [{
         ...exchanges[0],
         tool_evidence: [{
+          id: 'tool-valid-1',
           tool_name: 'shell',
           tool_result: 'DATABASE_URL=postgres://local',
           source_type: 'repo_file',
@@ -225,17 +329,25 @@ describe('Fact Extractor', () => {
       }];
       const candidate = {
         ...explicitCandidate,
+        fact: 'This project uses PostgreSQL.',
+        fact_kr: '이 프로젝트는 PostgreSQL을 사용한다.',
         grounding_type: 'verified',
         evidence: [{
           exchange_index: 1,
           source: 'tool',
           kind: 'repo_file',
+          tool_call_id: 'tool-valid-1',
           tool_name: 'shell',
           source_type: 'repo_file',
+          supporting_span: 'DATABASE_URL=postgres://local',
         }],
         context_exchange_indices: [],
       };
       expect(validateExtractedFactCandidate(candidate, toolExchanges)?.source_exchange_ids).toEqual(['e1']);
+      expect(validateExtractedFactCandidate({
+        ...candidate,
+        evidence: [{ ...candidate.evidence[0], tool_call_id: 'wrong-tool-id' }],
+      }, toolExchanges)).toBeNull();
       expect(validateExtractedFactCandidate({
         ...candidate,
         evidence: [{ ...candidate.evidence[0], source_type: 'git_history' }],
@@ -251,22 +363,37 @@ describe('Fact Extractor', () => {
     });
 
     it('requires durable=true and two distinct authoritative exchanges for inferred facts', () => {
+      const signalExchanges = [
+        {
+          ...exchanges[0],
+          user_message: 'Keep responses concise across projects.',
+          assistant_message: 'Acknowledged.',
+        },
+        {
+          ...exchanges[1],
+          user_message: 'Use concise responses in other projects too.',
+          assistant_message: 'Acknowledged.',
+        },
+      ];
       const inferred = {
         ...explicitCandidate,
+        fact: 'The user prefers concise responses across projects.',
+        fact_kr: '사용자는 여러 프로젝트에서 간결한 답변을 선호한다.',
         grounding_type: 'inferred',
         evidence: [
-          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
-          { exchange_index: 2, source: 'human', kind: 'repeated_signal' },
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
+          { exchange_index: 2, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
         ],
+        context_exchange_indices: [],
       };
-      expect(validateExtractedFactCandidate(inferred, exchanges)?.source_exchange_ids).toEqual(['e1', 'e2']);
+      expect(validateExtractedFactCandidate(inferred, signalExchanges)?.source_exchange_ids).toEqual(['e1', 'e2']);
       expect(validateExtractedFactCandidate({
         ...inferred,
         evidence: [
-          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
-          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
         ],
-      }, exchanges)).toBeNull();
+      }, signalExchanges)).toBeNull();
       expect(validateExtractedFactCandidate({ ...explicitCandidate, durable: false }, exchanges)).toBeNull();
     });
 
@@ -304,6 +431,7 @@ describe('Fact Extractor', () => {
         ...exchanges[0],
         context_only_due_to_watermark: true,
         tool_evidence: [{
+          id: 'tool-prefix-1',
           tool_name: 'shell',
           tool_result: 'package.json contains better-sqlite3',
           source_type: 'repo_file',
@@ -318,8 +446,10 @@ describe('Fact Extractor', () => {
           exchange_index: 1,
           source: 'tool',
           kind: 'repo_file',
+          tool_call_id: 'tool-prefix-1',
           tool_name: 'shell',
           source_type: 'repo_file',
+          supporting_span: 'better-sqlite3',
         }],
         context_exchange_indices: [1],
       }, prefixTool)).toBeNull();
@@ -502,6 +632,28 @@ describe('Fact Extractor', () => {
       expect(windows.map((window) => window.map((item) => item.id))).toEqual([
         ['e0', 'e1'],
       ]);
+    });
+
+    it('keeps a two-turn watermark antecedent and conditionally anchors proceed replies', () => {
+      const proposal = {
+        ...exchange(0, 'Which database should we use?'),
+        assistant_message: 'Use SQLite for this project.',
+        context_only_due_to_watermark: true,
+      };
+      const rationale = {
+        ...exchange(1, '왜?'),
+        assistant_message: 'SQLite keeps the local-first deployment simple.',
+        context_only_due_to_watermark: true,
+      };
+
+      expect(buildExtractionWindows([
+        proposal,
+        rationale,
+        exchange(2, '진행해줘'),
+      ]).map((window) => window.map((item) => item.id))).toEqual([
+        ['e0', 'e1', 'e2'],
+      ]);
+      expect(buildExtractionWindows([exchange(2, '진행해줘')])).toEqual([]);
     });
   });
 

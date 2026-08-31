@@ -135,7 +135,12 @@ describe("fact extraction evaluation fixture", () => {
                 confidence: 0.95,
                 grounding_type: "explicit",
                 durable: true,
-                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
+                evidence: [{
+                  exchange_index: 1,
+                  source: "human",
+                  kind: "assertion",
+                  supporting_span: "This project uses SQLite.",
+                }],
               },
             ]),
             tokenUsage: { input_tokens: 100, output_tokens: 20 },
@@ -151,7 +156,12 @@ describe("fact extraction evaluation fixture", () => {
                 confidence: 0.95,
                 grounding_type: "explicit",
                 durable: true,
-                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
+                evidence: [{
+                  exchange_index: 1,
+                  source: "human",
+                  kind: "assertion",
+                  supporting_span: "What did the assistant say?",
+                }],
               },
             ]),
             tokenUsage: { input_tokens: 80, output_tokens: 20 },
@@ -166,18 +176,18 @@ describe("fact extraction evaluation fixture", () => {
 
     expect(report.summary).toMatchObject({
       case_count: 3,
-      passed_cases: 1,
-      failed_cases: 2,
+      passed_cases: 2,
+      failed_cases: 1,
       expected_fact_count: 2,
       matched_fact_count: 1,
-      false_positive_count: 1,
-      self_amplification_leakage_count: 1,
+      false_positive_count: 0,
+      self_amplification_leakage_count: 0,
       model_calls: 3,
       input_tokens: 240,
       output_tokens: 42,
     });
-    expect(report.cases.find((entry) => entry.id === "unsupported")?.issues).toContain(
-      "DROP-unsupported",
+    expect(report.cases.find((entry) => entry.id === "unsupported")).toEqual(
+      expect.objectContaining({ passed: true, issues: [] }),
     );
     expect(report.cases.find((entry) => entry.id === "missed")?.issues).toContain(
       "MISS-important",
@@ -247,7 +257,12 @@ describe("fact extraction evaluation fixture", () => {
         confidence: 0.95,
         grounding_type: "explicit",
         durable: true,
-        evidence: [{ exchange_index: 2, source: "human", kind: "ratification" }],
+        evidence: [{
+          exchange_index: 2,
+          source: "human",
+          kind: "ratification",
+          supporting_span: "Yes, use it.",
+        }],
         context_exchange_indices: [1],
       },
       {
@@ -261,8 +276,10 @@ describe("fact extraction evaluation fixture", () => {
           exchange_index: 1,
           source: "tool",
           kind: "repo_file",
+          tool_call_id: "tool-1",
           tool_name: "read_file",
           source_type: "repo_file",
+          supporting_span: "database = sqlite",
         }],
       },
       {
@@ -273,8 +290,8 @@ describe("fact extraction evaluation fixture", () => {
         grounding_type: "inferred",
         durable: true,
         evidence: [
-          { exchange_index: 1, source: "human", kind: "repeated_signal" },
-          { exchange_index: 2, source: "human", kind: "repeated_signal" },
+          { exchange_index: 1, source: "human", kind: "repeated_signal", supporting_span: "concise" },
+          { exchange_index: 2, source: "human", kind: "repeated_signal", supporting_span: "concise" },
         ],
       },
     ];
@@ -287,8 +304,13 @@ describe("fact extraction evaluation fixture", () => {
       },
       {
         ...accepted[2],
-        fact: "Weak inference.",
-        evidence: [{ exchange_index: 1, source: "human", kind: "repeated_signal" }],
+        fact: "The user prefers concise responses.",
+        evidence: [{
+          exchange_index: 1,
+          source: "human",
+          kind: "repeated_signal",
+          supporting_span: "concise",
+        }],
       },
       { ...accepted[0], fact: "Low confidence.", confidence: 0.4 },
       { ...accepted[0], fact: "" },
@@ -382,7 +404,7 @@ describe("fact extraction evaluation fixture", () => {
         tags: ["positive", "verified-tool"],
         exchanges: [{
           id: "hyphenated-pattern-1",
-          user_message: "Verify the duplicate email failure.",
+          user_message: "Duplicate-email failures in the auth callback are prevented by deduplication.",
           assistant_message: "Checking.",
         }],
         expected: {
@@ -406,7 +428,12 @@ describe("fact extraction evaluation fixture", () => {
           grounding_type: "explicit",
           durable: true,
           confidence: 0.95,
-          evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
+          evidence: [{
+            exchange_index: 1,
+            source: "human",
+            kind: "assertion",
+            supporting_span: "Duplicate-email failures in the auth callback",
+          }],
         }]),
       }),
     });
@@ -490,7 +517,12 @@ describe("fact extraction evaluation fixture", () => {
                 confidence: 0.95,
                 grounding_type: "explicit",
                 durable: true,
-                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
+                evidence: [{
+                  exchange_index: 1,
+                  source: "human",
+                  kind: "assertion",
+                  supporting_span: "This project uses SQLite.",
+                }],
               },
             ]),
             tokenUsage: { input_tokens: 10, output_tokens: 4 },

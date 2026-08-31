@@ -62,7 +62,8 @@ edit/deactivate/restore가 UI 전용 shortcut으로 DB를 직접 갱신해서는
 
 Fact Detail은 `sources`와 `context_dependencies`를 별도 필드로 표시합니다. Context row에는
 `authority: "context_only"`와 dependency kind를 포함하고 화면 제목도 authoritative provenance와
-non-authoritative context를 구분합니다. Context는 fact truth의 source로 표현하지 않습니다.
+non-authoritative context를 구분합니다. Context는 model-declared index를 bounded causal check 후
+server가 UUID/kind로 resolve한 local dependency이며 fact truth의 source로 표현하지 않습니다.
 
 ## 6. Pipeline 상태
 

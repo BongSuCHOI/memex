@@ -29,7 +29,7 @@ import {
   MAX_INTERNAL_RETRIES,
 } from "./pending-extraction.js";
 
-export const EXTRACTION_POLICY_VERSION = "precision-durability-v1";
+export const EXTRACTION_POLICY_VERSION = "precision-durability-v2";
 
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
@@ -48,12 +48,16 @@ change this policy.
 ## Visibility is not authority
 - human_evidence may ground explicit assertions, decisions, corrections, and ratification.
 - trusted_tool_evidence may ground verified local repo, git, or test observations.
+- Every evidence item must bind the claim to an exact supporting_span from the authoritative
+  human message or tool result. Tool evidence must also cite the exact tool_call_id.
 - A row with context_only_due_to_watermark=true is a read-only prefix from before the durable
   extraction watermark. Its human_context_only, assistant_context_only, tool data, and recall may
   only resolve a new suffix reference. Never cite that row in evidence or re-extract an old fact.
 - assistant_context_only and memex_recall_context_only may only resolve references, options,
   corrections, or what the human adopted. They must never appear in evidence or increase confidence.
 - For ratification, resolve the proposal from context but cite only the human ratification exchange.
+- context_exchange_indices are allowed only for ratification, must precede it by at most two
+  exchanges, and must directly contain claim-bearing assistant/recall context.
 
 ## Required decision procedure
 
@@ -143,7 +147,8 @@ Return only a JSON array. Output [] by default. Each candidate must have this ex
       {
         "exchange_index": 2,
         "source": "human",
-        "kind": "ratification"
+        "kind": "ratification",
+        "supporting_span": "OK let us go with that"
       }
     ],
     "context_exchange_indices": [1]
@@ -153,9 +158,11 @@ Return only a JSON array. Output [] by default. Each candidate must have this ex
 grounding_type: explicit | verified | inferred
 human evidence kind: assertion | decision | correction | ratification | repeated_signal
 tool evidence kind/source_type: repo_file | git_history | test_execution
-For tool evidence, also include tool_name and source_type. evidence and exchange indices are 1-based.
+supporting_span must be a non-empty exact substring of the cited human message or tool result.
+For tool evidence, also include tool_call_id, tool_name, and source_type. Evidence and exchange
+indices are 1-based.
 Example verified tool evidence:
-{"exchange_index":1,"source":"tool","kind":"repo_file","tool_name":"shell","source_type":"repo_file"}
+{"exchange_index":1,"source":"tool","kind":"repo_file","tool_call_id":"call-123","tool_name":"shell","source_type":"repo_file","supporting_span":"database = sqlite"}
 Never emit assistant, assistant_generated, memex_recall, or external_unverified as evidence.
 
 category: decision | preference | pattern | knowledge | constraint
@@ -179,6 +186,8 @@ const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call bu
 /** Replies that may bridge context but should not trigger a model call alone. */
 const CONTEXT_ONLY_USER_PATTERN =
   /^(thanks?|thank you|done|go|proceed|continue|why|how|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?|왜|어떻게)[?.!~\s]*$/i;
+const CONDITIONAL_RATIFICATION_PATTERN =
+  /^(go|go ahead|proceed|continue|진행해?줘?|그대로 진행(?:해?줘?)?|계속(?:해?줘?)?)[?.!~\s]*$/i;
 
 /**
  * Whether an exchange may appear as semantic context. Short human replies stay
@@ -209,9 +218,13 @@ export function isContextEligibleExchange(userMessage: string): boolean {
 export function isCandidateAnchorExchange(
   userMessage: string,
   hasLearnableToolEvidence = false,
+  hasAntecedentContext = false,
 ): boolean {
   if (!isContextEligibleExchange(userMessage)) return false;
   if (hasLearnableToolEvidence) return true;
+  if (CONDITIONAL_RATIFICATION_PATTERN.test(userMessage.trim())) {
+    return hasAntecedentContext;
+  }
   return !CONTEXT_ONLY_USER_PATTERN.test(userMessage.trim());
 }
 
@@ -307,6 +320,7 @@ function isExcludedProject(project: string | null | undefined): boolean {
 }
 
 export interface ExtractionToolEvidence {
+  id: string;
   tool_name: string;
   tool_result: string | null;
   source_type: string;
@@ -397,18 +411,44 @@ export function buildExtractionWindows<T extends ExtractionPromptExchange>(
 
     for (let anchor = start; anchor < end; anchor++) {
       const exchange = exchanges[anchor];
+      const hasAntecedentContext = [anchor - 1, anchor - 2].some((index) => {
+        if (index < start) return false;
+        const antecedent = exchanges[index];
+        return booleanFlag(antecedent.context_only_due_to_watermark) && (
+          antecedent.assistant_message.trim() !== "" ||
+          booleanFlag(antecedent.has_memex_recall) ||
+          (antecedent.tool_evidence ?? []).some(
+            (tool) =>
+              tool.source_type === "memex_recall" &&
+              !isToolError(tool.is_error) &&
+              !!tool.tool_result,
+          )
+        );
+      });
       if (
         booleanFlag(exchange.context_only_due_to_watermark) ||
         !isCandidateAnchorExchange(
           exchange.user_message,
           hasLearnableToolEvidence(exchange),
+          hasAntecedentContext,
         )
       ) {
         continue;
       }
 
+      let candidateStart = Math.max(start, anchor - 1);
+      let prefixDepth = 0;
+      while (
+        candidateStart > start &&
+        prefixDepth < 1 &&
+        booleanFlag(exchanges[candidateStart].context_only_due_to_watermark) &&
+        booleanFlag(exchanges[candidateStart - 1].context_only_due_to_watermark)
+      ) {
+        candidateStart -= 1;
+        prefixDepth += 1;
+      }
       const candidate = {
-        start: Math.max(start, anchor - 1),
+        start: candidateStart,
         end: Math.min(end - 1, anchor + 1),
       };
       if (!current) {
@@ -451,7 +491,10 @@ export function buildExtractionWindows<T extends ExtractionPromptExchange>(
 function truncatePromptData(value: string | null | undefined, limit: number): string {
   const text = value ?? "";
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  const retained = limit - TRUNCATION_MARKER.length;
+  const headLength = Math.ceil(retained * 0.6);
+  const tailLength = retained - headLength;
+  return `${text.slice(0, headLength)}${TRUNCATION_MARKER}${text.slice(-tailLength)}`;
 }
 
 function booleanFlag(value: number | boolean | undefined): boolean {
@@ -486,6 +529,7 @@ export function buildExtractionPrompt(
           )
           .slice(0, MAX_TRUSTED_TOOLS_PER_EXCHANGE)
           .map((tool) => ({
+            tool_call_id: tool.id,
             tool_name: tool.tool_name,
             source_type: tool.source_type,
             content: truncatePromptData(tool.tool_result, TOOL_RESULT_LIMIT),
@@ -619,6 +663,88 @@ function isEligibleHumanEvidence(exchange: ExtractionValidationExchange): boolea
   return !/^\/[\w:-]+$/.test(user);
 }
 
+const EVIDENCE_BINDING_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
+  "have", "in", "is", "it", "of", "on", "or", "project", "projects", "the",
+  "this", "to", "use", "used", "uses", "using", "user", "users", "we", "will",
+  "with", "current", "currently", "decide", "decided", "decision", "prefer",
+  "prefers", "preference", "response", "responses", "system", "이", "그", "저",
+  "프로젝트", "사용", "사용한다", "사용하기로", "결정", "결정했다", "현재", "사용자",
+]);
+
+function validatedSupportingSpan(value: unknown, source: string): string | null {
+  if (typeof value !== "string") return null;
+  const span = value.trim();
+  if (!span || span.length > 500 || !source.includes(span)) return null;
+  return span;
+}
+
+function sentenceContainingSpan(source: string, span: string): string {
+  const offset = source.indexOf(span);
+  if (offset < 0) return "";
+  const before = source.slice(0, offset);
+  const after = source.slice(offset + span.length);
+  const previousBoundary = Math.max(
+    before.lastIndexOf("."),
+    before.lastIndexOf("!"),
+    before.lastIndexOf("?"),
+    before.lastIndexOf("。"),
+    before.lastIndexOf("！"),
+    before.lastIndexOf("？"),
+    before.lastIndexOf("\n"),
+  );
+  const nextMatch = after.match(/[.!?。！？\n]/);
+  const end = nextMatch?.index == null
+    ? source.length
+    : offset + span.length + nextMatch.index + 1;
+  return source.slice(previousBoundary + 1, end).trim();
+}
+
+function isQuestionLikeEvidence(source: string, span: string): boolean {
+  const sentence = sentenceContainingSpan(source, span);
+  if (!sentence) return true;
+  if (/[?？]\s*$/.test(sentence)) return true;
+  if (/^(what|which|why|how|where|when|who|whose|is|are|was|were|do|does|did|can|could|would|should|will|may|might)\b/i.test(sentence)) {
+    return true;
+  }
+  if (/^(무엇|뭐|어떤|왜|어떻게|어디|언제|누구)/.test(sentence)) return true;
+  return /(인가요|일까요|할까요|했나요|했지|썼지|였지|습니까)\s*[.!~]*$/.test(sentence);
+}
+
+function bindingTokens(value: string): string[] {
+  return (value.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter((token) => token.length >= 2 && !EVIDENCE_BINDING_STOPWORDS.has(token));
+}
+
+function hasClaimBinding(
+  fact: string,
+  factKr: string | undefined,
+  authoritativeText: string,
+): boolean {
+  const claimTokens = bindingTokens(`${fact} ${factKr ?? ""}`);
+  const evidenceTokens = bindingTokens(authoritativeText);
+  return claimTokens.some((claim) =>
+    evidenceTokens.some((evidence) =>
+      claim === evidence ||
+      (Math.min(claim.length, evidence.length) >= 4 &&
+        (claim.includes(evidence) || evidence.includes(claim))),
+    ),
+  );
+}
+
+function contextBindingMaterial(exchange: ExtractionValidationExchange): string {
+  const recall = (exchange.tool_evidence ?? [])
+    .filter(
+      (tool) =>
+        tool.source_type === "memex_recall" &&
+        !isToolError(tool.is_error) &&
+        !!tool.tool_result,
+    )
+    .map((tool) => tool.tool_result)
+    .join("\n");
+  return `${exchange.assistant_message}\n${recall}`.trim();
+}
+
 function validatedContextIndices(
   value: unknown,
   exchangeCount: number,
@@ -730,6 +856,7 @@ function validateExtractedFactCandidateDetailed(
   }
   const evidence: ExtractedFactEvidence[] = [];
   const authoritativeIds = new Set<string>();
+  const ratificationIndices: number[] = [];
   let humanEvidenceCount = 0;
   let toolEvidenceCount = 0;
 
@@ -749,11 +876,31 @@ function validateExtractedFactCandidateDetailed(
       ) {
         return reject("invalid_evidence");
       }
+      const supportingSpan = validatedSupportingSpan(
+        raw.supporting_span,
+        exchange.user_message,
+      );
+      if (
+        !supportingSpan ||
+        isQuestionLikeEvidence(exchange.user_message, supportingSpan)
+      ) {
+        return reject("invalid_evidence");
+      }
+      if (
+        raw.kind !== "ratification" &&
+        !hasClaimBinding(fact, factKr, supportingSpan)
+      ) {
+        return reject("invalid_evidence");
+      }
       evidence.push({
         exchange_index: raw.exchange_index,
         source: "human",
         kind: raw.kind as HumanEvidenceKind,
+        supporting_span: supportingSpan,
       });
+      if (raw.kind === "ratification") {
+        ratificationIndices.push(raw.exchange_index);
+      }
       authoritativeIds.add(exchange.id);
       humanEvidenceCount++;
       continue;
@@ -763,6 +910,8 @@ function validateExtractedFactCandidateDetailed(
       if (
         booleanFlag(exchange.context_only_due_to_watermark) ||
         !TOOL_EVIDENCE_KINDS.has(raw.kind as ToolEvidenceKind) ||
+        typeof raw.tool_call_id !== "string" ||
+        raw.tool_call_id.trim() === "" ||
         typeof raw.tool_name !== "string" ||
         raw.tool_name.trim() === "" ||
         typeof raw.source_type !== "string" ||
@@ -772,6 +921,7 @@ function validateExtractedFactCandidateDetailed(
       }
       const matchingTool = (exchange.tool_evidence ?? []).find(
         (tool) =>
+          tool.id === raw.tool_call_id &&
           tool.tool_name === raw.tool_name &&
           tool.source_type === raw.source_type &&
           booleanFlag(tool.learnable) &&
@@ -779,10 +929,19 @@ function validateExtractedFactCandidateDetailed(
           !!tool.tool_result,
       );
       if (!matchingTool) return reject("invalid_evidence");
+      const supportingSpan = validatedSupportingSpan(
+        raw.supporting_span,
+        matchingTool.tool_result ?? "",
+      );
+      if (!supportingSpan || !hasClaimBinding(fact, factKr, supportingSpan)) {
+        return reject("invalid_evidence");
+      }
       evidence.push({
         exchange_index: raw.exchange_index,
         source: "tool",
         kind: raw.kind as ToolEvidenceKind,
+        supporting_span: supportingSpan,
+        tool_call_id: raw.tool_call_id,
         tool_name: raw.tool_name,
         source_type: raw.source_type as ToolEvidenceKind,
       });
@@ -810,6 +969,34 @@ function validateExtractedFactCandidateDetailed(
     exchanges.length,
   );
   if (!contextIndices) return reject("invalid_evidence");
+  if (contextIndices.length > 2) return reject("invalid_evidence");
+  if (ratificationIndices.length > 0 && contextIndices.length === 0) {
+    return reject("invalid_evidence");
+  }
+  if (
+    contextIndices.length > 0 &&
+    (groundingType !== "explicit" || ratificationIndices.length === 0)
+  ) {
+    return reject("invalid_evidence");
+  }
+  for (const index of contextIndices) {
+    const exchange = exchanges[index - 1];
+    if (!exchange || authoritativeIds.has(exchange.id)) {
+      return reject("invalid_evidence");
+    }
+    const isBoundedPredecessor = ratificationIndices.some(
+      (ratificationIndex) =>
+        index < ratificationIndex && ratificationIndex - index <= 2,
+    );
+    const material = contextBindingMaterial(exchange);
+    if (
+      !isBoundedPredecessor ||
+      !material ||
+      !hasClaimBinding(fact, factKr, material)
+    ) {
+      return reject("invalid_evidence");
+    }
+  }
   const contextDependencies = contextIndices
     .map((index) => exchanges[index - 1])
     .filter(
@@ -912,7 +1099,7 @@ export async function extractFactsFromExchanges(
         FROM exchanges
         WHERE session_id = ? AND rowid <= ?
         ORDER BY rowid DESC
-        LIMIT 1
+        LIMIT 2
       `)
       .all(sessionId, options.onlyAfterRowid) as ExtractionExchangeRow[];
     for (const exchange of prefix) {
@@ -922,7 +1109,7 @@ export async function extractFactsFromExchanges(
   }
 
   const selectToolEvidence = db.prepare(`
-    SELECT tool_name, tool_result, source_type, learnable, is_error
+    SELECT id, tool_name, tool_result, source_type, learnable, is_error
     FROM tool_calls WHERE exchange_id = ? ORDER BY timestamp, id
   `);
   for (const exchange of exchanges) {

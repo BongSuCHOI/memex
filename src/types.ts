@@ -93,12 +93,17 @@ export interface ExtractedFactEvidence {
   exchange_index: number;
   source: FactEvidenceSource;
   kind: HumanEvidenceKind | ToolEvidenceKind;
+  /** Exact substring of the authoritative human message or tool result. */
+  supporting_span: string;
+  /** Exact DB tool_calls.id; required when source is tool. */
+  tool_call_id?: string;
   tool_name?: string;
   source_type?: ToolEvidenceKind;
 }
 
-/** Server-resolved, non-authoritative context used to interpret a fact.
- * This is local audit lineage and never substitutes for source_exchange_ids. */
+/** Model-declared by window index and server-resolved to a UUID/kind after
+ * bounded causal checks. This non-authoritative local audit lineage never
+ * substitutes for source_exchange_ids. */
 export interface FactContextDependency {
   exchange_id: string;
   dependency_kind: FactContextDependencyKind;
@@ -167,7 +172,7 @@ export interface ExtractedFact {
   durable?: boolean;
   evidence?: ExtractedFactEvidence[];
   context_exchange_indices?: number[];
-  /** Server-resolved local context lineage; model-supplied UUIDs are never accepted. */
+  /** Model-declared, server-resolved local context lineage after causal checks. */
   context_dependencies?: FactContextDependency[];
   /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
   source_exchange_ids?: string[];

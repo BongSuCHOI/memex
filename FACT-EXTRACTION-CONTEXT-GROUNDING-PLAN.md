@@ -2092,9 +2092,9 @@ normalization 회귀 수정으로 보정되었다. Phase 3 run에서는 repo/tes
 ```text
 post-claim last_exchange_rowid
   -> suffix query: rowid > watermark (기존 extraction target)
-  -> prefix query: same session의 rowid <= watermark 중 직전 1개
+  -> prefix query: same session의 rowid <= watermark 중 직전 최대 2개
   -> transient context_only_due_to_watermark=true
-  -> prefix는 anchor 불가, suffix anchor의 immediate context로만 window 참여
+  -> prefix는 authority/anchor 불가, suffix anchor의 bounded context로만 window 참여
   -> JSON envelope: human_context_only + assistant/recall context, trusted tools withheld
   -> server validator: prefix human/tool evidence 선언 hard reject
   -> source_exchange_ids: 신규 authoritative suffix UUID만 생성
@@ -2106,8 +2106,9 @@ prefix는 persisted exchange/schema를 바꾸지 않는 read-time 표식이다. 
 authority를 임의로 선언해도 validator가 candidate 전체를 폐기한다. prefix 단독으로는 anchor가
 될 수 없으므로 old row만 재추출하는 model call도 생성되지 않는다.
 
-직전 1개를 선택한 이유는 Phase 3의 immediate-neighbor window 계약과 정확히 맞고 최대 context
-비용을 고정하기 위해서다. 신규 suffix가 없으면 prefix query 자체를 하지 않는다. claim SQL,
+초기 구현은 직전 1개만 선택했으나 post-review에서 proposal→rationale→watermark→ratification
+referent가 끊기는 경계를 확인해 최대 2개로 확장했다. 신규 suffix가 없으면 prefix query 자체를
+하지 않는다. claim SQL,
 lease/retry 분류, `saveExtractedFacts()` transaction, completion marker의
 `last_exchange_rowid = MAX(rowid)` 계약은 변경하지 않았다.
 
@@ -2133,8 +2134,8 @@ watermark 2→3 전진을 결정론적으로 검증한다. 구현 직전 해당 
 
 ### Phase 5+B 나머지 구현 기록 (2026-08-31)
 
-`EXTRACTION_POLICY_VERSION = precision-durability-v1`로 prompt policy를 버전 고정하고,
-모든 candidate가 다음 순서를 통과하도록 계약을 명시했다.
+초기 `precision-durability-v1` prompt policy는 post-review evidence binding을 포함한
+`precision-durability-v2`로 갱신했다. 모든 candidate가 다음 순서를 통과하도록 계약을 명시했다.
 
 ```text
 GATE_1_GROUNDING
@@ -2330,7 +2331,8 @@ extract`를 선택하는 기존 계약을 유지한다.
 구현 매핑:
 
 ```text
-validated context_exchange_indices
+model-declared context_exchange_indices
+  -> bounded causal validation (ratification only, preceding depth <= 2, claim-bearing)
   -> server-resolved exchange UUID + dependency_kind
   -> fact_context_dependencies (local, non-authoritative)
   -> Fact Detail / trace_fact
@@ -2347,6 +2349,29 @@ server가 validated window의 실제 exchange row에서 결정한다.
 별도 table을 선택한 이유는 context가 local semantic/audit dependency인 반면
 `source_exchange_ids`는 cross-device authoritative lineage이기 때문이다. Context table은 sync하지
 않고, remote semantic replacement에서는 이전 local 의미의 stale row를 제거한다.
+
+### Post-review Severity closure (GitHub CI 제외)
+
+2026-08-31 verification review의 GitHub CI 항목을 제외한 Severity를 다음 구현 계약으로
+보완한다.
+
+- [x] human evidence는 exact `supporting_span`을 실제 user message와 대조
+- [x] human question을 assertion/decision/correction/repeated signal evidence로 사용할 수 없음
+- [x] trusted tool evidence는 exact `tool_call_id`와 result `supporting_span`을 실제 row와 대조
+- [x] candidate fact/fact_kr와 authoritative span 사이 claim-bearing token binding 요구
+- [x] watermark prefix depth를 1에서 최대 2 exchanges로 확대하되 authority는 계속 제거
+- [x] `진행해줘`/`proceed`/`continue`는 preceding watermark context가 있을 때만 anchor
+- [x] 긴 human/tool 본문은 head+tail을 함께 보존
+- [x] context dependency는 explicit ratification에만 허용하고, 앞선 최대 2개 claim-bearing
+      assistant/recall context로 제한
+- [x] context 표기를 `model-declared, server-resolved after bounded causal checks`로 정정
+- [ ] 동일 SHA 17-case current report와 approved archive shadow rerun으로 품질 증거 갱신
+- [ ] committed SHA full gate와 merge receipt 재발행
+
+이 보완은 generator가 assistant/recall 문맥을 보는 기존 의미 해석 능력을 유지하면서도,
+최종 acceptance를 authoritative material에 deterministic하게 bind한다. 별도 model verifier는
+추가 호출 비용과 새로운 비결정성 없이 위 hard gate로 해결 가능한 현재 결함 범위에는 도입하지
+않는다.
 
 ---
 

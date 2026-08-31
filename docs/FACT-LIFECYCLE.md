@@ -65,12 +65,16 @@ Extractor input은 JSON data envelope이며 모든 필드를 untrusted conversat
 `assistant_context_only.recall_influenced`는 `has_memex_recall`을 반영합니다. assistant와
 recall 본문은 extractor에 보이지만 evidence가 될 수 없으며, external/unverified tool
 output은 현재 extraction envelope에 포함하지 않습니다. 각 block은 고정된 per-message 및
-per-tool 문자 예산으로 잘리고 tool 개수도 제한됩니다.
+per-tool 문자 예산으로 잘리고 tool 개수도 제한됩니다. 긴 본문은 결정이나 검증 결과가 끝에
+있을 수 있으므로 head와 tail을 함께 보존합니다.
 
 Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 `context_exchange_indices`를 선언합니다. Server validator는 이를 `unknown` JSON에서
 검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
-대조합니다.
+대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
+정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
+질문 여부, claim-bearing token을 다시 대조하므로 질문이나 무관한 trusted tool을 authority로
+세탁한 candidate는 모델 confidence와 무관하게 폐기합니다.
 
 - `explicit` — valid human evidence가 최소 1개
 - `verified` — valid trusted tool evidence가 최소 1개
@@ -79,13 +83,21 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 
 assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불일치하는 선언은
 candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
-exchange UUID에서만 생성됩니다. 검증된 context index는 server가 실제 exchange UUID와
-dependency kind로 변환해 local `fact_context_dependencies`에 저장하며, authoritative lineage에는
-들어가지 않습니다. model이 context UUID나 kind를 직접 정할 수 없습니다.
+exchange UUID에서만 생성됩니다. `context_exchange_indices`는 ratification에만 허용하며 human
+ratification보다 앞선 최대 2개 exchange, 그리고 fact의 claim-bearing assistant/recall 문맥으로
+제한합니다. 이 model-declared index를 server가 실제 exchange UUID와 dependency kind로
+resolve해 local `fact_context_dependencies`에 저장하며 authoritative lineage에는 들어가지
+않습니다. model이 context UUID나 kind를 직접 정할 수 없습니다.
+
+증분 추출은 watermark 직전 최대 2개 exchange를 context-only prefix로 읽습니다. 이 prefix는
+authority가 아니며 새 suffix의 referent 해석에만 쓰입니다. `진행해줘`, `proceed`, `continue`
+계열은 이러한 preceding watermark context가 실제로 있을 때만 conditional ratification anchor가
+됩니다.
 
 ### Precision과 durability policy
 
-`precision-durability-v1` extraction policy는 candidate를 다음 순서로 판정합니다.
+`precision-durability-v2` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
+순서로 판정합니다.
 
 1. **Grounding** — explicit human, verified local tool, 또는 같은 결론을 독립적으로 지지하는
    authoritative exchange 2개 이상의 inferred evidence인지 확인합니다.
@@ -116,7 +128,8 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
 - `isCandidateAnchorExchange()`는 durable candidate 가능성이 있는 human turn 또는 trusted
   local tool evidence가 있는 turn만 LLM 호출 anchor로 삼습니다. `응/네/좋아/아니`처럼
   승인·정정일 수 있는 짧은 reply는 anchor이고, `고마워/감사합니다/계속/왜?`처럼 단독
-  durable signal이 아닌 reply는 context-only neighbor입니다.
+  durable signal이 아닌 reply는 context-only neighbor입니다. 단 `진행해줘`/`proceed`/`continue`
+  계열은 preceding watermark context가 있을 때만 conditional anchor입니다.
 - 각 anchor는 같은 raw-adjacency run의 직전·직후 1 exchange와 묶입니다. 인접 anchor
   range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
   window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
@@ -126,10 +139,10 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   validated authoritative lineage를 set-union합니다.
 
 증분 추출은 watermark 이후 suffix를 authoritative target으로 유지하면서, suffix가 있을 때만
-같은 session의 `rowid <= last_exchange_rowid` 중 직전 1개를 bounded prefix로 읽습니다. prefix는
+같은 session의 `rowid <= last_exchange_rowid` 중 직전 최대 2개를 bounded prefix로 읽습니다. prefix는
 persisted schema가 아닌 read-time `context_only_due_to_watermark=true` 표식을 가지며 anchor가 될
-수 없습니다. suffix anchor의 immediate neighbor로는 window에 들어가므로 첫 신규 ratification이
-이전 assistant proposition을 해석할 수 있습니다.
+수 없습니다. suffix anchor의 bounded neighbor로는 window에 들어가므로 첫 신규 ratification이
+proposal→rationale처럼 2-turn antecedent를 해석할 수 있습니다.
 
 prefix의 human text는 `human_context_only`에만 보이고 `human_evidence`는 `null`입니다. prefix의
 trusted tool evidence도 envelope에서 제거합니다. 이 prompt-level 분리와 별개로 server validator는

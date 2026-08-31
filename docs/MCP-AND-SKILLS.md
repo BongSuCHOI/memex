@@ -47,6 +47,7 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 
 `trace_fact`는 `source_exchange_ids`의 원문을 authoritative source로 먼저 표시하고, 별도
 `Interpretive Context (Non-Authoritative)` 절에 local `fact_context_dependencies`를 표시합니다.
+Context는 model-declared index가 bounded causal check를 통과한 뒤 server-resolved된 관계입니다.
 두 절의 exchange가 같아 보이더라도 context 절은 Fact evidence로 승격되지 않습니다.
 
 같은 turn의 별도 repo/Git/test tool result는 call ID별로 독립 분류합니다. Memex MCP call 하나가 sibling evidence를 자동으로 taint하지 않습니다.
