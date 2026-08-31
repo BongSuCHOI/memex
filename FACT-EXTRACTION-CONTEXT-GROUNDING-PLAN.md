@@ -2365,7 +2365,7 @@ server가 validated window의 실제 exchange row에서 결정한다.
 - [x] context dependency는 explicit ratification에만 허용하고, 앞선 최대 2개 claim-bearing
       assistant/recall context로 제한
 - [x] context 표기를 `model-declared, server-resolved after bounded causal checks`로 정정
-- [ ] 동일 SHA 17-case current report와 approved archive shadow rerun으로 품질 증거 갱신
+- [x] 동일 SHA 17-case current report와 approved archive shadow rerun으로 품질 증거 갱신
 - [ ] committed SHA full gate와 merge receipt 재발행
 
 이 보완은 generator가 assistant/recall 문맥을 보는 기존 의미 해석 능력을 유지하면서도,

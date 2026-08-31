@@ -106,6 +106,7 @@ receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 �
 - `benchmark.json` — 특정 benchmark run
 - `plugin-validation.json` — plugin/install validation artifact
 - `fact-extraction-baseline.json` — synthetic curated fixture에 대한 특정 model/prompt baseline
+- `fact-extraction-current.json` — 동일 fixture의 현재 production extractor/model raw report
 
 파일이 존재한다고 현재성까지 보장되는 것은 아닙니다. candidate SHA와 실행 시점을 항상 확인하십시오.
 
@@ -166,8 +167,8 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 
 Phase 5의 동일 17-case Luna 비교는 fixture SHA를 유지한 채 17/17 PASS, matched 11/11,
 precision/positive recall/negative accuracy/ratification/verified-local 100%, self-amplification
-leakage 0, model call 17회를 관측했습니다. raw model report는 private-derived ignored artifact로만
-보관합니다.
+leakage 0, model call 17회를 관측했습니다. Synthetic raw report는 개인정보가 없으므로
+`docs/verification/fact-extraction-current.json`에 commit합니다.
 
 Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieval surface까지 연결합니다.
 
@@ -193,21 +194,33 @@ Optional Phase 7 persistent context dependency gate는 authority 의미를 유�
 - Fact Detail과 `trace_fact`가 context를 non-authoritative로 명시
 - real Chrome 1440×900 Fact Detail에서 context kind/ID/authority가 보이고 overflow/runtime error가 없음
 
-동일 fixture SHA `f45b4f0a…5bcd6`의 최종 Luna run은 17/17 PASS, matched/observed
+동일 fixture SHA `f45b4f0a…5bcd6`의 post-review Luna run은 17/17 PASS, matched/observed
 11/11, false positive/self-amplification leakage 0을 관측했습니다. Candidate/accepted는 11/11,
 rejection 5종은 모두 0, accepted grounding은 explicit 8 / verified 2 / inferred 1,
 context-resolved ratification은 5였습니다. Phase 0 baseline 대비 improvement 8, regression 0이며
-raw report는 ignored `.fact-extraction-eval/`에만 보관합니다.
+raw report는 `docs/verification/fact-extraction-current.json`에 commit합니다. 이 run은 clean
+implementation commit에서 실행됐고 report의 `run_context.git_dirty=false`입니다. 정확한 SHA는
+report의 `run_context.git_head`를 기준으로 확인합니다.
 
-승인된 read-only archive shadow는 Phase 0과 같은 3 sessions / 38 exchanges에서 execution error
-0, candidate/accepted 14/14를 관측했습니다. 로컬 수동 판정은 KEEP 12, cross-window semantic
-duplicate `DROP-noise` 2, `WRONG-category`/`WRONG-scope`/`DROP-unsupported` 0,
-unreferenced `MISS-important` at least 4 exchanges였습니다. Shadow report에는 expected label이
+승인된 post-review read-only archive shadow는 같은 3 sessions / 38 exchanges에서 execution error
+0, candidate 16 / accepted 14 / `rejected_invalid_evidence` 2를 관측했습니다. 로컬 수동 판정은
+KEEP 11, cross-window semantic duplicate `DROP-noise` 3,
+`WRONG-category`/`WRONG-scope`/`DROP-unsupported` 0입니다. Shadow report에는 expected label이
 없으므로 자동 `precision=0`은 품질 지표가 아니며 수동 taxonomy가 판정 근거입니다. Model call은
-12회, input/output token은 276,829/6,279, latency는 159.7s였습니다. 실행 전후 archive DB
+12회, input/output token은 303,732/8,605, latency는 197.0s였습니다. 실행 전후 archive DB
 SHA-256은 모두
 `a476ec1c46b4dadf1cc3ce572f6b2adf06fdb58d7a5f4d8fc7fb7c6153e1d0bd`였습니다. Raw report와
 대화 원문은 ignored private artifact이고 production backfill은 실행하지 않았습니다.
+
+기존 `MISS-important >= 4`는 다음처럼 원인을 분리했습니다.
+
+- 독립 repository/fork snapshot 결정 1건은 10개 semantic window가 전부 선택된 상태에서도
+  이번 run에서 나오지 않은 Luna variance입니다. 해당 exchange는 watermark 밖이고 문자 limit
+  이내이므로 window cap/watermark/truncation 원인이 아닙니다. 이전 shadow에서는 추출됐습니다.
+- 공개 marketplace 설치 방식, contributor용 clone/build 분리, latest-release target, update command
+  계약군은 질문 또는 완곡 제안 형태였습니다. 이는 P1 hard gate가 의도적으로 authority로 채택하지
+  않은 precision-first omission이며, durable Fact로 만들려면 후속 human의 명시적 채택이 필요합니다.
+- 설치 후 첫 sync/backfill onboarding 계약은 이번 run에서 정상 추출돼 이전 miss가 해소됐습니다.
 
 관련 좁은 gate:
 
