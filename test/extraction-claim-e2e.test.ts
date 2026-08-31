@@ -11,7 +11,12 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
  */
 
 let calls = 0;
-let promptWindows: Array<{ exchanges: Array<{ human_evidence: string }> }> = [];
+let promptWindows: Array<{ exchanges: Array<{
+  human_evidence: string | null;
+  human_context_only?: string | null;
+  context_only_due_to_watermark?: boolean;
+  assistant_context_only?: { content: string };
+}> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
@@ -124,6 +129,67 @@ describe('claim E2E', () => {
     expect(JSON.parse(row.source_exchange_ids)).toEqual(['e1']);
   });
 
+  it('Phase 4+F: 새 ratification은 직전 watermark prefix를 보되 lineage는 신규 exchange만 가진다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const fixture = JSON.parse(fs.readFileSync(
+      new URL('./fixtures/fact-extraction-watermark-boundary.json', import.meta.url),
+      'utf8',
+    )) as {
+      prefix: { user_message: string; assistant_message: string };
+      suffix: { user_message: string; assistant_message: string };
+      expected: { fact: string; authoritative_exchange_id: string };
+    };
+
+    db.prepare(`
+      UPDATE exchanges
+      SET user_message = ?, assistant_message = ?
+      WHERE id = 'e1'
+    `).run(fixture.prefix.user_message, fixture.prefix.assistant_message);
+    db.prepare(`
+      INSERT INTO extraction_log
+        (session_id, processed_at, extracted, saved, last_exchange_rowid)
+      VALUES ('S1', ?, 0, 0, 2)
+    `).run(new Date().toISOString());
+    db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      'e2', '/tmp/p', new Date(Date.now() + 1000).toISOString(),
+      fixture.suffix.user_message, fixture.suffix.assistant_message,
+      '/tmp/a2.jsonl', 21, 30, 'S1',
+    );
+    sourceIndicesPerFact = [[2]];
+    factNameForCall = () => fixture.expected.fact;
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(calls).toBe(1);
+    expect(promptWindows[0].exchanges).toHaveLength(2);
+    expect(promptWindows[0].exchanges[0]).toEqual(expect.objectContaining({
+      context_only_due_to_watermark: true,
+      human_evidence: null,
+      human_context_only: fixture.prefix.user_message,
+      assistant_context_only: expect.objectContaining({
+        content: fixture.prefix.assistant_message,
+      }),
+    }));
+    expect(promptWindows[0].exchanges[1]).toEqual(expect.objectContaining({
+      context_only_due_to_watermark: false,
+      human_evidence: fixture.suffix.user_message,
+    }));
+    const row = db.prepare(
+      'SELECT source_exchange_ids FROM facts WHERE fact = ?',
+    ).get(fixture.expected.fact) as { source_exchange_ids: string };
+    expect(JSON.parse(row.source_exchange_ids)).toEqual([
+      fixture.expected.authoritative_exchange_id,
+    ]);
+    expect((db.prepare(
+      'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
+    ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid).toBe(3);
+  });
+
   it('LLM call budget is applied after semantic windows are formed', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const insert = db.prepare(`
@@ -174,8 +240,17 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 11, 20, 'S1',
     );
 
+    sourceIndicesPerFact = [[2]];
     await runFactExtraction(db, 'S1', '/tmp/p');
     expect(calls, '재개 세션은 새 exchange 배치에 대해 한 번만 호출해야 한다').toBe(2);
+    expect(promptWindows[1].exchanges[0]).toEqual(expect.objectContaining({
+      context_only_due_to_watermark: true,
+      human_evidence: null,
+    }));
+    expect(promptWindows[1].exchanges[1]).toEqual(expect.objectContaining({
+      context_only_due_to_watermark: false,
+      human_evidence: '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
+    }));
     const incremental = db.prepare(
       "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0'",
     ).get() as { source_exchange_ids: string };

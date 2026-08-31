@@ -95,6 +95,30 @@ describe('Fact Extractor', () => {
       }));
       expect(prompt).not.toContain('remote page says MySQL');
     });
+
+    it('marks pre-watermark rows as context-only and withholds their human/tool authority', () => {
+      const prompt = buildExtractionPrompt([{
+        user_message: 'Which database should we use?',
+        assistant_message: 'SQLite is the best fit.',
+        context_only_due_to_watermark: true,
+        tool_evidence: [{
+          tool_name: 'shell',
+          tool_result: 'package.json contains better-sqlite3',
+          source_type: 'repo_file',
+          learnable: true,
+          is_error: false,
+        }],
+      }]);
+      const exchange = JSON.parse(prompt).exchanges[0];
+
+      expect(exchange).toEqual(expect.objectContaining({
+        context_only_due_to_watermark: true,
+        human_evidence: null,
+        human_context_only: 'Which database should we use?',
+        trusted_tool_evidence: [],
+      }));
+      expect(exchange.assistant_context_only.content).toBe('SQLite is the best fit.');
+    });
   });
 
   describe('source exchange attribution contract', () => {
@@ -240,6 +264,49 @@ describe('Fact Extractor', () => {
         context_exchange_indices: [3],
       }, exchanges)).toBeNull();
     });
+
+    it('rejects pre-watermark human/tool evidence while allowing the row as context', () => {
+      const prefixHuman = [{
+        ...exchanges[0],
+        context_only_due_to_watermark: true,
+      }];
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        evidence: [{ exchange_index: 1, source: 'human', kind: 'assertion' }],
+        context_exchange_indices: [1],
+      }, prefixHuman)).toBeNull();
+
+      const prefixTool = [{
+        ...exchanges[0],
+        context_only_due_to_watermark: true,
+        tool_evidence: [{
+          tool_name: 'shell',
+          tool_result: 'package.json contains better-sqlite3',
+          source_type: 'repo_file',
+          learnable: 1,
+          is_error: 0,
+        }],
+      }];
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        grounding_type: 'verified',
+        evidence: [{
+          exchange_index: 1,
+          source: 'tool',
+          kind: 'repo_file',
+          tool_name: 'shell',
+          source_type: 'repo_file',
+        }],
+        context_exchange_indices: [1],
+      }, prefixTool)).toBeNull();
+
+      const accepted = validateExtractedFactCandidate(explicitCandidate, [
+        prefixHuman[0],
+        exchanges[1],
+      ]);
+      expect(accepted?.context_exchange_indices).toEqual([1]);
+      expect(accepted?.source_exchange_ids).toEqual(['e2']);
+    });
   });
 
   describe('confidence filtering logic', () => {
@@ -380,6 +447,22 @@ describe('Fact Extractor', () => {
         exchange(1, '계속'),
         exchange(2, '왜?'),
       ])).toEqual([]);
+    });
+
+    it('uses a pre-watermark row only as the immediate context of a new anchor', () => {
+      const prefix = {
+        ...exchange(0, 'Which database should we use?'),
+        context_only_due_to_watermark: true,
+      };
+      expect(buildExtractionWindows([prefix])).toEqual([]);
+
+      const windows = buildExtractionWindows([
+        prefix,
+        exchange(1, '좋아, 그걸로 결정하자.'),
+      ]);
+      expect(windows.map((window) => window.map((item) => item.id))).toEqual([
+        ['e0', 'e1'],
+      ]);
     });
   });
 

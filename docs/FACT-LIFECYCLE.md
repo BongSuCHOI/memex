@@ -57,6 +57,7 @@ Extractor input은 JSON data envelope이며 모든 필드를 untrusted conversat
 취급합니다. 한 exchange는 다음 역할을 분리해 전달합니다.
 
 - `human_evidence` — authoritative human candidate
+- `human_context_only` — durable watermark 이전 prefix의 human text; 지시어 해석 전용
 - `trusted_tool_evidence` — DB에서 learnable로 분류된 local repo/git/test 관측
 - `assistant_context_only` — 지시어·선택지·ratification 대상 해석 전용
 - `memex_recall_context_only` — 과거 recall의 의미 문맥 전용
@@ -98,9 +99,17 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   겹친 window가 같은 fact를 다시 만들면 기존 session-level normalized-text dedup이
   validated authoritative lineage를 set-union합니다.
 
-Phase 3은 watermark 이후 새 row 안에서만 위 window를 구성합니다. watermark 이전 prefix는
-아직 읽지 않으므로, 첫 신규 turn이 이전 처리 영역의 assistant를 가리키는 문제는 Phase 4
-범위로 남습니다.
+증분 추출은 watermark 이후 suffix를 authoritative target으로 유지하면서, suffix가 있을 때만
+같은 session의 `rowid <= last_exchange_rowid` 중 직전 1개를 bounded prefix로 읽습니다. prefix는
+persisted schema가 아닌 read-time `context_only_due_to_watermark=true` 표식을 가지며 anchor가 될
+수 없습니다. suffix anchor의 immediate neighbor로는 window에 들어가므로 첫 신규 ratification이
+이전 assistant proposition을 해석할 수 있습니다.
+
+prefix의 human text는 `human_context_only`에만 보이고 `human_evidence`는 `null`입니다. prefix의
+trusted tool evidence도 envelope에서 제거합니다. 이 prompt-level 분리와 별개로 server validator는
+prefix index를 human/tool evidence로 선언한 candidate를 hard reject합니다. 따라서 prefix index는
+`context_exchange_indices`에는 들어갈 수 있지만 `source_exchange_ids`에는 들어갈 수 없고, prefix
+단독으로 old Fact를 다시 추출하는 model call도 생기지 않습니다.
 
 ## 4. Extraction commit
 
@@ -112,7 +121,7 @@ sequenceDiagram
     participant F as facts
 
     W->>L: claim session
-    W->>E: rows after watermark
+    W->>E: rows after watermark + previous 1 context-only row
     W->>W: anchors + semantic windows + model + validate
     W->>F: BEGIN transaction
     W->>F: save/merge facts + provenance

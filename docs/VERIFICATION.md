@@ -149,6 +149,10 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - transport artifact는 raw-adjacency run을 끊고, window는 최대 5 exchanges로 bounded
 - overlapping window의 duplicate fact는 normalized text로 합쳐지고 authoritative lineage는 union
 - `MEMEX_MAX_EXTRACT_CALLS`는 semantic window 생성 후 적용되며 claim/retry/watermark 계약은 유지
+- watermark suffix가 있으면 직전 1개 prefix가 `context_only_due_to_watermark`로만 보임
+- prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
+- boundary ratification은 prefix assistant referent를 보되 persisted lineage는 신규 human UUID만 포함
+- prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
 
 관련 좁은 gate:
 

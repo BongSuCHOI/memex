@@ -2077,15 +2077,45 @@ normalization 회귀 수정으로 보정되었다. Phase 3 run에서는 repo/tes
 
 ### 작업
 
-- [ ] `onlyAfterRowid` 이전 직전 1~2 exchange fetch
-- [ ] prefix row를 `context_only_due_to_watermark`로 표시
-- [ ] prefix는 independent evidence source로 불허
-- [ ] 새 human ratification은 prefix assistant referent 사용 가능
-- [ ] watermark commit contract 유지
+- [x] `onlyAfterRowid` 이전 직전 1~2 exchange fetch
+- [x] prefix row를 `context_only_due_to_watermark`로 표시
+- [x] prefix는 independent evidence source로 불허
+- [x] 새 human ratification은 prefix assistant referent 사용 가능
+- [x] watermark commit contract 유지
 
 ### 완료 조건
 
 첫 신규 turn이 이전 assistant를 참조해도 의미 resolution 가능하고 old Fact 재추출은 발생하지 않는다.
+
+### Phase 4 구현 기록 (2026-08-31)
+
+```text
+post-claim last_exchange_rowid
+  -> suffix query: rowid > watermark (기존 extraction target)
+  -> prefix query: same session의 rowid <= watermark 중 직전 1개
+  -> transient context_only_due_to_watermark=true
+  -> prefix는 anchor 불가, suffix anchor의 immediate context로만 window 참여
+  -> JSON envelope: human_context_only + assistant/recall context, trusted tools withheld
+  -> server validator: prefix human/tool evidence 선언 hard reject
+  -> source_exchange_ids: 신규 authoritative suffix UUID만 생성
+  -> 기존 fact + completion marker + watermark 원자 commit
+```
+
+prefix는 persisted exchange/schema를 바꾸지 않는 read-time 표식이다. `human_evidence`는
+`null`, `trusted_tool_evidence`는 빈 배열로 model envelope에 전달하며, model이 raw tool/human
+authority를 임의로 선언해도 validator가 candidate 전체를 폐기한다. prefix 단독으로는 anchor가
+될 수 없으므로 old row만 재추출하는 model call도 생성되지 않는다.
+
+직전 1개를 선택한 이유는 Phase 3의 immediate-neighbor window 계약과 정확히 맞고 최대 context
+비용을 고정하기 위해서다. 신규 suffix가 없으면 prefix query 자체를 하지 않는다. claim SQL,
+lease/retry 분류, `saveExtractedFacts()` transaction, completion marker의
+`last_exchange_rowid = MAX(rowid)` 계약은 변경하지 않았다.
+
+기존 17-case fixture/baseline SHA는 historical comparison을 위해 그대로 유지했다. 대신 별도
+`fact-extraction-watermark-boundary.json` fixture는 suffix assistant가 SQLite를 반복하지 않게
+구성했고, claim E2E에서 prefix assistant referent visibility, 신규 ratification-only lineage,
+watermark 2→3 전진을 결정론적으로 검증한다. 구현 직전 해당 계약 5개가 실패함을 관찰했고,
+구현 후 `fact-extractor` + `extraction-claim-e2e` 56개 테스트가 통과했다.
 
 ---
 
@@ -2608,10 +2638,10 @@ self-amplification leakage = 0
 
 ## F. Watermark
 
-- [ ] previous context prefix fetch
-- [ ] prefix context-only flag
-- [ ] pre-watermark evidence reuse 방지
-- [ ] boundary fixture 추가
+- [x] previous context prefix fetch
+- [x] prefix context-only flag
+- [x] pre-watermark evidence reuse 방지
+- [x] boundary fixture 추가
 
 ## G. Provenance
 
