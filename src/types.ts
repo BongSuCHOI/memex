@@ -72,6 +72,25 @@ export interface MultiConceptResult {
 export type FactCategory = 'decision' | 'preference' | 'pattern' | 'knowledge' | 'constraint';
 export type FactScopeType = 'global' | 'project';
 export type FactRelation = 'DUPLICATE' | 'CONTRADICTION' | 'EVOLUTION' | 'INDEPENDENT';
+export type FactGroundingType = 'explicit' | 'verified' | 'inferred';
+export type FactEvidenceSource = 'human' | 'tool';
+export type HumanEvidenceKind =
+  | 'assertion'
+  | 'decision'
+  | 'correction'
+  | 'ratification'
+  | 'repeated_signal';
+export type ToolEvidenceKind = 'repo_file' | 'git_history' | 'test_execution';
+
+/** Model-declared evidence. The extractor validates every field against the
+ * selected exchange rows before it resolves authoritative UUID lineage. */
+export interface ExtractedFactEvidence {
+  exchange_index: number;
+  source: FactEvidenceSource;
+  kind: HumanEvidenceKind | ToolEvidenceKind;
+  tool_name?: string;
+  source_type?: ToolEvidenceKind;
+}
 
 export interface Fact {
   id: string;
@@ -131,6 +150,11 @@ export interface ExtractedFact {
   category: FactCategory;
   scope_type: FactScopeType;
   confidence: number;
+  /** Transient extraction diagnostics; not part of durable fact sync state. */
+  grounding_type?: FactGroundingType;
+  durable?: boolean;
+  evidence?: ExtractedFactEvidence[];
+  context_exchange_indices?: number[];
   /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
   source_exchange_ids?: string[];
 }

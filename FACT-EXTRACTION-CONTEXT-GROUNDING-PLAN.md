@@ -1922,12 +1922,12 @@ total model latency:            130.8s
 
 ### 작업
 
-- [ ] assistant text를 `[ASSISTANT_CONTEXT_ONLY]`로 prompt에 포함
-- [ ] `memex_recall` tool result를 `[MEMEX_RECALL_CONTEXT_ONLY]`로 포함
-- [ ] trusted tool은 기존처럼 evidence block
-- [ ] `has_memex_recall`을 context label에 반영
-- [ ] 모든 block을 data로 취급하도록 prompt injection guard 추가
-- [ ] message truncation/token budget 재검토
+- [x] assistant text를 `assistant_context_only`로 prompt JSON에 포함
+- [x] `memex_recall` tool result를 `memex_recall_context_only`로 포함
+- [x] trusted tool은 별도 `trusted_tool_evidence` block 유지
+- [x] `has_memex_recall`을 `recall_influenced` context label에 반영
+- [x] 모든 block을 untrusted data로 취급하도록 prompt injection guard 추가
+- [x] message/tool별 truncation과 tool count budget 적용
 
 ### 완료 조건
 
@@ -1945,18 +1945,54 @@ assistant는 visible하지만 기존 test의 “assistant is not learnable” �
 
 ### 작업
 
-- [ ] candidate output schema에 `grounding_type` 추가
-- [ ] `durable` 추가
-- [ ] typed `evidence[]` 추가
-- [ ] optional `context_exchange_indices` 추가
-- [ ] model output parser validation 강화
-- [ ] human/tool evidence를 실제 DB state와 대조
-- [ ] assistant / recall evidence declaration hard reject
-- [ ] validated evidence에서만 `source_exchange_ids` 생성
+- [x] candidate output schema에 `grounding_type` 추가
+- [x] `durable` 추가
+- [x] typed `evidence[]` 추가
+- [x] optional `context_exchange_indices` 추가
+- [x] model output을 `unknown`에서 좁히는 parser validation 강화
+- [x] human/tool evidence를 실제 DB state와 대조
+- [x] assistant / recall / external evidence declaration hard reject
+- [x] validated evidence에서만 `source_exchange_ids` 생성
 
 ### 완료 조건
 
 prompt가 실패해도 server-side validator가 assistant/recall self-grounding을 차단한다.
+
+### Phase 1+2 구현 기록 (2026-08-31)
+
+```text
+SQLite exchanges/tool_calls
+  -> bounded JSON data envelope (human/tool evidence + assistant/recall context)
+  -> one-pass Luna candidate with typed grounding declaration
+  -> unknown JSON parser
+  -> actual DB provenance/learnable/source_type/is_error validator
+  -> grounding cardinality + durable + confidence gates
+  -> authoritative exchange UUID lineage only
+```
+
+DB schema와 `facts.source_exchange_ids`의 durable 의미는 바꾸지 않았다.
+`grounding_type`, `durable`, `evidence`, `context_exchange_indices`는 extraction-time
+diagnostics이며 저장/sync truth가 아니다. Phase 3의 context-aware anchor/window와 Phase 4의
+watermark prefix는 의도적으로 이번 범위에서 제외했다.
+
+동일 17-case fixture의 `gpt-5.6-luna` model run 관측:
+
+```text
+passed / failed:                 12 / 5       (baseline 9 / 8)
+matched durable facts:          6            (baseline 4)
+positive fact recall:           54.5%        (baseline 36.4%)
+negative no-fact accuracy:      100%         (baseline 83.3%)
+ratification resolution:        60%          (baseline 0%)
+self-amplification leakage:     0            (baseline 0)
+model calls:                    17           (baseline 17)
+input/output tokens:            319,916 / 2,141 (observed)
+total model latency:            108.4s
+```
+
+보고서의 `trusted-test-solution` 1건은 올바른 verified candidate를 만들었지만
+`duplicate-email`과 fixture term `duplicate email`을 다르게 취급한 scorer false negative였다.
+문장부호 차이를 정규화하는 회귀 테스트와 scorer 수정으로 보정했다. 남은 short
+ratification 및 일부 correction/recall ratification 누락은 Phase 3 anchor/window 범위다.
 
 ---
 
@@ -2479,41 +2515,41 @@ self-amplification leakage = 0
 
 ## A. Extraction input contract
 
-- [ ] `buildExtractionPrompt()` 재설계
-- [ ] assistant text를 context-only로 노출
-- [ ] Memex recall tool result를 context-only로 노출
-- [ ] trusted tool evidence 별도 block 유지
-- [ ] source labels 명확화
-- [ ] prompt content를 untrusted data로 명시
-- [ ] truncation/token budget 정책 재검토
+- [x] `buildExtractionPrompt()` 재설계
+- [x] assistant text를 context-only로 노출
+- [x] Memex recall tool result를 context-only로 노출
+- [x] trusted tool evidence 별도 block 유지
+- [x] source labels 명확화
+- [x] prompt content를 untrusted data로 명시
+- [x] truncation/token budget 정책 재검토
 
 ## B. Extraction policy prompt
 
-- [ ] default `[]`
-- [ ] precision > recall 선언
-- [ ] negative rules 추가
-- [ ] context-only policy 추가
-- [ ] ratification resolution 규칙 추가
-- [ ] inference minimum evidence 규칙 추가
-- [ ] scope inference 규칙 추가
-- [ ] grounding vs durability 분리
+- [x] default `[]`
+- [x] precision > recall 선언
+- [x] negative rules 추가
+- [x] context-only policy 추가
+- [x] ratification resolution 규칙 추가
+- [x] inference minimum evidence 규칙 추가
+- [x] scope inference 규칙 추가
+- [x] grounding vs durability 분리
 
 ## C. Output schema
 
-- [ ] `grounding_type`
-- [ ] `durable`
-- [ ] `evidence[]`
-- [ ] optional `context_exchange_indices`
-- [ ] schema parser/validator
+- [x] `grounding_type`
+- [x] `durable`
+- [x] `evidence[]`
+- [x] optional `context_exchange_indices`
+- [x] schema parser/validator
 
 ## D. Programmatic grounding validator
 
-- [ ] human source validation
-- [ ] tool source validation
-- [ ] actual DB `learnable/source_type` verification
-- [ ] assistant/recall/external evidence reject
-- [ ] inferred evidence cardinality rule
-- [ ] validated source IDs only persist
+- [x] human source validation
+- [x] tool source validation
+- [x] actual DB `learnable/source_type/is_error` verification
+- [x] assistant/recall/external evidence reject
+- [x] inferred evidence cardinality rule
+- [x] validated source IDs only persist
 
 ## E. Exchange selection
 
@@ -2892,14 +2928,14 @@ P1 + P2
 
 # 38. 구현자가 작업 시작 전에 확인할 체크리스트
 
-- [ ] current main HEAD 재확인
-- [ ] 이 문서 이후 main 변경사항 diff 확인
-- [ ] 기존 `FACT-LIFECYCLE` evidence policy 유지 여부 확인
-- [ ] current `source_exchange_ids` sync/privacy 소비처 검색
-- [ ] current extraction watermark 소비처 검색
-- [ ] current recall provenance test baseline 실행
-- [ ] current fact extractor tests baseline 실행
-- [ ] 평가 fixture 먼저 작성
-- [ ] assistant visibility와 evidence authority를 별도 code path로 구현
-- [ ] server-side validation 없이 assistant visibility를 단독 merge하지 않음
+- [x] current main HEAD 재확인 (`b246afdb59c24113dd174248b94a65106762c3af`)
+- [x] 이 문서 이후 main 변경사항 diff 확인 (main unchanged, Phase 0 commit 위에서 작업)
+- [x] 기존 `FACT-LIFECYCLE` evidence policy 유지 여부 확인
+- [x] current `source_exchange_ids` sync/privacy 소비처 검색
+- [x] current extraction watermark 소비처 검색
+- [x] current recall provenance test baseline 실행
+- [x] current fact extractor tests baseline 실행
+- [x] 평가 fixture 먼저 작성 (Phase 0의 17-case fixture 재사용)
+- [x] assistant visibility와 evidence authority를 별도 code path로 구현
+- [x] server-side validation 없이 assistant visibility를 단독 merge하지 않음
 - [ ] 실제 archive shadow evaluation 후 production backfill 여부 결정

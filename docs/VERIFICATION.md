@@ -136,6 +136,27 @@ npm run eval:fact-extraction -- \
 받은 run만 수행합니다. report는 private-derived artifact로 취급해 ignored local path에
 보관하고, repository에는 aggregate 관측과 `PASS`/`FAIL`/`NOT_PROVEN` 판정만 기록합니다.
 
+Phase 1/2 grounding contract의 최소 회귀 표면은 다음을 포함합니다.
+
+- assistant/recall 본문이 JSON envelope의 context-only field에는 존재
+- assistant/recall/external evidence 선언은 server-side hard reject
+- trusted tool 선언은 실제 DB `tool_name/source_type/learnable/is_error`와 일치해야 통과
+- inferred candidate는 서로 다른 authoritative exchange 2개 이상 필요
+- accepted `source_exchange_ids`에는 validated human/tool exchange UUID만 존재
+- recall 영향을 받은 assistant text는 conversation FTS에서 계속 검색 가능
+
+관련 좁은 gate:
+
+```bash
+npx vitest run \
+  test/fact-extractor.test.ts \
+  test/recall-provenance.test.ts \
+  test/fact-extraction-eval.test.ts \
+  test/extraction-claim-e2e.test.ts \
+  test/extraction-session-retry.test.ts \
+  test/session-end-worker-p0.test.ts
+```
+
 ## 9. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:

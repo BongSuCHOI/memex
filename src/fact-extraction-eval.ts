@@ -436,6 +436,7 @@ function createCaseDatabase(
       session_id TEXT NOT NULL,
       user_message TEXT NOT NULL,
       assistant_message TEXT NOT NULL,
+      provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
       assistant_learnable INTEGER NOT NULL DEFAULT 0,
       has_memex_recall INTEGER NOT NULL DEFAULT 0,
       timestamp TEXT NOT NULL
@@ -454,8 +455,8 @@ function createCaseDatabase(
   const insertExchange = db.prepare(`
     INSERT INTO exchanges (
       id, session_id, user_message, assistant_message,
-      assistant_learnable, has_memex_recall, timestamp
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      provenance, assistant_learnable, has_memex_recall, timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTool = db.prepare(`
     INSERT INTO tool_calls (
@@ -473,6 +474,7 @@ function createCaseDatabase(
         testCase.id,
         exchange.user_message,
         exchange.assistant_message,
+        JSON.stringify(["human_assertion", "assistant_generated"]),
         exchange.assistant_learnable ? 1 : 0,
         exchange.has_memex_recall ? 1 : 0,
         timestamp,
@@ -502,8 +504,15 @@ function exactSetMatch(left: string[], right: string[]): boolean {
 }
 
 function includesRequiredTerms(fact: string, terms: string[]): boolean {
-  const normalized = fact.toLocaleLowerCase();
-  return terms.every((term) => normalized.includes(term.toLocaleLowerCase()));
+  const normalize = (value: string) =>
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .replace(/[\p{P}\p{S}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const normalized = normalize(fact);
+  return terms.every((term) => normalized.includes(normalize(term)));
 }
 
 function uniqueIssues(issues: EvaluationIssue[]): EvaluationIssue[] {

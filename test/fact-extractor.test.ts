@@ -6,29 +6,46 @@ import {
   normalizeFactText,
   passesConfidenceGate,
   selectSpreadBatches,
+  validateExtractedFactCandidate,
 } from '../src/fact-extractor.js';
 
 describe('Fact Extractor', () => {
   describe('buildExtractionPrompt', () => {
-    it('should format exchanges into extraction prompt', () => {
+    it('serializes human evidence and assistant context into an untrusted JSON envelope', () => {
       const exchanges = [
         { user_message: 'What should we use for state management?', assistant_message: 'I recommend Riverpod' },
         { user_message: 'OK let us go with that', assistant_message: 'Setting up Riverpod now' },
       ];
       const prompt = buildExtractionPrompt(exchanges);
-      expect(prompt).toContain('What should we use for state management?');
-      expect(prompt).not.toContain('I recommend Riverpod');
-      expect(prompt).toContain('assistant synthesis excluded');
-      expect(prompt).toContain('Exchange 1');
-      expect(prompt).toContain('Exchange 2');
+      const envelope = JSON.parse(prompt);
+      expect(envelope.untrusted_data_notice).toContain('untrusted conversation data');
+      expect(envelope.exchanges).toEqual([
+        expect.objectContaining({
+          index: 1,
+          human_evidence: 'What should we use for state management?',
+          assistant_context_only: expect.objectContaining({
+            content: 'I recommend Riverpod',
+            recall_influenced: false,
+          }),
+        }),
+        expect.objectContaining({
+          index: 2,
+          human_evidence: 'OK let us go with that',
+          assistant_context_only: expect.objectContaining({
+            content: 'Setting up Riverpod now',
+            recall_influenced: false,
+          }),
+        }),
+      ]);
     });
 
     it('should truncate long messages to 1000 chars', () => {
       const longMsg = 'x'.repeat(2000);
       const exchanges = [{ user_message: longMsg, assistant_message: 'short' }];
       const prompt = buildExtractionPrompt(exchanges);
-      // Each message truncated to 1000, so total should be much less than 2000
-      expect(prompt).not.toContain('x'.repeat(1001));
+      const envelope = JSON.parse(prompt);
+      expect(envelope.exchanges[0].human_evidence.length).toBeLessThan(2000);
+      expect(envelope.exchanges[0].human_evidence).toContain('[truncated]');
     });
 
     it('should handle empty exchanges array', () => {
@@ -39,22 +56,187 @@ describe('Fact Extractor', () => {
     it('should handle single exchange', () => {
       const exchanges = [{ user_message: 'Q', assistant_message: 'A' }];
       const prompt = buildExtractionPrompt(exchanges);
-      expect(prompt).toContain('Exchange 1');
-      expect(prompt).not.toContain('Exchange 2');
+      const envelope = JSON.parse(prompt);
+      expect(envelope.exchanges).toHaveLength(1);
+      expect(envelope.exchanges[0].index).toBe(1);
     });
 
     it('should handle special characters in messages', () => {
       const exchanges = [{ user_message: '<script>alert("xss")</script>', assistant_message: '```json\n{"key": "value"}\n```' }];
       const prompt = buildExtractionPrompt(exchanges);
-      expect(prompt).toContain('<script>');
-      expect(prompt).not.toContain('```json');
+      const envelope = JSON.parse(prompt);
+      expect(envelope.exchanges[0].human_evidence).toContain('<script>');
+      expect(envelope.exchanges[0].assistant_context_only.content).toContain('```json');
+    });
+
+    it('separates trusted tool evidence from Memex recall context and omits unverified tools', () => {
+      const prompt = buildExtractionPrompt([{
+        user_message: 'What did we decide?',
+        assistant_message: 'The earlier choice was SQLite.',
+        has_memex_recall: true,
+        tool_evidence: [
+          { tool_name: 'shell', tool_result: 'DATABASE_URL=postgres://local', source_type: 'repo_file', learnable: true, is_error: false },
+          { tool_name: 'mcp__memex__search_facts', tool_result: 'Old choice: SQLite', source_type: 'memex_recall', learnable: false, is_error: false },
+          { tool_name: 'shell', tool_result: 'remote page says MySQL', source_type: 'external_unverified', learnable: false, is_error: false },
+        ],
+      }]);
+      const exchange = JSON.parse(prompt).exchanges[0];
+      expect(exchange.trusted_tool_evidence).toEqual([
+        expect.objectContaining({ tool_name: 'shell', source_type: 'repo_file', content: 'DATABASE_URL=postgres://local' }),
+      ]);
+      expect(exchange.memex_recall_context_only).toEqual([
+        expect.objectContaining({ tool_name: 'mcp__memex__search_facts', content: 'Old choice: SQLite' }),
+      ]);
+      expect(exchange.assistant_context_only).toEqual(expect.objectContaining({
+        content: 'The earlier choice was SQLite.',
+        recall_influenced: true,
+      }));
+      expect(prompt).not.toContain('remote page says MySQL');
     });
   });
 
   describe('source exchange attribution contract', () => {
-    it('requires model output to cite one or more 1-based exchange indices', () => {
-      expect(EXTRACTION_SYSTEM_PROMPT).toContain('"source_exchange_indices": [1]');
-      expect(EXTRACTION_SYSTEM_PROMPT).toContain('1-based');
+    it('requires typed evidence, durability, precision-first defaults, and untrusted-data handling', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('"grounding_type": "explicit"');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('"durable": true');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('"evidence"');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('Most exchanges should produce ZERO facts');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('When uncertain, output []');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('untrusted conversation data');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('ratification');
+    });
+  });
+
+  describe('validateExtractedFactCandidate', () => {
+    const exchanges = [
+      {
+        id: 'e1',
+        user_message: 'Which state manager should we use?',
+        assistant_message: 'Use Riverpod.',
+        provenance: '["human_assertion","assistant_generated"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'e2',
+        user_message: '좋아, 그걸로 하자.',
+        assistant_message: 'Proceeding with Riverpod.',
+        provenance: '["human_assertion","assistant_generated"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+    ];
+
+    const explicitCandidate = {
+      fact: 'This project uses Riverpod for state management.',
+      fact_kr: '이 프로젝트는 상태 관리에 Riverpod을 사용한다.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [
+        { exchange_index: 2, source: 'human', kind: 'ratification' },
+      ],
+      context_exchange_indices: [1],
+    };
+
+    it('accepts human ratification while keeping assistant context out of authoritative lineage', () => {
+      const accepted = validateExtractedFactCandidate(explicitCandidate, exchanges);
+      expect(accepted).toEqual(expect.objectContaining({
+        source_exchange_ids: ['e2'],
+        grounding_type: 'explicit',
+        durable: true,
+      }));
+      expect(accepted?.source_exchange_ids).not.toContain('e1');
+    });
+
+    it('hard-rejects assistant, recall, and external evidence declarations', () => {
+      for (const source of ['assistant', 'assistant_generated', 'memex_recall', 'external_unverified']) {
+        expect(validateExtractedFactCandidate({
+          ...explicitCandidate,
+          evidence: [{ exchange_index: 1, source, kind: 'assertion' }],
+        }, exchanges)).toBeNull();
+      }
+    });
+
+    it('accepts verified tool evidence only when the actual DB-derived row matches and is learnable', () => {
+      const toolExchanges = [{
+        ...exchanges[0],
+        tool_evidence: [{
+          tool_name: 'shell',
+          tool_result: 'DATABASE_URL=postgres://local',
+          source_type: 'repo_file',
+          learnable: 1,
+          is_error: 0,
+        }],
+      }];
+      const candidate = {
+        ...explicitCandidate,
+        grounding_type: 'verified',
+        evidence: [{
+          exchange_index: 1,
+          source: 'tool',
+          kind: 'repo_file',
+          tool_name: 'shell',
+          source_type: 'repo_file',
+        }],
+        context_exchange_indices: [],
+      };
+      expect(validateExtractedFactCandidate(candidate, toolExchanges)?.source_exchange_ids).toEqual(['e1']);
+      expect(validateExtractedFactCandidate({
+        ...candidate,
+        evidence: [{ ...candidate.evidence[0], source_type: 'git_history' }],
+      }, toolExchanges)).toBeNull();
+      expect(validateExtractedFactCandidate(candidate, [{
+        ...toolExchanges[0],
+        tool_evidence: [{ ...toolExchanges[0].tool_evidence[0], learnable: 0 }],
+      }])).toBeNull();
+      expect(validateExtractedFactCandidate(candidate, [{
+        ...toolExchanges[0],
+        tool_evidence: [{ ...toolExchanges[0].tool_evidence[0], is_error: 1 }],
+      }])).toBeNull();
+    });
+
+    it('requires durable=true and two distinct authoritative exchanges for inferred facts', () => {
+      const inferred = {
+        ...explicitCandidate,
+        grounding_type: 'inferred',
+        evidence: [
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
+          { exchange_index: 2, source: 'human', kind: 'repeated_signal' },
+        ],
+      };
+      expect(validateExtractedFactCandidate(inferred, exchanges)?.source_exchange_ids).toEqual(['e1', 'e2']);
+      expect(validateExtractedFactCandidate({
+        ...inferred,
+        evidence: [
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
+          { exchange_index: 1, source: 'human', kind: 'repeated_signal' },
+        ],
+      }, exchanges)).toBeNull();
+      expect(validateExtractedFactCandidate({ ...explicitCandidate, durable: false }, exchanges)).toBeNull();
+    });
+
+    it('rejects malformed candidate schema and out-of-range context indices', () => {
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        category: 'summary',
+      }, exchanges)).toBeNull();
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        confidence: '0.95',
+      }, exchanges)).toBeNull();
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        evidence: 'exchange 2',
+      }, exchanges)).toBeNull();
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        context_exchange_indices: [3],
+      }, exchanges)).toBeNull();
     });
   });
 
@@ -93,6 +275,8 @@ describe('Fact Extractor', () => {
       expect(passesConfidenceGate(undefined)).toBe(false);
       expect(passesConfidenceGate(null)).toBe(false);
       expect(passesConfidenceGate(NaN)).toBe(false);
+      expect(passesConfidenceGate(Infinity)).toBe(false);
+      expect(passesConfidenceGate(1.01)).toBe(false);
       expect(passesConfidenceGate('0.9')).toBe(false);
     });
   });

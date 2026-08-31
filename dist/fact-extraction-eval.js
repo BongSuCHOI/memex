@@ -196,6 +196,7 @@ function createCaseDatabase(testCase) {
       session_id TEXT NOT NULL,
       user_message TEXT NOT NULL,
       assistant_message TEXT NOT NULL,
+      provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
       assistant_learnable INTEGER NOT NULL DEFAULT 0,
       has_memex_recall INTEGER NOT NULL DEFAULT 0,
       timestamp TEXT NOT NULL
@@ -214,8 +215,8 @@ function createCaseDatabase(testCase) {
     const insertExchange = db.prepare(`
     INSERT INTO exchanges (
       id, session_id, user_message, assistant_message,
-      assistant_learnable, has_memex_recall, timestamp
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      provenance, assistant_learnable, has_memex_recall, timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
     const insertTool = db.prepare(`
     INSERT INTO tool_calls (
@@ -226,7 +227,7 @@ function createCaseDatabase(testCase) {
     const insertAll = db.transaction(() => {
         testCase.exchanges.forEach((exchange, exchangeIndex) => {
             const timestamp = new Date(Date.UTC(2026, 0, 1, 0, exchangeIndex)).toISOString();
-            insertExchange.run(exchange.id, testCase.id, exchange.user_message, exchange.assistant_message, exchange.assistant_learnable ? 1 : 0, exchange.has_memex_recall ? 1 : 0, timestamp);
+            insertExchange.run(exchange.id, testCase.id, exchange.user_message, exchange.assistant_message, JSON.stringify(["human_assertion", "assistant_generated"]), exchange.assistant_learnable ? 1 : 0, exchange.has_memex_recall ? 1 : 0, timestamp);
             for (const tool of exchange.tool_evidence ?? []) {
                 insertTool.run(tool.id, exchange.id, tool.tool_name, tool.tool_result, tool.source_type, tool.learnable ? 1 : 0, tool.is_error ? 1 : 0, timestamp);
             }
@@ -242,8 +243,14 @@ function exactSetMatch(left, right) {
     return left.every((value) => expected.has(value));
 }
 function includesRequiredTerms(fact, terms) {
-    const normalized = fact.toLocaleLowerCase();
-    return terms.every((term) => normalized.includes(term.toLocaleLowerCase()));
+    const normalize = (value) => value
+        .normalize("NFKC")
+        .toLocaleLowerCase()
+        .replace(/[\p{P}\p{S}]+/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const normalized = normalize(fact);
+    return terms.every((term) => normalized.includes(normalize(term)));
 }
 function uniqueIssues(issues) {
     return [...new Set(issues)];

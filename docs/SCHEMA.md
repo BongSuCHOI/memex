@@ -50,6 +50,11 @@ exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니
 
 conversation/tool result는 source type과 learnable state를 저장합니다. `memex_recall`과 assistant synthesis는 searchable하더라도 fact evidence로 학습하지 않습니다.
 
+Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
+`context_exchange_indices`는 validation/diagnostic data이며 SQLite durable schema에는
+저장하지 않습니다. `facts.source_exchange_ids`만 검증된 authoritative exchange UUID
+lineage를 유지합니다. Context-only assistant/recall exchange를 이 배열에 넣지 않습니다.
+
 ## 3. Facts
 
 핵심 컬럼:

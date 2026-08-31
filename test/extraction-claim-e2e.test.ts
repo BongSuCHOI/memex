@@ -17,7 +17,9 @@ vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm
   callMemoryModel: async () => { calls++; await new Promise(r => setTimeout(r, 60));
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
       ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
-        source_exchange_indices: sourceIndicesPerFact?.[i] ?? [1] }))); } }));
+        grounding_type: 'explicit', durable: true,
+        evidence: (sourceIndicesPerFact?.[i] ?? [1]).map(exchange_index =>
+          ({ exchange_index, source: 'human', kind: 'assertion' })) }))); } }));
 let factsPerCall = 1;
 let embedCalls = 0;
 let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)

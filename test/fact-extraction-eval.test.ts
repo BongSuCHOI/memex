@@ -133,7 +133,9 @@ describe("fact extraction evaluation fixture", () => {
                 category: "knowledge",
                 scope_type: "project",
                 confidence: 0.95,
-                source_exchange_indices: [1],
+                grounding_type: "explicit",
+                durable: true,
+                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
               },
             ]),
             tokenUsage: { input_tokens: 100, output_tokens: 20 },
@@ -147,7 +149,9 @@ describe("fact extraction evaluation fixture", () => {
                 category: "knowledge",
                 scope_type: "project",
                 confidence: 0.95,
-                source_exchange_indices: [1],
+                grounding_type: "explicit",
+                durable: true,
+                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
               },
             ]),
             tokenUsage: { input_tokens: 80, output_tokens: 20 },
@@ -234,6 +238,48 @@ describe("fact extraction evaluation fixture", () => {
     ).toThrow(/same fixture sha256/);
   });
 
+  it("matches required terms across punctuation-only wording differences", async () => {
+    const fixture = parseFactExtractionFixture({
+      schema_version: 1,
+      name: "punctuation-normalization",
+      description: "hyphenated model wording should match fixture terms",
+      cases: [{
+        id: "hyphenated-pattern",
+        title: "hyphenated pattern",
+        tags: ["positive", "verified-tool"],
+        exchanges: [{
+          id: "hyphenated-pattern-1",
+          user_message: "Verify the duplicate email failure.",
+          assistant_message: "Checking.",
+        }],
+        expected: {
+          outcome: "facts",
+          facts: [{
+            required_terms: ["duplicate email", "auth callback"],
+            category: "pattern",
+            scope_type: "project",
+            authoritative_exchange_ids: ["hyphenated-pattern-1"],
+          }],
+        },
+      }],
+    });
+    const report = await evaluateFactExtractionFixture(fixture, {
+      model: "fixture-model",
+      invokeModel: async () => ({
+        text: JSON.stringify([{
+          fact: "Deduplication prevents duplicate-email failures in the auth callback.",
+          category: "pattern",
+          scope_type: "project",
+          grounding_type: "explicit",
+          durable: true,
+          confidence: 0.95,
+          evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
+        }]),
+      }),
+    });
+    expect(report.cases[0].passed).toBe(true);
+  });
+
   it("rejects malformed JSON at the fixture boundary", () => {
     expect(() =>
       parseFactExtractionFixture({
@@ -259,6 +305,7 @@ describe("fact extraction evaluation fixture", () => {
         cwd TEXT,
         user_message TEXT NOT NULL,
         assistant_message TEXT NOT NULL,
+        provenance TEXT NOT NULL DEFAULT '["human_assertion","assistant_generated"]',
         assistant_learnable INTEGER NOT NULL DEFAULT 0,
         has_memex_recall INTEGER NOT NULL DEFAULT 0,
         timestamp TEXT NOT NULL
@@ -270,6 +317,7 @@ describe("fact extraction evaluation fixture", () => {
         tool_result TEXT,
         source_type TEXT NOT NULL,
         learnable INTEGER NOT NULL,
+        is_error INTEGER NOT NULL DEFAULT 0,
         timestamp TEXT NOT NULL
       );
       CREATE TABLE extraction_log (
@@ -307,7 +355,9 @@ describe("fact extraction evaluation fixture", () => {
                 category: "knowledge",
                 scope_type: "project",
                 confidence: 0.95,
-                source_exchange_indices: [1],
+                grounding_type: "explicit",
+                durable: true,
+                evidence: [{ exchange_index: 1, source: "human", kind: "assertion" }],
               },
             ]),
             tokenUsage: { input_tokens: 10, output_tokens: 4 },

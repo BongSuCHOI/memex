@@ -51,6 +51,39 @@ fact extraction evidence는 source 단위로 분류합니다.
 
 Memex가 주입한 기억을 assistant가 다시 요약한 텍스트를 새 사실의 증거로 재섭취하지 않습니다. project 밖 파일, Memex data root, `$CODEX_HOME/sessions`, model workdir 등 출처가 안전하게 증명되지 않는 tool result도 fail-closed로 학습에서 제외합니다.
 
+### Context visibility와 evidence authority
+
+Extractor input은 JSON data envelope이며 모든 필드를 untrusted conversation data로
+취급합니다. 한 exchange는 다음 역할을 분리해 전달합니다.
+
+- `human_evidence` — authoritative human candidate
+- `trusted_tool_evidence` — DB에서 learnable로 분류된 local repo/git/test 관측
+- `assistant_context_only` — 지시어·선택지·ratification 대상 해석 전용
+- `memex_recall_context_only` — 과거 recall의 의미 문맥 전용
+
+`assistant_context_only.recall_influenced`는 `has_memex_recall`을 반영합니다. assistant와
+recall 본문은 extractor에 보이지만 evidence가 될 수 없으며, external/unverified tool
+output은 현재 extraction envelope에 포함하지 않습니다. 각 block은 고정된 per-message 및
+per-tool 문자 예산으로 잘리고 tool 개수도 제한됩니다.
+
+Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
+`context_exchange_indices`를 선언합니다. Server validator는 이를 `unknown` JSON에서
+검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
+대조합니다.
+
+- `explicit` — valid human evidence가 최소 1개
+- `verified` — valid trusted tool evidence가 최소 1개
+- `inferred` — 서로 다른 authoritative exchange가 최소 2개
+- `durable`은 반드시 `true`; confidence는 그 다음 secondary threshold
+
+assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불일치하는 선언은
+candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
+exchange UUID에서만 생성되며 context index는 persisted lineage에 들어가지 않습니다.
+
+Phase 1/2에서는 기존 substantive filter와 5-exchange batching을 유지합니다. 짧은
+ratification의 anchor selection, semantic-adjacency window, watermark prefix는 각각
+Phase 3/4 범위입니다.
+
 ## 4. Extraction commit
 
 ```mermaid

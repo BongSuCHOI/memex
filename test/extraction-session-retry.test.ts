@@ -32,7 +32,9 @@ vi.mock('../src/llm.js', async (importOriginal) => {
         throw new Error('weird provider hiccup xyz');
       }
       return JSON.stringify([
-        { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9, source_exchange_indices: [1] },
+        { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9,
+          grounding_type: 'explicit', durable: true,
+          evidence: [{ exchange_index: 1, source: 'human', kind: 'assertion' }] },
       ]);
     },
   };

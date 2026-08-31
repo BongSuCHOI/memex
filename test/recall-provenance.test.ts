@@ -10,7 +10,10 @@ import {
   markRecallEventEmitted,
   recordRecallEvent,
 } from "../src/db.js";
-import { buildExtractionPrompt } from "../src/fact-extractor.js";
+import {
+  buildExtractionPrompt,
+  extractFactsFromExchanges,
+} from "../src/fact-extractor.js";
 import { insertFact, getActiveFacts, getRevisions } from "../src/fact-db.js";
 import { applyConsolidationResult } from "../src/consolidator.js";
 
@@ -88,8 +91,12 @@ describe("Memex recall provenance", () => {
 
     const promptText = buildExtractionPrompt([row]);
     expect(promptText).toContain(prompt);
-    expect(promptText).not.toContain("SQLite for local persistence");
-    expect(promptText).toContain("assistant synthesis excluded");
+    const envelope = JSON.parse(promptText);
+    expect(envelope.exchanges[0].assistant_context_only).toEqual({
+      content: "The project uses SQLite for local persistence.",
+      recall_influenced: true,
+    });
+    expect(envelope.exchanges[0].trusted_tool_evidence).toEqual([]);
 
     const searchable = db
       .prepare(`
@@ -131,7 +138,10 @@ describe("Memex recall provenance", () => {
     expect(row.has_memex_recall).toBe(0);
     const promptText = buildExtractionPrompt([row]);
     expect(promptText).toContain("Let us use PostgreSQL");
-    expect(promptText).not.toContain("I will update the persistence layer");
+    expect(JSON.parse(promptText).exchanges[0].assistant_context_only).toEqual({
+      content: "I will update the persistence layer to PostgreSQL.",
+      recall_influenced: false,
+    });
   });
 
   it("taints an exchange only after its prepared recall receipt is emitted", () => {
@@ -251,9 +261,118 @@ describe("Memex recall provenance", () => {
       FROM tool_calls WHERE exchange_id = ? ORDER BY id`)
       .all("exchange-tool-1");
     const extractionPrompt = buildExtractionPrompt([extractionRow]);
-    expect(extractionPrompt).toContain("DATABASE_URL=postgres://localhost/app");
-    expect(extractionPrompt).not.toContain("The old fact says SQLite");
-    expect(extractionPrompt).not.toContain("The earlier decision was SQLite");
+    const extractionEnvelope = JSON.parse(extractionPrompt).exchanges[0];
+    expect(extractionEnvelope.trusted_tool_evidence).toEqual([
+      expect.objectContaining({ content: "DATABASE_URL=postgres://localhost/app" }),
+    ]);
+    expect(extractionEnvelope.memex_recall_context_only).toEqual([
+      expect.objectContaining({ content: "The old fact says SQLite." }),
+    ]);
+    expect(extractionEnvelope.assistant_context_only).toEqual({
+      content: "The earlier decision was SQLite.",
+      recall_influenced: true,
+    });
+  });
+
+  it("rejects assistant/recall self-grounding end to end and resolves lineage only from matching trusted DB evidence", async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-grounding-validator-"));
+    process.env.TEST_DB_PATH = path.join(tmp, "index.sqlite");
+    db = initDatabase();
+    insertExchange(
+      db,
+      {
+        id: "exchange-grounding-1",
+        project: "/tmp/project",
+        cwd: "/tmp/project",
+        timestamp: "2026-08-31T02:00:00Z",
+        userMessage: "Check the current database configuration in this project.",
+        assistantMessage: "The recalled answer says SQLite, but the repository says PostgreSQL.",
+        archivePath: "/tmp/rollout.jsonl",
+        lineStart: 1,
+        lineEnd: 5,
+        sessionId: "session-grounding-1",
+        toolCalls: [
+          {
+            id: "call-grounding-recall",
+            exchangeId: "exchange-grounding-1",
+            toolName: "mcp__memex__search_facts",
+            toolInput: { query: "database" },
+            toolResult: "The old fact says SQLite.",
+            isError: false,
+            timestamp: "2026-08-31T02:00:01Z",
+          },
+          {
+            id: "call-grounding-repo",
+            exchangeId: "exchange-grounding-1",
+            toolName: "shell",
+            toolInput: { cmd: "grep DATABASE_URL .env.example" },
+            toolResult: "DATABASE_URL=postgres://localhost/app",
+            isError: false,
+            timestamp: "2026-08-31T02:00:02Z",
+          },
+        ],
+      },
+      Array(384).fill(0),
+    );
+
+    const facts = await extractFactsFromExchanges(
+      db,
+      "session-grounding-1",
+      undefined,
+      undefined,
+      {
+        modelCall: async () => JSON.stringify([
+          {
+            fact: "Assistant says this project uses SQLite.",
+            category: "knowledge",
+            scope_type: "project",
+            grounding_type: "explicit",
+            durable: true,
+            confidence: 0.99,
+            evidence: [{ exchange_index: 1, source: "assistant", kind: "assertion" }],
+          },
+          {
+            fact: "Recalled memory proves this project uses SQLite.",
+            category: "knowledge",
+            scope_type: "project",
+            grounding_type: "verified",
+            durable: true,
+            confidence: 0.99,
+            evidence: [{
+              exchange_index: 1,
+              source: "tool",
+              kind: "memex_recall",
+              tool_name: "mcp__memex__search_facts",
+              source_type: "memex_recall",
+            }],
+          },
+          {
+            fact: "This project currently uses PostgreSQL.",
+            category: "knowledge",
+            scope_type: "project",
+            grounding_type: "verified",
+            durable: true,
+            confidence: 0.95,
+            evidence: [{
+              exchange_index: 1,
+              source: "tool",
+              kind: "repo_file",
+              tool_name: "shell",
+              source_type: "repo_file",
+            }],
+            context_exchange_indices: [1],
+          },
+        ]),
+      },
+    );
+
+    expect(facts).toEqual([
+      expect.objectContaining({
+        fact: "This project currently uses PostgreSQL.",
+        grounding_type: "verified",
+        source_exchange_ids: ["exchange-grounding-1"],
+      }),
+    ]);
   });
 
   it("trust classifier separates local evidence from network and generated output", () => {
@@ -791,11 +910,17 @@ describe("Memex recall provenance", () => {
       FROM tool_calls WHERE exchange_id = ? ORDER BY id`)
       .all("exchange-repo-observation");
     const evidencePrompt = buildExtractionPrompt([exchange]);
-    expect(evidencePrompt).toContain("image: postgres:17");
-    expect(evidencePrompt).not.toContain("Project database is SQLite");
-    expect(evidencePrompt).not.toContain(
-      "The project now uses PostgreSQL instead of SQLite",
-    );
+    const evidenceEnvelope = JSON.parse(evidencePrompt).exchanges[0];
+    expect(evidenceEnvelope.trusted_tool_evidence).toEqual([
+      expect.objectContaining({ content: "image: postgres:17" }),
+    ]);
+    expect(evidenceEnvelope.memex_recall_context_only).toEqual([
+      expect.objectContaining({ content: "Project database is SQLite" }),
+    ]);
+    expect(evidenceEnvelope.assistant_context_only).toEqual({
+      content: "The project now uses PostgreSQL instead of SQLite.",
+      recall_influenced: true,
+    });
 
     const oldId = insertFact(db, {
       fact: "Project database is SQLite",
