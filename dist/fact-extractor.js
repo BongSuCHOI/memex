@@ -274,7 +274,7 @@ export class ClaimLostError extends Error {
 const MAX_EXCHANGES_PER_WINDOW = 5; // configurable-ok
 const MAX_FACTS_PER_SESSION = 20; // configurable-ok
 const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
-const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call budget
+const DEFAULT_MAX_EXTRACT_WINDOWS = 12; // configurable-ok — per-session generator-window budget
 /** Replies that may bridge context but should not trigger a model call alone. */
 const CONTEXT_ONLY_USER_PATTERN = /^(thanks?|thank you|done|go|proceed|continue|why|how|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?|왜|어떻게)[?.!~\s]*$/i;
 const CONDITIONAL_RATIFICATION_PATTERN = /^(go|go ahead|proceed|continue|진행해?줘?|그대로 진행(?:해?줘?)?|계속(?:해?줘?)?)[?.!~\s]*$/i;
@@ -386,9 +386,19 @@ export function selectSpreadWindows(windows, maxWindows) {
 export function selectSpreadBatches(batches, maxBatches) {
     return selectSpreadWindows(batches, maxBatches);
 }
-function maxLlmCallsPerSession() {
-    const parsed = parseInt(process.env.MEMEX_MAX_EXTRACT_CALLS || "", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
+function positiveInteger(value) {
+    if (value === undefined)
+        return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+function maxExtractionWindowsPerSession() {
+    if (process.env.MEMEX_MAX_EXTRACT_WINDOWS !== undefined) {
+        return positiveInteger(process.env.MEMEX_MAX_EXTRACT_WINDOWS) ??
+            DEFAULT_MAX_EXTRACT_WINDOWS;
+    }
+    return positiveInteger(process.env.MEMEX_MAX_EXTRACT_CALLS) ??
+        DEFAULT_MAX_EXTRACT_WINDOWS;
 }
 // Self-referential repos whose conversations must NOT be extracted (e.g.
 // Memex's own monitoring/cron sessions — extracting them creates noise
@@ -726,6 +736,9 @@ export function buildExtractionPrompt(exchanges, referentCandidates = []) {
 }
 export function createFactExtractionObservability() {
     return {
+        windows_with_referent_candidates: 0,
+        referent_candidates_total: 0,
+        max_referent_candidates: 0,
         candidate_count: 0,
         accepted_count: 0,
         rejected_invalid_schema: 0,
@@ -1134,7 +1147,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     const windows = buildExtractionWindows(exchanges);
     if (windows.length === 0)
         return [];
-    const selectedWindows = selectSpreadWindows(windows, maxLlmCallsPerSession());
+    const selectedWindows = selectSpreadWindows(windows, maxExtractionWindowsPerSession());
     const modelCall = options?.modelCall ?? callMemoryModel;
     const allFacts = [];
     const factIndexByKey = new Map();
@@ -1145,6 +1158,11 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             break;
         const window = selectedWindows[b];
         const referentCandidates = selectLongRangeReferentCandidates(window, referentPool);
+        if (options?.observability && referentCandidates.length > 0) {
+            options.observability.windows_with_referent_candidates += 1;
+            options.observability.referent_candidates_total += referentCandidates.length;
+            options.observability.max_referent_candidates = Math.max(options.observability.max_referent_candidates, referentCandidates.length);
+        }
         const prompt = buildExtractionPrompt(window, referentCandidates);
         renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {

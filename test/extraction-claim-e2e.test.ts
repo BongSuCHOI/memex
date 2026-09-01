@@ -85,7 +85,7 @@ beforeEach(async () => {
     'Flutter 상태관리는 Riverpod으로 결정했습니다.',
     'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
 });
-afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; delete process.env.MEMEX_MAX_EXTRACT_CALLS; fs.rmSync(tmp, {recursive:true,force:true}); });
+afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; delete process.env.MEMEX_MAX_EXTRACT_WINDOWS; delete process.env.MEMEX_MAX_EXTRACT_CALLS; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
   it('각 fact에는 모델이 지목한 source exchange UUID만 저장한다', async () => {
@@ -335,6 +335,56 @@ describe('claim E2E', () => {
     expect(calls).toBe(1);
     expect(promptWindows).toHaveLength(1);
     expect(promptWindows[0].local_exchanges).toHaveLength(5);
+  });
+
+  it('canonical window budget overrides the deprecated alias without skipping verification', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (let i = 2; i < 8; i++) {
+      insert.run(
+        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
+        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
+        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
+      );
+    }
+    process.env.MEMEX_MAX_EXTRACT_WINDOWS = '1';
+    process.env.MEMEX_MAX_EXTRACT_CALLS = '2';
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(calls).toBe(1);
+    expect(verifierCalls).toBe(1);
+    expect(promptWindows).toHaveLength(1);
+  });
+
+  it('invalid canonical window budget falls back to the default, not the legacy alias', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (let i = 2; i < 8; i++) {
+      insert.run(
+        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
+        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
+        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
+      );
+    }
+    process.env.MEMEX_MAX_EXTRACT_WINDOWS = 'not-a-number';
+    process.env.MEMEX_MAX_EXTRACT_CALLS = '1';
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(calls).toBe(2);
+    expect(verifierCalls).toBe(2);
+    expect(promptWindows).toHaveLength(2);
   });
 
   it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {

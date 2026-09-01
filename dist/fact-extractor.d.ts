@@ -95,6 +95,9 @@ export type FactExtractionCandidateRejectionReason = "invalid_schema" | "invalid
 /** Optional, in-memory extraction telemetry. Production callers do not pass
  * this object; the evaluation harness uses it without adding durable schema. */
 export interface FactExtractionObservability {
+    windows_with_referent_candidates: number;
+    referent_candidates_total: number;
+    max_referent_candidates: number;
     candidate_count: number;
     accepted_count: number;
     rejected_invalid_schema: number;

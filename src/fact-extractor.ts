@@ -301,7 +301,7 @@ export class ClaimLostError extends Error {
 const MAX_EXCHANGES_PER_WINDOW = 5; // configurable-ok
 const MAX_FACTS_PER_SESSION = 20; // configurable-ok
 const CONFIDENCE_THRESHOLD = 0.7; // configurable-ok
-const DEFAULT_MAX_LLM_CALLS = 12; // configurable-ok — per-session LLM call budget
+const DEFAULT_MAX_EXTRACT_WINDOWS = 12; // configurable-ok — per-session generator-window budget
 
 /** Replies that may bridge context but should not trigger a model call alone. */
 const CONTEXT_ONLY_USER_PATTERN =
@@ -436,12 +436,19 @@ export function selectSpreadBatches<T>(batches: T[], maxBatches: number): T[] {
   return selectSpreadWindows(batches, maxBatches);
 }
 
-function maxLlmCallsPerSession(): number {
-  const parsed = parseInt(
-    process.env.MEMEX_MAX_EXTRACT_CALLS || "",
-    10,
-  );
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_LLM_CALLS;
+function positiveInteger(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function maxExtractionWindowsPerSession(): number {
+  if (process.env.MEMEX_MAX_EXTRACT_WINDOWS !== undefined) {
+    return positiveInteger(process.env.MEMEX_MAX_EXTRACT_WINDOWS) ??
+      DEFAULT_MAX_EXTRACT_WINDOWS;
+  }
+  return positiveInteger(process.env.MEMEX_MAX_EXTRACT_CALLS) ??
+    DEFAULT_MAX_EXTRACT_WINDOWS;
 }
 
 // Self-referential repos whose conversations must NOT be extracted (e.g.
@@ -941,6 +948,9 @@ export type FactExtractionCandidateRejectionReason =
 /** Optional, in-memory extraction telemetry. Production callers do not pass
  * this object; the evaluation harness uses it without adding durable schema. */
 export interface FactExtractionObservability {
+  windows_with_referent_candidates: number;
+  referent_candidates_total: number;
+  max_referent_candidates: number;
   candidate_count: number;
   accepted_count: number;
   rejected_invalid_schema: number;
@@ -957,6 +967,9 @@ export interface FactExtractionObservability {
 
 export function createFactExtractionObservability(): FactExtractionObservability {
   return {
+    windows_with_referent_candidates: 0,
+    referent_candidates_total: 0,
+    max_referent_candidates: 0,
     candidate_count: 0,
     accepted_count: 0,
     rejected_invalid_schema: 0,
@@ -1506,7 +1519,10 @@ export async function extractFactsFromExchanges(
   const windows = buildExtractionWindows(exchanges);
   if (windows.length === 0) return [];
 
-  const selectedWindows = selectSpreadWindows(windows, maxLlmCallsPerSession());
+  const selectedWindows = selectSpreadWindows(
+    windows,
+    maxExtractionWindowsPerSession(),
+  );
   const modelCall = options?.modelCall ?? callMemoryModel;
 
   const allFacts: ExtractedFact[] = [];
@@ -1522,6 +1538,14 @@ export async function extractFactsFromExchanges(
       window,
       referentPool,
     );
+    if (options?.observability && referentCandidates.length > 0) {
+      options.observability.windows_with_referent_candidates += 1;
+      options.observability.referent_candidates_total += referentCandidates.length;
+      options.observability.max_referent_candidates = Math.max(
+        options.observability.max_referent_candidates,
+        referentCandidates.length,
+      );
+    }
     const prompt = buildExtractionPrompt(window, referentCandidates);
     renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
 

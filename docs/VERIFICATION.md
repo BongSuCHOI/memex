@@ -156,7 +156,10 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - pure social/bridge reply는 context eligible이지만 단독 model call을 유발하지 않음
 - transport artifact는 raw-adjacency run을 끊고, window는 최대 5 exchanges로 bounded
 - overlapping window의 duplicate fact는 normalized text로 합쳐지고 authoritative lineage는 union
-- `MEMEX_MAX_EXTRACT_CALLS`는 semantic window 생성 후 적용되며 claim/retry/watermark 계약은 유지
+- canonical `MEMEX_MAX_EXTRACT_WINDOWS`는 semantic generator window 생성 후 적용되고 verifier를
+  생략하지 않으며, deprecated `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가 없을 때만 fallback
+- invalid canonical window budget은 deprecated alias가 아니라 default 12로 fallback하며
+  claim/retry/watermark 계약은 유지
 - watermark suffix가 있으면 직전 최대 2개 prefix가 `context_only_due_to_watermark`로만 보임
 - `진행해줘`/`proceed`/`continue`는 local antecedent가 없어도 context-need window를 열고 bounded historical ranking을 수행
 - 긴 human/tool evidence는 head+tail 보존으로 뒤쪽 결정·검증 결과가 envelope에 남음
@@ -183,10 +186,14 @@ precision/positive recall/negative accuracy/ratification/verified-local 100%, se
 leakage 0, model call 17회를 관측했습니다. Synthetic raw report는 개인정보가 없으므로
 `docs/verification/fact-extraction-current.json`에 commit합니다.
 
-P2 fixture는 기존 17-case baseline과 분리하여 explicit global user/environment/preference,
-one-off 및 topic-discussion negative, long-range first-option/style/workflow/watermark/ambiguity를
-독립적으로 평가합니다. Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieval
-surface까지 연결합니다.
+P2 fixture는 기존 17-case baseline과 분리한 23 cases입니다. explicit global
+user/environment/preference/constraint, project workflow, cross-language scoring, long-range
+first-option/style/workflow/watermark/ambiguity, bare `진행해줘`/`계속`, open-vocabulary approval,
+human-origin referent, question-shaped constraint, negative replacement, one-off 및 topic-discussion
+negative를 독립적으로 평가합니다. `required_terms`는 기존처럼 모든 term을 요구합니다.
+`required_term_groups`는 group 안에서는 대체어 중 하나, group 사이는 모두 충족해야 하며 두 field가
+함께 있으면 두 조건을 모두 적용합니다. Phase 6 regression gate는 위 extraction 계약을 durable
+consumer와 retrieval surface까지 연결합니다.
 
 - accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
@@ -195,6 +202,9 @@ surface까지 연결합니다.
 - 검색된 row는 동시에 `assistant_learnable = 0`, `has_memex_recall = 1`을 유지
 - eval report의 candidate acceptance/rejection reason은 배타적으로 집계되며 production DB에는 미저장
 - grounding별 accepted count와 context-resolved human ratification count를 report에 기록
+- eval model call을 generator/verifier/unknown으로 분리하고 각 call count, token, latency와 기존 total을
+  함께 기록
+- referent가 선택된 window 수, 총/최대 candidate 수와 populated-window 평균을 in-memory report에 기록
 
 Optional Phase 7 persistent context dependency gate는 authority 의미를 유지한 채 audit/UI 소비처를
 연결합니다.

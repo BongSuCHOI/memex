@@ -43,8 +43,8 @@ describe("fact extraction evaluation fixture", () => {
     const fixture = parseFactExtractionFixture(
       JSON.parse(fs.readFileSync(p2FixturePath, "utf8")),
     );
-    expect(fixture.cases).toHaveLength(15);
-    expect(new Set(fixture.cases.map((entry) => entry.id)).size).toBe(15);
+    expect(fixture.cases).toHaveLength(23);
+    expect(new Set(fixture.cases.map((entry) => entry.id)).size).toBe(23);
     const tags = new Set(fixture.cases.flatMap((entry) => entry.tags));
     for (const tag of [
       "global",
@@ -53,8 +53,31 @@ describe("fact extraction evaluation fixture", () => {
       "watermark",
       "ambiguous",
       "one_off",
+      "cross_language",
+      "human_origin",
+      "open_vocabulary",
+      "question_shaped",
+      "negative_replacement",
+      "pure_approval",
     ]) {
       expect(tags).toContain(tag);
+    }
+    expect(fixture.cases.find((entry) => entry.id === "g6-global-workflow-constraint")?.expected)
+      .toEqual(expect.objectContaining({
+        outcome: "facts",
+        facts: [expect.objectContaining({ category: "constraint", scope_type: "global" })],
+      }));
+    for (const id of [
+      "g9-cross-language-project",
+      "g10-global-double-check",
+      "l4-pure-proceed",
+      "l5-korean-continue",
+      "l6-open-vocabulary-original",
+      "l7-human-origin-referent",
+      "l8-question-shaped-constraint",
+      "l9-negative-replacement",
+    ]) {
+      expect(fixture.cases.some((entry) => entry.id === id), id).toBe(true);
     }
   });
 
@@ -228,10 +251,22 @@ describe("fact extraction evaluation fixture", () => {
       matched_fact_count: 1,
       false_positive_count: 0,
       self_amplification_leakage_count: 0,
+      generator_calls: 3,
+      verifier_calls: 2,
+      unknown_calls: 0,
       model_calls: 5,
+      generator_input_tokens: 240,
+      generator_output_tokens: 42,
+      verifier_input_tokens: 20,
+      verifier_output_tokens: 4,
       input_tokens: 260,
       output_tokens: 46,
     });
+    expect(report.summary.generator_latency_ms).toEqual(expect.any(Number));
+    expect(report.summary.verifier_latency_ms).toEqual(expect.any(Number));
+    expect(report.cases.find((entry) => entry.id === "accepted")?.calls.map(
+      (call) => call.call_type,
+    )).toEqual(["generator", "verifier"]);
     expect(report.cases.find((entry) => entry.id === "unsupported")).toEqual(
       expect.objectContaining({ passed: true, issues: [] }),
     );
@@ -385,6 +420,10 @@ describe("fact extraction evaluation fixture", () => {
       grounding_verified: 1,
       grounding_inferred: 1,
       context_resolved_ratification: 1,
+      windows_with_referent_candidates: 1,
+      referent_candidates_total: 1,
+      max_referent_candidates: 1,
+      average_referent_candidates_per_window: 1,
     });
     expect(report.cases[0].extraction_observability).toEqual(
       expect.objectContaining({ candidate_count: 8, accepted_count: 3 }),
@@ -491,6 +530,111 @@ describe("fact extraction evaluation fixture", () => {
         }),
     });
     expect(report.cases[0].passed).toBe(true);
+  });
+
+  it("matches every multilingual term group without requiring one canonical output language", async () => {
+    const fixture = parseFactExtractionFixture({
+      schema_version: 1,
+      name: "multilingual-groups",
+      description: "canonical fact language must not determine scoring",
+      cases: [{
+        id: "multilingual-workflow",
+        title: "multilingual workflow",
+        tags: ["positive", "cross_language"],
+        exchanges: [{
+          id: "multilingual-workflow-1",
+          user_message: "앞으로 작업 전에 조사하고 계획해줘.",
+          assistant_message: "그 순서를 유지하겠습니다.",
+        }],
+        expected: {
+          outcome: "facts",
+          facts: [{
+            required_term_groups: [
+              ["조사", "research", "investigation"],
+              ["계획", "plan", "planning"],
+            ],
+            category: "constraint",
+            scope_type: "global",
+            authoritative_exchange_ids: ["multilingual-workflow-1"],
+          }],
+        },
+      }],
+    });
+    const report = await evaluateFactExtractionFixture(fixture, {
+      model: "fixture-model",
+      invokeModel: async ({ systemPrompt, userMessage }) =>
+        entailmentVerification(systemPrompt, userMessage) ?? ({
+          text: JSON.stringify([{
+            fact: "The user requires research and planning before work.",
+            category: "constraint",
+            scope_type: "global",
+            grounding_type: "explicit",
+            durable: true,
+            confidence: 0.95,
+            evidence: [{
+              exchange_index: 1,
+              source: "human",
+              kind: "assertion",
+              supporting_span: "앞으로 작업 전에 조사하고 계획해줘.",
+            }],
+          }]),
+        }),
+    });
+
+    expect(report.cases[0]).toEqual(expect.objectContaining({ passed: true, issues: [] }));
+  });
+
+  it("applies legacy required terms and multilingual groups conjunctively", async () => {
+    const fixture = parseFactExtractionFixture({
+      schema_version: 1,
+      name: "combined-term-contract",
+      description: "legacy AND and group AND must both apply",
+      cases: [{
+        id: "combined-term-contract",
+        title: "combined term contract",
+        tags: ["positive", "cross_language"],
+        exchanges: [{
+          id: "combined-term-contract-1",
+          user_message: "작업 전에 조사하고 계획하는 절차는 필수야.",
+          assistant_message: "그 절차를 유지하겠습니다.",
+        }],
+        expected: {
+          outcome: "facts",
+          facts: [{
+            required_terms: ["mandatory"],
+            required_term_groups: [
+              ["조사", "research"],
+              ["계획", "planning"],
+            ],
+            category: "constraint",
+            scope_type: "global",
+            authoritative_exchange_ids: ["combined-term-contract-1"],
+          }],
+        },
+      }],
+    });
+    const report = await evaluateFactExtractionFixture(fixture, {
+      model: "fixture-model",
+      invokeModel: async ({ systemPrompt, userMessage }) =>
+        entailmentVerification(systemPrompt, userMessage) ?? ({
+          text: JSON.stringify([{
+            fact: "The user requires research and planning before work.",
+            category: "constraint",
+            scope_type: "global",
+            grounding_type: "explicit",
+            durable: true,
+            confidence: 0.95,
+            evidence: [{
+              exchange_index: 1,
+              source: "human",
+              kind: "assertion",
+              supporting_span: "작업 전에 조사하고 계획하는 절차는 필수야.",
+            }],
+          }]),
+        }),
+    });
+
+    expect(report.cases[0].issues).toContain("MISS-important");
   });
 
   it("rejects malformed JSON at the fixture boundary", () => {

@@ -3253,3 +3253,36 @@ local window 밖의 지시어를 bounded context로 해석합니다.
 
 Clean committed SHA의 merge-gate receipt 재발행은 release 후보를 확정할 때 수행합니다. 이 P2 작업의
 완료 조건은 source/test/docs, targeted real-model fixture, required runtime gate, commit/push입니다.
+
+---
+
+# 40. Priority 3/4 finalization (2026-09-01)
+
+이 절은 이전 단계의 historical observation을 수정하지 않고 최종화 계약을 추가합니다.
+
+## Priority 3 구현 계약
+
+- [x] canonical generator-window budget을 `MEMEX_MAX_EXTRACT_WINDOWS`로 명명
+- [x] `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가 없을 때만 사용하는 deprecated alias로 유지
+- [x] canonical 값이 invalid이면 alias가 아니라 default 12를 사용하고, accepted candidate의 mandatory
+      verifier는 generator-window cap 밖에서 계속 실행
+- [x] fixture scorer에 additive `required_term_groups`를 추가: group 내부 OR, group 사이 AND,
+      legacy `required_terms`와 함께 있으면 두 조건 모두 적용
+- [x] eval telemetry를 generator/verifier/unknown call count와 token/latency로 분리하면서 기존 total 유지
+- [x] referent-populated window count와 candidate total/max/average를 in-memory eval telemetry에 추가
+- [x] P2 fixture를 23 cases로 확장하고 `g6-global-workflow-constraint`를 `constraint/global`로 교정
+- [x] cross-language, global/project workflow, bare approval, Korean `계속`, open-vocabulary approval,
+      human-origin referent, question-shaped constraint, negative replacement를 독립 case로 고정
+
+RED는 fixture 15→23, call-type telemetry 부재, term-group parser 부재, canonical env 미지원에서
+관측했습니다. GREEN은 동일 targeted test surface에서 확인합니다.
+
+## Priority 4 release 계약
+
+- [ ] source/test/owner docs 교차검증 후 implementation commit
+- [ ] clean implementation SHA에서 기존 17-case와 P2 23-case real-model evaluation
+- [ ] 동일 승인 3 sessions / 38 exchanges를 source rollout에서 임시 read-only evaluation DB로 복원해
+      shadow evaluation하고, 실행 전후 DB hash 동일성을 확인한 뒤 임시 data 제거
+- [ ] final committed code SHA에서 repository required gate 실행
+- [ ] 실제 결과와 exact `candidate.codeSha`로 `docs/verification/merge-gate.json` 재생성
+- [ ] receipt-only commit, push, clean working tree와 remote 0/0 확인

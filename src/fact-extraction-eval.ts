@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import {
   createFactExtractionObservability,
+  EXTRACTION_POLICY_VERSION,
+  FACT_ENTAILMENT_POLICY_VERSION,
   extractFactsFromExchanges,
   type FactExtractionModelCall,
   type FactExtractionObservability,
@@ -42,6 +44,7 @@ export interface FactExtractionEvalExchange {
 
 export interface ExpectedEvaluationFact {
   required_terms: string[];
+  required_term_groups: string[][];
   category: FactCategory;
   scope_type: FactScopeType;
   authoritative_exchange_ids: string[];
@@ -91,6 +94,7 @@ export type EvaluationModelInvoker = (
 
 export interface EvaluationCallReport {
   call_index: number;
+  call_type: "generator" | "verifier" | "unknown";
   prompt_sha256: string;
   input_characters: number;
   output_characters: number;
@@ -132,7 +136,19 @@ export interface EvaluationSummary extends FactExtractionObservability {
   ratification_resolution: number | null;
   verified_local_recall: number | null;
   exploration_false_positive_rate: number | null;
+  average_referent_candidates_per_window: number | null;
+  generator_calls: number;
+  verifier_calls: number;
+  unknown_calls: number;
   model_calls: number;
+  generator_input_tokens: number | null;
+  generator_output_tokens: number | null;
+  generator_cached_input_tokens: number | null;
+  generator_latency_ms: number;
+  verifier_input_tokens: number | null;
+  verifier_output_tokens: number | null;
+  verifier_cached_input_tokens: number | null;
+  verifier_latency_ms: number;
   input_tokens: number | null;
   output_tokens: number | null;
   cached_input_tokens: number | null;
@@ -231,6 +247,13 @@ function stringArray(value: unknown, path: string): string[] {
   return value.map((entry, index) => stringValue(entry, `${path}[${index}]`));
 }
 
+function stringArrayGroups(value: unknown, path: string): string[][] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${path} must be a non-empty array of string arrays`);
+  }
+  return value.map((entry, index) => stringArray(entry, `${path}[${index}]`));
+}
+
 function optionalBoolean(
   value: unknown,
   path: string,
@@ -309,8 +332,23 @@ function parseExpectedFact(
   if (!FACT_SCOPES.has(scope as FactScopeType)) {
     throw new Error(`${path}.scope_type is unsupported: ${scope}`);
   }
+  const requiredTerms = input.required_terms === undefined
+    ? []
+    : stringArray(input.required_terms, `${path}.required_terms`);
+  const requiredTermGroups = input.required_term_groups === undefined
+    ? []
+    : stringArrayGroups(
+        input.required_term_groups,
+        `${path}.required_term_groups`,
+      );
+  if (requiredTerms.length === 0 && requiredTermGroups.length === 0) {
+    throw new Error(
+      `${path} requires required_terms or required_term_groups`,
+    );
+  }
   return {
-    required_terms: stringArray(input.required_terms, `${path}.required_terms`),
+    required_terms: requiredTerms,
+    required_term_groups: requiredTermGroups,
     category: category as FactCategory,
     scope_type: scope as FactScopeType,
     authoritative_exchange_ids: stringArray(
@@ -518,6 +556,24 @@ function includesRequiredTerms(fact: string, terms: string[]): boolean {
   return terms.every((term) => normalized.includes(normalize(term)));
 }
 
+function includesRequiredTermGroups(
+  fact: string,
+  groups: string[][],
+): boolean {
+  return groups.every((group) =>
+    group.some((alternative) => includesRequiredTerms(fact, [alternative])),
+  );
+}
+
+function evaluationCallType(
+  systemPrompt: string,
+): EvaluationCallReport["call_type"] {
+  const generator = systemPrompt.includes(EXTRACTION_POLICY_VERSION);
+  const verifier = systemPrompt.includes(FACT_ENTAILMENT_POLICY_VERSION);
+  if (generator === verifier) return "unknown";
+  return generator ? "generator" : "verifier";
+}
+
 function uniqueIssues(issues: EvaluationIssue[]): EvaluationIssue[] {
   return [...new Set(issues)];
 }
@@ -550,7 +606,11 @@ function scoreCase(
     const candidateIndex = facts.findIndex(
       (fact, index) =>
         !consumed.has(index) &&
-        includesRequiredTerms(fact.fact, expected.required_terms),
+        includesRequiredTerms(fact.fact, expected.required_terms) &&
+        includesRequiredTermGroups(
+          fact.fact,
+          expected.required_term_groups,
+        ),
     );
     if (candidateIndex < 0) {
       issues.push("MISS-important");
@@ -632,6 +692,18 @@ function summarize(
       : tokenObserved.length === calls.length
         ? "observed"
         : "partial";
+  const callsOfType = (callType: EvaluationCallReport["call_type"]) =>
+    calls.filter((call) => call.call_type === callType);
+  const generatorCalls = callsOfType("generator");
+  const verifierCalls = callsOfType("verifier");
+  const tokenSubtotal = (
+    selected: EvaluationCallReport[],
+    field: "input_tokens" | "output_tokens" | "cached_input_tokens",
+  ): number | null => {
+    if (selected.length === 0) return 0;
+    if (selected.some((call) => call[field] === null)) return null;
+    return selected.reduce((sum, call) => sum + (call[field] ?? 0), 0);
+  };
   const taggedRatio = (tag: string): number | null => {
     const selected = positives.filter((entry) => entry.tags.includes(tag));
     return ratio(
@@ -645,7 +717,11 @@ function summarize(
   const extractionObservability = reports.reduce<FactExtractionObservability>(
     (total, entry) => {
       for (const key of Object.keys(total) as Array<keyof FactExtractionObservability>) {
-        total[key] += entry.extraction_observability[key];
+        if (key === "max_referent_candidates") {
+          total[key] = Math.max(total[key], entry.extraction_observability[key]);
+        } else {
+          total[key] += entry.extraction_observability[key];
+        }
       }
       return total;
     },
@@ -677,7 +753,34 @@ function summarize(
       exploration.filter((entry) => entry.observed_facts.length > 0).length,
       exploration.length,
     ),
+    average_referent_candidates_per_window: ratio(
+      extractionObservability.referent_candidates_total,
+      extractionObservability.windows_with_referent_candidates,
+    ),
+    generator_calls: generatorCalls.length,
+    verifier_calls: verifierCalls.length,
+    unknown_calls: callsOfType("unknown").length,
     model_calls: calls.length,
+    generator_input_tokens: tokenSubtotal(generatorCalls, "input_tokens"),
+    generator_output_tokens: tokenSubtotal(generatorCalls, "output_tokens"),
+    generator_cached_input_tokens: tokenSubtotal(
+      generatorCalls,
+      "cached_input_tokens",
+    ),
+    generator_latency_ms: generatorCalls.reduce(
+      (sum, call) => sum + call.latency_ms,
+      0,
+    ),
+    verifier_input_tokens: tokenSubtotal(verifierCalls, "input_tokens"),
+    verifier_output_tokens: tokenSubtotal(verifierCalls, "output_tokens"),
+    verifier_cached_input_tokens: tokenSubtotal(
+      verifierCalls,
+      "cached_input_tokens",
+    ),
+    verifier_latency_ms: verifierCalls.reduce(
+      (sum, call) => sum + call.latency_ms,
+      0,
+    ),
     input_tokens:
       tokenStatus === "NOT_PROVEN"
         ? null
@@ -737,6 +840,7 @@ export async function evaluateFactExtractionFixture(
       const tokenUsage = result.tokenUsage ?? null;
       calls.push({
         call_index: currentCall,
+        call_type: evaluationCallType(systemPrompt),
         prompt_sha256: sha256(`${systemPrompt}\n---\n${userMessage}`),
         input_characters: systemPrompt.length + userMessage.length,
         output_characters: result.text.length,
@@ -868,6 +972,7 @@ export async function evaluateFactExtractionArchiveSessions(
       const tokenUsage = result.tokenUsage ?? null;
       calls.push({
         call_index: currentCall,
+        call_type: evaluationCallType(systemPrompt),
         prompt_sha256: sha256(`${systemPrompt}\n---\n${userMessage}`),
         input_characters: systemPrompt.length + userMessage.length,
         output_characters: result.text.length,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import { createFactExtractionObservability, extractFactsFromExchanges, } from "./fact-extractor.js";
+import { createFactExtractionObservability, EXTRACTION_POLICY_VERSION, FACT_ENTAILMENT_POLICY_VERSION, extractFactsFromExchanges, } from "./fact-extractor.js";
 const FACT_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -45,6 +45,12 @@ function stringArray(value, path) {
         throw new Error(`${path} must be a non-empty string array`);
     }
     return value.map((entry, index) => stringValue(entry, `${path}[${index}]`));
+}
+function stringArrayGroups(value, path) {
+    if (!Array.isArray(value) || value.length === 0) {
+        throw new Error(`${path} must be a non-empty array of string arrays`);
+    }
+    return value.map((entry, index) => stringArray(entry, `${path}[${index}]`));
 }
 function optionalBoolean(value, path) {
     return value === undefined ? undefined : booleanValue(value, path);
@@ -99,8 +105,18 @@ function parseExpectedFact(value, path) {
     if (!FACT_SCOPES.has(scope)) {
         throw new Error(`${path}.scope_type is unsupported: ${scope}`);
     }
+    const requiredTerms = input.required_terms === undefined
+        ? []
+        : stringArray(input.required_terms, `${path}.required_terms`);
+    const requiredTermGroups = input.required_term_groups === undefined
+        ? []
+        : stringArrayGroups(input.required_term_groups, `${path}.required_term_groups`);
+    if (requiredTerms.length === 0 && requiredTermGroups.length === 0) {
+        throw new Error(`${path} requires required_terms or required_term_groups`);
+    }
     return {
-        required_terms: stringArray(input.required_terms, `${path}.required_terms`),
+        required_terms: requiredTerms,
+        required_term_groups: requiredTermGroups,
         category: category,
         scope_type: scope,
         authoritative_exchange_ids: stringArray(input.authoritative_exchange_ids, `${path}.authoritative_exchange_ids`),
@@ -252,6 +268,16 @@ function includesRequiredTerms(fact, terms) {
     const normalized = normalize(fact);
     return terms.every((term) => normalized.includes(normalize(term)));
 }
+function includesRequiredTermGroups(fact, groups) {
+    return groups.every((group) => group.some((alternative) => includesRequiredTerms(fact, [alternative])));
+}
+function evaluationCallType(systemPrompt) {
+    const generator = systemPrompt.includes(EXTRACTION_POLICY_VERSION);
+    const verifier = systemPrompt.includes(FACT_ENTAILMENT_POLICY_VERSION);
+    if (generator === verifier)
+        return "unknown";
+    return generator ? "generator" : "verifier";
+}
 function uniqueIssues(issues) {
     return [...new Set(issues)];
 }
@@ -271,7 +297,8 @@ function scoreCase(testCase, facts) {
     let matchedFacts = 0;
     for (const expected of testCase.expected.facts) {
         const candidateIndex = facts.findIndex((fact, index) => !consumed.has(index) &&
-            includesRequiredTerms(fact.fact, expected.required_terms));
+            includesRequiredTerms(fact.fact, expected.required_terms) &&
+            includesRequiredTermGroups(fact.fact, expected.required_term_groups));
         if (candidateIndex < 0) {
             issues.push("MISS-important");
             continue;
@@ -324,6 +351,16 @@ function summarize(reports) {
         : tokenObserved.length === calls.length
             ? "observed"
             : "partial";
+    const callsOfType = (callType) => calls.filter((call) => call.call_type === callType);
+    const generatorCalls = callsOfType("generator");
+    const verifierCalls = callsOfType("verifier");
+    const tokenSubtotal = (selected, field) => {
+        if (selected.length === 0)
+            return 0;
+        if (selected.some((call) => call[field] === null))
+            return null;
+        return selected.reduce((sum, call) => sum + (call[field] ?? 0), 0);
+    };
     const taggedRatio = (tag) => {
         const selected = positives.filter((entry) => entry.tags.includes(tag));
         return ratio(selected.filter((entry) => entry.passed === true).length, selected.length);
@@ -331,7 +368,12 @@ function summarize(reports) {
     const exploration = negatives.filter((entry) => entry.tags.includes("exploration"));
     const extractionObservability = reports.reduce((total, entry) => {
         for (const key of Object.keys(total)) {
-            total[key] += entry.extraction_observability[key];
+            if (key === "max_referent_candidates") {
+                total[key] = Math.max(total[key], entry.extraction_observability[key]);
+            }
+            else {
+                total[key] += entry.extraction_observability[key];
+            }
         }
         return total;
     }, createFactExtractionObservability());
@@ -354,7 +396,19 @@ function summarize(reports) {
         ratification_resolution: taggedRatio("ratification"),
         verified_local_recall: taggedRatio("verified_local"),
         exploration_false_positive_rate: ratio(exploration.filter((entry) => entry.observed_facts.length > 0).length, exploration.length),
+        average_referent_candidates_per_window: ratio(extractionObservability.referent_candidates_total, extractionObservability.windows_with_referent_candidates),
+        generator_calls: generatorCalls.length,
+        verifier_calls: verifierCalls.length,
+        unknown_calls: callsOfType("unknown").length,
         model_calls: calls.length,
+        generator_input_tokens: tokenSubtotal(generatorCalls, "input_tokens"),
+        generator_output_tokens: tokenSubtotal(generatorCalls, "output_tokens"),
+        generator_cached_input_tokens: tokenSubtotal(generatorCalls, "cached_input_tokens"),
+        generator_latency_ms: generatorCalls.reduce((sum, call) => sum + call.latency_ms, 0),
+        verifier_input_tokens: tokenSubtotal(verifierCalls, "input_tokens"),
+        verifier_output_tokens: tokenSubtotal(verifierCalls, "output_tokens"),
+        verifier_cached_input_tokens: tokenSubtotal(verifierCalls, "cached_input_tokens"),
+        verifier_latency_ms: verifierCalls.reduce((sum, call) => sum + call.latency_ms, 0),
         input_tokens: tokenStatus === "NOT_PROVEN"
             ? null
             : tokenObserved.reduce((sum, call) => sum + (call.input_tokens ?? 0), 0),
@@ -389,6 +443,7 @@ export async function evaluateFactExtractionFixture(fixture, options) {
             const tokenUsage = result.tokenUsage ?? null;
             calls.push({
                 call_index: currentCall,
+                call_type: evaluationCallType(systemPrompt),
                 prompt_sha256: sha256(`${systemPrompt}\n---\n${userMessage}`),
                 input_characters: systemPrompt.length + userMessage.length,
                 output_characters: result.text.length,
@@ -501,6 +556,7 @@ export async function evaluateFactExtractionArchiveSessions(db, sessionIds, opti
             const tokenUsage = result.tokenUsage ?? null;
             calls.push({
                 call_index: currentCall,
+                call_type: evaluationCallType(systemPrompt),
                 prompt_sha256: sha256(`${systemPrompt}\n---\n${userMessage}`),
                 input_characters: systemPrompt.length + userMessage.length,
                 output_characters: result.text.length,

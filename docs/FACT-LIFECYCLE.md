@@ -158,9 +158,12 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
   window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
   이웃으로 연결하지 않습니다.
-- `MEMEX_MAX_EXTRACT_CALLS`의 spread cap은 이 semantic window를 모두 만든 뒤 적용합니다.
-  겹친 window가 같은 fact를 다시 만들면 기존 session-level normalized-text dedup이
-  validated authoritative lineage를 set-union합니다.
+- `MEMEX_MAX_EXTRACT_WINDOWS`의 spread cap은 이 semantic window를 모두 만든 뒤 generator
+  window 수에만 적용합니다. 구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
+  verifier는 cap과 별도로 실행됩니다. Deprecated alias `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가
+  아예 없을 때만 읽습니다. Canonical 값이 설정됐지만 양의 정수가 아니면 alias로 우회하지 않고
+  default 12를 사용합니다. 겹친 window가 같은 fact를 다시 만들면 기존 session-level
+  normalized-text dedup이 validated authoritative lineage를 set-union합니다.
 
 증분 추출은 watermark 이후 suffix를 authoritative target으로 유지하면서, suffix가 있을 때만
 같은 session의 `rowid <= last_exchange_rowid` 중 직전 최대 30개를 bounded long-range pool로

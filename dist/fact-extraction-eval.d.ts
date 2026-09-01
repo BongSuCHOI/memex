@@ -20,6 +20,7 @@ export interface FactExtractionEvalExchange {
 }
 export interface ExpectedEvaluationFact {
     required_terms: string[];
+    required_term_groups: string[][];
     category: FactCategory;
     scope_type: FactScopeType;
     authoritative_exchange_ids: string[];
@@ -63,6 +64,7 @@ export interface EvaluationModelResult {
 export type EvaluationModelInvoker = (invocation: EvaluationModelInvocation) => Promise<EvaluationModelResult>;
 export interface EvaluationCallReport {
     call_index: number;
+    call_type: "generator" | "verifier" | "unknown";
     prompt_sha256: string;
     input_characters: number;
     output_characters: number;
@@ -102,7 +104,19 @@ export interface EvaluationSummary extends FactExtractionObservability {
     ratification_resolution: number | null;
     verified_local_recall: number | null;
     exploration_false_positive_rate: number | null;
+    average_referent_candidates_per_window: number | null;
+    generator_calls: number;
+    verifier_calls: number;
+    unknown_calls: number;
     model_calls: number;
+    generator_input_tokens: number | null;
+    generator_output_tokens: number | null;
+    generator_cached_input_tokens: number | null;
+    generator_latency_ms: number;
+    verifier_input_tokens: number | null;
+    verifier_output_tokens: number | null;
+    verifier_cached_input_tokens: number | null;
+    verifier_latency_ms: number;
     input_tokens: number | null;
     output_tokens: number | null;
     cached_input_tokens: number | null;
