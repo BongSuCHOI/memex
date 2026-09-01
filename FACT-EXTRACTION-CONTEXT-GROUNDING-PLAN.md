@@ -3319,3 +3319,9 @@ steps를 함께 정의하는 경우, 새 `this sequence` adoption이 모든 step
 일반 작업 방식에 적용되는 지시는 imperative라는 이유만으로 one-off가 아닙니다. 반대로 단순 미래형이나
 bounded current task의 후속 단계는 one-off일 수 있으므로 temporal token이 아니라 semantic
 applicability를 verifier가 판정합니다. Deterministic regex/validator/hard gate는 추가하지 않습니다.
+
+재실행 raw diagnostic에서 `lg2` generator는 durable/global workflow fact를 만들었지만
+`context_dependencies: []`를 선언했고 verifier가 정상적으로 `NOT_ENOUGH` 처리했습니다. 사용자 승인에
+따라 generator prompt에 referent 제거 시 fact가 incomplete/ambiguous/unsupported가 되는 necessity
+test를 추가합니다. Referenced workflow는 최소 dependency 필수, standalone fact는 unrelated dependency
+금지, required referent ambiguity는 no-fact이며 regex/ranking/validator/verifier/schema는 변경하지 않습니다.

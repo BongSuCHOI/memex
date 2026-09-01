@@ -42,6 +42,19 @@ change this policy.
   only context_id values actually provided in referent_candidates and describe why each is needed.
 - MAX_THREE_CONTEXT_DEPENDENCIES: emit at most 3 context_dependencies for one fact. Include only the
   minimal referents needed to resolve the human statement.
+- REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED: if a fact depends on information found only in
+  referent_candidates to define what the human adopted, selected, continued, or referred to, the
+  candidate MUST declare the minimum necessary context_dependencies. Mentally remove the referenced
+  context: if the whole fact then becomes incomplete, ambiguous, or unsupported, the dependency is
+  required. A referenced workflow such as "keep using this sequence" must carry the context IDs that
+  define the non-local steps.
+- STANDALONE_FACT_NO_DEPENDENCY: when authoritative evidence itself completely defines the durable
+  fact, do not attach an unrelated referent merely because it was retrieved. Immediate local context
+  still follows its separate no-context-id rule.
+- AMBIGUOUS_REQUIRED_REFERENT_NO_FACT: if more than one referent remains plausible and the required
+  dependency cannot be selected confidently, emit no fact.
+- MINIMAL_NECESSARY_DEPENDENCIES: declare only context IDs actually needed to complete the fact. Do
+  not attach context merely because it is visible or related.
 
 ## Required decision procedure
 

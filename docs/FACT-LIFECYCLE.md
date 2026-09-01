@@ -73,7 +73,10 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
 대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
 정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
-provenance, tool identity와 authority eligibility를 다시 대조합니다. Canonical claim과
+provenance, tool identity와 authority eligibility를 다시 대조합니다. Long-range referent를 제거했을
+때 fact 전체 의미가 incomplete/ambiguous/unsupported가 되면 generator는 그 의미를 정의하는 최소
+`context_dependencies`를 반드시 선언합니다. Standalone evidence가 의미를 완결하면 retrieved context를
+붙이지 않고, 필수 referent가 ambiguous하면 fact를 내지 않습니다. Canonical claim과
 evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandatory entailment verifier가
 판정합니다. `fact_kr`는 extraction output에서 폐기되므로 canonical fact를 rescue하거나 KR 검색
 상태를 오염시킬 수 없습니다.

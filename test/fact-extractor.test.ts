@@ -197,6 +197,28 @@ describe('Fact Extractor', () => {
     });
   });
 
+  describe('generator context dependency policy', () => {
+    it('requires a dependency when a referenced workflow defines the fact', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
+    });
+
+    it('keeps a standalone durable fact free of unrelated dependencies', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('STANDALONE_FACT_NO_DEPENDENCY');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('STANDALONE_FACT_NO_DEPENDENCY');
+    });
+
+    it('emits no fact when required referents remain ambiguous', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('AMBIGUOUS_REQUIRED_REFERENT_NO_FACT');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('AMBIGUOUS_REQUIRED_REFERENT_NO_FACT');
+    });
+
+    it('declares only the minimum context needed to complete the claim', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('MINIMAL_NECESSARY_DEPENDENCIES');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('MINIMAL_NECESSARY_DEPENDENCIES');
+    });
+  });
+
   describe('validateExtractedFactCandidate', () => {
     const exchanges = [
       {
