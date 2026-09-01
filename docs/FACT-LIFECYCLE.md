@@ -69,7 +69,7 @@ per-tool 문자 예산으로 잘리고 tool 개수도 제한됩니다. 긴 본�
 있을 수 있으므로 head와 tail을 함께 보존합니다.
 
 Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
-`context_exchange_indices`를 선언합니다. Server validator는 이를 `unknown` JSON에서
+`context_dependencies[{context_id, relation}]`를 선언합니다. Server validator는 이를 `unknown` JSON에서
 검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
 대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
 정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
@@ -78,11 +78,12 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 오염시킬 수 없습니다.
 
 구조 검증을 통과한 candidate가 하나 이상이면 같은 window의 candidate를 한 batch로 별도
-`authoritative-entailment-v1` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
+`authoritative-entailment-v2` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
 durability와 server가 복원한 bounded authoritative source text를 비교하며 `ENTAILED`만 허용합니다.
 `CONTRADICTED`, `NOT_ENOUGH`, 누락, 중복, malformed verdict는 candidate별 fail-closed입니다.
-Ratification만 bounded assistant/recall referent를 non-authoritative context로 함께 보며, human text가
-그 referent를 긍정 채택해야 합니다. 명시적 rejection signal은 verifier 전 deterministic gate에서도
+선택된 bounded assistant/recall/human referent는 non-authoritative context로 함께 보며, human text가
+그 referent를 명확히 채택하거나 참조해야 합니다. 이 adoption evidence는 model label이 반드시
+`ratification`일 필요는 없습니다. 명시적 rejection signal은 verifier 전 deterministic gate에서도
 거부합니다. 따라서 lexical overlap은 provenance prefilter일 뿐 entailment proof가 아닙니다.
 
 - `explicit` — valid human evidence가 최소 1개
@@ -92,20 +93,19 @@ Ratification만 bounded assistant/recall referent를 non-authoritative context�
 
 assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불일치하는 선언은
 candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
-exchange UUID에서만 생성됩니다. `context_exchange_indices`는 ratification에만 허용하며 human
-ratification보다 앞선 최대 2개 exchange, 그리고 fact의 claim-bearing assistant/recall 문맥으로
-제한합니다. 이 model-declared index를 server가 실제 exchange UUID와 dependency kind로
-resolve해 local `fact_context_dependencies`에 저장하며 authoritative lineage에는 들어가지
-않습니다. model이 context UUID나 kind를 직접 정할 수 없습니다.
+exchange UUID에서만 생성됩니다. Model에는 opaque `context_id`만 보이고 DB UUID는 노출하지
+않습니다. Server는 제공한 candidate인지, anchor보다 앞서는지, dependency가 3개 이하인지,
+relation이 허용값인지 검증한 뒤 실제 exchange UUID로 resolve합니다. 이 dependency는 local
+`fact_context_dependencies`에만 저장되며 authoritative lineage에는 들어가지 않습니다.
 
-증분 추출은 watermark 직전 최대 2개 exchange를 context-only prefix로 읽습니다. 이 prefix는
-authority가 아니며 새 suffix의 referent 해석에만 쓰입니다. `진행해줘`, `proceed`, `continue`
-계열은 이러한 preceding watermark context가 실제로 있을 때만 conditional ratification anchor가
-됩니다.
+증분 추출은 watermark 직전 최대 30개 exchange를 context-only long-range pool로 읽습니다.
+일반 local semantic window에는 직전 최대 2개만 포함하고, `처음 추천한`, `그 방식`, `지금처럼`,
+`앞으로도` 같은 참조·지속 신호가 있는 anchor에만 selector가 pool에서 최대 5개 referent를
+별도 제공합니다. 이 historical context는 authority가 아니며 새 suffix의 의미 해석에만 쓰입니다.
 
 ### Precision과 durability policy
 
-`precision-durability-v3` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
+`precision-durability-v4` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
 순서로 판정합니다.
 
 1. **Grounding** — explicit human, verified local tool, 또는 같은 결론을 독립적으로 지지하는
@@ -115,10 +115,14 @@ authority가 아니며 새 suffix의 referent 해석에만 쓰입니다. `진행
 3. **Category/scope** — 의미 기준 category와 보수적인 project/global scope를 정합니다.
 4. **Confidence** — 앞 gate를 모두 통과한 candidate에만 secondary threshold를 적용합니다.
 
-질문, 비교, 단순 관심사, brainstorming, 현재 진행, temporary state, 일회성 package/file/command
-요청은 Fact가 아닙니다. 특히 한 번의 행동을 global preference로 올리지 않으며, durable하지 않은
-signal을 project fact로 바꿔 저장하지도 않습니다. global scope는 명시적인 cross-project human
-statement 또는 복수의 독립된 cross-project human signal에만 허용합니다.
+질문, 비교, brainstorming, 현재 진행, temporary state, 일회성 package/file/command 요청은
+Fact가 아닙니다. 특히 한 번의 행동을 global preference로 올리지 않으며, durable하지 않은 signal을
+project fact로 바꿔 저장하지도 않습니다. scope는 발화가 등장한 conversation이 아니라 fact가
+적용되는 대상에 따라 정합니다. Repository/product에 묶인 지식과 결정은 `project`이고, 사용자의
+지속적인 환경·도구·관심·응답/작업 방식처럼 무관한 미래 project에도 적용되는 명시적 지식은 단일
+authoritative human assertion만으로도 `global`일 수 있습니다. 행동으로 global preference를
+추론할 때는 여전히 복수의 독립된 authoritative signal이 필요합니다. 주제를 질문한 사실만으로
+관심사를 추론하지 않습니다.
 
 현재 project state를 바로잡는 human correction은 stable knowledge가 될 수 있습니다. recall을
 assistant가 반복했을 뿐이면 authority가 없지만, human이 recalled choice를 이번 project에서 새로
@@ -152,15 +156,15 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   validated authoritative lineage를 set-union합니다.
 
 증분 추출은 watermark 이후 suffix를 authoritative target으로 유지하면서, suffix가 있을 때만
-같은 session의 `rowid <= last_exchange_rowid` 중 직전 최대 2개를 bounded prefix로 읽습니다. prefix는
-persisted schema가 아닌 read-time `context_only_due_to_watermark=true` 표식을 가지며 anchor가 될
-수 없습니다. suffix anchor의 bounded neighbor로는 window에 들어가므로 첫 신규 ratification이
-proposal→rationale처럼 2-turn antecedent를 해석할 수 있습니다.
+같은 session의 `rowid <= last_exchange_rowid` 중 직전 최대 30개를 bounded long-range pool로
+읽습니다. prefix는 persisted schema가 아닌 read-time `context_only_due_to_watermark=true` 표식을
+가지며 anchor가 될 수 없습니다. 직전 최대 2개는 local window에 들어가고, 더 오래된 row는
+참조·지속 신호가 있는 anchor에서만 selector가 최대 5개 candidate로 제공합니다.
 
 prefix의 human text는 `human_context_only`에만 보이고 `human_evidence`는 `null`입니다. prefix의
 trusted tool evidence도 envelope에서 제거합니다. 이 prompt-level 분리와 별개로 server validator는
-prefix index를 human/tool evidence로 선언한 candidate를 hard reject합니다. 따라서 prefix index는
-`context_exchange_indices`에는 들어갈 수 있지만 `source_exchange_ids`에는 들어갈 수 없고, prefix
+prefix를 human/tool evidence로 선언한 candidate를 hard reject합니다. 따라서 historical candidate는
+`context_dependencies`에는 들어갈 수 있지만 `source_exchange_ids`에는 들어갈 수 없고, prefix
 단독으로 old Fact를 다시 추출하는 model call도 생기지 않습니다.
 
 ## 4. Extraction commit
@@ -173,8 +177,8 @@ sequenceDiagram
     participant F as facts
 
     W->>L: claim session
-    W->>E: rows after watermark + previous 1 context-only row
-    W->>W: anchors + semantic windows + model + validate
+    W->>E: rows after watermark + previous 30 context-only rows
+    W->>W: anchors + local windows + selected referents + model + validate
     W->>F: BEGIN transaction
     W->>F: save/merge facts + provenance + context dependency
     W->>L: saved count + watermark + release

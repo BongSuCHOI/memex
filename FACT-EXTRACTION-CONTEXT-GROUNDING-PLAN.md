@@ -3218,3 +3218,26 @@ P1 + P2
 - [x] assistant visibility와 evidence authority를 별도 code path로 구현
 - [x] server-side validation 없이 assistant visibility를 단독 merge하지 않음
 - [x] 실제 archive shadow evaluation 후 production backfill 여부 결정 — 자동 실행하지 않고 기존 explicit operator backfill 계약 유지
+
+---
+
+# 39. P2 — Long-range context와 global scope 구현
+
+이 단계는 기존 P1 authority boundary를 유지하면서 conversation 위치와 fact scope를 분리하고,
+local window 밖의 지시어를 bounded context로 해석합니다.
+
+## 구현 계약
+
+- [x] `GATE_3_CATEGORY_SCOPE`를 applicability 기준의 literal `Scope determination` prompt로 교체
+- [x] 단일 explicit human assertion도 durable user/environment knowledge이면 `global` 허용
+- [x] one-off action은 preference로 승격하지 않고 행동 기반 global inference는 복수 signal 요구
+- [x] `Long-range context` literal prompt와 `local_exchanges` / `referent_candidates` envelope 분리
+- [x] 참조·지속 signal에서만 이전 최대 30개 중 최대 5개 candidate 선택
+- [x] model은 opaque `context_id`와 typed relation만 반환하고 server가 실제 UUID로 resolve
+- [x] candidate 제공 여부, anchor 선행, relation allowlist, dependency 최대 3개를 fail-closed 검증
+- [x] historical context는 non-authoritative이며 새 human adoption만 `source_exchange_ids`에 포함
+- [x] watermark 이전 context는 의미 해석에만 쓰고 old fact 재추출에는 사용하지 않음
+- [x] 별도 `fact-extraction-p2-cases.json` fixture와 RED/GREEN regression test 추가
+
+Clean committed SHA의 merge-gate receipt 재발행은 release 후보를 확정할 때 수행합니다. 이 P2 작업의
+완료 조건은 source/test/docs, targeted real-model fixture, required runtime gate, commit/push입니다.

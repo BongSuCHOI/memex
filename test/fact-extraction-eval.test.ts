@@ -16,12 +16,17 @@ const fixturePath = path.join(
   "fixtures",
   "fact-extraction-cases.json",
 );
+const p2FixturePath = path.join(
+  import.meta.dirname,
+  "fixtures",
+  "fact-extraction-p2-cases.json",
+);
 
 function entailmentVerification(
   systemPrompt: string,
   userMessage: string,
 ): { text: string; tokenUsage: { input_tokens: number; output_tokens: number } } | null {
-  if (!systemPrompt.includes('authoritative-entailment-v1')) return null;
+  if (!systemPrompt.includes('authoritative-entailment-v2')) return null;
   const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
   return {
     text: JSON.stringify(envelope.candidates.map((_, index) => ({
@@ -33,6 +38,25 @@ function entailmentVerification(
 }
 
 describe("fact extraction evaluation fixture", () => {
+  it("keeps the P2 scope and long-range fixture separate from the 17-case baseline", () => {
+    const fixture = parseFactExtractionFixture(
+      JSON.parse(fs.readFileSync(p2FixturePath, "utf8")),
+    );
+    expect(fixture.cases).toHaveLength(15);
+    expect(new Set(fixture.cases.map((entry) => entry.id)).size).toBe(15);
+    const tags = new Set(fixture.cases.flatMap((entry) => entry.tags));
+    for (const tag of [
+      "global",
+      "project",
+      "long_range",
+      "watermark",
+      "ambiguous",
+      "one_off",
+    ]) {
+      expect(tags).toContain(tag);
+    }
+  });
+
   it("covers every required Phase 0 scenario", () => {
     const fixture = parseFactExtractionFixture(
       JSON.parse(fs.readFileSync(fixturePath, "utf8")),
@@ -280,7 +304,10 @@ describe("fact extraction evaluation fixture", () => {
           kind: "ratification",
           supporting_span: "Yes, use it.",
         }],
-        context_exchange_indices: [1],
+        context_dependencies: [{
+          context_id: 'ctx-1',
+          relation: 'ratified_proposition',
+        }],
       },
       {
         fact: "This project uses SQLite.",

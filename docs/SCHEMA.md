@@ -53,12 +53,13 @@ exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니
 conversation/tool result는 source type과 learnable state를 저장합니다. `memex_recall`과 assistant synthesis는 searchable하더라도 fact evidence로 학습하지 않습니다.
 
 Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
-`context_exchange_indices`는 server-side validation input입니다. 검증된 authoritative exchange
+`context_dependencies[{context_id, relation}]`는 server-side validation input입니다. 검증된 authoritative exchange
 UUID만 `facts.source_exchange_ids`에 들어가며 context-only assistant/recall exchange를 이 배열에
 넣지 않습니다. Human evidence의 exact `supporting_span`, tool evidence의 exact
 `tool_call_id`/`supporting_span`도 실제 row와 대조합니다. Context index는 model-declared input이며
-ratification보다 앞선 최대 2개 claim-bearing context라는 causal constraint를 통과한 경우에만
-server가 실제 exchange UUID/kind로 resolve해 `fact_context_dependencies`로 별도 저장합니다.
+model에 제공한 opaque ID인지, anchor보다 앞서는지, 최대 3개인지, relation이 허용값인지라는
+causal constraint를 통과한 경우에만 server가 실제 exchange UUID/kind로 resolve해
+`fact_context_dependencies`로 별도 저장합니다.
 Canonical `fact`만 lexical binding에 참여하고 extraction candidate의 `fact_kr`는 저장하지 않습니다.
 구조 검증 뒤 별도 entailment verifier가 bounded authoritative source text와 candidate 전체 의미를 판정하며
 `ENTAILED`만 저장 단계로 전달합니다. 이 verifier verdict와 거절 사유는 process-local 진단값이고
@@ -77,9 +78,11 @@ fact_context_dependencies (
 )
 ```
 
-`dependency_kind`는 `assistant_context`, `recall_influenced_assistant`,
-`watermark_prefix`, `conversation_context` 중 하나입니다. 이 관계는 local persistent audit
-lineage이지만 fact truth의 authority가 아니며 protocol v4 durable payload가 아닙니다.
+`dependency_kind`는 기존 local audit kind 외에 `ratified_proposition`, `referent_definition`,
+`style_reference`, `workflow_reference`, `recall_reference`를 허용합니다. 기존 DB는 초기화 시
+table을 transaction 안에서 rebuild해 old row를 보존하며 CHECK constraint를 확장합니다. 이 관계는
+local persistent audit lineage이지만 fact truth의 authority가 아니며 protocol v4 durable payload가
+아닙니다.
 
 Phase 6 evaluation의 candidate/accepted/rejection/grounding/ratification counter도 process-local
 report diagnostics입니다. `extraction_log`, `facts`, protocol v4 payload에 새 telemetry column이나

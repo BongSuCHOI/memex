@@ -13,18 +13,18 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
 let calls = 0;
 let verifierCalls = 0;
 let verifierVerdicts: string[] | null = null;
-let promptWindows: Array<{ exchanges: Array<{
+let promptWindows: Array<{ local_exchanges: Array<{
   human_evidence: string | null;
   human_context_only?: string | null;
   context_only_due_to_watermark?: boolean;
   assistant_context_only?: { content: string };
-}> }> = [];
+}>; referent_candidates: Array<{ context_id: string; content: string }> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
 let contextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callMemoryModel: async (systemPrompt: string, userMessage: string) => {
-    if (systemPrompt.includes('authoritative-entailment-v1')) {
+    if (systemPrompt.includes('authoritative-entailment-v2')) {
       verifierCalls++;
       const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
       return JSON.stringify(envelope.candidates.map((_, index) => ({
@@ -50,9 +50,12 @@ vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm
           exchange_index,
           source: 'human',
           kind: contextIndices.length > 0 ? 'ratification' : 'assertion',
-          supporting_span: envelope.exchanges[exchange_index - 1]?.human_evidence ?? '',
+          supporting_span: envelope.local_exchanges[exchange_index - 1]?.human_evidence ?? '',
         })),
-        context_exchange_indices: contextIndices,
+        context_dependencies: contextIndices.map((referentIndex) => ({
+          context_id: envelope.referent_candidates[referentIndex - 1]?.context_id ?? 'missing',
+          relation: 'ratified_proposition',
+        })),
       };
     }));
   } }));
@@ -154,7 +157,7 @@ describe('claim E2E', () => {
       "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact 상태관리'",
     ).get() as { source_exchange_ids: string };
     expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e3']);
-    expect(promptWindows.map((window) => window.exchanges.length)).toEqual([5, 3]);
+    expect(promptWindows.map((window) => window.local_exchanges.length)).toEqual([5, 3]);
   });
 
   it('짧은 ratification anchor가 직전 raw exchange와 함께 모델에 전달된다', async () => {
@@ -167,7 +170,7 @@ describe('claim E2E', () => {
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     expect(calls).toBe(1);
-    expect(promptWindows[0].exchanges.map((exchange) => exchange.human_evidence)).toEqual(['왜?', '응']);
+    expect(promptWindows[0].local_exchanges.map((exchange) => exchange.human_evidence)).toEqual(['왜?', '응']);
     const row = db.prepare(
       "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-1-0 Riverpod'",
     ).get() as { source_exchange_ids: string };
@@ -206,14 +209,14 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 21, 30, 'S1',
     );
     sourceIndicesPerFact = [[3]];
-    contextIndicesPerFact = [[2]];
+    contextIndicesPerFact = [[1]];
     factNameForCall = () => fixture.expected.fact;
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     expect(calls).toBe(1);
-    expect(promptWindows[0].exchanges).toHaveLength(3);
-    expect(promptWindows[0].exchanges[1]).toEqual(expect.objectContaining({
+    expect(promptWindows[0].local_exchanges).toHaveLength(3);
+    expect(promptWindows[0].local_exchanges[1]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: true,
       human_evidence: null,
       human_context_only: fixture.prefix.user_message,
@@ -221,7 +224,7 @@ describe('claim E2E', () => {
         content: fixture.prefix.assistant_message,
       }),
     }));
-    expect(promptWindows[0].exchanges[2]).toEqual(expect.objectContaining({
+    expect(promptWindows[0].local_exchanges[2]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: false,
       human_evidence: fixture.suffix.user_message,
     }));
@@ -237,11 +240,76 @@ describe('claim E2E', () => {
       WHERE fact_id = (SELECT id FROM facts WHERE fact = ?)
     `).all(fixture.expected.fact)).toEqual([{
       exchange_id: 'e1',
-      dependency_kind: 'watermark_prefix',
+      dependency_kind: 'ratified_proposition',
     }]);
     expect((db.prepare(
       'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
     ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid).toBe(3);
+  });
+
+  it('P2: watermark 8 exchanges 전 제안을 복원하되 authority는 신규 human만 저장한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    db.prepare(`
+      UPDATE exchanges
+      SET user_message = 'Which state manager fits this app?',
+          assistant_message = 'I recommend Riverpod for this app.'
+      WHERE id = 'e0'
+    `).run();
+    db.prepare(`
+      UPDATE exchanges
+      SET user_message = 'What are the first tradeoffs?',
+          assistant_message = 'Riverpod is testable.'
+      WHERE id = 'e1'
+    `).run();
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    const history = [
+      ['Compare another option.', 'Bloc is another option.'],
+      ['What is its downside?', 'Bloc adds boilerplate.'],
+      ['Any simpler option?', 'Provider is a third option.'],
+      ['How is testing?', 'All options are testable.'],
+      ['Summarize constraints.', 'The original recommendation balances them.'],
+      ['Anything else?', 'No additional blocker.'],
+    ];
+    history.forEach(([user, assistant], index) => insert.run(
+      `e${index + 2}`, '/tmp/p', new Date(Date.now() + (index + 2) * 1000).toISOString(),
+      user, assistant, `/tmp/a${index + 2}.jsonl`, 20 + index, 20 + index, 'S1',
+    ));
+    db.prepare(`
+      INSERT INTO extraction_log
+        (session_id, processed_at, extracted, saved, last_exchange_rowid)
+      VALUES ('S1', ?, 0, 0, 8)
+    `).run(new Date().toISOString());
+    insert.run(
+      'e8', '/tmp/p', new Date(Date.now() + 8000).toISOString(),
+      '그럼 처음 추천한 걸로 하자.', 'Riverpod으로 진행하겠습니다.',
+      '/tmp/a8.jsonl', 80, 80, 'S1',
+    );
+    sourceIndicesPerFact = [[3]];
+    contextIndicesPerFact = [[1]];
+    factNameForCall = () => 'This project uses Riverpod for state management.';
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(promptWindows[0].local_exchanges).toHaveLength(3);
+    expect(promptWindows[0].referent_candidates).toHaveLength(5);
+    expect(promptWindows[0].referent_candidates[0].content).toContain('Riverpod');
+    const fact = db.prepare(
+      'SELECT source_exchange_ids FROM facts WHERE fact = ?',
+    ).get('This project uses Riverpod for state management.') as { source_exchange_ids: string };
+    expect(JSON.parse(fact.source_exchange_ids)).toEqual(['e8']);
+    expect(db.prepare(`
+      SELECT exchange_id, dependency_kind
+      FROM fact_context_dependencies
+      WHERE fact_id = (SELECT id FROM facts WHERE fact = ?)
+    `).all('This project uses Riverpod for state management.')).toEqual([{
+      exchange_id: 'e0',
+      dependency_kind: 'ratified_proposition',
+    }]);
   });
 
   it('LLM call budget is applied after semantic windows are formed', async () => {
@@ -265,7 +333,7 @@ describe('claim E2E', () => {
 
     expect(calls).toBe(1);
     expect(promptWindows).toHaveLength(1);
-    expect(promptWindows[0].exchanges).toHaveLength(5);
+    expect(promptWindows[0].local_exchanges).toHaveLength(5);
   });
 
   it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {
@@ -297,11 +365,11 @@ describe('claim E2E', () => {
     sourceIndicesPerFact = [[3]];
     await runFactExtraction(db, 'S1', '/tmp/p');
     expect(calls, '재개 세션은 새 exchange 배치에 대해 한 번만 호출해야 한다').toBe(2);
-    expect(promptWindows[1].exchanges[0]).toEqual(expect.objectContaining({
+    expect(promptWindows[1].local_exchanges[0]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: true,
       human_evidence: null,
     }));
-    expect(promptWindows[1].exchanges[2]).toEqual(expect.objectContaining({
+    expect(promptWindows[1].local_exchanges[2]).toEqual(expect.objectContaining({
       context_only_due_to_watermark: false,
       human_evidence: '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
     }));

@@ -78,6 +78,65 @@ describe('Facts DB Schema', () => {
     ]));
   });
 
+  it('migrates context dependency kinds without losing existing local lineage', () => {
+    db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES ('legacy-exchange', '/tmp/p', '2026-01-01', 'Question', 'Answer',
+              '/tmp/a', 1, 2, 'legacy-session', 0)
+    `).run();
+    const factId = insertFact(db, {
+      fact: 'Legacy context fact',
+      category: 'decision',
+      scope_type: 'project',
+      scope_project: '/tmp/p',
+      source_exchange_ids: [],
+      embedding: null,
+    });
+    db.exec(`
+      DROP INDEX idx_fact_context_exchange;
+      DROP TABLE fact_context_dependencies;
+      CREATE TABLE fact_context_dependencies (
+        fact_id TEXT NOT NULL,
+        exchange_id TEXT NOT NULL,
+        dependency_kind TEXT NOT NULL CHECK (
+          dependency_kind IN (
+            'assistant_context',
+            'recall_influenced_assistant',
+            'watermark_prefix',
+            'conversation_context'
+          )
+        ),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+        FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+        FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+          ON UPDATE CASCADE ON DELETE CASCADE
+      );
+    `);
+    db.prepare(`
+      INSERT INTO fact_context_dependencies
+        (fact_id, exchange_id, dependency_kind, created_at)
+      VALUES (?, 'legacy-exchange', 'assistant_context', '2026-01-01')
+    `).run(factId);
+    db.close();
+
+    db = initDatabase();
+    expect(db.prepare(`
+      SELECT exchange_id, dependency_kind
+      FROM fact_context_dependencies WHERE fact_id = ?
+    `).all(factId)).toEqual([{
+      exchange_id: 'legacy-exchange',
+      dependency_kind: 'assistant_context',
+    }]);
+    expect(() => db.prepare(`
+      INSERT INTO fact_context_dependencies
+        (fact_id, exchange_id, dependency_kind, created_at)
+      VALUES (?, 'legacy-exchange', 'style_reference', '2026-01-02')
+    `).run(factId)).not.toThrow();
+  });
+
   it('should create vec_facts virtual table', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_facts'").all();
     expect(tables).toHaveLength(1);

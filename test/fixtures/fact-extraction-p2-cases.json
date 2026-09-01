@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "name": "p2-long-range-global-v1",
+  "description": "P2 global scope, long-range referent, ambiguity, and watermark lineage cases.",
+  "cases": [
+    {
+      "id": "g1-explicit-environment",
+      "title": "Explicit user environment is global knowledge",
+      "tags": ["positive", "global", "knowledge", "environment"],
+      "exchanges": [{
+        "id": "g1-1",
+        "user_message": "난 Mac을 사용해.",
+        "assistant_message": "기억하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["mac"],
+        "category": "knowledge",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["g1-1"]
+      }] }
+    },
+    {
+      "id": "g2-available-infrastructure",
+      "title": "Available infrastructure is global knowledge",
+      "tags": ["positive", "global", "knowledge", "infrastructure"],
+      "exchanges": [{
+        "id": "g2-1",
+        "user_message": "Oracle Free Tier VPC 하나 가지고 있어.",
+        "assistant_message": "필요할 때 활용하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["oracle", "vpc"],
+        "category": "knowledge",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["g2-1"]
+      }] }
+    },
+    {
+      "id": "g3-subscriptions",
+      "title": "Explicit subscriptions are global knowledge",
+      "tags": ["positive", "global", "knowledge", "services"],
+      "exchanges": [{
+        "id": "g3-1",
+        "user_message": "Codex랑 Gemini 구독을 사용하고 있어.",
+        "assistant_message": "기억하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["codex", "gemini"],
+        "category": "knowledge",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["g3-1"]
+      }] }
+    },
+    {
+      "id": "g4-explicit-interest",
+      "title": "Explicit interest is a global preference",
+      "tags": ["positive", "global", "preference", "interest"],
+      "exchanges": [{
+        "id": "g4-1",
+        "user_message": "난 철학에 관심이 있어.",
+        "assistant_message": "기억하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["philosophy"],
+        "category": "preference",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["g4-1"]
+      }] }
+    },
+    {
+      "id": "g5-discussion-not-interest",
+      "title": "A topic question does not prove interest",
+      "tags": ["negative", "global", "discussion", "interest"],
+      "exchanges": [{
+        "id": "g5-1",
+        "user_message": "니체 철학 설명해줘.",
+        "assistant_message": "니체 철학의 핵심을 설명하겠습니다."
+      }],
+      "expected": { "outcome": "none", "false_positive_taxonomy": "DROP-unsupported" }
+    },
+    {
+      "id": "g6-global-workflow-constraint",
+      "title": "Persistent workflow requirement is global",
+      "tags": ["positive", "global", "constraint", "workflow"],
+      "exchanges": [{
+        "id": "g6-1",
+        "user_message": "작업 끝나면 항상 한번 더 검토해줘.",
+        "assistant_message": "앞으로 완료 후 재검토하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["검토"],
+        "category": "preference",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["g6-1"]
+      }] }
+    },
+    {
+      "id": "g7-project-workflow-constraint",
+      "title": "Repository workflow requirement stays project scoped",
+      "tags": ["positive", "project", "constraint", "workflow"],
+      "exchanges": [{
+        "id": "g7-1",
+        "user_message": "이 repo에서는 작업 끝나면 lint도 돌려.",
+        "assistant_message": "이 저장소에서는 lint까지 실행하겠습니다."
+      }],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["lint"],
+        "category": "constraint",
+        "scope_type": "project",
+        "authoritative_exchange_ids": ["g7-1"]
+      }] }
+    },
+    {
+      "id": "g8-one-off-command",
+      "title": "One-off review command is not durable",
+      "tags": ["negative", "one_off", "workflow"],
+      "exchanges": [{
+        "id": "g8-1",
+        "user_message": "이번 작업만 끝나면 한번 더 확인해줘.",
+        "assistant_message": "이번 작업에 한해 확인하겠습니다."
+      }],
+      "expected": { "outcome": "none", "false_positive_taxonomy": "DROP-noise" }
+    },
+    {
+      "id": "l1-long-comparison-decision",
+      "title": "A distant first recommendation can be ratified",
+      "tags": ["positive", "project", "long_range", "ratification"],
+      "exchanges": [
+        { "id": "l1-1", "user_message": "Which state manager fits this app?", "assistant_message": "I recommend Riverpod for this app." },
+        { "id": "l1-2", "user_message": "What are its tradeoffs?", "assistant_message": "Riverpod is testable but adds providers." },
+        { "id": "l1-3", "user_message": "Compare Bloc.", "assistant_message": "Bloc is another option with more boilerplate." },
+        { "id": "l1-4", "user_message": "How about Provider?", "assistant_message": "Provider is simpler but less structured." },
+        { "id": "l1-5", "user_message": "What about testing?", "assistant_message": "All three can be tested." },
+        { "id": "l1-6", "user_message": "Summarize the constraints.", "assistant_message": "The original recommendation balances them best." },
+        { "id": "l1-7", "user_message": "Any blocker?", "assistant_message": "No blocker." },
+        { "id": "l1-8", "user_message": "그럼 처음 추천한 걸로 하자.", "assistant_message": "Riverpod으로 진행하겠습니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["riverpod"],
+        "category": "decision",
+        "scope_type": "project",
+        "authoritative_exchange_ids": ["l1-8"]
+      }] }
+    },
+    {
+      "id": "l2-competing-alternatives",
+      "title": "First option resolves among competing alternatives",
+      "tags": ["positive", "project", "long_range", "alternatives"],
+      "exchanges": [
+        { "id": "l2-1", "user_message": "Show the first option.", "assistant_message": "Option one is Riverpod." },
+        { "id": "l2-2", "user_message": "Explain it.", "assistant_message": "Riverpod uses providers." },
+        { "id": "l2-3", "user_message": "Show another option.", "assistant_message": "Option two is Bloc." },
+        { "id": "l2-4", "user_message": "And another?", "assistant_message": "Option three is Provider." },
+        { "id": "l2-5", "user_message": "Compare maintenance.", "assistant_message": "Each option has tradeoffs." },
+        { "id": "l2-6", "user_message": "첫 번째 안으로 하자.", "assistant_message": "Riverpod으로 진행합니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["riverpod"],
+        "category": "decision",
+        "scope_type": "project",
+        "authoritative_exchange_ids": ["l2-6"]
+      }] }
+    },
+    {
+      "id": "l3-ambiguous-reference",
+      "title": "Ambiguous distant reference fails closed",
+      "tags": ["negative", "long_range", "ambiguous"],
+      "exchanges": [
+        { "id": "l3-1", "user_message": "Give me an option.", "assistant_message": "Riverpod could fit." },
+        { "id": "l3-2", "user_message": "Give me another.", "assistant_message": "Bloc could fit equally well." },
+        { "id": "l3-3", "user_message": "Compare them.", "assistant_message": "Both satisfy the stated constraints." },
+        { "id": "l3-4", "user_message": "그걸로 하자.", "assistant_message": "어느 것을 뜻하는지 확인이 필요합니다." }
+      ],
+      "expected": { "outcome": "none", "false_positive_taxonomy": "DROP-unsupported" }
+    },
+    {
+      "id": "lg1-response-style",
+      "title": "A tuned response style can become a global preference",
+      "tags": ["positive", "global", "long_range", "style"],
+      "exchanges": [
+        { "id": "lg1-1", "user_message": "답변 스타일 몇 가지 보여줘.", "assistant_message": "A는 상세하고 B는 간결하며 C는 표 중심입니다." },
+        { "id": "lg1-2", "user_message": "B가 낫네. 설명은 줄여줘.", "assistant_message": "간결한 설명으로 조정했습니다." },
+        { "id": "lg1-3", "user_message": "예시는 조금 더 줘.", "assistant_message": "간결한 설명에 구체적인 예시를 추가했습니다." },
+        { "id": "lg1-4", "user_message": "문단은 짧게.", "assistant_message": "짧은 문단과 구체적인 예시로 답하겠습니다." },
+        { "id": "lg1-5", "user_message": "한번 적용해봐.", "assistant_message": "짧은 설명입니다. 예시: 입력과 출력을 함께 제시합니다." },
+        { "id": "lg1-6", "user_message": "조금 더 자연스럽게.", "assistant_message": "짧고 자연스러운 설명과 예시를 제공합니다." },
+        { "id": "lg1-7", "user_message": "지금 방식이 딱 좋네. 앞으로도 계속 이렇게 해줘.", "assistant_message": "앞으로 이 응답 스타일을 유지하겠습니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["짧", "자연"],
+        "category": "preference",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["lg1-7"]
+      }] }
+    },
+    {
+      "id": "lg2-workflow-style",
+      "title": "A referenced workflow can become a global preference",
+      "tags": ["positive", "global", "long_range", "workflow"],
+      "exchanges": [
+        { "id": "lg2-1", "user_message": "이번 작업은 먼저 조사해줘.", "assistant_message": "관련 코드를 조사하겠습니다." },
+        { "id": "lg2-2", "user_message": "대안도 비교해줘.", "assistant_message": "두 구현 대안을 비교했습니다." },
+        { "id": "lg2-3", "user_message": "구현 전에 계획 검토해줘.", "assistant_message": "구현 계획을 먼저 검토했습니다." },
+        { "id": "lg2-4", "user_message": "이제 구현해줘.", "assistant_message": "검토된 계획대로 구현했습니다." },
+        { "id": "lg2-5", "user_message": "테스트도 해줘.", "assistant_message": "관련 테스트를 실행했습니다." },
+        { "id": "lg2-6", "user_message": "앞으로 작업할 때도 이 순서로 해줘.", "assistant_message": "앞으로 조사, 비교, 계획 검토, 구현 순서를 따르겠습니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["조사", "계획"],
+        "category": "preference",
+        "scope_type": "global",
+        "authoritative_exchange_ids": ["lg2-6"]
+      }] }
+    },
+    {
+      "id": "lg3-project-only-adoption",
+      "title": "The same workflow can be project scoped",
+      "tags": ["positive", "project", "long_range", "workflow"],
+      "exchanges": [
+        { "id": "lg3-1", "user_message": "먼저 코드를 조사해줘.", "assistant_message": "코드 경계를 조사했습니다." },
+        { "id": "lg3-2", "user_message": "대안도 비교해줘.", "assistant_message": "대안을 비교했습니다." },
+        { "id": "lg3-3", "user_message": "계획을 검토해줘.", "assistant_message": "계획을 검토했습니다." },
+        { "id": "lg3-5", "user_message": "이 프로젝트에서는 계속 이 순서로 하자.", "assistant_message": "이 프로젝트에서 조사, 비교, 계획 검토 순서를 유지하겠습니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["조사", "계획"],
+        "category": "decision",
+        "scope_type": "project",
+        "authoritative_exchange_ids": ["lg3-5"]
+      }] }
+    },
+    {
+      "id": "w1-watermark-long-range",
+      "title": "Long-range ratification crosses the extraction watermark safely",
+      "tags": ["positive", "project", "long_range", "watermark", "ratification"],
+      "watermark_after_exchange_index": 7,
+      "exchanges": [
+        { "id": "w1-1", "user_message": "Which state manager fits this app?", "assistant_message": "I recommend Riverpod for this app." },
+        { "id": "w1-2", "user_message": "What are its tradeoffs?", "assistant_message": "Riverpod is testable." },
+        { "id": "w1-3", "user_message": "Compare Bloc.", "assistant_message": "Bloc is another option." },
+        { "id": "w1-4", "user_message": "Compare Provider.", "assistant_message": "Provider is a third option." },
+        { "id": "w1-5", "user_message": "What about maintenance?", "assistant_message": "The original recommendation is balanced." },
+        { "id": "w1-6", "user_message": "Any test concern?", "assistant_message": "No blocking concern." },
+        { "id": "w1-7", "user_message": "Summarize it.", "assistant_message": "The tradeoffs are clear." },
+        { "id": "w1-8", "user_message": "그럼 처음 추천한 걸로 하자.", "assistant_message": "Riverpod으로 진행하겠습니다." }
+      ],
+      "expected": { "outcome": "facts", "facts": [{
+        "required_terms": ["riverpod"],
+        "category": "decision",
+        "scope_type": "project",
+        "authoritative_exchange_ids": ["w1-8"]
+      }] }
+    }
+  ]
+}

@@ -161,9 +161,14 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - `진행해줘`/`proceed`/`continue`는 preceding watermark context가 있을 때만 conditional anchor
 - 긴 human/tool evidence는 head+tail 보존으로 뒤쪽 결정·검증 결과가 envelope에 남음
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
-- boundary ratification은 prefix assistant referent를 보되 persisted lineage는 신규 human UUID만 포함
+- boundary ratification과 long-range adoption은 selected referent를 보되 persisted authority는 신규 human UUID만 포함
 - prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
-- `precision-durability-v3`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
+- `precision-durability-v4`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
+- conversation 위치가 아니라 applicability로 scope를 정하고, 명시적 durable user/environment 지식은 단일 human assertion에서도 global 가능
+- 일회성 지시는 global preference가 아니며, 행동 기반 global inference는 복수의 독립 human signal 필요
+- 참조·지속 신호가 있을 때만 이전 최대 30개에서 최대 5개 referent를 선택하고 local/referent envelope를 분리
+- model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
+- ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리
 - current-state correction과 recall-backed new ratification은 새 human authority로 복구
@@ -174,7 +179,10 @@ precision/positive recall/negative accuracy/ratification/verified-local 100%, se
 leakage 0, model call 17회를 관측했습니다. Synthetic raw report는 개인정보가 없으므로
 `docs/verification/fact-extraction-current.json`에 commit합니다.
 
-Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieval surface까지 연결합니다.
+P2 fixture는 기존 17-case baseline과 분리하여 explicit global user/environment/preference,
+one-off 및 topic-discussion negative, long-range first-option/style/workflow/watermark/ambiguity를
+독립적으로 평가합니다. Phase 6 regression gate는 위 extraction 계약을 durable consumer와 retrieval
+surface까지 연결합니다.
 
 - accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴

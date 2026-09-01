@@ -213,7 +213,7 @@ describe("P0 worker full extraction through the real LLM path", () => {
         'const out = args.includes("-o") ? args[args.indexOf("-o") + 1] : null;',
         "if (!out) process.exit(2);",
         'const prompt = fs.readFileSync(0, "utf8");',
-        'const response = prompt.includes("authoritative-entailment-v1")',
+        'const response = prompt.includes("authoritative-entailment-v2")',
         '  ? JSON.stringify([{ candidate_index: 1, verdict: "ENTAILED" }])',
         "  : JSON.stringify([{",
         `  fact: ${JSON.stringify(FACT_TEXT)},`,

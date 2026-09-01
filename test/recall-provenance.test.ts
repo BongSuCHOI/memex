@@ -93,11 +93,11 @@ describe("Memex recall provenance", () => {
     const promptText = buildExtractionPrompt([row]);
     expect(promptText).toContain(prompt);
     const envelope = JSON.parse(promptText);
-    expect(envelope.exchanges[0].assistant_context_only).toEqual({
+    expect(envelope.local_exchanges[0].assistant_context_only).toEqual({
       content: "The project uses SQLite for local persistence.",
       recall_influenced: true,
     });
-    expect(envelope.exchanges[0].trusted_tool_evidence).toEqual([]);
+    expect(envelope.local_exchanges[0].trusted_tool_evidence).toEqual([]);
 
     const searchable = db
       .prepare(`
@@ -154,7 +154,7 @@ describe("Memex recall provenance", () => {
     expect(row.has_memex_recall).toBe(0);
     const promptText = buildExtractionPrompt([row]);
     expect(promptText).toContain("Let us use PostgreSQL");
-    expect(JSON.parse(promptText).exchanges[0].assistant_context_only).toEqual({
+    expect(JSON.parse(promptText).local_exchanges[0].assistant_context_only).toEqual({
       content: "I will update the persistence layer to PostgreSQL.",
       recall_influenced: false,
     });
@@ -277,7 +277,7 @@ describe("Memex recall provenance", () => {
       FROM tool_calls WHERE exchange_id = ? ORDER BY id`)
       .all("exchange-tool-1");
     const extractionPrompt = buildExtractionPrompt([extractionRow]);
-    const extractionEnvelope = JSON.parse(extractionPrompt).exchanges[0];
+    const extractionEnvelope = JSON.parse(extractionPrompt).local_exchanges[0];
     expect(extractionEnvelope.trusted_tool_evidence).toEqual([
       expect.objectContaining({ content: "DATABASE_URL=postgres://localhost/app" }),
     ]);
@@ -337,7 +337,7 @@ describe("Memex recall provenance", () => {
       undefined,
       undefined,
       {
-        modelCall: async (systemPrompt, userMessage) => systemPrompt.includes('authoritative-entailment-v1')
+        modelCall: async (systemPrompt, userMessage) => systemPrompt.includes('authoritative-entailment-v2')
           ? JSON.stringify((JSON.parse(userMessage) as { candidates: unknown[] }).candidates.map((_, index) => ({
               candidate_index: index + 1,
               verdict: 'ENTAILED',
@@ -933,7 +933,7 @@ describe("Memex recall provenance", () => {
       FROM tool_calls WHERE exchange_id = ? ORDER BY id`)
       .all("exchange-repo-observation");
     const evidencePrompt = buildExtractionPrompt([exchange]);
-    const evidenceEnvelope = JSON.parse(evidencePrompt).exchanges[0];
+    const evidenceEnvelope = JSON.parse(evidencePrompt).local_exchanges[0];
     expect(evidenceEnvelope.trusted_tool_evidence).toEqual([
       expect.objectContaining({ content: "image: postgres:17" }),
     ]);

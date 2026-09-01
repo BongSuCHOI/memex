@@ -77,7 +77,12 @@ export type FactContextDependencyKind =
   | 'assistant_context'
   | 'recall_influenced_assistant'
   | 'watermark_prefix'
-  | 'conversation_context';
+  | 'conversation_context'
+  | 'ratified_proposition'
+  | 'referent_definition'
+  | 'style_reference'
+  | 'workflow_reference'
+  | 'recall_reference';
 export type FactEvidenceSource = 'human' | 'tool';
 export type HumanEvidenceKind =
   | 'assertion'
@@ -101,9 +106,9 @@ export interface ExtractedFactEvidence {
   source_type?: ToolEvidenceKind;
 }
 
-/** Model-declared by window index and server-resolved to a UUID/kind after
- * bounded causal checks. This non-authoritative local audit lineage never
- * substitutes for source_exchange_ids. */
+/** Model-declared by a server-provided context ID and server-resolved to a
+ * UUID/kind after bounded causal checks. This non-authoritative local audit
+ * lineage never substitutes for source_exchange_ids. */
 export interface FactContextDependency {
   exchange_id: string;
   dependency_kind: FactContextDependencyKind;
@@ -171,7 +176,6 @@ export interface ExtractedFact {
   grounding_type?: FactGroundingType;
   durable?: boolean;
   evidence?: ExtractedFactEvidence[];
-  context_exchange_indices?: number[];
   /** Model-declared, server-resolved local context lineage after causal checks. */
   context_dependencies?: FactContextDependency[];
   /** Server-resolved UUIDs; present on candidates accepted by the extractor. */

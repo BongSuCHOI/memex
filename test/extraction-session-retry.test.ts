@@ -33,7 +33,7 @@ vi.mock('../src/llm.js', async (importOriginal) => {
         // 분류기가 인식 못 하는 shape (status 없음, 알려진 문구 없음)
         throw new Error('weird provider hiccup xyz');
       }
-      if (systemPrompt.includes('authoritative-entailment-v1')) {
+      if (systemPrompt.includes('authoritative-entailment-v2')) {
         if (llmBehavior.mode === 'verifier_transient') {
           throw Object.assign(new Error('verifier service unavailable'), { status: 503 });
         }

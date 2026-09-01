@@ -24,7 +24,7 @@ describe('Fact Extractor', () => {
       const prompt = buildExtractionPrompt(exchanges);
       const envelope = JSON.parse(prompt);
       expect(envelope.untrusted_data_notice).toContain('untrusted conversation data');
-      expect(envelope.exchanges).toEqual([
+      expect(envelope.local_exchanges).toEqual([
         expect.objectContaining({
           index: 1,
           human_evidence: 'What should we use for state management?',
@@ -49,8 +49,8 @@ describe('Fact Extractor', () => {
       const exchanges = [{ user_message: longMsg, assistant_message: 'short' }];
       const prompt = buildExtractionPrompt(exchanges);
       const envelope = JSON.parse(prompt);
-      expect(envelope.exchanges[0].human_evidence.length).toBeLessThan(2000);
-      expect(envelope.exchanges[0].human_evidence).toContain('[truncated]');
+      expect(envelope.local_exchanges[0].human_evidence.length).toBeLessThan(2000);
+      expect(envelope.local_exchanges[0].human_evidence).toContain('[truncated]');
     });
 
     it('preserves claim-bearing tails when human and tool evidence exceed prompt limits', () => {
@@ -66,7 +66,7 @@ describe('Fact Extractor', () => {
           is_error: false,
         }],
       }]);
-      const exchange = JSON.parse(prompt).exchanges[0];
+      const exchange = JSON.parse(prompt).local_exchanges[0];
 
       expect(exchange.human_evidence).toContain('TAIL_DECISION_USE_SQLITE');
       expect(exchange.trusted_tool_evidence[0].content).toContain('TAIL_TEST_RESULT_PASS');
@@ -81,16 +81,16 @@ describe('Fact Extractor', () => {
       const exchanges = [{ user_message: 'Q', assistant_message: 'A' }];
       const prompt = buildExtractionPrompt(exchanges);
       const envelope = JSON.parse(prompt);
-      expect(envelope.exchanges).toHaveLength(1);
-      expect(envelope.exchanges[0].index).toBe(1);
+      expect(envelope.local_exchanges).toHaveLength(1);
+      expect(envelope.local_exchanges[0].index).toBe(1);
     });
 
     it('should handle special characters in messages', () => {
       const exchanges = [{ user_message: '<script>alert("xss")</script>', assistant_message: '```json\n{"key": "value"}\n```' }];
       const prompt = buildExtractionPrompt(exchanges);
       const envelope = JSON.parse(prompt);
-      expect(envelope.exchanges[0].human_evidence).toContain('<script>');
-      expect(envelope.exchanges[0].assistant_context_only.content).toContain('```json');
+      expect(envelope.local_exchanges[0].human_evidence).toContain('<script>');
+      expect(envelope.local_exchanges[0].assistant_context_only.content).toContain('```json');
     });
 
     it('separates trusted tool evidence from Memex recall context and omits unverified tools', () => {
@@ -104,7 +104,7 @@ describe('Fact Extractor', () => {
           { id: 'tool-3', tool_name: 'shell', tool_result: 'remote page says MySQL', source_type: 'external_unverified', learnable: false, is_error: false },
         ],
       }]);
-      const exchange = JSON.parse(prompt).exchanges[0];
+      const exchange = JSON.parse(prompt).local_exchanges[0];
       expect(exchange.trusted_tool_evidence).toEqual([
         expect.objectContaining({ tool_name: 'shell', source_type: 'repo_file', content: 'DATABASE_URL=postgres://local' }),
       ]);
@@ -132,7 +132,7 @@ describe('Fact Extractor', () => {
           is_error: false,
         }],
       }]);
-      const exchange = JSON.parse(prompt).exchanges[0];
+      const exchange = JSON.parse(prompt).local_exchanges[0];
 
       expect(exchange).toEqual(expect.objectContaining({
         context_only_due_to_watermark: true,
@@ -158,7 +158,7 @@ describe('Fact Extractor', () => {
     });
 
     it('publishes the Phase 5 precision/durability decision gates as a versioned policy', () => {
-      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v3');
+      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v4');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain(`policy_version: ${EXTRACTION_POLICY_VERSION}`);
       for (const gate of [
         'GATE_1_GROUNDING',
@@ -215,16 +215,30 @@ describe('Fact Extractor', () => {
           supporting_span: '좋아, 그걸로 하자.',
         },
       ],
-      context_exchange_indices: [1],
+      context_dependencies: [{
+        context_id: 'ctx-1',
+        relation: 'ratified_proposition',
+      }],
     };
 
+    const referents = [{
+      context_id: 'ctx-1',
+      exchange_id: 'e1',
+      anchor_exchange_ids: ['e2'],
+      distance: 1,
+      source: 'assistant_context_only' as const,
+      human_context: exchanges[0].user_message,
+      content: exchanges[0].assistant_message,
+      context_only_due_to_watermark: false,
+    }];
+
     it('accepts human ratification while keeping assistant context out of authoritative lineage', () => {
-      const accepted = validateExtractedFactCandidate(explicitCandidate, exchanges);
+      const accepted = validateExtractedFactCandidate(explicitCandidate, exchanges, referents);
       expect(accepted).toEqual(expect.objectContaining({
         source_exchange_ids: ['e2'],
         context_dependencies: [{
           exchange_id: 'e1',
-          dependency_kind: 'assistant_context',
+          dependency_kind: 'ratified_proposition',
         }],
         grounding_type: 'explicit',
         durable: true,
@@ -378,7 +392,7 @@ describe('Fact Extractor', () => {
           source_type: 'repo_file',
           supporting_span: 'DATABASE_URL=postgres://local',
         }],
-        context_exchange_indices: [],
+        context_dependencies: [],
       };
       expect(validateExtractedFactCandidate(candidate, toolExchanges)?.source_exchange_ids).toEqual(['e1']);
       expect(validateExtractedFactCandidate({
@@ -421,7 +435,7 @@ describe('Fact Extractor', () => {
           { exchange_index: 1, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
           { exchange_index: 2, source: 'human', kind: 'repeated_signal', supporting_span: 'concise' },
         ],
-        context_exchange_indices: [],
+        context_dependencies: [],
       };
       expect(validateExtractedFactCandidate(inferred, signalExchanges)?.source_exchange_ids).toEqual(['e1', 'e2']);
       expect(validateExtractedFactCandidate({
@@ -449,7 +463,7 @@ describe('Fact Extractor', () => {
       }, exchanges)).toBeNull();
       expect(validateExtractedFactCandidate({
         ...explicitCandidate,
-        context_exchange_indices: [3],
+        context_dependencies: [{ context_id: 'missing', relation: 'ratified_proposition' }],
       }, exchanges)).toBeNull();
     });
 
@@ -491,26 +505,39 @@ describe('Fact Extractor', () => {
         context_exchange_indices: [1],
       }, prefixTool)).toBeNull();
 
+      const watermarkReferents = [{
+        ...referents[0],
+        context_only_due_to_watermark: true,
+      }];
       const accepted = validateExtractedFactCandidate(explicitCandidate, [
         prefixHuman[0],
         exchanges[1],
-      ]);
-      expect(accepted?.context_exchange_indices).toEqual([1]);
+      ], watermarkReferents);
       expect(accepted?.context_dependencies).toEqual([{
         exchange_id: 'e1',
-        dependency_kind: 'watermark_prefix',
+        dependency_kind: 'ratified_proposition',
       }]);
       expect(accepted?.source_exchange_ids).toEqual(['e2']);
     });
 
     it('derives recall-influenced context dependency kinds from server rows', () => {
-      const accepted = validateExtractedFactCandidate(explicitCandidate, [
+      const recallCandidate = {
+        ...explicitCandidate,
+        context_dependencies: [{
+          context_id: 'ctx-1',
+          relation: 'recall_reference',
+        }],
+      };
+      const accepted = validateExtractedFactCandidate(recallCandidate, [
         { ...exchanges[0], has_memex_recall: 1 },
         exchanges[1],
-      ]);
+      ], [{
+        ...referents[0],
+        source: 'recall_context_only',
+      }]);
       expect(accepted?.context_dependencies).toEqual([{
         exchange_id: 'e1',
-        dependency_kind: 'recall_influenced_assistant',
+        dependency_kind: 'recall_reference',
       }]);
     });
   });
@@ -612,7 +639,10 @@ describe('Fact Extractor', () => {
         grounding_type: 'explicit' as const,
         durable: true,
         evidence: [{ exchange_index: 5, source: 'human' as const, kind: 'ratification' as const, supporting_span: '아니, 그건 쓰지 마.' }],
-        context_exchange_indices: [4],
+        context_dependencies: [{
+          exchange_id: 'v4',
+          dependency_kind: 'ratified_proposition' as const,
+        }],
         source_exchange_ids: ['v5'],
       },
       {
@@ -627,8 +657,19 @@ describe('Fact Extractor', () => {
       },
     ];
 
+    const verifierReferents = [{
+      context_id: 'ctx-1',
+      exchange_id: 'v4',
+      anchor_exchange_ids: ['v5'],
+      distance: 1,
+      source: 'assistant_context_only' as const,
+      human_context: verifierExchanges[3].user_message,
+      content: verifierExchanges[3].assistant_message,
+      context_only_due_to_watermark: false,
+    }];
+
     it('sends canonical facts with full authoritative sentences and bounded ratification context', () => {
-      const prompt = buildFactEntailmentVerifierPrompt(candidates, verifierExchanges);
+      const prompt = buildFactEntailmentVerifierPrompt(candidates, verifierExchanges, verifierReferents);
       expect(prompt).toContain('We do not use SQLite.');
       expect(prompt).toContain('SQLite랑 PostgreSQL 비교해줘.');
       expect(prompt).toContain('이번 패키지만 pnpm으로 설치해줘.');

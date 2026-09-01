@@ -14,6 +14,7 @@
     "scripts/",
     "skills/",
     "test/fixtures/fact-extraction-cases.json",
+    "test/fixtures/fact-extraction-p2-cases.json",
     "ui/",
     "AGENTS.md",
     "CHANGELOG.md",

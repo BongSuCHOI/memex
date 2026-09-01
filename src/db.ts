@@ -511,7 +511,12 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
           'assistant_context',
           'recall_influenced_assistant',
           'watermark_prefix',
-          'conversation_context'
+          'conversation_context',
+          'ratified_proposition',
+          'referent_definition',
+          'style_reference',
+          'workflow_reference',
+          'recall_reference'
         )
       ),
       created_at TEXT NOT NULL,
@@ -521,6 +526,46 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
         ON UPDATE CASCADE ON DELETE CASCADE
     )
   `);
+  const contextDependencySchema = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fact_context_dependencies'",
+    )
+    .get() as { sql?: string } | undefined;
+  if (!contextDependencySchema?.sql?.includes("'ratified_proposition'")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE fact_context_dependencies_p2 (
+          fact_id TEXT NOT NULL,
+          exchange_id TEXT NOT NULL,
+          dependency_kind TEXT NOT NULL CHECK (
+            dependency_kind IN (
+              'assistant_context',
+              'recall_influenced_assistant',
+              'watermark_prefix',
+              'conversation_context',
+              'ratified_proposition',
+              'referent_definition',
+              'style_reference',
+              'workflow_reference',
+              'recall_reference'
+            )
+          ),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+          FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+          FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+            ON UPDATE CASCADE ON DELETE CASCADE
+        );
+        INSERT INTO fact_context_dependencies_p2
+          (fact_id, exchange_id, dependency_kind, created_at)
+        SELECT fact_id, exchange_id, dependency_kind, created_at
+        FROM fact_context_dependencies;
+        DROP TABLE fact_context_dependencies;
+        ALTER TABLE fact_context_dependencies_p2
+          RENAME TO fact_context_dependencies;
+      `);
+    })();
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_fact_context_exchange
     ON fact_context_dependencies(exchange_id)
