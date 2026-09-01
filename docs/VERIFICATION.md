@@ -182,6 +182,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - local recall 재채택, bare continue/proceed, first/original reference, human-origin reaffirmation을
   새 human authority로 resolve하되 실제 multiple referent ambiguity는 `NOT_ENOUGH`
 - `이 순서`/`this sequence` adoption은 해당 workflow steps를 새 authority anchor에 결속
+- 선택된 dependency와 pre-authority local context가 workflow를 함께 완성하는지 verifier가 판정
 - model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
 - generator도 `MAX_THREE_CONTEXT_DEPENDENCIES` 계약으로 fact당 최소 필요 referent 최대 3개만 출력
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed

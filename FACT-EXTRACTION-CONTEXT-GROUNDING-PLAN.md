@@ -3309,3 +3309,8 @@ context-only prefix로 이동해 fixture가 의도한 authority 경계를 직접
 `이 순서`를 strong reference로 분류하지 않아 조사/계획 candidate를 새 adoption anchor에 결속하지
 않은 것이 최종 `invalid_evidence` 원인이었습니다. `이 순서`/`this sequence` 계열만 strong reference
 signal에 추가해 기존 threshold와 validator fail-closed 계약을 유지합니다.
+
+Anchor 결속 GREEN 뒤 1-case 실모델은 candidate가 구조 검증을 통과했으나 verifier가
+`NOT_ENOUGH`를 반환했습니다. 선택된 dependency와 immediate pre-authority local context가 workflow
+steps를 함께 정의하는 경우, 새 `this sequence` adoption이 모든 step을 다시 열거하지 않아도 전체
+순서를 채택한다는 semantic completeness 경계를 verifier에만 명시합니다.

@@ -93,7 +93,9 @@ ratification authority보다 앞선 bounded local assistant/recall context가 �
 없는 candidate를 구조적으로 허용하고, verifier에는 earliest authority 이전 local context만
 `local_context_before_authority`로 제공합니다. Ratification 이후 assistant output은 제외되므로 새
 human authority를 사후 assistant 반복으로 self-grounding할 수 없습니다. 이 local context는 durable
-lineage나 `fact_context_dependencies`에 들어가지 않습니다.
+lineage나 `fact_context_dependencies`에 들어가지 않습니다. 선택된 dependency와 이 local context가
+workflow steps를 함께 완성하면 새 `this sequence` adoption은 모든 step을 반복하지 않아도 그 순서를
+채택할 수 있습니다.
 
 - `explicit` — valid human evidence가 최소 1개
 - `verified` — valid trusted tool evidence가 최소 1개

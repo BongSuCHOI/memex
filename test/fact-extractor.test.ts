@@ -192,6 +192,7 @@ describe('Fact Extractor', () => {
         expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain(marker);
       }
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('MAX_THREE_CONTEXT_DEPENDENCIES');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('SEQUENCE_REFERENCE_COMPLETENESS');
     });
   });
 

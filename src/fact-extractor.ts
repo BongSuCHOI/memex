@@ -323,6 +323,9 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
 - WORKFLOW_SEQUENCE_ADOPTION: a future cross-task request to keep a demonstrated style/workflow is a
   global preference; a project-limited collaborative adoption is a project decision; explicit
   lasting obligation language is a constraint.
+- SEQUENCE_REFERENCE_COMPLETENESS: when selected dependencies and pre-authority local context
+  collectively define the workflow steps, a later explicit adoption of "this sequence" can entail
+  the complete sequence. Do not require the human adoption to repeat every adopted step.
 - ORDINAL_REFERENCE_RESOLUTION: an explicit first/original reference can disambiguate an ordered
   recommendation even when other alternatives exist. Do not return NOT_ENOUGH merely because later
   alternatives were discussed.
