@@ -3304,3 +3304,8 @@ fact당 최대 3개 계약에서 거절됐고, human-origin fixture의 원래 hu
 같은 평가 창에 있어 새 reaffirmation만 authority라는 기대와 충돌했습니다. Validator를 완화하지 않고
 generator에 최대 3개/minimal dependency 계약을 명시하며, 원래 human decision은 watermark 이전
 context-only prefix로 이동해 fixture가 의도한 authority 경계를 직접 평가합니다.
+
+상한 수정 뒤 raw 1-case 진단은 model이 필요한 3개 workflow referent만 선언했지만, selector가
+`이 순서`를 strong reference로 분류하지 않아 조사/계획 candidate를 새 adoption anchor에 결속하지
+않은 것이 최종 `invalid_evidence` 원인이었습니다. `이 순서`/`this sequence` 계열만 strong reference
+signal에 추가해 기존 threshold와 validator fail-closed 계약을 유지합니다.

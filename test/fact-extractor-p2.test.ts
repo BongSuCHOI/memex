@@ -81,6 +81,24 @@ describe('P2 long-range context and global scope', () => {
     }));
   });
 
+  it('binds every selected step to a later Korean sequence adoption', () => {
+    const session = [
+      base('e1', '이번 작업은 먼저 조사해줘.', '관련 코드를 조사하겠습니다.'),
+      base('e2', '대안도 비교해줘.', '두 구현 대안을 비교했습니다.'),
+      base('e3', '구현 전에 계획 검토해줘.', '구현 계획을 먼저 검토했습니다.'),
+      base('e4', '이제 구현해줘.', '검토된 계획대로 구현했습니다.'),
+      base('e5', '테스트도 해줘.', '관련 테스트를 실행했습니다.'),
+      base('e6', '앞으로 작업할 때도 이 순서로 해줘.', '같은 순서를 유지하겠습니다.'),
+    ];
+
+    const candidates = selectLongRangeReferentCandidates(session.slice(3), session);
+
+    for (const exchangeId of ['e1', 'e2', 'e3']) {
+      expect(candidates.find((entry) => entry.exchange_id === exchangeId))
+        .toEqual(expect.objectContaining({ anchor_exchange_ids: expect.arrayContaining(['e6']) }));
+    }
+  });
+
   it('does not let a generic pronoun flood retrieval with unrelated history', () => {
     const history = Array.from({ length: 10 }, (_, index) =>
       base(`e${index + 1}`, `Budget note ${index + 1}.`, 'Recorded.'),

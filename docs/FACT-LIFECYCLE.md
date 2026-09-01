@@ -109,7 +109,7 @@ relation이 허용값인지 검증한 뒤 실제 exchange UUID로 resolve합니�
 
 증분 추출은 watermark 직전 최대 30개 exchange를 context-only long-range pool로 읽습니다.
 일반 local semantic window에는 직전 최대 2개만 포함합니다. Selector는 적격 anchor마다 bounded
-pool을 cheap ranking하고 최대 5개 referent를 제공합니다. `처음 추천한`, `그 방식`, `지금처럼`,
+pool을 cheap ranking하고 최대 5개 referent를 제공합니다. `처음 추천한`, `그 방식`, `이 순서`, `지금처럼`,
 `앞으로도` 같은 signal은 strong referential, persistence, generic context로 분리된 ranking bonus일
 뿐 activation/threshold bypass가 아닙니다. Strong reference는 최소 score 6, 짧고 불완전한 turn은 8,
 normal/standalone anchor는 20을 요구합니다. 이 historical context는 authority가 아니며 새 suffix의

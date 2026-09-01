@@ -588,7 +588,7 @@ const MAX_CONTEXT_DEPENDENCIES = 3;
 const TRUNCATION_MARKER = "…[truncated]";
 
 const STRONG_REFERENTIAL_SIGNAL =
-  /(?:\b(?:the first|first option|initial recommendation|earlier|this way|that way|this style|current style|same approach)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|원안|전자|후자)/i;
+  /(?:\b(?:the first|first option|initial recommendation|earlier|this way|that way|this style|current style|same approach|this sequence|same sequence)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|이\s*순서|그\s*순서|같은\s*순서|원안|전자|후자)/i;
 const PERSISTENCE_SIGNAL =
   /(?:\b(?:going forward|from now on|always|next time)\b|앞으로(?:도|는)?|항상|다음부터|다른\s*프로젝트에서도)/i;
 const GENERIC_CONTEXT_SIGNAL =
