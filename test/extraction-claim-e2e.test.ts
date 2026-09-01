@@ -296,7 +296,8 @@ describe('claim E2E', () => {
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     expect(promptWindows[0].local_exchanges).toHaveLength(3);
-    expect(promptWindows[0].referent_candidates).toHaveLength(5);
+    expect(promptWindows[0].referent_candidates.length).toBeGreaterThan(0);
+    expect(promptWindows[0].referent_candidates.length).toBeLessThanOrEqual(5);
     expect(promptWindows[0].referent_candidates[0].content).toContain('Riverpod');
     const fact = db.prepare(
       'SELECT source_exchange_ids FROM facts WHERE fact = ?',

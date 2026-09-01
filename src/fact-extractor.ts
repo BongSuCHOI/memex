@@ -309,7 +309,7 @@ const CONTEXT_ONLY_USER_PATTERN =
 const CONDITIONAL_RATIFICATION_PATTERN =
   /^(go|go ahead|proceed|continue|진행해?줘?|그대로 진행(?:해?줘?)?|계속(?:해?줘?)?)[?.!~\s]*$/i;
 const PURE_CONTEXT_BRIDGE_PATTERN =
-  /^(thanks?|thank you|done|why|how|고마워요?|감사(합니다|해요)?|계속|왜|어떻게)[?.!~\s]*$/i;
+  /^(thanks?|thank you|done|why|how|고마워요?|감사(합니다|해요)?|왜|어떻게)[?.!~\s]*$/i;
 const STANDALONE_SUBJECT_SIGNAL =
   /^(?:i\b|we\b|my\b|our\b|the user\b|this project\b|(?:난|나는|전|저는|제가|우리)(?:\s|[,.:!?]|$)|이 프로젝트)/i;
 
@@ -362,7 +362,9 @@ export function needsLongRangeContext(userMessage: string): boolean {
   const user = userMessage.trim();
   if (PURE_CONTEXT_BRIDGE_PATTERN.test(user)) return false;
   if (
-    LONG_RANGE_CONTEXT_SIGNAL.test(user) ||
+    STRONG_REFERENTIAL_SIGNAL.test(user) ||
+    PERSISTENCE_SIGNAL.test(user) ||
+    GENERIC_CONTEXT_SIGNAL.test(user) ||
     CONDITIONAL_RATIFICATION_PATTERN.test(user)
   ) {
     return true;
@@ -527,11 +529,15 @@ const MAX_REFERENT_CANDIDATES = 5;
 const MAX_CONTEXT_DEPENDENCIES = 3;
 const TRUNCATION_MARKER = "…[truncated]";
 
-const LONG_RANGE_CONTEXT_SIGNAL =
-  /(?:\b(?:yes|ok|okay|that|it|the first|first option|initial recommendation|earlier|before|this way|that way|this style|current style|same approach|keep doing|going forward|from now on|always|next time)\b|응|좋아|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|앞으로(?:도)?|계속|항상|다음부터|다른\s*프로젝트에서도)/i;
+const STRONG_REFERENTIAL_SIGNAL =
+  /(?:\b(?:the first|first option|initial recommendation|earlier|this way|that way|this style|current style|same approach)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|원안|전자|후자)/i;
+const PERSISTENCE_SIGNAL =
+  /(?:\b(?:going forward|from now on|always|next time)\b|앞으로(?:도|는)?|항상|다음부터|다른\s*프로젝트에서도)/i;
+const GENERIC_CONTEXT_SIGNAL =
+  /(?:\b(?:yes|ok|okay|that|it|keep doing)\b|응|좋아|계속)/i;
 const FIRST_REFERENT_SIGNAL = /(?:\b(?:the first|first option|initial)\b|처음|첫\s*번째)/i;
 const PROPOSAL_MATERIAL =
-  /(?:\b(?:recommend|recommended|suggest|suggested|proposal|propose|option|best fit|choose|choice|direction|use|go with|proceed)\b|추천|제안|선택지|첫\s*안|대안|방향|사용|진행)/i;
+  /(?:\b(?:recommend|recommended|suggest|suggested|proposal|propose|option|best fit|choose|choice|decision|decided|direction|use|go with|proceed)\b|추천|제안|선택지|첫\s*안|대안|결정|방향|사용|진행)/i;
 const STYLE_WORKFLOW_MATERIAL =
   /(?:\b(?:style|tone|format|response|explain|example|workflow|investigat|compare|plan|review|implement|sequence|process)\b|말투|형식|응답|설명|예시|방식|순서|조사|비교|계획|검토|구현|절차)/i;
 
@@ -760,11 +766,19 @@ export function selectLongRangeReferentCandidates(
     const anchorIndex = positionById.get(anchor.id);
     if (anchorIndex === undefined) continue;
     const firstSignal = FIRST_REFERENT_SIGNAL.test(anchor.user_message);
-    const explicitReference = LONG_RANGE_CONTEXT_SIGNAL.test(anchor.user_message);
+    const strongReference = STRONG_REFERENTIAL_SIGNAL.test(anchor.user_message);
+    const persistenceSignal = PERSISTENCE_SIGNAL.test(anchor.user_message);
+    const genericSignal = GENERIC_CONTEXT_SIGNAL.test(anchor.user_message);
     const contextNeeded = needsLongRangeContext(anchor.user_message);
-    const minimumScore = firstSignal || explicitReference
-      ? 0
-      : contextNeeded
+    const shortIncomplete =
+      contextNeeded &&
+      !persistenceSignal &&
+      rankingTokens(anchor.user_message).length <= 6 &&
+      anchor.user_message.length <= 80 &&
+      !STANDALONE_SUBJECT_SIGNAL.test(anchor.user_message);
+    const minimumScore = strongReference
+      ? 6
+      : shortIncomplete
         ? 8
         : 20;
     const poolStart = Math.max(0, anchorIndex - MAX_LONG_RANGE_POOL);
@@ -783,7 +797,8 @@ export function selectLongRangeReferentCandidates(
         score += 10_000 - index;
       } else {
         score += (proposal ? 12 : 0) + (styleOrWorkflow ? 8 : 0);
-        if (explicitReference) score += 4;
+        if (strongReference) score += 4;
+        if (persistenceSignal || genericSignal) score += 1;
         score += (MAX_LONG_RANGE_POOL - distance) / MAX_LONG_RANGE_POOL;
       }
       if (score < minimumScore) continue;
@@ -1019,48 +1034,6 @@ function validatedSupportingSpan(value: unknown, source: string): string | null 
   return span;
 }
 
-function sentenceContainingSpan(source: string, span: string): string {
-  const offset = source.indexOf(span);
-  if (offset < 0) return "";
-  const before = source.slice(0, offset);
-  const after = source.slice(offset + span.length);
-  const previousBoundary = Math.max(
-    before.lastIndexOf("."),
-    before.lastIndexOf("!"),
-    before.lastIndexOf("?"),
-    before.lastIndexOf("。"),
-    before.lastIndexOf("！"),
-    before.lastIndexOf("？"),
-    before.lastIndexOf("\n"),
-  );
-  const nextMatch = after.match(/[.!?。！？\n]/);
-  const end = nextMatch?.index == null
-    ? source.length
-    : offset + span.length + nextMatch.index + 1;
-  return source.slice(previousBoundary + 1, end).trim();
-}
-
-function isQuestionLikeEvidence(source: string, span: string): boolean {
-  const sentence = sentenceContainingSpan(source, span);
-  if (!sentence) return true;
-  if (/[?？]\s*$/.test(sentence)) return true;
-  if (/^(what|which|why|how|where|when|who|whose|is|are|was|were|do|does|did|can|could|would|should|will|may|might)\b/i.test(sentence)) {
-    return true;
-  }
-  if (/^(무엇|뭐|어떤|왜|어떻게|어디|언제|누구)/.test(sentence)) return true;
-  return /(인가요|일까요|할까요|했나요|했지|썼지|였지|습니까)\s*[.!~]*$/.test(sentence);
-}
-
-function isNegativeRatificationEvidence(source: string, span: string): boolean {
-  const sentence = sentenceContainingSpan(source, span).normalize("NFKC").toLowerCase();
-  if (!sentence) return true;
-  return (
-    /\b(no|not|never|reject|rejected|decline|declined|don't|doesn't|didn't|won't|can't|cannot)\b/.test(sentence) ||
-    /(^|[\s,])(아니|아니요|싫어|거부)([\s,.!]|$)/.test(sentence) ||
-    /(하지|쓰지|사용하지)\s*마|안\s*돼|말자/.test(sentence)
-  );
-}
-
 function rankingTokens(value: string): string[] {
   return (value.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
     .filter((token) => token.length >= 2 && !REFERENT_RANKING_STOPWORDS.has(token));
@@ -1169,16 +1142,7 @@ function validateExtractedFactCandidateDetailed(
         raw.supporting_span,
         exchange.user_message,
       );
-      if (
-        !supportingSpan ||
-        isQuestionLikeEvidence(exchange.user_message, supportingSpan)
-      ) {
-        return reject("invalid_evidence");
-      }
-      if (
-        raw.kind === "ratification" &&
-        isNegativeRatificationEvidence(exchange.user_message, supportingSpan)
-      ) {
+      if (!supportingSpan) {
         return reject("invalid_evidence");
       }
       evidence.push({

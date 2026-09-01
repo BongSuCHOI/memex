@@ -142,12 +142,12 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 
 - assistant/recall 본문이 JSON envelope의 context-only field에는 존재
 - assistant/recall/external evidence 선언은 server-side hard reject
-- human evidence는 exact supporting span, non-question, provenance/authority 검증을 모두 통과해야 함
+- human evidence는 exact supporting span과 provenance/authority 검증을 모두 통과해야 함
 - trusted tool 선언은 실제 DB `tool_call_id/tool_name/source_type/learnable/is_error`, exact result
   span과 일치해야 통과
 - canonical claim의 evidence entailment는 mandatory verifier가 판정하고 `fact_kr` poisoning은 acceptance 및 저장을 rescue하지 못함
 - 구조 통과 candidate는 bounded authoritative source text 기반 semantic verifier의 단일 `ENTAILED` verdict 필요
-- polarity inversion, 비교 imperative, one-off→global preference, negative ratification은 fail-closed
+- question/comparison, polarity inversion, one-off→global preference, negative ratification/replacement는 verifier에서 fail-closed
 - verifier verdict 누락·중복·malformed도 candidate별 fail-closed
 - inferred candidate는 서로 다른 authoritative exchange 2개 이상 필요
 - accepted `source_exchange_ids`에는 validated human/tool exchange UUID만 존재
@@ -168,6 +168,9 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - 일회성 지시는 global preference가 아니며, 행동 기반 global inference는 복수의 독립 human signal 필요
 - 적격 anchor마다 이전 최대 30개를 adaptive ranking해 최대 5개 referent를 선택하고 regex는 bonus로만 사용
 - referent ranking은 human+assistant+recall material을 사용하며 standalone assertion에는 높은 relevance threshold 적용
+- strong/short/normal threshold는 각각 6/8/20 이상이며 generic pronoun이나 persistence signal이 relevance를 우회하지 않음
+- 한국어 `계속`도 `continue`와 같이 bounded long-range context need를 활성화
+- question-shaped durable constraint와 negative replacement는 structural validation 뒤 verifier가 의미 판정
 - model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
@@ -196,8 +199,8 @@ surface까지 연결합니다.
 Optional Phase 7 persistent context dependency gate는 authority 의미를 유지한 채 audit/UI 소비처를
 연결합니다.
 
-- explicit ratification의 preceding depth <= 2, claim-bearing context index만 server가 실제
-  exchange UUID와 dependency kind로 resolve
+- model에 제공된 bounded candidate 중 anchor보다 앞선 opaque context ID만 server가 실제
+  exchange UUID와 dependency kind로 resolve하며 fact당 최대 3개로 제한
 - fact/context dependency/saved count/watermark가 한 extraction transaction에서 commit 또는 rollback
 - overlap 및 DUPLICATE/CONTRADICTION/EVOLUTION survivor가 context dependency를 set-union
 - manual semantic edit와 remote semantic replacement가 stale local context dependency를 제거

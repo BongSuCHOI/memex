@@ -2379,11 +2379,12 @@ P1 재검토에서 lexical overlap만으로 polarity, one-off scope, ratificatio
 
 최종 재검토의 Priority 1은 위 historical lexical/activation 계약을 다음 계획으로 supersede한다.
 
-- [x] `LONG_RANGE_CONTEXT_SIGNAL`을 activation hard gate에서 ranking bonus로 낮춤
-- [x] 모든 적격 anchor에서 이전 최대 30개를 adaptive threshold로 ranking하고 최대 5개만 제공
+- [x] signal을 strong referential/persistence/generic으로 분리하고 ranking bonus로만 사용
+- [x] 모든 적격 anchor에서 이전 최대 30개를 6/8/20 adaptive threshold로 ranking하고 최대 5개만 제공
 - [x] durable Fact anchor eligibility와 bounded long-range context need를 별도 판정
+- [x] 한국어 `계속`을 `continue`와 같은 long-range approval로 처리
 - [x] structural validator를 exact span/provenance/tool identity/context bounds로 제한
-- [x] canonical meaning, translation, scope, polarity, durability는 mandatory verifier의 단일
+- [x] question shape/rejection/replacement를 포함한 meaning, translation, scope, polarity, durability는 mandatory verifier의 단일
       `ENTAILED` verdict에서 fail-closed
 
 ---

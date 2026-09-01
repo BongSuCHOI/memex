@@ -256,8 +256,12 @@ describe('Fact Extractor', () => {
       }
     });
 
-    it('rejects semantic laundering through a human question even when the model cites an in-message span', () => {
-      expect(validateExtractedFactCandidate({
+    it('leaves question-shaped evidence semantics to the mandatory verifier', async () => {
+      const questionExchanges = [{
+        ...exchanges[0],
+        user_message: 'Should this project use Riverpod?',
+      }];
+      const accepted = validateExtractedFactCandidate({
         ...explicitCandidate,
         fact: 'This project uses Riverpod.',
         evidence: [{
@@ -266,8 +270,14 @@ describe('Fact Extractor', () => {
           kind: 'assertion',
           supporting_span: 'Riverpod',
         }],
-        context_exchange_indices: [],
-      }, exchanges)).toBeNull();
+        context_dependencies: [],
+      }, questionExchanges);
+      expect(accepted).toEqual(expect.objectContaining({ fact: 'This project uses Riverpod.' }));
+      expect(await verifyExtractedFactCandidates(
+        [accepted!],
+        questionExchanges,
+        async () => '[{"candidate_index":1,"verdict":"NOT_ENOUGH"}]',
+      )).toEqual([false]);
       expect(validateExtractedFactCandidate({
         ...explicitCandidate,
         evidence: [{ exchange_index: 2, source: 'human', kind: 'ratification' }],
@@ -301,8 +311,12 @@ describe('Fact Extractor', () => {
       )).toEqual([false]);
     });
 
-    it('rejects negative human text declared as positive ratification', () => {
-      expect(validateExtractedFactCandidate({
+    it('leaves negative ratification semantics to the mandatory verifier', async () => {
+      const negativeExchanges = [exchanges[0], {
+        ...exchanges[1],
+        user_message: '아니, 그건 쓰지 마.',
+      }];
+      const accepted = validateExtractedFactCandidate({
         ...explicitCandidate,
         evidence: [{
           exchange_index: 2,
@@ -310,10 +324,14 @@ describe('Fact Extractor', () => {
           kind: 'ratification',
           supporting_span: '아니, 그건 쓰지 마.',
         }],
-      }, [exchanges[0], {
-        ...exchanges[1],
-        user_message: '아니, 그건 쓰지 마.',
-      }])).toBeNull();
+      }, negativeExchanges, referents);
+      expect(accepted).toEqual(expect.objectContaining({ source_exchange_ids: ['e2'] }));
+      expect(await verifyExtractedFactCandidates(
+        [accepted!],
+        negativeExchanges,
+        async () => '[{"candidate_index":1,"verdict":"CONTRADICTED"}]',
+        referents,
+      )).toEqual([false]);
     });
 
     it('leaves unrelated trusted tool semantics to the mandatory verifier', async () => {
@@ -853,11 +871,10 @@ describe('Fact Extractor', () => {
       expect(windows.every((window) => window.length <= 5)).toBe(true);
     });
 
-    it('returns no windows when exchanges contain context-only social replies', () => {
+    it('returns no windows when exchanges contain only social or question bridges', () => {
       expect(buildExtractionWindows([
         exchange(0, '고마워'),
-        exchange(1, '계속'),
-        exchange(2, '왜?'),
+        exchange(1, '왜?'),
       ])).toEqual([]);
     });
 

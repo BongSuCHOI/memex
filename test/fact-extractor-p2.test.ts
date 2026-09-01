@@ -81,6 +81,52 @@ describe('P2 long-range context and global scope', () => {
     }));
   });
 
+  it('does not let a generic pronoun flood retrieval with unrelated history', () => {
+    const history = Array.from({ length: 10 }, (_, index) =>
+      base(`e${index + 1}`, `Budget note ${index + 1}.`, 'Recorded.'),
+    );
+    const anchor = base(
+      'e11',
+      'I think SQLite is better because it is simpler.',
+      'Acknowledged.',
+    );
+
+    expect(selectLongRangeReferentCandidates([anchor], [...history, anchor])).toEqual([]);
+  });
+
+  it('keeps a standalone persistence constraint free of unrelated history', () => {
+    const history = Array.from({ length: 6 }, (_, index) =>
+      base(`e${index + 1}`, `Budget note ${index + 1}.`, 'Recorded.'),
+    );
+    const anchor = base(
+      'e7',
+      '앞으로는 항상 작업 끝나면 더블체크해줘.',
+      '기억하겠습니다.',
+    );
+
+    expect(selectLongRangeReferentCandidates([anchor], [...history, anchor])).toEqual([]);
+  });
+
+  it('resolves a Korean long-range continue approval', () => {
+    const session = [
+      base('e1', 'Which database fits this project?', 'I recommend SQLite.'),
+      base('e2', '비용은?', '추가 비용은 없습니다.'),
+      base('e3', '운영은?', '단순합니다.'),
+      base('e4', '테스트는?', '지원됩니다.'),
+      base('e5', '마이그레이션은?', '필요 없습니다.'),
+      base('e6', '위험은?', '낮습니다.'),
+      base('e7', '요약해줘.', 'SQLite가 적합합니다.'),
+      base('e8', '계속', '진행하겠습니다.'),
+    ];
+    const windows = buildExtractionWindows([session[7]]);
+    const candidates = windows[0]
+      ? selectLongRangeReferentCandidates(windows[0], session)
+      : [];
+
+    expect(windows).toEqual([[session[7]]]);
+    expect(candidates[0]).toEqual(expect.objectContaining({ exchange_id: 'e1' }));
+  });
+
   it('opens a window for a context-dependent approval without a local antecedent', () => {
     const approval = base('e8', '진행해줘', '진행하겠습니다.');
 
@@ -145,6 +191,62 @@ describe('P2 long-range context and global scope', () => {
       scope_type: 'project',
       source_exchange_ids: ['p1'],
     }));
+  });
+
+  it('lets a question-shaped durable constraint reach semantic verification', () => {
+    const user = '앞으로 항상 작업 끝나면 더블체크하는 걸로, 알겠지?';
+    const exchanges = [base('q1', user, '기억하겠습니다.')];
+    const accepted = validateExtractedFactCandidate({
+      fact: 'Always double-check completed work.',
+      category: 'constraint',
+      scope_type: 'global',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'assertion',
+        supporting_span: user,
+      }],
+    }, exchanges);
+
+    expect(accepted).toEqual(expect.objectContaining({ source_exchange_ids: ['q1'] }));
+  });
+
+  it('lets a negative replacement reach semantic verification', () => {
+    const user = '아니, SQLite 말고 PostgreSQL로 가자.';
+    const exchanges = [base('r8', user, 'PostgreSQL로 변경하겠습니다.')];
+    const referents: LongRangeReferentCandidate[] = [{
+      context_id: 'ctx-db',
+      exchange_id: 'r1',
+      anchor_exchange_ids: ['r8'],
+      distance: 7,
+      source: 'assistant_context_only',
+      human_context: 'Which database should we use?',
+      content: 'I recommend SQLite.',
+      context_only_due_to_watermark: true,
+    }];
+    const accepted = validateExtractedFactCandidate({
+      fact: 'This project uses PostgreSQL.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: user,
+      }],
+      context_dependencies: [{
+        context_id: 'ctx-db',
+        relation: 'ratified_proposition',
+      }],
+    }, exchanges, referents);
+
+    expect(accepted).toEqual(expect.objectContaining({ source_exchange_ids: ['r8'] }));
   });
 
   it('allows an explicit human adoption to bind context without requiring the ratification label', () => {

@@ -73,7 +73,7 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
 대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
 정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
-질문 여부, provenance, tool identity와 authority eligibility를 다시 대조합니다. Canonical claim과
+provenance, tool identity와 authority eligibility를 다시 대조합니다. Canonical claim과
 evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandatory entailment verifier가
 판정합니다. `fact_kr`는 extraction output에서 폐기되므로 canonical fact를 rescue하거나 KR 검색
 상태를 오염시킬 수 없습니다.
@@ -84,9 +84,9 @@ durability와 server가 복원한 bounded authoritative source text를 비교하
 `CONTRADICTED`, `NOT_ENOUGH`, 누락, 중복, malformed verdict는 candidate별 fail-closed입니다.
 선택된 bounded assistant/recall/human referent는 non-authoritative context로 함께 보며, human text가
 그 referent를 명확히 채택하거나 참조해야 합니다. 이 adoption evidence는 model label이 반드시
-`ratification`일 필요는 없습니다. 명시적 rejection signal은 verifier 전 deterministic gate에서도
-거부합니다. 구조 검증은 provenance/integrity를, verifier는 entailment·polarity·scope·durability를
-각각 책임집니다.
+`ratification`일 필요는 없습니다. Question shape, rejection, replacement, polarity를 포함한 semantic
+판정은 verifier가 담당합니다. 구조 검증은 provenance/integrity를, verifier는 entailment·polarity·
+scope·durability를 각각 책임집니다.
 
 - `explicit` — valid human evidence가 최소 1개
 - `verified` — valid trusted tool evidence가 최소 1개
@@ -103,9 +103,10 @@ relation이 허용값인지 검증한 뒤 실제 exchange UUID로 resolve합니�
 증분 추출은 watermark 직전 최대 30개 exchange를 context-only long-range pool로 읽습니다.
 일반 local semantic window에는 직전 최대 2개만 포함합니다. Selector는 적격 anchor마다 bounded
 pool을 cheap ranking하고 최대 5개 referent를 제공합니다. `처음 추천한`, `그 방식`, `지금처럼`,
-`앞으로도` 같은 참조·지속 regex는 ranking bonus일 뿐 activation hard gate가 아닙니다. 짧고 불완전한
-turn은 threshold를 낮추고, standalone assertion은 relevance threshold를 높입니다. 이 historical
-context는 authority가 아니며 새 suffix의 의미 해석에만 쓰입니다.
+`앞으로도` 같은 signal은 strong referential, persistence, generic context로 분리된 ranking bonus일
+뿐 activation/threshold bypass가 아닙니다. Strong reference는 최소 score 6, 짧고 불완전한 turn은 8,
+normal/standalone anchor는 20을 요구합니다. 이 historical context는 authority가 아니며 새 suffix의
+의미 해석에만 쓰입니다.
 
 ### Precision과 durability policy
 
@@ -148,10 +149,10 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   제외합니다. 짧은 human reply와 pure social/bridge reply는 인접 문맥에 남습니다.
 - `isCandidateAnchorExchange()`는 durable candidate 가능성이 있는 human turn 또는 trusted
   local tool evidence가 있는 turn만 LLM 호출 anchor로 삼습니다. `응/네/좋아/아니`처럼
-  승인·정정일 수 있는 짧은 reply는 anchor이고, `고마워/감사합니다/계속/왜?`처럼 단독
-  durable signal이 아닌 reply는 context-only neighbor입니다. `needsLongRangeContext()`는 이 fact
+  승인·정정일 수 있는 짧은 reply는 anchor이고, `고마워/감사합니다/왜?`처럼 단독 durable signal이
+  아닌 reply는 context-only neighbor입니다. `needsLongRangeContext()`는 이 fact
   eligibility와 별도로 bounded referent search 필요성을 판단합니다. 따라서 `진행해줘`/`proceed`/
-  `continue`처럼 local antecedent가 없는 approval도 long-range context window를 열 수 있지만,
+  `continue`/`계속`처럼 local antecedent가 없는 approval도 long-range context window를 열 수 있지만,
   generator와 verifier를 통과하지 않으면 Fact가 되지 않습니다.
 - 각 anchor는 같은 raw-adjacency run의 직전·직후 1 exchange와 묶입니다. 인접 anchor
   range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
@@ -167,7 +168,8 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
 가지며 anchor가 될 수 없습니다. 직전 최대 2개는 local window에 들어가고, 더 오래된 row는
 모든 적격 anchor에서 human+assistant+recall material을 함께 ranking해 최대 5개 candidate로
 제공합니다. 참조 regex는 bonus이고 token overlap, proposal/workflow material, recency와
-adaptive threshold가 regex 밖 표현도 bounded retrieval에 진입시킵니다.
+adaptive threshold가 regex 밖 표현도 bounded retrieval에 진입시킵니다. 어떤 signal도 threshold를
+0으로 낮추지 않으며 standalone persistence assertion은 normal threshold를 유지합니다.
 
 prefix의 human text는 `human_context_only`에만 보이고 `human_evidence`는 `null`입니다. prefix의
 trusted tool evidence도 envelope에서 제거합니다. 이 prompt-level 분리와 별개로 server validator는

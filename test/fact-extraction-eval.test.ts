@@ -25,13 +25,14 @@ const p2FixturePath = path.join(
 function entailmentVerification(
   systemPrompt: string,
   userMessage: string,
+  verdict = 'ENTAILED',
 ): { text: string; tokenUsage: { input_tokens: number; output_tokens: number } } | null {
   if (!systemPrompt.includes('authoritative-entailment-v2')) return null;
   const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
   return {
     text: JSON.stringify(envelope.candidates.map((_, index) => ({
       candidate_index: index + 1,
-      verdict: 'ENTAILED',
+      verdict,
     }))),
     tokenUsage: { input_tokens: 10, output_tokens: 2 },
   };
@@ -164,7 +165,11 @@ describe("fact extraction evaluation fixture", () => {
       model: "fixture-model",
       createdAt: "2026-08-31T00:00:00.000Z",
       invokeModel: async ({ caseId, systemPrompt, userMessage }) => {
-        const verification = entailmentVerification(systemPrompt, userMessage);
+        const verification = entailmentVerification(
+          systemPrompt,
+          userMessage,
+          caseId === "unsupported" ? "NOT_ENOUGH" : "ENTAILED",
+        );
         if (verification) return verification;
         if (caseId === "accepted") {
           return {
@@ -223,9 +228,9 @@ describe("fact extraction evaluation fixture", () => {
       matched_fact_count: 1,
       false_positive_count: 0,
       self_amplification_leakage_count: 0,
-      model_calls: 4,
-      input_tokens: 250,
-      output_tokens: 44,
+      model_calls: 5,
+      input_tokens: 260,
+      output_tokens: 46,
     });
     expect(report.cases.find((entry) => entry.id === "unsupported")).toEqual(
       expect.objectContaining({ passed: true, issues: [] }),
