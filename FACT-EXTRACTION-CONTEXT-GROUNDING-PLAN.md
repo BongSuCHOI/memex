@@ -3298,3 +3298,9 @@ directive의 `preference` 오분류, project workflow adoption의 `constraint` �
 bare continue/workflow adoption generator omission, first/original 및 human-origin reaffirmation verifier
 rejection이었습니다. Ranking threshold와 deterministic regex는 바꾸지 않고, 이 관측 항목에 한정한
 generator/verifier semantic marker만 추가한 뒤 17-case와 P2 전체를 새 SHA에서 재실행합니다.
+
+남은 두 targeted diagnostic에서 workflow fact가 4개 context dependency를 선언해 server의 기존
+fact당 최대 3개 계약에서 거절됐고, human-origin fixture의 원래 human decision이 watermark suffix와
+같은 평가 창에 있어 새 reaffirmation만 authority라는 기대와 충돌했습니다. Validator를 완화하지 않고
+generator에 최대 3개/minimal dependency 계약을 명시하며, 원래 human decision은 watermark 이전
+context-only prefix로 이동해 fixture가 의도한 authority 경계를 직접 평가합니다.

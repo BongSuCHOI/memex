@@ -79,6 +79,15 @@ describe("fact extraction evaluation fixture", () => {
     ]) {
       expect(fixture.cases.some((entry) => entry.id === id), id).toBe(true);
     }
+    expect(fixture.cases.find((entry) => entry.id === "l7-human-origin-referent"))
+      .toEqual(expect.objectContaining({
+        watermark_after_exchange_index: 6,
+        expected: expect.objectContaining({
+          facts: [expect.objectContaining({
+            authoritative_exchange_ids: ["l7-7"],
+          })],
+        }),
+      }));
   });
 
   it("covers every required Phase 0 scenario", () => {

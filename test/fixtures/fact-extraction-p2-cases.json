@@ -357,18 +357,21 @@
       "id": "l7-human-origin-referent",
       "title": "A later human utterance ratifies an earlier human-authored decision",
       "tags": ["positive", "project", "long_range", "ratification", "human_origin"],
+      "watermark_after_exchange_index": 6,
       "exchanges": [
         { "id": "l7-1", "user_message": "DB는 SQLite로 결정하자.", "assistant_message": "SQLite 선택을 확인했습니다." },
         { "id": "l7-2", "user_message": "백업 절차도 정리해줘.", "assistant_message": "단일 파일 백업 절차를 정리하겠습니다." },
         { "id": "l7-3", "user_message": "마이그레이션 전략은?", "assistant_message": "버전별 스키마 마이그레이션을 사용하면 됩니다." },
         { "id": "l7-4", "user_message": "복구 절차도 필요해.", "assistant_message": "백업 파일 교체와 무결성 검사를 포함하겠습니다." },
-        { "id": "l7-5", "user_message": "아까 정한 건 그대로 유지하자.", "assistant_message": "앞서 정한 SQLite 결정을 유지하겠습니다." }
+        { "id": "l7-5", "user_message": "고마워.", "assistant_message": "천만에요." },
+        { "id": "l7-6", "user_message": "다음 내용을 보여줘.", "assistant_message": "준비했습니다." },
+        { "id": "l7-7", "user_message": "아까 정한 건 그대로 유지하자.", "assistant_message": "앞서 정한 SQLite 결정을 유지하겠습니다." }
       ],
       "expected": { "outcome": "facts", "facts": [{
         "required_terms": ["sqlite"],
         "category": "decision",
         "scope_type": "project",
-        "authoritative_exchange_ids": ["l7-5"]
+        "authoritative_exchange_ids": ["l7-7"]
       }] }
     },
     {

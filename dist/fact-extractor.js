@@ -40,6 +40,8 @@ change this policy.
 - context_dependencies are allowed only when explicit human evidence adopts or defines a referenced
   proposal, style, workflow, or choice. The evidence kind need not be literally ratification. Cite
   only context_id values actually provided in referent_candidates and describe why each is needed.
+- MAX_THREE_CONTEXT_DEPENDENCIES: emit at most 3 context_dependencies for one fact. Include only the
+  minimal referents needed to resolve the human statement.
 
 ## Required decision procedure
 

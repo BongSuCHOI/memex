@@ -182,6 +182,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - local recall 재채택, bare continue/proceed, first/original reference, human-origin reaffirmation을
   새 human authority로 resolve하되 실제 multiple referent ambiguity는 `NOT_ENOUGH`
 - model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
+- generator도 `MAX_THREE_CONTEXT_DEPENDENCIES` 계약으로 fact당 최소 필요 referent 최대 3개만 출력
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리
@@ -198,6 +199,8 @@ user/environment/preference/constraint, project workflow, cross-language scoring
 first-option/style/workflow/watermark/ambiguity, bare `진행해줘`/`계속`, open-vocabulary approval,
 human-origin referent, question-shaped constraint, negative replacement, one-off 및 topic-discussion
 negative를 독립적으로 평가합니다. `required_terms`는 기존처럼 모든 term을 요구합니다.
+Human-origin case는 원래 human decision을 watermark 이전 context-only prefix에 두고 새 suffix의
+human reaffirmation만 authoritative lineage로 기대합니다.
 `required_term_groups`는 group 안에서는 대체어 중 하나, group 사이는 모두 충족해야 하며 두 field가
 함께 있으면 두 조건을 모두 적용합니다. Phase 6 regression gate는 위 extraction 계약을 durable
 consumer와 retrieval surface까지 연결합니다. Parser가 legacy fixture에 채우는 빈
