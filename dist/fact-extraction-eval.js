@@ -204,6 +204,13 @@ export function parseFactExtractionFixture(value) {
 function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
+function fixtureSha256(fixture) {
+    return sha256(JSON.stringify(fixture, (key, value) => key === "required_term_groups" &&
+        Array.isArray(value) &&
+        value.length === 0
+        ? undefined
+        : value));
+}
 function createCaseDatabase(testCase) {
     const db = new Database(":memory:");
     db.exec(`
@@ -503,7 +510,7 @@ export async function evaluateFactExtractionFixture(fixture, options) {
         source: {
             kind: "fixture",
             name: fixture.name,
-            sha256: sha256(JSON.stringify(fixture)),
+            sha256: fixtureSha256(fixture),
         },
         summary: summarize(caseReports),
         cases: caseReports,

@@ -113,6 +113,22 @@ describe("fact extraction evaluation fixture", () => {
     );
   });
 
+  it("preserves the legacy 17-case fixture hash when additive term groups are absent", async () => {
+    const fixture = parseFactExtractionFixture(
+      JSON.parse(fs.readFileSync(fixturePath, "utf8")),
+    );
+    const report = await evaluateFactExtractionFixture(fixture, {
+      model: "fixture-model",
+      invokeModel: async () => ({ text: "[]" }),
+    });
+
+    expect(report.source).toEqual({
+      kind: "fixture",
+      name: "fact-extraction-context-grounding-curated-v1",
+      sha256: "f45b4f0aa5ecda45c4d16a426f12e7d62b8c04dc97e4db64d65ebcb9ed75bcd6",
+    });
+  });
+
   it("scores expected facts, unsupported facts, misses, and telemetry", async () => {
     const fixture = parseFactExtractionFixture({
       schema_version: 1,

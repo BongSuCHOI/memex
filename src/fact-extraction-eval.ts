@@ -467,6 +467,16 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function fixtureSha256(fixture: FactExtractionEvaluationFixture): string {
+  return sha256(JSON.stringify(fixture, (key, value) =>
+    key === "required_term_groups" &&
+      Array.isArray(value) &&
+      value.length === 0
+      ? undefined
+      : value
+  ));
+}
+
 function createCaseDatabase(
   testCase: FactExtractionEvaluationCase,
 ): Database.Database {
@@ -908,7 +918,7 @@ export async function evaluateFactExtractionFixture(
     source: {
       kind: "fixture",
       name: fixture.name,
-      sha256: sha256(JSON.stringify(fixture)),
+      sha256: fixtureSha256(fixture),
     },
     summary: summarize(caseReports),
     cases: caseReports,

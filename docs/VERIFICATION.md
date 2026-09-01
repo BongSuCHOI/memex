@@ -193,7 +193,9 @@ human-origin referent, question-shaped constraint, negative replacement, one-off
 negative를 독립적으로 평가합니다. `required_terms`는 기존처럼 모든 term을 요구합니다.
 `required_term_groups`는 group 안에서는 대체어 중 하나, group 사이는 모두 충족해야 하며 두 field가
 함께 있으면 두 조건을 모두 적용합니다. Phase 6 regression gate는 위 extraction 계약을 durable
-consumer와 retrieval surface까지 연결합니다.
+consumer와 retrieval surface까지 연결합니다. Parser가 legacy fixture에 채우는 빈
+`required_term_groups`는 fixture identity hash에서 제외해 기존 17-case baseline SHA와 비교
+호환성을 유지합니다.
 
 - accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
