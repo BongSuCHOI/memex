@@ -278,6 +278,11 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
   after a named fix can entail a concise problem-to-solution pattern. Do not require the evidence to
   repeat words such as "resolved" when the before/after result directly expresses that outcome.
 - A task/package/file-limited instruction cannot entail a global or cross-project preference.
+- RECURRING_APPLICABILITY_NOT_TENSE: an explicit directive that semantically applies to repeated
+  future tasks, future sessions, or the user's general way of working is durable even when phrased
+  as an imperative. Do not classify it as one-off merely because it is a command. Future tense by
+  itself is not durability: a bounded current-task follow-up or next step remains one-off. Decide by
+  whether the instruction applies beyond the bounded current task, not by temporal wording alone.
 - Scope follows applicability, not conversation location. One explicit durable human assertion can
   entail global user knowledge such as environment, devices, available infrastructure, services,
   subscriptions, or an explicitly stated interest. Behavioral preference inference still requires

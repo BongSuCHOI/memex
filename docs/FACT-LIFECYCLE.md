@@ -82,6 +82,9 @@ evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandat
 `authoritative-entailment-v2` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
 durability와 server가 복원한 bounded authoritative source text를 비교하며 `ENTAILED`만 허용합니다.
 `CONTRADICTED`, `NOT_ENOUGH`, 누락, 중복, malformed verdict는 candidate별 fail-closed입니다.
+Verifier는 imperative/future tense 자체가 아니라 적용 범위를 봅니다. 반복되는 future tasks/sessions나
+일반 작업 방식에 명시적으로 적용되는 지시는 durable일 수 있지만, 현재 bounded task의 후속 단계나
+단순 미래형은 계속 one-off입니다.
 선택된 bounded assistant/recall/human referent는 non-authoritative context로 함께 보며, human text가
 그 referent를 명확히 채택하거나 참조해야 합니다. 이 adoption evidence는 model label이 반드시
 `ratification`일 필요는 없습니다. Question shape, rejection, replacement, polarity를 포함한 semantic

@@ -179,6 +179,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - question-shaped durable constraint와 negative replacement는 structural validation 뒤 verifier가 의미 판정
 - lasting `always/must` directive=`constraint`, general future workflow request=`preference`,
   project-limited collaborative adoption=`decision` category distinction을 generator/verifier가 함께 적용
+- verifier durability는 imperative/future tense가 아니라 bounded current task를 넘어 반복 적용되는지 판정
 - local recall 재채택, bare continue/proceed, first/original reference, human-origin reaffirmation을
   새 human authority로 resolve하되 실제 multiple referent ambiguity는 `NOT_ENOUGH`
 - `이 순서`/`this sequence` adoption은 해당 workflow steps를 새 authority anchor에 결속

@@ -3314,3 +3314,8 @@ Anchor 결속 GREEN 뒤 1-case 실모델은 candidate가 구조 검증을 통과
 `NOT_ENOUGH`를 반환했습니다. 선택된 dependency와 immediate pre-authority local context가 workflow
 steps를 함께 정의하는 경우, 새 `this sequence` adoption이 모든 step을 다시 열거하지 않아도 전체
 순서를 채택한다는 semantic completeness 경계를 verifier에만 명시합니다.
+
+사용자 승인에 따라 durability precedence를 명확히 합니다. 명시적으로 반복 future tasks/sessions 또는
+일반 작업 방식에 적용되는 지시는 imperative라는 이유만으로 one-off가 아닙니다. 반대로 단순 미래형이나
+bounded current task의 후속 단계는 one-off일 수 있으므로 temporal token이 아니라 semantic
+applicability를 verifier가 판정합니다. Deterministic regex/validator/hard gate는 추가하지 않습니다.
