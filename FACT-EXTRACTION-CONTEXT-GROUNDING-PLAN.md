@@ -3325,3 +3325,8 @@ applicability를 verifier가 판정합니다. Deterministic regex/validator/hard
 따라 generator prompt에 referent 제거 시 fact가 incomplete/ambiguous/unsupported가 되는 necessity
 test를 추가합니다. Referenced workflow는 최소 dependency 필수, standalone fact는 unrelated dependency
 금지, required referent ambiguity는 no-fact이며 regex/ranking/validator/verifier/schema는 변경하지 않습니다.
+
+첫 전체 재실행은 22/23이었고 `lg1` duplicate는 재현되지 않았지만 `lg2` generator가 과보수적으로
+`[]`를 반환했습니다. Necessity removal test는 referent_candidates에만 적용하고, authority 이전 immediate
+local context의 구현/테스트 단계는 context ID 없이 의미를 정의할 수 있음을 명시합니다. 따라서 조사·비교·
+계획의 non-local referent만 최대 3개 dependency로 선언하면 전체 workflow가 완결됩니다.

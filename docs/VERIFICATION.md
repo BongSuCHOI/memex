@@ -188,6 +188,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - generator도 `MAX_THREE_CONTEXT_DEPENDENCIES` 계약으로 fact당 최소 필요 referent 최대 3개만 출력
 - long-range referent 제거 시 fact가 불완전하면 generator는 필요한 최소 dependency를 선언하고,
   standalone fact에는 unrelated dependency를 붙이지 않으며 required referent ambiguity는 no-fact
+- dependency necessity는 referent candidate에만 적용하고 pre-authority local context는 ID 없이 유지
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리

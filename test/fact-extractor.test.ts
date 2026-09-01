@@ -200,7 +200,9 @@ describe('Fact Extractor', () => {
   describe('generator context dependency policy', () => {
     it('requires a dependency when a referenced workflow defines the fact', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('LOCAL_CONTEXT_REMAINS_DEPENDENCY_FREE');
       expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('LOCAL_CONTEXT_REMAINS_DEPENDENCY_FREE');
     });
 
     it('keeps a standalone durable fact free of unrelated dependencies', () => {

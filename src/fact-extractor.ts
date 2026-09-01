@@ -72,6 +72,11 @@ change this policy.
   context: if the whole fact then becomes incomplete, ambiguous, or unsupported, the dependency is
   required. A referenced workflow such as "keep using this sequence" must carry the context IDs that
   define the non-local steps.
+- LOCAL_CONTEXT_REMAINS_DEPENDENCY_FREE: apply that removal test to referent_candidates only. Keep
+  bounded local_exchanges that precede the human authority: they can define immediate workflow steps
+  without context IDs. In a multi-step workflow, declare dependencies only for steps found solely in
+  referent_candidates; do not emit [] merely because local steps plus at most 3 non-local referents
+  collectively define the complete sequence.
 - STANDALONE_FACT_NO_DEPENDENCY: when authoritative evidence itself completely defines the durable
   fact, do not attach an unrelated referent merely because it was retrieved. Immediate local context
   still follows its separate no-context-id rule.
