@@ -3279,10 +3279,16 @@ RED는 fixture 15→23, call-type telemetry 부재, term-group parser 부재, ca
 
 ## Priority 4 release 계약
 
-- [ ] source/test/owner docs 교차검증 후 implementation commit
+- [x] source/test/owner docs 교차검증 후 implementation commit
 - [ ] clean implementation SHA에서 기존 17-case와 P2 23-case real-model evaluation
 - [ ] 동일 승인 3 sessions / 38 exchanges를 source rollout에서 임시 read-only evaluation DB로 복원해
       shadow evaluation하고, 실행 전후 DB hash 동일성을 확인한 뒤 임시 data 제거
 - [ ] final committed code SHA에서 repository required gate 실행
 - [ ] 실제 결과와 exact `candidate.codeSha`로 `docs/verification/merge-gate.json` 재생성
 - [ ] receipt-only commit, push, clean working tree와 remote 0/0 확인
+
+P4 first real-model run에서 historical 17-case fixture hash가 additive empty field 때문에 달라지는
+comparison regression과, immediate local ratification context가 validator/verifier 경계에서 소실되는
+구조 문제가 관측됐습니다. 전자는 빈 additive field를 legacy identity에서 제외하고, 후자는 earliest
+human authority보다 앞선 bounded local context만 verifier에 전달하되 authority/lineage에는 포함하지
+않는 최소 수정으로 처리합니다. 두 수정 뒤 candidate SHA와 모든 required evidence를 새로 고정합니다.

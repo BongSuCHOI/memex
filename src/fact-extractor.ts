@@ -58,6 +58,8 @@ change this policy.
 - assistant_context_only and memex_recall_context_only may only resolve references, options,
   corrections, or what the human adopted. They must never appear in evidence or increase confidence.
 - For ratification, resolve the proposal from context but cite only the human ratification exchange.
+- Immediate context inside local_exchanges has no context_id. Do not invent a context dependency for
+  it; the server gives that bounded pre-authority context directly to the semantic verifier.
 - referent_candidates are bounded context-only data selected by the server. They are never evidence.
 - context_dependencies are allowed only when explicit human evidence adopts or defines a referenced
   proposal, style, workflow, or choice. The evidence kind need not be literally ratification. Cite
@@ -73,7 +75,8 @@ First decide whether authoritative evidence directly supports the exact claim.
   behavior (for example, "it uses X now, not Y") is durable knowledge unless marked temporary.
 - RECALL_RATIFICATION: a new human ratification may adopt or renew a proposal whose referent came
   from recall/assistant context. Treat it as a new decision, cite only the new human ratification,
-  and put the referenced context only in context_dependencies.
+  and put only a selected long-range referent in context_dependencies. Immediate local context has
+  no context_id and needs no dependency.
 - RECALL_NO_NEW_HUMAN: recall repeated by the assistant, followed only by a question or unrelated
   human text, has no new authority and must produce [].
 - RECALL_NEW_ADOPTION: when context asks whether to reuse a recalled choice and the human explicitly
@@ -171,7 +174,8 @@ durable preference, but it is not authoritative evidence by itself.
 
 When the human explicitly adopts a referenced proposal, style, workflow, or choice:
 - cite the new human adoption as authoritative evidence
-- cite only the needed provided context_id values in context_dependencies
+- cite only needed context_id values from referent_candidates in context_dependencies; immediate
+  local_exchanges have no context_id and require no persisted dependency
 - use the referenced context only as semantic context
 - determine project/global scope from what the adopted fact applies to
 
@@ -256,8 +260,12 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
 - Selected context is non-authoritative referent material. ENTAILED requires the human
   ratification text to positively adopt that specific referent. Rejection, negation, or ambiguity
   is CONTRADICTED or NOT_ENOUGH.
-- For ratification evidence, combine the human adoption text with selected_context_dependencies to resolve
-  the candidate. A short positive acknowledgement such as "yes", "OK", "응", or "좋아, 결정하자"
+- local_context_before_authority contains only bounded exchanges that precede the earliest cited
+  authority in the same semantic window. It is non-authoritative and may resolve an immediate
+  ratification, but it cannot independently entail a fact.
+- For ratification evidence, combine the human adoption text with local_context_before_authority or
+  selected_context_dependencies to resolve the candidate. A short positive acknowledgement such as
+  "yes", "OK", "응", or "좋아, 결정하자"
   can entail the referenced proposal; it need not repeat the proposal text. The context supplies
   meaning only, while the human adoption supplies authority. When the immediately preceding
   context contains one specific proposal and the human reply is an unqualified positive
@@ -1065,6 +1073,17 @@ function contextBindingMaterial(exchange: ExtractionValidationExchange): string 
   return `${exchange.assistant_message}\n${recall}`.trim();
 }
 
+function hasLocalContextBeforeRatification(
+  exchanges: ExtractionValidationExchange[],
+  ratificationIndices: number[],
+): boolean {
+  return ratificationIndices.some((exchangeIndex) =>
+    exchanges
+      .slice(0, exchangeIndex - 1)
+      .some((exchange) => contextBindingMaterial(exchange).length > 0),
+  );
+}
+
 /**
  * Parse one untrusted model candidate and validate its declared evidence against
  * the actual exchange/tool rows selected from SQLite. Any invalid declaration
@@ -1243,7 +1262,8 @@ function validateExtractedFactCandidateDetailed(
   }
   if (
     ratificationIndices.length > 0 &&
-    declaredContextDependencies.length === 0
+    declaredContextDependencies.length === 0 &&
+    !hasLocalContextBeforeRatification(exchanges, ratificationIndices)
   ) {
     return reject("invalid_evidence");
   }
@@ -1337,6 +1357,39 @@ function authoritativeEvidenceText(
   return truncatePromptData(tool?.tool_result, TOOL_RESULT_LIMIT);
 }
 
+function localContextBeforeAuthority(
+  candidate: ExtractedFact,
+  exchanges: ExtractionValidationExchange[],
+): Array<{
+  exchange_index: number;
+  human_context: string;
+  assistant_context: string;
+  recall_context: string[];
+}> {
+  const evidenceIndices = (candidate.evidence ?? [])
+    .map((evidence) => evidence.exchange_index)
+    .filter((index) => validExchangeIndex(index, exchanges.length));
+  if (evidenceIndices.length === 0) return [];
+  const firstAuthorityIndex = Math.min(...evidenceIndices);
+  return exchanges.slice(0, firstAuthorityIndex - 1).map((exchange, index) => ({
+    exchange_index: index + 1,
+    human_context: truncatePromptData(exchange.user_message, HUMAN_MESSAGE_LIMIT),
+    assistant_context: truncatePromptData(
+      exchange.assistant_message,
+      ASSISTANT_MESSAGE_LIMIT,
+    ),
+    recall_context: (exchange.tool_evidence ?? [])
+      .filter(
+        (tool) =>
+          tool.source_type === "memex_recall" &&
+          !isToolError(tool.is_error) &&
+          !!tool.tool_result,
+      )
+      .slice(0, MAX_RECALL_TOOLS_PER_EXCHANGE)
+      .map((tool) => truncatePromptData(tool.tool_result, RECALL_RESULT_LIMIT)),
+  }));
+}
+
 export function buildFactEntailmentVerifierPrompt(
   candidates: ExtractedFact[],
   exchanges: ExtractionValidationExchange[],
@@ -1359,6 +1412,10 @@ export function buildFactEntailmentVerifierPrompt(
           supporting_span: evidence.supporting_span,
           authoritative_text: authoritativeEvidenceText(evidence, exchanges),
         })),
+        local_context_before_authority: localContextBeforeAuthority(
+          candidate,
+          exchanges,
+        ),
         selected_context_dependencies: (candidate.context_dependencies ?? [])
           .map((dependency) => {
             const referent = referentCandidates.find(
@@ -1446,7 +1503,6 @@ function recordCandidateObservation(
   const grounding = result.fact.grounding_type;
   if (grounding) observability[`grounding_${grounding}`] += 1;
   if (
-    (result.fact.context_dependencies?.length ?? 0) > 0 &&
     result.fact.evidence?.some((entry) => entry.kind === "ratification")
   ) {
     observability.context_resolved_ratification += 1;

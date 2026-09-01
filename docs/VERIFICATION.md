@@ -165,6 +165,9 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - 긴 human/tool evidence는 head+tail 보존으로 뒤쪽 결정·검증 결과가 envelope에 남음
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
 - boundary ratification과 long-range adoption은 selected referent를 보되 persisted authority는 신규 human UUID만 포함
+- immediate local ratification은 earliest authority 이전 assistant/recall context만 verifier가 보고,
+  이후 assistant output은 보지 않으며, persisted authority는 신규 human UUID만 포함
+- local context가 없고 selected referent dependency도 없는 ratification candidate는 structural reject
 - prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
 - `precision-durability-v4`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
 - conversation 위치가 아니라 applicability로 scope를 정하고, 명시적 durable user/environment 지식은 단일 human assertion에서도 global 가능

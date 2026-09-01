@@ -247,6 +247,32 @@ describe('Fact Extractor', () => {
       expect(accepted?.fact_kr).toBeUndefined();
     });
 
+    it('accepts immediate local ratification without inventing a persisted context dependency', () => {
+      const { context_dependencies: _contextDependencies, ...localCandidate } = explicitCandidate;
+      const accepted = validateExtractedFactCandidate(localCandidate, exchanges);
+
+      expect(accepted).toEqual(expect.objectContaining({
+        source_exchange_ids: ['e2'],
+        grounding_type: 'explicit',
+        durable: true,
+      }));
+      expect(accepted?.context_dependencies).toBeUndefined();
+      expect(accepted?.source_exchange_ids).not.toContain('e1');
+    });
+
+    it('rejects ratification with neither earlier local context nor a selected referent', () => {
+      const { context_dependencies: _contextDependencies, ...localCandidate } = explicitCandidate;
+      expect(validateExtractedFactCandidate({
+        ...localCandidate,
+        evidence: [{
+          exchange_index: 1,
+          source: 'human',
+          kind: 'ratification',
+          supporting_span: '좋아, 그걸로 하자.',
+        }],
+      }, [exchanges[1]])).toBeNull();
+    });
+
     it('hard-rejects assistant, recall, and external evidence declarations', () => {
       for (const source of ['assistant', 'assistant_generated', 'memex_recall', 'external_unverified']) {
         expect(validateExtractedFactCandidate({
@@ -712,6 +738,33 @@ describe('Fact Extractor', () => {
       expect(prompt).toContain('Which database should we use?');
       expect(prompt).toContain('SQLite로 가는 게 좋겠습니다.');
       expect(prompt).not.toContain('이 프로젝트는 SQLite를 사용한다.');
+    });
+
+    it('sends only pre-authority local context for immediate ratification verification', () => {
+      const localCandidate = {
+        ...candidates[3],
+        evidence: [{
+          exchange_index: 2,
+          source: 'human' as const,
+          kind: 'ratification' as const,
+          supporting_span: '아니, 그건 쓰지 마.',
+        }],
+        context_dependencies: undefined,
+        source_exchange_ids: ['v5'],
+      };
+      const prompt = buildFactEntailmentVerifierPrompt(
+        [localCandidate],
+        [verifierExchanges[3], verifierExchanges[4]],
+      );
+      const envelope = JSON.parse(prompt);
+
+      expect(envelope.candidates[0].local_context_before_authority).toEqual([{
+        exchange_index: 1,
+        human_context: 'Which database should we use?',
+        assistant_context: 'SQLite로 가는 게 좋겠습니다.',
+        recall_context: [],
+      }]);
+      expect(prompt).not.toContain('Understood.');
     });
 
     it('accepts only one complete ENTAILED verdict and fails closed on semantic adversaries', async () => {

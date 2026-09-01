@@ -88,6 +88,13 @@ durability와 server가 복원한 bounded authoritative source text를 비교하
 판정은 verifier가 담당합니다. 구조 검증은 provenance/integrity를, verifier는 entailment·polarity·
 scope·durability를 각각 책임집니다.
 
+같은 semantic window의 immediate ratification은 별도 `context_id`를 만들지 않습니다. Validator는
+ratification authority보다 앞선 bounded local assistant/recall context가 실제로 있을 때만 dependency
+없는 candidate를 구조적으로 허용하고, verifier에는 earliest authority 이전 local context만
+`local_context_before_authority`로 제공합니다. Ratification 이후 assistant output은 제외되므로 새
+human authority를 사후 assistant 반복으로 self-grounding할 수 없습니다. 이 local context는 durable
+lineage나 `fact_context_dependencies`에 들어가지 않습니다.
+
 - `explicit` — valid human evidence가 최소 1개
 - `verified` — valid trusted tool evidence가 최소 1개
 - `inferred` — 서로 다른 authoritative exchange가 최소 2개
