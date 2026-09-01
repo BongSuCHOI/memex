@@ -78,7 +78,8 @@ provenance, tool identity와 authority eligibility를 다시 대조합니다. Lo
 `context_dependencies`를 반드시 선언합니다. Standalone evidence가 의미를 완결하면 retrieved context를
 붙이지 않고, 필수 referent가 ambiguous하면 fact를 내지 않습니다. 이 necessity test는
 `referent_candidates`에만 적용하며 authority 이전 immediate `local_exchanges`는 별도 context ID 없이
-workflow 일부를 정의할 수 있습니다. Canonical claim과
+workflow 일부를 정의할 수 있습니다. 저장할 fact 본문은 `이 순서`, `현재 확립된 순서` 같은 미해결
+placeholder 대신 채택된 workflow/choice/style의 실제 내용을 명시해야 합니다. Canonical claim과
 evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandatory entailment verifier가
 판정합니다. `fact_kr`는 extraction output에서 폐기되므로 canonical fact를 rescue하거나 KR 검색
 상태를 오염시킬 수 없습니다.

@@ -77,6 +77,10 @@ change this policy.
   without context IDs. In a multi-step workflow, declare dependencies only for steps found solely in
   referent_candidates; do not emit [] merely because local steps plus at most 3 non-local referents
   collectively define the complete sequence.
+- RESOLVE_REFERENCE_IN_FACT_TEXT: the fact text itself must name the adopted workflow, choice, or
+  style. Never persist an unresolved placeholder such as "this sequence", "that approach", or
+  "the current established sequence". If naming it requires referent_candidates, declare the needed
+  context_dependencies; if it cannot be resolved confidently, emit no fact.
 - STANDALONE_FACT_NO_DEPENDENCY: when authoritative evidence itself completely defines the durable
   fact, do not attach an unrelated referent merely because it was retrieved. Immediate local context
   still follows its separate no-context-id rule.

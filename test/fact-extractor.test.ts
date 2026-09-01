@@ -201,8 +201,10 @@ describe('Fact Extractor', () => {
     it('requires a dependency when a referenced workflow defines the fact', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('LOCAL_CONTEXT_REMAINS_DEPENDENCY_FREE');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('RESOLVE_REFERENCE_IN_FACT_TEXT');
       expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('REFERENCED_WORKFLOW_DEPENDENCY_REQUIRED');
       expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('LOCAL_CONTEXT_REMAINS_DEPENDENCY_FREE');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('RESOLVE_REFERENCE_IN_FACT_TEXT');
     });
 
     it('keeps a standalone durable fact free of unrelated dependencies', () => {

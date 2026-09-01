@@ -3330,3 +3330,7 @@ test를 추가합니다. Referenced workflow는 최소 dependency 필수, standa
 `[]`를 반환했습니다. Necessity removal test는 referent_candidates에만 적용하고, authority 이전 immediate
 local context의 구현/테스트 단계는 context ID 없이 의미를 정의할 수 있음을 명시합니다. 따라서 조사·비교·
 계획의 non-local referent만 최대 3개 dependency로 선언하면 전체 workflow가 완결됩니다.
+
+`049d1c1`의 `lg2` 단독 진단에서는 generator가 `현재 확립된 순서`라는 unresolved placeholder로
+dependency 의무를 우회했습니다. 저장 fact 본문이 채택된 workflow/choice/style을 구체적으로 풀어 쓰고,
+그 해소에 referent가 필요하면 dependency를 선언하도록 generator prompt만 추가 보완합니다.
