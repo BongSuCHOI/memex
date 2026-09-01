@@ -3292,3 +3292,9 @@ comparison regression과, immediate local ratification context가 validator/veri
 구조 문제가 관측됐습니다. 전자는 빈 additive field를 legacy identity에서 제외하고, 후자는 earliest
 human authority보다 앞선 bounded local context만 verifier에 전달하되 authority/lineage에는 포함하지
 않는 최소 수정으로 처리합니다. 두 수정 뒤 candidate SHA와 모든 required evidence를 새로 고정합니다.
+
+같은 SHA의 P2 diagnostic은 safety leakage 0을 유지했지만 15/23이었습니다. 실제 실패는 지속
+directive의 `preference` 오분류, project workflow adoption의 `constraint` 오분류, local recall/
+bare continue/workflow adoption generator omission, first/original 및 human-origin reaffirmation verifier
+rejection이었습니다. Ranking threshold와 deterministic regex는 바꾸지 않고, 이 관측 항목에 한정한
+generator/verifier semantic marker만 추가한 뒤 17-case와 P2 전체를 새 SHA에서 재실행합니다.

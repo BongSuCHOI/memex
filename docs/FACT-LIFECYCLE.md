@@ -136,10 +136,21 @@ authoritative human assertion만으로도 `global`일 수 있습니다. 행동�
 추론할 때는 여전히 복수의 독립된 authoritative signal이 필요합니다. 주제를 질문한 사실만으로
 관심사를 추론하지 않습니다.
 
+Category는 동일한 "원한다" paraphrase가 아니라 communicative act를 따릅니다. `항상`/`must`처럼
+지속 의무를 부과하는 directive는 `constraint`, 일반적인 future style/workflow 유지 요청은
+`preference`, project 안에서 "이 순서로 하자"처럼 방향을 채택하는 표현은 별도 의무 언어가 없으면
+`decision`입니다. Tag question은 문장 부호가 아니라 전체 발화가 정보 질문인지 directive인지로
+판정합니다.
+
 현재 project state를 바로잡는 human correction은 stable knowledge가 될 수 있습니다. recall을
 assistant가 반복했을 뿐이면 authority가 없지만, human이 recalled choice를 이번 project에서 새로
 채택하면 새 project decision이 될 수 있습니다. 이때도 recall은 context일 뿐이고 새 ratification
 exchange만 durable lineage에 들어갑니다.
+
+명확한 한 referent가 있을 때 `proceed`/`continue`/`진행해줘`/`계속`, first/original reference,
+이전 human decision 유지 표현은 ratification을 resolve할 수 있습니다. 여러 referent가 실제로
+남아 모호하면 `NOT_ENOUGH`이며, 단지 alternatives가 논의됐다는 이유만으로 명시적인 first/original
+reference를 모호하다고 처리하지 않습니다.
 
 Fact 개수 목표는 없습니다. `MAX_FACTS_PER_SESSION`은 과다 출력을 제한하는 safety cap이며 품질
 KPI가 아닙니다. 0개가 올바른 session은 `[]`가 정상 결과입니다.

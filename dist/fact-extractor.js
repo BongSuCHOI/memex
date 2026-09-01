@@ -70,6 +70,23 @@ First decide whether authoritative evidence directly supports the exact claim.
   supporting human exchange as repeated_signal. Reserve explicit preference grounding for a human
   who directly states the durable preference itself (for example, "I generally prefer X").
 
+### Observed semantic clarifications
+- LOCAL_RECALL_NEW_ADOPTION: when the immediately preceding local assistant/recall context names one
+  choice and asks whether to reuse it, a human "yes, use it again" creates a new project decision.
+  Cite only that new human ratification. Do not drop it as recall-only and do not require the human
+  to repeat the choice name.
+- SHORT_CONTINUE_RATIFICATION: "proceed", "continue", "진행해줘", or "계속" can positively adopt one
+  clear active recommendation or conclusion. If more than one referent remains plausible, emit [].
+- WORKFLOW_SEQUENCE_ADOPTION: a request to keep a demonstrated style or workflow in future work is
+  a global preference when it describes the user's general way of working. A project-limited
+  "let's keep this sequence" is a project decision. Obligation language is handled as a constraint.
+- ORDINAL_REFERENCE_RESOLUTION: "the first option", "the original recommendation", and equivalent
+  wording resolve the ordered candidate they name even when later alternatives were compared.
+- HUMAN_ORIGIN_REAFFIRMATION: a later human statement to keep an earlier human-authored decision can
+  reaffirm that project decision; the new human statement is the current authority.
+- TAG_QUESTION_DIRECTIVE: judge the full communicative act. A durable directive or requirement does
+  not become an information-seeking question merely because it ends with a question mark or tag.
+
 ### GATE_2_DURABILITY
 Then decide whether the grounded claim will still help in a future task or session.
 - Keep stable project decisions, constraints, asserted or verified project knowledge, durable
@@ -87,6 +104,11 @@ Assign category by meaning, not wording:
 - preference: an explicit durable preference or a preference inferred from independent repetitions
 - constraint: a lasting requirement, prohibition, compatibility limit, or operating boundary
 - pattern: a reusable problem→cause→solution lesson supported by verified evidence
+- CATEGORY_DIRECTIVE_CONSTRAINT: a lasting imperative using "always", "must", or equivalent
+  obligation language is a constraint, not a preference merely because it can be paraphrased as
+  what the user wants.
+- CATEGORY_PROJECT_ADOPTION: a project-limited collaborative selection such as "let's keep this
+  sequence" is a decision unless the human states it as a requirement, prohibition, or limit.
 
 ## Scope determination
 
@@ -267,6 +289,25 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
   workflow; do not require the adoption sentence to repeat its concrete attributes.
 - Context-only text never enters authority, even when it defines the claim's meaning across a long
   distance or across the extraction watermark.
+- LOCAL_RECALL_NEW_ADOPTION: a human "yes, use it again" after one specific recalled choice is a new
+  project decision. The recall supplies meaning; only the new human ratification supplies authority.
+- SHORT_CONTINUE_RATIFICATION: "proceed", "continue", "진행해줘", or "계속" positively adopts one
+  clear active recommendation or conclusion, but not multiple unresolved alternatives.
+- WORKFLOW_SEQUENCE_ADOPTION: a future cross-task request to keep a demonstrated style/workflow is a
+  global preference; a project-limited collaborative adoption is a project decision; explicit
+  lasting obligation language is a constraint.
+- ORDINAL_REFERENCE_RESOLUTION: an explicit first/original reference can disambiguate an ordered
+  recommendation even when other alternatives exist. Do not return NOT_ENOUGH merely because later
+  alternatives were discussed.
+- HUMAN_ORIGIN_REAFFIRMATION: a human statement to keep an earlier human-authored decision can entail
+  that renewed project decision when the referenced decision is clear.
+- TAG_QUESTION_DIRECTIVE: a purely information-seeking question is NOT_ENOUGH. An otherwise explicit
+  durable directive or requirement is not a mere question only because it ends with a question mark
+  or tag question.
+- CATEGORY_DIRECTIVE_CONSTRAINT: a lasting "always/must" directive is a constraint, not a preference
+  merely because it expresses what the user wants.
+- CATEGORY_PROJECT_ADOPTION: a project-limited "let's keep this sequence" selection is a decision
+  unless it is expressed as a requirement, prohibition, or operating limit.
 
 Return only one JSON array item per candidate, preserving candidate_index exactly:
 [{"candidate_index":1,"verdict":"ENTAILED"}]

@@ -177,6 +177,10 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - strong/short/normal threshold는 각각 6/8/20 이상이며 generic pronoun이나 persistence signal이 relevance를 우회하지 않음
 - 한국어 `계속`도 `continue`와 같이 bounded long-range context need를 활성화
 - question-shaped durable constraint와 negative replacement는 structural validation 뒤 verifier가 의미 판정
+- lasting `always/must` directive=`constraint`, general future workflow request=`preference`,
+  project-limited collaborative adoption=`decision` category distinction을 generator/verifier가 함께 적용
+- local recall 재채택, bare continue/proceed, first/original reference, human-origin reaffirmation을
+  새 human authority로 resolve하되 실제 multiple referent ambiguity는 `NOT_ENOUGH`
 - model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외

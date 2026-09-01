@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   EXTRACTION_POLICY_VERSION,
   EXTRACTION_SYSTEM_PROMPT,
+  FACT_ENTAILMENT_VERIFIER_PROMPT,
   buildExtractionWindows,
   buildExtractionPrompt,
   buildFactEntailmentVerifierPrompt,
@@ -173,6 +174,22 @@ describe('Fact Extractor', () => {
         'REPEATED_PREFERENCE_LINEAGE',
       ]) {
         expect(EXTRACTION_SYSTEM_PROMPT).toContain(gate);
+      }
+    });
+
+    it('publishes semantic tuning markers only for observed real-model failures', () => {
+      for (const marker of [
+        'CATEGORY_DIRECTIVE_CONSTRAINT',
+        'CATEGORY_PROJECT_ADOPTION',
+        'LOCAL_RECALL_NEW_ADOPTION',
+        'SHORT_CONTINUE_RATIFICATION',
+        'WORKFLOW_SEQUENCE_ADOPTION',
+        'ORDINAL_REFERENCE_RESOLUTION',
+        'HUMAN_ORIGIN_REAFFIRMATION',
+        'TAG_QUESTION_DIRECTIVE',
+      ]) {
+        expect(EXTRACTION_SYSTEM_PROMPT).toContain(marker);
+        expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain(marker);
       }
     });
   });
