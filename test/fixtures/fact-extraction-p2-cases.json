@@ -210,7 +210,7 @@
       ],
       "expected": { "outcome": "facts", "facts": [{
         "required_term_groups": [
-          ["조사", "research", "investigation"],
+          ["조사", "research", "investigation", "investigate"],
           ["계획", "plan", "planning"]
         ],
         "category": "preference",
