@@ -2375,6 +2375,17 @@ P1 재검토에서 lexical overlap만으로 polarity, one-off scope, ratificatio
 능력은 유지하되, 구조 검증을 통과한 candidate가 있는 window만 별도 batched entailment verifier를
 한 번 호출한다. `ENTAILED` 단일 verdict만 저장하고 나머지는 fail-closed한다.
 
+### Final rereview Priority 1 architecture correction (2026-09-01)
+
+최종 재검토의 Priority 1은 위 historical lexical/activation 계약을 다음 계획으로 supersede한다.
+
+- [x] `LONG_RANGE_CONTEXT_SIGNAL`을 activation hard gate에서 ranking bonus로 낮춤
+- [x] 모든 적격 anchor에서 이전 최대 30개를 adaptive threshold로 ranking하고 최대 5개만 제공
+- [x] durable Fact anchor eligibility와 bounded long-range context need를 별도 판정
+- [x] structural validator를 exact span/provenance/tool identity/context bounds로 제한
+- [x] canonical meaning, translation, scope, polarity, durability는 mandatory verifier의 단일
+      `ENTAILED` verdict에서 fail-closed
+
 ---
 
 # 25. 테스트 변경 상세

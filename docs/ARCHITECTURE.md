@@ -142,7 +142,7 @@ lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 �
 | `src/parser.ts` | JSONL → exchange/tool-call 모델 |
 | `src/sync.ts` | rollout archive와 incremental indexing orchestration |
 | `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
-| `src/fact-extractor.ts` | exact-span/call-ID evidence binding → fact 후보, local window + bounded long-range referent selection → local dependency |
+| `src/fact-extractor.ts` | exact-span/call-ID provenance validation → mandatory semantic verifier, local window + adaptive bounded referent ranking → local dependency |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
 | `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
 | `src/sync-export.ts` | durable generation export |

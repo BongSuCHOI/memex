@@ -60,8 +60,9 @@ UUID만 `facts.source_exchange_ids`에 들어가며 context-only assistant/recal
 model에 제공한 opaque ID인지, anchor보다 앞서는지, 최대 3개인지, relation이 허용값인지라는
 causal constraint를 통과한 경우에만 server가 실제 exchange UUID/kind로 resolve해
 `fact_context_dependencies`로 별도 저장합니다.
-Canonical `fact`만 lexical binding에 참여하고 extraction candidate의 `fact_kr`는 저장하지 않습니다.
-구조 검증 뒤 별도 entailment verifier가 bounded authoritative source text와 candidate 전체 의미를 판정하며
+Extraction candidate의 `fact_kr`는 저장하지 않습니다. 구조 검증은 exact span, provenance, tool identity,
+authority와 context-ID bounds만 판정합니다. 별도 entailment verifier가 canonical `fact`, bounded
+authoritative source text와 candidate 전체 의미를 판정하며
 `ENTAILED`만 저장 단계로 전달합니다. 이 verifier verdict와 거절 사유는 process-local 진단값이고
 durable fact/schema/sync payload에는 추가되지 않습니다.
 

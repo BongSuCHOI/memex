@@ -3,6 +3,7 @@ import {
   EXTRACTION_POLICY_VERSION,
   EXTRACTION_SYSTEM_PROMPT,
   FACT_ENTAILMENT_VERIFIER_PROMPT,
+  buildExtractionWindows,
   buildExtractionPrompt,
   selectLongRangeReferentCandidates,
   validateExtractedFactCandidate,
@@ -60,6 +61,32 @@ describe('P2 long-range context and global scope', () => {
     expect(candidates.every((entry) => entry.distance > 0 && entry.distance <= 30)).toBe(true);
   });
 
+  it('retrieves a human-origin referent without requiring an allowlisted phrase', () => {
+    const session = [
+      base('e1', '이 프로젝트는 DB 선택을 SQLite로 결정하자.', '좋습니다.'),
+      base('e2', '마이그레이션 비용은?', '별도 migration은 필요 없습니다.'),
+      base('e3', '운영 문서를 정리해줘.', '정리했습니다.'),
+      base('e4', '테스트 상태는?', '통과했습니다.'),
+      base('e5', '배포 절차도 확인해줘.', '확인했습니다.'),
+      base('e6', '남은 위험은?', '없습니다.'),
+      base('e7', '마지막으로 요약해줘.', '준비됐습니다.'),
+      base('e8', 'DB 원안 유지.', '기존 결정을 유지하겠습니다.'),
+    ];
+
+    const candidates = selectLongRangeReferentCandidates([session[7]], session);
+
+    expect(candidates[0]).toEqual(expect.objectContaining({
+      exchange_id: 'e1',
+      human_context: '이 프로젝트는 DB 선택을 SQLite로 결정하자.',
+    }));
+  });
+
+  it('opens a window for a context-dependent approval without a local antecedent', () => {
+    const approval = base('e8', '진행해줘', '진행하겠습니다.');
+
+    expect(buildExtractionWindows([approval])).toEqual([[approval]]);
+  });
+
   it('does not retrieve context for a standalone explicit global assertion', () => {
     const session = [
       base('e1', 'What machine do you use?', 'Tell me when useful.'),
@@ -89,6 +116,34 @@ describe('P2 long-range context and global scope', () => {
       fact: 'The user is interested in philosophy.',
       scope_type: 'global',
       source_exchange_ids: ['g1'],
+    }));
+  });
+
+  it('lets cross-language project evidence reach semantic verification', () => {
+    const exchanges = [base(
+      'p1',
+      '이 프로젝트에서는 배포 전에 항상 테스트를 실행해.',
+      '이 프로젝트의 배포 전 테스트 규칙을 기억하겠습니다.',
+    )];
+    const accepted = validateExtractedFactCandidate({
+      fact: 'Always run tests before deployment in this project.',
+      category: 'constraint',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'assertion',
+        supporting_span: '이 프로젝트에서는 배포 전에 항상 테스트를 실행해.',
+      }],
+    }, exchanges);
+
+    expect(accepted).toEqual(expect.objectContaining({
+      fact: 'Always run tests before deployment in this project.',
+      scope_type: 'project',
+      source_exchange_ids: ['p1'],
     }));
   });
 

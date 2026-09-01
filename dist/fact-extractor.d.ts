@@ -20,6 +20,12 @@ export declare function isContextEligibleExchange(userMessage: string): boolean;
  * not. Trusted local evidence always makes an eligible exchange an anchor.
  */
 export declare function isCandidateAnchorExchange(userMessage: string, hasLearnableToolEvidence?: boolean, hasAntecedentContext?: boolean): boolean;
+/**
+ * Whether a turn may need bounded historical context. This is intentionally
+ * separate from durable-fact eligibility: a context-dependent request may
+ * still produce no fact, while a standalone assertion may need no referent.
+ */
+export declare function needsLongRangeContext(userMessage: string): boolean;
 /** @deprecated Use isCandidateAnchorExchange(); retained for package API compatibility. */
 export declare function isSubstantiveExchange(userMessage: string, _assistantMessage: string, hasLearnableToolEvidence?: boolean): boolean;
 /** Normalize fact text for cross-window duplicate detection within a session. */

@@ -142,10 +142,10 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 
 - assistant/recall 본문이 JSON envelope의 context-only field에는 존재
 - assistant/recall/external evidence 선언은 server-side hard reject
-- human evidence는 exact supporting span, non-question, claim token binding을 모두 통과해야 함
+- human evidence는 exact supporting span, non-question, provenance/authority 검증을 모두 통과해야 함
 - trusted tool 선언은 실제 DB `tool_call_id/tool_name/source_type/learnable/is_error`, exact result
-  span, claim token binding과 일치해야 통과
-- canonical `fact`만 binding에 참여하고 `fact_kr` poisoning은 acceptance 및 저장을 rescue하지 못함
+  span과 일치해야 통과
+- canonical claim의 evidence entailment는 mandatory verifier가 판정하고 `fact_kr` poisoning은 acceptance 및 저장을 rescue하지 못함
 - 구조 통과 candidate는 bounded authoritative source text 기반 semantic verifier의 단일 `ENTAILED` verdict 필요
 - polarity inversion, 비교 imperative, one-off→global preference, negative ratification은 fail-closed
 - verifier verdict 누락·중복·malformed도 candidate별 fail-closed
@@ -158,7 +158,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - overlapping window의 duplicate fact는 normalized text로 합쳐지고 authoritative lineage는 union
 - `MEMEX_MAX_EXTRACT_CALLS`는 semantic window 생성 후 적용되며 claim/retry/watermark 계약은 유지
 - watermark suffix가 있으면 직전 최대 2개 prefix가 `context_only_due_to_watermark`로만 보임
-- `진행해줘`/`proceed`/`continue`는 preceding watermark context가 있을 때만 conditional anchor
+- `진행해줘`/`proceed`/`continue`는 local antecedent가 없어도 context-need window를 열고 bounded historical ranking을 수행
 - 긴 human/tool evidence는 head+tail 보존으로 뒤쪽 결정·검증 결과가 envelope에 남음
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
 - boundary ratification과 long-range adoption은 selected referent를 보되 persisted authority는 신규 human UUID만 포함
@@ -166,7 +166,8 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - `precision-durability-v4`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
 - conversation 위치가 아니라 applicability로 scope를 정하고, 명시적 durable user/environment 지식은 단일 human assertion에서도 global 가능
 - 일회성 지시는 global preference가 아니며, 행동 기반 global inference는 복수의 독립 human signal 필요
-- 참조·지속 신호가 있을 때만 이전 최대 30개에서 최대 5개 referent를 선택하고 local/referent envelope를 분리
+- 적격 anchor마다 이전 최대 30개를 adaptive ranking해 최대 5개 referent를 선택하고 regex는 bonus로만 사용
+- referent ranking은 human+assistant+recall material을 사용하며 standalone assertion에는 높은 relevance threshold 적용
 - model context ID는 제공된 candidate, anchor 선행, 허용 relation, fact당 최대 3개 조건을 모두 통과해야 UUID로 resolve
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외

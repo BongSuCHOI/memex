@@ -308,6 +308,10 @@ const CONTEXT_ONLY_USER_PATTERN =
   /^(thanks?|thank you|done|go|proceed|continue|why|how|고마워요?|감사(합니다|해요)?|해줘|진행해?줘?|계속(해줘)?|왜|어떻게)[?.!~\s]*$/i;
 const CONDITIONAL_RATIFICATION_PATTERN =
   /^(go|go ahead|proceed|continue|진행해?줘?|그대로 진행(?:해?줘?)?|계속(?:해?줘?)?)[?.!~\s]*$/i;
+const PURE_CONTEXT_BRIDGE_PATTERN =
+  /^(thanks?|thank you|done|why|how|고마워요?|감사(합니다|해요)?|계속|왜|어떻게)[?.!~\s]*$/i;
+const STANDALONE_SUBJECT_SIGNAL =
+  /^(?:i\b|we\b|my\b|our\b|the user\b|this project\b|(?:난|나는|전|저는|제가|우리)(?:\s|[,.:!?]|$)|이 프로젝트)/i;
 
 /**
  * Whether an exchange may appear as semantic context. Short human replies stay
@@ -346,6 +350,30 @@ export function isCandidateAnchorExchange(
     return hasAntecedentContext;
   }
   return !CONTEXT_ONLY_USER_PATTERN.test(userMessage.trim());
+}
+
+/**
+ * Whether a turn may need bounded historical context. This is intentionally
+ * separate from durable-fact eligibility: a context-dependent request may
+ * still produce no fact, while a standalone assertion may need no referent.
+ */
+export function needsLongRangeContext(userMessage: string): boolean {
+  if (!isContextEligibleExchange(userMessage)) return false;
+  const user = userMessage.trim();
+  if (PURE_CONTEXT_BRIDGE_PATTERN.test(user)) return false;
+  if (
+    LONG_RANGE_CONTEXT_SIGNAL.test(user) ||
+    CONDITIONAL_RATIFICATION_PATTERN.test(user)
+  ) {
+    return true;
+  }
+  const tokens = rankingTokens(user);
+  return (
+    tokens.length > 0 &&
+    tokens.length <= 6 &&
+    user.length <= 80 &&
+    !STANDALONE_SUBJECT_SIGNAL.test(user)
+  );
 }
 
 /** @deprecated Use isCandidateAnchorExchange(); retained for package API compatibility. */
@@ -590,11 +618,12 @@ export function buildExtractionWindows<T extends ExtractionPromptExchange>(
       });
       if (
         booleanFlag(exchange.context_only_due_to_watermark) ||
-        !isCandidateAnchorExchange(
+        (!isCandidateAnchorExchange(
           exchange.user_message,
           hasLearnableToolEvidence(exchange),
           hasAntecedentContext,
-        )
+        ) &&
+          !needsLongRangeContext(exchange.user_message))
       ) {
         continue;
       }
@@ -681,9 +710,15 @@ function referentMaterial(exchange: ExtractionValidationExchange): string {
   return material || exchange.user_message.trim();
 }
 
+function referentRankingMaterial(
+  exchange: ExtractionValidationExchange,
+): string {
+  return `${exchange.user_message}\n${referentMaterial(exchange)}`.trim();
+}
+
 function tokenOverlapScore(left: string, right: string): number {
-  const leftTokens = new Set(bindingTokens(left));
-  const rightTokens = new Set(bindingTokens(right));
+  const leftTokens = new Set(rankingTokens(left));
+  const rightTokens = new Set(rankingTokens(right));
   let count = 0;
   for (const token of leftTokens) {
     if (rightTokens.has(token)) count += 1;
@@ -700,7 +735,11 @@ export function selectLongRangeReferentCandidates(
   const anchors = localExchanges.filter(
     (exchange) =>
       !booleanFlag(exchange.context_only_due_to_watermark) &&
-      LONG_RANGE_CONTEXT_SIGNAL.test(exchange.user_message),
+      (needsLongRangeContext(exchange.user_message) ||
+        isCandidateAnchorExchange(
+          exchange.user_message,
+          hasLearnableToolEvidence(exchange),
+        )),
   );
   if (anchors.length === 0) return [];
 
@@ -721,25 +760,33 @@ export function selectLongRangeReferentCandidates(
     const anchorIndex = positionById.get(anchor.id);
     if (anchorIndex === undefined) continue;
     const firstSignal = FIRST_REFERENT_SIGNAL.test(anchor.user_message);
+    const explicitReference = LONG_RANGE_CONTEXT_SIGNAL.test(anchor.user_message);
+    const contextNeeded = needsLongRangeContext(anchor.user_message);
+    const minimumScore = firstSignal || explicitReference
+      ? 0
+      : contextNeeded
+        ? 8
+        : 20;
     const poolStart = Math.max(0, anchorIndex - MAX_LONG_RANGE_POOL);
     for (let index = poolStart; index < anchorIndex; index++) {
       const exchange = sessionExchanges[index];
       if (!exchange || !isContextEligibleExchange(exchange.user_message)) continue;
       const content = referentMaterial(exchange);
       if (!content) continue;
+      const rankingMaterial = referentRankingMaterial(exchange);
       const distance = anchorIndex - index;
-      const proposal = PROPOSAL_MATERIAL.test(content);
-      const styleOrWorkflow = STYLE_WORKFLOW_MATERIAL.test(
-        `${exchange.user_message}\n${content}`,
-      );
-      const overlap = tokenOverlapScore(anchor.user_message, content);
+      const proposal = PROPOSAL_MATERIAL.test(rankingMaterial);
+      const styleOrWorkflow = STYLE_WORKFLOW_MATERIAL.test(rankingMaterial);
+      const overlap = tokenOverlapScore(anchor.user_message, rankingMaterial);
       let score = overlap * 20;
       if (firstSignal && proposal) {
         score += 10_000 - index;
       } else {
         score += (proposal ? 12 : 0) + (styleOrWorkflow ? 8 : 0);
+        if (explicitReference) score += 4;
         score += (MAX_LONG_RANGE_POOL - distance) / MAX_LONG_RANGE_POOL;
       }
+      if (score < minimumScore) continue;
 
       const existing = selected.get(exchange.id);
       if (existing) {
@@ -956,7 +1003,7 @@ function isEligibleHumanEvidence(exchange: ExtractionValidationExchange): boolea
   return !/^\/[\w:-]+$/.test(user);
 }
 
-const EVIDENCE_BINDING_STOPWORDS = new Set([
+const REFERENT_RANKING_STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has",
   "have", "in", "is", "it", "of", "on", "or", "project", "projects", "the",
   "this", "to", "use", "used", "uses", "using", "user", "users", "we", "will",
@@ -1014,24 +1061,9 @@ function isNegativeRatificationEvidence(source: string, span: string): boolean {
   );
 }
 
-function bindingTokens(value: string): string[] {
+function rankingTokens(value: string): string[] {
   return (value.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
-    .filter((token) => token.length >= 2 && !EVIDENCE_BINDING_STOPWORDS.has(token));
-}
-
-function hasClaimBinding(
-  fact: string,
-  authoritativeText: string,
-): boolean {
-  const claimTokens = bindingTokens(fact);
-  const evidenceTokens = bindingTokens(authoritativeText);
-  return claimTokens.some((claim) =>
-    evidenceTokens.some((evidence) =>
-      claim === evidence ||
-      (Math.min(claim.length, evidence.length) >= 4 &&
-        (claim.includes(evidence) || evidence.includes(claim))),
-    ),
-  );
+    .filter((token) => token.length >= 2 && !REFERENT_RANKING_STOPWORDS.has(token));
 }
 
 function contextBindingMaterial(exchange: ExtractionValidationExchange): string {
@@ -1114,9 +1146,6 @@ function validateExtractedFactCandidateDetailed(
   const evidence: ExtractedFactEvidence[] = [];
   const authoritativeIds = new Set<string>();
   const ratificationIndices: number[] = [];
-  const hasDeclaredContextDependencies =
-    Array.isArray(candidate.context_dependencies) &&
-    candidate.context_dependencies.length > 0;
   let humanEvidenceCount = 0;
   let toolEvidenceCount = 0;
 
@@ -1143,22 +1172,6 @@ function validateExtractedFactCandidateDetailed(
       if (
         !supportingSpan ||
         isQuestionLikeEvidence(exchange.user_message, supportingSpan)
-      ) {
-        return reject("invalid_evidence");
-      }
-      if (
-        raw.kind !== "ratification" &&
-        !hasClaimBinding(fact, supportingSpan) &&
-        !(
-          scopeType === "global" &&
-          groundingType === "explicit" &&
-          raw.kind !== "repeated_signal"
-        ) &&
-        !(
-          groundingType === "explicit" &&
-          raw.kind !== "repeated_signal" &&
-          hasDeclaredContextDependencies
-        )
       ) {
         return reject("invalid_evidence");
       }
@@ -1209,7 +1222,7 @@ function validateExtractedFactCandidateDetailed(
         raw.supporting_span,
         matchingTool.tool_result ?? "",
       );
-      if (!supportingSpan || !hasClaimBinding(fact, supportingSpan)) {
+      if (!supportingSpan) {
         return reject("invalid_evidence");
       }
       evidence.push({

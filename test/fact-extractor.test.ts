@@ -274,12 +274,12 @@ describe('Fact Extractor', () => {
       }, exchanges)).toBeNull();
     });
 
-    it('does not let fact_kr rescue an unrelated canonical fact', () => {
+    it('keeps fact_kr out of structural acceptance and leaves semantic mismatch to the verifier', async () => {
       const sqliteAssertion = [{
         ...exchanges[0],
         user_message: 'This project uses SQLite.',
       }];
-      expect(validateExtractedFactCandidate({
+      const accepted = validateExtractedFactCandidate({
         ...explicitCandidate,
         fact: 'This project uses Redis.',
         fact_kr: '이 프로젝트는 SQLite를 사용한다.',
@@ -289,8 +289,16 @@ describe('Fact Extractor', () => {
           kind: 'assertion',
           supporting_span: 'SQLite',
         }],
-        context_exchange_indices: [],
-      }, sqliteAssertion)).toBeNull();
+        context_dependencies: [],
+      }, sqliteAssertion);
+
+      expect(accepted).toEqual(expect.objectContaining({ fact: 'This project uses Redis.' }));
+      expect(accepted?.fact_kr).toBeUndefined();
+      expect(await verifyExtractedFactCandidates(
+        [accepted!],
+        sqliteAssertion,
+        async () => '[{"candidate_index":1,"verdict":"CONTRADICTED"}]',
+      )).toEqual([false]);
     });
 
     it('rejects negative human text declared as positive ratification', () => {
@@ -308,7 +316,7 @@ describe('Fact Extractor', () => {
       }])).toBeNull();
     });
 
-    it('rejects semantic laundering through an unrelated trusted tool result', () => {
+    it('leaves unrelated trusted tool semantics to the mandatory verifier', async () => {
       const toolExchanges = [{
         ...exchanges[0],
         tool_evidence: [{
@@ -320,7 +328,7 @@ describe('Fact Extractor', () => {
           is_error: 0,
         }],
       }];
-      expect(validateExtractedFactCandidate({
+      const accepted = validateExtractedFactCandidate({
         ...explicitCandidate,
         fact: 'This project uses SQLite.',
         grounding_type: 'verified',
@@ -333,8 +341,18 @@ describe('Fact Extractor', () => {
           source_type: 'repo_file',
           supporting_span: 'DATABASE_URL=postgres://local',
         }],
-        context_exchange_indices: [],
-      }, toolExchanges)).toBeNull();
+        context_dependencies: [],
+      }, toolExchanges);
+
+      expect(accepted).toEqual(expect.objectContaining({
+        fact: 'This project uses SQLite.',
+        source_exchange_ids: ['e1'],
+      }));
+      expect(await verifyExtractedFactCandidates(
+        [accepted!],
+        toolExchanges,
+        async () => '[{"candidate_index":1,"verdict":"NOT_ENOUGH"}]',
+      )).toEqual([false]);
     });
 
     it('rejects irrelevant or non-ratification context dependencies', () => {
@@ -859,7 +877,7 @@ describe('Fact Extractor', () => {
       ]);
     });
 
-    it('keeps a two-turn watermark antecedent and conditionally anchors proceed replies', () => {
+    it('keeps a two-turn watermark antecedent and still opens long-range proceed replies', () => {
       const proposal = {
         ...exchange(0, 'Which database should we use?'),
         assistant_message: 'Use SQLite for this project.',
@@ -878,7 +896,9 @@ describe('Fact Extractor', () => {
       ]).map((window) => window.map((item) => item.id))).toEqual([
         ['e0', 'e1', 'e2'],
       ]);
-      expect(buildExtractionWindows([exchange(2, '진행해줘')])).toEqual([]);
+      expect(buildExtractionWindows([exchange(2, '진행해줘')])).toEqual([
+        [exchange(2, '진행해줘')],
+      ]);
     });
   });
 
