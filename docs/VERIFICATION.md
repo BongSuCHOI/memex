@@ -145,6 +145,10 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - human evidence는 exact supporting span, non-question, claim token binding을 모두 통과해야 함
 - trusted tool 선언은 실제 DB `tool_call_id/tool_name/source_type/learnable/is_error`, exact result
   span, claim token binding과 일치해야 통과
+- canonical `fact`만 binding에 참여하고 `fact_kr` poisoning은 acceptance 및 저장을 rescue하지 못함
+- 구조 통과 candidate는 bounded authoritative source text 기반 semantic verifier의 단일 `ENTAILED` verdict 필요
+- polarity inversion, 비교 imperative, one-off→global preference, negative ratification은 fail-closed
+- verifier verdict 누락·중복·malformed도 candidate별 fail-closed
 - inferred candidate는 서로 다른 authoritative exchange 2개 이상 필요
 - accepted `source_exchange_ids`에는 validated human/tool exchange UUID만 존재
 - recall 영향을 받은 assistant text는 conversation FTS에서 계속 검색 가능
@@ -159,13 +163,13 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - prefix 단독은 anchor/model call을 만들지 않고 prefix human/tool evidence 선언은 hard reject
 - boundary ratification은 prefix assistant referent를 보되 persisted lineage는 신규 human UUID만 포함
 - prefix 도입 후에도 no-new-row/claim/retry와 completion watermark 원자 commit 계약이 유지
-- `precision-durability-v2`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
+- `precision-durability-v3`의 evidence binding 및 grounding→durability→category/scope→confidence gate가 prompt에 존재
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리
 - current-state correction과 recall-backed new ratification은 새 human authority로 복구
 - fact count 목표는 없으며 runtime maximum은 safety cap으로만 문서화
 
-Phase 5의 동일 17-case Luna 비교는 fixture SHA를 유지한 채 17/17 PASS, matched 11/11,
+Phase 5의 `precision-durability-v2` 동일 17-case Luna 비교는 fixture SHA를 유지한 채 17/17 PASS, matched 11/11,
 precision/positive recall/negative accuracy/ratification/verified-local 100%, self-amplification
 leakage 0, model call 17회를 관측했습니다. Synthetic raw report는 개인정보가 없으므로
 `docs/verification/fact-extraction-current.json`에 commit합니다.
@@ -201,6 +205,10 @@ context-resolved ratification은 5였습니다. Phase 0 baseline 대비 improvem
 raw report는 `docs/verification/fact-extraction-current.json`에 commit합니다. 이 run은 clean
 implementation commit에서 실행됐고 report의 `run_context.git_dirty=false`입니다. 정확한 SHA는
 report의 `run_context.git_head`를 기준으로 확인합니다.
+
+이 committed raw report는 `precision-durability-v2` runtime의 역사적 증거입니다. 이후 도입된
+`precision-durability-v3` entailment verifier의 model 품질이나 비용을 증명하지 않으며, 새 clean-SHA
+merge gate가 필요할 때만 같은 fixture로 별도 report를 재생성합니다.
 
 승인된 post-review read-only archive shadow는 같은 3 sessions / 38 exchanges에서 execution error
 0, candidate 16 / accepted 14 / `rejected_invalid_evidence` 2를 관측했습니다. 로컬 수동 판정은

@@ -11,6 +11,8 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
  */
 
 let calls = 0;
+let verifierCalls = 0;
+let verifierVerdicts: string[] | null = null;
 let promptWindows: Array<{ exchanges: Array<{
   human_evidence: string | null;
   human_context_only?: string | null;
@@ -21,7 +23,15 @@ let sourceIndicesPerFact: number[][] | null = null;
 let contextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
-  callMemoryModel: async (_systemPrompt: string, userMessage: string) => {
+  callMemoryModel: async (systemPrompt: string, userMessage: string) => {
+    if (systemPrompt.includes('authoritative-entailment-v1')) {
+      verifierCalls++;
+      const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
+      return JSON.stringify(envelope.candidates.map((_, index) => ({
+        candidate_index: index + 1,
+        verdict: verifierVerdicts?.[index] ?? 'ENTAILED',
+      })));
+    }
     calls++;
     const envelope = JSON.parse(userMessage);
     promptWindows.push(envelope);
@@ -29,12 +39,8 @@ vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) => {
       const sourceIndices = sourceIndicesPerFact?.[i] ?? [1];
       const contextIndices = contextIndicesPerFact?.[i] ?? [];
-      const bindingText = contextIndices.length > 0
-        ? contextIndices.map(index => envelope.exchanges[index - 1].assistant_context_only.content).join(' ')
-        : sourceIndices.map(index => envelope.exchanges[index - 1]?.human_evidence ?? '').join(' ');
       return {
-        fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`,
-        fact_kr: bindingText,
+        fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i} Riverpod`,
         category: 'preference',
         scope_type: 'project',
         confidence: 0.9,
@@ -68,7 +74,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -90,9 +96,23 @@ describe('claim E2E', () => {
       "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%' ORDER BY fact",
     ).all() as Array<{ fact: string; source_exchange_ids: string }>;
     expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
-      ['dup-probe-1-0', ['e0']],
-      ['dup-probe-1-1', ['e1']],
+      ['dup-probe-1-0 Riverpod', ['e0']],
+      ['dup-probe-1-1 Riverpod', ['e1']],
     ]);
+    expect(verifierCalls).toBe(1);
+  });
+
+  it('semantic verifier가 polarity contradiction을 거부하면 fact를 저장하지 않는다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    db.prepare("UPDATE exchanges SET user_message = 'We do not use Riverpod.' WHERE id = 'e0'").run();
+    verifierVerdicts = ['CONTRADICTED'];
+
+    const result = await runFactExtraction(db, 'S1', '/tmp/p');
+
+    expect(result.extracted).toBe(0);
+    expect(calls).toBe(1);
+    expect(verifierCalls).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(0);
   });
 
   it('source exchange index 누락·범위 이탈 fact는 저장하지 않고 중복 index는 정규화한다', async () => {
@@ -107,7 +127,7 @@ describe('claim E2E', () => {
       "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%'",
     ).all() as Array<{ fact: string; source_exchange_ids: string }>;
     expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
-      ['dup-probe-1-3', ['e1']],
+      ['dup-probe-1-3 Riverpod', ['e1']],
     ]);
   });
 
@@ -126,12 +146,12 @@ describe('claim E2E', () => {
         'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
       );
     }
-    factNameForCall = () => 'cross-batch-fact';
+    factNameForCall = () => 'cross-batch-fact 상태관리';
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     const row = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact'",
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact 상태관리'",
     ).get() as { source_exchange_ids: string };
     expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e3']);
     expect(promptWindows.map((window) => window.exchanges.length)).toEqual([5, 3]);
@@ -149,7 +169,7 @@ describe('claim E2E', () => {
     expect(calls).toBe(1);
     expect(promptWindows[0].exchanges.map((exchange) => exchange.human_evidence)).toEqual(['왜?', '응']);
     const row = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-1-0'",
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-1-0 Riverpod'",
     ).get() as { source_exchange_ids: string };
     expect(JSON.parse(row.source_exchange_ids)).toEqual(['e1']);
   });
@@ -286,7 +306,7 @@ describe('claim E2E', () => {
       human_evidence: '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
     }));
     const incremental = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0'",
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0 Riverpod'",
     ).get() as { source_exchange_ids: string };
     expect(JSON.parse(incremental.source_exchange_ids)).toEqual(['e2']);
     const finalWatermark = (db.prepare(

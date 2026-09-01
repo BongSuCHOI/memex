@@ -73,8 +73,17 @@ Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
 검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
 대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
 정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
-질문 여부, claim-bearing token을 다시 대조하므로 질문이나 무관한 trusted tool을 authority로
-세탁한 candidate는 모델 confidence와 무관하게 폐기합니다.
+질문 여부, canonical `fact`의 claim-bearing token을 다시 대조합니다. `fact_kr`는 이 binding에
+참여하지 않고 extraction output에서도 폐기되므로 canonical fact를 rescue하거나 KR 검색 상태를
+오염시킬 수 없습니다.
+
+구조 검증을 통과한 candidate가 하나 이상이면 같은 window의 candidate를 한 batch로 별도
+`authoritative-entailment-v1` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
+durability와 server가 복원한 bounded authoritative source text를 비교하며 `ENTAILED`만 허용합니다.
+`CONTRADICTED`, `NOT_ENOUGH`, 누락, 중복, malformed verdict는 candidate별 fail-closed입니다.
+Ratification만 bounded assistant/recall referent를 non-authoritative context로 함께 보며, human text가
+그 referent를 긍정 채택해야 합니다. 명시적 rejection signal은 verifier 전 deterministic gate에서도
+거부합니다. 따라서 lexical overlap은 provenance prefilter일 뿐 entailment proof가 아닙니다.
 
 - `explicit` — valid human evidence가 최소 1개
 - `verified` — valid trusted tool evidence가 최소 1개
@@ -96,7 +105,7 @@ authority가 아니며 새 suffix의 referent 해석에만 쓰입니다. `진행
 
 ### Precision과 durability policy
 
-`precision-durability-v2` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
+`precision-durability-v3` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
 순서로 판정합니다.
 
 1. **Grounding** — explicit human, verified local tool, 또는 같은 결론을 독립적으로 지지하는
@@ -118,6 +127,10 @@ exchange만 durable lineage에 들어갑니다.
 
 Fact 개수 목표는 없습니다. `MAX_FACTS_PER_SESSION`은 과다 출력을 제한하는 safety cap이며 품질
 KPI가 아닙니다. 0개가 올바른 session은 `[]`가 정상 결과입니다.
+
+Entailment verifier는 구조 검증을 통과한 candidate가 있는 window에서만 한 번 호출됩니다. 따라서
+빈 generator 결과나 구조적으로 모두 거부된 window에는 추가 호출이 없습니다. Verifier 호출 실패는
+generator와 같은 deterministic/transient retry 계약을 따릅니다.
 
 ### Context-aware selection과 semantic window
 
@@ -200,8 +213,9 @@ latency를 기록합니다. Codex JSONL에 `turn.completed.usage`가 있을 때�
 Phase 6부터 같은 production validator가 eval-only in-memory accumulator에 candidate 판정을
 기록합니다. `candidate_count`는 model JSON array의 원소 수이고 `accepted_count`는 server
 validator를 통과한 candidate 수이므로, overlap dedup 이후의 `observed_fact_count`와 구분합니다.
-거절은 `invalid_schema`, `invalid_evidence`, `not_durable`, `grounding_rule`, `confidence` 중 정확히
-하나로 집계됩니다. accepted candidate는 explicit/verified/inferred grounding과, human
+거절은 `invalid_schema`, `invalid_evidence`, `not_durable`, `grounding_rule`, `confidence`,
+`semantic_verifier` 중 정확히 하나로 집계됩니다. accepted candidate는
+explicit/verified/inferred grounding과, human
 ratification이 context index를 사용해 해석된 횟수를 별도로 기록합니다. Production extraction은
 accumulator를 전달하지 않으며 이 통계는 DB, extraction log, sync payload에 저장되지 않습니다.
 

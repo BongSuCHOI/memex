@@ -14,13 +14,15 @@ import path from 'node:path';
  * deterministic 은 그 배치만 버리고 진행한다(=큐를 막지 않음).
  */
 
-const llmBehavior: { mode: 'transient' | 'deterministic' | 'ok' | 'unknown' } = { mode: 'ok' };
+const llmBehavior: {
+  mode: 'transient' | 'verifier_transient' | 'deterministic' | 'ok' | 'unknown';
+} = { mode: 'ok' };
 
 vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
   return {
     ...actual,
-    callMemoryModel: async () => {
+    callMemoryModel: async (systemPrompt: string, userMessage: string) => {
       if (llmBehavior.mode === 'transient') {
         throw Object.assign(new Error('service unavailable'), { status: 503 });
       }
@@ -30,6 +32,16 @@ vi.mock('../src/llm.js', async (importOriginal) => {
       if (llmBehavior.mode === 'unknown') {
         // 분류기가 인식 못 하는 shape (status 없음, 알려진 문구 없음)
         throw new Error('weird provider hiccup xyz');
+      }
+      if (systemPrompt.includes('authoritative-entailment-v1')) {
+        if (llmBehavior.mode === 'verifier_transient') {
+          throw Object.assign(new Error('verifier service unavailable'), { status: 503 });
+        }
+        const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
+        return JSON.stringify(envelope.candidates.map((_, index) => ({
+          candidate_index: index + 1,
+          verdict: 'ENTAILED',
+        })));
       }
       return JSON.stringify([
         { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9,
@@ -122,6 +134,14 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     const result = await runFactExtraction(db, SESSION, PROJECT);
     expect(result.extracted).toBeGreaterThan(0);
     expect(loggedSessions()).toContain(SESSION); // 이제서야 완료 기록
+  });
+
+  it('AC4g: verifier transient 실패도 완료 마커 없이 다음 run으로 이연한다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    llmBehavior.mode = 'verifier_transient';
+
+    await expect(runFactExtraction(db, SESSION, PROJECT)).rejects.toThrow(/verifier service unavailable/);
+    expect(loggedSessions()).not.toContain(SESSION);
   });
 
   it('AC4d: 인식 못 한 에러(unknown)도 세션을 잃지 않는다 (Codex 리뷰 회귀 고정)', async () => {

@@ -17,6 +17,21 @@ const fixturePath = path.join(
   "fact-extraction-cases.json",
 );
 
+function entailmentVerification(
+  systemPrompt: string,
+  userMessage: string,
+): { text: string; tokenUsage: { input_tokens: number; output_tokens: number } } | null {
+  if (!systemPrompt.includes('authoritative-entailment-v1')) return null;
+  const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
+  return {
+    text: JSON.stringify(envelope.candidates.map((_, index) => ({
+      candidate_index: index + 1,
+      verdict: 'ENTAILED',
+    }))),
+    tokenUsage: { input_tokens: 10, output_tokens: 2 },
+  };
+}
+
 describe("fact extraction evaluation fixture", () => {
   it("covers every required Phase 0 scenario", () => {
     const fixture = parseFactExtractionFixture(
@@ -124,7 +139,9 @@ describe("fact extraction evaluation fixture", () => {
     const report = await evaluateFactExtractionFixture(fixture, {
       model: "fixture-model",
       createdAt: "2026-08-31T00:00:00.000Z",
-      invokeModel: async ({ caseId }) => {
+      invokeModel: async ({ caseId, systemPrompt, userMessage }) => {
+        const verification = entailmentVerification(systemPrompt, userMessage);
+        if (verification) return verification;
         if (caseId === "accepted") {
           return {
             text: JSON.stringify([
@@ -182,9 +199,9 @@ describe("fact extraction evaluation fixture", () => {
       matched_fact_count: 1,
       false_positive_count: 0,
       self_amplification_leakage_count: 0,
-      model_calls: 3,
-      input_tokens: 240,
-      output_tokens: 42,
+      model_calls: 4,
+      input_tokens: 250,
+      output_tokens: 44,
     });
     expect(report.cases.find((entry) => entry.id === "unsupported")).toEqual(
       expect.objectContaining({ passed: true, issues: [] }),
@@ -318,7 +335,10 @@ describe("fact extraction evaluation fixture", () => {
 
     const report = await evaluateFactExtractionFixture(fixture, {
       model: "fixture-model",
-      invokeModel: async () => ({ text: JSON.stringify([...accepted, ...rejected]) }),
+      invokeModel: async ({ systemPrompt, userMessage }) =>
+        entailmentVerification(systemPrompt, userMessage) ?? {
+          text: JSON.stringify([...accepted, ...rejected]),
+        },
     });
 
     expect(report.summary).toMatchObject({
@@ -420,8 +440,9 @@ describe("fact extraction evaluation fixture", () => {
     });
     const report = await evaluateFactExtractionFixture(fixture, {
       model: "fixture-model",
-      invokeModel: async () => ({
-        text: JSON.stringify([{
+      invokeModel: async ({ systemPrompt, userMessage }) =>
+        entailmentVerification(systemPrompt, userMessage) ?? ({
+          text: JSON.stringify([{
           fact: "Deduplication prevents duplicate-email failures in the auth callback.",
           category: "pattern",
           scope_type: "project",
@@ -434,8 +455,8 @@ describe("fact extraction evaluation fixture", () => {
             kind: "assertion",
             supporting_span: "Duplicate-email failures in the auth callback",
           }],
-        }]),
-      }),
+          }]),
+        }),
     });
     expect(report.cases[0].passed).toBe(true);
   });
@@ -508,8 +529,9 @@ describe("fact extraction evaluation fixture", () => {
         {
           model: "fixture-model",
           createdAt: "2026-08-31T00:00:00.000Z",
-          invokeModel: async () => ({
-            text: JSON.stringify([
+          invokeModel: async ({ systemPrompt, userMessage }) =>
+            entailmentVerification(systemPrompt, userMessage) ?? ({
+              text: JSON.stringify([
               {
                 fact: "This project uses SQLite.",
                 category: "knowledge",
@@ -525,8 +547,8 @@ describe("fact extraction evaluation fixture", () => {
                 }],
               },
             ]),
-            tokenUsage: { input_tokens: 10, output_tokens: 4 },
-          }),
+              tokenUsage: { input_tokens: 10, output_tokens: 4 },
+            }),
         },
       );
       expect(report.mode).toBe("shadow");

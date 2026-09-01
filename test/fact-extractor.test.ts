@@ -4,12 +4,14 @@ import {
   EXTRACTION_SYSTEM_PROMPT,
   buildExtractionWindows,
   buildExtractionPrompt,
+  buildFactEntailmentVerifierPrompt,
   isCandidateAnchorExchange,
   isContextEligibleExchange,
   normalizeFactText,
   passesConfidenceGate,
   selectSpreadWindows,
   validateExtractedFactCandidate,
+  verifyExtractedFactCandidates,
 } from '../src/fact-extractor.js';
 
 describe('Fact Extractor', () => {
@@ -156,7 +158,7 @@ describe('Fact Extractor', () => {
     });
 
     it('publishes the Phase 5 precision/durability decision gates as a versioned policy', () => {
-      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v2');
+      expect(EXTRACTION_POLICY_VERSION).toBe('precision-durability-v3');
       expect(EXTRACTION_SYSTEM_PROMPT).toContain(`policy_version: ${EXTRACTION_POLICY_VERSION}`);
       for (const gate of [
         'GATE_1_GROUNDING',
@@ -228,6 +230,7 @@ describe('Fact Extractor', () => {
         durable: true,
       }));
       expect(accepted?.source_exchange_ids).not.toContain('e1');
+      expect(accepted?.fact_kr).toBeUndefined();
     });
 
     it('hard-rejects assistant, recall, and external evidence declarations', () => {
@@ -255,6 +258,40 @@ describe('Fact Extractor', () => {
         ...explicitCandidate,
         evidence: [{ exchange_index: 2, source: 'human', kind: 'ratification' }],
       }, exchanges)).toBeNull();
+    });
+
+    it('does not let fact_kr rescue an unrelated canonical fact', () => {
+      const sqliteAssertion = [{
+        ...exchanges[0],
+        user_message: 'This project uses SQLite.',
+      }];
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        fact: 'This project uses Redis.',
+        fact_kr: '이 프로젝트는 SQLite를 사용한다.',
+        evidence: [{
+          exchange_index: 1,
+          source: 'human',
+          kind: 'assertion',
+          supporting_span: 'SQLite',
+        }],
+        context_exchange_indices: [],
+      }, sqliteAssertion)).toBeNull();
+    });
+
+    it('rejects negative human text declared as positive ratification', () => {
+      expect(validateExtractedFactCandidate({
+        ...explicitCandidate,
+        evidence: [{
+          exchange_index: 2,
+          source: 'human',
+          kind: 'ratification',
+          supporting_span: '아니, 그건 쓰지 마.',
+        }],
+      }, [exchanges[0], {
+        ...exchanges[1],
+        user_message: '아니, 그건 쓰지 마.',
+      }])).toBeNull();
     });
 
     it('rejects semantic laundering through an unrelated trusted tool result', () => {
@@ -475,6 +512,153 @@ describe('Fact Extractor', () => {
         exchange_id: 'e1',
         dependency_kind: 'recall_influenced_assistant',
       }]);
+    });
+  });
+
+  describe('semantic entailment verifier', () => {
+    const verifierExchanges = [
+      {
+        id: 'v1',
+        user_message: 'We do not use SQLite.',
+        assistant_message: 'Acknowledged.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'v2',
+        user_message: 'SQLite랑 PostgreSQL 비교해줘.',
+        assistant_message: 'Comparing them.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'v3',
+        user_message: '이번 패키지만 pnpm으로 설치해줘.',
+        assistant_message: 'Installing it.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'v4',
+        user_message: 'Which database should we use?',
+        assistant_message: 'SQLite로 가는 게 좋겠습니다.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'v5',
+        user_message: '아니, 그건 쓰지 마.',
+        assistant_message: 'Understood.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+      {
+        id: 'v6',
+        user_message: 'This project uses PostgreSQL.',
+        assistant_message: 'Acknowledged.',
+        provenance: '["human_assertion"]',
+        assistant_learnable: 0,
+        has_memex_recall: 0,
+        tool_evidence: [],
+      },
+    ];
+    const candidates = [
+      {
+        fact: 'This project uses SQLite.',
+        fact_kr: '이 프로젝트는 SQLite를 사용한다.',
+        category: 'knowledge' as const,
+        scope_type: 'project' as const,
+        confidence: 0.95,
+        grounding_type: 'explicit' as const,
+        durable: true,
+        evidence: [{ exchange_index: 1, source: 'human' as const, kind: 'assertion' as const, supporting_span: 'SQLite' }],
+        source_exchange_ids: ['v1'],
+      },
+      {
+        fact: 'This project uses SQLite.',
+        category: 'decision' as const,
+        scope_type: 'project' as const,
+        confidence: 0.95,
+        grounding_type: 'explicit' as const,
+        durable: true,
+        evidence: [{ exchange_index: 2, source: 'human' as const, kind: 'assertion' as const, supporting_span: 'SQLite' }],
+        source_exchange_ids: ['v2'],
+      },
+      {
+        fact: 'The user prefers pnpm across projects.',
+        category: 'preference' as const,
+        scope_type: 'global' as const,
+        confidence: 0.95,
+        grounding_type: 'explicit' as const,
+        durable: true,
+        evidence: [{ exchange_index: 3, source: 'human' as const, kind: 'assertion' as const, supporting_span: 'pnpm' }],
+        source_exchange_ids: ['v3'],
+      },
+      {
+        fact: 'This project will use SQLite.',
+        category: 'decision' as const,
+        scope_type: 'project' as const,
+        confidence: 0.95,
+        grounding_type: 'explicit' as const,
+        durable: true,
+        evidence: [{ exchange_index: 5, source: 'human' as const, kind: 'ratification' as const, supporting_span: '아니, 그건 쓰지 마.' }],
+        context_exchange_indices: [4],
+        source_exchange_ids: ['v5'],
+      },
+      {
+        fact: 'This project uses PostgreSQL.',
+        category: 'knowledge' as const,
+        scope_type: 'project' as const,
+        confidence: 0.95,
+        grounding_type: 'explicit' as const,
+        durable: true,
+        evidence: [{ exchange_index: 6, source: 'human' as const, kind: 'assertion' as const, supporting_span: 'PostgreSQL' }],
+        source_exchange_ids: ['v6'],
+      },
+    ];
+
+    it('sends canonical facts with full authoritative sentences and bounded ratification context', () => {
+      const prompt = buildFactEntailmentVerifierPrompt(candidates, verifierExchanges);
+      expect(prompt).toContain('We do not use SQLite.');
+      expect(prompt).toContain('SQLite랑 PostgreSQL 비교해줘.');
+      expect(prompt).toContain('이번 패키지만 pnpm으로 설치해줘.');
+      expect(prompt).toContain('Which database should we use?');
+      expect(prompt).toContain('SQLite로 가는 게 좋겠습니다.');
+      expect(prompt).not.toContain('이 프로젝트는 SQLite를 사용한다.');
+    });
+
+    it('accepts only one complete ENTAILED verdict and fails closed on semantic adversaries', async () => {
+      const accepted = await verifyExtractedFactCandidates(
+        candidates,
+        verifierExchanges,
+        async () => JSON.stringify([
+          { candidate_index: 1, verdict: 'CONTRADICTED' },
+          { candidate_index: 2, verdict: 'NOT_ENOUGH' },
+          { candidate_index: 3, verdict: 'CONTRADICTED' },
+          { candidate_index: 4, verdict: 'CONTRADICTED' },
+          { candidate_index: 5, verdict: 'ENTAILED' },
+        ]),
+      );
+      expect(accepted).toEqual([false, false, false, false, true]);
+
+      expect(await verifyExtractedFactCandidates(
+        [candidates[4]],
+        verifierExchanges,
+        async () => JSON.stringify([
+          { candidate_index: 1, verdict: 'ENTAILED' },
+          { candidate_index: 1, verdict: 'ENTAILED' },
+        ]),
+      )).toEqual([false]);
     });
   });
 

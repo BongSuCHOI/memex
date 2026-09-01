@@ -176,7 +176,11 @@ sequenceDiagram
 
     C->>H: SessionEnd
     H->>D: claim new exchange rows
-    H->>L: extraction/consolidation/classification
+    H->>L: extraction candidate generation
+    L-->>H: structured candidates + evidence declarations
+    H->>L: authoritative entailment verification
+    L-->>H: ENTAILED / CONTRADICTED / NOT_ENOUGH
+    H->>L: consolidation/classification
     L-->>H: structured results
     H->>D: atomic fact/provenance/watermark commit
     H->>S: export durable generation

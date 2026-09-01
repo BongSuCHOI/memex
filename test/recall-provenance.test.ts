@@ -337,7 +337,12 @@ describe("Memex recall provenance", () => {
       undefined,
       undefined,
       {
-        modelCall: async () => JSON.stringify([
+        modelCall: async (systemPrompt, userMessage) => systemPrompt.includes('authoritative-entailment-v1')
+          ? JSON.stringify((JSON.parse(userMessage) as { candidates: unknown[] }).candidates.map((_, index) => ({
+              candidate_index: index + 1,
+              verdict: 'ENTAILED',
+            })))
+          : JSON.stringify([
           {
             fact: "Assistant says this project uses SQLite.",
             category: "knowledge",
@@ -380,7 +385,7 @@ describe("Memex recall provenance", () => {
             }],
             context_exchange_indices: [],
           },
-        ]),
+          ]),
       },
     );
 

@@ -2358,20 +2358,22 @@ server가 validated window의 실제 exchange row에서 결정한다.
 - [x] human evidence는 exact `supporting_span`을 실제 user message와 대조
 - [x] human question을 assertion/decision/correction/repeated signal evidence로 사용할 수 없음
 - [x] trusted tool evidence는 exact `tool_call_id`와 result `supporting_span`을 실제 row와 대조
-- [x] candidate fact/fact_kr와 authoritative span 사이 claim-bearing token binding 요구
+- [x] canonical candidate fact와 authoritative span 사이 claim-bearing token binding 요구;
+      `fact_kr`는 extraction acceptance/output에서 제외
 - [x] watermark prefix depth를 1에서 최대 2 exchanges로 확대하되 authority는 계속 제거
 - [x] `진행해줘`/`proceed`/`continue`는 preceding watermark context가 있을 때만 anchor
 - [x] 긴 human/tool 본문은 head+tail을 함께 보존
 - [x] context dependency는 explicit ratification에만 허용하고, 앞선 최대 2개 claim-bearing
       assistant/recall context로 제한
 - [x] context 표기를 `model-declared, server-resolved after bounded causal checks`로 정정
-- [x] 동일 SHA 17-case current report와 approved archive shadow rerun으로 품질 증거 갱신
-- [x] committed SHA full gate와 merge receipt 재발행
+- [x] `precision-durability-v2` 동일 SHA 17-case report와 approved archive shadow rerun 보존
+- [x] `precision-durability-v2` committed SHA full gate와 merge receipt 보존
+- [ ] `precision-durability-v3` clean SHA에서 curated report와 merge receipt 재발행
 
-이 보완은 generator가 assistant/recall 문맥을 보는 기존 의미 해석 능력을 유지하면서도,
-최종 acceptance를 authoritative material에 deterministic하게 bind한다. 별도 model verifier는
-추가 호출 비용과 새로운 비결정성 없이 위 hard gate로 해결 가능한 현재 결함 범위에는 도입하지
-않는다.
+P1 재검토에서 lexical overlap만으로 polarity, one-off scope, ratification rejection을 판정할 수
+없음이 확인되어 위 결론을 supersede했다. Generator가 assistant/recall 문맥을 보는 기존 의미 해석
+능력은 유지하되, 구조 검증을 통과한 candidate가 있는 window만 별도 batched entailment verifier를
+한 번 호출한다. `ENTAILED` 단일 verdict만 저장하고 나머지는 fail-closed한다.
 
 ---
 
