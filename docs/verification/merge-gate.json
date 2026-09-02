@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-02T03:45:10Z",
+  "recordedAt": "2026-09-02T04:26:29Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.0.0",
@@ -9,9 +9,9 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "11e2a723c1d12a42452b8b50ae7932a786d02962",
+    "codeSha": "d25738cadabcfc2069f4f3b9ddbf1207cb56e0b8",
     "productionEvidenceSha": "887c570a14b0f636031549ec2f73a62075ee470e",
-    "note": "The final deterministic gate ran from a clean tree at candidate.codeSha. The only files changed between productionEvidenceSha and candidate.codeSha are FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md and docs/VERIFICATION.md; runtime code, prompts, fixtures, tests, and scripts are identical. This receipt-only commit follows."
+    "note": "The final deterministic and browser gates ran from a clean tree at candidate.codeSha. The only files changed between productionEvidenceSha and candidate.codeSha are FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md, docs/VERIFICATION.md, and the superseded docs/verification/merge-gate.json; runtime code, prompts, fixtures, tests, and scripts are identical. This receipt-only commit follows."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -41,7 +41,7 @@
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
-      "observed": "93 pass / 0 fail on the exact isolated rerun; the sandbox attempt had one environment-only listen EPERM for the Unix inject-daemon socket"
+      "observed": "93 pass / 0 fail in the required isolated run that permits the Unix inject-daemon socket"
     },
     {
       "name": "fact-extraction-legacy-17",
@@ -64,9 +64,10 @@
       "evidence": {
         "selectionReceiptSha256": "0874a5f9d970836854b269bd3da0d1030a10dbabc1a15afa25d3e73fdeb858c9",
         "rawReportSha256": "8247aba961610e62ccaaf0622a10e4f0db1307a5b32a79c01e57eea75b768c85",
-        "manualReceiptSha256": "4054bbaa19ffee0e20436a56ff5dc4f32cae480f40ff6598c836decf194723af"
+        "manualReceiptSha256": "4054bbaa19ffee0e20436a56ff5dc4f32cae480f40ff6598c836decf194723af",
+        "missTaxonomyReceiptSha256": "09732b1c63593d7d015553a0d76ec3b335fda3e1adcf2e742b2c954e823b2006"
       },
-      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 24/20, execution errors 0; manual KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 14/6/0; generator/verifier calls 13/9; input/output/cache tokens 682299/12426/279040; latency 312753ms; database SHA-256 unchanged"
+      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 24/20, execution errors 0; manual KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 14/6/0; the seven reviewed miss clusters classify as direct assertion 0, explicit project-decision detail generator stochastic 2, human-ratification detail generator stochastic 1, verified tool 0, window/retrieval 0, verifier 0, precision-first bounded-task 3, broader-fact cluster overcount 1; generator/verifier calls 13/9; input/output/cache tokens 682299/12426/279040; latency 312753ms; database SHA-256 unchanged"
     },
     {
       "name": "install-e2e",
@@ -84,7 +85,13 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz, 191 files, 760099 packed bytes / 3010831 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
+      "observed": "memex-0.2.0.tgz, 191 files, 761256 packed bytes / 3013829 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
+    },
+    {
+      "name": "web-ui-browser-e2e",
+      "command": "node scripts/web-ui-browser-e2e.mjs",
+      "status": "PASS",
+      "observed": "Google Chrome headless over CDP at 1440x900; Fact Detail rendered the authoritative-provenance/non-authoritative-context heading, context_only authority, assistant_context dependency kind, and context exchange ID; horizontal overflow false and runtime errors 0"
     },
     {
       "name": "lifecycle-e2e",
@@ -108,7 +115,11 @@
     "selectionFrozenBeforeContentReview": true,
     "sessionsReplacedAfterResults": false,
     "privateArtifactsContainExactIds": true,
+    "knownMissTaxonomyRecorded": true,
+    "systematicAuthorityClassFailureObserved": false,
+    "windowOrRetrievalMisses": 0,
+    "verifierMisses": 0,
     "verdict": "PASS-WITH-NOTES"
   },
-  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates and all hard-safety conditions passed. The notes preserve two quality observations without rewriting evidence: the P2 full run was 22/23 with an immediate same-SHA lg2 targeted PASS attributed to non-reproducible verifier variance, and the new deterministic archive baseline observed five semantic duplicates plus at least seven important miss clusters. No systematic workflow-adoption verifier miss or authority leakage was observed in the archive shadow."
+  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates, the Phase 7 browser E2E, and all hard-safety conditions passed. The notes preserve two quality observations without rewriting evidence: the P2 full run was 22/23 with an immediate same-SHA lg2 targeted PASS attributed to non-reproducible verifier variance, and the new deterministic archive baseline observed five semantic duplicates plus at least seven important miss clusters. All seven reviewed miss clusters were inside selected generator windows; three authoritative detail clusters were non-systematic generator omissions, while no authority-class hard-gate failure, window/retrieval miss, verifier miss, workflow-adoption miss, or authority leakage was observed."
 }
