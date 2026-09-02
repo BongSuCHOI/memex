@@ -188,7 +188,6 @@ describe('claim E2E', () => {
     db.prepare("UPDATE exchanges SET user_message = '왜?' WHERE id = 'e0'").run();
     db.prepare("UPDATE exchanges SET user_message = '응' WHERE id = 'e1'").run();
     sourceIndicesPerFact = [[2]];
-    contextIndicesPerFact = [[1]];
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 

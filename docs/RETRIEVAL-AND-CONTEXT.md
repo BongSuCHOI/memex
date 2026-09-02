@@ -109,6 +109,9 @@ relevance, Fact authority, `source_exchange_ids`, recall learnability를 변경�
 Strong deictic adoption은 기존 ranking과 함께 최근 substantive semantic material 최대 2개를 낮은
 score fallback으로 유지해 open-vocabulary recommendation을 verifier까지 전달합니다. 전체 candidate
 상한은 계속 5개이고 여러 referent가 plausible하면 verifier는 `NOT_ENOUGH`로 fail-closed합니다.
+현재 non-watermark local exchange는 long-range pool에서 제외해 local index와 persistent dependency로
+이중 기록하지 않습니다. Watermark prefix는 historical dependency가 필요할 수 있어 이 제외 대상이
+아닙니다.
 
 ## 7. Derived state와 retrieval
 

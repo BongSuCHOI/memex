@@ -373,6 +373,9 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
   context ID in used_context_dependencies and every necessary immediate local exchange index in
   used_local_context_exchange_indices. If the necessary referent cannot be identified exactly,
   return NOT_ENOUGH. Context usage never adds authority.
+- MAX_THREE_VERIFIER_CONTEXT_DEPENDENCIES: return at most 3 used_context_dependencies. If the
+  complete fact truly requires more than 3 historical referents, return NOT_ENOUGH. Do not duplicate
+  a local exchange as a historical dependency; use its local exchange index only.
 - A human statement that the current style or workflow is right and should continue going forward
   is explicit adoption. The selected recent context may define the accumulated current style or
   workflow; do not require the adoption sentence to repeat its concrete attributes.
@@ -392,7 +395,11 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
   recommendation even when other alternatives exist. Do not return NOT_ENOUGH merely because later
   alternatives were discussed.
 - HUMAN_ORIGIN_REAFFIRMATION: a human statement to keep an earlier human-authored decision can entail
-  that renewed project decision when the referenced decision is clear.
+  that renewed project decision when the referenced decision is clear. Inspect candidate
+  human_context as well as assistant content: one earlier explicit human decision may be the exact
+  referent even though its assistant reply merely acknowledges it. Unrelated questions, one-off
+  tasks, and explanations do not create ambiguity with that decision. If multiple competing prior
+  decisions remain plausible, return NOT_ENOUGH; otherwise report the one needed context ID.
 - TAG_QUESTION_DIRECTIVE: a purely information-seeking question is NOT_ENOUGH. An otherwise explicit
   durable directive or requirement is not a mere question only because it ends with a question mark
   or tag question.
@@ -882,6 +889,11 @@ export function selectLongRangeReferentCandidates(
   localExchanges: ExtractionValidationExchange[],
   sessionExchanges: ExtractionValidationExchange[],
 ): LongRangeReferentCandidate[] {
+  const localExchangeIds = new Set(
+    localExchanges
+      .filter((exchange) => !booleanFlag(exchange.context_only_due_to_watermark))
+      .map((exchange) => exchange.id),
+  );
   const anchors = localExchanges.filter(
     (exchange) =>
       !booleanFlag(exchange.context_only_due_to_watermark) &&
@@ -928,7 +940,13 @@ export function selectLongRangeReferentCandidates(
     const poolStart = Math.max(0, anchorIndex - MAX_LONG_RANGE_POOL);
     for (let index = poolStart; index < anchorIndex; index++) {
       const exchange = sessionExchanges[index];
-      if (!exchange || !isContextEligibleExchange(exchange.user_message)) continue;
+      if (
+        !exchange ||
+        localExchangeIds.has(exchange.id) ||
+        !isContextEligibleExchange(exchange.user_message)
+      ) {
+        continue;
+      }
       const content = referentMaterial(exchange);
       if (!content) continue;
       const rankingMaterial = referentRankingMaterial(exchange);
@@ -977,19 +995,28 @@ export function selectLongRangeReferentCandidates(
         .slice(poolStart, anchorIndex)
         .map((exchange, offset) => ({ exchange, index: poolStart + offset }))
         .filter(({ exchange }) =>
+          !localExchangeIds.has(exchange.id) &&
           isContextEligibleExchange(exchange.user_message) &&
-          referentMaterial(exchange).trim().length >= 20 &&
-          !selected.has(exchange.id),
+          referentMaterial(exchange).trim().length >= 20,
         )
         .slice(-2);
       for (const { exchange, index } of fallback) {
         const distance = anchorIndex - index;
-        selected.set(exchange.id, {
-          exchange,
-          distance,
-          score: 1 + (MAX_LONG_RANGE_POOL - distance) / MAX_LONG_RANGE_POOL,
-          anchorIds: new Set([anchor.id]),
-        });
+        const fallbackScore =
+          1 + (MAX_LONG_RANGE_POOL - distance) / MAX_LONG_RANGE_POOL;
+        const existing = selected.get(exchange.id);
+        if (existing) {
+          existing.anchorIds.add(anchor.id);
+          existing.distance = Math.min(existing.distance, distance);
+          existing.score = Math.max(existing.score, fallbackScore);
+        } else {
+          selected.set(exchange.id, {
+            exchange,
+            distance,
+            score: fallbackScore,
+            anchorIds: new Set([anchor.id]),
+          });
+        }
       }
     }
   }

@@ -144,6 +144,11 @@ language-specific reference/action 구조로 감지하며 기존 lexical/proposa
 material 최대 2개를 bounded fallback으로 예약합니다. Natural recommendation/workflow material도
 ranking bonus를 받습니다. Fallback은 verifier에 보이는 non-authoritative 후보만 넓히며 authority,
 persistence 또는 acceptance threshold를 우회하지 않습니다.
+현재 non-watermark `local_exchanges`는 같은 window의 `local_context_before_authority`로만 제공하고
+long-range candidate로 중복 노출하지 않습니다. Watermark 이전 prefix는 local window에 인접해 있어도
+historical context이므로 `context_id` candidate로 남아 필요한 persistent dependency를 보존합니다.
+Verifier는 historical dependency를 최대 3개만 반환하며, 같은 local exchange를 두 lineage로 중복
+사용하지 않습니다.
 
 Tier-C `inferred` grounding은 현재 같은 session의 현재 authoritative extraction window 안에서 서로
 다른 human/tool exchange가 같은 결론을 독립적으로 지지할 때만 허용합니다. Cross-session generic

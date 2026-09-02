@@ -3395,12 +3395,15 @@ artifact에 고정하며 historical 3 sessions / 38 exchanges 수치와 직접 �
 1. 같은 session의 이전 최대 30개 exchange만 historical pool로 읽고 candidate는 최대 5개다.
 2. Strong reference는 기존 ranking을 유지하면서 natural recommendation material과 최근 substantive
    semantic material 최대 2개 bounded fallback을 verifier에 non-authoritative context로 제공한다.
+   현재 non-watermark local exchange는 long-range candidate에서 제외하고, watermark prefix만
+   historical dependency 보존을 위해 candidate가 될 수 있다.
 3. `authoritative-entailment-v3`는 `ENTAILED` context-derived candidate마다 removal test로 필요한
    `used_context_dependencies`와 `used_local_context_exchange_indices`를 반환한다.
 4. Server는 verifier usage를 available pool, authoritative anchor, relation allowlist, authority overlap,
    local pre-authority 범위, fact당 최대 3개 상한으로 검증해 canonical dependency set을 만든다.
 5. Generator가 빼먹은 required dependency는 verified usage로 추가하고, declared-but-unused dependency는
-   제거한다. Required usage가 누락·모호·malformed면 candidate를 fail-closed로 폐기한다.
+   제거한다. Verifier historical usage는 최대 3개이며 local/historical duplicate usage를 허용하지
+   않는다. Required usage가 누락·모호·malformed면 candidate를 fail-closed로 폐기한다.
 6. `source_exchange_ids`는 human assertion/decision/correction/ratification 또는 trusted local tool
    exchange만 포함한다. Assistant, recall, historical referent, local semantic context는 포함하지 않는다.
 7. Tier-C inferred signal은 같은 session의 현재 authoritative extraction window에 한정한다. Generic

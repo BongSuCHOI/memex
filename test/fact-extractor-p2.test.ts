@@ -158,6 +158,33 @@ describe('P2 long-range context and global scope', () => {
     }
   });
 
+  it('keeps local exchanges out of the long-range dependency candidate pool', () => {
+    const session = [
+      base('e1', '먼저 조사해줘.', '코드를 조사했습니다.'),
+      base('e2', '대안을 비교해줘.', '대안을 비교했습니다.'),
+      base('e3', '앞으로도 이 순서로 해줘.', '순서를 유지하겠습니다.'),
+    ];
+
+    expect(selectLongRangeReferentCandidates(session, session)).toEqual([]);
+  });
+
+  it('links an already-ranked fallback candidate to the strong-reference anchor', () => {
+    const session = [
+      base('e1', 'Which storage note applies?', 'A substantive storage note applies here.'),
+      base('e2', 'Which storage note should we review?', 'Reviewing it.'),
+      base('e3', "Let's do that.", 'Proceeding.'),
+    ];
+
+    const candidates = selectLongRangeReferentCandidates(session.slice(1), session);
+
+    expect(candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        exchange_id: 'e1',
+        anchor_exchange_ids: expect.arrayContaining(['e3']),
+      }),
+    ]));
+  });
+
   it('does not let a generic pronoun flood retrieval with unrelated history', () => {
     const history = Array.from({ length: 10 }, (_, index) =>
       base(`e${index + 1}`, `Budget note ${index + 1}.`, 'Recorded.'),
