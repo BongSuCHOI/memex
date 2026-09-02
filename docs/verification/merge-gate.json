@@ -1,18 +1,19 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-08-31T18:48:32Z",
+  "recordedAt": "2026-09-02T03:45:10Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
-    "node": "v26.7.0",
+    "node": "v26.0.0",
     "platform": "darwin arm64"
   },
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "7c970747873db106785544405e04b8c29141165d",
-    "note": "Evidence was run from a clean working tree at the committed code SHA above. This receipt-only commit follows; runtime code, tests, generated artifacts, scripts, owner documentation, and the committed curated report are unchanged after the evidence run."
+    "codeSha": "11e2a723c1d12a42452b8b50ae7932a786d02962",
+    "productionEvidenceSha": "887c570a14b0f636031549ec2f73a62075ee470e",
+    "note": "The final deterministic gate ran from a clean tree at candidate.codeSha. The only files changed between productionEvidenceSha and candidate.codeSha are FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md and docs/VERIFICATION.md; runtime code, prompts, fixtures, tests, and scripts are identical. This receipt-only commit follows."
   },
-  "verdict": "PASS",
+  "verdict": "PASS-WITH-NOTES",
   "gates": [
     {
       "name": "typecheck",
@@ -28,7 +29,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "69 files / 635 tests passed"
+      "observed": "70 files / 680 tests passed"
     },
     {
       "name": "codex-slice",
@@ -40,47 +41,74 @@
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
-      "observed": "93 pass / 0 fail; isolated local rerun allowed the Unix-socket listener that the filesystem sandbox blocks with EPERM"
+      "observed": "93 pass / 0 fail on the exact isolated rerun; the sandbox attempt had one environment-only listen EPERM for the Unix inject-daemon socket"
     },
     {
-      "name": "fact-extraction-curated",
-      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out docs/verification/fact-extraction-current.json",
+      "name": "fact-extraction-legacy-17",
+      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out .fact-extraction-eval/final-17-887c570.json",
       "status": "PASS",
-      "observed": "same fixture SHA f45b4f0a...5bcd6; 17/17 cases, matched/observed 11/11, false positives 0, self-amplification leakage 0, explicit/verified/inferred 8/2/1, context-resolved ratification 5, regressions 0; committed raw report records clean production code SHA"
+      "evidenceSha256": "86c9b0a6a77c5a34f9c65b9cd61230acd9cbec4c4f99107c4de1cc231ee5db4a",
+      "observed": "clean productionEvidenceSha; fixture f45b4f0a...5bcd6; 17/17, matched/observed 11/11, false positives 0, self-amplification leakage 0, execution errors 0"
     },
     {
-      "name": "fact-extraction-shadow",
-      "command": "npm run eval:fact-extraction -- --session <approved-1> --session <approved-2> --session <approved-3> --out .fact-extraction-eval/shadow-severity-current.json",
-      "status": "PASS",
-      "observed": "read-only 3 sessions / 38 exchanges; candidate/accepted 16/14 with rejected_invalid_evidence 2 and execution errors 0; manual KEEP 11 / DROP-noise 3 / wrong category, scope, unsupported 0; archive DB SHA-256 unchanged before/after; raw report remains ignored private data"
+      "name": "fact-extraction-p2-composite",
+      "command": "full P2 evaluation followed by immediate lg2 targeted diagnostic at identical productionEvidenceSha",
+      "status": "PASS-WITH-NOTES",
+      "evidenceSha256": "c2d6446f354a3a9973c45e2b749cddfce16ae94cca87c48082033f57f4fea95d",
+      "observed": "full evaluation 22/23; only lg2 failed after one verifier semantic rejection. Its generator fact, preference category, global scope, and minimal context dependencies were correct. With no code, prompt, or fixture change, the immediate same-SHA targeted lg2 diagnostic passed 1/1 with verifier ENTAILED. Hard false positives, authority leakage, and self-amplification leakage remained 0. This is not reported as a 23/23 full run."
+    },
+    {
+      "name": "archive-shadow-baseline-v2",
+      "command": "deterministic latest-three eligible archived user sessions, evaluated read-only after IDs were frozen",
+      "status": "PASS-WITH-NOTES",
+      "evidence": {
+        "selectionReceiptSha256": "0874a5f9d970836854b269bd3da0d1030a10dbabc1a15afa25d3e73fdeb858c9",
+        "rawReportSha256": "8247aba961610e62ccaaf0622a10e4f0db1307a5b32a79c01e57eea75b768c85",
+        "manualReceiptSha256": "4054bbaa19ffee0e20436a56ff5dc4f32cae480f40ff6598c836decf194723af"
+      },
+      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 24/20, execution errors 0; manual KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 14/6/0; generator/verifier calls 13/9; input/output/cache tokens 682299/12426/279040; latency 312753ms; database SHA-256 unchanged"
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
-      "observed": "verdict PASS — dry-run no-mutation, real install (9 MCP tools, doctor passed, first sync completed), idempotent rerun, removal, isolation all true"
+      "observed": "dry-run no-mutation, real install with 9 MCP tools, doctor, first sync, idempotent rerun, removal, and user-environment isolation all passed"
     },
     {
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
-      "observed": "status PASS, cleanup PASS — isolated marketplace add, 3 skills, 3 hook events"
+      "observed": "isolated marketplace install exposed 3 skills and 3 hook events; cleanup PASS"
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz 190 files / 734783 bytes packed / 2916606 bytes unpacked, 9 MCP tools, onboarding (setup --dry-run, sync, backfill all, status), UserPromptSubmit valid-or-empty hook contract; authorized isolated network run completed npm package resolution"
+      "observed": "memex-0.2.0.tgz, 191 files, 760099 packed bytes / 3010831 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
-      "observed": "9/9 steps passed; cleanup inventory all true (plugin_registration_absent, owned_hooks_absent, temp_data_absent, test_workers_zero, inject_sockets_zero, test_listeners_zero, user_environment_isolated)"
+      "observed": "9/9 steps passed; plugin registration, owned hooks, temp data, workers, inject sockets, listeners, and user-environment isolation cleanup checks all passed"
     }
   ],
-  "reauditClosures": {
-    "reference": "Fact extraction context/evidence grounding verification-review Severity remediation, excluding GitHub CI as requested",
-    "result": "PASS at codeSha 7c970747873db106785544405e04b8c29141165d: deterministic evidence binding now requires exact human supporting spans or exact trusted tool-call IDs plus result spans and claim-bearing overlap, so human-question and unrelated-tool semantic laundering fail closed. Incremental extraction preserves up to two pre-watermark context exchanges; proceed/continue variants anchor only with preceding watermark context; long human/tool inputs preserve head and tail. Context dependencies are limited to explicit ratification, preceding depth <= 2, and claim-bearing assistant/recall material, then labeled model-declared and server-resolved. Adversarial regressions, the committed 17-case Luna report, approved read-only shadow rerun and MISS classification, 635 tests, 24 Codex slice tests, 93 complete slice tests, installer, marketplace, package-runtime, and lifecycle E2Es all passed."
-  }
+  "hardSafety": {
+    "assistantOnlyPersistedFact": 0,
+    "recallOnlyPersistedFact": 0,
+    "contextOnlyAuthorityLeakage": 0,
+    "preWatermarkAuthorityLeakage": 0,
+    "selfAmplificationLeakage": 0,
+    "shadowDbMutation": 0
+  },
+  "archiveShadow": {
+    "baseline": "archive-shadow-baseline-v2",
+    "historicalDatasetReproduced": false,
+    "historicalCountsDirectlyComparable": false,
+    "selectionFrozenBeforeContentReview": true,
+    "sessionsReplacedAfterResults": false,
+    "privateArtifactsContainExactIds": true,
+    "verdict": "PASS-WITH-NOTES"
+  },
+  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates and all hard-safety conditions passed. The notes preserve two quality observations without rewriting evidence: the P2 full run was 22/23 with an immediate same-SHA lg2 targeted PASS attributed to non-reproducible verifier variance, and the new deterministic archive baseline observed five semantic duplicates plus at least seven important miss clusters. No systematic workflow-adoption verifier miss or authority leakage was observed in the archive shadow."
 }
