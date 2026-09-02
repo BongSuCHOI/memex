@@ -191,6 +191,7 @@ Phase 1/2 grounding 및 Phase 3 semantic-window contract의 최소 회귀 표면
 - dependency necessity는 referent candidate에만 적용하고 pre-authority local context는 ID 없이 유지
 - generator는 저장 fact에서 deictic workflow/choice/style 참조를 구체 내용으로 해소
 - workflow category는 미래형/명령형이 아니라 preference와 mandatory boundary 의미로 tie-break
+- universal operating gate는 constraint, project-limited collaborative adoption은 decision으로 보존
 - ambiguity나 authority 없는 historical context는 semantic verifier에서 `NOT_ENOUGH`로 fail-closed
 - inferred는 같은 결론의 독립 authoritative exchange 2개 이상을 요구하고 context 반복은 제외
 - one-off request/action은 global에서 project로 강등 저장하지 않고 no-fact 처리

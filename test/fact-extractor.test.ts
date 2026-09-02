@@ -244,6 +244,16 @@ describe('Fact Extractor', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('IMPERATIVE_GRAMMAR_NOT_CONSTRAINT');
       expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('IMPERATIVE_GRAMMAR_NOT_CONSTRAINT');
     });
+
+    it('keeps a universal operating gate as a constraint by meaning', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('UNIVERSAL_OPERATING_GATE_CONSTRAINT');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('UNIVERSAL_OPERATING_GATE_CONSTRAINT');
+    });
+
+    it('keeps project-limited collaborative workflow adoption as a decision', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('PROJECT_WORKFLOW_ADOPTION_DECISION');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('PROJECT_WORKFLOW_ADOPTION_DECISION');
+    });
   });
 
   describe('validateExtractedFactCandidate', () => {

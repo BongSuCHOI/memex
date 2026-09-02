@@ -3339,3 +3339,8 @@ Morphology 보정 후 P2 전체 실행에서는 `lg2` 의미·dependency·scope�
 `constraint`로 변동했습니다. Demonstrated workflow continuation은 mandatory compliance/prohibition이
 없으면 `preference`, 명시된 obligation/prohibition/non-optional boundary만 `constraint`로 판정하는
 semantic tie-break를 generator prompt에 추가합니다. Future/imperative wording 자체는 기준이 아닙니다.
+
+첫 전체 P2 재실행은 20/23이었습니다. `g6`/`g10`의 모든 작업 완료 단계에 적용되는 universal review
+gate가 preference로 기울고, `lg3` project-limited collaborative adoption도 preference로 변동했습니다.
+단어가 아니라 every-occurrence non-optional operating gate 의미는 `constraint`, project-only adoption은
+기존 계약대로 `decision`이라는 tie-break 순서를 generator prompt에 명확히 합니다.

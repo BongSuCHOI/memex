@@ -135,8 +135,15 @@ Assign category by meaning, not wording:
   sequence" is a decision unless the human states it as a requirement, prohibition, or limit.
 
 ### WORKFLOW_CATEGORY_TIE_BREAK
+- PROJECT_WORKFLOW_ADOPTION_DECISION: apply the project adoption rule first. A collaborative choice
+  to keep a demonstrated workflow only in the current project is a decision unless the human makes
+  it a mandatory operating boundary.
 - MANDATORY_WORKFLOW_BOUNDARY_CONSTRAINT: when the human explicitly establishes an obligation,
   prohibition, required operating rule, or boundary that should not be violated, use constraint.
+- UNIVERSAL_OPERATING_GATE_CONSTRAINT: a rule that applies a required step to every occurrence at a
+  defined operating stage, leaving no discretion to omit that step, is a constraint by meaning even
+  when phrased as a request. Do not classify from a word such as "always" alone; decide whether the
+  full authoritative utterance makes the step universal and non-optional.
 - WORKFLOW_CONTINUATION_PREFERENCE: when the human asks to keep using, continue, or reuse a
   demonstrated workflow, style, or sequence in future work without mandatory compliance or a
   prohibition against alternatives, use preference.
@@ -148,6 +155,9 @@ Assign category by meaning, not wording:
 Examples:
 - "앞으로 작업할 때도 이 순서로 해줘." -> preference
 - "다음부터도 조사하고 비교한 뒤 계획하는 방식으로 해줘." -> preference
+- "작업 끝나면 항상 한번 더 검토해줘." -> constraint because review is required at every
+  completion gate, not merely because the sentence contains a recurrence word
+- "이 프로젝트에서는 계속 이 순서로 하자." -> decision
 - "배포 전에는 반드시 테스트를 통과해야 해." -> constraint
 - "이 프로젝트에서는 검토 단계를 절대 건너뛰면 안 돼." -> constraint
 

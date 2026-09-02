@@ -87,7 +87,10 @@ evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandat
 Workflow category는 문법이나 미래형이 아니라 authoritative meaning으로 정합니다. 시연된 workflow,
 style, sequence를 앞으로도 계속 사용해 달라는 요청은 mandatory compliance나 대안 금지가 없으면
 `preference`입니다. 준수 의무, 금지, required operating rule, non-optional boundary를 명시하면
-`constraint`입니다. Future applicability는 durability를 만들 뿐 constraint를 만들지 않습니다.
+`constraint`입니다. 모든 occurrence의 정의된 operating stage에 생략할 수 없는 단계를 부과하는
+universal gate도 전체 의미상 `constraint`이며, `항상` 같은 단어 하나로 판정하지 않습니다. 현재
+project에만 시연된 workflow를 계속 쓰자는 collaborative adoption은 mandatory boundary가 아니면
+`decision`입니다. Future applicability는 durability를 만들 뿐 constraint를 만들지 않습니다.
 
 구조 검증을 통과한 candidate가 하나 이상이면 같은 window의 candidate를 한 batch로 별도
 `authoritative-entailment-v2` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
