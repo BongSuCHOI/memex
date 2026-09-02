@@ -5,7 +5,8 @@
 - `PASS` — 현재 artifact에서 직접 관측하거나 충분한 자동 검증이 통과함
 - `FAIL` — 요구와 반대되는 결과를 관측함
 - `NOT_PROVEN` — 필요한 환경·권한·상태가 없어 아직 증명하지 못함
-- `PASS-WITH-NOTES` — 기능은 통과했지만 version/environment boundary를 함께 기록해야 함
+- `PASS-WITH-NOTES` — required correctness/safety gate는 통과했지만 environment,
+  nondeterminism, quality 또는 comparability 한계를 함께 기록해야 함
 
 필수 항목에 FAIL이 하나라도 있으면 merge gate는 FAIL입니다. 관측하지 않은 동작을 추정으로 PASS 처리하지 않습니다.
 
@@ -26,6 +27,11 @@ node scripts/lifecycle-e2e.mjs
 ```
 
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
+Persistent context dependency의 UI surface를 변경한 release는 다음 gate도 포함합니다.
+
+```bash
+node scripts/web-ui-browser-e2e.mjs
+```
 
 ## 3. Acceptance map
 
@@ -75,9 +81,12 @@ receipt에서 확인할 필드:
 | Gate | Result |
 | --- | --- |
 | code baseline | `candidate.codeSha` |
+| production/model evidence baseline | `candidate.productionEvidenceSha` |
 | 실행 시각·환경 | `recordedAt`, `environment` |
 | gate 결과·관측값 | `gates[]` |
-| 감사 closure | `reauditClosures` |
+| hard safety | `hardSafety` |
+| archive shadow 한계 | `archiveShadow` |
+| 최종 판정과 note | `releaseConclusion` |
 
 receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 상속되지 않습니다.
 
@@ -112,13 +121,8 @@ receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 �
 
 ## 8. Version/environment boundary
 
-latest merge-gate receipt는 다음 환경을 기록합니다.
-
-```text
-Codex CLI 0.150.1
-Node v26.7.0
-darwin arm64
-```
+최신 검증 환경의 authoritative 값은 `docs/verification/merge-gate.json`의 `environment`입니다.
+Owner document에는 version을 복제하지 않습니다.
 
 host-specific behavior는 Codex version이 바뀌면 재검증합니다. repository-owned `scripts/validate-plugin.mjs`는 Memex의 validation harness이며, Codex가 제공하는 formal validator와 동일한 것으로 표현하지 않습니다.
 
@@ -297,6 +301,28 @@ self-amplification leakage, shadow DB mutation은 모두 0이고 실행 전후 D
 Verdict는 `PASS-WITH-NOTES`이며 historical 3 sessions / 38 exchanges 수치와 직접 regression 비교하지
 않습니다. Raw report, exact IDs, 원문 및 수동 receipt는 ignored private artifact이고 production
 backfill은 실행하지 않았습니다.
+
+기록된 7개 important-miss cluster를 frozen source와 production window contract로 재분류했습니다.
+7개 모두 selected generator window 안에 있어 window/retrieval miss는 0이고 verifier miss도 0입니다.
+Privacy-safe root-cause aggregate는 다음과 같습니다.
+
+| Root cause | Count |
+| --- | ---: |
+| direct human assertion miss | 0 |
+| explicit project-decision detail — generator stochastic omission | 2 |
+| human-ratification detail — generator stochastic omission | 1 |
+| verified tool fact miss | 0 |
+| window/retrieval miss | 0 |
+| verifier stochastic miss | 0 |
+| precision-first bounded-task omission | 3 |
+| broader accepted fact에 포함된 cluster overcount | 1 |
+
+세 authoritative detail miss는 서로 다른 세부 계약이며, 같은 window의 인접 direct decision과
+ratification은 정상 accepted됐습니다. 동일 authority class를 막는 hard gate나 반복되는 retrieval/
+verifier failure는 관측되지 않았습니다. 따라서 merge blocker가 아닌 generator recall quality debt로
+남기고 `PASS-WITH-NOTES`를 유지합니다. 이 분류는 7개 known cluster만 설명하며 `>= 7`을 정확히
+7로 축소하지 않습니다. Opaque exchange IDs와 cluster별 근거는 ignored private taxonomy receipt에
+보관합니다.
 
 관련 좁은 gate:
 
