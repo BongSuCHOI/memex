@@ -3280,12 +3280,11 @@ RED는 fixture 15→23, call-type telemetry 부재, term-group parser 부재, ca
 ## Priority 4 release 계약
 
 - [x] source/test/owner docs 교차검증 후 implementation commit
-- [ ] clean implementation SHA에서 기존 17-case와 P2 23-case real-model evaluation
-- [ ] 동일 승인 3 sessions / 38 exchanges를 source rollout에서 임시 read-only evaluation DB로 복원해
-      shadow evaluation하고, 실행 전후 DB hash 동일성을 확인한 뒤 임시 data 제거
-- [ ] final committed code SHA에서 repository required gate 실행
-- [ ] 실제 결과와 exact `candidate.codeSha`로 `docs/verification/merge-gate.json` 재생성
-- [ ] receipt-only commit, push, clean working tree와 remote 0/0 확인
+- [x] clean implementation SHA에서 기존 17-case와 P2 23-case real-model evaluation
+- [x] historical 3-session ID 복구 불가를 명시하고 deterministic latest-3 rule로 새
+      `archive-shadow-baseline-v2`를 고정해 임시 read-only DB에서 평가 및 전후 hash 동일성 확인
+- final release sequence: clean committed SHA required gate → exact `candidate.codeSha` merge receipt →
+  receipt-only commit → push → clean working tree 및 remote 0/0 확인
 
 P4 first real-model run에서 historical 17-case fixture hash가 additive empty field 때문에 달라지는
 comparison regression과, immediate local ratification context가 validator/verifier 경계에서 소실되는
@@ -3344,3 +3343,21 @@ semantic tie-break를 generator prompt에 추가합니다. Future/imperative wor
 gate가 preference로 기울고, `lg3` project-limited collaborative adoption도 preference로 변동했습니다.
 단어가 아니라 every-occurrence non-optional operating gate 의미는 `constraint`, project-only adoption은
 기존 계약대로 `decision`이라는 tie-break 순서를 generator prompt에 명확히 합니다.
+
+최종 synthetic evidence는 `887c570`에서 legacy 17-case 17/17, P2 full 22/23을 관측했습니다. P2의
+유일한 실패 `lg2`는 generator fact/category/scope/minimal dependencies가 모두 맞았고 verifier만 1회
+reject했습니다. Production code/prompt/fixture 변경 없이 같은 SHA에서 즉시 실행한 targeted `lg2`는
+1/1 `ENTAILED`였으므로 full 결과를 23/23으로 재기록하지 않고 `22/23 full + same-SHA targeted PASS`,
+verdict `PASS-WITH-NOTES`로 보존합니다. 양쪽 run의 hard false positive 및 authority/self-amplification
+leakage는 0입니다.
+
+Historical shadow의 exact 3 session ID는 복구 불가능하므로 같은 dataset 재현을 주장하지 않습니다.
+새 `archive-shadow-baseline-v2`는 archive eligibility/exclusion 계약을 만족하고 human exchange가 5개
+이상인 정상 종료 user session을 `ended_at DESC, session_id ASC`로 정렬한 최신 3개를 content review
+전에 고정했습니다. 36개 eligible 중 선택된 3 sessions / 40 exchanges는 결과 후 교체하지 않았습니다.
+Read-only run은 candidate/accepted 24/20, execution error 0, 수동 KEEP 15 / DROP-noise 5 /
+MISS-important >= 7, unsupported/wrong category/wrong scope/wrong provenance/ambiguous 0을 관측했습니다.
+Accepted context는 local-only 14 / long-range-resolved 6 / context-noise 0이고, assistant-only·recall-only·
+context-only·pre-watermark·self-amplification leakage와 shadow DB mutation은 모두 0입니다. 실행 전후
+DB SHA-256은 동일합니다. Exact IDs, selection query, raw report와 수동 receipt는 ignored private
+artifact에 고정하며 historical 3 sessions / 38 exchanges 수치와 직접 비교하지 않습니다.

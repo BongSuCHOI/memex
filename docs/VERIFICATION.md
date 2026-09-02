@@ -216,6 +216,13 @@ consumer와 retrieval surface까지 연결합니다. Parser가 legacy fixture에
 `required_term_groups`는 fixture identity hash에서 제외해 기존 17-case baseline SHA와 비교
 호환성을 유지합니다.
 
+`887c570`의 final real-model evidence는 legacy 17-case 17/17과 P2 full 22/23입니다. P2의 유일한
+실패 `lg2`는 generator fact/category/scope/minimal dependencies가 모두 맞았고 verifier가 1회
+semantic reject했습니다. Code/prompt/fixture 변경 없이 동일 SHA에서 즉시 실행한 targeted `lg2`는
+1/1 `ENTAILED`였습니다. 따라서 이를 full 23/23으로 표현하지 않고 `22/23 full + same-SHA targeted
+PASS`, verdict `PASS-WITH-NOTES`로 기록합니다. Hard false positive 및 authority/self-amplification
+leakage는 0입니다.
+
 - accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
 - conversation exclusion purge는 authoritative source exchange에 연결된 fact와 derived state를 제거
@@ -272,6 +279,24 @@ SHA-256은 모두
   계약군은 질문 또는 완곡 제안 형태였습니다. 이는 P1 hard gate가 의도적으로 authority로 채택하지
   않은 precision-first omission이며, durable Fact로 만들려면 후속 human의 명시적 채택이 필요합니다.
 - 설치 후 첫 sync/backfill onboarding 계약은 이번 run에서 정상 추출돼 이전 miss가 해소됐습니다.
+
+Historical shadow의 exact session ID를 복구할 수 없으므로 해당 3-session dataset을 재현했다고
+주장하지 않습니다. Final verification은 별도 `archive-shadow-baseline-v2`를 생성했습니다. 실제
+archive user session 중 정상 종료, extraction eligibility, synthetic/worker/excluded-project 제외,
+human exchange 5개 이상 조건을 만족하는 36개를 `ended_at DESC, session_id ASC`로 정렬하고 내용
+검토 전에 최신 3개를 고정했습니다. Exact IDs와 selection query는 private selection receipt에만
+보관하며 결과가 나빠도 교체하지 않았습니다.
+
+새 baseline은 3 sessions / 40 exchanges, candidate/accepted 24/20, execution error 0을 관측했습니다.
+수동 taxonomy는 KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/
+WRONG-scope/WRONG-provenance/AMBIGUOUS 0입니다. Accepted context는 local-only 14,
+long-range-resolved 6, context-noise 0입니다. Generator/verifier call은 13/9, total input/output/cache
+token은 682,299/12,426/279,040, latency는 312.8s였습니다. Assistant-only persisted fact,
+recall-only persisted fact, context-only authority leakage, pre-watermark authority leakage,
+self-amplification leakage, shadow DB mutation은 모두 0이고 실행 전후 DB SHA-256은 동일합니다.
+Verdict는 `PASS-WITH-NOTES`이며 historical 3 sessions / 38 exchanges 수치와 직접 regression 비교하지
+않습니다. Raw report, exact IDs, 원문 및 수동 receipt는 ignored private artifact이고 production
+backfill은 실행하지 않았습니다.
 
 관련 좁은 gate:
 
