@@ -3334,3 +3334,8 @@ local context의 구현/테스트 단계는 context ID 없이 의미를 정의�
 `049d1c1`의 `lg2` 단독 진단에서는 generator가 `현재 확립된 순서`라는 unresolved placeholder로
 dependency 의무를 우회했습니다. 저장 fact 본문이 채택된 workflow/choice/style을 구체적으로 풀어 쓰고,
 그 해소에 referent가 필요하면 dependency를 선언하도록 generator prompt만 추가 보완합니다.
+
+Morphology 보정 후 P2 전체 실행에서는 `lg2` 의미·dependency·scope·verifier가 모두 맞았지만 category가
+`constraint`로 변동했습니다. Demonstrated workflow continuation은 mandatory compliance/prohibition이
+없으면 `preference`, 명시된 obligation/prohibition/non-optional boundary만 `constraint`로 판정하는
+semantic tie-break를 generator prompt에 추가합니다. Future/imperative wording 자체는 기준이 아닙니다.

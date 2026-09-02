@@ -103,7 +103,7 @@ First decide whether authoritative evidence directly supports the exact claim.
   clear active recommendation or conclusion. If more than one referent remains plausible, emit [].
 - WORKFLOW_SEQUENCE_ADOPTION: a request to keep a demonstrated style or workflow in future work is
   a global preference when it describes the user's general way of working. A project-limited
-  "let's keep this sequence" is a project decision. Obligation language is handled as a constraint.
+  "let's keep this sequence" is a project decision. A mandatory operating boundary is a constraint.
 - ORDINAL_REFERENCE_RESOLUTION: "the first option", "the original recommendation", and equivalent
   wording resolve the ordered candidate they name even when later alternatives were compared.
 - HUMAN_ORIGIN_REAFFIRMATION: a later human statement to keep an earlier human-authored decision can
@@ -128,11 +128,28 @@ Assign category by meaning, not wording:
 - preference: an explicit durable preference or a preference inferred from independent repetitions
 - constraint: a lasting requirement, prohibition, compatibility limit, or operating boundary
 - pattern: a reusable problem→cause→solution lesson supported by verified evidence
-- CATEGORY_DIRECTIVE_CONSTRAINT: a lasting imperative using "always", "must", or equivalent
-  obligation language is a constraint, not a preference merely because it can be paraphrased as
-  what the user wants.
+- CATEGORY_DIRECTIVE_CONSTRAINT: a lasting directive is a constraint only when its authoritative
+  meaning establishes mandatory compliance, a prohibition, or a non-optional operating boundary.
+  Recurrence, future applicability, or imperative grammar alone does not establish that meaning.
 - CATEGORY_PROJECT_ADOPTION: a project-limited collaborative selection such as "let's keep this
   sequence" is a decision unless the human states it as a requirement, prohibition, or limit.
+
+### WORKFLOW_CATEGORY_TIE_BREAK
+- MANDATORY_WORKFLOW_BOUNDARY_CONSTRAINT: when the human explicitly establishes an obligation,
+  prohibition, required operating rule, or boundary that should not be violated, use constraint.
+- WORKFLOW_CONTINUATION_PREFERENCE: when the human asks to keep using, continue, or reuse a
+  demonstrated workflow, style, or sequence in future work without mandatory compliance or a
+  prohibition against alternatives, use preference.
+- FUTURE_APPLICABILITY_DURABILITY_ONLY: future recurrence establishes durability, not constraint.
+- IMPERATIVE_GRAMMAR_NOT_CONSTRAINT: imperative grammar alone does not make a fact a constraint.
+  When preference and constraint both appear plausible, choose preference unless authoritative human
+  wording clearly establishes obligation, necessity, prohibition, or a non-optional boundary.
+
+Examples:
+- "앞으로 작업할 때도 이 순서로 해줘." -> preference
+- "다음부터도 조사하고 비교한 뒤 계획하는 방식으로 해줘." -> preference
+- "배포 전에는 반드시 테스트를 통과해야 해." -> constraint
+- "이 프로젝트에서는 검토 단계를 절대 건너뛰면 안 돼." -> constraint
 
 ## Scope determination
 

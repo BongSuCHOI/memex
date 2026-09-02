@@ -223,6 +223,29 @@ describe('Fact Extractor', () => {
     });
   });
 
+  describe('generator workflow category tie-break', () => {
+    it('classifies demonstrated workflow continuation as a preference', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('WORKFLOW_CATEGORY_TIE_BREAK');
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('WORKFLOW_CONTINUATION_PREFERENCE');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('WORKFLOW_CATEGORY_TIE_BREAK');
+    });
+
+    it('keeps explicit mandatory workflow boundaries as constraints', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('MANDATORY_WORKFLOW_BOUNDARY_CONSTRAINT');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('MANDATORY_WORKFLOW_BOUNDARY_CONSTRAINT');
+    });
+
+    it('treats future recurrence as durability rather than mandatory semantics', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('FUTURE_APPLICABILITY_DURABILITY_ONLY');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('FUTURE_APPLICABILITY_DURABILITY_ONLY');
+    });
+
+    it('does not classify imperative grammar alone as a constraint', () => {
+      expect(EXTRACTION_SYSTEM_PROMPT).toContain('IMPERATIVE_GRAMMAR_NOT_CONSTRAINT');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('IMPERATIVE_GRAMMAR_NOT_CONSTRAINT');
+    });
+  });
+
   describe('validateExtractedFactCandidate', () => {
     const exchanges = [
       {

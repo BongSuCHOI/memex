@@ -84,6 +84,11 @@ evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandat
 판정합니다. `fact_kr`는 extraction output에서 폐기되므로 canonical fact를 rescue하거나 KR 검색
 상태를 오염시킬 수 없습니다.
 
+Workflow category는 문법이나 미래형이 아니라 authoritative meaning으로 정합니다. 시연된 workflow,
+style, sequence를 앞으로도 계속 사용해 달라는 요청은 mandatory compliance나 대안 금지가 없으면
+`preference`입니다. 준수 의무, 금지, required operating rule, non-optional boundary를 명시하면
+`constraint`입니다. Future applicability는 durability를 만들 뿐 constraint를 만들지 않습니다.
+
 구조 검증을 통과한 candidate가 하나 이상이면 같은 window의 candidate를 한 batch로 별도
 `authoritative-entailment-v2` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
 durability와 server가 복원한 bounded authoritative source text를 비교하며 `ENTAILED`만 허용합니다.
