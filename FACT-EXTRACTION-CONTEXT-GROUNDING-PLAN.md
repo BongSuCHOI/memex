@@ -3357,12 +3357,10 @@ gate가 preference로 기울고, `lg3` project-limited collaborative adoption도
 단어가 아니라 every-occurrence non-optional operating gate 의미는 `constraint`, project-only adoption은
 기존 계약대로 `decision`이라는 tie-break 순서를 generator prompt에 명확히 합니다.
 
-최종 synthetic evidence는 `887c570`에서 legacy 17-case 17/17, P2 full 22/23을 관측했습니다. P2의
-유일한 실패 `lg2`는 generator fact/category/scope/minimal dependencies가 모두 맞았고 verifier만 1회
-reject했습니다. Production code/prompt/fixture 변경 없이 같은 SHA에서 즉시 실행한 targeted `lg2`는
-1/1 `ENTAILED`였으므로 full 결과를 23/23으로 재기록하지 않고 `22/23 full + same-SHA targeted PASS`,
-verdict `PASS-WITH-NOTES`로 보존합니다. 양쪽 run의 hard false positive 및 authority/self-amplification
-leakage는 0입니다.
+`887c570`의 historical finalization evidence는 legacy 17-case 17/17, P2 full 22/23과 same-SHA
+targeted `lg2` 1/1이었습니다. 이후 §34 구현은 production code/prompt를 변경했으므로 이 결과를 최신
+evidence로 재사용하지 않습니다. 최신 clean implementation SHA와 관측값은 아래 §34와
+`docs/verification/merge-gate.json`에서 확인합니다.
 
 Historical shadow의 exact 3 session ID는 복구 불가능하므로 같은 dataset 재현을 주장하지 않습니다.
 새 `archive-shadow-baseline-v2`는 archive eligibility/exclusion 계약을 만족하고 human exchange가 5개
@@ -3422,5 +3420,27 @@ artifact에 고정하며 historical 3 sessions / 38 exchanges 수치와 직접 �
 - [x] unknown/duplicate/out-of-pool verifier usage fail-closed
 - [x] authoritative-only `source_exchange_ids`
 - [x] consolidation/sync/privacy purge dependency lifecycle review
-- [ ] clean committed SHA에서 legacy 17-case + P2 real-model 재실행
+- [x] clean committed SHA에서 legacy 17-case + P2 real-model 재실행
+- [x] frozen archive-shadow-baseline-v2를 같은 3 IDs로 read-only 재실행하고 DB mutation 0 확인
 - [ ] required deterministic/E2E gate + fresh receipt-only commit
+
+### Current model and shadow evidence
+
+`8358d9c0dce943a7cd1ff36dbe0d73692f236d68`의 clean tree에서 legacy 17-case는 17/17,
+candidate/accepted 11/11, verifier rejection/false positive/self-amplification leakage 0을 관측했습니다.
+
+P2 full은 21/23입니다. `lg2`는 verifier semantic rejection, `l6`는 truncated malformed verifier JSON으로
+fail-closed됐습니다. Full 결과를 재추첨하지 않았고 같은 SHA의 targeted evidence는 이전 failure set
+3/3(`lg2` 포함), `l6` 1/1 `ENTAILED`입니다. 따라서 P2는 `PASS-WITH-NOTES`이며 full 23/23으로
+표현하지 않습니다. 양쪽 targeted evidence와 full run 모두 hard false positive 및 self-amplification
+leakage 0입니다.
+
+Frozen `archive-shadow-baseline-v2`는 session을 교체하지 않고 같은 3 sessions / 40 exchanges를 격리
+read-only DB에서 평가했습니다. Candidate/accepted 32/23, KEEP 19, DROP-noise 4,
+MISS-important >= 7, unsupported/wrong category/wrong scope/wrong provenance/ambiguous 0입니다. Accepted
+context는 local-only 22 / long-range-resolved 1 / context-noise 0이며 hard safety 6종과 DB mutation은
+모두 0입니다. 같은 run에서 direct/explicit facts 16개와 context-resolved ratification 7개가 accepted돼
+systematic authority-class 또는 workflow-adoption verifier failure는 관측되지 않았습니다. Miss authority
+form은 direct explicit project requirement 6, human-ratified project decision 1, verified tool 0입니다.
+Rejected payload를 report가 보존하지 않으므로 cluster별 generator/retrieval/verifier 귀속은
+`NOT_PROVEN`으로 남깁니다. Exact IDs, raw report와 taxonomy receipt는 ignored private artifact입니다.

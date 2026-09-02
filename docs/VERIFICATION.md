@@ -220,12 +220,13 @@ consumer와 retrieval surface까지 연결합니다. Parser가 legacy fixture에
 `required_term_groups`는 fixture identity hash에서 제외해 기존 17-case baseline SHA와 비교
 호환성을 유지합니다.
 
-`887c570`의 final real-model evidence는 legacy 17-case 17/17과 P2 full 22/23입니다. P2의 유일한
-실패 `lg2`는 generator fact/category/scope/minimal dependencies가 모두 맞았고 verifier가 1회
-semantic reject했습니다. Code/prompt/fixture 변경 없이 동일 SHA에서 즉시 실행한 targeted `lg2`는
-1/1 `ENTAILED`였습니다. 따라서 이를 full 23/23으로 표현하지 않고 `22/23 full + same-SHA targeted
-PASS`, verdict `PASS-WITH-NOTES`로 기록합니다. Hard false positive 및 authority/self-amplification
-leakage는 0입니다.
+최신 production evidence SHA의 real-model 결과는 legacy 17-case 17/17과 P2 full 21/23입니다.
+P2 full에서 `lg2`는 verifier semantic rejection, `l6`는 truncated malformed verifier JSON으로
+fail-closed됐습니다. 같은 code/prompt/fixture SHA의 targeted evidence는 `lg2`를 포함한 직전 failure
+set 3/3, `l6` 1/1 `ENTAILED`였습니다. Full 결과를 23/23으로 다시 쓰거나 P2 full을 재추첨하지 않고
+`21/23 full + same-SHA targeted PASS`, verdict `PASS-WITH-NOTES`로 기록합니다. Hard false positive 및
+authority/self-amplification leakage는 0입니다. 정확한 SHA와 private evidence hash는 최신
+`docs/verification/merge-gate.json`을 기준으로 확인합니다.
 
 - verifier-used `context_id` dependency는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
@@ -291,38 +292,36 @@ human exchange 5개 이상 조건을 만족하는 36개를 `ended_at DESC, sessi
 검토 전에 최신 3개를 고정했습니다. Exact IDs와 selection query는 private selection receipt에만
 보관하며 결과가 나빠도 교체하지 않았습니다.
 
-새 baseline은 3 sessions / 40 exchanges, candidate/accepted 24/20, execution error 0을 관측했습니다.
-수동 taxonomy는 KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/
-WRONG-scope/WRONG-provenance/AMBIGUOUS 0입니다. Accepted context는 local-only 14,
-long-range-resolved 6, context-noise 0입니다. Generator/verifier call은 13/9, total input/output/cache
-token은 682,299/12,426/279,040, latency는 312.8s였습니다. Assistant-only persisted fact,
+최신 production evidence SHA의 새 baseline은 같은 frozen 3 sessions / 40 exchanges를 교체 없이
+사용했고 candidate/accepted 32/23, execution error 0을 관측했습니다. 수동 taxonomy는 KEEP 19,
+DROP-noise 4, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/
+AMBIGUOUS 0입니다. Accepted context는 local-only 22, long-range-resolved 1, context-noise 0입니다.
+Generator/verifier call은 13/12, total input/output/cache token은 750,361/17,680/341,760, latency는
+441.2s였습니다. Assistant-only persisted fact,
 recall-only persisted fact, context-only authority leakage, pre-watermark authority leakage,
 self-amplification leakage, shadow DB mutation은 모두 0이고 실행 전후 DB SHA-256은 동일합니다.
 Verdict는 `PASS-WITH-NOTES`이며 historical 3 sessions / 38 exchanges 수치와 직접 regression 비교하지
 않습니다. Raw report, exact IDs, 원문 및 수동 receipt는 ignored private artifact이고 production
 backfill은 실행하지 않았습니다.
 
-기록된 7개 important-miss cluster를 frozen source와 production window contract로 재분류했습니다.
-7개 모두 selected generator window 안에 있어 window/retrieval miss는 0이고 verifier miss도 0입니다.
-Privacy-safe root-cause aggregate는 다음과 같습니다.
+기록된 7개 important-miss cluster를 frozen source와 accepted set으로 재분류했습니다. Privacy-safe
+authority-form aggregate는 다음과 같습니다.
 
-| Root cause | Count |
+| Miss authority form | Count |
 | --- | ---: |
-| direct human assertion miss | 0 |
-| explicit project-decision detail — generator stochastic omission | 2 |
-| human-ratification detail — generator stochastic omission | 1 |
+| direct explicit project requirement | 6 |
+| human-ratified project decision | 1 |
 | verified tool fact miss | 0 |
-| window/retrieval miss | 0 |
-| verifier stochastic miss | 0 |
-| precision-first bounded-task omission | 3 |
-| broader accepted fact에 포함된 cluster overcount | 1 |
+| precision-first omission | 0 |
+| broader accepted fact에 포함된 cluster overcount | 0 |
 
-세 authoritative detail miss는 서로 다른 세부 계약이며, 같은 window의 인접 direct decision과
-ratification은 정상 accepted됐습니다. 동일 authority class를 막는 hard gate나 반복되는 retrieval/
-verifier failure는 관측되지 않았습니다. 따라서 merge blocker가 아닌 generator recall quality debt로
-남기고 `PASS-WITH-NOTES`를 유지합니다. 이 분류는 7개 known cluster만 설명하며 `>= 7`을 정확히
-7로 축소하지 않습니다. Opaque exchange IDs와 cluster별 근거는 ignored private taxonomy receipt에
-보관합니다.
+같은 run에서 direct/explicit fact 16개와 context-resolved ratification 7개가 accepted됐고 hard safety는
+모두 0이므로 동일 authority class를 막는 hard gate나 반복되는 workflow-adoption verifier failure는
+관측되지 않았습니다. 다만 archive report는 rejected model payload를 저장하지 않으므로 각 miss를
+generator omission, retrieval miss, verifier rejection 중 하나로 세부 귀속하는 것은 `NOT_PROVEN`입니다.
+이를 추정으로 0 처리하지 않고 recall quality debt로 남겨 `PASS-WITH-NOTES`를 유지합니다. 이 분류는
+7개 known cluster만 설명하며 `>= 7`을 정확히 7로 축소하지 않습니다. Opaque exchange IDs와 cluster별
+근거는 ignored private taxonomy receipt에 보관합니다.
 
 관련 좁은 gate:
 
