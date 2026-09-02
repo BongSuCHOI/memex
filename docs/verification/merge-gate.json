@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-02T04:26:29Z",
+  "recordedAt": "2026-09-02T06:44:07Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.0.0",
@@ -9,9 +9,9 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "d25738cadabcfc2069f4f3b9ddbf1207cb56e0b8",
-    "productionEvidenceSha": "887c570a14b0f636031549ec2f73a62075ee470e",
-    "note": "The final deterministic and browser gates ran from a clean tree at candidate.codeSha. The only files changed between productionEvidenceSha and candidate.codeSha are FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md, docs/VERIFICATION.md, and the superseded docs/verification/merge-gate.json; runtime code, prompts, fixtures, tests, and scripts are identical. This receipt-only commit follows."
+    "codeSha": "2bcbb42ea3c4ab74e886d3d890608d4f1c2846c8",
+    "productionEvidenceSha": "8358d9c0dce943a7cd1ff36dbe0d73692f236d68",
+    "note": "The final deterministic and browser gates ran from a clean tree at candidate.codeSha. Between productionEvidenceSha and candidate.codeSha, only FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md, docs/VERIFICATION.md, and test/fact-extraction-eval.test.ts changed. The test-only change removed a stale nonexistent historical dependency from a local-context telemetry mock after the first full gate exposed the mismatch; runtime code, generator/verifier prompts, model fixtures, and evaluation scripts are identical. This receipt-only commit follows."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -29,7 +29,7 @@
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "70 files / 680 tests passed"
+      "observed": "70 files / 691 tests passed"
     },
     {
       "name": "codex-slice",
@@ -45,29 +45,33 @@
     },
     {
       "name": "fact-extraction-legacy-17",
-      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out .fact-extraction-eval/final-17-887c570.json",
+      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out .fact-extraction-eval/final-17-8358d9c.json",
       "status": "PASS",
-      "evidenceSha256": "86c9b0a6a77c5a34f9c65b9cd61230acd9cbec4c4f99107c4de1cc231ee5db4a",
-      "observed": "clean productionEvidenceSha; fixture f45b4f0a...5bcd6; 17/17, matched/observed 11/11, false positives 0, self-amplification leakage 0, execution errors 0"
+      "evidenceSha256": "707b66e05851164da1395acce8f9092981130fa8a0bef60b85fa1f6abef25fcf",
+      "observed": "clean productionEvidenceSha; fixture f45b4f0a...5bcd6; 17/17, candidate/accepted/matched/observed 11/11/11/11, verifier rejection 0, false positives 0, self-amplification leakage 0, execution errors 0"
     },
     {
       "name": "fact-extraction-p2-composite",
-      "command": "full P2 evaluation followed by immediate lg2 targeted diagnostic at identical productionEvidenceSha",
+      "command": "one full P2 evaluation plus same-productionEvidenceSha targeted diagnostics; no full-run redraw",
       "status": "PASS-WITH-NOTES",
-      "evidenceSha256": "c2d6446f354a3a9973c45e2b749cddfce16ae94cca87c48082033f57f4fea95d",
-      "observed": "full evaluation 22/23; only lg2 failed after one verifier semantic rejection. Its generator fact, preference category, global scope, and minimal context dependencies were correct. With no code, prompt, or fixture change, the immediate same-SHA targeted lg2 diagnostic passed 1/1 with verifier ENTAILED. Hard false positives, authority leakage, and self-amplification leakage remained 0. This is not reported as a 23/23 full run."
+      "evidence": {
+        "fullSha256": "ec89ab9ce3b7b7228bce8e4512dfacaa009b31875ef161e69d061494c56dda08",
+        "priorFailureSetTargetedSha256": "8807e134484d6547c59122bdd9bc55509f5d86805e3caacec02c014f7c5a424d",
+        "l6TargetedSha256": "a29dae6e156b4c8053b5873b372c6294e4bed33ad99fa84d467489391f82b669"
+      },
+      "observed": "full evaluation 21/23. Failed cases: lg2 after one semantic verifier rejection, and l6 after truncated malformed verifier JSON; both failed closed. At identical code/prompt/fixture SHA, the prior failure-set targeted run including lg2 passed 3/3 and l6 targeted passed 1/1 with verifier ENTAILED. Hard false positives, authority leakage, and self-amplification leakage remained 0. This is not reported as a 23/23 full run, and the full P2 run was not repeated."
     },
     {
       "name": "archive-shadow-baseline-v2",
-      "command": "deterministic latest-three eligible archived user sessions, evaluated read-only after IDs were frozen",
+      "command": "same frozen latest-three eligible archived user sessions, evaluated against an isolated read-only database without replacing IDs",
       "status": "PASS-WITH-NOTES",
       "evidence": {
         "selectionReceiptSha256": "0874a5f9d970836854b269bd3da0d1030a10dbabc1a15afa25d3e73fdeb858c9",
-        "rawReportSha256": "8247aba961610e62ccaaf0622a10e4f0db1307a5b32a79c01e57eea75b768c85",
-        "manualReceiptSha256": "4054bbaa19ffee0e20436a56ff5dc4f32cae480f40ff6598c836decf194723af",
-        "missTaxonomyReceiptSha256": "09732b1c63593d7d015553a0d76ec3b335fda3e1adcf2e742b2c954e823b2006"
+        "rawReportSha256": "7db190ca24aaf999637ad9473bf341fbe0ca44cf349ecb56fb7ad8f1657fc525",
+        "manualReceiptSha256": "19b55bf4c3e077aa6da953fcd90aacc26b1a8cc03f6835773ca3c4334a67c0f5",
+        "missTaxonomyReceiptSha256": "6460c22fc0df6bbec7659a4f302203f1f9954ad8e45b0de6a27fb1da35b05622"
       },
-      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 24/20, execution errors 0; manual KEEP 15, DROP-noise 5, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 14/6/0; the seven reviewed miss clusters classify as direct assertion 0, explicit project-decision detail generator stochastic 2, human-ratification detail generator stochastic 1, verified tool 0, window/retrieval 0, verifier 0, precision-first bounded-task 3, broader-fact cluster overcount 1; generator/verifier calls 13/9; input/output/cache tokens 682299/12426/279040; latency 312753ms; database SHA-256 unchanged"
+      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 32/23, execution errors 0; manual KEEP 19, DROP-noise 4, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 22/1/0; miss authority forms direct explicit project requirement 6, human-ratified project decision 1, verified tool 0; generator/verifier calls 13/12; input/output/cache tokens 750361/17680/341760; latency 441234ms; database SHA-256 unchanged. Per-miss generator/retrieval/verifier attribution is NOT_PROVEN because rejected model payloads are not retained."
     },
     {
       "name": "install-e2e",
@@ -85,7 +89,7 @@
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz, 191 files, 761256 packed bytes / 3013829 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
+      "observed": "memex-0.2.0.tgz, 191 files, 765177 packed bytes / 3030058 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
     },
     {
       "name": "web-ui-browser-e2e",
@@ -117,9 +121,9 @@
     "privateArtifactsContainExactIds": true,
     "knownMissTaxonomyRecorded": true,
     "systematicAuthorityClassFailureObserved": false,
-    "windowOrRetrievalMisses": 0,
-    "verifierMisses": 0,
+    "systematicWorkflowAdoptionVerifierFailureObserved": false,
+    "perMissPipelineLayerAttribution": "NOT_PROVEN",
     "verdict": "PASS-WITH-NOTES"
   },
-  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates, the Phase 7 browser E2E, and all hard-safety conditions passed. The notes preserve two quality observations without rewriting evidence: the P2 full run was 22/23 with an immediate same-SHA lg2 targeted PASS attributed to non-reproducible verifier variance, and the new deterministic archive baseline observed five semantic duplicates plus at least seven important miss clusters. All seven reviewed miss clusters were inside selected generator windows; three authoritative detail clusters were non-systematic generator omissions, while no authority-class hard-gate failure, window/retrieval miss, verifier miss, workflow-adoption miss, or authority leakage was observed."
+  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates, the Phase 7 browser E2E, and all hard-safety conditions passed. Notes preserve observed evidence without redrawing model runs: legacy 17-case was 17/17; P2 full was 21/23 with same-SHA targeted PASS for lg2 and l6; the frozen archive baseline observed four semantic duplicates and at least seven important miss clusters. The archive run accepted 16 direct/explicit facts and seven context-resolved ratifications, so no systematic authority-class or workflow-adoption verifier failure was observed. Exact per-miss generator/retrieval/verifier attribution remains NOT_PROVEN rather than inferred."
 }
