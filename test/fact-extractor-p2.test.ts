@@ -218,6 +218,41 @@ describe('P2 long-range context and global scope', () => {
     expect(selectLongRangeReferentCandidates([session[1]], session)).toEqual([]);
   });
 
+  it('does not treat a standalone project decision as a deictic context reference', async () => {
+    const exchanges = [base(
+      'e1',
+      'We will use Riverpod for state management in this project.',
+      'I will proceed with Riverpod.',
+    )];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses Riverpod for state management.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'decision',
+        supporting_span: 'We will use Riverpod for state management in this project.',
+      }],
+      context_dependencies: [],
+    }, exchanges);
+
+    expect(selectLongRangeReferentCandidates(exchanges, exchanges)).toEqual([]);
+    expect(await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      exchanges,
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [],
+        used_local_context_exchange_indices: [],
+      }]),
+    )).toEqual([expect.objectContaining({ source_exchange_ids: ['e1'] })]);
+  });
+
   it('lets a cross-language explicit global assertion reach semantic verification', () => {
     const exchanges = [base('g1', '난 철학에 관심이 있어.', '기억하겠습니다.')];
     const accepted = validateExtractedFactCandidate({

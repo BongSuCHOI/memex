@@ -656,9 +656,8 @@ const TRUNCATION_MARKER = "…[truncated]";
 
 const STRONG_REFERENTIAL_SIGNAL =
   /(?:\b(?:the first|first option|initial recommendation|original recommendation|original option|earlier|this way|that way|this style|current style|same approach|this sequence|same sequence)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|그\s*제안|그\s*선택|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|이\s*순서|그\s*순서|같은\s*순서|원안|전자|후자)/i;
-const ENGLISH_DEICTIC_REFERENCE = /\b(?:that|it|this)\b/i;
-const ENGLISH_ADOPTION_ACTION =
-  /\b(?:do|use|choose|pick|adopt|proceed|continue|keep|go\s+with)\b/i;
+const ENGLISH_DEICTIC_ADOPTION =
+  /\b(?:(?:do|use|choose|pick|adopt|keep)\s+(?:that|it|this)|(?:go|proceed)\s+with\s+(?:that|it|this)|continue(?:\s+with)?\s+(?:that|it|this)|do\s+it\s+that\s+way)\b/i;
 const KOREAN_DEICTIC_REFERENCE =
   /(?:그(?:걸|것|대로|렇게|방향|방식|순서|스타일|제안|선택|안)|이(?:걸|것|대로|렇게|방향|방식|순서|스타일|제안|선택|안))/i;
 const KOREAN_ADOPTION_ACTION =
@@ -681,7 +680,7 @@ const STYLE_WORKFLOW_MATERIAL =
 function hasStrongReferentialSignal(value: string): boolean {
   return (
     STRONG_REFERENTIAL_SIGNAL.test(value) ||
-    (ENGLISH_DEICTIC_REFERENCE.test(value) && ENGLISH_ADOPTION_ACTION.test(value)) ||
+    ENGLISH_DEICTIC_ADOPTION.test(value) ||
     (KOREAN_DEICTIC_REFERENCE.test(value) && KOREAN_ADOPTION_ACTION.test(value))
   );
 }
