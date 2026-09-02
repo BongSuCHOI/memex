@@ -382,10 +382,6 @@ describe("fact extraction evaluation fixture", () => {
           kind: "ratification",
           supporting_span: "Yes, use it.",
         }],
-        context_dependencies: [{
-          context_id: 'ctx-1',
-          relation: 'ratified_proposition',
-        }],
       },
       {
         fact: "This project uses SQLite.",
@@ -458,10 +454,10 @@ describe("fact extraction evaluation fixture", () => {
       grounding_verified: 1,
       grounding_inferred: 1,
       context_resolved_ratification: 1,
-      windows_with_referent_candidates: 1,
-      referent_candidates_total: 1,
-      max_referent_candidates: 1,
-      average_referent_candidates_per_window: 1,
+      windows_with_referent_candidates: 0,
+      referent_candidates_total: 0,
+      max_referent_candidates: 0,
+      average_referent_candidates_per_window: null,
     });
     expect(report.cases[0].extraction_observability).toEqual(
       expect.objectContaining({ candidate_count: 8, accepted_count: 3 }),
