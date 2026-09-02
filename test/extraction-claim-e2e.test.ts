@@ -21,15 +21,38 @@ let promptWindows: Array<{ local_exchanges: Array<{
 }>; referent_candidates: Array<{ context_id: string; content: string }> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
 let contextIndicesPerFact: number[][] | null = null;
+let verifierContextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callMemoryModel: async (systemPrompt: string, userMessage: string) => {
-    if (systemPrompt.includes('authoritative-entailment-v2')) {
+    if (systemPrompt.includes('authoritative-entailment-v3')) {
       verifierCalls++;
-      const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
-      return JSON.stringify(envelope.candidates.map((_, index) => ({
+      const envelope = JSON.parse(userMessage) as { candidates: Array<{
+        selected_context_dependencies: Array<{ context_id: string; relation: string }>;
+        available_referent_candidates: Array<{ context_id: string }>;
+        local_context_before_authority: Array<{ exchange_index: number }>;
+        authoritative_evidence: Array<{ kind: string }>;
+      }> };
+      return JSON.stringify(envelope.candidates.map((candidate, index) => ({
         candidate_index: index + 1,
         verdict: verifierVerdicts?.[index] ?? 'ENTAILED',
+        used_context_dependencies: verifierContextIndicesPerFact?.[index]
+          ? verifierContextIndicesPerFact[index].map((referentIndex) => ({
+              context_id:
+                candidate.available_referent_candidates[referentIndex - 1]?.context_id ??
+                'missing',
+              relation: 'ratified_proposition',
+            }))
+          : candidate.selected_context_dependencies.map(
+              ({ context_id, relation }) => ({ context_id, relation }),
+            ),
+        used_local_context_exchange_indices:
+          candidate.selected_context_dependencies.length === 0 &&
+          !(verifierContextIndicesPerFact?.[index]?.length) &&
+          candidate.authoritative_evidence.some(({ kind }) => kind === 'ratification') &&
+          candidate.local_context_before_authority.length > 0
+            ? [candidate.local_context_before_authority.at(-1)!.exchange_index]
+            : [],
       })));
     }
     calls++;
@@ -77,7 +100,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; verifierContextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -209,7 +232,7 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 21, 30, 'S1',
     );
     sourceIndicesPerFact = [[3]];
-    contextIndicesPerFact = [[1]];
+    verifierContextIndicesPerFact = [[1]];
     factNameForCall = () => fixture.expected.fact;
 
     await runFactExtraction(db, 'S1', '/tmp/p');

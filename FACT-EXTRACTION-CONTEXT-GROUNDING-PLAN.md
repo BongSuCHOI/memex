@@ -5,9 +5,14 @@
 > **대상 저장소:** `BongSuCHOI/memex`
 > **검토 기준 브랜치:** `main`
 > **검토 시점 HEAD:** `b246afdb59c24113dd174248b94a65106762c3af`
-> **runtime code baseline:** merge-gate receipt가 가리키는 `570d2687df3bad02fa3f4ea7176adfec4e3cf850`
+> **runtime code baseline:** 최신 committed candidate와 관측값은
+> `docs/verification/merge-gate.json`을 SSOT로 확인합니다.
 > **주요 변경 영역:** Fact extraction / evidence grounding / context preservation / provenance validation / incremental extraction window
 > **비목표:** retrieval 전체 재작성, consolidation 알고리즘 재설계, 모델 교체 자체
+
+> **SUPERSEDED terminology note:** 이 문서의 과거 phase 기록에 남은
+> `context_exchange_indices`/“context index”는 historical design evidence일 뿐 active contract가
+> 아닙니다. Active contract는 opaque `context_id`, verifier-used `context_dependencies`, §34입니다.
 
 ---
 
@@ -681,7 +686,12 @@ Duplicate email insertion causes the auth callback failure in this project.
 
 ---
 
-## 5.3 Tier C — Well-grounded Inference
+## 5.3 Tier C — Well-grounded Inference (SUPERSEDED multi-session example)
+
+> 아래 Session A/B/C 예시는 현재 runtime 계약이 아닙니다. 현재 Tier-C는 같은 session의 현재
+> authoritative extraction window에서 서로 다른 human/tool exchange가 같은 결론을 독립적으로
+> 지지할 때만 허용합니다. Generic recall은 authority가 아니며, original authoritative lineage를
+> 직접 조회하는 cross-session aggregation은 별도 future work입니다. 현재 계약은 §34를 따릅니다.
 
 추론 자체는 금지하지 않는다.
 
@@ -1650,7 +1660,10 @@ context-only exchange는 넣지 않는다.
 
 ---
 
-## 20.2 `context_exchange_indices`는 우선 비영속 diagnostics로
+## 20.2 `context_exchange_indices`는 우선 비영속 diagnostics로 (SUPERSEDED)
+
+> 이 index 기반 설계는 현재 `context_id` + verifier-used `context_dependencies` canonicalization으로
+> 대체됐습니다. 현재 계약은 §34를 따릅니다.
 
 LLM output에는:
 
@@ -3361,3 +3374,50 @@ Accepted context는 local-only 14 / long-range-resolved 6 / context-noise 0이�
 context-only·pre-watermark·self-amplification leakage와 shadow DB mutation은 모두 0입니다. 실행 전후
 DB SHA-256은 동일합니다. Exact IDs, selection query, raw report와 수동 receipt는 ignored private
 artifact에 고정하며 historical 3 sessions / 38 exchanges 수치와 직접 비교하지 않습니다.
+
+## 34. Long-range recall completeness + verifier canonical lineage
+
+> **CURRENT DESIGN.** 이 절은 위의 `context_exchange_indices`, generator-only dependency,
+> multi-session Tier-C 예시를 대체합니다. 최신 실행 결과와 candidate SHA는
+> `docs/verification/merge-gate.json`만 SSOT로 사용합니다.
+
+### Root cause
+
+- strong deictic approval의 antecedent ranking이 lexical overlap과 좁은 proposal material에 치우쳐
+  `B가 더 낫습니다`, `I'd pick B` 같은 open-vocabulary recommendation을 verifier 전에 제거할 수 있었다.
+- verifier는 모든 available referent를 볼 수 있지만 사용한 context ID를 반환하지 않아 generator가
+  dependency를 누락해도 semantic entailment와 persisted interpretive lineage가 어긋날 수 있었다.
+- local context의 단순 존재가 ratification structural shortcut이 되어 실제 historical referent가
+  필요한 경우를 가릴 수 있었다.
+
+### Current implementation contract
+
+1. 같은 session의 이전 최대 30개 exchange만 historical pool로 읽고 candidate는 최대 5개다.
+2. Strong reference는 기존 ranking을 유지하면서 natural recommendation material과 최근 substantive
+   semantic material 최대 2개 bounded fallback을 verifier에 non-authoritative context로 제공한다.
+3. `authoritative-entailment-v3`는 `ENTAILED` context-derived candidate마다 removal test로 필요한
+   `used_context_dependencies`와 `used_local_context_exchange_indices`를 반환한다.
+4. Server는 verifier usage를 available pool, authoritative anchor, relation allowlist, authority overlap,
+   local pre-authority 범위, fact당 최대 3개 상한으로 검증해 canonical dependency set을 만든다.
+5. Generator가 빼먹은 required dependency는 verified usage로 추가하고, declared-but-unused dependency는
+   제거한다. Required usage가 누락·모호·malformed면 candidate를 fail-closed로 폐기한다.
+6. `source_exchange_ids`는 human assertion/decision/correction/ratification 또는 trusted local tool
+   exchange만 포함한다. Assistant, recall, historical referent, local semantic context는 포함하지 않는다.
+7. Tier-C inferred signal은 같은 session의 현재 authoritative extraction window에 한정한다. Generic
+   recall은 authority나 repeated-signal cardinality가 아니다.
+8. Context dependency가 purge되면 authoritative exchange가 남아 있어도 dependent Fact를 terminal
+   privacy tombstone과 함께 제거한다. Consolidation은 local dependencies를 union하고 protocol v4는
+   이를 sync하지 않으며 remote semantic replacement는 stale local dependencies를 지운다.
+
+### Verification contract
+
+- [x] Korean/English open-vocabulary antecedent retrieval + candidate bound
+- [x] generator-omitted dependency server canonicalization
+- [x] declared-but-unused dependency removal
+- [x] exact local-context usage without persistent local lineage
+- [x] irrelevant local context does not satisfy historical dependency
+- [x] unknown/duplicate/out-of-pool verifier usage fail-closed
+- [x] authoritative-only `source_exchange_ids`
+- [x] consolidation/sync/privacy purge dependency lifecycle review
+- [ ] clean committed SHA에서 legacy 17-case + P2 real-model 재실행
+- [ ] required deterministic/E2E gate + fresh receipt-only commit

@@ -33,14 +33,25 @@ vi.mock('../src/llm.js', async (importOriginal) => {
         // 분류기가 인식 못 하는 shape (status 없음, 알려진 문구 없음)
         throw new Error('weird provider hiccup xyz');
       }
-      if (systemPrompt.includes('authoritative-entailment-v2')) {
+      if (systemPrompt.includes('authoritative-entailment-v3')) {
         if (llmBehavior.mode === 'verifier_transient') {
           throw Object.assign(new Error('verifier service unavailable'), { status: 503 });
         }
-        const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
-        return JSON.stringify(envelope.candidates.map((_, index) => ({
+        const envelope = JSON.parse(userMessage) as { candidates: Array<{
+          selected_context_dependencies: Array<{ context_id: string; relation: string }>;
+          local_context_before_authority: Array<{ exchange_index: number }>;
+          authoritative_evidence: Array<{ kind: string }>;
+        }> };
+        return JSON.stringify(envelope.candidates.map((candidate, index) => ({
           candidate_index: index + 1,
           verdict: 'ENTAILED',
+          used_context_dependencies: candidate.selected_context_dependencies,
+          used_local_context_exchange_indices:
+            candidate.selected_context_dependencies.length === 0 &&
+            candidate.authoritative_evidence.some(({ kind }) => kind === 'ratification') &&
+            candidate.local_context_before_authority.length > 0
+              ? [candidate.local_context_before_authority.at(-1)!.exchange_index]
+              : [],
         })));
       }
       return JSON.stringify([

@@ -99,12 +99,16 @@ exchange를 반환하면서, DB row의 `assistant_learnable = 0`이 그대로인
 결과가 durable Fact evidence가 되는 것은 아니며, extractor는 별도의 typed evidence validator를
 계속 적용합니다.
 
-Model이 선택한 opaque context ID와 typed relation이 bounded causal check와 server resolution을 통과하면
-`fact_context_dependencies`에 local audit lineage로 남을 수 있습니다.
+Verifier가 removal test 뒤 실제 사용했다고 반환한 opaque `context_id`와 typed relation이 bounded
+causal check와 server resolution을 통과하면 `fact_context_dependencies`에 local audit lineage로
+남습니다. Generator 선언은 hint이며 최종 set은 verifier usage로 canonicalize됩니다.
 참조·지속 신호가 있는 새 human anchor에만 같은 session의 이전 최대 30개 exchange에서 최대 5개
 referent candidate를 제공하며, fact 하나가 선언할 수 있는 dependency는 최대 3개입니다. 이는
 “어떤 assistant/recall/prefix가 지시어 해석에 쓰였는가”를 추적하기 위한 정보이며 검색
 relevance, Fact authority, `source_exchange_ids`, recall learnability를 변경하지 않습니다.
+Strong deictic adoption은 기존 ranking과 함께 최근 substantive semantic material 최대 2개를 낮은
+score fallback으로 유지해 open-vocabulary recommendation을 verifier까지 전달합니다. 전체 candidate
+상한은 계속 5개이고 여러 referent가 plausible하면 verifier는 `NOT_ENOUGH`로 fail-closed합니다.
 
 ## 7. Derived state와 retrieval
 

@@ -129,10 +129,11 @@ lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 �
 - primary/KR/category vectors
 - `fact_context_dependencies` interpretive lineage
 
-`fact_context_dependencies`는 Fact 해석에 사용된 exchange를 로컬에서 감사하기 위한 별도
-관계입니다. authoritative evidence가 아니며 `source_exchange_ids`와 합치거나 protocol v4로
-동기화하지 않습니다. 나머지 derived 값처럼 semantic state와 local conversation corpus에
-종속됩니다.
+`fact_context_dependencies`는 Fact 해석에 실제로 사용된 exchange를 로컬에서 감사하기 위한 별도
+관계입니다. Generator dependency는 hint이고 entailment verifier가 removal test 뒤 사용한
+`context_id`를 server가 bounded causal constraint로 canonicalize합니다. Authoritative evidence가
+아니며 `source_exchange_ids`와 합치거나 protocol v4로 동기화하지 않습니다. 나머지 derived 값처럼
+semantic state와 local conversation corpus에 종속됩니다.
 
 ## 4. 주요 컴포넌트
 

@@ -221,6 +221,14 @@ describe('Fact Extractor', () => {
       expect(EXTRACTION_SYSTEM_PROMPT).toContain('MINIMAL_NECESSARY_DEPENDENCIES');
       expect(FACT_ENTAILMENT_VERIFIER_PROMPT).not.toContain('MINIMAL_NECESSARY_DEPENDENCIES');
     });
+
+    it('makes verifier context usage the canonical server-enforced lineage', () => {
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('authoritative-entailment-v3');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('DEPENDENCY_REMOVAL_TEST');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('DEPENDENCY_COMPLETENESS');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('used_context_dependencies');
+      expect(FACT_ENTAILMENT_VERIFIER_PROMPT).toContain('used_local_context_exchange_indices');
+    });
   });
 
   describe('generator workflow category tie-break', () => {

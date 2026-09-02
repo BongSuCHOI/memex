@@ -184,7 +184,8 @@ consolidated_count  = max
 recall, watermark prefix의 context dependency는 sync payload에 추가되지 않습니다. Conversation
 exclusion purge는 authoritative lineage와 local context dependency를 각각 역참조합니다. 따라서
 context visibility를 durable source lineage로 확장하지 않으면서도 excluded context에 의미상
-의존한 local fact를 안전하게 제거합니다. Remote semantic replacement는 sync되지 않은 이전
+의존한 local fact를 안전하게 제거합니다. Purge가 두 lineage를 모두 따라가더라도 authority 의미는
+합치지 않습니다. Remote semantic replacement는 sync되지 않은 이전
 local context dependency를 지워 새 의미에 stale 해석 경로가 붙지 않게 합니다.
 
 ## 8. Replicated lifecycle

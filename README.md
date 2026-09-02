@@ -298,7 +298,7 @@ Supported fact/query scopes are:
 
 Cross-project leakage is prevented at query, import, traversal, and relation-write boundaries.
 
-Fact provenance is built from exact source exchange IDs. Lineage is monotonic across sync: source IDs are unioned and consolidated counts take the maximum rather than allowing an older peer to erase evidence.
+Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records non-authoritative exchanges needed to interpret a fact; it is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
 
 ---
 
@@ -419,27 +419,9 @@ The current verified code baseline is recorded in:
 docs/verification/merge-gate.json
 ```
 
-The latest audit-remediation gate was run from the clean committed code SHA:
-
-```text
-70f2ea4998941d8c185b53891f33e10e55728cca
-```
-
-Observed gate results:
-
-```text
-Typecheck                     PASS
-Build                         PASS
-Vitest                        68 files / 598 tests PASS
-Codex slice                   23 / 23 PASS
-All Node slices               91 / 91 PASS
-Install E2E                   PASS
-Marketplace E2E               PASS
-Package runtime E2E           PASS
-Lifecycle E2E                 PASS
-```
-
-The receipt itself lives in the following receipt-only commit, so runtime code is unchanged after the verified SHA.
+The receipt records the committed candidate SHA, environment, exact gate results,
+hard-safety results, and any retained notes. Do not infer current verification
+from numbers copied into an owner document.
 
 For the full acceptance model, version boundaries, and retained machine receipts, see [Verification](docs/VERIFICATION.md).
 

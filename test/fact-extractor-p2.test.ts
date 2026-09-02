@@ -7,6 +7,7 @@ import {
   buildExtractionPrompt,
   selectLongRangeReferentCandidates,
   validateExtractedFactCandidate,
+  verifyAndCanonicalizeExtractedFactCandidates,
   type LongRangeReferentCandidate,
 } from '../src/fact-extractor.js';
 
@@ -79,6 +80,64 @@ describe('P2 long-range context and global scope', () => {
       exchange_id: 'e1',
       human_context: '이 프로젝트는 DB 선택을 SQLite로 결정하자.',
     }));
+  });
+
+  it('retrieves an open-vocabulary Korean recommendation for a deictic approval', () => {
+    const session = [
+      base('e1', '현재 규모에 맞는 저장소는?', '이 정도 규모라면 SQLite 쪽이 더 적합합니다.'),
+      ...Array.from({ length: 6 }, (_, index) =>
+        base(`e${index + 2}`, `중간 점검 ${index + 1}`, '특이사항은 없습니다.'),
+      ),
+      base('e8', '그걸로 하자.', 'SQLite로 진행하겠습니다.'),
+    ];
+
+    const candidates = selectLongRangeReferentCandidates([session[7]], session);
+
+    expect(candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ exchange_id: 'e1', content: expect.stringContaining('SQLite') }),
+    ]));
+    expect(candidates.length).toBeLessThanOrEqual(5);
+  });
+
+  it('retrieves bounded English candidates while ambiguous approval stays fail-closed', async () => {
+    const session = [
+      base('e1', 'Which option fits?', "I'd pick B for this project."),
+      base('e2', 'What about A?', 'A may be better for portability.'),
+      ...Array.from({ length: 4 }, (_, index) =>
+        base(`e${index + 3}`, `Check ${index + 1}`, 'No blocker.'),
+      ),
+      base('e7', "Let's do that.", 'Proceeding.'),
+    ];
+
+    const candidates = selectLongRangeReferentCandidates([session[6]], session);
+
+    expect(candidates.map((entry) => entry.exchange_id)).toEqual(
+      expect.arrayContaining(['e1', 'e2']),
+    );
+    expect(candidates.length).toBeLessThanOrEqual(5);
+
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses B.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: "Let's do that.",
+      }],
+      context_dependencies: [],
+    }, [session[6]], candidates);
+    expect(candidate).not.toBeNull();
+    expect(await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [session[6]],
+      async () => '[{"candidate_index":1,"verdict":"NOT_ENOUGH"}]',
+      candidates,
+    )).toEqual([null]);
   });
 
   it('binds every selected step to a later Korean sequence adoption', () => {
@@ -415,5 +474,268 @@ describe('P2 long-range context and global scope', () => {
     ]) {
       expect(validateExtractedFactCandidate({ ...candidate, context_dependencies }, local, referents)).toBeNull();
     }
+  });
+
+  it('canonicalizes verifier-used context when the generator omitted the dependency', async () => {
+    const exchanges = [
+      base('e1', 'Which database fits?', 'SQLite is the better fit.'),
+      base('e2', '그걸로 하자.', 'SQLite로 진행하겠습니다.'),
+    ];
+    const referents: LongRangeReferentCandidate[] = [{
+      context_id: 'ctx-1',
+      exchange_id: 'e1',
+      anchor_exchange_ids: ['e2'],
+      distance: 1,
+      source: 'assistant_context_only',
+      human_context: exchanges[0].user_message,
+      content: exchanges[0].assistant_message,
+      context_only_due_to_watermark: false,
+    }];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses SQLite.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: '그걸로 하자.',
+      }],
+      context_dependencies: [],
+    }, [exchanges[1]], referents);
+
+    expect(candidate).not.toBeNull();
+    const canonical = await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [exchanges[1]],
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [{
+          context_id: 'ctx-1',
+          relation: 'ratified_proposition',
+        }],
+        used_local_context_exchange_indices: [],
+      }]),
+      referents,
+    );
+
+    expect(canonical[0]).toEqual(expect.objectContaining({
+      source_exchange_ids: ['e2'],
+      context_dependencies: [{
+        exchange_id: 'e1',
+        dependency_kind: 'ratified_proposition',
+      }],
+    }));
+  });
+
+  it('fails closed when a reference-dependent verdict omits its resolution lineage', async () => {
+    const exchanges = [
+      base('e1', 'Which database fits?', 'SQLite is the better fit.'),
+      base('e2', '그걸로 하자.', 'SQLite로 진행하겠습니다.'),
+    ];
+    const referents: LongRangeReferentCandidate[] = [{
+      context_id: 'ctx-1',
+      exchange_id: 'e1',
+      anchor_exchange_ids: ['e2'],
+      distance: 1,
+      source: 'assistant_context_only',
+      human_context: exchanges[0].user_message,
+      content: exchanges[0].assistant_message,
+      context_only_due_to_watermark: false,
+    }];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses SQLite.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: '그걸로 하자.',
+      }],
+      context_dependencies: [],
+    }, [exchanges[1]], referents);
+
+    expect(candidate).not.toBeNull();
+    expect(await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [exchanges[1]],
+      async () => '[{"candidate_index":1,"verdict":"ENTAILED"}]',
+      referents,
+    )).toEqual([null]);
+
+    expect(await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [exchanges[1]],
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [{
+          context_id: 'ctx-unknown',
+          relation: 'ratified_proposition',
+        }],
+        used_local_context_exchange_indices: [],
+      }]),
+      referents,
+    )).toEqual([null]);
+
+    expect(await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [exchanges[1]],
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [
+          { context_id: 'ctx-1', relation: 'ratified_proposition' },
+          { context_id: 'ctx-1', relation: 'ratified_proposition' },
+        ],
+        used_local_context_exchange_indices: [],
+      }]),
+      referents,
+    )).toEqual([null]);
+  });
+
+  it('requires the verifier to identify historical context despite irrelevant local context', async () => {
+    const exchanges = [
+      base('local-1', '로고 색상도 확인해줘.', '파란색 후보를 확인했습니다.'),
+      base('e2', '그걸로 하자.', 'SQLite로 진행하겠습니다.'),
+    ];
+    const referents: LongRangeReferentCandidate[] = [{
+      context_id: 'ctx-1',
+      exchange_id: 'historical-1',
+      anchor_exchange_ids: ['e2'],
+      distance: 8,
+      source: 'assistant_context_only',
+      human_context: 'Which database fits?',
+      content: 'SQLite is the better fit.',
+      context_only_due_to_watermark: true,
+    }];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses SQLite.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 2,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: '그걸로 하자.',
+      }],
+      context_dependencies: [],
+    }, exchanges, referents);
+
+    const canonical = await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      exchanges,
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [{
+          context_id: 'ctx-1',
+          relation: 'ratified_proposition',
+        }],
+        used_local_context_exchange_indices: [],
+      }]),
+      referents,
+    );
+
+    expect(canonical[0]?.context_dependencies).toEqual([{
+      exchange_id: 'historical-1',
+      dependency_kind: 'ratified_proposition',
+    }]);
+  });
+
+  it('accepts exact verifier-used local context without persisting it as lineage', async () => {
+    const exchanges = [
+      base('e1', 'Which database fits?', 'SQLite is the better fit.'),
+      base('e2', '그걸로 하자.', 'SQLite로 진행하겠습니다.'),
+    ];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses SQLite.',
+      category: 'decision',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 2,
+        source: 'human',
+        kind: 'ratification',
+        supporting_span: '그걸로 하자.',
+      }],
+      context_dependencies: [],
+    }, exchanges);
+
+    const canonical = await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      exchanges,
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [],
+        used_local_context_exchange_indices: [1],
+      }]),
+    );
+
+    expect(canonical[0]).toEqual(expect.objectContaining({
+      source_exchange_ids: ['e2'],
+    }));
+    expect(canonical[0]?.context_dependencies).toBeUndefined();
+  });
+
+  it('drops generator-only dependencies that the verifier did not use', async () => {
+    const exchanges = [
+      base('e1', 'What color should the logo use?', 'Blue is an option.'),
+      base('e2', 'This project uses SQLite.', 'Acknowledged.'),
+    ];
+    const referents: LongRangeReferentCandidate[] = [{
+      context_id: 'ctx-1',
+      exchange_id: 'e1',
+      anchor_exchange_ids: ['e2'],
+      distance: 1,
+      source: 'assistant_context_only',
+      human_context: exchanges[0].user_message,
+      content: exchanges[0].assistant_message,
+      context_only_due_to_watermark: false,
+    }];
+    const candidate = validateExtractedFactCandidate({
+      fact: 'This project uses SQLite.',
+      category: 'knowledge',
+      scope_type: 'project',
+      grounding_type: 'explicit',
+      durable: true,
+      confidence: 0.95,
+      evidence: [{
+        exchange_index: 1,
+        source: 'human',
+        kind: 'assertion',
+        supporting_span: 'This project uses SQLite.',
+      }],
+      context_dependencies: [{ context_id: 'ctx-1', relation: 'referent_definition' }],
+    }, [exchanges[1]], referents);
+
+    expect(candidate?.context_dependencies).toHaveLength(1);
+    const canonical = await verifyAndCanonicalizeExtractedFactCandidates(
+      [candidate!],
+      [exchanges[1]],
+      async () => JSON.stringify([{
+        candidate_index: 1,
+        verdict: 'ENTAILED',
+        used_context_dependencies: [],
+        used_local_context_exchange_indices: [],
+      }]),
+      referents,
+    );
+
+    expect(canonical[0]?.context_dependencies).toBeUndefined();
   });
 });

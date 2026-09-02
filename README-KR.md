@@ -298,7 +298,7 @@ Memex는 canonical absolute `session_meta.cwd`를 project identity로 사용합�
 
 cross-project leakage는 query, sync import, graph traversal, relation write 경계에서 차단합니다.
 
-Fact provenance는 정확한 source exchange ID로 구성됩니다. sync에서는 lineage를 monotonic하게 병합합니다. source ID는 union하고, consolidated count는 max를 취하므로 오래된 snapshot이 evidence를 지울 수 없습니다.
+Fact provenance는 두 경로를 분리합니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고 sync에서 단조 union하며, `consolidated_count`는 max로 수렴합니다. Local `fact_context_dependencies`는 fact 해석에 실제로 필요한 non-authoritative exchange를 semantic verifier 사용 결과에서 canonicalize하며, authority로 승격하거나 protocol v4로 sync하지 않습니다.
 
 ---
 
@@ -419,27 +419,7 @@ Repository의 release gate는 구현 commit과 증거 receipt를 분리해서 �
 docs/verification/merge-gate.json
 ```
 
-최근 audit-remediation 검증은 clean committed code SHA에서 수행됐습니다.
-
-```text
-70f2ea4998941d8c185b53891f33e10e55728cca
-```
-
-관측된 gate:
-
-```text
-Typecheck                     PASS
-Build                         PASS
-Vitest                        68 files / 598 tests PASS
-Codex slice                   23 / 23 PASS
-All Node slices               91 / 91 PASS
-Install E2E                   PASS
-Marketplace E2E               PASS
-Package runtime E2E           PASS
-Lifecycle E2E                 PASS
-```
-
-receipt는 그 다음 receipt-only commit에 존재하므로 검증 이후 runtime code는 변경되지 않았습니다.
+Receipt에는 committed candidate SHA, environment, exact gate 결과, hard-safety 결과와 retained note가 기록됩니다. Owner document에 복제된 숫자로 현재 검증 상태를 추정하지 않습니다.
 
 전체 acceptance model과 machine receipt 정책은 [Verification](docs/VERIFICATION.md)을 참고하세요.
 

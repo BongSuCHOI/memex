@@ -27,12 +27,25 @@ function entailmentVerification(
   userMessage: string,
   verdict = 'ENTAILED',
 ): { text: string; tokenUsage: { input_tokens: number; output_tokens: number } } | null {
-  if (!systemPrompt.includes('authoritative-entailment-v2')) return null;
-  const envelope = JSON.parse(userMessage) as { candidates: unknown[] };
+  if (!systemPrompt.includes('authoritative-entailment-v3')) return null;
+  const envelope = JSON.parse(userMessage) as { candidates: Array<{
+    selected_context_dependencies: Array<{ context_id: string; relation: string }>;
+    local_context_before_authority: Array<{ exchange_index: number }>;
+    authoritative_evidence: Array<{ kind: string }>;
+  }> };
   return {
-    text: JSON.stringify(envelope.candidates.map((_, index) => ({
+    text: JSON.stringify(envelope.candidates.map((candidate, index) => ({
       candidate_index: index + 1,
       verdict,
+      used_context_dependencies: candidate.selected_context_dependencies.map(
+        ({ context_id, relation }) => ({ context_id, relation }),
+      ),
+      used_local_context_exchange_indices:
+        candidate.selected_context_dependencies.length === 0 &&
+        candidate.authoritative_evidence.some(({ kind }) => kind === 'ratification') &&
+        candidate.local_context_before_authority.length > 0
+          ? [candidate.local_context_before_authority.at(-1)!.exchange_index]
+          : [],
     }))),
     tokenUsage: { input_tokens: 10, output_tokens: 2 },
   };

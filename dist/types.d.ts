@@ -65,9 +65,10 @@ export interface ExtractedFactEvidence {
     tool_name?: string;
     source_type?: ToolEvidenceKind;
 }
-/** Model-declared by a server-provided context ID and server-resolved to a
- * UUID/kind after bounded causal checks. This non-authoritative local audit
- * lineage never substitutes for source_exchange_ids. */
+/** Verifier-declared from server-provided context IDs and server-canonicalized
+ * to UUID/kind after bounded causal checks. Generator declarations are hints,
+ * not durable truth. This non-authoritative local audit lineage never
+ * substitutes for source_exchange_ids. */
 export interface FactContextDependency {
     exchange_id: string;
     dependency_kind: FactContextDependencyKind;

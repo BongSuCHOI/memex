@@ -227,7 +227,7 @@ semantic reject했습니다. Code/prompt/fixture 변경 없이 동일 SHA에서 
 PASS`, verdict `PASS-WITH-NOTES`로 기록합니다. Hard false positive 및 authority/self-amplification
 leakage는 0입니다.
 
-- accepted candidate의 context index는 `source_exchange_ids`에 저장되지 않음
+- verifier-used `context_id` dependency는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
 - conversation exclusion purge는 authoritative source exchange에 연결된 fact와 derived state를 제거
 - recall-influenced assistant의 고유 text가 FTS와 vector conversation search 양쪽에서 검색됨

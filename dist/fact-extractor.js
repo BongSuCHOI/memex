@@ -7,7 +7,7 @@ import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { randomUUID } from "node:crypto";
 import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, freshClaimPredicate, getExtractionConfig, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from "./pending-extraction.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
-export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v2";
+export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 policy_version: ${EXTRACTION_POLICY_VERSION}
@@ -338,8 +338,16 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
   multiple independent authoritative human signals.
 - selected_context_dependencies and available_referent_candidates are non-authoritative context.
   For a context-derived candidate, verify that the new human ratification positively adopts the
-  selected referent and that the selected relation matches the claim. If multiple plausible
-  referents remain or the reference is ambiguous, return NOT_ENOUGH.
+  referent and that the relation matches the claim. If multiple plausible referents remain or the
+  reference is ambiguous, return NOT_ENOUGH.
+- DEPENDENCY_REMOVAL_TEST: for every ENTAILED candidate, report only the context IDs and local
+  pre-authority exchange indices whose removal would make the complete fact ambiguous, incomplete,
+  or unsupported. Include a needed available_referent_candidate even when the generator omitted it
+  from selected_context_dependencies. Exclude selected context that is merely related or visible.
+- DEPENDENCY_COMPLETENESS: a context-derived ENTAILED verdict must return every necessary historical
+  context ID in used_context_dependencies and every necessary immediate local exchange index in
+  used_local_context_exchange_indices. If the necessary referent cannot be identified exactly,
+  return NOT_ENOUGH. Context usage never adds authority.
 - A human statement that the current style or workflow is right and should continue going forward
   is explicit adoption. The selected recent context may define the accumulated current style or
   workflow; do not require the adoption sentence to repeat its concrete attributes.
@@ -368,8 +376,10 @@ fact, category, scope, polarity, and durability. Exact token overlap is not enta
 - CATEGORY_PROJECT_ADOPTION: a project-limited "let's keep this sequence" selection is a decision
   unless it is expressed as a requirement, prohibition, or operating limit.
 
-Return only one JSON array item per candidate, preserving candidate_index exactly:
-[{"candidate_index":1,"verdict":"ENTAILED"}]
+Return only one JSON array item per candidate, preserving candidate_index exactly. Always include
+both usage arrays for ENTAILED context-derived candidates. Use empty arrays when an ENTAILED
+standalone fact needs no semantic context:
+[{"candidate_index":1,"verdict":"ENTAILED","used_context_dependencies":[{"context_id":"ctx-1","relation":"ratified_proposition"}],"used_local_context_exchange_indices":[]}]
 verdict: ENTAILED | CONTRADICTED | NOT_ENOUGH`;
 /** 선점(claim)을 잃어 작업을 중단할 때 던진다. 호출자는 이것을 실패가 아니라
  *  "다른 러너가 이 세션을 가져갔다"로 읽어야 한다 — 예산을 소모하지 않는다. */
@@ -433,7 +443,7 @@ export function needsLongRangeContext(userMessage) {
     const user = userMessage.trim();
     if (PURE_CONTEXT_BRIDGE_PATTERN.test(user))
         return false;
-    if (STRONG_REFERENTIAL_SIGNAL.test(user) ||
+    if (hasStrongReferentialSignal(user) ||
         PERSISTENCE_SIGNAL.test(user) ||
         GENERIC_CONTEXT_SIGNAL.test(user) ||
         CONDITIONAL_RATIFICATION_PATTERN.test(user)) {
@@ -541,12 +551,23 @@ const MAX_LONG_RANGE_POOL = 30;
 const MAX_REFERENT_CANDIDATES = 5;
 const MAX_CONTEXT_DEPENDENCIES = 3;
 const TRUNCATION_MARKER = "…[truncated]";
-const STRONG_REFERENTIAL_SIGNAL = /(?:\b(?:the first|first option|initial recommendation|earlier|this way|that way|this style|current style|same approach|this sequence|same sequence)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|이\s*순서|그\s*순서|같은\s*순서|원안|전자|후자)/i;
+const STRONG_REFERENTIAL_SIGNAL = /(?:\b(?:the first|first option|initial recommendation|original recommendation|original option|earlier|this way|that way|this style|current style|same approach|this sequence|same sequence)\b|그거|그걸로|그대로|그 방식|이 방식|그 방향|그 스타일|그\s*제안|그\s*선택|아까|처음|첫\s*번째|지금처럼|지금\s*방식|이대로|이렇게|이\s*순서|그\s*순서|같은\s*순서|원안|전자|후자)/i;
+const ENGLISH_DEICTIC_REFERENCE = /\b(?:that|it|this)\b/i;
+const ENGLISH_ADOPTION_ACTION = /\b(?:do|use|choose|pick|adopt|proceed|continue|keep|go\s+with)\b/i;
+const KOREAN_DEICTIC_REFERENCE = /(?:그(?:걸|것|대로|렇게|방향|방식|순서|스타일|제안|선택|안)|이(?:걸|것|대로|렇게|방향|방식|순서|스타일|제안|선택|안))/i;
+const KOREAN_ADOPTION_ACTION = /(?:하자|해줘|진행|가자|사용|쓰자|선택|고르|택하|유지|계속)/i;
 const PERSISTENCE_SIGNAL = /(?:\b(?:going forward|from now on|always|next time)\b|앞으로(?:도|는)?|항상|다음부터|다른\s*프로젝트에서도)/i;
 const GENERIC_CONTEXT_SIGNAL = /(?:\b(?:yes|ok|okay|that|it|keep doing)\b|응|좋아|계속)/i;
-const FIRST_REFERENT_SIGNAL = /(?:\b(?:the first|first option|initial)\b|처음|첫\s*번째)/i;
-const PROPOSAL_MATERIAL = /(?:\b(?:recommend|recommended|suggest|suggested|proposal|propose|option|best fit|choose|choice|decision|decided|direction|use|go with|proceed)\b|추천|제안|선택지|첫\s*안|대안|결정|방향|사용|진행)/i;
+const FIRST_REFERENT_SIGNAL = /(?:\b(?:the first|first option|initial|original)\b|처음|첫\s*번째|원안)/i;
+const EXPLICIT_PROPOSAL_MATERIAL = /(?:\b(?:recommend|suggest|propos|option|best\s+fit|choose|choice|decision|direction|use|go\s+with|proceed)\w*\b|추천|제안|선택지|첫\s*안|대안|결정|방향|사용|진행)/i;
+const NATURAL_RECOMMENDATION_MATERIAL = /(?:\b(?:pick|better|prefer|lean|suit|fit|appropriate|consider)\w*\b|적합|낫|좋|맞|고르|택하|고려)/i;
+const PROPOSAL_MATERIAL = /(?:\b(?:recommend|suggest|propos|option|best\s+fit|choose|choice|decision|direction|use|go\s+with|proceed|pick|better|prefer|lean|suit|fit|appropriate|consider)\w*\b|추천|제안|선택지|첫\s*안|대안|결정|방향|사용|진행|적합|낫|좋|맞|고르|택하|고려)/i;
 const STYLE_WORKFLOW_MATERIAL = /(?:\b(?:style|tone|format|response|explain|example|workflow|investigat|compare|plan|review|implement|sequence|process)\b|말투|형식|응답|설명|예시|방식|순서|조사|비교|계획|검토|구현|절차)/i;
+function hasStrongReferentialSignal(value) {
+    return (STRONG_REFERENTIAL_SIGNAL.test(value) ||
+        (ENGLISH_DEICTIC_REFERENCE.test(value) && ENGLISH_ADOPTION_ACTION.test(value)) ||
+        (KOREAN_DEICTIC_REFERENCE.test(value) && KOREAN_ADOPTION_ACTION.test(value)));
+}
 const FACT_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -709,7 +730,7 @@ export function selectLongRangeReferentCandidates(localExchanges, sessionExchang
         if (anchorIndex === undefined)
             continue;
         const firstSignal = FIRST_REFERENT_SIGNAL.test(anchor.user_message);
-        const strongReference = STRONG_REFERENTIAL_SIGNAL.test(anchor.user_message);
+        const strongReference = hasStrongReferentialSignal(anchor.user_message);
         const persistenceSignal = PERSISTENCE_SIGNAL.test(anchor.user_message);
         const genericSignal = GENERIC_CONTEXT_SIGNAL.test(anchor.user_message);
         const contextNeeded = needsLongRangeContext(anchor.user_message);
@@ -733,7 +754,9 @@ export function selectLongRangeReferentCandidates(localExchanges, sessionExchang
                 continue;
             const rankingMaterial = referentRankingMaterial(exchange);
             const distance = anchorIndex - index;
-            const proposal = PROPOSAL_MATERIAL.test(rankingMaterial);
+            const explicitProposal = EXPLICIT_PROPOSAL_MATERIAL.test(rankingMaterial);
+            const naturalRecommendation = NATURAL_RECOMMENDATION_MATERIAL.test(rankingMaterial);
+            const proposal = explicitProposal || naturalRecommendation;
             const styleOrWorkflow = STYLE_WORKFLOW_MATERIAL.test(rankingMaterial);
             const overlap = tokenOverlapScore(anchor.user_message, rankingMaterial);
             let score = overlap * 20;
@@ -741,7 +764,9 @@ export function selectLongRangeReferentCandidates(localExchanges, sessionExchang
                 score += 10_000 - index;
             }
             else {
-                score += (proposal ? 12 : 0) + (styleOrWorkflow ? 8 : 0);
+                score +=
+                    (explicitProposal ? 12 : naturalRecommendation ? 6 : 0) +
+                        (styleOrWorkflow ? 8 : 0);
                 if (strongReference)
                     score += 4;
                 if (persistenceSignal || genericSignal)
@@ -761,6 +786,28 @@ export function selectLongRangeReferentCandidates(localExchanges, sessionExchang
                     exchange,
                     distance,
                     score,
+                    anchorIds: new Set([anchor.id]),
+                });
+            }
+        }
+        // Strong deictic adoption is structurally meaningful even when the
+        // antecedent uses novel recommendation wording. Reserve at most two
+        // recent, substantive context candidates; they remain non-authoritative
+        // and the semantic verifier must select one or fail closed on ambiguity.
+        if (strongReference) {
+            const fallback = sessionExchanges
+                .slice(poolStart, anchorIndex)
+                .map((exchange, offset) => ({ exchange, index: poolStart + offset }))
+                .filter(({ exchange }) => isContextEligibleExchange(exchange.user_message) &&
+                referentMaterial(exchange).trim().length >= 20 &&
+                !selected.has(exchange.id))
+                .slice(-2);
+            for (const { exchange, index } of fallback) {
+                const distance = anchorIndex - index;
+                selected.set(exchange.id, {
+                    exchange,
+                    distance,
+                    score: 1 + (MAX_LONG_RANGE_POOL - distance) / MAX_LONG_RANGE_POOL,
                     anchorIds: new Set([anchor.id]),
                 });
             }
@@ -924,7 +971,7 @@ function contextBindingMaterial(exchange) {
         .join("\n");
     return `${exchange.assistant_message}\n${recall}`.trim();
 }
-function hasLocalContextBeforeRatification(exchanges, ratificationIndices) {
+function hasPotentialLocalContextBeforeRatification(exchanges, ratificationIndices) {
     return ratificationIndices.some((exchangeIndex) => exchanges
         .slice(0, exchangeIndex - 1)
         .some((exchange) => contextBindingMaterial(exchange).length > 0));
@@ -1066,7 +1113,8 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
     }
     if (ratificationIndices.length > 0 &&
         declaredContextDependencies.length === 0 &&
-        !hasLocalContextBeforeRatification(exchanges, ratificationIndices)) {
+        !hasPotentialLocalContextBeforeRatification(exchanges, ratificationIndices) &&
+        !referentCandidates.some((referent) => referent.anchor_exchange_ids.some((id) => authoritativeIds.has(id)))) {
         return reject("invalid_evidence");
     }
     if (declaredContextDependencies.length > 0 &&
@@ -1193,13 +1241,22 @@ export function buildFactEntailmentVerifierPrompt(candidates, exchanges, referen
         })),
     }, null, 2);
 }
-export async function verifyExtractedFactCandidates(candidates, exchanges, modelCall, referentCandidates = []) {
+function candidateRequiresSemanticContext(candidate) {
+    return (candidate.evidence ?? []).some((evidence) => evidence.kind === "ratification" ||
+        hasStrongReferentialSignal(evidence.supporting_span));
+}
+/**
+ * Validate verifier-reported semantic usage and make it the canonical local
+ * dependency lineage. Generator declarations are hints only: omitted required
+ * context is added, and declared-but-unused context is removed.
+ */
+export async function verifyAndCanonicalizeExtractedFactCandidates(candidates, exchanges, modelCall, referentCandidates = []) {
     if (candidates.length === 0)
         return [];
     const response = await modelCall(FACT_ENTAILMENT_VERIFIER_PROMPT, buildFactEntailmentVerifierPrompt(candidates, exchanges, referentCandidates));
     const parsed = parseJsonResponse(response);
     if (!Array.isArray(parsed))
-        return candidates.map(() => false);
+        return candidates.map(() => null);
     const verdicts = new Map();
     for (const entry of parsed) {
         if (!isRecord(entry) ||
@@ -1209,13 +1266,86 @@ export async function verifyExtractedFactCandidates(candidates, exchanges, model
             continue;
         }
         const values = verdicts.get(entry.candidate_index) ?? [];
-        values.push(entry.verdict);
+        values.push(entry);
         verdicts.set(entry.candidate_index, values);
     }
-    return candidates.map((_, index) => {
+    const referentByContextId = new Map(referentCandidates.map((referent) => [referent.context_id, referent]));
+    return candidates.map((candidate, index) => {
         const values = verdicts.get(index + 1);
-        return values?.length === 1 && values[0] === "ENTAILED";
+        if (values?.length !== 1 || !isRecord(values[0]))
+            return null;
+        const verdict = values[0];
+        if (verdict.verdict !== "ENTAILED")
+            return null;
+        const requiresContext = candidateRequiresSemanticContext(candidate);
+        const permitsContext = requiresContext || (candidate.context_dependencies?.length ?? 0) > 0;
+        const hasExplicitContextUsage = Object.hasOwn(verdict, "used_context_dependencies") &&
+            Object.hasOwn(verdict, "used_local_context_exchange_indices");
+        if (requiresContext && !hasExplicitContextUsage)
+            return null;
+        const rawDependencies = verdict.used_context_dependencies ?? [];
+        const rawLocalIndices = verdict.used_local_context_exchange_indices ?? [];
+        if (!Array.isArray(rawDependencies) ||
+            !Array.isArray(rawLocalIndices) ||
+            rawDependencies.length > MAX_CONTEXT_DEPENDENCIES) {
+            return null;
+        }
+        const authoritativeIds = new Set(candidate.source_exchange_ids ?? []);
+        const seenContextIds = new Set();
+        const canonicalDependencies = [];
+        for (const raw of rawDependencies) {
+            if (!isRecord(raw) ||
+                typeof raw.context_id !== "string" ||
+                !raw.context_id ||
+                typeof raw.relation !== "string" ||
+                !LONG_RANGE_CONTEXT_RELATIONS.has(raw.relation) ||
+                seenContextIds.has(raw.context_id)) {
+                return null;
+            }
+            const referent = referentByContextId.get(raw.context_id);
+            if (!referent ||
+                authoritativeIds.has(referent.exchange_id) ||
+                !referent.content ||
+                !referent.anchor_exchange_ids.some((id) => authoritativeIds.has(id)) ||
+                (raw.relation === "recall_reference" &&
+                    referent.source !== "recall_context_only")) {
+                return null;
+            }
+            seenContextIds.add(raw.context_id);
+            canonicalDependencies.push({
+                exchange_id: referent.exchange_id,
+                dependency_kind: raw.relation,
+            });
+        }
+        const availableLocalIndices = new Set(localContextBeforeAuthority(candidate, exchanges).map((entry) => entry.exchange_index));
+        const seenLocalIndices = new Set();
+        for (const rawIndex of rawLocalIndices) {
+            if (!validExchangeIndex(rawIndex, exchanges.length) ||
+                !availableLocalIndices.has(rawIndex) ||
+                seenLocalIndices.has(rawIndex)) {
+                return null;
+            }
+            seenLocalIndices.add(rawIndex);
+        }
+        const usedContextCount = canonicalDependencies.length + seenLocalIndices.size;
+        if (requiresContext && usedContextCount === 0)
+            return null;
+        if (!permitsContext && usedContextCount > 0)
+            return null;
+        if (canonicalDependencies.length > 0 &&
+            (candidate.grounding_type !== "explicit" ||
+                !(candidate.evidence ?? []).some((evidence) => evidence.source === "human"))) {
+            return null;
+        }
+        return {
+            ...candidate,
+            context_dependencies: canonicalDependencies.length > 0 ? canonicalDependencies : undefined,
+        };
     });
+}
+export async function verifyExtractedFactCandidates(candidates, exchanges, modelCall, referentCandidates = []) {
+    const canonical = await verifyAndCanonicalizeExtractedFactCandidates(candidates, exchanges, modelCall, referentCandidates);
+    return canonical.map((candidate) => candidate !== null);
 }
 function recordCandidateObservation(observability, result) {
     if (!observability)
@@ -1313,10 +1443,11 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                 }
                 if (structurallyAccepted.length > 0) {
                     renewLease?.();
-                    const entailment = await verifyExtractedFactCandidates(structurallyAccepted.map((validation) => validation.fact), window, modelCall, referentCandidates);
+                    const verifiedFacts = await verifyAndCanonicalizeExtractedFactCandidates(structurallyAccepted.map((validation) => validation.fact), window, modelCall, referentCandidates);
                     for (let index = 0; index < structurallyAccepted.length; index++) {
                         const validation = structurallyAccepted[index];
-                        if (!entailment[index]) {
+                        const fact = verifiedFacts[index];
+                        if (!fact) {
                             recordCandidateObservation(options?.observability, {
                                 accepted: false,
                                 reason: "semantic_verifier",
@@ -1324,7 +1455,6 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                             continue;
                         }
                         recordCandidateObservation(options?.observability, validation);
-                        const fact = validation.fact;
                         if (!fact.source_exchange_ids)
                             continue;
                         const sourceExchangeIds = fact.source_exchange_ids;

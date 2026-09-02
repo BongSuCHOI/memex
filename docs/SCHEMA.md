@@ -53,13 +53,16 @@ exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니
 conversation/tool result는 source type과 learnable state를 저장합니다. `memex_recall`과 assistant synthesis는 searchable하더라도 fact evidence로 학습하지 않습니다.
 
 Extraction model이 반환하는 `grounding_type`, `durable`, `evidence`,
-`context_dependencies[{context_id, relation}]`는 server-side validation input입니다. 검증된 authoritative exchange
+`context_dependencies[{context_id, relation}]`는 server-side validation hint입니다. 검증된 authoritative exchange
 UUID만 `facts.source_exchange_ids`에 들어가며 context-only assistant/recall exchange를 이 배열에
 넣지 않습니다. Human evidence의 exact `supporting_span`, tool evidence의 exact
-`tool_call_id`/`supporting_span`도 실제 row와 대조합니다. Context index는 model-declared input이며
-model에 제공한 opaque ID인지, anchor보다 앞서는지, 최대 3개인지, relation이 허용값인지라는
-causal constraint를 통과한 경우에만 server가 실제 exchange UUID/kind로 resolve해
-`fact_context_dependencies`로 별도 저장합니다.
+`tool_call_id`/`supporting_span`도 실제 row와 대조합니다. Entailment verifier는 removal test로 실제
+사용한 opaque `context_id`와 local pre-authority exchange index를 반환합니다. Server는 제공한 ID인지,
+authoritative anchor에 결속됐는지, authority와 겹치지 않는지, 최대 3개인지, relation이 허용값인지
+검증하고 verifier-used historical context만 실제 exchange UUID/kind로 canonicalize해
+`fact_context_dependencies`로 별도 저장합니다. Generator가 선언했지만 verifier가 사용하지 않은
+dependency는 저장하지 않고, 필요한 usage lineage가 없거나 malformed이면 context-derived fact를
+fail-closed로 거절합니다.
 Extraction candidate의 `fact_kr`는 저장하지 않습니다. 구조 검증은 exact span, provenance, tool identity,
 authority와 context-ID bounds만 판정합니다. 별도 entailment verifier가 canonical `fact`, bounded
 authoritative source text와 candidate 전체 의미를 판정하며
