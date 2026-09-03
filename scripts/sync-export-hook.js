@@ -2,7 +2,7 @@
 
 /**
  * SessionEnd Hook: Export reconciliable knowledge/safety state for cross-device sync.
- * Runs after extraction completes in scripts/session-end-hook.js.
+ * Explicit/background sync export helper. SessionEnd no longer invokes it.
  *
  * P2-6: export must never wedge the session lifecycle, but it must also never
  * fail silently — every attempt (ok or failed) is recorded to the durable

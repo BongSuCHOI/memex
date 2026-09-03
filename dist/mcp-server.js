@@ -18481,7 +18481,7 @@ async function queryBaseline(queryEmbedding) {
 
 // src/continuity-store.ts
 import { createHash, randomUUID } from "node:crypto";
-var CONTINUITY_SCHEMA_VERSION = 1;
+var CONTINUITY_SCHEMA_VERSION = 3;
 function sha256(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -18652,8 +18652,141 @@ function ensureContinuitySchema(db, options = {}) {
         UNIQUE(target_id, from_ordinal, through_ordinal, payload_fingerprint)
       );
 
+      CREATE TABLE IF NOT EXISTS journal_streams (
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        source_path TEXT NOT NULL,
+        source_realpath TEXT NOT NULL,
+        source_dev TEXT NOT NULL,
+        source_ino TEXT NOT NULL,
+        source_mtime_ms REAL NOT NULL DEFAULT 0,
+        source_guard_start INTEGER NOT NULL DEFAULT 0,
+        source_guard_hash TEXT NOT NULL DEFAULT '',
+        copied_byte_end INTEGER NOT NULL DEFAULT 0,
+        copied_line_end INTEGER NOT NULL DEFAULT 0,
+        journal_byte_end INTEGER NOT NULL DEFAULT 0,
+        journal_path TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL DEFAULT '',
+        parser_version INTEGER NOT NULL DEFAULT 1,
+        state TEXT NOT NULL DEFAULT 'active'
+          CHECK(state IN ('active','replaced','gap','purged')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(session_id, stream_epoch)
+      );
+
+      CREATE TABLE IF NOT EXISTS journal_blocks (
+        block_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        source_from_byte INTEGER NOT NULL,
+        source_through_byte INTEGER NOT NULL,
+        journal_from_byte INTEGER NOT NULL,
+        journal_through_byte INTEGER NOT NULL,
+        from_line INTEGER NOT NULL,
+        through_line INTEGER NOT NULL,
+        segment_hash TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id, stream_epoch)
+          REFERENCES journal_streams(session_id, stream_epoch) ON DELETE CASCADE,
+        UNIQUE(session_id, stream_epoch, ordinal),
+        UNIQUE(session_id, stream_epoch, source_through_byte, prefix_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS capture_gaps (
+        gap_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER,
+        source_path TEXT,
+        event_kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'open'
+          CHECK(state IN ('open','recovered','purged')),
+        created_at TEXT NOT NULL,
+        recovered_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS conversation_exclusions (
+        session_id TEXT PRIMARY KEY,
+        source_path TEXT,
+        reason TEXT NOT NULL,
+        excluded_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS minimal_workstreams (
+        workstream_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL UNIQUE,
+        branch_hint TEXT,
+        binding_reason TEXT NOT NULL DEFAULT 'session-local',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_memory_state (
+        session_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        context_epoch INTEGER NOT NULL DEFAULT 0,
+        epoch_token TEXT NOT NULL DEFAULT '',
+        resident_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        capsule_generation_seen INTEGER NOT NULL DEFAULT 0,
+        memory_revision_seen INTEGER NOT NULL DEFAULT 0,
+        latest_checkpoint_id TEXT,
+        last_source TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS work_capsules (
+        workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL DEFAULT 0,
+        objective TEXT NOT NULL DEFAULT '',
+        current_state TEXT NOT NULL DEFAULT '',
+        verified_progress_json TEXT NOT NULL DEFAULT '[]',
+        hypotheses_json TEXT NOT NULL DEFAULT '[]',
+        blockers_json TEXT NOT NULL DEFAULT '[]',
+        open_questions_json TEXT NOT NULL DEFAULT '[]',
+        next_actions_json TEXT NOT NULL DEFAULT '[]',
+        touched_areas_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        source_exchange_ids_json TEXT NOT NULL DEFAULT '[]',
+        through_checkpoint_id TEXT,
+        authority TEXT NOT NULL DEFAULT 'context-only'
+          CHECK(authority = 'context-only'),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS capsule_checkpoint_state (
+        checkpoint_id TEXT PRIMARY KEY REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','processing','processed','retry','failed-visible')),
+        expected_generation INTEGER NOT NULL,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+
     `);
     options.afterMigrationStage?.("continuity-tables");
+    options.afterMigrationStage?.("continuity-core-tables");
+    const journalColumns = columnNames(db, "journal_streams");
+    if (!journalColumns.has("source_mtime_ms")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_mtime_ms REAL NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-mtime-column");
+    }
+    const guardedJournalColumns = columnNames(db, "journal_streams");
+    if (!guardedJournalColumns.has("source_guard_start")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_start INTEGER NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
+    if (!guardedJournalColumns.has("source_guard_hash")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_hash TEXT NOT NULL DEFAULT ''");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
     db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -18666,8 +18799,19 @@ function ensureContinuitySchema(db, options = {}) {
         ON extraction_target_items(target_id, state, ordinal);
       CREATE INDEX IF NOT EXISTS idx_exchange_generation_pending
         ON exchange_extraction_state(policy_version, state, exchange_id);
+      CREATE INDEX IF NOT EXISTS idx_journal_streams_source
+        ON journal_streams(source_realpath, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_journal_blocks_range
+        ON journal_blocks(session_id, stream_epoch, source_through_byte);
+      CREATE INDEX IF NOT EXISTS idx_capture_gaps_state
+        ON capture_gaps(state, session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_session_memory_workstream
+        ON session_memory_state(workstream_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_capsule_checkpoint_state
+        ON capsule_checkpoint_state(workstream_id, state, updated_at);
     `);
     options.afterMigrationStage?.("continuity-indexes");
+    options.afterMigrationStage?.("continuity-core-indexes");
     options.afterStructuralDdl?.();
     const priorVersion = Number(
       db.prepare(
@@ -20326,62 +20470,132 @@ function appendInjectLog(entry) {
   }
 }
 
-// src/inject-ledger.ts
+// src/continuity-core.ts
+import { createHash as createHash3 } from "node:crypto";
+
+// src/observe-hook-event.ts
 import fs6 from "node:fs";
 import path5 from "node:path";
-var MAX_IDS = 400;
-var TTL_MS = 7 * 24 * 60 * 60 * 1e3;
-function ledgerDir() {
-  return path5.join(getIndexDir(), "state", "inject-ledger");
+import { fileURLToPath } from "node:url";
+function dataRoot() {
+  return getMemexHome();
 }
-function sanitizeSessionId(sessionId) {
-  if (!sessionId) return null;
-  const clean = String(sessionId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
-  return clean.length >= 4 ? clean : null;
+function observationLogPath() {
+  return path5.join(dataRoot(), "logs", "hook-events.jsonl");
 }
-function ledgerPath(cleanId) {
-  return path5.join(ledgerDir(), cleanId + ".json");
-}
-function loadLedger(sessionId) {
-  const id = sanitizeSessionId(sessionId);
-  if (!id) return /* @__PURE__ */ new Set();
+function recordHookEvent(event, info) {
   try {
-    const raw = fs6.readFileSync(ledgerPath(id), "utf8");
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return new Set(arr.filter((x2) => typeof x2 === "string"));
-  } catch {
-  }
-  return /* @__PURE__ */ new Set();
-}
-function appendLedger(sessionId, existing, newIds) {
-  const id = sanitizeSessionId(sessionId);
-  if (!id || newIds.length === 0) return;
-  try {
-    const dir = ledgerDir();
-    fs6.mkdirSync(dir, { recursive: true });
-    const ordered = [...existing, ...newIds.filter((n) => !existing.has(n))];
-    const bounded = ordered.length > MAX_IDS ? ordered.slice(ordered.length - MAX_IDS) : ordered;
-    const p = ledgerPath(id);
-    const tmp = p + ".tmp";
-    fs6.writeFileSync(tmp, JSON.stringify(bounded));
-    fs6.renameSync(tmp, p);
-    pruneOldLedgers(dir);
+    const line = JSON.stringify({
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      event,
+      session_id: typeof info.sessionId === "string" ? info.sessionId : "",
+      cwd: typeof info.cwd === "string" ? info.cwd : ""
+    }) + "\n";
+    const file = observationLogPath();
+    fs6.mkdirSync(path5.dirname(file), { recursive: true });
+    fs6.appendFileSync(file, line);
   } catch {
   }
 }
-function pruneOldLedgers(dir) {
+if (process.argv[1] && path5.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  recordHookEvent(process.argv[2] || "Unknown", {});
+}
+
+// src/continuity-core.ts
+var MAX_CAPTURE_DELTA_BYTES = 64 * 1024 * 1024;
+var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
+function sha2562(value) {
+  return createHash3("sha256").update(value).digest("hex");
+}
+function stableId(prefix, ...parts) {
+  return sha2562(`${prefix}\0${parts.join("\0")}`);
+}
+function parseJsonArray(raw, fallback = []) {
+  if (typeof raw !== "string") return fallback;
   try {
-    const now = Date.now();
-    for (const f of fs6.readdirSync(dir)) {
-      if (!f.endsWith(".json")) continue;
-      const fp = path5.join(dir, f);
-      try {
-        if (now - fs6.statSync(fp).mtimeMs > TTL_MS) fs6.unlinkSync(fp);
-      } catch {
-      }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function sessionWorkstreamId(project, sessionId) {
+  return `ws-${stableId("session-workstream", project, sessionId).slice(0, 32)}`;
+}
+function ensureSessionMemoryState(db, input) {
+  const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
+  const existing = db.prepare(`
+    SELECT workstream_id, context_epoch, project FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+  if (existing) {
+    if (existing.project !== input.project) {
+      throw new Error("session project identity does not match canonical session_meta cwd");
     }
-  } catch {
+    db.prepare(`
+      UPDATE session_memory_state SET last_source = ?, updated_at = ? WHERE session_id = ?
+    `).run(input.source ?? null, now, input.sessionId);
+    return {
+      workstreamId: existing.workstream_id,
+      contextEpoch: existing.context_epoch
+    };
   }
+  const explicit = input.explicitWorkstreamId?.trim();
+  const workstreamId = explicit && /^[A-Za-z0-9_-]{4,128}$/.test(explicit) ? explicit : sessionWorkstreamId(input.project, input.sessionId);
+  const tx = db.transaction(() => {
+    db.prepare(`
+      INSERT OR IGNORE INTO minimal_workstreams
+        (workstream_id, project, session_id, binding_reason, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      workstreamId,
+      input.project,
+      input.sessionId,
+      explicit ? "explicit" : "session-local",
+      now,
+      now
+    );
+    db.prepare(`
+      INSERT OR IGNORE INTO session_memory_state
+        (session_id, project, workstream_id, context_epoch, last_source, created_at, updated_at)
+      VALUES (?, ?, ?, 0, ?, ?, ?)
+    `).run(
+      input.sessionId,
+      input.project,
+      workstreamId,
+      input.source ?? null,
+      now,
+      now
+    );
+  });
+  if (db.inTransaction) tx();
+  else tx.immediate();
+  return { workstreamId, contextEpoch: 0 };
+}
+function readResidentFactRevisions(db, sessionId) {
+  const row = db.prepare(`
+    SELECT context_epoch, resident_fact_revisions_json, carry_fact_revisions_json
+    FROM session_memory_state WHERE session_id = ?
+  `).get(sessionId);
+  return {
+    contextEpoch: Number(row?.context_epoch ?? 0),
+    resident: parseJsonArray(row?.resident_fact_revisions_json),
+    carry: parseJsonArray(row?.carry_fact_revisions_json)
+  };
+}
+function recordResidentFactRevisions(db, sessionId, contextEpoch, revisions, now = (/* @__PURE__ */ new Date()).toISOString()) {
+  const current = readResidentFactRevisions(db, sessionId);
+  if (current.contextEpoch !== contextEpoch) return false;
+  const map = new Map(current.resident.map((entry) => [entry[0], entry]));
+  for (const entry of revisions) {
+    if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[0] !== "string" || !Number.isInteger(entry[1]) || !Number.isInteger(entry[2])) continue;
+    map.set(entry[0], entry);
+  }
+  const bounded = [...map.values()].slice(-400);
+  return db.prepare(`
+    UPDATE session_memory_state
+    SET resident_fact_revisions_json = ?, updated_at = ?
+    WHERE session_id = ? AND context_epoch = ?
+  `).run(JSON.stringify(bounded), now, sessionId, contextEpoch).changes === 1;
 }
 
 // src/inject-core.ts
@@ -20444,6 +20658,11 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         });
         return "";
       }
+      ensureSessionMemoryState(db, {
+        sessionId,
+        project,
+        source: "UserPromptSubmit"
+      });
       const seenIds = new Set(results.map((r) => r.fact.id));
       const expandedFacts = [
         ...results.map((r) => ({ fact: r.fact, note: "" }))
@@ -20460,8 +20679,19 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
           }
         }
       }
-      const ledger = loadLedger(sessionId);
-      const fresh = expandedFacts.filter(({ fact }) => !ledger.has(fact.id));
+      const residency = readResidentFactRevisions(db, sessionId);
+      const resident = new Set(
+        residency.resident.map(([id, semantic, lifecycle]) => `${id}:${semantic}:${lifecycle}`)
+      );
+      const revisionOf = (fact) => [
+        fact.id,
+        fact.semantic_generation ?? 1,
+        fact.lifecycle_generation ?? 1
+      ];
+      const fresh = expandedFacts.filter(({ fact }) => {
+        const [id, semantic, lifecycle] = revisionOf(fact);
+        return !resident.has(`${id}:${semantic}:${lifecycle}`);
+      });
       const dedupedCount = expandedFacts.length - fresh.length;
       if (fresh.length === 0) {
         appendInjectLog({
@@ -20520,7 +20750,15 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
       if (!recallEventId) {
         throw new Error("Failed to persist prepared recall receipt");
       }
-      appendLedger(sessionId, ledger, injectedIds);
+      const injectedRevisions = fresh.filter(({ fact }) => injectedIds.includes(fact.id)).map(({ fact }) => revisionOf(fact));
+      if (!recordResidentFactRevisions(
+        db,
+        sessionId,
+        residency.contextEpoch,
+        injectedRevisions
+      )) {
+        throw new Error("context epoch changed before residency commit");
+      }
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",

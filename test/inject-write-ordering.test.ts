@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 const recordRecallEvent = vi.hoisted(() => vi.fn());
+const recordResidentFactRevisions = vi.hoisted(() => vi.fn(() => true));
 
 vi.mock("../src/search.js", () => ({
   getSearchDb: () => ({}),
@@ -47,9 +48,13 @@ vi.mock("../src/repeat-detector.js", () => ({
 vi.mock("../src/inject-log.js", () => ({
   appendInjectLog: vi.fn(),
 }));
+vi.mock("../src/continuity-core.js", () => ({
+  ensureSessionMemoryState: vi.fn(),
+  readResidentFactRevisions: () => ({ contextEpoch: 0, resident: [], carry: [] }),
+  recordResidentFactRevisions,
+}));
 
 import { computeInjectContext } from "../src/inject-core.js";
-import { loadLedger } from "../src/inject-ledger.js";
 
 describe("injection write ordering", () => {
   let tmpDir: string;
@@ -59,6 +64,7 @@ describe("injection write ordering", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "memex-inject-order-"));
     process.env.MEMEX_HOME = tmpDir;
     recordRecallEvent.mockReset();
+    recordResidentFactRevisions.mockClear();
   });
 
   afterEach(() => {
@@ -81,8 +87,6 @@ describe("injection write ordering", () => {
 
     expect(context).toBe("");
     expect(recordRecallEvent).toHaveBeenCalledOnce();
-    expect(loadLedger("session-ordering-test")).not.toContain(
-      "fact-prepared-gate",
-    );
+    expect(recordResidentFactRevisions).not.toHaveBeenCalled();
   });
 });

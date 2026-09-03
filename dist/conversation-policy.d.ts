@@ -25,6 +25,7 @@ export interface ConversationPurgeResult {
     facts: number;
     summaries: number;
 }
+export declare function isConversationExcludedSession(db: Database.Database, sessionId: string): boolean;
 /**
  * User exclusion applies only to user-role message payloads. Raw transcript
  * bytes, tool output, and assistant output can quote marker source text and

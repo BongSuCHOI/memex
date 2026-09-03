@@ -1,7 +1,7 @@
 /**
  * CX-01 — Codex lifecycle registration, diagnosis, removal.
  *
- * Contract (documented in docs/CONVERSATION-LIFECYCLE.md, codex-cli 0.149.1):
+ * Contract (documented in docs/CONVERSATION-LIFECYCLE.md, codex-cli 0.150.1):
  *  - The hook config owner is $CODEX_HOME/hooks.json (user scope). Plugin
  *    marketplace plugins declare hooks through plugin.json; explicit setup is
  *    retained only as a fingerprinted fallback for non-plugin hosts.
@@ -33,6 +33,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
+  "Stop",
+  "Interrupt",
+  "PreCompact",
+  "PostCompact",
   "SessionEnd",
 ] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -41,24 +45,31 @@ export interface LifecycleCommandConfig {
   script: string;
   args?: string[];
   async?: boolean;
+  matcher?: string;
+  timeout?: number;
 }
 
 /** Relative-to-plugin-root commands registered for each event. */
 export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
   SessionStart: [
-    { script: "scripts/version-drift-check.js", async: true },
-    { script: "cli/memex.js", args: ["sync", "--background"], async: true },
-    { script: "scripts/sync-import-hook.js", async: true },
-    { script: "scripts/session-start-maintenance.js", async: true },
+    { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 3 },
+    { script: "scripts/version-drift-check.js", async: true, matcher: "startup|resume" },
+    { script: "cli/memex.js", args: ["sync", "--background"], async: true, matcher: "startup|resume" },
+    { script: "scripts/sync-import-hook.js", async: true, matcher: "startup|resume" },
+    { script: "scripts/session-start-maintenance.js", async: true, matcher: "startup|resume" },
   ],
   UserPromptSubmit: [{ script: "scripts/inject-context-hook.sh" }],
-  SessionEnd: [{ script: "scripts/session-end-hook.js" }],
+  Stop: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+  Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+  PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],
+  PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 3 }],
+  SessionEnd: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
 };
 
 const OWNERSHIP_KEY = "_memex";
 
 export interface LifecycleRegistration {
-  schemaVersion: 1;
+  schemaVersion: 2;
   installedAt: string;
   pluginRoot: string;
   codexHome: string;
@@ -68,6 +79,8 @@ export interface LifecycleRegistration {
     command: string;
     fingerprint: string;
     async?: boolean;
+    matcher?: string;
+    timeout?: number;
   }>;
 }
 
@@ -107,6 +120,7 @@ interface HookEntry {
   type?: string;
   command?: string;
   async?: boolean;
+  timeout?: number;
   [OWNERSHIP_KEY]?: boolean;
 }
 interface HookMatcherBlock {
@@ -161,8 +175,8 @@ export function commandFor(root: string, c: LifecycleCommandConfig): string {
 /** Build the desired entry list for a given plugin root (absolute commands). */
 export function desiredEntries(
   root = pluginRoot(),
-): Array<{ event: HookEvent; command: string; async?: boolean }> {
-  const entries: Array<{ event: HookEvent; command: string; async?: boolean }> =
+): Array<{ event: HookEvent; command: string; async?: boolean; matcher?: string; timeout?: number }> {
+  const entries: Array<{ event: HookEvent; command: string; async?: boolean; matcher?: string; timeout?: number }> =
     [];
   for (const event of HOOK_EVENTS) {
     for (const c of LIFECYCLE_COMMANDS[event]) {
@@ -170,6 +184,8 @@ export function desiredEntries(
         event,
         command: commandFor(root, c),
         ...(c.async ? { async: true } : {}),
+        ...(c.matcher ? { matcher: c.matcher } : {}),
+        ...(c.timeout ? { timeout: c.timeout } : {}),
       });
     }
   }
@@ -178,7 +194,7 @@ export function desiredEntries(
 
 export interface PlanDiff {
   targetFile: string;
-  add: Array<{ event: HookEvent; command: string }>;
+  add: Array<{ event: HookEvent; command: string; matcher?: string; timeout?: number }>;
   remove: Array<{ event: HookEvent; command: string }>;
   preservedForeignEntries: number;
   staleOwnedEntries: number;
@@ -189,7 +205,7 @@ export function planSetup(root = pluginRoot()): PlanDiff {
   const hooks = readHooksFile(hooksFilePath());
   const desired = desiredEntries(root);
   const desiredCmds = new Set(desired.map((d) => d.command));
-  const existingCommands = new Set<string>();
+  const existingKeys = new Set<string>();
   let preservedForeign = 0;
   let staleOwned = 0;
 
@@ -198,7 +214,7 @@ export function planSetup(root = pluginRoot()): PlanDiff {
       for (const h of block.hooks ?? []) {
         if (!h.command || typeof h.command !== "string") continue;
         if ((h as Record<string, unknown>)[OWNERSHIP_KEY] === true) {
-          existingCommands.add(h.command);
+          existingKeys.add(`${event}\0${block.matcher ?? ""}\0${h.command}`);
           // Owned entry pointing at a path that no longer exists or not desired -> stale
           const m = h.command.match(/"([^"]+)"/);
           const p = m ? m[1] : "";
@@ -212,8 +228,8 @@ export function planSetup(root = pluginRoot()): PlanDiff {
   }
 
   const add = desired
-    .filter((d) => !existingCommands.has(d.command))
-    .map(({ event, command }) => ({ event, command }));
+    .filter((d) => !existingKeys.has(`${d.event}\0${d.matcher ?? ""}\0${d.command}`))
+    .map(({ event, command, matcher, timeout }) => ({ event, command, matcher, timeout }));
   return {
     targetFile: hooksFilePath(),
     add,
@@ -256,7 +272,9 @@ export function setupHooks({
 
   if (!dryRun) {
     const desired = desiredEntries(root);
-    const desiredCmds = new Set(desired.map((d) => d.command));
+    const desiredKeys = new Set(
+      desired.map((d) => `${d.event}\0${d.matcher ?? ""}\0${d.command}`),
+    );
     // Prune owned entries whose registered path no longer exists (plugin
     // relocation / cache-version bump) or that are not in desired commands,
     // then re-add at the current root.
@@ -271,7 +289,9 @@ export function setupHooks({
               return true;
             const m = h.command ? h.command.match(/"([^"]+)"/) : null;
             if (m && !fs.existsSync(m[1])) return false;
-            return desiredCmds.has(h.command ?? "");
+            return desiredKeys.has(
+              `${event}\0${block.matcher ?? ""}\0${h.command ?? ""}`,
+            );
           });
         }
         hooks.hooks[event] = blocks.filter((b) => (b.hooks ?? []).length > 0);
@@ -284,15 +304,17 @@ export function setupHooks({
 
   if (!dryRun && diff.add.length > 0) {
     if (!hooks.hooks) hooks.hooks = {};
-    for (const { event, command, async } of desiredEntries(root).filter((x) =>
-      diff.add.some((a) => a.command === x.command),
+    for (const { event, command, async, matcher, timeout } of desiredEntries(root).filter((x) =>
+      diff.add.some((a) =>
+        a.event === x.event && a.command === x.command &&
+        (a.matcher ?? "") === (x.matcher ?? "")),
     )) {
       if (!hooks.hooks[event]) hooks.hooks[event] = [];
       let block = (hooks.hooks[event] as HookMatcherBlock[]).find(
-        (b) => !b.matcher,
+        (b) => (b.matcher ?? "") === (matcher ?? ""),
       );
       if (!block) {
-        block = { matcher: "", hooks: [] };
+        block = { matcher: matcher ?? "", hooks: [] };
         (hooks.hooks[event] as HookMatcherBlock[]).push(block);
       }
       if (!block.hooks) block.hooks = [];
@@ -301,6 +323,7 @@ export function setupHooks({
         command,
         ...({ [OWNERSHIP_KEY]: true } as object),
         ...(async ? { async: true } : {}),
+        ...(timeout ? { timeout } : {}),
       });
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -309,7 +332,7 @@ export function setupHooks({
 
   // Persist/refresh the ownership record regardless (cheap, local).
   const reg: LifecycleRegistration = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     installedAt: new Date().toISOString(),
     pluginRoot: root,
     codexHome: codexHome(),

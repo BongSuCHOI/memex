@@ -172,11 +172,40 @@ describe("Continuity v1 schema and migration", () => {
     ).toBeUndefined();
 
     ensureContinuitySchema(migrationDb);
-    expect(migrationDb.pragma("user_version", { simple: true })).toBe(1);
+    expect(migrationDb.pragma("user_version", { simple: true })).toBe(CONTINUITY_SCHEMA_VERSION);
     expect(migrationDb.prepare(`
       SELECT rowid, content_generation, closure_state FROM exchanges WHERE id = 'e'
     `).get()).toEqual({ rowid: 1, content_generation: 1, closure_state: "closed" });
     migrationDb.close();
+  });
+
+  it("upgrades the Phase 1 Continuity schema with journal rewrite guards", () => {
+    db.exec("ALTER TABLE journal_streams DROP COLUMN source_mtime_ms");
+    db.exec("ALTER TABLE journal_streams DROP COLUMN source_guard_start");
+    db.exec("ALTER TABLE journal_streams DROP COLUMN source_guard_hash");
+    db.pragma("user_version = 1");
+    expect(() => ensureContinuitySchema(db, {
+      afterMigrationStage: (stage) => {
+        if (stage === "journal-source-guard-columns") throw new Error("kill-guard-migration");
+      },
+    })).toThrow("kill-guard-migration");
+    expect(columnSet(db, "journal_streams").has("source_mtime_ms")).toBe(false);
+    expect(columnSet(db, "journal_streams").has("source_guard_start")).toBe(false);
+    expect(columnSet(db, "journal_streams").has("source_guard_hash")).toBe(false);
+    expect(db.pragma("user_version", { simple: true })).toBe(1);
+    const stages: string[] = [];
+    ensureContinuitySchema(db, {
+      afterMigrationStage: (stage) => stages.push(stage),
+    });
+    expect(columnSet(db, "journal_streams").has("source_mtime_ms")).toBe(true);
+    expect(columnSet(db, "journal_streams").has("source_guard_start")).toBe(true);
+    expect(columnSet(db, "journal_streams").has("source_guard_hash")).toBe(true);
+    expect(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_exclusions'",
+    ).get()).toEqual({ 1: 1 });
+    expect(stages).toContain("journal-source-mtime-column");
+    expect(stages).toContain("journal-source-guard-columns");
+    expect(db.pragma("user_version", { simple: true })).toBe(CONTINUITY_SCHEMA_VERSION);
   });
 
   it("rolls back every migration write-stage crash and preserves durable legacy rows", () => {
@@ -187,7 +216,9 @@ describe("Continuity v1 schema and migration", () => {
       "closure-state-column",
       "parser-version-column",
       "continuity-tables",
+      "continuity-core-tables",
       "continuity-indexes",
+      "continuity-core-indexes",
       "fts-rebuild",
       "exchange-metadata",
       "schema-meta",
@@ -238,7 +269,7 @@ describe("Continuity v1 schema and migration", () => {
       expect(migrationDb.prepare("SELECT payload FROM recall_events").get()).toEqual({ payload: "before" });
 
       ensureContinuitySchema(migrationDb);
-      expect(migrationDb.pragma("user_version", { simple: true })).toBe(1);
+      expect(migrationDb.pragma("user_version", { simple: true })).toBe(CONTINUITY_SCHEMA_VERSION);
       expect(migrationDb.prepare("SELECT COUNT(*) AS n FROM facts").get()).toEqual({ n: 1 });
       migrationDb.close();
     }

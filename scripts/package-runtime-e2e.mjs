@@ -23,6 +23,7 @@ const EXPECTED_TOOLS = [
 ];
 
 function run(command, args, options = {}) {
+  const { env: extraEnv = {}, ...spawnOptions } = options;
   const result = spawnSync(command, args, {
     cwd: ROOT,
     encoding: "utf8",
@@ -31,8 +32,9 @@ function run(command, args, options = {}) {
       CODEX_HOME,
       MEMEX_HOME: DATA_ROOT,
       npm_config_cache: NPM_CACHE,
+      ...extraEnv,
     },
-    ...options,
+    ...spawnOptions,
   });
   if (result.error || result.status !== 0) {
     const detail = (
@@ -152,6 +154,38 @@ try {
   });
   if (hook.stdout.trim()) JSON.parse(hook.stdout.trim().split("\n")[0]);
 
+  const sessions = path.join(CODEX_HOME, "sessions");
+  fs.mkdirSync(sessions, { recursive: true });
+  const sessionId = "package-continuity-e2e";
+  const transcript = path.join(sessions, "rollout-package-continuity.jsonl");
+  fs.writeFileSync(transcript, `${JSON.stringify({
+    type: "session_meta",
+    payload: { id: sessionId, cwd: ROOT },
+  })}\n`);
+  const continuity = npmExec(packageSpec, "memex-hook-continuity", [], {
+    input: `${JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: sessionId,
+      transcript_path: transcript,
+      cwd: ROOT,
+    })}\n`,
+    env: { MEMEX_CONTINUITY_NO_WAKE: "1" },
+    timeout: 2 * 60 * 1000,
+  });
+  if (continuity.stdout) {
+    throw new Error(`packaged Continuity hook emitted invalid stdout: ${continuity.stdout.slice(-500)}`);
+  }
+  const unexpectedHookStderr = continuity.stderr
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => !value.startsWith("npm warn"));
+  if (unexpectedHookStderr.length > 0)
+    throw new Error(`packaged Continuity hook failed: ${unexpectedHookStderr.join("\n").slice(-500)}`);
+  npmExec(packageSpec, "memex-continuity-worker", [], {
+    timeout: 2 * 60 * 1000,
+  });
+
   console.log(
     JSON.stringify(
       {
@@ -162,7 +196,7 @@ try {
         files: packed[0].entryCount,
         mcpTools: tools.length,
         onboarding: ["setup --dry-run", "sync", "backfill all", "status"],
-        hook: "UserPromptSubmit valid-or-empty",
+        hooks: ["UserPromptSubmit valid-or-empty", "SessionEnd final fence + deferred worker"],
       },
       null,
       2,

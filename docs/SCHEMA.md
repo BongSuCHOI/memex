@@ -2,8 +2,8 @@
 
 schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
 
-Continuity DB schema version은 `PRAGMA user_version = 1`과
-`continuity_schema_meta.schema_version = 1`에 함께 기록됩니다. Migration은 기존 table/rowid를
+Continuity DB schema version은 `PRAGMA user_version = 3`와
+`continuity_schema_meta.schema_version = 3`에 함께 기록됩니다. Migration은 기존 table/rowid를
 rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
 마지막에만 기록됩니다.
 
@@ -22,6 +22,10 @@ erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
     EXCHANGES ||--o{ EXTRACTION_TARGET_ITEMS : snapshots
     CHECKPOINTS ||--o{ MEMORY_JOBS : enqueues
+    JOURNAL_STREAMS ||--o{ JOURNAL_BLOCKS : chains
+    MINIMAL_WORKSTREAMS ||--|| SESSION_MEMORY_STATE : binds
+    MINIMAL_WORKSTREAMS ||--o| WORK_CAPSULES : projects
+    CHECKPOINTS ||--o| CAPSULE_CHECKPOINT_STATE : distills
     EXTRACTION_TARGETS ||--o{ EXTRACTION_TARGET_ITEMS : pages
     EXTRACTION_TARGETS ||--o{ EXTRACTION_FAILED_RANGES : accounts
     EXCHANGES }o--o{ FACTS : provenance
@@ -48,6 +52,10 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 - `recall_events`
 - `extraction_log`
 - `checkpoints`, `memory_jobs`
+- `journal_streams`, `journal_blocks`, `capture_gaps`
+- `conversation_exclusions`
+- `minimal_workstreams`, `session_memory_state`
+- `work_capsules`, `capsule_checkpoint_state`
 - `extraction_targets`, `extraction_target_items`, `extraction_failed_ranges`
 - `exchange_extraction_state`
 - summary/FTS metadata
@@ -93,6 +101,18 @@ Crash/restart 뒤 `pending|retry|running with expired lease|dead`는 durable que
 
 Prefix ingest는 `ingestPrefixExchanges()`만 사용하며 desired-set delete를 수행하지 않습니다. Full
 archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를 호출합니다.
+
+### Continuity Core state
+
+`journal_streams`는 `(session_id, stream_epoch)`별 source realpath/dev/inode/mtime, copied source byte/line, journal byte, parser version, current prefix hash와 copied boundary 직전 최대 4KiB의 source guard hash를 저장합니다. Capture는 session writer transaction을 먼저 선점한 뒤 journal을 append하므로 competing hook process가 같은 boundary를 동시에 쓰지 못합니다. `journal_blocks`는 contiguous source/journal range와 segment/prefix SHA-256 chain을 가집니다. Checkpoint worker는 exact prefix boundary까지만 읽고 모든 block hash를 다시 검증한 뒤 ingest합니다. Source rewind/replace, same-size rewrite, 기존 prefix를 바꾸고 더 길어진 rewrite, committed journal 손상은 기존 stream row와 journal을 보존한 채 새 epoch을 생성합니다.
+
+`conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.
+
+`session_memory_state`는 session-local workstream, `context_epoch`, resident/carry revision tuple, observed Capsule generation, latest checkpoint를 소유합니다. Phase 2의 `minimal_workstreams`는 확실하지 않은 세션끼리 자동 결합하지 않으며 stable project/workspace identity는 Phase 3에서 확장합니다.
+
+`work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation CAS와 capsule job의 lease completion은 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. 최신 checkpoint가 Capsule의 `through_checkpoint_id`보다 앞서 있으면 compact/resume bundle에 deterministic tail baton도 함께 들어갑니다.
+
+Capture checkpoint마다 P0 `capture_index` job이 있고, P1 `capsule_update`는 Stop/Interrupt boundary 6개 또는 accumulated 8KiB, PreCompact, SessionEnd에서 coalesce됩니다. Checkpoint와 outbox insert는 atomic입니다. Capture gap은 `open|recovered|purged`로 명시되며 silent completion으로 계산하지 않습니다. Retry가 소진된 checkpoint는 `dead-letter`, 관련 Capsule state는 `failed-visible`이고, dependency가 죽은 Capsule job을 pending으로 남기지 않습니다.
 
 ### Provenance
 

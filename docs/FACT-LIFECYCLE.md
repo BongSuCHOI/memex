@@ -37,7 +37,7 @@ Memex는 fact row의 상태를 네 성격으로 나눕니다.
 
 ## 3. 추출 eligibility
 
-SessionEnd 또는 backlog worker는 `extraction_log.last_exchange_rowid` 이후의 새 exchange만 처리합니다.
+Continuity worker는 먼저 P0 capture-index와 P1 Work Capsule queue를 비운 뒤 fact extraction을 실행합니다. Fact 대상은 legacy `extraction_log.last_exchange_rowid`가 아니라 current `(exchange_id, content_generation, policy_version)` completion state와 immutable target item으로 결정합니다. Legacy watermark는 scheduling/reporting hint일 뿐 unseen generation을 완료로 만들지 못합니다.
 
 fact extraction evidence는 source 단위로 분류합니다.
 

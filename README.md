@@ -213,15 +213,20 @@ See [GUIDE.md](docs/GUIDE.md) for the complete CLI and lifecycle reference.
 
 ## Automatic lifecycle
 
-Memex integrates with three Codex lifecycle events:
+Memex integrates with the full Codex continuity lifecycle:
 
 | Event | Memex behavior |
 | --- | --- |
-| **SessionStart** | version drift check, background sync, durable sync import, bounded maintenance |
+| **SessionStart(startup/resume)** | resolve session state, recover the durable queue, then run independent background sync/import/maintenance |
+| **SessionStart(clear/compact)** | advance `context_epoch`; compact immediately returns a bounded Capsule/current-fact bundle |
 | **UserPromptSubmit** | scoped retrieval, relevance gate, deduplication, bounded context injection |
-| **SessionEnd** | rollout stabilization, incremental fact extraction, durable sync export |
+| **Stop** | append only new complete transcript bytes and commit a closed-turn fence |
+| **Interrupt** | append delta and preserve an interrupted/open fence |
+| **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
+| **PostCompact** | optional telemetry only; correctness never depends on it |
+| **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export |
 
-SessionStart jobs are intentionally asynchronous and eventually consistent. Each writer is responsible for its own transaction/CAS safety; Memex does not depend on one fixed completion order.
+Capture hooks perform bounded local I/O only. The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.
 
 ---
 

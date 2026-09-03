@@ -13,8 +13,8 @@
 //                  handler wiring with stub workers, injection JSON shape,
 //                  cleanup inventory. No network, no model calls.
 // authenticated  — everything above plus REAL codex exec canaries for
-//                  SessionStart / UserPromptSubmit / SessionEnd and ONE real
-//                  fact extraction through session-end-hook -> Luna.
+//                  SessionStart / UserPromptSubmit / SessionEnd and one real
+//                  deferred Work Capsule update through the Continuity worker.
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -241,8 +241,8 @@ async function main() {
     const file = path.join(CODEX_HOME, "hooks.json");
     const after1 = fs.readFileSync(file, "utf8");
     const owned1 = (after1.match(/_memex/g) || []).length;
-    if (owned1 !== 6)
-      throw new Error(`expected 6 owned entries, got ${owned1}`);
+    if (owned1 !== 11)
+      throw new Error(`expected 11 owned entries, got ${owned1}`);
 
     r = MB(["setup-hooks"]);
     if (r.status !== 0) throw new Error(r.stderr);
@@ -292,8 +292,8 @@ async function main() {
     );
 
     await step(
-      "SessionEnd handler: empty rollout skips worker (no completion marker)",
-      () => {
+      "SessionEnd handler: empty rollout creates a final fence without foreground work",
+      async () => {
         const tp = path.join(TMP, "rollout-empty.jsonl");
         fs.writeFileSync(
           tp,
@@ -313,21 +313,36 @@ async function main() {
           [path.join(ACTIVE_PLUGIN, "scripts", "session-end-hook.js")],
           {
             input: JSON.stringify({
+              hook_event_name: "SessionEnd",
               transcript_path: tp,
               session_id: RUN_MARKER,
               cwd: TEST_PROJECT,
             }),
-            env: ENV,
+            env: {
+              ...ENV,
+              MEMEX_ALLOWED_TRANSCRIPT_ROOTS: TMP,
+              MEMEX_CONTINUITY_NO_WAKE: "1",
+            },
             encoding: "utf8",
             timeout: 60000,
           },
         );
         if (r.status !== 0) throw new Error(`exit ${r.status}`);
-        if (!r.stderr.includes("empty rollout"))
-          throw new Error(
-            `expected empty-rollout guard log, got: ${r.stderr.slice(0, 200)}`,
-          );
-        return "guard held, no marker written";
+        if (r.stdout || r.stderr)
+          throw new Error(`expected silent valid output, got: ${(r.stdout + r.stderr).slice(0, 200)}`);
+        const { default: Database } = await import("better-sqlite3");
+        const db = new Database(path.join(MB_HOME, "conversation-index", "db.sqlite"), { readonly: true });
+        const fence = db.prepare(`
+          SELECT kind, closure_state FROM checkpoints WHERE session_id = ?
+        `).get(RUN_MARKER);
+        const jobs = db.prepare(`
+          SELECT COUNT(*) AS n FROM memory_jobs WHERE checkpoint_id IN
+            (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)
+        `).get(RUN_MARKER);
+        db.close();
+        if (fence?.kind !== "final" || fence?.closure_state !== "final" || Number(jobs?.n) !== 2)
+          throw new Error(`missing final fence/outbox: ${JSON.stringify({ fence, jobs })}`);
+        return "final fence + capture_index/capsule_update pending; no foreground worker";
       },
     );
   }
@@ -342,6 +357,16 @@ async function main() {
       fs.copyFileSync(authSrc, path.join(CODEX_HOME, "auth.json"));
       fs.chmodSync(path.join(CODEX_HOME, "auth.json"), 0o600);
       return "ok";
+    });
+
+    await step("plugin runtime canary uses no fallback hook registration", () => {
+      const r = MB(["remove-hooks"]);
+      if (r.status !== 0) throw new Error(r.stderr || `exit ${r.status}`);
+      const file = path.join(CODEX_HOME, "hooks.json");
+      if (fs.existsSync(file) && /_memex/.test(fs.readFileSync(file, "utf8"))) {
+        throw new Error("fallback Memex hooks remain beside plugin-managed hooks");
+      }
+      return "plugin-managed hooks are the sole active Memex registration";
     });
 
     // Canary variants of the SAME registered script names: proves Codex
@@ -362,8 +387,12 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
       canary("SessionStart"),
     );
     fs.writeFileSync(
-      path.join(ACTIVE_PLUGIN, "scripts", "session-end-hook.js"),
-      canary("SessionEnd"),
+      path.join(ACTIVE_PLUGIN, "scripts", "continuity-hook.js"),
+      `import fs from 'node:fs';
+let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
+  const parsed=JSON.parse(input||'{}');
+  fs.appendFileSync(${JSON.stringify(canaryLog)}, JSON.stringify({event:parsed.hook_event_name,stdin:parsed})+'\\n');
+});`,
     );
     // Mock the sync command to avoid "Sync started..." output interfering with model reply
     const syncCanaryPath = path.join(ACTIVE_PLUGIN, "cli", "memex.js");
@@ -379,12 +408,8 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
       },
     });
     fs.writeFileSync(
-      path.join(ACTIVE_PLUGIN, "scripts", "inject-context-hook.sh"),
-      `#!/usr/bin/env bash\ninput=$(cat)\nnode -e 'const fs=require("fs");const log=${JSON.stringify(canaryLog)};const j=JSON.parse(process.argv[1]||"{}");fs.appendFileSync(log, JSON.stringify({event:"UserPromptSubmit",stdin:j})+"\\n")' "$input"\ncat <<'EOF'\n${hookJson}\nEOF\n`,
-    );
-    fs.chmodSync(
-      path.join(ACTIVE_PLUGIN, "scripts", "inject-context-hook.sh"),
-      0o755,
+      path.join(ACTIVE_PLUGIN, "scripts", "inject-context.js"),
+      `import fs from 'node:fs';\nlet input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{const j=JSON.parse(input||'{}');fs.appendFileSync(${JSON.stringify(canaryLog)},JSON.stringify({event:'UserPromptSubmit',stdin:j})+'\\n');process.stdout.write(${JSON.stringify(hookJson + "\n")});});\n`,
     );
     await step(
       "real codex exec fires SessionStart/UserPromptSubmit/SessionEnd",
@@ -422,6 +447,10 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
           if (!names.includes(expected))
             throw new Error(`missing canary event ${expected}; got ${names}`);
         }
+        for (const unique of ["UserPromptSubmit", "Stop", "SessionEnd"]) {
+          const count = names.filter((name) => name === unique).length;
+          if (count !== 1) throw new Error(`expected one ${unique}, got ${count}`);
+        }
         const ups = events.find((e) => e.event === "UserPromptSubmit");
         if (!ups.stdin.prompt || typeof ups.stdin.prompt !== "string")
           throw new Error("UserPromptSubmit stdin lacked prompt");
@@ -440,10 +469,10 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
       },
     );
     await step(
-      "real SessionEnd extraction through Luna (one fact)",
+      "real SessionEnd final fence then deferred Capsule update through Luna",
       async () => {
-        // Restore REAL handlers, then drive session-end-hook with a stable
-        // transcript containing one obvious decision.
+        // Restore real handlers, write the final fence synchronously, then run
+        // the durable queue worker as a separate process.
         fs.rmSync(canaryLog, { force: true });
         fs.cpSync(
           path.join(REPO, "scripts"),
@@ -501,92 +530,93 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
             }),
           ].join("\n") + "\n",
         );
-        // Real lifecycle order: SessionStart background sync indexed the rollout
-        // BEFORE SessionEnd extracts from the index. Reproduce both steps.
-        const syncR = MB(["sync"]);
-        if (syncR.status !== 0)
-          throw new Error(`sync failed: ${(syncR.stderr || "").slice(-300)}`);
+        const started = Date.now();
         const r = spawnSync(
           process.execPath,
-          [path.join(ACTIVE_PLUGIN, "scripts", "session-end-hook.js")],
+          [path.join(ACTIVE_PLUGIN, "scripts", "continuity-hook.js")],
           {
             input: JSON.stringify({
+              hook_event_name: "SessionEnd",
               transcript_path: rollout,
               session_id: sid,
               cwd: TEST_PROJECT,
             }),
             env: {
               ...ENV,
-              MEMEX_STABILIZE_QUIET_MS: "200",
-              MEMEX_STABILIZE_POLL_MS: "50",
-              BACKFILL_MIN_EXCHANGES: "1",
+              MEMEX_CONTINUITY_NO_WAKE: "1",
             },
             encoding: "utf8",
-            timeout: 600000,
+            timeout: 10_000,
           },
         );
-        // The hook itself stays silent on success; completion evidence lives in
-        // the data root: a project-scoped active fact plus the worker log line.
-        if (/no completion evidence/.test(r.stderr)) {
-          throw new Error(
-            `hook reported no completion evidence: ${r.stderr.slice(-300)}`,
-          );
-        }
-        let factCount = 0;
-        try {
-          const { default: Database } = await import("better-sqlite3");
-          const dbPath = path.join(MB_HOME, "conversation-index", "db.sqlite");
-          const db = new Database(dbPath, { readonly: true });
-          const row = db
-            .prepare(
-              "SELECT COUNT(*) AS c FROM facts WHERE scope_project = ? AND is_active = 1",
-            )
-            .get(TEST_PROJECT);
-          factCount = Number(row.c);
-          db.close();
-        } catch {
-          /* DB not created yet counts as not visible */
-        }
-        if (factCount === 0)
-          throw new Error(
-            "no project-scoped active fact found in temp DB after SessionEnd",
-          );
-        return `project-scoped facts in temp DB: ${factCount}`;
+        if (r.status !== 0 || r.stdout || r.stderr)
+          throw new Error(`final fence failed: status=${r.status} ${(r.stdout + r.stderr).slice(-300)}`);
+        const hookMs = Date.now() - started;
+        const { default: Database } = await import("better-sqlite3");
+        const dbPath = path.join(MB_HOME, "conversation-index", "db.sqlite");
+        let db = new Database(dbPath, { readonly: true });
+        const pending = db.prepare(`
+          SELECT COUNT(*) AS n FROM memory_jobs WHERE checkpoint_id IN
+            (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)
+            AND state = 'pending'
+        `).get(sid);
+        db.close();
+        if (Number(pending.n) !== 2) throw new Error(`expected two deferred jobs, got ${pending.n}`);
+        const worker = spawnSync(
+          process.execPath,
+          [path.join(ACTIVE_PLUGIN, "scripts", "continuity-worker.js")],
+          { env: ENV, encoding: "utf8", timeout: 600000 },
+        );
+        if (worker.status !== 0)
+          throw new Error(`continuity worker failed: ${worker.stderr.slice(-500)}`);
+        db = new Database(dbPath, { readonly: true });
+        const capsule = db.prepare(`
+          SELECT generation, authority FROM work_capsules
+          WHERE workstream_id = (SELECT workstream_id FROM session_memory_state WHERE session_id = ?)
+        `).get(sid);
+        db.close();
+        if (!capsule || Number(capsule.generation) < 1 || capsule.authority !== "context-only")
+          throw new Error(`Capsule missing after worker: ${JSON.stringify(capsule)}; worker=${worker.stderr.slice(-1000)}`);
+        return `hook=${hookMs}ms, deferred jobs=2, Capsule generation=${capsule.generation}`;
       },
     );
   }
 
-  // ── Next-session observability: MCP search_facts finds the new fact ─────
+  // ── Next-session observability: compact resumes from local projection ───
   if (TIER === "authenticated") {
     await step(
-      "next-session MCP search_facts returns the freshly extracted fact",
-      async () => {
-        process.env.TEST_DB_PATH = path.join(
-          MB_HOME,
-          "conversation-index",
-          "db.sqlite",
+      "next-session compact rehydrates the local Work Capsule immediately",
+      () => {
+        const sid = "01a039aa-1111-4222-8333-a44445555666";
+        const r = spawnSync(
+          process.execPath,
+          [path.join(ACTIVE_PLUGIN, "scripts", "continuity-hook.js")],
+          {
+            input: JSON.stringify({
+              hook_event_name: "SessionStart",
+              source: "compact",
+              session_id: sid,
+              cwd: TEST_PROJECT,
+            }),
+            env: { ...ENV, MEMEX_CONTINUITY_NO_WAKE: "1" },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
         );
-        const mod = await import(path.join(REPO, "dist", "mcp-server.js"));
-        const reply = await mod.handleToolCall("search_facts", {
-          query: "cursor pagination with encrypted opaque cursors",
-          project: TEST_PROJECT,
-        });
-        if (reply.isError)
-          throw new Error(
-            `search_facts error: ${reply.content[0].text.slice(0, 200)}`,
-          );
-        const text = reply.content[0].text;
-        if (!/cursor|pagination/i.test(text) || /Results: 0/.test(text)) {
-          throw new Error(`fact not surfaced:\n${text.slice(0, 300)}`);
-        }
-        delete process.env.TEST_DB_PATH;
-        return "freshly extracted fact visible through MCP scope contract";
+        if (r.status !== 0) throw new Error(r.stderr || `exit ${r.status}`);
+        const output = parseJson(r.stdout, "compact additionalContext");
+        const context = output?.hookSpecificOutput?.additionalContext;
+        if (!context || (!context.includes("[WORK NOW]") && !context.includes("[WORK NOW — DETERMINISTIC TAIL BATON]")))
+          throw new Error(`Capsule context not surfaced: ${r.stdout.slice(0, 300)}`);
+        return "bounded Work Capsule context emitted without retrieval/model wait";
       },
     );
   }
 
   // ── Step N: removal preserves foreign entries; data preserved ───────────
   await step("remove-hooks removes only owned entries", () => {
+    const setup = MB(["setup-hooks"]);
+    if (setup.status !== 0) throw new Error(setup.stderr || `setup-hooks exit ${setup.status}`);
     // Plant a foreign entry first.
     const file = path.join(CODEX_HOME, "hooks.json");
     const j = parseJson(
@@ -615,7 +645,7 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
     ) {
       throw new Error("owned entries not removed");
     }
-    return `removed 6 owned, foreign preserved`;
+    return `removed 11 owned, foreign preserved`;
   });
 
   await step("remove isolated plugin and marketplace registrations", () => {

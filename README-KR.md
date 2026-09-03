@@ -213,15 +213,20 @@ Fact 관리에는 edit, deactivate, restore, history, guarded hard delete가 포
 
 ## 자동 lifecycle
 
-Memex는 세 가지 Codex lifecycle event와 연결됩니다.
+Memex는 Codex의 전체 continuity lifecycle과 연결됩니다.
 
 | 이벤트 | Memex 동작 |
 | --- | --- |
-| **SessionStart** | version drift 확인, background sync, durable sync import, bounded maintenance |
+| **SessionStart(startup/resume)** | session state 복원과 durable queue recovery 후 background sync/import/maintenance |
+| **SessionStart(clear/compact)** | `context_epoch` 전환; compact는 bounded Capsule/current-fact bundle을 즉시 반환 |
 | **UserPromptSubmit** | scoped retrieval, relevance gate, deduplication, bounded context injection |
-| **SessionEnd** | rollout 안정화, incremental fact extraction, durable sync export |
+| **Stop** | 새 complete transcript bytes만 append하고 closed-turn fence commit |
+| **Interrupt** | delta append와 interrupted/open fence 보존 |
+| **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
+| **PostCompact** | optional telemetry 전용; correctness 비의존 |
+| **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음 |
 
-SessionStart 작업은 의도적으로 비동기이며 eventual consistency를 사용합니다. 정해진 완료 순서에 의존하지 않고, 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
+Capture hook은 bounded local I/O만 수행합니다. Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
 
 ---
 

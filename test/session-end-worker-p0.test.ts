@@ -52,8 +52,8 @@ afterEach(() => {
   tmp = undefined;
 });
 
-describe("P0 SessionEnd worker runtime", () => {
-  it("reads an indexed exchange, emits canonical success, then allows SessionEnd export", () => {
+describe("legacy fact worker remains independently callable after SessionEnd decoupling", () => {
+  it("reads an indexed exchange while SessionEnd independently writes a final fence", () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-session-end-p0-"));
     const dbPath = path.join(tmp, "conversation-index", "db.sqlite");
     const transcript = path.join(tmp, `rollout-${SESSION_ID}.jsonl`);
@@ -122,11 +122,11 @@ describe("P0 SessionEnd worker runtime", () => {
       env: {
         ...env,
         MEMEX_PLUGIN_ROOT: process.cwd(),
-        MEMEX_STABILIZE_POLL_MS: "5",
-        MEMEX_STABILIZE_QUIET_MS: "10",
-        MEMEX_STABILIZE_MAX_WAIT_MS: "1000",
+        MEMEX_ALLOWED_TRANSCRIPT_ROOTS: path.dirname(transcript),
+        MEMEX_CONTINUITY_NO_WAKE: "1",
       },
       input: JSON.stringify({
+        hook_event_name: "SessionEnd",
         transcript_path: transcript,
         session_id: SESSION_ID,
         cwd: PROJECT,
@@ -135,23 +135,19 @@ describe("P0 SessionEnd worker runtime", () => {
       timeout: 30_000,
     });
     expect(hook.status).toBe(0);
-    expect(hook.stderr).not.toContain("no completion evidence");
-    // P1-1: export commits one generation per device — probe it there.
-    {
-      const deviceDir = path.join(
-        tmp, "conversation-index", "sync", "devices",
-        fs.readdirSync(path.join(tmp, "conversation-index", "sync", "devices"))[0],
-      );
-      expect(
-        fs.existsSync(
-          path.join(
-            deviceDir, "generations",
-            (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
-              .generation,
-            "meta.json",
-          ),
-        ),
-      ).toBe(true);
+    expect(hook.stdout).toBe("");
+    expect(hook.stderr).toBe("");
+    const fenceDb = new Database(dbPath, { readonly: true });
+    try {
+      expect(fenceDb.prepare(`
+        SELECT kind, closure_state FROM checkpoints WHERE session_id = ? AND kind = 'final'
+      `).get(SESSION_ID)).toEqual({ kind: "final", closure_state: "final" });
+      expect(fenceDb.prepare(`
+        SELECT COUNT(*) AS n FROM memory_jobs WHERE checkpoint_id IN
+          (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)
+      `).get(SESSION_ID)).toEqual({ n: 2 });
+    } finally {
+      fenceDb.close();
     }
     const log = fs.readFileSync(
       path.join(tmp, "conversation-index", "fact-extract.log"),
@@ -249,7 +245,7 @@ describe("P0 worker full extraction through the real LLM path", () => {
     return { root, dbPath, home };
   }
 
-  it("claims an indexed session, saves a fact, and reports extracted=1 saved=1", () => {
+  it("claims and saves a fact before an independent SessionEnd final fence", () => {
     const { root, dbPath, home } = writeWorkerSandbox();
     const transcript = path.join(root, `rollout-${SESSION_ID}.jsonl`);
     fs.writeFileSync(transcript, rollout());
@@ -354,11 +350,11 @@ describe("P0 worker full extraction through the real LLM path", () => {
       env: {
         ...env,
         MEMEX_PLUGIN_ROOT: process.cwd(),
-        MEMEX_STABILIZE_POLL_MS: "5",
-        MEMEX_STABILIZE_QUIET_MS: "10",
-        MEMEX_STABILIZE_MAX_WAIT_MS: "1000",
+        MEMEX_ALLOWED_TRANSCRIPT_ROOTS: path.dirname(transcript),
+        MEMEX_CONTINUITY_NO_WAKE: "1",
       },
       input: JSON.stringify({
+        hook_event_name: "SessionEnd",
         transcript_path: transcript,
         session_id: SESSION_ID,
         cwd: EXTRACT_PROJECT,
@@ -367,23 +363,15 @@ describe("P0 worker full extraction through the real LLM path", () => {
       timeout: 30_000,
     });
     expect(hook.status).toBe(0);
-    expect(hook.stderr).not.toContain("no completion evidence");
-    // P1-1: export commits one generation per device — probe it there.
-    {
-      const deviceDir = path.join(
-        home, "conversation-index", "sync", "devices",
-        fs.readdirSync(path.join(home, "conversation-index", "sync", "devices"))[0],
-      );
-      expect(
-        fs.existsSync(
-          path.join(
-            deviceDir, "generations",
-            (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
-              .generation,
-            "meta.json",
-          ),
-        ),
-      ).toBe(true);
+    expect(hook.stdout).toBe("");
+    expect(hook.stderr).toBe("");
+    const fenceDb = new Database(dbPath, { readonly: true });
+    try {
+      expect(fenceDb.prepare(`
+        SELECT kind, closure_state FROM checkpoints WHERE session_id = ? AND kind = 'final'
+      `).get(SESSION_ID)).toEqual({ kind: "final", closure_state: "final" });
+    } finally {
+      fenceDb.close();
     }
     const log = fs.readFileSync(
       path.join(home, "conversation-index", "fact-extract.log"),

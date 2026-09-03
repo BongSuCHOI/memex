@@ -353,8 +353,12 @@ export async function parseConversation(
   filePath: string,
   projectName: string,
   archivePath: string = filePath,
+  throughByteExclusive?: number,
 ): Promise<Array<Record<string, unknown>>> {
-  const stream = fs.createReadStream(filePath);
+  if (throughByteExclusive !== undefined && throughByteExclusive <= 0) return [];
+  const stream = fs.createReadStream(filePath, throughByteExclusive === undefined
+    ? undefined
+    : { start: 0, end: Math.max(0, throughByteExclusive - 1) });
   try {
     const { meta, exchanges } = await parseRolloutStream(stream, {
       archivePath,

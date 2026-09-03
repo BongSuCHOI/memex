@@ -13,6 +13,8 @@ Memex는 Codex 대화를 수집해 검색 가능한 conversation corpus와 장�
 5. multi-device sync는 durable state만 generation 단위로 전송합니다.
 6. 자동 lifecycle은 bounded, idempotent, observable해야 합니다.
 7. project identity는 canonical absolute cwd 하나로 통일합니다.
+8. capture hook은 raw evidence fence만 commit하고 model/embedding/distillation을 기다리지 않습니다.
+9. Work Capsule은 current work의 `context-only` projection이며 Current Fact authority와 분리합니다.
 
 ## 2. 논리 계층
 
@@ -144,7 +146,9 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/sync.ts` | rollout archive와 incremental indexing orchestration |
 | `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
 | `src/fact-extractor.ts` | exact-span/call-ID provenance validation → mandatory semantic verifier, local window + adaptive bounded referent ranking → local dependency |
-| `src/continuity-store.ts` | additive schema v1, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
+| `src/continuity-store.ts` | additive schema v3, journal/session/Capsule/privacy-guard tables, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
+| `src/continuity-core.ts` | hook payload/path/session-meta validation, serialized rolling journal, checkpoint identity, context epoch/residency, Capsule/tail baton, compact rehydration |
+| `src/continuity-worker.ts` | P0 hash-verified prefix ingest와 P1 typed Capsule update; partition ordering/retry/CAS |
 | `src/archive-ingestion.ts` | canonical desired-set ingest와 monotonic prefix ingest 분리 |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
 | `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
@@ -164,37 +168,40 @@ sequenceDiagram
     participant C as Codex session
     participant H as Memex hooks
     participant A as Archive/index
+    participant J as Journal/checkpoint
+    participant W as Continuity worker
     participant D as SQLite
     participant L as Local codex exec
     participant S as Sync v4
 
-    C->>H: SessionStart
+    C->>H: Stop / Interrupt / PreCompact / SessionEnd
+    H->>J: append complete delta + fsync
+    H->>D: checkpoint + durable outbox
+    H-->>W: detached wake, no wait
+    W->>D: P0 verify hash + monotonic prefix ingest
+    W->>L: P1 typed Capsule update
+    L-->>W: strict JSON patch
+    W->>D: Capsule generation + lease CAS commit
+
+    C->>H: SessionStart startup/resume/compact
     H-->>A: background sync/index
     H-->>S: import committed peer generations
-    H-->>D: bounded maintenance
+    H->>D: recovery + context epoch
+    H-->>C: compact/resume bounded Capsule or tail baton
 
     C->>H: UserPromptSubmit
     H->>D: scoped conversation/fact retrieval
     H-->>C: additionalContext + durable recall receipt
 
-    C->>H: SessionEnd
-    H->>D: fix immutable exchange-generation target + claim job lease
-    H->>L: extraction candidate generation
-    L-->>H: structured candidates + evidence declarations
-    H->>L: authoritative entailment verification
-    L-->>H: ENTAILED / CONTRADICTED / NOT_ENOUGH
-    H->>L: consolidation/classification
-    L-->>H: structured results
-    H->>D: atomic fact/provenance/page-cursor commit under generation+lease CAS
-    H->>S: export durable generation
+    W->>D: P2 immutable fact target after P0/P1 drain
+    W->>L: extraction + entailment verification
+    L-->>W: typed evidence result
+    W->>D: atomic fact/provenance/page cursor commit
 ```
 
 SessionStart의 background sync, sync import, maintenance는 독립 async 작업입니다. 순서가 아니라 **eventual consistency**를 계약으로 삼고, 각 writer가 자체적으로 concurrency-safe해야 합니다.
 
-Phase 1 Correctness Spine은 lifecycle capture 이전 기반입니다. Every closed generation은 immutable target
-item으로 accounted되고, processing budget은 contiguous page scheduling만 제한합니다. Checkpoint/job API는
-Phase 2 capture hook이 재사용하지만 Phase 1에서는 Stop/Interrupt/Compact 등록이나 journal을 추가하지
-않습니다.
+Phase 2는 Phase 1 Correctness Spine 위에 Capture Plane을 올립니다. Every closed generation은 계속 immutable target item으로 accounted되며, capture-index는 canonical reconciliation과 분리된 monotonic prefix ingest만 사용합니다. Capture는 canonical `session_meta.cwd`와 hook session ID를 bounded prefix probe로 대조하고 SQLite writer transaction 안에서 journal append와 DB boundary를 직렬화합니다. `PostCompact`는 telemetry일 뿐이며 `PreCompact -> SessionStart(compact)`만으로 correctness와 immediate rehydration이 성립합니다. Phase 2의 workstream은 안전한 session-local binding이고 stable project/workspace identity는 Phase 3 범위입니다.
 
 ## 6. Sync protocol v4
 
@@ -249,6 +256,6 @@ importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다�
 
 ## 9. 배포 단위
 
-일반 사용자는 source checkout을 직접 build하지 않습니다. Codex plugin cache에는 manifest, skills, hook/MCP launcher가 설치되고 `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` runtime을 `npx` isolated cache에서 실행합니다.
+일반 사용자는 source checkout을 직접 build하지 않습니다. Codex plugin cache에는 manifest, skills, hook/MCP launcher와 materialized production dependencies가 설치됩니다. `cli/runtime-exec.js`는 version-pinned installed artifact의 로컬 binary를 우선 실행하여 foreground hook이 moving `github:...#main` revision이나 package-manager/network latency에 의존하지 않게 합니다. Dependency materialization 전의 raw plugin registration에는 기존 `npx` 경로가 compatibility fallback으로만 남습니다.
 
 MCP는 `$XDG_CACHE_HOME/memex/npm-mcp`(기본 `~/.cache/memex/npm-mcp`) 전용 cache를 사용합니다. `main`이 runtime release channel이므로 **검증된 commit만 main에 들어가는 것**이 release safety boundary입니다.

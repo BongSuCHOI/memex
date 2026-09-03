@@ -5,6 +5,8 @@ import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
 import { recordFactTombstone } from "./fact-management.js";
 import { bumpTaxonomyEpoch } from "./ontology-db.js";
+import { getMemexHome } from "./paths.js";
+import path from "node:path";
 export const USER_EXCLUSION_MARKERS = [
     "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
     "Only use NO_INSIGHTS_FOUND",
@@ -17,6 +19,9 @@ export const USER_EXCLUSION_MARKERS = [
  * re-consent event exists anywhere in the protocol.
  */
 export const PRIVACY_TOMBSTONE_REASON = "source_conversation_excluded";
+export function isConversationExcludedSession(db, sessionId) {
+    return !!db.prepare("SELECT 1 FROM conversation_exclusions WHERE session_id = ?").get(sessionId);
+}
 /**
  * User exclusion applies only to user-role message payloads. Raw transcript
  * bytes, tool output, and assistant output can quote marker source text and
@@ -143,6 +148,16 @@ export function purgeConversationFromIndex(db, input) {
         }
     }
     const purge = db.transaction(() => {
+        if (input.sessionId) {
+            db.prepare(`
+        INSERT INTO conversation_exclusions(session_id, source_path, reason, excluded_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          source_path = excluded.source_path,
+          reason = excluded.reason,
+          excluded_at = excluded.excluded_at
+      `).run(input.sessionId, input.archivePath, PRIVACY_TOMBSTONE_REASON, new Date().toISOString());
+        }
         const deleteRelation = db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?");
         const deleteFactVector = db.prepare("DELETE FROM vec_facts WHERE id = ?");
         const deleteFactVectorKr = db.prepare("DELETE FROM vec_facts_kr WHERE id = ?");
@@ -188,6 +203,15 @@ export function purgeConversationFromIndex(db, input) {
                 // This prevents a queued worker from recreating purged knowledge.
                 db.prepare("DELETE FROM checkpoints WHERE session_id = ?").run(input.sessionId);
             }
+            if (continuityTables.has("journal_streams")) {
+                db.prepare("DELETE FROM journal_streams WHERE session_id = ?").run(input.sessionId);
+            }
+            if (continuityTables.has("capture_gaps")) {
+                db.prepare("DELETE FROM capture_gaps WHERE session_id = ?").run(input.sessionId);
+            }
+            if (continuityTables.has("minimal_workstreams")) {
+                db.prepare("DELETE FROM minimal_workstreams WHERE session_id = ?").run(input.sessionId);
+            }
             if (continuityTables.has("extraction_targets")) {
                 db.prepare("DELETE FROM extraction_targets WHERE session_id = ?").run(input.sessionId);
             }
@@ -196,6 +220,15 @@ export function purgeConversationFromIndex(db, input) {
         }
     });
     purge.immediate();
+    if (input.sessionId && /^[A-Za-z0-9_-]{4,128}$/.test(input.sessionId)) {
+        // Journal bytes are user-source-derived durable evidence. Privacy purge is
+        // the sole normal destructive path and removes the session-owned directory
+        // only after the DB transaction has made every queued worker unreachable.
+        fs.rmSync(path.join(getMemexHome(), "journals", input.sessionId), {
+            recursive: true,
+            force: true,
+        });
+    }
     const summaryPath = input.archivePath.replace(/\.jsonl(?:\.zst)?$/, "-summary.txt");
     let summaries = 0;
     for (const candidate of [summaryPath, `${summaryPath}.zst`]) {

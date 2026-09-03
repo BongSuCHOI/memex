@@ -2,7 +2,17 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "",
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
         "hooks": [
           {
             "type": "command",
@@ -38,13 +48,62 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-session-end"
+            "command": "node \"${PLUGIN_ROOT}/cli/runtime-exec.js\" memex-hook-continuity",
+            "timeout": 3
           }
         ]
       }

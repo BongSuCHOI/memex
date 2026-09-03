@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Detached worker spawned by scripts/session-end-hook.js (foreground).
+ * Detached P2 worker started only after the Continuity P0/P1 queue drains.
  *
  * Environment:
  *   SESSION_ID - session to extract facts from (required)

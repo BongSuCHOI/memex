@@ -44,13 +44,13 @@ project-sensitive retrieval은 다음 중 하나를 명시합니다.
 sequenceDiagram
     participant H as Hook
     participant R as Retrieval core
-    participant L as Session dedup ledger
+    participant L as Session memory state
     participant P as Recall receipts
     participant C as Codex
 
     H->>R: prompt + session + project
     R->>R: retrieve, scope, relevance, budget
-    R->>L: remove already injected fact IDs
+    R->>L: remove resident fact revision tuples in current epoch
     R->>P: write prepared receipt
     P-->>R: event id
     R-->>H: context
@@ -64,12 +64,14 @@ warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같�
 
 1. 비정보성 prompt는 skip할 수 있습니다.
 2. relevance gate를 통과한 scoped result만 후보입니다.
-3. 이미 같은 session에 주입한 fact를 제거합니다.
+3. 현재 `context_epoch`에 이미 resident인 `(fact_id, semantic_generation, lifecycle_generation)`만 제거합니다.
 4. 필요하면 허용 scope relation을 1-hop 확장합니다.
 5. fact별 길이와 전체 char/token budget을 적용합니다.
 6. 결과가 없으면 context block을 만들지 않습니다.
 
-session dedup ledger는 운영 최적화라 fail-open이지만, recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 context를 주입하지 않습니다.
+Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
+
+`SessionStart(compact)`는 semantic query를 실행하지 않습니다. 최신 Work Capsule을 우선하고, 없거나 `through_checkpoint_id`가 session latest checkpoint보다 오래됐으면 latest substantive user request·plan item·touched files·trusted test·unresolved error로 만든 deterministic tail baton을 함께 사용합니다. 여기에 이전 epoch carry candidate의 latest active revision만 더해 2,000자 이하 `additionalContext`를 만들고, 실제 포함한 revision을 새 epoch residency로 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
 
 ## 6. Recall provenance
 

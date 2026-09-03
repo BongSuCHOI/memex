@@ -18,7 +18,7 @@ codex plugin marketplace add BongSuCHOI/memex
 codex plugin add memex@memex
 ```
 
-plugin은 manifest, MCP declaration, 3개 skills, hooks, UI launcher를 Codex cache에 설치합니다. dependency-free `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` runtime을 `npx` isolated cache에서 실행합니다.
+plugin은 manifest, MCP declaration, 3개 skills, hooks, UI launcher를 Codex cache에 설치합니다. 설치 절차가 production dependencies를 materialize한 뒤 `cli/runtime-exec.js`는 동일한 설치 artifact의 로컬 binary를 우선 실행합니다. 아직 materialize되지 않은 raw plugin registration만 `github:BongSuCHOI/memex#main`을 `npx` isolated cache에서 실행하는 compatibility fallback을 사용합니다.
 
 첫 실행은 native dependency와 npm cache 준비로 평소보다 오래 걸릴 수 있습니다. MCP manifest는 이를 고려해 startup timeout을 넉넉하게 둡니다.
 
@@ -98,11 +98,16 @@ node scripts/translate-facts.mjs
 
 | 이벤트 | 주요 동작 | 성격 |
 | --- | --- | --- |
-| SessionStart | version drift check, archive/index sync, sync import, bounded maintenance | 독립 async / eventual consistency |
+| SessionStart(startup/resume) | session/workstream restore, queue recovery, version/sync/import/maintenance | continuity resolve는 sync, 나머지는 독립 async |
+| SessionStart(clear/compact) | 새 `context_epoch`; compact는 Capsule/tail baton/current revisions 즉시 복원 | 새 retrieval/model 대기 없음 |
 | UserPromptSubmit | scoped retrieval, relevance/dedup/budget, recall receipt, `additionalContext` | no-match는 무주입 |
-| SessionEnd | rollout 안정화, extraction/consolidation, durable sync export | 실패 시 watermark 선행 전진 금지 |
+| Stop | incremental journal append + closed fence + outbox | 3초 timeout, model/embedding 0 |
+| Interrupt | incremental journal append + interrupted/open fence | 3초 timeout, 완료 처리 금지 |
+| PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze + outbox | 5초 timeout |
+| PostCompact(manual/auto) | telemetry/diagnostics only | correctness 비의존, 3초 timeout |
+| SessionEnd | final delta + final fence + outbox | 3초 timeout, foreground extraction/export 없음 |
 
-SessionStart의 여러 작업은 ordered pipeline이 아닙니다. 서로 완료를 기다리지 않으며 concurrency-safe writer와 다음 SessionStart의 eventual recovery에 의존합니다.
+Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 
 구형/별도 host에서 plugin-managed hook를 사용할 수 없을 때만 explicit fallback을 사용합니다.
 

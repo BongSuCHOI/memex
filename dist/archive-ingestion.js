@@ -1,6 +1,7 @@
 import { insertExchange, reconcileArchiveExchanges } from './db.js';
 import { generateExchangeEmbedding, initEmbeddings } from './embeddings.js';
 import { isWorkerPromptMessage } from './paths.js';
+import { applyLatestLifecycleClosure } from './continuity-core.js';
 /**
  * Single ingestion SSOT for every archive→index entrypoint (sync,
  * indexConversations/indexSession/indexUnprocessed, verify --repair).
@@ -31,6 +32,9 @@ export async function ingestArchiveExchanges(db, archivePath, exchanges) {
         const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
         insertExchange(db, exchange, embedding, toolNames);
         indexed++;
+    }
+    for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+        applyLatestLifecycleClosure(db, sessionId);
     }
     return indexed;
 }
@@ -63,6 +67,9 @@ export async function ingestPrefixExchanges(db, exchanges) {
             indexed += 1;
         else
             ignoredRegressions += 1;
+    }
+    for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+        applyLatestLifecycleClosure(db, sessionId);
     }
     return { indexed, ignoredRegressions };
 }

@@ -5,8 +5,8 @@ import { generateEmbedding, initEmbeddings, queryBaseline, } from "./embeddings.
 import { getRelatedFacts } from "./ontology-db.js";
 import { detectRepeat, formatRepeatContext } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
-import { loadLedger, appendLedger } from "./inject-ledger.js";
 import { recordRecallEvent } from "./db.js";
+import { ensureSessionMemoryState, readResidentFactRevisions, recordResidentFactRevisions, } from "./continuity-core.js";
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
 // thresholds cannot separate relevant from irrelevant). A fact is injected
@@ -94,6 +94,11 @@ export async function computeInjectContext(userPrompt, project, via, sessionId) 
                 });
                 return "";
             }
+            ensureSessionMemoryState(db, {
+                sessionId,
+                project,
+                source: "UserPromptSubmit",
+            });
             // Expand with 1-hop relations
             const seenIds = new Set(results.map((r) => r.fact.id));
             const expandedFacts = [
@@ -114,8 +119,17 @@ export async function computeInjectContext(userPrompt, project, via, sessionId) 
             }
             // 세션 dedup: 이 세션에서 이미 주입한 fact 는 대화 컨텍스트에 이미 있다 —
             // 재주입은 순수 토큰 낭비. 원장에 없는 fact 만 주입한다.
-            const ledger = loadLedger(sessionId);
-            const fresh = expandedFacts.filter(({ fact }) => !ledger.has(fact.id));
+            const residency = readResidentFactRevisions(db, sessionId);
+            const resident = new Set(residency.resident.map(([id, semantic, lifecycle]) => `${id}:${semantic}:${lifecycle}`));
+            const revisionOf = (fact) => [
+                fact.id,
+                fact.semantic_generation ?? 1,
+                fact.lifecycle_generation ?? 1,
+            ];
+            const fresh = expandedFacts.filter(({ fact }) => {
+                const [id, semantic, lifecycle] = revisionOf(fact);
+                return !resident.has(`${id}:${semantic}:${lifecycle}`);
+            });
             const dedupedCount = expandedFacts.length - fresh.length;
             if (fresh.length === 0) {
                 appendInjectLog({
@@ -189,7 +203,12 @@ export async function computeInjectContext(userPrompt, project, via, sessionId) 
             if (!recallEventId) {
                 throw new Error("Failed to persist prepared recall receipt");
             }
-            appendLedger(sessionId, ledger, injectedIds);
+            const injectedRevisions = fresh
+                .filter(({ fact }) => injectedIds.includes(fact.id))
+                .map(({ fact }) => revisionOf(fact));
+            if (!recordResidentFactRevisions(db, sessionId, residency.contextEpoch, injectedRevisions)) {
+                throw new Error("context epoch changed before residency commit");
+            }
             const block = lines.join("\n") + "\n";
             appendInjectLog({
                 status: "injected",

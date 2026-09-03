@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
-export const CONTINUITY_SCHEMA_VERSION = 1;
+export const CONTINUITY_SCHEMA_VERSION = 3;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
@@ -20,7 +20,11 @@ export type ContinuityMigrationStage =
   | "closure-state-column"
   | "parser-version-column"
   | "continuity-tables"
+  | "continuity-core-tables"
+  | "journal-source-mtime-column"
+  | "journal-source-guard-columns"
   | "continuity-indexes"
+  | "continuity-core-indexes"
   | "fts-rebuild"
   | "exchange-metadata"
   | "schema-meta"
@@ -257,8 +261,142 @@ export function ensureContinuitySchema(
         UNIQUE(target_id, from_ordinal, through_ordinal, payload_fingerprint)
       );
 
+      CREATE TABLE IF NOT EXISTS journal_streams (
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        source_path TEXT NOT NULL,
+        source_realpath TEXT NOT NULL,
+        source_dev TEXT NOT NULL,
+        source_ino TEXT NOT NULL,
+        source_mtime_ms REAL NOT NULL DEFAULT 0,
+        source_guard_start INTEGER NOT NULL DEFAULT 0,
+        source_guard_hash TEXT NOT NULL DEFAULT '',
+        copied_byte_end INTEGER NOT NULL DEFAULT 0,
+        copied_line_end INTEGER NOT NULL DEFAULT 0,
+        journal_byte_end INTEGER NOT NULL DEFAULT 0,
+        journal_path TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL DEFAULT '',
+        parser_version INTEGER NOT NULL DEFAULT 1,
+        state TEXT NOT NULL DEFAULT 'active'
+          CHECK(state IN ('active','replaced','gap','purged')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(session_id, stream_epoch)
+      );
+
+      CREATE TABLE IF NOT EXISTS journal_blocks (
+        block_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        source_from_byte INTEGER NOT NULL,
+        source_through_byte INTEGER NOT NULL,
+        journal_from_byte INTEGER NOT NULL,
+        journal_through_byte INTEGER NOT NULL,
+        from_line INTEGER NOT NULL,
+        through_line INTEGER NOT NULL,
+        segment_hash TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id, stream_epoch)
+          REFERENCES journal_streams(session_id, stream_epoch) ON DELETE CASCADE,
+        UNIQUE(session_id, stream_epoch, ordinal),
+        UNIQUE(session_id, stream_epoch, source_through_byte, prefix_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS capture_gaps (
+        gap_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER,
+        source_path TEXT,
+        event_kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'open'
+          CHECK(state IN ('open','recovered','purged')),
+        created_at TEXT NOT NULL,
+        recovered_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS conversation_exclusions (
+        session_id TEXT PRIMARY KEY,
+        source_path TEXT,
+        reason TEXT NOT NULL,
+        excluded_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS minimal_workstreams (
+        workstream_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL UNIQUE,
+        branch_hint TEXT,
+        binding_reason TEXT NOT NULL DEFAULT 'session-local',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_memory_state (
+        session_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        context_epoch INTEGER NOT NULL DEFAULT 0,
+        epoch_token TEXT NOT NULL DEFAULT '',
+        resident_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        capsule_generation_seen INTEGER NOT NULL DEFAULT 0,
+        memory_revision_seen INTEGER NOT NULL DEFAULT 0,
+        latest_checkpoint_id TEXT,
+        last_source TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS work_capsules (
+        workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL DEFAULT 0,
+        objective TEXT NOT NULL DEFAULT '',
+        current_state TEXT NOT NULL DEFAULT '',
+        verified_progress_json TEXT NOT NULL DEFAULT '[]',
+        hypotheses_json TEXT NOT NULL DEFAULT '[]',
+        blockers_json TEXT NOT NULL DEFAULT '[]',
+        open_questions_json TEXT NOT NULL DEFAULT '[]',
+        next_actions_json TEXT NOT NULL DEFAULT '[]',
+        touched_areas_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        source_exchange_ids_json TEXT NOT NULL DEFAULT '[]',
+        through_checkpoint_id TEXT,
+        authority TEXT NOT NULL DEFAULT 'context-only'
+          CHECK(authority = 'context-only'),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS capsule_checkpoint_state (
+        checkpoint_id TEXT PRIMARY KEY REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','processing','processed','retry','failed-visible')),
+        expected_generation INTEGER NOT NULL,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+
     `);
     options.afterMigrationStage?.("continuity-tables");
+    options.afterMigrationStage?.("continuity-core-tables");
+
+    const journalColumns = columnNames(db, "journal_streams");
+    if (!journalColumns.has("source_mtime_ms")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_mtime_ms REAL NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-mtime-column");
+    }
+    const guardedJournalColumns = columnNames(db, "journal_streams");
+    if (!guardedJournalColumns.has("source_guard_start")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_start INTEGER NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
+    if (!guardedJournalColumns.has("source_guard_hash")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_hash TEXT NOT NULL DEFAULT ''");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
 
     db.exec(`
 
@@ -272,8 +410,19 @@ export function ensureContinuitySchema(
         ON extraction_target_items(target_id, state, ordinal);
       CREATE INDEX IF NOT EXISTS idx_exchange_generation_pending
         ON exchange_extraction_state(policy_version, state, exchange_id);
+      CREATE INDEX IF NOT EXISTS idx_journal_streams_source
+        ON journal_streams(source_realpath, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_journal_blocks_range
+        ON journal_blocks(session_id, stream_epoch, source_through_byte);
+      CREATE INDEX IF NOT EXISTS idx_capture_gaps_state
+        ON capture_gaps(state, session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_session_memory_workstream
+        ON session_memory_state(workstream_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_capsule_checkpoint_state
+        ON capsule_checkpoint_state(workstream_id, state, updated_at);
     `);
     options.afterMigrationStage?.("continuity-indexes");
+    options.afterMigrationStage?.("continuity-core-indexes");
 
     options.afterStructuralDdl?.();
 
@@ -723,11 +872,17 @@ export function failMemoryJob(
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const row = db.prepare(`
-    SELECT attempts, max_attempts FROM memory_jobs
+    SELECT attempts, max_attempts, checkpoint_id, target_id, kind FROM memory_jobs
     WHERE job_id = ? AND state = 'running' AND lease_owner = ?
       AND lease_generation = ? AND lease_until > ?
   `).get(input.jobId, input.owner, input.leaseGeneration, nowIso) as
-    | { attempts: number; max_attempts: number }
+    | {
+        attempts: number;
+        max_attempts: number;
+        checkpoint_id: string | null;
+        target_id: string | null;
+        kind: string;
+      }
     | undefined;
   if (!row) return false;
   const retry = input.retry && row.attempts < row.max_attempts;
@@ -737,22 +892,59 @@ export function failMemoryJob(
     1000 * 2 ** Math.max(0, row.attempts - 1),
   );
   const availableAt = input.availableAt ?? new Date(now.getTime() + defaultBackoffMs);
-  return db.prepare(`
-    UPDATE memory_jobs
-    SET state = ?, available_at = ?, lease_owner = NULL, lease_until = NULL,
-        last_error = ?, updated_at = ?
-    WHERE job_id = ? AND state = 'running' AND lease_owner = ?
-      AND lease_generation = ? AND lease_until > ?
-  `).run(
-    state,
-    availableAt.toISOString(),
-    input.error,
-    nowIso,
-    input.jobId,
-    input.owner,
-    input.leaseGeneration,
-    nowIso,
-  ).changes === 1;
+  const fail = db.transaction(() => {
+    const changed = db.prepare(`
+      UPDATE memory_jobs
+      SET state = ?, available_at = ?, lease_owner = NULL, lease_until = NULL,
+          last_error = ?, updated_at = ?
+      WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+        AND lease_generation = ? AND lease_until > ?
+    `).run(
+      state,
+      availableAt.toISOString(),
+      input.error,
+      nowIso,
+      input.jobId,
+      input.owner,
+      input.leaseGeneration,
+      nowIso,
+    ).changes;
+    if (changed !== 1) return false;
+    // Extraction targets own their richer exact-range checkpoint state. For
+    // checkpoint-native Continuity work, keep terminal/retry accountability
+    // synchronized with the queue transition itself.
+    if (!row.target_id && row.checkpoint_id) {
+      db.prepare("UPDATE checkpoints SET state = ? WHERE checkpoint_id = ?")
+        .run(retry ? "retry" : "dead-letter", row.checkpoint_id);
+      if (!retry && row.kind === "capture_index") {
+        db.prepare(`
+          UPDATE memory_jobs
+          SET state = 'dead', last_error = ?, updated_at = ?
+          WHERE checkpoint_id = ? AND kind = 'capsule_update'
+            AND state IN ('pending','retry')
+        `).run("capture_index dependency is dead-letter", nowIso, row.checkpoint_id);
+        db.prepare(`
+          UPDATE capsule_checkpoint_state
+          SET state = 'failed-visible', last_error = ?, updated_at = ?
+          WHERE checkpoint_id = ? AND state IN ('pending','retry')
+        `).run("capture_index dependency is dead-letter", nowIso, row.checkpoint_id);
+      }
+      if (row.kind === "capsule_update") {
+        db.prepare(`
+          UPDATE capsule_checkpoint_state
+          SET state = ?, last_error = ?, updated_at = ?
+          WHERE checkpoint_id = ?
+        `).run(
+          retry ? "retry" : "failed-visible",
+          input.error.slice(0, 1_000),
+          nowIso,
+          row.checkpoint_id,
+        );
+      }
+    }
+    return true;
+  });
+  return db.inTransaction ? fail() : fail.immediate();
 }
 
 export interface ExtractionTargetItem {

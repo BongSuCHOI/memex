@@ -5,10 +5,9 @@
  *
  * Spawned from hooks.json after the background sync. Owns everything that
  * must resume across sessions but must never block or emit context:
- *   1. fact consolidation (LLM) — detached fact-consolidate-worker.js
- *   2. re-embed backlog (stale/missing vectors, exchanges + facts)
- *   3. ontology classification backfill
- *   4. cross-project fact-extraction backfill
+ *   1. Continuity capture index + Work Capsule queue (P0/P1)
+ *   2. fact extraction (P2)
+ *   3. fact consolidation / re-embed / ontology maintenance
  *
  * Context injection does NOT live here — UserPromptSubmit inject-context owns it.
  * Emits nothing on stdout; every failure is non-fatal and retried next session.
@@ -39,19 +38,6 @@ async function main() {
       });
     } catch { /* observation is best-effort */ }
 
-    const worker = path.join(HERE, 'fact-consolidate-worker.js');
-    try {
-      const child = spawn(process.execPath, [worker], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: { ...process.env },
-      });
-      child.unref();
-    } catch {
-      // Non-fatal: consolidation is best-effort
-    }
-
     const db = initDatabase();
 
     const spawnDetached = (script) => {
@@ -66,6 +52,34 @@ async function main() {
         // Non-fatal: background work resumes on a later session
       }
     };
+
+    // P0/P1 always outrank fact/derived maintenance. The Continuity worker
+    // itself claims only durable queue rows and is restart-safe.
+    let continuityPending = false;
+    try {
+      const pendingContinuity = db.prepare(`
+        SELECT 1 FROM memory_jobs
+        WHERE kind IN ('capture_index','capsule_update')
+          AND ((state IN ('pending','retry') AND available_at <= ?)
+            OR (state = 'running' AND (lease_until IS NULL OR lease_until <= ?)))
+        LIMIT 1
+      `).get(new Date().toISOString(), new Date().toISOString());
+      if (pendingContinuity) {
+        continuityPending = true;
+        spawnDetached('continuity-worker.js');
+      }
+    } catch { /* non-fatal */ }
+
+    // Keep process-level priority strict: lower lanes resume on the next
+    // SessionStart after P0/P1 has drained instead of competing for SQLite or
+    // local model capacity in the same maintenance invocation.
+    if (continuityPending) {
+      db.close();
+      return;
+    }
+
+    // Derived work begins only when the Continuity queue is currently drained.
+    spawnDetached('fact-consolidate-worker.js');
 
     // 2. Auto-resume vector upgrades: stale/missing category, fact, Korean,
     // and exchange vectors (selectors are the shared generation contract).

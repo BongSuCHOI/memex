@@ -87,3 +87,48 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: classify every stale result as failed-visible; let exchange deletion cascade the target item; keep stale target retrying forever.
 - Invariant evidence: growth and canonical-delete-during-model tests commit zero facts/cursor, retire the target as superseded, emit no failed range, and retarget the current generation; queued privacy purge leaves zero Continuity/source rows.
 - Reversal condition/trade-off: Phase 2 may replace row identity with journal/checkpoint-native identity, but stale work must remain explicitly accounted and purge-atomic.
+
+## D-009 — PostCompact is registered as telemetry-only compatibility surface
+
+- RFC section/invariant: §6.2; POSTCOMPACT INDEPENDENCE
+- Actual choice: Codex CLI `0.150.1` exposes `PreCompact` and `PostCompact` with `manual|auto` matchers, so Memex registers both. `PostCompact` records only the privacy-safe hook event and may wake an already-durable queue; it performs no epoch, checkpoint, residency, or completion transition.
+- Reason: registration gives operational visibility without making correctness depend on event delivery. Required state is committed by `PreCompact` and idempotently ensured by `SessionStart(compact)`.
+- Alternatives considered: omit PostCompact entirely; use it as the epoch commit point.
+- Invariant evidence: the 200-turn adversarial fixture executes six auto and two manual compact cycles with zero PostCompact calls and preserves all bytes, eight epoch transitions, and immediate context.
+- Reversal condition/trade-off: PostCompact registration may be removed if the supported runtime drops it; no correctness code must change.
+
+## D-010 — Capture indexing and Capsule work share the Phase 1 durable queue
+
+- RFC section/invariant: §7, §9, §14; CAPTURE, OUTBOX, RECOVERY, CAPSULE TYPING
+- Actual choice: Phase 2 extends `checkpoints`/`memory_jobs` rather than creating a second queue. Every capture prefix gets P0 `capture_index`; P1 `capsule_update` is coalesced at six Stop/Interrupt boundaries, accumulated 8 KiB, PreCompact, or SessionEnd. Workstream partitions serialize Capsule generations while session partitions serialize prefix indexing.
+- Reason: the Phase 1 queue already provides atomic outbox insertion, leases, retries, ordinal ordering, and privacy cascade. Reuse avoids a competing completion authority.
+- Alternatives considered: one Capsule model call per turn; a separate filesystem queue; merging Capsule and fact extraction.
+- Invariant evidence: 200-turn benchmark observed 200 checkpoints, one threshold Capsule job, byte amplification `1.0`, and zero gaps; crash/hash/CAS tests keep failed work retryable.
+- Reversal condition/trade-off: thresholds are deliberately fixed and few in Phase 2; Phase 5 may tune them only with measured product evidence.
+
+## D-011 — Legacy SessionEnd executable is a thin final-fence alias
+
+- RFC section/invariant: §6.7–6.8; HOOK BOUNDARY
+- Actual choice: plugin registration uses `scripts/continuity-hook.js`; the packaged `scripts/session-end-hook.js` name remains as a compatibility alias importing the same gateway. Its old stabilize → extract → consolidate → export chain is unreachable.
+- Reason: external installations or tests may still invoke the public executable name during the support window, while foreground heavy work violates the final architecture.
+- Alternatives considered: delete the old executable immediately; keep its old behavior outside plugin registration.
+- Invariant evidence: process tests assert silent stdout/stderr, final checkpoint plus two durable jobs, duplicate same effect, no sync export directory, and no model/embedding call in the hook process.
+- Reversal condition/trade-off: remove the alias in a future breaking release after installed callers are migrated.
+
+## D-012 — Rewrite detection uses mtime plus a bounded copied-prefix guard
+
+- RFC section/invariant: §7.1; CAPTURE
+- Actual choice: `journal_streams` schema v3 records `source_mtime_ms` plus the SHA-256 and start offset of at most 4KiB immediately before `copied_byte_end`. A same-size mtime rewrite or a rewrite that changes the copied prefix and then grows the file starts a new stream epoch. Capture revalidates source identity/size/mtime before journal append.
+- Reason: truncate/replace can reuse an inode, preserve byte length, or grow after rewriting existing bytes; inode/size and same-size mtime alone can silently create a hybrid journal.
+- Alternatives considered: full-prefix rehash on every hook, which reintroduces quadratic I/O; trust inode and size only; treat every normal append mtime change as replacement.
+- Invariant evidence: same-size and growing-rewrite regressions preserve the old journal and write the replacement to epoch `N+1`; competing hook processes are serialized before file append; Phase 1 schema upgrades additively and an interrupted guard-column migration rolls back.
+- Reversal condition/trade-off: a future runtime-provided immutable transcript identity may replace the mtime compatibility guard.
+
+## D-013 — Materialized plugin execution is pinned to the installed artifact
+
+- RFC section/invariant: §2, §6.8, §19 HOOK BOUNDARY
+- Actual choice: `cli/runtime-exec.js` executes the locally installed binary whenever production dependencies have been materialized beside the plugin. The `npx github:BongSuCHOI/memex#main` path remains only as a compatibility fallback for an incomplete raw plugin registration.
+- Reason: Phase 2B observed that authenticated hooks from an installed `0.3.0` artifact actually launched the moving remote `main`, including behavior/output different from the candidate under test. It also placed package-manager and network work inside every foreground capture boundary.
+- Alternatives considered: keep moving `main` for every invocation; bypass `runtime-exec.js` only for Continuity hooks; vendor a second runtime package.
+- Invariant evidence: the local-runtime process test proves stdin/arguments reach the installed Continuity script without invoking `npx`; plugin-only authenticated lifecycle E2E then observed exact-once UserPromptSubmit/Stop/SessionEnd delivery, additionalContext, a 577 ms final fence, deferred Luna Capsule generation 1, and immediate compact rehydration.
+- Reversal condition/trade-off: remove the remote fallback after Codex plugin installation itself guarantees dependency materialization. Until then, raw `codex plugin add` without the Memex installer is compatible but does not have the same pinned/offline guarantee.

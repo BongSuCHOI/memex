@@ -93,7 +93,7 @@ test('installer uses the authoritative installed root for MCP, plugin hooks, syn
   const state = JSON.parse(fs.readFileSync(f.statePath, 'utf8'));
   assert.deepEqual(state, { marketplace: true, plugin: true });
   assert.equal(fs.existsSync(path.join(f.codexHome, 'hooks.json')), false);
-  assert.match(r.stdout, /plugin-managed lifecycle hooks.*SessionStart, UserPromptSubmit, SessionEnd/);
+  assert.match(r.stdout, /plugin-managed lifecycle hooks.*SessionStart, UserPromptSubmit, Stop, Interrupt, PreCompact, PostCompact, SessionEnd/);
   assert.match(r.stdout, /MCP handshake.*9 tools/);
 
   const second = runInstaller(f);

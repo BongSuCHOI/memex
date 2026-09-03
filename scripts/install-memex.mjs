@@ -465,7 +465,15 @@ try {
   const pluginHooks = JSON.parse(
     fs.readFileSync(path.join(installedRoot, "hooks.json"), "utf8"),
   ).hooks;
-  for (const event of ["SessionStart", "UserPromptSubmit", "SessionEnd"]) {
+  for (const event of [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "Interrupt",
+    "PreCompact",
+    "PostCompact",
+    "SessionEnd",
+  ]) {
     if (
       !Array.isArray(pluginHooks?.[event]) ||
       pluginHooks[event].length === 0
@@ -475,7 +483,7 @@ try {
   }
   ok(
     "plugin-managed lifecycle hooks",
-    "SessionStart, UserPromptSubmit, SessionEnd declared; restart Codex to activate",
+    "SessionStart, UserPromptSubmit, Stop, Interrupt, PreCompact, PostCompact, SessionEnd declared; restart Codex to activate",
   );
 
   const doctor = jsonCommand(

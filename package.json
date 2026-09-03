@@ -31,7 +31,9 @@
     "memex-hook-sync-import": "./scripts/sync-import-hook.js",
     "memex-hook-maintenance": "./scripts/session-start-maintenance.js",
     "memex-hook-inject": "./scripts/inject-context.js",
-    "memex-hook-session-end": "./scripts/session-end-hook.js"
+    "memex-hook-continuity": "./scripts/continuity-hook.js",
+    "memex-continuity-worker": "./scripts/continuity-worker.js",
+    "memex-hook-session-end": "./scripts/continuity-hook.js"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

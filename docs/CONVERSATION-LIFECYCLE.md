@@ -76,17 +76,44 @@ transcript를 FTS/vector에서 제거하지 않으며, extraction 단계에서 a
 
 ## 5. Lifecycle hooks
 
+### Capture plane
+
+`Stop`, `Interrupt`, `PreCompact`, `SessionEnd`는 하나의 `continuity-hook` gateway를 사용합니다. Gateway는 installed runtime의 snake_case payload를 보존해 normalize하고, transcript가 허용된 sessions root 아래의 regular file인지 확인합니다. Symlink·foreign absolute path·traversal은 거절합니다.
+
+각 capture는 canonical `session_meta.cwd`/session ID를 bounded prefix에서 먼저 확인하고, SQLite immediate writer transaction으로 동일 session의 competing hook을 직렬화합니다. 그 안에서 이전 committed source byte 이후의 complete newline까지만 읽어 Memex journal에 append하고 fsync합니다. trailing partial line은 다음 capture로 이월합니다. 동일 `(session, stream_epoch, through_byte, prefix_hash, kind)`은 같은 checkpoint이며, 같은 turn이라도 prefix가 늘면 다른 checkpoint입니다. truncate, inode/path 교체, same-size mtime rewrite, copied-boundary tail hash가 달라진 growing rewrite, short committed journal은 기존 journal을 되감지 않고 새 `stream_epoch`을 만듭니다.
+
+```text
+source delta -> journal fsync -> checkpoint + capture_index job
+                                + coalesced capsule_update job
+                                (one SQLite IMMEDIATE transaction)
+```
+
+기본 capture 실패는 fail-open이지만 `capture_gaps`에 durable하게 남고 stderr warning을 허용하는 contract에서 보입니다. `MEMEX_STRICT_CAPTURE=1`만 opt-in fail-closed switch입니다. Startup/resume/compact는 committed boundary 밖 orphan journal tail을 제거하고 open gap을 진단합니다. 다음 성공 capture는 관련 gap을 `recovered`로 전환합니다.
+
+| Event | Closure / synchronous responsibility |
+| --- | --- |
+| `Stop` | `closed`; delta/fence/outbox only |
+| `Interrupt` | `interrupted`; partial evidence, never completed |
+| `PreCompact(manual|auto)` | `interrupted` prefix, fsync, carry freeze |
+| `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait |
+| `PostCompact(manual|auto)` | telemetry only; no correctness transition |
+
+Capture commit 뒤 worker wake는 detached best-effort입니다. Wake가 사라져도 durable job은 남으며 다음 lifecycle에서 재개됩니다.
+
 ### SessionStart
 
 ```mermaid
 flowchart LR
-    S[SessionStart] --> V[Version drift check]
+    S[SessionStart startup/resume] --> R[Session/workstream and queue recovery]
+    S --> V[Version drift check]
     S --> A[Background archive/index sync]
     S --> I[Sync import]
     S --> M[Bounded maintenance]
+    C[SessionStart compact] --> E[Ensure context epoch]
+    E --> B[Capsule or tail baton plus active carry]
 ```
 
-이 작업들은 독립적인 async hook entry입니다. 실행 순서를 보장하지 않으며 eventual consistency를 계약으로 사용합니다. 따라서 import, maintenance, reembed 등 각 writer는 다른 작업이 동시에 진행돼도 안전해야 합니다.
+Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다.
 
 ### UserPromptSubmit
 
@@ -94,11 +121,11 @@ prompt/session/project를 받아 warm sidecar를 우선 사용하고 불가능�
 
 receipt 저장이 실패하면 provenance 없는 context를 주입하지 않습니다.
 
-### SessionEnd
+### Deferred worker와 privacy
 
-rollout의 size/mtime quiet window를 확인한 뒤 stable main-thread session만 incremental extraction 대상으로 사용합니다. exclusion gate를 다시 확인하고, 성공 evidence가 없으면 extraction watermark를 전진시키지 않습니다.
+Worker는 P0 `capture_index`를 먼저 처리하며 checkpoint의 block/prefix hash chain과 exact journal boundary를 검증한 뒤 그 prefix만 monotonic ingest합니다. P1 `capsule_update`는 P0 완료 뒤 exact-key/strict-bound/source-authority validation을 거치는 별도 JSON/typed pipeline으로 실행하고 generation + lease CAS와 job completion을 한 transaction에 commit합니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd가 Capsule coalescing 경계입니다. Capsule의 checkpoint가 latest보다 오래됐으면 rehydration은 stale projection만 반환하지 않고 deterministic tail baton을 병합합니다.
 
-마지막으로 durable sync generation export를 시도합니다. export contention은 `ExportLockedError` 성격의 retryable 상태이며 다음 SessionEnd에서 다시 시도할 수 있습니다.
+User-role exclusion marker가 journal에 있으면 P0 worker는 indexing/model 전에 conversation purge를 실행합니다. Purge transaction은 terminal `conversation_exclusions` session guard를 먼저 남깁니다. Hook은 이후 recapture를 거부하고 P0 worker는 ingest 직전과 직후에도 guard를 재확인하므로 in-flight purge race가 private exchange를 부활시키지 못합니다. Journal/checkpoint/pending job/session state/Capsule은 같은 privacy 경계에서 제거되며 journal directory는 DB transaction 뒤 삭제됩니다. Capsule과 tail baton은 `context-only`이고 Fact evidence로 승격하지 않습니다.
 
 ## 6. Sync protocol v4
 

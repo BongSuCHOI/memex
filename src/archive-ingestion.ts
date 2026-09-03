@@ -3,6 +3,7 @@ import { insertExchange, reconcileArchiveExchanges } from './db.js';
 import { generateExchangeEmbedding, initEmbeddings } from './embeddings.js';
 import { isWorkerPromptMessage } from './paths.js';
 import type { ConversationExchange } from './types.js';
+import { applyLatestLifecycleClosure } from './continuity-core.js';
 
 /**
  * Single ingestion SSOT for every archive→index entrypoint (sync,
@@ -41,6 +42,9 @@ export async function ingestArchiveExchanges(
     );
     insertExchange(db, exchange, embedding, toolNames);
     indexed++;
+  }
+  for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+    applyLatestLifecycleClosure(db, sessionId!);
   }
   return indexed;
 }
@@ -82,6 +86,9 @@ export async function ingestPrefixExchanges(
     );
     if (insertExchange(db, exchange, embedding, toolNames)) indexed += 1;
     else ignoredRegressions += 1;
+  }
+  for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+    applyLatestLifecycleClosure(db, sessionId!);
   }
   return { indexed, ignoredRegressions };
 }

@@ -294,8 +294,12 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
  * Legacy-compatible entry point: parse one rollout transcript into exchanges.
  * projectName is stamped onto every exchange (project scoping stays with sync).
  */
-export async function parseConversation(filePath, projectName, archivePath = filePath) {
-    const stream = fs.createReadStream(filePath);
+export async function parseConversation(filePath, projectName, archivePath = filePath, throughByteExclusive) {
+    if (throughByteExclusive !== undefined && throughByteExclusive <= 0)
+        return [];
+    const stream = fs.createReadStream(filePath, throughByteExclusive === undefined
+        ? undefined
+        : { start: 0, end: Math.max(0, throughByteExclusive - 1) });
     try {
         const { meta, exchanges } = await parseRolloutStream(stream, {
             archivePath,
