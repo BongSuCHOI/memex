@@ -18792,6 +18792,72 @@ function initDatabase(options = {}) {
     CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(is_active)
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_context_dependencies (
+      fact_id TEXT NOT NULL,
+      exchange_id TEXT NOT NULL,
+      dependency_kind TEXT NOT NULL CHECK (
+        dependency_kind IN (
+          'assistant_context',
+          'recall_influenced_assistant',
+          'watermark_prefix',
+          'conversation_context',
+          'ratified_proposition',
+          'referent_definition',
+          'style_reference',
+          'workflow_reference',
+          'recall_reference'
+        )
+      ),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+      FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+      FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+        ON UPDATE CASCADE ON DELETE CASCADE
+    )
+  `);
+  const contextDependencySchema = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fact_context_dependencies'"
+  ).get();
+  if (!contextDependencySchema?.sql?.includes("'ratified_proposition'")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE fact_context_dependencies_p2 (
+          fact_id TEXT NOT NULL,
+          exchange_id TEXT NOT NULL,
+          dependency_kind TEXT NOT NULL CHECK (
+            dependency_kind IN (
+              'assistant_context',
+              'recall_influenced_assistant',
+              'watermark_prefix',
+              'conversation_context',
+              'ratified_proposition',
+              'referent_definition',
+              'style_reference',
+              'workflow_reference',
+              'recall_reference'
+            )
+          ),
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (fact_id, exchange_id, dependency_kind),
+          FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+          FOREIGN KEY (exchange_id) REFERENCES exchanges(id)
+            ON UPDATE CASCADE ON DELETE CASCADE
+        );
+        INSERT INTO fact_context_dependencies_p2
+          (fact_id, exchange_id, dependency_kind, created_at)
+        SELECT fact_id, exchange_id, dependency_kind, created_at
+        FROM fact_context_dependencies;
+        DROP TABLE fact_context_dependencies;
+        ALTER TABLE fact_context_dependencies_p2
+          RENAME TO fact_context_dependencies;
+      `);
+    })();
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_fact_context_exchange
+    ON fact_context_dependencies(exchange_id)
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,
       fact_id TEXT NOT NULL,
@@ -21884,6 +21950,33 @@ function lastAgentMessageFromEvents(stdout) {
   }
   return last.trim();
 }
+function tokenUsageFromEvents(stdout) {
+  let usage = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof event !== "object" || event === null || Array.isArray(event)) continue;
+    const candidate = event;
+    if (candidate.type !== "turn.completed" || typeof candidate.usage !== "object" || candidate.usage === null || Array.isArray(candidate.usage)) {
+      continue;
+    }
+    const raw = candidate.usage;
+    if (typeof raw.input_tokens !== "number" || !Number.isFinite(raw.input_tokens) || typeof raw.output_tokens !== "number" || !Number.isFinite(raw.output_tokens)) {
+      continue;
+    }
+    usage = {
+      input_tokens: raw.input_tokens,
+      output_tokens: raw.output_tokens,
+      ...typeof raw.cached_input_tokens === "number" && Number.isFinite(raw.cached_input_tokens) ? { cached_input_tokens: raw.cached_input_tokens } : {}
+    };
+  }
+  return usage;
+}
 function textFromContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -21948,6 +22041,7 @@ async function runCodex(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 18e4;
   const workdir = fs8.mkdtempSync(path8.join(os3.tmpdir(), "memex-llm-"));
   const outPath = path8.join(workdir, "last-message.txt");
+  const started = performance.now();
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
     const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath });
@@ -21958,6 +22052,13 @@ async function runCodex(opts = {}) {
     } catch {
     }
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
+    try {
+      opts.onObservation?.({
+        duration_ms: performance.now() - started,
+        token_usage: tokenUsageFromEvents(res.stdout)
+      });
+    } catch {
+    }
     if (!text && res.timedOut) throw new Error(`codex exec timed out after ${timeoutMs}ms`);
     if (!text && res.code !== 0) {
       throw new Error(
@@ -21986,19 +22087,60 @@ function backoffMs(attempt) {
   return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
-async function callOnce(systemPrompt, userMessage, _maxTokens) {
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation) {
   const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
-  return runCodex({ systemPrompt, userMessage, model, timeoutMs });
+  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
 }
-async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
+function summarizeObservations(attempts, started, observations) {
+  const withUsage = observations.filter(
+    (observation) => observation.token_usage !== null
+  );
+  const status = withUsage.length === 0 ? "NOT_PROVEN" : withUsage.length === attempts ? "observed" : "partial";
+  return {
+    attempts,
+    total_latency_ms: performance.now() - started,
+    token_usage: status === "NOT_PROVEN" ? null : {
+      input_tokens: withUsage.reduce(
+        (sum, observation) => sum + observation.token_usage.input_tokens,
+        0
+      ),
+      output_tokens: withUsage.reduce(
+        (sum, observation) => sum + observation.token_usage.output_tokens,
+        0
+      ),
+      cached_input_tokens: withUsage.reduce(
+        (sum, observation) => sum + (observation.token_usage.cached_input_tokens ?? 0),
+        0
+      )
+    },
+    token_usage_status: status
+  };
+}
+async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048) {
   const retries = retryBudget();
   let lastError;
+  const observations = [];
+  const started = performance.now();
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const text = await callOnce(systemPrompt, userMessage, maxTokens);
-      if (text && text.trim() !== "") return text;
+      const text = await callOnce(
+        systemPrompt,
+        userMessage,
+        maxTokens,
+        (observation) => observations.push(observation)
+      );
+      if (text && text.trim() !== "") {
+        return {
+          text,
+          observation: summarizeObservations(
+            attempt + 1,
+            started,
+            observations
+          )
+        };
+      }
       lastError = new EmptyLlmResponseError(
         `LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`
       );
@@ -22014,6 +22156,9 @@ async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
+  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
 }
 function parseJsonResponse(text) {
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\])/) || text.match(/(\{[\s\S]*\})/);
@@ -22249,7 +22394,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.2.0"
+    version: "0.3.0"
   },
   {
     capabilities: {
@@ -22460,7 +22605,7 @@ function getToolDefinitions() {
     },
     {
       name: "trace_fact",
-      description: "Trace a fact back to its source conversations. Shows the original exchanges that led to a knowledge graph fact, providing full provenance and context.",
+      description: "Trace a fact to authoritative source conversations and separately labeled non-authoritative interpretive context.",
       inputSchema: {
         type: "object",
         properties: {
@@ -23021,6 +23166,33 @@ Query: "${params.query}"
 _Source exchanges not available._
 
 `;
+          }
+          const contextDependencies = db.prepare(`
+            SELECT d.exchange_id, d.dependency_kind,
+                   e.project, e.timestamp, e.assistant_message,
+                   e.archive_path, e.line_start, e.line_end
+            FROM fact_context_dependencies d
+            JOIN exchanges e ON e.id = d.exchange_id
+            WHERE d.fact_id = ?
+            ORDER BY d.created_at, d.exchange_id, d.dependency_kind
+          `).all(fact.id);
+          if (contextDependencies.length > 0) {
+            output += `### Interpretive Context (Non-Authoritative)
+
+`;
+            output += `_These exchanges helped resolve meaning but are not Fact evidence._
+
+`;
+            for (const dependency of contextDependencies) {
+              const assistant = String(dependency["assistant_message"] ?? "").substring(0, 200).replace(/\s+/g, " ");
+              output += `- **[${dependency["dependency_kind"]}, ${dependency["project"]}, ${String(dependency["timestamp"]).slice(0, 10)}]**
+`;
+              output += `  Assistant context: "${assistant}..."
+`;
+              output += `  Lines ${dependency["line_start"]}-${dependency["line_end"]} in ${dependency["archive_path"]}
+
+`;
+            }
           }
           const revisions = getRevisions(db, fact.id);
           if (revisions.length > 0) {

@@ -1,0 +1,1259 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-31T18:25:40.479Z",
+  "mode": "curated",
+  "model": "gpt-5.6-luna",
+  "source": {
+    "kind": "fixture",
+    "name": "fact-extraction-context-grounding-curated-v1",
+    "sha256": "f45b4f0aa5ecda45c4d16a426f12e7d62b8c04dc97e4db64d65ebcb9ed75bcd6"
+  },
+  "summary": {
+    "candidate_count": 11,
+    "accepted_count": 11,
+    "rejected_invalid_schema": 0,
+    "rejected_invalid_evidence": 0,
+    "rejected_not_durable": 0,
+    "rejected_grounding_rule": 0,
+    "rejected_confidence": 0,
+    "grounding_explicit": 8,
+    "grounding_verified": 2,
+    "grounding_inferred": 1,
+    "context_resolved_ratification": 5,
+    "case_count": 17,
+    "passed_cases": 17,
+    "failed_cases": 0,
+    "execution_error_count": 0,
+    "expected_fact_count": 11,
+    "matched_fact_count": 11,
+    "observed_fact_count": 11,
+    "false_positive_count": 0,
+    "self_amplification_leakage_count": 0,
+    "positive_fact_recall": 1,
+    "negative_no_fact_accuracy": 1,
+    "precision": 1,
+    "ratification_resolution": 1,
+    "verified_local_recall": 1,
+    "exploration_false_positive_rate": 0,
+    "model_calls": 17,
+    "input_tokens": 373215,
+    "output_tokens": 2731,
+    "cached_input_tokens": 170752,
+    "token_usage_status": "observed",
+    "input_characters": 154855,
+    "output_characters": 6102,
+    "total_latency_ms": 107390.72566299999
+  },
+  "cases": [
+    {
+      "id": "explicit-assertion",
+      "title": "Explicit project assertion",
+      "tags": [
+        "positive",
+        "explicit"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite",
+              "project"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-assertion-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project uses SQLite for local persistence.",
+          "fact_kr": "이 프로젝트는 로컬 영속성에 SQLite를 사용한다.",
+          "category": "knowledge",
+          "scope_type": "project",
+          "confidence": 0.98,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "human",
+              "kind": "assertion",
+              "supporting_span": "This project uses SQLite for local persistence."
+            }
+          ],
+          "source_exchange_ids": [
+            "explicit-assertion-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "64220db75c06acbee319c6e3684c2dbe7ef7ee658c35ad64cefdb294ed869fbb",
+          "input_characters": 8793,
+          "output_characters": 461,
+          "input_tokens": 21868,
+          "output_tokens": 155,
+          "cached_input_tokens": 8960,
+          "latency_ms": 6132.187583
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "explicit-decision",
+      "title": "Explicit architecture decision",
+      "tags": [
+        "positive",
+        "explicit"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-decision-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project will use Riverpod for state management.",
+          "fact_kr": "이 프로젝트는 상태 관리에 Riverpod을 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.98,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "human",
+              "kind": "decision",
+              "supporting_span": "We will use Riverpod for state management in this project."
+            }
+          ],
+          "source_exchange_ids": [
+            "explicit-decision-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "1a277ae685c1f344d10a0d0374259a81e0606a9dfa62b9706f02a741866f26f9",
+          "input_characters": 8822,
+          "output_characters": 476,
+          "input_tokens": 21878,
+          "output_tokens": 158,
+          "cached_input_tokens": 8960,
+          "latency_ms": 5884.885541000001
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "explicit-correction",
+      "title": "Human correction overrides assistant context",
+      "tags": [
+        "positive",
+        "explicit",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "server action"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-correction-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "The project now uses a server action instead of an API route.",
+          "fact_kr": "이 프로젝트는 이제 API 라우트 대신 서버 액션을 사용한다.",
+          "category": "knowledge",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "human",
+              "kind": "correction",
+              "supporting_span": "No, it uses a server action now, not an API route."
+            }
+          ],
+          "source_exchange_ids": [
+            "explicit-correction-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "1989b9ce74789cb99afbf4cd1bb8da62a3618d2c12f078dd67c0ad0063e3a555",
+          "input_characters": 8811,
+          "output_characters": 484,
+          "input_tokens": 21878,
+          "output_tokens": 194,
+          "cached_input_tokens": 8960,
+          "latency_ms": 6579.821833
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "assistant-proposal-ratified",
+      "title": "Assistant proposal followed by human ratification",
+      "tags": [
+        "positive",
+        "ratification",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "assistant-proposal-ratified-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project will use Riverpod for state management.",
+          "fact_kr": "이 프로젝트는 상태 관리에 Riverpod을 사용하기로 결정했다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.93,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 2,
+              "source": "human",
+              "kind": "ratification",
+              "supporting_span": "좋아, 그걸로 하자."
+            }
+          ],
+          "context_exchange_indices": [
+            1
+          ],
+          "context_dependencies": [
+            {
+              "exchange_id": "assistant-proposal-ratified-1",
+              "dependency_kind": "assistant_context"
+            }
+          ],
+          "source_exchange_ids": [
+            "assistant-proposal-ratified-2"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "4ed7e1c0145bebc3796ada9139bf45e9ed0e4dfe3316f0bc7e5d0e186a731703",
+          "input_characters": 9169,
+          "output_characters": 488,
+          "input_tokens": 21972,
+          "output_tokens": 253,
+          "cached_input_tokens": 8960,
+          "latency_ms": 7855.5453750000015
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 1
+      }
+    },
+    {
+      "id": "one-question-exploration",
+      "title": "A question is not a durable preference",
+      "tags": [
+        "negative",
+        "exploration"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "159f009bd58063bbdf10e997949e91fe8fa56d670cb3927328ee78fdc2648724",
+          "input_characters": 8780,
+          "output_characters": 2,
+          "input_tokens": 21878,
+          "output_tokens": 21,
+          "cached_input_tokens": 8960,
+          "latency_ms": 3551.4791670000013
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "comparison-only",
+      "title": "A comparison is not a decision",
+      "tags": [
+        "negative",
+        "exploration"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "759fa1226781342df8f0185811a4f92066ebc22be711ca439c125342b0a80bf5",
+          "input_characters": 8792,
+          "output_characters": 2,
+          "input_tokens": 21890,
+          "output_tokens": 22,
+          "cached_input_tokens": 8960,
+          "latency_ms": 4195.984957999997
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "assistant-suggestion-only",
+      "title": "Assistant suggestion alone is context only",
+      "tags": [
+        "negative",
+        "assistant_only",
+        "self_amplification"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "08556a0d4a6e0310c2d7e1761c0043c8069588216633af3a1516c3d69db698fc",
+          "input_characters": 8803,
+          "output_characters": 2,
+          "input_tokens": 21871,
+          "output_tokens": 21,
+          "cached_input_tokens": 8960,
+          "latency_ms": 3432.1521250000005
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "recall-assistant-repeat-only",
+      "title": "Memex recall repeated by assistant cannot self-ground",
+      "tags": [
+        "negative",
+        "recall",
+        "self_amplification"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "8b3f850387068f83cfd30c84a97384ee5da599d1f730f0f89f48b5580c1c5696",
+          "input_characters": 8899,
+          "output_characters": 2,
+          "input_tokens": 21896,
+          "output_tokens": 25,
+          "cached_input_tokens": 8960,
+          "latency_ms": 5276.943791000005
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "recall-proposal-ratified",
+      "title": "Recalled context plus a new human ratification",
+      "tags": [
+        "positive",
+        "ratification",
+        "recall",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "pnpm"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "recall-proposal-ratified-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project will use pnpm again.",
+          "fact_kr": "이 프로젝트는 이번에도 pnpm을 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.93,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 2,
+              "source": "human",
+              "kind": "ratification",
+              "supporting_span": "응, 이번에도 그렇게 하자."
+            }
+          ],
+          "context_exchange_indices": [
+            1
+          ],
+          "context_dependencies": [
+            {
+              "exchange_id": "recall-proposal-ratified-1",
+              "dependency_kind": "recall_influenced_assistant"
+            }
+          ],
+          "source_exchange_ids": [
+            "recall-proposal-ratified-2"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "41ca2f8c510d6e0b7896e3420260c90eb75acd14fb83823dc92284f39d143f28",
+          "input_characters": 9267,
+          "output_characters": 449,
+          "input_tokens": 22002,
+          "output_tokens": 227,
+          "cached_input_tokens": 8960,
+          "latency_ms": 7129.0354579999985
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 1
+      }
+    },
+    {
+      "id": "trusted-repo-fact",
+      "title": "Trusted repository evidence can ground project knowledge",
+      "tags": [
+        "positive",
+        "verified_local"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "trusted-repo-fact-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project uses SQLite through better-sqlite3 and stores its database in db.sqlite.",
+          "fact_kr": "이 프로젝트는 better-sqlite3를 통해 SQLite를 사용하며 데이터베이스를 db.sqlite에 저장한다.",
+          "category": "knowledge",
+          "scope_type": "project",
+          "confidence": 0.98,
+          "grounding_type": "verified",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "tool",
+              "kind": "repo_file",
+              "supporting_span": "schema.ts imports better-sqlite3 and opens db.sqlite.",
+              "tool_call_id": "trusted-repo-fact-tool-1",
+              "tool_name": "read_file",
+              "source_type": "repo_file"
+            }
+          ],
+          "source_exchange_ids": [
+            "trusted-repo-fact-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "3d383669bd407559a0c122bb31bf318c45f2a2d01b70590144dd2a034fca24fa",
+          "input_characters": 9034,
+          "output_characters": 661,
+          "input_tokens": 21926,
+          "output_tokens": 234,
+          "cached_input_tokens": 8960,
+          "latency_ms": 7334.578000000001
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 1,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "trusted-test-solution",
+      "title": "Trusted test evidence can ground a problem-solution pattern",
+      "tags": [
+        "positive",
+        "verified_local"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "duplicate email",
+              "auth callback"
+            ],
+            "category": "pattern",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "trusted-test-solution-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "In this project, deduplicating email records before insertion prevents the auth callback from returning HTTP 500 on duplicate-email requests.",
+          "fact_kr": "이 프로젝트에서는 중복 이메일 요청을 처리할 때 삽입 전에 이메일 레코드를 중복 제거하면 auth callback의 HTTP 500 반환을 방지할 수 있다.",
+          "category": "pattern",
+          "scope_type": "project",
+          "confidence": 0.92,
+          "grounding_type": "verified",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "tool",
+              "kind": "test_execution",
+              "supporting_span": "Before fix: duplicate email insert makes auth callback return 500. After deduping before insert: targeted test passes.",
+              "tool_call_id": "trusted-test-solution-tool-1",
+              "tool_name": "exec_command",
+              "source_type": "test_execution"
+            }
+          ],
+          "source_exchange_ids": [
+            "trusted-test-solution-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "ebdd7fce1a9b581f1952ba1e458a972a5d272fe30da46fae5ab814dc88f2071b",
+          "input_characters": 9121,
+          "output_characters": 820,
+          "input_tokens": 21938,
+          "output_tokens": 325,
+          "cached_input_tokens": 8960,
+          "latency_ms": 9161.655708000006
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 1,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "repeated-preference",
+      "title": "Repeated independent human signals can ground a preference",
+      "tags": [
+        "positive",
+        "inferred",
+        "repeated_signal"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "pnpm"
+            ],
+            "category": "preference",
+            "scope_type": "global",
+            "authoritative_exchange_ids": [
+              "repeated-preference-1",
+              "repeated-preference-2",
+              "repeated-preference-3"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "The user prefers pnpm as the package manager across projects.",
+          "fact_kr": "사용자는 여러 프로젝트에서 패키지 매니저로 pnpm을 사용하는 것을 선호한다.",
+          "category": "preference",
+          "scope_type": "global",
+          "confidence": 0.95,
+          "grounding_type": "inferred",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 1,
+              "source": "human",
+              "kind": "repeated_signal",
+              "supporting_span": "JavaScript 패키지는 pnpm으로 설치해줘."
+            },
+            {
+              "exchange_index": 2,
+              "source": "human",
+              "kind": "repeated_signal",
+              "supporting_span": "이 작업도 npm 말고 pnpm으로 진행해줘."
+            },
+            {
+              "exchange_index": 3,
+              "source": "human",
+              "kind": "repeated_signal",
+              "supporting_span": "다른 프로젝트에서도 package manager는 pnpm으로 맞춰줘."
+            }
+          ],
+          "source_exchange_ids": [
+            "repeated-preference-1",
+            "repeated-preference-2",
+            "repeated-preference-3"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "c0b7fc32b5d7619c194b97b1b6c96033c4c0715c564da9876f86626cd93dace9",
+          "input_characters": 9500,
+          "output_characters": 816,
+          "input_tokens": 22078,
+          "output_tokens": 319,
+          "cached_input_tokens": 8960,
+          "latency_ms": 8885.207041000001
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 1,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "single-weak-preference",
+      "title": "One isolated package-manager instruction is not a global preference",
+      "tags": [
+        "negative",
+        "weak_signal"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "WRONG-scope"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "70e20a9a3e2c578f00af85c1ae0d8a7898d5f8e941a5631b9029cec572d55041",
+          "input_characters": 8777,
+          "output_characters": 2,
+          "input_tokens": 21879,
+          "output_tokens": 28,
+          "cached_input_tokens": 15104,
+          "latency_ms": 4495.649082999997
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "short-ratification",
+      "title": "Short acknowledgement can ratify an assistant proposition",
+      "tags": [
+        "positive",
+        "ratification",
+        "short_ack",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "deepseek",
+              "flash"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "short-ratification-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "이 프로젝트는 실행기로 DeepSeek V4 Flash를 사용하기로 결정했다.",
+          "fact_kr": "이 프로젝트는 실행기로 DeepSeek V4 Flash를 사용하기로 결정했다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 2,
+              "source": "human",
+              "kind": "ratification",
+              "supporting_span": "응."
+            }
+          ],
+          "context_exchange_indices": [
+            1
+          ],
+          "context_dependencies": [
+            {
+              "exchange_id": "short-ratification-1",
+              "dependency_kind": "assistant_context"
+            }
+          ],
+          "source_exchange_ids": [
+            "short-ratification-2"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "ee7cc2abfe814953f978ff15218b1ea04b73c0b79e06c7cb4c1a266e09de8d3e",
+          "input_characters": 9150,
+          "output_characters": 465,
+          "input_tokens": 21967,
+          "output_tokens": 241,
+          "cached_input_tokens": 15104,
+          "latency_ms": 7680.024291999987
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 1
+      }
+    },
+    {
+      "id": "pure-thanks",
+      "title": "Pure thanks produces no durable fact",
+      "tags": [
+        "negative",
+        "social_ack"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [],
+      "extraction_observability": {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 0,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 0
+      }
+    },
+    {
+      "id": "watermark-boundary-ratification",
+      "title": "Ratification after a watermark needs prefix context",
+      "tags": [
+        "positive",
+        "ratification",
+        "watermark",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "watermark-boundary-ratification-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project will use SQLite as its local database.",
+          "fact_kr": "이 프로젝트는 로컬 데이터베이스로 SQLite를 사용하기로 결정했다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 2,
+              "source": "human",
+              "kind": "ratification",
+              "supporting_span": "좋아, 그걸로 결정하자."
+            }
+          ],
+          "context_exchange_indices": [
+            1
+          ],
+          "context_dependencies": [
+            {
+              "exchange_id": "watermark-boundary-ratification-1",
+              "dependency_kind": "watermark_prefix"
+            }
+          ],
+          "source_exchange_ids": [
+            "watermark-boundary-ratification-2"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "f0f56bed4c8c1d120647927d71f4c04b306c48d7de20309c82be2b920c63651b",
+          "input_characters": 9166,
+          "output_characters": 491,
+          "input_tokens": 21972,
+          "output_tokens": 248,
+          "cached_input_tokens": 8960,
+          "latency_ms": 7666.989042000001
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 1
+      }
+    },
+    {
+      "id": "batch-boundary-context",
+      "title": "Immediate antecedent must survive a batch boundary",
+      "tags": [
+        "positive",
+        "ratification",
+        "batch_boundary",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "batch-boundary-context-6"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project will use Riverpod as its state manager.",
+          "fact_kr": "이 프로젝트는 상태 관리자로 Riverpod을 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "grounding_type": "explicit",
+          "durable": true,
+          "evidence": [
+            {
+              "exchange_index": 3,
+              "source": "human",
+              "kind": "ratification",
+              "supporting_span": "좋아, 첫 번째 제안으로 진행하자."
+            }
+          ],
+          "context_exchange_indices": [
+            2
+          ],
+          "context_dependencies": [
+            {
+              "exchange_id": "batch-boundary-context-5",
+              "dependency_kind": "assistant_context"
+            }
+          ],
+          "source_exchange_ids": [
+            "batch-boundary-context-6"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "a47aef2e719262763b4f5848d46738d677be3fb12a8ba375943b924d0b42130b",
+          "input_characters": 10397,
+          "output_characters": 2,
+          "input_tokens": 22252,
+          "output_tokens": 27,
+          "cached_input_tokens": 8960,
+          "latency_ms": 4459.469916000002
+        },
+        {
+          "call_index": 2,
+          "prompt_sha256": "d670fc59eb0c34369262ade6d0fcdc9aabd319000b7159ae2dc0223ec5ba2829",
+          "input_characters": 9574,
+          "output_characters": 479,
+          "input_tokens": 22070,
+          "output_tokens": 233,
+          "cached_input_tokens": 15104,
+          "latency_ms": 7669.116750000001
+        }
+      ],
+      "extraction_observability": {
+        "candidate_count": 1,
+        "accepted_count": 1,
+        "rejected_invalid_schema": 0,
+        "rejected_invalid_evidence": 0,
+        "rejected_not_durable": 0,
+        "rejected_grounding_rule": 0,
+        "rejected_confidence": 0,
+        "grounding_explicit": 1,
+        "grounding_verified": 0,
+        "grounding_inferred": 0,
+        "context_resolved_ratification": 1
+      }
+    }
+  ],
+  "run_context": {
+    "git_head": "7c7b00ec4e93ba94276485a79954a4491a998ec0",
+    "git_dirty": false,
+    "node": "v26.7.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "extractor_profile": "production-current",
+    "database_mode": "not-opened"
+  },
+  "comparison": {
+    "baseline_model": "gpt-5.6-luna",
+    "baseline_created_at": "2026-08-30T19:16:26.412Z",
+    "improvements": [
+      "explicit-assertion",
+      "explicit-correction",
+      "assistant-proposal-ratified",
+      "recall-proposal-ratified",
+      "single-weak-preference",
+      "short-ratification",
+      "watermark-boundary-ratification",
+      "batch-boundary-context"
+    ],
+    "regressions": [],
+    "unchanged_passes": [
+      "explicit-decision",
+      "one-question-exploration",
+      "comparison-only",
+      "assistant-suggestion-only",
+      "recall-assistant-repeat-only",
+      "trusted-repo-fact",
+      "trusted-test-solution",
+      "repeated-preference",
+      "pure-thanks"
+    ],
+    "unchanged_failures": [],
+    "deltas": {
+      "matched_fact_count": 7,
+      "false_positive_count": -1,
+      "self_amplification_leakage_count": 0,
+      "model_calls": 0,
+      "input_tokens": 57777,
+      "output_tokens": 1685,
+      "total_latency_ms": 30708.368829999992
+    }
+  }
+}

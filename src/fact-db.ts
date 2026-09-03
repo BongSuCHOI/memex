@@ -1,6 +1,11 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
-import type { Fact, FactCategory, FactRevision } from "./types.js";
+import type {
+  Fact,
+  FactCategory,
+  FactContextDependency,
+  FactRevision,
+} from "./types.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
   getVecTableDtype,
@@ -45,6 +50,60 @@ interface InsertRevisionParams {
   new_fact: string;
   reason: string | null;
   source_exchange_id: string | null;
+}
+
+export function insertFactContextDependencies(
+  db: Database.Database,
+  factId: string,
+  dependencies: FactContextDependency[],
+): void {
+  if (dependencies.length === 0) return;
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO fact_context_dependencies
+      (fact_id, exchange_id, dependency_kind, created_at)
+    VALUES (?, ?, ?, ?)
+  `);
+  const now = new Date().toISOString();
+  const seen = new Set<string>();
+  for (const dependency of dependencies) {
+    const key = `${dependency.exchange_id}\u0000${dependency.dependency_kind}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    insert.run(
+      factId,
+      dependency.exchange_id,
+      dependency.dependency_kind,
+      now,
+    );
+  }
+}
+
+/** Copy local interpretive lineage into a survivor. Caller owns transaction. */
+export function mergeFactContextDependencies(
+  db: Database.Database,
+  targetFactId: string,
+  sourceFactIds: string[],
+): void {
+  const copy = db.prepare(`
+    INSERT OR IGNORE INTO fact_context_dependencies
+      (fact_id, exchange_id, dependency_kind, created_at)
+    SELECT ?, exchange_id, dependency_kind, created_at
+    FROM fact_context_dependencies
+    WHERE fact_id = ?
+  `);
+  for (const sourceFactId of new Set(sourceFactIds)) {
+    if (sourceFactId === targetFactId) continue;
+    copy.run(targetFactId, sourceFactId);
+  }
+}
+
+export function clearFactContextDependencies(
+  db: Database.Database,
+  factId: string,
+): void {
+  db.prepare(
+    "DELETE FROM fact_context_dependencies WHERE fact_id = ?",
+  ).run(factId);
 }
 
 export function insertFact(

@@ -47,6 +47,32 @@ export interface MultiConceptResult {
 export type FactCategory = 'decision' | 'preference' | 'pattern' | 'knowledge' | 'constraint';
 export type FactScopeType = 'global' | 'project';
 export type FactRelation = 'DUPLICATE' | 'CONTRADICTION' | 'EVOLUTION' | 'INDEPENDENT';
+export type FactGroundingType = 'explicit' | 'verified' | 'inferred';
+export type FactContextDependencyKind = 'assistant_context' | 'recall_influenced_assistant' | 'watermark_prefix' | 'conversation_context' | 'ratified_proposition' | 'referent_definition' | 'style_reference' | 'workflow_reference' | 'recall_reference';
+export type FactEvidenceSource = 'human' | 'tool';
+export type HumanEvidenceKind = 'assertion' | 'decision' | 'correction' | 'ratification' | 'repeated_signal';
+export type ToolEvidenceKind = 'repo_file' | 'git_history' | 'test_execution';
+/** Model-declared evidence. The extractor validates every field against the
+ * selected exchange rows before it resolves authoritative UUID lineage. */
+export interface ExtractedFactEvidence {
+    exchange_index: number;
+    source: FactEvidenceSource;
+    kind: HumanEvidenceKind | ToolEvidenceKind;
+    /** Exact substring of the authoritative human message or tool result. */
+    supporting_span: string;
+    /** Exact DB tool_calls.id; required when source is tool. */
+    tool_call_id?: string;
+    tool_name?: string;
+    source_type?: ToolEvidenceKind;
+}
+/** Verifier-declared from server-provided context IDs and server-canonicalized
+ * to UUID/kind after bounded causal checks. Generator declarations are hints,
+ * not durable truth. This non-authoritative local audit lineage never
+ * substitutes for source_exchange_ids. */
+export interface FactContextDependency {
+    exchange_id: string;
+    dependency_kind: FactContextDependencyKind;
+}
 export interface Fact {
     id: string;
     fact: string;
@@ -102,6 +128,12 @@ export interface ExtractedFact {
     category: FactCategory;
     scope_type: FactScopeType;
     confidence: number;
+    /** Transient extraction diagnostics; not part of durable fact sync state. */
+    grounding_type?: FactGroundingType;
+    durable?: boolean;
+    evidence?: ExtractedFactEvidence[];
+    /** Model-declared, server-resolved local context lineage after causal checks. */
+    context_dependencies?: FactContextDependency[];
     /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
     source_exchange_ids?: string[];
 }

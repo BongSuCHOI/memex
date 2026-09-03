@@ -34,7 +34,7 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 | `search_facts` | 증류된 fact 검색 |
 | `search_ontology` | domain/category별 fact 탐색 |
 | `ask_avatar` | 저장된 evidence를 바탕으로 답변 합성 |
-| `trace_fact` | fact revision/source/archive 추적 |
+| `trace_fact` | authoritative revision/source와 non-authoritative interpretive context 추적 |
 | `explore_graph` | 1–3 hop relation 탐색 |
 | `cross_project_insights` | 다른 project의 유사 해결책 탐색 |
 | `graph_stats` | graph 규모와 health 확인 |
@@ -44,6 +44,11 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 ## 4. Recall evidence 경계
 
 모든 Memex MCP retrieval result는 `memex_recall/learnable=0`입니다. 검색에는 남지만 다시 장기 fact의 증거로 학습하지 않습니다.
+
+`trace_fact`는 `source_exchange_ids`의 원문을 authoritative source로 먼저 표시하고, 별도
+`Interpretive Context (Non-Authoritative)` 절에 local `fact_context_dependencies`를 표시합니다.
+Context는 model-declared index가 bounded causal check를 통과한 뒤 server-resolved된 관계입니다.
+두 절의 exchange가 같아 보이더라도 context 절은 Fact evidence로 승격되지 않습니다.
 
 같은 turn의 별도 repo/Git/test tool result는 call ID별로 독립 분류합니다. Memex MCP call 하나가 sibling evidence를 자동으로 taint하지 않습니다.
 

@@ -16,6 +16,10 @@ behavior belongs in the owner documents under `docs/`.
   allowlisted local repo/Git/test observations may be learnable; Memex recall,
   assistant synthesis, external/unknown output, and unverified generated output
   are searchable but not learnable evidence.
+- Keep authoritative lineage (`source_exchange_ids`) separate from local,
+  non-authoritative interpretive lineage (`fact_context_dependencies`). The
+  semantic verifier reports context it actually used; server validation
+  canonicalizes that set without promoting context to authority.
 - Preserve `exchanges.rowid` on update. Extraction uses rowid watermarks.
 - Extraction claim, fact/provenance writes, saved counts, and watermark advance
   must commit atomically or remain retryable.
@@ -32,7 +36,8 @@ Treat durable fact state as independent axes:
 - **lifecycle** — active/inactive; guarded by `lifecycle_generation` and
   `lifecycle_updated_at`
 - **lineage** — `source_exchange_ids` and `consolidated_count`
-- **local-derived** — KR text, ontology, relations, vectors
+- **local-derived** — KR text, ontology, relations, vectors, interpretive
+  `fact_context_dependencies`
 
 Do not collapse semantic and lifecycle into one clock.
 

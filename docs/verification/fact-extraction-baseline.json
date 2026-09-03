@@ -1,0 +1,790 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-30T19:16:26.412Z",
+  "mode": "curated",
+  "model": "gpt-5.6-luna",
+  "source": {
+    "kind": "fixture",
+    "name": "fact-extraction-context-grounding-curated-v1",
+    "sha256": "f45b4f0aa5ecda45c4d16a426f12e7d62b8c04dc97e4db64d65ebcb9ed75bcd6"
+  },
+  "summary": {
+    "case_count": 17,
+    "passed_cases": 9,
+    "failed_cases": 8,
+    "execution_error_count": 0,
+    "expected_fact_count": 11,
+    "matched_fact_count": 4,
+    "observed_fact_count": 7,
+    "false_positive_count": 1,
+    "self_amplification_leakage_count": 0,
+    "positive_fact_recall": 0.36363636363636365,
+    "negative_no_fact_accuracy": 0.8333333333333334,
+    "precision": 0.5714285714285714,
+    "ratification_resolution": 0,
+    "verified_local_recall": 1,
+    "exploration_false_positive_rate": 0,
+    "model_calls": 17,
+    "input_tokens": 315438,
+    "output_tokens": 1046,
+    "cached_input_tokens": 252672,
+    "token_usage_status": "observed",
+    "input_characters": 37020,
+    "output_characters": 1944,
+    "total_latency_ms": 76682.356833
+  },
+  "cases": [
+    {
+      "id": "explicit-assertion",
+      "title": "Explicit project assertion",
+      "tags": [
+        "positive",
+        "explicit"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite",
+              "project"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-assertion-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project uses SQLite for local persistence.",
+          "fact_kr": "이 프로젝트는 로컬 영속성에 SQLite를 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.98,
+          "source_exchange_ids": [
+            "explicit-assertion-1"
+          ]
+        }
+      ],
+      "passed": false,
+      "issues": [
+        "WRONG-category"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "3b76a0a2b981bb71ebb11f1d103932779605707f3598eb1fe294c5221c7996c8",
+          "input_characters": 2110,
+          "output_characters": 238,
+          "input_tokens": 20144,
+          "output_tokens": 95,
+          "cached_input_tokens": 15104,
+          "latency_ms": 7123.480125
+        }
+      ]
+    },
+    {
+      "id": "explicit-decision",
+      "title": "Explicit architecture decision",
+      "tags": [
+        "positive",
+        "explicit"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-decision-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "The project will use Riverpod for state management.",
+          "fact_kr": "이 프로젝트는 상태 관리에 Riverpod을 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.99,
+          "source_exchange_ids": [
+            "explicit-decision-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "cf2772d998848d48af19094f59b4f5531cf07305edeaff1f40a3b94afadd83c9",
+          "input_characters": 2121,
+          "output_characters": 243,
+          "input_tokens": 18441,
+          "output_tokens": 92,
+          "cached_input_tokens": 17152,
+          "latency_ms": 4859.757874999999
+        }
+      ]
+    },
+    {
+      "id": "explicit-correction",
+      "title": "Human correction overrides assistant context",
+      "tags": [
+        "positive",
+        "explicit",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "server action"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "explicit-correction-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "The project uses a server action instead of an API route.",
+          "fact_kr": "프로젝트는 API route 대신 server action을 사용한다.",
+          "category": "decision",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "source_exchange_ids": [
+            "explicit-correction-1"
+          ]
+        }
+      ],
+      "passed": false,
+      "issues": [
+        "WRONG-category"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "a02c9b3eaaa2e2eb0b197ba8c152f1b3eeb781f9b272dbe19992200b420a8f0a",
+          "input_characters": 2113,
+          "output_characters": 258,
+          "input_tokens": 18443,
+          "output_tokens": 130,
+          "cached_input_tokens": 17152,
+          "latency_ms": 5794.939165999998
+        }
+      ]
+    },
+    {
+      "id": "assistant-proposal-ratified",
+      "title": "Assistant proposal followed by human ratification",
+      "tags": [
+        "positive",
+        "ratification",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "assistant-proposal-ratified-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [],
+      "passed": false,
+      "issues": [
+        "MISS-important"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "40aea33fb4d4ee7d9768716dcb82d1a2ed114932baaedc1a8e20452fb764e109",
+          "input_characters": 2217,
+          "output_characters": 2,
+          "input_tokens": 18464,
+          "output_tokens": 29,
+          "cached_input_tokens": 8960,
+          "latency_ms": 3633.3865000000005
+        }
+      ]
+    },
+    {
+      "id": "one-question-exploration",
+      "title": "A question is not a durable preference",
+      "tags": [
+        "negative",
+        "exploration"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "fc1bdd711d345e0a3de2beafc3a0c9c2cf01c88554df4eed6c727d5d27b72312",
+          "input_characters": 2095,
+          "output_characters": 2,
+          "input_tokens": 18440,
+          "output_tokens": 5,
+          "cached_input_tokens": 17152,
+          "latency_ms": 3687.887999999999
+        }
+      ]
+    },
+    {
+      "id": "comparison-only",
+      "title": "A comparison is not a decision",
+      "tags": [
+        "negative",
+        "exploration"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "0681140c6d58fef7e8362c5b6cbcb4da0266bca6a928f764924580614a5f8f3f",
+          "input_characters": 2099,
+          "output_characters": 2,
+          "input_tokens": 18444,
+          "output_tokens": 25,
+          "cached_input_tokens": 8960,
+          "latency_ms": 3839.7596660000017
+        }
+      ]
+    },
+    {
+      "id": "assistant-suggestion-only",
+      "title": "Assistant suggestion alone is context only",
+      "tags": [
+        "negative",
+        "assistant_only",
+        "self_amplification"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "504a0e0e09ad43952bdd1ff671ccea759c16a0db2b1a0b52085be6e4dd9c9198",
+          "input_characters": 2101,
+          "output_characters": 2,
+          "input_tokens": 18436,
+          "output_tokens": 26,
+          "cached_input_tokens": 13056,
+          "latency_ms": 4007.9067079999986
+        }
+      ]
+    },
+    {
+      "id": "recall-assistant-repeat-only",
+      "title": "Memex recall repeated by assistant cannot self-ground",
+      "tags": [
+        "negative",
+        "recall",
+        "self_amplification"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "c095e0cd26f37ba4840a4afc0e7869663cd1a2a7e6208e35243695728c855528",
+          "input_characters": 2090,
+          "output_characters": 2,
+          "input_tokens": 18433,
+          "output_tokens": 24,
+          "cached_input_tokens": 13056,
+          "latency_ms": 3511.1540840000016
+        }
+      ]
+    },
+    {
+      "id": "recall-proposal-ratified",
+      "title": "Recalled context plus a new human ratification",
+      "tags": [
+        "positive",
+        "ratification",
+        "recall",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "pnpm"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "recall-proposal-ratified-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [],
+      "passed": false,
+      "issues": [
+        "MISS-important"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "99b706d4408b66601d7320242598aed032ee9c5c78fc1622c491773c9a513ae8",
+          "input_characters": 2207,
+          "output_characters": 2,
+          "input_tokens": 18465,
+          "output_tokens": 36,
+          "cached_input_tokens": 8960,
+          "latency_ms": 3830.919958999999
+        }
+      ]
+    },
+    {
+      "id": "trusted-repo-fact",
+      "title": "Trusted repository evidence can ground project knowledge",
+      "tags": [
+        "positive",
+        "verified_local"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite"
+            ],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "trusted-repo-fact-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "This project uses SQLite through better-sqlite3, with the database stored in db.sqlite.",
+          "fact_kr": "이 프로젝트는 better-sqlite3를 통해 SQLite를 사용하며 데이터베이스는 db.sqlite에 저장된다",
+          "category": "knowledge",
+          "scope_type": "project",
+          "confidence": 0.99,
+          "source_exchange_ids": [
+            "trusted-repo-fact-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "fe696167e8da678dddc8a8746f94cbc4ab260143a90edeead6a385b86a1480d6",
+          "input_characters": 2198,
+          "output_characters": 313,
+          "input_tokens": 18458,
+          "output_tokens": 98,
+          "cached_input_tokens": 17152,
+          "latency_ms": 4861.193542000001
+        }
+      ]
+    },
+    {
+      "id": "trusted-test-solution",
+      "title": "Trusted test evidence can ground a problem-solution pattern",
+      "tags": [
+        "positive",
+        "verified_local"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "duplicate email",
+              "auth callback"
+            ],
+            "category": "pattern",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "trusted-test-solution-1"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "Duplicate email insertion causes the auth callback to return 500, and deduplicating before insertion fixes the failure.",
+          "fact_kr": "중복 이메일 삽입으로 auth callback이 500을 반환하며, 삽입 전에 중복을 제거하면 문제가 해결된다.",
+          "category": "pattern",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "source_exchange_ids": [
+            "trusted-test-solution-1"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "9de8c55c60786f51a3f808211f6460ee058ae6bafec3ece3ab3bfa9971e9665e",
+          "input_characters": 2276,
+          "output_characters": 342,
+          "input_tokens": 18471,
+          "output_tokens": 135,
+          "cached_input_tokens": 13056,
+          "latency_ms": 5819.716582999994
+        }
+      ]
+    },
+    {
+      "id": "repeated-preference",
+      "title": "Repeated independent human signals can ground a preference",
+      "tags": [
+        "positive",
+        "inferred",
+        "repeated_signal"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "pnpm"
+            ],
+            "category": "preference",
+            "scope_type": "global",
+            "authoritative_exchange_ids": [
+              "repeated-preference-1",
+              "repeated-preference-2",
+              "repeated-preference-3"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [
+        {
+          "fact": "User prefers pnpm as the package manager for JavaScript projects.",
+          "fact_kr": "사용자는 JavaScript 프로젝트의 package manager로 pnpm을 선호한다",
+          "category": "preference",
+          "scope_type": "global",
+          "confidence": 0.95,
+          "source_exchange_ids": [
+            "repeated-preference-1",
+            "repeated-preference-2",
+            "repeated-preference-3"
+          ]
+        }
+      ],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 1,
+      "matched_fact_count": 1,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "87410430329857263a8d41914c5f0d57f14b795b83540c95d521a2a8bcc4fd8d",
+          "input_characters": 2355,
+          "output_characters": 283,
+          "input_tokens": 18501,
+          "output_tokens": 130,
+          "cached_input_tokens": 17152,
+          "latency_ms": 6084.686750000001
+        }
+      ]
+    },
+    {
+      "id": "single-weak-preference",
+      "title": "One isolated package-manager instruction is not a global preference",
+      "tags": [
+        "negative",
+        "weak_signal"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "WRONG-scope"
+      },
+      "observed_facts": [
+        {
+          "fact": "The user wants only this package installed with pnpm.",
+          "fact_kr": "사용자는 이번 패키지만 pnpm으로 설치하기를 원한다.",
+          "category": "preference",
+          "scope_type": "project",
+          "confidence": 0.95,
+          "source_exchange_ids": [
+            "single-weak-preference-1"
+          ]
+        }
+      ],
+      "passed": false,
+      "issues": [
+        "WRONG-scope"
+      ],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 1,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "164bbb6ab9d9f3938a53911e305417d0f2a05f9df56663f3927d372d05e43db5",
+          "input_characters": 2083,
+          "output_characters": 247,
+          "input_tokens": 18440,
+          "output_tokens": 82,
+          "cached_input_tokens": 17152,
+          "latency_ms": 4587.32475
+        }
+      ]
+    },
+    {
+      "id": "short-ratification",
+      "title": "Short acknowledgement can ratify an assistant proposition",
+      "tags": [
+        "positive",
+        "ratification",
+        "short_ack",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "deepseek",
+              "flash"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "short-ratification-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [],
+      "passed": false,
+      "issues": [
+        "MISS-important"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "3b2f64400065ef84f75cd987443f85ef9c80de684f1472a0848643ec364ac34a",
+          "input_characters": 2102,
+          "output_characters": 2,
+          "input_tokens": 18436,
+          "output_tokens": 24,
+          "cached_input_tokens": 17152,
+          "latency_ms": 3486.8475000000035
+        }
+      ]
+    },
+    {
+      "id": "pure-thanks",
+      "title": "Pure thanks produces no durable fact",
+      "tags": [
+        "negative",
+        "social_ack"
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      },
+      "observed_facts": [],
+      "passed": true,
+      "issues": [],
+      "expected_fact_count": 0,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": []
+    },
+    {
+      "id": "watermark-boundary-ratification",
+      "title": "Ratification after a watermark needs prefix context",
+      "tags": [
+        "positive",
+        "ratification",
+        "watermark",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "sqlite"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "watermark-boundary-ratification-2"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [],
+      "passed": false,
+      "issues": [
+        "MISS-important"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "f2329608ff2584ab021b81e1a271d4373630e2b8df97ca8d190993b87122821a",
+          "input_characters": 2076,
+          "output_characters": 2,
+          "input_tokens": 18438,
+          "output_tokens": 37,
+          "cached_input_tokens": 17152,
+          "latency_ms": 3639.224500000004
+        }
+      ]
+    },
+    {
+      "id": "batch-boundary-context",
+      "title": "Immediate antecedent must survive a batch boundary",
+      "tags": [
+        "positive",
+        "ratification",
+        "batch_boundary",
+        "context"
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": [
+              "riverpod"
+            ],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": [
+              "batch-boundary-context-6"
+            ]
+          }
+        ]
+      },
+      "observed_facts": [],
+      "passed": false,
+      "issues": [
+        "MISS-important"
+      ],
+      "expected_fact_count": 1,
+      "matched_fact_count": 0,
+      "false_positive_count": 0,
+      "calls": [
+        {
+          "call_index": 1,
+          "prompt_sha256": "8a5bcbdc787936295f3f5e6c78cd1e1a97b00cc2f299f83470626806c32d72bc",
+          "input_characters": 2695,
+          "output_characters": 2,
+          "input_tokens": 18544,
+          "output_tokens": 22,
+          "cached_input_tokens": 17152,
+          "latency_ms": 3554.9301669999986
+        },
+        {
+          "call_index": 2,
+          "prompt_sha256": "a1ebf9b1b00c6bb2bd421c6a5fc1a6d00adc7ad586e383c579589fe4c8ee9860",
+          "input_characters": 2082,
+          "output_characters": 2,
+          "input_tokens": 18440,
+          "output_tokens": 56,
+          "cached_input_tokens": 17152,
+          "latency_ms": 4359.240957999995
+        }
+      ]
+    }
+  ],
+  "run_context": {
+    "git_head": "b246afdb59c24113dd174248b94a65106762c3af",
+    "git_dirty": true,
+    "node": "v26.7.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "extractor_profile": "production-current",
+    "database_mode": "not-opened"
+  }
+}
