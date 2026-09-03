@@ -331,26 +331,8 @@ try {
   process.env.TEST_DB_PATH = "";
   process.env.XDG_CONFIG_HOME = XDG_CONFIG_HOME;
   const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
-  const { insertFact, insertFactContextDependencies } = await import(
-    path.join(ROOT, "dist", "fact-db.js")
-  );
+  const { insertFact } = await import(path.join(ROOT, "dist", "fact-db.js"));
   const db = initDatabase();
-  const contextExchangeId = "web-ui-context-exchange";
-  db.prepare(`
-    INSERT INTO exchanges
-      (id, project, timestamp, user_message, assistant_message,
-       archive_path, line_start, line_end)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    contextExchangeId,
-    "/tmp/memex-web-ui",
-    "2026-08-31T00:00:00.000Z",
-    "그 선택으로 진행해줘.",
-    "SQLite를 선택하면 로컬 우선 요구사항을 충족합니다.",
-    "/tmp/memex-web-ui/session.jsonl",
-    10,
-    11,
-  );
   const factId = insertFact(db, {
     fact: MALICIOUS,
     category: "decision",
@@ -360,12 +342,6 @@ try {
     embedding: new Array(384).fill(0.1),
     embedding_version: 1,
   });
-  insertFactContextDependencies(db, factId, [
-    {
-      exchange_id: contextExchangeId,
-      dependency_kind: "assistant_context",
-    },
-  ]);
   db.close();
 
   const port = await freePort();
@@ -385,33 +361,6 @@ try {
     ),
     "facts.png",
     true,
-  );
-  const factDetail = await pageProbe(
-    cdp,
-    base + "/facts",
-    `new Promise((resolve,reject)=>{
-      const deadline=setTimeout(()=>reject(new Error('fact detail timeout')),15000);
-      const done=()=>{
-        const detail=document.querySelector('#detailBox');
-        if (!detail?.textContent.includes('context_only')) return false;
-        clearTimeout(deadline);
-        resolve({
-          heading:detail.querySelector('strong')?.textContent,
-          text:detail.textContent,
-          hasContextOnly:detail.textContent.includes('context_only'),
-          hasAssistantKind:detail.textContent.includes('assistant_context'),
-          hasContextExchange:detail.textContent.includes(${JSON.stringify(contextExchangeId)}),
-          overflowX:detail.scrollWidth > detail.clientWidth,
-        });
-        return true;
-      };
-      const observer=new MutationObserver(()=>{if(done())observer.disconnect()});
-      observer.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
-      [...document.querySelectorAll('#rows button')].find(b=>b.textContent==='Detail')?.click();
-      done();
-    })`,
-    "facts-detail-context.png",
-    false,
   );
   const mutations = await pageProbe(
     cdp,
@@ -477,18 +426,6 @@ try {
   ) {
     throw new Error("Facts browser assertion failed: " + JSON.stringify(facts));
   }
-  if (
-    factDetail.heading !==
-      "Detail / authoritative provenance + non-authoritative context" ||
-    !factDetail.hasContextOnly ||
-    !factDetail.hasAssistantKind ||
-    !factDetail.hasContextExchange ||
-    factDetail.overflowX
-  ) {
-    throw new Error(
-      "Fact context detail assertion failed: " + JSON.stringify(factDetail),
-    );
-  }
   if (pipeline.rows !== 3 || !pipeline.text.includes("conversation-ready")) {
     throw new Error(
       "Pipeline browser assertion failed: " + JSON.stringify(pipeline),
@@ -536,7 +473,6 @@ try {
         verdict: "PASS",
         checks: {
           facts,
-          factDetail,
           mutations,
           pipeline,
           graphEmpty: graph,

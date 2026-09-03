@@ -14,15 +14,13 @@ import path from 'node:path';
  * deterministic 은 그 배치만 버리고 진행한다(=큐를 막지 않음).
  */
 
-const llmBehavior: {
-  mode: 'transient' | 'verifier_transient' | 'deterministic' | 'ok' | 'unknown';
-} = { mode: 'ok' };
+const llmBehavior: { mode: 'transient' | 'deterministic' | 'ok' | 'unknown' } = { mode: 'ok' };
 
 vi.mock('../src/llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/llm.js')>();
   return {
     ...actual,
-    callMemoryModel: async (systemPrompt: string, userMessage: string) => {
+    callMemoryModel: async () => {
       if (llmBehavior.mode === 'transient') {
         throw Object.assign(new Error('service unavailable'), { status: 503 });
       }
@@ -33,36 +31,8 @@ vi.mock('../src/llm.js', async (importOriginal) => {
         // 분류기가 인식 못 하는 shape (status 없음, 알려진 문구 없음)
         throw new Error('weird provider hiccup xyz');
       }
-      if (systemPrompt.includes('authoritative-entailment-v3')) {
-        if (llmBehavior.mode === 'verifier_transient') {
-          throw Object.assign(new Error('verifier service unavailable'), { status: 503 });
-        }
-        const envelope = JSON.parse(userMessage) as { candidates: Array<{
-          selected_context_dependencies: Array<{ context_id: string; relation: string }>;
-          local_context_before_authority: Array<{ exchange_index: number }>;
-          authoritative_evidence: Array<{ kind: string }>;
-        }> };
-        return JSON.stringify(envelope.candidates.map((candidate, index) => ({
-          candidate_index: index + 1,
-          verdict: 'ENTAILED',
-          used_context_dependencies: candidate.selected_context_dependencies,
-          used_local_context_exchange_indices:
-            candidate.selected_context_dependencies.length === 0 &&
-            candidate.authoritative_evidence.some(({ kind }) => kind === 'ratification') &&
-            candidate.local_context_before_authority.length > 0
-              ? [candidate.local_context_before_authority.at(-1)!.exchange_index]
-              : [],
-        })));
-      }
       return JSON.stringify([
-        { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9,
-          grounding_type: 'explicit', durable: true,
-          evidence: [{
-            exchange_index: 1,
-            source: 'human',
-            kind: 'assertion',
-            supporting_span: 'Riverpod',
-          }] },
+        { fact: 'User prefers Riverpod for Flutter state management', category: 'preference', scope_type: 'project', confidence: 0.9, source_exchange_indices: [1] },
       ]);
     },
   };
@@ -99,8 +69,8 @@ async function setupDb() {
   for (let i = 0; i < 2; i++) {
     insert.run(
       `ex-${i}`, PROJECT, now,
-      `Flutter 프로젝트의 상태관리는 Riverpod으로 결정했습니다.`,
-      `Riverpod 결정을 확인합니다.`,
+      `Flutter 프로젝트에서 상태관리를 무엇으로 할지 결정해야 합니다. Riverpod 과 Bloc 중 어느 쪽이 좋을까요? 이유도 알려주세요.`,
+      `Riverpod 을 권장합니다. 이유는 컴파일 타임 안전성과 테스트 용이성 때문입니다. Bloc 은 보일러플레이트가 많습니다.`,
       `/tmp/archive-${i}.jsonl`, 1, 10, SESSION,
     );
   }
@@ -145,14 +115,6 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     const result = await runFactExtraction(db, SESSION, PROJECT);
     expect(result.extracted).toBeGreaterThan(0);
     expect(loggedSessions()).toContain(SESSION); // 이제서야 완료 기록
-  });
-
-  it('AC4g: verifier transient 실패도 완료 마커 없이 다음 run으로 이연한다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    llmBehavior.mode = 'verifier_transient';
-
-    await expect(runFactExtraction(db, SESSION, PROJECT)).rejects.toThrow(/verifier service unavailable/);
-    expect(loggedSessions()).not.toContain(SESSION);
   });
 
   it('AC4d: 인식 못 한 에러(unknown)도 세션을 잃지 않는다 (Codex 리뷰 회귀 고정)', async () => {

@@ -4,47 +4,6 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
-## 0.3.0 - 2026-09-03
-
-### Added
-
-- Added bounded semantic context windows and long-range referent retrieval for
-  deictic approvals, workflow adoption, and cross-language fact extraction.
-- Added local `fact_context_dependencies` for persisted long-range interpretive
-  lineage, separate from authoritative `source_exchange_ids`.
-- Added curated legacy/P2 real-model evaluation fixtures, rejection telemetry,
-  archive-shadow methodology, and merge-gate evidence.
-- Added Fact Detail and `trace_fact` surfaces that distinguish authoritative
-  provenance from non-authoritative context.
-
-### Changed
-
-- Fact scope now follows durable applicability instead of conversation location.
-- The semantic verifier reports the context it used; server validation
-  canonicalizes the minimal persisted dependency set and rejects malformed,
-  unknown, duplicate, overlapping, or out-of-pool usage.
-- Immediate local context remains transient while persisted historical context
-  participates in consolidation, privacy purge, and local lifecycle handling.
-- Tier-C repeated-signal inference is limited to the same session's current
-  authoritative extraction window; assistant and recall text remain context-only.
-
-### Fixed
-
-- Prevented assistant, recall, negative ratification, and translated-text paths
-  from laundering unsupported claims into durable facts.
-- Preserved semantic antecedents across watermark and extraction-window
-  boundaries without promoting historical context to authority.
-- Improved open-vocabulary recommendation, workflow, sequence, and original
-  choice resolution while retaining fail-closed ambiguity handling.
-- Removed local/historical referent duplication and stale dependency telemetry.
-
-### Verification
-
-The authoritative release evidence is stored in
-`docs/verification/merge-gate.json`. Known real-model and archive quality limits
-remain recorded as `PASS-WITH-NOTES`; hard authority and leakage checks remain
-release blockers.
-
 ## 0.2.0 - 2026-08-31
 
 ### Added

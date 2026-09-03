@@ -10,17 +10,6 @@ export interface CodexExecOptions {
     /** Explicit model override; when absent, MEMEX_CODEX_MODEL then
      *  DEFAULT_CODEX_MODEL applies. */
     model?: string | null;
-    /** Best-effort provider telemetry. Failure to observe never fails the call. */
-    onObservation?: (observation: CodexExecObservation) => void;
-}
-export interface CodexTokenUsage {
-    input_tokens: number;
-    output_tokens: number;
-    cached_input_tokens?: number;
-}
-export interface CodexExecObservation {
-    duration_ms: number;
-    token_usage: CodexTokenUsage | null;
 }
 /** Pure arg builder — unit-tested without spawning anything. */
 export declare function buildCodexExecArgs(opts: {
@@ -30,8 +19,6 @@ export declare function buildCodexExecArgs(opts: {
 }): string[];
 /** Pull the last agent answer out of --json JSONL events (fallback path). */
 export declare function lastAgentMessageFromEvents(stdout: string): string;
-/** Read the final Codex `turn.completed` token counters from a JSONL stream. */
-export declare function tokenUsageFromEvents(stdout: string): CodexTokenUsage | null;
 /**
  * One-shot LLM call through the local codex CLI.
  * Returns the final agent message (non-empty guaranteed by callers' retry

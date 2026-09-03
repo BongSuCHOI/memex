@@ -11,77 +11,13 @@ import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'
  */
 
 let calls = 0;
-let verifierCalls = 0;
-let verifierVerdicts: string[] | null = null;
-let promptWindows: Array<{ local_exchanges: Array<{
-  human_evidence: string | null;
-  human_context_only?: string | null;
-  context_only_due_to_watermark?: boolean;
-  assistant_context_only?: { content: string };
-}>; referent_candidates: Array<{ context_id: string; content: string }> }> = [];
 let sourceIndicesPerFact: number[][] | null = null;
-let contextIndicesPerFact: number[][] | null = null;
-let verifierContextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
-  callMemoryModel: async (systemPrompt: string, userMessage: string) => {
-    if (systemPrompt.includes('authoritative-entailment-v3')) {
-      verifierCalls++;
-      const envelope = JSON.parse(userMessage) as { candidates: Array<{
-        selected_context_dependencies: Array<{ context_id: string; relation: string }>;
-        available_referent_candidates: Array<{ context_id: string }>;
-        local_context_before_authority: Array<{ exchange_index: number }>;
-        authoritative_evidence: Array<{ kind: string }>;
-      }> };
-      return JSON.stringify(envelope.candidates.map((candidate, index) => ({
-        candidate_index: index + 1,
-        verdict: verifierVerdicts?.[index] ?? 'ENTAILED',
-        used_context_dependencies: verifierContextIndicesPerFact?.[index]
-          ? verifierContextIndicesPerFact[index].map((referentIndex) => ({
-              context_id:
-                candidate.available_referent_candidates[referentIndex - 1]?.context_id ??
-                'missing',
-              relation: 'ratified_proposition',
-            }))
-          : candidate.selected_context_dependencies.map(
-              ({ context_id, relation }) => ({ context_id, relation }),
-            ),
-        used_local_context_exchange_indices:
-          candidate.selected_context_dependencies.length === 0 &&
-          !(verifierContextIndicesPerFact?.[index]?.length) &&
-          candidate.authoritative_evidence.some(({ kind }) => kind === 'ratification') &&
-          candidate.local_context_before_authority.length > 0
-            ? [candidate.local_context_before_authority.at(-1)!.exchange_index]
-            : [],
-      })));
-    }
-    calls++;
-    const envelope = JSON.parse(userMessage);
-    promptWindows.push(envelope);
-    await new Promise(r => setTimeout(r, 60));
-    return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) => {
-      const sourceIndices = sourceIndicesPerFact?.[i] ?? [1];
-      const contextIndices = contextIndicesPerFact?.[i] ?? [];
-      return {
-        fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i} Riverpod`,
-        category: 'preference',
-        scope_type: 'project',
-        confidence: 0.9,
-        grounding_type: 'explicit',
-        durable: true,
-        evidence: sourceIndices.map(exchange_index => ({
-          exchange_index,
-          source: 'human',
-          kind: contextIndices.length > 0 ? 'ratification' : 'assertion',
-          supporting_span: envelope.local_exchanges[exchange_index - 1]?.human_evidence ?? '',
-        })),
-        context_dependencies: contextIndices.map((referentIndex) => ({
-          context_id: envelope.referent_candidates[referentIndex - 1]?.context_id ?? 'missing',
-          relation: 'ratified_proposition',
-        })),
-      };
-    }));
-  } }));
+  callMemoryModel: async () => { calls++; await new Promise(r => setTimeout(r, 60));
+    return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) =>
+      ({ fact: factNameForCall?.(calls, i) ?? `dup-probe-${calls}-${i}`, category: 'preference', scope_type: 'project', confidence: 0.9,
+        source_exchange_indices: sourceIndicesPerFact?.[i] ?? [1] }))); } }));
 let factsPerCall = 1;
 let embedCalls = 0;
 let stealAtEmbedCall = 0; // >0 이면 그 호출 시점에 claim 을 탈취(결정론적 재현)
@@ -100,15 +36,15 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; verifierContextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; factsPerCall = 1; sourceIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
   for (let i = 0; i < 2; i++) ins.run(`e${i}`, '/tmp/p', new Date().toISOString(),
-    'Flutter 상태관리는 Riverpod으로 결정했습니다.',
-    'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
+    'Flutter 상태관리를 Riverpod 과 Bloc 중 무엇으로 할지 결정해야 합니다. 이유도 알려주세요.',
+    'Riverpod 을 권장합니다. 컴파일 타임 안전성과 테스트 용이성 때문입니다.', `/tmp/a${i}.jsonl`, 1, 10, 'S1');
 });
-afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; delete process.env.MEMEX_MAX_EXTRACT_WINDOWS; delete process.env.MEMEX_MAX_EXTRACT_CALLS; fs.rmSync(tmp, {recursive:true,force:true}); });
+afterEach(() => { try { db.close(); } catch {} ; delete process.env.MEMEX_HOME; delete process.env.MEMEX_DB_PATH; fs.rmSync(tmp, {recursive:true,force:true}); });
 
 describe('claim E2E', () => {
   it('각 fact에는 모델이 지목한 source exchange UUID만 저장한다', async () => {
@@ -122,23 +58,9 @@ describe('claim E2E', () => {
       "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%' ORDER BY fact",
     ).all() as Array<{ fact: string; source_exchange_ids: string }>;
     expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
-      ['dup-probe-1-0 Riverpod', ['e0']],
-      ['dup-probe-1-1 Riverpod', ['e1']],
+      ['dup-probe-1-0', ['e0']],
+      ['dup-probe-1-1', ['e1']],
     ]);
-    expect(verifierCalls).toBe(1);
-  });
-
-  it('semantic verifier가 polarity contradiction을 거부하면 fact를 저장하지 않는다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    db.prepare("UPDATE exchanges SET user_message = 'We do not use Riverpod.' WHERE id = 'e0'").run();
-    verifierVerdicts = ['CONTRADICTED'];
-
-    const result = await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(result.extracted).toBe(0);
-    expect(calls).toBe(1);
-    expect(verifierCalls).toBe(1);
-    expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(0);
   });
 
   it('source exchange index 누락·범위 이탈 fact는 저장하지 않고 중복 index는 정규화한다', async () => {
@@ -153,11 +75,11 @@ describe('claim E2E', () => {
       "SELECT fact, source_exchange_ids FROM facts WHERE fact LIKE 'dup-probe%'",
     ).all() as Array<{ fact: string; source_exchange_ids: string }>;
     expect(rows.map((row) => [row.fact, JSON.parse(row.source_exchange_ids)])).toEqual([
-      ['dup-probe-1-3 Riverpod', ['e1']],
+      ['dup-probe-1-3', ['e1']],
     ]);
   });
 
-  it('같은 fact가 겹치는 semantic window에서 재추출되면 검증된 source UUID를 합친다', async () => {
+  it('같은 fact가 여러 배치에서 재추출되면 각 배치의 검증된 source UUID를 합친다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const insert = db.prepare(`
       INSERT INTO exchanges
@@ -172,241 +94,14 @@ describe('claim E2E', () => {
         'Riverpod 결정을 확인합니다.', `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
       );
     }
-    factNameForCall = () => 'cross-batch-fact 상태관리';
+    factNameForCall = () => 'cross-batch-fact';
 
     await runFactExtraction(db, 'S1', '/tmp/p');
 
     const row = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact 상태관리'",
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'cross-batch-fact'",
     ).get() as { source_exchange_ids: string };
-    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e3']);
-    expect(promptWindows.map((window) => window.local_exchanges.length)).toEqual([5, 3]);
-  });
-
-  it('짧은 ratification anchor가 직전 raw exchange와 함께 모델에 전달된다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    db.prepare("UPDATE exchanges SET user_message = '왜?' WHERE id = 'e0'").run();
-    db.prepare("UPDATE exchanges SET user_message = '응' WHERE id = 'e1'").run();
-    sourceIndicesPerFact = [[2]];
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(calls).toBe(1);
-    expect(promptWindows[0].local_exchanges.map((exchange) => exchange.human_evidence)).toEqual(['왜?', '응']);
-    const row = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-1-0 Riverpod'",
-    ).get() as { source_exchange_ids: string };
-    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e1']);
-  });
-
-  it('Phase 4+F: 새 ratification은 직전 watermark prefix를 보되 lineage는 신규 exchange만 가진다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    const fixture = JSON.parse(fs.readFileSync(
-      new URL('./fixtures/fact-extraction-watermark-boundary.json', import.meta.url),
-      'utf8',
-    )) as {
-      prefix: { user_message: string; assistant_message: string };
-      suffix: { user_message: string; assistant_message: string };
-      expected: { fact: string; authoritative_exchange_id: string };
-    };
-
-    db.prepare(`
-      UPDATE exchanges
-      SET user_message = ?, assistant_message = ?
-      WHERE id = 'e1'
-    `).run(fixture.prefix.user_message, fixture.prefix.assistant_message);
-    db.prepare(`
-      INSERT INTO extraction_log
-        (session_id, processed_at, extracted, saved, last_exchange_rowid)
-      VALUES ('S1', ?, 0, 0, 2)
-    `).run(new Date().toISOString());
-    db.prepare(`
-      INSERT INTO exchanges
-        (id, project, timestamp, user_message, assistant_message, archive_path,
-         line_start, line_end, session_id, is_sidechain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `).run(
-      'e2', '/tmp/p', new Date(Date.now() + 1000).toISOString(),
-      fixture.suffix.user_message, fixture.suffix.assistant_message,
-      '/tmp/a2.jsonl', 21, 30, 'S1',
-    );
-    sourceIndicesPerFact = [[3]];
-    verifierContextIndicesPerFact = [[1]];
-    factNameForCall = () => fixture.expected.fact;
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(calls).toBe(1);
-    expect(promptWindows[0].local_exchanges).toHaveLength(3);
-    expect(promptWindows[0].local_exchanges[1]).toEqual(expect.objectContaining({
-      context_only_due_to_watermark: true,
-      human_evidence: null,
-      human_context_only: fixture.prefix.user_message,
-      assistant_context_only: expect.objectContaining({
-        content: fixture.prefix.assistant_message,
-      }),
-    }));
-    expect(promptWindows[0].local_exchanges[2]).toEqual(expect.objectContaining({
-      context_only_due_to_watermark: false,
-      human_evidence: fixture.suffix.user_message,
-    }));
-    const row = db.prepare(
-      'SELECT source_exchange_ids FROM facts WHERE fact = ?',
-    ).get(fixture.expected.fact) as { source_exchange_ids: string };
-    expect(JSON.parse(row.source_exchange_ids)).toEqual([
-      fixture.expected.authoritative_exchange_id,
-    ]);
-    expect(db.prepare(`
-      SELECT exchange_id, dependency_kind
-      FROM fact_context_dependencies
-      WHERE fact_id = (SELECT id FROM facts WHERE fact = ?)
-    `).all(fixture.expected.fact)).toEqual([{
-      exchange_id: 'e1',
-      dependency_kind: 'ratified_proposition',
-    }]);
-    expect((db.prepare(
-      'SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?',
-    ).get('S1') as { last_exchange_rowid: number }).last_exchange_rowid).toBe(3);
-  });
-
-  it('P2: watermark 8 exchanges 전 제안을 복원하되 authority는 신규 human만 저장한다', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    db.prepare(`
-      UPDATE exchanges
-      SET user_message = 'Which state manager fits this app?',
-          assistant_message = 'I recommend Riverpod for this app.'
-      WHERE id = 'e0'
-    `).run();
-    db.prepare(`
-      UPDATE exchanges
-      SET user_message = 'What are the first tradeoffs?',
-          assistant_message = 'Riverpod is testable.'
-      WHERE id = 'e1'
-    `).run();
-    const insert = db.prepare(`
-      INSERT INTO exchanges
-        (id, project, timestamp, user_message, assistant_message, archive_path,
-         line_start, line_end, session_id, is_sidechain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `);
-    const history = [
-      ['Compare another option.', 'Bloc is another option.'],
-      ['What is its downside?', 'Bloc adds boilerplate.'],
-      ['Any simpler option?', 'Provider is a third option.'],
-      ['How is testing?', 'All options are testable.'],
-      ['Summarize constraints.', 'The original recommendation balances them.'],
-      ['Anything else?', 'No additional blocker.'],
-    ];
-    history.forEach(([user, assistant], index) => insert.run(
-      `e${index + 2}`, '/tmp/p', new Date(Date.now() + (index + 2) * 1000).toISOString(),
-      user, assistant, `/tmp/a${index + 2}.jsonl`, 20 + index, 20 + index, 'S1',
-    ));
-    db.prepare(`
-      INSERT INTO extraction_log
-        (session_id, processed_at, extracted, saved, last_exchange_rowid)
-      VALUES ('S1', ?, 0, 0, 8)
-    `).run(new Date().toISOString());
-    insert.run(
-      'e8', '/tmp/p', new Date(Date.now() + 8000).toISOString(),
-      '그럼 처음 추천한 걸로 하자.', 'Riverpod으로 진행하겠습니다.',
-      '/tmp/a8.jsonl', 80, 80, 'S1',
-    );
-    sourceIndicesPerFact = [[3]];
-    contextIndicesPerFact = [[1]];
-    factNameForCall = () => 'This project uses Riverpod for state management.';
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(promptWindows[0].local_exchanges).toHaveLength(3);
-    expect(promptWindows[0].referent_candidates.length).toBeGreaterThan(0);
-    expect(promptWindows[0].referent_candidates.length).toBeLessThanOrEqual(5);
-    expect(promptWindows[0].referent_candidates[0].content).toContain('Riverpod');
-    const fact = db.prepare(
-      'SELECT source_exchange_ids FROM facts WHERE fact = ?',
-    ).get('This project uses Riverpod for state management.') as { source_exchange_ids: string };
-    expect(JSON.parse(fact.source_exchange_ids)).toEqual(['e8']);
-    expect(db.prepare(`
-      SELECT exchange_id, dependency_kind
-      FROM fact_context_dependencies
-      WHERE fact_id = (SELECT id FROM facts WHERE fact = ?)
-    `).all('This project uses Riverpod for state management.')).toEqual([{
-      exchange_id: 'e0',
-      dependency_kind: 'ratified_proposition',
-    }]);
-  });
-
-  it('LLM call budget is applied after semantic windows are formed', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    const insert = db.prepare(`
-      INSERT INTO exchanges
-        (id, project, timestamp, user_message, assistant_message, archive_path,
-         line_start, line_end, session_id, is_sidechain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `);
-    for (let i = 2; i < 8; i++) {
-      insert.run(
-        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
-        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
-        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
-      );
-    }
-    process.env.MEMEX_MAX_EXTRACT_CALLS = '1';
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(calls).toBe(1);
-    expect(promptWindows).toHaveLength(1);
-    expect(promptWindows[0].local_exchanges).toHaveLength(5);
-  });
-
-  it('canonical window budget overrides the deprecated alias without skipping verification', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    const insert = db.prepare(`
-      INSERT INTO exchanges
-        (id, project, timestamp, user_message, assistant_message, archive_path,
-         line_start, line_end, session_id, is_sidechain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `);
-    for (let i = 2; i < 8; i++) {
-      insert.run(
-        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
-        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
-        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
-      );
-    }
-    process.env.MEMEX_MAX_EXTRACT_WINDOWS = '1';
-    process.env.MEMEX_MAX_EXTRACT_CALLS = '2';
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(calls).toBe(1);
-    expect(verifierCalls).toBe(1);
-    expect(promptWindows).toHaveLength(1);
-  });
-
-  it('invalid canonical window budget falls back to the default, not the legacy alias', async () => {
-    const { runFactExtraction } = await import('../src/fact-extractor.js');
-    const insert = db.prepare(`
-      INSERT INTO exchanges
-        (id, project, timestamp, user_message, assistant_message, archive_path,
-         line_start, line_end, session_id, is_sidechain)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `);
-    for (let i = 2; i < 8; i++) {
-      insert.run(
-        `e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
-        `교환 ${i}에서 장기 프로젝트 결정을 명시합니다.`,
-        `교환 ${i}의 결정을 확인합니다.`, `/tmp/a${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
-      );
-    }
-    process.env.MEMEX_MAX_EXTRACT_WINDOWS = 'not-a-number';
-    process.env.MEMEX_MAX_EXTRACT_CALLS = '1';
-
-    await runFactExtraction(db, 'S1', '/tmp/p');
-
-    expect(calls).toBe(2);
-    expect(verifierCalls).toBe(2);
-    expect(promptWindows).toHaveLength(2);
+    expect(JSON.parse(row.source_exchange_ids)).toEqual(['e0', 'e5']);
   });
 
   it('동일 SessionEnd는 no-op이고 재개 세션은 새 exchange만 증분 처리한다', async () => {
@@ -435,19 +130,10 @@ describe('claim E2E', () => {
       '/tmp/a2.jsonl', 11, 20, 'S1',
     );
 
-    sourceIndicesPerFact = [[3]];
     await runFactExtraction(db, 'S1', '/tmp/p');
     expect(calls, '재개 세션은 새 exchange 배치에 대해 한 번만 호출해야 한다').toBe(2);
-    expect(promptWindows[1].local_exchanges[0]).toEqual(expect.objectContaining({
-      context_only_due_to_watermark: true,
-      human_evidence: null,
-    }));
-    expect(promptWindows[1].local_exchanges[2]).toEqual(expect.objectContaining({
-      context_only_due_to_watermark: false,
-      human_evidence: '새 요구사항으로 Riverpod provider 범위를 프로젝트 전체에서 화면 단위로 제한하기로 결정했습니다.',
-    }));
     const incremental = db.prepare(
-      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0 Riverpod'",
+      "SELECT source_exchange_ids FROM facts WHERE fact = 'dup-probe-2-0'",
     ).get() as { source_exchange_ids: string };
     expect(JSON.parse(incremental.source_exchange_ids)).toEqual(['e2']);
     const finalWatermark = (db.prepare(
@@ -543,8 +229,6 @@ describe('claim E2E', () => {
   it('R9 HIGH: 마지막(유일) fact 구간에서 탈취돼도 저장이 남지 않는다 (원자적 커밋)', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     factsPerCall = 1;               // fact 1건 = 루프 꼬리 = 체크포인트 사각
-    sourceIndicesPerFact = [[2]];
-    contextIndicesPerFact = [[1]];  // fact와 함께 rollback될 context dependency
     stealAtEmbedCall = 1;           // 그 유일한 fact 의 임베딩 중 탈취
     stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
 
@@ -555,9 +239,6 @@ describe('claim E2E', () => {
     const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
     console.log(`  → 루프 꼬리 탈취: 저장된 fact ${n}건 (saved=${saved})`);
     expect(n, '탈취 후 남은 fact 는 새 소유자의 재추출과 중복된다').toBe(0);
-    expect((db.prepare(
-      'SELECT COUNT(*) AS n FROM fact_context_dependencies',
-    ).get() as { n: number }).n).toBe(0);
   });
 
   it('R10 MEDIUM: claim 이양은 ClaimLostError 로 구분돼 내부 실패로 오분류되지 않는다', async () => {

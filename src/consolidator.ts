@@ -5,7 +5,6 @@ import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
 import {
   getPendingConsolidationFacts,
-  mergeFactContextDependencies,
   searchFactsByScope,
   updateFact,
 } from './fact-db.js';
@@ -300,7 +299,6 @@ export async function applyConsolidationResult(
           consolidated_count_increment: true,
           source_exchange_ids: liveSources,
         });
-        mergeFactContextDependencies(db, existingFact.id, [newFact.id]);
         deactivateFactTransactional(db, newFact.id);
         return true;
       });
@@ -328,7 +326,6 @@ export async function applyConsolidationResult(
         expectedPreviousFact: existingFact.fact,
         expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
         expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
-        mergeContextFromFactIds: [newFact.id],
         deactivateFacts: [
           {
             id: newFact.id,
@@ -350,7 +347,6 @@ export async function applyConsolidationResult(
         expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
         expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
         consolidatedCountIncrement: true,
-        mergeContextFromFactIds: [newFact.id],
         deactivateFacts: [
           {
             id: newFact.id,

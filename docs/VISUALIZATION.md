@@ -15,7 +15,7 @@ UI는 CLI와 같은 Memex data-root 해석을 사용합니다. read/write connec
 | Route | 역할 |
 | --- | --- |
 | `/` | projects, conversations, search, exchange detail |
-| `/facts` | fact, revision, authoritative provenance, non-authoritative context, mutation |
+| `/facts` | fact, revision, provenance, mutation |
 | `/graph` | 3D Knowledge Galaxy |
 | `/pipeline` | readiness와 backlog |
 
@@ -60,11 +60,6 @@ ontology와 relation은 protocol v4 local-derived state입니다. sync 직후 ta
 
 edit/deactivate/restore가 UI 전용 shortcut으로 DB를 직접 갱신해서는 안 됩니다.
 
-Fact Detail은 `sources`와 `context_dependencies`를 별도 필드로 표시합니다. Context row에는
-`authority: "context_only"`와 dependency kind를 포함하고 화면 제목도 authoritative provenance와
-non-authoritative context를 구분합니다. Context는 model-declared index를 bounded causal check 후
-server가 UUID/kind로 resolve한 local dependency이며 fact truth의 source로 표현하지 않습니다.
-
 ## 6. Pipeline 상태
 
 `/pipeline`은 conversation sync, extraction, consolidation, ontology, embedding backlog를 관측하는 read-only surface입니다.
@@ -85,7 +80,7 @@ privacy purge 뒤에는 ontology가 전면 invalidate되므로 graph readiness�
 ## 8. QA 체크리스트
 
 1. empty DB에서 모든 route가 crash 없이 열린다.
-2. populated DB에서 conversation → fact → authoritative provenance와 context-only dependency가 분리되어 연결된다.
+2. populated DB에서 conversation → fact → provenance가 연결된다.
 3. global/project/all graph scope가 올바르게 분리된다.
 4. relation filter와 node detail 이동이 동작한다.
 5. malicious text가 markup으로 실행되지 않는다.

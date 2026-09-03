@@ -51,193 +51,6 @@ fact extraction evidence는 source 단위로 분류합니다.
 
 Memex가 주입한 기억을 assistant가 다시 요약한 텍스트를 새 사실의 증거로 재섭취하지 않습니다. project 밖 파일, Memex data root, `$CODEX_HOME/sessions`, model workdir 등 출처가 안전하게 증명되지 않는 tool result도 fail-closed로 학습에서 제외합니다.
 
-### Context visibility와 evidence authority
-
-Extractor input은 JSON data envelope이며 모든 필드를 untrusted conversation data로
-취급합니다. 한 exchange는 다음 역할을 분리해 전달합니다.
-
-- `human_evidence` — authoritative human candidate
-- `human_context_only` — durable watermark 이전 prefix의 human text; 지시어 해석 전용
-- `trusted_tool_evidence` — DB에서 learnable로 분류된 local repo/git/test 관측
-- `assistant_context_only` — 지시어·선택지·ratification 대상 해석 전용
-- `memex_recall_context_only` — 과거 recall의 의미 문맥 전용
-
-`assistant_context_only.recall_influenced`는 `has_memex_recall`을 반영합니다. assistant와
-recall 본문은 extractor에 보이지만 evidence가 될 수 없으며, external/unverified tool
-output은 현재 extraction envelope에 포함하지 않습니다. 각 block은 고정된 per-message 및
-per-tool 문자 예산으로 잘리고 tool 개수도 제한됩니다. 긴 본문은 결정이나 검증 결과가 끝에
-있을 수 있으므로 head와 tail을 함께 보존합니다.
-
-Model candidate는 `grounding_type`, `durable`, typed `evidence[]`, optional
-`context_dependencies[{context_id, relation}]` hint를 선언합니다. Server validator는 이를 `unknown` JSON에서
-검증하고 실제 `exchanges.provenance` 및 `tool_calls.learnable/source_type/is_error`와
-대조합니다. Human evidence는 실제 user message의 정확한 `supporting_span`을, tool evidence는
-정확한 `tool_call_id`와 tool result의 `supporting_span`을 필수로 제출합니다. Server는 substring,
-provenance, tool identity와 authority eligibility를 다시 대조합니다. Long-range referent를 제거했을
-때 fact 전체 의미가 incomplete/ambiguous/unsupported가 되면 generator는 그 의미를 정의하는 최소
-`context_dependencies`를 선언해야 합니다. Standalone evidence가 의미를 완결하면 retrieved context를
-붙이지 않고, 필수 referent가 ambiguous하면 fact를 내지 않습니다. 이 necessity test는
-`referent_candidates`에만 적용하며 authority 이전 immediate `local_exchanges`는 별도 context ID 없이
-workflow 일부를 정의할 수 있습니다. 저장할 fact 본문은 `이 순서`, `현재 확립된 순서` 같은 미해결
-placeholder 대신 채택된 workflow/choice/style의 실제 내용을 명시해야 합니다. Canonical claim과
-evidence의 의미·번역 관계는 structural lexical gate가 아니라 mandatory entailment verifier가
-판정합니다. `fact_kr`는 extraction output에서 폐기되므로 canonical fact를 rescue하거나 KR 검색
-상태를 오염시킬 수 없습니다.
-
-Workflow category는 문법이나 미래형이 아니라 authoritative meaning으로 정합니다. 시연된 workflow,
-style, sequence를 앞으로도 계속 사용해 달라는 요청은 mandatory compliance나 대안 금지가 없으면
-`preference`입니다. 준수 의무, 금지, required operating rule, non-optional boundary를 명시하면
-`constraint`입니다. 모든 occurrence의 정의된 operating stage에 생략할 수 없는 단계를 부과하는
-universal gate도 전체 의미상 `constraint`이며, `항상` 같은 단어 하나로 판정하지 않습니다. 현재
-project에만 시연된 workflow를 계속 쓰자는 collaborative adoption은 mandatory boundary가 아니면
-`decision`입니다. Future applicability는 durability를 만들 뿐 constraint를 만들지 않습니다.
-
-구조 검증을 통과한 candidate가 하나 이상이면 같은 window의 candidate를 한 batch로 별도
-`authoritative-entailment-v3` verifier에 보냅니다. Verifier는 canonical fact/category/scope/polarity/
-durability와 server가 복원한 bounded authoritative source text를 비교하며 `ENTAILED`만 허용합니다.
-`CONTRADICTED`, `NOT_ENOUGH`, 누락, 중복, malformed verdict는 candidate별 fail-closed입니다.
-`ENTAILED` context-derived candidate는 removal test를 통과해 실제 사용한
-`used_context_dependencies[{context_id, relation}]`와
-`used_local_context_exchange_indices[]`를 함께 반환합니다. Server는 candidate pool, anchor, relation,
-authority overlap, local pre-authority 범위와 최대 3개 상한을 다시 검사한 뒤 이 사용 집합을 최종
-canonical dependency로 만듭니다. Generator가 필요한 dependency를 빼도 verifier가 정확히 식별하면
-추가되고, generator가 붙인 관련 없는 dependency는 제거됩니다. 필요한 referent를 정확히 식별하지
-못하거나 usage lineage가 누락되면 candidate를 폐기합니다.
-Verifier는 imperative/future tense 자체가 아니라 적용 범위를 봅니다. 반복되는 future tasks/sessions나
-일반 작업 방식에 명시적으로 적용되는 지시는 durable일 수 있지만, 현재 bounded task의 후속 단계나
-단순 미래형은 계속 one-off입니다.
-선택된 bounded assistant/recall/human referent는 non-authoritative context로 함께 보며, human text가
-그 referent를 명확히 채택하거나 참조해야 합니다. 이 adoption evidence는 model label이 반드시
-`ratification`일 필요는 없습니다. Question shape, rejection, replacement, polarity를 포함한 semantic
-판정은 verifier가 담당합니다. 구조 검증은 provenance/integrity를, verifier는 entailment·polarity·
-scope·durability를 각각 책임집니다.
-
-같은 semantic window의 immediate ratification은 별도 `context_id`를 만들지 않습니다. Validator는
-ratification authority보다 앞선 bounded local context 또는 anchor에 결속된 referent가 있을 때만
-dependency 없는 candidate를 verifier까지 통과시키고, verifier에는 earliest authority 이전 local context만
-`local_context_before_authority`로 제공합니다. Ratification 이후 assistant output은 제외되므로 새
-human authority를 사후 assistant 반복으로 self-grounding할 수 없습니다. 이 local context는 durable
-lineage나 `fact_context_dependencies`에 들어가지 않습니다. 단순히 local context가 존재한다는 사실은
-historical dependency 만족으로 취급하지 않으며, verifier가 사용한 exact local index 또는 historical
-`context_id`가 실제 resolution source입니다. 선택된 dependency와 이 local context가
-workflow steps를 함께 완성하면 새 `this sequence` adoption은 모든 step을 반복하지 않아도 그 순서를
-채택할 수 있습니다.
-
-- `explicit` — valid human evidence가 최소 1개
-- `verified` — valid trusted tool evidence가 최소 1개
-- `inferred` — 서로 다른 authoritative exchange가 최소 2개
-- `durable`은 반드시 `true`; confidence는 그 다음 secondary threshold
-
-assistant/recall/external/unknown evidence 선언이나 실제 tool row와 불일치하는 선언은
-candidate 전체를 폐기합니다. `source_exchange_ids`는 검증을 통과한 authoritative
-exchange UUID에서만 생성됩니다. Model에는 opaque `context_id`만 보이고 DB UUID는 노출하지
-않습니다. Server는 verifier가 사용했다고 반환한 `context_id`가 제공한 candidate인지, authoritative
-anchor에 결속됐는지, dependency가 3개 이하인지, relation이 허용값인지 검증한 뒤 실제 exchange
-UUID로 resolve합니다. 이 dependency는 local
-`fact_context_dependencies`에만 저장되며 authoritative lineage에는 들어가지 않습니다.
-
-증분 추출은 watermark 직전 최대 30개 exchange를 context-only long-range pool로 읽습니다.
-일반 local semantic window에는 직전 최대 2개만 포함합니다. Selector는 적격 anchor마다 bounded
-pool을 cheap ranking하고 최대 5개 referent를 제공합니다. Strong deictic adoption은
-language-specific reference/action 구조로 감지하며 기존 lexical/proposal ranking을 유지합니다.
-낮은 lexical score에서도 novel recommendation wording이 잘리지 않도록 최근 substantive semantic
-material 최대 2개를 bounded fallback으로 예약합니다. Natural recommendation/workflow material도
-ranking bonus를 받습니다. Fallback은 verifier에 보이는 non-authoritative 후보만 넓히며 authority,
-persistence 또는 acceptance threshold를 우회하지 않습니다.
-현재 non-watermark `local_exchanges`는 같은 window의 `local_context_before_authority`로만 제공하고
-long-range candidate로 중복 노출하지 않습니다. Watermark 이전 prefix는 local window에 인접해 있어도
-historical context이므로 `context_id` candidate로 남아 필요한 persistent dependency를 보존합니다.
-Verifier는 historical dependency를 최대 3개만 반환하며, 같은 local exchange를 두 lineage로 중복
-사용하지 않습니다.
-
-Tier-C `inferred` grounding은 현재 같은 session의 현재 authoritative extraction window 안에서 서로
-다른 human/tool exchange가 같은 결론을 독립적으로 지지할 때만 허용합니다. Cross-session generic
-recall text는 authority가 아니며 cardinality에도 포함하지 않습니다. Original authoritative lineage를
-직접 조회하는 별도 cross-session path는 현재 범위 밖입니다.
-
-### Precision과 durability policy
-
-`precision-durability-v4` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
-순서로 판정합니다.
-
-1. **Grounding** — explicit human, verified local tool, 또는 같은 결론을 독립적으로 지지하는
-   authoritative exchange 2개 이상의 inferred evidence인지 확인합니다.
-2. **Durability** — 다음 task/session에서도 재사용할 안정된 decision, constraint, knowledge,
-   preference, verified problem→solution pattern인지 확인합니다.
-3. **Category/scope** — 의미 기준 category와 보수적인 project/global scope를 정합니다.
-4. **Confidence** — 앞 gate를 모두 통과한 candidate에만 secondary threshold를 적용합니다.
-
-질문, 비교, brainstorming, 현재 진행, temporary state, 일회성 package/file/command 요청은
-Fact가 아닙니다. 특히 한 번의 행동을 global preference로 올리지 않으며, durable하지 않은 signal을
-project fact로 바꿔 저장하지도 않습니다. scope는 발화가 등장한 conversation이 아니라 fact가
-적용되는 대상에 따라 정합니다. Repository/product에 묶인 지식과 결정은 `project`이고, 사용자의
-지속적인 환경·도구·관심·응답/작업 방식처럼 무관한 미래 project에도 적용되는 명시적 지식은 단일
-authoritative human assertion만으로도 `global`일 수 있습니다. 행동으로 global preference를
-추론할 때는 여전히 복수의 독립된 authoritative signal이 필요합니다. 주제를 질문한 사실만으로
-관심사를 추론하지 않습니다.
-
-Category는 동일한 "원한다" paraphrase가 아니라 communicative act를 따릅니다. `항상`/`must`처럼
-지속 의무를 부과하는 directive는 `constraint`, 일반적인 future style/workflow 유지 요청은
-`preference`, project 안에서 "이 순서로 하자"처럼 방향을 채택하는 표현은 별도 의무 언어가 없으면
-`decision`입니다. Tag question은 문장 부호가 아니라 전체 발화가 정보 질문인지 directive인지로
-판정합니다.
-
-현재 project state를 바로잡는 human correction은 stable knowledge가 될 수 있습니다. recall을
-assistant가 반복했을 뿐이면 authority가 없지만, human이 recalled choice를 이번 project에서 새로
-채택하면 새 project decision이 될 수 있습니다. 이때도 recall은 context일 뿐이고 새 ratification
-exchange만 durable lineage에 들어갑니다.
-
-명확한 한 referent가 있을 때 `proceed`/`continue`/`진행해줘`/`계속`, first/original reference,
-이전 human decision 유지 표현은 ratification을 resolve할 수 있습니다. 여러 referent가 실제로
-남아 모호하면 `NOT_ENOUGH`이며, 단지 alternatives가 논의됐다는 이유만으로 명시적인 first/original
-reference를 모호하다고 처리하지 않습니다.
-
-Fact 개수 목표는 없습니다. `MAX_FACTS_PER_SESSION`은 과다 출력을 제한하는 safety cap이며 품질
-KPI가 아닙니다. 0개가 올바른 session은 `[]`가 정상 결과입니다.
-
-Entailment verifier는 구조 검증을 통과한 candidate가 있는 window에서만 한 번 호출됩니다. 따라서
-빈 generator 결과나 구조적으로 모두 거부된 window에는 추가 호출이 없습니다. Verifier 호출 실패는
-generator와 같은 deterministic/transient retry 계약을 따릅니다.
-
-### Context-aware selection과 semantic window
-
-Extraction 호출 여부와 input visibility는 별도 단계입니다.
-
-- `isContextEligibleExchange()`는 빈 turn, harness transport artifact, bare slash command만
-  제외합니다. 짧은 human reply와 pure social/bridge reply는 인접 문맥에 남습니다.
-- `isCandidateAnchorExchange()`는 durable candidate 가능성이 있는 human turn 또는 trusted
-  local tool evidence가 있는 turn만 LLM 호출 anchor로 삼습니다. `응/네/좋아/아니`처럼
-  승인·정정일 수 있는 짧은 reply는 anchor이고, `고마워/감사합니다/왜?`처럼 단독 durable signal이
-  아닌 reply는 context-only neighbor입니다. `needsLongRangeContext()`는 이 fact
-  eligibility와 별도로 bounded referent search 필요성을 판단합니다. 따라서 `진행해줘`/`proceed`/
-  `continue`/`계속`처럼 local antecedent가 없는 approval도 long-range context window를 열 수 있지만,
-  generator와 verifier를 통과하지 않으면 Fact가 되지 않습니다.
-- 각 anchor는 같은 raw-adjacency run의 직전·직후 1 exchange와 묶입니다. 인접 anchor
-  range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
-  window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
-  이웃으로 연결하지 않습니다.
-- `MEMEX_MAX_EXTRACT_WINDOWS`의 spread cap은 이 semantic window를 모두 만든 뒤 generator
-  window 수에만 적용합니다. 구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
-  verifier는 cap과 별도로 실행됩니다. Deprecated alias `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가
-  아예 없을 때만 읽습니다. Canonical 값이 설정됐지만 양의 정수가 아니면 alias로 우회하지 않고
-  default 12를 사용합니다. 겹친 window가 같은 fact를 다시 만들면 기존 session-level
-  normalized-text dedup이 validated authoritative lineage를 set-union합니다.
-
-증분 추출은 watermark 이후 suffix를 authoritative target으로 유지하면서, suffix가 있을 때만
-같은 session의 `rowid <= last_exchange_rowid` 중 직전 최대 30개를 bounded long-range pool로
-읽습니다. prefix는 persisted schema가 아닌 read-time `context_only_due_to_watermark=true` 표식을
-가지며 anchor가 될 수 없습니다. 직전 최대 2개는 local window에 들어가고, 더 오래된 row는
-모든 적격 anchor에서 human+assistant+recall material을 함께 ranking해 최대 5개 candidate로
-제공합니다. 참조 regex는 bonus이고 token overlap, proposal/workflow material, recency와
-adaptive threshold가 regex 밖 표현도 bounded retrieval에 진입시킵니다. 어떤 signal도 threshold를
-0으로 낮추지 않으며 standalone persistence assertion은 normal threshold를 유지합니다.
-
-prefix의 human text는 `human_context_only`에만 보이고 `human_evidence`는 `null`입니다. prefix의
-trusted tool evidence도 envelope에서 제거합니다. 이 prompt-level 분리와 별개로 server validator는
-prefix를 human/tool evidence로 선언한 candidate를 hard reject합니다. 따라서 historical candidate는
-`context_dependencies`에는 들어갈 수 있지만 `source_exchange_ids`에는 들어갈 수 없고, prefix
-단독으로 old Fact를 다시 추출하는 model call도 생기지 않습니다.
-
 ## 4. Extraction commit
 
 ```mermaid
@@ -248,51 +61,15 @@ sequenceDiagram
     participant F as facts
 
     W->>L: claim session
-    W->>E: rows after watermark + previous 30 context-only rows
-    W->>W: anchors + local windows + selected referents + model + validate
+    W->>E: rows after watermark
+    W->>W: filter + model + validate
     W->>F: BEGIN transaction
-    W->>F: save/merge facts + provenance + context dependency
+    W->>F: save/merge facts + provenance
     W->>L: saved count + watermark + release
     W->>F: COMMIT
 ```
 
-fact/context dependency가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를
-허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
-
-### Extraction evaluation
-
-Phase 0 평가 harness는 production의 `extractFactsFromExchanges()`와 동일한
-anchor/window/prompt/parser 경로를 사용하되 model call만 계측 가능한 seam으로 주입합니다.
-평가 경로는 `saveExtractedFacts()`나 `runFactExtraction()`을 호출하지 않으므로 fact,
-claim, `extraction_log`, watermark를 쓰지 않습니다.
-
-```bash
-# 17개 synthetic curated case의 현재 extractor 결과
-npm run eval:fact-extraction -- \
-  --out docs/verification/fact-extraction-baseline.json
-
-# 이후 extractor를 같은 fixture와 비교
-npm run eval:fact-extraction -- \
-  --baseline docs/verification/fact-extraction-baseline.json
-```
-
-실제 archive shadow mode는 SQLite를 `readonly` + `query_only`로 열고 명시한
-session만 평가합니다. 하지만 대화 본문이 configured Codex model로 전달되므로 별도
-사용자 승인이 필요합니다. 실제 session report는 기본적으로 ignored
-`.fact-extraction-eval/` 아래에 두며 repository receipt로 커밋하지 않습니다.
-
-평가 report는 case별 후보/오류 taxonomy와 함께 model call 수, prompt/output 문자 수,
-latency를 기록합니다. Codex JSONL에 `turn.completed.usage`가 있을 때만 token 수를
-`observed`로 기록하고, 없으면 추정값을 만들지 않고 `NOT_PROVEN`으로 남깁니다.
-
-Phase 6부터 같은 production validator가 eval-only in-memory accumulator에 candidate 판정을
-기록합니다. `candidate_count`는 model JSON array의 원소 수이고 `accepted_count`는 server
-validator를 통과한 candidate 수이므로, overlap dedup 이후의 `observed_fact_count`와 구분합니다.
-거절은 `invalid_schema`, `invalid_evidence`, `not_durable`, `grounding_rule`, `confidence`,
-`semantic_verifier` 중 정확히 하나로 집계됩니다. accepted candidate는
-explicit/verified/inferred grounding과, human
-ratification이 local context 또는 `context_id` dependency를 사용해 해석된 횟수를 별도로 기록합니다. Production extraction은
-accumulator를 전달하지 않으며 이 통계는 DB, extraction log, sync payload에 저장되지 않습니다.
+fact가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를 허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
 
 ## 5. Consolidation
 
@@ -306,10 +83,6 @@ accumulator를 전달하지 않으며 이 통계는 DB, extraction log, sync pay
 consolidation은 active participant를 대상으로 LLM 판단을 수행하므로, **LLM await 중 participant의 semantic 또는 lifecycle generation이 움직이면 verdict 전체를 stale로 폐기**합니다.
 
 DUPLICATE commit과 CONTRADICTION/EVOLUTION mutation은 semantic + lifecycle CAS를 사용해 deactivate→restore 같은 lifecycle churn 뒤 stale verdict가 다시 fact를 비활성화하지 못하게 합니다.
-
-DUPLICATE/CONTRADICTION/EVOLUTION 판정은 survivor에 participant의 local context dependency를
-set-union합니다. 이는 해석 경로를 보존할 뿐 `source_exchange_ids` provenance union의 authority를
-바꾸지 않습니다. INDEPENDENT는 각 fact의 context를 그대로 둡니다.
 
 ## 6. Semantic mutation
 
@@ -328,8 +101,6 @@ manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를
 - ontology attempt ledger reset
 - 기존 relation 제거
 - consolidation dirty state 갱신
-- manual semantic edit에서는 이전 의미의 stale context dependency 제거
-- consolidation semantic rewrite에서는 participant context dependency를 survivor에 union
 
 중간 단계가 실패하면 이전 semantic generation 전체를 유지합니다.
 
@@ -370,10 +141,6 @@ remote 여러 기기를 fold할 때도 이 규칙을 적용하고, local commit 
 
 이 provenance는 conversation exclusion purge가 어떤 fact를 제거해야 하는지 판단하는 privacy evidence이기도 하므로 유실해서는 안 됩니다.
 
-`fact_context_dependencies`는 이 cross-device lineage 축에 속하지 않습니다. protocol v4로
-동기화하지 않으며 remote semantic replacement가 local fact 의미를 바꾸면 이전 local context를
-제거합니다.
-
 ## 9. Ontology와 relation
 
 ontology와 relation은 protocol v4에서 **local derived state**입니다. 기기 간 UUID를 맞추려고 sync하지 않습니다.
@@ -409,10 +176,7 @@ fact text unchanged
 
 ## 11. Privacy purge와 taxonomy rebuild
 
-conversation exclusion purge는 authoritative source뿐 아니라 제외된 context exchange에 의미상
-의존한 fact도 terminal tombstone과 함께 제거합니다. context가 truth authority는 아니어도 fact
-문구를 해석하는 데 사용됐고 private text를 노출할 수 있기 때문입니다. 이어서
-private-derived taxonomy가 후속 분류 prompt에 재등장하지 않게 ontology를 전면 invalidate합니다.
+conversation exclusion purge는 private-derived taxonomy가 남아 후속 분류 prompt에 재등장하지 않게 ontology를 전면 invalidate합니다.
 
 - `ontology_domains`, `ontology_categories`, `vec_categories` 제거
 - surviving facts의 `ontology_category_id = NULL`
@@ -424,8 +188,5 @@ private-derived taxonomy가 후속 분류 prompt에 재등장하지 않게 ontol
 ## 12. Hard delete와 tombstone
 
 hard delete는 full UUID와 explicit confirmation을 요구합니다. fact를 실제로 지우기 전에 `fact_tombstones`에 deletion event를 기록합니다.
-
-삭제되는 fact의 `fact_context_dependencies`는 FK cascade로 함께 제거되며 dry-run impact에 해당
-row 수를 표시합니다.
 
 특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못합니다.

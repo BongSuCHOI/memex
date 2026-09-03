@@ -209,16 +209,6 @@ describe("T09: reindex reconciles the desired exchange set", () => {
       INSERT INTO fact_revisions (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
       VALUES ('rev-1', ?, 'old', 'new', 'r', 'legacy-complete', '2026-08-29T01:00:00.000Z')
     `).run(factId);
-    db.prepare(`
-      INSERT INTO fact_context_dependencies
-        (fact_id, exchange_id, dependency_kind, created_at)
-      VALUES (?, 'legacy-partial', 'assistant_context', '2026-08-29T01:00:00.000Z')
-    `).run(factId);
-    db.prepare(`
-      INSERT INTO fact_context_dependencies
-        (fact_id, exchange_id, dependency_kind, created_at)
-      VALUES (?, 'legacy-complete', 'watermark_prefix', '2026-08-29T01:00:00.000Z')
-    `).run(factId);
 
     const CANON = "canonical-id-for-line-5";
     const result = reconcileArchiveExchanges(db, {
@@ -241,13 +231,6 @@ describe("T09: reindex reconciles the desired exchange set", () => {
     expect(
       db.prepare("SELECT source_exchange_id FROM fact_revisions WHERE id = 'rev-1'").get(),
     ).toEqual({ source_exchange_id: CANON });
-    expect(db.prepare(`
-      SELECT exchange_id, dependency_kind FROM fact_context_dependencies
-      WHERE fact_id = ?
-    `).all(factId)).toEqual([{
-      exchange_id: CANON,
-      dependency_kind: 'watermark_prefix',
-    }]);
     // 살아남은 행의 tool_calls 만 새 id 로 옮겨진다(삭제된 행의 call 은 함께 삭제).
     expect(
       db.prepare("SELECT id FROM tool_calls").all() as Array<{ id: string }>,

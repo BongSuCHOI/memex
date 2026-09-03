@@ -1,7 +1,7 @@
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
-import { getPendingConsolidationFacts, mergeFactContextDependencies, searchFactsByScope, updateFact, } from './fact-db.js';
+import { getPendingConsolidationFacts, searchFactsByScope, updateFact, } from './fact-db.js';
 import { deactivateFactTransactional, mutateFactMeaning, StaleFactMutationError } from './fact-management.js';
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -247,7 +247,6 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                     consolidated_count_increment: true,
                     source_exchange_ids: liveSources,
                 });
-                mergeFactContextDependencies(db, existingFact.id, [newFact.id]);
                 deactivateFactTransactional(db, newFact.id);
                 return true;
             });
@@ -272,7 +271,6 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                 expectedPreviousFact: existingFact.fact,
                 expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
                 expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
-                mergeContextFromFactIds: [newFact.id],
                 deactivateFacts: [
                     {
                         id: newFact.id,
@@ -293,7 +291,6 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                 expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
                 expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
                 consolidatedCountIncrement: true,
-                mergeContextFromFactIds: [newFact.id],
                 deactivateFacts: [
                     {
                         id: newFact.id,

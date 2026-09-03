@@ -16,8 +16,7 @@ new fact extraction merely because the agent repeated them.
   only the best 2–5 archive ranges.
 - Durable decision, preference, pattern, knowledge, or constraint: call
   `search_facts`.
-- Why a fact exists: call `trace_fact`; treat source exchanges as authoritative
-  provenance and the separately labeled interpretive context as non-authoritative.
+- Why a fact exists: call `trace_fact` and inspect its source exchanges.
 - How decisions connect: call `explore_graph`; use `search_ontology` for
   domain/category browsing.
 - How another project solved a similar problem: call `cross_project_insights`.

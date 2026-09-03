@@ -61,7 +61,6 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 - `PASS` — 현재 artifact에서 직접 관측하거나 충분한 자동 검증으로 증명됨
 - `FAIL` — 요구 동작과 반대되는 결과를 관측함
 - `NOT_PROVEN` — 필요한 환경·권한·관측이 없어 증명하지 못함
-- `PASS-WITH-NOTES` — 필수 correctness/safety gate는 통과했지만 environment,
-  nondeterminism, quality 또는 comparability 한계를 함께 기록해야 함
+- `PASS-WITH-NOTES` — 동작은 통과했지만 명시할 version/environment boundary가 있음
 
 최신 release evidence와 merge-gate 절차는 [VERIFICATION.md](VERIFICATION.md)를 기준으로 합니다.

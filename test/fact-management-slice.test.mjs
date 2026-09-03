@@ -34,38 +34,8 @@ async function setup(t) {
   return { db, id };
 }
 
-function seedContextDependency(db, factId, exchangeId = 'ctx-detail') {
-  const now = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO exchanges
-      (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
-    VALUES (?, '/tmp/p', ?, 'Which pagination should we use?',
-            'Use cursor pagination.', '/tmp/context.jsonl', 1, 2)
-  `).run(exchangeId, now);
-  db.prepare(`
-    INSERT INTO fact_context_dependencies
-      (fact_id, exchange_id, dependency_kind, created_at)
-    VALUES (?, ?, 'assistant_context', ?)
-  `).run(factId, exchangeId, now);
-}
-
-test('fact detail exposes interpretive context separately from authoritative sources', async (t) => {
-  const { db, id } = await setup(t);
-  seedContextDependency(db, id);
-  const fm = await import(path.join(REPO, 'dist/fact-management.js'));
-
-  const detail = fm.showFact(db, id);
-  assert.equal(detail.context_dependencies.length, 1);
-  assert.equal(detail.context_dependencies[0].exchange_id, 'ctx-detail');
-  assert.equal(detail.context_dependencies[0].dependency_kind, 'assistant_context');
-  assert.match(detail.context_dependencies[0].assistant_message, /cursor pagination/);
-  assert.deepEqual(detail.sources, []);
-  db.close();
-});
-
 test('edit writes revision + fresh embedding atomically; ontology goes observable-pending', async (t) => {
   const { db, id } = await setup(t);
-  seedContextDependency(db, id, 'ctx-edit');
   // classify first and set attempt counters so we can observe the pending transition
   db.prepare("UPDATE facts SET ontology_category_id = 'cat-old', ontology_attempts = 2, consolidation_attempts = 1, needs_consolidation = 0 WHERE id = ?").run(id);
 
@@ -110,11 +80,6 @@ test('edit writes revision + fresh embedding atomically; ontology goes observabl
   assert.equal(revs.length, 1);
   assert.equal(revs[0].reason, 'decision updated after review');
   assert.equal(revs[0].previous_fact, 'The API uses cursor pagination.');
-  assert.equal(
-    db.prepare('SELECT COUNT(*) c FROM fact_context_dependencies WHERE fact_id = ?').get(id).c,
-    0,
-    'manual semantic edit must clear stale interpretive context',
-  );
 
   const afterVec = db.prepare('SELECT embedding FROM vec_facts WHERE id = ?').get(id);
   assert.ok(afterVec, 'vector must be refreshed');
@@ -145,7 +110,6 @@ test('deactivate removes from search/vector; restore brings both back', async (t
 
 test('hard delete requires full UUID and explicit confirmation; reports impact', async (t) => {
   const { db, id } = await setup(t);
-  seedContextDependency(db, id, 'ctx-delete');
   const fm = await import(path.join(REPO, 'dist/fact-management.js'));
 
   assert.throws(() => fm.hardDeleteFact(db, id, { confirm: false }), /confirmation/);
@@ -154,13 +118,11 @@ test('hard delete requires full UUID and explicit confirmation; reports impact',
   const impact = fm.hardDeleteImpact(db, id);
   assert.equal(impact.exists, true);
   assert.equal(impact.revisions >= 0, true);
-  assert.equal(impact.contextDependencies, 1);
 
   const r = fm.hardDeleteFact(db, id, { confirm: true });
   assert.equal(r.deleted, true);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM facts WHERE id = ?').get(id).c, 0);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM vec_facts WHERE id = ?').get(id).c, 0);
-  assert.equal(db.prepare('SELECT COUNT(*) c FROM fact_context_dependencies WHERE fact_id = ?').get(id).c, 0);
   db.close();
 });
 

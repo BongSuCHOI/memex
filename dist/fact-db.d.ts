@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import type { Fact, FactCategory, FactContextDependency, FactRevision } from "./types.js";
+import type { Fact, FactCategory, FactRevision } from "./types.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
@@ -29,10 +29,6 @@ interface InsertRevisionParams {
     reason: string | null;
     source_exchange_id: string | null;
 }
-export declare function insertFactContextDependencies(db: Database.Database, factId: string, dependencies: FactContextDependency[]): void;
-/** Copy local interpretive lineage into a survivor. Caller owns transaction. */
-export declare function mergeFactContextDependencies(db: Database.Database, targetFactId: string, sourceFactIds: string[]): void;
-export declare function clearFactContextDependencies(db: Database.Database, factId: string): void;
 export declare function insertFact(db: Database.Database, params: InsertFactParams): string;
 export declare function getActiveFacts(db: Database.Database): Fact[];
 export declare function getFactsByProject(db: Database.Database, project: string): Fact[];

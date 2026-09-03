@@ -6,42 +6,6 @@ export function vecParamFor(db, table, embedding) {
     const dt = getVecTableDtype(db, table);
     return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
 }
-export function insertFactContextDependencies(db, factId, dependencies) {
-    if (dependencies.length === 0)
-        return;
-    const insert = db.prepare(`
-    INSERT OR IGNORE INTO fact_context_dependencies
-      (fact_id, exchange_id, dependency_kind, created_at)
-    VALUES (?, ?, ?, ?)
-  `);
-    const now = new Date().toISOString();
-    const seen = new Set();
-    for (const dependency of dependencies) {
-        const key = `${dependency.exchange_id}\u0000${dependency.dependency_kind}`;
-        if (seen.has(key))
-            continue;
-        seen.add(key);
-        insert.run(factId, dependency.exchange_id, dependency.dependency_kind, now);
-    }
-}
-/** Copy local interpretive lineage into a survivor. Caller owns transaction. */
-export function mergeFactContextDependencies(db, targetFactId, sourceFactIds) {
-    const copy = db.prepare(`
-    INSERT OR IGNORE INTO fact_context_dependencies
-      (fact_id, exchange_id, dependency_kind, created_at)
-    SELECT ?, exchange_id, dependency_kind, created_at
-    FROM fact_context_dependencies
-    WHERE fact_id = ?
-  `);
-    for (const sourceFactId of new Set(sourceFactIds)) {
-        if (sourceFactId === targetFactId)
-            continue;
-        copy.run(targetFactId, sourceFactId);
-    }
-}
-export function clearFactContextDependencies(db, factId) {
-    db.prepare("DELETE FROM fact_context_dependencies WHERE fact_id = ?").run(factId);
-}
 export function insertFact(db, params) {
     const id = randomUUID();
     const now = new Date().toISOString();

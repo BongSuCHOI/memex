@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { LLM_WORKDIR_BASENAME } from './paths.js';
 import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
-import { runCodex, } from './codex-exec.js';
+import { runCodex } from './codex-exec.js';
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
 // --ignore-user-config, so the child persists no session rollout and nothing
@@ -46,31 +46,11 @@ const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.
  * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
  * The resolved id is always forwarded via -m.
  */
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation) {
+async function callOnce(systemPrompt, userMessage, _maxTokens) {
     const model = process.env.MEMEX_CODEX_MODEL || null;
     const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
     const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
-    return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
-}
-function summarizeObservations(attempts, started, observations) {
-    const withUsage = observations.filter((observation) => observation.token_usage !== null);
-    const status = withUsage.length === 0
-        ? 'NOT_PROVEN'
-        : withUsage.length === attempts
-            ? 'observed'
-            : 'partial';
-    return {
-        attempts,
-        total_latency_ms: performance.now() - started,
-        token_usage: status === 'NOT_PROVEN'
-            ? null
-            : {
-                input_tokens: withUsage.reduce((sum, observation) => sum + observation.token_usage.input_tokens, 0),
-                output_tokens: withUsage.reduce((sum, observation) => sum + observation.token_usage.output_tokens, 0),
-                cached_input_tokens: withUsage.reduce((sum, observation) => sum + (observation.token_usage.cached_input_tokens ?? 0), 0),
-            },
-        token_usage_status: status,
-    };
+    return runCodex({ systemPrompt, userMessage, model, timeoutMs });
 }
 /**
  * One LLM call through the local Codex CLI (CodexExec) — authenticated by the
@@ -90,20 +70,14 @@ function summarizeObservations(attempts, started, observations) {
  *    보류·재시도, deterministic 은 attempt 소모)가 비로소 작동한다 (fail-loud).
  * 호출자 계약: 성공 반환값은 **비어있지 않음이 보장**된다.
  */
-async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048) {
+export async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
     const retries = retryBudget();
     let lastError;
-    const observations = [];
-    const started = performance.now();
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const text = await callOnce(systemPrompt, userMessage, maxTokens, (observation) => observations.push(observation));
-            if (text && text.trim() !== '') {
-                return {
-                    text,
-                    observation: summarizeObservations(attempt + 1, started, observations),
-                };
-            }
+            const text = await callOnce(systemPrompt, userMessage, maxTokens);
+            if (text && text.trim() !== '')
+                return text;
             lastError = new EmptyLlmResponseError(`LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`);
         }
         catch (error) {
@@ -118,12 +92,6 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
         }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-export async function callMemoryModelObserved(systemPrompt, userMessage, maxTokens = 2048) {
-    return callMemoryModelInternal(systemPrompt, userMessage, maxTokens);
-}
-export async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
-    return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
 }
 export function parseJsonResponse(text) {
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/)

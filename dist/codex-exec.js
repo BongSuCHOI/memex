@@ -82,46 +82,6 @@ export function lastAgentMessageFromEvents(stdout) {
     }
     return last.trim();
 }
-/** Read the final Codex `turn.completed` token counters from a JSONL stream. */
-export function tokenUsageFromEvents(stdout) {
-    let usage = null;
-    for (const line of stdout.split('\n')) {
-        if (!line.trim())
-            continue;
-        let event;
-        try {
-            event = JSON.parse(line);
-        }
-        catch {
-            continue;
-        }
-        if (typeof event !== 'object' || event === null || Array.isArray(event))
-            continue;
-        const candidate = event;
-        if (candidate.type !== 'turn.completed' ||
-            typeof candidate.usage !== 'object' ||
-            candidate.usage === null ||
-            Array.isArray(candidate.usage)) {
-            continue;
-        }
-        const raw = candidate.usage;
-        if (typeof raw.input_tokens !== 'number' ||
-            !Number.isFinite(raw.input_tokens) ||
-            typeof raw.output_tokens !== 'number' ||
-            !Number.isFinite(raw.output_tokens)) {
-            continue;
-        }
-        usage = {
-            input_tokens: raw.input_tokens,
-            output_tokens: raw.output_tokens,
-            ...(typeof raw.cached_input_tokens === 'number' &&
-                Number.isFinite(raw.cached_input_tokens)
-                ? { cached_input_tokens: raw.cached_input_tokens }
-                : {}),
-        };
-    }
-    return usage;
-}
 function textFromContent(content) {
     if (typeof content === 'string')
         return content;
@@ -200,7 +160,6 @@ export async function runCodex(opts = {}) {
     const timeoutMs = opts.timeoutMs ?? 180_000;
     const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-llm-'));
     const outPath = path.join(workdir, 'last-message.txt');
-    const started = performance.now();
     try {
         const prompt = buildPrompt(opts.systemPrompt || '', opts.userMessage || '');
         const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath });
@@ -214,15 +173,6 @@ export async function runCodex(opts = {}) {
         }
         if (!text)
             text = lastAgentMessageFromEvents(res.stdout);
-        try {
-            opts.onObservation?.({
-                duration_ms: performance.now() - started,
-                token_usage: tokenUsageFromEvents(res.stdout),
-            });
-        }
-        catch {
-            // Telemetry is optional and must never change model-call behavior.
-        }
         if (!text && res.timedOut)
             throw new Error(`codex exec timed out after ${timeoutMs}ms`);
         if (!text && res.code !== 0) {

@@ -3,11 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { LLM_WORKDIR_BASENAME } from './paths.js';
 import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
-import {
-  runCodex,
-  type CodexExecObservation,
-  type CodexTokenUsage,
-} from './codex-exec.js';
+import { runCodex } from './codex-exec.js';
 
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
@@ -54,69 +50,12 @@ const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : 
  * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
  * The resolved id is always forwarded via -m.
  */
-async function callOnce(
-  systemPrompt: string,
-  userMessage: string,
-  _maxTokens: number,
-  onObservation?: (observation: CodexExecObservation) => void,
-): Promise<string> {
+async function callOnce(systemPrompt: string, userMessage: string, _maxTokens: number): Promise<string> {
   const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
     timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
-  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
-}
-
-export interface MemoryModelObservation {
-  attempts: number;
-  total_latency_ms: number;
-  token_usage: CodexTokenUsage | null;
-  token_usage_status: 'observed' | 'partial' | 'NOT_PROVEN';
-}
-
-export interface ObservedMemoryModelResult {
-  text: string;
-  observation: MemoryModelObservation;
-}
-
-function summarizeObservations(
-  attempts: number,
-  started: number,
-  observations: CodexExecObservation[],
-): MemoryModelObservation {
-  const withUsage = observations.filter(
-    (observation): observation is CodexExecObservation & { token_usage: CodexTokenUsage } =>
-      observation.token_usage !== null,
-  );
-  const status =
-    withUsage.length === 0
-      ? 'NOT_PROVEN'
-      : withUsage.length === attempts
-        ? 'observed'
-        : 'partial';
-  return {
-    attempts,
-    total_latency_ms: performance.now() - started,
-    token_usage:
-      status === 'NOT_PROVEN'
-        ? null
-        : {
-            input_tokens: withUsage.reduce(
-              (sum, observation) => sum + observation.token_usage.input_tokens,
-              0,
-            ),
-            output_tokens: withUsage.reduce(
-              (sum, observation) => sum + observation.token_usage.output_tokens,
-              0,
-            ),
-            cached_input_tokens: withUsage.reduce(
-              (sum, observation) =>
-                sum + (observation.token_usage.cached_input_tokens ?? 0),
-              0,
-            ),
-          },
-    token_usage_status: status,
-  };
+  return runCodex({ systemPrompt, userMessage, model, timeoutMs });
 }
 
 /**
@@ -137,34 +76,18 @@ function summarizeObservations(
  *    보류·재시도, deterministic 은 attempt 소모)가 비로소 작동한다 (fail-loud).
  * 호출자 계약: 성공 반환값은 **비어있지 않음이 보장**된다.
  */
-async function callMemoryModelInternal(
+export async function callMemoryModel(
   systemPrompt: string,
   userMessage: string,
   maxTokens: number = 2048,
-): Promise<ObservedMemoryModelResult> {
+): Promise<string> {
   const retries = retryBudget();
   let lastError: unknown;
-  const observations: CodexExecObservation[] = [];
-  const started = performance.now();
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const text = await callOnce(
-        systemPrompt,
-        userMessage,
-        maxTokens,
-        (observation) => observations.push(observation),
-      );
-      if (text && text.trim() !== '') {
-        return {
-          text,
-          observation: summarizeObservations(
-            attempt + 1,
-            started,
-            observations,
-          ),
-        };
-      }
+      const text = await callOnce(systemPrompt, userMessage, maxTokens);
+      if (text && text.trim() !== '') return text;
       lastError = new EmptyLlmResponseError(
         `LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`,
       );
@@ -181,22 +104,6 @@ async function callMemoryModelInternal(
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
-
-export async function callMemoryModelObserved(
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens: number = 2048,
-): Promise<ObservedMemoryModelResult> {
-  return callMemoryModelInternal(systemPrompt, userMessage, maxTokens);
-}
-
-export async function callMemoryModel(
-  systemPrompt: string,
-  userMessage: string,
-  maxTokens: number = 2048,
-): Promise<string> {
-  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
 }
 
 export function parseJsonResponse<T>(text: string): T | null {

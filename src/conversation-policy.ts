@@ -173,19 +173,6 @@ export function purgeConversationFromIndex(
         factIds.add(revision.fact_id);
       }
     }
-    const contextDependencies = db
-      .prepare(
-        "SELECT fact_id, exchange_id FROM fact_context_dependencies",
-      )
-      .all() as Array<{ fact_id: string; exchange_id: string }>;
-    for (const dependency of contextDependencies) {
-      // Context is non-authoritative for truth, but it can still disclose or
-      // semantically determine the fact text. User exclusion therefore
-      // purges the dependent derived fact rather than merely hiding the edge.
-      if (exchangeIds.has(dependency.exchange_id)) {
-        factIds.add(dependency.fact_id);
-      }
-    }
   }
 
   const purge = db.transaction(() => {

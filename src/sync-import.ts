@@ -805,12 +805,6 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
               factId, semantic.localGeneration,
             );
             if (claimed.changes === 0) return false;
-            // Context dependencies are local interpretive lineage for the
-            // previous local meaning and are intentionally absent from
-            // protocol v4. A remote semantic winner cannot inherit them.
-            db.prepare(
-              "DELETE FROM fact_context_dependencies WHERE fact_id = ?",
-            ).run(factId);
             // The meaning changed — derived state built on the OLD meaning is
             // invalid: relations are re-derived, the KR translation is
             // re-derived by the translation backfill (derived overlay does

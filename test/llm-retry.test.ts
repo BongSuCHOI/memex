@@ -10,21 +10,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  */
 
 // runCodex() 를 모킹 — 호출마다 다음 시나리오를 방출한다.
-const scenarios: Array<{
-  result?: string;
-  throws?: unknown;
-  noResultMessage?: boolean;
-  usage?: { input_tokens: number; output_tokens: number; cached_input_tokens?: number };
-}> = [];
+const scenarios: Array<{ result?: string; throws?: unknown; noResultMessage?: boolean }> = [];
 let queryCalls = 0;
 
 vi.mock('../src/codex-exec.js', () => ({
   INNER_GUARD_ENV: 'MEMEX_CODEX_EXEC_INNER',
-  runCodex: (_args: { onObservation?: (value: unknown) => void }) => {
+  runCodex: (_args: unknown) => {
     const scenario = scenarios[Math.min(queryCalls, scenarios.length - 1)];
     queryCalls++;
     if (scenario?.throws) return Promise.reject(scenario.throws);
-    _args.onObservation?.({ duration_ms: 1, token_usage: scenario?.usage ?? null });
     return Promise.resolve(scenario?.result ?? '');
   },
 }));
@@ -117,31 +111,6 @@ describe('callMemoryModel 재시도/복구', () => {
     scenarios.push({ result: '   ' }, { result: 'real' }); // 공백만 = 빈 응답 취급
     expect((await callMemoryModel('sys', 'user')).trim()).not.toBe('');
     expect(queryCalls).toBe(2);
-  });
-
-  it('관측 API는 재시도 전체의 token usage와 시도 횟수를 합산한다', async () => {
-    const { callMemoryModelObserved } = await llm();
-    scenarios.push(
-      {
-        result: '',
-        usage: { input_tokens: 10, output_tokens: 1, cached_input_tokens: 4 },
-      },
-      {
-        result: 'observed',
-        usage: { input_tokens: 20, output_tokens: 2, cached_input_tokens: 8 },
-      },
-    );
-    const result = await callMemoryModelObserved('sys', 'user');
-    expect(result.text).toBe('observed');
-    expect(result.observation).toMatchObject({
-      attempts: 2,
-      token_usage_status: 'observed',
-      token_usage: {
-        input_tokens: 30,
-        output_tokens: 3,
-        cached_input_tokens: 12,
-      },
-    });
   });
 });
 

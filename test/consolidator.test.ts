@@ -49,23 +49,6 @@ describe('Consolidator', () => {
     it('should merge DUPLICATE facts', async () => {
       const id1 = insertFact(db, { fact: 'Named export usage', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
       const id2 = insertFact(db, { fact: 'Only use named exports', category: 'preference', scope_type: 'global', scope_project: null, source_exchange_ids: [], embedding: null });
-      const insertExchange = db.prepare(`
-        INSERT INTO exchanges
-          (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
-        VALUES (?, '/proj', ?, 'question', 'proposal', ?, 1, 2)
-      `);
-      insertExchange.run('ctx-existing', new Date().toISOString(), '/tmp/ctx-existing.jsonl');
-      insertExchange.run('ctx-new', new Date().toISOString(), '/tmp/ctx-new.jsonl');
-      db.prepare(`
-        INSERT INTO fact_context_dependencies
-          (fact_id, exchange_id, dependency_kind, created_at)
-        VALUES (?, ?, 'assistant_context', ?)
-      `).run(id1, 'ctx-existing', new Date().toISOString());
-      db.prepare(`
-        INSERT INTO fact_context_dependencies
-          (fact_id, exchange_id, dependency_kind, created_at)
-        VALUES (?, ?, 'recall_influenced_assistant', ?)
-      `).run(id2, 'ctx-new', new Date().toISOString());
 
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
@@ -75,14 +58,6 @@ describe('Consolidator', () => {
       const active = getActiveFacts(db);
       expect(active).toHaveLength(1);
       expect(active[0].consolidated_count).toBe(2);
-      expect(db.prepare(`
-        SELECT exchange_id, dependency_kind
-        FROM fact_context_dependencies WHERE fact_id = ?
-        ORDER BY exchange_id
-      `).all(id1)).toEqual([
-        { exchange_id: 'ctx-existing', dependency_kind: 'assistant_context' },
-        { exchange_id: 'ctx-new', dependency_kind: 'recall_influenced_assistant' },
-      ]);
     });
 
     // 재감사 P1-4(v4): consolidation은 ACTIVE 참가자끼리 판정한다 — LLM 왕복
@@ -105,35 +80,6 @@ describe('Consolidator', () => {
       })).rejects.toThrow(StaleFactMutationError);
       // The stale verdict deactivated nothing.
       expect(getActiveFacts(db)).toHaveLength(2);
-    });
-
-    it('carries both interpretive context lineages into an EVOLUTION survivor', async () => {
-      const id1 = insertFact(db, { fact: 'Uses API v1', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
-      const id2 = insertFact(db, { fact: 'Migrating to API v2', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
-      const insertExchange = db.prepare(`
-        INSERT INTO exchanges
-          (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
-        VALUES (?, '/proj', ?, 'question', 'proposal', ?, 1, 2)
-      `);
-      insertExchange.run('ctx-v1', new Date().toISOString(), '/tmp/ctx-v1.jsonl');
-      insertExchange.run('ctx-v2', new Date().toISOString(), '/tmp/ctx-v2.jsonl');
-      const insertDependency = db.prepare(`
-        INSERT INTO fact_context_dependencies
-          (fact_id, exchange_id, dependency_kind, created_at)
-        VALUES (?, ?, 'assistant_context', ?)
-      `);
-      insertDependency.run(id1, 'ctx-v1', new Date().toISOString());
-      insertDependency.run(id2, 'ctx-v2', new Date().toISOString());
-
-      const facts = getActiveFacts(db);
-      await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'EVOLUTION', merged_fact: 'Uses API v2', reason: 'version upgrade',
-      });
-
-      expect(db.prepare(`
-        SELECT exchange_id FROM fact_context_dependencies
-        WHERE fact_id = ? ORDER BY exchange_id
-      `).all(id1)).toEqual([{ exchange_id: 'ctx-v1' }, { exchange_id: 'ctx-v2' }]);
     });
 
     it('discards a CONTRADICTION verdict whose existing fact lifecycle moved during the comparison (P1-4 v4)', async () => {

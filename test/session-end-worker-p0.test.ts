@@ -212,16 +212,13 @@ describe("P0 worker full extraction through the real LLM path", () => {
         "const args = process.argv.slice(2);",
         'const out = args.includes("-o") ? args[args.indexOf("-o") + 1] : null;',
         "if (!out) process.exit(2);",
-        'const prompt = fs.readFileSync(0, "utf8");',
-        'const response = prompt.includes("authoritative-entailment-v3")',
-        '  ? JSON.stringify([{ candidate_index: 1, verdict: "ENTAILED" }])',
-        "  : JSON.stringify([{",
+        "const response = JSON.stringify([{",
         `  fact: ${JSON.stringify(FACT_TEXT)},`,
+        '  fact_kr: "SessionEnd 워커 회귀 검증은 결정론적 스텁 모델을 사용한다",',
         '  category: "decision",',
         '  scope_type: "project",',
         "  confidence: 0.9,",
-        "  grounding_type: 'explicit', durable: true,",
-        `  evidence: [{ exchange_index: 1, source: 'human', kind: 'assertion', supporting_span: ${JSON.stringify(FACT_TEXT)} }],`,
+        "  source_exchange_indices: [1],",
         "}]);",
         "fs.writeFileSync(out, response);",
       ].join("\n") + "\n",
@@ -251,7 +248,7 @@ describe("P0 worker full extraction through the real LLM path", () => {
         INSERT INTO exchanges
           (id, project, timestamp, user_message, assistant_message, archive_path,
            line_start, line_end, session_id, cwd, is_sidechain)
-        VALUES ('p0-extract-exchange', ?, ?, 'SessionEnd worker regression check uses a deterministic stub model', '확인했습니다.',
+        VALUES ('p0-extract-exchange', ?, ?, '실제 indexed exchange입니다.', '확인했습니다.',
                 ?, 1, 3, ?, ?, 0)
       `).run(EXTRACT_PROJECT, new Date().toISOString(), transcript, SESSION_ID, EXTRACT_PROJECT);
     } finally {
