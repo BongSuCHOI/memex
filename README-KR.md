@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.2.0-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.3.0-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -298,7 +298,7 @@ Memex는 canonical absolute `session_meta.cwd`를 project identity로 사용합�
 
 cross-project leakage는 query, sync import, graph traversal, relation write 경계에서 차단합니다.
 
-Fact provenance는 두 경로를 분리합니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고 sync에서 단조 union하며, `consolidated_count`는 max로 수렴합니다. Local `fact_context_dependencies`는 fact 해석에 실제로 필요한 non-authoritative exchange를 semantic verifier 사용 결과에서 canonicalize하며, authority로 승격하거나 protocol v4로 sync하지 않습니다.
+Fact provenance는 두 경로를 분리합니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고 sync에서 단조 union하며, `consolidated_count`는 max로 수렴합니다. Local `fact_context_dependencies`는 fact 해석에 사용된 persisted long-range non-authoritative context dependency만 기록하며 immediate local context 사용은 저장하지 않습니다. Persisted set은 semantic verifier 사용 결과에서 canonicalize하고, authority로 승격하거나 protocol v4로 sync하지 않습니다.
 
 ---
 
@@ -340,7 +340,7 @@ Privacy purge는 다음 상태를 제거하거나 무효화합니다.
 - exchange와 tool-call index state
 - FTS/vector rows
 - extraction/recall processing state
-- 제외된 conversation을 evidence로 사용한 fact
+- 제외된 conversation에 authoritative evidence 또는 persisted interpretive context로 의존한 fact
 - 해당 fact에서 파생된 revision/relation/vector
 - 기존 corpus에서 파생된 local taxonomy
 

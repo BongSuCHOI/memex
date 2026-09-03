@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.2.0-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.3.0-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -298,7 +298,7 @@ Supported fact/query scopes are:
 
 Cross-project leakage is prevented at query, import, traversal, and relation-write boundaries.
 
-Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records non-authoritative exchanges needed to interpret a fact; it is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
+Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records persisted long-range non-authoritative context dependencies used to interpret a fact; immediate local context usage is not stored. The persisted set is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
 
 ---
 
@@ -338,7 +338,7 @@ The privacy purge removes or invalidates:
 - exchanges and tool-call index state,
 - FTS/vector rows,
 - extraction/recall processing state,
-- facts that used the excluded conversation as evidence,
+- facts that depended on the excluded conversation as authoritative evidence or persisted interpretive context,
 - fact-derived revisions/relations/vectors,
 - local taxonomy derived from the previous corpus.
 
