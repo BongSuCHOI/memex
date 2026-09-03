@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-03T06:50:34Z",
+  "recordedAt": "2026-09-03T06:55:43Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.0.0",
@@ -8,10 +8,10 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "codex/docs-context-dependency-wording",
-    "codeSha": "621d226e0622dd04583618189fdc31495e1e4a18",
+    "branch": "codex/fact-extraction-context-grounding-v030",
+    "codeSha": "18fd60f6fedde42595e721c19c9a7380d8c7e364",
     "productionEvidenceSha": "8358d9c0dce943a7cd1ff36dbe0d73692f236d68",
-    "note": "The final required, installer, marketplace, package-runtime, and lifecycle gates ran from a clean tree at candidate.codeSha for release 0.3.0. Between productionEvidenceSha and candidate.codeSha, public documentation, release metadata, the MCP advertised version, and its generated bundle changed; fact extraction runtime code, generator/verifier prompts, model fixtures, and evaluation scripts are identical. The browser result is reused from the immediately preceding fdd3408 receipt because the Web UI and server implementation did not change. This receipt-only commit follows."
+    "note": "candidate.codeSha restores the complete, already-gated release tree byte-for-byte from merge f8e6702 so the full fact-extraction change is presented in one PR; no product, prompt, fixture, generated, or public-file content changed during reconstruction. The final required, installer, marketplace, package-runtime, and lifecycle gates ran on the identical pre-receipt release tree at 621d226 for release 0.3.0. The browser result is reused from fdd3408 because the Web UI and server implementation did not change. This receipt-only commit follows."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
