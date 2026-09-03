@@ -9,5 +9,6 @@ tmp/
 .env
 ui/relations/data.json
 optional-exports/
+.fact-extraction-eval/
 galaxy-*.png
 /tmp/mbgalaxy-server.log

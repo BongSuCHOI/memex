@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "prefix": {
+    "user_message": "Which local database should we choose?",
+    "assistant_message": "SQLite is the best fit for this local-first project."
+  },
+  "suffix": {
+    "user_message": "좋아, 그걸로 결정하자.",
+    "assistant_message": "확인했습니다. 다음 단계로 진행하겠습니다."
+  },
+  "expected": {
+    "fact": "This project uses SQLite as its local database.",
+    "authoritative_exchange_id": "e2"
+  }
+}

@@ -1425,7 +1425,7 @@ async function showDetail(id) {
   let box = document.getElementById('detailBox');
   if (!box) { box = document.createElement('div'); box.id = 'detailBox'; box.className = 'detail'; $('.wrap').insertBefore(box, $('#err')); }
   const esc = (s) => String(s == null ? '' : s);
-  box.innerHTML = '<strong>Detail / provenance</strong><pre></pre>';
+  box.innerHTML = '<strong>Detail / authoritative provenance + non-authoritative context</strong><pre></pre>';
   box.querySelector('pre').textContent = JSON.stringify(d, null, 2);
 }
 function startEdit(f) {

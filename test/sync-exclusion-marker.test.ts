@@ -240,6 +240,7 @@ describe("sync exclusion markers honor user messages only", () => {
     const sourceFile = writeRollout(source, UUID_3, { markerIn: "none" });
     useIsolatedDb();
     let excludedFactId: string | undefined;
+    let contextDependentFactId: string | undefined;
 
     const first = await syncConversations(source, dest);
     expect(first.errors).toHaveLength(0);
@@ -283,6 +284,19 @@ describe("sync exclusion markers honor user messages only", () => {
         source_exchange_ids: ["other-exchange"],
         embedding: null,
       });
+      contextDependentFactId = insertFact(db, {
+        fact: "권위 근거는 다른 곳에 있지만 이 대화의 제안을 해석에 사용한 결정",
+        category: "decision",
+        scope_type: "project",
+        scope_project: CWD,
+        source_exchange_ids: ["other-exchange"],
+        embedding: null,
+      });
+      db.prepare(`
+        INSERT INTO fact_context_dependencies
+          (fact_id, exchange_id, dependency_kind, created_at)
+        VALUES (?, ?, 'assistant_context', ?)
+      `).run(contextDependentFactId, exchange.id, new Date().toISOString());
       insertRevision(db, {
         fact_id: excludedFact,
         previous_fact: "이전 비공개 결정",
@@ -316,6 +330,7 @@ describe("sync exclusion markers honor user messages only", () => {
         "extraction_log",
         "recall_events",
         "fact_revisions",
+        "fact_context_dependencies",
         "ontology_relations",
       ]) {
         const n = (
@@ -348,6 +363,11 @@ describe("sync exclusion markers honor user messages only", () => {
         check
           .prepare("SELECT reason FROM fact_tombstones WHERE fact_id = ?")
           .get(excludedFactId),
+      ).toEqual({ reason: "source_conversation_excluded" });
+      expect(
+        check
+          .prepare("SELECT reason FROM fact_tombstones WHERE fact_id = ?")
+          .get(contextDependentFactId),
       ).toEqual({ reason: "source_conversation_excluded" });
     } finally {
       check.close();

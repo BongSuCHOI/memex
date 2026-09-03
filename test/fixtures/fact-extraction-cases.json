@@ -1,0 +1,454 @@
+{
+  "schema_version": 1,
+  "name": "fact-extraction-context-grounding-curated-v1",
+  "description": "Curated Phase 0 cases for context visibility, authoritative evidence, durability, watermark, and batching regressions.",
+  "cases": [
+    {
+      "id": "explicit-assertion",
+      "title": "Explicit project assertion",
+      "tags": ["positive", "explicit"],
+      "exchanges": [
+        {
+          "id": "explicit-assertion-1",
+          "user_message": "This project uses SQLite for local persistence.",
+          "assistant_message": "Understood."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["sqlite", "project"],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["explicit-assertion-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "explicit-decision",
+      "title": "Explicit architecture decision",
+      "tags": ["positive", "explicit"],
+      "exchanges": [
+        {
+          "id": "explicit-decision-1",
+          "user_message": "We will use Riverpod for state management in this project.",
+          "assistant_message": "I will proceed with Riverpod."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["riverpod"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["explicit-decision-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "explicit-correction",
+      "title": "Human correction overrides assistant context",
+      "tags": ["positive", "explicit", "context"],
+      "exchanges": [
+        {
+          "id": "explicit-correction-1",
+          "user_message": "No, it uses a server action now, not an API route.",
+          "assistant_message": "Thanks for the correction."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["server action"],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["explicit-correction-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "assistant-proposal-ratified",
+      "title": "Assistant proposal followed by human ratification",
+      "tags": ["positive", "ratification", "context"],
+      "exchanges": [
+        {
+          "id": "assistant-proposal-ratified-1",
+          "user_message": "Which state manager best fits this project?",
+          "assistant_message": "Riverpod best matches the existing architecture."
+        },
+        {
+          "id": "assistant-proposal-ratified-2",
+          "user_message": "좋아, 그걸로 하자.",
+          "assistant_message": "Riverpod으로 진행하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["riverpod"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["assistant-proposal-ratified-2"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "one-question-exploration",
+      "title": "A question is not a durable preference",
+      "tags": ["negative", "exploration"],
+      "exchanges": [
+        {
+          "id": "one-question-exploration-1",
+          "user_message": "DeepSeek and Muse 중 어떤 모델이 더 좋아?",
+          "assistant_message": "각각 장단점이 있습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      }
+    },
+    {
+      "id": "comparison-only",
+      "title": "A comparison is not a decision",
+      "tags": ["negative", "exploration"],
+      "exchanges": [
+        {
+          "id": "comparison-only-1",
+          "user_message": "Executor에 Flash를 넣는 선택지는 어떤 장단점이 있어?",
+          "assistant_message": "비용과 속도 측면의 장단점이 있습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      }
+    },
+    {
+      "id": "assistant-suggestion-only",
+      "title": "Assistant suggestion alone is context only",
+      "tags": ["negative", "assistant_only", "self_amplification"],
+      "exchanges": [
+        {
+          "id": "assistant-suggestion-only-1",
+          "user_message": "Which database might fit this project?",
+          "assistant_message": "SQLite would be a good choice."
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      }
+    },
+    {
+      "id": "recall-assistant-repeat-only",
+      "title": "Memex recall repeated by assistant cannot self-ground",
+      "tags": ["negative", "recall", "self_amplification"],
+      "exchanges": [
+        {
+          "id": "recall-assistant-repeat-only-1",
+          "user_message": "What did we use previously?",
+          "assistant_message": "You previously preferred pnpm.",
+          "has_memex_recall": true,
+          "tool_evidence": [
+            {
+              "id": "recall-assistant-repeat-only-tool-1",
+              "tool_name": "memex_recall",
+              "tool_result": "User prefers pnpm.",
+              "source_type": "memex_recall",
+              "learnable": false,
+              "is_error": false
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-unsupported"
+      }
+    },
+    {
+      "id": "recall-proposal-ratified",
+      "title": "Recalled context plus a new human ratification",
+      "tags": ["positive", "ratification", "recall", "context"],
+      "exchanges": [
+        {
+          "id": "recall-proposal-ratified-1",
+          "user_message": "What did we choose last time?",
+          "assistant_message": "We used pnpm. Shall we use it again?",
+          "has_memex_recall": true,
+          "tool_evidence": [
+            {
+              "id": "recall-proposal-ratified-tool-1",
+              "tool_name": "memex_recall",
+              "tool_result": "The user previously preferred pnpm.",
+              "source_type": "memex_recall",
+              "learnable": false,
+              "is_error": false
+            }
+          ]
+        },
+        {
+          "id": "recall-proposal-ratified-2",
+          "user_message": "응, 이번에도 그렇게 하자.",
+          "assistant_message": "pnpm으로 진행하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["pnpm"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["recall-proposal-ratified-2"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "trusted-repo-fact",
+      "title": "Trusted repository evidence can ground project knowledge",
+      "tags": ["positive", "verified_local"],
+      "exchanges": [
+        {
+          "id": "trusted-repo-fact-1",
+          "user_message": "Which database does this project use?",
+          "assistant_message": "I will inspect the repository.",
+          "tool_evidence": [
+            {
+              "id": "trusted-repo-fact-tool-1",
+              "tool_name": "read_file",
+              "tool_result": "schema.ts imports better-sqlite3 and opens db.sqlite.",
+              "source_type": "repo_file",
+              "learnable": true,
+              "is_error": false
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["sqlite"],
+            "category": "knowledge",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["trusted-repo-fact-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "trusted-test-solution",
+      "title": "Trusted test evidence can ground a problem-solution pattern",
+      "tags": ["positive", "verified_local"],
+      "exchanges": [
+        {
+          "id": "trusted-test-solution-1",
+          "user_message": "Find and verify the auth callback failure.",
+          "assistant_message": "I reproduced and fixed the failure.",
+          "tool_evidence": [
+            {
+              "id": "trusted-test-solution-tool-1",
+              "tool_name": "exec_command",
+              "tool_result": "Before fix: duplicate email insert makes auth callback return 500. After deduping before insert: targeted test passes.",
+              "source_type": "test_execution",
+              "learnable": true,
+              "is_error": false
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["duplicate email", "auth callback"],
+            "category": "pattern",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["trusted-test-solution-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "repeated-preference",
+      "title": "Repeated independent human signals can ground a preference",
+      "tags": ["positive", "inferred", "repeated_signal"],
+      "exchanges": [
+        {
+          "id": "repeated-preference-1",
+          "user_message": "JavaScript 패키지는 pnpm으로 설치해줘.",
+          "assistant_message": "pnpm을 사용하겠습니다."
+        },
+        {
+          "id": "repeated-preference-2",
+          "user_message": "이 작업도 npm 말고 pnpm으로 진행해줘.",
+          "assistant_message": "이번에도 pnpm을 사용하겠습니다."
+        },
+        {
+          "id": "repeated-preference-3",
+          "user_message": "다른 프로젝트에서도 package manager는 pnpm으로 맞춰줘.",
+          "assistant_message": "전역 선호로 이해했습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["pnpm"],
+            "category": "preference",
+            "scope_type": "global",
+            "authoritative_exchange_ids": ["repeated-preference-1", "repeated-preference-2", "repeated-preference-3"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "single-weak-preference",
+      "title": "One isolated package-manager instruction is not a global preference",
+      "tags": ["negative", "weak_signal"],
+      "exchanges": [
+        {
+          "id": "single-weak-preference-1",
+          "user_message": "이번 패키지만 pnpm으로 설치해줘.",
+          "assistant_message": "이 패키지는 pnpm으로 설치하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "WRONG-scope"
+      }
+    },
+    {
+      "id": "short-ratification",
+      "title": "Short acknowledgement can ratify an assistant proposition",
+      "tags": ["positive", "ratification", "short_ack", "context"],
+      "exchanges": [
+        {
+          "id": "short-ratification-1",
+          "user_message": "Which executor should this project use?",
+          "assistant_message": "DeepSeek V4 Flash is the best fit."
+        },
+        {
+          "id": "short-ratification-2",
+          "user_message": "응.",
+          "assistant_message": "DeepSeek V4 Flash로 진행하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["deepseek", "flash"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["short-ratification-2"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "pure-thanks",
+      "title": "Pure thanks produces no durable fact",
+      "tags": ["negative", "social_ack"],
+      "exchanges": [
+        {
+          "id": "pure-thanks-1",
+          "user_message": "고마워.",
+          "assistant_message": "천만에요."
+        }
+      ],
+      "expected": {
+        "outcome": "none",
+        "false_positive_taxonomy": "DROP-noise"
+      }
+    },
+    {
+      "id": "watermark-boundary-ratification",
+      "title": "Ratification after a watermark needs prefix context",
+      "tags": ["positive", "ratification", "watermark", "context"],
+      "watermark_after_exchange_index": 1,
+      "exchanges": [
+        {
+          "id": "watermark-boundary-ratification-1",
+          "user_message": "Which local database should we choose?",
+          "assistant_message": "SQLite is the best fit for this local-first project."
+        },
+        {
+          "id": "watermark-boundary-ratification-2",
+          "user_message": "좋아, 그걸로 결정하자.",
+          "assistant_message": "SQLite로 진행하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["sqlite"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["watermark-boundary-ratification-2"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch-boundary-context",
+      "title": "Immediate antecedent must survive a batch boundary",
+      "tags": ["positive", "ratification", "batch_boundary", "context"],
+      "exchanges": [
+        {
+          "id": "batch-boundary-context-1",
+          "user_message": "Can you summarize the current task status?",
+          "assistant_message": "There is no durable decision yet."
+        },
+        {
+          "id": "batch-boundary-context-2",
+          "user_message": "What remains to investigate before deciding?",
+          "assistant_message": "Several options still need comparison."
+        },
+        {
+          "id": "batch-boundary-context-3",
+          "user_message": "Can you list the open questions for this task?",
+          "assistant_message": "The questions remain unresolved."
+        },
+        {
+          "id": "batch-boundary-context-4",
+          "user_message": "Please compare the constraints without choosing yet.",
+          "assistant_message": "I will avoid making a selection."
+        },
+        {
+          "id": "batch-boundary-context-5",
+          "user_message": "Which state manager best fits these constraints?",
+          "assistant_message": "Riverpod is the first and strongest option."
+        },
+        {
+          "id": "batch-boundary-context-6",
+          "user_message": "좋아, 첫 번째 제안으로 진행하자.",
+          "assistant_message": "Riverpod으로 진행하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["riverpod"],
+            "category": "decision",
+            "scope_type": "project",
+            "authoritative_exchange_ids": ["batch-boundary-context-6"]
+          }
+        ]
+      }
+    }
+  ]
+}

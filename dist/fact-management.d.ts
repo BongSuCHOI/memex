@@ -60,6 +60,9 @@ export interface MutateFactMeaningOptions {
      * the verdict even though semantic_generation is unchanged. */
     expectedLifecycleGeneration?: number;
     consolidatedCountIncrement?: boolean;
+    /** Consolidation preserves the target's context and unions these facts'
+     * local interpretive lineage. Other semantic rewrites clear stale context. */
+    mergeContextFromFactIds?: string[];
     /** Facts to deactivate in the same transaction, each with the semantic AND
      * lifecycle generation its deactivation was decided against. A fact whose
      * meaning moved (edit, sync import) OR whose activation state moved
@@ -136,6 +139,7 @@ export interface HardDeleteImpact {
     exists: boolean;
     revisions: number;
     relations: number;
+    contextDependencies: number;
 }
 export declare function recordFactTombstone(db: Database.Database, id: string, reason?: string | null, deletedAt?: string): void;
 export declare function hardDeleteImpact(db: Database.Database, id: string): HardDeleteImpact;

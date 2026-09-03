@@ -92,7 +92,7 @@ describe('sync-export/import', () => {
       expect(fs.existsSync(path.join(exportedGenDir, name)), name).toBe(true);
     }
     // Protocol v4: taxonomy/relations are derived state and never leave the device.
-    for (const name of ['ontology-domains.jsonl', 'ontology-categories.jsonl', 'ontology-relations.jsonl']) {
+    for (const name of ['ontology-domains.jsonl', 'ontology-categories.jsonl', 'ontology-relations.jsonl', 'fact-context-dependencies.jsonl']) {
       expect(fs.existsSync(path.join(exportedGenDir, name)), name).toBe(false);
     }
     expect(fs.existsSync(path.join(syncDir, 'facts.jsonl'))).toBe(false);
@@ -284,6 +284,23 @@ describe('sync-export/import', () => {
     // 원격 의미 편집이 더 새롭다 — replacement가 일어나도 로컬 provenance(ex-a)는
     // 원격 승자 행에서 사라지지 않는다.
     const { id, createdAt } = await seedLocalFact({ sources: ['ex-a'], count: 1 });
+    const { initDatabase } = await import('../src/db.js');
+    const before = initDatabase();
+    try {
+      const now = new Date().toISOString();
+      before.prepare(`
+        INSERT INTO exchanges
+          (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end)
+        VALUES ('ctx-local-semantic', '/proj', ?, 'question', 'old local proposal', '/tmp/context.jsonl', 1, 2)
+      `).run(now);
+      before.prepare(`
+        INSERT INTO fact_context_dependencies
+          (fact_id, exchange_id, dependency_kind, created_at)
+        VALUES (?, 'ctx-local-semantic', 'assistant_context', ?)
+      `).run(id, now);
+    } finally {
+      before.close();
+    }
     craftCommittedGeneration('dev-a', {
       'facts.jsonl': remoteFactPayload({
         id,
@@ -298,7 +315,6 @@ describe('sync-export/import', () => {
     const { importFromSync } = await import('../src/sync-import.js');
     await importFromSync();
 
-    const { initDatabase } = await import('../src/db.js');
     const check = initDatabase();
     try {
       expect(check.prepare(
@@ -307,6 +323,9 @@ describe('sync-export/import', () => {
         fact: 'Metrics are exported on demand',
         source_exchange_ids: '["ex-a","ex-c"]',
       });
+      expect((check.prepare(
+        'SELECT COUNT(*) AS n FROM fact_context_dependencies WHERE fact_id = ?',
+      ).get(id) as { n: number }).n).toBe(0);
     } finally {
       check.close();
     }

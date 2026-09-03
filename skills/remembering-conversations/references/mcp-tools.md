@@ -56,7 +56,10 @@ and state confidence.
 ## `trace_fact`
 
 `query` is required; `limit` is 1–10 (default 3). Pass `project` or explicit
-scope. Returns revisions, source exchange IDs, archive paths, and line ranges.
+scope. Returns revisions, authoritative source exchange IDs, archive paths, and
+line ranges. When local context dependency rows exist, a separate
+`Interpretive Context (Non-Authoritative)` section reports their dependency
+kind and archive location; these exchanges are not Fact evidence.
 
 ## `graph_stats`
 

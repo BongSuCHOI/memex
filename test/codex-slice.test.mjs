@@ -33,7 +33,13 @@ test('extractSessionIdFromPath captures the trailing UUID of real Codex names', 
 });
 
 const execMod = await import(path.join(REPO, 'src/codex-exec.ts'));
-const { buildCodexExecArgs, lastAgentMessageFromEvents, runCodex, INNER_GUARD_ENV } = execMod;
+const {
+  buildCodexExecArgs,
+  lastAgentMessageFromEvents,
+  tokenUsageFromEvents,
+  runCodex,
+  INNER_GUARD_ENV,
+} = execMod;
 
 const hookStdin = await import(path.join(REPO, 'scripts/hook-stdin.js'));
 const { waitForFileStable } = hookStdin;
@@ -238,6 +244,25 @@ test('AGY-3: fallback parser handles item.completed agent_message shape', () => 
   ].join('\n');
   assert.equal(lastAgentMessageFromEvents(out), 'oldest shape'); // last record wins across shapes
   assert.equal(lastAgentMessageFromEvents(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'only' } })), 'only');
+});
+
+test('Codex JSONL usage parser reads the final turn.completed counters', () => {
+  const out = [
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 120, cached_input_tokens: 80, output_tokens: 12 },
+    }),
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 240, cached_input_tokens: 160, output_tokens: 24 },
+    }),
+  ].join('\n');
+  assert.deepEqual(tokenUsageFromEvents(out), {
+    input_tokens: 240,
+    cached_input_tokens: 160,
+    output_tokens: 24,
+  });
+  assert.equal(tokenUsageFromEvents('{"type":"turn.completed"}'), null);
 });
 
 test('INNER_GUARD refuses nested codex exec without spawning', async () => {

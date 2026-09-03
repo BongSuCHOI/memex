@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.2.0-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.3.0-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -298,7 +298,7 @@ Supported fact/query scopes are:
 
 Cross-project leakage is prevented at query, import, traversal, and relation-write boundaries.
 
-Fact provenance is built from exact source exchange IDs. Lineage is monotonic across sync: source IDs are unioned and consolidated counts take the maximum rather than allowing an older peer to erase evidence.
+Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records persisted long-range non-authoritative context dependencies used to interpret a fact; immediate local context usage is not stored. The persisted set is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
 
 ---
 
@@ -338,7 +338,7 @@ The privacy purge removes or invalidates:
 - exchanges and tool-call index state,
 - FTS/vector rows,
 - extraction/recall processing state,
-- facts that used the excluded conversation as evidence,
+- facts that depended on the excluded conversation as authoritative evidence or persisted interpretive context,
 - fact-derived revisions/relations/vectors,
 - local taxonomy derived from the previous corpus.
 
@@ -419,27 +419,9 @@ The current verified code baseline is recorded in:
 docs/verification/merge-gate.json
 ```
 
-The latest audit-remediation gate was run from the clean committed code SHA:
-
-```text
-70f2ea4998941d8c185b53891f33e10e55728cca
-```
-
-Observed gate results:
-
-```text
-Typecheck                     PASS
-Build                         PASS
-Vitest                        68 files / 598 tests PASS
-Codex slice                   23 / 23 PASS
-All Node slices               91 / 91 PASS
-Install E2E                   PASS
-Marketplace E2E               PASS
-Package runtime E2E           PASS
-Lifecycle E2E                 PASS
-```
-
-The receipt itself lives in the following receipt-only commit, so runtime code is unchanged after the verified SHA.
+The receipt records the committed candidate SHA, environment, exact gate results,
+hard-safety results, and any retained notes. Do not infer current verification
+from numbers copied into an owner document.
 
 For the full acceptance model, version boundaries, and retained machine receipts, see [Verification](docs/VERIFICATION.md).
 
