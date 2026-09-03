@@ -1,0 +1,14 @@
+{
+  "rfc_title": "Memex Continuity Architecture v1 — Final RFC",
+  "rfc_version": "1.0",
+  "source_filename": "docs/Memex Continuity Architecture v1 - FINAL RFC.md",
+  "repository_copy_path": "docs/architecture/memex-continuity-v1.md",
+  "sha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a",
+  "locked_at": "2026-09-03T10:41:17Z",
+  "locked_by_phase": "Phase 0 — Baseline & RFC Lock",
+  "supersedes": [
+    "all earlier Memex Continuity architecture drafts",
+    "all earlier Memex Continuity worker prompt packs"
+  ],
+  "change_policy": "Do not edit the repository copy without explicit user approval and a recorded amendment. Every phase and gate must re-hash it before work starts."
+}
