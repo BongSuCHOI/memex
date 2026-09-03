@@ -157,7 +157,12 @@ export async function analyzeHistory(options: AnalyzeOptions = {}): Promise<Anal
       // 의미 변화 고지: 공유 쿼리는 최소 교환수·제외 프로젝트 필터를 포함하므로
       // 이 수치는 "워커가 실제로 집을 세션 수"가 된다(이전에는 그 필터가 없는
       // 원시 집계였다). 리포트 목적상 이쪽이 더 정확하다.
-      const { sql: pendingSql, params: pendingParams } = pendingExtractionCoreQuery(getExtractionConfig());
+      const { sql: pendingSql, params: pendingParams } = pendingExtractionCoreQuery(
+        getExtractionConfig(),
+        tables.has('exchange_extraction_state') && tables.has('extraction_targets')
+          ? 'continuity'
+          : 'legacy',
+      );
       try {
         const pending = db.prepare(`SELECT COUNT(*) AS n FROM (${pendingSql})`)
           .get(...pendingParams) as { n: number };

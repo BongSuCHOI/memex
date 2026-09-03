@@ -8,6 +8,10 @@ import * as sqliteVec from "sqlite-vec";
 import { afterEach, describe, expect, it } from "vitest";
 import { initDatabase } from "../src/db.js";
 import { EMBEDDING_VERSION } from "../src/embeddings.js";
+import {
+  FACT_EXTRACTION_POLICY_VERSION,
+  refreshExchangeMetadata,
+} from "../src/continuity-store.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,6 +78,17 @@ describe("P0 SessionEnd worker runtime", () => {
           (session_id, processed_at, extracted, saved, last_exchange_rowid)
         VALUES (?, ?, 0, 0, ?)
       `).run(SESSION_ID, new Date().toISOString(), Number(inserted.lastInsertRowid));
+      refreshExchangeMetadata(db, SESSION_ID);
+      db.prepare(`
+        INSERT INTO exchange_extraction_state
+          (exchange_id, content_generation, policy_version, state, processed_at)
+        SELECT id, content_generation, ?, 'processed', ?
+        FROM exchanges WHERE session_id = ?
+      `).run(
+        FACT_EXTRACTION_POLICY_VERSION,
+        new Date().toISOString(),
+        SESSION_ID,
+      );
     } finally {
       db.close();
       if (priorDb === undefined) delete process.env.MEMEX_DB_PATH;

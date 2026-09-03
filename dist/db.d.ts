@@ -30,7 +30,7 @@ export declare function openWriteDb(dbPath?: string): Database.Database;
 export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
 }): Database.Database;
-export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): void;
+export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): boolean;
 export declare function isMemexRecallToolName(toolName: string): boolean;
 /**
  * Optional context that lets the trust classifier prove WHERE an observation

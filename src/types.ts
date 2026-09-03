@@ -29,6 +29,14 @@ export interface ConversationExchange {
   lineStart: number;
   lineEnd: number;
 
+  // Continuity v1 content identity. Legacy parsers may omit these; the DB
+  // assigns/backfills a monotonic generation without changing exchange rowid.
+  exchangeSeq?: number;
+  contentHash?: string;
+  contentGeneration?: number;
+  closureState?: 'open' | 'interrupted' | 'closed' | 'final';
+  parserVersion?: number;
+
   // Conversation structure
   parentUuid?: string;
   isSidechain?: boolean;

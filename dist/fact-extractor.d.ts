@@ -114,6 +114,18 @@ export interface FactExtractionObservability {
 export declare function createFactExtractionObservability(): FactExtractionObservability;
 export interface ExtractFactsOptions {
     onlyAfterRowid?: number;
+    throughRowid?: number;
+    targetExchangeIds?: string[];
+    /** Mutable page receipt used by the durable target owner. */
+    progress?: {
+        processedThroughRowid: number;
+        budgetExhausted: boolean;
+        irreducibleFailures: Array<{
+            exchangeIds: string[];
+            payloadFingerprint: string;
+            error: string;
+        }>;
+    };
     /** Evaluation seam: production callers use callMemoryModel by default. */
     modelCall?: FactExtractionModelCall;
     /** Evaluation-only accumulator; omitted by production extraction callers. */
@@ -168,10 +180,15 @@ export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
  */
 export declare function failureConsumesBudget(kind: ExtractionFailureKind): boolean;
 /** Claim a session, process unhandled rows, and atomically record completion. */
-export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, opts?: {
+/**
+ * Continuity v1 extraction owner. A claim-time immutable target and its
+ * ordered item snapshot are the only completion authority; live session MAX
+ * is never consulted after model work starts.
+ */
+export declare function runFactExtraction(db: Database.Database, sessionId: string, project: string, _opts?: {
     claimVariant?: "worker" | "hook";
 }): Promise<{
     extracted: number;
     saved: number;
-    skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked";
+    skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked" | "failed_visible";
 }>;

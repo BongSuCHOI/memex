@@ -10,8 +10,8 @@ import path from 'node:path';
  * 반환 → extractAndSaveFacts 가 extraction_log 에 '완료(0건)'로 기록 → pending 쿼리가
  * 그 세션을 영구 제외 → **그 대화의 fact 는 영원히 추출되지 않음**.
  *
- * 수정 후: transient 는 throw 되어 extraction_log 가 기록되지 않고(=다음 run 재시도),
- * deterministic 은 그 배치만 버리고 진행한다(=큐를 막지 않음).
+ * Continuity v1: transient 는 retry target으로 남고 completion cursor를 쓰지 않는다.
+ * deterministic 은 recursive split 뒤 exact failed-visible range가 되며 completed가 아니다.
  */
 
 const llmBehavior: {
@@ -142,6 +142,7 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(loggedSessions()).not.toContain(SESSION);
 
     llmBehavior.mode = 'ok'; // 공급자 회복
+    db.prepare("UPDATE memory_jobs SET available_at = '1970-01-01T00:00:00.000Z'").run();
     const result = await runFactExtraction(db, SESSION, PROJECT);
     expect(result.extracted).toBeGreaterThan(0);
     expect(loggedSessions()).toContain(SESSION); // 이제서야 완료 기록
@@ -164,14 +165,17 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     expect(loggedSessions()).not.toContain(SESSION);
   });
 
-  it('AC4c: deterministic 실패는 throw 하지 않고 진행해 기록한다 (큐 wedge 방지)', async () => {
+  it('AC4c: irreducible deterministic 실패는 completed가 아닌 failed-visible이다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     llmBehavior.mode = 'deterministic';
 
     const result = await runFactExtraction(db, SESSION, PROJECT);
     expect(result.extracted).toBe(0);
-    // 같은 입력은 같은 결과 — 영원히 재시도하면 큐가 막히므로 완료로 기록한다.
-    expect(loggedSessions()).toContain(SESSION);
+    expect(result.skipped).toBe('failed_visible');
+    expect(loggedSessions()).not.toContain(SESSION);
+    expect(db.prepare(
+      "SELECT state FROM extraction_targets WHERE session_id = ?",
+    ).get(SESSION)).toEqual({ state: 'dead' });
   });
 
   it('AC4e: 폐기된 배치는 dead-letter 로 기록돼 조회 가능하다 (무음 손실 금지)', async () => {
@@ -179,11 +183,65 @@ describe('세션 영구 손실 방지 (transient vs deterministic)', () => {
     llmBehavior.mode = 'deterministic';
 
     await runFactExtraction(db, SESSION, PROJECT);
-    const row = db.prepare(
-      'SELECT dropped_batches FROM extraction_log WHERE session_id = ?',
-    ).get(SESSION) as { dropped_batches: number } | undefined;
-    // 폐기 사실이 DB 에 남아야 "왜 이 세션엔 fact 가 없나"를 사후에 답할 수 있다.
-    expect(row?.dropped_batches).toBeGreaterThan(0);
+    const rows = db.prepare(`
+      SELECT from_ordinal, through_ordinal, payload_fingerprint, state
+      FROM extraction_failed_ranges
+      WHERE target_id = (SELECT target_id FROM extraction_targets WHERE session_id = ?)
+      ORDER BY from_ordinal
+    `).all(SESSION) as Array<{
+      from_ordinal: number;
+      through_ordinal: number;
+      payload_fingerprint: string;
+      state: string;
+    }>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.from_ordinal === row.through_ordinal)).toBe(true);
+    expect(rows.every((row) => /^[a-f0-9]{64}$/.test(row.payload_fingerprint))).toBe(true);
+    expect(rows.every((row) => row.state === 'failed-visible')).toBe(true);
+  });
+
+  it('historical context singleton failure cannot escape durable target accounting', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const { refreshExchangeMetadata } = await import('../src/continuity-store.js');
+    const firstRowid = (db.prepare(
+      "SELECT MIN(rowid) AS rowid FROM exchanges WHERE session_id = ?",
+    ).get(SESSION) as { rowid: number }).rowid;
+    db.prepare(`
+      INSERT INTO extraction_log
+        (session_id, processed_at, extracted, saved, last_exchange_rowid)
+      VALUES (?, ?, 0, 0, ?)
+    `).run(SESSION, new Date().toISOString(), firstRowid);
+    refreshExchangeMetadata(db, SESSION);
+    db.prepare(`
+      INSERT INTO exchange_extraction_state
+        (exchange_id, content_generation, policy_version, state, processed_at)
+      SELECT id, content_generation, 'continuity-fact-v1', 'processed', ?
+      FROM exchanges WHERE rowid = ?
+    `).run(new Date().toISOString(), firstRowid);
+    llmBehavior.mode = 'deterministic';
+
+    const result = await runFactExtraction(db, SESSION, PROJECT);
+    expect(result.skipped).toBe('failed_visible');
+    const target = db.prepare(`
+      SELECT target_id, state, cursor_ordinal, item_count
+      FROM extraction_targets WHERE session_id = ?
+    `).get(SESSION) as {
+      target_id: string;
+      state: string;
+      cursor_ordinal: number;
+      item_count: number;
+    };
+    expect(target).toEqual(expect.objectContaining({
+      state: 'dead', cursor_ordinal: 0, item_count: 1,
+    }));
+    expect(db.prepare(`
+      SELECT from_ordinal, through_ordinal, state
+      FROM extraction_failed_ranges WHERE target_id = ?
+    `).get(target.target_id)).toEqual({
+      from_ordinal: 1,
+      through_ordinal: 1,
+      state: 'failed-visible',
+    });
   });
 
   it('AC4f: 정상 처리 세션은 dropped_batches 가 0 이다', async () => {

@@ -22,6 +22,30 @@ describe('Parser - Codex rollout', () => {
       expect(ex.timestamp).toBeDefined();
       expect(ex.sessionId).toBe('sess-fix-1');
       expect(ex.cwd).toBe('/workspaces/fixtures');
+      expect(ex.exchangeSeq).toBeGreaterThan(0);
+      expect(ex.parserVersion).toBe(2);
+      expect(['closed', 'interrupted']).toContain(ex.closureState);
+    }
+  });
+
+  it('marks an EOF exchange with an unfinished tool call interrupted', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-parser-open-'));
+    const file = path.join(dir, 'rollout.jsonl');
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'session_meta', payload: { session_id: 'open-s', cwd: '/work/open' } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run it' }] } }),
+      JSON.stringify({ type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{"cmd":"npm test"}' } }),
+    ].join('\n') + '\n');
+    try {
+      const result = await parseConversationFile(file);
+      expect(result.exchanges).toHaveLength(1);
+      expect(result.exchanges[0]).toMatchObject({
+        exchangeSeq: 1,
+        closureState: 'interrupted',
+        parserVersion: 2,
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

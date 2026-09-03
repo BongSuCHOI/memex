@@ -39,15 +39,24 @@ node scripts/web-ui-browser-e2e.mjs
 | --- | --- |
 | rollout ingestion | main/resumed/subagent/tool/malformed/worker fixture |
 | project isolation | archive, DB, search, MCP, graph, sync에서 동일 canonical scope |
-| extraction | retry/claim/no-new-row/atomic watermark |
+| extraction | fixed fence, contiguous multi-run drain, generation/closure CAS, exact failed range, zero-fact distinction |
+| checkpoint/outbox | atomic insert, duplicate idempotency, expired lease reclaim, stale owner rejection, restart visibility |
+| prefix ingestion | CP2→CP1 out-of-order delivery에서 delete/generation/line regression 0 |
 | context dependency | server mapping, atomic save, consolidation union, edit/sync clear, privacy/FK cascade |
 | extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |
 | fact mutation | semantic/lifecycle generation과 derived-state CAS |
 | sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
-| privacy | conversation purge, terminal tombstone, taxonomy epoch/in-flight race |
+| privacy | conversation purge, pending checkpoint/job/target cascade, terminal tombstone, taxonomy epoch/in-flight race |
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
+
+Phase 1 gate의 mandatory matrix는 `test/continuity-correctness-spine.test.ts`의 deterministic seeded
+pagination, migration/page-commit crash stages, ten duplicate deliveries, checkpoint ordinal ordering,
+expired/stale lease ownership, concurrent source mutation, open fence 및 exact failure accounting과
+`test/extraction-claim-e2e.test.ts`의 fact-budget/atomic fact commit E2E로 고정됩니다. Legacy
+`SEED|PERMANENT` markers가 exact completion으로 승격되지 않는 회귀는
+`test/backfill-seed-watermark.test.ts`가 담당합니다.
 | lifecycle | SessionStart/UserPromptSubmit/SessionEnd + cleanup |
 | UI | empty/populated/mutation/security/accessibility |
 | data integrity | FK check, vector/parent consistency, repair behavior |

@@ -100,7 +100,10 @@ async function main() {
     // 4. Auto-resume cross-project extraction backfill (worker's own pending
     // predicate — never spawns for phantom sessions it could not clear).
     try {
-      const { sql: exSql, params: exParams } = pendingExtractionCoreQuery(getExtractionConfig());
+      const { sql: exSql, params: exParams } = pendingExtractionCoreQuery(
+        getExtractionConfig(),
+        'continuity',
+      );
       const pendingExtract = db.prepare(`SELECT 1 FROM (${exSql}) LIMIT 1`).get(...exParams);
       if (pendingExtract) spawnDetached('backfill-extract-worker.js');
     } catch { /* non-fatal */ }

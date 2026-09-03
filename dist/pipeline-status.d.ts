@@ -8,14 +8,14 @@ export interface StageCounters {
     excludedBelowMin: number;
     /** …of which in excluded/LLM-workdir projects. */
     excludedProject: number;
-    /** Sessions whose marker is SEED(-1) or a terminal PERMANENT(-2) failure —
-     * the worker's pending query excludes both, so they are never pending
-     * work; they stay visible here instead of inflating pending. */
+    /** Sessions with terminal legacy or failed-visible extraction state. */
     deferred: number;
     /** The configured min-exchange gate value, shown for actionability. */
     gateMinExchanges: number;
     claimed: number;
     failedPermanent: number;
+    /** Exact Continuity ranges that failed deterministically; never completed. */
+    failedVisible: number;
     retriable: number;
 }
 export interface PipelineStatus {

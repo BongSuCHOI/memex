@@ -144,6 +144,8 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/sync.ts` | rollout archive와 incremental indexing orchestration |
 | `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
 | `src/fact-extractor.ts` | exact-span/call-ID provenance validation → mandatory semantic verifier, local window + adaptive bounded referent ranking → local dependency |
+| `src/continuity-store.ts` | additive schema v1, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
+| `src/archive-ingestion.ts` | canonical desired-set ingest와 monotonic prefix ingest 분리 |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
 | `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
 | `src/sync-export.ts` | durable generation export |
@@ -176,18 +178,23 @@ sequenceDiagram
     H-->>C: additionalContext + durable recall receipt
 
     C->>H: SessionEnd
-    H->>D: claim new exchange rows
+    H->>D: fix immutable exchange-generation target + claim job lease
     H->>L: extraction candidate generation
     L-->>H: structured candidates + evidence declarations
     H->>L: authoritative entailment verification
     L-->>H: ENTAILED / CONTRADICTED / NOT_ENOUGH
     H->>L: consolidation/classification
     L-->>H: structured results
-    H->>D: atomic fact/provenance/watermark commit
+    H->>D: atomic fact/provenance/page-cursor commit under generation+lease CAS
     H->>S: export durable generation
 ```
 
 SessionStart의 background sync, sync import, maintenance는 독립 async 작업입니다. 순서가 아니라 **eventual consistency**를 계약으로 삼고, 각 writer가 자체적으로 concurrency-safe해야 합니다.
+
+Phase 1 Correctness Spine은 lifecycle capture 이전 기반입니다. Every closed generation은 immutable target
+item으로 accounted되고, processing budget은 contiguous page scheduling만 제한합니다. Checkpoint/job API는
+Phase 2 capture hook이 재사용하지만 Phase 1에서는 Stop/Interrupt/Compact 등록이나 journal을 추가하지
+않습니다.
 
 ## 6. Sync protocol v4
 

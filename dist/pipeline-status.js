@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { openReadDb } from "./db.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
-import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
+import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, pendingExtractionCoreQuery, } from "./pending-extraction.js";
 function tableExists(db, name) {
     return (db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
@@ -68,6 +68,7 @@ export function getPipelineStatus(opts = {}) {
                 gateMinExchanges: extractionGate.minExchanges,
                 claimed: 0,
                 failedPermanent: 0,
+                failedVisible: 0,
                 retriable: 0,
                 lastSuccessAt: null,
                 lastErrorAt: null,
@@ -107,6 +108,7 @@ export function getPipelineStatus(opts = {}) {
             gateMinExchanges: extractionGate.minExchanges,
             claimed: 0,
             failedPermanent: 0,
+            failedVisible: 0,
             retriable: 0,
             lastSuccessAt: null,
             lastErrorAt: null,
@@ -116,22 +118,53 @@ export function getPipelineStatus(opts = {}) {
             // done = successful sessions whose watermark covers every current
             // exchange. A successful marker with a newer resume suffix is pending,
             // not simultaneously done (the same watermark contract as the worker).
-            const done = count(db, `
-        SELECT COUNT(*) AS c FROM (
-          SELECT DISTINCT e.session_id
-          FROM exchanges e
-          JOIN extraction_log l ON l.session_id = e.session_id
-          WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
-            AND l.extracted >= 0
-            AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
-                 WHERE x.session_id = e.session_id)
-                <= l.last_exchange_rowid
-        )`);
+            const hasGenerationState = tableExists(db, "exchange_extraction_state");
+            const done = hasGenerationState
+                ? count(db, `
+            SELECT COUNT(*) AS c FROM (
+              SELECT DISTINCT e.session_id
+              FROM exchanges e
+              WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+                AND EXISTS (
+                  SELECT 1 FROM exchanges closed
+                  WHERE closed.session_id = e.session_id
+                    AND closed.closure_state IN ('closed','final')
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM exchanges current
+                  LEFT JOIN exchange_extraction_state state
+                    ON state.exchange_id = current.id
+                   AND state.content_generation = current.content_generation
+                   AND state.policy_version = 'continuity-fact-v1'
+                   AND state.state = 'processed'
+                  WHERE current.session_id = e.session_id
+                    AND current.closure_state IN ('closed','final')
+                    AND state.exchange_id IS NULL
+                )
+            )`)
+                : count(db, `
+            SELECT COUNT(*) AS c FROM (
+              SELECT DISTINCT e.session_id
+              FROM exchanges e
+              JOIN extraction_log l ON l.session_id = e.session_id
+              WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+                AND l.extracted >= 0
+                AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
+                     WHERE x.session_id = e.session_id)
+                    <= l.last_exchange_rowid
+            )`);
             const permanent = count(db, "SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?", EXTRACTION_STATE.PERMANENT);
             const retriable = count(db, `SELECT COUNT(*) AS c FROM extraction_log WHERE extracted = ?
         AND saved < 3`, EXTRACTION_STATE.RETRIABLE_INTERNAL);
-            const claimedFresh = count(db, `SELECT COUNT(*) AS c FROM extraction_log
-        WHERE extracted = ? AND ${freshClaimPredicate()}`, EXTRACTION_STATE.CLAIMED);
+            const failedVisible = tableExists(db, "extraction_failed_ranges")
+                ? count(db, "SELECT COUNT(*) AS c FROM extraction_failed_ranges WHERE state = 'failed-visible'")
+                : 0;
+            const claimedFresh = tableExists(db, "memory_jobs")
+                ? count(db, `SELECT COUNT(*) AS c FROM memory_jobs
+             WHERE kind = 'fact_extract' AND state = 'running'
+               AND lease_until > ?`, new Date().toISOString())
+                : count(db, `SELECT COUNT(*) AS c FROM extraction_log
+            WHERE extracted = ? AND ${freshClaimPredicate()}`, EXTRACTION_STATE.CLAIMED);
             // Pending = sessions with exchanges lacking a settled extraction_log row.
             const settledSessions = count(db, `
         SELECT COUNT(*) AS c FROM (
@@ -181,35 +214,55 @@ export function getPipelineStatus(opts = {}) {
           FROM exchanges e
           LEFT JOIN extraction_log l ON l.session_id = e.session_id
           WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
-            AND l.session_id IS NULL
+            ${hasGenerationState
+                ? `AND EXISTS (
+                  SELECT 1 FROM exchanges ce
+                  LEFT JOIN exchange_extraction_state ces
+                    ON ces.exchange_id = ce.id
+                   AND ces.content_generation = ce.content_generation
+                   AND ces.policy_version = 'continuity-fact-v1'
+                  WHERE ce.session_id = e.session_id
+                    AND ce.closure_state IN ('closed','final')
+                    AND (ces.exchange_id IS NULL
+                      OR (ces.state IN ('pending','processing','retry')
+                        AND NOT EXISTS (
+                          SELECT 1 FROM extraction_targets cet
+                          WHERE cet.target_id = ces.target_id AND cet.state = 'dead'
+                        )))
+                )`
+                : "AND l.session_id IS NULL"}
           GROUP BY e.session_id
           HAVING COUNT(*) < ? OR polluted = 1
         ) g`)
                 .get(...exTerms, extractionGate.minExchanges);
             const excludedSessions = Number(gateRow.c);
-            // Terminal markers the worker's pending query deliberately never
-            // re-picks: SEED(-1) always, and PERMANENT(-2) unless its watermark
-            // happens to be covered (that covered shape already counts as settled).
-            // Subtracting them keeps pending meaning exactly "work the pipeline
-            // will actually do" while the states stay visible under their own name.
-            const deferredSessions = count(db, `
-        SELECT COUNT(*) AS c FROM (
-          SELECT DISTINCT e.session_id
-          FROM exchanges e
-          JOIN extraction_log l ON l.session_id = e.session_id
-          WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
-            AND (
-              l.extracted = ?
-              OR (l.extracted = ?
-                  AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
-                       WHERE x.session_id = e.session_id)
-                      > COALESCE(l.last_exchange_rowid, -1))
-            )
-        )`, EXTRACTION_STATE.SEED, EXTRACTION_STATE.PERMANENT);
+            // Legacy SEED/PERMANENT markers are not exact completion/failure evidence.
+            // Only a Continuity target with an exact failed-visible range may defer.
+            const deferredSessions = hasGenerationState
+                ? count(db, `SELECT COUNT(DISTINCT session_id) AS c
+             FROM extraction_targets WHERE state = 'dead'`)
+                : count(db, `
+            SELECT COUNT(*) AS c FROM (
+              SELECT DISTINCT e.session_id
+              FROM exchanges e
+              JOIN extraction_log l ON l.session_id = e.session_id
+              WHERE e.session_id IS NOT NULL AND e.is_sidechain = 0
+                AND (l.extracted = ?
+                  OR (l.extracted = ?
+                    AND (SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
+                         WHERE x.session_id = e.session_id)
+                        > COALESCE(l.last_exchange_rowid, -1)))
+            )`, EXTRACTION_STATE.SEED, EXTRACTION_STATE.PERMANENT);
+            const pendingCore = hasGenerationState
+                ? pendingExtractionCoreQuery(extractionGate, "continuity")
+                : null;
+            const exactPending = pendingCore
+                ? count(db, `SELECT COUNT(*) AS c FROM (${pendingCore.sql})`, ...pendingCore.params)
+                : Math.max(0, total - settledSessions - excludedSessions - deferredSessions);
             extraction = {
                 total,
                 done,
-                pending: Math.max(0, total - settledSessions - excludedSessions - deferredSessions),
+                pending: exactPending,
                 excluded: excludedSessions,
                 excludedBelowMin: Number(gateRow.belowMin),
                 excludedProject: Number(gateRow.byProject),
@@ -217,6 +270,7 @@ export function getPipelineStatus(opts = {}) {
                 gateMinExchanges: extractionGate.minExchanges,
                 claimed: claimedFresh,
                 failedPermanent: permanent,
+                failedVisible,
                 retriable,
                 lastSuccessAt: times.lastOk,
                 lastErrorAt: times.lastErr,
@@ -249,6 +303,7 @@ export function getPipelineStatus(opts = {}) {
             extraction.pending === 0 &&
             extraction.claimed === 0 &&
             extraction.failedPermanent === 0 &&
+            extraction.failedVisible === 0 &&
             embeddings.factVectorsPending === 0;
         const graphReady = factReady && ontology.pendingFacts === 0;
         return {
@@ -312,14 +367,15 @@ export function formatPipelineStatus(s) {
         `${ex.deferred} deferred`,
         `${ex.claimed} claimed`,
         `${ex.failedPermanent} permanent-failed`,
+        `${ex.failedVisible} failed-visible`,
     ];
     if (ex.retriable > 0)
         parts.push(`${ex.retriable} retriable`);
-    lines.push(`Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`);
+    lines.push(`Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 && ex.failedVisible === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`);
     if (ex.excluded > 0)
         lines.push(`  excluded: intentionally skipped by extraction policy — ${ex.excludedBelowMin} below min-exchanges (BACKFILL_MIN_EXCHANGES=${ex.gateMinExchanges}), ${ex.excludedProject} excluded projects`);
     if (ex.deferred > 0)
-        lines.push(`  deferred: seeded or permanently-failed sessions the extraction worker never re-picks — ${ex.deferred}`);
+        lines.push(`  deferred: exact failed-visible targets (or legacy-only seed/permanent markers) — ${ex.deferred}`);
     if (ex.lastSuccessAt)
         lines.push(`  last success: ${ex.lastSuccessAt}`);
     if (ex.lastErrorAt)
@@ -334,8 +390,9 @@ export function formatPipelineStatus(s) {
     lines.push(`conversation-ready: ${s.readiness.conversationReady ? "YES" : "NO"}`);
     lines.push(`fact-ready:         ${s.readiness.factReady ? "YES" : "NO"}`);
     lines.push(`graph-ready:        ${s.readiness.graphReady ? "YES" : "NO"}`);
-    if (!s.readiness.factReady && s.extraction.failedPermanent > 0) {
-        lines.push("NOTE: permanent extraction failures exist — overall readiness stays PARTIAL until they are resolved.");
+    if (!s.readiness.factReady &&
+        (s.extraction.failedPermanent > 0 || s.extraction.failedVisible > 0)) {
+        lines.push("NOTE: permanent or failed-visible extraction ranges exist — overall readiness stays PARTIAL until they are resolved.");
     }
     return lines.join("\n");
 }

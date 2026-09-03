@@ -19,6 +19,11 @@ export interface ConversationExchange {
     archivePath: string;
     lineStart: number;
     lineEnd: number;
+    exchangeSeq?: number;
+    contentHash?: string;
+    contentGeneration?: number;
+    closureState?: 'open' | 'interrupted' | 'closed' | 'final';
+    parserVersion?: number;
     parentUuid?: string;
     isSidechain?: boolean;
     sessionId?: string;

@@ -1,6 +1,11 @@
 # Memex SQLite 스키마와 불변식
 
-schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
+schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
+
+Continuity DB schema version은 `PRAGMA user_version = 1`과
+`continuity_schema_meta.schema_version = 1`에 함께 기록됩니다. Migration은 기존 table/rowid를
+rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
+마지막에만 기록됩니다.
 
 기본 DB:
 
@@ -15,6 +20,10 @@ schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세
 ```mermaid
 erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
+    EXCHANGES ||--o{ EXTRACTION_TARGET_ITEMS : snapshots
+    CHECKPOINTS ||--o{ MEMORY_JOBS : enqueues
+    EXTRACTION_TARGETS ||--o{ EXTRACTION_TARGET_ITEMS : pages
+    EXTRACTION_TARGETS ||--o{ EXTRACTION_FAILED_RANGES : accounts
     EXCHANGES }o--o{ FACTS : provenance
     EXCHANGES ||--o{ FACT_CONTEXT_DEPENDENCIES : interpretive_context
     FACTS ||--o{ FACT_CONTEXT_DEPENDENCIES : depends_on
@@ -38,6 +47,9 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 - `tool_calls`
 - `recall_events`
 - `extraction_log`
+- `checkpoints`, `memory_jobs`
+- `extraction_targets`, `extraction_target_items`, `extraction_failed_ranges`
+- `exchange_extraction_state`
 - summary/FTS metadata
 - `exchanges_fts`
 - `vec_exchanges`
@@ -47,6 +59,40 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니다. `archive_path`는 identity가 아니라 location metadata입니다.
 
 동일 exchange re-index는 rowid를 보존합니다. extraction watermark가 rowid를 기준으로 하므로 `INSERT OR REPLACE`처럼 rowid를 바꾸는 update는 금지합니다.
+
+각 exchange는 `exchange_seq`, `content_hash`, `content_generation`, `closure_state`,
+`parser_version`을 가집니다. `line_end` 또는 canonical content hash가 변하면 generation이 증가합니다.
+명시적 lower generation, shorter `line_end`, 같은 generation의 다른 hash, 같은 generation의 closure
+regression은 `insertExchange()` transaction에서 거절됩니다. `open|interrupted`는 closed extraction
+fence에 들어가지 않습니다. Released reader가 직접 쓴 legacy row는 startup backfill에서 hash/sequence와
+generation 1을 얻되 rowid는 유지됩니다.
+
+### Correctness Spine state
+
+`extraction_targets`는 model call 전 고정한 immutable rowid fence와 ordered generation snapshot을
+소유합니다. Legacy watermark가 unseen row를 건넜다면 fence는 첫 missing item 직전부터 다시
+형성되며, 완료 권한은 target item이지 `extraction_log.last_exchange_rowid`가 아닙니다.
+`cursor_ordinal`은 오직 contiguous page commit에서 증가합니다. 각 target item은
+`pending|processing|processed|retry|superseded|failed-visible` 중 하나이며,
+`exchange_extraction_state`의 identity는 `(exchange_id, content_generation, policy_version)`입니다.
+`superseded`는 async work 중 source generation/hash/closure/deletion이 바뀐 obsolete work이며 failure나
+completion으로 계산하지 않습니다. `extraction_target_items.exchange_id`는 이 stale identity를 commit
+검증까지 보존하려고 FK cascade를 두지 않습니다. Privacy purge는 source delete와 같은 transaction에서
+target을 먼저 지워 private identity가 commit 후 남지 않게 합니다.
+
+`extraction_failed_ranges`는 exact ordinal/rowid range, payload SHA-256, error kind/message를 저장합니다.
+`failed-visible` target/job은 completed가 아니며 pipeline readiness를 막습니다. Zero-fact page도 policy가
+실제로 page 전체를 성공 처리한 경우에만 cursor를 전진합니다.
+
+`checkpoints`와 `memory_jobs`는 같은 SQLite transaction에서 생성됩니다. Job idempotency key는 UNIQUE이며,
+claim마다 `lease_generation`이 증가합니다. Completion은 running state, owner, generation, unexpired lease가
+모두 일치할 때만 성공합니다. Partial page 성공은 job을 pending으로 되돌리고 attempts를 reset합니다.
+Crash/restart 뒤 `pending|retry|running with expired lease|dead`는 durable query로 식별할 수 있습니다.
+동일 partition은 checkpoint ordinal 순서로만 claim되며, semantic target이 다른 idempotency-key 충돌은
+기존 row 재사용 대신 전체 transaction을 rollback합니다.
+
+Prefix ingest는 `ingestPrefixExchanges()`만 사용하며 desired-set delete를 수행하지 않습니다. Full
+archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를 호출합니다.
 
 ### Provenance
 

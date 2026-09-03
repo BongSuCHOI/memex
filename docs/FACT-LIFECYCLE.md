@@ -216,8 +216,9 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
   window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
   이웃으로 연결하지 않습니다.
-- `MEMEX_MAX_EXTRACT_WINDOWS`의 spread cap은 이 semantic window를 모두 만든 뒤 generator
-  window 수에만 적용합니다. 구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
+- `MEMEX_MAX_EXTRACT_WINDOWS`는 semantic window를 모두 만든 뒤 **contiguous prefix**의 generator
+  window 수에만 적용합니다. 선택되지 않은 suffix는 durable target cursor 뒤 pending으로 남습니다.
+  구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
   verifier는 cap과 별도로 실행됩니다. Deprecated alias `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가
   아예 없을 때만 읽습니다. Canonical 값이 설정됐지만 양의 정수가 아니면 alias로 우회하지 않고
   default 12를 사용합니다. 겹친 window가 같은 fact를 다시 만들면 기존 session-level
@@ -243,21 +244,32 @@ prefix를 human/tool evidence로 선언한 candidate를 hard reject합니다. �
 ```mermaid
 sequenceDiagram
     participant W as Worker
-    participant L as extraction_log
+    participant T as extraction target/job
     participant E as exchanges
     participant F as facts
 
-    W->>L: claim session
-    W->>E: rows after watermark + previous 30 context-only rows
+    W->>T: fix target + claim lease generation
+    W->>E: immutable target page + previous 30 context-only rows
     W->>W: anchors + local windows + selected referents + model + validate
     W->>F: BEGIN transaction
     W->>F: save/merge facts + provenance + context dependency
-    W->>L: saved count + watermark + release
+    W->>T: generation CAS + contiguous page cursor + job state
+    W->>L: compatibility count + fixed target watermark
     W->>F: COMMIT
 ```
 
-fact/context dependency가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를
-허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
+fact/context dependency가 저장됐지만 page marker는 실패하거나, marker만 먼저 전진하는 상태를
+허용하지 않습니다. Fact/current mutation, generation verification, target item state, cursor와 compatibility
+watermark는 한 SQLite transaction입니다. transient failure와 budget exhaustion은 cursor를 전진시키지
+않습니다. Oversized deterministic window는 recursively split하고 singleton failure만 exact
+`failed-visible` range가 됩니다. Completion은 live `MAX(rowid)`를 다시 읽지 않습니다.
+
+Legacy `extraction_log`의 `SEED`, `PERMANENT`, success watermark는 과거 extractor가 모든 generation을
+실제로 보았다는 증거가 아닙니다. Continuity worker는 이를 compatibility/reporting hint로만 유지하고,
+current `(exchange_id, content_generation, policy_version)`의 `processed` state가 없으면 고정 target에
+다시 포함합니다. 기존 fact 하나를 근거로 session live `MAX(rowid)`까지 seed하던 backfill 경로는
+제거했습니다. 한 model window가 configured fact cap보다 많은 valid candidate를 반환하면 window 내부를
+잘라 버리지 않고 모두 atomic save하며, cap은 다음 window/run scheduling에서 적용됩니다.
 
 ### Extraction evaluation
 

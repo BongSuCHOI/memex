@@ -13,6 +13,10 @@ import {
 import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
+import {
+  ensureContinuitySchema,
+  exchangeContentHash,
+} from "./continuity-store.js";
 
 // === vec table dtype handling ===
 // int8 quantization: q = clamp(round(x*127)). e5 embeddings are L2-normalized
@@ -769,6 +773,7 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
       last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
+  ensureContinuitySchema(db);
   return db;
 }
 
@@ -777,7 +782,7 @@ export function insertExchange(
   exchange: ConversationExchange,
   embedding: number[],
   _toolNames?: string[],
-): void {
+): boolean {
   const now = Date.now();
   const promptHash = hashRecallPrompt(exchange.userMessage);
   const recall = exchange.sessionId
@@ -813,6 +818,54 @@ export function insertExchange(
   // the table dtype inside that write transaction so the blob always matches
   // the actual vec schema.
   const insertAll = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT line_end, exchange_seq, content_hash, content_generation, closure_state
+      FROM exchanges WHERE id = ?
+    `).get(exchange.id) as {
+      line_end: number;
+      exchange_seq: number;
+      content_hash: string;
+      content_generation: number;
+      closure_state: string;
+    } | undefined;
+    const contentHash = exchange.contentHash ?? exchangeContentHash(exchange);
+    const explicitGeneration = exchange.contentGeneration;
+    if (existing) {
+      if (exchange.lineEnd < existing.line_end) return false;
+      if (
+        explicitGeneration !== undefined &&
+        explicitGeneration < existing.content_generation
+      ) return false;
+      if (
+        explicitGeneration !== undefined &&
+        explicitGeneration === existing.content_generation &&
+        existing.content_hash &&
+        contentHash !== existing.content_hash
+      ) return false;
+    }
+    const contentGeneration = explicitGeneration ?? (
+      existing &&
+      (contentHash !== existing.content_hash || exchange.lineEnd > existing.line_end)
+        ? existing.content_generation + 1
+        : Math.max(1, existing?.content_generation ?? 1)
+    );
+    const closureRank: Record<string, number> = {
+      open: 0,
+      interrupted: 1,
+      closed: 2,
+      final: 3,
+    };
+    const closureState = exchange.closureState ?? "closed";
+    if (
+      existing &&
+      contentGeneration === existing.content_generation &&
+      closureRank[closureState] < closureRank[existing.closure_state]
+    ) return false;
+    const exchangeSeq = exchange.exchangeSeq ?? existing?.exchange_seq ?? (
+      (db.prepare(
+        "SELECT COALESCE(MAX(exchange_seq), 0) + 1 AS n FROM exchanges WHERE session_id IS ?",
+      ).get(exchange.sessionId ?? null) as { n: number }).n
+    );
     // The embedding parameter was just generated with the current model, so
     // stamp the current version — search filters on it and the re-embed
     // worker must not redo freshly indexed rows.
@@ -821,8 +874,9 @@ export function insertExchange(
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
        parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
        thinking_level, thinking_disabled, thinking_triggers, embedding_version,
-       provenance, assistant_learnable, has_memex_recall)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       provenance, assistant_learnable, has_memex_recall, exchange_seq,
+       content_hash, content_generation, closure_state, parser_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project = excluded.project,
         timestamp = excluded.timestamp,
@@ -844,7 +898,12 @@ export function insertExchange(
         embedding_version = excluded.embedding_version,
         provenance = excluded.provenance,
         assistant_learnable = excluded.assistant_learnable,
-        has_memex_recall = excluded.has_memex_recall
+        has_memex_recall = excluded.has_memex_recall,
+        exchange_seq = excluded.exchange_seq,
+        content_hash = excluded.content_hash,
+        content_generation = excluded.content_generation,
+        closure_state = excluded.closure_state,
+        parser_version = excluded.parser_version
     `).run(
       exchange.id,
       exchange.project,
@@ -868,6 +927,11 @@ export function insertExchange(
       JSON.stringify(provenance),
       assistantLearnable ? 1 : 0,
       hasMemexRecall ? 1 : 0,
+      exchangeSeq,
+      contentHash,
+      contentGeneration,
+      closureState,
+      exchange.parserVersion ?? 1,
     );
 
     // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
@@ -912,9 +976,10 @@ export function insertExchange(
         );
       }
     }
+    return true;
   });
   // .immediate(): acquire the write lock at BEGIN, before any schema read.
-  insertAll.immediate();
+  return insertAll.immediate();
 }
 
 const MEMEX_RECALL_TOOLS = new Set([

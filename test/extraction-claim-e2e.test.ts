@@ -23,6 +23,7 @@ let sourceIndicesPerFact: number[][] | null = null;
 let contextIndicesPerFact: number[][] | null = null;
 let verifierContextIndicesPerFact: number[][] | null = null;
 let factNameForCall: ((call: number, index: number) => string) | null = null;
+let modelHook: (() => void) | null = null;
 vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm.js')>()),
   callMemoryModel: async (systemPrompt: string, userMessage: string) => {
     if (systemPrompt.includes('authoritative-entailment-v3')) {
@@ -58,6 +59,8 @@ vi.mock('../src/llm.js', async (io) => ({ ...(await io<typeof import('../src/llm
     calls++;
     const envelope = JSON.parse(userMessage);
     promptWindows.push(envelope);
+    modelHook?.();
+    modelHook = null;
     await new Promise(r => setTimeout(r, 60));
     return JSON.stringify(Array.from({ length: factsPerCall }, (_, i) => {
       const sourceIndices = sourceIndicesPerFact?.[i] ?? [1];
@@ -100,7 +103,7 @@ beforeEach(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-claim-e2e-'));
   process.env.MEMEX_HOME = tmp;
   process.env.MEMEX_DB_PATH = path.join(tmp, 't.sqlite');
-  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; verifierContextIndicesPerFact = null; factNameForCall = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
+  calls = 0; verifierCalls = 0; verifierVerdicts = null; promptWindows = []; factsPerCall = 1; sourceIndicesPerFact = null; contextIndicesPerFact = null; verifierContextIndicesPerFact = null; factNameForCall = null; modelHook = null; embedCalls = 0; stealAtEmbedCall = 0; stealHook = null;
   const { initDatabase } = await import('../src/db.js');
   db = initDatabase();
   const ins = db.prepare(`INSERT INTO exchanges (id,project,timestamp,user_message,assistant_message,archive_path,line_start,line_end,session_id,is_sidechain) VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -201,6 +204,7 @@ describe('claim E2E', () => {
 
   it('Phase 4+F: 새 ratification은 직전 watermark prefix를 보되 lineage는 신규 exchange만 가진다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const { refreshExchangeMetadata } = await import('../src/continuity-store.js');
     const fixture = JSON.parse(fs.readFileSync(
       new URL('./fixtures/fact-extraction-watermark-boundary.json', import.meta.url),
       'utf8',
@@ -219,6 +223,13 @@ describe('claim E2E', () => {
       INSERT INTO extraction_log
         (session_id, processed_at, extracted, saved, last_exchange_rowid)
       VALUES ('S1', ?, 0, 0, 2)
+    `).run(new Date().toISOString());
+    refreshExchangeMetadata(db, 'S1');
+    db.prepare(`
+      INSERT INTO exchange_extraction_state
+        (exchange_id, content_generation, policy_version, state, processed_at)
+      SELECT id, content_generation, 'continuity-fact-v1', 'processed', ?
+      FROM exchanges WHERE session_id = 'S1' AND rowid <= 2
     `).run(new Date().toISOString());
     db.prepare(`
       INSERT INTO exchanges
@@ -271,6 +282,7 @@ describe('claim E2E', () => {
 
   it('P2: watermark 8 exchanges 전 제안을 복원하되 authority는 신규 human만 저장한다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const { refreshExchangeMetadata } = await import('../src/continuity-store.js');
     db.prepare(`
       UPDATE exchanges
       SET user_message = 'Which state manager fits this app?',
@@ -305,6 +317,13 @@ describe('claim E2E', () => {
       INSERT INTO extraction_log
         (session_id, processed_at, extracted, saved, last_exchange_rowid)
       VALUES ('S1', ?, 0, 0, 8)
+    `).run(new Date().toISOString());
+    refreshExchangeMetadata(db, 'S1');
+    db.prepare(`
+      INSERT INTO exchange_extraction_state
+        (exchange_id, content_generation, policy_version, state, processed_at)
+      SELECT id, content_generation, 'continuity-fact-v1', 'processed', ?
+      FROM exchanges WHERE session_id = 'S1' AND rowid <= 8
     `).run(new Date().toISOString());
     insert.run(
       'e8', '/tmp/p', new Date(Date.now() + 8000).toISOString(),
@@ -357,6 +376,43 @@ describe('claim E2E', () => {
     expect(calls).toBe(1);
     expect(promptWindows).toHaveLength(1);
     expect(promptWindows[0].local_exchanges).toHaveLength(5);
+  });
+
+  it('fact budget never truncates an already inspected window and leaves later windows pending', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    const insert = db.prepare(`
+      INSERT INTO exchanges
+        (id, project, timestamp, user_message, assistant_message, archive_path,
+         line_start, line_end, session_id, is_sidechain)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (let i = 2; i < 8; i++) {
+      insert.run(
+        `cap-e${i}`, '/tmp/p', new Date(Date.now() + i * 1000).toISOString(),
+        `교환 ${i}에서 Riverpod 장기 프로젝트 결정을 명시합니다.`,
+        `교환 ${i}의 결정을 확인합니다.`, `/tmp/cap-${i}.jsonl`, i * 10, i * 10 + 9, 'S1',
+      );
+    }
+    factsPerCall = 25;
+    sourceIndicesPerFact = Array.from({ length: 25 }, () => [3]);
+    const first = await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(first.saved).toBe(25);
+    const pending = db.prepare(`
+      SELECT state, cursor_ordinal, item_count FROM extraction_targets
+      WHERE state = 'pending'
+    `).get() as { state: string; cursor_ordinal: number; item_count: number };
+    expect(pending.cursor_ordinal).toBeGreaterThan(0);
+    expect(pending.cursor_ordinal).toBeLessThan(pending.item_count);
+
+    factsPerCall = 1;
+    sourceIndicesPerFact = [[3]];
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(db.prepare(`
+      SELECT state, cursor_ordinal, item_count FROM extraction_targets
+      WHERE target_id = (SELECT target_id FROM extraction_targets ORDER BY created_at LIMIT 1)
+    `).get()).toEqual({ state: 'completed', cursor_ordinal: 8, item_count: 8 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM facts WHERE fact LIKE 'dup-probe-%'").get())
+      .toEqual({ n: 26 });
   });
 
   it('canonical window budget overrides the deprecated alias without skipping verification', async () => {
@@ -456,6 +512,68 @@ describe('claim E2E', () => {
     expect(finalWatermark).toBe(3);
   });
 
+  it('fixed target 이후 concurrent insert는 첫 completion watermark를 넘지 않는다', async () => {
+    const { runFactExtraction } = await import('../src/fact-extractor.js');
+    modelHook = () => {
+      db.prepare(`
+        INSERT INTO exchanges
+          (id, project, timestamp, user_message, assistant_message, archive_path,
+           line_start, line_end, session_id, is_sidechain)
+        VALUES ('late', '/tmp/p', ?, '늦게 추가된 결정입니다.', '확인합니다.',
+                '/tmp/late.jsonl', 30, 30, 'S1', 0)
+      `).run(new Date(Date.now() + 5000).toISOString());
+    };
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    expect((db.prepare(
+      "SELECT last_exchange_rowid FROM extraction_log WHERE session_id = 'S1'",
+    ).get() as { last_exchange_rowid: number }).last_exchange_rowid).toBe(2);
+    expect(db.prepare(`
+      SELECT state FROM exchange_extraction_state
+      WHERE exchange_id = 'late'
+    `).get()).toBeUndefined();
+
+    await runFactExtraction(db, 'S1', '/tmp/p');
+    expect((db.prepare(
+      "SELECT last_exchange_rowid FROM extraction_log WHERE session_id = 'S1'",
+    ).get() as { last_exchange_rowid: number }).last_exchange_rowid).toBe(3);
+  });
+
+  it('model await 중 exchange generation이 성장하면 stale fact와 cursor를 함께 거부한다', async () => {
+    const { runFactExtraction, ClaimLostError } = await import('../src/fact-extractor.js');
+    const { insertExchange } = await import('../src/db.js');
+    modelHook = () => {
+      insertExchange(db, {
+        id: 'e0', project: '/tmp/p', timestamp: new Date().toISOString(),
+        userMessage: 'Riverpod 결정이 Provider로 변경되었습니다.',
+        assistantMessage: 'Provider 변경을 확인합니다.', archivePath: '/tmp/a0.jsonl',
+        lineStart: 1, lineEnd: 20, sessionId: 'S1', contentGeneration: 2,
+        closureState: 'closed',
+      }, new Array(384).fill(0.01));
+    };
+
+    await expect(runFactExtraction(db, 'S1', '/tmp/p')).rejects.toBeInstanceOf(ClaimLostError);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM facts").get() as { n: number }).n).toBe(0);
+    expect(db.prepare("SELECT state, cursor_ordinal FROM extraction_targets").get()).toEqual({
+      state: 'superseded', cursor_ordinal: 0,
+    });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM extraction_failed_ranges").get()).toEqual({ n: 0 });
+    expect((db.prepare(
+      "SELECT content_generation FROM exchanges WHERE id = 'e0'",
+    ).get() as { content_generation: number }).content_generation).toBe(2);
+
+    const retried = await runFactExtraction(db, 'S1', '/tmp/p');
+    expect(retried.saved).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT content_generation, state FROM exchange_extraction_state
+      WHERE exchange_id = 'e0' ORDER BY content_generation
+    `).all()).toEqual([
+      { content_generation: 1, state: 'superseded' },
+      { content_generation: 2, state: 'processed' },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM extraction_failed_ranges").get()).toEqual({ n: 0 });
+  });
+
   it('훅과 워커가 같은 세션을 동시에 처리해도 fact 는 한 벌만 저장된다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
     const [a, b] = await Promise.all([
@@ -470,7 +588,7 @@ describe('claim E2E', () => {
     expect(Math.min(a.saved, b.saved)).toBe(0);
   });
 
-  it('재감사 P1-8/T11: worker 변형은 훅이 정리한 세션을 다시 열지 않는다', async () => {
+  it('Continuity target은 worker/hook 호출자와 무관하게 새 suffix만 한 번 처리한다', async () => {
     const { runFactExtraction } = await import('../src/fact-extractor.js');
 
     // SessionEnd(hook 변형)가 세션을 settle한다 — 성공 마커 + 현재 워터마크.
@@ -484,9 +602,8 @@ describe('claim E2E', () => {
     expect(calls).toBe(settledCalls);
     expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
 
-    // seed 마커 위에 suffix 가 쌓인 상태: worker 변형은 선점을 거절한다 —
-    // seed suffix 의 재추출은 SessionEnd 훅이 담당한다는 설계 계약(pending-extraction).
-    // LLM 0회, fact 0건.
+    // seed marker는 더 이상 새 suffix를 숨기는 terminal 상태가 아니다. Durable
+    // target/outbox가 호출자 종류와 무관하게 suffix를 정확히 한 번 회수한다.
     db.prepare(
       "UPDATE extraction_log SET extracted = -1, saved = -1 WHERE session_id = 'S1'",
     ).run();
@@ -501,12 +618,16 @@ describe('claim E2E', () => {
       '화면 단위 ProviderScope를 사용하면 테스트 격리가 명확해집니다.',
       '/tmp/a2.jsonl', 11, 20, 'S1',
     );
-    const refused = await runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' });
-    expect(refused.skipped).toBe('claim_not_acquired');
-    expect(calls).toBe(settledCalls);
+    const workerRun = await runFactExtraction(db, 'S1', '/tmp/p', { claimVariant: 'worker' });
+    expect(workerRun.skipped).toBeUndefined();
+    expect(calls).toBe(settledCalls + 1);
     expect((db.prepare('SELECT COUNT(*) AS n FROM facts').get() as { n: number }).n).toBe(1);
+    expect(db.prepare(`
+      SELECT state FROM exchange_extraction_state
+      WHERE exchange_id = 'e2' ORDER BY content_generation DESC LIMIT 1
+    `).get()).toEqual({ state: 'processed' });
 
-    // 대조: hook 변형은 같은 상태에서 suffix 를 회수한다 — 변형이 동작을 바꾼다.
+    // 같은 target은 이미 완료됐으므로 hook 재전달은 no-op이다.
     const hookRun = await runFactExtraction(db, 'S1', '/tmp/p');
     expect(hookRun.skipped).toBeUndefined();
     expect(calls).toBe(settledCalls + 1);
@@ -517,7 +638,7 @@ describe('claim E2E', () => {
     // 추출 시작 직후 다른 러너가 claim 을 탈취한 상황을 재현:
     // 첫 배치 LLM 호출 중에 claim_owner 를 바꿔치기한다.
     setTimeout(() => {
-      try { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); }
+      try { db.prepare("UPDATE memory_jobs SET lease_owner = 'thief' WHERE target_id IN (SELECT target_id FROM extraction_targets WHERE session_id = 'S1' AND state = 'running')").run(); }
       catch { /* ignore */ }
     }, 20);
     await expect(runFactExtraction(db, 'S1', '/tmp/p')).rejects.toThrow(/claim lost/i);
@@ -532,7 +653,7 @@ describe('claim E2E', () => {
     // 결정론적 재현: 2번째 임베딩(=2번째 fact 저장 중) 시점에 claim 탈취.
     // 타이머는 임베딩이 스텁이라 저장이 먼저 끝나 재현이 안 된다(플레이키).
     stealAtEmbedCall = 2;
-    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+    stealHook = () => { db.prepare("UPDATE memory_jobs SET lease_owner = 'thief' WHERE target_id IN (SELECT target_id FROM extraction_targets WHERE session_id = 'S1' AND state = 'running')").run(); };
     await expect(runFactExtraction(db, 'S1', '/tmp/p')).rejects.toThrow(/claim lost/i);
     const n = (db.prepare("SELECT COUNT(*) c FROM facts WHERE fact LIKE 'dup-probe%'").get() as {c:number}).c;
     console.log(`  → 저장 중 탈취: fact ${n}건에서 중단 (4건 전부 저장되면 실패)`);
@@ -546,7 +667,7 @@ describe('claim E2E', () => {
     sourceIndicesPerFact = [[2]];
     contextIndicesPerFact = [[1]];  // fact와 함께 rollback될 context dependency
     stealAtEmbedCall = 1;           // 그 유일한 fact 의 임베딩 중 탈취
-    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+    stealHook = () => { db.prepare("UPDATE memory_jobs SET lease_owner = 'thief' WHERE target_id IN (SELECT target_id FROM extraction_targets WHERE session_id = 'S1' AND state = 'running')").run(); };
 
     // 체크포인트 방식이면 여기서 예외 없이 성공 반환 + fact 1건이 남는다.
     // 원자적 커밋이면 마커가 0행 → 트랜잭션 롤백 → fact 0건.
@@ -563,16 +684,18 @@ describe('claim E2E', () => {
   it('R10 MEDIUM: claim 이양은 ClaimLostError 로 구분돼 내부 실패로 오분류되지 않는다', async () => {
     const { runFactExtraction, ClaimLostError } = await import('../src/fact-extractor.js');
     factsPerCall = 1; stealAtEmbedCall = 1;
-    stealHook = () => { db.prepare("UPDATE extraction_log SET claim_owner = 'thief' WHERE session_id = 'S1'").run(); };
+    stealHook = () => { db.prepare("UPDATE memory_jobs SET lease_owner = 'thief' WHERE target_id IN (SELECT target_id FROM extraction_targets WHERE session_id = 'S1' AND state = 'running')").run(); };
 
     let caught: unknown;
     try { await runFactExtraction(db, 'S1', '/tmp/p'); } catch (e) { caught = e; }
     expect(caught, '이양은 전용 타입이어야 소비자가 3분류할 수 있다').toBeInstanceOf(ClaimLostError);
 
-    const row = db.prepare('SELECT extracted, saved FROM extraction_log WHERE session_id = ?')
-      .get('S1') as { extracted: number; saved: number };
-    console.log(`  → 이양 후 상태: extracted=${row.extracted} saved=${row.saved}`);
-    expect(row.extracted, '남의 claim(-3)이 유지돼야 한다 — 예산(-4) 소모 금지').toBe(-3);
+    const row = db.prepare(`
+      SELECT state, lease_owner FROM memory_jobs
+      WHERE target_id = (SELECT target_id FROM extraction_targets WHERE session_id = ?)
+    `).get('S1') as { state: string; lease_owner: string };
+    console.log(`  → 이양 후 상태: state=${row.state} owner=${row.lease_owner}`);
+    expect(row).toEqual({ state: 'running', lease_owner: 'thief' });
   });
 });
 

@@ -18385,7 +18385,7 @@ var LLM_WORKDIR_BASENAME = "memex-llm";
 
 // src/db.ts
 import Database from "better-sqlite3";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 import fs2 from "node:fs";
 import path3 from "path";
 import * as sqliteVec from "sqlite-vec";
@@ -18477,6 +18477,267 @@ async function queryBaseline(queryEmbedding) {
     if (dot > max) max = dot;
   }
   return max;
+}
+
+// src/continuity-store.ts
+import { createHash, randomUUID } from "node:crypto";
+var CONTINUITY_SCHEMA_VERSION = 1;
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+function parseStoredJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+function columnNames(db, table) {
+  return new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(
+      ({ name }) => name
+    )
+  );
+}
+function ensureContinuitySchema(db, options = {}) {
+  const migrate = db.transaction(() => {
+    const columns = columnNames(db, "exchanges");
+    if (!columns.has("exchange_seq")) {
+      db.exec("ALTER TABLE exchanges ADD COLUMN exchange_seq INTEGER NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("exchange-seq-column");
+    }
+    if (!columns.has("content_hash")) {
+      db.exec("ALTER TABLE exchanges ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''");
+      options.afterMigrationStage?.("content-hash-column");
+    }
+    if (!columns.has("content_generation")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN content_generation INTEGER NOT NULL DEFAULT 0"
+      );
+      options.afterMigrationStage?.("content-generation-column");
+    }
+    if (!columns.has("closure_state")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN closure_state TEXT NOT NULL DEFAULT 'closed' CHECK(closure_state IN ('open','interrupted','closed','final'))"
+      );
+      options.afterMigrationStage?.("closure-state-column");
+    }
+    if (!columns.has("parser_version")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 1"
+      );
+      options.afterMigrationStage?.("parser-version-column");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS continuity_schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        workspace_id TEXT,
+        workstream_id TEXT,
+        stream_epoch INTEGER NOT NULL DEFAULT 0,
+        ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('stop','interrupt','precompact','final','extraction')),
+        turn_id TEXT,
+        from_byte INTEGER,
+        through_byte INTEGER,
+        from_line INTEGER,
+        through_line INTEGER,
+        from_cursor INTEGER,
+        through_cursor INTEGER,
+        segment_hash TEXT,
+        prefix_hash TEXT,
+        parser_version INTEGER NOT NULL DEFAULT 1,
+        closure_state TEXT NOT NULL DEFAULT 'closed'
+          CHECK(closure_state IN ('open','interrupted','closed','final')),
+        context_epoch_before INTEGER,
+        state TEXT NOT NULL DEFAULT 'captured'
+          CHECK(state IN ('captured','pending','processing','processed','retry','superseded','failed-visible','dead-letter')),
+        capture_gap_reason TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_jobs (
+        job_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        partition_key TEXT NOT NULL,
+        checkpoint_id TEXT REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+        target_id TEXT,
+        from_cursor INTEGER,
+        through_cursor INTEGER,
+        policy_version TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','running','retry','completed','superseded','dead')),
+        available_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_until TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        last_error TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_targets (
+        target_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        from_rowid INTEGER NOT NULL,
+        through_rowid INTEGER NOT NULL,
+        cursor_ordinal INTEGER NOT NULL DEFAULT 0,
+        item_count INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','running','retry','completed','superseded','dead')),
+        lease_owner TEXT,
+        lease_until TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_target_items (
+        target_id TEXT NOT NULL REFERENCES extraction_targets(target_id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        -- Keep immutable target identity if canonical reconciliation removes
+        -- an exchange during async model work. Privacy purge deletes the
+        -- target first, so this non-FK reference does not retain purged state.
+        exchange_id TEXT NOT NULL,
+        exchange_rowid INTEGER NOT NULL,
+        content_generation INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','processing','processed','retry','superseded','failed-visible')),
+        PRIMARY KEY(target_id, ordinal),
+        UNIQUE(target_id, exchange_id, content_generation)
+      );
+
+      CREATE TABLE IF NOT EXISTS exchange_extraction_state (
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        content_generation INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','processing','processed','retry','superseded','failed-visible')),
+        target_id TEXT,
+        processed_at TEXT,
+        PRIMARY KEY(exchange_id, content_generation, policy_version)
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_failed_ranges (
+        failure_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL REFERENCES extraction_targets(target_id) ON DELETE CASCADE,
+        from_ordinal INTEGER NOT NULL,
+        through_ordinal INTEGER NOT NULL,
+        from_rowid INTEGER NOT NULL,
+        through_rowid INTEGER NOT NULL,
+        payload_fingerprint TEXT NOT NULL,
+        error_kind TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('retry','failed-visible')),
+        attempts INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(target_id, from_ordinal, through_ordinal, payload_fingerprint)
+      );
+
+    `);
+    options.afterMigrationStage?.("continuity-tables");
+    db.exec(`
+
+      CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
+        ON memory_jobs(state, available_at, priority DESC, created_at, job_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_jobs_partition
+        ON memory_jobs(partition_key, state, lease_until);
+      CREATE INDEX IF NOT EXISTS idx_extraction_targets_session
+        ON extraction_targets(session_id, policy_version, state, created_at);
+      CREATE INDEX IF NOT EXISTS idx_extraction_items_state
+        ON extraction_target_items(target_id, state, ordinal);
+      CREATE INDEX IF NOT EXISTS idx_exchange_generation_pending
+        ON exchange_extraction_state(policy_version, state, exchange_id);
+    `);
+    options.afterMigrationStage?.("continuity-indexes");
+    options.afterStructuralDdl?.();
+    const priorVersion = Number(
+      db.prepare(
+        "SELECT value FROM continuity_schema_meta WHERE key = 'schema_version'"
+      ).get()?.value ?? 0
+    );
+    const ftsExists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'exchanges_fts'"
+    ).get();
+    if (ftsExists && priorVersion < CONTINUITY_SCHEMA_VERSION) {
+      db.exec("INSERT INTO exchanges_fts(exchanges_fts) VALUES('rebuild')");
+      options.afterMigrationStage?.("fts-rebuild");
+    }
+    refreshExchangeMetadata(db);
+    options.afterMigrationStage?.("exchange-metadata");
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.prepare(`
+      INSERT INTO continuity_schema_meta(key, value, updated_at)
+      VALUES ('schema_version', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(CONTINUITY_SCHEMA_VERSION), now);
+    options.afterMigrationStage?.("schema-meta");
+    db.pragma(`user_version = ${CONTINUITY_SCHEMA_VERSION}`);
+    options.afterMigrationStage?.("user-version");
+  });
+  migrate.immediate();
+}
+function refreshExchangeMetadata(db, sessionId) {
+  const rows = db.prepare(`
+      SELECT rowid, id, session_id, user_message, assistant_message, line_end,
+             exchange_seq, content_hash, content_generation
+      FROM exchanges
+      ${sessionId ? "WHERE session_id = ?" : ""}
+      ORDER BY session_id, timestamp, rowid
+    `).all(...sessionId ? [sessionId] : []);
+  const nextBySession = /* @__PURE__ */ new Map();
+  const update = db.prepare(`
+    UPDATE exchanges
+    SET exchange_seq = ?, content_hash = ?, content_generation = ?
+    WHERE id = ?
+  `);
+  const selectTools = db.prepare(`
+    SELECT id, tool_name, tool_input, tool_result, is_error
+    FROM tool_calls WHERE exchange_id = ? ORDER BY id
+  `);
+  for (const row of rows) {
+    const key = row.session_id ?? `__row__${row.rowid}`;
+    const next = (nextBySession.get(key) ?? 0) + 1;
+    nextBySession.set(key, Math.max(next, row.exchange_seq));
+    const tools = selectTools.all(row.id);
+    const hash = sha256(JSON.stringify({
+      user: row.user_message,
+      assistant: row.assistant_message,
+      lineEnd: row.line_end,
+      tools: tools.map((tool) => ({
+        id: tool.id,
+        name: tool.tool_name,
+        input: parseStoredJson(tool.tool_input),
+        result: tool.tool_result,
+        error: !!tool.is_error
+      }))
+    }));
+    const changed = !!row.content_hash && row.content_hash !== hash;
+    update.run(
+      row.exchange_seq > 0 ? row.exchange_seq : next,
+      hash,
+      changed ? Math.max(1, row.content_generation) + 1 : row.content_generation > 0 ? row.content_generation : 1,
+      row.id
+    );
+  }
 }
 
 // src/db.ts
@@ -19004,14 +19265,15 @@ function initDatabase(options = {}) {
       last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
+  ensureContinuitySchema(db);
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash("sha256").update(prompt, "utf8").digest("hex");
+  return createHash2("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0) return null;
-  const id = randomUUID();
+  const id = randomUUID2();
   db.prepare(`
     INSERT INTO recall_events
       (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)

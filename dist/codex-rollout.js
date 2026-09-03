@@ -168,7 +168,7 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
     let cur = null;
     let lineNo = 0;
     let lastTs = "";
-    const flush = () => {
+    const flush = (boundary) => {
         if (!cur ||
             (cur.assistantMessages.length === 0 && cur.toolCalls.length === 0)) {
             cur = null;
@@ -193,6 +193,7 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
                 .update(`mx:u${cur.userLine}:${cur.userMessage}`)
                 .digest("hex");
         const toolCalls = cur.toolCalls.map((tc) => ({ ...tc, exchangeId: id }));
+        const hasIncompleteTool = toolCalls.some((call) => call.toolResult === undefined);
         exchanges.push({
             id,
             project: "",
@@ -202,6 +203,9 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
             archivePath,
             lineStart: cur.userLine,
             lineEnd: cur.assistantLine,
+            exchangeSeq: exchanges.length + 1,
+            closureState: boundary === "eof" && hasIncompleteTool ? "interrupted" : "closed",
+            parserVersion: 2,
             sessionId: meta ? (meta.session_id ?? meta.id) : undefined,
             cwd: meta ? meta.cwd : undefined,
             codexVersion: meta ? meta.cli_version : undefined,
@@ -241,7 +245,7 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
             if (role === "user") {
                 if (isInternalContextMessage(text))
                     continue;
-                flush();
+                flush("next_user");
                 cur = {
                     userMessage: text,
                     userLine: lineNo,
@@ -283,7 +287,7 @@ export async function parseRolloutStream(input, { archivePath = "" } = {}) {
             }
         }
     }
-    flush();
+    flush("eof");
     return { meta, isSubagent: isSubagentMeta(meta), exchanges };
 }
 /**

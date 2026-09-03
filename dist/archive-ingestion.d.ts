@@ -15,3 +15,13 @@ import type { ConversationExchange } from './types.js';
  * and from the insert loop (so they are never indexed).
  */
 export declare function ingestArchiveExchanges(db: Database.Database, archivePath: string, exchanges: ConversationExchange[]): Promise<number>;
+/**
+ * Monotonic partial ingestion for checkpoint prefixes. Unlike the canonical
+ * archive path above, this never reconciles a desired set and therefore never
+ * deletes exchanges missing from an older/shorter prefix. DB generation and
+ * line guards reject regression before vectors or tool evidence are replaced.
+ */
+export declare function ingestPrefixExchanges(db: Database.Database, exchanges: ConversationExchange[]): Promise<{
+    indexed: number;
+    ignoredRegressions: number;
+}>;

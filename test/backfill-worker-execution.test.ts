@@ -70,7 +70,6 @@ export function pendingExtractionCoreQuery() { return { sql: 'SELECT 1', params:
   // 치환 앵커가 사라지면 조용히 '다른 것'을 테스트하게 된다 — 명시적으로 실패시킨다.
   for (const anchor of [
     'return db.prepare(`${sql} ORDER BY ts DESC LIMIT ?`).all(...params, limit);',
-    'const seeded = seedFromExistingFacts(db);',
   ]) {
     if (!original.includes(anchor)) throw new Error(`스텁 앵커 소실 — 테스트를 갱신하세요: ${anchor}`);
   }
@@ -79,10 +78,7 @@ export function pendingExtractionCoreQuery() { return { sql: 'SELECT 1', params:
     .replace(
       'return db.prepare(`${sql} ORDER BY ts DESC LIMIT ?`).all(...params, limit);',
       "return [{sid:'s1'},{sid:'s2'},{sid:'s3'},{sid:'s4'}];",
-    )
-    // seed 단계는 이 테스트의 관심사가 아니다 — 함수 본문이 아니라 **호출부**만 치환한다
-    // (본문을 주석으로 감싸면 구문이 깨진다).
-    .replace('const seeded = seedFromExistingFacts(db);', 'const seeded = 0;');
+    );
   fs.writeFileSync(path.join(sandbox, 'scripts', 'backfill-extract-worker.js'), worker);
 }
 

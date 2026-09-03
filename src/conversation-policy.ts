@@ -235,6 +235,23 @@ export function purgeConversationFromIndex(
     // 다시 만들지 못한다. bump는 taxonomy 삭제와 같은 transaction 안에 있다.
     bumpTaxonomyEpoch(db);
     if (input.sessionId) {
+      const continuityTables = new Set(
+        (db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ).all() as Array<{ name: string }>).map(({ name }) => name),
+      );
+      if (continuityTables.has("checkpoints")) {
+        // Cascade removes checkpoint-owned jobs before target/exchange rows.
+        // This prevents a queued worker from recreating purged knowledge.
+        db.prepare("DELETE FROM checkpoints WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("extraction_targets")) {
+        db.prepare("DELETE FROM extraction_targets WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
       db.prepare("DELETE FROM extraction_log WHERE session_id = ?").run(
         input.sessionId,
       );

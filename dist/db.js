@@ -7,6 +7,7 @@ import { getMemexHome, getDbPath, ensureDbDir, LLM_WORKDIR_BASENAME, } from "./p
 import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
+import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
 export const VEC_INT8_SCALE = 127;
 /**
  * Authoritative vector dtype for vec_exchanges.
@@ -619,6 +620,7 @@ export function initDatabase(options = {}) {
       last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
+    ensureContinuitySchema(db);
     return db;
 }
 export function insertExchange(db, exchange, embedding, _toolNames) {
@@ -652,6 +654,40 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
     // the table dtype inside that write transaction so the blob always matches
     // the actual vec schema.
     const insertAll = db.transaction(() => {
+        const existing = db.prepare(`
+      SELECT line_end, exchange_seq, content_hash, content_generation, closure_state
+      FROM exchanges WHERE id = ?
+    `).get(exchange.id);
+        const contentHash = exchange.contentHash ?? exchangeContentHash(exchange);
+        const explicitGeneration = exchange.contentGeneration;
+        if (existing) {
+            if (exchange.lineEnd < existing.line_end)
+                return false;
+            if (explicitGeneration !== undefined &&
+                explicitGeneration < existing.content_generation)
+                return false;
+            if (explicitGeneration !== undefined &&
+                explicitGeneration === existing.content_generation &&
+                existing.content_hash &&
+                contentHash !== existing.content_hash)
+                return false;
+        }
+        const contentGeneration = explicitGeneration ?? (existing &&
+            (contentHash !== existing.content_hash || exchange.lineEnd > existing.line_end)
+            ? existing.content_generation + 1
+            : Math.max(1, existing?.content_generation ?? 1));
+        const closureRank = {
+            open: 0,
+            interrupted: 1,
+            closed: 2,
+            final: 3,
+        };
+        const closureState = exchange.closureState ?? "closed";
+        if (existing &&
+            contentGeneration === existing.content_generation &&
+            closureRank[closureState] < closureRank[existing.closure_state])
+            return false;
+        const exchangeSeq = exchange.exchangeSeq ?? existing?.exchange_seq ?? (db.prepare("SELECT COALESCE(MAX(exchange_seq), 0) + 1 AS n FROM exchanges WHERE session_id IS ?").get(exchange.sessionId ?? null).n);
         // The embedding parameter was just generated with the current model, so
         // stamp the current version — search filters on it and the re-embed
         // worker must not redo freshly indexed rows.
@@ -660,8 +696,9 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
        parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
        thinking_level, thinking_disabled, thinking_triggers, embedding_version,
-       provenance, assistant_learnable, has_memex_recall)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       provenance, assistant_learnable, has_memex_recall, exchange_seq,
+       content_hash, content_generation, closure_state, parser_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project = excluded.project,
         timestamp = excluded.timestamp,
@@ -683,8 +720,13 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         embedding_version = excluded.embedding_version,
         provenance = excluded.provenance,
         assistant_learnable = excluded.assistant_learnable,
-        has_memex_recall = excluded.has_memex_recall
-    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0);
+        has_memex_recall = excluded.has_memex_recall,
+        exchange_seq = excluded.exchange_seq,
+        content_hash = excluded.content_hash,
+        content_generation = excluded.content_generation,
+        closure_state = excluded.closure_state,
+        parser_version = excluded.parser_version
+    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0, exchangeSeq, contentHash, contentGeneration, closureState, exchange.parserVersion ?? 1);
         // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
         const vecDtype = getVecDtype(db);
         db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(exchange.id);
@@ -709,9 +751,10 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
                     : 0);
             }
         }
+        return true;
     });
     // .immediate(): acquire the write lock at BEGIN, before any schema read.
-    insertAll.immediate();
+    return insertAll.immediate();
 }
 const MEMEX_RECALL_TOOLS = new Set([
     "search",
