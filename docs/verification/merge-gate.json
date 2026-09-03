@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-02T06:44:07Z",
+  "recordedAt": "2026-09-03T06:50:34Z",
   "environment": {
     "codexCli": "codex-cli 0.150.1",
     "node": "v26.0.0",
@@ -8,10 +8,10 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "codex/fact-extraction-context-grounding",
-    "codeSha": "2bcbb42ea3c4ab74e886d3d890608d4f1c2846c8",
+    "branch": "codex/docs-context-dependency-wording",
+    "codeSha": "621d226e0622dd04583618189fdc31495e1e4a18",
     "productionEvidenceSha": "8358d9c0dce943a7cd1ff36dbe0d73692f236d68",
-    "note": "The final deterministic and browser gates ran from a clean tree at candidate.codeSha. Between productionEvidenceSha and candidate.codeSha, only FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md, docs/VERIFICATION.md, and test/fact-extraction-eval.test.ts changed. The test-only change removed a stale nonexistent historical dependency from a local-context telemetry mock after the first full gate exposed the mismatch; runtime code, generator/verifier prompts, model fixtures, and evaluation scripts are identical. This receipt-only commit follows."
+    "note": "The final required, installer, marketplace, package-runtime, and lifecycle gates ran from a clean tree at candidate.codeSha for release 0.3.0. Between productionEvidenceSha and candidate.codeSha, public documentation, release metadata, the MCP advertised version, and its generated bundle changed; fact extraction runtime code, generator/verifier prompts, model fixtures, and evaluation scripts are identical. The browser result is reused from the immediately preceding fdd3408 receipt because the Web UI and server implementation did not change. This receipt-only commit follows."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -83,25 +83,25 @@
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
-      "observed": "isolated marketplace install exposed 3 skills and 3 hook events; cleanup PASS"
+      "observed": "isolated marketplace install exposed version 0.3.0, 3 skills, and 3 hook events; cleanup PASS"
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.2.0.tgz, 191 files, 765177 packed bytes / 3030058 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
+      "observed": "memex-0.3.0.tgz, 191 files, 766117 packed bytes / 3032736 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
     },
     {
       "name": "web-ui-browser-e2e",
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "status": "PASS",
-      "observed": "Google Chrome headless over CDP at 1440x900; Fact Detail rendered the authoritative-provenance/non-authoritative-context heading, context_only authority, assistant_context dependency kind, and context exchange ID; horizontal overflow false and runtime errors 0"
+      "observed": "reused fdd3408 Google Chrome headless observation at 1440x900 because UI/server code is unchanged through candidate.codeSha; Fact Detail rendered the authoritative-provenance/non-authoritative-context heading, context_only authority, assistant_context dependency kind, and context exchange ID; horizontal overflow false and runtime errors 0"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
-      "observed": "9/9 steps passed; plugin registration, owned hooks, temp data, workers, inject sockets, listeners, and user-environment isolation cleanup checks all passed"
+      "observed": "9/9 steps passed against isolated plugin version 0.3.0; plugin registration, owned hooks, temp data, workers, inject sockets, listeners, and user-environment isolation cleanup checks all passed"
     }
   ],
   "hardSafety": {
@@ -125,5 +125,5 @@
     "perMissPipelineLayerAttribution": "NOT_PROVEN",
     "verdict": "PASS-WITH-NOTES"
   },
-  "releaseConclusion": "PASS-WITH-NOTES: deterministic repository gates, the Phase 7 browser E2E, and all hard-safety conditions passed. Notes preserve observed evidence without redrawing model runs: legacy 17-case was 17/17; P2 full was 21/23 with same-SHA targeted PASS for lg2 and l6; the frozen archive baseline observed four semantic duplicates and at least seven important miss clusters. The archive run accepted 16 direct/explicit facts and seven context-resolved ratifications, so no systematic authority-class or workflow-adoption verifier failure was observed. Exact per-miss generator/retrieval/verifier attribution remains NOT_PROVEN rather than inferred."
+  "releaseConclusion": "PASS-WITH-NOTES: release 0.3.0 deterministic repository, installer, marketplace, package-runtime, and lifecycle gates passed at candidate.codeSha; the unchanged Web UI retains the preceding browser PASS; all hard-safety conditions passed. Notes preserve observed evidence without redrawing model runs: legacy 17-case was 17/17; P2 full was 21/23 with same-SHA targeted PASS for lg2 and l6; the frozen archive baseline observed four semantic duplicates and at least seven important miss clusters. The archive run accepted 16 direct/explicit facts and seven context-resolved ratifications, so no systematic authority-class or workflow-adoption verifier failure was observed. Exact per-miss generator/retrieval/verifier attribution remains NOT_PROVEN rather than inferred."
 }
