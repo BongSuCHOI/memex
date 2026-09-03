@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "name": "memex",
   "description": "Local-first personal knowledge for Codex: conversation memory, facts, RAG, knowledge graphs, and context injection.",
   "author": {

@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.2.0-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.3.0-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
