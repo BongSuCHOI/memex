@@ -68,6 +68,10 @@ Phase 4부터 `trace_fact`는 lane label을 출력합니다: `CURRENT FACT`(auth
 exchange, purge된 경우 `source unavailable`), `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`.
 event의 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`는 항상 분리됩니다.
 history는 `timeline_limit`(≤50)과 `timeline_cursor`로 bounded pagination됩니다.
+timeline의 scope 가시성은 fact search 계약과 같습니다: `project` scope는 project-wide truth와 event-only
+observation만 보여주고 unmerged workspace/workstream fact의 history는 숨깁니다. `workspace`/`workstream`
+scope는 정확히 그 workspace/workstream의 fact와 evidence를 추가하며 sibling workstream의 history는 보이지 않습니다.
+unmerged fact의 event는 `scope: workstream <id> (unmerged; not project-wide truth)`로 표시됩니다.
 
 같은 turn의 별도 repo/Git/test tool result는 call ID별로 독립 분류합니다. Memex MCP call 하나가 sibling evidence를 자동으로 taint하지 않습니다.
 

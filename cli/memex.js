@@ -287,7 +287,7 @@ async function main() {
           } else if (sub === "restore") {
             const id = optValue("--id");
             if (!id) throw new Error("usage: memex facts restore --id <uuid>");
-            const r = fm.restoreFact(db, id);
+            const r = await fm.restoreFact(db, id);
             console.log(
               `Restored: ${id}\nVector restored: ${r.vectorRestored}`,
             );
@@ -306,7 +306,7 @@ async function main() {
             for (const ev of events) {
               console.log(chronicle.formatChronicleEvent(db, ev, { includeSources: false }));
             }
-            console.log(`(${revs.length} revisions)`);
+            console.log(`(${events.length} Chronicle events)`);
           } else if (sub === "delete") {
             const id = optValue("--id");
             if (!id)

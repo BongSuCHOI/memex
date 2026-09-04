@@ -153,6 +153,12 @@ export interface ChronicleTimelineQuery {
     limit?: number;
     order?: "asc" | "desc";
     includeGlobal?: boolean;
+    /**
+     * Project scope: hide the history of unmerged workspace/workstream facts
+     * (they are not project-wide truth). Ignored when a workspace/workstream
+     * filter is given, which selects exactly that scope's visibility.
+     */
+    projectTruthOnly?: boolean;
 }
 export interface ChronicleTimelinePage {
     events: ChronicleEvent[];
@@ -180,10 +186,19 @@ export interface CurrentFactRevision {
     lifecycleUpdatedAt: string;
     latestEventId: string | null;
     latestEffectiveAt: string | null;
+    latestEffectiveAtSource: EffectiveAtSource | null;
 }
 /** Current projection revision for one fact, plus its latest projection-changing event. */
 export declare function currentFactRevision(db: Database.Database, factId: string): CurrentFactRevision | null;
-/** Effective time of the current projection value, used for temporal ordering of incoming evidence. */
+/**
+ * Effective time of the current projection value plus how it was established
+ * (`source` = cited evidence timestamp, `recorded` = a worker clock that was
+ * the only thing available), used for temporal ordering of incoming evidence.
+ */
+export declare function currentEffectiveTime(db: Database.Database, factId: string): {
+    at: string;
+    source: EffectiveAtSource;
+} | null;
 export declare function currentEffectiveAt(db: Database.Database, factId: string): string | null;
 export declare const SUBJECT_KEY_PATTERN: RegExp;
 /** Validate a model-proposed subject key against the stable slot grammar and its category prefix. */

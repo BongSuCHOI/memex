@@ -12,9 +12,11 @@ import {
 import { deactivateFactTransactional, mutateFactMeaning, StaleFactMutationError } from './fact-management.js';
 import {
   currentEffectiveAt,
+  currentEffectiveTime,
   currentEvidenceAuthority,
   judgeCompetingEvidence,
   recordChronicleEvent,
+  type EffectiveAtSource,
 } from './chronicle.js';
 
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
@@ -335,7 +337,12 @@ export async function applyConsolidationResult(
       // last. The consolidator's own reason is model inference and is stored
       // only as a classifier note.
       const existingEffective = currentEffectiveAt(db, existingFact.id);
-      const incomingEffective = currentEffectiveAt(db, newFact.id) ?? newFact.semantic_updated_at ?? newFact.created_at;
+      // A candidate without any source-effective time falls back to its local
+      // write clock; the event then says `recorded` so the uncertainty is
+      // visible instead of being presented as evidence time.
+      const incomingTime = currentEffectiveTime(db, newFact.id);
+      const incomingEffective = incomingTime?.at ?? newFact.semantic_updated_at ?? newFact.created_at;
+      const incomingEffectiveSource: EffectiveAtSource = incomingTime?.source ?? 'recorded';
       const judgement = judgeCompetingEvidence({
         existingEffectiveAt: existingEffective,
         existingAuthority: currentEvidenceAuthority(db, existingFact.id),
@@ -364,6 +371,7 @@ export async function applyConsolidationResult(
             actor: 'consolidator',
             classifierNote: `${result.relation}: ${result.reason}`,
             effectiveAt: incomingEffective,
+            effectiveAtSource: incomingEffectiveSource,
             evidenceAuthority: currentEvidenceAuthority(db, newFact.id),
             outcome: { consolidation: result.relation, temporal: judgement.reason, absorbed_fact_id: newFact.id },
           },
@@ -404,6 +412,7 @@ export async function applyConsolidationResult(
           actor: 'consolidator',
           evidenceAuthority: currentEvidenceAuthority(db, newFact.id),
           effectiveAt: incomingEffective,
+          effectiveAtSource: incomingEffectiveSource,
           projectionApplied: false,
         });
         if (judgement.verdict === 'historical') {

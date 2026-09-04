@@ -23,6 +23,7 @@ import {
   recordChronicleEvent,
   type ChronicleActor,
   type ChronicleEvent,
+  type EffectiveAtSource,
   type EvidenceAuthority,
   type GroundedField,
 } from './chronicle.js';
@@ -182,6 +183,8 @@ export interface ChronicleMutationContext {
   classifierNote?: string | null;
   evidenceAuthority?: EvidenceAuthority;
   effectiveAt?: string | null;
+  /** How `effectiveAt` was established; a caller passing a worker clock must say `recorded`. */
+  effectiveAtSource?: EffectiveAtSource;
   sourceEvidenceIds?: string[];
   revertsEventId?: string | null;
   relatedEventIds?: string[];
@@ -405,6 +408,7 @@ export function applyFactMeaningMutation(
       actor: chronicle.actor,
       evidenceAuthority: chronicle.evidenceAuthority ?? (chronicle.actor === 'user' ? 'human' : 'unknown'),
       effectiveAt: chronicle.effectiveAt ?? null,
+      effectiveAtSource: chronicle.effectiveAtSource,
       recordedAt: now,
       projectionApplied: true,
     });

@@ -498,7 +498,8 @@ temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDE
 ### Temporal semantics
 
 `effective_at` = cited authoritative source exchange의 timestamp(최대값). source가 없으면 `recorded_at`으로
-fallback하고 `effective_at_source=recorded`로 불확실성을 표시합니다. `recorded_at` = worker commit 시점.
+fallback하고 `effective_at_source=recorded`로 불확실성을 표시합니다(consolidator가 source 없는 candidate의 local
+write clock으로 판정한 경우도 `recorded`). `recorded_at` = worker commit 시점.
 Timeline과 rollback 탐지는 effective 순서를 사용합니다.
 
 ### Grounded cause
@@ -507,7 +508,10 @@ Timeline과 rollback 탐지는 effective 순서를 사용합니다.
 tool result 안의 exact span으로 제시하고 server가 재검증한 경우, (2) actor `user`가 CLI/UI에서 직접 입력한 경우에만
 기록됩니다. 검증 실패는 `ChronicleGroundingError`(fail-closed) 또는 `classifier_note: unverified ...`입니다.
 API/MCP/CLI 출력은 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`를
-분리해 표시합니다.
+분리해 표시합니다. grounded field가 cite한 exchange는 항상 event의 `source_exchange_ids`에 포함되므로 source 없는
+grounded field는 구조적으로 존재하지 않습니다. sync import는 이 구조를 검증합니다(source 없는
+`problem`/`grounded_cause`, actor `user`가 아닌 source 없는 `rationale`, `fact_id` 없는 projection change는 generation
+전체 reject). 그 외 peer의 grounded field는 origin에서 검증된 값으로 신뢰하고 `effective_at_source=peer`로 표시합니다.
 
 ### Rollback
 
@@ -517,13 +521,18 @@ API/MCP/CLI 출력은 `grounded cause (source-cited)`와 `classifier note (model
 ### Incident pattern
 
 `recordIncidentOccurrence`: signature는 ANSI/uuid/time/path/hex/number를 placeholder로 치환한 240자 normalized
-text의 sha256[0:24]입니다. 같은 project+signature+session에서 30분 안의 재시도는 기존 occurrence에 coalesce
-(`retry_count`)되고 event를 만들지 않습니다. 독립 episode(다른 session 또는 window 밖)는 `INCIDENT` event +
-occurrence를 append하고 `episode_count`를 올립니다. `episode_count >= 2` 또는 `user_flagged_repeat`이면
-`pattern`입니다. 재발 없음은 resolved가 아닙니다. `recordIncidentRemediation`은 trusted test 성공 evidence(또는
-human 명시)만 받아 `VALIDATED` event를 쓰고 signature를 `remediated`로 바꿉니다. remediation 후 재발은 다시
-`pattern`입니다. `matchIncidentPatterns(db, {projectId, text, limit})`은 Phase 5 WATCH용 bounded match(normalized
-substring 또는 token Jaccard ≥ 0.5)입니다.
+text의 sha256[0:24]입니다. 이미 어떤 occurrence가 cite한 exchange로 같은 signature가 다시 전달되면(worker page
+재시도, job replay) session과 무관하게 no-op입니다(retry도 episode도 아님). 같은 project+signature+session의
+`open` occurrence에 30분 안의 새 evidence가 오면 그 occurrence에 coalesce(`retry_count`, exchange 추가)되고
+event를 만들지 않습니다. 독립 episode(다른 session 또는 window 밖)는 `INCIDENT` event + occurrence를 append하고
+`episode_count`를 올립니다. `episode_count >= 2` 또는 `user_flagged_repeat`이면 `pattern`입니다. 재발 없음은
+resolved가 아닙니다. `recordIncidentRemediation`은 trusted test 성공 evidence(또는 human 명시)만 받아 `VALIDATED`
+event를 쓰고 signature를 `remediated`로 바꿉니다. remediation 후 재발(effective_at이 remediation 이후)은 다시
+`pattern`이고 remediation link는 지워집니다. remediation보다 앞선 effective_at을 가진 episode가 늦게 도착하면
+occurrence는 `remediated` 상태로 저장되고 signature는 `remediated`로 유지됩니다(worker 순서가 history를 뒤집지
+않음). signature는 project 단위이므로 서로 다른 workstream의 독립 episode는 하나의 project pattern으로 집계되며
+occurrence에 workstream/session provenance가 남습니다. `matchIncidentPatterns(db, {projectId, text, limit≤20})`은
+Phase 5 WATCH용 bounded match(normalized substring 또는 token Jaccard ≥ 0.5)입니다.
 
 ### Phase 5 API
 

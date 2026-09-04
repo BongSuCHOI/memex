@@ -352,8 +352,10 @@ Project-scoped wire rows는 stable project/portable identity를 사용하고 `sc
 `fact-revisions.jsonl`은 Chronicle event 전체 shape(legacy 7-field + event field, `portable_project_key`)를 additive로
 실어 나르며 device-local generation 번호는 내보내지 않습니다. importer는 legacy 7-field row와 event row를 모두
 받아 stable event id로 replay-idempotent하게 append하고, 같은 id에 다른 내용이 오면 local history를 보존한 채
-`malformedRows`에 conflict를 기록합니다. `fact-tombstones.jsonl`에는 `{fact_id: null, event_id, ...}` 형태의
-Chronicle tombstone row가 추가됩니다(구 peer는 generation 전체를 visible reject).
+`malformedRows`에 conflict를 기록합니다. event row의 grounded field는 origin에서 검증된 값으로 신뢰하되
+구조 검증을 통과해야 합니다(source 없는 `problem`/`grounded_cause`, actor `user`가 아닌 source 없는 `rationale`,
+`fact_id` 없는 `projection_applied=1`은 schema-invalid로 generation 전체 reject). `fact-tombstones.jsonl`에는
+`{fact_id: null, event_id, ...}` 형태의 Chronicle tombstone row가 추가됩니다(구 peer는 generation 전체를 visible reject).
 Workspace path, Git common-dir, branch와 Hot Evidence는 device-local/ephemeral이므로 export하지 않습니다.
 Legacy v4 path row는 importer가 canonical local workspace로 migration할 수 있지만, 새 path-free shape를
 모르는 peer는 generation 전체를 visible하게 reject해야 하며 partial compatibility import는 금지합니다.

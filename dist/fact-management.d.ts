@@ -9,7 +9,7 @@
  * counts (revisions/relations/vectors) before removing anything.
  */
 import type Database from 'better-sqlite3';
-import { type ChronicleActor, type ChronicleEvent, type EvidenceAuthority, type GroundedField } from './chronicle.js';
+import { type ChronicleActor, type ChronicleEvent, type EffectiveAtSource, type EvidenceAuthority, type GroundedField } from './chronicle.js';
 export interface FactRow {
     id: string;
     fact: string;
@@ -95,6 +95,8 @@ export interface ChronicleMutationContext {
     classifierNote?: string | null;
     evidenceAuthority?: EvidenceAuthority;
     effectiveAt?: string | null;
+    /** How `effectiveAt` was established; a caller passing a worker clock must say `recorded`. */
+    effectiveAtSource?: EffectiveAtSource;
     sourceEvidenceIds?: string[];
     revertsEventId?: string | null;
     relatedEventIds?: string[];

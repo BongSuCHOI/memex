@@ -81,6 +81,12 @@ per-event `[RAW EVIDENCE]` sources or `source unavailable (purged or missing)`),
 matching signature patterns), and `Related Facts`. A `subject_key` with no current fact still returns its
 historical events. A fact outside the requested scope is an error, never silently widened.
 
+Timeline visibility follows the fact-search scope contract: `project` scope shows project-wide truth
+(`legacy-project|decision|project-current`) and event-only observations, never the history of an unmerged
+workspace/workstream fact; `workspace`/`workstream` scope adds exactly that workspace/workstream's facts and
+evidence; `session` scope shows events whose cited evidence belongs to that session. An event on an unmerged
+fact is labeled `scope: workstream <id> (unmerged; not project-wide truth)`.
+
 Example: `{"subject_key":"state.runtime.session_store","project_id":"<id>","timeline_limit":5}` then
 `{"subject_key":"state.runtime.session_store","project_id":"<id>","timeline_limit":5,"timeline_cursor":"<cursor>"}`.
 

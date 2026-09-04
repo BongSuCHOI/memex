@@ -395,6 +395,18 @@ function parseRevision(value) {
     const projection = value.projection_applied;
     if (projection !== 0 && projection !== 1 && projection !== true && projection !== false)
         return null;
+    const projectionApplied = projection === 1 || projection === true;
+    // Structural GROUNDED CAUSE guard for replicated rows: the exporting peer
+    // verified grounded fields against its own sources, so a grounded field
+    // must always travel with cited sources (a user-stated rationale is the one
+    // source-free exception, and only for actor `user`). A projection change
+    // must name the fact it changed. Anything else is not a Memex-written row.
+    if ((problem || groundedCause) && sourceExchangeIds.length === 0)
+        return null;
+    if (rationale && sourceExchangeIds.length === 0 && value.actor !== "user")
+        return null;
+    if (projectionApplied && !factId)
+        return null;
     let outcome = null;
     if (outcomeRaw) {
         try {
@@ -434,7 +446,7 @@ function parseRevision(value) {
             evidence_authority: value.evidence_authority,
             effective_at: value.effective_at,
             recorded_at: value.recorded_at,
-            projection_applied: projection === 1 || projection === true,
+            projection_applied: projectionApplied,
         },
     };
 }

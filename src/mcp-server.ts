@@ -1362,9 +1362,10 @@ export async function handleToolCall(
             const page = readChronicleTimeline(db, {
               projectId: traceScope.projectId,
               subjectKey: params.subject_key,
-              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
               workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
               sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
               cursor: params.timeline_cursor ?? null,
               limit: params.timeline_limit,
               order: params.timeline_order,
@@ -1451,9 +1452,10 @@ export async function handleToolCall(
               ...(bySubject
                 ? { projectId: fact.project_id, subjectKey: fact.subject_key }
                 : { factId: fact.id }),
-              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
               workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
               sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
               cursor: params.timeline_cursor ?? null,
               limit: params.timeline_limit,
               order: params.timeline_order,

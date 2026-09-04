@@ -326,11 +326,16 @@ export function recordChronicleEvent(
     rationale: null,
   };
   const notes: string[] = [];
+  // Every grounded statement is bound to the exchange that states it, so the
+  // exchange is always part of the event's cited sources (a grounded field
+  // without a cited source is structurally impossible, locally and on sync).
+  const groundedExchangeIds: string[] = [];
   for (const [slot, field] of Object.entries(input.grounded ?? {}) as Array<[keyof typeof grounded, GroundedField | undefined]>) {
     if (!field) continue;
     if (!field.text || field.text.trim() === "") continue;
     if (verifyGroundedField(db, field)) {
       grounded[slot] = field.text.trim();
+      groundedExchangeIds.push(field.exchangeId);
     } else {
       throw new ChronicleGroundingError(
         `${slot} is not present in the cited authoritative source (exchange ${field.exchangeId})`,
@@ -343,7 +348,7 @@ export function recordChronicleEvent(
   if (input.classifierNote && input.classifierNote.trim() !== "") notes.push(input.classifierNote.trim());
 
   const recordedAt = input.recordedAt ?? new Date().toISOString();
-  const sourceExchangeIds = uniqueSorted(input.sourceExchangeIds);
+  const sourceExchangeIds = uniqueSorted([...(input.sourceExchangeIds ?? []), ...groundedExchangeIds]);
   const sourceEvidenceIds = uniqueSorted(input.sourceEvidenceIds);
   let effectiveAt = input.effectiveAt ?? null;
   let effectiveAtSource: EffectiveAtSource = input.effectiveAtSource ?? "source";
@@ -512,6 +517,12 @@ export interface ChronicleTimelineQuery {
   limit?: number;
   order?: "asc" | "desc";
   includeGlobal?: boolean;
+  /**
+   * Project scope: hide the history of unmerged workspace/workstream facts
+   * (they are not project-wide truth). Ignored when a workspace/workstream
+   * filter is given, which selects exactly that scope's visibility.
+   */
+  projectTruthOnly?: boolean;
 }
 
 export interface ChronicleTimelinePage {
@@ -576,19 +587,27 @@ export function readChronicleTimeline(
     clauses.push(`r.event_kind IN (${query.kinds.map(() => "?").join(",")})`);
     params.push(...query.kinds);
   }
-  if (query.workspaceId) {
-    clauses.push(`(
-      EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND f.workspace_id = ?)
-      OR EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.workspace_id = ?)
-    )`);
-    params.push(query.workspaceId, query.workspaceId);
-  }
+  // Scope visibility mirrors the fact search contract (BRANCH TRUTH / SCOPE):
+  // project-wide truth (legacy-project/decision/project-current) is visible in
+  // every scope of its project; a workspace/workstream fact's history is
+  // visible only inside that workspace/workstream; an event-only row is
+  // visible where its cited evidence lives. A sibling workstream's unmerged
+  // history therefore never appears under another workstream's scope.
+  const PROJECT_TRUTH = "f.promotion_state IN ('legacy-project','decision','project-current')";
+  const factVisible = (extra: string): string =>
+    `EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND (${PROJECT_TRUTH}${extra}))`;
+  const evidenceIn = (column: "workspace_id" | "workstream_id"): string =>
+    `EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.${column} = ?)`;
   if (query.workstreamId) {
-    clauses.push(`(
-      EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND f.workstream_id = ?)
-      OR EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.workstream_id = ?)
-    )`);
-    params.push(query.workstreamId, query.workstreamId);
+    clauses.push(`(${factVisible(
+      " OR (f.promotion_state = 'workstream' AND f.workstream_id = ?) OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)",
+    )} OR ${evidenceIn("workstream_id")})`);
+    params.push(query.workstreamId, query.workspaceId ?? "", query.workstreamId);
+  } else if (query.workspaceId) {
+    clauses.push(`(${factVisible(" OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)")} OR ${evidenceIn("workspace_id")})`);
+    params.push(query.workspaceId, query.workspaceId);
+  } else if (query.projectTruthOnly) {
+    clauses.push(`(r.fact_id IS NULL OR ${factVisible("")})`);
   }
   if (query.sessionId) {
     clauses.push(`EXISTS (
@@ -633,6 +652,7 @@ export interface CurrentFactRevision {
   lifecycleUpdatedAt: string;
   latestEventId: string | null;
   latestEffectiveAt: string | null;
+  latestEffectiveAtSource: EffectiveAtSource | null;
 }
 
 /** Current projection revision for one fact, plus its latest projection-changing event. */
@@ -644,10 +664,10 @@ export function currentFactRevision(db: Database.Database, factId: string): Curr
   `).get(factId) as Record<string, unknown> | undefined;
   if (!row) return null;
   const latest = db.prepare(`
-    SELECT id, effective_at FROM fact_revisions
+    SELECT id, effective_at, effective_at_source FROM fact_revisions
     WHERE fact_id = ? AND projection_applied = 1
     ORDER BY effective_at DESC, recorded_at DESC, COALESCE(chronicle_seq, rowid) DESC LIMIT 1
-  `).get(factId) as { id: string; effective_at: string } | undefined;
+  `).get(factId) as { id: string; effective_at: string; effective_at_source: string | null } | undefined;
   return {
     factId,
     projectId: (row["project_id"] as string | null) ?? null,
@@ -661,21 +681,36 @@ export function currentFactRevision(db: Database.Database, factId: string): Curr
     lifecycleUpdatedAt: String(row["lifecycle_updated_at"] ?? ""),
     latestEventId: latest?.id ?? null,
     latestEffectiveAt: latest?.effective_at ?? null,
+    latestEffectiveAtSource: latest ? (String(latest.effective_at_source || "recorded") as EffectiveAtSource) : null,
   };
 }
 
-/** Effective time of the current projection value, used for temporal ordering of incoming evidence. */
-export function currentEffectiveAt(db: Database.Database, factId: string): string | null {
+/**
+ * Effective time of the current projection value plus how it was established
+ * (`source` = cited evidence timestamp, `recorded` = a worker clock that was
+ * the only thing available), used for temporal ordering of incoming evidence.
+ */
+export function currentEffectiveTime(
+  db: Database.Database,
+  factId: string,
+): { at: string; source: EffectiveAtSource } | null {
   const current = currentFactRevision(db, factId);
   if (!current) return null;
-  if (current.latestEffectiveAt) return current.latestEffectiveAt;
+  if (current.latestEffectiveAt) {
+    return { at: current.latestEffectiveAt, source: current.latestEffectiveAtSource ?? "recorded" };
+  }
   // Facts that predate the Chronicle: the evidence time is the latest cited
   // source exchange, never the local write time, when a source still exists.
   // A local write time is not evidence time; when neither an event nor a
   // source exists the effective time is unknown (null) and the judge treats
   // the value as un-ordered rather than as newer than real evidence.
   const row = db.prepare("SELECT source_exchange_ids FROM facts WHERE id = ?").get(factId) as { source_exchange_ids: string | null } | undefined;
-  return maxSourceTimestamp(db, parseStringArray(row?.source_exchange_ids ?? null));
+  const fromSource = maxSourceTimestamp(db, parseStringArray(row?.source_exchange_ids ?? null));
+  return fromSource ? { at: fromSource, source: "source" } : null;
+}
+
+export function currentEffectiveAt(db: Database.Database, factId: string): string | null {
+  return currentEffectiveTime(db, factId)?.at ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +909,12 @@ function verifyIncidentEvidence(db: Database.Database, input: RecordIncidentInpu
 
 function upsertSignature(
   db: Database.Database,
-  input: { projectId: string; signature: IncidentSignature; effectiveAt: string; now: string; userFlaggedRepeat: boolean; newEpisode: boolean },
+  input: {
+    projectId: string; signature: IncidentSignature; effectiveAt: string; now: string; userFlaggedRepeat: boolean;
+    newEpisode: boolean;
+    /** The episode happened before the recorded remediation (out-of-order arrival): it does not reopen the pattern. */
+    remediatedBefore: boolean;
+  },
 ): { patternState: "candidate" | "pattern" | "remediated"; episodeCount: number } {
   const existing = db.prepare(`
     SELECT episode_count, pattern_state, user_flagged_repeat, first_effective_at, last_effective_at
@@ -884,10 +924,13 @@ function upsertSignature(
     | undefined;
   const episodeCount = (existing?.episode_count ?? 0) + (input.newEpisode ? 1 : 0);
   const flagged = (existing?.user_flagged_repeat ?? 0) === 1 || input.userFlaggedRepeat;
-  // Remediated signatures that recur are patterns again; absence of recurrence
-  // never resolves a pattern, only a verified remediation does.
+  // A remediated signature is reopened only by a new episode that is effective
+  // after the remediation; retries of an already-remediated occurrence and
+  // late-arriving older episodes keep the verified remediation. Absence of
+  // recurrence never resolves a pattern, only a verified remediation does.
+  const keepRemediated = existing?.pattern_state === "remediated" && (!input.newEpisode || input.remediatedBefore);
   const patternState: "candidate" | "pattern" | "remediated" =
-    episodeCount >= 2 || flagged ? "pattern" : "candidate";
+    keepRemediated ? "remediated" : episodeCount >= 2 || flagged ? "pattern" : "candidate";
   const first = existing ? (input.effectiveAt < existing.first_effective_at ? input.effectiveAt : existing.first_effective_at) : input.effectiveAt;
   const last = existing ? (input.effectiveAt > existing.last_effective_at ? input.effectiveAt : existing.last_effective_at) : input.effectiveAt;
   db.prepare(`
@@ -928,9 +971,42 @@ export function recordIncidentOccurrence(
   const effectiveAt = input.effectiveAt ?? maxSourceTimestamp(db, sourceExchangeIds) ?? now;
 
   const tx = db.transaction((): RecordIncidentResult => {
+    const describe = (occurrenceId: string, eventId: string, coalesced: boolean, signatureRow: { patternState: "candidate" | "pattern" | "remediated"; episodeCount: number }): RecordIncidentResult => ({
+      coalesced,
+      occurrenceId,
+      eventId,
+      signatureKey: signature.key,
+      signatureText: signature.text,
+      patternState: signatureRow.patternState,
+      episodeCount: signatureRow.episodeCount,
+    });
+    const currentSignature = (): { patternState: "candidate" | "pattern" | "remediated"; episodeCount: number } => {
+      const row = db.prepare("SELECT pattern_state, episode_count FROM incident_signatures WHERE project_id = ? AND signature_key = ?")
+        .get(input.projectId, signature.key) as { pattern_state: "candidate" | "pattern" | "remediated"; episode_count: number } | undefined;
+      return { patternState: row?.pattern_state ?? "candidate", episodeCount: Number(row?.episode_count ?? 0) };
+    };
+    // Duplicate delivery (same signature proven by the same exchanges, e.g. a
+    // retried worker page or a replayed job) is a no-op regardless of session:
+    // it is neither a retry nor a new episode (incident count inflation 0).
+    const duplicate = db.prepare(`
+      SELECT occurrence_id, event_id FROM incident_occurrences
+      WHERE project_id = ? AND signature_key = ?
+        AND EXISTS (SELECT 1 FROM json_each(incident_occurrences.source_exchange_ids) WHERE value IN (${sourceExchangeIds.map(() => "?").join(",")}))
+      ORDER BY effective_at DESC, recorded_at DESC LIMIT 1
+    `).get(input.projectId, signature.key, ...sourceExchangeIds) as
+      | { occurrence_id: string; event_id: string }
+      | undefined;
+    if (duplicate) {
+      if (input.userFlaggedRepeat) {
+        db.prepare("UPDATE incident_signatures SET user_flagged_repeat = 1, pattern_state = CASE WHEN pattern_state = 'candidate' THEN 'pattern' ELSE pattern_state END, updated_at = ? WHERE project_id = ? AND signature_key = ?")
+          .run(now, input.projectId, signature.key);
+      }
+      return describe(duplicate.occurrence_id, duplicate.event_id, true, currentSignature());
+    }
+    // Retry of an open occurrence in the same session inside the window.
     const previous = db.prepare(`
       SELECT occurrence_id, event_id, effective_at, last_retry_at FROM incident_occurrences
-      WHERE project_id = ? AND signature_key = ? AND COALESCE(session_id, '') = COALESCE(?, '')
+      WHERE project_id = ? AND signature_key = ? AND session_id = ? AND state = 'open'
       ORDER BY effective_at DESC, recorded_at DESC LIMIT 1
     `).get(input.projectId, signature.key, input.sessionId ?? null) as
       | { occurrence_id: string; event_id: string; effective_at: string; last_retry_at: string | null }
@@ -940,27 +1016,35 @@ export function recordIncidentOccurrence(
       const gap = Math.abs(Date.parse(effectiveAt) - Date.parse(anchor));
       if (Number.isFinite(gap) && gap <= INCIDENT_COALESCE_WINDOW_MS) {
         db.prepare(`
-          UPDATE incident_occurrences SET retry_count = retry_count + 1, last_retry_at = ?
+          UPDATE incident_occurrences SET retry_count = retry_count + 1, last_retry_at = ?,
+            source_exchange_ids = (
+              SELECT json_group_array(value) FROM (
+                SELECT DISTINCT value FROM (
+                  SELECT value FROM json_each(incident_occurrences.source_exchange_ids)
+                  UNION ALL SELECT value FROM json_each(?)
+                ) ORDER BY value
+              )
+            )
           WHERE occurrence_id = ?
-        `).run(effectiveAt > anchor ? effectiveAt : anchor, previous.occurrence_id);
+        `).run(effectiveAt > anchor ? effectiveAt : anchor, JSON.stringify(sourceExchangeIds), previous.occurrence_id);
         const signatureRow = upsertSignature(db, {
           projectId: input.projectId, signature, effectiveAt, now,
-          userFlaggedRepeat: input.userFlaggedRepeat === true, newEpisode: false,
+          userFlaggedRepeat: input.userFlaggedRepeat === true, newEpisode: false, remediatedBefore: false,
         });
-        return {
-          coalesced: true,
-          occurrenceId: previous.occurrence_id,
-          eventId: previous.event_id,
-          signatureKey: signature.key,
-          signatureText: signature.text,
-          patternState: signatureRow.patternState,
-          episodeCount: signatureRow.episodeCount,
-        };
+        return describe(previous.occurrence_id, previous.event_id, true, signatureRow);
       }
     }
+    // A new episode whose effective time precedes the verified remediation is
+    // history that arrived late (TEMPORAL ORDER): it is stored as already
+    // remediated and does not reopen the pattern.
+    const remediation = db.prepare(`
+      SELECT r.effective_at FROM incident_signatures s JOIN fact_revisions r ON r.id = s.remediation_event_id
+      WHERE s.project_id = ? AND s.signature_key = ? AND s.pattern_state = 'remediated'
+    `).get(input.projectId, signature.key) as { effective_at: string } | undefined;
+    const remediatedBefore = !!remediation && effectiveAt <= remediation.effective_at;
     const signatureRow = upsertSignature(db, {
       projectId: input.projectId, signature, effectiveAt, now,
-      userFlaggedRepeat: input.userFlaggedRepeat === true, newEpisode: true,
+      userFlaggedRepeat: input.userFlaggedRepeat === true, newEpisode: true, remediatedBefore,
     });
     const { event } = recordChronicleEvent(db, {
       kind: "INCIDENT",
@@ -991,22 +1075,14 @@ export function recordIncidentOccurrence(
         occurrence_id, project_id, workspace_id, workstream_id, session_id, signature_key, signature_text,
         subject_key, event_id, source_exchange_ids, source_evidence_ids, retry_count, evidence_authority,
         effective_at, recorded_at, last_retry_at, state, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, 'open', ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?)
     `).run(
       occurrenceId, input.projectId, input.workspaceId ?? null, input.workstreamId ?? null, input.sessionId ?? null,
       signature.key, signature.text, input.subjectKey ?? null, event.id,
       JSON.stringify(sourceExchangeIds), JSON.stringify(uniqueSorted(input.sourceEvidenceIds)),
-      input.evidenceAuthority, effectiveAt, now, now,
+      input.evidenceAuthority, effectiveAt, now, remediatedBefore ? "remediated" : "open", now,
     );
-    return {
-      coalesced: false,
-      occurrenceId,
-      eventId: event.id,
-      signatureKey: signature.key,
-      signatureText: signature.text,
-      patternState: signatureRow.patternState,
-      episodeCount: signatureRow.episodeCount,
-    };
+    return describe(occurrenceId, event.id, false, signatureRow);
   });
   return tx();
 }
@@ -1429,6 +1505,16 @@ export function formatChronicleEvent(
   const effect = event.projection_applied ? "projection changed" : "event-only, current unchanged";
   lines.push(`- [${CHRONICLE_LANE_LABELS.event}] ${event.event_kind} · effective ${event.effective_at} (${event.effective_at_source}) · recorded ${event.recorded_at} · ${effect} · actor ${event.actor} · authority ${event.evidence_authority}`);
   lines.push(`  id: ${event.id}${event.subject_key ? ` · subject: ${event.subject_key}` : ""}${event.fact_id ? ` · fact: ${event.fact_id}` : ""}`);
+  if (event.fact_id) {
+    // BRANCH TRUTH: history of an unmerged workspace/workstream fact is never
+    // presented as project-wide truth.
+    const placement = db.prepare("SELECT promotion_state, workspace_id, workstream_id FROM facts WHERE id = ?")
+      .get(event.fact_id) as { promotion_state: string | null; workspace_id: string | null; workstream_id: string | null } | undefined;
+    if (placement?.promotion_state === "workstream" || placement?.promotion_state === "workspace") {
+      const id = placement.promotion_state === "workstream" ? placement.workstream_id : placement.workspace_id;
+      lines.push(`  scope: ${placement.promotion_state} ${id ?? "?"} (unmerged; not project-wide truth)`);
+    }
+  }
   if (event.previous_value !== null || event.new_value !== null) {
     lines.push(`  value: ${event.previous_value === null ? "(none)" : JSON.stringify(event.previous_value)} → ${event.new_value === null ? "(none)" : JSON.stringify(event.new_value)}`);
   }

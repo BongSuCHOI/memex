@@ -241,6 +241,7 @@ export function applyFactMeaningMutation(db, opts, embedding) {
             actor: chronicle.actor,
             evidenceAuthority: chronicle.evidenceAuthority ?? (chronicle.actor === 'user' ? 'human' : 'unknown'),
             effectiveAt: chronicle.effectiveAt ?? null,
+            effectiveAtSource: chronicle.effectiveAtSource,
             recordedAt: now,
             projectionApplied: true,
         });

@@ -1,121 +1,186 @@
-PHASE 4 GATE: PENDING (4A implementation handoff; independent 4B gate not yet run)
+PHASE 4 GATE: PASS
 
-# Phase 4 — Chronicle & Deep Memory Exploration implementation handoff
+# Phase 4 — Chronicle & Deep Memory Exploration gate handoff
 
-Prompt 4A implemented the sparse Chronicle on top of the released revision table, stable subject slots,
-grounded-cause versus classifier-note separation, source-effective temporal ordering, rollback and
-contradiction handling, incident episodes/patterns with a bounded match API, MCP deep exploration, sync and
-privacy coverage, and measured outcome telemetry. Phase 5 adaptive recall and WATCH/TRACE injection routing
-were not started.
+Prompt 4B independently traced the Phase 4A schema migration, projection/event transaction, subject-slot
+resolver, consolidator temporal judge, incident API, MCP `trace_fact`, sync export/import and privacy purge
+paths, crash-injected the transaction seams, built a two-database sync matrix, and fixed the defects found
+directly. Every Prompt 4B PASS condition holds on the corrected working tree: duplicate authoritative events 0,
+history deletion on rollback 0, ungrounded cause stored as authoritative 0, temporal order corruption 0,
+incident count inflation 0, MCP current→event→source trace success, bounded history pagination, safe
+sync/purge, all mandatory tests passing, and the Phase 5 Chronicle/incident/current-revision APIs documented.
+Phase 5 (adaptive gate, WATCH/TRACE injection routing) was not started.
 
-## Repository and lock
+## Gate, revision and lock
 
 - Branch: `feat/memex-continuity-v1`
-- Phase 4A base HEAD: `b591aa3` (Phase 3 `5ec4909` plus the post-gate trigger-race fix)
-- Final RFC SHA-256: `146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a`
+- Phase 4A HEAD reviewed: `3b798a9e12a07e2ab305eccb9b7fe8e62426915d`; 4B corrections are uncommitted in the
+  working tree for the parent's Phase 4 closing commit.
+- Final RFC SHA-256: `146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a` (verified, unmodified)
 - Worker Prompt Pack SHA-256: `6ac7511bea8ddaa29b4bfda63e8702780e83b33d456d4cb5be01f221debbddf3`
-- Continuity schema: `5` (was `4`); sync protocol: `4` (additive rows); package/plugin: `0.3.0`
-- Runtime: Node `v26.0.0`, macOS arm64. Implementation session: Claude Code (see D-017).
-- Preserved user-owned state: deleted `FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md` remains untouched.
+- Gate runtime: Claude Code general-purpose subagent (D-017), Node `v26.0.0`, Codex CLI `0.153.2`, macOS arm64.
+- Preserved user-owned state: the uncommitted deletion of `FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md` was not
+  staged, restored, or touched.
 
-## Current Facts vs Chronicle
+## Schema and protocol versions
 
-`facts` stays the fast materialized projection with semantic/lifecycle generation CAS. `fact_revisions` is
-rebuilt in place (schema v5) as the single append-only Chronicle table (D-018): nullable `fact_id`,
-`previous_fact`, `new_fact`; added `project_id`, `subject_key`, `event_kind`, from/to semantic generation,
-`lifecycle_generation`, `problem`, `grounded_cause`, `rationale`, `classifier_note`, `outcome_json`,
-`source_exchange_ids`, `source_evidence_ids`, `reverts_event_id`, `related_event_ids`, `actor`,
-`policy_version`, `evidence_authority`, `effective_at`, `effective_at_source`, `recorded_at`,
-`projection_applied`, `chronicle_seq`. Legacy rows are backfilled deterministically as
-`CHANGED`/`actor=legacy` with `reason → classifier_note`. No query replays events to compute current state.
+- Continuity schema `5` (`PRAGMA user_version`, `continuity_schema_meta`): `fact_revisions` rebuilt in place as
+  the single Chronicle table (nullable `fact_id`/`previous_fact`/`new_fact`, RFC event columns, `chronicle_seq`),
+  `chronicle_tombstones`, `incident_occurrences`, `incident_signatures`, `continuity_telemetry`. Migration stages
+  `chronicle-table`/`chronicle-backfill`/`incident-tables`/`telemetry-table`/`chronicle-indexes` are
+  crash-injected in `test/continuity-correctness-spine.test.ts` and rerun idempotently.
+- Sync protocol `4` (five exact files, additive event row shape and `{fact_id: null, event_id}` tombstone rows;
+  D-018/D-019). Package/plugin `0.3.0`.
 
 ## Subject and event contract
 
-- Subject grammar `^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$`; prefix must match
-  the category (knowledge → `state`). Invalid proposals become classifier notes, never slots (D-020).
-- Slot resolution in the extraction commit: empty → `ASSERTED`; same normalized text → provenance merge, no
-  event; newer evidence with sufficient authority → `CHANGED` on the existing identity; older evidence →
-  historical `ASSERTED` (`projection_applied = 0`); tie or lower authority → `CONTRADICTED` candidate.
-- Event ids are content hashes (`sha256[0:32]`): duplicate delivery and sync replay collapse; same id with
-  different content is a visible conflict, never an overwrite.
-- Kinds: `ASSERTED`, `CHANGED`, `RETIRED`, `RESTORED` may change the projection and are written in the same
-  transaction as the projection mutation; `VALIDATED`, `INCIDENT`, `CONTRADICTED` are event-only and are
-  rejected if they claim a projection change.
-- Consolidator mapping: `DUPLICATE` → no event; `EVOLUTION`/`CONTRADICTION` → temporal judge → `CHANGED`
-  or historical/`CONTRADICTED`; consolidator reason → `classifier_note` only.
-- Rollback: returning to the value a prior `CHANGED` replaced links `reverts_event_id`; nothing is deleted.
+- Subject grammar `^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$`, category prefix
+  enforced; invalid proposals become classifier notes, never slots (D-020). Legacy per-fact keys are not semantic
+  slots.
+- Slot resolution at extraction commit: empty → `ASSERTED`; same normalized text → provenance merge, no event;
+  newer evidence with authority ≥ current → `CHANGED` on the same identity (generation CAS); older evidence →
+  historical `ASSERTED` (`projection_applied = 0`); tie or lower authority → `CONTRADICTED` candidate. The current
+  projection is never overwritten by worker order.
+- Event id = `sha256(kind, project, subject, fact, effective_at, previous, new, sources, evidence, reverts,
+  outcome)[0:32]`: duplicate delivery and sync replay collapse; same id with different content is a visible
+  conflict (`ChronicleConflictError` locally, `malformedRows` on import), never an overwrite.
+- Projection kinds (`ASSERTED`, `CHANGED`, `RETIRED`, `RESTORED`) are written inside the same SQLite
+  transaction as the projection mutation; event-only kinds (`VALIDATED`, `INCIDENT`, `CONTRADICTED`) reject
+  `projection_applied = 1`. Consolidator `DUPLICATE` → no event; `EVOLUTION`/`CONTRADICTION` → temporal judge;
+  the consolidator reason is always a classifier note. Rollback links `reverts_event_id`; nothing is deleted.
 
 ## Temporal and grounding contract
 
-- `effective_at` = max timestamp of the cited authoritative source exchanges (`effective_at_source=source`),
-  else the recorded time flagged `recorded`; peer rows are `peer`. `recorded_at` = worker commit time.
-- Timelines order by `effective_at, recorded_at, chronicle_seq`; generation numbers and worker order never
-  order history. Unknown existing effective time is un-ordered (D-021).
-- Authority rank `human-decision` > `human` = `trusted-tool` > `unknown`.
-- Grounded fields are written only when the exact supporting span is present in the cited human message or
-  trusted tool result (`verifyGroundedField`, extractor `change_context` validation), or when actor `user`
-  states the rationale directly. Anything else is `classifier_note` or a `ChronicleGroundingError`.
+- `effective_at` = max timestamp of cited authoritative exchanges (`effective_at_source = source`), else the
+  worker clock marked `recorded`; replicated rows are marked `peer`. `recorded_at` = commit time. Timelines order
+  by `effective_at, recorded_at, chronicle_seq`; `chronicle_seq` and worker order are never history clocks.
+- 4B correction: the consolidator's local-clock fallback for a candidate without source time is now labeled
+  `recorded` (it was labeled `source`).
+- Grounded `problem`/`grounded_cause`/`rationale` are written only when the exact span is present in the cited
+  human message or trusted tool result (`verifyGroundedField`, fail-closed) or when actor `user` states the
+  rationale. 4B correction: the exchange cited by a grounded field is always added to the event's
+  `source_exchange_ids`, so a source-free grounded field cannot exist locally, and the sync importer rejects any
+  peer row with that shape (D-022). MCP/CLI render `grounded cause (source-cited)` and
+  `classifier note (model inference, NOT authoritative)` on separate lines; `search_facts` revision lines
+  render the compatibility `reason` as `note:`.
+- Authority rank: `human-decision` 3 > `human` 2 = `trusted-tool` 2 > `unknown` 1. Unknown existing effective
+  time is un-ordered (D-021).
 
-## Incident match API
+## Incident match API (Phase 5 WATCH source)
 
-- `recordIncidentOccurrence` (trusted `test_execution` evidence, failures allowed, or human
-  `repeated_signal`): same project+signature+session within 30 minutes coalesces (`retry_count`), otherwise a
-  new episode with an `INCIDENT` event. `episode_count >= 2` or `user_flagged_repeat` → `pattern`.
-- `recordIncidentRemediation`: only successful trusted test evidence or explicit human confirmation writes
-  `VALIDATED` and marks `remediated`; recurrence reopens `pattern`. No-recurrence never resolves.
-- `matchIncidentPatterns(db, {projectId, text, limit, includeCandidates?, includeRemediated?})`: bounded
-  deterministic match (normalized substring or token Jaccard ≥ 0.5) for Phase 5 WATCH.
-- `listIncidentOccurrences`, signature normalization strips ANSI/uuid/time/path/hex/numbers.
+- `recordIncidentOccurrence(db, {projectId, workspaceId?, workstreamId?, sessionId?, subjectKey?, signatureText,
+  summary?, sourceExchangeIds, sourceEvidenceIds?, evidenceAuthority, userFlaggedRepeat?, effectiveAt?, actor})`:
+  evidence is verified (trusted `test_execution` results, failures allowed, or a human-authored exchange). 4B
+  rules (D-024): a delivery whose exchanges are already cited by an occurrence of the same signature is a
+  no-op regardless of session; a same-session retry within 30 minutes coalesces only into an `open`
+  occurrence (`retry_count`, exchange ids merged); an episode effective before the verified remediation is
+  stored `remediated` and keeps the signature remediated; an episode after it reopens `pattern`.
+  `episode_count >= 2` or `user_flagged_repeat` → `pattern`; no-recurrence never resolves.
+- `recordIncidentRemediation` accepts only successful trusted test evidence or explicit human confirmation,
+  writes `VALIDATED`, marks occurrences with `effective_at <= remediation` as `remediated`.
+- `matchIncidentPatterns(db, {projectId, text, limit≤20, includeCandidates?, includeRemediated?, minScore?})`:
+  deterministic, bounded (500 newest signatures scanned; normalized substring or token Jaccard ≥ 0.5).
+- `listIncidentOccurrences(db, {projectId, signatureKey?, subjectKey?, sessionId?, limit≤100})` keeps
+  workstream/session provenance; signatures are project-level (§15.4).
+- Other Phase 5 APIs: `readChronicleTimeline` (keyset cursor, `limit ≤ 100`, `kinds`, workspace/workstream/
+  session/`projectTruthOnly` visibility), `currentFactRevision` (semantic/lifecycle generation, latest projection
+  event, `latestEffectiveAtSource`), `currentEffectiveTime`/`currentEffectiveAt`, `summarizeTelemetry`.
 
 ## MCP contract
 
-`trace_fact` accepts `query | fact_id | subject_key` plus stable scope, `include_timeline`, `timeline_limit`
-(≤50), `timeline_cursor`, `timeline_order`, `include_incidents`, `include_sources`, `include_hot_evidence`.
-Output lanes: `CURRENT FACT`, `CHRONICLE EVENT`, `RAW EVIDENCE`, `ASSISTANT CONTEXT-ONLY`,
-`HOT EVIDENCE — NOT YET DISTILLED`; grounded cause and classifier note are labeled separately; purged sources
-print `source unavailable (purged or missing)`; out-of-scope facts are errors. `search_facts` revision lines
-show the event kind. CLI: `memex facts history --id` prints events; `memex facts explain --subject <key>
---project-id <id>` reads a subject timeline. Phase 5 APIs: `readChronicleTimeline`, `currentFactRevision`,
-`currentEffectiveAt`, `matchIncidentPatterns`, `summarizeTelemetry` (exported from `src/index.ts`).
+- `trace_fact` accepts `query | fact_id | subject_key` plus stable scope (`project|workspace|workstream|session|
+  global|all`), `include_timeline`, `timeline_limit ≤ 50`, `timeline_cursor`, `timeline_order`,
+  `include_incidents`, `include_sources`, `include_hot_evidence`. Lanes: `CURRENT FACT`, `CHRONICLE EVENT`,
+  `RAW EVIDENCE`, `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`. Purged sources print
+  `source unavailable (purged or missing)`. Out-of-scope facts are errors, never widened.
+- 4B correction (D-023): timeline visibility now mirrors `factMatchesScope`: project-wide truth is visible in
+  every scope of its project; a workspace/workstream fact's history only inside that scope; event-only rows where
+  their evidence lives; `project` scope hides unmerged histories; events on unmerged facts are labeled
+  `scope: workstream <id> (unmerged; not project-wide truth)`. Before the fix a workstream-scoped trace hid
+  project truth and a sibling workstream's unmerged history could surface.
+- CLI: `memex facts history --id <uuid>` and `memex facts explain --subject <key> --project-id <id>` print the
+  labeled timeline (4B fixed a `ReferenceError` that made both commands crash after printing, and the
+  un-awaited `facts restore`).
 
-## Sync, privacy, telemetry
+## Sync, privacy and telemetry tests
 
-- Export: `fact-revisions.jsonl` rows carry the event shape plus `portable_project_key`; device-local
-  generations are dropped; event-only project rows are exported; `fact-tombstones.jsonl` gains
-  `{fact_id: null, event_id}` rows (D-019). Import accepts legacy and event rows, maps projects through the
-  portable key, appends idempotently by id, skips tombstoned ids, and records same-id conflicts in
-  `malformedRows` while preserving local history.
-- Purge: `purgeChronicleForSources` removes events of purged facts and events citing purged exchanges,
-  cascades incident occurrences, recounts signatures, and tombstones every id in the purge transaction.
-  A later attempt to record an incident on a purged exchange fails closed.
-- Telemetry: `continuity_telemetry` samples for allowlisted metrics only; inject-core records
-  `semantic_retrieval_calls`, `injected_chars`, `repeated_context_turns`; `summarizeTelemetry` returns a
-  labeled measured report, never a fact or event.
+`test/continuity-chronicle-gate.test.ts` (new, 13 tests) plus `test/continuity-chronicle.test.ts` (22 tests):
 
-## Tests and results (4A self-report; 4B must re-verify)
+- Sync two-database matrix: export from device A (3 events) → import on B twice (3 then 0 new rows, counts
+  stable); effective-ordered timeline with `peer` marking, grounded cause and classifier note preserved,
+  purged/absent source rendered unavailable; same-id conflict from a third device recorded in `malformedRows`
+  with local history intact; released 7-field peer row imported as `CHANGED`/`actor=legacy` with the reason as
+  classifier note; peer row with a grounded cause and no sources rejects its generation; event tombstone import
+  deletes the event, records `chronicle_tombstones`, and device A's still-committed generation cannot replay it.
+- Out-of-order generations: the later `CHANGED` arrives before the earlier `ASSERTED` (recorded order proven by
+  `chronicle_seq`), the timeline still reads `ASSERTED → CHANGED` by effective time.
+- Purge: origin purge → 0 events, 3 event tombstones → export → peer import deletes events, occurrences and the
+  fact → a third device replaying the pre-purge snapshot resurrects nothing. Local purge while a job is queued
+  (4A l/u) remains covered.
+- Telemetry: allowlisted metrics only, `TELEMETRY — MEASURED, NOT A FACT` notice, no fact/event rows (4A).
 
-- `test/continuity-chronicle.test.ts`: 22 tests covering a–v of the Prompt 4A matrix (a ASSERTED, b/j
-  CHANGED + grounded/null cause, c rollback, d RETIRED/RESTORED, e event-only, f contradiction candidate,
-  g duplicate id, h stale worker, i effective vs recorded order, k classifier note/hallucinated cause,
-  l/u purge with pending job, m subject collision, n/o/p incident coalescing/pattern/remediation,
-  q/r/s MCP trace/pagination/session filter, t sync covered in `sync-export-import` suite, v contamination,
-  telemetry, legacy migration).
-- `test/continuity-correctness-spine.test.ts` migration crash matrix extended with the five Chronicle stages.
-- Existing suites adjusted: consolidator temporal fixtures, restore result shape (`eventId`), sync fixture
-  validated through the event parser, FK orphan detection retained.
-- `npm run typecheck` PASS; `vitest run` 259 files / 816 tests, failed 0, skipped 0 (2026-09-04).
-- Not rerun in 4A: `node --test` slices, lifecycle/package/install/marketplace E2E scripts.
+## Defects found and fixed by 4B
 
-## Phase 4B focus risks
+1. `cli/memex.js`: `facts history`/`facts explain` referenced an undefined `revs` after printing (ReferenceError
+   on every run); `facts restore` did not await the async restore. Fixed; verified by running both commands.
+2. `src/chronicle.ts` `recordChronicleEvent`: a grounded field's exchange was not guaranteed to be in
+   `source_exchange_ids`; now unioned (structural GROUNDED CAUSE invariant, basis for D-022).
+3. `src/sync-import.ts` `parseRevision`: peer event rows with `problem`/`grounded_cause` and no sources, a
+   non-user `rationale` without sources, or `projection_applied = 1` without `fact_id` are schema-invalid
+   (generation rejected, visible).
+4. `src/chronicle.ts` incidents: null-session duplicate delivery inflated episodes (and produced a second event
+   id); retry coalescing could target a remediated occurrence; a late older episode reopened a verified
+   remediation. Fixed per D-024.
+5. `src/chronicle.ts` `readChronicleTimeline` + `src/mcp-server.ts`: workspace/workstream filters excluded
+   project-wide truth and could expose a sibling workstream's unmerged history via evidence membership;
+   `project` scope did not hide unmerged histories. Fixed per D-023; unmerged events are labeled.
+6. `src/consolidator.ts`/`src/fact-management.ts`: local-clock fallback effective time was labeled `source`;
+   `ChronicleMutationContext.effectiveAtSource` added and `currentEffectiveTime` reports the source.
+7. `test/fact-management-slice.test.mjs` asserted a UUID-shaped revision id and the released revision row shape;
+   the 4A change to content-hashed event ids and `factHistory` returning Chronicle events was not covered by a
+   rerun (4A stated the slices were not rerun). Updated to assert the event id, kind, actor, rationale vs note.
 
-1. Projection/event atomicity under injected failure after the projection UPDATE (event insert failure must
-   roll back the projection) — covered indirectly; 4B should crash-inject.
-2. Sync: out-of-order generation replay and same-id conflict need an end-to-end two-database test in
-   `sync-export-import`; 4A only proved parser acceptance and idempotent insert paths.
-3. Incident coalescing window when `sessionId` is null (no coalescing) and cross-workstream signatures.
-4. `trace_fact` timeline scope filters for workspace/workstream rely on fact or exchange membership; events
-   with neither may be visible project-wide.
-5. Extraction prompt additions (`subject_key`, `change_context`, observation candidates) are validated
-   fail-closed but have no recorded model fixtures; the eval baseline was not re-run.
-6. `getRevisions` compatibility view now includes event-only rows for the fact (VALIDATED/INCIDENT tied to a
-   fact id) — callers counting revisions may see more rows.
+## Debt
+
+- `getRevisions` compatibility view flattens `rationale ?? grounded_cause ?? classifier_note` into `reason`;
+  `search_facts include_revisions` labels it `note:`. Callers needing the distinction use `trace_fact`/
+  `factHistory`. Not a Phase 4 gap; recorded for Phase 5 formatting work.
+- Extraction prompt additions (`subject_key`, `change_context`, observation candidates) are validated fail-closed
+  but no recorded model fixtures exist; the extraction eval baseline was not re-run in Phase 4.
+- A peer that forges a grounded field with a fabricated exchange id passes the structural import guard; the row
+  is marked `peer` and never `source` (D-022).
+- Incident signatures are project-level; a sibling workstream's independent episode contributes to the project
+  pattern (by design, §15.4) with occurrence-level provenance.
+- Consolidation candidate search still uses the legacy `exact-project` path scope (Phase 3 debt); the temporal
+  judge and event kinds apply regardless.
+
+## Phase 5 blockers
+
+None. Phase 5 may consume `readChronicleTimeline`, `matchIncidentPatterns`, `listIncidentOccurrences`,
+`currentFactRevision`, `currentEffectiveTime`, and `summarizeTelemetry` as documented in
+`docs/FACT-LIFECYCLE.md` §13 and `skills/remembering-conversations/references/mcp-tools.md`.
+
+## Verification evidence (Prompt 4B, 2026-09-04)
+
+| Command / workload | Independent gate result |
+| --- | --- |
+| RFC SHA-256 check | `146d9a58…163a` matches; file unmodified |
+| `npm run typecheck` | PASS |
+| `npm run build` | PASS; `dist` refreshed (bundle 931.9 kB) |
+| `npx vitest run` before 4B changes (baseline) | 259 files / 816 tests, failed 0, pending 0, todo 0 |
+| `npx vitest run` after 4B changes (JSON reporter) | 264 files / 829 tests, passed 829, failed 0, pending 0, todo 0 |
+| `test/continuity-chronicle-gate.test.ts` + `test/continuity-chronicle.test.ts` | 13 + 22 = 35 passed |
+| `node --test test/*slice.test.mjs` first run | 93/94; sole failure `fact-management-slice` (4A revision-id/history shape regression, defect 7) |
+| `node --test test/*slice.test.mjs` after fix | 94/94; fail 0, cancelled 0, skipped 0, todo 0 (no `listen EPERM` in this environment) |
+| `node --test test/inject-daemon-slice.test.mjs` alone | 1/1; skipped 0, todo 0 |
+| `node scripts/lifecycle-e2e.mjs --tier offline` | PASS — 9/9 steps; cleanup 7/7 |
+| `node scripts/install-e2e.mjs` | PASS — dry-run/install/idempotent rerun/removal/isolation |
+| `node scripts/marketplace-e2e.mjs` | PASS — lifecycle surfaces registered; cleanup PASS |
+| `node scripts/validate-plugin.mjs` | PASS-WITH-NOTES — CLI 0.153.2 has no formal validator; all installed-artifact substitute checks PASS |
+| `node scripts/package-runtime-e2e.mjs` | PASS — `memex-0.3.0.tgz`, 215 files, 9 MCP tools, onboarding, hooks, deferred worker |
+| `git diff --check` | clean |
+| disabled-test scan (`\.skip|\.todo|xit(`) | no disabled tests (matches are `skipped` result-field assertions only) |
+| CLI `memex facts history --id` / `facts explain --subject --project-id` on a seeded temp DB | both print the labeled timeline and `(1 Chronicle events)`; exit 0 |
+
+Expected stderr from negative grounding, stale-CAS, privacy and retry tests was observed. Nothing mandatory was
+skipped or left unrun.

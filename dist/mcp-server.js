@@ -20544,19 +20544,19 @@ function readChronicleTimeline(db, query) {
     clauses.push(`r.event_kind IN (${query.kinds.map(() => "?").join(",")})`);
     params.push(...query.kinds);
   }
-  if (query.workspaceId) {
-    clauses.push(`(
-      EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND f.workspace_id = ?)
-      OR EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.workspace_id = ?)
-    )`);
-    params.push(query.workspaceId, query.workspaceId);
-  }
+  const PROJECT_TRUTH = "f.promotion_state IN ('legacy-project','decision','project-current')";
+  const factVisible = (extra) => `EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND (${PROJECT_TRUTH}${extra}))`;
+  const evidenceIn = (column) => `EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.${column} = ?)`;
   if (query.workstreamId) {
-    clauses.push(`(
-      EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND f.workstream_id = ?)
-      OR EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.workstream_id = ?)
-    )`);
-    params.push(query.workstreamId, query.workstreamId);
+    clauses.push(`(${factVisible(
+      " OR (f.promotion_state = 'workstream' AND f.workstream_id = ?) OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)"
+    )} OR ${evidenceIn("workstream_id")})`);
+    params.push(query.workstreamId, query.workspaceId ?? "", query.workstreamId);
+  } else if (query.workspaceId) {
+    clauses.push(`(${factVisible(" OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)")} OR ${evidenceIn("workspace_id")})`);
+    params.push(query.workspaceId, query.workspaceId);
+  } else if (query.projectTruthOnly) {
+    clauses.push(`(r.fact_id IS NULL OR ${factVisible("")})`);
   }
   if (query.sessionId) {
     clauses.push(`EXISTS (
@@ -20593,7 +20593,7 @@ function currentFactRevision(db, factId) {
   `).get(factId);
   if (!row) return null;
   const latest = db.prepare(`
-    SELECT id, effective_at FROM fact_revisions
+    SELECT id, effective_at, effective_at_source FROM fact_revisions
     WHERE fact_id = ? AND projection_applied = 1
     ORDER BY effective_at DESC, recorded_at DESC, COALESCE(chronicle_seq, rowid) DESC LIMIT 1
   `).get(factId);
@@ -20609,7 +20609,8 @@ function currentFactRevision(db, factId) {
     semanticUpdatedAt: String(row["semantic_updated_at"] ?? ""),
     lifecycleUpdatedAt: String(row["lifecycle_updated_at"] ?? ""),
     latestEventId: latest?.id ?? null,
-    latestEffectiveAt: latest?.effective_at ?? null
+    latestEffectiveAt: latest?.effective_at ?? null,
+    latestEffectiveAtSource: latest ? String(latest.effective_at_source || "recorded") : null
   };
 }
 var SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
@@ -20769,6 +20770,13 @@ function formatChronicleEvent(db, event, options = {}) {
   const effect = event.projection_applied ? "projection changed" : "event-only, current unchanged";
   lines.push(`- [${CHRONICLE_LANE_LABELS.event}] ${event.event_kind} \xB7 effective ${event.effective_at} (${event.effective_at_source}) \xB7 recorded ${event.recorded_at} \xB7 ${effect} \xB7 actor ${event.actor} \xB7 authority ${event.evidence_authority}`);
   lines.push(`  id: ${event.id}${event.subject_key ? ` \xB7 subject: ${event.subject_key}` : ""}${event.fact_id ? ` \xB7 fact: ${event.fact_id}` : ""}`);
+  if (event.fact_id) {
+    const placement = db.prepare("SELECT promotion_state, workspace_id, workstream_id FROM facts WHERE id = ?").get(event.fact_id);
+    if (placement?.promotion_state === "workstream" || placement?.promotion_state === "workspace") {
+      const id = placement.promotion_state === "workstream" ? placement.workstream_id : placement.workspace_id;
+      lines.push(`  scope: ${placement.promotion_state} ${id ?? "?"} (unmerged; not project-wide truth)`);
+    }
+  }
   if (event.previous_value !== null || event.new_value !== null) {
     lines.push(`  value: ${event.previous_value === null ? "(none)" : JSON.stringify(event.previous_value)} \u2192 ${event.new_value === null ? "(none)" : JSON.stringify(event.new_value)}`);
   }
@@ -25628,9 +25636,10 @@ Subject: ${params.subject_key}` : ""}
             const page = readChronicleTimeline(db, {
               projectId: traceScope.projectId,
               subjectKey: params.subject_key,
-              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
               workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
               sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
               cursor: params.timeline_cursor ?? null,
               limit: params.timeline_limit,
               order: params.timeline_order
@@ -25735,9 +25744,10 @@ _Source exchanges not available._
             const bySubject = isSemanticSubjectKey(fact.subject_key) && !!fact.project_id;
             const page = readChronicleTimeline(db, {
               ...bySubject ? { projectId: fact.project_id, subjectKey: fact.subject_key } : { factId: fact.id },
-              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
               workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
               sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
               cursor: params.timeline_cursor ?? null,
               limit: params.timeline_limit,
               order: params.timeline_order
