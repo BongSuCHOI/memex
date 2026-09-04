@@ -283,3 +283,71 @@ rm -rf "$(memex home)"
 ```
 
 이 삭제는 Memex archive/index/facts/sync state를 제거합니다. 원본 Codex rollout인 `$CODEX_HOME/sessions`는 Memex가 삭제하거나 수정하지 않습니다.
+
+## 15. Continuity 운영
+
+### 업그레이드
+
+기존 설치(0.3.0 이하 DB)를 최신 plugin으로 올리면 첫 hook/MCP/CLI 실행에서 Continuity schema `6`으로 additive migration이 한 번 실행됩니다(`PRAGMA user_version`으로 확인). 중단되면 다음 실행에서 이어서 재실행되며 released row와 rowid는 보존됩니다. 절차는 §12와 같고, 완료 후 Codex를 재시작하십시오.
+
+```bash
+memex update
+memex doctor --json
+memex status --json
+```
+
+### Worker 시작과 복구
+
+capture hook은 commit 후 detached worker를 깨웁니다. wake 실패·expired lease·retry 잔량은 다음 `SessionStart(startup|resume)`에서 복구되고, 수동으로는 다음으로 확인합니다.
+
+```bash
+memex status --json                 # 단계별 pending/processing/retry/dead
+node scripts/continuity-worker.js   # 즉시 drain (설치 artifact에서는 memex-continuity-worker)
+memex backfill all                  # extraction/ontology/embedding backlog
+```
+
+`dead` job/target과 `failed-visible` range는 완료로 위장되지 않습니다. 원인을 고친 뒤 재실행하면 lease가 회수됩니다.
+
+### Journal/checkpoint 무결성과 capture gap
+
+```sql
+-- sqlite3 "$(memex home)/conversation-index/db.sqlite"
+SELECT state, COUNT(*) FROM capture_gaps GROUP BY state;
+SELECT session_id, stream_epoch, journal_byte_end FROM journal_streams WHERE state = 'active';
+SELECT state, COUNT(*) FROM checkpoints GROUP BY state;
+```
+
+`capture_gaps.state = 'open'`은 recovery 대기입니다. `MEMEX_STRICT_CAPTURE=1`을 켜면 gap 대신 hook이 실패합니다. transcript가 rewrite되면 새 stream epoch이 생기고 이전 journal은 보존됩니다.
+
+### Project link/split, workstream rebind
+
+resolver는 basename/remote만으로 project를 합치지 않습니다. 명시 연결은 API로 수행합니다(각각 idempotent이며 `project_identity_audit`에 남음).
+
+```bash
+node -e 'import("./dist/index.js").then(m => { const db = m.initDatabase(); console.log(m.linkWorkspaceToProject(db, { workspaceId: "<ws>", projectId: "<project>" })); })'
+# splitWorkspace(db, { workspaceId }), approveRemoteProjectMapping(db, { remoteFingerprint, projectId }),
+# rebindSessionWorkstream(db, { sessionId, workstreamId })
+```
+
+### Capsule · current fact · Chronicle 진단
+
+```bash
+memex facts list --project <cwd>
+memex facts show --id <uuid>
+memex facts history --id <uuid>
+memex facts explain --subject state.runtime.session_store --project-id <project_id>
+```
+
+MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가 current → Chronicle → source → other session을 보여 줍니다. `grounded cause (source-cited)`와 `classifier note (…NOT authoritative)`는 항상 분리 표시됩니다.
+
+### Privacy purge
+
+§11의 conversation exclusion은 journal/checkpoint/job/exchange/fact/Chronicle event/incident/Capsule/vector/Hot Evidence/session state를 한 transaction에서 제거하고 `fact_tombstones`/`chronicle_tombstones`를 남깁니다. pending worker와 sync replay는 tombstone 때문에 재생성하지 못합니다.
+
+### Rollback
+
+이전 plugin 버전으로 되돌릴 때 DB는 그대로 두어도 됩니다. schema `6`은 additive이므로 구버전은 새 column/table을 무시하며, `fact_revisions`의 nullable column은 구버전 reader와 호환됩니다. 구버전 peer는 새 sync row shape(stable identity, Chronicle event, event tombstone)를 포함한 generation 전체를 visible하게 거부합니다. DB를 완전히 되돌리려면 업그레이드 전 백업 파일을 복원하십시오.
+
+### 호환 surface (support window)
+
+`scripts/session-end-hook.js`(final-fence alias, D-011), legacy canonical path query(D-016), `extraction_log`/`SEED`/`PERMANENT` marker(D-007)는 읽기/호환 용도로만 남아 있으며 completion authority가 아닙니다.

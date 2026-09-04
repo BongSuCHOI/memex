@@ -1,11 +1,12 @@
 # Memex Continuity v1 traceability matrix
 
-Statuses describe branch `feat/memex-continuity-v1` at Phase 5 closing HEAD `0854797` plus the Final Integration
-(Prompt F1) corrections in the working tree: priority-lane partition claims (D-034), Capsule privacy cascade
-(D-035), resident-revision gate trigger (D-036) and the cross-phase end-to-end fixture
-`test/continuity-final-integration.test.ts` (capture → outbox → P0/P1 worker → exact extraction → Chronicle →
-injection → sync → purge → replay with crash injection, duplicate delivery and the 13 mandatory zero counts).
-"Latest gate" is the Final Integration gate verdict recorded in `final-integration-gate.md`.
+Statuses describe branch `feat/memex-continuity-v1` at Final Integration HEAD `8d32dfd` (Prompt F1 PASS,
+committed) plus the Prompt F2 release-closure documentation. F1 added priority-lane partition claims (D-034),
+the Capsule privacy cascade (D-035), the resident-revision gate trigger (D-036) and the cross-phase end-to-end
+fixture `test/continuity-final-integration.test.ts` (capture → outbox → P0/P1 worker → exact extraction →
+Chronicle → injection → sync → purge → replay with crash injection, duplicate delivery and the 13 mandatory zero
+counts). "Latest gate" is the Final Integration gate verdict recorded in `final-integration-gate.md`; F2 changed
+no code and re-ran the full smoke matrix (see `final-handoff.md`).
 
 | Invariant | RFC section | Current status | Related code | Related schema | Related tests | Target phase | Verification method | Latest gate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

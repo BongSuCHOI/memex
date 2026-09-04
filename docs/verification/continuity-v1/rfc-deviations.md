@@ -343,3 +343,12 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: bump the project revision for workstream facts (rejected in D-028 — it breaks BRANCH TRUTH separation); a per-workstream revision counter (new state for the same signal residency already carries).
 - Invariant evidence: `test/continuity-final-integration.test.ts` sibling correction on "ok" with 0 embeddings; `test/inject-write-ordering.test.ts`, `test/continuity-recall-gate.test.ts`, `test/continuity-recall.test.ts` unchanged and passing; recall benchmark re-run in the Final Integration gate (retrieval reduction unchanged at 61.1%).
 - Reversal condition/trade-off: one primary-key row read plus one `facts WHERE id IN (...)` query per prompt when the session has resident revisions; no embedding or model work is added.
+
+## D-037 — Release closure keeps the support-window compatibility surfaces
+
+- RFC section/invariant: §22 Final Integration & Release Closure; Prompt F2 code cleanup
+- Actual choice: F2 changed no runtime code. `scripts/session-end-hook.js` (final-fence alias, D-011), `scripts/sync-export-hook.js`, `scripts/inject-context-hook.sh` (explicit fallback hook path used by the installer and lifecycle tests), legacy canonical path queries (D-016) and the `extraction_log`/`SEED`/`PERMANENT` markers (D-007) remain as documented read-only or alias surfaces. The repository contains no TODO/FIXME markers and no disabled tests.
+- Reason: removing released executables or readers in the same release would break installed callers during the support window; none of them is a completion or truth authority.
+- Alternatives considered: delete the aliases now; leave them undocumented.
+- Invariant evidence: `docs/GUIDE.md` §15 lists the surfaces; `test/codex-slice.test.mjs`, `test/session-end-*.test.ts` and `test/lifecycle-slice.test.mjs` pin their behavior; the F2 smoke matrix passed unchanged.
+- Reversal condition/trade-off: remove in a documented breaking release after installed callers migrate.

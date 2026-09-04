@@ -208,6 +208,12 @@ Phase 3은 `project_id → workspace_id → workstream_id → session_id`를 분
 
 Work Capsule은 workstream-scoped `context-only`, 검증된 workspace state는 workspace-scoped, explicit decision과 merged/validated state만 project current slot이 됩니다. Current slot은 `(project_id, subject_key, promotion_state, workspace_id, workstream_id)`에서 active unique입니다. Meaningful current/decision/workspace mutation만 project `memory_revision`을 올리고, sibling session은 다음 prompt/resume/compact boundary에서 bounded correction을 소진한 뒤에만 revision을 seen 처리합니다. Hot Evidence는 recent human/trusted repo/Git/test evidence의 TTL-bounded lane이며 항상 `NOT YET DISTILLED`로 표시됩니다.
 
+Phase 4는 `fact_revisions`를 단일 append-only Chronicle로 확장합니다. 추출 commit은 `(project, subject, promotion, workspace, workstream)` slot을 source-effective time과 authority로 deterministic하게 해소해 `ASSERTED`/`CHANGED`/historical/`CONTRADICTED`를 기록하고, 원인은 source에 있는 span만 grounded로, 모델 추정은 classifier note로 저장합니다. incident는 coalesced episode/pattern/remediation으로 남고 `trace_fact`가 current → event → source를 bounded cursor로 탐색합니다.
+
+Phase 5는 `UserPromptSubmit`에 cheap gate를 둡니다. ack/continuation과 topic-coherent follow-up은 embedding 0회로 skip되고, memory intent·epoch/Capsule/project revision·incident match·drift·coverage·safety refresh에서만 retrieval이 실행됩니다. 결과는 CORRECTION/WORK NOW/CURRENT TRUTH/WATCH/TRACE/RECENT EVIDENCE/ASSISTANT CONTEXT-ONLY 순서의 Memory Bundle(hard 1,000자)로 렌더링되며 MCP deep path는 그대로입니다.
+
+규범 문서와 as-built의 관계: [Final RFC](architecture/memex-continuity-v1.md)는 SHA로 고정된 목표이고, 이 문서와 [CONTINUITY.md](CONTINUITY.md)는 실제 구현을, [rfc-deviations.md](verification/continuity-v1/rfc-deviations.md)는 차이를 기록합니다.
+
 ## 6. Sync protocol v4
 
 기기 간 이동하는 durable payload는 네 파일입니다.
