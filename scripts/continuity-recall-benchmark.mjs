@@ -33,7 +33,7 @@ const { DEFAULT_RECALL_GATE_CONFIG } = await import(dist("recall-gate.js"));
 const { NORMAL_BUNDLE_BUDGET, REHYDRATION_BUNDLE_BUDGET } = await import(dist("memory-bundle.js"));
 const { recordIncidentOccurrence, recordChronicleEvent, readChronicleTimeline, summarizeTelemetry } = await import(dist("chronicle.js"));
 const { ensureSessionMemoryState, advanceContextEpoch, buildRehydrationContext } = await import(dist("continuity-core.js"));
-const { createWorkstream, bindSessionWorkstream } = await import(dist("continuity-identity.js"));
+const { createWorkstream, bindSessionWorkstream, indexHotEvidenceForSession } = await import(dist("continuity-identity.js"));
 const { stubEmbedding } = await import(dist("embeddings.js"));
 const { handleToolCall } = await import(dist("mcp-server.js"));
 
@@ -112,7 +112,12 @@ function seed(db) {
   return { projectId, facts };
 }
 
-const ACKS = ["thanks", "ok", "계속해", "응", "good", "continue"];
+const ACKS = ["thanks", "ok", "계속해", "응", "good", "continue", "네 계속해주세요", "sounds good, go ahead"];
+const TOPIC_STORE_KR = ["redis 세션 스토어 클라이언트를 설정해줘", "redis 클라이언트 재시도 옵션도 추가해줘", "redis 클라이언트 에러 로그 남겨줘", "세션 스토어 타임아웃 조정해줘"];
+const HISTORY_KR = [
+  { prompt: "왜 redis 세션 스토어를 선택했지?", expect: "state.runtime.session_store" },
+  { prompt: "세션 ttl 제약의 이전 기록 보여줘", expect: "constraint.session.ttl" },
+];
 const TOPIC_STORE = ["Configure the redis runtime session store client", "add the redis client retry option", "log redis client errors", "tune the redis session store timeout"];
 const TOPIC_ROLLOUT = ["Rewrite the deployment rollout pipeline with canary stages", "add health checks to the rollout", "document the rollout runbook"];
 const TOPIC_TTL = ["Set the session ttl to thirty minutes in config", "keep the ttl", "expose the ttl in the admin panel"];
@@ -139,10 +144,24 @@ function workloads() {
     { p: "great", ack: true },
   ] });
   list.push({ name: "compaction-heavy-200", prompts: Array.from({ length: 200 }, (_, i) => {
+    if (i === 3) return { capsule: true };
     if (i % 25 === 24) return { compact: true };
+    // The first prompt after every other compaction is a bare continuation: the Capsule must still carry (no vector).
+    if (i % 50 === 25) return { p: "계속해", ack: true, expectWorkNow: true };
     const cycle = [TOPIC_STORE, TOPIC_ROLLOUT, TOPIC_TTL][Math.floor(i / 5) % 3];
     return i % 5 === 4 ? { p: ACKS[i % ACKS.length], ack: true } : { p: cycle[i % cycle.length] };
   }) });
+  list.push({ name: "korean-follow-up-ack", prompts: [
+    ...Array.from({ length: 5 }, () => TOPIC_STORE_KR).flat().map((p, i) => (i % 3 === 2 ? { p: ACKS[(i + 2) % ACKS.length], ack: true } : { p })),
+    ...HISTORY_KR.map((h) => ({ p: h.prompt, mustRecall: h.expect })),
+  ] });
+  list.push({ name: "same-project-same-workstream", prompts: [
+    { p: "Configure the payment retry limit handler" },
+    { siblingMutate: { key: "stale", text: "The payment retry limit is five attempts" }, siblingEvidence: "Sibling verified the payment retry handler against five attempts" },
+    { p: "thanks", ack: true, expectCorrection: "five attempts", staleText: "three attempts", expectEvidence: "Sibling verified" },
+    { p: "ok", ack: true },
+    { p: "add the payment retry limit metric now", forbidRepeatEvidence: "Sibling verified" },
+  ] });
   list.push({ name: "same-project-different-workstreams", prompts: Array.from({ length: 12 }, (_, i) => ({ p: TOPIC_STORE[i % TOPIC_STORE.length], forbid: "EXPERIMENTAL" })) });
   list.push({ name: "incident-recurrence", prompts: [
     { p: "Configure the redis runtime session store client" },
@@ -164,37 +183,80 @@ async function runWorkload(workload, gate) {
     prompts: 0, acks: 0, ackEmbeddingCalls: 0, contexts: 0, injectedChars: 0, maxBundleChars: 0,
     staleInjections: 0, wrongWorkstreamInjections: 0, mandatoryRecallMisses: 0, mandatoryRecalls: 0,
     correctionsExpected: 0, correctionsSeen: 0, watchExpected: 0, watchSeen: 0, watchFalse: 0, watchSuppressedOk: 0,
-    assistantAboveTruth: 0, degradedOk: 0,
+    assistantAboveTruth: 0, degradedOk: 0, duplicateInjections: 0, workNowExpected: 0, workNowSeen: 0,
+    evidenceExpected: 0, evidenceSeen: 0, repeatedEvidence: 0,
   };
+  // Duplicate injection = the same bullet line emitted twice inside one context epoch.
+  let epochLines = new Set();
+  // Mandatory recall is residency-aware: a subject already injected in this epoch is in context.
+  let epochRecalled = new Set();
+  const mandatoryKeys = [...new Set(workload.prompts.filter((step) => step.mustRecall).map((step) => step.mustRecall))];
+  let capsuleGeneration = 0;
+  const embeddingRequests = () => Number(db.prepare(
+    "SELECT COALESCE(SUM(value),0) AS v FROM continuity_telemetry WHERE metric IN ('embedding_calls','embedding_cache_hits') AND session_id = ?",
+  ).get(session).v);
   for (const step of workload.prompts) {
     if (step.compact) {
       advanceContextEpoch(db, { sessionId: session, source: "compact", turnId: `c-${outcome.prompts}` });
       db.prepare("UPDATE session_memory_state SET last_source = 'compact' WHERE session_id = ?").run(session);
       const bundle = buildRehydrationContext(db, { sessionId: session });
       outcome.maxBundleChars = Math.max(outcome.maxBundleChars, bundle.context.length);
+      epochLines = new Set();
+      epochRecalled = new Set();
+      continue;
+    }
+    if (step.capsule) {
+      const workstreamId = db.prepare("SELECT workstream_id FROM session_memory_state WHERE session_id = ?").get(session).workstream_id;
+      capsuleGeneration += 1;
+      db.prepare(`
+        INSERT INTO work_capsules (workstream_id, generation, objective, current_state, next_actions_json, updated_at)
+        VALUES (?, ?, 'Ship the redis session store', 'client wired, tests pending', '["run the failover test"]', ?)
+        ON CONFLICT(workstream_id) DO UPDATE SET generation = excluded.generation, objective = excluded.objective
+      `).run(workstreamId, capsuleGeneration, new Date().toISOString());
       continue;
     }
     if (step.mutate) {
       await mutateFactMeaning(db, { factId: facts[step.mutate.key], newText: step.mutate.text, chronicle: { actor: "user", userStatedRationale: "benchmark" } });
       continue;
     }
+    if (step.siblingMutate) {
+      // A second session on the same workstream changes the resident fact and leaves trusted evidence.
+      const scope = db.prepare("SELECT project_id, workspace_id, workstream_id FROM session_memory_state WHERE session_id = ?").get(session);
+      const sibling = `${session}-sibling`;
+      bindSessionWorkstream(db, { sessionId: sibling, projectId: scope.project_id, workspaceId: scope.workspace_id, projectPath: cwd, explicitWorkstreamId: scope.workstream_id });
+      await mutateFactMeaning(db, { factId: facts[step.siblingMutate.key], newText: step.siblingMutate.text, chronicle: { actor: "user", userStatedRationale: "sibling benchmark" } });
+      exchange(db, `${sibling}-ex`, sibling, new Date().toISOString(), step.siblingEvidence);
+      indexHotEvidenceForSession(db, sibling, { now: new Date(Date.now() + 5).toISOString() });
+      continue;
+    }
     if (step.failEmbeddings) { process.env.MEMEX_EMBEDDING_STUB = "fail"; continue; }
     if (step.restoreEmbeddings) { process.env.MEMEX_EMBEDDING_STUB = "1"; continue; }
-    const before = Number(db.prepare("SELECT COALESCE(SUM(value),0) AS v FROM continuity_telemetry WHERE metric = 'embedding_calls' AND session_id = ?").get(session).v);
+    const before = embeddingRequests();
     const t0 = performance.now();
     const context = await computeInjectContext(step.p, cwd, "daemon", session, { gate });
     latencies.push(performance.now() - t0);
-    const after = Number(db.prepare("SELECT COALESCE(SUM(value),0) AS v FROM continuity_telemetry WHERE metric = 'embedding_calls' AND session_id = ?").get(session).v);
+    const after = embeddingRequests();
     outcome.prompts++;
     if (step.ack) { outcome.acks++; outcome.ackEmbeddingCalls += after - before; }
     if (context) outcome.contexts++;
     outcome.injectedChars += context.length;
     outcome.maxBundleChars = Math.max(outcome.maxBundleChars, context.length);
+    for (const line of context.split("\n")) {
+      if (!line.startsWith("- ")) continue;
+      if (epochLines.has(line)) outcome.duplicateInjections++;
+      epochLines.add(line);
+    }
+    if (step.expectWorkNow) { outcome.workNowExpected++; if (context.includes("[WORK NOW]")) outcome.workNowSeen++; }
+    if (step.expectEvidence) { outcome.evidenceExpected++; if (context.includes(step.expectEvidence)) outcome.evidenceSeen++; }
+    if (step.forbidRepeatEvidence && context.includes(step.forbidRepeatEvidence)) outcome.repeatedEvidence++;
     if (step.forbid && context.includes(step.forbid)) outcome.wrongWorkstreamInjections++;
     if (context.includes("EXPERIMENTAL")) outcome.wrongWorkstreamInjections++;
+    for (const key of mandatoryKeys) if (context.includes(key)) epochRecalled.add(key);
     if (step.mustRecall) {
       outcome.mandatoryRecalls++;
-      if (!context.includes(step.mustRecall) && !context.includes("[CURRENT TRUTH]")) outcome.mandatoryRecallMisses++;
+      const recalledNow = context.includes(step.mustRecall) || context.includes("[CURRENT TRUTH]");
+      if (recalledNow) epochRecalled.add(step.mustRecall);
+      else if (!epochRecalled.has(step.mustRecall)) outcome.mandatoryRecallMisses++;
     }
     if (step.expectCorrection) {
       outcome.correctionsExpected++;
@@ -226,12 +288,18 @@ async function runWorkload(workload, gate) {
   db.close();
   const retrievals = totals.retrieval_execute_count?.sum ?? 0;
   const skips = totals.retrieval_gate_skip_count?.sum ?? 0;
+  const inferences = totals.embedding_calls?.sum ?? 0;
+  const memoHits = totals.embedding_cache_hits?.sum ?? 0;
   return {
     workload: workload.name,
     mode: gate ? "gated" : "baseline",
     ...outcome,
     retrievals, skips,
-    embeddingCalls: totals.embedding_calls?.sum ?? 0,
+    // Requests = model inferences + query-memo hits: the cost on unique prompts.
+    // The harness recycles prompt text, so inferences alone understate it.
+    embeddingCalls: inferences + memoHits,
+    embeddingInferences: inferences,
+    embeddingMemoHits: memoHits,
     retrievalsPer100: outcome.prompts ? Math.round((retrievals / outcome.prompts) * 1000) / 10 : 0,
     injectedCharsPer100: outcome.prompts ? Math.round((outcome.injectedChars / outcome.prompts) * 100) : 0,
     latencyMs: { p50: Math.round(percentile(latencies, 0.5) * 100) / 100, p95: Math.round(percentile(latencies, 0.95) * 100) / 100 },
@@ -254,8 +322,8 @@ const report = {
   gate_config: DEFAULT_RECALL_GATE_CONFIG,
   budgets: { normal: NORMAL_BUNDLE_BUDGET, rehydration: REHYDRATION_BUNDLE_BUDGET },
   totals: {
-    baseline: { prompts: sum(baseline, "prompts"), retrievals: sum(baseline, "retrievals"), embeddingCalls: sum(baseline, "embeddingCalls"), injectedChars: sum(baseline, "injectedChars"), ackEmbeddingCalls: sum(baseline, "ackEmbeddingCalls") },
-    gated: { prompts: sum(gated, "prompts"), retrievals: sum(gated, "retrievals"), embeddingCalls: sum(gated, "embeddingCalls"), injectedChars: sum(gated, "injectedChars"), ackEmbeddingCalls: sum(gated, "ackEmbeddingCalls") },
+    baseline: { prompts: sum(baseline, "prompts"), retrievals: sum(baseline, "retrievals"), embeddingCalls: sum(baseline, "embeddingCalls"), embeddingInferences: sum(baseline, "embeddingInferences"), injectedChars: sum(baseline, "injectedChars"), ackEmbeddingCalls: sum(baseline, "ackEmbeddingCalls"), duplicateInjections: sum(baseline, "duplicateInjections") },
+    gated: { prompts: sum(gated, "prompts"), retrievals: sum(gated, "retrievals"), embeddingCalls: sum(gated, "embeddingCalls"), embeddingInferences: sum(gated, "embeddingInferences"), injectedChars: sum(gated, "injectedChars"), ackEmbeddingCalls: sum(gated, "ackEmbeddingCalls"), duplicateInjections: sum(gated, "duplicateInjections") },
   },
   quality_gated: {
     stale_injections: sum(gated, "staleInjections"),
@@ -267,6 +335,10 @@ const report = {
     watch_false_positives: sum(gated, "watchFalse"),
     watch_ttl_suppressions: sum(gated, "watchSuppressedOk"),
     assistant_above_truth: sum(gated, "assistantAboveTruth"),
+    duplicate_injections: sum(gated, "duplicateInjections"),
+    work_now_carry_seen_of_expected: `${sum(gated, "workNowSeen")}/${sum(gated, "workNowExpected")}`,
+    sibling_evidence_seen_of_expected: `${sum(gated, "evidenceSeen")}/${sum(gated, "evidenceExpected")}`,
+    repeated_sibling_evidence: sum(gated, "repeatedEvidence"),
     max_bundle_chars: Math.max(...gated.map((r) => r.maxBundleChars)),
     mcp_trace_success: gated.every((r) => r.mcp.traceSuccess),
     mcp_timeline_bounded: gated.every((r) => r.mcp.timelineBounded),
@@ -278,6 +350,9 @@ const report = {
     corrections_correct: sum(gated, "correctionsSeen") === sum(gated, "correctionsExpected"),
     hard_budget_respected: Math.max(...results.map((r) => r.maxBundleChars)) <= REHYDRATION_BUNDLE_BUDGET.hard + 1,
     watch_authority_safe: sum(gated, "watchFalse") === 0 && sum(gated, "watchSeen") === sum(gated, "watchExpected"),
+    duplicate_injection_zero: sum(gated, "duplicateInjections") === 0,
+    capsule_carry_on_continuation: sum(gated, "workNowSeen") === sum(gated, "workNowExpected"),
+    sibling_evidence_once: sum(gated, "evidenceSeen") === sum(gated, "evidenceExpected") && sum(gated, "repeatedEvidence") === 0,
     retrieval_reduction: sum(baseline, "retrievals") > 0 ? Math.round((1 - sum(gated, "retrievals") / sum(baseline, "retrievals")) * 1000) / 10 : null,
   },
   workloads: results,

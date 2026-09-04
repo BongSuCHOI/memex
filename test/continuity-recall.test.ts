@@ -31,6 +31,7 @@ vi.mock("../src/embeddings.js", async (io) => ({
   },
   // Hashed bag-of-words vectors: unrelated prompts score ~0.1, related ≥ 0.35.
   queryBaseline: async () => 0.2,
+  embeddingCallStats: () => ({ modelCalls: embeddingCalls.n, cacheHits: 0 }),
 }));
 vi.mock("../src/fact-db.js", async (io) => {
   const actual = await io<typeof import("../src/fact-db.js")>();

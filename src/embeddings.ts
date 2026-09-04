@@ -119,6 +119,16 @@ function applyModePrefix(text: string, mode: EmbeddingMode): string {
 const QUERY_EMBED_MEMO_MAX = 32;
 const queryEmbedMemo = new Map<string, number[]>();
 
+// Process-wide inference accounting so callers can report exactly how many
+// model calls a prompt cost (probe warm-up included) versus memo hits.
+let modelCalls = 0;
+let cacheHits = 0;
+
+/** Cumulative counts for this process; sample the delta around a unit of work. */
+export function embeddingCallStats(): { modelCalls: number; cacheHits: number } {
+  return { modelCalls, cacheHits };
+}
+
 /**
  * @param mode 'passage' for stored/indexed content (facts, exchanges),
  *             'query' for search queries. Defaults to 'passage' because most
@@ -131,12 +141,14 @@ export async function generateEmbedding(text: string, mode: EmbeddingMode = 'pas
       // refresh LRU position
       queryEmbedMemo.delete(text);
       queryEmbedMemo.set(text, hit);
+      cacheHits++;
       return hit.slice();
     }
   }
 
   if (embeddingStubFails()) throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
   if (embeddingStubEnabled()) {
+    modelCalls++;
     const stub = stubEmbedding(text);
     if (mode === 'query') queryEmbedMemo.set(text, stub.slice());
     return stub;
@@ -148,6 +160,7 @@ export async function generateEmbedding(text: string, mode: EmbeddingMode = 'pas
   // Truncate text to avoid token limits (512 tokens max for this model)
   const truncated = applyModePrefix(text.substring(0, 2000), mode);
 
+  modelCalls++;
   const output = await embeddingPipeline!(truncated, {
     pooling: 'mean',
     normalize: true

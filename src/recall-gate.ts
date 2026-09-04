@@ -115,12 +115,13 @@ const STOPWORDS = new Set([
 ]);
 
 const ACK_PATTERNS = [
-  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright)[.! ]*$/i,
-  /^(응|네|넵|예|아니|아니요|고마워|고맙습니다|감사|감사합니다|좋아|좋아요|좋네|알겠어|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿)[.! ~]*$/,
+  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$/i,
+  /^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$/,
 ];
 const CONTINUE_PATTERNS = [
   /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
-  /^(계속|계속해|계속해줘|계속하자|진행|진행해|진행해줘|다음|가자|고|해줘|해봐|ㄱ)[.! ~]*$/,
+  /^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$/,
+  /^(가자|고|해줘|해봐|ㄱ)[.! ~]*$/,
 ];
 const MINOR_CORRECTION_PATTERNS = [
   /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
@@ -130,11 +131,24 @@ const MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\
 const TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
 const HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
 
+// Korean particles and common verb endings attached to a stem. Stripping one
+// trailing suffix keeps "클라이언트를"/"클라이언트" and "옵션도"/"옵션" on the
+// same fingerprint token; the stem must keep at least two characters.
+const KR_SUFFIX = /(해주세요|해줘요|합니다|하세요|했어요|해요|해줘|해봐|하자|할까|했어|했다|한다|해서|에서|에게|한테|으로|까지|부터|처럼|이랑|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$/u;
+
+function normalizeToken(token: string): string {
+  if (!/[\u3131-\uD79D]/u.test(token)) return token;
+  const stripped = token.replace(KR_SUFFIX, "");
+  return stripped.length >= 2 ? stripped : token;
+}
+
 export function tokenizePrompt(text: string): string[] {
   const tokens = text
     .toLowerCase()
     .split(/[^\p{L}\p{N}_.-]+/u)
     .map((token) => token.replace(/^[.-]+|[.-]+$/g, ""))
+    .filter((token) => token.length >= 2 && !STOPWORDS.has(token))
+    .map(normalizeToken)
     .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
   return [...new Set(tokens)];
 }
@@ -151,22 +165,30 @@ export function jaccard(a: Iterable<string>, b: Iterable<string>): number {
 const ACK_WORDS = new Set([
   "ok", "okay", "k", "yes", "yep", "yeah", "no", "nope", "sure", "thanks", "thank", "thx", "ty", "cool",
   "great", "nice", "good", "got", "understood", "done", "fine", "alright", "perfect", "right", "awesome",
-  "응", "네", "넵", "예", "아니", "아니요", "고마워", "고맙습니다", "감사", "감사합니다", "좋아", "좋아요", "좋네",
-  "알겠어", "알겠습니다", "오케이", "ㅇㅋ", "ㅇㅇ", "굿", "맞아", "맞아요",
+  "응", "네", "넵", "넹", "예", "아니", "아니요", "고마워", "고마워요", "고맙습니다", "감사", "감사합니다", "감사해요",
+  "좋아", "좋아요", "좋네", "좋습니다", "알겠어", "알겠어요", "알겠습니다", "오케이", "ㅇㅋ", "ㅇㅇ", "굿", "맞아", "맞아요",
+  "그래", "그래요", "확인",
 ]);
 const CONTINUE_WORDS = new Set([
   "continue", "go", "on", "keep", "going", "next", "proceed", "carry", "ahead", "resume",
-  "계속", "계속해", "계속해줘", "계속하자", "진행", "진행해", "진행해줘", "다음", "가자", "해줘", "해봐", "ㄱㄱ",
+  "계속", "계속해", "계속해줘", "계속해줘요", "계속해주세요", "계속하자", "진행", "진행해", "진행해줘", "진행해주세요", "진행할게",
+  "진행할게요", "다음", "다음으로", "넘어가자", "넘어가요", "넘어가", "이어서", "이어", "가자", "해줘", "해주세요", "해봐", "ㄱㄱ",
 ]);
-
+/** Words that carry no topic on their own; they never make a prompt substantive. */
+const FILLER_WORDS = new Set([
+  "you", "it", "that", "this", "the", "and", "then", "now", "please", "let", "lets", "s", "do", "for", "with",
+  "sounds", "looks", "work", "job", "well", "really", "very", "much", "so", "all", "too",
+  "저", "그", "좀", "요", "네요", "입니다", "이제", "그럼", "그러면", "일단",
+]);
 export function detectPromptIntents(prompt: string): PromptIntents {
   const trimmed = prompt.trim();
   const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
-  const allAck = rawTokens.length > 0 && rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || token === "you" || token === "it" || token === "that");
+  const allAck = rawTokens.length > 0 &&
+    rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || FILLER_WORDS.has(token));
   const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) ||
     (allAck && rawTokens.some((token) => ACK_WORDS.has(token)));
   const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) ||
-    (allAck && !acknowledgement);
+    (allAck && !acknowledgement && rawTokens.some((token) => CONTINUE_WORDS.has(token)));
   return {
     memory: MEMORY_INTENT.test(trimmed),
     trace: TRACE_INTENT.test(trimmed),
@@ -193,9 +215,12 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 /**
  * Cheap gate decision. Order matters: explicit memory intent is never skipped
  * because a prompt is short; state-change triggers (epoch/Capsule/project
- * revision/incident) fire before lexical judgments; acknowledgements and
- * continuations skip; everything else is judged by fingerprint overlap and,
- * when still unclear, deferred to one embedding (`ambiguous`).
+ * revision/incident) fire before lexical judgments — including for
+ * acknowledgements, so the first "continue" of a new epoch still carries the
+ * Capsule (the caller renders it without any vector work); otherwise
+ * acknowledgements and continuations skip; everything else is judged by
+ * fingerprint overlap and, when still unclear, deferred to one embedding
+ * (`ambiguous`).
  */
 export function decideRecall(input: RecallGateInput): RecallGateDecision {
   const config = { ...DEFAULT_RECALL_GATE_CONFIG, ...(input.config ?? {}) };
@@ -204,7 +229,8 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
   const triggers: RecallTrigger[] = [];
   const fingerprint = input.state.topicFingerprint;
   const topicOverlap = fingerprint.length > 0 ? jaccard(tokens, fingerprint) : null;
-  const substantive = tokens.length >= config.substantiveMinTokens || intents.memory || intents.highImpact;
+  const substantive = !(intents.acknowledgement || intents.continuation) &&
+    (tokens.length >= config.substantiveMinTokens || intents.memory || intents.highImpact);
   const base = (action: RecallGateDecision["action"], skipReason: RecallSkipReason | null = null): RecallGateDecision => ({
     action, triggers, skipReason, intents, tokens, substantive, topicOverlap,
   });
@@ -215,6 +241,9 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
   if (input.incidentMatched) triggers.push("incident_signature_match");
   if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
   if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
+  if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
+    triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
+  }
   if (triggers.length > 0) return base("retrieve");
 
   // Pure acknowledgements/continuations never need retrieval on their own.
@@ -226,10 +255,6 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
     return base("skip", "minor_correction");
   }
 
-  const epochChanged = input.state.lastRetrievalEpoch !== input.state.contextEpoch;
-  if (epochChanged) {
-    triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
-  }
   if (intents.highImpact) triggers.push("high_impact_intent");
   if (input.state.informativePromptsSinceRetrieval >= config.safetyRefreshInterval) triggers.push("safety_refresh");
   if (topicOverlap !== null && tokens.length >= config.driftMinTokens && topicOverlap < config.driftJaccard) {
@@ -244,12 +269,11 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
 
   // Short non-memory prompt that clearly continues the current topic.
   if (!substantive && topicOverlap !== null && topicOverlap >= 0.3) return base("skip", "continuation");
-  if (!substantive && topicOverlap === null) return base("skip", "continuation");
   // Substantive prompt whose vocabulary largely repeats the current topic:
   // lexical continuation, no embedding needed (safety refresh still bounds it).
   if (topicOverlap !== null && topicOverlap >= config.lexicalCoherentJaccard) return base("skip", "coherent_topic");
 
-  // Substantive prompt on a known topic with no other signal: one embedding decides.
+  // Prompt on a known topic with no other signal: one embedding decides.
   if (!input.state.hasTopicEmbedding) {
     triggers.push("no_topic_embedding");
     return base("retrieve");

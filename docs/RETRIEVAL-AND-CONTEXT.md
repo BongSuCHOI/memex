@@ -69,25 +69,29 @@ lexical fingerprint만 사용하고 LLM을 호출하지 않습니다.
 
 | 순서 | 판정 | 결과 |
 | --- | --- | --- |
-| 1 | explicit memory intent(왜/언제/이전/기록/출처/why/history/source/again…) | retrieve (길이 무관) |
-| 2 | verified incident signature match, `project.memory_revision > seen`, Capsule generation 변경 | retrieve |
-| 3 | acknowledgement/continuation lexicon(≤ 4 tokens), 짧은 minor correction | skip, embedding 0 |
-| 4 | context epoch 변경 / compact 뒤 첫 prompt / epoch 내 첫 substantive prompt | retrieve (+ WORK NOW) |
-| 5 | high-impact intent(decide/switch/migrate/rollback/전환/롤백…), safety refresh(substantive 6회) | retrieve |
-| 6 | topic drift: prompt tokens vs topic fingerprint Jaccard < 0.12 (≥ 5 tokens) | retrieve |
-| 7 | low resident coverage: ≥ 8 tokens인데 resident fact vocabulary와 교집합 0 | retrieve |
-| 8 | 짧은 prompt가 topic과 겹침(Jaccard ≥ 0.3) 또는 substantive prompt가 강하게 겹침(≥ 0.35) | skip, embedding 0 |
-| 9 | 그 외 | ambiguous → embedding 1회: `cos(prompt, topic) - baseline ≥ 0.08`이면 skip(coherent), 아니면 retrieve(embedding_drift) |
+| 1 | state trigger: explicit memory intent(왜/언제/이전/기록/출처/why/history/source/again…), verified incident signature match, `project.memory_revision > seen`, Capsule generation 변경, context epoch 변경(compact/clear 뒤 첫 prompt, epoch 내 첫 prompt) | retrieve (길이·ack 여부 무관) |
+| 2 | acknowledgement/continuation lexicon(KR/EN, ≤ 4 tokens), 짧은 minor correction | skip, embedding 0 |
+| 3 | high-impact intent(decide/switch/migrate/rollback/전환/롤백…), safety refresh(substantive skip 6회) | retrieve |
+| 4 | topic drift: prompt tokens vs topic fingerprint Jaccard < 0.12 (≥ 5 tokens) | retrieve |
+| 5 | low resident coverage: ≥ 8 tokens인데 resident fact vocabulary와 교집합 0 | retrieve |
+| 6 | 짧은 prompt가 topic과 겹침(Jaccard ≥ 0.3) 또는 substantive prompt가 강하게 겹침(≥ 0.35) | skip, embedding 0 |
+| 7 | 그 외 | ambiguous → embedding 1회: `cos(prompt, topic) - baseline ≥ 0.08`이면 skip(coherent), 아니면 retrieve(embedding_drift); topic embedding이 없으면 retrieve |
 
-ambiguous path의 embedding은 retrieval에 그대로 재사용됩니다. 기본값은 `DEFAULT_RECALL_GATE_CONFIG`에
-있으며 threshold는 deterministic이고 소수입니다. embedding이 불가능하면(model 없음/offline) skip은 그대로
-무료이고 retrieve path는 vector가 필요 없는 section(CORRECTION, WORK NOW, WATCH, RECENT EVIDENCE)만
-렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
+state trigger(1)는 acknowledgement보다 먼저 평가됩니다. 그래서 새 session/epoch의 첫 prompt가 "계속해"여도
+Capsule(`[WORK NOW]`)과 pending correction은 전달됩니다. 다만 ack/continuation은 vector 없이 처리됩니다
+(embedding 0, CURRENT TRUTH 검색 없음, topic fingerprint 유지). 그 외 retrieve path는 embedding을 정확히
+1회 계산하고 ambiguous path의 embedding은 retrieval에 그대로 재사용됩니다.
+
+fingerprint tokenizer는 소문자·stopword 제거 뒤 한국어 token의 꼬리 조사/어미(을/를/도/에서/해줘/해주세요 …)를
+한 개 벗겨 "클라이언트를"과 "클라이언트"를 같은 token으로 만듭니다(retrieval embedding에는 영향 없음).
+기본값은 `DEFAULT_RECALL_GATE_CONFIG`에 있으며 threshold는 deterministic이고 소수입니다. embedding이
+불가능하면(model 없음/offline) skip은 그대로 무료이고 retrieve path는 vector가 필요 없는 section(CORRECTION,
+WORK NOW, WATCH, RECENT EVIDENCE)만 렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
 
 session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embedding`,
-`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`, `watch_emitted_json`.
-새 session은 생성 시점의 `projects.memory_revision`을 `memory_revision_seen`으로 시작합니다(resident가
-없으므로 correct할 것이 없음). sibling 변경은 다음 prompt에서 `[MEMEX CORRECTION]`으로 강제됩니다.
+`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`(Hot Evidence watermark),
+`watch_emitted_json`(WATCH/TRACE hint ledger). 새 session은 생성 시점의 `projects.memory_revision`을
+`memory_revision_seen`으로 시작합니다(resident가 없으므로 correct할 것이 없음).
 
 ## 4b. Memory Bundle
 
@@ -95,12 +99,12 @@ session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embeddin
 
 | Section | 조건 |
 | --- | --- |
-| `[MEMEX CORRECTION]` | 같은 fact의 새 generation(`Updated (supersedes earlier context)`), 비활성화된 resident fact(`No longer active`), stale project revision |
-| `[WORK NOW]` | Capsule generation 변경, epoch 내 첫 substantive prompt, compact 뒤 첫 prompt (Capsule은 context-only) |
+| `[MEMEX CORRECTION]` | residency에서 도출: resident revision의 fact가 새 generation이면 `Updated (supersedes earlier context): … — earlier: "…"`, 비활성화됐으면 `No longer active`. prompt와 무관하게 모든 resident fact를 검사하며, stale project revision(sibling 변경)은 이 검사를 강제할 뿐 never-resident fact를 밀어넣지 않습니다. budget 때문에 남은 correction이 있으면 `memory_revision_seen`을 올리지 않고 다음 prompt에서 이어서 내보냅니다 |
+| `[WORK NOW]` | 현재 Capsule generation이 이 epoch에 resident가 아닐 때(새 session, compact/clear, 새 generation). SessionStart(compact/resume) rehydration이 이미 넣은 generation은 반복하지 않으며, 빈 Capsule도 resident로 표시해 retrieval loop를 막습니다 (Capsule은 context-only) |
 | `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
-| `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; session TTL 5 prompt |
-| `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 subject의 Chronicle event 수·latest event·`trace_fact` 안내(전체 history 주입 금지) |
-| `[RECENT EVIDENCE — NOT YET DISTILLED]` | Hot Evidence lane |
+| `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; 같은 signature는 새 verified episode가 없으면 substantive prompt 5회 동안 반복하지 않음 |
+| `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 `trace_fact subject_key=… — N Chronicle event(s), latest …` pointer(전체 history 주입 금지). 같은 subject는 Chronicle이 바뀌지 않는 한 epoch 동안 반복하지 않음 |
+| `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 Hot Evidence만(자기 session 것은 이미 context에 있음), `last_retrieval_at` 이후 index된 것만. epoch 변경 시 watermark가 초기화되고 rehydration이 다시 stamp합니다 |
 | `[ASSISTANT CONTEXT-ONLY — NOT AUTHORITATIVE]` | current truth/correction이 없고 explicit memory intent일 때만 source-linked 과거 답변 1건 |
 
 예산: normal prompt target 700 / hard 1,000자(line 160자), resume/compact target 1,500 / hard 2,000자.
@@ -188,17 +192,22 @@ Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 �
 ## 8a. Metrics와 calibration
 
 `continuity_telemetry`에 측정 sample만 기록합니다: `retrieval_gate_skip_count`(reason),
-`retrieval_execute_count`(triggers), `embedding_calls`, `candidate_facts`, `current_facts`, `delta_facts`,
-`injected_facts`, `injected_chars`, `section_chars`(section), `bundle_size`, `estimated_tokens`,
+`retrieval_execute_count`(triggers, vector 여부), `embedding_calls`(embedding module이 센 실제 model
+inference 수 — probe warm-up 포함), `embedding_cache_hits`(query memo hit), `candidate_facts`, `current_facts`,
+`delta_facts`, `injected_facts`, `injected_chars`, `section_chars`(section), `bundle_size`, `estimated_tokens`,
 `correction_count`, `correction_delay_prompts`, `watch_emissions`, `project_revision_invalidations`,
 `repeated_context_turns`. `summarizeTelemetry`는 `TELEMETRY — MEASURED, NOT A FACT` 보고서를 만들며 fact나
 Chronicle event를 만들지 않습니다.
 
-`node scripts/continuity-recall-benchmark.mjs`는 deterministic embedding stub 위에서 Prompt 5A/5B workload를
-baseline(gate off)과 gated로 두 번 실행하고 `docs/verification/continuity-v1/recall-calibration.json`을 씁니다.
-최신 측정(prompts 340): retrievals baseline 340 → gated 126, embedding calls 337 → 209, ack prompt embedding 0,
-stale/wrong-workstream injection 0, mandatory memory intent miss 0, max bundle 514자. stub 위 수치이므로 production
-model에서는 threshold를 재측정합니다(D-027).
+`node scripts/continuity-recall-benchmark.mjs`는 deterministic embedding stub 위에서 Prompt 5A/5B workload
+(follow-up, ack, topic shift, explicit history/source, same-fact evolution/rollback/correction, 200-turn
+compaction with continuation carry, Korean follow-up/ack, same project same/different workstream, incident
+recurrence, embeddings unavailable)를 baseline(gate off)과 gated로 두 번 실행하고
+`docs/verification/continuity-v1/recall-calibration.json`을 씁니다. harness는 prompt text를 재사용하므로
+embedding 비용은 request(inference + memo hit)로 보고합니다. Phase 5B 측정(prompts 365): retrievals 365 →
+142(−61.1%), embedding requests 370 → 224, ack prompt embedding 85 → 0, injected chars 7,557 → 6,035,
+stale/wrong-workstream/duplicate injection 0, mandatory memory intent miss 0/20, max bundle 432자.
+production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027에 기록되어 있습니다.
 
 ## 9. 관측 상태
 

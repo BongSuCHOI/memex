@@ -112,6 +112,24 @@ export declare function readResidentFactRevisions(db: Database.Database, session
     carry: ResidentFactRevision[];
 };
 export declare function recordResidentFactRevisions(db: Database.Database, sessionId: string, contextEpoch: number, revisions: ResidentFactRevision[], now?: string): boolean;
+export interface ResidentRevisionCorrection {
+    id: string;
+    fact: string;
+    category: string;
+    semantic_generation: number;
+    lifecycle_generation: number;
+    is_active: number;
+    /** Statement the resident revision carried, from the Chronicle, when known. */
+    previous_fact: string | null;
+}
+/**
+ * Resident fact revisions whose current row differs (new semantic/lifecycle
+ * generation or deactivated): exactly the facts whose earlier statement is
+ * now stale in the model's context (RFC §12.4/§12.6). Purged rows are skipped
+ * so a correction never resurrects removed text. Never-resident facts are not
+ * corrections; they reach the context only through relevance retrieval.
+ */
+export declare function readResidentRevisionCorrections(db: Database.Database, sessionId: string): ResidentRevisionCorrection[];
 export declare function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch;
 export declare function applyWorkCapsulePatch(db: Database.Database, input: {
     workstreamId: string;

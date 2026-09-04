@@ -254,11 +254,65 @@ the historical Phase 0 observation remains in this record.
 - Invariant evidence: `test/continuity-recall.test.ts` (stale revision correction after a sibling update; first prompt renders `[CURRENT TRUTH]`) and the Phase 3 identity/core/adversarial suites still pass.
 - Reversal condition/trade-off: none identified; a resumed session keeps its stored `seen` value.
 
-## D-027 — Gate thresholds are few, deterministic, and calibrated on the stub
+## D-027 — Gate thresholds are few, deterministic, calibrated on the stub and spot-checked on the production model
 
 - RFC section/invariant: §12.3; Prompt 5A "threshold는 deterministic/configurable but few defaults"
-- Actual choice: `DEFAULT_RECALL_GATE_CONFIG` = ack ≤ 4 tokens, safety refresh 6 substantive prompts, drift Jaccard < 0.12 (≥ 5 tokens), coverage ≥ 8 tokens, lexical coherent Jaccard ≥ 0.35, ambiguous coherence `cos − baseline ≥ 0.08`, substantive ≥ 5 tokens. The lexical coherent skip (rule 8) is an as-built addition that avoids one embedding on strongly overlapping follow-ups.
-- Reason: the RFC leaves numbers to calibration; these defaults produced 0 ack embeddings, 0 stale/wrong-scope injections, 0 mandatory-intent misses and a 62.9% retrieval reduction on the stub workloads.
-- Alternatives considered: absolute cosine threshold (model dependent); no lexical coherent skip (one embedding per follow-up).
-- Invariant evidence: `recall-calibration.json` verdict block; `test/continuity-recall.test.ts` cases a–x.
-- Reversal condition/trade-off: any threshold change must be justified with recall and cost evidence together; lowering retrieval by dropping mandatory memory intents is forbidden.
+- Actual choice: `DEFAULT_RECALL_GATE_CONFIG` = ack ≤ 4 tokens, safety refresh 6 substantive prompts, drift Jaccard < 0.12 (≥ 5 tokens), coverage ≥ 8 tokens, lexical coherent Jaccard ≥ 0.35, ambiguous coherence `cos − baseline ≥ 0.08`, substantive ≥ 5 tokens. The lexical coherent skip is an as-built addition that avoids one embedding on strongly overlapping follow-ups. Phase 5B left every threshold unchanged.
+- Reason: the RFC leaves numbers to calibration. On the stub workloads (365 prompts) these defaults give 0 acknowledgement embeddings, 0 stale/wrong-scope/duplicate injections, 0 mandatory-intent misses and a 61.1% retrieval reduction (`recall-calibration.json`). Phase 5B also ran the cached production model (`Xenova/multilingual-e5-small`, offline, 20 topic/prompt pairs, EN and KR): related follow-ups scored margins 0.083–0.111 (skip) or fell to lexical drift (retrieve, safe direction); every unrelated prompt retrieved (margins −0.011…0.076); the closest unrelated case ("Rewrite the deployment rollout pipeline…" against a Redis client topic) was 0.076, only 0.004 under the skip line, but such prompts (≥ 5 tokens, Jaccard < 0.12) are decided by lexical drift before any embedding. Korean short follow-ups had negative margins on the model (retrieve), so the Korean cost stays on the safe side.
+- Alternatives considered: absolute cosine threshold (model dependent); no lexical coherent skip (one embedding per follow-up); raising the margin to 0.10 (would turn measured related pairs at 0.083–0.104 into retrievals without a recall benefit).
+- Invariant evidence: `recall-calibration.json` verdict block; `test/continuity-recall.test.ts` cases a–x; `test/continuity-recall-gate.test.ts` case 8; the 5B handoff records the 20-pair model sample.
+- Reversal condition/trade-off: any threshold change must be justified with recall and cost evidence together; lowering retrieval by dropping mandatory memory intents is forbidden. The production-model sample is small (20 pairs); a larger replay on real transcripts is Final Integration work.
+
+## D-028 — Corrections are derived from residency, not pushed from the project scope
+
+- RFC section/invariant: §11.4 ("다른 session의 변경을 현재 context에 강제로 push하지 않는다"), §12.4, §12.6; RESIDENCY, REVISION-AWARE INJECTION
+- Actual choice: on the prompt path `[MEMEX CORRECTION]` is computed by `readResidentRevisionCorrections` from the session's resident tuples: a resident fact whose row moved to a new semantic/lifecycle generation or was deactivated is corrected on every retrieval, whether or not the prompt is about it; the Chronicle's `previous_fact` is quoted as the earlier statement when known. A stale project revision forces the pass (even on an acknowledgement, vector-free) but never-resident facts are not corrections — they reach the context only through relevance retrieval. The revision is acknowledged only once every stale resident revision has been emitted (bounded drain under the CORRECTION item cap). `buildRehydrationContext` (SessionStart resume/compact) keeps its Phase 3 scope-wide correction list.
+- Reason: Phase 5A reused the rehydration renderer on the prompt path and returned early, so a stale revision (a) replaced the prompt's own recall (an explicit "why …" question received only the sibling's correction and the next prompt on that topic was skipped as coherent), (b) injected every never-resident fact in scope as a "correction", and (c) missed a resident fact that changed without a project-revision bump (workstream-promoted facts) unless it happened to be in the search results.
+- Alternatives considered: keep the early return and add the prompt's recall after it (still pushes never-resident facts); bump the project revision for workstream facts (breaks BRANCH TRUTH separation).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` cases 2 and 6; `test/inject-write-ordering.test.ts` stale-resident correction ordering; harness `same-fact-evolution-rollback-correction` 3/3 and `same-project-same-workstream` correction on an acknowledgement.
+- Reversal condition/trade-off: if a product signal shows that never-resident sibling facts must be surfaced eagerly, add them as a relevance-ranked CURRENT TRUTH candidate set, not as corrections.
+
+## D-029 — Acknowledgements carry pending state without a vector
+
+- RFC section/invariant: §12.3 skip candidates and recall triggers; §4.2/§24 ("새 세션을 열었다 → Capsule로 이어받는다"); HOOK BOUNDARY
+- Actual choice: the gate evaluates state triggers (epoch change, Capsule generation, project revision, incident, explicit memory intent) before the acknowledgement/continuation lexicon. An acknowledgement with a pending trigger is a vector-free retrieval: no embedding, no fact search, no topic-fingerprint replacement; it renders WORK NOW, corrections, WATCH and sibling evidence only. WORK NOW itself is emitted whenever the current Capsule generation is not resident in the epoch, and an empty Capsule generation is marked resident so it cannot force retrieval on every prompt.
+- Reason: with 5A's order, "계속해줘"/"continue" as the first prompt of a new session or after compaction skipped entirely, so the Capsule arrived one prompt late; a memory question as the first prompt in an epoch consumed the epoch trigger without ever rendering WORK NOW; and the first prompt after a SessionStart(compact) rehydration repeated the Capsule the rehydration had already injected.
+- Alternatives considered: rehydrate on SessionStart(startup) as well (would inject the Capsule before the user's intent is known); keep acknowledgements as pure skips (loses the Capsule on the most common resume prompt).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` cases 1, 5 and 8; harness `compaction-heavy-200` continuation carry 4/4 with 0 acknowledgement embeddings.
+- Reversal condition/trade-off: none identified; the acknowledgement path costs one SQL residency check.
+
+## D-030 — Hot Evidence on the prompt path is sibling-only with an epoch watermark
+
+- RFC section/invariant: §11.2 ("sibling session의 최신 결정이 아직 fact로 증류되지 않았을 때 보완"); RESIDENCY
+- Actual choice: `readHotEvidence` accepts `excludeSessionId` and `afterCreatedAt`; the prompt path excludes the session's own evidence and only injects evidence indexed after `last_retrieval_at`. `advanceContextEpoch` resets `last_retrieval_at` to NULL (nothing is resident in a new epoch) and the SessionStart resume/compact rehydration stamps it after emitting its own RECENT EVIDENCE block. The rehydration read itself is unchanged.
+- Reason: 5A (and Phase 3 before it) re-injected the same two evidence lines on every retrieval for the 14-day TTL, including the session's own last human message.
+- Alternatives considered: a separate emitted-evidence ledger (more state for the same effect); dropping the lane from the prompt path (loses the sibling-freshness supplement the RFC asks for).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` case 3; harness `same-project-same-workstream` sibling evidence 1/1 with 0 repeats; `duplicate_injections` 0 across all workloads.
+- Reversal condition/trade-off: evidence cut by the budget or indexed inside the read/commit window is not retried on the prompt path (bounded loss; MCP still serves it).
+
+## D-031 — `embedding_calls` counts real inferences; the harness reports requests
+
+- RFC section/invariant: §15.5 measured outcomes; Prompt 5A metric 12 "embedding call/cache hit"; Prompt 5B check 13
+- Actual choice: `embeddings.ts` keeps process-wide `modelCalls`/`cacheHits` counters (`embeddingCallStats`); the prompt path samples the delta, so `embedding_calls` equals model inferences including the eight background-probe embeddings on a cold process and `embedding_cache_hits` counts query-memo hits. `scripts/continuity-recall-benchmark.mjs` reports `embeddingCalls` as requests (inferences + memo hits) and `embeddingInferences` separately, because the harness recycles prompt text through the 32-entry memo.
+- Reason: 5A incremented a local counter around `generateEmbedding`, which reported 1 while a cold-process retrieval performed 9 inferences, and never recorded cache hits at all.
+- Alternatives considered: counting probes statically (wrong once cached); disabling the memo in the harness (would misreport production behaviour).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` case 7 (telemetry equals the module counters, memo hit recorded); `test/continuity-recall.test.ts` case w under the mocked counter.
+- Reversal condition/trade-off: none; counters are monotonic per process and cost nothing.
+
+## D-032 — Hint ledger: WATCH TTL in substantive prompts, TRACE resident per epoch
+
+- RFC section/invariant: §12.5 WATCH/TRACE policies, §15.4; Prompt 5A "bounded ranking/TTL"
+- Actual choice: `watch_emitted_json` is a hint ledger keyed `watch:<signature>` / `trace:<subject>` with the epoch, a change token (newest verified episode or Chronicle count@effective_at) and a counter of substantive prompts since emission that advances on every retrieval. A WATCH line is repeated only after 5 substantive prompts or when a newer verified episode exists; a TRACE pointer is repeated only when the Chronicle for that subject changed. The TRACE text starts with `trace_fact subject_key=…` so the actionable pointer survives the 160-char line cap.
+- Reason: 5A's TTL compared against a counter that every retrieval reset, so a WATCH never re-emitted inside an epoch; TRACE had no residency and repeated on every explicit-history prompt (33 duplicate lines in the harness).
+- Alternatives considered: TTL for TRACE too (re-emits a pointer already in context); no TTL for WATCH (a live signature is never re-warned in a long epoch).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` case 4; harness `duplicate_injections` 0 and `watch_ttl_suppressions` 1.
+- Reversal condition/trade-off: the TTL constant (5) is unmeasured on real sessions; it bounds fatigue and is not a recall control.
+
+## D-033 — Korean suffix stripping in the fingerprint tokenizer and a wider acknowledgement lexicon
+
+- RFC section/invariant: §12.3 lexical fingerprint, "단순 길이만으로 중요한 짧은 질문을 버리지 않는다"
+- Actual choice: `tokenizePrompt` strips one trailing Korean particle/verb ending (을/를/도/에서/해줘/해주세요 …) from tokens that keep at least two characters; the acknowledgement/continuation lexicon adds polite Korean forms (계속해주세요, 알겠어요, 좋습니다 …) and English filler-only phrases (sounds good, go ahead; nice work). Memory, trace and high-impact intent regexes are unchanged.
+- Reason: attached particles made Korean follow-ups look like topic drift (Jaccard 0), forcing retrieval on every Korean prompt, and polite acknowledgements went to the ambiguous path (one embedding each).
+- Alternatives considered: full morphological analysis (dependency); Korean-specific thresholds (more knobs).
+- Invariant evidence: `test/continuity-recall-gate.test.ts` case 8 (KR/EN short memory, high-impact and incident prompts retrieve; acknowledgements skip); harness `korean-follow-up-ack` retrievals 22 → 7 with 2/2 Korean history intents recalled.
+- Reversal condition/trade-off: stripping only affects fingerprint overlap, never the retrieval embedding; a false coherent skip would still be bounded by the safety refresh.

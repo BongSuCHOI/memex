@@ -601,6 +601,14 @@ export function readHotEvidence(db, input) {
         where.push("session_id = ?");
         args.push(input.sessionId);
     }
+    if (input.excludeSessionId) {
+        where.push("session_id <> ?");
+        args.push(input.excludeSessionId);
+    }
+    if (input.afterCreatedAt) {
+        where.push("created_at > ?");
+        args.push(input.afterCreatedAt);
+    }
     if (input.beforeCreatedAt) {
         where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
         args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");

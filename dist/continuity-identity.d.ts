@@ -79,8 +79,12 @@ export declare function readHotEvidence(db: Database.Database, input: {
     workspaceId?: string | null;
     workstreamId?: string | null;
     sessionId?: string | null;
+    /** Sibling-lane read: the session's own evidence is already in its context. */
+    excludeSessionId?: string | null;
     beforeCreatedAt?: string | null;
     beforeEvidenceId?: string | null;
+    /** Residency watermark: only evidence indexed after this instant. */
+    afterCreatedAt?: string | null;
     limit?: number;
     now?: string;
 }): Array<Record<string, unknown>>;

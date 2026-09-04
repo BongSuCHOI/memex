@@ -261,8 +261,11 @@ fact/event가 아닙니다(allowlist metric은 `TELEMETRY_METRICS`).
 
 `session_memory_state`는 Phase 5 recall gate state를 additive column으로 가집니다(schema v6):
 `topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`,
-`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. 새 session row의 `memory_revision_seen`은
-생성 시점의 project revision입니다.
+`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. `last_retrieval_at`은 Hot Evidence
+residency watermark를 겸합니다(epoch 변경 시 NULL, SessionStart rehydration과 prompt path retrieval이 stamp).
+`watch_emitted_json`은 hint ledger(`watch:<signature>`/`trace:<subject>` key, epoch, substantive prompt
+counter, change token)입니다. `resident_bundle_hash`는 RFC §12.2 예약 column이며 현재 쓰지 않습니다.
+새 session row의 `memory_revision_seen`은 생성 시점의 project revision입니다.
 
 `fact_tombstones`는 hard-delete event이며 fact row가 없어져도 남아 stale peer snapshot의 resurrection을 막습니다.
 `chronicle_tombstones`는 purge된 event id를 같은 목적으로 보존합니다.

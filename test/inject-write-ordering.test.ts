@@ -5,12 +5,8 @@ import path from "node:path";
 
 const recordRecallEvent = vi.hoisted(() => vi.fn());
 const recordResidentFactRevisions = vi.hoisted(() => vi.fn(() => true));
-const buildRehydrationContext = vi.hoisted(() => vi.fn(() => ({
-  context: "",
-  factRevisions: [] as Array<[string, number, number]>,
-  capsuleGeneration: 0,
-  projectRevisionComplete: true,
-})));
+const residentCorrections = vi.hoisted(() => vi.fn(() => [] as Array<Record<string, unknown>>));
+const residency = vi.hoisted(() => ({ resident: [] as Array<[string, number, number]> }));
 const revisionState = vi.hoisted(() => ({ current: 0, seen: 0 }));
 const markSessionProjectRevisionSeen = vi.hoisted(() => vi.fn(() => true));
 const factResults = vi.hoisted(() => ({ value: [] as Array<Record<string, unknown>> }));
@@ -27,6 +23,7 @@ vi.mock("../src/embeddings.js", () => ({
   generateEmbedding: vi.fn().mockResolvedValue(new Array(384).fill(0.1)),
   initEmbeddings: vi.fn().mockResolvedValue(undefined),
   queryBaseline: vi.fn().mockResolvedValue(0),
+  embeddingCallStats: () => ({ modelCalls: 0, cacheHits: 0 }),
 }));
 vi.mock("../src/fact-db.js", () => ({
   searchFactsByScope: () => factResults.value,
@@ -48,8 +45,8 @@ vi.mock("../src/continuity-core.js", () => ({
     workstreamId: "workstream-ordering",
     contextEpoch: 0,
   })),
-  buildRehydrationContext,
-  readResidentFactRevisions: () => ({ contextEpoch: 0, resident: [], carry: [] }),
+  readResidentFactRevisions: () => ({ contextEpoch: 0, resident: residency.resident, carry: [] }),
+  readResidentRevisionCorrections: residentCorrections,
   recordResidentFactRevisions,
   readWorkCapsule: () => null,
 }));
@@ -76,13 +73,9 @@ describe("injection write ordering", () => {
     process.env.MEMEX_HOME = tmpDir;
     recordRecallEvent.mockReset();
     recordResidentFactRevisions.mockClear();
-    buildRehydrationContext.mockReset();
-    buildRehydrationContext.mockReturnValue({
-      context: "",
-      factRevisions: [],
-      capsuleGeneration: 0,
-      projectRevisionComplete: true,
-    });
+    residentCorrections.mockReset();
+    residentCorrections.mockReturnValue([]);
+    residency.resident = [];
     revisionState.current = 0;
     revisionState.seen = 0;
     markSessionProjectRevisionSeen.mockClear();
@@ -128,15 +121,14 @@ describe("injection write ordering", () => {
     expect(recordResidentFactRevisions).not.toHaveBeenCalled();
   });
 
-  it("emits a stale-project correction before a semantically matching fact result", async () => {
+  it("emits a stale-resident correction before a semantically matching fact result and acknowledges the project revision in the same commit", async () => {
     revisionState.current = 3;
     revisionState.seen = 2;
-    buildRehydrationContext.mockReturnValue({
-      context: "[MEMEX CORRECTION]\n- Main now uses PostgreSQL",
-      factRevisions: [["fact-correction", 2, 1]],
-      capsuleGeneration: 0,
-      projectRevisionComplete: true,
-    });
+    residency.resident = [["fact-correction", 1, 1]];
+    residentCorrections.mockReturnValue([{
+      id: "fact-correction", fact: "Main now uses PostgreSQL", category: "decision",
+      semantic_generation: 2, lifecycle_generation: 1, is_active: 1, previous_fact: "Main uses MySQL",
+    }]);
     recordRecallEvent.mockReturnValue("recall-correction");
 
     const context = await computeInjectContext(
@@ -146,18 +138,22 @@ describe("injection write ordering", () => {
       "session-ordering-test",
     );
 
-    expect(context).toContain("[MEMEX CORRECTION]");
-    expect(context).not.toContain("Prepared recall receipt");
+    expect(context.indexOf("[MEMEX CORRECTION]")).toBe(0);
+    expect(context).toContain("Main now uses PostgreSQL");
+    expect(context).toContain('earlier: "Main uses MySQL"');
+    expect(context.indexOf("[MEMEX CORRECTION]")).toBeLessThan(context.indexOf("[CURRENT TRUTH]"));
+    expect(context).toContain("Prepared recall receipt");
     expect(recordRecallEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      factIds: ["fact-correction"],
+      factIds: ["fact-correction", "fact-prepared-gate"],
       projectMemoryRevision: 3,
     }));
     expect(recordResidentFactRevisions).toHaveBeenCalledWith(
       expect.anything(),
       "session-ordering-test",
       0,
-      [["fact-correction", 2, 1]],
+      [["fact-correction", 2, 1], ["fact-prepared-gate", 1, 1]],
     );
+    expect(markSessionProjectRevisionSeen).toHaveBeenCalledWith(expect.anything(), "session-ordering-test", 3);
   });
 
   it("emits labeled Hot Evidence even when no distilled fact matches", async () => {

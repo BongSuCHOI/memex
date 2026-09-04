@@ -708,8 +708,12 @@ export function readHotEvidence(
     workspaceId?: string | null;
     workstreamId?: string | null;
     sessionId?: string | null;
+    /** Sibling-lane read: the session's own evidence is already in its context. */
+    excludeSessionId?: string | null;
     beforeCreatedAt?: string | null;
     beforeEvidenceId?: string | null;
+    /** Residency watermark: only evidence indexed after this instant. */
+    afterCreatedAt?: string | null;
     limit?: number;
     now?: string;
   },
@@ -719,6 +723,8 @@ export function readHotEvidence(
   if (input.workspaceId) { where.push("workspace_id = ?"); args.push(input.workspaceId); }
   if (input.workstreamId) { where.push("workstream_id = ?"); args.push(input.workstreamId); }
   if (input.sessionId) { where.push("session_id = ?"); args.push(input.sessionId); }
+  if (input.excludeSessionId) { where.push("session_id <> ?"); args.push(input.excludeSessionId); }
+  if (input.afterCreatedAt) { where.push("created_at > ?"); args.push(input.afterCreatedAt); }
   if (input.beforeCreatedAt) {
     where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
     args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");

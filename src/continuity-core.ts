@@ -927,6 +927,7 @@ export function advanceContextEpoch(
           ELSE '[]' END,
         resident_fact_revisions_json = '[]',
         capsule_generation_seen = 0,
+        last_retrieval_at = NULL,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
   `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
@@ -972,6 +973,60 @@ export function recordResidentFactRevisions(
     SET resident_fact_revisions_json = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
   `).run(JSON.stringify(bounded), now, sessionId, contextEpoch).changes === 1;
+}
+
+export interface ResidentRevisionCorrection {
+  id: string;
+  fact: string;
+  category: string;
+  semantic_generation: number;
+  lifecycle_generation: number;
+  is_active: number;
+  /** Statement the resident revision carried, from the Chronicle, when known. */
+  previous_fact: string | null;
+}
+
+/**
+ * Resident fact revisions whose current row differs (new semantic/lifecycle
+ * generation or deactivated): exactly the facts whose earlier statement is
+ * now stale in the model's context (RFC §12.4/§12.6). Purged rows are skipped
+ * so a correction never resurrects removed text. Never-resident facts are not
+ * corrections; they reach the context only through relevance retrieval.
+ */
+export function readResidentRevisionCorrections(
+  db: Database.Database,
+  sessionId: string,
+): ResidentRevisionCorrection[] {
+  const { resident } = readResidentFactRevisions(db, sessionId);
+  if (resident.length === 0) return [];
+  const rows = db.prepare(`
+    SELECT id, fact, category, semantic_generation, lifecycle_generation, is_active
+    FROM facts WHERE id IN (${resident.map(() => "?").join(",")})
+  `).all(...resident.map(([id]) => id)) as Array<Omit<ResidentRevisionCorrection, "previous_fact">>;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const previous = db.prepare(`
+    SELECT previous_fact FROM fact_revisions
+    WHERE fact_id = ? AND previous_fact IS NOT NULL AND previous_fact <> ''
+    ORDER BY chronicle_seq DESC LIMIT 1
+  `);
+  const corrections: ResidentRevisionCorrection[] = [];
+  for (const [id, semantic, lifecycle] of resident) {
+    const row = byId.get(id);
+    if (!row) continue;
+    if (Number(row.semantic_generation) === semantic && Number(row.lifecycle_generation) === lifecycle) continue;
+    const prior = row.is_active === 1
+      ? (previous.get(id) as { previous_fact: string } | undefined)?.previous_fact ?? null
+      : null;
+    corrections.push({
+      ...row,
+      semantic_generation: Number(row.semantic_generation),
+      lifecycle_generation: Number(row.lifecycle_generation),
+      is_active: Number(row.is_active),
+      previous_fact: prior,
+    });
+  }
+  corrections.sort((a, b) => a.id.localeCompare(b.id));
+  return corrections;
 }
 
 function cleanList(values: unknown, field: string): string[] {
@@ -1658,6 +1713,14 @@ export function handleContinuityHook(
             if (updated.changes !== 1) {
               throw new Error("context epoch changed before Capsule residency commit");
             }
+          }
+          if (rehydrated.context) {
+            // Hot Evidence emitted here is resident for the epoch; the prompt
+            // path only injects evidence indexed after this watermark.
+            db.prepare(`
+              UPDATE session_memory_state SET last_retrieval_at = ?, updated_at = ?
+              WHERE session_id = ? AND context_epoch = ?
+            `).run(new Date().toISOString(), new Date().toISOString(), payload.sessionId, epoch);
           }
         });
         commitRehydration.immediate();

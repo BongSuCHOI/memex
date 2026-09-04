@@ -78,9 +78,12 @@ export declare function cosineSimilarity(a: number[], b: number[]): number;
 /**
  * Cheap gate decision. Order matters: explicit memory intent is never skipped
  * because a prompt is short; state-change triggers (epoch/Capsule/project
- * revision/incident) fire before lexical judgments; acknowledgements and
- * continuations skip; everything else is judged by fingerprint overlap and,
- * when still unclear, deferred to one embedding (`ambiguous`).
+ * revision/incident) fire before lexical judgments — including for
+ * acknowledgements, so the first "continue" of a new epoch still carries the
+ * Capsule (the caller renders it without any vector work); otherwise
+ * acknowledgements and continuations skip; everything else is judged by
+ * fingerprint overlap and, when still unclear, deferred to one embedding
+ * (`ambiguous`).
  */
 export declare function decideRecall(input: RecallGateInput): RecallGateDecision;
 /**
