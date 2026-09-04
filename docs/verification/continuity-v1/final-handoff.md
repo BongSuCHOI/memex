@@ -18,7 +18,7 @@ matrix and deviation record, and a full smoke rerun. No code changed in F2.
 | Worker Prompt Pack SHA-256 | `6ac7511bea8ddaa29b4bfda63e8702780e83b33d456d4cb5be01f221debbddf3` |
 | Continuity schema | `6` (`PRAGMA user_version`, `continuity_schema_meta`), additive v1→v6, crash-injected and rerunnable |
 | Sync protocol | `4` (five files; additive stable identity, Chronicle event and event tombstone rows) |
-| Package / plugin | `0.3.0` in `package.json` (bump not performed — see checklist); packaged `memex-0.3.0.tgz`, 223 files, 9 MCP tools |
+| Package / plugin | `0.4.0` (bumped in the release-prep commit after user approval; F2 smoke ran on `0.3.0`, re-verified after the bump — see "Release preparation"); packaged `memex-0.4.0.tgz`, 9 MCP tools |
 | Runtime verified | Codex CLI `0.153.2` (contract from `0.150.1`), Node `v26.0.0`, macOS arm64 |
 
 ## Gate and commit sequence
@@ -104,6 +104,12 @@ compatibility surfaces). Environment flags: `docs/CONTINUITY.md` §10.
 - The authenticated lifecycle tier was last run in Phase 2B; F1/F2 ran the mandated offline tier plus
   install/marketplace/package E2E.
 
+## Release preparation (after user approval, 2026-09-04)
+
+Version bumped to `0.4.0`; the obsolete plan file deletion committed. Re-verification after the bump is
+recorded in the release-prep commit message and below. PR to `main`, push, tag and publish were explicitly
+excluded by the user and were not executed.
+
 ## Non-blocking future ideas and explicit non-scope
 
 Future (not required by the RFC): CLI verbs for link/split/rebind, production-model calibration replay,
@@ -124,12 +130,11 @@ corrections), D-034–D-036 (F1 corrections), D-037 (release closure keeps compa
 ## User checklist before publish
 
 1. Review the branch: `git log --oneline e9cc91f^..HEAD` (logical per-phase commits, gates committed
-   separately). The user-owned deletion of `FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md` is still uncommitted —
-   commit or restore it deliberately.
-2. Decide the version: recommended `0.4.0` (additive schema v6, new sync row shapes, new CLI subcommand
-   `facts explain`, changed default extraction scope). Suggested commands, to run only after approval:
-   `npm version minor --no-git-tag-version`, move the `Unreleased` CHANGELOG section under `## 0.4.0 - <date>`,
-   commit `chore(release): prepare v0.4.0`, then `git tag v0.4.0`.
+   separately). The deletion of `FACT-EXTRACTION-CONTEXT-GROUNDING-PLAN.md` is committed on user approval
+   (`chore: remove obsolete fact extraction grounding plan`).
+2. Version `0.4.0` prepared on user approval (`chore(release): prepare v0.4.0`: `package.json`,
+   `.codex-plugin/plugin.json`, MCP server version, README badges, CHANGELOG `0.4.0 - 2026-09-04`). Tag
+   `v0.4.0` only when releasing: `git tag v0.4.0`.
 3. Optionally rerun the authenticated lifecycle tier on the release candidate
    (`node scripts/lifecycle-e2e.mjs --tier authenticated`) and a real-transcript calibration replay.
 4. Merge/push only after review: `git push origin feat/memex-continuity-v1`, open the PR to `main`, and push

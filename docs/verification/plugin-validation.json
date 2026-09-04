@@ -1,6 +1,6 @@
 {
   "kind": "plugin-validation-receipt",
-  "recordedAt": "2026-09-04T05:23:04.133Z",
+  "recordedAt": "2026-09-04T08:47:04.226Z",
   "environment": {
     "codexCli": "codex-cli 0.153.2",
     "node": "v26.0.0",
@@ -20,7 +20,7 @@
       "status": "PASS",
       "observed": {
         "name": "memex",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "hooks": [
           "Interrupt",
           "PostCompact",
@@ -40,12 +40,12 @@
     {
       "name": "isolated plugin add installedPath",
       "status": "PASS",
-      "observed": "/private/tmp/memex-plugin-validate-MIUoCr/codex-home/plugins/cache/memex-validator/memex/0.3.0"
+      "observed": "/private/tmp/memex-plugin-validate-EQLDOq/codex-home/plugins/cache/memex-validator/memex/0.4.0"
     },
     {
       "name": "Codex cache identity",
       "status": "PASS",
-      "observed": "/private/tmp/memex-plugin-validate-MIUoCr/codex-home/plugins/cache/memex-validator/memex/0.3.0"
+      "observed": "/private/tmp/memex-plugin-validate-EQLDOq/codex-home/plugins/cache/memex-validator/memex/0.4.0"
     },
     {
       "name": "production dependency packaging",
@@ -59,7 +59,7 @@
     {
       "name": "MCP manifest installed-root resolution",
       "status": "PASS",
-      "observed": "/private/tmp/memex-plugin-validate-MIUoCr/codex-home/plugins/cache/memex-validator/memex/0.3.0/cli/runtime-exec.js"
+      "observed": "/private/tmp/memex-plugin-validate-EQLDOq/codex-home/plugins/cache/memex-validator/memex/0.4.0/cli/runtime-exec.js"
     },
     {
       "name": "MCP initialize and tools/list",

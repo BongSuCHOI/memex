@@ -1,6 +1,6 @@
 {
   "name": "memex",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A local-first personal knowledge system for Codex conversations",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

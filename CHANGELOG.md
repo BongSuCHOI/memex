@@ -4,6 +4,8 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-04
+
 ### Memex Continuity Architecture v1
 
 Normative target: `docs/architecture/memex-continuity-v1.md` (SHA-locked). As-built map:
