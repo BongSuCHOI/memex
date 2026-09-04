@@ -18,6 +18,7 @@ export interface NormalizedHookPayload {
     permissionMode: string | null;
     stopHookActive: boolean;
     lastAssistantMessage: string | null;
+    prompt: string | null;
     workstreamId: string | null;
 }
 export interface CaptureResult {
@@ -58,6 +59,8 @@ export interface WorkCapsule extends WorkCapsulePatch {
     generation: number;
     throughCheckpointId: string | null;
     authority: "context-only";
+    sourceWorkspaceId: string | null;
+    sourceSessionId: string | null;
     updatedAt: string;
 }
 export interface HandleHookResult {
@@ -75,11 +78,15 @@ export declare function ensureSessionMemoryState(db: Database.Database, input: {
     sessionId: string;
     project: string;
     explicitWorkstreamId?: string | null;
+    branch?: string | null;
+    prompt?: string | null;
     source?: string | null;
     now?: string;
 }): {
     workstreamId: string;
     contextEpoch: number;
+    projectId: string;
+    workspaceId: string;
 };
 export declare function captureTranscriptPrefix(db: Database.Database, input: {
     sessionId: string;
@@ -137,6 +144,8 @@ export declare function buildRehydrationContext(db: Database.Database, input: {
     context: string;
     factRevisions: ResidentFactRevision[];
     capsuleGeneration: number;
+    projectRevisionComplete: boolean;
+    projectMemoryRevision: number;
 };
 export declare function handleContinuityHook(payloadValue: unknown, options?: {
     db?: Database.Database;

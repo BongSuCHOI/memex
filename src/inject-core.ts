@@ -12,10 +12,16 @@ import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
 import {
   ensureSessionMemoryState,
+  buildRehydrationContext,
   readResidentFactRevisions,
   recordResidentFactRevisions,
   type ResidentFactRevision,
 } from "./continuity-core.js";
+import {
+  markSessionProjectRevisionSeen,
+  readHotEvidence,
+  sessionProjectRevisionState,
+} from "./continuity-identity.js";
 
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
@@ -35,6 +41,42 @@ const BLOCK_CHAR_BUDGET = 1000;
 // 선점할 수 없다(Promise.race 는 무효 — Codex 리뷰 지적). 대신 시작 "전" 경과
 // 예산을 확인해, 파이프라인이 이미 이만큼 썼으면 반복감지를 통째로 생략한다.
 const REPEAT_ELAPSED_BUDGET_MS = 700;
+
+function commitInjectionState(
+  db: ReturnType<typeof getSearchDb>,
+  input: {
+    sessionId: string;
+    project: string;
+    prompt: string;
+    factIds: string[];
+    projectId: string;
+    workspaceId: string;
+    workstreamId: string;
+    contextEpoch: number;
+    projectMemoryRevision: number;
+    revisions: ResidentFactRevision[];
+    markProjectRevision?: boolean;
+  },
+): void {
+  const write = () => {
+    const receipt = recordRecallEvent(db, input);
+    if (!receipt) throw new Error("Failed to persist prepared recall receipt");
+    if (!recordResidentFactRevisions(db, input.sessionId, input.contextEpoch, input.revisions)) {
+      throw new Error("context epoch changed before residency commit");
+    }
+    if (input.markProjectRevision !== false &&
+        !markSessionProjectRevisionSeen(db, input.sessionId, input.projectMemoryRevision)) {
+      throw new Error("project memory revision changed before injection commit");
+    }
+  };
+  if (typeof db.transaction !== "function") {
+    write();
+    return;
+  }
+  const tx = db.transaction(write);
+  if (db.inTransaction) tx();
+  else tx.immediate();
+}
 
 function truncateFact(text: string): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -95,11 +137,64 @@ export async function computeInjectContext(
     // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
     const db = getSearchDb();
     {
+      const sessionScope = ensureSessionMemoryState(db, {
+        sessionId,
+        project,
+        prompt: userPrompt,
+        source: "UserPromptSubmit",
+      });
+      const revisionState = sessionProjectRevisionState(db, sessionId);
+      const currentProjectRevision = revisionState.current;
+      const staleProjectMemory = currentProjectRevision > revisionState.seen;
+      if (staleProjectMemory) {
+        const correction = buildRehydrationContext(db, {
+          sessionId,
+          maxChars: BLOCK_CHAR_BUDGET,
+        });
+        const ids = [...new Set(correction.factRevisions.map(([id]) => id))];
+        if (correction.context && ids.length > 0) {
+          const contextEpoch = readResidentFactRevisions(db, sessionId).contextEpoch;
+          commitInjectionState(db, {
+            sessionId,
+            project,
+            prompt: userPrompt,
+            factIds: ids,
+            projectId: sessionScope.projectId,
+            workspaceId: sessionScope.workspaceId,
+            workstreamId: sessionScope.workstreamId,
+            contextEpoch,
+            projectMemoryRevision: currentProjectRevision,
+            revisions: correction.factRevisions,
+            markProjectRevision: correction.projectRevisionComplete,
+          });
+          appendInjectLog({
+            status: "injected",
+            project,
+            prompt_len: userPrompt.length,
+            injected: ids.length,
+            chars: correction.context.length + 1,
+            duration_ms: Date.now() - t0,
+            via,
+          });
+          return correction.context + "\n";
+        }
+        // A project revision can be irrelevant to this workspace/workstream
+        // (or contain no active correction). Advance the invalidation token
+        // only after rehydration has proved that there is nothing to emit.
+        if (!markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+          throw new Error("project memory revision changed during correction check");
+        }
+      }
       // threshold 0: take top-k by distance, then gate by baseline margin below
       const candidates = searchFactsByScope(
         db,
         embedding,
-        { type: "project", project },
+        {
+          type: "workstream-id",
+          projectId: sessionScope.projectId,
+          workspaceId: sessionScope.workspaceId,
+          workstreamId: sessionScope.workstreamId,
+        },
         TOP_K,
         0,
       );
@@ -107,8 +202,35 @@ export async function computeInjectContext(
         const similarity = l2DistanceToSimilarity(r.distance);
         return similarity - baseline >= BASELINE_MARGIN;
       });
+      const hot = readHotEvidence(db, {
+        projectId: sessionScope.projectId,
+        workstreamId: sessionScope.workstreamId,
+        limit: 2,
+      });
 
       if (results.length === 0) {
+        if (hot.length > 0) {
+          const heading = "[RECENT EVIDENCE — NOT YET DISTILLED]";
+          const lines = [heading];
+          let chars = heading.length;
+          for (const item of hot) {
+            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
+            if (chars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
+            lines.push(line);
+            chars += line.length + 1;
+          }
+          appendInjectLog({
+            status: "injected",
+            project,
+            prompt_len: userPrompt.length,
+            candidates: candidates.length,
+            injected: 0,
+            chars,
+            duration_ms: Date.now() - t0,
+            via,
+          });
+          return lines.join("\n") + "\n";
+        }
         appendInjectLog({
           status: "no-match",
           project,
@@ -121,19 +243,27 @@ export async function computeInjectContext(
         return "";
       }
 
-      ensureSessionMemoryState(db, {
-        sessionId,
-        project,
-        source: "UserPromptSubmit",
-      });
-
       // Expand with 1-hop relations
       const seenIds = new Set(results.map((r) => r.fact.id));
       const expandedFacts = [
         ...results.map((r) => ({ fact: r.fact, note: "" })),
       ];
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
+        const related = getRelatedFacts(
+          db,
+          fact.id,
+          1,
+          0.6,
+          0.2,
+          null,
+          "project",
+          {
+            type: "workstream-id",
+            projectId: sessionScope.projectId,
+            workspaceId: sessionScope.workspaceId,
+            workstreamId: sessionScope.workstreamId,
+          },
+        );
         for (const { fact: relFact, relation } of related) {
           if (
             !seenIds.has(relFact.id) &&
@@ -196,6 +326,19 @@ export async function computeInjectContext(
         blockChars += line.length + 1;
         injectedIds.push(fact.id);
       }
+      if (hot.length > 0) {
+        const heading = "[RECENT EVIDENCE — NOT YET DISTILLED]";
+        if (blockChars + heading.length + 1 <= BLOCK_CHAR_BUDGET) {
+          lines.push("", heading);
+          blockChars += heading.length + 2;
+          for (const item of hot) {
+            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
+            if (blockChars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
+            lines.push(line);
+            blockChars += line.length + 1;
+          }
+        }
+      }
 
       // Detect repeated prompts (best-effort). 동기 sqlite 검색이라 시작 후엔
       // 선점 불가 — 주입이 이미 예산을 소진했으면 시작 자체를 생략 (tail 상한).
@@ -231,26 +374,21 @@ export async function computeInjectContext(
       // Provenance is the fail-closed durability gate; the dedup ledger is
       // only best-effort operational state. Writing the ledger first would
       // suppress a later retry when the prepared receipt fails to persist.
-      const recallEventId = recordRecallEvent(db, {
+      const injectedRevisions = fresh
+        .filter(({ fact }) => injectedIds.includes(fact.id))
+        .map(({ fact }) => revisionOf(fact));
+      commitInjectionState(db, {
         sessionId,
         project,
         prompt: userPrompt,
         factIds: injectedIds,
+        projectId: sessionScope.projectId,
+        workspaceId: sessionScope.workspaceId,
+        workstreamId: sessionScope.workstreamId,
+        contextEpoch: residency.contextEpoch,
+        projectMemoryRevision: currentProjectRevision,
+        revisions: injectedRevisions,
       });
-      if (!recallEventId) {
-        throw new Error("Failed to persist prepared recall receipt");
-      }
-      const injectedRevisions = fresh
-        .filter(({ fact }) => injectedIds.includes(fact.id))
-        .map(({ fact }) => revisionOf(fact));
-      if (!recordResidentFactRevisions(
-        db,
-        sessionId,
-        residency.contextEpoch,
-        injectedRevisions,
-      )) {
-        throw new Error("context epoch changed before residency commit");
-      }
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",

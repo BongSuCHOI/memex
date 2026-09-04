@@ -10,5 +10,7 @@ export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, se
 export type { FactSearchScope } from './fact-db.js';
 export * from './fact-extractor.js';
 export * from './fact-management.js';
+export { inspectWorkspaceLocation, resolveProjectWorkspace, approveRemoteProjectMapping, linkWorkspaceToProject, splitWorkspace, createWorkstream, bindSessionWorkstream, rebindSessionWorkstream, readHotEvidence, assignFactSubject, projectRevision, sessionProjectRevisionState, markSessionProjectRevisionSeen, } from './continuity-identity.js';
+export type { WorkspaceIdentity, WorkspaceLocationKind } from './continuity-identity.js';
 export * from './consolidator.js';
 export * from './llm.js';

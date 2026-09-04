@@ -16,5 +16,6 @@ export * from './paths.js';
 export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, searchSimilarFacts, searchSimilarFactsSameScope, getTopFacts, getNewFactsSince, getPendingConsolidationFacts, searchAllFacts, } from './fact-db.js';
 export * from './fact-extractor.js';
 export * from './fact-management.js';
+export { inspectWorkspaceLocation, resolveProjectWorkspace, approveRemoteProjectMapping, linkWorkspaceToProject, splitWorkspace, createWorkstream, bindSessionWorkstream, rebindSessionWorkstream, readHotEvidence, assignFactSubject, projectRevision, sessionProjectRevisionState, markSessionProjectRevisionSeen, } from './continuity-identity.js';
 export * from './consolidator.js';
 export * from './llm.js';

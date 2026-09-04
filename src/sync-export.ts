@@ -4,6 +4,7 @@ import os from 'os';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { initDatabase } from './db.js';
+import { resolveProjectWorkspace } from './continuity-identity.js';
 import { getMemexHome } from './paths.js';
 
 const SYNC_DIR_NAME = 'sync';
@@ -230,6 +231,28 @@ export function exportForSync(): SyncExportResult {
     // in this generation and serializes local exporters. This nested helper is
     // a savepoint; WAL readers still see one consistent DB state throughout.
     const readTx = db.transaction(() => {
+      // Compatibility rows may have been inserted by an older local writer or
+      // a direct maintenance script after schema migration. Materialize their
+      // stable identity before creating a path-free payload.
+      const legacyProjectPaths = db.prepare(`
+        SELECT DISTINCT scope_project FROM facts
+        WHERE scope_type = 'project' AND project_id IS NULL AND scope_project IS NOT NULL
+      `).all() as Array<{ scope_project: string }>;
+      for (const row of legacyProjectPaths) {
+        const identity = resolveProjectWorkspace(db, { cwd: row.scope_project });
+        db.prepare(`
+          UPDATE facts SET project_id = ?, subject_key = COALESCE(subject_key, 'legacy.fact.' || id)
+          WHERE scope_type = 'project' AND project_id IS NULL AND scope_project = ?
+        `).run(identity.projectId, row.scope_project);
+      }
+      const legacyRecallPaths = db.prepare(`
+        SELECT DISTINCT project FROM recall_events WHERE project_id IS NULL
+      `).all() as Array<{ project: string }>;
+      for (const row of legacyRecallPaths) {
+        const identity = resolveProjectWorkspace(db, { cwd: row.project });
+        db.prepare("UPDATE recall_events SET project_id = ? WHERE project_id IS NULL AND project = ?")
+          .run(identity.projectId, row.project);
+      }
       // Export active and inactive facts. is_active is a revision-bearing state;
       // filtering it here would make deactivation impossible to reconcile.
       // semantic_updated_at carries the meaning clock and lifecycle_updated_at
@@ -237,16 +260,31 @@ export function exportForSync(): SyncExportResult {
       // event time, never by a polluted updated_at. fact_kr and
       // ontology_category_id are derived overlay — they rebuild locally and do
       // not travel (재감사 P1-4 v4).
-      const facts = db.prepare(`
-        SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
-               created_at, updated_at, consolidated_count, is_active,
-               semantic_updated_at, lifecycle_updated_at
-        FROM facts ORDER BY id
+      const factRows = db.prepare(`
+        SELECT f.id, f.fact, f.category, f.scope_type, f.source_exchange_ids,
+               f.created_at, f.updated_at, f.consolidated_count, f.is_active,
+               f.semantic_updated_at, f.lifecycle_updated_at, f.project_id,
+               p.portable_project_key, f.subject_key, f.promotion_state
+        FROM facts f LEFT JOIN projects p ON p.project_id = f.project_id
+        WHERE f.scope_type = 'global'
+           OR f.promotion_state IN ('legacy-project','decision','project-current')
+        ORDER BY f.id
       `).all() as Array<Record<string, unknown>>;
+      const facts = factRows.map((row) => ({
+        ...row,
+        // Device paths never leave the device. Stable logical identity is the
+        // protocol-v4 Phase 3 scope; an old peer rejects these rows visibly
+        // instead of silently merging them by a foreign path.
+        scope_project: null,
+      }));
 
       const revisions = db.prepare(`
-        SELECT id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at
-        FROM fact_revisions ORDER BY id
+        SELECT r.id, r.fact_id, r.previous_fact, r.new_fact, r.reason,
+               r.source_exchange_id, r.created_at
+        FROM fact_revisions r JOIN facts f ON f.id = r.fact_id
+        WHERE f.scope_type = 'global'
+           OR f.promotion_state IN ('legacy-project','decision','project-current')
+        ORDER BY r.id
       `).all() as Array<Record<string, unknown>>;
 
       const tombstones = db.prepare(`
@@ -256,9 +294,12 @@ export function exportForSync(): SyncExportResult {
       // recall_events cannot be reconstructed from source rollouts. Export the
       // durable receipt so recalled context stays non-learnable after migration.
       const recallEvents = db.prepare(`
-        SELECT id, session_id, project, prompt_hash, fact_ids, source_type,
-               learnable, status, created_at, emitted_at
-        FROM recall_events ORDER BY id
+        SELECT r.id, r.session_id, NULL AS project, r.project_id,
+               p.portable_project_key, r.prompt_hash, r.fact_ids, r.source_type,
+               r.learnable, r.status, r.context_epoch, r.project_memory_revision,
+               r.created_at, r.emitted_at
+        FROM recall_events r LEFT JOIN projects p ON p.project_id = r.project_id
+        ORDER BY r.id
       `).all() as Array<Record<string, unknown>>;
 
       return { facts, revisions, tombstones, recallEvents };
@@ -279,6 +320,7 @@ export function exportForSync(): SyncExportResult {
     // synced or corrupted generation instead of silently reading a prefix.
     const meta = {
       protocol_version: 4,
+      identity_contract: 'stable-project-v1',
       generation: generationId,
       device_id: device.value,
       exported_at: new Date().toISOString(),

@@ -113,13 +113,9 @@ async function waitUntil(predicate: () => boolean, what: string): Promise<void> 
 describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
   it("T04: discards the EN re-embed when the meaning changes during the embedding await", async () => {
     const { root, sig, dbPath, home } = writeWorkerSandbox();
-    const priorDb = process.env.MEMEX_DB_PATH;
-    const priorHome = process.env.MEMEX_HOME;
-    process.env.MEMEX_DB_PATH = dbPath;
-    process.env.MEMEX_HOME = home;
     let factId = "";
     try {
-      db = initDatabase();
+      db = initDatabase({ dbPath });
       factId = insertFact(db, {
         fact: "Fact A written before the re-embed",
         category: "decision",
@@ -139,9 +135,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     expect(fs.readFileSync(path.join(sig, "embed-1.txt"), "utf8")).toBe("Fact A written before the re-embed");
 
     // 임베딩 대기 중 동시 의미 변이: A → B (세대 2, 새 벡터 스왑 포함).
-    process.env.MEMEX_DB_PATH = dbPath;
-    process.env.MEMEX_HOME = home;
-    db = initDatabase();
+    db = initDatabase({ dbPath });
     try {
       await mutateFactMeaning(db, { factId, newText: "Fact B written during the re-embed await" });
     } finally {
@@ -156,7 +150,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     expect(out).toMatch(/stale discard/);
 
     // 재검증: worker의 stale 결과가 새 의미를 덮지 않았다.
-    db = initDatabase();
+    db = initDatabase({ dbPath });
     try {
       const row = db
         .prepare("SELECT fact, semantic_generation, embedding_version, embedding FROM facts WHERE id = ?")
@@ -173,22 +167,14 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
       ).toBe(1);
     } finally {
       db.close();
-      if (priorDb === undefined) delete process.env.MEMEX_DB_PATH;
-      else process.env.MEMEX_DB_PATH = priorDb;
-      if (priorHome === undefined) delete process.env.MEMEX_HOME;
-      else process.env.MEMEX_HOME = priorHome;
     }
   });
 
   it("T05: discards the KR vector when the meaning changes during the embedding await", async () => {
     const { root, sig, dbPath, home } = writeWorkerSandbox();
-    const priorDb = process.env.MEMEX_DB_PATH;
-    const priorHome = process.env.MEMEX_HOME;
-    process.env.MEMEX_DB_PATH = dbPath;
-    process.env.MEMEX_HOME = home;
     let factId = "";
     try {
-      db = initDatabase();
+      db = initDatabase({ dbPath });
       factId = insertFact(db, {
         fact: "Primary meaning stays current",
         fact_kr: "기본 의미는 현재로 유지된다",
@@ -208,9 +194,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     await waitUntil(() => fs.existsSync(path.join(sig, "embed-1.txt")), "worker KR embedding call");
     expect(fs.readFileSync(path.join(sig, "embed-1.txt"), "utf8")).toBe("기본 의미는 현재로 유지된다");
 
-    process.env.MEMEX_DB_PATH = dbPath;
-    process.env.MEMEX_HOME = home;
-    db = initDatabase();
+    db = initDatabase({ dbPath });
     try {
       // 변이는 fact_kr을 NULL로 무효화하고 세대를 올린다.
       await mutateFactMeaning(db, { factId, newText: "Primary meaning replaced mid-await" });
@@ -223,7 +207,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     expect(code).toBe(0);
     expect(out).toMatch(/facts-kr: stale discard/);
 
-    db = initDatabase();
+    db = initDatabase({ dbPath });
     try {
       const row = db
         .prepare("SELECT fact_kr, semantic_generation FROM facts WHERE id = ?")
@@ -235,10 +219,6 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
       ).toBe(0);
     } finally {
       db.close();
-      if (priorDb === undefined) delete process.env.MEMEX_DB_PATH;
-      else process.env.MEMEX_DB_PATH = priorDb;
-      if (priorHome === undefined) delete process.env.MEMEX_HOME;
-      else process.env.MEMEX_HOME = priorHome;
     }
   });
 });

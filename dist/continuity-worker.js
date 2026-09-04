@@ -6,6 +6,7 @@ import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
 import { isUserExcludedConversation, isConversationExcludedSession, purgeConversationFromIndex, } from "./conversation-policy.js";
+import { indexHotEvidenceForSession } from "./continuity-identity.js";
 const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one contiguous transcript segment.
 Return exactly one JSON object and no markdown. It must have exactly these keys:
 {"objective":"","currentState":"","verifiedProgress":[],"hypotheses":[],"blockers":[],"openQuestions":[],"nextActions":[],"touchedAreas":[],"carryFactRevisions":[],"sourceExchangeIds":[]}
@@ -182,6 +183,19 @@ async function processCaptureIndex(db, jobId, owner, now, beforePrefixIngest) {
             };
         }
         applyLatestLifecycleClosure(db, checkpoint.session_id);
+        const hotEvidence = indexHotEvidenceForSession(db, checkpoint.session_id);
+        if (isConversationExcludedSession(db, checkpoint.session_id)) {
+            purgeConversationFromIndex(db, {
+                archivePath: checkpoint.journal_path,
+                sessionId: checkpoint.session_id,
+            });
+            return {
+                jobId,
+                kind: "capture_index",
+                state: "completed",
+                detail: "purged user-excluded conversation",
+            };
+        }
         if (!completeCaptureIndexJob(db, {
             jobId,
             checkpointId: checkpoint.checkpoint_id,
@@ -195,7 +209,7 @@ async function processCaptureIndex(db, jobId, owner, now, beforePrefixIngest) {
             jobId,
             kind: "capture_index",
             state: "completed",
-            detail: `indexed=${result.indexed} ignored=${result.ignoredRegressions}`,
+            detail: `indexed=${result.indexed} ignored=${result.ignoredRegressions} hot=${hotEvidence}`,
         };
     }
     catch (error) {

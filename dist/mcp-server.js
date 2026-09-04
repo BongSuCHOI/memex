@@ -1057,10 +1057,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -3257,8 +3257,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path11) {
-      let input = path11;
+    function removeDotSegments(path13) {
+      let input = path13;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3663,8 +3663,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path11 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
+        const path13 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7170,12 +7170,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs10, exportName) {
+    function addFormats(ajv, list, fs11, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs10[f]);
+        ajv.addFormat(f, fs11[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7661,8 +7661,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path11, errorMaps, issueData } = params;
-  const fullPath = [...path11, ...issueData.path || []];
+  const { data, path: path13, errorMaps, issueData } = params;
+  const fullPath = [...path13, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7778,11 +7778,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path11, key) {
+  constructor(parent, value, path13, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path11;
+    this._path = path13;
     this._key = key;
   }
   get path() {
@@ -11420,10 +11420,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path11) {
-  if (!path11)
+function getElementAtPath(obj, path13) {
+  if (!path13)
     return obj;
-  return path11.reduce((acc, key) => acc?.[key], obj);
+  return path13.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11743,11 +11743,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path11, issues) {
+function prefixIssues(path13, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path11);
+    iss.path.unshift(path13);
     return iss;
   });
 }
@@ -18320,8 +18320,8 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 import net from "node:net";
-import fs7 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 
 // src/paths.ts
 import os2 from "os";
@@ -18385,9 +18385,9 @@ var LLM_WORKDIR_BASENAME = "memex-llm";
 
 // src/db.ts
 import Database from "better-sqlite3";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
-import fs2 from "node:fs";
-import path3 from "path";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import fs3 from "node:fs";
+import path6 from "path";
 import * as sqliteVec from "sqlite-vec";
 
 // src/embeddings.ts
@@ -18480,10 +18480,465 @@ async function queryBaseline(queryEmbedding) {
 }
 
 // src/continuity-store.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import path5 from "node:path";
+
+// src/project-identity.ts
+import path3 from "node:path";
+function canonicalizeProjectPath(cwd) {
+  if (typeof cwd !== "string") return "";
+  let p = cwd.trim();
+  if (!p) return "";
+  if (!path3.isAbsolute(p)) p = path3.resolve("/", p);
+  const resolved = path3.normalize(p);
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
+// src/continuity-identity.ts
 import { createHash, randomUUID } from "node:crypto";
-var CONTINUITY_SCHEMA_VERSION = 3;
+import fs2 from "node:fs";
+import path4 from "node:path";
+function hash(...parts) {
+  const h = createHash("sha256");
+  for (const part of parts) h.update(String(part ?? "")).update("\0");
+  return h.digest("hex");
+}
+function nowIso(value) {
+  return value ?? (/* @__PURE__ */ new Date()).toISOString();
+}
+function deviceId(db) {
+  const existing = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
+  if (existing) return existing.value;
+  const value = randomUUID();
+  db.prepare("INSERT INTO sync_meta(key, value) VALUES ('device_id', ?)").run(value);
+  return value;
+}
+function audit(db, input) {
+  const at = nowIso(input.now);
+  const detail = JSON.stringify(input.detail ?? {});
+  const auditId = `identity-audit-${hash(input.action, input.projectId, input.workspaceId, input.workstreamId, input.sessionId, input.reason, detail).slice(0, 32)}`;
+  db.prepare(`
+    INSERT OR IGNORE INTO project_identity_audit
+      (audit_id, action, project_id, workspace_id, workstream_id, session_id, reason, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    auditId,
+    input.action,
+    input.projectId ?? null,
+    input.workspaceId ?? null,
+    input.workstreamId ?? null,
+    input.sessionId ?? null,
+    input.reason,
+    detail,
+    at
+  );
+}
+function readGitFile(file) {
+  try {
+    return fs2.readFileSync(file, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+function inspectWorkspaceLocation(cwd) {
+  const canonical = canonicalizeProjectPath(cwd);
+  const dotGit = path4.join(canonical, ".git");
+  let gitDir = null;
+  let locationKind = "directory";
+  try {
+    const stat = fs2.statSync(dotGit);
+    if (stat.isDirectory()) {
+      gitDir = fs2.realpathSync(dotGit);
+      locationKind = "clone";
+    } else if (stat.isFile()) {
+      const pointer = readGitFile(dotGit)?.match(/^gitdir:\s*(.+)$/i)?.[1];
+      if (pointer) {
+        gitDir = fs2.realpathSync(path4.resolve(canonical, pointer));
+        locationKind = "worktree";
+      }
+    }
+  } catch {
+  }
+  if (!gitDir) return { gitCommonDir: null, remoteFingerprint: null, locationKind, branch: null, gitCommonIdentity: null, gitDirIdentity: null };
+  const commonPointer = readGitFile(path4.join(gitDir, "commondir"));
+  let common = gitDir;
+  if (commonPointer) {
+    try {
+      common = fs2.realpathSync(path4.resolve(gitDir, commonPointer));
+    } catch {
+      common = path4.resolve(gitDir, commonPointer);
+    }
+  }
+  const config2 = readGitFile(path4.join(common, "config")) ?? "";
+  const origin = config2.match(/\[remote\s+"origin"\][\s\S]*?\n\s*url\s*=\s*([^\n]+)/i)?.[1]?.trim();
+  const head = readGitFile(path4.join(gitDir, "HEAD"));
+  const inodeIdentity = (value) => {
+    try {
+      const stat = fs2.statSync(value);
+      return `${stat.dev}:${stat.ino}`;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    gitCommonDir: canonicalizeProjectPath(common),
+    remoteFingerprint: origin ? hash("remote-v1", origin).slice(0, 40) : null,
+    locationKind,
+    branch: head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null,
+    gitCommonIdentity: inodeIdentity(common),
+    gitDirIdentity: inodeIdentity(gitDir)
+  };
+}
+function projectRow(db, projectId) {
+  return db.prepare(`
+    SELECT project_id, portable_project_key, memory_revision FROM projects WHERE project_id = ?
+  `).get(projectId);
+}
+function resolveProjectWorkspace(db, input) {
+  if (input.projectId && !/^[A-Za-z0-9_-]{8,128}$/.test(input.projectId)) {
+    throw new Error("invalid project_id");
+  }
+  if (input.portableProjectKey && !/^[A-Za-z0-9_.:-]{4,160}$/.test(input.portableProjectKey)) {
+    throw new Error("invalid portable_project_key");
+  }
+  if (input.branch && input.branch.length > 512) throw new Error("branch hint is too long");
+  const canonicalPath = canonicalizeProjectPath(input.cwd);
+  if (!canonicalPath || canonicalPath === "unknown") throw new Error("canonical workspace path is required");
+  const at = nowIso(input.now);
+  const device = deviceId(db);
+  const inspected = input.gitCommonDir === void 0 && input.remoteFingerprint === void 0 ? inspectWorkspaceLocation(canonicalPath) : { gitCommonDir: input.gitCommonDir ?? null, remoteFingerprint: input.remoteFingerprint ?? null, locationKind: input.locationKind ?? "directory", branch: input.branch ?? null, gitCommonIdentity: null, gitDirIdentity: null };
+  const gitCommonDir = input.gitCommonDir ?? inspected.gitCommonDir;
+  const remoteFingerprint = input.remoteFingerprint ?? inspected.remoteFingerprint;
+  const locationKind = input.locationKind ?? inspected.locationKind;
+  const tx = db.transaction(() => {
+    const byPath = db.prepare(`
+      SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+             p.portable_project_key, p.memory_revision
+      FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+      WHERE w.device_id = ? AND w.canonical_path = ?
+    `).get(device, canonicalPath);
+    if (byPath) {
+      if (input.projectId && input.projectId !== String(byPath.project_id)) {
+        throw new Error("workspace is already linked to another project; use explicit linkWorkspaceToProject");
+      }
+      if (input.portableProjectKey && input.portableProjectKey !== byPath.portable_project_key) {
+        throw new Error("workspace portable_project_key conflicts with its linked project");
+      }
+      db.prepare(`
+        UPDATE workspaces SET git_common_dir = COALESCE(?, git_common_dir),
+          git_common_identity = COALESCE(?, git_common_identity),
+          git_dir_identity = COALESCE(?, git_dir_identity),
+          remote_fingerprint = COALESCE(?, remote_fingerprint), location_kind = ?,
+          branch = COALESCE(?, branch), last_seen_at = ? WHERE workspace_id = ?
+      `).run(
+        gitCommonDir,
+        inspected.gitCommonIdentity,
+        inspected.gitDirIdentity,
+        remoteFingerprint,
+        locationKind,
+        input.branch ?? inspected.branch ?? null,
+        at,
+        byPath.workspace_id
+      );
+      return {
+        projectId: String(byPath.project_id),
+        workspaceId: String(byPath.workspace_id),
+        canonicalPath,
+        portableProjectKey: byPath.portable_project_key ? String(byPath.portable_project_key) : null,
+        memoryRevision: Number(byPath.memory_revision),
+        locationKind,
+        branch: input.branch ?? inspected.branch ?? (byPath.branch ? String(byPath.branch) : null),
+        reason: "existing-path"
+      };
+    }
+    if (inspected.gitDirIdentity) {
+      const moved = db.prepare(`
+        SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+               p.portable_project_key, p.memory_revision
+        FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+        WHERE w.device_id = ? AND w.git_dir_identity = ?
+      `).all(device, inspected.gitDirIdentity);
+      if (moved.length === 1) {
+        const row = moved[0];
+        if (input.projectId && input.projectId !== String(row.project_id)) {
+          throw new Error("moved workspace is linked to another project; use explicit linkWorkspaceToProject");
+        }
+        db.prepare(`
+          UPDATE workspaces SET canonical_path = ?, git_common_dir = ?,
+            git_common_identity = ?, remote_fingerprint = COALESCE(?, remote_fingerprint),
+            location_kind = ?, branch = COALESCE(?, branch), last_seen_at = ?
+          WHERE workspace_id = ?
+        `).run(
+          canonicalPath,
+          gitCommonDir,
+          inspected.gitCommonIdentity,
+          remoteFingerprint,
+          locationKind,
+          input.branch ?? inspected.branch ?? null,
+          at,
+          row.workspace_id
+        );
+        audit(db, { action: "resolve", projectId: String(row.project_id), workspaceId: String(row.workspace_id), reason: "local git location moved", detail: { canonicalPath }, now: at });
+        return {
+          projectId: String(row.project_id),
+          workspaceId: String(row.workspace_id),
+          canonicalPath,
+          portableProjectKey: row.portable_project_key ? String(row.portable_project_key) : null,
+          memoryRevision: Number(row.memory_revision),
+          locationKind,
+          branch: input.branch ?? inspected.branch ?? (row.branch ? String(row.branch) : null),
+          reason: "existing-path"
+        };
+      }
+    }
+    let selectedProject;
+    let reason = "new-isolated";
+    if (input.projectId) {
+      selectedProject = projectRow(db, input.projectId);
+      if (!selectedProject) throw new Error("explicit project_id does not exist");
+      if (input.portableProjectKey && selectedProject.portable_project_key !== input.portableProjectKey) {
+        throw new Error("explicit project_id conflicts with portable_project_key");
+      }
+      reason = "explicit";
+    } else if (input.portableProjectKey) {
+      selectedProject = db.prepare(`
+        SELECT project_id, portable_project_key, memory_revision FROM projects WHERE portable_project_key = ?
+      `).get(input.portableProjectKey);
+      if (!selectedProject) {
+        const projectId = `project-${randomUUID()}`;
+        db.prepare(`
+          INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+          VALUES (?, ?, ?, 0, ?, ?)
+        `).run(projectId, input.portableProjectKey, path4.basename(canonicalPath) || "unknown", at, at);
+        selectedProject = { project_id: projectId, portable_project_key: input.portableProjectKey, memory_revision: 0 };
+      }
+      reason = "explicit";
+    }
+    if (!selectedProject && gitCommonDir) {
+      const rows = db.prepare(`
+        SELECT DISTINCT p.project_id, p.portable_project_key, p.memory_revision
+        FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+        WHERE w.device_id = ? AND (
+          w.git_common_dir = ? OR (? IS NOT NULL AND w.git_common_identity = ?)
+        )
+      `).all(device, canonicalizeProjectPath(gitCommonDir), inspected.gitCommonIdentity, inspected.gitCommonIdentity);
+      if (rows.length === 1) {
+        selectedProject = rows[0];
+        reason = "git-common-dir";
+      }
+    }
+    if (!selectedProject && remoteFingerprint) {
+      const rows = db.prepare(`
+        SELECT p.project_id, p.portable_project_key, p.memory_revision
+        FROM approved_remote_mappings m JOIN projects p ON p.project_id = m.project_id
+        WHERE m.remote_fingerprint = ?
+      `).all(remoteFingerprint);
+      if (rows.length === 1) {
+        selectedProject = rows[0];
+        reason = "approved-remote";
+      } else {
+        const candidates = db.prepare(`
+          SELECT DISTINCT project_id FROM workspaces WHERE remote_fingerprint = ?
+        `).all(remoteFingerprint);
+        if (candidates.length > 0 || rows.length > 1) {
+          audit(db, {
+            action: "suggest",
+            reason: rows.length > 1 ? "remote has conflicting approved project mappings" : "same remote requires explicit approval",
+            detail: {
+              canonicalPath,
+              remoteFingerprint,
+              candidates: [.../* @__PURE__ */ new Set([
+                ...rows.map((row) => row?.project_id).filter(Boolean),
+                ...candidates.map((row) => row.project_id)
+              ])]
+            },
+            now: at
+          });
+        }
+      }
+    }
+    if (!selectedProject) {
+      const projectId = `project-${randomUUID()}`;
+      db.prepare(`
+        INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?)
+      `).run(projectId, input.portableProjectKey ?? null, path4.basename(canonicalPath) || "unknown", at, at);
+      selectedProject = { project_id: projectId, portable_project_key: input.portableProjectKey ?? null, memory_revision: 0 };
+    }
+    const workspaceId = `workspace-${randomUUID()}`;
+    db.prepare(`
+      INSERT INTO workspaces
+        (workspace_id, project_id, device_id, canonical_path, git_common_dir, remote_fingerprint,
+         git_common_identity, git_dir_identity, location_kind, branch, last_seen_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      workspaceId,
+      selectedProject.project_id,
+      device,
+      canonicalPath,
+      gitCommonDir ? canonicalizeProjectPath(gitCommonDir) : null,
+      remoteFingerprint,
+      inspected.gitCommonIdentity,
+      inspected.gitDirIdentity,
+      locationKind,
+      input.branch ?? inspected.branch ?? null,
+      at,
+      at
+    );
+    audit(db, { action: "resolve", projectId: selectedProject.project_id, workspaceId, reason, detail: { canonicalPath }, now: at });
+    return {
+      projectId: selectedProject.project_id,
+      workspaceId,
+      canonicalPath,
+      portableProjectKey: selectedProject.portable_project_key,
+      memoryRevision: selectedProject.memory_revision,
+      locationKind,
+      branch: input.branch ?? inspected.branch ?? null,
+      reason
+    };
+  });
+  return db.inTransaction ? tx() : tx.immediate();
+}
+function tokens(value) {
+  return new Set(value.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}_-]{2,}/gu) ?? []);
+}
+function jaccard(left, right) {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection2 = 0;
+  for (const value of left) if (right.has(value)) intersection2++;
+  return intersection2 / (left.size + right.size - intersection2);
+}
+function bindSessionWorkstream(db, input) {
+  if (!db.inTransaction) {
+    const tx = db.transaction(() => bindSessionWorkstream(db, input));
+    return tx.immediate();
+  }
+  const existing = db.prepare(`
+    SELECT workstream_id, binding_reason, binding_confidence, project_id, workspace_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+  if (existing) {
+    if (existing.project_id && existing.project_id !== input.projectId) {
+      throw new Error("resumed session is outside the resolved project");
+    }
+    if (existing.workspace_id && existing.workspace_id !== input.workspaceId) {
+      throw new Error("resumed session is outside the resolved workspace");
+    }
+    return { workstreamId: existing.workstream_id, reason: "resume-exact", confidence: 1 };
+  }
+  const at = nowIso(input.now);
+  let workstreamId = null;
+  let reason = "session-local";
+  let confidence = 1;
+  if (input.explicitWorkstreamId) {
+    const explicit = db.prepare("SELECT project_id FROM minimal_workstreams WHERE workstream_id = ?").get(input.explicitWorkstreamId);
+    if (!explicit || explicit.project_id !== input.projectId) throw new Error("explicit workstream is outside the resolved project");
+    workstreamId = input.explicitWorkstreamId;
+    reason = "explicit";
+  }
+  if (!workstreamId && input.branch) {
+    const candidates = db.prepare(`
+      SELECT workstream_id FROM minimal_workstreams
+      WHERE project_id = ? AND workspace_id = ? AND status = 'active' AND branch_hint = ?
+      ORDER BY updated_at DESC
+    `).all(input.projectId, input.workspaceId, input.branch);
+    if (candidates.length === 1) {
+      workstreamId = candidates[0].workstream_id;
+      reason = "unique-workspace-branch";
+      confidence = 0.9;
+    }
+  }
+  if (!workstreamId && input.prompt?.trim()) {
+    const query = tokens(input.prompt);
+    const rows = db.prepare(`
+      SELECT w.workstream_id, c.objective, c.current_state
+      FROM minimal_workstreams w JOIN work_capsules c ON c.workstream_id = w.workstream_id
+      WHERE w.project_id = ? AND w.status = 'active'
+    `).all(input.projectId);
+    const ranked = rows.map((row) => ({ id: row.workstream_id, score: jaccard(query, tokens(`${row.objective} ${row.current_state}`)) })).sort((a, b2) => b2.score - a.score || a.id.localeCompare(b2.id));
+    if (ranked[0] && ranked[0].score >= 0.45 && ranked[0].score - (ranked[1]?.score ?? 0) >= 0.15) {
+      workstreamId = ranked[0].id;
+      reason = "strong-topic-margin";
+      confidence = ranked[0].score;
+    }
+  }
+  if (!workstreamId) {
+    workstreamId = `ws-${hash("session-workstream-v2", input.projectId, input.sessionId).slice(0, 32)}`;
+    db.prepare(`
+      INSERT OR IGNORE INTO minimal_workstreams
+        (workstream_id, project, session_id, branch_hint, binding_reason, project_id, workspace_id,
+         status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'session-local', ?, ?, 'active', ?, ?)
+    `).run(workstreamId, input.projectPath, input.sessionId, input.branch ?? null, input.projectId, input.workspaceId, at, at);
+  }
+  db.prepare(`
+    INSERT INTO workstream_sessions(session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(input.sessionId, workstreamId, input.workspaceId, reason, confidence, at);
+  db.prepare(`
+    INSERT INTO session_memory_state
+      (session_id, project, project_id, workspace_id, workstream_id, context_epoch,
+       binding_reason, binding_confidence, last_source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding', ?, ?)
+  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, at, at);
+  audit(db, { action: "rebind", projectId: input.projectId, workspaceId: input.workspaceId, workstreamId, sessionId: input.sessionId, reason, detail: { confidence }, now: at });
+  return { workstreamId, reason, confidence };
+}
+function readHotEvidence(db, input) {
+  const where = ["project_id = ?", "expires_at > ?"];
+  const args = [input.projectId, nowIso(input.now)];
+  if (input.workspaceId) {
+    where.push("workspace_id = ?");
+    args.push(input.workspaceId);
+  }
+  if (input.workstreamId) {
+    where.push("workstream_id = ?");
+    args.push(input.workstreamId);
+  }
+  if (input.sessionId) {
+    where.push("session_id = ?");
+    args.push(input.sessionId);
+  }
+  if (input.beforeCreatedAt) {
+    where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
+    args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");
+  }
+  args.push(Math.max(1, Math.min(100, input.limit ?? 20)));
+  return db.prepare(`
+    SELECT evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
+           evidence_kind, source_type, evidence_text, authority, created_at, expires_at,
+           'HOT EVIDENCE \u2014 NOT YET DISTILLED' AS lane
+    FROM hot_evidence WHERE ${where.join(" AND ")}
+    ORDER BY created_at DESC, evidence_id LIMIT ?
+  `).all(...args);
+}
+function projectRevision(db, projectId) {
+  return Number(db.prepare("SELECT memory_revision FROM projects WHERE project_id = ?").get(projectId)?.memory_revision ?? 0);
+}
+function sessionProjectRevisionState(db, sessionId) {
+  const row = db.prepare(`
+    SELECT s.project_id, s.memory_revision_seen, p.memory_revision
+    FROM session_memory_state s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.session_id = ?
+  `).get(sessionId);
+  return {
+    projectId: row?.project_id ?? null,
+    seen: Number(row?.memory_revision_seen ?? 0),
+    current: Number(row?.memory_revision ?? 0)
+  };
+}
+function markSessionProjectRevisionSeen(db, sessionId, expectedRevision) {
+  return db.prepare(`
+    UPDATE session_memory_state SET memory_revision_seen = ?, updated_at = ?
+    WHERE session_id = ? AND project_id IS NOT NULL
+      AND (SELECT memory_revision FROM projects WHERE project_id = session_memory_state.project_id) = ?
+  `).run(expectedRevision, (/* @__PURE__ */ new Date()).toISOString(), sessionId, expectedRevision).changes === 1;
+}
+
+// src/continuity-store.ts
+var CONTINUITY_SCHEMA_VERSION = 4;
 function sha256(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+  return createHash2("sha256").update(value, "utf8").digest("hex");
 }
 function parseStoredJson(value) {
   if (!value) return null;
@@ -18499,6 +18954,9 @@ function columnNames(db, table) {
       ({ name }) => name
     )
   );
+}
+function tableExists(db, table) {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== void 0;
 }
 function ensureContinuitySchema(db, options = {}) {
   const migrate = db.transaction(() => {
@@ -18788,6 +19246,318 @@ function ensureContinuitySchema(db, options = {}) {
       options.afterMigrationStage?.("journal-source-guard-columns");
     }
     db.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        project_id TEXT PRIMARY KEY,
+        portable_project_key TEXT UNIQUE,
+        display_name TEXT NOT NULL,
+        memory_revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workspaces (
+        workspace_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+        device_id TEXT NOT NULL,
+        canonical_path TEXT NOT NULL,
+        git_common_dir TEXT,
+        git_common_identity TEXT,
+        git_dir_identity TEXT,
+        remote_fingerprint TEXT,
+        location_kind TEXT NOT NULL DEFAULT 'directory'
+          CHECK(location_kind IN ('worktree','clone','directory')),
+        branch TEXT,
+        last_seen_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(device_id, canonical_path)
+      );
+
+      CREATE TABLE IF NOT EXISTS approved_remote_mappings (
+        remote_fingerprint TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        approved_at TEXT NOT NULL,
+        approved_by TEXT NOT NULL DEFAULT 'user',
+        PRIMARY KEY(remote_fingerprint, project_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_identity_audit (
+        audit_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('resolve','suggest','link','split','rebind')),
+        project_id TEXT,
+        workspace_id TEXT,
+        workstream_id TEXT,
+        session_id TEXT,
+        reason TEXT NOT NULL,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workstream_sessions (
+        session_id TEXT PRIMARY KEY,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        binding_reason TEXT NOT NULL,
+        binding_confidence REAL NOT NULL DEFAULT 1.0,
+        bound_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS hot_evidence (
+        evidence_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        workstream_id TEXT,
+        session_id TEXT NOT NULL,
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('human','trusted_tool')),
+        source_type TEXT NOT NULL,
+        evidence_text TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        authority TEXT NOT NULL DEFAULT 'hot-evidence'
+          CHECK(authority = 'hot-evidence'),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE(exchange_id, evidence_kind, source_type, content_hash)
+      );
+    `);
+    options.afterMigrationStage?.("identity-tables");
+    const identityColumns = [
+      ["exchanges", "project_id", "TEXT"],
+      ["exchanges", "workspace_id", "TEXT"],
+      ["exchanges", "workstream_id", "TEXT"],
+      ["facts", "project_id", "TEXT"],
+      ["facts", "workspace_id", "TEXT"],
+      ["facts", "workstream_id", "TEXT"],
+      ["facts", "subject_key", "TEXT"],
+      ["facts", "promotion_state", "TEXT NOT NULL DEFAULT 'legacy-project'"],
+      ["recall_events", "project_id", "TEXT"],
+      ["recall_events", "workspace_id", "TEXT"],
+      ["recall_events", "workstream_id", "TEXT"],
+      ["recall_events", "context_epoch", "INTEGER NOT NULL DEFAULT 0"],
+      ["recall_events", "project_memory_revision", "INTEGER NOT NULL DEFAULT 0"],
+      ["minimal_workstreams", "project_id", "TEXT"],
+      ["minimal_workstreams", "workspace_id", "TEXT"],
+      ["minimal_workstreams", "status", "TEXT NOT NULL DEFAULT 'active'"],
+      ["minimal_workstreams", "topic_fingerprint", "TEXT"],
+      ["session_memory_state", "project_id", "TEXT"],
+      ["session_memory_state", "workspace_id", "TEXT"],
+      ["session_memory_state", "binding_reason", "TEXT NOT NULL DEFAULT 'session-local'"],
+      ["session_memory_state", "binding_confidence", "REAL NOT NULL DEFAULT 1.0"],
+      ["work_capsules", "source_workspace_id", "TEXT"],
+      ["work_capsules", "source_session_id", "TEXT"],
+      ["workspaces", "git_common_identity", "TEXT"],
+      ["workspaces", "git_dir_identity", "TEXT"]
+    ];
+    for (const [table, column, definition] of identityColumns) {
+      if (!tableExists(db, table)) continue;
+      if (!columnNames(db, table).has(column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    }
+    options.afterMigrationStage?.("identity-columns");
+    db.exec(`CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
+    if (!device) {
+      device = { value: randomUUID2() };
+      db.prepare("INSERT INTO sync_meta(key, value) VALUES ('device_id', ?)").run(device.value);
+    }
+    const pathSources = [];
+    if (tableExists(db, "exchanges")) pathSources.push("SELECT project AS value FROM exchanges");
+    if (columnNames(db, "facts").has("scope_project") && columnNames(db, "facts").has("scope_type")) {
+      pathSources.push("SELECT scope_project AS value FROM facts WHERE scope_type = 'project' AND scope_project IS NOT NULL");
+    }
+    if (columnNames(db, "recall_events").has("project")) pathSources.push("SELECT project AS value FROM recall_events");
+    if (columnNames(db, "minimal_workstreams").has("project")) pathSources.push("SELECT project AS value FROM minimal_workstreams");
+    if (columnNames(db, "session_memory_state").has("project")) pathSources.push("SELECT project AS value FROM session_memory_state");
+    const pathRows = pathSources.length > 0 ? db.prepare(pathSources.join(" UNION ")).all() : [];
+    const nowIdentity = (/* @__PURE__ */ new Date()).toISOString();
+    const identityByPath = /* @__PURE__ */ new Map();
+    const commonProjectByDir = /* @__PURE__ */ new Map();
+    for (const row of pathRows) {
+      const raw = row.value ?? "";
+      const canonical = canonicalizeProjectPath(raw);
+      if (!canonical || canonical === "unknown") continue;
+      const existingWorkspace = db.prepare(`
+        SELECT workspace_id, project_id FROM workspaces
+        WHERE device_id = ? AND canonical_path = ?
+      `).get(device.value, canonical);
+      const inspected = inspectWorkspaceLocation(canonical);
+      const linkedByCommonDir = inspected.gitCommonDir ? commonProjectByDir.get(inspected.gitCommonDir) ?? db.prepare(`
+              SELECT project_id FROM workspaces
+              WHERE device_id = ? AND git_common_dir = ?
+              ORDER BY created_at, workspace_id LIMIT 1
+            `).get(device.value, inspected.gitCommonDir)?.project_id : void 0;
+      const projectId = linkedByCommonDir ?? existingWorkspace?.project_id ?? `project-${sha256(`path-project-v1\0${canonical}`).slice(0, 32)}`;
+      const workspaceId = existingWorkspace?.workspace_id ?? `workspace-${sha256(`workspace-v1\0${device.value}\0${canonical}`).slice(0, 32)}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO projects
+          (project_id, display_name, memory_revision, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?)
+      `).run(projectId, path5.basename(canonical) || "unknown", nowIdentity, nowIdentity);
+      db.prepare(`
+        INSERT OR IGNORE INTO workspaces
+          (workspace_id, project_id, device_id, canonical_path, git_common_dir,
+           git_common_identity, git_dir_identity, remote_fingerprint,
+           location_kind, branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        workspaceId,
+        projectId,
+        device.value,
+        canonical,
+        inspected.gitCommonDir,
+        inspected.gitCommonIdentity,
+        inspected.gitDirIdentity,
+        inspected.remoteFingerprint,
+        inspected.locationKind,
+        inspected.branch,
+        nowIdentity,
+        nowIdentity
+      );
+      if (existingWorkspace && existingWorkspace.project_id !== projectId && inspected.gitCommonDir) {
+        db.prepare(`
+          UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
+            git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
+            branch = COALESCE(?, branch), last_seen_at = ?
+          WHERE workspace_id = ?
+        `).run(
+          projectId,
+          inspected.gitCommonDir,
+          inspected.remoteFingerprint,
+          inspected.gitCommonIdentity,
+          inspected.gitDirIdentity,
+          inspected.locationKind,
+          inspected.branch,
+          nowIdentity,
+          existingWorkspace.workspace_id
+        );
+      }
+      if (inspected.gitCommonDir) commonProjectByDir.set(inspected.gitCommonDir, projectId);
+      identityByPath.set(raw, { canonical, projectId, workspaceId });
+    }
+    const updateIdentity = (table, pathColumn) => {
+      const columns2 = columnNames(db, table);
+      if (!columns2.has(pathColumn) || !columns2.has("project_id") || !columns2.has("workspace_id")) return;
+      const update = db.prepare(`UPDATE ${table} SET project_id = ?, workspace_id = ? WHERE ${pathColumn} = ?`);
+      for (const [raw, identity] of identityByPath) {
+        update.run(identity.projectId, identity.workspaceId, raw);
+      }
+    };
+    updateIdentity("exchanges", "project");
+    updateIdentity("recall_events", "project");
+    updateIdentity("minimal_workstreams", "project");
+    updateIdentity("session_memory_state", "project");
+    const factColumnsForIdentity = columnNames(db, "facts");
+    if (factColumnsForIdentity.has("scope_project") && factColumnsForIdentity.has("scope_type") && factColumnsForIdentity.has("subject_key")) {
+      const updateFacts = db.prepare(`
+        UPDATE facts SET project_id = ?, subject_key = COALESCE(subject_key, 'legacy.fact.' || id)
+        WHERE scope_type = 'project' AND scope_project = ?
+      `);
+      for (const [raw, identity] of identityByPath) updateFacts.run(identity.projectId, raw);
+      db.prepare("UPDATE facts SET subject_key = COALESCE(subject_key, 'global.fact.' || id) WHERE scope_type = 'global'").run();
+    }
+    if (tableExists(db, "minimal_workstreams")) {
+      db.prepare(`
+        UPDATE workstream_sessions
+        SET workspace_id = (SELECT workspace_id FROM minimal_workstreams w WHERE w.workstream_id = workstream_sessions.workstream_id)
+        WHERE workspace_id IS NULL
+      `).run();
+    }
+    if (tableExists(db, "session_memory_state")) {
+      db.prepare(`
+        INSERT OR IGNORE INTO workstream_sessions
+          (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+        SELECT s.session_id, s.workstream_id, s.workspace_id,
+               COALESCE(s.binding_reason, 'session-local'), COALESCE(s.binding_confidence, 1.0), s.created_at
+        FROM session_memory_state s
+      `).run();
+      if (tableExists(db, "checkpoints")) {
+        db.prepare(`
+          UPDATE checkpoints
+          SET workspace_id = (SELECT workspace_id FROM session_memory_state s WHERE s.session_id = checkpoints.session_id)
+          WHERE workspace_id IS NULL
+        `).run();
+      }
+    }
+    options.afterMigrationStage?.("identity-backfill");
+    const factColumnsForTriggers = columnNames(db, "facts");
+    if (["scope_type", "project_id", "fact", "semantic_generation", "lifecycle_generation", "is_active", "updated_at", "promotion_state", "subject_key", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      DROP TRIGGER IF EXISTS facts_project_revision_insert;
+      DROP TRIGGER IF EXISTS facts_project_revision_semantic;
+      DROP TRIGGER IF EXISTS facts_project_revision_move_old;
+      DROP TRIGGER IF EXISTS facts_project_revision_delete;
+      CREATE TRIGGER facts_project_revision_insert
+      AFTER INSERT ON facts
+      WHEN NEW.scope_type = 'project' AND NEW.project_id IS NOT NULL
+        AND NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_semantic
+      AFTER UPDATE OF fact, semantic_generation, lifecycle_generation, is_active, project_id,
+        promotion_state, subject_key, workspace_id, workstream_id ON facts
+      WHEN COALESCE(NEW.project_id, '') <> ''
+        AND (NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+          OR OLD.promotion_state IN ('legacy-project','decision','project-current','workspace'))
+        AND (
+        OLD.fact IS NOT NEW.fact OR OLD.semantic_generation IS NOT NEW.semantic_generation OR
+        OLD.lifecycle_generation IS NOT NEW.lifecycle_generation OR OLD.is_active IS NOT NEW.is_active OR
+        OLD.project_id IS NOT NEW.project_id OR OLD.promotion_state IS NOT NEW.promotion_state OR
+        OLD.subject_key IS NOT NEW.subject_key OR OLD.workspace_id IS NOT NEW.workspace_id OR
+        OLD.workstream_id IS NOT NEW.workstream_id
+      )
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_move_old
+      AFTER UPDATE OF project_id ON facts
+      WHEN OLD.project_id IS NOT NULL AND OLD.project_id IS NOT NEW.project_id
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = OLD.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_delete
+      AFTER DELETE ON facts
+      WHEN OLD.scope_type = 'project' AND OLD.project_id IS NOT NULL
+        AND OLD.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = datetime('now')
+        WHERE project_id = OLD.project_id;
+      END;
+    `);
+    options.afterMigrationStage?.("identity-triggers");
+    if (tableExists(db, "ontology_relations") && factColumnsForTriggers.has("project_id")) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS ontology_relations_scope_insert_guard;
+        DROP TRIGGER IF EXISTS ontology_relations_scope_update_guard;
+        CREATE TRIGGER ontology_relations_scope_insert_guard
+        BEFORE INSERT ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+        CREATE TRIGGER ontology_relations_scope_update_guard
+        BEFORE UPDATE OF source_fact_id, target_fact_id ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+      `);
+    }
+    db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
         ON memory_jobs(state, available_at, priority DESC, created_at, job_id);
@@ -18809,6 +19579,29 @@ function ensureContinuitySchema(db, options = {}) {
         ON session_memory_state(workstream_id, updated_at);
       CREATE INDEX IF NOT EXISTS idx_capsule_checkpoint_state
         ON capsule_checkpoint_state(workstream_id, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_project
+        ON workspaces(project_id, device_id, canonical_path);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_common_dir
+        ON workspaces(device_id, git_common_dir) WHERE git_common_dir IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_workspaces_git_identity
+        ON workspaces(device_id, git_common_identity, git_dir_identity);
+      CREATE INDEX IF NOT EXISTS idx_workstreams_scope
+        ON minimal_workstreams(project_id, workspace_id, status, branch_hint);
+      CREATE INDEX IF NOT EXISTS idx_hot_evidence_scope
+        ON hot_evidence(project_id, workstream_id, expires_at, created_at);
+    `);
+    if (["project_id", "subject_key", "is_active", "promotion_state", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_facts_project_subject
+        ON facts(project_id, subject_key, is_active);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active_subject_slot
+        ON facts(
+          project_id,
+          subject_key,
+          promotion_state,
+          COALESCE(workspace_id, ''),
+          COALESCE(workstream_id, '')
+        )
+        WHERE is_active = 1 AND project_id IS NOT NULL AND subject_key IS NOT NULL;
     `);
     options.afterMigrationStage?.("continuity-indexes");
     options.afterMigrationStage?.("continuity-core-indexes");
@@ -18862,7 +19655,7 @@ function refreshExchangeMetadata(db, sessionId) {
     const next = (nextBySession.get(key) ?? 0) + 1;
     nextBySession.set(key, Math.max(next, row.exchange_seq));
     const tools = selectTools.all(row.id);
-    const hash = sha256(JSON.stringify({
+    const hash2 = sha256(JSON.stringify({
       user: row.user_message,
       assistant: row.assistant_message,
       lineEnd: row.line_end,
@@ -18874,10 +19667,10 @@ function refreshExchangeMetadata(db, sessionId) {
         error: !!tool.is_error
       }))
     }));
-    const changed = !!row.content_hash && row.content_hash !== hash;
+    const changed = !!row.content_hash && row.content_hash !== hash2;
     update.run(
       row.exchange_seq > 0 ? row.exchange_seq : next,
-      hash,
+      hash2,
       changed ? Math.max(1, row.content_generation) + 1 : row.content_generation > 0 ? row.content_generation : 1,
       row.id
     );
@@ -18940,12 +19733,13 @@ function initializeConnection(db, mode) {
   }
 }
 function openWriteDb(dbPath = getDbPath()) {
-  fs2.mkdirSync(path3.dirname(dbPath), { recursive: true });
+  fs3.mkdirSync(path6.dirname(dbPath), { recursive: true });
   return initializeConnection(new Database(dbPath), "write");
 }
 function initDatabase(options = {}) {
-  const dbPath = getDbPath();
-  ensureDbDir();
+  const dbPath = options.dbPath ?? getDbPath();
+  if (options.dbPath) fs3.mkdirSync(path6.dirname(dbPath), { recursive: true });
+  else ensureDbDir();
   const db = openWriteDb(dbPath);
   if (options.busyTimeoutMs !== void 0) {
     db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
@@ -19116,8 +19910,9 @@ function initDatabase(options = {}) {
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
     END
   `);
+  db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
   db.exec(`
-    CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE ON exchanges BEGIN
+    CREATE TRIGGER exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
       INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
       INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
@@ -19413,21 +20208,27 @@ function initDatabase(options = {}) {
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash2("sha256").update(prompt, "utf8").digest("hex");
+  return createHash3("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0) return null;
-  const id = randomUUID2();
+  const id = randomUUID3();
   db.prepare(`
     INSERT INTO recall_events
-      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
     event.project,
     hashRecallPrompt(event.prompt),
     JSON.stringify([...new Set(event.factIds)]),
+    event.projectId ?? null,
+    event.workspaceId ?? null,
+    event.workstreamId ?? null,
+    event.contextEpoch ?? 0,
+    event.projectMemoryRevision ?? 0,
     (/* @__PURE__ */ new Date()).toISOString()
   );
   return id;
@@ -19443,7 +20244,7 @@ function getRevisions(db, factId) {
     "SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC"
   ).all(factId);
 }
-function factMatchesSearch(fact, scope, filters) {
+function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
   if (filters.category && fact.category !== filters.category) return false;
   switch (scope.type) {
     case "global":
@@ -19456,10 +20257,29 @@ function factMatchesSearch(fact, scope, filters) {
       return fact.scope_type === "project" && fact.scope_project === scope.project;
     case "other-projects":
       return fact.scope_type === "project" && fact.scope_project !== scope.project;
+    case "other-project-id":
+      return fact.scope_type === "project" && fact.project_id !== scope.projectId;
+    case "project-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current");
+    case "workspace-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" || fact.promotion_state === "workspace" && fact.workspace_id === scope.workspaceId);
+    case "workstream-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" || fact.promotion_state === "workspace" && !!scope.workspaceId && fact.workspace_id === scope.workspaceId || fact.promotion_state === "workstream" && fact.workstream_id === scope.workstreamId);
+    case "session-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && fact.source_exchange_ids.some((id) => sessionExchangeIds?.has(id));
   }
+}
+function listFactsByScope(db, scope) {
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
+  return db.prepare("SELECT * FROM facts WHERE is_active = 1").all().map(rowToFact).filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
+}
+function factMatchesScope(db, fact, scope) {
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
+  return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
 }
 function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
   if (limit <= 0) return [];
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
   const fetch = (table, count) => {
     try {
       const p = vecParamFor(db, table, embedding);
@@ -19512,7 +20332,7 @@ function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, f
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) break;
       const fact = loadFact(vr.id);
-      if (!fact || !factMatchesSearch(fact, scope, filters)) continue;
+      if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
     }
@@ -19553,6 +20373,11 @@ function rowToFact(row) {
     category: row["category"],
     scope_type: row["scope_type"],
     scope_project: row["scope_project"] ?? null,
+    project_id: row["project_id"] ?? null,
+    workspace_id: row["workspace_id"] ?? null,
+    workstream_id: row["workstream_id"] ?? null,
+    subject_key: row["subject_key"] ?? null,
+    promotion_state: row["promotion_state"] ?? "legacy-project",
     source_exchange_ids: sourceExchangeIds,
     embedding,
     created_at: row["created_at"],
@@ -19577,19 +20402,20 @@ function listCategories(db, domainId) {
   }
   return db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all();
 }
-function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
+function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
   let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
   const params = [categoryId];
-  if (scopeType === "global") {
+  if (!identityScope && scopeType === "global") {
     query += ` AND scope_type = 'global'`;
-  } else if (scopeProject && scopeType !== "all") {
+  } else if (!identityScope && scopeProject && scopeType !== "all") {
     query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
     params.push(scopeProject);
   }
   query += ` ORDER BY consolidated_count DESC`;
-  return db.prepare(query).all(...params).map(rowToFact2);
+  const facts = db.prepare(query).all(...params).map(rowToFact2);
+  return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
 }
-function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType) {
+function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType, identityScope) {
   const visited = /* @__PURE__ */ new Set([factId]);
   const results = [];
   let frontier = [factId];
@@ -19618,8 +20444,9 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [targetId, rows] of outByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (scopeType === "global" && fact.scope_type !== "global") continue;
-        if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
+        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -19655,8 +20482,9 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [sourceId, rows] of inByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (scopeType === "global" && fact.scope_type !== "global") continue;
-        if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
+        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -19679,7 +20507,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
   results.sort((a, b2) => b2.relevance - a.relevance);
   return results;
 }
-function getOntologyTree(db, scopeProject, scopeType) {
+function getOntologyTree(db, scopeProject, scopeType, identityScope) {
   const domains = listDomains(db);
   const tree = [];
   for (const domain of domains) {
@@ -19689,7 +20517,7 @@ function getOntologyTree(db, scopeProject, scopeType) {
       categories: []
     };
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
       if (facts.length > 0 || !scopeProject && !scopeType) {
         domainEntry.categories.push({ category, facts });
       }
@@ -19714,6 +20542,11 @@ function rowToFact2(row) {
     category: row["category"],
     scope_type: row["scope_type"],
     scope_project: row["scope_project"] ?? null,
+    project_id: row["project_id"] ?? null,
+    workspace_id: row["workspace_id"] ?? null,
+    workstream_id: row["workstream_id"] ?? null,
+    subject_key: row["subject_key"] ?? null,
+    promotion_state: row["promotion_state"] ?? "legacy-project",
     source_exchange_ids: row["source_exchange_ids"] ? JSON.parse(row["source_exchange_ids"]) : [],
     embedding,
     created_at: row["created_at"],
@@ -19721,7 +20554,9 @@ function rowToFact2(row) {
     consolidated_count: row["consolidated_count"],
     is_active: Boolean(row["is_active"]),
     semantic_generation: Number(row["semantic_generation"] ?? 1),
-    semantic_updated_at: row["semantic_updated_at"] ?? null
+    semantic_updated_at: row["semantic_updated_at"] ?? null,
+    lifecycle_generation: Number(row["lifecycle_generation"] ?? 1),
+    lifecycle_updated_at: row["lifecycle_updated_at"] ?? null
   };
 }
 function rowToRelation(row) {
@@ -19736,11 +20571,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs4 from "fs";
+import fs5 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs3 from "fs";
+import fs4 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -19760,7 +20595,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs3.statSync(p);
+      return fs4.statSync(p);
     } catch {
       return null;
     }
@@ -19809,7 +20644,7 @@ function readArchiveFile(filePath) {
       code: "ENOENT"
     });
   }
-  const buf = fs3.readFileSync(resolved);
+  const buf = fs4.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -19818,27 +20653,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs3.createReadStream(filePath);
+    return fs4.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs3.createReadStream(resolved);
+      const source = fs4.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs3.readFileSync(resolved));
+    const content = requireZstdSync()(fs4.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs3.createReadStream(resolved);
+  return fs4.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs3.statSync(resolved);
+    return fs4.statSync(resolved);
   } catch {
     return null;
   }
@@ -19850,7 +20685,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs4.statSync(p);
+    const st = fs5.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -19882,7 +20717,7 @@ function validateISODate(dateStr, paramName) {
   }
 }
 async function searchConversations(query, options = {}) {
-  const { limit = 10, mode = "both", after, before, project } = options;
+  const { limit = 10, mode = "both", after, before, project, identityScope } = options;
   if (after) validateISODate(after, "--after");
   if (before) validateISODate(before, "--before");
   const db = getSearchDb();
@@ -19893,6 +20728,19 @@ async function searchConversations(query, options = {}) {
     if (project) {
       filterParts.push(`e.project = ?`);
       filterParams.push(project);
+    }
+    if (identityScope?.type === "project") {
+      filterParts.push(`e.project_id = ?`);
+      filterParams.push(identityScope.projectId);
+    } else if (identityScope?.type === "workspace") {
+      filterParts.push(`e.workspace_id = ?`);
+      filterParams.push(identityScope.workspaceId);
+    } else if (identityScope?.type === "workstream") {
+      filterParts.push(`e.workstream_id = ?`);
+      filterParams.push(identityScope.workstreamId);
+    } else if (identityScope?.type === "session") {
+      filterParts.push(`e.session_id = ?`);
+      filterParams.push(identityScope.sessionId);
     }
     if (after) {
       filterParts.push(`e.timestamp >= ?`);
@@ -20444,44 +21292,41 @@ function formatRepeatContext(matches) {
 }
 
 // src/inject-log.ts
-import fs5 from "fs";
-import path4 from "path";
+import fs6 from "fs";
+import path7 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path4.join(getIndexDir(), "logs");
-  if (!fs5.existsSync(dir)) {
-    fs5.mkdirSync(dir, { recursive: true });
+  const dir = path7.join(getIndexDir(), "logs");
+  if (!fs6.existsSync(dir)) {
+    fs6.mkdirSync(dir, { recursive: true });
   }
-  return path4.join(dir, "inject-context.jsonl");
+  return path7.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs5.statSync(logPath);
+      const stat = fs6.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs5.renameSync(logPath, `${logPath}.old`);
+        fs6.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs5.appendFileSync(logPath, line + "\n");
+    fs6.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
 
-// src/continuity-core.ts
-import { createHash as createHash3 } from "node:crypto";
-
 // src/observe-hook-event.ts
-import fs6 from "node:fs";
-import path5 from "node:path";
+import fs7 from "node:fs";
+import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 function dataRoot() {
   return getMemexHome();
 }
 function observationLogPath() {
-  return path5.join(dataRoot(), "logs", "hook-events.jsonl");
+  return path8.join(dataRoot(), "logs", "hook-events.jsonl");
 }
 function recordHookEvent(event, info) {
   try {
@@ -20492,24 +21337,18 @@ function recordHookEvent(event, info) {
       cwd: typeof info.cwd === "string" ? info.cwd : ""
     }) + "\n";
     const file = observationLogPath();
-    fs6.mkdirSync(path5.dirname(file), { recursive: true });
-    fs6.appendFileSync(file, line);
+    fs7.mkdirSync(path8.dirname(file), { recursive: true });
+    fs7.appendFileSync(file, line);
   } catch {
   }
 }
-if (process.argv[1] && path5.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   recordHookEvent(process.argv[2] || "Unknown", {});
 }
 
 // src/continuity-core.ts
 var MAX_CAPTURE_DELTA_BYTES = 64 * 1024 * 1024;
 var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
-function sha2562(value) {
-  return createHash3("sha256").update(value).digest("hex");
-}
-function stableId(prefix, ...parts) {
-  return sha2562(`${prefix}\0${parts.join("\0")}`);
-}
 function parseJsonArray(raw, fallback = []) {
   if (typeof raw !== "string") return fallback;
   try {
@@ -20519,57 +21358,60 @@ function parseJsonArray(raw, fallback = []) {
     return fallback;
   }
 }
-function sessionWorkstreamId(project, sessionId) {
-  return `ws-${stableId("session-workstream", project, sessionId).slice(0, 32)}`;
-}
 function ensureSessionMemoryState(db, input) {
   const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
+  const identity = resolveProjectWorkspace(db, {
+    cwd: input.project,
+    branch: input.branch,
+    now
+  });
   const existing = db.prepare(`
-    SELECT workstream_id, context_epoch, project FROM session_memory_state WHERE session_id = ?
+    SELECT workstream_id, context_epoch, project, project_id, workspace_id
+    FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
   if (existing) {
-    if (existing.project !== input.project) {
-      throw new Error("session project identity does not match canonical session_meta cwd");
+    if (existing.project_id && existing.project_id !== identity.projectId) {
+      throw new Error("session project identity does not match resolved logical project");
     }
     db.prepare(`
-      UPDATE session_memory_state SET last_source = ?, updated_at = ? WHERE session_id = ?
-    `).run(input.source ?? null, now, input.sessionId);
+      UPDATE session_memory_state
+      SET project = ?, project_id = ?, workspace_id = ?, last_source = ?, updated_at = ?
+      WHERE session_id = ?
+    `).run(input.project, identity.projectId, identity.workspaceId, input.source ?? null, now, input.sessionId);
+    db.prepare(`
+      INSERT INTO workstream_sessions
+        (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+      VALUES (?, ?, ?, 'resume-exact', 1.0, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        binding_reason = 'resume-exact',
+        binding_confidence = 1.0,
+        bound_at = excluded.bound_at
+    `).run(input.sessionId, existing.workstream_id, identity.workspaceId, now);
     return {
       workstreamId: existing.workstream_id,
-      contextEpoch: existing.context_epoch
+      contextEpoch: existing.context_epoch,
+      projectId: identity.projectId,
+      workspaceId: identity.workspaceId
     };
   }
-  const explicit = input.explicitWorkstreamId?.trim();
-  const workstreamId = explicit && /^[A-Za-z0-9_-]{4,128}$/.test(explicit) ? explicit : sessionWorkstreamId(input.project, input.sessionId);
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT OR IGNORE INTO minimal_workstreams
-        (workstream_id, project, session_id, binding_reason, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      workstreamId,
-      input.project,
-      input.sessionId,
-      explicit ? "explicit" : "session-local",
-      now,
-      now
-    );
-    db.prepare(`
-      INSERT OR IGNORE INTO session_memory_state
-        (session_id, project, workstream_id, context_epoch, last_source, created_at, updated_at)
-      VALUES (?, ?, ?, 0, ?, ?, ?)
-    `).run(
-      input.sessionId,
-      input.project,
-      workstreamId,
-      input.source ?? null,
-      now,
-      now
-    );
+  const binding = bindSessionWorkstream(db, {
+    sessionId: input.sessionId,
+    projectId: identity.projectId,
+    workspaceId: identity.workspaceId,
+    projectPath: input.project,
+    explicitWorkstreamId: input.explicitWorkstreamId,
+    branch: input.branch,
+    prompt: input.prompt,
+    now
   });
-  if (db.inTransaction) tx();
-  else tx.immediate();
-  return { workstreamId, contextEpoch: 0 };
+  db.prepare("UPDATE session_memory_state SET last_source = ? WHERE session_id = ?").run(input.source ?? null, input.sessionId);
+  return {
+    workstreamId: binding.workstreamId,
+    contextEpoch: 0,
+    projectId: identity.projectId,
+    workspaceId: identity.workspaceId
+  };
 }
 function readResidentFactRevisions(db, sessionId) {
   const row = db.prepare(`
@@ -20597,6 +21439,213 @@ function recordResidentFactRevisions(db, sessionId, contextEpoch, revisions, now
     WHERE session_id = ? AND context_epoch = ?
   `).run(JSON.stringify(bounded), now, sessionId, contextEpoch).changes === 1;
 }
+function readWorkCapsule(db, workstreamId) {
+  const row = db.prepare(`
+    SELECT * FROM work_capsules WHERE workstream_id = ?
+  `).get(workstreamId);
+  if (!row) return null;
+  return {
+    workstreamId,
+    generation: Number(row.generation),
+    objective: String(row.objective),
+    currentState: String(row.current_state),
+    verifiedProgress: parseJsonArray(row.verified_progress_json),
+    hypotheses: parseJsonArray(row.hypotheses_json),
+    blockers: parseJsonArray(row.blockers_json),
+    openQuestions: parseJsonArray(row.open_questions_json),
+    nextActions: parseJsonArray(row.next_actions_json),
+    touchedAreas: parseJsonArray(row.touched_areas_json),
+    carryFactRevisions: parseJsonArray(row.carry_fact_revisions_json),
+    sourceExchangeIds: parseJsonArray(row.source_exchange_ids_json),
+    throughCheckpointId: row.through_checkpoint_id ? String(row.through_checkpoint_id) : null,
+    authority: "context-only",
+    sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
+    sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
+    updatedAt: String(row.updated_at)
+  };
+}
+function extractPlanLine(text) {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.find((line) => /(?:next|다음|todo|계속|해야)/i.test(line)) ?? null;
+}
+function buildDeterministicTailBaton(db, input) {
+  const maxChars = Math.max(200, Math.min(1500, input.maxChars ?? 1200));
+  const exchanges = db.prepare(`
+    SELECT id, user_message, assistant_message FROM exchanges
+    WHERE session_id = ? ORDER BY exchange_seq DESC, rowid DESC LIMIT 8
+  `).all(input.sessionId);
+  const latestUser = exchanges.find((row) => row.user_message.trim())?.user_message.trim() ?? "";
+  const plan = exchanges.map((row) => extractPlanLine(row.assistant_message)).find(Boolean) ?? null;
+  const tools = db.prepare(`
+    SELECT t.tool_name, t.tool_result, t.is_error, t.source_type
+    FROM tool_calls t JOIN exchanges e ON e.id = t.exchange_id
+    WHERE e.session_id = ? AND t.source_type IN ('repo_file','git_history','test_execution')
+    ORDER BY e.exchange_seq DESC, e.rowid DESC, t.timestamp DESC LIMIT 12
+  `).all(input.sessionId);
+  const touched = [...new Set(tools.flatMap((tool) => (tool.tool_result ?? "").match(/(?:^|\s)([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)/g) ?? []))].map((item) => item.trim()).slice(0, 5);
+  const trustedTest = tools.find((tool) => tool.source_type === "test_execution" && !tool.is_error);
+  const unresolved = tools.find((tool) => tool.is_error);
+  const lines = ["[WORK NOW \u2014 DETERMINISTIC TAIL BATON]"];
+  if (latestUser) lines.push(`Request: ${latestUser.replace(/\s+/g, " ").slice(0, 500)}`);
+  if (plan) lines.push(`Next: ${plan.replace(/\s+/g, " ").slice(0, 300)}`);
+  if (touched.length) lines.push(`Touched: ${touched.join(", ")}`);
+  if (trustedTest?.tool_result) lines.push(`Trusted test: ${trustedTest.tool_result.replace(/\s+/g, " ").slice(0, 300)}`);
+  if (unresolved?.tool_result) lines.push(`Unresolved: ${unresolved.tool_result.replace(/\s+/g, " ").slice(0, 300)}`);
+  return lines.join("\n").slice(0, maxChars);
+}
+function renderCapsule(capsule) {
+  const lines = ["[WORK NOW]"];
+  if (capsule.objective) lines.push(`Objective: ${capsule.objective}`);
+  if (capsule.currentState) lines.push(`State: ${capsule.currentState}`);
+  if (capsule.blockers[0]) lines.push(`Blocker: ${capsule.blockers[0]}`);
+  if (capsule.nextActions[0]) lines.push(`Next: ${capsule.nextActions[0]}`);
+  return lines.join("\n");
+}
+function buildRehydrationContext(db, input) {
+  if (!db.inTransaction) {
+    const readSnapshot = db.transaction(() => buildRehydrationContext(db, input));
+    return readSnapshot();
+  }
+  const state = db.prepare(`
+    SELECT workstream_id, context_epoch, carry_fact_revisions_json,
+           resident_fact_revisions_json, latest_checkpoint_id, project_id,
+           workspace_id, memory_revision_seen
+    FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+  if (!state) {
+    return {
+      context: "",
+      factRevisions: [],
+      capsuleGeneration: 0,
+      projectRevisionComplete: true,
+      projectMemoryRevision: 0
+    };
+  }
+  const capsule = readWorkCapsule(db, String(state.workstream_id));
+  const carry = parseJsonArray(state.carry_fact_revisions_json);
+  const resident = parseJsonArray(state.resident_fact_revisions_json);
+  const validFacts = [];
+  const carryCorrections = [];
+  const selectFact = db.prepare(`
+    SELECT id, fact, semantic_generation, lifecycle_generation, is_active FROM facts
+    WHERE id = ? AND is_active = 1
+  `);
+  for (const revision of carry) {
+    const row = selectFact.get(revision[0]);
+    if (!row) continue;
+    const current = [revision[0], row.semantic_generation, row.lifecycle_generation];
+    if (current[1] === revision[1] && current[2] === revision[2]) {
+      validFacts.push({ revision: current, text: row.fact });
+    } else {
+      carryCorrections.push({
+        id: revision[0],
+        fact: row.fact,
+        semantic_generation: row.semantic_generation,
+        lifecycle_generation: row.lifecycle_generation,
+        is_active: 1
+      });
+    }
+  }
+  const maxChars = Math.max(500, Math.min(2e3, input.maxChars ?? 2e3));
+  const capsuleIsStale = !!capsule && !!state.latest_checkpoint_id && capsule.throughCheckpointId !== String(state.latest_checkpoint_id);
+  const projectId = state.project_id ? String(state.project_id) : null;
+  const currentProjectRevision = projectId ? projectRevision(db, projectId) : 0;
+  let freshCorrections = carryCorrections;
+  if (projectId && currentProjectRevision > Number(state.memory_revision_seen ?? 0)) {
+    const priorRevisions = [
+      ...carry,
+      ...resident,
+      ...validFacts.map(({ revision }) => revision)
+    ];
+    const residentKeys = new Set(priorRevisions.map(([id, semantic, lifecycle]) => `${id}:${semantic}:${lifecycle}`));
+    const residentIds = new Set(priorRevisions.map(([id]) => id));
+    const corrections = db.prepare(`
+      SELECT id, fact, semantic_generation, lifecycle_generation, is_active
+      FROM facts
+      WHERE project_id = ? AND (
+        promotion_state IN ('decision','project-current','legacy-project') OR
+        (promotion_state = 'workspace' AND workspace_id = ?) OR
+        (promotion_state = 'workstream' AND workstream_id = ?)
+      )
+      ORDER BY updated_at DESC, id
+    `).all(projectId, state.workspace_id ?? null, state.workstream_id);
+    const projectCorrections = corrections.filter((fact) => {
+      const changed = !residentKeys.has(
+        `${fact.id}:${fact.semantic_generation}:${fact.lifecycle_generation}`
+      );
+      return changed && (fact.is_active === 1 || residentIds.has(fact.id));
+    });
+    const byId = new Map(freshCorrections.map((fact) => [fact.id, fact]));
+    for (const fact of projectCorrections) byId.set(fact.id, fact);
+    freshCorrections = [...byId.values()];
+  }
+  const sections = [];
+  const emittedRevisions = [];
+  let used = 0;
+  const appendSection = (heading, items) => {
+    if (items.length === 0) return 0;
+    const accepted = [];
+    const acceptedRevisions = [];
+    for (const item of items) {
+      const line = `- ${item.text.replace(/\s+/g, " ").slice(0, 260)}`;
+      const prospective = `${heading}
+${[...accepted, line].join("\n")}`;
+      const separator = sections.length > 0 ? 2 : 0;
+      if (used + separator + prospective.length > maxChars) break;
+      accepted.push(line);
+      if (item.revision) acceptedRevisions.push(item.revision);
+    }
+    if (accepted.length === 0) return 0;
+    const block = `${heading}
+${accepted.join("\n")}`;
+    used += (sections.length > 0 ? 2 : 0) + block.length;
+    sections.push(block);
+    emittedRevisions.push(...acceptedRevisions);
+    return accepted.length;
+  };
+  const emittedCorrectionCount = appendSection("[MEMEX CORRECTION]", freshCorrections.map((fact) => ({
+    text: fact.is_active === 1 ? fact.fact : `No longer active: ${fact.fact}`,
+    revision: [fact.id, fact.semantic_generation, fact.lifecycle_generation]
+  })));
+  appendSection("[CURRENT TRUTH]", validFacts.slice(0, 4).map(({ text, revision }) => ({ text, revision })));
+  let capsuleGeneration = 0;
+  if (capsule) {
+    const block = renderCapsule(capsule);
+    const remaining = Math.max(0, maxChars - used - (sections.length ? 2 : 0));
+    if (block.length <= remaining) {
+      used += (sections.length ? 2 : 0) + block.length;
+      sections.push(block);
+      capsuleGeneration = capsule.generation;
+    }
+  }
+  if (!capsule || capsuleIsStale) {
+    const remaining = maxChars - used - (sections.length ? 2 : 0);
+    if (remaining >= 40) {
+      const baton = buildDeterministicTailBaton(db, { sessionId: input.sessionId, maxChars: remaining });
+      if (baton) {
+        used += (sections.length ? 2 : 0) + baton.length;
+        sections.push(baton);
+      }
+    }
+  }
+  if (projectId) {
+    const recent = readHotEvidence(db, {
+      projectId,
+      workstreamId: String(state.workstream_id),
+      limit: 3
+    });
+    appendSection("[RECENT EVIDENCE \u2014 NOT YET DISTILLED]", recent.map((item) => ({
+      text: String(item.evidence_text)
+    })));
+  }
+  return {
+    context: sections.join("\n\n"),
+    factRevisions: emittedRevisions,
+    capsuleGeneration,
+    projectRevisionComplete: emittedCorrectionCount === freshCorrections.length,
+    projectMemoryRevision: currentProjectRevision
+  };
+}
 
 // src/inject-core.ts
 var TOP_K = 5;
@@ -20605,6 +21654,25 @@ var MAX_CONTEXT_FACTS = 8;
 var FACT_CHAR_CAP = 160;
 var BLOCK_CHAR_BUDGET = 1e3;
 var REPEAT_ELAPSED_BUDGET_MS = 700;
+function commitInjectionState(db, input) {
+  const write = () => {
+    const receipt = recordRecallEvent(db, input);
+    if (!receipt) throw new Error("Failed to persist prepared recall receipt");
+    if (!recordResidentFactRevisions(db, input.sessionId, input.contextEpoch, input.revisions)) {
+      throw new Error("context epoch changed before residency commit");
+    }
+    if (input.markProjectRevision !== false && !markSessionProjectRevisionSeen(db, input.sessionId, input.projectMemoryRevision)) {
+      throw new Error("project memory revision changed before injection commit");
+    }
+  };
+  if (typeof db.transaction !== "function") {
+    write();
+    return;
+  }
+  const tx = db.transaction(write);
+  if (db.inTransaction) tx();
+  else tx.immediate();
+}
 function truncateFact(text) {
   const t = text.replace(/\s+/g, " ").trim();
   return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + "\u2026" : t;
@@ -20635,10 +21703,60 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
     const baseline = await queryBaseline(embedding);
     const db = getSearchDb();
     {
+      const sessionScope = ensureSessionMemoryState(db, {
+        sessionId,
+        project,
+        prompt: userPrompt,
+        source: "UserPromptSubmit"
+      });
+      const revisionState = sessionProjectRevisionState(db, sessionId);
+      const currentProjectRevision = revisionState.current;
+      const staleProjectMemory = currentProjectRevision > revisionState.seen;
+      if (staleProjectMemory) {
+        const correction = buildRehydrationContext(db, {
+          sessionId,
+          maxChars: BLOCK_CHAR_BUDGET
+        });
+        const ids = [...new Set(correction.factRevisions.map(([id]) => id))];
+        if (correction.context && ids.length > 0) {
+          const contextEpoch = readResidentFactRevisions(db, sessionId).contextEpoch;
+          commitInjectionState(db, {
+            sessionId,
+            project,
+            prompt: userPrompt,
+            factIds: ids,
+            projectId: sessionScope.projectId,
+            workspaceId: sessionScope.workspaceId,
+            workstreamId: sessionScope.workstreamId,
+            contextEpoch,
+            projectMemoryRevision: currentProjectRevision,
+            revisions: correction.factRevisions,
+            markProjectRevision: correction.projectRevisionComplete
+          });
+          appendInjectLog({
+            status: "injected",
+            project,
+            prompt_len: userPrompt.length,
+            injected: ids.length,
+            chars: correction.context.length + 1,
+            duration_ms: Date.now() - t0,
+            via
+          });
+          return correction.context + "\n";
+        }
+        if (!markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+          throw new Error("project memory revision changed during correction check");
+        }
+      }
       const candidates = searchFactsByScope(
         db,
         embedding,
-        { type: "project", project },
+        {
+          type: "workstream-id",
+          projectId: sessionScope.projectId,
+          workspaceId: sessionScope.workspaceId,
+          workstreamId: sessionScope.workstreamId
+        },
         TOP_K,
         0
       );
@@ -20646,7 +21764,34 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         const similarity = l2DistanceToSimilarity(r.distance);
         return similarity - baseline >= BASELINE_MARGIN;
       });
+      const hot = readHotEvidence(db, {
+        projectId: sessionScope.projectId,
+        workstreamId: sessionScope.workstreamId,
+        limit: 2
+      });
       if (results.length === 0) {
+        if (hot.length > 0) {
+          const heading = "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]";
+          const lines2 = [heading];
+          let chars = heading.length;
+          for (const item of hot) {
+            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
+            if (chars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
+            lines2.push(line);
+            chars += line.length + 1;
+          }
+          appendInjectLog({
+            status: "injected",
+            project,
+            prompt_len: userPrompt.length,
+            candidates: candidates.length,
+            injected: 0,
+            chars,
+            duration_ms: Date.now() - t0,
+            via
+          });
+          return lines2.join("\n") + "\n";
+        }
         appendInjectLog({
           status: "no-match",
           project,
@@ -20658,17 +21803,26 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         });
         return "";
       }
-      ensureSessionMemoryState(db, {
-        sessionId,
-        project,
-        source: "UserPromptSubmit"
-      });
       const seenIds = new Set(results.map((r) => r.fact.id));
       const expandedFacts = [
         ...results.map((r) => ({ fact: r.fact, note: "" }))
       ];
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
+        const related = getRelatedFacts(
+          db,
+          fact.id,
+          1,
+          0.6,
+          0.2,
+          null,
+          "project",
+          {
+            type: "workstream-id",
+            projectId: sessionScope.projectId,
+            workspaceId: sessionScope.workspaceId,
+            workstreamId: sessionScope.workstreamId
+          }
+        );
         for (const { fact: relFact, relation } of related) {
           if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
@@ -20718,6 +21872,19 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         blockChars += line.length + 1;
         injectedIds.push(fact.id);
       }
+      if (hot.length > 0) {
+        const heading = "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]";
+        if (blockChars + heading.length + 1 <= BLOCK_CHAR_BUDGET) {
+          lines.push("", heading);
+          blockChars += heading.length + 2;
+          for (const item of hot) {
+            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
+            if (blockChars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
+            lines.push(line);
+            blockChars += line.length + 1;
+          }
+        }
+      }
       if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
         try {
           const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
@@ -20741,24 +21908,19 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         } catch {
         }
       }
-      const recallEventId = recordRecallEvent(db, {
+      const injectedRevisions = fresh.filter(({ fact }) => injectedIds.includes(fact.id)).map(({ fact }) => revisionOf(fact));
+      commitInjectionState(db, {
         sessionId,
         project,
         prompt: userPrompt,
-        factIds: injectedIds
+        factIds: injectedIds,
+        projectId: sessionScope.projectId,
+        workspaceId: sessionScope.workspaceId,
+        workstreamId: sessionScope.workstreamId,
+        contextEpoch: residency.contextEpoch,
+        projectMemoryRevision: currentProjectRevision,
+        revisions: injectedRevisions
       });
-      if (!recallEventId) {
-        throw new Error("Failed to persist prepared recall receipt");
-      }
-      const injectedRevisions = fresh.filter(({ fact }) => injectedIds.includes(fact.id)).map(({ fact }) => revisionOf(fact));
-      if (!recordResidentFactRevisions(
-        db,
-        sessionId,
-        residency.contextEpoch,
-        injectedRevisions
-      )) {
-        throw new Error("context epoch changed before residency commit");
-      }
       const block = lines.join("\n") + "\n";
       appendInjectLog({
         status: "injected",
@@ -20789,7 +21951,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
 
 // src/inject-daemon.ts
 function injectSocketPath() {
-  return path6.join(getIndexDir(), "inject-daemon.sock");
+  return path9.join(getIndexDir(), "inject-daemon.sock");
 }
 function startInjectDaemon() {
   ensureIndexDir();
@@ -20833,7 +21995,7 @@ function startInjectDaemon() {
     probe.on("connect", () => probe.destroy());
     probe.on("error", () => {
       try {
-        fs7.unlinkSync(sockPath);
+        fs8.unlinkSync(sockPath);
         server2.listen(sockPath, onListen);
       } catch {
       }
@@ -20841,7 +22003,7 @@ function startInjectDaemon() {
   });
   const onListen = () => {
     try {
-      fs7.chmodSync(sockPath, 384);
+      fs8.chmodSync(sockPath, 384);
     } catch {
     }
     void initEmbeddings().catch(() => {
@@ -22326,19 +23488,8 @@ ${JSON.stringify(value, null, 2)}
   return output;
 }
 
-// src/project-identity.ts
-import path7 from "node:path";
-function canonicalizeProjectPath(cwd) {
-  if (typeof cwd !== "string") return "";
-  let p = cwd.trim();
-  if (!p) return "";
-  if (!path7.isAbsolute(p)) p = path7.resolve("/", p);
-  const resolved = path7.normalize(p);
-  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
-}
-
 // src/llm.ts
-import path9 from "node:path";
+import path11 from "node:path";
 import os4 from "node:os";
 
 // src/llm-error-class.ts
@@ -22394,9 +23545,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import os3 from "node:os";
-import path8 from "node:path";
+import path10 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 function buildPrompt(systemPrompt, userMessage) {
@@ -22539,8 +23690,8 @@ async function runCodex(opts = {}) {
   }
   const bin = opts.codexBin || process.env.MEMEX_CODEX_BIN || "codex";
   const timeoutMs = opts.timeoutMs ?? 18e4;
-  const workdir = fs8.mkdtempSync(path8.join(os3.tmpdir(), "memex-llm-"));
-  const outPath = path8.join(workdir, "last-message.txt");
+  const workdir = fs9.mkdtempSync(path10.join(os3.tmpdir(), "memex-llm-"));
+  const outPath = path10.join(workdir, "last-message.txt");
   const started = performance.now();
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
@@ -22548,7 +23699,7 @@ async function runCodex(opts = {}) {
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
     let text = "";
     try {
-      text = fs8.readFileSync(outPath, "utf8").trim();
+      text = fs9.readFileSync(outPath, "utf8").trim();
     } catch {
     }
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
@@ -22567,12 +23718,12 @@ async function runCodex(opts = {}) {
     }
     return text;
   } finally {
-    fs8.rmSync(workdir, { recursive: true, force: true });
+    fs9.rmSync(workdir, { recursive: true, force: true });
   }
 }
 
 // src/llm.ts
-var LLM_WORKDIR = path9.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path11.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -22696,11 +23847,11 @@ You represent their past engineering decisions, preferences, and patterns.
 - 0.7-0.9: inferred from related decisions
 - 0.5-0.7: weak inference, needs verification
 - below 0.5: not enough information`;
-async function askAvatar(db, question, project, scope) {
+async function askAvatar(db, question, project, scope, identityScope) {
   await initEmbeddings();
   const questionEmbedding = await generateEmbedding(question, "query");
   const scopeProject = project ?? null;
-  const factScope = scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" };
+  const factScope = identityScope ?? (scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" });
   const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
   if (vectorResults.length === 0) {
     return {
@@ -22719,7 +23870,7 @@ async function askAvatar(db, question, project, scope) {
   const relatedDecisions = [];
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
+    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope, identityScope);
     for (const { fact: relFact, relation } of related) {
       if (scope === "global" && relFact.scope_type !== "global") continue;
       if (!expandedFactIds.has(relFact.id)) {
@@ -22795,10 +23946,11 @@ async function askAvatar(db, question, project, scope) {
 }
 
 // src/mcp-server.ts
-import path10 from "path";
-import fs9 from "fs";
+import path12 from "path";
+import fs10 from "fs";
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
+var ContinuityScopeEnum = external_exports.enum(["project", "workspace", "workstream", "session", "global", "all"]);
 var SearchInputSchema = external_exports.object({
   query: external_exports.union([
     external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
@@ -22812,6 +23964,11 @@ var SearchInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly."
   ),
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional(),
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
   after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe(
     "Only return conversations after this date (YYYY-MM-DD format)"
@@ -22832,15 +23989,21 @@ var ShowConversationInputSchema = external_exports.object({
     "Ending line number (1-indexed, inclusive). Omit to read to end."
   )
 }).strict();
-var ScopeEnum = external_exports.enum(["project", "global", "all"]);
 var SearchFactsInputSchema = external_exports.object({
   query: external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
   project: external_exports.string().max(500).optional().describe(
-    "Canonical absolute Codex thread cwd (required unless scope is global/all)"
+    "Legacy canonical cwd compatibility key for project scope; prefer project_id"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope. Project accepts project_id or legacy canonical path."
   ),
+  include_hot_evidence: external_exports.boolean().default(false),
+  hot_before: external_exports.string().datetime().optional(),
+  hot_before_evidence_id: external_exports.string().max(128).optional(),
   category: external_exports.enum(["decision", "preference", "pattern", "knowledge", "constraint"]).optional(),
   include_revisions: external_exports.boolean().default(false),
   limit: external_exports.number().int().min(1).max(50).default(10)
@@ -22852,8 +24015,12 @@ var SearchOntologyInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd (required unless scope is global/all)"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope"
   )
 }).strict();
 var AskAvatarInputSchema = external_exports.object({
@@ -22861,29 +24028,119 @@ var AskAvatarInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd (required unless scope is global/all)"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope"
   )
 }).strict();
-function toFactSearchScope(resolved) {
-  if (resolved.scope === "global") return { type: "global" };
-  if (resolved.scope === "all") return { type: "all" };
-  return { type: "project", project: resolved.project };
-}
-function resolveProjectScope(raw, tool, field = "project") {
+function resolveStableScope(db, raw, tool) {
   const scope = raw.scope ?? "project";
-  if (scope === "global" || scope === "all") return { project: null, scope };
-  const value = (field === "current_project" ? raw.current_project : raw.project) ?? "";
-  if (!value.trim()) {
-    throw new Error(
-      JSON.stringify({
-        error: `${tool}: ${field} is required for project-scoped queries`,
-        expected: 'canonical absolute Codex thread cwd (session_meta.cwd), or scope: "global" | "all"',
-        example: { [field]: "/Users/me/work/app-a" }
-      })
-    );
+  if (scope === "global" || scope === "all") {
+    if (raw.project || raw.project_id || raw.workspace_id || raw.workstream_id || raw.session_id) {
+      throw new Error(`${tool}: ${scope} scope cannot be combined with project/workspace/workstream/session identity`);
+    }
+    return {
+      factScope: scope === "global" ? { type: "global" } : { type: "all" },
+      scope,
+      projectId: null,
+      workspaceId: null,
+      workstreamId: null,
+      sessionId: null,
+      legacyProject: null,
+      label: scope
+    };
   }
-  return { project: canonicalizeProjectPath(value.trim()), scope };
+  if (scope !== "project" && raw.project) {
+    throw new Error(`${tool}: legacy project path cannot be combined with ${scope} scope; use stable IDs`);
+  }
+  if (scope === "session") {
+    if (!raw.session_id) throw new Error(`${tool}: session_id is required for session scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, workstream_id, project
+      FROM session_memory_state WHERE session_id = ?
+    `).get(raw.session_id);
+    if (!row?.project_id) throw new Error(`${tool}: unknown session_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: session_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: session_id is outside workspace_id`);
+    if (raw.workstream_id && raw.workstream_id !== row.workstream_id) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "session-id", projectId: row.project_id, sessionId: raw.session_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: row.workstream_id, sessionId: raw.session_id, legacyProject: row.project, label: `session:${raw.session_id}` };
+  }
+  if (scope === "workstream") {
+    if (!raw.workstream_id) throw new Error(`${tool}: workstream_id is required for workstream scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, project FROM minimal_workstreams WHERE workstream_id = ?
+    `).get(raw.workstream_id);
+    if (!row?.project_id) throw new Error(`${tool}: unknown workstream_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workstream_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM workstream_sessions WHERE session_id = ? AND workstream_id = ?
+    `).get(raw.session_id, raw.workstream_id)) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "workstream-id", projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id, sessionId: null, legacyProject: row.project, label: `workstream:${raw.workstream_id}` };
+  }
+  if (scope === "workspace") {
+    if (!raw.workspace_id) throw new Error(`${tool}: workspace_id is required for workspace scope`);
+    const row = db.prepare(`
+      SELECT project_id, canonical_path FROM workspaces WHERE workspace_id = ?
+    `).get(raw.workspace_id);
+    if (!row) throw new Error(`${tool}: unknown workspace_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workspace_id is outside project_id`);
+    if (raw.workstream_id && !db.prepare(`
+      SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND workspace_id = ?
+    `).get(raw.workstream_id, raw.workspace_id)) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM session_memory_state WHERE session_id = ? AND workspace_id = ?
+    `).get(raw.session_id, raw.workspace_id)) throw new Error(`${tool}: session_id is outside workspace_id`);
+    return { factScope: { type: "workspace-id", projectId: row.project_id, workspaceId: raw.workspace_id }, scope, projectId: row.project_id, workspaceId: raw.workspace_id, workstreamId: null, sessionId: null, legacyProject: row.canonical_path, label: `workspace:${raw.workspace_id}` };
+  }
+  let projectId = raw.project_id ?? null;
+  let legacyProject = null;
+  if (projectId) {
+    if (raw.project?.trim()) {
+      throw new Error(`${tool}: choose project_id or legacy project path, not both`);
+    }
+    const workspace = db.prepare(`
+      SELECT canonical_path FROM workspaces WHERE project_id = ? ORDER BY last_seen_at DESC LIMIT 1
+    `).get(projectId);
+    if (!db.prepare("SELECT 1 FROM projects WHERE project_id = ?").get(projectId)) {
+      throw new Error(`${tool}: unknown project_id`);
+    }
+    legacyProject = workspace?.canonical_path ?? null;
+  } else if (raw.project?.trim()) {
+    legacyProject = canonicalizeProjectPath(raw.project);
+    const known = db.prepare(`
+      SELECT project_id FROM workspaces WHERE canonical_path = ?
+      ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+    `).get(legacyProject);
+    if (!known) {
+      return {
+        factScope: { type: "project", project: legacyProject },
+        scope,
+        projectId: null,
+        workspaceId: null,
+        workstreamId: null,
+        sessionId: null,
+        legacyProject,
+        label: `legacy-project:${legacyProject}`
+      };
+    }
+    projectId = known.project_id;
+  } else {
+    throw new Error(`${tool}: project is required for project scope; provide project_id or canonical absolute project path`);
+  }
+  if (raw.workspace_id && !db.prepare("SELECT 1 FROM workspaces WHERE workspace_id = ? AND project_id = ?").get(raw.workspace_id, projectId)) {
+    throw new Error(`${tool}: workspace_id is outside project_id`);
+  }
+  if (raw.workstream_id && !db.prepare("SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND project_id = ?").get(raw.workstream_id, projectId)) {
+    throw new Error(`${tool}: workstream_id is outside project_id`);
+  }
+  if (raw.session_id && !db.prepare("SELECT 1 FROM session_memory_state WHERE session_id = ? AND project_id = ?").get(raw.session_id, projectId)) {
+    throw new Error(`${tool}: session_id is outside project_id`);
+  }
+  return { factScope: { type: "project-id", projectId }, scope, projectId, workspaceId: null, workstreamId: null, sessionId: null, legacyProject, label: `project:${projectId}` };
 }
 function handleError(error2) {
   if (error2 instanceof Error) {
@@ -22906,7 +24163,7 @@ function getToolDefinitions() {
   return [
     {
       name: "search",
-      description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+      description: `Search raw conversation evidence across sessions with optional explicit project/workspace/workstream/session scope. Single string performs semantic/text search; an array of 2-5 concepts performs precise AND matching. Stable IDs are preferred and process cwd is never inferred.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -22930,6 +24187,14 @@ function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description: "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global."
+          },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          scope: {
+            type: "string",
+            enum: ["project", "workspace", "workstream", "session", "global", "all"]
           },
           limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
           after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
@@ -22974,7 +24239,7 @@ function getToolDefinitions() {
     },
     {
       name: "search_facts",
-      description: "Search extracted facts from past conversations. Returns project-scoped and global facts. Facts are long-term knowledge automatically extracted and consolidated from conversations.",
+      description: "Search extracted facts with explicit project/workspace/workstream/session/global/all scope. Optionally returns separately labeled recent Hot Evidence.",
       inputSchema: {
         type: "object",
         properties: {
@@ -22987,12 +24252,16 @@ function getToolDefinitions() {
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all."
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global" (global facts only), or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all."
           },
           category: {
             type: "string",
@@ -23010,6 +24279,13 @@ function getToolDefinitions() {
             description: "Include revision history",
             default: false
           },
+          include_hot_evidence: {
+            type: "boolean",
+            description: "Include recent authoritative raw evidence with a NOT YET DISTILLED label",
+            default: false
+          },
+          hot_before: { type: "string", format: "date-time" },
+          hot_before_evidence_id: { type: "string", maxLength: 128 },
           limit: {
             type: "number",
             minimum: 1,
@@ -23053,10 +24329,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         additionalProperties: false
@@ -23084,12 +24364,16 @@ function getToolDefinitions() {
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+            description: "Legacy canonical cwd compatibility key for project scope; prefer project_id."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         required: ["question"],
@@ -23118,12 +24402,16 @@ function getToolDefinitions() {
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+            description: "Legacy canonical cwd compatibility key for project scope; prefer project_id."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all."
           },
           limit: {
             type: "number",
@@ -23155,10 +24443,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         additionalProperties: false
@@ -23186,12 +24478,17 @@ function getToolDefinitions() {
           current_project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd to exclude (required)."
+            description: "Canonical absolute Codex thread cwd to exclude. Required unless current_project_id is provided."
+          },
+          current_project_id: {
+            type: "string",
+            pattern: "^[A-Za-z0-9_-]{8,128}$",
+            description: "Stable logical project ID to exclude. Required unless current_project is provided."
           },
           scope: {
             type: "string",
             enum: ["project"],
-            description: "cross_project_insights always excludes the given current_project; pass its cwd explicitly."
+            description: "cross_project_insights excludes the explicit current project identity."
           },
           limit: {
             type: "number",
@@ -23201,7 +24498,7 @@ function getToolDefinitions() {
             description: "Max results"
           }
         },
-        required: ["query", "current_project"],
+        required: ["query"],
         additionalProperties: false
       },
       annotations: {
@@ -23236,10 +24533,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         required: ["query"],
@@ -23267,12 +24568,36 @@ async function handleToolCall(name, args) {
     if (name === "search") {
       const params = SearchInputSchema.parse(args);
       let resultText;
+      let identityScope;
+      let legacyProjectScope = params.project;
+      const hasExplicitIdentity = !!(params.scope || params.project_id || params.workspace_id || params.workstream_id || params.session_id);
+      if (hasExplicitIdentity) {
+        const identityDb = initDatabase();
+        try {
+          const resolved = resolveStableScope(identityDb, params, "search");
+          legacyProjectScope = resolved.scope === "project" && !resolved.projectId ? resolved.legacyProject ?? void 0 : void 0;
+          if (resolved.scope === "project" && resolved.projectId) {
+            identityScope = { type: "project", projectId: resolved.projectId };
+          } else if (resolved.scope === "workspace" && resolved.workspaceId) {
+            identityScope = { type: "workspace", workspaceId: resolved.workspaceId };
+          } else if (resolved.scope === "workstream" && resolved.workstreamId) {
+            identityScope = { type: "workstream", workstreamId: resolved.workstreamId };
+          } else if (resolved.scope === "session" && resolved.sessionId) {
+            identityScope = { type: "session", sessionId: resolved.sessionId };
+          } else if (resolved.scope === "global") {
+            return { content: [{ type: "text", text: "No conversation evidence exists in global fact scope." }] };
+          }
+        } finally {
+          identityDb.close();
+        }
+      }
       if (Array.isArray(params.query)) {
         const options = {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project
+          project: legacyProjectScope,
+          identityScope
         };
         const results = await searchMultipleConcepts(params.query, options);
         if (params.response_format === "json") {
@@ -23294,7 +24619,8 @@ async function handleToolCall(name, args) {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project
+          project: legacyProjectScope,
+          identityScope
         };
         const results = await searchConversations(params.query, options);
         if (params.response_format === "json") {
@@ -23337,7 +24663,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path10.resolve(params.path);
+      const resolvedPath = path12.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -23345,16 +24671,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs9.realpathSync(resolvedFile);
+      const realFile = fs10.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs9.realpathSync(root);
+          return fs10.realpathSync(root);
         } catch {
-          return path10.resolve(root);
+          return path12.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path10.sep)
+        (root) => realFile === root || realFile.startsWith(root + path12.sep)
       );
       if (!isAllowed) {
         throw new Error(
@@ -23378,21 +24704,20 @@ async function handleToolCall(name, args) {
     }
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
-      const scopeInfo = resolveProjectScope(params, "search_facts");
-      const scopeFilter = scopeInfo.scope;
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const scopeInfo = resolveStableScope(db, params, "search_facts");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const results = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(scopeInfo),
+          scopeInfo.factScope,
           params.limit,
           0.85,
           { category: params.category }
         );
-        const scopeLabel = scopeFilter === "project" ? scopeInfo.project : `${scopeFilter} facts only`;
+        const scopeLabel = scopeInfo.label;
         let output = `# Facts Search Results
 
 Query: "${params.query}"
@@ -23443,8 +24768,8 @@ Results: ${results.length}
             1,
             0.6,
             0.2,
-            scopeInfo.project,
-            scopeInfo.scope
+            scopeInfo.legacyProject,
+            scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project"
           );
           if (related.length > 0) {
             output += `- Related:
@@ -23454,6 +24779,26 @@ Results: ${results.length}
 `;
             }
           }
+          output += "\n";
+        }
+        if (params.include_hot_evidence && scopeInfo.projectId) {
+          const hot = readHotEvidence(db, {
+            projectId: scopeInfo.projectId,
+            workspaceId: scopeInfo.scope === "workspace" ? scopeInfo.workspaceId : null,
+            workstreamId: scopeInfo.scope === "workstream" ? scopeInfo.workstreamId : null,
+            sessionId: scopeInfo.scope === "session" ? scopeInfo.sessionId : null,
+            beforeCreatedAt: params.hot_before ?? null,
+            beforeEvidenceId: params.hot_before_evidence_id ?? null,
+            limit: params.limit
+          });
+          output += `
+## Recent Evidence \u2014 NOT YET DISTILLED (${hot.length})
+
+`;
+          output += hot.map(
+            (item) => `- [${item.source_type}] ${item.evidence_text}
+  - Cursor: ${item.created_at} / ${item.evidence_id}`
+          ).join("\n") || "_No recent evidence._";
           output += "\n";
         }
         return {
@@ -23472,10 +24817,15 @@ Results: ${results.length}
       const params = SearchOntologyInputSchema.parse(
         args
       );
-      const scopeInfo = resolveProjectScope(params, "search_ontology");
       try {
         const db = initDatabase();
-        const tree = getOntologyTree(db, scopeInfo.project, scopeInfo.scope);
+        const scopeInfo = resolveStableScope(db, params, "search_ontology");
+        const tree = getOntologyTree(
+          db,
+          scopeInfo.legacyProject,
+          scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+          scopeInfo.factScope
+        );
         const domainFilter = params.domain?.toLowerCase();
         const categoryFilter = params.category?.toLowerCase();
         const filtered = tree.filter((entry) => {
@@ -23523,8 +24873,9 @@ Results: ${results.length}
                   1,
                   0.6,
                   0.2,
-                  scopeInfo.project,
-                  scopeInfo.scope
+                  scopeInfo.legacyProject,
+                  scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+                  scopeInfo.factScope
                 );
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
@@ -23548,14 +24899,15 @@ Results: ${results.length}
     }
     if (name === "ask_avatar") {
       const params = AskAvatarInputSchema.parse(args);
-      const avatarScope = resolveProjectScope(params, "ask_avatar");
       try {
         const db = initDatabase();
+        const avatarScope = resolveStableScope(db, params, "ask_avatar");
         const result = await askAvatar(
           db,
           params.question,
-          avatarScope.project ?? void 0,
-          avatarScope.scope
+          avatarScope.legacyProject ?? void 0,
+          avatarScope.scope === "global" || avatarScope.scope === "all" ? avatarScope.scope : "project",
+          avatarScope.factScope
         );
         db.close();
         const confidenceLabel = result.confidence >= 0.9 ? "HIGH" : result.confidence >= 0.7 ? "MEDIUM" : result.confidence >= 0.5 ? "LOW" : "INSUFFICIENT";
@@ -23604,18 +24956,22 @@ Results: ${results.length}
       const params = external_exports.object({
         query: external_exports.string().min(2).max(1e4),
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional(),
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional(),
         limit: external_exports.number().int().min(1).max(10).default(3)
       }).strict().parse(args);
-      const traceScope = resolveProjectScope(params, "trace_fact");
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const traceScope = resolveStableScope(db, params, "trace_fact");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const results = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(traceScope),
+          traceScope.factScope,
           params.limit,
           0.5
         );
@@ -23711,8 +25067,8 @@ _Source exchanges not available._
             1,
             0.6,
             0.2,
-            traceScope.project,
-            traceScope.scope
+            traceScope.legacyProject,
+            traceScope.scope === "global" || traceScope.scope === "all" ? traceScope.scope : "project"
           );
           if (related.length > 0) {
             output += `### Related Facts (1-hop)
@@ -23738,61 +25094,42 @@ _Source exchanges not available._
     if (name === "graph_stats") {
       const gs = external_exports.object({
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional()
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional()
       }).strict().parse(args);
-      const gsScope = resolveProjectScope(gs, "graph_stats");
       const db = initDatabase();
       try {
-        const factWhere = gsScope.scope === "global" ? "f.is_active = 1 AND f.scope_type = 'global'" : gsScope.project ? "f.is_active = 1 AND (f.scope_type = 'global' OR f.scope_project = ?)" : "f.is_active = 1";
-        const factArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project] : [];
-        const totalFacts = db.prepare(`SELECT COUNT(*) as count FROM facts f WHERE ${factWhere}`).get(...factArgs).count;
-        const totalDomains = db.prepare(`
-          SELECT COUNT(DISTINCT d.id) as count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const totalCategories = db.prepare(`
-          SELECT COUNT(DISTINCT c.id) as count
-          FROM ontology_categories c
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const relWhere = gsScope.scope === "global" ? "s.is_active = 1 AND t.is_active = 1 AND s.scope_type = 'global' AND t.scope_type = 'global'" : gsScope.project ? "s.is_active = 1 AND t.is_active = 1 AND (s.scope_type = 'global' OR s.scope_project = ?) AND (t.scope_type = 'global' OR t.scope_project = ?)" : "s.is_active = 1 AND t.is_active = 1";
-        const relArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project, gsScope.project] : [];
-        const totalRelations = db.prepare(`
-          SELECT COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-        `).get(...relArgs).count;
-        const totalRevisions = db.prepare(`
-          SELECT COUNT(*) as count
-          FROM fact_revisions fr
-          JOIN facts f ON fr.fact_id = f.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const categoryBreakdown = db.prepare(
-          `SELECT f.category, COUNT(*) as count FROM facts f WHERE ${factWhere} GROUP BY f.category ORDER BY count DESC`
-        ).all(...factArgs);
-        const topDomains = db.prepare(`
-          SELECT d.name, COUNT(f.id) as fact_count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-          GROUP BY d.id ORDER BY fact_count DESC LIMIT 10
-        `).all(...factArgs);
-        const relationBreakdown = db.prepare(`
-          SELECT r.relation_type, COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-          GROUP BY r.relation_type ORDER BY count DESC
-        `).all(...relArgs);
+        const gsScope = resolveStableScope(db, gs, "graph_stats");
+        const facts = listFactsByScope(db, gsScope.factScope);
+        const factIds = new Set(facts.map((fact) => fact.id));
+        const categoryRows = listCategories(db);
+        const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
+        const domainById = new Map(listDomains(db).map((domain) => [domain.id, domain]));
+        const categories = new Set(facts.map((fact) => fact.ontology_category_id).filter(Boolean));
+        const domains = new Set([...categories].map((id) => categoryById.get(id)?.domain_id).filter(Boolean));
+        const relations = db.prepare(`
+          SELECT source_fact_id, target_fact_id, relation_type FROM ontology_relations
+        `).all().filter((row) => factIds.has(row.source_fact_id) && factIds.has(row.target_fact_id));
+        const revisions = db.prepare("SELECT fact_id FROM fact_revisions").all().filter((row) => factIds.has(row.fact_id));
+        const countBy = (values) => {
+          const counts = /* @__PURE__ */ new Map();
+          for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+          return [...counts].map(([key, count]) => ({ key, count })).sort((a, b2) => b2.count - a.count || a.key.localeCompare(b2.key));
+        };
+        const totalFacts = facts.length;
+        const totalDomains = domains.size;
+        const totalCategories = categories.size;
+        const totalRelations = relations.length;
+        const totalRevisions = revisions.length;
+        const categoryBreakdown = countBy(facts.map((fact) => fact.category)).map(({ key: category, count }) => ({ category, count }));
+        const topDomains = countBy(facts.map((fact) => {
+          const category = fact.ontology_category_id ? categoryById.get(fact.ontology_category_id) : void 0;
+          return category ? domainById.get(category.domain_id)?.name ?? "Unknown" : "Unknown";
+        })).slice(0, 10).map(({ key: name2, count: fact_count }) => ({ name: name2, fact_count }));
+        const relationBreakdown = countBy(relations.map((row) => row.relation_type)).map(({ key: relation_type, count }) => ({ relation_type, count }));
         let output = `# Knowledge Graph Statistics
 
 `;
@@ -23851,26 +25188,23 @@ _Source exchanges not available._
       const params = external_exports.object({
         query: external_exports.string().min(2).max(1e4),
         current_project: external_exports.string().max(500).optional(),
+        current_project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
         scope: external_exports.enum(["project"]).optional(),
         limit: external_exports.number().int().min(1).max(20).default(5)
       }).strict().parse(args);
-      const cxScope = resolveProjectScope(
-        params,
-        "cross_project_insights",
-        "current_project"
-      );
-      if (cxScope.scope !== "project") {
-        throw new Error("cross_project_insights requires project scope");
-      }
-      const currentProject = cxScope.project;
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const cxScope = resolveStableScope(db, {
+          project: params.current_project,
+          project_id: params.current_project_id,
+          scope: "project"
+        }, "cross_project_insights");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const crossProjectResults = searchFactsByScope(
           db,
           queryEmbedding,
-          { type: "other-projects", project: currentProject },
+          cxScope.projectId ? { type: "other-project-id", projectId: cxScope.projectId } : { type: "other-projects", project: cxScope.legacyProject },
           params.limit,
           0.5
         );
@@ -23886,14 +25220,14 @@ _Source exchanges not available._
         }
         const byProject = /* @__PURE__ */ new Map();
         for (const { fact, distance } of crossProjectResults) {
-          const proj = fact.scope_project || "global";
+          const proj = fact.project_id || fact.scope_project || "global";
           if (!byProject.has(proj)) byProject.set(proj, []);
           byProject.get(proj).push({ fact, distance });
         }
         let output = `# Cross-Project Insights
 
 Query: "${params.query}"
-Excluding: ${currentProject}
+Excluding: ${cxScope.label}
 
 `;
         for (const [project, facts] of byProject) {
@@ -23924,17 +25258,21 @@ Excluding: ${currentProject}
         query: external_exports.string().min(2).max(1e4),
         hops: external_exports.number().int().min(1).max(3).default(2),
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional()
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional()
       }).strict().parse(args);
-      const egScope = resolveProjectScope(params, "explore_graph");
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const egScope = resolveStableScope(db, params, "explore_graph");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const seedFacts = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(egScope),
+          egScope.factScope,
           3,
           0.5
         );
@@ -23981,8 +25319,9 @@ Seed: "${params.query}" | Depth: ${params.hops} hops
             params.hops,
             0.6,
             0.2,
-            egScope.project,
-            egScope.scope
+            egScope.legacyProject,
+            egScope.scope === "global" || egScope.scope === "all" ? egScope.scope : "project",
+            egScope.factScope
           ).slice(0, 20);
           void seedIds;
           if (related.length === 0) {

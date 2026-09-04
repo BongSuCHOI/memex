@@ -6,6 +6,7 @@ import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256, }
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 import { applyReplicatedLifecycle, compareTimestamps } from "./fact-management.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
 const ALLOWED_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -243,15 +244,34 @@ function parseSyncFact(value) {
         !Number.isInteger(value.consolidated_count) || Number(value.consolidated_count) < 0 ||
         (value.is_active !== 0 && value.is_active !== 1))
         return null;
-    const scopeProject = canonicalScopeProject(value.scope_type, value.scope_project);
-    if (scopeProject === undefined)
+    const stableProjectId = typeof value.project_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value.project_id)
+        ? value.project_id
+        : null;
+    const portableProjectKey = typeof value.portable_project_key === "string" && /^[A-Za-z0-9_.:-]{4,160}$/.test(value.portable_project_key)
+        ? value.portable_project_key
+        : null;
+    const isStableProject = value.scope_type === "project" && stableProjectId !== null;
+    const scopeProject = isStableProject
+        ? (value.scope_project === null || value.scope_project === undefined ? null : undefined)
+        : canonicalScopeProject(value.scope_type, value.scope_project);
+    if (scopeProject === undefined || (value.scope_type === "project" && !stableProjectId && scopeProject === null))
         return null;
+    const promotionState = value.promotion_state === "decision" || value.promotion_state === "project-current"
+        ? value.promotion_state
+        : "legacy-project";
+    const subjectKey = typeof value.subject_key === "string" && /^[a-z][a-z0-9_.-]{2,160}$/.test(value.subject_key)
+        ? value.subject_key
+        : null;
     return {
         id: value.id,
         fact: value.fact,
         category: value.category,
         scope_type: value.scope_type,
         scope_project: scopeProject,
+        project_id: value.scope_type === "global" ? null : stableProjectId,
+        portable_project_key: value.scope_type === "global" ? null : portableProjectKey,
+        subject_key: subjectKey,
+        promotion_state: promotionState,
         source_exchange_ids: value.source_exchange_ids,
         created_at: value.created_at,
         updated_at: value.updated_at,
@@ -296,7 +316,8 @@ function parseRevision(value) {
 function parseRecallEvent(value) {
     if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
         typeof value.session_id !== "string" || !value.session_id ||
-        typeof value.project !== "string" || !value.project ||
+        !((typeof value.project === "string" && value.project) ||
+            (typeof value.project_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value.project_id))) ||
         typeof value.prompt_hash !== "string" || !value.prompt_hash ||
         !isStringArrayJson(value.fact_ids) ||
         (value.status !== "prepared" && value.status !== "emitted") ||
@@ -311,12 +332,19 @@ function parseRecallEvent(value) {
     return {
         id: value.id,
         session_id: value.session_id,
-        project: value.project,
+        project: typeof value.project === "string" && value.project ? value.project : null,
+        project_id: typeof value.project_id === "string" ? value.project_id : null,
+        portable_project_key: typeof value.portable_project_key === "string" &&
+            /^[A-Za-z0-9_.:-]{4,160}$/.test(value.portable_project_key)
+            ? value.portable_project_key
+            : null,
         prompt_hash: value.prompt_hash,
         fact_ids: value.fact_ids,
         status: value.status,
         created_at: value.created_at,
         emitted_at: typeof value.emitted_at === "string" ? value.emitted_at : null,
+        context_epoch: Number.isInteger(value.context_epoch) ? Number(value.context_epoch) : 0,
+        project_memory_revision: Number.isInteger(value.project_memory_revision) ? Number(value.project_memory_revision) : 0,
     };
 }
 /** Semantic identity of a fact row — the ONLY fields that may decide a
@@ -334,7 +362,9 @@ function semanticConflictKey(fact) {
         fact.fact,
         fact.category,
         fact.scope_type,
-        fact.scope_project,
+        fact.project_id ?? fact.scope_project,
+        fact.subject_key,
+        fact.promotion_state,
         fact.created_at,
     ]);
 }
@@ -370,6 +400,10 @@ function localFactView(row) {
         category: row.category,
         scope_type: row.scope_type,
         scope_project: row.scope_project ?? null,
+        project_id: row.project_id ?? null,
+        portable_project_key: null,
+        subject_key: row.subject_key ?? null,
+        promotion_state: row.promotion_state ?? "legacy-project",
         source_exchange_ids: row.source_exchange_ids ?? "[]",
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -466,14 +500,167 @@ function importTombstones(db, generations, result) {
         result.newTombstones++;
     }
 }
+function resolveSyncedFactScope(db, fact) {
+    const subjectKey = fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`;
+    if (fact.scope_type === "global")
+        return { ...fact, project_id: null, scope_project: null, subject_key: subjectKey };
+    if (!fact.project_id) {
+        const identity = resolveProjectWorkspace(db, { cwd: fact.scope_project });
+        return { ...fact, project_id: identity.projectId, scope_project: identity.canonicalPath, subject_key: subjectKey };
+    }
+    const byId = db.prepare(`
+    SELECT project_id, portable_project_key FROM projects WHERE project_id = ?
+  `).get(fact.project_id);
+    const byPortable = fact.portable_project_key
+        ? db.prepare(`
+        SELECT project_id, portable_project_key FROM projects WHERE portable_project_key = ?
+      `).get(fact.portable_project_key)
+        : undefined;
+    if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+        throw new Error("stable project id and portable key resolve to different local projects");
+    }
+    if (byId?.portable_project_key && fact.portable_project_key &&
+        byId.portable_project_key !== fact.portable_project_key) {
+        throw new Error("stable project id conflicts with local portable key");
+    }
+    const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
+    if (!byId && !byPortable) {
+        db.prepare(`
+      INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+      VALUES (?, ?, ?, 0, ?, ?)
+    `).run(localProjectId, fact.portable_project_key, localProjectId, fact.created_at, fact.updated_at);
+    }
+    else if (fact.portable_project_key) {
+        db.prepare(`
+      UPDATE projects SET portable_project_key = COALESCE(portable_project_key, ?), updated_at = ?
+      WHERE project_id = ?
+    `).run(fact.portable_project_key, fact.updated_at, localProjectId);
+    }
+    const workspace = db.prepare(`
+    SELECT canonical_path FROM workspaces WHERE project_id = ?
+    ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+  `).get(localProjectId);
+    return { ...fact, project_id: localProjectId, scope_project: workspace?.canonical_path ?? null, subject_key: subjectKey };
+}
+function rejectStableIdentityConflicts(db, generations, errors) {
+    const rejected = new Set();
+    const remoteKeys = new Map();
+    const slots = new Map();
+    const reject = (generation, message, related = new Set(), file = "facts.jsonl") => {
+        const key = generationKey(generation);
+        rejected.add(key);
+        for (const other of related)
+            rejected.add(other);
+        errors.push({ file: path.join(generation.source, file), line: 0, error: message });
+    };
+    for (const generation of generations) {
+        const generationId = generationKey(generation);
+        for (const value of parseFromPinned(generation, "facts.jsonl", errors)) {
+            const fact = parseSyncFact(value);
+            if (!fact || fact.scope_type !== "project" || !fact.project_id)
+                continue;
+            const priorRemote = remoteKeys.get(fact.project_id);
+            if (priorRemote && priorRemote.key && fact.portable_project_key && priorRemote.key !== fact.portable_project_key) {
+                reject(generation, "stable project_id is paired with conflicting portable_project_key values", priorRemote.generations);
+            }
+            else if (!priorRemote) {
+                remoteKeys.set(fact.project_id, { key: fact.portable_project_key, generations: new Set([generationId]) });
+            }
+            else {
+                priorRemote.key ??= fact.portable_project_key;
+                priorRemote.generations.add(generationId);
+            }
+            const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                .get(fact.project_id);
+            const byPortable = fact.portable_project_key
+                ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                    .get(fact.portable_project_key)
+                : undefined;
+            if (byId?.portable_project_key && fact.portable_project_key &&
+                byId.portable_project_key !== fact.portable_project_key) {
+                reject(generation, "stable project_id conflicts with the local portable_project_key");
+                continue;
+            }
+            if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+                reject(generation, "stable project_id and portable_project_key resolve to different local projects");
+                continue;
+            }
+            const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
+            const subjectKey = fact.subject_key ?? `legacy.fact.${fact.id}`;
+            const slotKey = `${localProjectId}\0${fact.promotion_state}\0${subjectKey}`;
+            const localConflict = db.prepare(`
+        SELECT id FROM facts
+        WHERE is_active = 1 AND project_id = ? AND promotion_state = ? AND subject_key = ? AND id <> ?
+        LIMIT 1
+      `).get(localProjectId, fact.promotion_state, subjectKey, fact.id);
+            if (localConflict) {
+                reject(generation, `stable subject slot conflicts with local fact ${localConflict.id}`);
+                continue;
+            }
+            const priorSlot = slots.get(slotKey);
+            if (priorSlot && priorSlot.factId !== fact.id) {
+                reject(generation, `stable subject slot has conflicting fact ids ${priorSlot.factId} and ${fact.id}`, priorSlot.generations);
+            }
+            else if (!priorSlot) {
+                slots.set(slotKey, { factId: fact.id, generations: new Set([generationId]) });
+            }
+            else {
+                priorSlot.generations.add(generationId);
+            }
+        }
+        for (const value of parseFromPinned(generation, "recall-events.jsonl", errors)) {
+            const event = parseRecallEvent(value);
+            if (!event?.project_id)
+                continue;
+            const priorRemote = remoteKeys.get(event.project_id);
+            if (priorRemote && priorRemote.key && event.portable_project_key && priorRemote.key !== event.portable_project_key) {
+                reject(generation, "recall project_id is paired with a conflicting portable_project_key", priorRemote.generations, "recall-events.jsonl");
+            }
+            else if (!priorRemote) {
+                remoteKeys.set(event.project_id, {
+                    key: event.portable_project_key,
+                    generations: new Set([generationId]),
+                });
+            }
+            else {
+                priorRemote.key ??= event.portable_project_key;
+                priorRemote.generations.add(generationId);
+            }
+            const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                .get(event.project_id);
+            const byPortable = event.portable_project_key
+                ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                    .get(event.portable_project_key)
+                : undefined;
+            if ((byId?.portable_project_key && event.portable_project_key &&
+                byId.portable_project_key !== event.portable_project_key) ||
+                (byId && byPortable && byId.project_id !== byPortable.project_id)) {
+                reject(generation, "recall stable identity conflicts with local project mapping", new Set(), "recall-events.jsonl");
+            }
+        }
+    }
+    return rejected;
+}
 async function importFacts(db, generations, result) {
     const plans = new Map();
     const remoteById = new Map();
     for (const generation of generations) {
         for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
-            const fact = parseSyncFact(value);
-            if (!fact)
+            const parsed = parseSyncFact(value);
+            if (!parsed)
                 continue; // strict validation already rejected this generation
+            let fact;
+            try {
+                fact = resolveSyncedFactScope(db, parsed);
+            }
+            catch (error) {
+                result.malformedRows.push({
+                    file: path.join(generation.source, "facts.jsonl"),
+                    line: 0,
+                    error: `project identity conflict: ${error instanceof Error ? error.message : String(error)}`,
+                });
+                continue;
+            }
             const agg = remoteById.get(fact.id);
             if (!agg) {
                 remoteById.set(fact.id, {
@@ -520,7 +707,8 @@ async function importFacts(db, generations, result) {
         const localRow = db.prepare(`
       SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active,
-             semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at
+             semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at,
+             project_id, subject_key, promotion_state
       FROM facts WHERE id = ?
     `).get(remote.id);
         const plan = {};
@@ -622,6 +810,7 @@ async function importFacts(db, generations, result) {
                         const claimed = db.prepare(`
               UPDATE facts SET
                 fact = ?, category = ?, scope_type = ?, scope_project = ?,
+                project_id = ?, subject_key = ?, promotion_state = ?,
                 source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
                 consolidated_count = ?, embedding_version = ?,
                 ontology_category_id = NULL, fact_kr = NULL,
@@ -629,7 +818,7 @@ async function importFacts(db, generations, result) {
                 needs_consolidation = ?, ontology_last_attempt_at = NULL,
                 semantic_generation = semantic_generation + 1, semantic_updated_at = ?
               WHERE id = ? AND semantic_generation = ?
-            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
+            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
                         if (claimed.changes === 0)
                             return false;
                         // Context dependencies are local interpretive lineage for the
@@ -659,9 +848,10 @@ async function importFacts(db, generations, result) {
                  embedding, created_at, updated_at, consolidated_count, is_active,
                  embedding_version, needs_consolidation,
                  semantic_generation, semantic_updated_at,
-                 lifecycle_generation, lifecycle_updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?)
-            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at);
+                 lifecycle_generation, lifecycle_updated_at,
+                 project_id, subject_key, promotion_state)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?)
+            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at, fact.project_id, fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`, fact.promotion_state);
                         // A strictly newer semantic event resurrected over a stale
                         // non-privacy tombstone — clear the inert deletion marker.
                         db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(factId);
@@ -754,12 +944,45 @@ function importRecallEvents(db, generations, result) {
                 continue;
             const existing = db.prepare("SELECT status FROM recall_events WHERE id = ?").get(event.id);
             if (!existing) {
+                let localProjectId = event.project_id;
+                let localProject = event.project;
+                if (localProjectId) {
+                    const byPortable = event.portable_project_key
+                        ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                            .get(event.portable_project_key)
+                        : undefined;
+                    const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                        .get(localProjectId);
+                    if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+                        throw new Error("recall stable project id and portable key resolve to different local projects");
+                    }
+                    if (byId?.portable_project_key && event.portable_project_key &&
+                        byId.portable_project_key !== event.portable_project_key) {
+                        throw new Error("recall stable project id conflicts with local portable key");
+                    }
+                    localProjectId = byPortable?.project_id ?? byId?.project_id ?? localProjectId;
+                    if (!byId && !byPortable) {
+                        db.prepare(`
+              INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+              VALUES (?, ?, ?, 0, ?, ?)
+            `).run(localProjectId, event.portable_project_key, localProjectId, event.created_at, event.created_at);
+                    }
+                    localProject = db.prepare(`
+            SELECT canonical_path FROM workspaces WHERE project_id = ?
+            ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+          `).get(localProjectId)?.canonical_path ?? `project:${localProjectId}`;
+                }
+                else if (localProject) {
+                    const identity = resolveProjectWorkspace(db, { cwd: localProject });
+                    localProjectId = identity.projectId;
+                    localProject = identity.canonicalPath;
+                }
                 db.prepare(`
           INSERT INTO recall_events
             (id, session_id, project, prompt_hash, fact_ids, source_type, learnable,
-             status, created_at, emitted_at)
-          VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, ?, ?, ?)
-        `).run(event.id, event.session_id, event.project, event.prompt_hash, event.fact_ids, event.status, event.created_at, event.emitted_at);
+             status, project_id, context_epoch, project_memory_revision, created_at, emitted_at)
+          VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, ?, ?, ?, ?, ?, ?)
+        `).run(event.id, event.session_id, localProject, event.prompt_hash, event.fact_ids, event.status, localProjectId, event.context_epoch, event.project_memory_revision, event.created_at, event.emitted_at);
                 result.newRecallEvents++;
             }
             else if (existing.status === "prepared" && event.status === "emitted") {
@@ -888,13 +1111,19 @@ export async function importFromSync() {
     if (pinned.length === 0)
         return result;
     const rejected = rejectInvalidRows(pinned, result.malformedRows);
-    const generations = rejected.size === 0
+    let generations = rejected.size === 0
         ? pinned
         : pinned.filter((generation) => !rejected.has(generationKey(generation)));
     if (generations.length === 0)
         return result;
     const db = initDatabase();
     try {
+        const identityRejected = rejectStableIdentityConflicts(db, generations, result.malformedRows);
+        if (identityRejected.size > 0) {
+            generations = generations.filter((generation) => !identityRejected.has(generationKey(generation)));
+        }
+        if (generations.length === 0)
+            return result;
         importTombstones(db, generations, result);
         await importFacts(db, generations, result);
         importRevisions(db, generations, result);

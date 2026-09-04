@@ -20,6 +20,10 @@ This file records as-built choices and runtime compatibility differences. It doe
 - Invariant evidence: official contract currently includes `SessionStart` sources `startup|resume|clear|compact`, compaction triggers `manual|auto`, `Stop`, `Interrupt`, `PreCompact`, `PostCompact`, and synchronous `SessionEnd`. Phase 2 must implement event-specific compatibility fixtures.
 - Reversal condition/trade-off: refresh the record when the supported minimum/runtime matrix is deliberately changed.
 
+Phase 3 verification ran on Codex CLI `0.153.2`. The registered lifecycle matcher/output contract remained
+compatible in offline/install/marketplace/package tests; the formal `codex plugin validate` subcommand is
+still unavailable, so the version-bound installed-artifact substitute receipt remains explicit.
+
 ## D-002 — Existing database has no explicit global schema version
 
 - RFC section/invariant: §17 data model; Phase 1 migration/compatibility
@@ -132,3 +136,30 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: keep moving `main` for every invocation; bypass `runtime-exec.js` only for Continuity hooks; vendor a second runtime package.
 - Invariant evidence: the local-runtime process test proves stdin/arguments reach the installed Continuity script without invoking `npx`; plugin-only authenticated lifecycle E2E then observed exact-once UserPromptSubmit/Stop/SessionEnd delivery, additionalContext, a 577 ms final fence, deferred Luna Capsule generation 1, and immediate compact rehydration.
 - Reversal condition/trade-off: remove the remote fallback after Codex plugin installation itself guarantees dependency materialization. Until then, raw `codex plugin add` without the Memex installer is compatible but does not have the same pinned/offline guarantee.
+
+## D-014 — Local Git inode identity supplements workspace rename detection
+
+- RFC section/invariant: §10.2–10.3, SCOPE; Phase 3 path move/rename acceptance
+- Actual choice: `workspaces` stores device-local `git_common_identity` and `git_dir_identity` (`dev:ino`) beside canonical path and Git common-dir. A unique Git-dir identity may update the same workspace row after a local checkout rename; worktrees still share the logical project by common-dir and retain distinct workspace IDs.
+- Reason: a renamed checkout changes both cwd and textual `.git` path, while the underlying Git directory inode remains the same on the device. Canonical path alone would split one local workspace identity.
+- Alternatives considered: hash basename/remote/package; treat every moved path as a new workspace; shell out to Git for every resolve.
+- Invariant evidence: resolver tests cover checkout rename, checkout plus worktree, same-remote clone isolation, explicit link/split, and no-remote directories. Inode fields and all paths remain local metadata and are excluded from sync.
+- Reversal condition/trade-off: replace the inode hint if the supported runtime supplies a durable local checkout identifier. Copying a repository to another filesystem does not preserve inode identity and still requires portable/explicit linking.
+
+## D-015 — Stable project identity is an additive protocol-v4 row shape
+
+- RFC section/invariant: §10.2–10.3, §17, Phase 3 sync compatibility; SCOPE, PRIVACY, NO SILENT LOSS
+- Actual choice: protocol number and the five exact durable files remain v4, while project fact/recall rows add stable `project_id`, optional `portable_project_key`, `subject_key`, and `promotion_state`; device path fields are serialized as null. Import accepts both released path-bearing v4 rows and the new path-free stable shape.
+- Reason: changing the protocol number or adding a sixth durable file would violate the repository-wide protocol-v4 contract. Stable identity can be introduced with strict additive row validation while retaining old-generation import.
+- Alternatives considered: protocol v5; sync workspace paths; silently synthesize a remote path; duplicate portable mapping in a new file.
+- Invariant evidence: cross-device tests map one portable key onto a differently located local workspace, assert source paths are absent from the wire, replay idempotently, and reject conflicting stable ID/key combinations before partial mutation.
+- Reversal condition/trade-off: an older v4 peer that does not know the additive fields/path-free shape rejects the complete generation visibly rather than importing it partially. A future coordinated breaking protocol may make the stable fields mandatory under a new version.
+
+## D-016 — Legacy path queries remain a read-only compatibility surface
+
+- RFC section/invariant: §10, §13, Phase 3 migration/MCP compatibility; SCOPE, MCP ACCESS
+- Actual choice: path columns remain local provenance and released path query APIs remain supported during the compatibility window. Every project-sensitive fact/ontology/avatar/graph MCP surface now accepts explicit stable project/workspace/workstream/session scope. Unknown compatibility paths are queried without creating project/workspace rows, while stable relation expansion filters both endpoints at every hop.
+- Reason: removing path readers in the same additive migration would break released callers, but deferring stable scope on ontology/avatar/graph would leave Phase 3 workstream isolation incomplete. A read-only lookup must honor MCP `readOnlyHint` and cannot create identity state merely because a caller searched an unknown path.
+- Alternatives considered: delete path fields immediately; keep ontology/avatar/graph path-only until Phase 4; resolve every MCP path by creating identity rows; infer MCP scope from process cwd.
+- Invariant evidence: migration keeps canonical path lookups functional; MCP tests cover stable membership on all public surfaces, path-free ontology/avatar facts, workstream relation isolation, graph counts, mixed-ID rejection, raw other-session evidence, and zero identity-row mutation for an unregistered path.
+- Reversal condition/trade-off: remove legacy path readers only in a documented breaking migration after released callers have migrated. Phase 4 extends history/source depth but does not own or defer Phase 3 stable scope.

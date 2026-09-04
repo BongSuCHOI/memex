@@ -8,6 +8,7 @@ import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
 export const VEC_INT8_SCALE = 127;
 /**
  * Authoritative vector dtype for vec_exchanges.
@@ -114,9 +115,12 @@ export function openWriteDb(dbPath = getDbPath()) {
     return initializeConnection(new Database(dbPath), "write");
 }
 export function initDatabase(options = {}) {
-    const dbPath = getDbPath();
+    const dbPath = options.dbPath ?? getDbPath();
     // Ensure directory exists
-    ensureDbDir();
+    if (options.dbPath)
+        fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    else
+        ensureDbDir();
     const db = openWriteDb(dbPath);
     if (options.busyTimeoutMs !== undefined) {
         db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
@@ -306,8 +310,12 @@ export function initDatabase(options = {}) {
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
     END
   `);
+    // Identity/provenance-only updates must not touch the external-content FTS
+    // index. Recreate the legacy broad trigger as a content-column trigger before
+    // Continuity's Phase 3 backfill updates project/workspace IDs.
+    db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
     db.exec(`
-    CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE ON exchanges BEGIN
+    CREATE TRIGGER exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
       INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
       INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
@@ -654,8 +662,32 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
     // the table dtype inside that write transaction so the blob always matches
     // the actual vec schema.
     const insertAll = db.transaction(() => {
+        const identityPath = exchange.cwd || exchange.project;
+        const identity = identityPath && identityPath !== "unknown"
+            ? resolveProjectWorkspace(db, {
+                cwd: identityPath,
+                projectId: exchange.projectId ?? null,
+                branch: exchange.gitBranch ?? null,
+            })
+            : null;
+        if (exchange.workspaceId && identity && exchange.workspaceId !== identity.workspaceId) {
+            throw new Error("exchange workspace_id does not match resolved workspace");
+        }
+        const sessionScope = exchange.sessionId
+            ? db.prepare(`
+          SELECT project_id, workspace_id, workstream_id
+          FROM session_memory_state WHERE session_id = ?
+        `).get(exchange.sessionId)
+            : undefined;
+        if (sessionScope?.project_id && identity && sessionScope.project_id !== identity.projectId) {
+            throw new Error("exchange session belongs to a different logical project");
+        }
+        const projectId = identity?.projectId ?? exchange.projectId ?? null;
+        const workspaceId = identity?.workspaceId ?? exchange.workspaceId ?? null;
+        const workstreamId = exchange.workstreamId ?? sessionScope?.workstream_id ?? null;
         const existing = db.prepare(`
-      SELECT line_end, exchange_seq, content_hash, content_generation, closure_state
+      SELECT line_end, exchange_seq, content_hash, content_generation, closure_state,
+             project_id, workspace_id, workstream_id
       FROM exchanges WHERE id = ?
     `).get(exchange.id);
         const contentHash = exchange.contentHash ?? exchangeContentHash(exchange);
@@ -697,8 +729,9 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
        parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
        thinking_level, thinking_disabled, thinking_triggers, embedding_version,
        provenance, assistant_learnable, has_memex_recall, exchange_seq,
-       content_hash, content_generation, closure_state, parser_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       content_hash, content_generation, closure_state, parser_version,
+       project_id, workspace_id, workstream_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project = excluded.project,
         timestamp = excluded.timestamp,
@@ -725,8 +758,11 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         content_hash = excluded.content_hash,
         content_generation = excluded.content_generation,
         closure_state = excluded.closure_state,
-        parser_version = excluded.parser_version
-    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0, exchangeSeq, contentHash, contentGeneration, closureState, exchange.parserVersion ?? 1);
+        parser_version = excluded.parser_version,
+        project_id = excluded.project_id,
+        workspace_id = excluded.workspace_id,
+        workstream_id = excluded.workstream_id
+    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0, exchangeSeq, contentHash, contentGeneration, closureState, exchange.parserVersion ?? 1, projectId, workspaceId, workstreamId);
         // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
         const vecDtype = getVecDtype(db);
         db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(exchange.id);
@@ -1289,9 +1325,10 @@ export function recordRecallEvent(db, event) {
     const id = randomUUID();
     db.prepare(`
     INSERT INTO recall_events
-      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
-  `).run(id, event.sessionId, event.project, hashRecallPrompt(event.prompt), JSON.stringify([...new Set(event.factIds)]), new Date().toISOString());
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
+  `).run(id, event.sessionId, event.project, hashRecallPrompt(event.prompt), JSON.stringify([...new Set(event.factIds)]), event.projectId ?? null, event.workspaceId ?? null, event.workstreamId ?? null, event.contextEpoch ?? 0, event.projectMemoryRevision ?? 0, new Date().toISOString());
     return id;
 }
 export function markRecallEventEmitted(db, event) {

@@ -37,14 +37,23 @@ stateDiagram-v2
 
 marker의 의미는 conversation-wide입니다. marker가 어느 시점에 나타났든 sync/index/rebuild/SessionEnd extraction은 동일한 eligibility 판정을 사용합니다.
 
-## 3. Project identity와 archive
+## 3. Project/workspace identity와 archive
 
 ```text
-identity = canonicalAbsolute(session_meta.cwd)
-storage  = safeBasename(identity) + "--" + shortHash(identity)
+logical identity = project_id
+local location   = workspace_id + canonicalAbsolute(session_meta.cwd)
+archive storage  = safeBasename(cwd) + "--" + shortHash(cwd)
 ```
 
-같은 basename을 가진 서로 다른 cwd는 다른 project입니다. archive storage key는 표시/저장 편의를 위한 값일 뿐 identity가 아닙니다.
+기존 path-scoped 데이터는 먼저 canonical path별 1:1 project/workspace로 보존 migration합니다. 같은
+device에서 검증된 Git common-dir만 staged auto-link할 수 있습니다. 다른 clone/device는 portable key,
+explicit project ID 또는 user-approved remote mapping이 있어야 합칩니다. basename, package name,
+remote URL만 같은 후보는 suggestion audit만 남기고 분리합니다. Local Git directory inode identity는
+동일 checkout rename을 탐지하는 device-local 보조 신호이며 sync하지 않습니다.
+
+Archive storage key와 absolute path는 location/provenance이지 logical identity가 아닙니다. 기존
+canonical-path query는 지원 기간 동안 compatibility reader로 유지하지만 새 code/MCP/sync는 stable
+ID scope를 우선합니다. 제거 시점은 future breaking migration에서 별도로 결정합니다.
 
 원본 rollout은 수정하지 않습니다. Memex archive는 재구축 가능한 snapshot이며 parser/indexer는 **검증한 archive snapshot 자체를 다시 parse**합니다. source를 검사한 뒤 live source를 다시 읽는 TOCTOU 경로를 만들지 않습니다.
 
@@ -113,11 +122,11 @@ flowchart LR
     E --> B[Capsule or tail baton plus active carry]
 ```
 
-Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다.
+Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → deterministic topic margin → session-local 순서로 bind하며, branch는 hint이고 latest session은 fallback이 아닙니다.
 
 ### UserPromptSubmit
 
-prompt/session/project를 받아 warm sidecar를 우선 사용하고 불가능하면 같은 retrieval core의 cold path로 fallback합니다. context를 반환하기 전에 `recall_events`에 durable `prepared` receipt를 기록하고, hook stdout emit 후 `emitted`로 전환합니다.
+prompt/session/project를 받아 stable project/workspace/workstream scope를 확정한 뒤 warm sidecar를 우선 사용하고 불가능하면 같은 retrieval core의 cold path로 fallback합니다. `project.memory_revision > session.memory_revision_seen`이면 semantic match보다 correction을 먼저 처리합니다. Bounded correction이 여러 boundary에 걸치면 실제 emitted revision만 residency에 누적하고 모든 관련 correction이 소진되기 전에는 revision을 seen 처리하지 않습니다. context를 반환하기 전에 `recall_events`에 durable `prepared` receipt를 기록하고, hook stdout emit 후 `emitted`로 전환합니다.
 
 receipt 저장이 실패하면 provenance 없는 context를 주입하지 않습니다.
 
@@ -235,6 +244,7 @@ conversation exclusion이 확인되면 해당 conversation에서 유래한 searc
 - 해당 exchange를 evidence 또는 interpretive context로 사용한 facts/revisions/relations/vectors
 - context-dependent fact의 terminal privacy tombstone과 context dependency FK cascade
 - terminal privacy tombstone (`source_conversation_excluded`)
+- session/workstream binding, orphan workspace/project mapping, Work Capsule, Hot Evidence, checkpoint provenance
 - ontology domains/categories/category vectors 전체 invalidate
 - surviving public facts의 `ontology_category_id`, attempt ledger reset
 - global `taxonomy_state.epoch` 증가

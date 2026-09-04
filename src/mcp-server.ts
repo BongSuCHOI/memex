@@ -28,6 +28,7 @@ import { canonicalizeProjectPath } from "./project-identity.js";
 import { initDatabase } from "./db.js";
 import {
   searchFactsByScope,
+  listFactsByScope,
   getRevisions,
   type FactSearchScope,
 } from "./fact-db.js";
@@ -43,11 +44,13 @@ import path from "path";
 import fs from "fs";
 import { readArchiveFile, resolveArchiveFile } from "./archive-io.js";
 import { getArchiveDir, getSessionsRoot } from "./paths.js";
+import { readHotEvidence } from "./continuity-identity.js";
 
 // Zod Schemas for Input Validation
 
 const SearchModeEnum = z.enum(["vector", "text", "both"]);
 const ResponseFormatEnum = z.enum(["markdown", "json"]);
+const ContinuityScopeEnum = z.enum(["project", "workspace", "workstream", "session", "global", "all"]);
 
 const SearchInputSchema = z
   .object({
@@ -75,6 +78,11 @@ const SearchInputSchema = z
       .describe(
         "Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly.",
       ),
+    project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    scope: ContinuityScopeEnum.optional(),
     limit: z
       .number()
       .int()
@@ -127,8 +135,6 @@ const ShowConversationInputSchema = z
   })
   .strict();
 
-const ScopeEnum = z.enum(["project", "global", "all"]);
-
 const SearchFactsInputSchema = z
   .object({
     query: z
@@ -140,11 +146,18 @@ const SearchFactsInputSchema = z
       .max(500)
       .optional()
       .describe(
-        "Canonical absolute Codex thread cwd (required unless scope is global/all)",
+        "Legacy canonical cwd compatibility key for project scope; prefer project_id",
       ),
-    scope: ScopeEnum.optional().describe(
-      '"project" (default, requires project), "global" (global facts only), or "all"',
+    project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    scope: ContinuityScopeEnum.optional().describe(
+      'Explicit project/workspace/workstream/session/global/all scope. Project accepts project_id or legacy canonical path.',
     ),
+    include_hot_evidence: z.boolean().default(false),
+    hot_before: z.string().datetime().optional(),
+    hot_before_evidence_id: z.string().max(128).optional(),
     category: z
       .enum(["decision", "preference", "pattern", "knowledge", "constraint"])
       .optional(),
@@ -174,8 +187,12 @@ const SearchOntologyInputSchema = z
       .describe(
         "Canonical absolute Codex thread cwd (required unless scope is global/all)",
       ),
-    scope: ScopeEnum.optional().describe(
-      '"project" (default, requires project), "global" (global facts only), or "all"',
+    project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    scope: ContinuityScopeEnum.optional().describe(
+      'Explicit project/workspace/workstream/session/global/all scope',
     ),
   })
   .strict();
@@ -196,8 +213,12 @@ const AskAvatarInputSchema = z
       .describe(
         "Canonical absolute Codex thread cwd (required unless scope is global/all)",
       ),
-    scope: ScopeEnum.optional().describe(
-      '"project" (default, requires project), "global" (global facts only), or "all"',
+    project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+    workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+    scope: ContinuityScopeEnum.optional().describe(
+      'Explicit project/workspace/workstream/session/global/all scope',
     ),
   })
   .strict();
@@ -210,41 +231,133 @@ type AskAvatarInput = z.infer<typeof AskAvatarInputSchema>;
 // plugin-root facts into the user's project. The caller must pass the
 // canonical absolute Codex thread cwd, or an explicit global/all scope.
 
-type ResolvedScope =
-  | { project: string; scope: "project" }
-  | { project: null; scope: "global" }
-  | { project: null; scope: "all" };
+type StableResolvedScope = {
+  factScope: FactSearchScope;
+  scope: "project" | "workspace" | "workstream" | "session" | "global" | "all";
+  projectId: string | null;
+  workspaceId: string | null;
+  workstreamId: string | null;
+  sessionId: string | null;
+  legacyProject: string | null;
+  label: string;
+};
 
-function toFactSearchScope(resolved: ResolvedScope): FactSearchScope {
-  if (resolved.scope === "global") return { type: "global" };
-  if (resolved.scope === "all") return { type: "all" };
-  return { type: "project", project: resolved.project };
-}
-
-function resolveProjectScope(
+function resolveStableScope(
+  db: ReturnType<typeof initDatabase>,
   raw: {
     project?: string;
-    current_project?: string;
-    scope?: "project" | "global" | "all";
+    project_id?: string;
+    workspace_id?: string;
+    workstream_id?: string;
+    session_id?: string;
+    scope?: "project" | "workspace" | "workstream" | "session" | "global" | "all";
   },
   tool: string,
-  field: "project" | "current_project" = "project",
-): ResolvedScope {
+): StableResolvedScope {
   const scope = raw.scope ?? "project";
-  if (scope === "global" || scope === "all") return { project: null, scope };
-  const value =
-    (field === "current_project" ? raw.current_project : raw.project) ?? "";
-  if (!value.trim()) {
-    throw new Error(
-      JSON.stringify({
-        error: `${tool}: ${field} is required for project-scoped queries`,
-        expected:
-          'canonical absolute Codex thread cwd (session_meta.cwd), or scope: "global" | "all"',
-        example: { [field]: "/Users/me/work/app-a" },
-      }),
-    );
+  if (scope === "global" || scope === "all") {
+    if (raw.project || raw.project_id || raw.workspace_id || raw.workstream_id || raw.session_id) {
+      throw new Error(`${tool}: ${scope} scope cannot be combined with project/workspace/workstream/session identity`);
+    }
+    return {
+      factScope: scope === "global" ? { type: "global" } : { type: "all" },
+      scope,
+      projectId: null,
+      workspaceId: null,
+      workstreamId: null,
+      sessionId: null,
+      legacyProject: null,
+      label: scope,
+    };
   }
-  return { project: canonicalizeProjectPath(value.trim()), scope };
+  if (scope !== "project" && raw.project) {
+    throw new Error(`${tool}: legacy project path cannot be combined with ${scope} scope; use stable IDs`);
+  }
+  if (scope === "session") {
+    if (!raw.session_id) throw new Error(`${tool}: session_id is required for session scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, workstream_id, project
+      FROM session_memory_state WHERE session_id = ?
+    `).get(raw.session_id) as { project_id: string; workspace_id: string | null; workstream_id: string; project: string } | undefined;
+    if (!row?.project_id) throw new Error(`${tool}: unknown session_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: session_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: session_id is outside workspace_id`);
+    if (raw.workstream_id && raw.workstream_id !== row.workstream_id) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "session-id", projectId: row.project_id, sessionId: raw.session_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: row.workstream_id, sessionId: raw.session_id, legacyProject: row.project, label: `session:${raw.session_id}` };
+  }
+  if (scope === "workstream") {
+    if (!raw.workstream_id) throw new Error(`${tool}: workstream_id is required for workstream scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, project FROM minimal_workstreams WHERE workstream_id = ?
+    `).get(raw.workstream_id) as { project_id: string; workspace_id: string | null; project: string } | undefined;
+    if (!row?.project_id) throw new Error(`${tool}: unknown workstream_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workstream_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM workstream_sessions WHERE session_id = ? AND workstream_id = ?
+    `).get(raw.session_id, raw.workstream_id)) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "workstream-id", projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id, sessionId: null, legacyProject: row.project, label: `workstream:${raw.workstream_id}` };
+  }
+  if (scope === "workspace") {
+    if (!raw.workspace_id) throw new Error(`${tool}: workspace_id is required for workspace scope`);
+    const row = db.prepare(`
+      SELECT project_id, canonical_path FROM workspaces WHERE workspace_id = ?
+    `).get(raw.workspace_id) as { project_id: string; canonical_path: string } | undefined;
+    if (!row) throw new Error(`${tool}: unknown workspace_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workspace_id is outside project_id`);
+    if (raw.workstream_id && !db.prepare(`
+      SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND workspace_id = ?
+    `).get(raw.workstream_id, raw.workspace_id)) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM session_memory_state WHERE session_id = ? AND workspace_id = ?
+    `).get(raw.session_id, raw.workspace_id)) throw new Error(`${tool}: session_id is outside workspace_id`);
+    return { factScope: { type: "workspace-id", projectId: row.project_id, workspaceId: raw.workspace_id }, scope, projectId: row.project_id, workspaceId: raw.workspace_id, workstreamId: null, sessionId: null, legacyProject: row.canonical_path, label: `workspace:${raw.workspace_id}` };
+  }
+  let projectId = raw.project_id ?? null;
+  let legacyProject: string | null = null;
+  if (projectId) {
+    if (raw.project?.trim()) {
+      throw new Error(`${tool}: choose project_id or legacy project path, not both`);
+    }
+    const workspace = db.prepare(`
+      SELECT canonical_path FROM workspaces WHERE project_id = ? ORDER BY last_seen_at DESC LIMIT 1
+    `).get(projectId) as { canonical_path: string } | undefined;
+    if (!db.prepare("SELECT 1 FROM projects WHERE project_id = ?").get(projectId)) {
+      throw new Error(`${tool}: unknown project_id`);
+    }
+    legacyProject = workspace?.canonical_path ?? null;
+  } else if (raw.project?.trim()) {
+    legacyProject = canonicalizeProjectPath(raw.project);
+    const known = db.prepare(`
+      SELECT project_id FROM workspaces WHERE canonical_path = ?
+      ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+    `).get(legacyProject) as { project_id: string } | undefined;
+    if (!known) {
+      return {
+        factScope: { type: "project", project: legacyProject },
+        scope,
+        projectId: null,
+        workspaceId: null,
+        workstreamId: null,
+        sessionId: null,
+        legacyProject,
+        label: `legacy-project:${legacyProject}`,
+      };
+    }
+    projectId = known.project_id;
+  } else {
+    throw new Error(`${tool}: project is required for project scope; provide project_id or canonical absolute project path`);
+  }
+  if (raw.workspace_id && !db.prepare("SELECT 1 FROM workspaces WHERE workspace_id = ? AND project_id = ?").get(raw.workspace_id, projectId)) {
+    throw new Error(`${tool}: workspace_id is outside project_id`);
+  }
+  if (raw.workstream_id && !db.prepare("SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND project_id = ?").get(raw.workstream_id, projectId)) {
+    throw new Error(`${tool}: workstream_id is outside project_id`);
+  }
+  if (raw.session_id && !db.prepare("SELECT 1 FROM session_memory_state WHERE session_id = ? AND project_id = ?").get(raw.session_id, projectId)) {
+    throw new Error(`${tool}: session_id is outside project_id`);
+  }
+  return { factScope: { type: "project-id", projectId }, scope, projectId, workspaceId: null, workstreamId: null, sessionId: null, legacyProject, label: `project:${projectId}` };
 }
 
 // Error Handling Utility
@@ -276,7 +389,7 @@ export function getToolDefinitions() {
   return [
     {
       name: "search",
-      description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+      description: `Search raw conversation evidence across sessions with optional explicit project/workspace/workstream/session scope. Single string performs semantic/text search; an array of 2-5 concepts performs precise AND matching. Stable IDs are preferred and process cwd is never inferred.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -301,6 +414,14 @@ export function getToolDefinitions() {
             maxLength: 500,
             description:
               "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global.",
+          },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          scope: {
+            type: "string",
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
           },
           limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
           after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
@@ -346,7 +467,7 @@ export function getToolDefinitions() {
     {
       name: "search_facts",
       description:
-        "Search extracted facts from past conversations. Returns project-scoped and global facts. Facts are long-term knowledge automatically extracted and consolidated from conversations.",
+        "Search extracted facts with explicit project/workspace/workstream/session/global/all scope. Optionally returns separately labeled recent Hot Evidence.",
       inputSchema: {
         type: "object",
         properties: {
@@ -360,13 +481,17 @@ export function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description:
-              "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all.",
+              "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global" (global facts only), or "all"',
+              'Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all.',
           },
           category: {
             type: "string",
@@ -384,6 +509,13 @@ export function getToolDefinitions() {
             description: "Include revision history",
             default: false,
           },
+          include_hot_evidence: {
+            type: "boolean",
+            description: "Include recent authoritative raw evidence with a NOT YET DISTILLED label",
+            default: false,
+          },
+          hot_before: { type: "string", format: "date-time" },
+          hot_before_evidence_id: { type: "string", maxLength: 128 },
           limit: {
             type: "number",
             minimum: 1,
@@ -429,11 +561,15 @@ export function getToolDefinitions() {
             description:
               "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global", or "all"',
+              "Explicit stable scope; project may use a legacy canonical path.",
           },
         },
         additionalProperties: false,
@@ -463,13 +599,17 @@ export function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description:
-              "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
+              "Legacy canonical cwd compatibility key for project scope; prefer project_id.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global", or "all"',
+              "Explicit stable scope; project may use a legacy canonical path.",
           },
         },
         required: ["question"],
@@ -500,13 +640,17 @@ export function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description:
-              "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
+              "Legacy canonical cwd compatibility key for project scope; prefer project_id.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global", or "all"',
+              'Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all.',
           },
           limit: {
             type: "number",
@@ -540,11 +684,15 @@ export function getToolDefinitions() {
             description:
               "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global", or "all"',
+              "Explicit stable scope; project may use a legacy canonical path.",
           },
         },
         additionalProperties: false,
@@ -574,13 +722,18 @@ export function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description:
-              "Canonical absolute Codex thread cwd to exclude (required).",
+              "Canonical absolute Codex thread cwd to exclude. Required unless current_project_id is provided.",
+          },
+          current_project_id: {
+            type: "string",
+            pattern: "^[A-Za-z0-9_-]{8,128}$",
+            description: "Stable logical project ID to exclude. Required unless current_project is provided.",
           },
           scope: {
             type: "string",
             enum: ["project"],
             description:
-              "cross_project_insights always excludes the given current_project; pass its cwd explicitly.",
+              "cross_project_insights excludes the explicit current project identity.",
           },
           limit: {
             type: "number",
@@ -590,7 +743,7 @@ export function getToolDefinitions() {
             description: "Max results",
           },
         },
-        required: ["query", "current_project"],
+        required: ["query"],
         additionalProperties: false,
       },
       annotations: {
@@ -627,11 +780,15 @@ export function getToolDefinitions() {
             description:
               "Canonical absolute Codex thread cwd. Required unless scope is global/all.",
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
             description:
-              '"project" (default, requires project), "global", or "all"',
+              "Explicit stable scope; project may use a legacy canonical path.",
           },
         },
         required: ["query"],
@@ -674,6 +831,34 @@ export async function handleToolCall(
     if (name === "search") {
       const params = SearchInputSchema.parse(args);
       let resultText: string;
+      let identityScope: SearchOptions["identityScope"];
+      let legacyProjectScope = params.project;
+      const hasExplicitIdentity = !!(
+        params.scope || params.project_id || params.workspace_id ||
+        params.workstream_id || params.session_id
+      );
+      if (hasExplicitIdentity) {
+        const identityDb = initDatabase();
+        try {
+          const resolved = resolveStableScope(identityDb, params, "search");
+          legacyProjectScope = resolved.scope === "project" && !resolved.projectId
+            ? resolved.legacyProject ?? undefined
+            : undefined;
+          if (resolved.scope === "project" && resolved.projectId) {
+            identityScope = { type: "project", projectId: resolved.projectId };
+          } else if (resolved.scope === "workspace" && resolved.workspaceId) {
+            identityScope = { type: "workspace", workspaceId: resolved.workspaceId };
+          } else if (resolved.scope === "workstream" && resolved.workstreamId) {
+            identityScope = { type: "workstream", workstreamId: resolved.workstreamId };
+          } else if (resolved.scope === "session" && resolved.sessionId) {
+            identityScope = { type: "session", sessionId: resolved.sessionId };
+          } else if (resolved.scope === "global") {
+            return { content: [{ type: "text", text: "No conversation evidence exists in global fact scope." }] };
+          }
+        } finally {
+          identityDb.close();
+        }
+      }
 
       // Check if query is array (multi-concept) or string (single-concept)
       if (Array.isArray(params.query)) {
@@ -682,7 +867,8 @@ export async function handleToolCall(
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project,
+          project: legacyProjectScope,
+          identityScope,
         };
 
         const results = await searchMultipleConcepts(params.query, options);
@@ -707,7 +893,8 @@ export async function handleToolCall(
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project,
+          project: legacyProjectScope,
+          identityScope,
         };
 
         const results = await searchConversations(params.query, options);
@@ -815,26 +1002,23 @@ export async function handleToolCall(
 
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
-      // CX-03: no cwd fallback — explicit project or global/all scope required.
-      const scopeInfo = resolveProjectScope(params, "search_facts");
-      const scopeFilter = scopeInfo.scope;
 
       await initEmbeddings();
       const db = initDatabase();
       try {
+        // Stable identity is resolved from explicit IDs or a caller-supplied
+        // compatibility path. MCP process cwd is never consulted.
+        const scopeInfo = resolveStableScope(db, params, "search_facts");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const results = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(scopeInfo),
+          scopeInfo.factScope,
           params.limit,
           0.85,
           { category: params.category },
         );
-        const scopeLabel =
-          scopeFilter === "project"
-            ? scopeInfo.project
-            : `${scopeFilter} facts only`;
+        const scopeLabel = scopeInfo.label;
         let output = `# Facts Search Results\n\nQuery: "${params.query}"\nScope: ${scopeLabel}\nResults: ${results.length}\n\n`;
 
         if (results.length === 0) {
@@ -885,8 +1069,8 @@ export async function handleToolCall(
             1,
             0.6,
             0.2,
-            scopeInfo.project,
-            scopeInfo.scope,
+            scopeInfo.legacyProject,
+            scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
           );
           if (related.length > 0) {
             output += `- Related:\n`;
@@ -895,6 +1079,22 @@ export async function handleToolCall(
             }
           }
 
+          output += "\n";
+        }
+        if (params.include_hot_evidence && scopeInfo.projectId) {
+          const hot = readHotEvidence(db, {
+            projectId: scopeInfo.projectId,
+            workspaceId: scopeInfo.scope === "workspace" ? scopeInfo.workspaceId : null,
+            workstreamId: scopeInfo.scope === "workstream" ? scopeInfo.workstreamId : null,
+            sessionId: scopeInfo.scope === "session" ? scopeInfo.sessionId : null,
+            beforeCreatedAt: params.hot_before ?? null,
+            beforeEvidenceId: params.hot_before_evidence_id ?? null,
+            limit: params.limit,
+          });
+          output += `\n## Recent Evidence — NOT YET DISTILLED (${hot.length})\n\n`;
+          output += hot.map((item) =>
+            `- [${item.source_type}] ${item.evidence_text}\n  - Cursor: ${item.created_at} / ${item.evidence_id}`,
+          ).join("\n") || "_No recent evidence._";
           output += "\n";
         }
 
@@ -915,11 +1115,16 @@ export async function handleToolCall(
       const params = SearchOntologyInputSchema.parse(
         args,
       ) as SearchOntologyInput;
-      const scopeInfo = resolveProjectScope(params, "search_ontology");
 
       try {
         const db = initDatabase();
-        const tree = getOntologyTree(db, scopeInfo.project, scopeInfo.scope);
+        const scopeInfo = resolveStableScope(db, params, "search_ontology");
+        const tree = getOntologyTree(
+          db,
+          scopeInfo.legacyProject,
+          scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+          scopeInfo.factScope,
+        );
 
         // Apply domain/category filters
         const domainFilter = params.domain?.toLowerCase();
@@ -976,8 +1181,9 @@ export async function handleToolCall(
                   1,
                   0.6,
                   0.2,
-                  scopeInfo.project,
-                  scopeInfo.scope,
+                  scopeInfo.legacyProject,
+                  scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+                  scopeInfo.factScope,
                 );
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
@@ -1002,16 +1208,16 @@ export async function handleToolCall(
 
     if (name === "ask_avatar") {
       const params = AskAvatarInputSchema.parse(args) as AskAvatarInput;
-      // CX-03: explicit scope contract; global/all scopes restrict sources.
-      const avatarScope = resolveProjectScope(params, "ask_avatar");
 
       try {
         const db = initDatabase();
+        const avatarScope = resolveStableScope(db, params, "ask_avatar");
         const result = await askAvatar(
           db,
           params.question,
-          avatarScope.project ?? undefined,
-          avatarScope.scope,
+          avatarScope.legacyProject ?? undefined,
+          avatarScope.scope === "global" || avatarScope.scope === "all" ? avatarScope.scope : "project",
+          avatarScope.factScope,
         );
         db.close();
 
@@ -1059,24 +1265,26 @@ export async function handleToolCall(
         .object({
           query: z.string().min(2).max(10000),
           project: z.string().max(500).optional(),
-          scope: ScopeEnum.optional(),
+          project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          scope: ContinuityScopeEnum.optional(),
           limit: z.number().int().min(1).max(10).default(3),
         })
         .strict()
         .parse(args);
 
-      // CX-03: explicit scope contract.
-      const traceScope = resolveProjectScope(params, "trace_fact");
-
       await initEmbeddings();
       const db = initDatabase();
 
       try {
+        const traceScope = resolveStableScope(db, params, "trace_fact");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const results = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(traceScope),
+          traceScope.factScope,
           params.limit,
           0.5,
         );
@@ -1160,8 +1368,8 @@ export async function handleToolCall(
             1,
             0.6,
             0.2,
-            traceScope.project,
-            traceScope.scope,
+            traceScope.legacyProject,
+            traceScope.scope === "global" || traceScope.scope === "all" ? traceScope.scope : "project",
           );
           if (related.length > 0) {
             output += `### Related Facts (1-hop)\n\n`;
@@ -1187,116 +1395,49 @@ export async function handleToolCall(
       const gs = z
         .object({
           project: z.string().max(500).optional(),
-          scope: ScopeEnum.optional(),
+          project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          scope: ContinuityScopeEnum.optional(),
         })
         .strict()
         .parse(args);
-      // CX-11/F3: the scope parameter is a contract, not decoration — apply it.
-      const gsScope = resolveProjectScope(gs, "graph_stats");
 
       const db = initDatabase();
       try {
-        const factWhere =
-          gsScope.scope === "global"
-            ? "f.is_active = 1 AND f.scope_type = 'global'"
-            : gsScope.project
-              ? "f.is_active = 1 AND (f.scope_type = 'global' OR f.scope_project = ?)"
-              : "f.is_active = 1";
-        const factArgs =
-          gsScope.scope === "project" && gsScope.project
-            ? [gsScope.project]
-            : [];
-
-        const totalFacts = (
-          db
-            .prepare(`SELECT COUNT(*) as count FROM facts f WHERE ${factWhere}`)
-            .get(...factArgs) as { count: number }
-        ).count;
-
-        const totalDomains = (
-          db
-            .prepare(`
-          SELECT COUNT(DISTINCT d.id) as count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `)
-            .get(...factArgs) as { count: number }
-        ).count;
-
-        const totalCategories = (
-          db
-            .prepare(`
-          SELECT COUNT(DISTINCT c.id) as count
-          FROM ontology_categories c
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `)
-            .get(...factArgs) as { count: number }
-        ).count;
-
-        const relWhere =
-          gsScope.scope === "global"
-            ? "s.is_active = 1 AND t.is_active = 1 AND s.scope_type = 'global' AND t.scope_type = 'global'"
-            : gsScope.project
-              ? "s.is_active = 1 AND t.is_active = 1 AND (s.scope_type = 'global' OR s.scope_project = ?) AND (t.scope_type = 'global' OR t.scope_project = ?)"
-              : "s.is_active = 1 AND t.is_active = 1";
-        const relArgs =
-          gsScope.scope === "project" && gsScope.project
-            ? [gsScope.project, gsScope.project]
-            : [];
-
-        const totalRelations = (
-          db
-            .prepare(`
-          SELECT COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-        `)
-            .get(...relArgs) as { count: number }
-        ).count;
-
-        const totalRevisions = (
-          db
-            .prepare(`
-          SELECT COUNT(*) as count
-          FROM fact_revisions fr
-          JOIN facts f ON fr.fact_id = f.id
-          WHERE ${factWhere}
-        `)
-            .get(...factArgs) as { count: number }
-        ).count;
-
-        const categoryBreakdown = db
-          .prepare(
-            `SELECT f.category, COUNT(*) as count FROM facts f WHERE ${factWhere} GROUP BY f.category ORDER BY count DESC`,
-          )
-          .all(...factArgs) as Array<{ category: string; count: number }>;
-
-        const topDomains = db
-          .prepare(`
-          SELECT d.name, COUNT(f.id) as fact_count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-          GROUP BY d.id ORDER BY fact_count DESC LIMIT 10
-        `)
-          .all(...factArgs) as Array<{ name: string; fact_count: number }>;
-
-        const relationBreakdown = db
-          .prepare(`
-          SELECT r.relation_type, COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-          GROUP BY r.relation_type ORDER BY count DESC
-        `)
-          .all(...relArgs) as Array<{ relation_type: string; count: number }>;
+        const gsScope = resolveStableScope(db, gs, "graph_stats");
+        const facts = listFactsByScope(db, gsScope.factScope);
+        const factIds = new Set(facts.map((fact) => fact.id));
+        const categoryRows = listCategories(db);
+        const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
+        const domainById = new Map(listDomains(db).map((domain) => [domain.id, domain]));
+        const categories = new Set(facts.map((fact) => fact.ontology_category_id).filter(Boolean));
+        const domains = new Set([...categories].map((id) => categoryById.get(id as string)?.domain_id).filter(Boolean));
+        const relations = (db.prepare(`
+          SELECT source_fact_id, target_fact_id, relation_type FROM ontology_relations
+        `).all() as Array<{ source_fact_id: string; target_fact_id: string; relation_type: string }>)
+          .filter((row) => factIds.has(row.source_fact_id) && factIds.has(row.target_fact_id));
+        const revisions = (db.prepare("SELECT fact_id FROM fact_revisions").all() as Array<{ fact_id: string }>)
+          .filter((row) => factIds.has(row.fact_id));
+        const countBy = <T extends string>(values: T[]): Array<{ key: T; count: number }> => {
+          const counts = new Map<T, number>();
+          for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+          return [...counts].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+        };
+        const totalFacts = facts.length;
+        const totalDomains = domains.size;
+        const totalCategories = categories.size;
+        const totalRelations = relations.length;
+        const totalRevisions = revisions.length;
+        const categoryBreakdown = countBy(facts.map((fact) => fact.category))
+          .map(({ key: category, count }) => ({ category, count }));
+        const topDomains = countBy(facts.map((fact) => {
+          const category = fact.ontology_category_id ? categoryById.get(fact.ontology_category_id) : undefined;
+          return category ? (domainById.get(category.domain_id)?.name ?? "Unknown") : "Unknown";
+        })).slice(0, 10).map(({ key: name, count: fact_count }) => ({ name, fact_count }));
+        const relationBreakdown = countBy(relations.map((row) => row.relation_type))
+          .map(({ key: relation_type, count }) => ({ relation_type, count }));
 
         let output = `# Knowledge Graph Statistics\n\n`;
         output += `| Metric | Count |\n|--------|-------|\n`;
@@ -1347,32 +1488,29 @@ export async function handleToolCall(
         .object({
           query: z.string().min(2).max(10000),
           current_project: z.string().max(500).optional(),
+          current_project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
           scope: z.enum(["project"]).optional(),
           limit: z.number().int().min(1).max(20).default(5),
         })
         .strict()
         .parse(args);
 
-      // CX-03: current_project is required — never guess the active project.
-      const cxScope = resolveProjectScope(
-        params,
-        "cross_project_insights",
-        "current_project",
-      );
-      if (cxScope.scope !== "project") {
-        throw new Error("cross_project_insights requires project scope");
-      }
-      const currentProject = cxScope.project;
-
       await initEmbeddings();
       const db = initDatabase();
 
       try {
+        const cxScope = resolveStableScope(db, {
+          project: params.current_project,
+          project_id: params.current_project_id,
+          scope: "project",
+        }, "cross_project_insights");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const crossProjectResults = searchFactsByScope(
           db,
           queryEmbedding,
-          { type: "other-projects", project: currentProject },
+          cxScope.projectId
+            ? { type: "other-project-id", projectId: cxScope.projectId }
+            : { type: "other-projects", project: cxScope.legacyProject as string },
           params.limit,
           0.5,
         );
@@ -1397,12 +1535,12 @@ export async function handleToolCall(
           }>
         >();
         for (const { fact, distance } of crossProjectResults) {
-          const proj = fact.scope_project || "global";
+          const proj = fact.project_id || fact.scope_project || "global";
           if (!byProject.has(proj)) byProject.set(proj, []);
           byProject.get(proj)!.push({ fact, distance });
         }
 
-        let output = `# Cross-Project Insights\n\nQuery: "${params.query}"\nExcluding: ${currentProject}\n\n`;
+        let output = `# Cross-Project Insights\n\nQuery: "${params.query}"\nExcluding: ${cxScope.label}\n\n`;
 
         for (const [project, facts] of byProject) {
           output += `## Project: ${project}\n\n`;
@@ -1432,23 +1570,26 @@ export async function handleToolCall(
           query: z.string().min(2).max(10000),
           hops: z.number().int().min(1).max(3).default(2),
           project: z.string().max(500).optional(),
-          scope: ScopeEnum.optional(),
+          project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+          workstream_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+          scope: ContinuityScopeEnum.optional(),
         })
         .strict()
         .parse(args);
       // CX-11/F4: traversal seeds obey the same scope contract; no all-project
       // default. Relation hops are filtered to stay inside the resolved scope.
-      const egScope = resolveProjectScope(params, "explore_graph");
-
       await initEmbeddings();
       const db = initDatabase();
 
       try {
+        const egScope = resolveStableScope(db, params, "explore_graph");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const seedFacts = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(egScope),
+          egScope.factScope,
           3,
           0.5,
         );
@@ -1502,8 +1643,9 @@ export async function handleToolCall(
             params.hops,
             0.6,
             0.2,
-            egScope.project,
-            egScope.scope,
+            egScope.legacyProject,
+            egScope.scope === "global" || egScope.scope === "all" ? egScope.scope : "project",
+            egScope.factScope,
           ).slice(0, 20);
           void seedIds;
 

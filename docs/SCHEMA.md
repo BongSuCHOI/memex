@@ -2,8 +2,8 @@
 
 schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
 
-Continuity DB schema version은 `PRAGMA user_version = 3`와
-`continuity_schema_meta.schema_version = 3`에 함께 기록됩니다. Migration은 기존 table/rowid를
+Continuity DB schema version은 `PRAGMA user_version = 4`와
+`continuity_schema_meta.schema_version = 4`에 함께 기록됩니다. Migration은 기존 table/rowid를
 rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
 마지막에만 기록됩니다.
 
@@ -20,6 +20,11 @@ rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전
 ```mermaid
 erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
+    PROJECTS ||--o{ WORKSPACES : locates
+    PROJECTS ||--o{ MINIMAL_WORKSTREAMS : scopes
+    WORKSPACES ||--o{ MINIMAL_WORKSTREAMS : hosts
+    MINIMAL_WORKSTREAMS ||--o{ WORKSTREAM_SESSIONS : binds
+    EXCHANGES ||--o{ HOT_EVIDENCE : indexes
     EXCHANGES ||--o{ EXTRACTION_TARGET_ITEMS : snapshots
     CHECKPOINTS ||--o{ MEMORY_JOBS : enqueues
     JOURNAL_STREAMS ||--o{ JOURNAL_BLOCKS : chains
@@ -54,6 +59,8 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 - `checkpoints`, `memory_jobs`
 - `journal_streams`, `journal_blocks`, `capture_gaps`
 - `conversation_exclusions`
+- `projects`, `workspaces`, `approved_remote_mappings`, `project_identity_audit`
+- `workstream_sessions`, `hot_evidence`
 - `minimal_workstreams`, `session_memory_state`
 - `work_capsules`, `capsule_checkpoint_state`
 - `extraction_targets`, `extraction_target_items`, `extraction_failed_ranges`
@@ -108,7 +115,9 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 
 `conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.
 
-`session_memory_state`는 session-local workstream, `context_epoch`, resident/carry revision tuple, observed Capsule generation, latest checkpoint를 소유합니다. Phase 2의 `minimal_workstreams`는 확실하지 않은 세션끼리 자동 결합하지 않으며 stable project/workspace identity는 Phase 3에서 확장합니다.
+`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch를 local provenance로 가집니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+
+`session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
 
 `work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation CAS와 capsule job의 lease completion은 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. 최신 checkpoint가 Capsule의 `through_checkpoint_id`보다 앞서 있으면 compact/resume bundle에 deterministic tail baton도 함께 들어갑니다.
 
@@ -184,9 +193,19 @@ facts (
   semantic_generation,
   semantic_updated_at,
   lifecycle_generation,
-  lifecycle_updated_at
+  lifecycle_updated_at,
+  project_id,
+  workspace_id,
+  workstream_id,
+  subject_key,
+  promotion_state
 )
 ```
+
+`promotion_state`는 `legacy-project|decision|project-current|workspace|workstream`입니다. Active subject
+slot은 project와 optional workspace/workstream 범위에서 unique입니다. `decision`은 explicit decision,
+`project-current`는 merged/validated evidence만 허용하고 experimental state는 `workstream` 또는 Capsule에
+남습니다. Branch 전체 fact graph는 만들지 않습니다.
 
 ### Semantic fields
 
@@ -295,6 +314,11 @@ fact_revisions
 fact_tombstones
 recall_events
 ```
+
+Project-scoped wire rows는 stable project/portable identity를 사용하고 `scope_project = null`입니다.
+Workspace path, Git common-dir, branch와 Hot Evidence는 device-local/ephemeral이므로 export하지 않습니다.
+Legacy v4 path row는 importer가 canonical local workspace로 migration할 수 있지만, 새 path-free shape를
+모르는 peer는 generation 전체를 visible하게 reject해야 하며 partial compatibility import는 금지합니다.
 
 `fact_context_dependencies`는 local conversation corpus에 종속된 interpretive lineage이므로
 export/import하지 않습니다. Remote semantic winner가 local fact 의미를 교체하면 이전 의미에

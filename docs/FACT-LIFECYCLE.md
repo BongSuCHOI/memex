@@ -14,6 +14,13 @@ Fact는 대화 전체 요약이 아니라 다음 작업에서 재사용할 가�
 
 fact는 scope와 source exchange provenance를 가지며 검색, revision, consolidation, ontology의 기준이 됩니다. extraction-time `confidence`는 저장 후보 필터에만 사용하고 fact row에는 보존하지 않습니다.
 
+Phase 3부터 project fact는 stable `project_id`와 `subject_key`를 가집니다. Absolute path는
+workspace provenance/legacy query key입니다. Source exchange가 workstream에 묶인 새 extraction은 기본적으로
+`promotion_state=workstream`이며 자동으로 project current가 되지 않습니다. Project-level decision은
+explicit-decision evidence, project current state는 merged 또는 validated evidence를 요구합니다.
+이 검사는 high-level promotion API뿐 아니라 low-level `insertFact()` boundary에도 적용되므로
+internal caller가 evidence나 membership 검증을 우회해 project-current slot을 만들 수 없습니다.
+
 ## 2. 네 종류의 상태
 
 Memex는 fact row의 상태를 네 성격으로 나눕니다.

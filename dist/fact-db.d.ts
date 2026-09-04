@@ -16,6 +16,12 @@ interface InsertFactParams {
     embedding: number[] | null;
     fact_kr?: string | null;
     embedding_kr?: number[] | null;
+    project_id?: string | null;
+    workspace_id?: string | null;
+    workstream_id?: string | null;
+    subject_key?: string | null;
+    promotion_state?: Fact['promotion_state'];
+    promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental';
 }
 interface UpdateFactParams {
     embedding?: number[] | null;
@@ -54,10 +60,35 @@ export type FactSearchScope = {
 } | {
     type: "other-projects";
     project: string;
+} | {
+    type: "other-project-id";
+    projectId: string;
+} | {
+    type: "project-id";
+    projectId: string;
+    includeGlobal?: boolean;
+} | {
+    type: "workspace-id";
+    projectId: string;
+    workspaceId: string;
+    includeGlobal?: boolean;
+} | {
+    type: "workstream-id";
+    projectId: string;
+    workspaceId?: string | null;
+    workstreamId: string;
+    includeGlobal?: boolean;
+} | {
+    type: "session-id";
+    projectId: string;
+    sessionId: string;
+    includeGlobal?: boolean;
 };
 interface FactSearchFilters {
     category?: FactCategory;
 }
+export declare function listFactsByScope(db: Database.Database, scope: FactSearchScope): Fact[];
+export declare function factMatchesScope(db: Database.Database, fact: Fact, scope: FactSearchScope): boolean;
 /**
  * Scope-aware semantic fact search SSOT.
  *

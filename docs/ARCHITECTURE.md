@@ -12,7 +12,7 @@ Memex는 Codex 대화를 수집해 검색 가능한 conversation corpus와 장�
 4. ontology, KR translation, relation, vector는 local derived state입니다.
 5. multi-device sync는 durable state만 generation 단위로 전송합니다.
 6. 자동 lifecycle은 bounded, idempotent, observable해야 합니다.
-7. project identity는 canonical absolute cwd 하나로 통일합니다.
+7. `project_id`는 logical identity이고 canonical absolute cwd는 device-local `workspace` provenance입니다.
 8. capture hook은 raw evidence fence만 commit하고 model/embedding/distillation을 기다리지 않습니다.
 9. Work Capsule은 current work의 `context-only` projection이며 Current Fact authority와 분리합니다.
 
@@ -146,7 +146,8 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/sync.ts` | rollout archive와 incremental indexing orchestration |
 | `src/indexer.ts` | archive snapshot을 검색 corpus로 반영 |
 | `src/fact-extractor.ts` | exact-span/call-ID provenance validation → mandatory semantic verifier, local window + adaptive bounded referent ranking → local dependency |
-| `src/continuity-store.ts` | additive schema v3, journal/session/Capsule/privacy-guard tables, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
+| `src/continuity-store.ts` | additive schema v4, project/workspace/workstream/session identity, journal/session/Capsule/privacy-guard tables, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
+| `src/continuity-identity.ts` | stable resolver, approved remote mapping, explicit link/split/rebind, subject promotion, project revision, Hot Evidence |
 | `src/continuity-core.ts` | hook payload/path/session-meta validation, serialized rolling journal, checkpoint identity, context epoch/residency, Capsule/tail baton, compact rehydration |
 | `src/continuity-worker.ts` | P0 hash-verified prefix ingest와 P1 typed Capsule update; partition ordering/retry/CAS |
 | `src/archive-ingestion.ts` | canonical desired-set ingest와 monotonic prefix ingest 분리 |
@@ -201,7 +202,11 @@ sequenceDiagram
 
 SessionStart의 background sync, sync import, maintenance는 독립 async 작업입니다. 순서가 아니라 **eventual consistency**를 계약으로 삼고, 각 writer가 자체적으로 concurrency-safe해야 합니다.
 
-Phase 2는 Phase 1 Correctness Spine 위에 Capture Plane을 올립니다. Every closed generation은 계속 immutable target item으로 accounted되며, capture-index는 canonical reconciliation과 분리된 monotonic prefix ingest만 사용합니다. Capture는 canonical `session_meta.cwd`와 hook session ID를 bounded prefix probe로 대조하고 SQLite writer transaction 안에서 journal append와 DB boundary를 직렬화합니다. `PostCompact`는 telemetry일 뿐이며 `PreCompact -> SessionStart(compact)`만으로 correctness와 immediate rehydration이 성립합니다. Phase 2의 workstream은 안전한 session-local binding이고 stable project/workspace identity는 Phase 3 범위입니다.
+Phase 2는 Phase 1 Correctness Spine 위에 Capture Plane을 올립니다. Every closed generation은 계속 immutable target item으로 accounted되며, capture-index는 canonical reconciliation과 분리된 monotonic prefix ingest만 사용합니다. Capture는 canonical `session_meta.cwd`와 hook session ID를 bounded prefix probe로 대조하고 SQLite writer transaction 안에서 journal append와 DB boundary를 직렬화합니다. `PostCompact`는 telemetry일 뿐이며 `PreCompact -> SessionStart(compact)`만으로 correctness와 immediate rehydration이 성립합니다.
+
+Phase 3은 `project_id → workspace_id → workstream_id → session_id`를 분리합니다. Resolver는 explicit project/portable key, same local Git common-dir, user-approved remote mapping, isolated canonical-path fallback 순서만 허용합니다. basename/package/remote 일치만으로는 합치지 않습니다. 같은 Git common-dir의 worktree는 project를 공유하되 workspace는 분리되고, clone/device 연결과 split은 idempotent audit record를 남기는 explicit API입니다. Session binding은 resume exact, explicit, unique workspace+branch, deterministic strong-topic margin, session-local fallback 순서이며 latest-session fallback이나 per-prompt LLM classifier는 없습니다.
+
+Work Capsule은 workstream-scoped `context-only`, 검증된 workspace state는 workspace-scoped, explicit decision과 merged/validated state만 project current slot이 됩니다. Current slot은 `(project_id, subject_key, promotion_state, workspace_id, workstream_id)`에서 active unique입니다. Meaningful current/decision/workspace mutation만 project `memory_revision`을 올리고, sibling session은 다음 prompt/resume/compact boundary에서 bounded correction을 소진한 뒤에만 revision을 seen 처리합니다. Hot Evidence는 recent human/trusted repo/Git/test evidence의 TTL-bounded lane이며 항상 `NOT YET DISTILLED`로 표시됩니다.
 
 ## 6. Sync protocol v4
 
@@ -229,6 +234,12 @@ importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다�
 
 한 항목이라도 실패하면 그 device generation 전체를 적용하지 않습니다.
 
+Phase 3의 protocol-v4 payload는 project fact에 stable `project_id`, optional `portable_project_key`,
+`subject_key`, `promotion_state`를 싣고 `scope_project`는 `null`로 보냅니다. Device-local cwd,
+workspace path, Git directory는 wire truth가 아닙니다. 같은 portable key는 로컬 project에 매핑하고,
+서로 충돌하는 ID/key 조합은 generation을 적용하지 않습니다. Phase 3 shape를 모르는 기존 v4 peer는
+schema-invalid generation을 명시적으로 거절하며 silent path merge나 partial import를 하지 않습니다.
+
 ## 7. 일관성과 장애 모델
 
 - exchange upsert는 rowid-preserving update입니다.
@@ -246,7 +257,7 @@ importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다�
 | 경계 | 방어 |
 | --- | --- |
 | rollout/archive input | path confinement, bounded decompression, malformed-line isolation |
-| project/scope | canonical absolute path, explicit enum, no cwd guessing |
+| project/scope | stable project/workspace/workstream/session IDs, explicit enum, no process-cwd guessing; ambiguous identity stays isolated |
 | SQLite | parameterized query, FK enforcement, transactions/CAS |
 | sync payload | generation manifest, hash/count/schema fail-closed |
 | model call | isolated local `codex exec`, read-only sandbox, recursion guard |

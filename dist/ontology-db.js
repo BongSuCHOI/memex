@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance } from './db.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
+import { factMatchesScope } from './fact-db.js';
 // === Taxonomy epoch (재감사 Privacy-P1 v4) ===
 /** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
  * privacy purge). In-flight classification captures this value before its
@@ -166,18 +167,19 @@ export function classifyFact(db, factId, categoryId, expectedSemanticGeneration,
     return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
      WHERE id = ? AND semantic_generation = ?`).run(categoryId, new Date().toISOString(), factId, expectedSemanticGeneration).changes;
 }
-export function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
+export function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
     let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
     const params = [categoryId];
-    if (scopeType === 'global') {
+    if (!identityScope && scopeType === 'global') {
         query += ` AND scope_type = 'global'`;
     }
-    else if (scopeProject && scopeType !== 'all') {
+    else if (!identityScope && scopeProject && scopeType !== 'all') {
         query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
         params.push(scopeProject);
     }
     query += ` ORDER BY consolidated_count DESC`;
-    return db.prepare(query).all(...params).map(rowToFact);
+    const facts = db.prepare(query).all(...params).map(rowToFact);
+    return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
 }
 export function getFactsByDomain(db, domainId) {
     return db
@@ -266,7 +268,7 @@ export function createRelation(db, sourceFactId, relationType, targetFactId, rea
  *                       Prevents cross-project noise in graph traversal.
  *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
  */
-export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType) {
+export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType, identityScope) {
     const visited = new Set([factId]);
     const results = [];
     let frontier = [factId];
@@ -310,9 +312,11 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             for (const [targetId, rows] of outByNeighbour) {
                 const fact = rowToFact(rows[0]);
                 // Scope filter:
-                if (scopeType === 'global' && fact.scope_type !== 'global')
+                if (identityScope && !factMatchesScope(db, fact, identityScope))
                     continue;
-                if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
+                if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global')
+                    continue;
+                if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
                     continue;
                 // Select the surfaced edge FIRST: a neighbour with no qualifying
                 // edge is PRUNED — it must not enter the frontier, or traversal
@@ -362,9 +366,11 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             for (const [sourceId, rows] of inByNeighbour) {
                 const fact = rowToFact(rows[0]);
                 // Scope filter:
-                if (scopeType === 'global' && fact.scope_type !== 'global')
+                if (identityScope && !factMatchesScope(db, fact, identityScope))
                     continue;
-                if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
+                if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global')
+                    continue;
+                if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
                     continue;
                 // Same pruning contract as the outgoing side: no qualifying edge →
                 // no frontier entry, no path leak.
@@ -401,7 +407,7 @@ export function getRelationsForFact(db, factId) {
         .all(factId, factId);
 }
 // === Ontology Tree ===
-export function getOntologyTree(db, scopeProject, scopeType) {
+export function getOntologyTree(db, scopeProject, scopeType, identityScope) {
     const domains = listDomains(db);
     const tree = [];
     for (const domain of domains) {
@@ -411,7 +417,7 @@ export function getOntologyTree(db, scopeProject, scopeType) {
             categories: [],
         };
         for (const category of categories) {
-            const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+            const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
             if (facts.length > 0 || (!scopeProject && !scopeType)) {
                 domainEntry.categories.push({ category, facts });
             }
@@ -438,6 +444,11 @@ function rowToFact(row) {
         category: row['category'],
         scope_type: row['scope_type'],
         scope_project: row['scope_project'] ?? null,
+        project_id: row['project_id'] ?? null,
+        workspace_id: row['workspace_id'] ?? null,
+        workstream_id: row['workstream_id'] ?? null,
+        subject_key: row['subject_key'] ?? null,
+        promotion_state: row['promotion_state'] ?? 'legacy-project',
         source_exchange_ids: row['source_exchange_ids']
             ? JSON.parse(row['source_exchange_ids'])
             : [],
@@ -448,6 +459,8 @@ function rowToFact(row) {
         is_active: Boolean(row['is_active']),
         semantic_generation: Number(row['semantic_generation'] ?? 1),
         semantic_updated_at: row['semantic_updated_at'] ?? null,
+        lifecycle_generation: Number(row['lifecycle_generation'] ?? 1),
+        lifecycle_updated_at: row['lifecycle_updated_at'] ?? null,
     };
 }
 function rowToRelation(row) {

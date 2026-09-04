@@ -32,7 +32,8 @@ conversation과 fact 검색은 같은 원칙을 사용합니다.
 
 project-sensitive retrieval은 다음 중 하나를 명시합니다.
 
-- canonical absolute project path
+- stable `project_id`, `workspace_id`, `workstream_id`, 또는 `session_id`
+- 지원 기간의 canonical absolute project path compatibility key
 - `scope=global`
 - `scope=all`
 
@@ -69,9 +70,20 @@ warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같�
 5. fact별 길이와 전체 char/token budget을 적용합니다.
 6. 결과가 없으면 context block을 만들지 않습니다.
 
+Project `memory_revision`이 stale이면 normal semantic match보다 `[MEMEX CORRECTION]`을 먼저 냅니다.
+비활성화된 resident fact는 `No longer active`로 철회합니다. 예산 때문에 correction 일부만 들어가면
+실제 emitted revision만 resident로 기록하고 다음 natural boundary에서 나머지를 이어서 처리합니다.
+관련 correction을 모두 소진했거나 현재 workspace/workstream에 해당하는 변경이 없음을 확인한 뒤에만
+scalar revision을 seen 처리합니다.
+
 Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
 
 `SessionStart(compact)`는 semantic query를 실행하지 않습니다. 최신 Work Capsule을 우선하고, 없거나 `through_checkpoint_id`가 session latest checkpoint보다 오래됐으면 latest substantive user request·plan item·touched files·trusted test·unresolved error로 만든 deterministic tail baton을 함께 사용합니다. 여기에 이전 epoch carry candidate의 latest active revision만 더해 2,000자 이하 `additionalContext`를 만들고, 실제 포함한 revision을 새 epoch residency로 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
+
+Recent human과 learnable trusted repo/Git/test observation은 별도 Hot Evidence lane에서 TTL과 keyset
+cursor로 제한됩니다. 자동 context와 MCP 출력은 `[RECENT EVIDENCE — NOT YET DISTILLED]`로 표시하며
+Current Fact 문법으로 렌더링하지 않습니다. Assistant, compact summary, Capsule은 Assistant Continuity
+lane의 context-only 자료이고 Fact extraction authority로 재진입할 수 없습니다.
 
 ## 6. Recall provenance
 

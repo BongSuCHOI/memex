@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type { OntologyDomain, OntologyCategory, OntologyRelation, RelationType, DomainTree, Fact } from './types.js';
+import { type FactSearchScope } from './fact-db.js';
 /** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
  * privacy purge). In-flight classification captures this value before its
  * LLM/embedding awaits and re-checks it at commit: a stale result must leave
@@ -44,7 +45,7 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
  * it onto the newer meaning.
  */
 export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): number;
-export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Fact[];
+export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];
 export interface CreateRelationOptions {
     /**
@@ -73,11 +74,11 @@ export declare function createRelation(db: Database.Database, sourceFactId: stri
  *                       Prevents cross-project noise in graph traversal.
  *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
  */
-export declare function getRelatedFacts(db: Database.Database, factId: string, hops?: number, decay?: number, minRelevance?: number, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): Array<{
+export declare function getRelatedFacts(db: Database.Database, factId: string, hops?: number, decay?: number, minRelevance?: number, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Array<{
     fact: Fact;
     relation: OntologyRelation;
     relevance: number;
     hop: number;
 }>;
 export declare function getRelationsForFact(db: Database.Database, factId: string): OntologyRelation[];
-export declare function getOntologyTree(db: Database.Database, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all'): DomainTree[];
+export declare function getOntologyTree(db: Database.Database, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): DomainTree[];

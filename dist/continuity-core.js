@@ -6,6 +6,7 @@ import { initDatabase } from "./db.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookEvent } from "./observe-hook-event.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
+import { bindSessionWorkstream, markSessionProjectRevisionSeen, projectRevision, readHotEvidence, resolveProjectWorkspace, } from "./continuity-identity.js";
 export const CONTINUITY_CAPTURE_POLICY_VERSION = "continuity-capture-v1";
 export const CAPSULE_POLICY_VERSION = "continuity-capsule-v1";
 export const CONTINUITY_PARSER_VERSION = 2;
@@ -65,6 +66,7 @@ export function normalizeHookPayload(input) {
         permissionMode: optionalString(value.permission_mode ?? value.permissionMode, 128),
         stopHookActive: value.stop_hook_active === true || value.stopHookActive === true,
         lastAssistantMessage: optionalString(value.last_assistant_message ?? value.lastAssistantMessage, 16_384),
+        prompt: optionalString(value.prompt, 32_768),
         workstreamId: optionalString(value.workstream_id ?? value.workstreamId, 128),
     };
 }
@@ -127,7 +129,11 @@ function readCanonicalSessionMeta(transcriptPath) {
             if (!cwd || !path.isAbsolute(cwd)) {
                 throw new Error("session_meta cwd must be absolute");
             }
-            return { sessionId, project: path.resolve(cwd) };
+            return {
+                sessionId,
+                project: path.resolve(cwd),
+                branch: optionalString(record.payload.git_branch ?? record.payload.git?.branch, 512),
+            };
         }
         catch (error) {
             if (error instanceof SyntaxError)
@@ -195,47 +201,61 @@ function recoverContinuitySession(db, sessionId) {
   `).get(sessionId).n;
     return open > 0 ? `${open} open capture gap(s) require recovery` : undefined;
 }
-function sessionWorkstreamId(project, sessionId) {
-    return `ws-${stableId("session-workstream", project, sessionId).slice(0, 32)}`;
-}
 export function ensureSessionMemoryState(db, input) {
     const now = input.now ?? new Date().toISOString();
+    const identity = resolveProjectWorkspace(db, {
+        cwd: input.project,
+        branch: input.branch,
+        now,
+    });
     const existing = db.prepare(`
-    SELECT workstream_id, context_epoch, project FROM session_memory_state WHERE session_id = ?
+    SELECT workstream_id, context_epoch, project, project_id, workspace_id
+    FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
     if (existing) {
-        if (existing.project !== input.project) {
-            throw new Error("session project identity does not match canonical session_meta cwd");
+        if (existing.project_id && existing.project_id !== identity.projectId) {
+            throw new Error("session project identity does not match resolved logical project");
         }
         db.prepare(`
-      UPDATE session_memory_state SET last_source = ?, updated_at = ? WHERE session_id = ?
-    `).run(input.source ?? null, now, input.sessionId);
+      UPDATE session_memory_state
+      SET project = ?, project_id = ?, workspace_id = ?, last_source = ?, updated_at = ?
+      WHERE session_id = ?
+    `).run(input.project, identity.projectId, identity.workspaceId, input.source ?? null, now, input.sessionId);
+        db.prepare(`
+      INSERT INTO workstream_sessions
+        (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+      VALUES (?, ?, ?, 'resume-exact', 1.0, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        binding_reason = 'resume-exact',
+        binding_confidence = 1.0,
+        bound_at = excluded.bound_at
+    `).run(input.sessionId, existing.workstream_id, identity.workspaceId, now);
         return {
             workstreamId: existing.workstream_id,
             contextEpoch: existing.context_epoch,
+            projectId: identity.projectId,
+            workspaceId: identity.workspaceId,
         };
     }
-    const explicit = input.explicitWorkstreamId?.trim();
-    const workstreamId = explicit && /^[A-Za-z0-9_-]{4,128}$/.test(explicit)
-        ? explicit
-        : sessionWorkstreamId(input.project, input.sessionId);
-    const tx = db.transaction(() => {
-        db.prepare(`
-      INSERT OR IGNORE INTO minimal_workstreams
-        (workstream_id, project, session_id, binding_reason, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(workstreamId, input.project, input.sessionId, explicit ? "explicit" : "session-local", now, now);
-        db.prepare(`
-      INSERT OR IGNORE INTO session_memory_state
-        (session_id, project, workstream_id, context_epoch, last_source, created_at, updated_at)
-      VALUES (?, ?, ?, 0, ?, ?, ?)
-    `).run(input.sessionId, input.project, workstreamId, input.source ?? null, now, now);
+    const binding = bindSessionWorkstream(db, {
+        sessionId: input.sessionId,
+        projectId: identity.projectId,
+        workspaceId: identity.workspaceId,
+        projectPath: input.project,
+        explicitWorkstreamId: input.explicitWorkstreamId,
+        branch: input.branch,
+        prompt: input.prompt,
+        now,
     });
-    if (db.inTransaction)
-        tx();
-    else
-        tx.immediate();
-    return { workstreamId, contextEpoch: 0 };
+    db.prepare("UPDATE session_memory_state SET last_source = ? WHERE session_id = ?")
+        .run(input.source ?? null, input.sessionId);
+    return {
+        workstreamId: binding.workstreamId,
+        contextEpoch: 0,
+        projectId: identity.projectId,
+        workspaceId: identity.workspaceId,
+    };
 }
 function checkpointOrdinal(streamEpoch, throughByte) {
     const ordinal = streamEpoch * 1_000_000_000_000 + throughByte;
@@ -278,6 +298,7 @@ function captureTranscriptPrefixInTransaction(db, input) {
         sessionId: input.sessionId,
         project: meta.project,
         explicitWorkstreamId: input.workstreamId,
+        branch: meta.branch,
         source: input.kind,
         now,
     });
@@ -512,10 +533,10 @@ function captureTranscriptPrefixInTransaction(db, input) {
          ordinal, kind, turn_id, from_byte, through_byte, from_line, through_line,
          segment_hash, prefix_hash, parser_version, closure_state,
          context_epoch_before, state, idempotency_key, created_at)
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         (SELECT context_epoch FROM session_memory_state WHERE session_id = ?),
         'pending', ?, ?)
-    `).run(checkpointId, input.sessionId, session.workstreamId, streamEpoch, ordinal, input.kind, input.turnId ?? null, copiedByteEnd, sourceThroughByte, copiedLineEnd + (complete.length > 0 ? 1 : 0), throughLine, segmentHash, prefixHash, CONTINUITY_PARSER_VERSION, closureState, input.sessionId, `capture:${checkpointId}`, now);
+    `).run(checkpointId, input.sessionId, session.workspaceId, session.workstreamId, streamEpoch, ordinal, input.kind, input.turnId ?? null, copiedByteEnd, sourceThroughByte, copiedLineEnd + (complete.length > 0 ? 1 : 0), throughLine, segmentHash, prefixHash, CONTINUITY_PARSER_VERSION, closureState, input.sessionId, `capture:${checkpointId}`, now);
         input.afterCheckpoint?.();
         db.prepare(`
       INSERT OR IGNORE INTO memory_jobs
@@ -811,7 +832,8 @@ export function applyWorkCapsulePatch(db, input) {
         if (!workstream)
             throw new Error("unknown workstream");
         const checkpoint = db.prepare(`
-      SELECT 1 FROM checkpoints WHERE checkpoint_id = ? AND workstream_id = ?
+      SELECT session_id, workspace_id FROM checkpoints
+      WHERE checkpoint_id = ? AND workstream_id = ?
     `).get(input.throughCheckpointId, input.workstreamId);
         if (!checkpoint)
             throw new Error("checkpoint does not belong to workstream");
@@ -830,8 +852,8 @@ export function applyWorkCapsulePatch(db, input) {
          verified_progress_json, hypotheses_json, blockers_json,
          open_questions_json, next_actions_json, touched_areas_json,
          carry_fact_revisions_json, source_exchange_ids_json,
-         through_checkpoint_id, authority, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'context-only', ?)
+         through_checkpoint_id, authority, source_workspace_id, source_session_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'context-only', ?, ?, ?)
       ON CONFLICT(workstream_id) DO UPDATE SET
         generation = excluded.generation,
         objective = excluded.objective,
@@ -845,9 +867,11 @@ export function applyWorkCapsulePatch(db, input) {
         carry_fact_revisions_json = excluded.carry_fact_revisions_json,
         source_exchange_ids_json = excluded.source_exchange_ids_json,
         through_checkpoint_id = excluded.through_checkpoint_id,
+        source_workspace_id = excluded.source_workspace_id,
+        source_session_id = excluded.source_session_id,
         updated_at = excluded.updated_at
       WHERE work_capsules.generation = ?
-    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, now, input.expectedGeneration);
+    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, input.expectedGeneration);
         if (result.changes !== 1)
             return null;
         db.prepare(`
@@ -915,6 +939,8 @@ export function readWorkCapsule(db, workstreamId) {
         sourceExchangeIds: parseJsonArray(row.source_exchange_ids_json),
         throughCheckpointId: row.through_checkpoint_id ? String(row.through_checkpoint_id) : null,
         authority: "context-only",
+        sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
+        sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
         updatedAt: String(row.updated_at),
     };
 }
@@ -966,18 +992,32 @@ function renderCapsule(capsule) {
     return lines.join("\n");
 }
 export function buildRehydrationContext(db, input) {
+    if (!db.inTransaction) {
+        const readSnapshot = db.transaction(() => buildRehydrationContext(db, input));
+        return readSnapshot();
+    }
     const state = db.prepare(`
     SELECT workstream_id, context_epoch, carry_fact_revisions_json,
-           latest_checkpoint_id
+           resident_fact_revisions_json, latest_checkpoint_id, project_id,
+           workspace_id, memory_revision_seen
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
-    if (!state)
-        return { context: "", factRevisions: [], capsuleGeneration: 0 };
+    if (!state) {
+        return {
+            context: "",
+            factRevisions: [],
+            capsuleGeneration: 0,
+            projectRevisionComplete: true,
+            projectMemoryRevision: 0,
+        };
+    }
     const capsule = readWorkCapsule(db, String(state.workstream_id));
     const carry = parseJsonArray(state.carry_fact_revisions_json);
+    const resident = parseJsonArray(state.resident_fact_revisions_json);
     const validFacts = [];
+    const carryCorrections = [];
     const selectFact = db.prepare(`
-    SELECT fact, semantic_generation, lifecycle_generation FROM facts
+    SELECT id, fact, semantic_generation, lifecycle_generation, is_active FROM facts
     WHERE id = ? AND is_active = 1
   `);
     for (const revision of carry) {
@@ -985,27 +1025,120 @@ export function buildRehydrationContext(db, input) {
         if (!row)
             continue;
         const current = [revision[0], row.semantic_generation, row.lifecycle_generation];
-        validFacts.push({ revision: current, text: row.fact });
+        if (current[1] === revision[1] && current[2] === revision[2]) {
+            validFacts.push({ revision: current, text: row.fact });
+        }
+        else {
+            carryCorrections.push({
+                id: revision[0],
+                fact: row.fact,
+                semantic_generation: row.semantic_generation,
+                lifecycle_generation: row.lifecycle_generation,
+                is_active: 1,
+            });
+        }
     }
-    const sections = [];
+    const maxChars = Math.max(500, Math.min(2_000, input.maxChars ?? 2_000));
     const capsuleIsStale = !!capsule &&
         !!state.latest_checkpoint_id &&
         capsule.throughCheckpointId !== String(state.latest_checkpoint_id);
-    if (capsule)
-        sections.push(renderCapsule(capsule));
+    const projectId = state.project_id ? String(state.project_id) : null;
+    const currentProjectRevision = projectId ? projectRevision(db, projectId) : 0;
+    let freshCorrections = carryCorrections;
+    if (projectId && currentProjectRevision > Number(state.memory_revision_seen ?? 0)) {
+        const priorRevisions = [
+            ...carry,
+            ...resident,
+            ...validFacts.map(({ revision }) => revision),
+        ];
+        const residentKeys = new Set(priorRevisions.map(([id, semantic, lifecycle]) => `${id}:${semantic}:${lifecycle}`));
+        const residentIds = new Set(priorRevisions.map(([id]) => id));
+        const corrections = db.prepare(`
+      SELECT id, fact, semantic_generation, lifecycle_generation, is_active
+      FROM facts
+      WHERE project_id = ? AND (
+        promotion_state IN ('decision','project-current','legacy-project') OR
+        (promotion_state = 'workspace' AND workspace_id = ?) OR
+        (promotion_state = 'workstream' AND workstream_id = ?)
+      )
+      ORDER BY updated_at DESC, id
+    `).all(projectId, state.workspace_id ?? null, state.workstream_id);
+        const projectCorrections = corrections.filter((fact) => {
+            const changed = !residentKeys.has(`${fact.id}:${fact.semantic_generation}:${fact.lifecycle_generation}`);
+            return changed && (fact.is_active === 1 || residentIds.has(fact.id));
+        });
+        const byId = new Map(freshCorrections.map((fact) => [fact.id, fact]));
+        for (const fact of projectCorrections)
+            byId.set(fact.id, fact);
+        freshCorrections = [...byId.values()];
+    }
+    const sections = [];
+    const emittedRevisions = [];
+    let used = 0;
+    const appendSection = (heading, items) => {
+        if (items.length === 0)
+            return 0;
+        const accepted = [];
+        const acceptedRevisions = [];
+        for (const item of items) {
+            const line = `- ${item.text.replace(/\s+/g, " ").slice(0, 260)}`;
+            const prospective = `${heading}\n${[...accepted, line].join("\n")}`;
+            const separator = sections.length > 0 ? 2 : 0;
+            if (used + separator + prospective.length > maxChars)
+                break;
+            accepted.push(line);
+            if (item.revision)
+                acceptedRevisions.push(item.revision);
+        }
+        if (accepted.length === 0)
+            return 0;
+        const block = `${heading}\n${accepted.join("\n")}`;
+        used += (sections.length > 0 ? 2 : 0) + block.length;
+        sections.push(block);
+        emittedRevisions.push(...acceptedRevisions);
+        return accepted.length;
+    };
+    const emittedCorrectionCount = appendSection("[MEMEX CORRECTION]", freshCorrections.map((fact) => ({
+        text: fact.is_active === 1 ? fact.fact : `No longer active: ${fact.fact}`,
+        revision: [fact.id, fact.semantic_generation, fact.lifecycle_generation],
+    })));
+    appendSection("[CURRENT TRUTH]", validFacts.slice(0, 4).map(({ text, revision }) => ({ text, revision })));
+    let capsuleGeneration = 0;
+    if (capsule) {
+        const block = renderCapsule(capsule);
+        const remaining = Math.max(0, maxChars - used - (sections.length ? 2 : 0));
+        if (block.length <= remaining) {
+            used += (sections.length ? 2 : 0) + block.length;
+            sections.push(block);
+            capsuleGeneration = capsule.generation;
+        }
+    }
     if (!capsule || capsuleIsStale) {
-        const baton = buildDeterministicTailBaton(db, { sessionId: input.sessionId });
-        if (baton)
-            sections.push(baton);
+        const remaining = maxChars - used - (sections.length ? 2 : 0);
+        if (remaining >= 40) {
+            const baton = buildDeterministicTailBaton(db, { sessionId: input.sessionId, maxChars: remaining });
+            if (baton) {
+                used += (sections.length ? 2 : 0) + baton.length;
+                sections.push(baton);
+            }
+        }
     }
-    if (validFacts.length) {
-        sections.push("[CURRENT TRUTH]\n" + validFacts.slice(0, 4).map(({ text }) => `- ${text}`).join("\n"));
+    if (projectId) {
+        const recent = readHotEvidence(db, {
+            projectId,
+            workstreamId: String(state.workstream_id),
+            limit: 3,
+        });
+        appendSection("[RECENT EVIDENCE — NOT YET DISTILLED]", recent.map((item) => ({
+            text: String(item.evidence_text),
+        })));
     }
-    const maxChars = Math.max(500, Math.min(2_000, input.maxChars ?? 2_000));
     return {
-        context: sections.join("\n\n").slice(0, maxChars),
-        factRevisions: validFacts.map(({ revision }) => revision),
-        capsuleGeneration: capsule?.generation ?? 0,
+        context: sections.join("\n\n"),
+        factRevisions: emittedRevisions,
+        capsuleGeneration,
+        projectRevisionComplete: emittedCorrectionCount === freshCorrections.length,
+        projectMemoryRevision: currentProjectRevision,
     };
 }
 function emitAdditionalContext(event, context) {
@@ -1082,6 +1215,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
             return { stdout: "" };
         }
         let canonicalProject = payload.cwd;
+        let canonicalBranch = null;
         if (payload.transcriptPath) {
             const source = validateTranscriptPath(payload.transcriptPath);
             const meta = readCanonicalSessionMeta(source.realpath);
@@ -1089,6 +1223,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
                 throw new Error("hook session_id does not match transcript session_meta id");
             }
             canonicalProject = meta.project;
+            canonicalBranch = meta.branch;
         }
         else if (payload.hookEventName === "SessionStart") {
             const existing = db.prepare("SELECT project FROM session_memory_state WHERE session_id = ?").get(payload.sessionId);
@@ -1101,6 +1236,8 @@ export function handleContinuityHook(payloadValue, options = {}) {
             sessionId: payload.sessionId,
             project: canonicalProject,
             explicitWorkstreamId: payload.workstreamId,
+            prompt: payload.hookEventName === "UserPromptSubmit" ? payload.prompt : null,
+            branch: canonicalBranch,
             source: payload.source ?? payload.hookEventName,
         });
         if (payload.hookEventName === "SessionStart") {
@@ -1119,15 +1256,26 @@ export function handleContinuityHook(payloadValue, options = {}) {
             if (source === "resume" || source === "compact") {
                 const rehydrated = buildRehydrationContext(db, { sessionId: payload.sessionId });
                 const epoch = readResidentFactRevisions(db, payload.sessionId).contextEpoch;
-                if (rehydrated.factRevisions.length) {
-                    recordResidentFactRevisions(db, payload.sessionId, epoch, rehydrated.factRevisions);
-                }
-                if (rehydrated.capsuleGeneration > 0) {
-                    db.prepare(`
-            UPDATE session_memory_state SET capsule_generation_seen = ?, updated_at = ?
-            WHERE session_id = ? AND context_epoch = ?
-          `).run(rehydrated.capsuleGeneration, new Date().toISOString(), payload.sessionId, epoch);
-                }
+                const commitRehydration = db.transaction(() => {
+                    if (rehydrated.factRevisions.length &&
+                        !recordResidentFactRevisions(db, payload.sessionId, epoch, rehydrated.factRevisions)) {
+                        throw new Error("context epoch changed before rehydration residency commit");
+                    }
+                    if (rehydrated.projectRevisionComplete &&
+                        !markSessionProjectRevisionSeen(db, payload.sessionId, rehydrated.projectMemoryRevision)) {
+                        throw new Error("project memory revision changed before rehydration commit");
+                    }
+                    if (rehydrated.capsuleGeneration > 0) {
+                        const updated = db.prepare(`
+              UPDATE session_memory_state SET capsule_generation_seen = ?, updated_at = ?
+              WHERE session_id = ? AND context_epoch = ?
+            `).run(rehydrated.capsuleGeneration, new Date().toISOString(), payload.sessionId, epoch);
+                        if (updated.changes !== 1) {
+                            throw new Error("context epoch changed before Capsule residency commit");
+                        }
+                    }
+                });
+                commitRehydration.immediate();
                 return {
                     stdout: emitAdditionalContext("SessionStart", rehydrated.context),
                     warning: recoveryWarning,

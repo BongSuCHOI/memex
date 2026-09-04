@@ -52,6 +52,7 @@ node scripts/web-ui-browser-e2e.mjs
 | sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
 | privacy | conversation purge, pending checkpoint/job/target cascade, terminal session guard, in-flight capture-index race, fact tombstone, taxonomy epoch race |
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
+| continuity identity v4 | path migration/re-run, worktree/rename/clone link-split, conservative binding, promotion slots, memory revision/correction, Hot Evidence TTL/pagination, stable MCP/sync/privacy scope |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
 

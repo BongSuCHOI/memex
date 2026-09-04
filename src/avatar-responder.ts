@@ -40,6 +40,7 @@ export async function askAvatar(
   question: string,
   project?: string,
   scope?: 'project' | 'global' | 'all',
+  identityScope?: FactSearchScope,
 ): Promise<AvatarResponse> {
   await initEmbeddings();
 
@@ -49,13 +50,13 @@ export async function askAvatar(
   // Step 1: Vector search for top-10 relevant facts through the shared scope
   // contract. Direct library callers without an explicit scope keep the
   // historical behavior: project when provided, otherwise all.
-  const factScope: FactSearchScope = scope === 'global'
+  const factScope: FactSearchScope = identityScope ?? (scope === 'global'
     ? { type: 'global' }
     : scope === 'all'
       ? { type: 'all' }
       : scopeProject
         ? { type: 'project', project: scopeProject }
-        : { type: 'all' };
+        : { type: 'all' });
   const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
 
   if (vectorResults.length === 0) {
@@ -81,7 +82,7 @@ export async function askAvatar(
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
 
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
+    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope, identityScope);
     for (const { fact: relFact, relation } of related) {
       if (scope === 'global' && relFact.scope_type !== 'global') continue;
       if (!expandedFactIds.has(relFact.id)) {

@@ -29,6 +29,7 @@ export declare function openReadDb(dbPath?: string): Database.Database;
 export declare function openWriteDb(dbPath?: string): Database.Database;
 export declare function initDatabase(options?: {
     busyTimeoutMs?: number;
+    dbPath?: string;
 }): Database.Database;
 export declare function insertExchange(db: Database.Database, exchange: ConversationExchange, embedding: number[], _toolNames?: string[]): boolean;
 export declare function isMemexRecallToolName(toolName: string): boolean;
@@ -52,6 +53,11 @@ export declare function recordRecallEvent(db: Database.Database, event: {
     project: string;
     prompt: string;
     factIds: string[];
+    projectId?: string | null;
+    workspaceId?: string | null;
+    workstreamId?: string | null;
+    contextEpoch?: number;
+    projectMemoryRevision?: number;
 }): string | null;
 export declare function markRecallEventEmitted(db: Database.Database, event: {
     sessionId: string;

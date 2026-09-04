@@ -149,6 +149,22 @@ export function purgeConversationFromIndex(
   db: Database.Database,
   input: { archivePath: string; sessionId?: string | null },
 ): ConversationPurgeResult {
+  const continuityTablesBefore = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name),
+  );
+  const identityCandidates: Array<{ project_id: string | null; workspace_id: string | null }> = [];
+  if (input.sessionId) {
+    if (continuityTablesBefore.has("session_memory_state")) {
+      identityCandidates.push(...db.prepare(`
+        SELECT project_id, workspace_id FROM session_memory_state WHERE session_id = ?
+      `).all(input.sessionId) as Array<{ project_id: string | null; workspace_id: string | null }>);
+    }
+    if (continuityTablesBefore.has("exchanges")) {
+      identityCandidates.push(...db.prepare(`
+        SELECT DISTINCT project_id, workspace_id FROM exchanges WHERE session_id = ?
+      `).all(input.sessionId) as Array<{ project_id: string | null; workspace_id: string | null }>);
+    }
+  }
   const rows = (
     input.sessionId
       ? db
@@ -283,10 +299,46 @@ export function purgeConversationFromIndex(
           input.sessionId,
         );
       }
-      if (continuityTables.has("minimal_workstreams")) {
-        db.prepare("DELETE FROM minimal_workstreams WHERE session_id = ?").run(
+      if (continuityTables.has("hot_evidence")) {
+        db.prepare("DELETE FROM hot_evidence WHERE session_id = ?").run(
           input.sessionId,
         );
+      }
+      if (continuityTables.has("session_memory_state")) {
+        db.prepare("DELETE FROM session_memory_state WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("workstream_sessions")) {
+        db.prepare("DELETE FROM workstream_sessions WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("minimal_workstreams")) {
+        // Phase 3 permits several sessions to share one workstream Capsule.
+        // Purging one source session must remove its binding but must not erase
+        // a sibling session's continuity projection. Re-home the compatibility
+        // owner when another binding remains; delete only orphan workstreams.
+        const owned = db.prepare(`
+          SELECT workstream_id FROM minimal_workstreams WHERE session_id = ?
+        `).all(input.sessionId) as Array<{ workstream_id: string }>;
+        for (const row of owned) {
+          const sibling = continuityTables.has("workstream_sessions")
+            ? db.prepare(`
+                SELECT session_id FROM workstream_sessions
+                WHERE workstream_id = ? ORDER BY bound_at, session_id LIMIT 1
+              `).get(row.workstream_id) as { session_id: string } | undefined
+            : undefined;
+          if (sibling) {
+            db.prepare(`
+              UPDATE minimal_workstreams SET session_id = ?, updated_at = ?
+              WHERE workstream_id = ?
+            `).run(sibling.session_id, new Date().toISOString(), row.workstream_id);
+          } else {
+            db.prepare("DELETE FROM minimal_workstreams WHERE workstream_id = ?")
+              .run(row.workstream_id);
+          }
+        }
       }
       if (continuityTables.has("extraction_targets")) {
         db.prepare("DELETE FROM extraction_targets WHERE session_id = ?").run(
@@ -299,6 +351,48 @@ export function purgeConversationFromIndex(
       db.prepare("DELETE FROM recall_events WHERE session_id = ?").run(
         input.sessionId,
       );
+      if (continuityTables.has("project_identity_audit")) {
+        db.prepare("DELETE FROM project_identity_audit WHERE session_id = ?").run(input.sessionId);
+      }
+      for (const candidate of identityCandidates) {
+        if (candidate.workspace_id && continuityTables.has("workspaces")) {
+          const used = db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM exchanges WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM facts WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM session_memory_state WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM minimal_workstreams WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM hot_evidence WHERE workspace_id = ?) AS n
+          `).get(
+            candidate.workspace_id, candidate.workspace_id, candidate.workspace_id,
+            candidate.workspace_id, candidate.workspace_id,
+          ) as { n: number };
+          if (used.n === 0) {
+            db.prepare("DELETE FROM project_identity_audit WHERE workspace_id = ?").run(candidate.workspace_id);
+            db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(candidate.workspace_id);
+          }
+        }
+        if (candidate.project_id && continuityTables.has("projects")) {
+          const used = db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM workspaces WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM exchanges WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM facts WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM recall_events WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM hot_evidence WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM session_memory_state WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM minimal_workstreams WHERE project_id = ?) AS n
+          `).get(
+            candidate.project_id, candidate.project_id, candidate.project_id,
+            candidate.project_id, candidate.project_id, candidate.project_id,
+            candidate.project_id,
+          ) as { n: number };
+          if (used.n === 0) {
+            db.prepare("DELETE FROM project_identity_audit WHERE project_id = ?").run(candidate.project_id);
+            db.prepare("DELETE FROM projects WHERE project_id = ?").run(candidate.project_id);
+          }
+        }
+      }
     }
   });
   purge.immediate();

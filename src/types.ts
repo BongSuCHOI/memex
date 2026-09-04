@@ -37,6 +37,12 @@ export interface ConversationExchange {
   closureState?: 'open' | 'interrupted' | 'closed' | 'final';
   parserVersion?: number;
 
+  // Continuity v1 stable scope. `project`/`cwd` remain path-compatible local
+  // provenance; these IDs are the durable logical scope.
+  projectId?: string | null;
+  workspaceId?: string | null;
+  workstreamId?: string | null;
+
   // Conversation structure
   parentUuid?: string;
   isSidechain?: boolean;
@@ -129,6 +135,11 @@ export interface Fact {
   category: FactCategory;
   scope_type: FactScopeType;
   scope_project: string | null;
+  project_id?: string | null;
+  workspace_id?: string | null;
+  workstream_id?: string | null;
+  subject_key?: string | null;
+  promotion_state?: 'legacy-project' | 'decision' | 'project-current' | 'workspace' | 'workstream';
   source_exchange_ids: string[];
   embedding: Float32Array | null;
   created_at: string;

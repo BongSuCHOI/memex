@@ -2,7 +2,9 @@
 
 ## 1. MCP server
 
-`.mcp.json`의 server id는 `memex`입니다. installed plugin의 `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` package의 `memex-mcp-server`를 isolated npm cache에서 실행합니다.
+`.mcp.json`의 server id는 `memex`입니다. installed plugin의 `cli/runtime-exec.js`는 materialized된
+version-pinned local artifact의 `memex-mcp-server`를 실행합니다. `github:BongSuCHOI/memex#main`은
+dependency materialization 전 raw registration을 위한 compatibility fallback일 뿐입니다.
 
 MCP 전용 cache:
 
@@ -15,15 +17,26 @@ $XDG_CACHE_HOME/memex/npm-mcp
 
 ## 2. Scope 계약
 
-project-sensitive tool은 canonical absolute project 또는 explicit scope를 요구합니다.
+Project-sensitive MCP surfaces(`search`, `search_facts`, `search_ontology`, `ask_avatar`,
+`trace_fact`, `graph_stats`, `explore_graph`)는 stable identity의 explicit scope를 지원합니다.
 
 ```text
-project: "/absolute/project"
+scope: "project"    + project_id (또는 legacy canonical path)
+scope: "workspace"  + workspace_id
+scope: "workstream" + workstream_id
+scope: "session"    + session_id
 scope: "global"
 scope: "all"
 ```
 
 MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project identity로 사용하지 않습니다.
+Workspace/workstream/session ID는 DB membership을 검증하며 다른 project의 ID 조합을 허용하지 않습니다.
+`search`는 raw conversation evidence를 같은 stable scope로 제한합니다. Ontology/avatar/graph도
+동일 membership 검사를 거치며 relation traversal의 모든 hop을 요청 scope로 제한합니다.
+`include_hot_evidence`는
+stable scope 안의 recent raw evidence를 `NOT YET DISTILLED`로 분리하고
+`hot_before` + `hot_before_evidence_id` keyset cursor를 지원합니다. Legacy canonical path는 read-only
+compatibility surface이며 process cwd 추론이나 identity registry mutation 없이 explicit path로만 받습니다.
 
 ## 3. 9개 도구
 

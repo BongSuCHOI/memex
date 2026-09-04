@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity, } from "./db.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export function vecParamFor(db, table, embedding) {
     const dt = getVecTableDtype(db, table);
@@ -45,12 +46,76 @@ export function clearFactContextDependencies(db, factId) {
 export function insertFact(db, params) {
     const id = randomUUID();
     const now = new Date().toISOString();
+    let projectId = params.project_id ?? null;
+    let workspaceId = params.workspace_id ?? null;
+    let workstreamId = params.workstream_id ?? null;
+    if (params.scope_type === "project" && params.source_exchange_ids.length > 0) {
+        const placeholders = params.source_exchange_ids.map(() => "?").join(",");
+        const sources = db.prepare(`
+      SELECT DISTINCT project_id, workspace_id, workstream_id
+      FROM exchanges WHERE id IN (${placeholders})
+    `).all(...params.source_exchange_ids);
+        const same = (key) => {
+            const values = [...new Set(sources.map((row) => row[key]).filter(Boolean))];
+            return values.length === 1 ? values[0] : null;
+        };
+        projectId ??= same("project_id");
+        workspaceId ??= same("workspace_id");
+        workstreamId ??= same("workstream_id");
+    }
+    if (params.scope_type === "project" && !projectId && params.scope_project) {
+        const identity = resolveProjectWorkspace(db, { cwd: params.scope_project, now });
+        projectId = identity.projectId;
+        workspaceId ??= identity.workspaceId;
+    }
+    const promotionState = params.promotion_state ?? (params.scope_type === "project" && workstreamId ? "workstream" : "legacy-project");
+    const promotionEvidence = params.promotion_evidence ?? (params.promotion_state === undefined && promotionState === "workstream" ? "experimental" : undefined);
+    if (promotionState === "decision" && promotionEvidence !== "explicit-decision") {
+        throw new Error("project decision requires explicit decision evidence");
+    }
+    if (promotionState === "project-current" &&
+        promotionEvidence !== "merged" && promotionEvidence !== "validated") {
+        throw new Error("project current state requires merged or validated evidence");
+    }
+    if (promotionState === "workspace" && (!workspaceId || promotionEvidence !== "validated")) {
+        throw new Error("workspace state requires workspace_id and validated evidence");
+    }
+    if (promotionState === "workstream" && (!workstreamId || promotionEvidence !== "experimental")) {
+        throw new Error("workstream state requires workstream_id and experimental evidence");
+    }
+    if ((promotionState === "decision" || promotionState === "project-current") &&
+        (workspaceId || workstreamId)) {
+        throw new Error("project-wide truth cannot retain workspace/workstream scope");
+    }
+    if (promotionState === "workspace" && workstreamId) {
+        throw new Error("workspace truth cannot retain workstream scope");
+    }
+    if (params.scope_type === "project" && projectId && workspaceId) {
+        const workspace = db.prepare("SELECT project_id FROM workspaces WHERE workspace_id = ?")
+            .get(workspaceId);
+        if (!workspace || workspace.project_id !== projectId) {
+            throw new Error("fact workspace_id is outside project_id");
+        }
+    }
+    if (params.scope_type === "project" && projectId && workstreamId) {
+        const workstream = db.prepare("SELECT project_id FROM minimal_workstreams WHERE workstream_id = ?")
+            .get(workstreamId);
+        if (!workstream || workstream.project_id !== projectId) {
+            throw new Error("fact workstream_id is outside project_id");
+        }
+    }
+    const subjectKey = params.subject_key ?? (params.scope_type === "global" ? `global.fact.${id}` : `${promotionState}.fact.${id}`);
     db.prepare(`
-    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version, semantic_generation, semantic_updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?)
+    INSERT INTO facts (
+      id, fact, category, scope_type, scope_project, source_exchange_ids, embedding,
+      created_at, updated_at, consolidated_count, is_active, fact_kr,
+      embedding_version, semantic_generation, semantic_updated_at,
+      project_id, workspace_id, workstream_id, subject_key, promotion_state
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?)
   `).run(id, params.fact, params.category, params.scope_type, params.scope_project, JSON.stringify(params.source_exchange_ids), params.embedding
         ? Buffer.from(new Float32Array(params.embedding).buffer)
-        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION, now);
+        : null, now, now, params.fact_kr ?? null, EMBEDDING_VERSION, now, projectId, workspaceId, workstreamId, subjectKey, promotionState);
     // Insert into vector index (atomic DELETE+INSERT via transaction)
     if (params.embedding) {
         const p = vecParamFor(db, "vec_facts", params.embedding);
@@ -123,7 +188,13 @@ export function updateFact(db, id, params) {
     }
 }
 export function deactivateFact(db, id) {
-    db.prepare("UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+    const now = new Date().toISOString();
+    db.prepare(`
+    UPDATE facts SET is_active = 0, needs_consolidation = 0,
+      lifecycle_generation = lifecycle_generation + 1,
+      lifecycle_updated_at = ?, updated_at = ?
+    WHERE id = ? AND is_active = 1
+  `).run(now, now, id);
     // Deactivated facts must not occupy vector index slots
     db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
     db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
@@ -154,7 +225,7 @@ export function getRevisions(db, factId) {
         .prepare("SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC")
         .all(factId);
 }
-function factMatchesSearch(fact, scope, filters) {
+function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
     if (filters.category && fact.category !== filters.category)
         return false;
     switch (scope.type) {
@@ -169,7 +240,42 @@ function factMatchesSearch(fact, scope, filters) {
             return (fact.scope_type === "project" && fact.scope_project === scope.project);
         case "other-projects":
             return (fact.scope_type === "project" && fact.scope_project !== scope.project);
+        case "other-project-id":
+            return fact.scope_type === "project" && fact.project_id !== scope.projectId;
+        case "project-id":
+            return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+                (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+                    (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current"));
+        case "workspace-id":
+            return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+                (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+                    (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" ||
+                        (fact.promotion_state === "workspace" && fact.workspace_id === scope.workspaceId)));
+        case "workstream-id":
+            return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+                (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+                    (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" ||
+                        (fact.promotion_state === "workspace" && !!scope.workspaceId && fact.workspace_id === scope.workspaceId) ||
+                        (fact.promotion_state === "workstream" && fact.workstream_id === scope.workstreamId)));
+        case "session-id":
+            return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+                (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+                    fact.source_exchange_ids.some((id) => sessionExchangeIds?.has(id)));
     }
+}
+export function listFactsByScope(db, scope) {
+    const sessionExchangeIds = scope.type === "session-id"
+        ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id))
+        : undefined;
+    return db.prepare("SELECT * FROM facts WHERE is_active = 1").all()
+        .map(rowToFact)
+        .filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
+}
+export function factMatchesScope(db, fact, scope) {
+    const sessionExchangeIds = scope.type === "session-id"
+        ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id))
+        : undefined;
+    return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
 }
 /**
  * Scope-aware semantic fact search SSOT.
@@ -183,6 +289,9 @@ function factMatchesSearch(fact, scope, filters) {
 export function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
     if (limit <= 0)
         return [];
+    const sessionExchangeIds = scope.type === "session-id"
+        ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id))
+        : undefined;
     const fetch = (table, count) => {
         try {
             const p = vecParamFor(db, table, embedding);
@@ -242,7 +351,7 @@ export function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 
             if (similarity < threshold)
                 break;
             const fact = loadFact(vr.id);
-            if (!fact || !factMatchesSearch(fact, scope, filters))
+            if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds))
                 continue;
             results.push({ fact, distance: vr.distance });
             if (results.length >= limit)
@@ -388,6 +497,11 @@ function rowToFact(row) {
         category: row["category"],
         scope_type: row["scope_type"],
         scope_project: row["scope_project"] ?? null,
+        project_id: row["project_id"] ?? null,
+        workspace_id: row["workspace_id"] ?? null,
+        workstream_id: row["workstream_id"] ?? null,
+        subject_key: row["subject_key"] ?? null,
+        promotion_state: row["promotion_state"] ?? 'legacy-project',
         source_exchange_ids: sourceExchangeIds,
         embedding,
         created_at: row["created_at"],

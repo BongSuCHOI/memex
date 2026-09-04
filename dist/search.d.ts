@@ -7,6 +7,19 @@ export interface SearchOptions {
     after?: string;
     before?: string;
     project?: string;
+    identityScope?: {
+        type: 'project';
+        projectId: string;
+    } | {
+        type: 'workspace';
+        workspaceId: string;
+    } | {
+        type: 'workstream';
+        workstreamId: string;
+    } | {
+        type: 'session';
+        sessionId: string;
+    };
 }
 export declare function searchConversations(query: string, options?: SearchOptions): Promise<SearchResult[]>;
 export declare function formatResults(results: Array<SearchResult & {

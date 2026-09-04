@@ -22,6 +22,7 @@ import {
   isConversationExcludedSession,
   purgeConversationFromIndex,
 } from "./conversation-policy.js";
+import { indexHotEvidenceForSession } from "./continuity-identity.js";
 
 const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one contiguous transcript segment.
 Return exactly one JSON object and no markdown. It must have exactly these keys:
@@ -264,6 +265,19 @@ async function processCaptureIndex(
       };
     }
     applyLatestLifecycleClosure(db, checkpoint.session_id);
+    const hotEvidence = indexHotEvidenceForSession(db, checkpoint.session_id);
+    if (isConversationExcludedSession(db, checkpoint.session_id)) {
+      purgeConversationFromIndex(db, {
+        archivePath: checkpoint.journal_path,
+        sessionId: checkpoint.session_id,
+      });
+      return {
+        jobId,
+        kind: "capture_index",
+        state: "completed",
+        detail: "purged user-excluded conversation",
+      };
+    }
     if (!completeCaptureIndexJob(db, {
       jobId,
       checkpointId: checkpoint.checkpoint_id,
@@ -277,7 +291,7 @@ async function processCaptureIndex(
       jobId,
       kind: "capture_index",
       state: "completed",
-      detail: `indexed=${result.indexed} ignored=${result.ignoredRegressions}`,
+      detail: `indexed=${result.indexed} ignored=${result.ignoredRegressions} hot=${hotEvidence}`,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

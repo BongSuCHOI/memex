@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type Database from "better-sqlite3";
+import { canonicalizeProjectPath } from "./project-identity.js";
+import { inspectWorkspaceLocation } from "./continuity-identity.js";
 
-export const CONTINUITY_SCHEMA_VERSION = 3;
+export const CONTINUITY_SCHEMA_VERSION = 4;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
@@ -23,6 +26,10 @@ export type ContinuityMigrationStage =
   | "continuity-core-tables"
   | "journal-source-mtime-column"
   | "journal-source-guard-columns"
+  | "identity-tables"
+  | "identity-columns"
+  | "identity-backfill"
+  | "identity-triggers"
   | "continuity-indexes"
   | "continuity-core-indexes"
   | "fts-rebuild"
@@ -94,6 +101,11 @@ function columnNames(db: Database.Database, table: string): Set<string> {
       ({ name }) => name,
     ),
   );
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) !== undefined;
 }
 
 /**
@@ -399,6 +411,319 @@ export function ensureContinuitySchema(
     }
 
     db.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        project_id TEXT PRIMARY KEY,
+        portable_project_key TEXT UNIQUE,
+        display_name TEXT NOT NULL,
+        memory_revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workspaces (
+        workspace_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+        device_id TEXT NOT NULL,
+        canonical_path TEXT NOT NULL,
+        git_common_dir TEXT,
+        git_common_identity TEXT,
+        git_dir_identity TEXT,
+        remote_fingerprint TEXT,
+        location_kind TEXT NOT NULL DEFAULT 'directory'
+          CHECK(location_kind IN ('worktree','clone','directory')),
+        branch TEXT,
+        last_seen_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(device_id, canonical_path)
+      );
+
+      CREATE TABLE IF NOT EXISTS approved_remote_mappings (
+        remote_fingerprint TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        approved_at TEXT NOT NULL,
+        approved_by TEXT NOT NULL DEFAULT 'user',
+        PRIMARY KEY(remote_fingerprint, project_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_identity_audit (
+        audit_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('resolve','suggest','link','split','rebind')),
+        project_id TEXT,
+        workspace_id TEXT,
+        workstream_id TEXT,
+        session_id TEXT,
+        reason TEXT NOT NULL,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workstream_sessions (
+        session_id TEXT PRIMARY KEY,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        binding_reason TEXT NOT NULL,
+        binding_confidence REAL NOT NULL DEFAULT 1.0,
+        bound_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS hot_evidence (
+        evidence_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        workstream_id TEXT,
+        session_id TEXT NOT NULL,
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('human','trusted_tool')),
+        source_type TEXT NOT NULL,
+        evidence_text TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        authority TEXT NOT NULL DEFAULT 'hot-evidence'
+          CHECK(authority = 'hot-evidence'),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE(exchange_id, evidence_kind, source_type, content_hash)
+      );
+    `);
+    options.afterMigrationStage?.("identity-tables");
+
+    const identityColumns: Array<[string, string, string]> = [
+      ["exchanges", "project_id", "TEXT"],
+      ["exchanges", "workspace_id", "TEXT"],
+      ["exchanges", "workstream_id", "TEXT"],
+      ["facts", "project_id", "TEXT"],
+      ["facts", "workspace_id", "TEXT"],
+      ["facts", "workstream_id", "TEXT"],
+      ["facts", "subject_key", "TEXT"],
+      ["facts", "promotion_state", "TEXT NOT NULL DEFAULT 'legacy-project'"],
+      ["recall_events", "project_id", "TEXT"],
+      ["recall_events", "workspace_id", "TEXT"],
+      ["recall_events", "workstream_id", "TEXT"],
+      ["recall_events", "context_epoch", "INTEGER NOT NULL DEFAULT 0"],
+      ["recall_events", "project_memory_revision", "INTEGER NOT NULL DEFAULT 0"],
+      ["minimal_workstreams", "project_id", "TEXT"],
+      ["minimal_workstreams", "workspace_id", "TEXT"],
+      ["minimal_workstreams", "status", "TEXT NOT NULL DEFAULT 'active'"],
+      ["minimal_workstreams", "topic_fingerprint", "TEXT"],
+      ["session_memory_state", "project_id", "TEXT"],
+      ["session_memory_state", "workspace_id", "TEXT"],
+      ["session_memory_state", "binding_reason", "TEXT NOT NULL DEFAULT 'session-local'"],
+      ["session_memory_state", "binding_confidence", "REAL NOT NULL DEFAULT 1.0"],
+      ["work_capsules", "source_workspace_id", "TEXT"],
+      ["work_capsules", "source_session_id", "TEXT"],
+      ["workspaces", "git_common_identity", "TEXT"],
+      ["workspaces", "git_dir_identity", "TEXT"],
+    ];
+    for (const [table, column, definition] of identityColumns) {
+      if (!tableExists(db, table)) continue;
+      if (!columnNames(db, table).has(column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    }
+    options.afterMigrationStage?.("identity-columns");
+
+    db.exec(`CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get() as
+      | { value: string }
+      | undefined;
+    if (!device) {
+      device = { value: randomUUID() };
+      db.prepare("INSERT INTO sync_meta(key, value) VALUES ('device_id', ?)").run(device.value);
+    }
+    const pathSources: string[] = [];
+    if (tableExists(db, "exchanges")) pathSources.push("SELECT project AS value FROM exchanges");
+    if (columnNames(db, "facts").has("scope_project") && columnNames(db, "facts").has("scope_type")) {
+      pathSources.push("SELECT scope_project AS value FROM facts WHERE scope_type = 'project' AND scope_project IS NOT NULL");
+    }
+    if (columnNames(db, "recall_events").has("project")) pathSources.push("SELECT project AS value FROM recall_events");
+    if (columnNames(db, "minimal_workstreams").has("project")) pathSources.push("SELECT project AS value FROM minimal_workstreams");
+    if (columnNames(db, "session_memory_state").has("project")) pathSources.push("SELECT project AS value FROM session_memory_state");
+    const pathRows = pathSources.length > 0
+      ? db.prepare(pathSources.join(" UNION ")).all() as Array<{ value: string | null }>
+      : [];
+    const nowIdentity = new Date().toISOString();
+    const identityByPath = new Map<string, { canonical: string; projectId: string; workspaceId: string }>();
+    const commonProjectByDir = new Map<string, string>();
+    for (const row of pathRows) {
+      const raw = row.value ?? "";
+      const canonical = canonicalizeProjectPath(raw);
+      if (!canonical || canonical === "unknown") continue;
+      const existingWorkspace = db.prepare(`
+        SELECT workspace_id, project_id FROM workspaces
+        WHERE device_id = ? AND canonical_path = ?
+      `).get(device.value, canonical) as { workspace_id: string; project_id: string } | undefined;
+      const inspected = inspectWorkspaceLocation(canonical);
+      const linkedByCommonDir = inspected.gitCommonDir
+        ? commonProjectByDir.get(inspected.gitCommonDir) ?? (
+            db.prepare(`
+              SELECT project_id FROM workspaces
+              WHERE device_id = ? AND git_common_dir = ?
+              ORDER BY created_at, workspace_id LIMIT 1
+            `).get(device.value, inspected.gitCommonDir) as { project_id: string } | undefined
+          )?.project_id
+        : undefined;
+      const projectId = linkedByCommonDir ?? existingWorkspace?.project_id ??
+        `project-${sha256(`path-project-v1\0${canonical}`).slice(0, 32)}`;
+      const workspaceId = existingWorkspace?.workspace_id ??
+        `workspace-${sha256(`workspace-v1\0${device.value}\0${canonical}`).slice(0, 32)}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO projects
+          (project_id, display_name, memory_revision, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?)
+      `).run(projectId, path.basename(canonical) || "unknown", nowIdentity, nowIdentity);
+      db.prepare(`
+        INSERT OR IGNORE INTO workspaces
+          (workspace_id, project_id, device_id, canonical_path, git_common_dir,
+           git_common_identity, git_dir_identity, remote_fingerprint,
+           location_kind, branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        workspaceId, projectId, device.value, canonical, inspected.gitCommonDir,
+        inspected.gitCommonIdentity, inspected.gitDirIdentity,
+        inspected.remoteFingerprint, inspected.locationKind, inspected.branch,
+        nowIdentity, nowIdentity,
+      );
+      if (existingWorkspace && existingWorkspace.project_id !== projectId && inspected.gitCommonDir) {
+        db.prepare(`
+          UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
+            git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
+            branch = COALESCE(?, branch), last_seen_at = ?
+          WHERE workspace_id = ?
+        `).run(
+          projectId, inspected.gitCommonDir, inspected.remoteFingerprint,
+          inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.locationKind,
+          inspected.branch, nowIdentity, existingWorkspace.workspace_id,
+        );
+      }
+      if (inspected.gitCommonDir) commonProjectByDir.set(inspected.gitCommonDir, projectId);
+      identityByPath.set(raw, { canonical, projectId, workspaceId });
+    }
+    const updateIdentity = (table: string, pathColumn: string): void => {
+      const columns = columnNames(db, table);
+      if (!columns.has(pathColumn) || !columns.has("project_id") || !columns.has("workspace_id")) return;
+      const update = db.prepare(`UPDATE ${table} SET project_id = ?, workspace_id = ? WHERE ${pathColumn} = ?`);
+      for (const [raw, identity] of identityByPath) {
+        update.run(identity.projectId, identity.workspaceId, raw);
+      }
+    };
+    updateIdentity("exchanges", "project");
+    updateIdentity("recall_events", "project");
+    updateIdentity("minimal_workstreams", "project");
+    updateIdentity("session_memory_state", "project");
+    const factColumnsForIdentity = columnNames(db, "facts");
+    if (factColumnsForIdentity.has("scope_project") && factColumnsForIdentity.has("scope_type") && factColumnsForIdentity.has("subject_key")) {
+      const updateFacts = db.prepare(`
+        UPDATE facts SET project_id = ?, subject_key = COALESCE(subject_key, 'legacy.fact.' || id)
+        WHERE scope_type = 'project' AND scope_project = ?
+      `);
+      for (const [raw, identity] of identityByPath) updateFacts.run(identity.projectId, raw);
+      db.prepare("UPDATE facts SET subject_key = COALESCE(subject_key, 'global.fact.' || id) WHERE scope_type = 'global'").run();
+    }
+    if (tableExists(db, "minimal_workstreams")) {
+      db.prepare(`
+        UPDATE workstream_sessions
+        SET workspace_id = (SELECT workspace_id FROM minimal_workstreams w WHERE w.workstream_id = workstream_sessions.workstream_id)
+        WHERE workspace_id IS NULL
+      `).run();
+    }
+    if (tableExists(db, "session_memory_state")) {
+      db.prepare(`
+        INSERT OR IGNORE INTO workstream_sessions
+          (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+        SELECT s.session_id, s.workstream_id, s.workspace_id,
+               COALESCE(s.binding_reason, 'session-local'), COALESCE(s.binding_confidence, 1.0), s.created_at
+        FROM session_memory_state s
+      `).run();
+      if (tableExists(db, "checkpoints")) {
+        db.prepare(`
+          UPDATE checkpoints
+          SET workspace_id = (SELECT workspace_id FROM session_memory_state s WHERE s.session_id = checkpoints.session_id)
+          WHERE workspace_id IS NULL
+        `).run();
+      }
+    }
+    options.afterMigrationStage?.("identity-backfill");
+
+    const factColumnsForTriggers = columnNames(db, "facts");
+    if (["scope_type", "project_id", "fact", "semantic_generation", "lifecycle_generation", "is_active", "updated_at", "promotion_state", "subject_key", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      DROP TRIGGER IF EXISTS facts_project_revision_insert;
+      DROP TRIGGER IF EXISTS facts_project_revision_semantic;
+      DROP TRIGGER IF EXISTS facts_project_revision_move_old;
+      DROP TRIGGER IF EXISTS facts_project_revision_delete;
+      CREATE TRIGGER facts_project_revision_insert
+      AFTER INSERT ON facts
+      WHEN NEW.scope_type = 'project' AND NEW.project_id IS NOT NULL
+        AND NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_semantic
+      AFTER UPDATE OF fact, semantic_generation, lifecycle_generation, is_active, project_id,
+        promotion_state, subject_key, workspace_id, workstream_id ON facts
+      WHEN COALESCE(NEW.project_id, '') <> ''
+        AND (NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+          OR OLD.promotion_state IN ('legacy-project','decision','project-current','workspace'))
+        AND (
+        OLD.fact IS NOT NEW.fact OR OLD.semantic_generation IS NOT NEW.semantic_generation OR
+        OLD.lifecycle_generation IS NOT NEW.lifecycle_generation OR OLD.is_active IS NOT NEW.is_active OR
+        OLD.project_id IS NOT NEW.project_id OR OLD.promotion_state IS NOT NEW.promotion_state OR
+        OLD.subject_key IS NOT NEW.subject_key OR OLD.workspace_id IS NOT NEW.workspace_id OR
+        OLD.workstream_id IS NOT NEW.workstream_id
+      )
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_move_old
+      AFTER UPDATE OF project_id ON facts
+      WHEN OLD.project_id IS NOT NULL AND OLD.project_id IS NOT NEW.project_id
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = OLD.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_delete
+      AFTER DELETE ON facts
+      WHEN OLD.scope_type = 'project' AND OLD.project_id IS NOT NULL
+        AND OLD.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = datetime('now')
+        WHERE project_id = OLD.project_id;
+      END;
+    `);
+    options.afterMigrationStage?.("identity-triggers");
+
+    if (tableExists(db, "ontology_relations") && factColumnsForTriggers.has("project_id")) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS ontology_relations_scope_insert_guard;
+        DROP TRIGGER IF EXISTS ontology_relations_scope_update_guard;
+        CREATE TRIGGER ontology_relations_scope_insert_guard
+        BEFORE INSERT ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+        CREATE TRIGGER ontology_relations_scope_update_guard
+        BEFORE UPDATE OF source_fact_id, target_fact_id ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+      `);
+    }
+
+    db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
         ON memory_jobs(state, available_at, priority DESC, created_at, job_id);
@@ -420,6 +745,29 @@ export function ensureContinuitySchema(
         ON session_memory_state(workstream_id, updated_at);
       CREATE INDEX IF NOT EXISTS idx_capsule_checkpoint_state
         ON capsule_checkpoint_state(workstream_id, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_project
+        ON workspaces(project_id, device_id, canonical_path);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_common_dir
+        ON workspaces(device_id, git_common_dir) WHERE git_common_dir IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_workspaces_git_identity
+        ON workspaces(device_id, git_common_identity, git_dir_identity);
+      CREATE INDEX IF NOT EXISTS idx_workstreams_scope
+        ON minimal_workstreams(project_id, workspace_id, status, branch_hint);
+      CREATE INDEX IF NOT EXISTS idx_hot_evidence_scope
+        ON hot_evidence(project_id, workstream_id, expires_at, created_at);
+    `);
+    if (["project_id", "subject_key", "is_active", "promotion_state", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_facts_project_subject
+        ON facts(project_id, subject_key, is_active);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active_subject_slot
+        ON facts(
+          project_id,
+          subject_key,
+          promotion_state,
+          COALESCE(workspace_id, ''),
+          COALESCE(workstream_id, '')
+        )
+        WHERE is_active = 1 AND project_id IS NOT NULL AND subject_key IS NOT NULL;
     `);
     options.afterMigrationStage?.("continuity-indexes");
     options.afterMigrationStage?.("continuity-core-indexes");

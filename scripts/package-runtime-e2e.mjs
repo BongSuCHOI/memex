@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), "memex-package-e2e-"));
 const CODEX_HOME = path.join(TEMP, "codex-home");
 const DATA_ROOT = path.join(TEMP, "data");
 const NPM_CACHE = path.join(TEMP, "npm-cache");
+const INSTALL_ROOT = path.join(TEMP, "installed");
 const EXPECTED_TOOLS = [
   "ask_avatar",
   "cross_project_insights",
@@ -58,12 +59,63 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function npmExec(packageSpec, binary, args = [], options = {}) {
-  return run(
-    "npm",
-    ["exec", "--yes", "--package=" + packageSpec, "--", binary, ...args],
-    options,
-  );
+function installedBin(binary, args = [], options = {}) {
+  return run(path.join(INSTALL_ROOT, "node_modules", ".bin", binary), args, options);
+}
+
+function listInstalledMcpTools(input) {
+  return new Promise((resolve, reject) => {
+    const command = path.join(INSTALL_ROOT, "node_modules", ".bin", "memex-mcp-server");
+    const child = spawn(command, [], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        CODEX_HOME,
+        MEMEX_HOME: DATA_ROOT,
+        npm_config_cache: NPM_CACHE,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        child.kill();
+        reject(error);
+        return;
+      }
+      if (child.exitCode !== null) {
+        resolve(value);
+        return;
+      }
+      child.once("close", () => resolve(value));
+      child.kill();
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`packaged MCP tools/list timed out: ${stderr.slice(-1200)}`));
+    }, 30_000);
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const response = stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          try { return JSON.parse(line); } catch { return null; }
+        })
+        .find((item) => item?.id === 2);
+      if (response) finish(null, response);
+    });
+    child.on("error", (error) => finish(error));
+    child.on("exit", (code) => {
+      if (!settled) finish(new Error(`packaged MCP exited before tools/list (${code}): ${stderr.slice(-1200)}`));
+    });
+    child.stdin.end(input);
+  });
 }
 
 try {
@@ -75,6 +127,9 @@ try {
   if (!fs.existsSync(tarball))
     throw new Error("npm pack did not create a tarball");
   const packageSpec = "file:" + tarball;
+  run("npm", ["install", "--prefix", INSTALL_ROOT, packageSpec], {
+    timeout: 10 * 60 * 1000,
+  });
 
   const initialize = [
     {
@@ -90,16 +145,9 @@ try {
     { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
     { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
   ];
-  const mcp = npmExec(packageSpec, "memex-mcp-server", [], {
-    input:
-      initialize.map((message) => JSON.stringify(message)).join("\n") + "\n",
-    timeout: 10 * 60 * 1000,
-  });
-  const response = mcp.stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .find((item) => item.id === 2);
+  const response = await listInstalledMcpTools(
+    initialize.map((message) => JSON.stringify(message)).join("\n") + "\n",
+  );
   const tools = (response?.result?.tools || []).map((tool) => tool.name).sort();
   if (JSON.stringify(tools) !== JSON.stringify(EXPECTED_TOOLS)) {
     throw new Error(
@@ -107,7 +155,7 @@ try {
     );
   }
 
-  const help = npmExec(packageSpec, "memex", ["--help"]);
+  const help = installedBin("memex", ["--help"]);
   if (
     !help.stdout.includes(
       "setup       Detect conflicting Codex built-in Memory",
@@ -117,11 +165,11 @@ try {
   ) {
     throw new Error("packaged CLI help is incomplete");
   }
-  const setup = npmExec(packageSpec, "memex", ["setup", "--dry-run"]);
+  const setup = installedBin("memex", ["setup", "--dry-run"]);
   if (!/Codex built-in Memory|already disabled/.test(setup.stdout)) {
     throw new Error("packaged setup did not inspect Codex built-in Memory");
   }
-  const sync = npmExec(packageSpec, "memex", ["sync"], {
+  const sync = installedBin("memex", ["sync"], {
     timeout: 2 * 60 * 1000,
   });
   if (!/Sync complete|No conversations|0/.test(sync.stdout)) {
@@ -130,10 +178,10 @@ try {
         sync.stdout.slice(-500),
     );
   }
-  npmExec(packageSpec, "memex", ["backfill", "all"], {
+  installedBin("memex", ["backfill", "all"], {
     timeout: 4 * 60 * 1000,
   });
-  const status = npmExec(packageSpec, "memex", ["status", "--json"]);
+  const status = installedBin("memex", ["status", "--json"]);
   const parsedStatus = JSON.parse(status.stdout);
   if (
     !parsedStatus.conversations ||
@@ -143,7 +191,7 @@ try {
     throw new Error("packaged status omitted readiness sections");
   }
 
-  const hook = npmExec(packageSpec, "memex-hook-inject", [], {
+  const hook = installedBin("memex-hook-inject", [], {
     input:
       JSON.stringify({
         prompt: "package runtime empty corpus hook validation prompt",
@@ -162,7 +210,7 @@ try {
     type: "session_meta",
     payload: { id: sessionId, cwd: ROOT },
   })}\n`);
-  const continuity = npmExec(packageSpec, "memex-hook-continuity", [], {
+  const continuity = installedBin("memex-hook-continuity", [], {
     input: `${JSON.stringify({
       hook_event_name: "SessionEnd",
       session_id: sessionId,
@@ -182,7 +230,7 @@ try {
     .filter((value) => !value.startsWith("npm warn"));
   if (unexpectedHookStderr.length > 0)
     throw new Error(`packaged Continuity hook failed: ${unexpectedHookStderr.join("\n").slice(-500)}`);
-  npmExec(packageSpec, "memex-continuity-worker", [], {
+  installedBin("memex-continuity-worker", [], {
     timeout: 2 * 60 * 1000,
   });
 
