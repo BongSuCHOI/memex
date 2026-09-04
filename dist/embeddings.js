@@ -47,7 +47,42 @@ function modelVersion(model) {
 }
 export const EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
 let embeddingPipeline = null;
+/**
+ * Reproducible-harness seam: `MEMEX_EMBEDDING_STUB=1` replaces the model with a
+ * deterministic hashed bag-of-words vector. Never enabled by default; the
+ * calibration benchmark and no-model test environments use it so gate
+ * behaviour can be measured without network or model downloads.
+ */
+function embeddingStubEnabled() {
+    return process.env.MEMEX_EMBEDDING_STUB === '1' || process.env.MEMEX_EMBEDDING_STUB === 'fail';
+}
+/** Harness seam: `MEMEX_EMBEDDING_STUB=fail` simulates an unavailable model. */
+function embeddingStubFails() {
+    return process.env.MEMEX_EMBEDDING_STUB === 'fail';
+}
+export function stubEmbedding(text, dimensions = 384) {
+    const vector = new Array(dimensions).fill(0);
+    const tokens = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
+    for (const token of tokens) {
+        let hash = 2166136261;
+        for (let i = 0; i < token.length; i++) {
+            hash ^= token.charCodeAt(i);
+            hash = Math.imul(hash, 16777619) >>> 0;
+        }
+        vector[hash % dimensions] += 1;
+        vector[(hash >>> 8) % dimensions] += 0.5;
+    }
+    let norm = 0;
+    for (const value of vector)
+        norm += value * value;
+    norm = Math.sqrt(norm) || 1;
+    return vector.map((value) => value / norm);
+}
 export async function initEmbeddings() {
+    if (embeddingStubFails())
+        throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
+    if (embeddingStubEnabled())
+        return;
     if (!embeddingPipeline) {
         // stderr: stdout of hook scripts is injected into the session as context,
         // so progress logs must never go to stdout.
@@ -84,6 +119,14 @@ export async function generateEmbedding(text, mode = 'passage') {
             queryEmbedMemo.set(text, hit);
             return hit.slice();
         }
+    }
+    if (embeddingStubFails())
+        throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
+    if (embeddingStubEnabled()) {
+        const stub = stubEmbedding(text);
+        if (mode === 'query')
+            queryEmbedMemo.set(text, stub.slice());
+        return stub;
     }
     if (!embeddingPipeline) {
         await initEmbeddings();

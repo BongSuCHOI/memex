@@ -235,3 +235,30 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: make the event id independent of the episode index; a global dedupe by signature+effective_at.
 - Invariant evidence: `test/continuity-chronicle-gate.test.ts` incident cases (null-session duplicate, retry duplicate, late older episode, cross-workstream episodes) and the Phase 4A n/o/p and recurrence cases.
 - Reversal condition/trade-off: two genuinely independent failures proven by the same exchange are counted once; the model must cite distinct evidence for distinct episodes.
+
+## D-025 — Deterministic embedding stub seam for reproducible calibration
+
+- RFC section/invariant: §21.7 reproducible workloads; Phase 5 calibration harness
+- Actual choice: `MEMEX_EMBEDDING_STUB=1` replaces the embedding model with a deterministic hashed bag-of-words vector and `MEMEX_EMBEDDING_STUB=fail` simulates an unavailable model. Both are opt-in environment seams; production never sets them.
+- Reason: the calibration harness and no-model test environments must measure gate behaviour without network or model downloads, and the RFC requires a reproducible workload artifact.
+- Alternatives considered: record/replay real embeddings (large fixtures); skip calibration when the model is absent.
+- Invariant evidence: `scripts/continuity-recall-benchmark.mjs` writes `recall-calibration.json` with the stub; all similarity thresholds are probe-baseline relative so the stub and the production model share the same rule shape.
+- Reversal condition/trade-off: absolute similarity numbers on the stub are not production numbers; Prompt 5B must re-measure on the real model before tuning thresholds.
+
+## D-026 — New sessions start at the current project memory revision
+
+- RFC section/invariant: §11.4, §12.6; REVISION-AWARE INJECTION, RESIDENCY
+- Actual choice: `bindSessionWorkstream` initialises `memory_revision_seen` to the project's current `memory_revision` instead of `0`.
+- Reason: a brand-new session has no resident context to correct; starting at `0` made the first substantive prompt of every session render ordinary project facts as `[MEMEX CORRECTION]`. Sibling changes after creation still raise the revision above `seen` and force a correction at the next boundary.
+- Alternatives considered: keep `0` and special-case the first injection; treat the first prompt as a correction.
+- Invariant evidence: `test/continuity-recall.test.ts` (stale revision correction after a sibling update; first prompt renders `[CURRENT TRUTH]`) and the Phase 3 identity/core/adversarial suites still pass.
+- Reversal condition/trade-off: none identified; a resumed session keeps its stored `seen` value.
+
+## D-027 — Gate thresholds are few, deterministic, and calibrated on the stub
+
+- RFC section/invariant: §12.3; Prompt 5A "threshold는 deterministic/configurable but few defaults"
+- Actual choice: `DEFAULT_RECALL_GATE_CONFIG` = ack ≤ 4 tokens, safety refresh 6 substantive prompts, drift Jaccard < 0.12 (≥ 5 tokens), coverage ≥ 8 tokens, lexical coherent Jaccard ≥ 0.35, ambiguous coherence `cos − baseline ≥ 0.08`, substantive ≥ 5 tokens. The lexical coherent skip (rule 8) is an as-built addition that avoids one embedding on strongly overlapping follow-ups.
+- Reason: the RFC leaves numbers to calibration; these defaults produced 0 ack embeddings, 0 stale/wrong-scope injections, 0 mandatory-intent misses and a 62.9% retrieval reduction on the stub workloads.
+- Alternatives considered: absolute cosine threshold (model dependent); no lexical coherent skip (one embedding per follow-up).
+- Invariant evidence: `recall-calibration.json` verdict block; `test/continuity-recall.test.ts` cases a–x.
+- Reversal condition/trade-off: any threshold change must be justified with recall and cost evidence together; lowering retrieval by dropping mandatory memory intents is forbidden.

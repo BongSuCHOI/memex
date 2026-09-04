@@ -598,6 +598,6 @@ describe("Privacy purge and telemetry", () => {
       effective_at: "2026-08-01T10:00:00.000Z", effective_at_source: "source", recorded_at: "2026-08-02T00:00:00.000Z",
       source_exchange_ids: ["ex-1"],
     });
-    expect(db.pragma("user_version", { simple: true })).toBe(5);
+    expect(db.pragma("user_version", { simple: true })).toBe(6);
   });
 });

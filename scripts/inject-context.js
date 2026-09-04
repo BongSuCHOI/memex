@@ -164,7 +164,10 @@ async function main() {
   } catch {
     /* observation is best-effort */
   }
-  if (!prompt || prompt.length < 20) return; // not worth an injection
+  // Phase 5: the cheap gate decides what is worth retrieval. Only an empty
+  // prompt is dropped here, so a short explicit memory question ("왜 Redis?")
+  // still reaches the gate while acknowledgements skip without a model call.
+  if (!prompt || prompt.trim().length === 0) return;
 
   // FAST PATH — warm daemon inside a running MCP server.
   const daemonContext = await askDaemon(prompt, cwd, sessionId);

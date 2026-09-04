@@ -364,7 +364,7 @@ export declare function purgeChronicleForSources(db: Database.Database, input: {
     reason: string;
     now?: string;
 }): ChroniclePurgeResult;
-export declare const TELEMETRY_METRICS: readonly ["semantic_retrieval_calls", "retrieval_gate_skip_count", "injected_chars", "estimated_tokens", "duplicate_tool_calls", "repeated_context_turns", "time_to_first_correct_action_ms", "incident_recurrence", "warning_precision", "worker_extraction_tokens"];
+export declare const TELEMETRY_METRICS: readonly ["semantic_retrieval_calls", "retrieval_gate_skip_count", "retrieval_execute_count", "embedding_calls", "embedding_cache_hits", "candidate_facts", "current_facts", "delta_facts", "injected_facts", "injected_chars", "section_chars", "bundle_size", "estimated_tokens", "correction_count", "correction_delay_prompts", "watch_emissions", "watch_confirmed", "warning_precision", "project_revision_invalidations", "duplicate_tool_calls", "repeated_context_turns", "time_to_first_correct_action_ms", "incident_recurrence", "mcp_trace_success", "worker_extraction_tokens", "worker_extraction_latency_ms", "worker_extraction_retries", "worker_extraction_dead"];
 export type TelemetryMetric = (typeof TELEMETRY_METRICS)[number];
 export declare function recordTelemetrySample(db: Database.Database, input: {
     metric: TelemetryMetric;

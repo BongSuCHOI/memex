@@ -51,6 +51,12 @@ vi.mock("../src/continuity-core.js", () => ({
   buildRehydrationContext,
   readResidentFactRevisions: () => ({ contextEpoch: 0, resident: [], carry: [] }),
   recordResidentFactRevisions,
+  readWorkCapsule: () => null,
+}));
+vi.mock("../src/chronicle.js", () => ({
+  matchIncidentPatterns: () => [],
+  readChronicleTimeline: () => ({ events: [], nextCursor: null, limit: 1 }),
+  recordTelemetrySample: () => "sample",
 }));
 vi.mock("../src/continuity-identity.js", () => ({
   projectRevision: () => 0,

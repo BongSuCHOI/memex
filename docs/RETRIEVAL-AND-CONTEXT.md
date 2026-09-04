@@ -61,6 +61,52 @@ sequenceDiagram
 
 warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
 
+## 4a. Pre-retrieval cheap gate (Phase 5)
+
+`UserPromptSubmit` hook은 매번 실행되지만, embedding/vector search/graph expansion/model call은
+`src/recall-gate.ts`의 cheap gate가 `retrieve`로 판정할 때만 실행됩니다. gate는 local session state와
+lexical fingerprint만 사용하고 LLM을 호출하지 않습니다.
+
+| 순서 | 판정 | 결과 |
+| --- | --- | --- |
+| 1 | explicit memory intent(왜/언제/이전/기록/출처/why/history/source/again…) | retrieve (길이 무관) |
+| 2 | verified incident signature match, `project.memory_revision > seen`, Capsule generation 변경 | retrieve |
+| 3 | acknowledgement/continuation lexicon(≤ 4 tokens), 짧은 minor correction | skip, embedding 0 |
+| 4 | context epoch 변경 / compact 뒤 첫 prompt / epoch 내 첫 substantive prompt | retrieve (+ WORK NOW) |
+| 5 | high-impact intent(decide/switch/migrate/rollback/전환/롤백…), safety refresh(substantive 6회) | retrieve |
+| 6 | topic drift: prompt tokens vs topic fingerprint Jaccard < 0.12 (≥ 5 tokens) | retrieve |
+| 7 | low resident coverage: ≥ 8 tokens인데 resident fact vocabulary와 교집합 0 | retrieve |
+| 8 | 짧은 prompt가 topic과 겹침(Jaccard ≥ 0.3) 또는 substantive prompt가 강하게 겹침(≥ 0.35) | skip, embedding 0 |
+| 9 | 그 외 | ambiguous → embedding 1회: `cos(prompt, topic) - baseline ≥ 0.08`이면 skip(coherent), 아니면 retrieve(embedding_drift) |
+
+ambiguous path의 embedding은 retrieval에 그대로 재사용됩니다. 기본값은 `DEFAULT_RECALL_GATE_CONFIG`에
+있으며 threshold는 deterministic이고 소수입니다. embedding이 불가능하면(model 없음/offline) skip은 그대로
+무료이고 retrieve path는 vector가 필요 없는 section(CORRECTION, WORK NOW, WATCH, RECENT EVIDENCE)만
+렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
+
+session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embedding`,
+`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`, `watch_emitted_json`.
+새 session은 생성 시점의 `projects.memory_revision`을 `memory_revision_seen`으로 시작합니다(resident가
+없으므로 correct할 것이 없음). sibling 변경은 다음 prompt에서 `[MEMEX CORRECTION]`으로 강제됩니다.
+
+## 4b. Memory Bundle
+
+`src/memory-bundle.ts`가 section을 고정 우선순위로 렌더링합니다.
+
+| Section | 조건 |
+| --- | --- |
+| `[MEMEX CORRECTION]` | 같은 fact의 새 generation(`Updated (supersedes earlier context)`), 비활성화된 resident fact(`No longer active`), stale project revision |
+| `[WORK NOW]` | Capsule generation 변경, epoch 내 첫 substantive prompt, compact 뒤 첫 prompt (Capsule은 context-only) |
+| `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
+| `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; session TTL 5 prompt |
+| `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 subject의 Chronicle event 수·latest event·`trace_fact` 안내(전체 history 주입 금지) |
+| `[RECENT EVIDENCE — NOT YET DISTILLED]` | Hot Evidence lane |
+| `[ASSISTANT CONTEXT-ONLY — NOT AUTHORITATIVE]` | current truth/correction이 없고 explicit memory intent일 때만 source-linked 과거 답변 1건 |
+
+예산: normal prompt target 700 / hard 1,000자(line 160자), resume/compact target 1,500 / hard 2,000자.
+ranking은 section 우선순위 → caller 순서(score desc, id asc)이며 truncation은 deterministic입니다.
+relation 1-hop expansion은 why/related/dependency/contradiction/trace intent에서만 실행됩니다.
+
 ## 5. Selection 규칙
 
 1. 비정보성 prompt는 skip할 수 있습니다.
@@ -139,6 +185,21 @@ KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.
 
 Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 실제로 context를 소비했다는 별도 receipt가 없다면 `consumed`를 주장하지 않습니다.
 
+## 8a. Metrics와 calibration
+
+`continuity_telemetry`에 측정 sample만 기록합니다: `retrieval_gate_skip_count`(reason),
+`retrieval_execute_count`(triggers), `embedding_calls`, `candidate_facts`, `current_facts`, `delta_facts`,
+`injected_facts`, `injected_chars`, `section_chars`(section), `bundle_size`, `estimated_tokens`,
+`correction_count`, `correction_delay_prompts`, `watch_emissions`, `project_revision_invalidations`,
+`repeated_context_turns`. `summarizeTelemetry`는 `TELEMETRY — MEASURED, NOT A FACT` 보고서를 만들며 fact나
+Chronicle event를 만들지 않습니다.
+
+`node scripts/continuity-recall-benchmark.mjs`는 deterministic embedding stub 위에서 Prompt 5A/5B workload를
+baseline(gate off)과 gated로 두 번 실행하고 `docs/verification/continuity-v1/recall-calibration.json`을 씁니다.
+최신 측정(prompts 340): retrievals baseline 340 → gated 126, embedding calls 337 → 209, ack prompt embedding 0,
+stale/wrong-workstream injection 0, mandatory memory intent miss 0, max bundle 514자. stub 위 수치이므로 production
+model에서는 threshold를 재측정합니다(D-027).
+
 ## 9. 관측 상태
 
 대표 injection status:
@@ -146,8 +207,10 @@ Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 �
 - `injected`
 - `no-match`
 - `deduped`
-- `skipped`
+- `skipped` (`gate: skip:<reason>`, `embedding_calls`)
 - `no-session-provenance`
 - `error`
+
+`injected` 로그는 `gate: retrieve:<triggers>`, `embedding_calls`, `sections`를 함께 기록합니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

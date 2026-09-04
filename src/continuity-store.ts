@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
 
-export const CONTINUITY_SCHEMA_VERSION = 5;
+export const CONTINUITY_SCHEMA_VERSION = 6;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
@@ -37,6 +37,7 @@ export type ContinuityMigrationStage =
   | "incident-tables"
   | "telemetry-table"
   | "chronicle-indexes"
+  | "recall-gate-columns"
   | "fts-rebuild"
   | "exchange-metadata"
   | "schema-meta"
@@ -729,6 +730,22 @@ export function ensureContinuitySchema(
     }
 
     ensureChronicleSchema(db, options);
+
+    // Phase 5 recall gate state (RFC §12.2): additive session columns.
+    const gateColumns: Array<[string, string]> = [
+      ["topic_fingerprint_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["topic_embedding", "BLOB"],
+      ["informative_prompts_since_retrieval", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_retrieval_epoch", "INTEGER NOT NULL DEFAULT -1"],
+      ["last_retrieval_at", "TEXT"],
+      ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
+      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ];
+    const sessionColumns = columnNames(db, "session_memory_state");
+    for (const [name, type] of gateColumns) {
+      if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
+    }
+    options.afterMigrationStage?.("recall-gate-columns");
 
     db.exec(`
 

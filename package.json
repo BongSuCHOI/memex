@@ -42,6 +42,7 @@
     "test": "vitest run",
     "test:marketplace": "node scripts/marketplace-e2e.mjs",
     "test:package": "node scripts/package-runtime-e2e.mjs",
+    "bench:recall": "node scripts/continuity-recall-benchmark.mjs",
     "test:watch": "vitest",
     "eval:fact-extraction": "npm run build --silent && node scripts/fact-extraction-eval.mjs",
     "pretest": "npm run build"

@@ -54,6 +54,7 @@ node scripts/web-ui-browser-e2e.mjs
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
 | continuity identity v4 | path migration/re-run, worktree/rename/clone link-split, conservative binding, promotion slots, memory revision/correction, Hot Evidence TTL/pagination, stable MCP/sync/privacy scope |
 | continuity chronicle v5 | extended `fact_revisions` Chronicle, subject slot resolution, grounded cause vs classifier note, effective/recorded order, rollback/contradiction, incident coalescing/pattern/remediation, `trace_fact` timeline pagination, Chronicle sync/purge tombstones, measured telemetry |
+| continuity recall v6 | cheap gate skip/trigger matrix, revision-aware delta/correction, Memory Bundle hard budget, intent-gated graph, verified WATCH, demoted assistant lane, embeddings-unavailable fallback, metrics exactness, 150-turn workload, `scripts/continuity-recall-benchmark.mjs` calibration artifact |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
 

@@ -1,6 +1,7 @@
 export declare const EMBEDDING_MODEL: string;
 export declare const EMBEDDING_VERSION: number;
 export type EmbeddingMode = 'query' | 'passage';
+export declare function stubEmbedding(text: string, dimensions?: number): number[];
 export declare function initEmbeddings(): Promise<void>;
 /**
  * @param mode 'passage' for stored/indexed content (facts, exchanges),

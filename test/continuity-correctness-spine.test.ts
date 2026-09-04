@@ -226,6 +226,7 @@ describe("Continuity v1 schema and migration", () => {
       "incident-tables",
       "telemetry-table",
       "chronicle-indexes",
+      "recall-gate-columns",
       "continuity-indexes",
       "continuity-core-indexes",
       "fts-rebuild",

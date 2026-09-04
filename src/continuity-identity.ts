@@ -560,9 +560,10 @@ export function bindSessionWorkstream(
   db.prepare(`
     INSERT INTO session_memory_state
       (session_id, project, project_id, workspace_id, workstream_id, context_epoch,
-       binding_reason, binding_confidence, last_source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding', ?, ?)
-  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, at, at);
+       binding_reason, binding_confidence, last_source, memory_revision_seen, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding',
+      COALESCE((SELECT memory_revision FROM projects WHERE project_id = ?), 0), ?, ?)
+  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, input.projectId, at, at);
   audit(db, { action: "rebind", projectId: input.projectId, workspaceId: input.workspaceId, workstreamId, sessionId: input.sessionId, reason, detail: { confidence }, now: at });
   return { workstreamId, reason, confidence };
 }

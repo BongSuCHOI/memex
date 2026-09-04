@@ -18408,7 +18408,32 @@ function modelVersion(model) {
 }
 var EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
 var embeddingPipeline = null;
+function embeddingStubEnabled() {
+  return process.env.MEMEX_EMBEDDING_STUB === "1" || process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function embeddingStubFails() {
+  return process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function stubEmbedding(text, dimensions = 384) {
+  const vector = new Array(dimensions).fill(0);
+  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
+  for (const token of tokens2) {
+    let hash2 = 2166136261;
+    for (let i = 0; i < token.length; i++) {
+      hash2 ^= token.charCodeAt(i);
+      hash2 = Math.imul(hash2, 16777619) >>> 0;
+    }
+    vector[hash2 % dimensions] += 1;
+    vector[(hash2 >>> 8) % dimensions] += 0.5;
+  }
+  let norm = 0;
+  for (const value of vector) norm += value * value;
+  norm = Math.sqrt(norm) || 1;
+  return vector.map((value) => value / norm);
+}
 async function initEmbeddings() {
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) return;
   if (!embeddingPipeline) {
     console.error(`Loading embedding model ${EMBEDDING_MODEL} (first run may take time)...`);
     embeddingPipeline = await pipeline(
@@ -18434,6 +18459,12 @@ async function generateEmbedding(text, mode = "passage") {
       queryEmbedMemo.set(text, hit);
       return hit.slice();
     }
+  }
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) {
+    const stub = stubEmbedding(text);
+    if (mode === "query") queryEmbedMemo.set(text, stub.slice());
+    return stub;
   }
   if (!embeddingPipeline) {
     await initEmbeddings();
@@ -18878,9 +18909,10 @@ function bindSessionWorkstream(db, input) {
   db.prepare(`
     INSERT INTO session_memory_state
       (session_id, project, project_id, workspace_id, workstream_id, context_epoch,
-       binding_reason, binding_confidence, last_source, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding', ?, ?)
-  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, at, at);
+       binding_reason, binding_confidence, last_source, memory_revision_seen, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding',
+      COALESCE((SELECT memory_revision FROM projects WHERE project_id = ?), 0), ?, ?)
+  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, input.projectId, at, at);
   audit(db, { action: "rebind", projectId: input.projectId, workspaceId: input.workspaceId, workstreamId, sessionId: input.sessionId, reason, detail: { confidence }, now: at });
   return { workstreamId, reason, confidence };
 }
@@ -18936,7 +18968,7 @@ function markSessionProjectRevisionSeen(db, sessionId, expectedRevision) {
 }
 
 // src/continuity-store.ts
-var CONTINUITY_SCHEMA_VERSION = 5;
+var CONTINUITY_SCHEMA_VERSION = 6;
 function sha256(value) {
   return createHash2("sha256").update(value, "utf8").digest("hex");
 }
@@ -19558,6 +19590,20 @@ function ensureContinuitySchema(db, options = {}) {
       `);
     }
     ensureChronicleSchema(db, options);
+    const gateColumns = [
+      ["topic_fingerprint_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["topic_embedding", "BLOB"],
+      ["informative_prompts_since_retrieval", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_retrieval_epoch", "INTEGER NOT NULL DEFAULT -1"],
+      ["last_retrieval_at", "TEXT"],
+      ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
+      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"]
+    ];
+    const sessionColumns = columnNames(db, "session_memory_state");
+    for (const [name, type] of gateColumns) {
+      if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
+    }
+    options.afterMigrationStage?.("recall-gate-columns");
     db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -20717,14 +20763,32 @@ function listIncidentOccurrences(db, input) {
 var TELEMETRY_METRICS = [
   "semantic_retrieval_calls",
   "retrieval_gate_skip_count",
+  "retrieval_execute_count",
+  "embedding_calls",
+  "embedding_cache_hits",
+  "candidate_facts",
+  "current_facts",
+  "delta_facts",
+  "injected_facts",
   "injected_chars",
+  "section_chars",
+  "bundle_size",
   "estimated_tokens",
+  "correction_count",
+  "correction_delay_prompts",
+  "watch_emissions",
+  "watch_confirmed",
+  "warning_precision",
+  "project_revision_invalidations",
   "duplicate_tool_calls",
   "repeated_context_turns",
   "time_to_first_correct_action_ms",
   "incident_recurrence",
-  "warning_precision",
-  "worker_extraction_tokens"
+  "mcp_trace_success",
+  "worker_extraction_tokens",
+  "worker_extraction_latency_ms",
+  "worker_extraction_retries",
+  "worker_extraction_dead"
 ];
 var TELEMETRY_SET = new Set(TELEMETRY_METRICS);
 function recordTelemetrySample(db, input) {
@@ -21862,19 +21926,6 @@ async function detectRepeat(prompt, project, limit = 3, threshold = 0.82, opts =
     if (ownDb) db.close();
   }
 }
-function formatRepeatContext(matches) {
-  if (matches.length === 0) return "";
-  const lines = ["\u{1F504} \uBE44\uC2B7\uD55C \uC9C8\uBB38\uC744 \uC774\uC804\uC5D0 \uD558\uC2E0 \uC801\uC774 \uC788\uC2B5\uB2C8\uB2E4:"];
-  for (const m2 of matches) {
-    const date3 = m2.timestamp.slice(0, 10);
-    const sim = Math.round(m2.similarity * 100);
-    lines.push(`
-[${date3}, ${sim}% \uC720\uC0AC] "${m2.userMessage.trim()}..."`);
-    lines.push(`\u2192 ${m2.assistantSummary.trim()}`);
-    lines.push(`  (Lines ${m2.lineStart}-${m2.lineEnd} in ${m2.archivePath})`);
-  }
-  return lines.join("\n");
-}
 
 // src/inject-log.ts
 import fs6 from "fs";
@@ -22232,6 +22283,354 @@ ${accepted.join("\n")}`;
   };
 }
 
+// src/recall-gate.ts
+var DEFAULT_RECALL_GATE_CONFIG = {
+  ackMaxTokens: 4,
+  safetyRefreshInterval: 6,
+  driftJaccard: 0.12,
+  driftMinTokens: 5,
+  coverageMinTokens: 8,
+  coherentMargin: 0.08,
+  substantiveMinTokens: 5,
+  lexicalCoherentJaccard: 0.35
+};
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "to",
+  "of",
+  "and",
+  "or",
+  "in",
+  "on",
+  "for",
+  "is",
+  "are",
+  "it",
+  "this",
+  "that",
+  "with",
+  "be",
+  "as",
+  "at",
+  "by",
+  "we",
+  "i",
+  "you",
+  "do",
+  "can",
+  "please",
+  "let",
+  "me",
+  "us",
+  "our",
+  "my",
+  "your",
+  "\uC740",
+  "\uB294",
+  "\uC774",
+  "\uAC00",
+  "\uC744",
+  "\uB97C",
+  "\uC5D0",
+  "\uC758",
+  "\uB85C",
+  "\uC73C\uB85C",
+  "\uC640",
+  "\uACFC",
+  "\uB3C4",
+  "\uC880",
+  "\uADF8",
+  "\uC800",
+  "\uAC83",
+  "\uC218",
+  "\uD574",
+  "\uD574\uC918",
+  "\uD558\uC790",
+  "\uD574\uC694",
+  "\uD569\uB2C8\uB2E4",
+  "\uC788\uC5B4",
+  "\uC5C6\uC5B4",
+  "\uADF8\uB9AC\uACE0",
+  "\uB610",
+  "\uADF8\uB7FC"
+]);
+var ACK_PATTERNS = [
+  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright)[.! ]*$/i,
+  /^(응|네|넵|예|아니|아니요|고마워|고맙습니다|감사|감사합니다|좋아|좋아요|좋네|알겠어|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿)[.! ~]*$/
+];
+var CONTINUE_PATTERNS = [
+  /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
+  /^(계속|계속해|계속해줘|계속하자|진행|진행해|진행해줘|다음|가자|고|해줘|해봐|ㄱ)[.! ~]*$/
+];
+var MINOR_CORRECTION_PATTERNS = [
+  /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
+  /^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)/
+];
+var MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\b|\bbefore\b|\bearlier\b|\brepeat(ed|ing)?\b|\bagain\b|\bremember\b|\brecall\b|\bwhat did we\b|\bwhat was\b|\bhow did\b|\bwhere did\b|\borigin\b|\bdecided\b|왜|언제|이전|예전|과거|전에|기록|출처|근거|이유|히스토리|history|반복|또\s*(그|이)|기억|다시|했었|였었|결정했|정했|바꿨|변경했|어디서)/i;
+var TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
+var HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
+function tokenizePrompt(text) {
+  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_.-]+/u).map((token) => token.replace(/^[.-]+|[.-]+$/g, "")).filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+  return [...new Set(tokens2)];
+}
+function jaccard2(a, b2) {
+  const left = new Set(a);
+  const right = new Set(b2);
+  if (left.size === 0 || right.size === 0) return 0;
+  let overlap = 0;
+  for (const token of left) if (right.has(token)) overlap++;
+  return overlap / (left.size + right.size - overlap);
+}
+var ACK_WORDS = /* @__PURE__ */ new Set([
+  "ok",
+  "okay",
+  "k",
+  "yes",
+  "yep",
+  "yeah",
+  "no",
+  "nope",
+  "sure",
+  "thanks",
+  "thank",
+  "thx",
+  "ty",
+  "cool",
+  "great",
+  "nice",
+  "good",
+  "got",
+  "understood",
+  "done",
+  "fine",
+  "alright",
+  "perfect",
+  "right",
+  "awesome",
+  "\uC751",
+  "\uB124",
+  "\uB135",
+  "\uC608",
+  "\uC544\uB2C8",
+  "\uC544\uB2C8\uC694",
+  "\uACE0\uB9C8\uC6CC",
+  "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
+  "\uAC10\uC0AC",
+  "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
+  "\uC88B\uC544",
+  "\uC88B\uC544\uC694",
+  "\uC88B\uB124",
+  "\uC54C\uACA0\uC5B4",
+  "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
+  "\uC624\uCF00\uC774",
+  "\u3147\u314B",
+  "\u3147\u3147",
+  "\uAD7F",
+  "\uB9DE\uC544",
+  "\uB9DE\uC544\uC694"
+]);
+var CONTINUE_WORDS = /* @__PURE__ */ new Set([
+  "continue",
+  "go",
+  "on",
+  "keep",
+  "going",
+  "next",
+  "proceed",
+  "carry",
+  "ahead",
+  "resume",
+  "\uACC4\uC18D",
+  "\uACC4\uC18D\uD574",
+  "\uACC4\uC18D\uD574\uC918",
+  "\uACC4\uC18D\uD558\uC790",
+  "\uC9C4\uD589",
+  "\uC9C4\uD589\uD574",
+  "\uC9C4\uD589\uD574\uC918",
+  "\uB2E4\uC74C",
+  "\uAC00\uC790",
+  "\uD574\uC918",
+  "\uD574\uBD10",
+  "\u3131\u3131"
+]);
+function detectPromptIntents(prompt) {
+  const trimmed = prompt.trim();
+  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+  const allAck = rawTokens.length > 0 && rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || token === "you" || token === "it" || token === "that");
+  const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && rawTokens.some((token) => ACK_WORDS.has(token));
+  const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && !acknowledgement;
+  return {
+    memory: MEMORY_INTENT.test(trimmed),
+    trace: TRACE_INTENT.test(trimmed),
+    highImpact: HIGH_IMPACT_INTENT.test(trimmed),
+    acknowledgement,
+    continuation
+  };
+}
+function cosineSimilarity(a, b2) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b2.length);
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b2[i];
+    na += a[i] * a[i];
+    nb += b2[i] * b2[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+function decideRecall(input) {
+  const config2 = { ...DEFAULT_RECALL_GATE_CONFIG, ...input.config ?? {} };
+  const tokens2 = tokenizePrompt(input.prompt);
+  const intents = detectPromptIntents(input.prompt);
+  const triggers = [];
+  const fingerprint = input.state.topicFingerprint;
+  const topicOverlap = fingerprint.length > 0 ? jaccard2(tokens2, fingerprint) : null;
+  const substantive = tokens2.length >= config2.substantiveMinTokens || intents.memory || intents.highImpact;
+  const base = (action, skipReason = null) => ({
+    action,
+    triggers,
+    skipReason,
+    intents,
+    tokens: tokens2,
+    substantive,
+    topicOverlap
+  });
+  if (input.prompt.trim().length === 0) return base("skip", "empty_prompt");
+  if (intents.memory) triggers.push("explicit_memory_intent");
+  if (input.incidentMatched) triggers.push("incident_signature_match");
+  if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
+  if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
+  if (triggers.length > 0) return base("retrieve");
+  if ((intents.acknowledgement || intents.continuation) && tokens2.length <= config2.ackMaxTokens) {
+    return base("skip", intents.acknowledgement ? "acknowledgement" : "continuation");
+  }
+  if (!substantive && MINOR_CORRECTION_PATTERNS.some((pattern) => pattern.test(input.prompt.trim())) && tokens2.length <= config2.ackMaxTokens + 2) {
+    return base("skip", "minor_correction");
+  }
+  const epochChanged = input.state.lastRetrievalEpoch !== input.state.contextEpoch;
+  if (epochChanged) {
+    triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
+  }
+  if (intents.highImpact) triggers.push("high_impact_intent");
+  if (input.state.informativePromptsSinceRetrieval >= config2.safetyRefreshInterval) triggers.push("safety_refresh");
+  if (topicOverlap !== null && tokens2.length >= config2.driftMinTokens && topicOverlap < config2.driftJaccard) {
+    triggers.push("topic_drift");
+  }
+  if (tokens2.length >= config2.coverageMinTokens && input.state.residentTokens.size > 0) {
+    let covered = 0;
+    for (const token of tokens2) if (input.state.residentTokens.has(token)) covered++;
+    if (covered === 0) triggers.push("low_resident_coverage");
+  }
+  if (triggers.length > 0) return base("retrieve");
+  if (!substantive && topicOverlap !== null && topicOverlap >= 0.3) return base("skip", "continuation");
+  if (!substantive && topicOverlap === null) return base("skip", "continuation");
+  if (topicOverlap !== null && topicOverlap >= config2.lexicalCoherentJaccard) return base("skip", "coherent_topic");
+  if (!input.state.hasTopicEmbedding) {
+    triggers.push("no_topic_embedding");
+    return base("retrieve");
+  }
+  return base("ambiguous");
+}
+function resolveAmbiguousDecision(decision, promptEmbedding, topicEmbedding, baseline, config2 = {}) {
+  const merged = { ...DEFAULT_RECALL_GATE_CONFIG, ...config2 };
+  if (!topicEmbedding) {
+    return { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
+  }
+  const similarity = cosineSimilarity(promptEmbedding, topicEmbedding);
+  if (similarity - baseline >= merged.coherentMargin) {
+    return { ...decision, action: "skip", skipReason: "coherent_topic" };
+  }
+  return { ...decision, action: "retrieve", triggers: [...decision.triggers, "embedding_drift"], skipReason: null };
+}
+function embeddingToBlob(embedding) {
+  return Buffer.from(new Float32Array(embedding).buffer);
+}
+function blobToEmbedding(blob) {
+  if (!blob || !(blob instanceof Buffer) || blob.byteLength === 0) return null;
+  const view = new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
+  return Array.from(view);
+}
+
+// src/memory-bundle.ts
+var BUNDLE_SECTION_ORDER = [
+  "CORRECTION",
+  "WORK NOW",
+  "CURRENT TRUTH",
+  "WATCH",
+  "TRACE",
+  "RECENT EVIDENCE",
+  "ASSISTANT CONTEXT"
+];
+var BUNDLE_HEADINGS = {
+  CORRECTION: "[MEMEX CORRECTION]",
+  "WORK NOW": "[WORK NOW]",
+  "CURRENT TRUTH": "[CURRENT TRUTH]",
+  WATCH: "[WATCH \u2014 VERIFIED INCIDENT PATTERN]",
+  TRACE: "[TRACE \u2014 HISTORY AVAILABLE]",
+  "RECENT EVIDENCE": "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]",
+  "ASSISTANT CONTEXT": "[ASSISTANT CONTEXT-ONLY \u2014 NOT AUTHORITATIVE]"
+};
+var NORMAL_BUNDLE_BUDGET = {
+  target: 700,
+  hard: 1e3,
+  lineChars: 160,
+  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 }
+};
+function normalizeLine(text, cap) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > cap ? flat.slice(0, cap - 1) + "\u2026" : flat;
+}
+function renderMemoryBundle(sections, budget) {
+  const byKind = new Map(sections.map((section) => [section.kind, section]));
+  const blocks = [];
+  const report = [];
+  let used = 0;
+  let truncated = false;
+  for (const kind of BUNDLE_SECTION_ORDER) {
+    const section = byKind.get(kind);
+    if (!section || section.items.length === 0) continue;
+    const maxItems = budget.maxItems[kind] ?? section.items.length;
+    const heading = BUNDLE_HEADINGS[kind];
+    const accepted = [];
+    const emitted = [];
+    for (const item of section.items) {
+      if (emitted.length >= maxItems) {
+        truncated = true;
+        break;
+      }
+      const line = item.raw ? item.text.trim().slice(0, budget.hard) : `- ${normalizeLine(item.text, budget.lineChars)}`;
+      const prospective = item.raw && accepted.length === 0 && line.startsWith("[") ? line : `${heading}
+${[...accepted, line].join("\n")}`;
+      const separator = blocks.length > 0 ? 2 : 0;
+      if (used + separator + prospective.length > budget.hard) {
+        truncated = true;
+        break;
+      }
+      if (used + separator + prospective.length > budget.target && line.length > budget.lineChars / 2 && accepted.length > 0) {
+        truncated = true;
+        break;
+      }
+      accepted.push(line);
+      emitted.push(item);
+    }
+    if (accepted.length === 0) continue;
+    const block = accepted.length === 1 && section.items[0]?.raw && accepted[0].startsWith("[") ? accepted[0] : `${heading}
+${accepted.join("\n")}`;
+    used += (blocks.length > 0 ? 2 : 0) + block.length;
+    blocks.push(block);
+    report.push({ kind, emitted, chars: block.length });
+  }
+  const text = blocks.join("\n\n");
+  return { text, chars: text.length, sections: report, truncated };
+}
+function estimateTokens(chars) {
+  return Math.ceil(chars / 3);
+}
+
 // src/inject-core.ts
 function sampleTelemetry(db, input) {
   try {
@@ -22242,9 +22641,10 @@ function sampleTelemetry(db, input) {
 var TOP_K = 5;
 var BASELINE_MARGIN = 0.045;
 var MAX_CONTEXT_FACTS = 8;
-var FACT_CHAR_CAP = 160;
-var BLOCK_CHAR_BUDGET = 1e3;
+var BLOCK_CHAR_BUDGET = NORMAL_BUNDLE_BUDGET.hard;
 var REPEAT_ELAPSED_BUDGET_MS = 700;
+var WATCH_TTL_PROMPTS = 5;
+var TOPIC_FINGERPRINT_MAX = 64;
 function commitInjectionState(db, input) {
   const write = () => {
     const receipt = recordRecallEvent(db, input);
@@ -22264,21 +22664,59 @@ function commitInjectionState(db, input) {
   if (db.inTransaction) tx();
   else tx.immediate();
 }
-function truncateFact(text) {
-  const t = text.replace(/\s+/g, " ").trim();
-  return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + "\u2026" : t;
+function canQuery(db) {
+  return typeof db.prepare === "function";
 }
-async function computeInjectContext(userPrompt, project, via, sessionId) {
-  const t0 = Date.now();
-  if (!userPrompt || userPrompt.length < 20) {
-    appendInjectLog({
-      status: "skipped",
-      project,
-      prompt_len: userPrompt?.length ?? 0,
-      via
-    });
-    return "";
+function readGateRow(db, sessionId) {
+  if (!canQuery(db)) return null;
+  return db.prepare(`
+    SELECT context_epoch, last_source, capsule_generation_seen, memory_revision_seen,
+           topic_fingerprint_json, topic_embedding, informative_prompts_since_retrieval,
+           last_retrieval_epoch, watch_emitted_json, resident_fact_revisions_json, workstream_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(sessionId) ?? null;
+}
+function parseJson(raw, fallback) {
+  if (typeof raw !== "string" || raw === "") return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
   }
+}
+function noteSkippedPrompt(db, sessionId, substantive, now) {
+  if (!substantive || !canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET informative_prompts_since_retrieval = informative_prompts_since_retrieval + 1, updated_at = ?
+    WHERE session_id = ?
+  `).run(now, sessionId);
+}
+function commitGateState(db, input) {
+  if (!canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET topic_fingerprint_json = ?, topic_embedding = COALESCE(?, topic_embedding),
+        informative_prompts_since_retrieval = 0, last_retrieval_epoch = ?, last_retrieval_at = ?,
+        watch_emitted_json = ?, updated_at = ?
+    WHERE session_id = ?
+  `).run(
+    JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)),
+    input.embedding ? embeddingToBlob(input.embedding) : null,
+    input.contextEpoch,
+    input.now,
+    JSON.stringify(input.watchLedger.slice(-20)),
+    input.now,
+    input.sessionId
+  );
+}
+function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > cap ? t.slice(0, cap - 1) + "\u2026" : t;
+}
+async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
+  const t0 = Date.now();
+  const now = options.now ?? (/* @__PURE__ */ new Date()).toISOString();
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
@@ -22289,219 +22727,334 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
     return "";
   }
   try {
-    await initEmbeddings();
-    const embedding = await generateEmbedding(userPrompt, "query");
-    const baseline = await queryBaseline(embedding);
     const db = getSearchDb();
-    {
-      const sessionScope = ensureSessionMemoryState(db, {
-        sessionId,
-        project,
-        prompt: userPrompt,
-        source: "UserPromptSubmit"
-      });
-      sampleTelemetry(db, { metric: "semantic_retrieval_calls", value: 1, projectId: sessionScope.projectId, sessionId });
-      const revisionState = sessionProjectRevisionState(db, sessionId);
-      const currentProjectRevision = revisionState.current;
-      const staleProjectMemory = currentProjectRevision > revisionState.seen;
-      if (staleProjectMemory) {
-        const correction = buildRehydrationContext(db, {
-          sessionId,
-          maxChars: BLOCK_CHAR_BUDGET
-        });
-        const ids = [...new Set(correction.factRevisions.map(([id]) => id))];
-        if (correction.context && ids.length > 0) {
-          const contextEpoch = readResidentFactRevisions(db, sessionId).contextEpoch;
-          commitInjectionState(db, {
-            sessionId,
-            project,
-            prompt: userPrompt,
-            factIds: ids,
-            projectId: sessionScope.projectId,
-            workspaceId: sessionScope.workspaceId,
-            workstreamId: sessionScope.workstreamId,
-            contextEpoch,
-            projectMemoryRevision: currentProjectRevision,
-            revisions: correction.factRevisions,
-            markProjectRevision: correction.projectRevisionComplete
-          });
-          sampleTelemetry(db, { metric: "injected_chars", value: correction.context.length + 1, unit: "chars", projectId: sessionScope.projectId, sessionId });
-          appendInjectLog({
-            status: "injected",
-            project,
-            prompt_len: userPrompt.length,
-            injected: ids.length,
-            chars: correction.context.length + 1,
-            duration_ms: Date.now() - t0,
-            via
-          });
-          return correction.context + "\n";
-        }
-        if (!markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
-          throw new Error("project memory revision changed during correction check");
-        }
+    const sessionScope = ensureSessionMemoryState(db, {
+      sessionId,
+      project,
+      prompt: userPrompt,
+      source: "UserPromptSubmit"
+    });
+    const revisionState = sessionProjectRevisionState(db, sessionId);
+    const currentProjectRevision = revisionState.current;
+    const gateRow = readGateRow(db, sessionId);
+    const capsule = readWorkCapsule(db, sessionScope.workstreamId);
+    const currentCapsuleGeneration = capsule?.generation ?? 0;
+    const residentTuples = parseJson(gateRow?.resident_fact_revisions_json, []);
+    const residentTexts = residentTuples.length > 0 && canQuery(db) ? db.prepare(`
+          SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
+        `).all(...residentTuples.map(([id]) => id)) : [];
+    const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
+    const incidents = canQuery(db) ? matchIncidentPatterns(db, {
+      projectId: sessionScope.projectId,
+      text: userPrompt,
+      limit: 2
+    }) : [];
+    let embedding = null;
+    let embeddingCalls = 0;
+    let decision = decideRecall({
+      prompt: userPrompt,
+      state: {
+        contextEpoch: sessionScope.contextEpoch,
+        lastRetrievalEpoch: Number(gateRow?.last_retrieval_epoch ?? -1),
+        lastSource: gateRow?.last_source ?? null,
+        capsuleGenerationSeen: Number(gateRow?.capsule_generation_seen ?? 0),
+        memoryRevisionSeen: revisionState.seen,
+        topicFingerprint: parseJson(gateRow?.topic_fingerprint_json, []),
+        hasTopicEmbedding: !!gateRow?.topic_embedding,
+        informativePromptsSinceRetrieval: Number(gateRow?.informative_prompts_since_retrieval ?? 0),
+        residentTokens
+      },
+      currentCapsuleGeneration,
+      currentProjectRevision,
+      incidentMatched: incidents.length > 0,
+      config: options.gateConfig
+    });
+    if (options.gate === false) {
+      decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
+    }
+    let embeddingUnavailable = false;
+    const embedOnce = async () => {
+      try {
+        await initEmbeddings();
+        const vector = await generateEmbedding(userPrompt, "query");
+        embeddingCalls++;
+        return vector;
+      } catch {
+        embeddingUnavailable = true;
+        return null;
       }
-      const candidates = searchFactsByScope(
-        db,
-        embedding,
-        {
-          type: "workstream-id",
+    };
+    let baseline = null;
+    if (decision.action === "ambiguous") {
+      embedding = await embedOnce();
+      if (embedding) {
+        baseline = await queryBaseline(embedding);
+        decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, options.gateConfig);
+      } else {
+        decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
+      }
+    }
+    if (decision.action === "skip") {
+      noteSkippedPrompt(db, sessionId, decision.substantive, now);
+      sampleTelemetry(db, {
+        metric: "retrieval_gate_skip_count",
+        value: 1,
+        projectId: sessionScope.projectId,
+        sessionId,
+        dims: { reason: decision.skipReason, substantive: decision.substantive }
+      });
+      sampleTelemetry(db, { metric: "embedding_calls", value: embeddingCalls, projectId: sessionScope.projectId, sessionId, dims: { path: "skip" } });
+      appendInjectLog({
+        status: "skipped",
+        project,
+        prompt_len: userPrompt.length,
+        gate: `skip:${decision.skipReason}`,
+        embedding_calls: embeddingCalls,
+        duration_ms: Date.now() - t0,
+        via
+      });
+      return "";
+    }
+    if (!embedding && !embeddingUnavailable) embedding = await embedOnce();
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    sampleTelemetry(db, {
+      metric: "retrieval_execute_count",
+      value: 1,
+      projectId: sessionScope.projectId,
+      sessionId,
+      dims: { triggers: decision.triggers }
+    });
+    sampleTelemetry(db, { metric: "semantic_retrieval_calls", value: 1, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "embedding_calls", value: embeddingCalls, projectId: sessionScope.projectId, sessionId, dims: { path: "retrieve", unavailable: embeddingUnavailable } });
+    if (decision.triggers.includes("project_revision_stale")) {
+      sampleTelemetry(db, { metric: "project_revision_invalidations", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    if (baseline === null) baseline = embedding ? await queryBaseline(embedding) : 0;
+    const watchLedger = parseJson(gateRow?.watch_emitted_json, []);
+    const informativeCounter = Number(gateRow?.informative_prompts_since_retrieval ?? 0);
+    const staleProjectMemory = currentProjectRevision > revisionState.seen;
+    if (staleProjectMemory) {
+      const correction = buildRehydrationContext(db, {
+        sessionId,
+        maxChars: BLOCK_CHAR_BUDGET
+      });
+      const ids = [...new Set(correction.factRevisions.map(([id]) => id))];
+      if (correction.context && ids.length > 0) {
+        const contextEpoch = readResidentFactRevisions(db, sessionId).contextEpoch;
+        commitInjectionState(db, {
+          sessionId,
+          project,
+          prompt: userPrompt,
+          factIds: ids,
           projectId: sessionScope.projectId,
           workspaceId: sessionScope.workspaceId,
-          workstreamId: sessionScope.workstreamId
-        },
-        TOP_K,
-        0
-      );
-      const results = candidates.filter((r) => {
-        const similarity = l2DistanceToSimilarity(r.distance);
-        return similarity - baseline >= BASELINE_MARGIN;
-      });
-      const hot = readHotEvidence(db, {
-        projectId: sessionScope.projectId,
-        workstreamId: sessionScope.workstreamId,
-        limit: 2
-      });
-      if (results.length === 0) {
-        if (hot.length > 0) {
-          const heading = "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]";
-          const lines2 = [heading];
-          let chars = heading.length;
-          for (const item of hot) {
-            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
-            if (chars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
-            lines2.push(line);
-            chars += line.length + 1;
-          }
-          appendInjectLog({
-            status: "injected",
-            project,
-            prompt_len: userPrompt.length,
-            candidates: candidates.length,
-            injected: 0,
-            chars,
-            duration_ms: Date.now() - t0,
-            via
-          });
-          return lines2.join("\n") + "\n";
-        }
+          workstreamId: sessionScope.workstreamId,
+          contextEpoch,
+          projectMemoryRevision: currentProjectRevision,
+          revisions: correction.factRevisions,
+          markProjectRevision: correction.projectRevisionComplete
+        });
+        commitGateState(db, { sessionId, contextEpoch, tokens: decision.tokens, embedding, watchLedger, now });
+        const chars = correction.context.length + 1;
+        sampleTelemetry(db, { metric: "correction_count", value: ids.length, projectId: sessionScope.projectId, sessionId, dims: { path: "project_revision" } });
+        sampleTelemetry(db, { metric: "correction_delay_prompts", value: informativeCounter, projectId: sessionScope.projectId, sessionId });
+        sampleTelemetry(db, { metric: "injected_facts", value: ids.length, projectId: sessionScope.projectId, sessionId });
+        sampleTelemetry(db, { metric: "injected_chars", value: chars, unit: "chars", projectId: sessionScope.projectId, sessionId });
+        sampleTelemetry(db, { metric: "bundle_size", value: chars, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { kind: "correction" } });
         appendInjectLog({
-          status: "no-match",
+          status: "injected",
           project,
           prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
+          injected: ids.length,
+          chars,
+          gate: gateLabel,
+          embedding_calls: embeddingCalls,
+          sections: ["CORRECTION"],
           duration_ms: Date.now() - t0,
           via
         });
-        return "";
+        return correction.context + "\n";
       }
-      const seenIds = new Set(results.map((r) => r.fact.id));
-      const expandedFacts = [
-        ...results.map((r) => ({ fact: r.fact, note: "" }))
-      ];
+      if (!markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+        throw new Error("project memory revision changed during correction check");
+      }
+    }
+    const scope = {
+      type: "workstream-id",
+      projectId: sessionScope.projectId,
+      workspaceId: sessionScope.workspaceId,
+      workstreamId: sessionScope.workstreamId
+    };
+    const candidates = embedding ? searchFactsByScope(db, embedding, scope, TOP_K, 0) : [];
+    const results = candidates.filter((r) => {
+      const similarity = l2DistanceToSimilarity(r.distance);
+      return similarity - baseline >= BASELINE_MARGIN;
+    });
+    sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
+    const hot = readHotEvidence(db, {
+      projectId: sessionScope.projectId,
+      workstreamId: sessionScope.workstreamId,
+      limit: 2
+    });
+    const seenIds = new Set(results.map((r) => r.fact.id));
+    const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
+    if (decision.intents.trace) {
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(
-          db,
-          fact.id,
-          1,
-          0.6,
-          0.2,
-          null,
-          "project",
-          {
-            type: "workstream-id",
-            projectId: sessionScope.projectId,
-            workspaceId: sessionScope.workspaceId,
-            workstreamId: sessionScope.workstreamId
-          }
-        );
+        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, null, "project", scope);
         for (const { fact: relFact, relation } of related) {
           if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
-            expandedFacts.push({
-              fact: relFact,
-              note: `[${relation.relation_type}]`
-            });
+            expandedFacts.push({ fact: relFact, note: `[${relation.relation_type}]` });
           }
         }
       }
-      const residency = readResidentFactRevisions(db, sessionId);
-      const resident = new Set(
-        residency.resident.map(([id, semantic, lifecycle]) => `${id}:${semantic}:${lifecycle}`)
-      );
-      const revisionOf = (fact) => [
-        fact.id,
-        fact.semantic_generation ?? 1,
-        fact.lifecycle_generation ?? 1
-      ];
-      const fresh = expandedFacts.filter(({ fact }) => {
-        const [id, semantic, lifecycle] = revisionOf(fact);
-        return !resident.has(`${id}:${semantic}:${lifecycle}`);
+    }
+    const residency = readResidentFactRevisions(db, sessionId);
+    const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
+    const revisionOf = (fact) => [
+      fact.id,
+      fact.semantic_generation ?? 1,
+      fact.lifecycle_generation ?? 1
+    ];
+    const fresh = [];
+    const corrections = [];
+    let dedupedCount = 0;
+    for (const entry of expandedFacts) {
+      const [id, semantic, lifecycle] = revisionOf(entry.fact);
+      const resident = residentById.get(id);
+      if (!resident) {
+        fresh.push(entry);
+        continue;
+      }
+      if (resident[1] === semantic && resident[2] === lifecycle) {
+        dedupedCount++;
+        continue;
+      }
+      corrections.push({
+        text: `Updated (supersedes earlier context): [${entry.fact.category}] ${truncateFact(entry.fact.fact)}`,
+        revision: [id, semantic, lifecycle]
       });
-      const dedupedCount = expandedFacts.length - fresh.length;
-      if (fresh.length === 0) {
-        appendInjectLog({
-          status: "deduped",
-          project,
-          prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
-          deduped: dedupedCount,
-          duration_ms: Date.now() - t0,
-          via
-        });
-        return "";
-      }
-      const lines = ["\u{1F4CC} \uAD00\uB828 \uACFC\uAC70 \uACB0\uC815:"];
-      let blockChars = lines[0].length;
-      const injectedIds = [];
-      for (const { fact, note } of fresh) {
-        const dateStr = fact.created_at.slice(0, 10);
-        const line = `- ${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
-        if (blockChars + line.length > BLOCK_CHAR_BUDGET && injectedIds.length > 0)
-          break;
-        lines.push(line);
-        blockChars += line.length + 1;
-        injectedIds.push(fact.id);
-      }
-      if (hot.length > 0) {
-        const heading = "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]";
-        if (blockChars + heading.length + 1 <= BLOCK_CHAR_BUDGET) {
-          lines.push("", heading);
-          blockChars += heading.length + 2;
-          for (const item of hot) {
-            const line = `- ${String(item.evidence_text).replace(/\s+/g, " ").slice(0, 180)}`;
-            if (blockChars + line.length + 1 > BLOCK_CHAR_BUDGET) break;
-            lines.push(line);
-            blockChars += line.length + 1;
-          }
-        }
-      }
-      if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
-        try {
-          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
-            embedding,
-            db
+    }
+    if (residentById.size > 0 && canQuery(db)) {
+      const inactive = db.prepare(`
+        SELECT id, fact, semantic_generation, lifecycle_generation FROM facts
+        WHERE is_active = 0 AND id IN (${[...residentById.keys()].map(() => "?").join(",")})
+      `).all(...residentById.keys());
+      for (const row of inactive) {
+        const resident = residentById.get(row.id);
+        if (resident && resident[2] !== row.lifecycle_generation) {
+          corrections.push({
+            text: `No longer active: ${truncateFact(row.fact)}`,
+            revision: [row.id, row.semantic_generation, row.lifecycle_generation]
           });
-          let repeatCtx = formatRepeatContext(repeats);
-          if (repeatCtx) {
-            const remaining = BLOCK_CHAR_BUDGET - blockChars;
-            if (remaining <= 0) {
-            } else {
-              if (repeatCtx.length > remaining) {
-                repeatCtx = repeatCtx.slice(0, Math.max(0, remaining - 1)) + "\u2026";
-              }
-              if (repeatCtx.trim().length > 0) {
-                lines.push("");
-                lines.push(repeatCtx);
-              }
-            }
-          }
-        } catch {
         }
       }
-      const injectedRevisions = fresh.filter(({ fact }) => injectedIds.includes(fact.id)).map(({ fact }) => revisionOf(fact));
+    }
+    sampleTelemetry(db, { metric: "delta_facts", value: fresh.length + corrections.length, projectId: sessionScope.projectId, sessionId });
+    const sections = [];
+    if (corrections.length > 0) {
+      sections.push({ kind: "CORRECTION", items: corrections.map((c) => ({ text: c.text, ref: c.revision })) });
+    }
+    const wantsWorkNow = !!capsule && (decision.triggers.includes("capsule_generation_changed") || decision.triggers.includes("first_substantive_in_epoch") || decision.triggers.includes("context_epoch_changed") || decision.triggers.includes("compact_first_prompt"));
+    if (wantsWorkNow && capsule) {
+      const lines = ["[WORK NOW]"];
+      if (capsule.objective) lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
+      if (capsule.currentState) lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
+      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
+      if (capsule.nextActions[0]) lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+      if (lines.length > 1) sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
+    }
+    if (fresh.length > 0) {
+      sections.push({
+        kind: "CURRENT TRUTH",
+        items: fresh.map(({ fact, note }) => ({
+          text: `${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${fact.created_at.slice(0, 10)})`,
+          ref: revisionOf(fact)
+        }))
+      });
+    }
+    const watchItems = [];
+    for (const pattern of incidents) {
+      const prior = watchLedger.find((entry) => entry.key === pattern.signatureKey);
+      const recurred = prior ? pattern.lastEffectiveAt > prior.lastEffectiveAt : true;
+      const withinTtl = !!prior && prior.epoch === sessionScope.contextEpoch && informativeCounter - prior.at < WATCH_TTL_PROMPTS;
+      if (!recurred && withinTtl) continue;
+      watchItems.push({
+        key: pattern.signatureKey,
+        lastEffectiveAt: pattern.lastEffectiveAt,
+        text: `Known incident pattern (${pattern.episodeCount} verified episodes, last ${pattern.lastEffectiveAt.slice(0, 10)}): "${pattern.signatureText}"${pattern.remediationSummary ? ` \u2014 verified remediation: ${pattern.remediationSummary}` : ""}`
+      });
+    }
+    if (watchItems.length > 0) sections.push({ kind: "WATCH", items: watchItems.map((w2) => ({ text: w2.text })) });
+    if ((decision.intents.trace || decision.intents.memory) && canQuery(db)) {
+      const traceItems = [];
+      for (const { fact } of results.slice(0, 2)) {
+        if (!fact.subject_key || !fact.project_id) continue;
+        const latest = readChronicleTimeline(db, {
+          projectId: fact.project_id,
+          subjectKey: fact.subject_key,
+          order: "desc",
+          limit: 1
+        });
+        const count = db.prepare("SELECT COUNT(*) AS n FROM fact_revisions WHERE project_id = ? AND subject_key = ?").get(fact.project_id, fact.subject_key).n;
+        const event = latest.events[0];
+        if (!event || Number(count) === 0) continue;
+        traceItems.push({
+          text: `${fact.subject_key}: ${count} Chronicle event(s), latest ${event.event_kind} effective ${event.effective_at.slice(0, 10)}${event.grounded_cause ? ` (cause: ${truncateFact(event.grounded_cause, 80)})` : ""}. Use trace_fact subject_key=${fact.subject_key} for history/source.`
+        });
+      }
+      if (traceItems.length > 0) sections.push({ kind: "TRACE", items: traceItems });
+    }
+    if (hot.length > 0) {
+      sections.push({ kind: "RECENT EVIDENCE", items: hot.map((item) => ({ text: String(item.evidence_text).slice(0, 180) })) });
+    }
+    if (embedding && fresh.length === 0 && corrections.length === 0 && decision.intents.memory && Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
+      try {
+        const repeats = await detectRepeat(userPrompt, project, 1, 0.85, { embedding, db });
+        const match = repeats[0];
+        if (match) {
+          sections.push({
+            kind: "ASSISTANT CONTEXT",
+            items: [{
+              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" \u2014 lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`
+            }]
+          });
+        }
+      } catch {
+      }
+    }
+    const rendered = renderMemoryBundle(sections, NORMAL_BUNDLE_BUDGET);
+    const emittedRevisions = [];
+    for (const section of rendered.sections) {
+      for (const item of section.emitted) if (item.ref) emittedRevisions.push(item.ref);
+    }
+    const emittedWatch = rendered.sections.find((s) => s.kind === "WATCH")?.emitted.length ?? 0;
+    const nextWatchLedger = [...watchLedger.filter((entry) => !watchItems.slice(0, emittedWatch).some((w2) => w2.key === entry.key))];
+    for (const watch of watchItems.slice(0, emittedWatch)) {
+      nextWatchLedger.push({ key: watch.key, epoch: sessionScope.contextEpoch, at: 0, lastEffectiveAt: watch.lastEffectiveAt });
+    }
+    if (rendered.chars === 0) {
+      commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: decision.tokens, embedding, watchLedger, now });
+      appendInjectLog({
+        status: dedupedCount > 0 ? "deduped" : "no-match",
+        project,
+        prompt_len: userPrompt.length,
+        candidates: candidates.length,
+        injected: 0,
+        deduped: dedupedCount,
+        gate: gateLabel,
+        embedding_calls: embeddingCalls,
+        duration_ms: Date.now() - t0,
+        via
+      });
+      if (dedupedCount > 0) {
+        sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+      }
+      return "";
+    }
+    const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+    if (injectedIds.length > 0) {
       commitInjectionState(db, {
         sessionId,
         project,
@@ -22512,26 +23065,47 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
         workstreamId: sessionScope.workstreamId,
         contextEpoch: residency.contextEpoch,
         projectMemoryRevision: currentProjectRevision,
-        revisions: injectedRevisions
+        revisions: emittedRevisions
       });
-      const block = lines.join("\n") + "\n";
-      sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
-      if (dedupedCount > 0) {
-        sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
-      }
-      appendInjectLog({
-        status: "injected",
-        project,
-        prompt_len: userPrompt.length,
-        candidates: candidates.length,
-        injected: injectedIds.length,
-        deduped: dedupedCount,
-        chars: block.length,
-        duration_ms: Date.now() - t0,
-        via
-      });
-      return block;
     }
+    commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: decision.tokens, embedding, watchLedger: nextWatchLedger, now });
+    if (rendered.sections.some((s) => s.kind === "WORK NOW") && capsule && canQuery(db)) {
+      db.prepare("UPDATE session_memory_state SET capsule_generation_seen = ? WHERE session_id = ? AND context_epoch = ?").run(capsule.generation, sessionId, residency.contextEpoch);
+    }
+    const block = rendered.text + "\n";
+    const sectionKinds = rendered.sections.map((s) => s.kind);
+    sampleTelemetry(db, { metric: "injected_facts", value: injectedIds.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "estimated_tokens", value: estimateTokens(block.length), unit: "tokens", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "bundle_size", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { kind: "normal", sections: sectionKinds } });
+    for (const section of rendered.sections) {
+      sampleTelemetry(db, { metric: "section_chars", value: section.chars, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { section: section.kind } });
+    }
+    const emittedCorrections = rendered.sections.find((s) => s.kind === "CORRECTION")?.emitted.length ?? 0;
+    if (emittedCorrections > 0) {
+      sampleTelemetry(db, { metric: "correction_count", value: emittedCorrections, projectId: sessionScope.projectId, sessionId, dims: { path: "revision_delta" } });
+    }
+    if (emittedWatch > 0) {
+      sampleTelemetry(db, { metric: "watch_emissions", value: emittedWatch, projectId: sessionScope.projectId, sessionId, dims: { keys: watchItems.slice(0, emittedWatch).map((w2) => w2.key) } });
+    }
+    if (dedupedCount > 0) {
+      sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    appendInjectLog({
+      status: "injected",
+      project,
+      prompt_len: userPrompt.length,
+      candidates: candidates.length,
+      injected: injectedIds.length,
+      deduped: dedupedCount,
+      chars: block.length,
+      gate: gateLabel,
+      embedding_calls: embeddingCalls,
+      sections: sectionKinds,
+      duration_ms: Date.now() - t0,
+      via
+    });
+    return block;
   } catch (error2) {
     const message = error2 instanceof Error ? error2.message : String(error2);
     appendInjectLog({

@@ -257,7 +257,12 @@ Timeline 정렬은 항상 `effective_at, recorded_at, chronicle_seq`이며 worke
 `incident_occurrences`는 source-linked incident episode(session, signature_key, retry_count, state)이고
 `incident_signatures`는 project별 stable failure signature(`episode_count`, `pattern_state`
 `candidate|pattern|remediated`, remediation event)입니다. `continuity_telemetry`는 측정된 outcome sample이며
-fact/event가 아닙니다.
+fact/event가 아닙니다(allowlist metric은 `TELEMETRY_METRICS`).
+
+`session_memory_state`는 Phase 5 recall gate state를 additive column으로 가집니다(schema v6):
+`topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`,
+`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. 새 session row의 `memory_revision_seen`은
+생성 시점의 project revision입니다.
 
 `fact_tombstones`는 hard-delete event이며 fact row가 없어져도 남아 stale peer snapshot의 resurrection을 막습니다.
 `chronicle_tombstones`는 purge된 event id를 같은 목적으로 보존합니다.
