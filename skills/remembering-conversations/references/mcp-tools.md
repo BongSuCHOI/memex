@@ -65,11 +65,24 @@ and state confidence.
 
 ## `trace_fact`
 
-`query` is required; `limit` is 1–10 (default 3). It accepts the same stable
-identity scope fields as `search_facts`. Returns revisions, authoritative source exchange IDs, archive paths, and
-line ranges. When local context dependency rows exist, a separate
-`Interpretive Context (Non-Authoritative)` section reports their dependency
-kind and archive location; these exchanges are not Fact evidence.
+One of `query` (2–10000 chars), `fact_id` (UUID), or `subject_key` (`^[a-z0-9_.]{3,200}$`) is required;
+`limit` is 1–10 (default 3). It accepts the same stable identity scope fields as `search_facts`.
+Optional history controls: `include_timeline` (default true), `timeline_limit` 1–50 (default 10),
+`timeline_cursor` (keyset cursor printed as `_Next timeline cursor: …_`), `timeline_order` `asc|desc`
+(effective time), `include_incidents` (default true), `include_sources` (default true),
+`include_hot_evidence` (default false).
+
+Output lanes: `[CURRENT FACT]` (id, active flag, promotion, subject, semantic/lifecycle revision),
+`Source Conversations [RAW EVIDENCE]`, `Interpretive Context (Non-Authoritative) [ASSISTANT CONTEXT-ONLY]`,
+`Chronicle Timeline` of `[CHRONICLE EVENT]` rows (`ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED`,
+`effective` vs `recorded` time, `projection changed` vs `event-only`, previous → new value, `reverts event`,
+`grounded cause (source-cited)` separated from `classifier note (model inference, NOT authoritative)`,
+per-event `[RAW EVIDENCE]` sources or `source unavailable (purged or missing)`), `Incidents` (occurrences and
+matching signature patterns), and `Related Facts`. A `subject_key` with no current fact still returns its
+historical events. A fact outside the requested scope is an error, never silently widened.
+
+Example: `{"subject_key":"state.runtime.session_store","project_id":"<id>","timeline_limit":5}` then
+`{"subject_key":"state.runtime.session_store","project_id":"<id>","timeline_limit":5,"timeline_cursor":"<cursor>"}`.
 
 ## `graph_stats`
 

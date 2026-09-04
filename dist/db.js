@@ -479,13 +479,12 @@ export function initDatabase(options = {}) {
     db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,
-      fact_id TEXT NOT NULL,
-      previous_fact TEXT NOT NULL,
-      new_fact TEXT NOT NULL,
+      fact_id TEXT REFERENCES facts(id),
+      previous_fact TEXT,
+      new_fact TEXT,
       reason TEXT,
       source_exchange_id TEXT,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (fact_id) REFERENCES facts(id)
+      created_at TEXT NOT NULL
     )
   `);
     db.exec(`

@@ -10,6 +10,7 @@ import { getRelatedFacts } from "./ontology-db.js";
 import { detectRepeat, formatRepeatContext } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
+import { recordTelemetrySample, type TelemetryMetric } from "./chronicle.js";
 import {
   ensureSessionMemoryState,
   buildRehydrationContext,
@@ -22,6 +23,19 @@ import {
   readHotEvidence,
   sessionProjectRevisionState,
 } from "./continuity-identity.js";
+
+
+/** Measured outcome sample; never blocks or fails the prompt path. */
+function sampleTelemetry(
+  db: Parameters<typeof recordTelemetrySample>[0],
+  input: { metric: TelemetryMetric; value: number; unit?: string; projectId?: string | null; sessionId?: string | null },
+): void {
+  try {
+    recordTelemetrySample(db, input);
+  } catch {
+    /* telemetry is best-effort */
+  }
+}
 
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
@@ -143,6 +157,7 @@ export async function computeInjectContext(
         prompt: userPrompt,
         source: "UserPromptSubmit",
       });
+      sampleTelemetry(db, { metric: "semantic_retrieval_calls", value: 1, projectId: sessionScope.projectId, sessionId });
       const revisionState = sessionProjectRevisionState(db, sessionId);
       const currentProjectRevision = revisionState.current;
       const staleProjectMemory = currentProjectRevision > revisionState.seen;
@@ -167,6 +182,7 @@ export async function computeInjectContext(
             revisions: correction.factRevisions,
             markProjectRevision: correction.projectRevisionComplete,
           });
+          sampleTelemetry(db, { metric: "injected_chars", value: correction.context.length + 1, unit: "chars", projectId: sessionScope.projectId, sessionId });
           appendInjectLog({
             status: "injected",
             project,
@@ -390,6 +406,10 @@ export async function computeInjectContext(
         revisions: injectedRevisions,
       });
       const block = lines.join("\n") + "\n";
+      sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
+      if (dedupedCount > 0) {
+        sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+      }
       appendInjectLog({
         status: "injected",
         project,

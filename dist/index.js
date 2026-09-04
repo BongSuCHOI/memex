@@ -17,5 +17,6 @@ export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, se
 export * from './fact-extractor.js';
 export * from './fact-management.js';
 export { inspectWorkspaceLocation, resolveProjectWorkspace, approveRemoteProjectMapping, linkWorkspaceToProject, splitWorkspace, createWorkstream, bindSessionWorkstream, rebindSessionWorkstream, readHotEvidence, assignFactSubject, projectRevision, sessionProjectRevisionState, markSessionProjectRevisionSeen, } from './continuity-identity.js';
+export * from './chronicle.js';
 export * from './consolidator.js';
 export * from './llm.js';

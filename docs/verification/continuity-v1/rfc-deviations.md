@@ -163,3 +163,48 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: delete path fields immediately; keep ontology/avatar/graph path-only until Phase 4; resolve every MCP path by creating identity rows; infer MCP scope from process cwd.
 - Invariant evidence: migration keeps canonical path lookups functional; MCP tests cover stable membership on all public surfaces, path-free ontology/avatar facts, workstream relation isolation, graph counts, mixed-ID rejection, raw other-session evidence, and zero identity-row mutation for an unregistered path.
 - Reversal condition/trade-off: remove legacy path readers only in a documented breaking migration after released callers have migrated. Phase 4 extends history/source depth but does not own or defer Phase 3 stable scope.
+
+## D-017 — B gates run by a Claude general-purpose subagent
+
+- RFC section/invariant: Worker Prompt Pack gate execution rules (not an RFC invariant)
+- Actual choice: from Phase 4 onward the implementation is driven from Claude Code. The Codex custom agent `memex_gate_reviewer` (`gpt-5.6-sol`, reasoning effort high) cannot be spawned from this runtime, so each B gate is delegated to exactly one Claude `general-purpose` subagent that receives the same developer instructions (`~/.codex/agents/memex-gate-reviewer.toml`), the Final RFC, the B prompt, the latest handoff, the traceability matrix and this record, and is allowed to fix defects directly.
+- Reason: the user approved adapting the gate runner to the available runtime on 2026-09-04 while keeping the one-gate-one-independent-reviewer rule.
+- Alternatives considered: return every B gate to Codex; run the gate in the implementing session.
+- Invariant evidence: the parent session does not edit gate-owned files while the subagent runs and advances only on `PASS`.
+- Reversal condition/trade-off: if the work returns to Codex, the original agent definition applies unchanged.
+
+## D-018 — Chronicle is the extended `fact_revisions` table
+
+- RFC section/invariant: §4.4, §15, §17 (`fact_events / extended fact_revisions`); CURRENT VS HISTORY
+- Actual choice: the released `fact_revisions` table is rebuilt in place (schema v5) with nullable `fact_id`/`previous_fact`/`new_fact` and the RFC event columns added additively. Released revision rows keep their ids and are backfilled as `CHANGED`/`actor=legacy` events whose free-text reason becomes `classifier_note`. No parallel `fact_events` table exists. The sync file name `fact-revisions.jsonl` and protocol number `4` are unchanged; rows carry the additive event shape.
+- Reason: RFC §17 permits either shape and the Prompt Pack forbids a duplicate history system; one table keeps legacy readers, sync and purge on a single path.
+- Alternatives considered: a new `fact_events` table beside `fact_revisions`; protocol v5.
+- Invariant evidence: `test/continuity-chronicle.test.ts` legacy migration case, `test/continuity-correctness-spine.test.ts` crash-injected stages `chronicle-table`/`chronicle-backfill`/`incident-tables`/`telemetry-table`/`chronicle-indexes`, `test/fk-enforcement.test.ts` orphan detection.
+- Reversal condition/trade-off: an older peer that does not know the event shape rejects the whole generation visibly (same posture as D-015); device-local generation numbers are dropped on the wire.
+
+## D-019 — Event tombstones travel inside `fact-tombstones.jsonl`
+
+- RFC section/invariant: §9 sync, §20 purge; PRIVACY, NO SILENT LOSS
+- Actual choice: purged Chronicle event ids are exported as `{fact_id: null, event_id, deleted_at, reason}` rows in the existing five-file v4 generation and stored locally in `chronicle_tombstones`. Import treats them as terminal, deletes the local event/occurrence and refuses later replays of the id.
+- Reason: a sixth durable file or a new protocol number would break the repository-wide five-file v4 contract; a tombstone row shape is additive.
+- Alternatives considered: no event tombstones (a peer replay could resurrect purged history); a separate file.
+- Invariant evidence: `test/continuity-chronicle.test.ts` purge case (three event tombstones, zero rows, re-record rejected) and `insertReplicatedChronicleEvent` returning `tombstoned`.
+- Reversal condition/trade-off: a released peer rejects a generation that contains the new tombstone shape visibly.
+
+## D-020 — Legacy facts keep per-fact subject keys; semantic slots are extractor/user assigned
+
+- RFC section/invariant: §4.3 subject key completion; Phase 4 "deterministic and rerunnable subject migration"
+- Actual choice: migration never infers semantic subjects for released facts (no LLM in migration). Rows keep the Phase 3 per-fact keys (`legacy.fact.<id>`, `<promotion>.fact.<id>`), which are not semantic slots, so slot resolution (merge/CHANGED/historical/CONTRADICTED) applies only to keys matching the grammar `^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$`. Semantic slots are assigned by the extractor contract (validated by grammar and category prefix) or explicitly via `assignFactSubject`.
+- Reason: a deterministic, rerunnable backfill cannot invent meaning; an ambiguous slot must remain unresolved rather than force a current overwrite.
+- Alternatives considered: LLM-driven subject backfill at migration; text-hash subjects.
+- Invariant evidence: subject grammar tests and the merged-rephrasing case in `test/continuity-chronicle.test.ts`.
+- Reversal condition/trade-off: released facts without semantic slots still consolidate through the LLM consolidator path, whose verdicts now pass the same temporal judge.
+
+## D-021 — Unknown existing effective time is un-ordered, not "newer"
+
+- RFC section/invariant: §16 temporal semantics; TEMPORAL ORDER
+- Actual choice: `currentEffectiveAt()` returns null when a fact has neither a projection event nor a resolvable source exchange. The judge then applies incoming evidence (as the released consolidator did) instead of comparing a local write time against real evidence time. Ties and lower-authority newer evidence still become `CONTRADICTED` candidates.
+- Reason: a local `semantic_updated_at` is a recorded clock; treating it as evidence time made genuinely older sources look newer than facts created seconds earlier.
+- Alternatives considered: compare against `semantic_updated_at`; always contradict when unknown.
+- Invariant evidence: `test/recall-provenance.test.ts` trusted-repo evolution and `test/consolidator.test.ts` fallback cases pass under the rule; out-of-order source evidence still yields a historical event (`test/continuity-chronicle.test.ts` case i).
+- Reversal condition/trade-off: facts predating the Chronicle whose sources were purged cannot be temporally ordered; their next evidenced change becomes the first ordered event.

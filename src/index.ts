@@ -44,5 +44,6 @@ export {
   markSessionProjectRevisionSeen,
 } from './continuity-identity.js';
 export type { WorkspaceIdentity, WorkspaceLocationKind } from './continuity-identity.js';
+export * from './chronicle.js';
 export * from './consolidator.js';
 export * from './llm.js';

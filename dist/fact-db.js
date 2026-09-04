@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity, } from "./db.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { readChronicleTimeline, recordChronicleEvent } from "./chronicle.js";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export function vecParamFor(db, table, embedding) {
     const dt = getVecTableDtype(db, table);
@@ -43,8 +44,12 @@ export function mergeFactContextDependencies(db, targetFactId, sourceFactIds) {
 export function clearFactContextDependencies(db, factId) {
     db.prepare("DELETE FROM fact_context_dependencies WHERE fact_id = ?").run(factId);
 }
-export function insertFact(db, params) {
-    const id = randomUUID();
+/**
+ * Stable identity and promotion placement for a fact about to be inserted.
+ * Shared by insertFact and the extractor's subject-slot resolver so both see
+ * the same slot before deciding whether to insert, merge, change or contradict.
+ */
+export function resolveFactInsertIdentity(db, params) {
     const now = new Date().toISOString();
     let projectId = params.project_id ?? null;
     let workspaceId = params.workspace_id ?? null;
@@ -104,6 +109,12 @@ export function insertFact(db, params) {
             throw new Error("fact workstream_id is outside project_id");
         }
     }
+    return { projectId, workspaceId, workstreamId, promotionState };
+}
+export function insertFact(db, params) {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const { projectId, workspaceId, workstreamId, promotionState } = resolveFactInsertIdentity(db, params);
     const subjectKey = params.subject_key ?? (params.scope_type === "global" ? `global.fact.${id}` : `${promotionState}.fact.${id}`);
     db.prepare(`
     INSERT INTO facts (
@@ -212,18 +223,44 @@ export function deleteFact(db, id) {
         db.prepare("DELETE FROM facts WHERE id = ?").run(id);
     })();
 }
+/**
+ * Compatibility writer for callers that only know the released revision
+ * shape. It appends a Chronicle CHANGED event; the free-text reason is a
+ * classifier note because this path carries no source-cited cause.
+ */
 export function insertRevision(db, params) {
-    const id = randomUUID();
-    db.prepare(`
-    INSERT INTO fact_revisions (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, params.fact_id, params.previous_fact, params.new_fact, params.reason, params.source_exchange_id, new Date().toISOString());
-    return id;
+    const fact = db.prepare("SELECT project_id, subject_key, semantic_generation FROM facts WHERE id = ?")
+        .get(params.fact_id);
+    const { event } = recordChronicleEvent(db, {
+        kind: "CHANGED",
+        projectId: fact?.project_id ?? null,
+        subjectKey: fact?.subject_key ?? null,
+        factId: params.fact_id,
+        previousValue: params.previous_fact,
+        newValue: params.new_fact,
+        classifierNote: params.reason,
+        sourceExchangeIds: params.source_exchange_id ? [params.source_exchange_id] : [],
+        actor: params.actor ?? "legacy",
+        projectionApplied: true,
+        toSemanticGeneration: fact ? Number(fact.semantic_generation) : null,
+    });
+    return event.id;
 }
+/** Released revision view over the Chronicle: newest effective change first. */
 export function getRevisions(db, factId) {
-    return db
-        .prepare("SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC")
-        .all(factId);
+    const page = readChronicleTimeline(db, { factId, order: "desc", limit: 100 });
+    return page.events.map((event) => ({
+        id: event.id,
+        fact_id: event.fact_id ?? factId,
+        previous_fact: event.previous_value ?? "",
+        new_fact: event.new_value ?? "",
+        reason: event.rationale ?? event.grounded_cause ?? event.classifier_note ?? null,
+        source_exchange_id: event.source_exchange_ids[0] ?? null,
+        created_at: event.recorded_at,
+        event_kind: event.event_kind,
+        effective_at: event.effective_at,
+        projection_applied: event.projection_applied,
+    }));
 }
 function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
     if (filters.category && fact.category !== filters.category)
@@ -470,7 +507,7 @@ export function getPendingConsolidationFacts(db, limit = 2000, project) {
 export function searchAllFacts(db, embedding, limit = 10, threshold = 0.6) {
     return searchFactsByScope(db, embedding, { type: "all" }, limit, threshold);
 }
-function rowToFact(row) {
+export function rowToFact(row) {
     const embeddingRaw = row["embedding"];
     let embedding = null;
     if (embeddingRaw instanceof Buffer) {

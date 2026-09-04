@@ -7,6 +7,7 @@ import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 import { applyReplicatedLifecycle, compareTimestamps } from "./fact-management.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { CHRONICLE_EVENT_KINDS, insertReplicatedChronicleEvent, purgeChronicleForSources, recordChronicleTombstone, } from "./chronicle.js";
 const ALLOWED_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -293,24 +294,148 @@ function parseTombstone(value) {
         reason: typeof value.reason === "string" ? value.reason : null,
     };
 }
-function parseRevision(value) {
-    if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
-        typeof value.fact_id !== "string" || !value.fact_id ||
-        typeof value.previous_fact !== "string" || typeof value.new_fact !== "string" ||
-        !isTimestamp(value.created_at) ||
-        (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string") ||
-        (value.source_exchange_id !== undefined && value.source_exchange_id !== null &&
-            typeof value.source_exchange_id !== "string")) {
+function parseEventTombstone(value) {
+    if (!isRecord(value) || (value.fact_id !== null && value.fact_id !== undefined) ||
+        typeof value.event_id !== "string" || !value.event_id || value.event_id.length > 200 ||
+        !isTimestamp(value.deleted_at) ||
+        (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string")) {
         return null;
     }
     return {
-        id: value.id,
-        fact_id: value.fact_id,
-        previous_fact: value.previous_fact,
-        new_fact: value.new_fact,
+        event_id: value.event_id,
+        deleted_at: value.deleted_at,
         reason: typeof value.reason === "string" ? value.reason : null,
-        source_exchange_id: typeof value.source_exchange_id === "string" ? value.source_exchange_id : null,
+    };
+}
+function parseAnyTombstone(value) {
+    return parseTombstone(value) !== null || parseEventTombstone(value) !== null;
+}
+const CHRONICLE_ACTORS = new Set(["extractor", "consolidator", "user", "sync", "legacy"]);
+const EVIDENCE_AUTHORITIES = new Set(["human-decision", "human", "trusted-tool", "unknown"]);
+const CHRONICLE_KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
+function optionalString(value) {
+    if (value === undefined || value === null)
+        return null;
+    return typeof value === "string" ? value : undefined;
+}
+function optionalStringArray(value) {
+    if (value === undefined || value === null)
+        return [];
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) && parsed.every((v) => typeof v === "string") ? parsed : undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    return Array.isArray(value) && value.every((v) => typeof v === "string") ? value : undefined;
+}
+function parseRevision(value) {
+    if (!isRecord(value) || typeof value.id !== "string" || !value.id || !isTimestamp(value.created_at)) {
+        return null;
+    }
+    const reason = optionalString(value.reason);
+    const sourceExchangeId = optionalString(value.source_exchange_id);
+    if (reason === undefined || sourceExchangeId === undefined)
+        return null;
+    const isChronicle = value.event_kind !== undefined && value.event_kind !== null;
+    if (!isChronicle) {
+        // Released 7-field revision row.
+        if (typeof value.fact_id !== "string" || !value.fact_id ||
+            typeof value.previous_fact !== "string" || typeof value.new_fact !== "string") {
+            return null;
+        }
+        return {
+            id: value.id,
+            fact_id: value.fact_id,
+            previous_fact: value.previous_fact,
+            new_fact: value.new_fact,
+            reason,
+            source_exchange_id: sourceExchangeId,
+            created_at: value.created_at,
+            chronicle: null,
+        };
+    }
+    if (typeof value.event_kind !== "string" || !CHRONICLE_KIND_SET.has(value.event_kind))
+        return null;
+    if (value.id.length > 200)
+        return null;
+    const factId = optionalString(value.fact_id);
+    const previous = optionalString(value.previous_fact);
+    const next = optionalString(value.new_fact);
+    const projectId = optionalString(value.project_id);
+    const portableKey = optionalString(value.portable_project_key);
+    const subjectKey = optionalString(value.subject_key);
+    const problem = optionalString(value.problem);
+    const groundedCause = optionalString(value.grounded_cause);
+    const rationale = optionalString(value.rationale);
+    const classifierNote = optionalString(value.classifier_note);
+    const revertsEventId = optionalString(value.reverts_event_id);
+    const outcomeRaw = optionalString(value.outcome_json);
+    const sourceExchangeIds = optionalStringArray(value.source_exchange_ids);
+    const sourceEvidenceIds = optionalStringArray(value.source_evidence_ids);
+    const relatedEventIds = optionalStringArray(value.related_event_ids);
+    if ([factId, previous, next, projectId, portableKey, subjectKey, problem, groundedCause, rationale,
+        classifierNote, revertsEventId, outcomeRaw].includes(undefined) ||
+        !sourceExchangeIds || !sourceEvidenceIds || !relatedEventIds) {
+        return null;
+    }
+    if (projectId && !/^[A-Za-z0-9_-]{8,128}$/.test(projectId))
+        return null;
+    if (typeof value.actor !== "string" || !CHRONICLE_ACTORS.has(value.actor))
+        return null;
+    if (typeof value.policy_version !== "string" || !value.policy_version)
+        return null;
+    if (typeof value.evidence_authority !== "string" || !EVIDENCE_AUTHORITIES.has(value.evidence_authority))
+        return null;
+    if (!isTimestamp(value.effective_at) || !isTimestamp(value.recorded_at))
+        return null;
+    const projection = value.projection_applied;
+    if (projection !== 0 && projection !== 1 && projection !== true && projection !== false)
+        return null;
+    let outcome = null;
+    if (outcomeRaw) {
+        try {
+            const parsed = JSON.parse(outcomeRaw);
+            if (!isRecord(parsed))
+                return null;
+            outcome = parsed;
+        }
+        catch {
+            return null;
+        }
+    }
+    return {
+        id: value.id,
+        fact_id: factId ?? null,
+        previous_fact: previous ?? null,
+        new_fact: next ?? null,
+        reason,
+        source_exchange_id: sourceExchangeId,
         created_at: value.created_at,
+        chronicle: {
+            project_id: projectId ?? null,
+            portable_project_key: portableKey ?? null,
+            subject_key: subjectKey ?? null,
+            event_kind: value.event_kind,
+            problem: problem ?? null,
+            grounded_cause: groundedCause ?? null,
+            rationale: rationale ?? null,
+            classifier_note: classifierNote ?? null,
+            outcome,
+            source_exchange_ids: sourceExchangeIds,
+            source_evidence_ids: sourceEvidenceIds,
+            reverts_event_id: revertsEventId ?? null,
+            related_event_ids: relatedEventIds,
+            actor: value.actor,
+            policy_version: value.policy_version,
+            evidence_authority: value.evidence_authority,
+            effective_at: value.effective_at,
+            recorded_at: value.recorded_at,
+            projection_applied: projection === 1 || projection === true,
+        },
     };
 }
 function parseRecallEvent(value) {
@@ -420,7 +545,7 @@ function deleteFactState(db, factId) {
     db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(factId);
     db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
         .run(factId, factId);
-    db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(factId);
+    purgeChronicleForSources(db, { exchangeIds: new Set(), factIds: new Set([factId]), reason: "sync_tombstone" });
     db.prepare("DELETE FROM facts WHERE id = ?").run(factId);
 }
 /**
@@ -444,14 +569,44 @@ function mergeTombstones(a, b) {
 }
 function importTombstones(db, generations, result) {
     const byFact = new Map();
+    const byEvent = new Map();
     for (const generation of generations) {
         for (const value of parseFromPinned(generation, "fact-tombstones.jsonl", result.malformedRows)) {
+            const eventRow = parseEventTombstone(value);
+            if (eventRow) {
+                const previous = byEvent.get(eventRow.event_id);
+                if (!previous || compareTimestamps(eventRow.deleted_at, previous.deleted_at) > 0 ||
+                    eventRow.reason === PRIVACY_TOMBSTONE_REASON) {
+                    byEvent.set(eventRow.event_id, eventRow);
+                }
+                continue;
+            }
             const row = parseTombstone(value);
             if (!row)
                 continue;
             const previous = byFact.get(row.fact_id);
             byFact.set(row.fact_id, previous ? mergeTombstones(previous, row) : row);
         }
+    }
+    // Chronicle events are immutable, so an event tombstone is terminal: the
+    // local copy is removed (with its incident occurrence) and the id is
+    // remembered so later replays cannot resurrect it.
+    for (const tombstone of byEvent.values()) {
+        const existing = db.prepare("SELECT deleted_at FROM chronicle_tombstones WHERE event_id = ?")
+            .get(tombstone.event_id);
+        const commit = db.transaction(() => {
+            const present = !!db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(tombstone.event_id);
+            if (present) {
+                db.prepare("DELETE FROM incident_occurrences WHERE event_id = ?").run(tombstone.event_id);
+                db.prepare("UPDATE fact_revisions SET reverts_event_id = NULL WHERE reverts_event_id = ?").run(tombstone.event_id);
+                db.prepare("DELETE FROM fact_revisions WHERE id = ?").run(tombstone.event_id);
+            }
+            recordChronicleTombstone(db, tombstone.event_id, tombstone.reason, tombstone.deleted_at);
+            return present;
+        });
+        commit();
+        if (!existing)
+            result.newTombstones++;
     }
     for (const tombstone of byFact.values()) {
         const localFact = db.prepare("SELECT COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock, updated_at FROM facts WHERE id = ?").get(tombstone.fact_id);
@@ -922,17 +1077,117 @@ async function importFacts(db, generations, result) {
 }
 function importRevisions(db, generations, result) {
     for (const generation of generations) {
+        let lineNo = 0;
         for (const value of parseFromPinned(generation, "fact-revisions.jsonl", result.malformedRows)) {
+            lineNo++;
             const revision = parseRevision(value);
-            if (!revision || !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id) ||
-                db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id))
+            if (!revision)
                 continue;
-            db.prepare(`
-        INSERT INTO fact_revisions
-          (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(revision.id, revision.fact_id, revision.previous_fact, revision.new_fact, revision.reason, revision.source_exchange_id, revision.created_at);
-            result.newRevisions++;
+            if (db.prepare("SELECT 1 FROM chronicle_tombstones WHERE event_id = ?").get(revision.id))
+                continue;
+            if (revision.fact_id && !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id))
+                continue;
+            if (!revision.chronicle) {
+                // Released peer row: a CHANGED transition whose reason is model text.
+                if (db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id))
+                    continue;
+                const fact = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?")
+                    .get(revision.fact_id);
+                const status = insertReplicatedChronicleEvent(db, {
+                    id: revision.id,
+                    project_id: fact?.project_id ?? null,
+                    subject_key: fact?.subject_key ?? null,
+                    fact_id: revision.fact_id,
+                    event_kind: "CHANGED",
+                    previous_value: revision.previous_fact,
+                    new_value: revision.new_fact,
+                    problem: null,
+                    grounded_cause: null,
+                    rationale: null,
+                    classifier_note: revision.reason,
+                    outcome: null,
+                    source_exchange_ids: revision.source_exchange_id ? [revision.source_exchange_id] : [],
+                    source_evidence_ids: [],
+                    reverts_event_id: null,
+                    related_event_ids: [],
+                    actor: "legacy",
+                    policy_version: "legacy-revision-v0",
+                    evidence_authority: "unknown",
+                    effective_at: revision.created_at,
+                    effective_at_source: "peer",
+                    recorded_at: revision.created_at,
+                    projection_applied: true,
+                    created_at: revision.created_at,
+                });
+                if (status === "inserted")
+                    result.newRevisions++;
+                continue;
+            }
+            const event = revision.chronicle;
+            // Map the stable project through the portable key exactly like facts.
+            let localProjectId = null;
+            if (event.project_id) {
+                const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                    .get(event.project_id);
+                const byPortable = event.portable_project_key
+                    ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                        .get(event.portable_project_key)
+                    : undefined;
+                if ((byId?.portable_project_key && event.portable_project_key && byId.portable_project_key !== event.portable_project_key) ||
+                    (byId && byPortable && byId.project_id !== byPortable.project_id)) {
+                    result.malformedRows.push({
+                        file: path.join(generation.source, "fact-revisions.jsonl"), line: lineNo,
+                        error: `chronicle event ${revision.id} stable project identity conflicts with local mapping`,
+                    });
+                    continue;
+                }
+                localProjectId = byPortable?.project_id ?? byId?.project_id ?? null;
+                if (!localProjectId) {
+                    if (revision.fact_id) {
+                        localProjectId = db.prepare("SELECT project_id FROM facts WHERE id = ?").get(revision.fact_id)?.project_id ?? null;
+                    }
+                    if (!localProjectId)
+                        continue; // event-only row for a project this device has never seen
+                }
+            }
+            else if (revision.fact_id) {
+                localProjectId = db.prepare("SELECT project_id FROM facts WHERE id = ?").get(revision.fact_id)?.project_id ?? null;
+            }
+            const status = insertReplicatedChronicleEvent(db, {
+                id: revision.id,
+                project_id: localProjectId,
+                subject_key: event.subject_key,
+                fact_id: revision.fact_id,
+                event_kind: event.event_kind,
+                previous_value: revision.previous_fact,
+                new_value: revision.new_fact,
+                problem: event.problem,
+                grounded_cause: event.grounded_cause,
+                rationale: event.rationale,
+                classifier_note: event.classifier_note,
+                outcome: event.outcome,
+                source_exchange_ids: event.source_exchange_ids,
+                source_evidence_ids: event.source_evidence_ids,
+                reverts_event_id: event.reverts_event_id,
+                related_event_ids: event.related_event_ids,
+                actor: event.actor,
+                policy_version: event.policy_version,
+                evidence_authority: event.evidence_authority,
+                effective_at: event.effective_at,
+                effective_at_source: "peer",
+                recorded_at: event.recorded_at,
+                projection_applied: event.projection_applied,
+                created_at: revision.created_at,
+            });
+            if (status === "inserted")
+                result.newRevisions++;
+            else if (status === "conflict") {
+                // Same event id with different content: never overwrite silently.
+                result.malformedRows.push({
+                    file: path.join(generation.source, "fact-revisions.jsonl"), line: lineNo,
+                    error: `chronicle event ${revision.id} conflicts with the local event of the same id; local history preserved`,
+                });
+            }
         }
     }
 }
@@ -1034,7 +1289,7 @@ function generationKey(generation) {
 const ROW_VALIDATORS = [
     { file: "facts.jsonl", validate: (value) => parseSyncFact(value) !== null },
     { file: "fact-revisions.jsonl", validate: (value) => parseRevision(value) !== null },
-    { file: "fact-tombstones.jsonl", validate: (value) => parseTombstone(value) !== null },
+    { file: "fact-tombstones.jsonl", validate: (value) => parseAnyTombstone(value) },
     { file: "recall-events.jsonl", validate: (value) => parseRecallEvent(value) !== null },
 ];
 function rejectInvalidRows(generations, issues) {

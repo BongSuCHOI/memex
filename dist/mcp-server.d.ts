@@ -98,6 +98,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -132,7 +140,7 @@ export declare function getToolDefinitions(): ({
             };
             query?: undefined;
             mode?: undefined;
-            readonly project?: undefined;
+            project?: undefined;
             project_id?: undefined;
             workspace_id?: undefined;
             workstream_id?: undefined;
@@ -150,6 +158,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -243,6 +259,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -317,6 +341,14 @@ export declare function getToolDefinitions(): ({
             hot_before?: undefined;
             hot_before_evidence_id?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -385,6 +417,14 @@ export declare function getToolDefinitions(): ({
             hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -411,6 +451,16 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
                 oneOf?: undefined;
+            };
+            fact_id: {
+                type: string;
+                pattern: string;
+                description: string;
+            };
+            subject_key: {
+                type: string;
+                pattern: string;
+                description: string;
             };
             project: {
                 type: string;
@@ -445,6 +495,44 @@ export declare function getToolDefinitions(): ({
                 default: number;
                 description: string;
             };
+            include_timeline: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            timeline_limit: {
+                type: string;
+                minimum: number;
+                maximum: number;
+                default: number;
+                description: string;
+            };
+            timeline_cursor: {
+                type: string;
+                maxLength: number;
+                description: string;
+            };
+            timeline_order: {
+                type: string;
+                enum: string[];
+                default: string;
+                description: string;
+            };
+            include_incidents: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            include_sources: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            include_hot_evidence: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
             mode?: undefined;
             after?: undefined;
             before?: undefined;
@@ -454,7 +542,6 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
-            include_hot_evidence?: undefined;
             hot_before?: undefined;
             hot_before_evidence_id?: undefined;
             domain?: undefined;
@@ -464,8 +551,8 @@ export declare function getToolDefinitions(): ({
             current_project_id?: undefined;
             hops?: undefined;
         };
-        required: string[];
         additionalProperties: boolean;
+        required?: undefined;
     };
     annotations: {
         title: string;
@@ -523,6 +610,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
             hops?: undefined;
@@ -573,7 +668,7 @@ export declare function getToolDefinitions(): ({
                 description: string;
             };
             mode?: undefined;
-            readonly project?: undefined;
+            project?: undefined;
             project_id?: undefined;
             workspace_id?: undefined;
             workstream_id?: undefined;
@@ -592,6 +687,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -666,6 +769,14 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
             current_project_id?: undefined;
         };

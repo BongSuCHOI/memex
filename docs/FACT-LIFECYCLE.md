@@ -352,6 +352,9 @@ manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를
 
 중간 단계가 실패하면 이전 semantic generation 전체를 유지합니다.
 
+Semantic mutation은 같은 transaction에서 Chronicle `CHANGED` event를 append합니다(§13). projection UPDATE가
+0행이면 event도 남지 않고, event 기록이 실패하면 projection도 롤백됩니다.
+
 ## 7. Lifecycle mutation
 
 ### Deactivate
@@ -448,3 +451,95 @@ hard delete는 full UUID와 explicit confirmation을 요구합니다. fact를 �
 row 수를 표시합니다.
 
 특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못합니다.
+
+## 13. Chronicle (Phase 4)
+
+### Subject key
+
+`subject_key`는 stable semantic slot입니다. 문법은 `<prefix>.<segment>{1,4}`(lowercase snake_case, prefix는
+category에 따라 `decision|state|constraint|preference|pattern`, knowledge→`state`)입니다. 같은 단어라도 subject가
+다르면(`state.runtime.session_store` vs `decision.runtime.session_store.target`) 별도 current slot입니다.
+문법/prefix가 맞지 않는 제안은 slot이 되지 않고 classifier note(`unresolved subject_key proposal`)로 남습니다.
+Legacy fact의 per-fact key(`legacy.fact.<id>`, `<promotion>.fact.<id>`)는 semantic slot이 아니며 migration은
+LLM 없이 deterministic/rerunnable하게 identity만 보존합니다. 의미 slot 부여는 재추출 또는 `assignFactSubject`로만 일어납니다.
+
+### Slot resolution (extraction commit)
+
+semantic subject를 가진 candidate는 `(project_id, subject_key, promotion_state, workspace_id, workstream_id)`
+slot의 active current fact와 deterministic하게 비교합니다.
+
+| 상황 | 결과 |
+| --- | --- |
+| slot 비어 있음 | insert + `ASSERTED` |
+| 정규화 텍스트 동일 | provenance merge, event 없음(재표현) |
+| incoming effective_at > existing이고 authority ≥ existing | 기존 identity의 meaning mutation + `CHANGED`(from/to generation, previous/new) |
+| incoming effective_at < existing | historical `ASSERTED`(projection_applied=0), current 유지 |
+| 같은 effective_at 또는 낮은 authority | `CONTRADICTED` candidate(projection_applied=0, `outcome.resolution=unresolved`), current 유지 |
+
+authority rank: `human-decision`(decision/correction) 3 > `human` 2 = `trusted-tool` 2 > `unknown` 1.
+existing의 effective time을 알 수 없으면(event도 source도 없음) 순서 판정 불가로 보고 incoming을 적용합니다.
+worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.
+
+### Event kinds와 mapping
+
+| Kind | 생성 경로 | projection |
+| --- | --- | --- |
+| `ASSERTED` | 새 slot fact; older evidence의 historical assertion | 1 / 0 |
+| `CHANGED` | slot resolution, consolidator EVOLUTION/CONTRADICTION(temporal 판정 통과), user edit; rollback은 `reverts_event_id` | 1 |
+| `RETIRED` / `RESTORED` | user/UI deactivate·restore. consolidation DUPLICATE/absorb는 event 없음 | 1 |
+| `VALIDATED` | trusted `test_execution` 성공 evidence를 가진 observation, remediation | 0 |
+| `INCIDENT` | trusted test failure 또는 human repeated_signal observation | 0 |
+| `CONTRADICTED` | 순서/authority가 모호한 경쟁 evidence, consolidator verdict가 temporal 판정에 실패한 경우 | 0 |
+
+기존 consolidation relation mapping: `DUPLICATE` → event 없음(재표현), `EVOLUTION`/`CONTRADICTION` →
+temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDENT` → 없음. consolidator `reason`은 항상
+`classifier_note`입니다.
+
+### Temporal semantics
+
+`effective_at` = cited authoritative source exchange의 timestamp(최대값). source가 없으면 `recorded_at`으로
+fallback하고 `effective_at_source=recorded`로 불확실성을 표시합니다. `recorded_at` = worker commit 시점.
+Timeline과 rollback 탐지는 effective 순서를 사용합니다.
+
+### Grounded cause
+
+`problem`/`grounded_cause`/`rationale`은 (1) extractor가 cited authority exchange의 human message 또는 trusted
+tool result 안의 exact span으로 제시하고 server가 재검증한 경우, (2) actor `user`가 CLI/UI에서 직접 입력한 경우에만
+기록됩니다. 검증 실패는 `ChronicleGroundingError`(fail-closed) 또는 `classifier_note: unverified ...`입니다.
+API/MCP/CLI 출력은 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`를
+분리해 표시합니다.
+
+### Rollback
+
+이전 event는 삭제하지 않습니다. 이전 `CHANGED`가 교체한 값으로 돌아오면 새 `CHANGED`에 `reverts_event_id`가
+자동 연결됩니다. Redis→MySQL rollback 뒤에도 MySQL→Redis 시도와 outcome이 Chronicle에 남습니다.
+
+### Incident pattern
+
+`recordIncidentOccurrence`: signature는 ANSI/uuid/time/path/hex/number를 placeholder로 치환한 240자 normalized
+text의 sha256[0:24]입니다. 같은 project+signature+session에서 30분 안의 재시도는 기존 occurrence에 coalesce
+(`retry_count`)되고 event를 만들지 않습니다. 독립 episode(다른 session 또는 window 밖)는 `INCIDENT` event +
+occurrence를 append하고 `episode_count`를 올립니다. `episode_count >= 2` 또는 `user_flagged_repeat`이면
+`pattern`입니다. 재발 없음은 resolved가 아닙니다. `recordIncidentRemediation`은 trusted test 성공 evidence(또는
+human 명시)만 받아 `VALIDATED` event를 쓰고 signature를 `remediated`로 바꿉니다. remediation 후 재발은 다시
+`pattern`입니다. `matchIncidentPatterns(db, {projectId, text, limit})`은 Phase 5 WATCH용 bounded match(normalized
+substring 또는 token Jaccard ≥ 0.5)입니다.
+
+### Phase 5 API
+
+- `readChronicleTimeline(db, {projectId|factId|subjectKey, workspaceId?, workstreamId?, sessionId?, kinds?, cursor?, limit≤100, order})`
+- `currentFactRevision(db, factId)` — semantic/lifecycle generation + latest projection event
+- `matchIncidentPatterns`, `listIncidentOccurrences`
+- `summarizeTelemetry` — measured samples only
+
+### Privacy
+
+purge는 purged fact의 event, purged exchange를 cite하는 event, 해당 incident occurrence를 삭제하고
+`chronicle_tombstones`에 기록한 뒤 signature를 recount합니다. formatter는 사라진 source를
+`source unavailable (purged or missing)`으로 표시합니다. pending job은 terminal exclusion guard로 재생성이 차단되고,
+purge된 exchange를 cite하는 새 incident 기록은 `ChronicleGroundingError`입니다.
+
+### Telemetry
+
+`continuity_telemetry`는 RFC §15.5 allowlist metric(`semantic_retrieval_calls`, `injected_chars`, `repeated_context_turns`
+등)의 측정 sample만 저장합니다. 개발 시간/비용 절감 같은 미측정 ROI는 metric도 fact도 event도 아닙니다.

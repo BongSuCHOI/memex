@@ -52,7 +52,7 @@ COMMANDS:
   home        Print the resolved Memex data root (read-only)
   status      Show pipeline readiness per stage (read-only)
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
-  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|delete
+  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|delete
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -291,14 +291,20 @@ async function main() {
             console.log(
               `Restored: ${id}\nVector restored: ${r.vectorRestored}`,
             );
-          } else if (sub === "history") {
+          } else if (sub === "history" || sub === "explain") {
             const id = optValue("--id");
-            if (!id) throw new Error("usage: memex facts history --id <uuid>");
-            const revs = fm.factHistory(db, id);
-            for (const r of revs) {
-              console.log(
-                `${r.created_at}  "${String(r.previous_fact).slice(0, 60)}" -> "${String(r.new_fact).slice(0, 60)}"${r.reason ? `  (${r.reason})` : ""}`,
-              );
+            const subject = optValue("--subject");
+            const projectId = optValue("--project-id");
+            if (!id && !(subject && projectId)) {
+              throw new Error("usage: memex facts history --id <uuid> | --subject <subject_key> --project-id <project_id>");
+            }
+            const chronicle = await import(join(distDir, "chronicle.js"));
+            const events = id
+              ? fm.factHistory(db, id)
+              : chronicle.readChronicleTimeline(db, { projectId, subjectKey: subject, order: "asc", limit: 100 }).events;
+            if (events.length === 0) console.log("No Chronicle events.");
+            for (const ev of events) {
+              console.log(chronicle.formatChronicleEvent(db, ev, { includeSources: false }));
             }
             console.log(`(${revs.length} revisions)`);
           } else if (sub === "delete") {

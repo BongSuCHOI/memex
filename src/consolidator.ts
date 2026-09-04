@@ -10,6 +10,12 @@ import {
   updateFact,
 } from './fact-db.js';
 import { deactivateFactTransactional, mutateFactMeaning, StaleFactMutationError } from './fact-management.js';
+import {
+  currentEffectiveAt,
+  currentEvidenceAuthority,
+  judgeCompetingEvidence,
+  recordChronicleEvent,
+} from './chronicle.js';
 
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -301,7 +307,9 @@ export async function applyConsolidationResult(
           source_exchange_ids: liveSources,
         });
         mergeFactContextDependencies(db, existingFact.id, [newFact.id]);
-        deactivateFactTransactional(db, newFact.id);
+        // A duplicate is a rephrasing: the survivor keeps the truth, so no
+        // RETIRED event is written for the absorbed row (RFC §15.1).
+        deactivateFactTransactional(db, newFact.id, { chronicle: false });
         return true;
       });
       if (!apply()) {
@@ -313,53 +321,106 @@ export async function applyConsolidationResult(
     }
 
     case 'CONTRADICTION':
+    case 'EVOLUTION': {
       // 재감사 P1-2: CONTRADICTION/EVOLUTION도 DUPLICATE와 같은 CAS 계약이다 —
       // LLM 왕복 동안 어느 쪽이든 의미가 변이됐으면 이 판정은 폐기된다.
       // expectedSemanticGeneration은 existing 쪽(expectedPreviousFact는 텍스트
       // 우연 복귀를 못 잡는다), deactivateFacts의 세대 CAS는 driver 쪽을 지킨다.
       // 재감사 P1-4(v4): 양쪽 참가자 모두 lifecycle_generation까지 CAS한다 —
       // active 참가자끼리 내린 판정이므로 활성 상태가 움직이면 stale이다.
-      await mutateFactMeaning(db, {
-        factId: existingFact.id,
-        newText: mergedFact || newFact.fact,
-        reason: result.reason,
-        source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
-        lineageMode: 'preserve-identity',
-        expectedPreviousFact: existingFact.fact,
-        expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
-        expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
-        mergeContextFromFactIds: [newFact.id],
-        deactivateFacts: [
-          {
-            id: newFact.id,
-            expectedSemanticGeneration: newFact.semantic_generation ?? 1,
-            expectedLifecycleGeneration: newFact.lifecycle_generation ?? 1,
-          },
-        ],
+      //
+      // Phase 4 TEMPORAL ORDER / CURRENT VS HISTORY: the verdict says the two
+      // facts compete for one meaning; which one is current is decided by the
+      // evidence's effective time and authority, never by which worker ran
+      // last. The consolidator's own reason is model inference and is stored
+      // only as a classifier note.
+      const existingEffective = currentEffectiveAt(db, existingFact.id);
+      const incomingEffective = currentEffectiveAt(db, newFact.id) ?? newFact.semantic_updated_at ?? newFact.created_at;
+      const judgement = judgeCompetingEvidence({
+        existingEffectiveAt: existingEffective,
+        existingAuthority: currentEvidenceAuthority(db, existingFact.id),
+        incomingEffectiveAt: incomingEffective,
+        incomingAuthority: currentEvidenceAuthority(db, newFact.id),
       });
-      break;
-
-    case 'EVOLUTION':
-      await mutateFactMeaning(db, {
-        factId: existingFact.id,
-        newText: mergedFact || newFact.fact,
-        reason: result.reason,
-        source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
-        lineageMode: 'preserve-identity',
-        expectedPreviousFact: existingFact.fact,
-        expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
-        expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
-        consolidatedCountIncrement: true,
-        mergeContextFromFactIds: [newFact.id],
-        deactivateFacts: [
-          {
-            id: newFact.id,
-            expectedSemanticGeneration: newFact.semantic_generation ?? 1,
-            expectedLifecycleGeneration: newFact.lifecycle_generation ?? 1,
+      if (judgement.verdict === 'apply') {
+        await mutateFactMeaning(db, {
+          factId: existingFact.id,
+          newText: mergedFact || newFact.fact,
+          source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
+          lineageMode: 'preserve-identity',
+          expectedPreviousFact: existingFact.fact,
+          expectedSemanticGeneration: existingFact.semantic_generation ?? 1,
+          expectedLifecycleGeneration: existingFact.lifecycle_generation ?? 1,
+          consolidatedCountIncrement: result.relation === 'EVOLUTION',
+          mergeContextFromFactIds: [newFact.id],
+          deactivateFacts: [
+            {
+              id: newFact.id,
+              expectedSemanticGeneration: newFact.semantic_generation ?? 1,
+              expectedLifecycleGeneration: newFact.lifecycle_generation ?? 1,
+            },
+          ],
+          chronicle: {
+            actor: 'consolidator',
+            classifierNote: `${result.relation}: ${result.reason}`,
+            effectiveAt: incomingEffective,
+            evidenceAuthority: currentEvidenceAuthority(db, newFact.id),
+            outcome: { consolidation: result.relation, temporal: judgement.reason, absorbed_fact_id: newFact.id },
           },
-        ],
+        });
+        break;
+      }
+      // The current value stays. Preserve the competing statement as
+      // Chronicle history (older evidence) or as an unresolved contradiction
+      // candidate; neither overwrites the projection.
+      const preserve = db.transaction(() => {
+        const genStmt = db.prepare('SELECT semantic_generation, lifecycle_generation, is_active FROM facts WHERE id = ?');
+        const existingNow = genStmt.get(existingFact.id) as { semantic_generation: number; lifecycle_generation: number; is_active: number } | undefined;
+        const newNow = genStmt.get(newFact.id) as { semantic_generation: number; lifecycle_generation: number; is_active: number } | undefined;
+        if (!existingNow || !newNow || existingNow.is_active !== 1 || newNow.is_active !== 1 ||
+            existingNow.semantic_generation !== (existingFact.semantic_generation ?? 1) ||
+            existingNow.lifecycle_generation !== Number(existingFact.lifecycle_generation ?? 1) ||
+            newNow.semantic_generation !== (newFact.semantic_generation ?? 1) ||
+            newNow.lifecycle_generation !== Number(newFact.lifecycle_generation ?? 1)) {
+          return false;
+        }
+        recordChronicleEvent(db, {
+          kind: judgement.verdict === 'historical' ? 'ASSERTED' : 'CONTRADICTED',
+          projectId: existingFact.project_id ?? null,
+          subjectKey: existingFact.subject_key ?? null,
+          factId: existingFact.id,
+          fromSemanticGeneration: existingFact.semantic_generation ?? 1,
+          toSemanticGeneration: null,
+          previousValue: judgement.verdict === 'historical' ? null : existingFact.fact,
+          newValue: newFact.fact,
+          classifierNote: `${result.relation}: ${result.reason}`,
+          outcome: {
+            resolution: judgement.verdict === 'historical' ? 'historical' : 'unresolved',
+            temporal: judgement.reason,
+            candidate_fact_id: newFact.id,
+            consolidation: result.relation,
+          },
+          sourceExchangeIds: newFact.source_exchange_ids,
+          actor: 'consolidator',
+          evidenceAuthority: currentEvidenceAuthority(db, newFact.id),
+          effectiveAt: incomingEffective,
+          projectionApplied: false,
+        });
+        if (judgement.verdict === 'historical') {
+          // Older evidence is history for the existing subject; the candidate
+          // row is absorbed (its value lives in the Chronicle), not retired.
+          mergeFactContextDependencies(db, existingFact.id, [newFact.id]);
+          deactivateFactTransactional(db, newFact.id, { chronicle: false });
+        }
+        return true;
       });
+      if (!preserve()) {
+        throw new StaleFactMutationError(
+          `consolidation ${result.relation} discarded: fact ${existingFact.id} / ${newFact.id} changed during comparison`,
+        );
+      }
       break;
+    }
 
     case 'INDEPENDENT':
       // Keep both, do nothing

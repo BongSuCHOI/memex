@@ -4,6 +4,7 @@ import { createArchiveReadStream } from "./archive-io.js";
 import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
 import { recordFactTombstone } from "./fact-management.js";
+import { purgeChronicleForSources } from "./chronicle.js";
 import { bumpTaxonomyEpoch } from "./ontology-db.js";
 import { getMemexHome } from "./paths.js";
 import path from "node:path";
@@ -142,10 +143,13 @@ export function purgeConversationFromIndex(db, input) {
             }
         }
         const revisions = db
-            .prepare("SELECT fact_id, source_exchange_id FROM fact_revisions WHERE source_exchange_id IS NOT NULL")
+            .prepare("SELECT fact_id, source_exchange_id, source_exchange_ids FROM fact_revisions WHERE fact_id IS NOT NULL")
             .all();
         for (const revision of revisions) {
-            if (exchangeIds.has(revision.source_exchange_id)) {
+            const cited = parseSourceIds(revision.source_exchange_ids);
+            if (revision.source_exchange_id)
+                cited.push(revision.source_exchange_id);
+            if (cited.some((id) => exchangeIds.has(id))) {
                 factIds.add(revision.fact_id);
             }
         }
@@ -175,14 +179,17 @@ export function purgeConversationFromIndex(db, input) {
         const deleteRelation = db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?");
         const deleteFactVector = db.prepare("DELETE FROM vec_facts WHERE id = ?");
         const deleteFactVectorKr = db.prepare("DELETE FROM vec_facts_kr WHERE id = ?");
-        const deleteRevisions = db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?");
         const deleteFact = db.prepare("DELETE FROM facts WHERE id = ?");
+        // Chronicle events, incident occurrences and their signatures that belong
+        // to a purged fact or cite a purged exchange are removed and tombstoned in
+        // this same transaction, so a peer replay or pending worker cannot
+        // resurrect purged history (PRIVACY).
+        purgeChronicleForSources(db, { exchangeIds, factIds, reason: PRIVACY_TOMBSTONE_REASON });
         for (const factId of factIds) {
             recordFactTombstone(db, factId, PRIVACY_TOMBSTONE_REASON);
             deleteRelation.run(factId, factId);
             deleteFactVector.run(factId);
             deleteFactVectorKr.run(factId);
-            deleteRevisions.run(factId);
             deleteFact.run(factId);
         }
         const deleteTools = db.prepare("DELETE FROM tool_calls WHERE exchange_id = ?");

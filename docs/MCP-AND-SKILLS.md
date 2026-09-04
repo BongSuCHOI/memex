@@ -47,7 +47,7 @@ compatibility surface이며 process cwd 추론이나 identity registry mutation 
 | `search_facts` | 증류된 fact 검색 |
 | `search_ontology` | domain/category별 fact 탐색 |
 | `ask_avatar` | 저장된 evidence를 바탕으로 답변 합성 |
-| `trace_fact` | authoritative revision/source와 non-authoritative interpretive context 추적 |
+| `trace_fact` | current fact → Chronicle timeline(previous value, rollback, grounded cause vs classifier note, validation/incident, contradiction) → source evidence 추적. `query|fact_id|subject_key`, bounded cursor pagination, stable scope filter |
 | `explore_graph` | 1–3 hop relation 탐색 |
 | `cross_project_insights` | 다른 project의 유사 해결책 탐색 |
 | `graph_stats` | graph 규모와 health 확인 |
@@ -62,6 +62,12 @@ compatibility surface이며 process cwd 추론이나 identity registry mutation 
 `Interpretive Context (Non-Authoritative)` 절에 local `fact_context_dependencies`를 표시합니다.
 Context는 model-declared index가 bounded causal check를 통과한 뒤 server-resolved된 관계입니다.
 두 절의 exchange가 같아 보이더라도 context 절은 Fact evidence로 승격되지 않습니다.
+
+Phase 4부터 `trace_fact`는 lane label을 출력합니다: `CURRENT FACT`(authoritative current), `CHRONICLE EVENT`
+(append-only history, `effective`/`recorded` 시각과 `projection changed|event-only` 표시), `RAW EVIDENCE`(source
+exchange, purge된 경우 `source unavailable`), `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`.
+event의 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`는 항상 분리됩니다.
+history는 `timeline_limit`(≤50)과 `timeline_cursor`로 bounded pagination됩니다.
 
 같은 turn의 별도 repo/Git/test tool result는 call ID별로 독립 분류합니다. Memex MCP call 하나가 sibling evidence를 자동으로 taint하지 않습니다.
 

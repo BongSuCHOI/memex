@@ -1,12 +1,15 @@
 import Database from "better-sqlite3";
 import type {
+  ExtractedChangeContext,
   ExtractedFact,
   ExtractedFactEvidence,
+  ExtractedObservation,
   FactCategory,
   FactContextDependency,
   FactGroundingType,
   FactScopeType,
   HumanEvidenceKind,
+  ResolvedGroundedRef,
   ToolEvidenceKind,
 } from "./types.js";
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
@@ -14,7 +17,23 @@ import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
 import {
   insertFact,
   insertFactContextDependencies,
+  resolveFactInsertIdentity,
+  updateFact,
 } from "./fact-db.js";
+import { applyFactMeaningMutation } from "./fact-management.js";
+import {
+  currentEffectiveAt,
+  currentEvidenceAuthority,
+  evidenceAuthorityFromKinds,
+  findCurrentSlotFact,
+  isSemanticSubjectKey,
+  judgeCompetingEvidence,
+  normalizeSubjectKey,
+  recordChronicleEvent,
+  recordIncidentOccurrence,
+  recordIncidentRemediation,
+  type GroundedField,
+} from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
@@ -321,7 +340,32 @@ Never emit assistant, assistant_generated, memex_recall, or external_unverified 
 
 category: decision | preference | pattern | knowledge | constraint
 Do not emit fact_kr. Korean translation is separate local-derived maintenance after acceptance.
-confidence is secondary telemetry, not a substitute for grounding or durability; omit candidates below 0.7.`;
+confidence is secondary telemetry, not a substitute for grounding or durability; omit candidates below 0.7.
+
+## Optional Chronicle fields
+A fact candidate MAY add:
+- subject_key: the stable semantic slot the fact occupies, written as
+  <prefix>.<domain>.<object>[.<attribute>] with lowercase snake_case segments (2-5 segments). The prefix
+  follows the category: decision→decision, knowledge→state, constraint→constraint,
+  preference→preference, pattern→pattern. Examples: "state.runtime.session_store",
+  "decision.runtime.session_store.target", "constraint.session.ttl". Two statements about different
+  things must never share a slot. Omit subject_key when the slot is ambiguous.
+- change_context: {"problem"?: R, "cause"?: R, "rationale"?: R} where
+  R = {"exchange_index": n, "supporting_span": "<exact substring>", "text"?: "<normalized statement>",
+  "tool_call_id"?: "<id when the span is inside a trusted tool result>"}. Each span must be an exact
+  substring of the cited authoritative human message or trusted tool result that STATES the problem,
+  cause or rationale. Never infer a cause: if the source does not state one, omit the field.
+
+Observation candidates describe verified events without creating a fact. Emit this shape instead of a
+fact object:
+{"observation":"incident"|"validated","summary":"<one sentence>","subject_key"?: "<slot>",
+ "signature_text"?: "<exact failure text copied from the cited tool result>",
+ "remediates_signature_key"?: "<signature key from recalled context>","user_flagged_repeat"?: true,
+ "confidence": 0.9,"evidence":[<same evidence contract>]}
+- incident requires trusted test_execution tool evidence (a failing result is allowed) or a human
+  repeated_signal evidence in which the user states the failure recurs.
+- validated requires a successful trusted test_execution tool evidence.
+- assistant claims of success or failure are never observation evidence.`;
 
 export const FACT_ENTAILMENT_VERIFIER_PROMPT = `You are a fail-closed fact entailment verifier.
 
@@ -1203,6 +1247,8 @@ export interface ExtractFactsOptions {
   modelCall?: FactExtractionModelCall;
   /** Evaluation-only accumulator; omitted by production extraction callers. */
   observability?: FactExtractionObservability;
+  /** Receives validated event-only observations (incident/validated) for the same commit. */
+  collectObservations?: ExtractedObservation[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1518,6 +1564,13 @@ function validateExtractedFactCandidateDetailed(
     });
   }
 
+  const classifierNotes: string[] = [];
+  const subjectKey = normalizeSubjectKey(candidate.subject_key, category as string);
+  if (candidate.subject_key !== undefined && candidate.subject_key !== null && !subjectKey) {
+    classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
+  }
+  const changeContext = resolveChangeContext(candidate.change_context, exchanges, evidence, classifierNotes);
+
   return {
     accepted: true,
     fact: {
@@ -1532,7 +1585,192 @@ function validateExtractedFactCandidateDetailed(
         ? { context_dependencies: contextDependencies }
         : {}),
       source_exchange_ids: [...authoritativeIds],
+      ...(subjectKey ? { subject_key: subjectKey } : {}),
+      ...(changeContext ? { change_context: changeContext } : {}),
+      ...(classifierNotes.length > 0 ? { classifier_notes: classifierNotes } : {}),
     },
+  };
+}
+
+/**
+ * Resolve model-declared problem/cause/rationale statements to verified
+ * source spans. A statement whose span is not literally present in a cited
+ * authoritative exchange is kept only as a classifier note — never as a
+ * grounded field (GROUNDED CAUSE).
+ */
+function resolveChangeContext(
+  raw: unknown,
+  exchanges: ExtractionValidationExchange[],
+  evidence: ExtractedFactEvidence[],
+  notes: string[],
+): ExtractedChangeContext | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)) {
+    notes.push("change_context ignored: invalid shape");
+    return undefined;
+  }
+  const resolved: ExtractedChangeContext = {};
+  const citedIndices = new Set(evidence.map((item) => item.exchange_index));
+  for (const slot of ["problem", "cause", "rationale"] as const) {
+    const entry = raw[slot];
+    if (entry === undefined || entry === null) continue;
+    const label = typeof (entry as { text?: unknown })?.text === "string"
+      ? String((entry as { text: string }).text)
+      : typeof (entry as { supporting_span?: unknown })?.supporting_span === "string"
+        ? String((entry as { supporting_span: string }).supporting_span)
+        : "";
+    const fail = (why: string): void => {
+      notes.push(`unverified ${slot}${label ? `: ${label.slice(0, 200)}` : ""} (${why})`);
+    };
+    if (!isRecord(entry) || !validExchangeIndex(entry.exchange_index, exchanges.length)) {
+      fail("no cited exchange");
+      continue;
+    }
+    const exchange = exchanges[entry.exchange_index - 1];
+    if (!exchange || !citedIndices.has(entry.exchange_index)) {
+      fail("exchange is not fact evidence");
+      continue;
+    }
+    let span: string | null = null;
+    let toolCallId: string | undefined;
+    if (typeof entry.tool_call_id === "string" && entry.tool_call_id.trim() !== "") {
+      const tool = (exchange.tool_evidence ?? []).find(
+        (item) => item.id === entry.tool_call_id && booleanFlag(item.learnable) && !!item.tool_result,
+      );
+      if (!tool || !TOOL_EVIDENCE_KINDS.has(tool.source_type as ToolEvidenceKind)) {
+        fail("tool evidence is not trusted");
+        continue;
+      }
+      span = validatedSupportingSpan(entry.supporting_span, tool.tool_result ?? "");
+      toolCallId = entry.tool_call_id;
+    } else {
+      if (!isEligibleHumanEvidence(exchange)) {
+        fail("exchange has no human authority");
+        continue;
+      }
+      span = validatedSupportingSpan(entry.supporting_span, exchange.user_message);
+    }
+    if (!span) {
+      fail("span is not present in the source");
+      continue;
+    }
+    const text = typeof entry.text === "string" && entry.text.trim() !== "" ? entry.text.trim() : span;
+    const ref: ResolvedGroundedRef = { exchange_id: exchange.id, supporting_span: span, text };
+    if (toolCallId) ref.tool_call_id = toolCallId;
+    resolved[slot] = ref;
+  }
+  return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
+/**
+ * Validate an event-only observation candidate. Incidents need trusted
+ * test_execution evidence (failures allowed) or a human repeated_signal;
+ * validations need a successful trusted test_execution result. Assistant text
+ * never qualifies. Any invalid declaration rejects the whole candidate.
+ */
+export function validateExtractedObservationCandidate(
+  candidate: unknown,
+  exchanges: ExtractionValidationExchange[],
+): ExtractedObservation | null {
+  if (!isRecord(candidate)) return null;
+  const kind = candidate.observation;
+  if (kind !== "incident" && kind !== "validated") return null;
+  const summary = typeof candidate.summary === "string" ? candidate.summary.trim() : "";
+  if (summary.length < 4) return null;
+  const confidence = candidate.confidence;
+  if (typeof confidence !== "number" || !Number.isFinite(confidence) || !passesConfidenceGate(confidence)) {
+    return null;
+  }
+  const rawEvidence = candidate.evidence;
+  if (!Array.isArray(rawEvidence) || rawEvidence.length === 0) return null;
+  const evidence: ExtractedFactEvidence[] = [];
+  const sourceExchangeIds = new Set<string>();
+  const sourceEvidenceIds = new Set<string>();
+  const toolResults: string[] = [];
+  const humanTexts: string[] = [];
+  let testEvidence = 0;
+  let successfulTest = 0;
+  let repeatedSignal = 0;
+  for (const raw of rawEvidence) {
+    if (!isRecord(raw) || !validExchangeIndex(raw.exchange_index, exchanges.length)) return null;
+    const exchange = exchanges[raw.exchange_index - 1];
+    if (!exchange || booleanFlag(exchange.context_only_due_to_watermark)) return null;
+    if (raw.source === "human") {
+      if (!HUMAN_EVIDENCE_KINDS.has(raw.kind as HumanEvidenceKind) || !isEligibleHumanEvidence(exchange)) return null;
+      const span = validatedSupportingSpan(raw.supporting_span, exchange.user_message);
+      if (!span) return null;
+      evidence.push({ exchange_index: raw.exchange_index, source: "human", kind: raw.kind as HumanEvidenceKind, supporting_span: span });
+      humanTexts.push(exchange.user_message);
+      sourceExchangeIds.add(exchange.id);
+      if (raw.kind === "repeated_signal") repeatedSignal++;
+      continue;
+    }
+    if (raw.source === "tool") {
+      if (
+        !TOOL_EVIDENCE_KINDS.has(raw.kind as ToolEvidenceKind) ||
+        typeof raw.tool_call_id !== "string" || raw.tool_call_id.trim() === "" ||
+        typeof raw.tool_name !== "string" || raw.tool_name.trim() === "" ||
+        raw.source_type !== raw.kind
+      ) {
+        return null;
+      }
+      const tool = (exchange.tool_evidence ?? []).find(
+        (item) =>
+          item.id === raw.tool_call_id && item.tool_name === raw.tool_name &&
+          item.source_type === raw.source_type && booleanFlag(item.learnable) && !!item.tool_result,
+      );
+      if (!tool) return null;
+      const span = validatedSupportingSpan(raw.supporting_span, tool.tool_result ?? "");
+      if (!span) return null;
+      evidence.push({
+        exchange_index: raw.exchange_index, source: "tool", kind: raw.kind as ToolEvidenceKind,
+        supporting_span: span, tool_call_id: raw.tool_call_id, tool_name: raw.tool_name,
+        source_type: raw.source_type as ToolEvidenceKind,
+      });
+      toolResults.push(tool.tool_result ?? "");
+      sourceExchangeIds.add(exchange.id);
+      sourceEvidenceIds.add(raw.tool_call_id);
+      if (raw.kind === "test_execution") {
+        testEvidence++;
+        if (!isToolError(tool.is_error)) successfulTest++;
+      }
+      continue;
+    }
+    return null;
+  }
+  const userFlaggedRepeat = candidate.user_flagged_repeat === true;
+  if (kind === "incident" && testEvidence === 0 && !(repeatedSignal > 0 && userFlaggedRepeat)) return null;
+  if (kind === "validated" && successfulTest === 0) return null;
+
+  let signatureText: string | undefined;
+  if (kind === "incident") {
+    const proposed = typeof candidate.signature_text === "string" ? candidate.signature_text.trim() : "";
+    const corpus = [...toolResults, ...humanTexts];
+    if (proposed && corpus.some((text) => text.includes(proposed))) {
+      signatureText = proposed;
+    } else {
+      // Fail closed to the first verified span; never accept a paraphrased signature.
+      signatureText = evidence[0]?.supporting_span;
+    }
+    if (!signatureText || signatureText.length < 4) return null;
+  }
+  const subjectKey = typeof candidate.subject_key === "string" && /^[a-z0-9_.]{3,200}$/.test(candidate.subject_key)
+    ? candidate.subject_key
+    : null;
+  const remediates = typeof candidate.remediates_signature_key === "string" && /^[0-9a-f]{24}$/.test(candidate.remediates_signature_key)
+    ? candidate.remediates_signature_key
+    : undefined;
+  return {
+    observation: kind,
+    summary,
+    subject_key: subjectKey,
+    ...(signatureText ? { signature_text: signatureText } : {}),
+    ...(remediates ? { remediates_signature_key: remediates } : {}),
+    user_flagged_repeat: userFlaggedRepeat,
+    confidence,
+    evidence,
+    source_exchange_ids: [...sourceExchangeIds],
+    source_evidence_ids: [...sourceEvidenceIds],
   };
 }
 
@@ -1973,6 +2211,17 @@ export async function extractFactsFromExchanges(
       if (Array.isArray(extracted)) {
         const structurallyAccepted: Array<{ accepted: true; fact: ExtractedFact }> = [];
         for (const candidate of extracted) {
+          if (isRecord(candidate) && typeof candidate.observation === "string") {
+            const observation = validateExtractedObservationCandidate(candidate, window);
+            if (observation && options?.collectObservations) {
+              const key = `${observation.observation}\u0000${observation.signature_text ?? observation.summary}\u0000${[...observation.source_exchange_ids].sort().join(",")}`;
+              if (!options.collectObservations.some((existing) =>
+                `${existing.observation}\u0000${existing.signature_text ?? existing.summary}\u0000${[...existing.source_exchange_ids].sort().join(",")}` === key)) {
+                options.collectObservations.push(observation);
+              }
+            }
+            continue;
+          }
           const validation = validateExtractedFactCandidateDetailed(
             candidate,
             window,
@@ -2039,6 +2288,9 @@ export async function extractFactsFromExchanges(
               evidence: fact.evidence,
               context_dependencies: fact.context_dependencies,
               source_exchange_ids: sourceExchangeIds,
+              ...(fact.subject_key ? { subject_key: fact.subject_key } : {}),
+              ...(fact.change_context ? { change_context: fact.change_context } : {}),
+              ...(fact.classifier_notes ? { classifier_notes: fact.classifier_notes } : {}),
             });
           }
         }
@@ -2109,7 +2361,52 @@ export async function extractFactsFromExchanges(
   return allFacts;
 }
 
-/** Save facts and the completion marker in one transaction. */
+export interface SaveExtractedFactsExtras {
+  /** Event-only observations validated in the same extraction run. */
+  observations?: ExtractedObservation[];
+  sessionId?: string | null;
+}
+
+export interface SaveExtractedFactsOutcome {
+  savedIds: string[];
+  asserted: number;
+  changed: number;
+  merged: number;
+  historical: number;
+  contradicted: number;
+  incidents: number;
+  validations: number;
+}
+
+function groundedFieldsFor(fact: ExtractedFact): { problem?: GroundedField; cause?: GroundedField; rationale?: GroundedField } | undefined {
+  const context = fact.change_context;
+  if (!context) return undefined;
+  const map = (ref: ResolvedGroundedRef | undefined): GroundedField | undefined =>
+    ref ? { text: ref.text, exchangeId: ref.exchange_id, supportingSpan: ref.supporting_span, toolCallId: ref.tool_call_id } : undefined;
+  return { problem: map(context.problem), cause: map(context.cause), rationale: map(context.rationale) };
+}
+
+function toolEvidenceIds(fact: { evidence?: ExtractedFactEvidence[] }): string[] {
+  return (fact.evidence ?? [])
+    .filter((item) => item.source === "tool" && !!item.tool_call_id)
+    .map((item) => item.tool_call_id as string);
+}
+
+function maxExchangeTimestamp(db: Database.Database, exchangeIds: string[]): string | null {
+  if (exchangeIds.length === 0) return null;
+  const row = db.prepare(`
+    SELECT MAX(timestamp) AS ts FROM exchanges WHERE id IN (${exchangeIds.map(() => "?").join(",")})
+  `).get(...exchangeIds) as { ts: string | null } | undefined;
+  return row?.ts ?? null;
+}
+
+/**
+ * Save facts, their Chronicle events, event-only observations and the
+ * completion marker in one transaction. A semantic subject slot that is
+ * already occupied is resolved deterministically (merge / CHANGED /
+ * historical / CONTRADICTED) by source-effective time and authority — never by
+ * worker order — so the projection and its history commit together.
+ */
 export async function saveExtractedFacts(
   db: Database.Database,
   facts: ExtractedFact[],
@@ -2117,7 +2414,20 @@ export async function saveExtractedFacts(
   sourceExchangeIds: string[],
   renewLease?: () => void,
   commitMarker?: (extracted: number, saved: number) => number,
+  extras: SaveExtractedFactsExtras = {},
 ): Promise<string[]> {
+  return (await saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras)).savedIds;
+}
+
+export async function saveExtractedFactsDetailed(
+  db: Database.Database,
+  facts: ExtractedFact[],
+  project: string,
+  sourceExchangeIds: string[],
+  renewLease?: () => void,
+  commitMarker?: (extracted: number, saved: number) => number,
+  extras: SaveExtractedFactsExtras = {},
+): Promise<SaveExtractedFactsOutcome> {
   await initEmbeddings();
 
   // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
@@ -2135,28 +2445,213 @@ export async function saveExtractedFacts(
     });
   }
 
-  // 2단계(동기·원자적): fact 삽입 + 완료 마커를 한 트랜잭션으로. 마커가 0행이면
-  // 선점을 잃은 것이므로 throw → 삽입까지 통째로 롤백된다(부분 저장 잔존 없음).
+  // 2단계(동기·원자적): fact 삽입 + Chronicle + 완료 마커를 한 트랜잭션으로. 마커가
+  // 0행이면 선점을 잃은 것이므로 throw → 삽입까지 통째로 롤백된다(부분 저장 잔존 없음).
   const savedIds: string[] = [];
+  const savedVectors = new Map<string, number[]>();
+  const outcome: SaveExtractedFactsOutcome = {
+    savedIds, asserted: 0, changed: 0, merged: 0, historical: 0, contradicted: 0, incidents: 0, validations: 0,
+  };
+  const observations = extras.observations ?? [];
   const commit = db.transaction(() => {
+    const now = new Date().toISOString();
     for (const p of prepared) {
-      const factId = insertFact(db, {
+      const factSources = p.fact.source_exchange_ids ?? sourceExchangeIds;
+      const insertParams = {
         fact: p.fact.fact,
         category: p.fact.category,
         scope_type: p.fact.scope_type,
         scope_project: p.fact.scope_type === "project" ? project : null,
-        source_exchange_ids: p.fact.source_exchange_ids ?? sourceExchangeIds,
+        source_exchange_ids: factSources,
         embedding: p.embedding,
         fact_kr: p.fact.fact_kr ?? null,
         embedding_kr: p.embeddingKr,
+        subject_key: p.fact.subject_key ?? undefined,
+      };
+      const authority = evidenceAuthorityFromKinds(p.fact.evidence);
+      const effectiveAt = maxExchangeTimestamp(db, factSources);
+      const grounded = groundedFieldsFor(p.fact);
+      const classifierNote = p.fact.classifier_notes?.length ? p.fact.classifier_notes.join("\n") : null;
+      const evidenceIds = toolEvidenceIds(p.fact);
+
+      let existing: ReturnType<typeof findCurrentSlotFact> = null;
+      let identity: ReturnType<typeof resolveFactInsertIdentity> | null = null;
+      if (p.fact.scope_type === "project" && isSemanticSubjectKey(p.fact.subject_key)) {
+        identity = resolveFactInsertIdentity(db, insertParams);
+        existing = findCurrentSlotFact(db, {
+          projectId: identity.projectId,
+          subjectKey: p.fact.subject_key as string,
+          promotionState: identity.promotionState,
+          workspaceId: identity.workspaceId,
+          workstreamId: identity.workstreamId,
+        });
+      }
+
+      if (!existing) {
+        const factId = insertFact(db, insertParams);
+        const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(factId) as { project_id: string | null; subject_key: string | null };
+        recordChronicleEvent(db, {
+          kind: "ASSERTED",
+          projectId: row.project_id,
+          subjectKey: row.subject_key,
+          factId,
+          fromSemanticGeneration: null,
+          toSemanticGeneration: 1,
+          previousValue: null,
+          newValue: p.fact.fact,
+          grounded,
+          classifierNote,
+          sourceExchangeIds: factSources,
+          sourceEvidenceIds: evidenceIds,
+          actor: "extractor",
+          evidenceAuthority: authority,
+          effectiveAt,
+          recordedAt: now,
+          projectionApplied: true,
+        });
+        insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
+        savedIds.push(factId);
+        savedVectors.set(factId, p.embedding);
+        outcome.asserted++;
+        continue;
+      }
+
+      if (normalizeFactText(existing.fact) === normalizeFactText(p.fact.fact)) {
+        // Rephrasing of the current value: provenance grows, no event (RFC §15.1).
+        let liveSources = factSources;
+        try {
+          const parsed: unknown = JSON.parse(existing.source_exchange_ids ?? "[]");
+          if (Array.isArray(parsed)) liveSources = [...new Set([...parsed.filter((id): id is string => typeof id === "string"), ...factSources])];
+        } catch { /* keep new evidence side */ }
+        updateFact(db, existing.id, { consolidated_count_increment: true, source_exchange_ids: liveSources });
+        outcome.merged++;
+        continue;
+      }
+
+      const judgement = judgeCompetingEvidence({
+        existingEffectiveAt: currentEffectiveAt(db, existing.id),
+        existingAuthority: currentEvidenceAuthority(db, existing.id),
+        incomingEffectiveAt: effectiveAt ?? now,
+        incomingAuthority: authority,
       });
-      insertFactContextDependencies(
-        db,
-        factId,
-        p.fact.context_dependencies ?? [],
-      );
-      savedIds.push(factId);
+      if (judgement.verdict === "apply") {
+        applyFactMeaningMutation(db, {
+          factId: existing.id,
+          newText: p.fact.fact,
+          source: { exchangeIds: factSources },
+          lineageMode: "preserve-identity",
+          expectedSemanticGeneration: existing.semantic_generation,
+          expectedLifecycleGeneration: existing.lifecycle_generation,
+          chronicle: {
+            actor: "extractor",
+            grounded,
+            classifierNote,
+            evidenceAuthority: authority,
+            effectiveAt,
+            sourceEvidenceIds: evidenceIds,
+            outcome: { temporal: judgement.reason },
+          },
+        }, p.embedding);
+        insertFactContextDependencies(db, existing.id, p.fact.context_dependencies ?? []);
+        savedIds.push(existing.id);
+        savedVectors.set(existing.id, p.embedding);
+        outcome.changed++;
+        continue;
+      }
+      const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(existing.id) as { project_id: string | null; subject_key: string | null };
+      recordChronicleEvent(db, {
+        kind: judgement.verdict === "historical" ? "ASSERTED" : "CONTRADICTED",
+        projectId: row.project_id,
+        subjectKey: row.subject_key,
+        factId: existing.id,
+        fromSemanticGeneration: existing.semantic_generation,
+        toSemanticGeneration: null,
+        previousValue: judgement.verdict === "historical" ? null : existing.fact,
+        newValue: p.fact.fact,
+        grounded,
+        classifierNote,
+        outcome: {
+          resolution: judgement.verdict === "historical" ? "historical" : "unresolved",
+          temporal: judgement.reason,
+        },
+        sourceExchangeIds: factSources,
+        sourceEvidenceIds: evidenceIds,
+        actor: "extractor",
+        evidenceAuthority: authority,
+        effectiveAt,
+        recordedAt: now,
+        projectionApplied: false,
+      });
+      if (judgement.verdict === "historical") outcome.historical++;
+      else outcome.contradicted++;
     }
+
+    for (const observation of observations) {
+      const identity = resolveFactInsertIdentity(db, {
+        scope_type: "project",
+        scope_project: project,
+        source_exchange_ids: observation.source_exchange_ids,
+      });
+      if (!identity.projectId) continue;
+      const sessionRow = db.prepare(`
+        SELECT session_id FROM exchanges WHERE id IN (${observation.source_exchange_ids.map(() => "?").join(",")}) LIMIT 1
+      `).get(...observation.source_exchange_ids) as { session_id: string | null } | undefined;
+      const sessionId = extras.sessionId ?? sessionRow?.session_id ?? null;
+      const authority = observation.source_evidence_ids.length > 0 ? "trusted-tool" : "human";
+      if (observation.observation === "incident") {
+        recordIncidentOccurrence(db, {
+          projectId: identity.projectId,
+          workspaceId: identity.workspaceId,
+          workstreamId: identity.workstreamId,
+          sessionId,
+          subjectKey: observation.subject_key ?? null,
+          signatureText: observation.signature_text ?? observation.summary,
+          summary: observation.summary,
+          sourceExchangeIds: observation.source_exchange_ids,
+          sourceEvidenceIds: observation.source_evidence_ids,
+          evidenceAuthority: authority,
+          userFlaggedRepeat: observation.user_flagged_repeat === true,
+          recordedAt: now,
+          actor: "extractor",
+        });
+        outcome.incidents++;
+        continue;
+      }
+      if (observation.remediates_signature_key) {
+        const known = db.prepare("SELECT 1 FROM incident_signatures WHERE project_id = ? AND signature_key = ?")
+          .get(identity.projectId, observation.remediates_signature_key);
+        if (known) {
+          recordIncidentRemediation(db, {
+            projectId: identity.projectId,
+            signatureKey: observation.remediates_signature_key,
+            subjectKey: observation.subject_key ?? null,
+            summary: observation.summary,
+            sourceExchangeIds: observation.source_exchange_ids,
+            sourceEvidenceIds: observation.source_evidence_ids,
+            evidenceAuthority: authority,
+            recordedAt: now,
+            actor: "extractor",
+          });
+          outcome.validations++;
+          continue;
+        }
+      }
+      recordChronicleEvent(db, {
+        kind: "VALIDATED",
+        projectId: identity.projectId,
+        subjectKey: observation.subject_key ?? null,
+        newValue: observation.summary,
+        outcome: { validation: "test_execution" },
+        sourceExchangeIds: observation.source_exchange_ids,
+        sourceEvidenceIds: observation.source_evidence_ids,
+        actor: "extractor",
+        evidenceAuthority: authority,
+        recordedAt: now,
+        projectionApplied: false,
+      });
+      outcome.validations++;
+    }
+
     if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
       throw new ClaimLostError(
         "완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).",
@@ -2171,15 +2666,17 @@ export async function saveExtractedFacts(
   }
 
   // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
-  for (let i = 0; i < savedIds.length; i++) {
+  for (const factId of savedIds) {
+    const vector = savedVectors.get(factId);
+    if (!vector) continue;
     try {
-      await classifyAndLinkFact(db, savedIds[i], prepared[i].embedding);
+      await classifyAndLinkFact(db, factId, vector);
     } catch (err) {
-      console.error(`Ontology pipeline failed for fact ${savedIds[i]}:`, err);
+      console.error(`Ontology pipeline failed for fact ${factId}:`, err);
     }
   }
 
-  return savedIds;
+  return outcome;
 }
 
 /**
@@ -2403,8 +2900,10 @@ export async function runFactExtraction(
         | undefined)?.exchange_rowid ?? target.fromRowid
     : target.fromRowid;
   let facts: ExtractedFact[];
+  const observations: ExtractedObservation[] = [];
   try {
     facts = await extractFactsFromExchanges(db, sessionId, undefined, renewLease, {
+      collectObservations: observations,
       onlyAfterRowid: page.every(
         (item) => item.exchange_rowid > contextWatermark,
       )
@@ -2490,7 +2989,7 @@ export async function runFactExtraction(
   let saved = 0;
   try {
     renewLease();
-    if (facts.length > 0) {
+    if (facts.length > 0 || observations.length > 0) {
       saved = (
         await saveExtractedFacts(
           db,
@@ -2499,6 +2998,7 @@ export async function runFactExtraction(
           [],
           renewLease,
           commitMarker,
+          { observations, sessionId },
         )
       ).length;
     } else {

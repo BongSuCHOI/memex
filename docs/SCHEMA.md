@@ -223,11 +223,44 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 
 `source_exchange_ids`와 `consolidated_count`는 sync/concurrent writer에서 각각 union/max로 수렴합니다. 의미 winner의 metadata로 단순 덮어쓰지 않습니다.
 
-## 4. Revisions와 tombstones
+## 4. Chronicle (extended `fact_revisions`)와 tombstones
 
-`fact_revisions`는 기존 fact identity의 의미 변화를 보존합니다.
+`fact_revisions`는 Phase 4부터 Chronicle event table입니다. 별도의 history table을 두지 않고 released
+revision row를 같은 table 안에서 CHANGED event로 확장합니다(schema v5 rebuild: `fact_id`/`previous_fact`/`new_fact`
+nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chronicle은 append-only 의미 전환 계보입니다.
+매 query마다 event replay로 current를 계산하지 않습니다.
+
+| Column | 의미 |
+| --- | --- |
+| `id` | content-derived event id(sha256 32hex). 같은 내용의 duplicate delivery/sync replay는 같은 id로 수렴 |
+| `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
+| `previous_fact` / `new_fact` | previous/new value |
+| `project_id`, `subject_key` | stable slot |
+| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED` |
+| `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
+| `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
+| `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
+| `outcome_json` | validation/incident/temporal 판정 결과 |
+| `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
+| `reverts_event_id`, `related_event_ids` | rollback/관계 |
+| `actor` | `extractor|consolidator|user|sync|legacy` |
+| `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision|human|trusted-tool|unknown` |
+| `effective_at` / `effective_at_source` | 실제 사건 시점(`source`) 또는 처리 시점 fallback(`recorded`), peer 수신(`peer`) |
+| `recorded_at` | worker 처리 시점 |
+| `projection_applied` | 1이면 같은 transaction에서 current가 바뀜, 0이면 event-only/historical/candidate |
+| `chronicle_seq` | local append 순서 tie-breaker(clock 아님) |
+
+Timeline 정렬은 항상 `effective_at, recorded_at, chronicle_seq`이며 worker 완료 순서나 generation 번호로
+정렬하지 않습니다. Legacy row backfill: `event_kind=CHANGED`, `actor=legacy`, `reason → classifier_note`,
+`effective_at`은 cited source exchange timestamp(없으면 `created_at`, `recorded`).
+
+`incident_occurrences`는 source-linked incident episode(session, signature_key, retry_count, state)이고
+`incident_signatures`는 project별 stable failure signature(`episode_count`, `pattern_state`
+`candidate|pattern|remediated`, remediation event)입니다. `continuity_telemetry`는 측정된 outcome sample이며
+fact/event가 아닙니다.
 
 `fact_tombstones`는 hard-delete event이며 fact row가 없어져도 남아 stale peer snapshot의 resurrection을 막습니다.
+`chronicle_tombstones`는 purge된 event id를 같은 목적으로 보존합니다.
 
 `reason = source_conversation_excluded`는 terminal privacy tombstone으로 취급합니다. 일반 newer lifecycle event만으로 복원하지 않습니다.
 
@@ -316,6 +349,11 @@ recall_events
 ```
 
 Project-scoped wire rows는 stable project/portable identity를 사용하고 `scope_project = null`입니다.
+`fact-revisions.jsonl`은 Chronicle event 전체 shape(legacy 7-field + event field, `portable_project_key`)를 additive로
+실어 나르며 device-local generation 번호는 내보내지 않습니다. importer는 legacy 7-field row와 event row를 모두
+받아 stable event id로 replay-idempotent하게 append하고, 같은 id에 다른 내용이 오면 local history를 보존한 채
+`malformedRows`에 conflict를 기록합니다. `fact-tombstones.jsonl`에는 `{fact_id: null, event_id, ...}` 형태의
+Chronicle tombstone row가 추가됩니다(구 peer는 generation 전체를 visible reject).
 Workspace path, Git common-dir, branch와 Hot Evidence는 device-local/ephemeral이므로 export하지 않습니다.
 Legacy v4 path row는 importer가 canonical local workspace로 migration할 수 있지만, 새 path-free shape를
 모르는 peer는 generation 전체를 visible하게 reject해야 하며 partial compatibility import는 금지합니다.

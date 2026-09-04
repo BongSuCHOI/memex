@@ -53,6 +53,7 @@ node scripts/web-ui-browser-e2e.mjs
 | privacy | conversation purge, pending checkpoint/job/target cascade, terminal session guard, in-flight capture-index race, fact tombstone, taxonomy epoch race |
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
 | continuity identity v4 | path migration/re-run, worktree/rename/clone link-split, conservative binding, promotion slots, memory revision/correction, Hot Evidence TTL/pagination, stable MCP/sync/privacy scope |
+| continuity chronicle v5 | extended `fact_revisions` Chronicle, subject slot resolution, grounded cause vs classifier note, effective/recorded order, rollback/contradiction, incident coalescing/pattern/remediation, `trace_fact` timeline pagination, Chronicle sync/purge tombstones, measured telemetry |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
 

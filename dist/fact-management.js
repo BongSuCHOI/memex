@@ -1,5 +1,6 @@
-import { clearFactContextDependencies, getRevisions, insertRevision, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
+import { clearFactContextDependencies, getRevisions, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
+import { normalizeSlotText, purgeChronicleForSources, readChronicleTimeline, recordChronicleEvent, } from './chronicle.js';
 function tableExists(db, name) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined;
 }
@@ -114,7 +115,8 @@ function deactivateWithinTransaction(db, id, expectedSemanticGeneration, expecte
 /**
  * Replace one fact's meaning while preserving its identity and revision chain.
  * Embedding generation happens before the write; every durable generation
- * transition and invalidation commits in one transaction.
+ * transition, its Chronicle CHANGED event, and invalidation commit in one
+ * transaction.
  */
 export async function mutateFactMeaning(db, opts) {
     if (opts.lineageMode && opts.lineageMode !== 'preserve-identity') {
@@ -130,6 +132,19 @@ export async function mutateFactMeaning(db, opts) {
         throw new Error('semantic fact mutation requires an initialized vec_facts table');
     }
     const embedding = await generateEmbedding(newText, 'passage');
+    return applyFactMeaningMutation(db, opts, embedding);
+}
+/**
+ * Synchronous core of the semantic mutation. Callers that already hold a
+ * vector (the extractor's slot resolver) run it inside their own transaction;
+ * better-sqlite3 nests it as a savepoint. The CHANGED event is appended after
+ * the projection UPDATE inside the same transaction, so a failed projection
+ * update leaves no event and a failed event leaves no projection change.
+ */
+export function applyFactMeaningMutation(db, opts, embedding) {
+    const newText = String(opts.newText || '').trim();
+    if (newText.length < 4)
+        throw new Error('new fact text too short (min 4 chars)');
     const embBuffer = Buffer.from(new Float32Array(embedding).buffer);
     const vp = vecParamFor(db, 'vec_facts', embedding);
     const deactivateFacts = [];
@@ -140,8 +155,9 @@ export async function mutateFactMeaning(db, opts) {
         seenDeactivations.add(d.id);
         deactivateFacts.push(d);
     }
+    const chronicle = opts.chronicle ?? { actor: 'consolidator' };
     const tx = db.transaction(() => {
-        const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation, lifecycle_generation FROM facts WHERE id = ?').get(opts.factId);
+        const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation, lifecycle_generation, project_id, subject_key FROM facts WHERE id = ?').get(opts.factId);
         if (!current)
             throw new Error(`fact not found: ${opts.factId}`);
         if (opts.expectedPreviousFact !== undefined && current.fact !== opts.expectedPreviousFact) {
@@ -162,20 +178,13 @@ export async function mutateFactMeaning(db, opts) {
                 ...parseSourceExchangeIds(current.source_exchange_ids),
                 ...(opts.source?.exchangeIds ?? []),
             ])];
-        const revisionId = insertRevision(db, {
-            fact_id: opts.factId,
-            previous_fact: current.fact,
-            new_fact: newText,
-            reason: opts.reason ?? null,
-            source_exchange_id: opts.source?.exchangeId ?? null,
-        });
         const countUpdate = opts.consolidatedCountIncrement
             ? ', consolidated_count = consolidated_count + 1'
             : '';
         const now = new Date().toISOString();
         // 재감사 P1-2: 의미 변경은 semantic_generation을 올린다 — 이 커밋 이후
         // 캡처된 구세대의 비동기 결과(분류/벡터/KR/관계)는 CAS에서 0행으로 폐기된다.
-        db.prepare(`
+        const updated = db.prepare(`
       UPDATE facts
       SET fact = ?, source_exchange_ids = ?, embedding = ?, updated_at = ?, embedding_version = ?,
           ontology_category_id = NULL, fact_kr = NULL,
@@ -183,8 +192,58 @@ export async function mutateFactMeaning(db, opts) {
           ontology_last_attempt_at = NULL,
           semantic_generation = semantic_generation + 1, semantic_updated_at = ?
           ${countUpdate}
-      WHERE id = ?
-    `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, now, EMBEDDING_VERSION, now, opts.factId);
+      WHERE id = ? AND semantic_generation = ?
+    `).run(newText, JSON.stringify(sourceExchangeIds), embBuffer, now, EMBEDDING_VERSION, now, opts.factId, current.semantic_generation);
+        if (updated.changes !== 1) {
+            throw new StaleFactMutationError(`fact changed during semantic mutation: ${opts.factId}`);
+        }
+        // CURRENT VS HISTORY: the projection moved, so the Chronicle must record
+        // the transition in this same commit. The new evidence for the change is
+        // the mutation's own source, not the fact's accumulated provenance.
+        // `source.exchangeId` is the exchange that carries the new evidence;
+        // `source.exchangeIds` may be the merged provenance union (consolidation),
+        // which belongs to the fact row, not to this transition.
+        const eventSources = opts.source?.exchangeId
+            ? [opts.source.exchangeId]
+            : [...(opts.source?.exchangeIds ?? [])];
+        // Rollback detection: returning to the value a previous CHANGED event
+        // replaced links the two transitions (RFC §15.3) without deleting history.
+        let revertsEventId = chronicle.revertsEventId ?? null;
+        if (!revertsEventId) {
+            const candidates = db.prepare(`
+        SELECT id, previous_fact, new_fact FROM fact_revisions
+        WHERE fact_id = ? AND projection_applied = 1 AND event_kind IN ('CHANGED','ASSERTED')
+        ORDER BY effective_at DESC, recorded_at DESC, COALESCE(chronicle_seq, rowid) DESC LIMIT 20
+      `).all(opts.factId);
+            const target = normalizeSlotText(newText);
+            const fromValue = normalizeSlotText(current.fact);
+            const reverted = candidates.find((row) => row.previous_fact !== null && normalizeSlotText(row.previous_fact) === target &&
+                row.new_fact !== null && normalizeSlotText(row.new_fact) === fromValue);
+            revertsEventId = reverted?.id ?? null;
+        }
+        const { event } = recordChronicleEvent(db, {
+            kind: 'CHANGED',
+            projectId: current.project_id,
+            subjectKey: current.subject_key,
+            factId: opts.factId,
+            fromSemanticGeneration: current.semantic_generation,
+            toSemanticGeneration: current.semantic_generation + 1,
+            previousValue: current.fact,
+            newValue: newText,
+            grounded: chronicle.grounded,
+            userStatedRationale: chronicle.userStatedRationale ?? null,
+            classifierNote: chronicle.classifierNote ?? opts.reason ?? null,
+            outcome: chronicle.outcome ?? null,
+            sourceExchangeIds: eventSources,
+            sourceEvidenceIds: chronicle.sourceEvidenceIds ?? [],
+            revertsEventId,
+            relatedEventIds: chronicle.relatedEventIds ?? [],
+            actor: chronicle.actor,
+            evidenceAuthority: chronicle.evidenceAuthority ?? (chronicle.actor === 'user' ? 'human' : 'unknown'),
+            effectiveAt: chronicle.effectiveAt ?? null,
+            recordedAt: now,
+            projectionApplied: true,
+        });
         if (tableExists(db, 'fact_context_dependencies')) {
             if ((opts.mergeContextFromFactIds?.length ?? 0) > 0) {
                 mergeFactContextDependencies(db, opts.factId, opts.mergeContextFromFactIds ?? []);
@@ -209,7 +268,7 @@ export async function mutateFactMeaning(db, opts) {
         for (const d of deactivateFacts) {
             deactivateWithinTransaction(db, d.id, d.expectedSemanticGeneration, d.expectedLifecycleGeneration);
         }
-        return { revisionId, affectedRelations };
+        return { revisionId: event.id, affectedRelations };
     });
     const result = tx();
     return {
@@ -231,19 +290,45 @@ export async function editFact(db, id, opts) {
     return mutateFactMeaning(db, {
         factId: id,
         newText: opts.text,
-        reason: opts.reason,
+        reason: undefined,
         source: { exchangeId: opts.sourceExchangeId },
         lineageMode: 'preserve-identity',
+        // A reason typed by the user is an explicit human rationale, not a model note.
+        chronicle: { actor: 'user', userStatedRationale: opts.reason ?? null, evidenceAuthority: 'human' },
     });
 }
-/** Deactivate (default delete). Removes from search/vector immediately.
- * Lifecycle 전환이므로 lifecycle_generation을 올린다(재감사 P1-3 v4) — sync는
- * 이 시계로 deactivate를 전파하고, restore은 이 토큰으로 await race를 폐기한다. */
-export function deactivateFactTransactional(db, id) {
+export function deactivateFactTransactional(db, id, options = {}) {
+    const chronicle = options.chronicle === undefined ? { actor: 'user' } : options.chronicle;
+    let eventId = null;
     const tx = db.transaction(() => {
-        const r = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), id);
-        if (r.changes === 0)
+        const now = new Date().toISOString();
+        const current = db.prepare('SELECT fact, project_id, subject_key, semantic_generation, lifecycle_generation FROM facts WHERE id = ? AND is_active = 1')
+            .get(id);
+        const r = db.prepare('UPDATE facts SET is_active = 0, needs_consolidation = 0, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 1').run(now, now, id);
+        if (r.changes === 0 || !current)
             throw new Error(`no active fact with id: ${id} (not found or already inactive)`);
+        if (chronicle) {
+            const { event } = recordChronicleEvent(db, {
+                kind: 'RETIRED',
+                projectId: current.project_id,
+                subjectKey: current.subject_key,
+                factId: id,
+                fromSemanticGeneration: current.semantic_generation,
+                toSemanticGeneration: current.semantic_generation,
+                lifecycleGeneration: current.lifecycle_generation + 1,
+                previousValue: current.fact,
+                newValue: null,
+                userStatedRationale: chronicle.userStatedRationale ?? null,
+                classifierNote: chronicle.classifierNote ?? null,
+                sourceExchangeIds: chronicle.sourceExchangeIds ?? [],
+                actor: chronicle.actor,
+                evidenceAuthority: chronicle.evidenceAuthority ?? (chronicle.actor === 'user' ? 'human' : 'unknown'),
+                effectiveAt: chronicle.effectiveAt ?? null,
+                recordedAt: now,
+                projectionApplied: true,
+            });
+            eventId = event.id;
+        }
         let removed = false;
         if (tableExists(db, 'vec_facts')) {
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
@@ -254,7 +339,7 @@ export function deactivateFactTransactional(db, id) {
         return removed;
     });
     const removedFromVectorIndex = tx();
-    return { deactivated: true, removedFromVectorIndex };
+    return { deactivated: true, removedFromVectorIndex, eventId };
 }
 /**
  * Restore an inactive fact and rebuild its vector. The stored embedding is
@@ -282,9 +367,10 @@ function storedVectorIfCurrent(row) {
     }
     return undefined; // model upgrade happened while inactive: re-embed
 }
-export async function restoreFact(db, id) {
+export async function restoreFact(db, id, options = {}) {
+    const chronicle = options.chronicle === undefined ? { actor: 'user' } : options.chronicle;
     const row = db
-        .prepare('SELECT fact, embedding, embedding_version, semantic_generation, lifecycle_generation FROM facts WHERE id = ? AND is_active = 0')
+        .prepare('SELECT fact, embedding, embedding_version, semantic_generation, lifecycle_generation, project_id, subject_key FROM facts WHERE id = ? AND is_active = 0')
         .get(id);
     if (!row)
         throw new Error(`no inactive fact with id: ${id}`);
@@ -306,12 +392,43 @@ export async function restoreFact(db, id) {
     // 재감사 P1-3(protocol v4): restore은 lifecycle 전환이기도 하다 — lifecycle
     // 토큰까지 검사해 await 중인 deactivate/remote lifecycle import를 존중하고,
     // 커밋이 lifecycle_generation을 올려 다른 기기의 순서 판정을 가능하게 한다.
+    let eventId = null;
+    const recordRestored = (now) => {
+        if (!chronicle)
+            return;
+        const retired = db.prepare(`
+      SELECT id FROM fact_revisions WHERE fact_id = ? AND event_kind = 'RETIRED'
+      ORDER BY effective_at DESC, recorded_at DESC, COALESCE(chronicle_seq, rowid) DESC LIMIT 1
+    `).get(id);
+        const { event } = recordChronicleEvent(db, {
+            kind: 'RESTORED',
+            projectId: row.project_id,
+            subjectKey: row.subject_key,
+            factId: id,
+            fromSemanticGeneration: row.semantic_generation,
+            toSemanticGeneration: row.semantic_generation,
+            lifecycleGeneration: row.lifecycle_generation + 1,
+            previousValue: null,
+            newValue: row.fact,
+            userStatedRationale: chronicle.userStatedRationale ?? null,
+            classifierNote: chronicle.classifierNote ?? null,
+            sourceExchangeIds: chronicle.sourceExchangeIds ?? [],
+            revertsEventId: retired?.id ?? null,
+            actor: chronicle.actor,
+            evidenceAuthority: chronicle.evidenceAuthority ?? (chronicle.actor === 'user' ? 'human' : 'unknown'),
+            effectiveAt: chronicle.effectiveAt ?? null,
+            recordedAt: now,
+            projectionApplied: true,
+        });
+        eventId = event.id;
+    };
     const tx = db.transaction(() => {
         if (vector && tableExists(db, 'vec_facts')) {
             const now = new Date().toISOString();
             const claimed = db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ?, embedding = ?, embedding_version = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ? AND lifecycle_generation = ?').run(now, now, Buffer.from(new Float32Array(vector).buffer), EMBEDDING_VERSION, id, row.semantic_generation, row.lifecycle_generation);
             if (claimed.changes === 0)
                 return 'stale';
+            recordRestored(now);
             const vp = vecParamFor(db, 'vec_facts', vector);
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
             db.prepare(`INSERT INTO vec_facts (id, embedding) VALUES (?, ${vp.sql})`).run(id, vp.blob);
@@ -324,14 +441,18 @@ export async function restoreFact(db, id) {
             }
             return 'vector';
         }
-        const claimed = db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ? AND lifecycle_generation = ?').run(new Date().toISOString(), new Date().toISOString(), id, row.semantic_generation, row.lifecycle_generation);
-        return claimed.changes === 0 ? 'stale' : 'plain';
+        const plainNow = new Date().toISOString();
+        const claimed = db.prepare('UPDATE facts SET is_active = 1, needs_consolidation = 1, lifecycle_generation = lifecycle_generation + 1, lifecycle_updated_at = ?, updated_at = ? WHERE id = ? AND is_active = 0 AND semantic_generation = ? AND lifecycle_generation = ?').run(plainNow, plainNow, id, row.semantic_generation, row.lifecycle_generation);
+        if (claimed.changes === 0)
+            return 'stale';
+        recordRestored(plainNow);
+        return 'plain';
     });
     const outcome = tx();
     if (outcome === 'stale') {
         throw new StaleFactMutationError(`restore discarded: fact ${id} changed meaning or state during restore`);
     }
-    return { restored: true, vectorRestored: outcome === 'vector', reembedded };
+    return { restored: true, vectorRestored: outcome === 'vector', reembedded, eventId };
 }
 /**
  * Apply a REPLICATED lifecycle event (재감사 P1-2/P1-3 v4). Replication is not
@@ -425,8 +546,9 @@ export async function applyReplicatedLifecycle(db, id, desiredActive, eventAt) {
     });
     return tx();
 }
+/** Chronicle timeline for one fact in effective order (oldest first). */
 export function factHistory(db, id) {
-    return getRevisions(db, id);
+    return readChronicleTimeline(db, { factId: id, order: 'asc', limit: 100 }).events;
 }
 export function recordFactTombstone(db, id, reason = null, deletedAt = new Date().toISOString()) {
     db.prepare(`
@@ -466,7 +588,7 @@ export function hardDeleteFact(db, id, opts) {
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
         if (tableExists(db, 'vec_facts_kr'))
             db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
-        db.prepare('DELETE FROM fact_revisions WHERE fact_id = ?').run(id);
+        purgeChronicleForSources(db, { exchangeIds: new Set(), factIds: new Set([id]), reason: 'hard_delete' });
         try {
             db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(id, id);
         }

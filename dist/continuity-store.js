@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
-export const CONTINUITY_SCHEMA_VERSION = 4;
+export const CONTINUITY_SCHEMA_VERSION = 5;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 class ContinuityCasRejected extends Error {
 }
@@ -638,6 +638,7 @@ export function ensureContinuitySchema(db, options = {}) {
         END;
       `);
         }
+        ensureChronicleSchema(db, options);
         db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -710,6 +711,220 @@ export function ensureContinuitySchema(db, options = {}) {
         options.afterMigrationStage?.("user-version");
     });
     migrate.immediate();
+}
+export const CHRONICLE_EVENT_KINDS = [
+    "ASSERTED",
+    "CHANGED",
+    "RETIRED",
+    "RESTORED",
+    "VALIDATED",
+    "INCIDENT",
+    "CONTRADICTED",
+];
+const CHRONICLE_COLUMNS = [
+    ["project_id", "TEXT"],
+    ["subject_key", "TEXT"],
+    ["event_kind", "TEXT NOT NULL DEFAULT 'CHANGED'"],
+    ["from_semantic_generation", "INTEGER"],
+    ["to_semantic_generation", "INTEGER"],
+    ["lifecycle_generation", "INTEGER"],
+    ["problem", "TEXT"],
+    ["grounded_cause", "TEXT"],
+    ["rationale", "TEXT"],
+    ["classifier_note", "TEXT"],
+    ["outcome_json", "TEXT"],
+    ["source_exchange_ids", "TEXT NOT NULL DEFAULT '[]'"],
+    ["source_evidence_ids", "TEXT NOT NULL DEFAULT '[]'"],
+    ["reverts_event_id", "TEXT"],
+    ["related_event_ids", "TEXT NOT NULL DEFAULT '[]'"],
+    ["actor", "TEXT NOT NULL DEFAULT 'legacy'"],
+    ["policy_version", "TEXT NOT NULL DEFAULT 'legacy-revision-v0'"],
+    ["evidence_authority", "TEXT NOT NULL DEFAULT 'unknown'"],
+    ["effective_at", "TEXT NOT NULL DEFAULT ''"],
+    ["effective_at_source", "TEXT NOT NULL DEFAULT 'recorded'"],
+    ["recorded_at", "TEXT NOT NULL DEFAULT ''"],
+    ["projection_applied", "INTEGER NOT NULL DEFAULT 1"],
+    // Local monotonic append order; the deterministic tie-breaker when two
+    // events share effective_at and recorded_at (never a history clock).
+    ["chronicle_seq", "INTEGER"],
+];
+/**
+ * Phase 4 Chronicle. The released `fact_revisions` table is the single
+ * history table: it is rebuilt in place so `fact_id`/`previous_fact`/`new_fact`
+ * become nullable (event-only VALIDATED/INCIDENT rows) and the RFC event shape
+ * is added additively. Existing revision rows keep their ids and are
+ * backfilled as legacy CHANGED events whose free-text `reason` becomes a
+ * classifier note (a consolidator verdict is model inference, never a
+ * grounded cause). No parallel history table is created.
+ */
+function ensureChronicleSchema(db, options) {
+    const BASE_REVISION_COLUMNS = [
+        ["id", "TEXT PRIMARY KEY"],
+        // Nullable so event-only rows exist; the reference keeps orphan detection.
+        ["fact_id", "TEXT REFERENCES facts(id)"],
+        ["previous_fact", "TEXT"],
+        ["new_fact", "TEXT"],
+        ["reason", "TEXT"],
+        ["source_exchange_id", "TEXT"],
+        ["created_at", "TEXT NOT NULL DEFAULT ''"],
+    ];
+    if (!tableExists(db, "fact_revisions")) {
+        db.exec(`CREATE TABLE fact_revisions (${BASE_REVISION_COLUMNS.map(([n, t]) => `${n} ${t}`).join(", ")})`);
+    }
+    const revisionInfo = db.prepare("PRAGMA table_info(fact_revisions)").all();
+    const relaxable = new Set(["fact_id", "previous_fact", "new_fact"]);
+    const needsRebuild = revisionInfo.some((column) => relaxable.has(column.name) && column.notnull === 1);
+    if (needsRebuild) {
+        // SQLite cannot drop NOT NULL in place. Copy every existing column (known
+        // ones in the relaxed shape, unknown ones exactly as declared) into a new
+        // table, preserving every id and value, then swap names. The surrounding
+        // immediate transaction makes the swap atomic and rerunnable.
+        const known = new Map(BASE_REVISION_COLUMNS);
+        const existingNames = revisionInfo.map((column) => column.name);
+        const ddl = revisionInfo.map((column) => {
+            if (known.has(column.name))
+                return `${column.name} ${known.get(column.name)}`;
+            const type = column.type || "TEXT";
+            const notNull = column.notnull === 1 ? " NOT NULL" : "";
+            const dflt = column.dflt_value !== null ? ` DEFAULT ${column.dflt_value}` : "";
+            return `${column.name} ${type}${notNull}${dflt}`;
+        });
+        for (const [name, type] of BASE_REVISION_COLUMNS) {
+            if (!existingNames.includes(name))
+                ddl.push(`${name} ${type}`);
+        }
+        const copyColumns = existingNames.join(", ");
+        db.exec(`
+      CREATE TABLE fact_revisions_chronicle (${ddl.join(", ")});
+      INSERT INTO fact_revisions_chronicle (${copyColumns})
+      SELECT ${copyColumns} FROM fact_revisions;
+      DROP TABLE fact_revisions;
+      ALTER TABLE fact_revisions_chronicle RENAME TO fact_revisions;
+    `);
+    }
+    for (const [name, type] of BASE_REVISION_COLUMNS) {
+        if (!columnNames(db, "fact_revisions").has(name)) {
+            db.exec(`ALTER TABLE fact_revisions ADD COLUMN ${name} ${type}`);
+        }
+    }
+    const revisionColumns = columnNames(db, "fact_revisions");
+    for (const [name, type] of CHRONICLE_COLUMNS) {
+        if (!revisionColumns.has(name)) {
+            db.exec(`ALTER TABLE fact_revisions ADD COLUMN ${name} ${type}`);
+        }
+    }
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS chronicle_tombstones (
+      event_id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL,
+      reason TEXT
+    )
+  `);
+    options.afterMigrationStage?.("chronicle-table");
+    // Deterministic, rerunnable backfill for released revision rows. A row is
+    // legacy when recorded_at is still empty. effective_at prefers the cited
+    // source exchange timestamp; otherwise it falls back to the recorded time
+    // and says so, because the transition time is genuinely unknown.
+    const factColumns = columnNames(db, "facts");
+    const hasFactIdentity = factColumns.has("project_id") && factColumns.has("subject_key");
+    const migrationNow = new Date().toISOString();
+    db.prepare("UPDATE fact_revisions SET created_at = ? WHERE created_at = '' OR created_at IS NULL").run(migrationNow);
+    db.prepare(`
+    UPDATE fact_revisions SET
+      event_kind = CASE WHEN event_kind IS NULL OR event_kind = '' THEN 'CHANGED' ELSE event_kind END,
+      actor = 'legacy',
+      policy_version = 'legacy-revision-v0',
+      classifier_note = COALESCE(classifier_note, reason),
+      source_exchange_ids = CASE
+        WHEN source_exchange_id IS NOT NULL AND source_exchange_id <> '' THEN json_array(source_exchange_id)
+        ELSE '[]' END,
+      effective_at = COALESCE(
+        (SELECT e.timestamp FROM exchanges e WHERE e.id = fact_revisions.source_exchange_id),
+        created_at),
+      effective_at_source = CASE
+        WHEN EXISTS (SELECT 1 FROM exchanges e WHERE e.id = fact_revisions.source_exchange_id) THEN 'source'
+        ELSE 'recorded' END,
+      recorded_at = created_at,
+      projection_applied = 1
+    WHERE recorded_at = ''
+  `).run();
+    db.prepare("UPDATE fact_revisions SET chronicle_seq = rowid WHERE chronicle_seq IS NULL").run();
+    if (hasFactIdentity) {
+        db.prepare(`
+      UPDATE fact_revisions SET
+        project_id = COALESCE(project_id, (SELECT f.project_id FROM facts f WHERE f.id = fact_revisions.fact_id)),
+        subject_key = COALESCE(subject_key, (SELECT f.subject_key FROM facts f WHERE f.id = fact_revisions.fact_id))
+      WHERE fact_id IS NOT NULL AND (project_id IS NULL OR subject_key IS NULL)
+    `).run();
+    }
+    options.afterMigrationStage?.("chronicle-backfill");
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS incident_occurrences (
+      occurrence_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      workspace_id TEXT,
+      workstream_id TEXT,
+      session_id TEXT,
+      signature_key TEXT NOT NULL,
+      signature_text TEXT NOT NULL,
+      subject_key TEXT,
+      event_id TEXT NOT NULL REFERENCES fact_revisions(id) ON DELETE CASCADE,
+      source_exchange_ids TEXT NOT NULL DEFAULT '[]',
+      source_evidence_ids TEXT NOT NULL DEFAULT '[]',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      evidence_authority TEXT NOT NULL DEFAULT 'trusted-tool',
+      effective_at TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      last_retry_at TEXT,
+      state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','remediated')),
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS incident_signatures (
+      project_id TEXT NOT NULL,
+      signature_key TEXT NOT NULL,
+      signature_text TEXT NOT NULL,
+      first_effective_at TEXT NOT NULL,
+      last_effective_at TEXT NOT NULL,
+      episode_count INTEGER NOT NULL DEFAULT 0,
+      user_flagged_repeat INTEGER NOT NULL DEFAULT 0,
+      pattern_state TEXT NOT NULL DEFAULT 'candidate'
+        CHECK(pattern_state IN ('candidate','pattern','remediated')),
+      remediation_event_id TEXT,
+      remediation_summary TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, signature_key)
+    );
+  `);
+    options.afterMigrationStage?.("incident-tables");
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS continuity_telemetry (
+      sample_id TEXT PRIMARY KEY,
+      metric TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'count',
+      project_id TEXT,
+      session_id TEXT,
+      dims_json TEXT NOT NULL DEFAULT '{}',
+      recorded_at TEXT NOT NULL
+    )
+  `);
+    options.afterMigrationStage?.("telemetry-table");
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_revisions_fact ON fact_revisions(fact_id);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_subject_time
+      ON fact_revisions(project_id, subject_key, effective_at, recorded_at, chronicle_seq);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_fact_time
+      ON fact_revisions(fact_id, effective_at, recorded_at, chronicle_seq);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_kind
+      ON fact_revisions(project_id, event_kind, effective_at);
+    CREATE INDEX IF NOT EXISTS idx_incident_signature_scope
+      ON incident_occurrences(project_id, signature_key, session_id, effective_at);
+    CREATE INDEX IF NOT EXISTS idx_incident_event
+      ON incident_occurrences(event_id);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_metric
+      ON continuity_telemetry(metric, project_id, recorded_at);
+  `);
+    options.afterMigrationStage?.("chronicle-indexes");
 }
 /** Backfill rows inserted by legacy readers or direct migration fixtures. */
 export function refreshExchangeMetadata(db, sessionId) {

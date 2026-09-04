@@ -30,8 +30,19 @@ import {
   searchFactsByScope,
   listFactsByScope,
   getRevisions,
+  factMatchesScope,
+  rowToFact,
   type FactSearchScope,
 } from "./fact-db.js";
+import {
+  CHRONICLE_LANE_LABELS,
+  currentFactRevision,
+  formatChronicleEvent,
+  isSemanticSubjectKey,
+  listIncidentOccurrences,
+  matchIncidentPatterns,
+  readChronicleTimeline,
+} from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import {
   getOntologyTree,
@@ -626,7 +637,7 @@ export function getToolDefinitions() {
     {
       name: "trace_fact",
       description:
-        "Trace a fact to authoritative source conversations and separately labeled non-authoritative interpretive context.",
+        "Deep memory path: trace a current fact (by query, fact_id, or subject_key) to its Chronicle timeline (ASSERTED/CHANGED/RETIRED/RESTORED/VALIDATED/INCIDENT/CONTRADICTED), previous values and rollbacks, source-cited causes versus classifier notes, incident occurrences, and authoritative source conversations with separately labeled non-authoritative context. History is bounded and cursor-paginated.",
       inputSchema: {
         type: "object",
         properties: {
@@ -634,7 +645,17 @@ export function getToolDefinitions() {
             type: "string",
             minLength: 2,
             maxLength: 10000,
-            description: "Search query to find the fact to trace",
+            description: "Search query to find the fact to trace (optional when fact_id or subject_key is given)",
+          },
+          fact_id: {
+            type: "string",
+            pattern: "^[0-9a-fA-F-]{36}$",
+            description: "Exact fact UUID to trace",
+          },
+          subject_key: {
+            type: "string",
+            pattern: "^[a-z0-9_.]{3,200}$",
+            description: "Stable subject slot to trace (e.g. state.runtime.session_store)",
           },
           project: {
             type: "string",
@@ -659,12 +680,18 @@ export function getToolDefinitions() {
             default: 3,
             description: "Max facts to trace",
           },
+          include_timeline: { type: "boolean", default: true, description: "Include the Chronicle timeline" },
+          timeline_limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Events per page" },
+          timeline_cursor: { type: "string", maxLength: 512, description: "Keyset cursor from a previous page" },
+          timeline_order: { type: "string", enum: ["asc", "desc"], default: "asc", description: "Effective-time order" },
+          include_incidents: { type: "boolean", default: true, description: "Include incident occurrences and matching patterns" },
+          include_sources: { type: "boolean", default: true, description: "Include raw source evidence for each event" },
+          include_hot_evidence: { type: "boolean", default: false, description: "Append recent not-yet-distilled evidence for the scope" },
         },
-        required: ["query"],
         additionalProperties: false,
       },
       annotations: {
-        title: "Trace Fact Provenance",
+        title: "Trace Fact Provenance and Chronicle",
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
@@ -1055,9 +1082,9 @@ export async function handleToolCall(
           if (params.include_revisions) {
             const revisions = getRevisions(db, fact.id);
             if (revisions.length > 0) {
-              output += "- Revisions:\n";
+              output += "- Chronicle (use trace_fact for grounded cause vs classifier note):\n";
               for (const rev of revisions) {
-                output += `  - ${rev.created_at}: "${rev.previous_fact}" → "${rev.new_fact}" (${rev.reason})\n`;
+                output += `  - ${rev.event_kind ?? "CHANGED"} effective ${rev.effective_at ?? rev.created_at}: "${rev.previous_fact}" → "${rev.new_fact}"${rev.reason ? ` (note: ${rev.reason})` : ""}\n`;
               }
             }
           }
@@ -1263,7 +1290,9 @@ export async function handleToolCall(
     if (name === "trace_fact") {
       const params = z
         .object({
-          query: z.string().min(2).max(10000),
+          query: z.string().min(2).max(10000).optional(),
+          fact_id: z.string().regex(/^[0-9a-fA-F-]{36}$/).optional(),
+          subject_key: z.string().regex(/^[a-z0-9_.]{3,200}$/).optional(),
           project: z.string().max(500).optional(),
           project_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
           workspace_id: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
@@ -1271,25 +1300,82 @@ export async function handleToolCall(
           session_id: z.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
           scope: ContinuityScopeEnum.optional(),
           limit: z.number().int().min(1).max(10).default(3),
+          include_timeline: z.boolean().default(true),
+          timeline_limit: z.number().int().min(1).max(50).default(10),
+          timeline_cursor: z.string().max(512).optional(),
+          timeline_order: z.enum(["asc", "desc"]).default("asc"),
+          include_incidents: z.boolean().default(true),
+          include_sources: z.boolean().default(true),
+          include_hot_evidence: z.boolean().default(false),
         })
         .strict()
         .parse(args);
+      if (!params.query && !params.fact_id && !params.subject_key) {
+        return {
+          content: [{ type: "text", text: "trace_fact: provide query, fact_id, or subject_key" }],
+          isError: true,
+        };
+      }
 
-      await initEmbeddings();
       const db = initDatabase();
 
       try {
         const traceScope = resolveStableScope(db, params, "trace_fact");
-        const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchFactsByScope(
-          db,
-          queryEmbedding,
-          traceScope.factScope,
-          params.limit,
-          0.5,
-        );
+        type Traced = { fact: ReturnType<typeof rowToFact>; distance: number | null };
+        let results: Traced[] = [];
+        if (params.fact_id) {
+          const row = db.prepare("SELECT * FROM facts WHERE id = ?").get(params.fact_id) as Record<string, unknown> | undefined;
+          if (!row) {
+            return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} not found` }] };
+          }
+          const fact = rowToFact(row);
+          if (!factMatchesScope(db, fact, traceScope.factScope)) {
+            return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} is outside ${traceScope.label}` }], isError: true };
+          }
+          results = [{ fact, distance: null }];
+        } else if (params.subject_key) {
+          const rows = db.prepare(`
+            SELECT * FROM facts WHERE subject_key = ? ORDER BY is_active DESC, updated_at DESC LIMIT 50
+          `).all(params.subject_key) as Array<Record<string, unknown>>;
+          results = rows.map(rowToFact)
+            .filter((fact) => factMatchesScope(db, fact, traceScope.factScope))
+            .slice(0, params.limit)
+            .map((fact) => ({ fact, distance: null }));
+        } else {
+          await initEmbeddings();
+          const queryEmbedding = await generateEmbedding(params.query as string, "query");
+          results = searchFactsByScope(
+            db,
+            queryEmbedding,
+            traceScope.factScope,
+            params.limit,
+            0.5,
+          ).map(({ fact, distance }) => ({ fact, distance }));
+        }
+
+        let output = `# Fact Provenance Trace\n\nScope: ${traceScope.label}${params.query ? `\nQuery: "${params.query}"` : ""}${params.subject_key ? `\nSubject: ${params.subject_key}` : ""}\n\n`;
+        output += `_Lanes: ${CHRONICLE_LANE_LABELS.currentFact} is authoritative current truth; ${CHRONICLE_LANE_LABELS.event} is append-only history; ${CHRONICLE_LANE_LABELS.rawEvidence} is source; ${CHRONICLE_LANE_LABELS.assistantContext} and ${CHRONICLE_LANE_LABELS.hotEvidence} are not fact authority._\n\n`;
 
         if (results.length === 0) {
+          if (params.subject_key && traceScope.projectId && params.include_timeline) {
+            // No current fact occupies the slot; the slot may still have history.
+            const page = readChronicleTimeline(db, {
+              projectId: traceScope.projectId,
+              subjectKey: params.subject_key,
+              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+              sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              cursor: params.timeline_cursor ?? null,
+              limit: params.timeline_limit,
+              order: params.timeline_order,
+            });
+            if (page.events.length > 0) {
+              output += `## Subject ${params.subject_key} — no current fact, ${page.events.length} historical event(s)\n\n`;
+              output += page.events.map((event) => formatChronicleEvent(db, event, { includeSources: params.include_sources })).join("\n") + "\n";
+              if (page.nextCursor) output += `\n_Next timeline cursor: ${page.nextCursor}_\n`;
+              return { content: [{ type: "text", text: output }] };
+            }
+          }
           return {
             content: [
               { type: "text", text: "No matching facts found to trace." },
@@ -1297,22 +1383,28 @@ export async function handleToolCall(
           };
         }
 
-        let output = `# Fact Provenance Trace\n\nQuery: "${params.query}"\n\n`;
-
         for (const { fact, distance } of results) {
-          const similarity = (1 - (distance * distance) / 2).toFixed(3);
-          output += `## ${fact.fact}\n`;
-          output += `- Category: ${fact.category} | Scope: ${fact.scope_type}\n`;
-          output += `- Similarity: ${similarity} | Confirmed: ${fact.consolidated_count}x\n`;
+          const revision = currentFactRevision(db, fact.id);
+          output += `## [${CHRONICLE_LANE_LABELS.currentFact}] ${fact.fact}\n`;
+          output += `- Fact ID: ${fact.id} | Active: ${fact.is_active ? "yes" : "no (retired)"}\n`;
+          output += `- Category: ${fact.category} | Scope: ${fact.scope_type} | Promotion: ${fact.promotion_state ?? "legacy-project"}\n`;
+          output += `- Subject: ${fact.subject_key ?? "(none)"}${isSemanticSubjectKey(fact.subject_key) ? "" : " (per-fact slot, not a semantic subject)"}\n`;
+          output += `- Revision: semantic ${revision?.semanticGeneration ?? "?"} / lifecycle ${revision?.lifecycleGeneration ?? "?"} | Current since: ${revision?.latestEffectiveAt ?? fact.updated_at}\n`;
+          if (distance !== null) {
+            const similarity = (1 - (distance * distance) / 2).toFixed(3);
+            output += `- Similarity: ${similarity} | Confirmed: ${fact.consolidated_count}x\n`;
+          } else {
+            output += `- Confirmed: ${fact.consolidated_count}x\n`;
+          }
           output += `- Created: ${fact.created_at}\n`;
 
           // Trace back to source exchanges
           if (fact.source_exchange_ids && fact.source_exchange_ids.length > 0) {
-            output += `\n### Source Conversations\n\n`;
+            output += `\n### Source Conversations [${CHRONICLE_LANE_LABELS.rawEvidence}]\n\n`;
             for (const exchangeId of fact.source_exchange_ids) {
               const exchange = db
                 .prepare(
-                  "SELECT id, project, timestamp, user_message, archive_path, line_start, line_end FROM exchanges WHERE id = ?",
+                  "SELECT id, project, timestamp, session_id, user_message, archive_path, line_start, line_end FROM exchanges WHERE id = ?",
                 )
                 .get(exchangeId) as Record<string, unknown> | undefined;
 
@@ -1320,9 +1412,11 @@ export async function handleToolCall(
                 const userMsg = (exchange["user_message"] as string)
                   .substring(0, 200)
                   .replace(/\s+/g, " ");
-                output += `- **[${exchange["project"]}, ${(exchange["timestamp"] as string).slice(0, 10)}]**\n`;
+                output += `- **[${exchange["project"]}, ${(exchange["timestamp"] as string).slice(0, 10)}, session ${exchange["session_id"] ?? "?"}]**\n`;
                 output += `  "${userMsg}..."\n`;
                 output += `  Lines ${exchange["line_start"]}-${exchange["line_end"]} in ${exchange["archive_path"]}\n\n`;
+              } else {
+                output += `- ${exchangeId}: source unavailable (purged or missing)\n\n`;
               }
             }
           } else {
@@ -1339,7 +1433,7 @@ export async function handleToolCall(
             ORDER BY d.created_at, d.exchange_id, d.dependency_kind
           `).all(fact.id) as Array<Record<string, unknown>>;
           if (contextDependencies.length > 0) {
-            output += `### Interpretive Context (Non-Authoritative)\n\n`;
+            output += `### Interpretive Context (Non-Authoritative) [${CHRONICLE_LANE_LABELS.assistantContext}]\n\n`;
             output += `_These exchanges helped resolve meaning but are not Fact evidence._\n\n`;
             for (const dependency of contextDependencies) {
               const assistant = String(dependency["assistant_message"] ?? "")
@@ -1351,14 +1445,49 @@ export async function handleToolCall(
             }
           }
 
-          // Show ontology context
-          const revisions = getRevisions(db, fact.id);
-          if (revisions.length > 0) {
-            output += `### Revision History\n\n`;
-            for (const rev of revisions) {
-              output += `- ${rev.created_at.slice(0, 10)}: "${rev.previous_fact}" → "${rev.new_fact}" (${rev.reason})\n`;
+          if (params.include_timeline) {
+            const bySubject = isSemanticSubjectKey(fact.subject_key) && !!fact.project_id;
+            const page = readChronicleTimeline(db, {
+              ...(bySubject
+                ? { projectId: fact.project_id, subjectKey: fact.subject_key }
+                : { factId: fact.id }),
+              workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+              workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+              sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              cursor: params.timeline_cursor ?? null,
+              limit: params.timeline_limit,
+              order: params.timeline_order,
+            });
+            output += `### Chronicle Timeline (${bySubject ? "subject" : "fact"}, ${params.timeline_order} by effective time, ${page.events.length} of max ${page.limit})\n\n`;
+            if (page.events.length === 0) {
+              output += `_No Chronicle events recorded._\n`;
+            } else {
+              output += page.events.map((event) => formatChronicleEvent(db, event, { includeSources: params.include_sources })).join("\n") + "\n";
             }
+            if (page.nextCursor) output += `\n_Next timeline cursor: ${page.nextCursor}_\n`;
             output += "\n";
+          }
+
+          if (params.include_incidents && fact.project_id) {
+            const occurrences = isSemanticSubjectKey(fact.subject_key)
+              ? listIncidentOccurrences(db, { projectId: fact.project_id, subjectKey: fact.subject_key, limit: 10 })
+              : [];
+            const patterns = matchIncidentPatterns(db, {
+              projectId: fact.project_id,
+              text: `${params.query ?? ""} ${fact.fact}`,
+              limit: 3,
+              includeRemediated: true,
+            });
+            if (occurrences.length > 0 || patterns.length > 0) {
+              output += `### Incidents\n\n`;
+              for (const occurrence of occurrences) {
+                output += `- [${CHRONICLE_LANE_LABELS.event}] INCIDENT occurrence ${occurrence.occurrence_id} · ${occurrence.effective_at} · session ${occurrence.session_id ?? "?"} · retries ${occurrence.retry_count} · ${occurrence.state} · signature ${occurrence.signature_key}\n  "${occurrence.signature_text}"\n`;
+              }
+              for (const pattern of patterns) {
+                output += `- Pattern ${pattern.signatureKey} (${pattern.patternState}, ${pattern.episodeCount} episode(s), score ${pattern.score.toFixed(2)}): "${pattern.signatureText}"${pattern.remediationSummary ? ` — remediation: ${pattern.remediationSummary}` : ""}\n`;
+              }
+              output += "\n";
+            }
           }
 
           // Show graph relations
@@ -1378,6 +1507,23 @@ export async function handleToolCall(
             }
             output += "\n";
           }
+        }
+
+        if (params.include_hot_evidence && traceScope.projectId) {
+          const hot = readHotEvidence(db, {
+            projectId: traceScope.projectId,
+            workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+            workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+            sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+            beforeCreatedAt: null,
+            beforeEvidenceId: null,
+            limit: params.limit,
+          });
+          output += `\n## Recent Evidence — NOT YET DISTILLED (${hot.length})\n\n`;
+          output += hot.map((item) =>
+            `- [${item.source_type}] ${item.evidence_text}\n  - Cursor: ${item.created_at} / ${item.evidence_id}`,
+          ).join("\n") || "_No recent evidence._";
+          output += "\n";
         }
 
         return { content: [{ type: "text", text: output }] };

@@ -39,13 +39,33 @@ export declare function insertFactContextDependencies(db: Database.Database, fac
 /** Copy local interpretive lineage into a survivor. Caller owns transaction. */
 export declare function mergeFactContextDependencies(db: Database.Database, targetFactId: string, sourceFactIds: string[]): void;
 export declare function clearFactContextDependencies(db: Database.Database, factId: string): void;
+export interface ResolvedFactInsertIdentity {
+    projectId: string | null;
+    workspaceId: string | null;
+    workstreamId: string | null;
+    promotionState: NonNullable<Fact['promotion_state']>;
+}
+/**
+ * Stable identity and promotion placement for a fact about to be inserted.
+ * Shared by insertFact and the extractor's subject-slot resolver so both see
+ * the same slot before deciding whether to insert, merge, change or contradict.
+ */
+export declare function resolveFactInsertIdentity(db: Database.Database, params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence'>): ResolvedFactInsertIdentity;
 export declare function insertFact(db: Database.Database, params: InsertFactParams): string;
 export declare function getActiveFacts(db: Database.Database): Fact[];
 export declare function getFactsByProject(db: Database.Database, project: string): Fact[];
 export declare function updateFact(db: Database.Database, id: string, params: UpdateFactParams): void;
 export declare function deactivateFact(db: Database.Database, id: string): void;
 export declare function deleteFact(db: Database.Database, id: string): void;
-export declare function insertRevision(db: Database.Database, params: InsertRevisionParams): string;
+/**
+ * Compatibility writer for callers that only know the released revision
+ * shape. It appends a Chronicle CHANGED event; the free-text reason is a
+ * classifier note because this path carries no source-cited cause.
+ */
+export declare function insertRevision(db: Database.Database, params: InsertRevisionParams & {
+    actor?: "extractor" | "consolidator" | "user" | "legacy";
+}): string;
+/** Released revision view over the Chronicle: newest effective change first. */
 export declare function getRevisions(db: Database.Database, factId: string): FactRevision[];
 export type FactSearchScope = {
     type: "project";
@@ -144,4 +164,5 @@ export declare function searchAllFacts(db: Database.Database, embedding: number[
     fact: Fact;
     distance: number;
 }>;
+export declare function rowToFact(row: Record<string, unknown>): Fact;
 export {};

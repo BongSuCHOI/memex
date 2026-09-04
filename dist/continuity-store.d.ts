@@ -1,9 +1,9 @@
 import type Database from "better-sqlite3";
-export declare const CONTINUITY_SCHEMA_VERSION = 4;
+export declare const CONTINUITY_SCHEMA_VERSION = 5;
 export declare const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
 export type MemoryJobState = "pending" | "running" | "retry" | "completed" | "superseded" | "dead";
-export type ContinuityMigrationStage = "exchange-seq-column" | "content-hash-column" | "content-generation-column" | "closure-state-column" | "parser-version-column" | "continuity-tables" | "continuity-core-tables" | "journal-source-mtime-column" | "journal-source-guard-columns" | "identity-tables" | "identity-columns" | "identity-backfill" | "identity-triggers" | "continuity-indexes" | "continuity-core-indexes" | "fts-rebuild" | "exchange-metadata" | "schema-meta" | "user-version";
+export type ContinuityMigrationStage = "exchange-seq-column" | "content-hash-column" | "content-generation-column" | "closure-state-column" | "parser-version-column" | "continuity-tables" | "continuity-core-tables" | "journal-source-mtime-column" | "journal-source-guard-columns" | "identity-tables" | "identity-columns" | "identity-backfill" | "identity-triggers" | "continuity-indexes" | "continuity-core-indexes" | "chronicle-table" | "chronicle-backfill" | "incident-tables" | "telemetry-table" | "chronicle-indexes" | "fts-rebuild" | "exchange-metadata" | "schema-meta" | "user-version";
 export type ExtractionCommitStage = "target-items" | "generation-state" | "target-cursor" | "compatibility-watermark" | "checkpoint" | "job";
 export declare function exchangeContentHash(exchange: {
     userMessage: string;
@@ -26,6 +26,7 @@ export declare function ensureContinuitySchema(db: Database.Database, options?: 
     afterStructuralDdl?: () => void;
     afterMigrationStage?: (stage: ContinuityMigrationStage) => void;
 }): void;
+export declare const CHRONICLE_EVENT_KINDS: readonly ["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "VALIDATED", "INCIDENT", "CONTRADICTED"];
 /** Backfill rows inserted by legacy readers or direct migration fixtures. */
 export declare function refreshExchangeMetadata(db: Database.Database, sessionId?: string): void;
 export interface CheckpointJobInput {

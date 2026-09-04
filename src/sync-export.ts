@@ -278,18 +278,46 @@ export function exportForSync(): SyncExportResult {
         scope_project: null,
       }));
 
-      const revisions = db.prepare(`
+      // Chronicle rows travel with the facts they describe plus event-only
+      // project observations. Device-local semantic/lifecycle generation
+      // numbers are dropped (they mean nothing on another device); stable
+      // event ids, project identity, effective/recorded clocks and grounded
+      // versus classifier fields are durable.
+      const revisions = (db.prepare(`
         SELECT r.id, r.fact_id, r.previous_fact, r.new_fact, r.reason,
-               r.source_exchange_id, r.created_at
-        FROM fact_revisions r JOIN facts f ON f.id = r.fact_id
-        WHERE f.scope_type = 'global'
-           OR f.promotion_state IN ('legacy-project','decision','project-current')
+               r.source_exchange_id, r.created_at,
+               COALESCE(r.project_id, f.project_id) AS project_id, p.portable_project_key,
+               COALESCE(r.subject_key, f.subject_key) AS subject_key, r.event_kind,
+               r.problem, r.grounded_cause, r.rationale, r.classifier_note, r.outcome_json,
+               r.source_evidence_ids, r.reverts_event_id, r.related_event_ids,
+               r.actor, r.policy_version, r.evidence_authority,
+               COALESCE(NULLIF(r.effective_at, ''), r.created_at) AS effective_at,
+               CASE WHEN NULLIF(r.effective_at, '') IS NULL THEN 'recorded' ELSE r.effective_at_source END AS effective_at_source,
+               COALESCE(NULLIF(r.recorded_at, ''), r.created_at) AS recorded_at,
+               CASE WHEN r.source_exchange_ids = '[]' AND r.source_exchange_id IS NOT NULL
+                    THEN json_array(r.source_exchange_id) ELSE r.source_exchange_ids END AS source_exchange_ids_normalized,
+               r.projection_applied
+        FROM fact_revisions r
+        LEFT JOIN facts f ON f.id = r.fact_id
+        LEFT JOIN projects p ON p.project_id = COALESCE(r.project_id, f.project_id)
+        WHERE (f.id IS NOT NULL AND (f.scope_type = 'global'
+                 OR f.promotion_state IN ('legacy-project','decision','project-current')))
+           OR (r.fact_id IS NULL AND r.project_id IS NOT NULL)
         ORDER BY r.id
-      `).all() as Array<Record<string, unknown>>;
+      `).all() as Array<Record<string, unknown>>).map(({ source_exchange_ids_normalized, ...row }) => ({
+        ...row,
+        source_exchange_ids: source_exchange_ids_normalized,
+        projection_applied: Number(row.projection_applied ?? 1) === 1 ? 1 : 0,
+      }));
 
-      const tombstones = db.prepare(`
-        SELECT fact_id, deleted_at, reason FROM fact_tombstones ORDER BY fact_id
-      `).all() as Array<Record<string, unknown>>;
+      const tombstones = [
+        ...(db.prepare(`
+          SELECT fact_id, NULL AS event_id, deleted_at, reason FROM fact_tombstones ORDER BY fact_id
+        `).all() as Array<Record<string, unknown>>),
+        ...(db.prepare(`
+          SELECT NULL AS fact_id, event_id, deleted_at, reason FROM chronicle_tombstones ORDER BY event_id
+        `).all() as Array<Record<string, unknown>>),
+      ];
 
       // recall_events cannot be reconstructed from source rollouts. Export the
       // durable receipt so recalled context stays non-learnable after migration.
