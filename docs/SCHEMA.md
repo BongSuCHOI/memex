@@ -103,8 +103,11 @@ target을 먼저 지워 private identity가 commit 후 남지 않게 합니다.
 claim마다 `lease_generation`이 증가합니다. Completion은 running state, owner, generation, unexpired lease가
 모두 일치할 때만 성공합니다. Partial page 성공은 job을 pending으로 되돌리고 attempts를 reset합니다.
 Crash/restart 뒤 `pending|retry|running with expired lease|dead`는 durable query로 식별할 수 있습니다.
-동일 partition은 checkpoint ordinal 순서로만 claim되며, semantic target이 다른 idempotency-key 충돌은
-기존 row 재사용 대신 전체 transaction을 rollback합니다.
+동일 partition은 priority lane(P0 `capture_index` 100 > P1 `capsule_update` 80 > P2 `fact_extract` 20)
+순서로 먼저, 같은 lane 안에서는 checkpoint ordinal 순서로만 claim됩니다. Capture checkpoint ordinal은
+journal byte 기준이고 extraction checkpoint ordinal은 exchange rowid 기준이라 lane을 넘어 비교하지
+않습니다(Final Integration D-034). Semantic target이 다른 idempotency-key 충돌은 기존 row 재사용 대신
+전체 transaction을 rollback합니다.
 
 Prefix ingest는 `ingestPrefixExchanges()`만 사용하며 desired-set delete를 수행하지 않습니다. Full
 archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를 호출합니다.

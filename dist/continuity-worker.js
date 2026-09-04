@@ -31,9 +31,11 @@ function nextJob(db, kind, now) {
         LEFT JOIN checkpoints ec ON ec.checkpoint_id = earlier.checkpoint_id
         WHERE earlier.partition_key = j.partition_key
           AND earlier.state IN ('pending','retry','running')
-          AND (COALESCE(ec.ordinal, 0) < COALESCE(c.ordinal, 0)
-            OR (COALESCE(ec.ordinal, 0) = COALESCE(c.ordinal, 0)
-              AND earlier.created_at < j.created_at))
+          AND (earlier.priority > j.priority
+            OR (earlier.priority = j.priority
+              AND (COALESCE(ec.ordinal, 0) < COALESCE(c.ordinal, 0)
+                OR (COALESCE(ec.ordinal, 0) = COALESCE(c.ordinal, 0)
+                  AND earlier.created_at < j.created_at))))
       )
     ORDER BY j.priority DESC, COALESCE(c.ordinal, 0), j.created_at, j.job_id
     LIMIT 1

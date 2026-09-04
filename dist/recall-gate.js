@@ -149,6 +149,8 @@ export function decideRecall(input) {
         triggers.push("incident_signature_match");
     if (input.currentProjectRevision > input.state.memoryRevisionSeen)
         triggers.push("project_revision_stale");
+    if (input.residentRevisionStale)
+        triggers.push("resident_revision_stale");
     if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen)
         triggers.push("capsule_generation_changed");
     if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {

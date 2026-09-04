@@ -134,7 +134,7 @@ receipt 저장이 실패하면 provenance 없는 context를 주입하지 않습�
 
 Worker는 P0 `capture_index`를 먼저 처리하며 checkpoint의 block/prefix hash chain과 exact journal boundary를 검증한 뒤 그 prefix만 monotonic ingest합니다. P1 `capsule_update`는 P0 완료 뒤 exact-key/strict-bound/source-authority validation을 거치는 별도 JSON/typed pipeline으로 실행하고 generation + lease CAS와 job completion을 한 transaction에 commit합니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd가 Capsule coalescing 경계입니다. Capsule의 checkpoint가 latest보다 오래됐으면 rehydration은 stale projection만 반환하지 않고 deterministic tail baton을 병합합니다.
 
-User-role exclusion marker가 journal에 있으면 P0 worker는 indexing/model 전에 conversation purge를 실행합니다. Purge transaction은 terminal `conversation_exclusions` session guard를 먼저 남깁니다. Hook은 이후 recapture를 거부하고 P0 worker는 ingest 직전과 직후에도 guard를 재확인하므로 in-flight purge race가 private exchange를 부활시키지 못합니다. Journal/checkpoint/pending job/session state/Capsule은 같은 privacy 경계에서 제거되며 journal directory는 DB transaction 뒤 삭제됩니다. Capsule과 tail baton은 `context-only`이고 Fact evidence로 승격하지 않습니다.
+User-role exclusion marker가 journal에 있으면 P0 worker는 indexing/model 전에 conversation purge를 실행합니다. Purge transaction은 terminal `conversation_exclusions` session guard를 먼저 남깁니다. Hook은 이후 recapture를 거부하고 P0 worker는 ingest 직전과 직후에도 guard를 재확인하므로 in-flight purge race가 private exchange를 부활시키지 못합니다. Journal/checkpoint/pending job/session state/Capsule은 같은 privacy 경계에서 제거되며 journal directory는 DB transaction 뒤 삭제됩니다. Purge된 session이 만든 Capsule이나 purge된 exchange를 인용하는 Capsule은 sibling session이 같은 workstream을 공유하더라도 삭제되고, 그 workstream에 묶인 session의 `capsule_generation_seen`은 0으로 되돌아가 다음 Capsule이 다시 `[WORK NOW]`로 전달됩니다(D-035). Capsule과 tail baton은 `context-only`이고 Fact evidence로 승격하지 않습니다.
 
 ## 6. Sync protocol v4
 

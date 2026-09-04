@@ -49,6 +49,7 @@ export type RecallTrigger =
   | "compact_first_prompt"
   | "capsule_generation_changed"
   | "project_revision_stale"
+  | "resident_revision_stale"
   | "incident_signature_match"
   | "high_impact_intent"
   | "safety_refresh"
@@ -93,6 +94,13 @@ export interface RecallGateInput {
   currentCapsuleGeneration: number;
   currentProjectRevision: number;
   incidentMatched: boolean;
+  /**
+   * A revision resident in this epoch moved to a newer semantic/lifecycle
+   * generation or was deactivated. Workstream truth changes carry no project
+   * revision token (BRANCH TRUTH), so residency itself is the invalidation
+   * signal (RFC §11.4, §12.6).
+   */
+  residentRevisionStale?: boolean;
   config?: Partial<RecallGateConfig>;
 }
 
@@ -240,6 +248,7 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
   if (intents.memory) triggers.push("explicit_memory_intent");
   if (input.incidentMatched) triggers.push("incident_signature_match");
   if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
+  if (input.residentRevisionStale) triggers.push("resident_revision_stale");
   if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
   if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
     triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");

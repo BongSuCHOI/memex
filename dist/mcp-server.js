@@ -22429,6 +22429,7 @@ function decideRecall(input) {
   if (intents.memory) triggers.push("explicit_memory_intent");
   if (input.incidentMatched) triggers.push("incident_signature_match");
   if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
+  if (input.residentRevisionStale) triggers.push("resident_revision_stale");
   if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
   if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
     triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
@@ -22672,6 +22673,9 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
           SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
         `).all(...residentTuples.map(([id]) => id)) : [];
     const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
+    const residency = readResidentFactRevisions(db, sessionId);
+    const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
+    const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
     const incidents = canQuery(db) ? matchIncidentPatterns(db, {
       projectId: sessionScope.projectId,
       text: userPrompt,
@@ -22705,6 +22709,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       currentCapsuleGeneration,
       currentProjectRevision,
       incidentMatched: incidents.length > 0,
+      residentRevisionStale: revisionCorrections.length > 0,
       config: options.gateConfig
     });
     if (options.gate === false) {
@@ -22769,9 +22774,6 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     if (baseline === null) baseline = embedding ? await queryBaseline(embedding) : 0;
     const watchLedger = parseJson(gateRow?.watch_emitted_json, []);
     const informativeCounter = Number(gateRow?.informative_prompts_since_retrieval ?? 0);
-    const residency = readResidentFactRevisions(db, sessionId);
-    const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
-    const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
     const corrections = revisionCorrections.map((row) => ({
       text: row.is_active === 1 ? `Updated (supersedes earlier context): [${row.category}] ${truncateFact(row.fact)}${row.previous_fact ? ` \u2014 earlier: "${truncateFact(row.previous_fact, 60)}"` : ""}` : `No longer active: ${truncateFact(row.fact)}`,
       revision: [row.id, row.semantic_generation, row.lifecycle_generation]

@@ -174,6 +174,15 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         `).all(...residentTuples.map(([id]) => id))
             : [];
         const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
+        // Corrections come from residency, not from the search results: every
+        // resident revision whose fact moved to a new generation or was
+        // deactivated is corrected, whether or not the prompt is about it. This is
+        // also a gate trigger, because workstream-scoped truth changes carry no
+        // project revision token and the stale statement must still be corrected
+        // at the next prompt boundary, even an acknowledgement (vector-free).
+        const residency = readResidentFactRevisions(db, sessionId);
+        const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
+        const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
         // Verified incident patterns only (independent episodes or explicit user
         // repeat); candidates and remediated signatures never wake retrieval.
         const incidents = canQuery(db)
@@ -213,6 +222,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             currentCapsuleGeneration,
             currentProjectRevision,
             incidentMatched: incidents.length > 0,
+            residentRevisionStale: revisionCorrections.length > 0,
             config: options.gateConfig,
         });
         if (options.gate === false) {
@@ -284,14 +294,9 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             baseline = embedding ? await queryBaseline(embedding) : 0;
         const watchLedger = parseJson(gateRow?.watch_emitted_json, []);
         const informativeCounter = Number(gateRow?.informative_prompts_since_retrieval ?? 0);
-        // Corrections come from residency, not from the search results: every
-        // resident revision whose fact moved to a new generation or was
-        // deactivated is corrected, whether or not the prompt is about it. A stale
-        // project revision (sibling change) forces this pass; never-resident
-        // facts are not corrections and arrive only through relevance below.
-        const residency = readResidentFactRevisions(db, sessionId);
-        const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
-        const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
+        // A stale project revision (sibling change) or a stale resident revision
+        // forces this pass; never-resident facts are not corrections and arrive
+        // only through relevance below.
         const corrections = revisionCorrections.map((row) => ({
             text: row.is_active === 1
                 ? `Updated (supersedes earlier context): [${row.category}] ${truncateFact(row.fact)}${row.previous_fact ? ` — earlier: "${truncateFact(row.previous_fact, 60)}"` : ""}`

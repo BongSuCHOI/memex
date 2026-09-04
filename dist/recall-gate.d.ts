@@ -30,7 +30,7 @@ export interface RecallGateConfig {
     lexicalCoherentJaccard: number;
 }
 export declare const DEFAULT_RECALL_GATE_CONFIG: RecallGateConfig;
-export type RecallTrigger = "explicit_memory_intent" | "first_substantive_in_epoch" | "context_epoch_changed" | "compact_first_prompt" | "capsule_generation_changed" | "project_revision_stale" | "incident_signature_match" | "high_impact_intent" | "safety_refresh" | "topic_drift" | "low_resident_coverage" | "embedding_drift" | "no_topic_embedding";
+export type RecallTrigger = "explicit_memory_intent" | "first_substantive_in_epoch" | "context_epoch_changed" | "compact_first_prompt" | "capsule_generation_changed" | "project_revision_stale" | "resident_revision_stale" | "incident_signature_match" | "high_impact_intent" | "safety_refresh" | "topic_drift" | "low_resident_coverage" | "embedding_drift" | "no_topic_embedding";
 export type RecallSkipReason = "acknowledgement" | "continuation" | "minor_correction" | "coherent_topic" | "empty_prompt";
 export interface PromptIntents {
     /** why / history / source / when / previous / repeated — explicit memory question. */
@@ -59,6 +59,13 @@ export interface RecallGateInput {
     currentCapsuleGeneration: number;
     currentProjectRevision: number;
     incidentMatched: boolean;
+    /**
+     * A revision resident in this epoch moved to a newer semantic/lifecycle
+     * generation or was deactivated. Workstream truth changes carry no project
+     * revision token (BRANCH TRUTH), so residency itself is the invalidation
+     * signal (RFC §11.4, §12.6).
+     */
+    residentRevisionStale?: boolean;
     config?: Partial<RecallGateConfig>;
 }
 export interface RecallGateDecision {

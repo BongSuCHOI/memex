@@ -239,6 +239,25 @@ export function purgeConversationFromIndex(db, input) {
             if (continuityTables.has("workstream_sessions")) {
                 db.prepare("DELETE FROM workstream_sessions WHERE session_id = ?").run(input.sessionId);
             }
+            if (continuityTables.has("work_capsules")) {
+                // A Work Capsule is a model-derived projection. One built from the
+                // purged session, or citing any purged exchange, must not survive as
+                // a sibling's context; the sibling rebuilds from its own evidence and
+                // re-receives WORK NOW because its seen generation is reset.
+                const capsules = db.prepare(`
+          SELECT workstream_id, source_session_id, source_exchange_ids_json FROM work_capsules
+        `).all();
+                for (const capsule of capsules) {
+                    const cites = parseSourceIds(capsule.source_exchange_ids_json).some((id) => exchangeIds.has(id));
+                    if (capsule.source_session_id !== input.sessionId && !cites)
+                        continue;
+                    db.prepare("DELETE FROM work_capsules WHERE workstream_id = ?").run(capsule.workstream_id);
+                    if (continuityTables.has("session_memory_state")) {
+                        db.prepare("UPDATE session_memory_state SET capsule_generation_seen = 0 WHERE workstream_id = ?")
+                            .run(capsule.workstream_id);
+                    }
+                }
+            }
             if (continuityTables.has("minimal_workstreams")) {
                 // Phase 3 permits several sessions to share one workstream Capsule.
                 // Purging one source session must remove its binding but must not erase

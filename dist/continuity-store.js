@@ -1117,12 +1117,17 @@ export function claimMemoryJobById(db, input) {
       `).run(error, nowIso, row.job_id);
             return null;
         }
+        // A partition is drained by priority lane first (P0 capture > P1 Capsule >
+        // P2 extraction), then by checkpoint ordinal within a lane. Ordinals are
+        // only comparable inside one lane: capture checkpoints use journal bytes,
+        // extraction checkpoints use exchange rowids.
         const firstOutstanding = db.prepare(`
       SELECT j.job_id
       FROM memory_jobs j
       LEFT JOIN checkpoints c ON c.checkpoint_id = j.checkpoint_id
       WHERE j.partition_key = ? AND j.state NOT IN ('completed','superseded','dead')
-      ORDER BY CASE WHEN c.ordinal IS NULL THEN 1 ELSE 0 END,
+      ORDER BY j.priority DESC,
+               CASE WHEN c.ordinal IS NULL THEN 1 ELSE 0 END,
                c.ordinal, j.created_at, j.job_id
       LIMIT 1
     `).get(row.partition_key);

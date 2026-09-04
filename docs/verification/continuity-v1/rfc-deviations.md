@@ -316,3 +316,30 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: full morphological analysis (dependency); Korean-specific thresholds (more knobs).
 - Invariant evidence: `test/continuity-recall-gate.test.ts` case 8 (KR/EN short memory, high-impact and incident prompts retrieve; acknowledgements skip); harness `korean-follow-up-ack` retrievals 22 → 7 with 2/2 Korean history intents recalled.
 - Reversal condition/trade-off: stripping only affects fingerprint overlap, never the retrieval embedding; a false coherent skip would still be bounded by the safety refresh.
+
+## D-034 — Session partition claims are ordered by priority lane before checkpoint ordinal
+
+- RFC section/invariant: §9 durable queue and worker priority (P0 capture > P1 Capsule > P2 extraction), §16 session partition serialization; OUTBOX, RECOVERY, HOOK BOUNDARY, ACCOUNTABILITY
+- Actual choice: `claimMemoryJobById` orders a partition's outstanding jobs by `priority DESC` first and by checkpoint ordinal only within the same priority; the Continuity worker's `nextJob` applies the same rule. Capture checkpoints keep journal-byte ordinals and extraction checkpoints keep exchange-rowid ordinals; the two are never compared across lanes.
+- Reason: Phase 1 extraction jobs (`fact_extract`, ordinal = `through_rowid`) and Phase 2 capture jobs (`capture_index`, ordinal = journal byte offset) share the `session:<id>` partition. A `fact_extract` job left `pending` between pages had a smaller ordinal than every later capture checkpoint, so the worker never selected the capture job and the startup launcher (which defers extraction while Continuity work is pending) never resumed extraction either: P0 capture indexing for that session was blocked indefinitely. Found by the Final Integration probe; reproduced before the fix.
+- Alternatives considered: a separate `extraction:<session>` partition key (would need a data migration for pending rows and loses the RFC's single session partition); kind-aware ordinal spaces.
+- Invariant evidence: `test/continuity-final-integration.test.ts` "P0 capture indexing is never blocked by a pending P2 extraction job in the same session partition" (fails on the previous ordering); `test/continuity-correctness-spine.test.ts` partition ordering/serialization cases unchanged and passing.
+- Reversal condition/trade-off: a `capture_index` job in `retry` with backoff defers extraction for that session until it retries or is dead-lettered (accountability first); extraction never starves capture.
+
+## D-035 — Privacy purge removes Capsules derived from the purged session
+
+- RFC section/invariant: §18 privacy purge cascade (journal/checkpoint/capsule/event/cache/sync), §21.6; PRIVACY
+- Actual choice: inside the purge transaction, every `work_capsules` row whose `source_session_id` is the purged session or whose `source_exchange_ids_json` cites a purged exchange is deleted, and `session_memory_state.capsule_generation_seen` is reset to 0 for sessions bound to that workstream so the sibling's next Capsule generation is re-injected as `[WORK NOW]`. Phase 3's rule that a shared workstream row itself survives for the sibling is unchanged.
+- Reason: Phase 3 preserved a Capsule "still owned by a sibling session" as a whole, so a projection quoting purged human statements remained readable through rehydration and `WORK NOW` on the sibling. A Capsule is model-derived state built from the purged evidence; the RFC lists it in the purge cascade.
+- Alternatives considered: strip only the items citing purged exchanges (leaves objective/state text derived from the same evidence); rebuild immediately (model call inside a purge).
+- Invariant evidence: `test/continuity-final-integration.test.ts` "privacy purge removes a Capsule projection derived from the purged session even when a sibling shares the workstream" and the end-to-end residue table; `test/continuity-identity.test.ts` sibling-Capsule case still passes (its Capsule is not sourced from the purged session).
+- Reversal condition/trade-off: the sibling loses its projection until its next Capsule job; the deterministic tail baton from its own evidence covers the gap.
+
+## D-036 — Stale resident revision is a cheap-gate state trigger
+
+- RFC section/invariant: §11.4 (sibling change corrected at the next boundary), §12.3 cheap gate triggers, §12.6 correction semantics; REVISION-AWARE INJECTION, RESIDENCY, BRANCH TRUTH
+- Actual choice: `computeInjectContext` reads the session's resident revisions and `readResidentRevisionCorrections` before the gate decision and passes `residentRevisionStale` to `decideRecall`, which adds the `resident_revision_stale` trigger alongside `project_revision_stale`. An acknowledgement that hits it is the existing vector-free retrieval (0 embeddings): only CORRECTION/WORK NOW/WATCH/RECENT EVIDENCE render.
+- Reason: workstream-scoped truth deliberately does not bump `projects.memory_revision` (BRANCH TRUTH), so a sibling session's change to a fact resident in this session had no invalidation token; the stale statement stayed uncorrected across acknowledgement prompts until the next substantive retrieval. Phase 5B gate case 6 covered the substantive-prompt path only. Found by the Final Integration fixture ("ok" after a sibling edit rendered nothing).
+- Alternatives considered: bump the project revision for workstream facts (rejected in D-028 — it breaks BRANCH TRUTH separation); a per-workstream revision counter (new state for the same signal residency already carries).
+- Invariant evidence: `test/continuity-final-integration.test.ts` sibling correction on "ok" with 0 embeddings; `test/inject-write-ordering.test.ts`, `test/continuity-recall-gate.test.ts`, `test/continuity-recall.test.ts` unchanged and passing; recall benchmark re-run in the Final Integration gate (retrieval reduction unchanged at 61.1%).
+- Reversal condition/trade-off: one primary-key row read plus one `facts WHERE id IN (...)` query per prompt when the session has resident revisions; no embedding or model work is added.
