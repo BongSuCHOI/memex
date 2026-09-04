@@ -196,6 +196,20 @@ package attempt was interrupted after the unbounded repeated-`npm exec` harness 
 tarball creation, and one-prefix install were isolated before the bounded harness passed. No product failure,
 skip, or unverified mandatory Phase 3 path is hidden.
 
+## Post-gate defect fixed before Phase 4 (2026-09-04)
+
+Phase 3 is committed at `5ec4909b9503ac3806b22e5e96a5fb85400202ba`. A full-suite rerun by the Phase 4 worker
+reproduced one intermittent failure that the 3B run did not surface: the competing-hook-process capture test
+crashed a child with `SqliteError: trigger exchanges_fts_au already exists`. Root cause was the Phase 3A FTS
+trigger replacement in `initDatabase()`, which ran an unconditional `DROP TRIGGER` followed by a plain
+`CREATE TRIGGER`; two processes initializing the same database concurrently could both pass the drop and the
+second create failed, killing a capture hook (HOOK BOUNDARY / CAPTURE exposure). The decision and replacement
+now run inside one immediate transaction, only a legacy broad-update trigger is dropped, and creation uses
+`IF NOT EXISTS`. `test/db-init-process-race.test.ts` covers six concurrent fresh initializations, six concurrent
+legacy-trigger replacements, and repeated in-process initialization; the new test fails on the previous code.
+The Phase 3 gate verdict is unchanged; this record exists so the 3B evidence table is not read as proof that the
+race was covered.
+
 ## Debt and Phase 4 boundary
 
 - Legacy canonical path readers remain a documented read-only compatibility surface; stable identity is the

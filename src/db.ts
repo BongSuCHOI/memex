@@ -404,15 +404,31 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // Identity/provenance-only updates must not touch the external-content FTS
   // index. Recreate the legacy broad trigger as a content-column trigger before
   // Continuity's Phase 3 backfill updates project/workspace IDs.
-  db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
-  db.exec(`
-    CREATE TRIGGER exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
-      INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
-      VALUES('delete', old.rowid, old.user_message, old.assistant_message);
-      INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
-      VALUES (new.rowid, new.user_message, new.assistant_message);
-    END
-  `);
+  //
+  // initDatabase() runs in every hook/MCP process, so several processes can
+  // reach this point at once. An unconditional DROP + plain CREATE lets a second
+  // process observe the trigger the first one just created and fail with
+  // "trigger exchanges_fts_au already exists", which crashes a capture hook.
+  // Decide and apply inside one immediate transaction so processes serialize
+  // on the write lock and only a legacy-shaped trigger is ever replaced.
+  db.transaction(() => {
+    const auTrigger = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'exchanges_fts_au'",
+      )
+      .get() as { sql?: string } | undefined;
+    if (auTrigger?.sql && !/AFTER UPDATE OF user_message, assistant_message ON exchanges/i.test(auTrigger.sql)) {
+      db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
+    }
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
+        INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
+        VALUES('delete', old.rowid, old.user_message, old.assistant_message);
+        INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
+        VALUES (new.rowid, new.user_message, new.assistant_message);
+      END
+    `);
+  }).immediate();
 
   // === Facts Schema ===
   db.exec(`

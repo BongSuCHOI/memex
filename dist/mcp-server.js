@@ -19910,15 +19910,22 @@ function initDatabase(options = {}) {
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
     END
   `);
-  db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
-  db.exec(`
-    CREATE TRIGGER exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
-      INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
-      VALUES('delete', old.rowid, old.user_message, old.assistant_message);
-      INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
-      VALUES (new.rowid, new.user_message, new.assistant_message);
-    END
-  `);
+  db.transaction(() => {
+    const auTrigger = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'exchanges_fts_au'"
+    ).get();
+    if (auTrigger?.sql && !/AFTER UPDATE OF user_message, assistant_message ON exchanges/i.test(auTrigger.sql)) {
+      db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
+    }
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
+        INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
+        VALUES('delete', old.rowid, old.user_message, old.assistant_message);
+        INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
+        VALUES (new.rowid, new.user_message, new.assistant_message);
+      END
+    `);
+  }).immediate();
   db.exec(`
     CREATE TABLE IF NOT EXISTS facts (
       id TEXT PRIMARY KEY,

@@ -1,8 +1,9 @@
 # Memex Continuity v1 traceability matrix
 
-Statuses through Phase 3 describe branch `feat/memex-continuity-v1` at base HEAD
-`db548d29235d871f2f719486961480c20d9a07dd` plus the independently verified uncommitted Phase 3 gate
-candidate. Later gates must update code, schema, tests, and latest gate after each committed phase boundary.
+Statuses through Phase 3 describe branch `feat/memex-continuity-v1` at committed Phase 3 HEAD
+`5ec4909b9503ac3806b22e5e96a5fb85400202ba` plus the post-gate `exchanges_fts_au` concurrent-initialization
+fix recorded in `phase-3-handoff.md`. Later gates must update code, schema, tests, and latest gate after each
+committed phase boundary.
 
 | Invariant | RFC section | Current status | Related code | Related schema | Related tests | Target phase | Verification method | Latest gate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
