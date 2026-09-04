@@ -101,14 +101,19 @@ compatibility surfaces). Environment flags: `docs/CONTINUITY.md` §10.
 - Formal `codex plugin validate` is unavailable in CLI 0.153.2; substitute installed-artifact checks apply.
 - Project link/split, remote approval and workstream rebind are library APIs (no dedicated CLI verbs).
 - Sync import has no crash seam; recovery relies on pinned generations and idempotent re-import.
-- The authenticated lifecycle tier was last run in Phase 2B; F1/F2 ran the mandated offline tier plus
-  install/marketplace/package E2E.
+- Product A/B and the real-transcript calibration replay remain manual protocols (the authenticated
+  lifecycle tier was re-run on the release candidate, 12/12).
 
 ## Release preparation (after user approval, 2026-09-04)
 
-Version bumped to `0.4.0`; the obsolete plan file deletion committed. Re-verification after the bump is
-recorded in the release-prep commit message and below. PR to `main`, push, tag and publish were explicitly
-excluded by the user and were not executed.
+Version bumped to `0.4.0` (`a8d34fa`); the obsolete plan file deletion committed (`6c38a28`). Re-verification
+after the bump: typecheck/build PASS, vitest 273 files / 857 tests passed, `node --test` slices 94/94,
+validate-plugin PASS-WITH-NOTES (receipt now records 0.4.0), package-runtime-e2e PASS (`memex-0.4.0.tgz`, 225
+files, 9 MCP tools), install-e2e PASS. The authenticated lifecycle tier
+(`node scripts/lifecycle-e2e.mjs --tier authenticated`, real Codex CLI 0.153.2 exec) then passed 12/12 steps on
+the release candidate: SessionStart/UserPromptSubmit/SessionEnd delivery, final fence with deferred Capsule
+update through the model, immediate compact rehydration, hook removal and the 7-surface cleanup inventory. PR to
+`main`, push, tag and publish were explicitly excluded by the user and were not executed.
 
 ## Non-blocking future ideas and explicit non-scope
 
@@ -135,7 +140,7 @@ corrections), D-034–D-036 (F1 corrections), D-037 (release closure keeps compa
 2. Version `0.4.0` prepared on user approval (`chore(release): prepare v0.4.0`: `package.json`,
    `.codex-plugin/plugin.json`, MCP server version, README badges, CHANGELOG `0.4.0 - 2026-09-04`). Tag
    `v0.4.0` only when releasing: `git tag v0.4.0`.
-3. Optionally rerun the authenticated lifecycle tier on the release candidate
-   (`node scripts/lifecycle-e2e.mjs --tier authenticated`) and a real-transcript calibration replay.
+3. Authenticated lifecycle tier: done on the release candidate (12/12). A real-transcript calibration replay
+   on the production model remains optional manual work.
 4. Merge/push only after review: `git push origin feat/memex-continuity-v1`, open the PR to `main`, and push
    the tag after merge. None of these were executed.
