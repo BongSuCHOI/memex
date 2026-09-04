@@ -25,6 +25,7 @@ test('MCP runtime uses a cache isolated from concurrent hook launches', () => {
       ...process.env,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
       XDG_CACHE_HOME: cache,
+      MEMEX_RUNTIME_FORCE_REMOTE: '1',
     };
     delete env.npm_config_cache;
 
@@ -42,6 +43,40 @@ test('MCP runtime uses a cache isolated from concurrent hook launches', () => {
       '--package=github:BongSuCHOI/memex#main',
       'memex-mcp-server',
     ]);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('materialized plugin runs its pinned local hook instead of moving github main', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-runtime-local-'));
+  const cli = path.join(temp, 'cli');
+  const scripts = path.join(temp, 'scripts');
+  const dependency = path.join(temp, 'node_modules', 'better-sqlite3');
+  const localLauncher = path.join(cli, 'runtime-exec.js');
+  try {
+    fs.mkdirSync(cli, { recursive: true });
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.copyFileSync(launcher, localLauncher);
+    fs.writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
+    fs.writeFileSync(path.join(dependency, 'package.json'), '{"name":"better-sqlite3"}\n');
+    fs.writeFileSync(
+      path.join(scripts, 'continuity-hook.js'),
+      'let input="";process.stdin.on("data",d=>input+=d);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({input,args:process.argv.slice(2),pkg:process.env.MEMEX_RUNTIME_PACKAGE})));\n',
+    );
+
+    const result = spawnSync(process.execPath, [localLauncher, 'memex-hook-continuity', '--probe'], {
+      input: '{"hook_event_name":"Stop"}',
+      env: process.env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      input: '{"hook_event_name":"Stop"}',
+      args: ['--probe'],
+      pkg: 'github:BongSuCHOI/memex#main',
+    });
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

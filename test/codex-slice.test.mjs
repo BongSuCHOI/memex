@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Readable } from 'node:stream';
+import Database from 'better-sqlite3';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 
@@ -320,74 +321,71 @@ test('inject-context no longer auto-installs: self-heal removed, fail-loud hint 
   assert.ok(src.includes('npm install && npm run build'), 'manual command hint missing');
 });
 
-function makeHookFixture(name) {
+function makeHookFixture(name, sessionId) {
   const root = tmpdir();
-  fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
-  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'dist', 'codex-rollout.js'),
-    'export async function parseRolloutStream(_s,{archivePath=""}={}){return{meta:{cwd:"/p"},isSubagent:false,exchanges:archivePath.includes("EMPTY")?[]:[{id:"1"}]};}\n');
-  const order = path.join(root, 'order.log');
-  fs.writeFileSync(path.join(root, 'scripts', 'fact-extract-worker.js'), [
-    `const fs=require('fs');`,
-    `fs.appendFileSync(${JSON.stringify(order)},'extract\\n');`,
-    `const tp=process.env.MB_TRANSCRIPT_PATH||'';`,
-    `if(tp.includes('FAIL'))process.exit(3);`,
-    `if(tp.includes('ZEROEXIT')){console.log('worker: session=x extracted=0 saved=0');console.log('ERROR: upstream refused');process.exit(0);}`,
-    `console.log('worker: session='+(process.env.SESSION_ID||'')+' extracted=2 saved=2');`,
-  ].join('\n'));
-  fs.writeFileSync(path.join(root, 'scripts', 'sync-export-hook.js'),
-    `require('fs').appendFileSync(${JSON.stringify(order)},'export\\n');\n`);
-  const tp = path.join(tmpdir(), name);
-  fs.writeFileSync(tp, 'x'); // stable transcript stand-in
-  return { root, order, tp };
+  const sessions = path.join(root, 'sessions');
+  fs.mkdirSync(sessions, { recursive: true });
+  const tp = path.join(sessions, name);
+  fs.writeFileSync(tp, JSON.stringify({
+    type: 'session_meta',
+    payload: { id: sessionId, cwd: '/x' },
+  }) + '\n');
+  return { root, sessions, tp, dbPath: path.join(root, 'db.sqlite') };
 }
 
-const hookEnv = (root) => ({
+const hookEnv = (fx) => ({
   ...process.env,
-  MEMEX_PLUGIN_ROOT: root,
-  MEMEX_HOME: path.join(root, 'memex-home'),
-  MEMEX_STABILIZE_POLL_MS: '25',
-  MEMEX_STABILIZE_QUIET_MS: '60',
-  MEMEX_STABILIZE_MAX_WAIT_MS: '3000',
+  MEMEX_HOME: path.join(fx.root, 'memex-home'),
+  MEMEX_DB_PATH: fx.dbPath,
+  MEMEX_ALLOWED_TRANSCRIPT_ROOTS: fx.sessions,
+  MEMEX_CONTINUITY_NO_WAKE: '1',
 });
 
-test('session-end hook: empty rollout skips worker (no marker, no export)', async () => {
-  const fx = makeHookFixture('rollout-EMPTY-1.jsonl');
+const sessionEndPayload = (fx, sessionId) => JSON.stringify({
+  hook_event_name: 'SessionEnd',
+  transcript_path: fx.tp,
+  session_id: sessionId,
+  cwd: '/x',
+});
+
+test('session-end hook: empty rollout still creates a durable final fence without foreground work', () => {
+  const fx = makeHookFixture('rollout-empty.jsonl', 'session-empty-1');
   const r = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
-    input: JSON.stringify({ transcript_path: fx.tp, session_id: 's1', cwd: '/ignored' }),
-    env: hookEnv(fx.root),
+    input: sessionEndPayload(fx, 'session-empty-1'),
+    env: hookEnv(fx),
     encoding: 'utf8',
   });
   assert.equal(r.status, 0);
-  assert.ok(!fs.existsSync(fx.order), 'worker/export must not run for empty rollout');
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, '');
+  const db = new Database(fx.dbPath, { readonly: true });
+  assert.deepEqual(db.prepare('SELECT kind, closure_state FROM checkpoints').get(), {
+    kind: 'final', closure_state: 'final',
+  });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_jobs').get().n, 2);
+  db.close();
 });
 
-test('session-end hook: export strictly after extraction evidence; failure blocks export', async () => {
-  const okCase = makeHookFixture('rollout-ok-1.jsonl');
-  const rOk = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
-    input: JSON.stringify({ transcript_path: okCase.tp, session_id: 's2', cwd: '/x' }),
-    env: hookEnv(okCase.root),
+test('session-end hook never runs legacy extraction or export in the foreground', () => {
+  const fx = makeHookFixture('rollout-final.jsonl', 'session-final-2');
+  const canary = path.join(fx.root, 'legacy-foreground-ran');
+  const r = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
+    input: sessionEndPayload(fx, 'session-final-2'),
+    env: { ...hookEnv(fx), MEMEX_LEGACY_FOREGROUND_CANARY: canary },
     encoding: 'utf8',
   });
-  assert.equal(rOk.status, 0);
-  assert.equal(fs.readFileSync(okCase.order, 'utf8'), 'extract\nexport\n');
-
-  const failCase = makeHookFixture('rollout-FAIL-1.jsonl');
-  const rFail = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
-    input: JSON.stringify({ transcript_path: failCase.tp, session_id: 's3', cwd: '/x' }),
-    env: hookEnv(failCase.root),
-    encoding: 'utf8',
-  });
-  assert.equal(rFail.status, 0);
-  assert.ok(rFail.stderr.includes('no completion marker'));
-  assert.equal(fs.readFileSync(failCase.order, 'utf8'), 'extract\n');
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, '');
+  assert.equal(fs.existsSync(canary), false);
+  assert.equal(fs.existsSync(path.join(hookEnv(fx).MEMEX_HOME, 'conversation-index', 'sync')), false);
 });
 
-test('session-end hook records exactly one SessionEnd event on the normal path', async () => {
-  const fx = makeHookFixture('rollout-observation-ok.jsonl');
-  const env = hookEnv(fx.root);
+test('session-end hook records exactly one SessionEnd event on the normal path', () => {
+  const fx = makeHookFixture('rollout-observation-ok.jsonl', 'observed-session');
+  const env = hookEnv(fx);
   const result = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
-    input: JSON.stringify({ transcript_path: fx.tp, session_id: 'observed-session', cwd: '/observed' }),
+    input: sessionEndPayload(fx, 'observed-session'),
     env,
     encoding: 'utf8',
   });
@@ -398,14 +396,22 @@ test('session-end hook records exactly one SessionEnd event on the normal path',
   assert.equal(events.length, 1);
 });
 
-test('session-end hook: exit-0 with ERROR token blocks export despite success-shaped line', async () => {
-  const fx = makeHookFixture('rollout-ZEROEXIT-1.jsonl');
-  const r = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
-    input: JSON.stringify({ transcript_path: fx.tp, session_id: 's4', cwd: '/x' }),
-    env: hookEnv(fx.root),
+test('session-end hook duplicate delivery has the same final-fence effect', () => {
+  const fx = makeHookFixture('rollout-duplicate.jsonl', 'session-duplicate-4');
+  const first = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
+    input: sessionEndPayload(fx, 'session-duplicate-4'),
+    env: hookEnv(fx),
     encoding: 'utf8',
   });
-  assert.equal(r.status, 0);
-  assert.ok(r.stderr.includes('no completion marker'));
-  assert.equal(fs.readFileSync(fx.order, 'utf8'), 'extract\n');
+  const second = spawnSync(process.execPath, [path.join(REPO, 'scripts/session-end-hook.js')], {
+    input: sessionEndPayload(fx, 'session-duplicate-4'),
+    env: hookEnv(fx),
+    encoding: 'utf8',
+  });
+  assert.equal(first.status, 0);
+  assert.equal(second.status, 0);
+  const db = new Database(fx.dbPath, { readonly: true });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM checkpoints').get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_jobs').get().n, 2);
+  db.close();
 });

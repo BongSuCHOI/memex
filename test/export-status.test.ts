@@ -3,13 +3,14 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 
 /**
  * 재감사 P2-6 — SessionEnd sync-export 실패가 무음이 아닌 계약.
  *
  * sync-export-hook은 실패해도 session lifecycle을 wedge하지 않지만(exit 0),
  * 실패는 durable status(sync/export-status.json)로 기록되고 stderr로 보고되며,
- * parent session-end-hook은 child 결과/status를 검사해 EXPORT_FAILED를 남긴다.
+ * SessionEnd는 export를 호출하지 않는다. export 상태는 이 독립 helper만 소유한다.
  * 다음 성공 export가 status를 덮어쓰는 것이 자연 retry다.
  */
 
@@ -141,36 +142,9 @@ describe('sync export failure status (P2-6)', () => {
     expect(readStatus(home)?.ok).toBe(true);
   });
 
-  it('session-end parent reports EXPORT_FAILED on stderr while exiting 0', () => {
+  it('SessionEnd writes only a final fence and never invokes foreground export', () => {
     const home = tmpHome();
     homes.push(home);
-    const sandbox = buildSandbox();
-    homes.push(sandbox);
-    // Full SessionEnd chain: real session-end-hook + hook-stdin, stub worker
-    // that yields canonical success evidence, sabotaged export child.
-    fs.copyFileSync(
-      path.join(REPO, 'scripts', 'session-end-hook.js'),
-      path.join(sandbox, 'scripts', 'session-end-hook.js'),
-    );
-    fs.copyFileSync(
-      path.join(REPO, 'scripts', 'hook-stdin.js'),
-      path.join(sandbox, 'scripts', 'hook-stdin.js'),
-    );
-    fs.writeFileSync(
-      path.join(sandbox, 'scripts', 'fact-extract-worker.js'),
-      'console.log(`worker: session=${process.env.SESSION_ID} extracted=1 saved=0`);\n',
-    );
-    // Minimal parser stub: non-empty, non-subagent session (the real parser is
-    // exercised elsewhere; this test targets the export failure wiring).
-    fs.writeFileSync(
-      path.join(sandbox, 'dist', 'codex-rollout.js'),
-      [
-        'export async function parseRolloutStream(_stream, _opts) {',
-        '  return { isSubagent: false, exchanges: [{ userMessage: "q", assistantMessage: "a" }], meta: { cwd: "/tmp/export-status-project" } };',
-        '}',
-      ].join('\n') + '\n',
-    );
-
     const rolloutDir = path.join(home, 'rollouts');
     fs.mkdirSync(rolloutDir, { recursive: true });
     const transcript = path.join(rolloutDir, 'rollout-qa.jsonl');
@@ -184,19 +158,18 @@ describe('sync export failure status (P2-6)', () => {
 
     const run = spawnSync(
       process.execPath,
-      [path.join(sandbox, 'scripts', 'session-end-hook.js')],
+      [path.join(REPO, 'scripts', 'session-end-hook.js')],
       {
         cwd: REPO,
         env: {
           ...process.env,
-          MEMEX_PLUGIN_ROOT: sandbox,
           MEMEX_HOME: home,
           MEMEX_DB_PATH: path.join(home, 'conversation-index', 'db.sqlite'),
-          MEMEX_STABILIZE_POLL_MS: '25',
-          MEMEX_STABILIZE_QUIET_MS: '50',
+          MEMEX_ALLOWED_TRANSCRIPT_ROOTS: rolloutDir,
+          MEMEX_CONTINUITY_NO_WAKE: '1',
         },
         input: JSON.stringify({
-          event_name: 'SessionEnd',
+          hook_event_name: 'SessionEnd',
           session_id: 'sess-export-qa',
           transcript_path: transcript,
           cwd: '/tmp/export-status-project',
@@ -205,8 +178,25 @@ describe('sync export failure status (P2-6)', () => {
         timeout: 60000,
       },
     );
-    expect(run.status).toBe(0); // session lifecycle completes normally
-    expect(run.stderr).toContain('EXPORT_FAILED');
-    expect(readStatus(home)?.ok).toBe(false);
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).toBe('');
+    expect(readStatus(home)).toBeNull();
+    const check = new Database(path.join(home, 'conversation-index', 'db.sqlite'), { readonly: true });
+    try {
+      expect(check.prepare(`
+        SELECT kind, closure_state, state FROM checkpoints WHERE session_id = ?
+      `).get('sess-export-qa')).toEqual({ kind: 'final', closure_state: 'final', state: 'pending' });
+      expect(check.prepare(`
+        SELECT kind, state FROM memory_jobs WHERE checkpoint_id IN
+          (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)
+        ORDER BY priority DESC
+      `).all('sess-export-qa')).toEqual([
+        { kind: 'capture_index', state: 'pending' },
+        { kind: 'capsule_update', state: 'pending' },
+      ]);
+    } finally {
+      check.close();
+    }
   });
 });

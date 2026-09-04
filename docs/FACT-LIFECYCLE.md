@@ -14,6 +14,13 @@ Fact는 대화 전체 요약이 아니라 다음 작업에서 재사용할 가�
 
 fact는 scope와 source exchange provenance를 가지며 검색, revision, consolidation, ontology의 기준이 됩니다. extraction-time `confidence`는 저장 후보 필터에만 사용하고 fact row에는 보존하지 않습니다.
 
+Phase 3부터 project fact는 stable `project_id`와 `subject_key`를 가집니다. Absolute path는
+workspace provenance/legacy query key입니다. Source exchange가 workstream에 묶인 새 extraction은 기본적으로
+`promotion_state=workstream`이며 자동으로 project current가 되지 않습니다. Project-level decision은
+explicit-decision evidence, project current state는 merged 또는 validated evidence를 요구합니다.
+이 검사는 high-level promotion API뿐 아니라 low-level `insertFact()` boundary에도 적용되므로
+internal caller가 evidence나 membership 검증을 우회해 project-current slot을 만들 수 없습니다.
+
 ## 2. 네 종류의 상태
 
 Memex는 fact row의 상태를 네 성격으로 나눕니다.
@@ -37,7 +44,7 @@ Memex는 fact row의 상태를 네 성격으로 나눕니다.
 
 ## 3. 추출 eligibility
 
-SessionEnd 또는 backlog worker는 `extraction_log.last_exchange_rowid` 이후의 새 exchange만 처리합니다.
+Continuity worker는 먼저 P0 capture-index와 P1 Work Capsule queue를 비운 뒤 fact extraction을 실행합니다. Fact 대상은 legacy `extraction_log.last_exchange_rowid`가 아니라 current `(exchange_id, content_generation, policy_version)` completion state와 immutable target item으로 결정합니다. Legacy watermark는 scheduling/reporting hint일 뿐 unseen generation을 완료로 만들지 못합니다.
 
 fact extraction evidence는 source 단위로 분류합니다.
 
@@ -216,8 +223,9 @@ Extraction 호출 여부와 input visibility는 별도 단계입니다.
   range는 최대 5 raw exchanges까지 합치고, 더 긴 run은 neighbor 보존에 필요한 만큼
   window가 겹칩니다. ineligible transport row는 run을 끊으므로 멀리 떨어진 turn을 가짜
   이웃으로 연결하지 않습니다.
-- `MEMEX_MAX_EXTRACT_WINDOWS`의 spread cap은 이 semantic window를 모두 만든 뒤 generator
-  window 수에만 적용합니다. 구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
+- `MEMEX_MAX_EXTRACT_WINDOWS`는 semantic window를 모두 만든 뒤 **contiguous prefix**의 generator
+  window 수에만 적용합니다. 선택되지 않은 suffix는 durable target cursor 뒤 pending으로 남습니다.
+  구조 검증을 통과한 candidate가 있으면 선택된 각 window의 mandatory
   verifier는 cap과 별도로 실행됩니다. Deprecated alias `MEMEX_MAX_EXTRACT_CALLS`는 canonical env가
   아예 없을 때만 읽습니다. Canonical 값이 설정됐지만 양의 정수가 아니면 alias로 우회하지 않고
   default 12를 사용합니다. 겹친 window가 같은 fact를 다시 만들면 기존 session-level
@@ -243,21 +251,32 @@ prefix를 human/tool evidence로 선언한 candidate를 hard reject합니다. �
 ```mermaid
 sequenceDiagram
     participant W as Worker
-    participant L as extraction_log
+    participant T as extraction target/job
     participant E as exchanges
     participant F as facts
 
-    W->>L: claim session
-    W->>E: rows after watermark + previous 30 context-only rows
+    W->>T: fix target + claim lease generation
+    W->>E: immutable target page + previous 30 context-only rows
     W->>W: anchors + local windows + selected referents + model + validate
     W->>F: BEGIN transaction
     W->>F: save/merge facts + provenance + context dependency
-    W->>L: saved count + watermark + release
+    W->>T: generation CAS + contiguous page cursor + job state
+    W->>L: compatibility count + fixed target watermark
     W->>F: COMMIT
 ```
 
-fact/context dependency가 저장됐지만 watermark는 실패하거나, watermark만 먼저 전진하는 상태를
-허용하지 않습니다. transient failure에서는 기존 successful watermark가 유지됩니다.
+fact/context dependency가 저장됐지만 page marker는 실패하거나, marker만 먼저 전진하는 상태를
+허용하지 않습니다. Fact/current mutation, generation verification, target item state, cursor와 compatibility
+watermark는 한 SQLite transaction입니다. transient failure와 budget exhaustion은 cursor를 전진시키지
+않습니다. Oversized deterministic window는 recursively split하고 singleton failure만 exact
+`failed-visible` range가 됩니다. Completion은 live `MAX(rowid)`를 다시 읽지 않습니다.
+
+Legacy `extraction_log`의 `SEED`, `PERMANENT`, success watermark는 과거 extractor가 모든 generation을
+실제로 보았다는 증거가 아닙니다. Continuity worker는 이를 compatibility/reporting hint로만 유지하고,
+current `(exchange_id, content_generation, policy_version)`의 `processed` state가 없으면 고정 target에
+다시 포함합니다. 기존 fact 하나를 근거로 session live `MAX(rowid)`까지 seed하던 backfill 경로는
+제거했습니다. 한 model window가 configured fact cap보다 많은 valid candidate를 반환하면 window 내부를
+잘라 버리지 않고 모두 atomic save하며, cap은 다음 window/run scheduling에서 적용됩니다.
 
 ### Extraction evaluation
 
@@ -332,6 +351,9 @@ manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를
 - consolidation semantic rewrite에서는 participant context dependency를 survivor에 union
 
 중간 단계가 실패하면 이전 semantic generation 전체를 유지합니다.
+
+Semantic mutation은 같은 transaction에서 Chronicle `CHANGED` event를 append합니다(§13). projection UPDATE가
+0행이면 event도 남지 않고, event 기록이 실패하면 projection도 롤백됩니다.
 
 ## 7. Lifecycle mutation
 
@@ -429,3 +451,104 @@ hard delete는 full UUID와 explicit confirmation을 요구합니다. fact를 �
 row 수를 표시합니다.
 
 특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못합니다.
+
+## 13. Chronicle (Phase 4)
+
+### Subject key
+
+`subject_key`는 stable semantic slot입니다. 문법은 `<prefix>.<segment>{1,4}`(lowercase snake_case, prefix는
+category에 따라 `decision|state|constraint|preference|pattern`, knowledge→`state`)입니다. 같은 단어라도 subject가
+다르면(`state.runtime.session_store` vs `decision.runtime.session_store.target`) 별도 current slot입니다.
+문법/prefix가 맞지 않는 제안은 slot이 되지 않고 classifier note(`unresolved subject_key proposal`)로 남습니다.
+Legacy fact의 per-fact key(`legacy.fact.<id>`, `<promotion>.fact.<id>`)는 semantic slot이 아니며 migration은
+LLM 없이 deterministic/rerunnable하게 identity만 보존합니다. 의미 slot 부여는 재추출 또는 `assignFactSubject`로만 일어납니다.
+
+### Slot resolution (extraction commit)
+
+semantic subject를 가진 candidate는 `(project_id, subject_key, promotion_state, workspace_id, workstream_id)`
+slot의 active current fact와 deterministic하게 비교합니다.
+
+| 상황 | 결과 |
+| --- | --- |
+| slot 비어 있음 | insert + `ASSERTED` |
+| 정규화 텍스트 동일 | provenance merge, event 없음(재표현) |
+| incoming effective_at > existing이고 authority ≥ existing | 기존 identity의 meaning mutation + `CHANGED`(from/to generation, previous/new) |
+| incoming effective_at < existing | historical `ASSERTED`(projection_applied=0), current 유지 |
+| 같은 effective_at 또는 낮은 authority | `CONTRADICTED` candidate(projection_applied=0, `outcome.resolution=unresolved`), current 유지 |
+
+authority rank: `human-decision`(decision/correction) 3 > `human` 2 = `trusted-tool` 2 > `unknown` 1.
+existing의 effective time을 알 수 없으면(event도 source도 없음) 순서 판정 불가로 보고 incoming을 적용합니다.
+worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.
+
+### Event kinds와 mapping
+
+| Kind | 생성 경로 | projection |
+| --- | --- | --- |
+| `ASSERTED` | 새 slot fact; older evidence의 historical assertion | 1 / 0 |
+| `CHANGED` | slot resolution, consolidator EVOLUTION/CONTRADICTION(temporal 판정 통과), user edit; rollback은 `reverts_event_id` | 1 |
+| `RETIRED` / `RESTORED` | user/UI deactivate·restore. consolidation DUPLICATE/absorb는 event 없음 | 1 |
+| `VALIDATED` | trusted `test_execution` 성공 evidence를 가진 observation, remediation | 0 |
+| `INCIDENT` | trusted test failure 또는 human repeated_signal observation | 0 |
+| `CONTRADICTED` | 순서/authority가 모호한 경쟁 evidence, consolidator verdict가 temporal 판정에 실패한 경우 | 0 |
+
+기존 consolidation relation mapping: `DUPLICATE` → event 없음(재표현), `EVOLUTION`/`CONTRADICTION` →
+temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDENT` → 없음. consolidator `reason`은 항상
+`classifier_note`입니다.
+
+### Temporal semantics
+
+`effective_at` = cited authoritative source exchange의 timestamp(최대값). source가 없으면 `recorded_at`으로
+fallback하고 `effective_at_source=recorded`로 불확실성을 표시합니다(consolidator가 source 없는 candidate의 local
+write clock으로 판정한 경우도 `recorded`). `recorded_at` = worker commit 시점.
+Timeline과 rollback 탐지는 effective 순서를 사용합니다.
+
+### Grounded cause
+
+`problem`/`grounded_cause`/`rationale`은 (1) extractor가 cited authority exchange의 human message 또는 trusted
+tool result 안의 exact span으로 제시하고 server가 재검증한 경우, (2) actor `user`가 CLI/UI에서 직접 입력한 경우에만
+기록됩니다. 검증 실패는 `ChronicleGroundingError`(fail-closed) 또는 `classifier_note: unverified ...`입니다.
+API/MCP/CLI 출력은 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`를
+분리해 표시합니다. grounded field가 cite한 exchange는 항상 event의 `source_exchange_ids`에 포함되므로 source 없는
+grounded field는 구조적으로 존재하지 않습니다. sync import는 이 구조를 검증합니다(source 없는
+`problem`/`grounded_cause`, actor `user`가 아닌 source 없는 `rationale`, `fact_id` 없는 projection change는 generation
+전체 reject). 그 외 peer의 grounded field는 origin에서 검증된 값으로 신뢰하고 `effective_at_source=peer`로 표시합니다.
+
+### Rollback
+
+이전 event는 삭제하지 않습니다. 이전 `CHANGED`가 교체한 값으로 돌아오면 새 `CHANGED`에 `reverts_event_id`가
+자동 연결됩니다. Redis→MySQL rollback 뒤에도 MySQL→Redis 시도와 outcome이 Chronicle에 남습니다.
+
+### Incident pattern
+
+`recordIncidentOccurrence`: signature는 ANSI/uuid/time/path/hex/number를 placeholder로 치환한 240자 normalized
+text의 sha256[0:24]입니다. 이미 어떤 occurrence가 cite한 exchange로 같은 signature가 다시 전달되면(worker page
+재시도, job replay) session과 무관하게 no-op입니다(retry도 episode도 아님). 같은 project+signature+session의
+`open` occurrence에 30분 안의 새 evidence가 오면 그 occurrence에 coalesce(`retry_count`, exchange 추가)되고
+event를 만들지 않습니다. 독립 episode(다른 session 또는 window 밖)는 `INCIDENT` event + occurrence를 append하고
+`episode_count`를 올립니다. `episode_count >= 2` 또는 `user_flagged_repeat`이면 `pattern`입니다. 재발 없음은
+resolved가 아닙니다. `recordIncidentRemediation`은 trusted test 성공 evidence(또는 human 명시)만 받아 `VALIDATED`
+event를 쓰고 signature를 `remediated`로 바꿉니다. remediation 후 재발(effective_at이 remediation 이후)은 다시
+`pattern`이고 remediation link는 지워집니다. remediation보다 앞선 effective_at을 가진 episode가 늦게 도착하면
+occurrence는 `remediated` 상태로 저장되고 signature는 `remediated`로 유지됩니다(worker 순서가 history를 뒤집지
+않음). signature는 project 단위이므로 서로 다른 workstream의 독립 episode는 하나의 project pattern으로 집계되며
+occurrence에 workstream/session provenance가 남습니다. `matchIncidentPatterns(db, {projectId, text, limit≤20})`은
+Phase 5 WATCH용 bounded match(normalized substring 또는 token Jaccard ≥ 0.5)입니다.
+
+### Phase 5 API
+
+- `readChronicleTimeline(db, {projectId|factId|subjectKey, workspaceId?, workstreamId?, sessionId?, kinds?, cursor?, limit≤100, order})`
+- `currentFactRevision(db, factId)` — semantic/lifecycle generation + latest projection event
+- `matchIncidentPatterns`, `listIncidentOccurrences`
+- `summarizeTelemetry` — measured samples only
+
+### Privacy
+
+purge는 purged fact의 event, purged exchange를 cite하는 event, 해당 incident occurrence를 삭제하고
+`chronicle_tombstones`에 기록한 뒤 signature를 recount합니다. formatter는 사라진 source를
+`source unavailable (purged or missing)`으로 표시합니다. pending job은 terminal exclusion guard로 재생성이 차단되고,
+purge된 exchange를 cite하는 새 incident 기록은 `ChronicleGroundingError`입니다.
+
+### Telemetry
+
+`continuity_telemetry`는 RFC §15.5 allowlist metric(`semantic_retrieval_calls`, `injected_chars`, `repeated_context_turns`
+등)의 측정 sample만 저장합니다. 개발 시간/비용 절감 같은 미측정 ROI는 metric도 fact도 event도 아닙니다.

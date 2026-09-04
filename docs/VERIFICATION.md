@@ -39,16 +39,46 @@ node scripts/web-ui-browser-e2e.mjs
 | --- | --- |
 | rollout ingestion | main/resumed/subagent/tool/malformed/worker fixture |
 | project isolation | archive, DB, search, MCP, graph, sync에서 동일 canonical scope |
-| extraction | retry/claim/no-new-row/atomic watermark |
+| extraction | fixed fence, contiguous multi-run drain, generation/closure CAS, exact failed range, zero-fact distinction |
+| checkpoint/outbox | atomic insert, duplicate idempotency, expired lease reclaim, stale owner rejection, restart visibility |
+| rolling journal | delta-only byte accounting, partial-line deferral, same-size/growing rewrite and damaged-journal epoch, competing-process serialization, block/prefix hash verification, fsync/DB crash seams |
+| lifecycle capture | Stop closed, Interrupt open, PreCompact/final fence, event stdout shape, model/embedding 0, bounded latency |
+| compact continuity | no-PostCompact epoch transition, immediate Capsule/tail baton, active latest carry, clear reset |
+| Work Capsule | exact typed authority/source bounds, strict JSON, generation+lease CAS, stale-projection tail baton, coalescing, retry exhaustion accounting |
+| prefix ingestion | CP2→CP1 out-of-order delivery에서 delete/generation/line regression 0 |
 | context dependency | server mapping, atomic save, consolidation union, edit/sync clear, privacy/FK cascade |
 | extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |
 | fact mutation | semantic/lifecycle generation과 derived-state CAS |
 | sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
-| privacy | conversation purge, terminal tombstone, taxonomy epoch/in-flight race |
+| privacy | conversation purge, pending checkpoint/job/target cascade, terminal session guard, in-flight capture-index race, fact tombstone, taxonomy epoch race |
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
+| continuity identity v4 | path migration/re-run, worktree/rename/clone link-split, conservative binding, promotion slots, memory revision/correction, Hot Evidence TTL/pagination, stable MCP/sync/privacy scope |
+| continuity chronicle v5 | extended `fact_revisions` Chronicle, subject slot resolution, grounded cause vs classifier note, effective/recorded order, rollback/contradiction, incident coalescing/pattern/remediation, `trace_fact` timeline pagination, Chronicle sync/purge tombstones, measured telemetry |
+| continuity recall v6 | cheap gate skip/trigger matrix, revision-aware delta/correction, Memory Bundle hard budget, intent-gated graph, verified WATCH, demoted assistant lane, embeddings-unavailable fallback, metrics exactness, 150-turn workload, `scripts/continuity-recall-benchmark.mjs` calibration artifact; 5B adversarial gate (`test/continuity-recall-gate.test.ts`): continuation carry with 0 embeddings, stale-revision recall + residency corrections, sibling Hot Evidence once per epoch, WATCH TTL, SessionStart(compact) no duplicate WORK NOW, feature/main two-session divergence, real inference accounting, KR/EN short-prompt lexicon |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
-| lifecycle | SessionStart/UserPromptSubmit/SessionEnd + cleanup |
+
+Phase 1 gate의 mandatory matrix는 `test/continuity-correctness-spine.test.ts`의 deterministic seeded
+pagination, migration/page-commit crash stages, ten duplicate deliveries, checkpoint ordinal ordering,
+expired/stale lease ownership, concurrent source mutation, open fence 및 exact failure accounting과
+`test/extraction-claim-e2e.test.ts`의 fact-budget/atomic fact commit E2E로 고정됩니다. Legacy
+`SEED|PERMANENT` markers가 exact completion으로 승격되지 않는 회귀는
+`test/backfill-seed-watermark.test.ts`가 담당합니다.
+
+Phase 2의 mandatory matrix는 `test/continuity-core.test.ts`와
+`test/continuity-adversarial.test.ts`가 담당합니다. 후자는 200 turns, 6 auto + 2 manual compact,
+same-turn double compact, repeated Stop/Interrupt, zero PostCompact, byte-total accounting, hash mismatch,
+Capsule stale CAS/failure fallback을 한 deterministic fixture에서 검증합니다. Installed lifecycle은 7 event,
+11 owned hook entry이며 `scripts/lifecycle-e2e.mjs --tier offline`이 setup/reinstall/remove와 final-fence process
+boundary를 검증합니다. Unix socket `listen EPERM`이 발생한 managed sandbox run은 정확한 isolated suite를
+socket 허용 환경에서 재실행해 product failure와 구분합니다.
+Authenticated tier는 격리된 `CODEX_HOME`과 복사된 사용자 auth에서 실제 `codex exec`를 실행해
+installed plugin의 SessionStart/UserPromptSubmit/Stop/SessionEnd stdin, JSON additionalContext,
+SessionEnd foreground final fence, 별도 Luna Capsule worker, compact 즉시 복원을 검증합니다.
+Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 process 회귀는
+`test/runtime-exec-slice.test.mjs`가 담당합니다.
+
+| lifecycle | SessionStart/UserPromptSubmit/Stop/Interrupt/PreCompact/PostCompact/SessionEnd + cleanup |
 | UI | empty/populated/mutation/security/accessibility |
 | data integrity | FK check, vector/parent consistency, repair behavior |
 

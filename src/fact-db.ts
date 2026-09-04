@@ -14,6 +14,8 @@ import {
   normalizeVecDistance,
   l2DistanceToSimilarity,
 } from "./db.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { readChronicleTimeline, recordChronicleEvent } from "./chronicle.js";
 
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 
@@ -36,6 +38,12 @@ interface InsertFactParams {
   embedding: number[] | null; // number[] to match generateEmbedding() return type
   fact_kr?: string | null; // Korean translation — enables same-language matching for Korean queries
   embedding_kr?: number[] | null;
+  project_id?: string | null;
+  workspace_id?: string | null;
+  workstream_id?: string | null;
+  subject_key?: string | null;
+  promotion_state?: Fact['promotion_state'];
+  promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental';
 }
 
 interface UpdateFactParams {
@@ -106,15 +114,108 @@ export function clearFactContextDependencies(
   ).run(factId);
 }
 
+export interface ResolvedFactInsertIdentity {
+  projectId: string | null;
+  workspaceId: string | null;
+  workstreamId: string | null;
+  promotionState: NonNullable<Fact['promotion_state']>;
+}
+
+/**
+ * Stable identity and promotion placement for a fact about to be inserted.
+ * Shared by insertFact and the extractor's subject-slot resolver so both see
+ * the same slot before deciding whether to insert, merge, change or contradict.
+ */
+export function resolveFactInsertIdentity(
+  db: Database.Database,
+  params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence'>,
+): ResolvedFactInsertIdentity {
+  const now = new Date().toISOString();
+  let projectId = params.project_id ?? null;
+  let workspaceId = params.workspace_id ?? null;
+  let workstreamId = params.workstream_id ?? null;
+  if (params.scope_type === "project" && params.source_exchange_ids.length > 0) {
+    const placeholders = params.source_exchange_ids.map(() => "?").join(",");
+    const sources = db.prepare(`
+      SELECT DISTINCT project_id, workspace_id, workstream_id
+      FROM exchanges WHERE id IN (${placeholders})
+    `).all(...params.source_exchange_ids) as Array<{
+      project_id: string | null; workspace_id: string | null; workstream_id: string | null;
+    }>;
+    const same = <K extends keyof (typeof sources)[number]>(key: K): (typeof sources)[number][K] | null => {
+      const values = [...new Set(sources.map((row) => row[key]).filter(Boolean))];
+      return values.length === 1 ? values[0] : null;
+    };
+    projectId ??= same("project_id");
+    workspaceId ??= same("workspace_id");
+    workstreamId ??= same("workstream_id");
+  }
+  if (params.scope_type === "project" && !projectId && params.scope_project) {
+    const identity = resolveProjectWorkspace(db, { cwd: params.scope_project, now });
+    projectId = identity.projectId;
+    workspaceId ??= identity.workspaceId;
+  }
+  const promotionState = params.promotion_state ?? (
+    params.scope_type === "project" && workstreamId ? "workstream" : "legacy-project"
+  );
+  const promotionEvidence = params.promotion_evidence ?? (
+    params.promotion_state === undefined && promotionState === "workstream" ? "experimental" : undefined
+  );
+  if (promotionState === "decision" && promotionEvidence !== "explicit-decision") {
+    throw new Error("project decision requires explicit decision evidence");
+  }
+  if (promotionState === "project-current" &&
+      promotionEvidence !== "merged" && promotionEvidence !== "validated") {
+    throw new Error("project current state requires merged or validated evidence");
+  }
+  if (promotionState === "workspace" && (!workspaceId || promotionEvidence !== "validated")) {
+    throw new Error("workspace state requires workspace_id and validated evidence");
+  }
+  if (promotionState === "workstream" && (!workstreamId || promotionEvidence !== "experimental")) {
+    throw new Error("workstream state requires workstream_id and experimental evidence");
+  }
+  if ((promotionState === "decision" || promotionState === "project-current") &&
+      (workspaceId || workstreamId)) {
+    throw new Error("project-wide truth cannot retain workspace/workstream scope");
+  }
+  if (promotionState === "workspace" && workstreamId) {
+    throw new Error("workspace truth cannot retain workstream scope");
+  }
+  if (params.scope_type === "project" && projectId && workspaceId) {
+    const workspace = db.prepare("SELECT project_id FROM workspaces WHERE workspace_id = ?")
+      .get(workspaceId) as { project_id: string } | undefined;
+    if (!workspace || workspace.project_id !== projectId) {
+      throw new Error("fact workspace_id is outside project_id");
+    }
+  }
+  if (params.scope_type === "project" && projectId && workstreamId) {
+    const workstream = db.prepare("SELECT project_id FROM minimal_workstreams WHERE workstream_id = ?")
+      .get(workstreamId) as { project_id: string | null } | undefined;
+    if (!workstream || workstream.project_id !== projectId) {
+      throw new Error("fact workstream_id is outside project_id");
+    }
+  }
+  return { projectId, workspaceId, workstreamId, promotionState };
+}
+
 export function insertFact(
   db: Database.Database,
   params: InsertFactParams,
 ): string {
   const id = randomUUID();
   const now = new Date().toISOString();
+  const { projectId, workspaceId, workstreamId, promotionState } = resolveFactInsertIdentity(db, params);
+  const subjectKey = params.subject_key ?? (
+    params.scope_type === "global" ? `global.fact.${id}` : `${promotionState}.fact.${id}`
+  );
   db.prepare(`
-    INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active, fact_kr, embedding_version, semantic_generation, semantic_updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?)
+    INSERT INTO facts (
+      id, fact, category, scope_type, scope_project, source_exchange_ids, embedding,
+      created_at, updated_at, consolidated_count, is_active, fact_kr,
+      embedding_version, semantic_generation, semantic_updated_at,
+      project_id, workspace_id, workstream_id, subject_key, promotion_state
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     params.fact,
@@ -130,6 +231,11 @@ export function insertFact(
     params.fact_kr ?? null,
     EMBEDDING_VERSION,
     now,
+    projectId,
+    workspaceId,
+    workstreamId,
+    subjectKey,
+    promotionState,
   );
 
   // Insert into vector index (atomic DELETE+INSERT via transaction)
@@ -238,10 +344,13 @@ export function updateFact(
 }
 
 export function deactivateFact(db: Database.Database, id: string): void {
-  db.prepare("UPDATE facts SET is_active = 0, needs_consolidation = 0, updated_at = ? WHERE id = ?").run(
-    new Date().toISOString(),
-    id,
-  );
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE facts SET is_active = 0, needs_consolidation = 0,
+      lifecycle_generation = lifecycle_generation + 1,
+      lifecycle_updated_at = ?, updated_at = ?
+    WHERE id = ? AND is_active = 1
+  `).run(now, now, id);
   // Deactivated facts must not occupy vector index slots
   db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
   db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
@@ -261,35 +370,51 @@ export function deleteFact(db: Database.Database, id: string): void {
   })();
 }
 
+/**
+ * Compatibility writer for callers that only know the released revision
+ * shape. It appends a Chronicle CHANGED event; the free-text reason is a
+ * classifier note because this path carries no source-cited cause.
+ */
 export function insertRevision(
   db: Database.Database,
-  params: InsertRevisionParams,
+  params: InsertRevisionParams & { actor?: "extractor" | "consolidator" | "user" | "legacy" },
 ): string {
-  const id = randomUUID();
-  db.prepare(`
-    INSERT INTO fact_revisions (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    params.fact_id,
-    params.previous_fact,
-    params.new_fact,
-    params.reason,
-    params.source_exchange_id,
-    new Date().toISOString(),
-  );
-  return id;
+  const fact = db.prepare("SELECT project_id, subject_key, semantic_generation FROM facts WHERE id = ?")
+    .get(params.fact_id) as { project_id: string | null; subject_key: string | null; semantic_generation: number } | undefined;
+  const { event } = recordChronicleEvent(db, {
+    kind: "CHANGED",
+    projectId: fact?.project_id ?? null,
+    subjectKey: fact?.subject_key ?? null,
+    factId: params.fact_id,
+    previousValue: params.previous_fact,
+    newValue: params.new_fact,
+    classifierNote: params.reason,
+    sourceExchangeIds: params.source_exchange_id ? [params.source_exchange_id] : [],
+    actor: params.actor ?? "legacy",
+    projectionApplied: true,
+    toSemanticGeneration: fact ? Number(fact.semantic_generation) : null,
+  });
+  return event.id;
 }
 
+/** Released revision view over the Chronicle: newest effective change first. */
 export function getRevisions(
   db: Database.Database,
   factId: string,
 ): FactRevision[] {
-  return db
-    .prepare(
-      "SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC",
-    )
-    .all(factId) as FactRevision[];
+  const page = readChronicleTimeline(db, { factId, order: "desc", limit: 100 });
+  return page.events.map((event) => ({
+    id: event.id,
+    fact_id: event.fact_id ?? factId,
+    previous_fact: event.previous_value ?? "",
+    new_fact: event.new_value ?? "",
+    reason: event.rationale ?? event.grounded_cause ?? event.classifier_note ?? null,
+    source_exchange_id: event.source_exchange_ids[0] ?? null,
+    created_at: event.recorded_at,
+    event_kind: event.event_kind,
+    effective_at: event.effective_at,
+    projection_applied: event.projection_applied,
+  }));
 }
 
 export type FactSearchScope =
@@ -300,7 +425,12 @@ export type FactSearchScope =
   // on the same search implementation without changing the public semantics
   // above: project means that project plus global facts.
   | { type: "exact-project"; project: string }
-  | { type: "other-projects"; project: string };
+  | { type: "other-projects"; project: string }
+  | { type: "other-project-id"; projectId: string }
+  | { type: "project-id"; projectId: string; includeGlobal?: boolean }
+  | { type: "workspace-id"; projectId: string; workspaceId: string; includeGlobal?: boolean }
+  | { type: "workstream-id"; projectId: string; workspaceId?: string | null; workstreamId: string; includeGlobal?: boolean }
+  | { type: "session-id"; projectId: string; sessionId: string; includeGlobal?: boolean };
 
 interface FactSearchFilters {
   category?: FactCategory;
@@ -310,6 +440,7 @@ function factMatchesSearch(
   fact: Fact,
   scope: FactSearchScope,
   filters: FactSearchFilters,
+  sessionExchangeIds?: Set<string>,
 ): boolean {
   if (filters.category && fact.category !== filters.category) return false;
 
@@ -331,7 +462,51 @@ function factMatchesSearch(
       return (
         fact.scope_type === "project" && fact.scope_project !== scope.project
       );
+    case "other-project-id":
+      return fact.scope_type === "project" && fact.project_id !== scope.projectId;
+    case "project-id":
+      return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+        (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+          (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current"));
+    case "workspace-id":
+      return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+        (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+          (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" ||
+            (fact.promotion_state === "workspace" && fact.workspace_id === scope.workspaceId)));
+    case "workstream-id":
+      return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+        (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+          (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" ||
+            (fact.promotion_state === "workspace" && !!scope.workspaceId && fact.workspace_id === scope.workspaceId) ||
+            (fact.promotion_state === "workstream" && fact.workstream_id === scope.workstreamId)));
+    case "session-id":
+      return (scope.includeGlobal !== false && fact.scope_type === "global") ||
+        (fact.scope_type === "project" && fact.project_id === scope.projectId &&
+          fact.source_exchange_ids.some((id) => sessionExchangeIds?.has(id)));
   }
+}
+
+export function listFactsByScope(
+  db: Database.Database,
+  scope: FactSearchScope,
+): Fact[] {
+  const sessionExchangeIds = scope.type === "session-id"
+    ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
+    : undefined;
+  return (db.prepare("SELECT * FROM facts WHERE is_active = 1").all() as Array<Record<string, unknown>>)
+    .map(rowToFact)
+    .filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
+}
+
+export function factMatchesScope(
+  db: Database.Database,
+  fact: Fact,
+  scope: FactSearchScope,
+): boolean {
+  const sessionExchangeIds = scope.type === "session-id"
+    ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
+    : undefined;
+  return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
 }
 
 /**
@@ -352,6 +527,9 @@ export function searchFactsByScope(
   filters: FactSearchFilters = {},
 ): Array<{ fact: Fact; distance: number }> {
   if (limit <= 0) return [];
+  const sessionExchangeIds = scope.type === "session-id"
+    ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
+    : undefined;
 
   const fetch = (
     table: FactVecTable,
@@ -422,7 +600,7 @@ export function searchFactsByScope(
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) break;
       const fact = loadFact(vr.id);
-      if (!fact || !factMatchesSearch(fact, scope, filters)) continue;
+      if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
     }
@@ -587,7 +765,7 @@ export function searchAllFacts(
   return searchFactsByScope(db, embedding, { type: "all" }, limit, threshold);
 }
 
-function rowToFact(row: Record<string, unknown>): Fact {
+export function rowToFact(row: Record<string, unknown>): Fact {
   const embeddingRaw = row["embedding"];
   let embedding: Float32Array | null = null;
   if (embeddingRaw instanceof Buffer) {
@@ -621,6 +799,11 @@ function rowToFact(row: Record<string, unknown>): Fact {
     category: row["category"] as Fact["category"],
     scope_type: row["scope_type"] as Fact["scope_type"],
     scope_project: (row["scope_project"] as string | null) ?? null,
+    project_id: (row["project_id"] as string | null) ?? null,
+    workspace_id: (row["workspace_id"] as string | null) ?? null,
+    workstream_id: (row["workstream_id"] as string | null) ?? null,
+    subject_key: (row["subject_key"] as string | null) ?? null,
+    promotion_state: (row["promotion_state"] as Fact['promotion_state']) ?? 'legacy-project',
     source_exchange_ids: sourceExchangeIds,
     embedding,
     created_at: row["created_at"] as string,

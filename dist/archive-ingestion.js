@@ -1,6 +1,7 @@
 import { insertExchange, reconcileArchiveExchanges } from './db.js';
 import { generateExchangeEmbedding, initEmbeddings } from './embeddings.js';
 import { isWorkerPromptMessage } from './paths.js';
+import { applyLatestLifecycleClosure } from './continuity-core.js';
 /**
  * Single ingestion SSOT for every archive→index entrypoint (sync,
  * indexConversations/indexSession/indexUnprocessed, verify --repair).
@@ -32,5 +33,43 @@ export async function ingestArchiveExchanges(db, archivePath, exchanges) {
         insertExchange(db, exchange, embedding, toolNames);
         indexed++;
     }
+    for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+        applyLatestLifecycleClosure(db, sessionId);
+    }
     return indexed;
+}
+/**
+ * Monotonic partial ingestion for checkpoint prefixes. Unlike the canonical
+ * archive path above, this never reconciles a desired set and therefore never
+ * deletes exchanges missing from an older/shorter prefix. DB generation and
+ * line guards reject regression before vectors or tool evidence are replaced.
+ */
+export async function ingestPrefixExchanges(db, exchanges) {
+    await initEmbeddings();
+    let indexed = 0;
+    let ignoredRegressions = 0;
+    for (const exchange of exchanges) {
+        if (isWorkerPromptMessage(exchange.userMessage))
+            continue;
+        const existing = db.prepare(`
+      SELECT line_end, content_generation FROM exchanges WHERE id = ?
+    `).get(exchange.id);
+        if (existing &&
+            (exchange.lineEnd < existing.line_end ||
+                (exchange.contentGeneration !== undefined &&
+                    exchange.contentGeneration < existing.content_generation))) {
+            ignoredRegressions += 1;
+            continue;
+        }
+        const toolNames = exchange.toolCalls?.map((call) => call.toolName);
+        const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
+        if (insertExchange(db, exchange, embedding, toolNames))
+            indexed += 1;
+        else
+            ignoredRegressions += 1;
+    }
+    for (const sessionId of new Set(exchanges.map((exchange) => exchange.sessionId).filter(Boolean))) {
+        applyLatestLifecycleClosure(db, sessionId);
+    }
+    return { indexed, ignoredRegressions };
 }

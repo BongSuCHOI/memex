@@ -1,11 +1,14 @@
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
-import { insertFact, insertFactContextDependencies, } from "./fact-db.js";
+import { insertFact, insertFactContextDependencies, resolveFactInsertIdentity, updateFact, } from "./fact-db.js";
+import { applyFactMeaningMutation } from "./fact-management.js";
+import { currentEffectiveAt, currentEvidenceAuthority, evidenceAuthorityFromKinds, findCurrentSlotFact, isSemanticSubjectKey, judgeCompetingEvidence, normalizeSubjectKey, recordChronicleEvent, recordIncidentOccurrence, recordIncidentRemediation, } from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
-import { randomUUID } from "node:crypto";
-import { claimSessionSql, renewClaimSql, failureMarkerUpsertSql, freshClaimPredicate, getExtractionConfig, EXTRACTION_STATE, MAX_INTERNAL_RETRIES, } from "./pending-extraction.js";
+import { createHash } from "node:crypto";
+import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
+import { claimExtractionTarget, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, supersedeStaleExtractionTarget, } from "./continuity-store.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
@@ -292,7 +295,32 @@ Never emit assistant, assistant_generated, memex_recall, or external_unverified 
 
 category: decision | preference | pattern | knowledge | constraint
 Do not emit fact_kr. Korean translation is separate local-derived maintenance after acceptance.
-confidence is secondary telemetry, not a substitute for grounding or durability; omit candidates below 0.7.`;
+confidence is secondary telemetry, not a substitute for grounding or durability; omit candidates below 0.7.
+
+## Optional Chronicle fields
+A fact candidate MAY add:
+- subject_key: the stable semantic slot the fact occupies, written as
+  <prefix>.<domain>.<object>[.<attribute>] with lowercase snake_case segments (2-5 segments). The prefix
+  follows the category: decision→decision, knowledge→state, constraint→constraint,
+  preference→preference, pattern→pattern. Examples: "state.runtime.session_store",
+  "decision.runtime.session_store.target", "constraint.session.ttl". Two statements about different
+  things must never share a slot. Omit subject_key when the slot is ambiguous.
+- change_context: {"problem"?: R, "cause"?: R, "rationale"?: R} where
+  R = {"exchange_index": n, "supporting_span": "<exact substring>", "text"?: "<normalized statement>",
+  "tool_call_id"?: "<id when the span is inside a trusted tool result>"}. Each span must be an exact
+  substring of the cited authoritative human message or trusted tool result that STATES the problem,
+  cause or rationale. Never infer a cause: if the source does not state one, omit the field.
+
+Observation candidates describe verified events without creating a fact. Emit this shape instead of a
+fact object:
+{"observation":"incident"|"validated","summary":"<one sentence>","subject_key"?: "<slot>",
+ "signature_text"?: "<exact failure text copied from the cited tool result>",
+ "remediates_signature_key"?: "<signature key from recalled context>","user_flagged_repeat"?: true,
+ "confidence": 0.9,"evidence":[<same evidence contract>]}
+- incident requires trusted test_execution tool evidence (a failing result is allowed) or a human
+  repeated_signal evidence in which the user states the failure recurs.
+- validated requires a successful trusted test_execution tool evidence.
+- assistant claims of success or failure are never observation evidence.`;
 export const FACT_ENTAILMENT_VERIFIER_PROMPT = `You are a fail-closed fact entailment verifier.
 
 policy_version: ${FACT_ENTAILMENT_POLICY_VERSION}
@@ -1169,6 +1197,12 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
             dependency_kind: declared.relation,
         });
     }
+    const classifierNotes = [];
+    const subjectKey = normalizeSubjectKey(candidate.subject_key, category);
+    if (candidate.subject_key !== undefined && candidate.subject_key !== null && !subjectKey) {
+        classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
+    }
+    const changeContext = resolveChangeContext(candidate.change_context, exchanges, evidence, classifierNotes);
     return {
         accepted: true,
         fact: {
@@ -1183,7 +1217,194 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
                 ? { context_dependencies: contextDependencies }
                 : {}),
             source_exchange_ids: [...authoritativeIds],
+            ...(subjectKey ? { subject_key: subjectKey } : {}),
+            ...(changeContext ? { change_context: changeContext } : {}),
+            ...(classifierNotes.length > 0 ? { classifier_notes: classifierNotes } : {}),
         },
+    };
+}
+/**
+ * Resolve model-declared problem/cause/rationale statements to verified
+ * source spans. A statement whose span is not literally present in a cited
+ * authoritative exchange is kept only as a classifier note — never as a
+ * grounded field (GROUNDED CAUSE).
+ */
+function resolveChangeContext(raw, exchanges, evidence, notes) {
+    if (raw === undefined || raw === null)
+        return undefined;
+    if (!isRecord(raw)) {
+        notes.push("change_context ignored: invalid shape");
+        return undefined;
+    }
+    const resolved = {};
+    const citedIndices = new Set(evidence.map((item) => item.exchange_index));
+    for (const slot of ["problem", "cause", "rationale"]) {
+        const entry = raw[slot];
+        if (entry === undefined || entry === null)
+            continue;
+        const label = typeof entry?.text === "string"
+            ? String(entry.text)
+            : typeof entry?.supporting_span === "string"
+                ? String(entry.supporting_span)
+                : "";
+        const fail = (why) => {
+            notes.push(`unverified ${slot}${label ? `: ${label.slice(0, 200)}` : ""} (${why})`);
+        };
+        if (!isRecord(entry) || !validExchangeIndex(entry.exchange_index, exchanges.length)) {
+            fail("no cited exchange");
+            continue;
+        }
+        const exchange = exchanges[entry.exchange_index - 1];
+        if (!exchange || !citedIndices.has(entry.exchange_index)) {
+            fail("exchange is not fact evidence");
+            continue;
+        }
+        let span = null;
+        let toolCallId;
+        if (typeof entry.tool_call_id === "string" && entry.tool_call_id.trim() !== "") {
+            const tool = (exchange.tool_evidence ?? []).find((item) => item.id === entry.tool_call_id && booleanFlag(item.learnable) && !!item.tool_result);
+            if (!tool || !TOOL_EVIDENCE_KINDS.has(tool.source_type)) {
+                fail("tool evidence is not trusted");
+                continue;
+            }
+            span = validatedSupportingSpan(entry.supporting_span, tool.tool_result ?? "");
+            toolCallId = entry.tool_call_id;
+        }
+        else {
+            if (!isEligibleHumanEvidence(exchange)) {
+                fail("exchange has no human authority");
+                continue;
+            }
+            span = validatedSupportingSpan(entry.supporting_span, exchange.user_message);
+        }
+        if (!span) {
+            fail("span is not present in the source");
+            continue;
+        }
+        const text = typeof entry.text === "string" && entry.text.trim() !== "" ? entry.text.trim() : span;
+        const ref = { exchange_id: exchange.id, supporting_span: span, text };
+        if (toolCallId)
+            ref.tool_call_id = toolCallId;
+        resolved[slot] = ref;
+    }
+    return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+/**
+ * Validate an event-only observation candidate. Incidents need trusted
+ * test_execution evidence (failures allowed) or a human repeated_signal;
+ * validations need a successful trusted test_execution result. Assistant text
+ * never qualifies. Any invalid declaration rejects the whole candidate.
+ */
+export function validateExtractedObservationCandidate(candidate, exchanges) {
+    if (!isRecord(candidate))
+        return null;
+    const kind = candidate.observation;
+    if (kind !== "incident" && kind !== "validated")
+        return null;
+    const summary = typeof candidate.summary === "string" ? candidate.summary.trim() : "";
+    if (summary.length < 4)
+        return null;
+    const confidence = candidate.confidence;
+    if (typeof confidence !== "number" || !Number.isFinite(confidence) || !passesConfidenceGate(confidence)) {
+        return null;
+    }
+    const rawEvidence = candidate.evidence;
+    if (!Array.isArray(rawEvidence) || rawEvidence.length === 0)
+        return null;
+    const evidence = [];
+    const sourceExchangeIds = new Set();
+    const sourceEvidenceIds = new Set();
+    const toolResults = [];
+    const humanTexts = [];
+    let testEvidence = 0;
+    let successfulTest = 0;
+    let repeatedSignal = 0;
+    for (const raw of rawEvidence) {
+        if (!isRecord(raw) || !validExchangeIndex(raw.exchange_index, exchanges.length))
+            return null;
+        const exchange = exchanges[raw.exchange_index - 1];
+        if (!exchange || booleanFlag(exchange.context_only_due_to_watermark))
+            return null;
+        if (raw.source === "human") {
+            if (!HUMAN_EVIDENCE_KINDS.has(raw.kind) || !isEligibleHumanEvidence(exchange))
+                return null;
+            const span = validatedSupportingSpan(raw.supporting_span, exchange.user_message);
+            if (!span)
+                return null;
+            evidence.push({ exchange_index: raw.exchange_index, source: "human", kind: raw.kind, supporting_span: span });
+            humanTexts.push(exchange.user_message);
+            sourceExchangeIds.add(exchange.id);
+            if (raw.kind === "repeated_signal")
+                repeatedSignal++;
+            continue;
+        }
+        if (raw.source === "tool") {
+            if (!TOOL_EVIDENCE_KINDS.has(raw.kind) ||
+                typeof raw.tool_call_id !== "string" || raw.tool_call_id.trim() === "" ||
+                typeof raw.tool_name !== "string" || raw.tool_name.trim() === "" ||
+                raw.source_type !== raw.kind) {
+                return null;
+            }
+            const tool = (exchange.tool_evidence ?? []).find((item) => item.id === raw.tool_call_id && item.tool_name === raw.tool_name &&
+                item.source_type === raw.source_type && booleanFlag(item.learnable) && !!item.tool_result);
+            if (!tool)
+                return null;
+            const span = validatedSupportingSpan(raw.supporting_span, tool.tool_result ?? "");
+            if (!span)
+                return null;
+            evidence.push({
+                exchange_index: raw.exchange_index, source: "tool", kind: raw.kind,
+                supporting_span: span, tool_call_id: raw.tool_call_id, tool_name: raw.tool_name,
+                source_type: raw.source_type,
+            });
+            toolResults.push(tool.tool_result ?? "");
+            sourceExchangeIds.add(exchange.id);
+            sourceEvidenceIds.add(raw.tool_call_id);
+            if (raw.kind === "test_execution") {
+                testEvidence++;
+                if (!isToolError(tool.is_error))
+                    successfulTest++;
+            }
+            continue;
+        }
+        return null;
+    }
+    const userFlaggedRepeat = candidate.user_flagged_repeat === true;
+    if (kind === "incident" && testEvidence === 0 && !(repeatedSignal > 0 && userFlaggedRepeat))
+        return null;
+    if (kind === "validated" && successfulTest === 0)
+        return null;
+    let signatureText;
+    if (kind === "incident") {
+        const proposed = typeof candidate.signature_text === "string" ? candidate.signature_text.trim() : "";
+        const corpus = [...toolResults, ...humanTexts];
+        if (proposed && corpus.some((text) => text.includes(proposed))) {
+            signatureText = proposed;
+        }
+        else {
+            // Fail closed to the first verified span; never accept a paraphrased signature.
+            signatureText = evidence[0]?.supporting_span;
+        }
+        if (!signatureText || signatureText.length < 4)
+            return null;
+    }
+    const subjectKey = typeof candidate.subject_key === "string" && /^[a-z0-9_.]{3,200}$/.test(candidate.subject_key)
+        ? candidate.subject_key
+        : null;
+    const remediates = typeof candidate.remediates_signature_key === "string" && /^[0-9a-f]{24}$/.test(candidate.remediates_signature_key)
+        ? candidate.remediates_signature_key
+        : undefined;
+    return {
+        observation: kind,
+        summary,
+        subject_key: subjectKey,
+        ...(signatureText ? { signature_text: signatureText } : {}),
+        ...(remediates ? { remediates_signature_key: remediates } : {}),
+        user_flagged_repeat: userFlaggedRepeat,
+        confidence,
+        evidence,
+        source_exchange_ids: [...sourceExchangeIds],
+        source_evidence_ids: [...sourceEvidenceIds],
     };
 }
 export function validateExtractedFactCandidate(candidate, exchanges, referentCandidates = []) {
@@ -1386,18 +1607,27 @@ function recordCandidateObservation(observability, result) {
 }
 /** Extract facts, optionally renewing a claim and processing rows after a watermark. */
 export async function extractFactsFromExchanges(db, sessionId, stats, renewLease, options) {
+    // Evaluation/shadow readers may open a released read-only fixture before
+    // Continuity migration. They do not commit progress, so synthesize legacy
+    // generation identity instead of requiring a write migration.
+    const exchangeColumns = new Set(db.prepare("PRAGMA table_info(exchanges)").all().map(({ name }) => name));
+    const identityColumns = exchangeColumns.has("content_generation") && exchangeColumns.has("content_hash")
+        ? "content_generation, content_hash"
+        : "1 AS content_generation, '' AS content_hash";
+    const targetIds = options?.targetExchangeIds ?? [];
     const suffixExchanges = db
         .prepare(`
-    SELECT id, user_message, assistant_message, provenance,
-           assistant_learnable, has_memex_recall
+    SELECT rowid, id, user_message, assistant_message, provenance,
+           assistant_learnable, has_memex_recall,
+           ${identityColumns}
     FROM exchanges
     WHERE session_id = ?
       ${options?.onlyAfterRowid != null ? "AND rowid > ?" : ""}
-    ORDER BY timestamp ASC, rowid ASC
+      ${options?.throughRowid != null ? "AND rowid <= ?" : ""}
+      ${targetIds.length > 0 ? `AND id IN (${targetIds.map(() => "?").join(",")})` : ""}
+    ORDER BY rowid ASC
   `)
-        .all(...(options?.onlyAfterRowid != null
-        ? [sessionId, options.onlyAfterRowid]
-        : [sessionId]));
+        .all(sessionId, ...(options?.onlyAfterRowid != null ? [options.onlyAfterRowid] : []), ...(options?.throughRowid != null ? [options.throughRowid] : []), ...targetIds);
     // P2: keep the immediate two-row prefix for local chronology, while a separate
     // read-only pool of at most thirty historical rows can define a long-range
     // referent. Historical rows never regain human/tool authority.
@@ -1406,8 +1636,9 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     if (options?.onlyAfterRowid != null && suffixExchanges.length > 0) {
         const historical = db
             .prepare(`
-        SELECT id, user_message, assistant_message, provenance,
-               assistant_learnable, has_memex_recall
+        SELECT rowid, id, user_message, assistant_message, provenance,
+               assistant_learnable, has_memex_recall,
+               ${identityColumns}
         FROM exchanges
         WHERE session_id = ? AND rowid <= ?
         ORDER BY rowid DESC
@@ -1429,18 +1660,32 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
         exchange.tool_evidence = selectToolEvidence.all(exchange.id);
     }
     const windows = buildExtractionWindows(exchanges);
-    if (windows.length === 0)
+    if (windows.length === 0) {
+        if (options?.progress && suffixExchanges.length > 0) {
+            options.progress.processedThroughRowid = Math.max(...suffixExchanges.map((exchange) => exchange.rowid));
+        }
         return [];
-    const selectedWindows = selectSpreadWindows(windows, maxExtractionWindowsPerSession());
+    }
+    // Phase 1: a run budget selects a contiguous prefix. Spread sampling is
+    // retained as a package helper only; it can no longer define completion.
+    const maxWindows = maxExtractionWindowsPerSession();
+    const selectedWindows = windows.slice(0, maxWindows);
+    if (options?.progress) {
+        options.progress.budgetExhausted = windows.length > selectedWindows.length;
+    }
     const modelCall = options?.modelCall ?? callMemoryModel;
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
     const transientFailures = [];
-    for (let b = 0; b < selectedWindows.length; b++) {
-        if (allFacts.length >= MAX_FACTS_PER_SESSION)
+    const windowQueue = [...selectedWindows];
+    for (let b = 0; b < windowQueue.length; b++) {
+        if (allFacts.length >= MAX_FACTS_PER_SESSION) {
+            if (options?.progress)
+                options.progress.budgetExhausted = true;
             break;
-        const window = selectedWindows[b];
+        }
+        const window = windowQueue[b];
         const referentCandidates = selectLongRangeReferentCandidates(window, referentPool);
         if (options?.observability && referentCandidates.length > 0) {
             options.observability.windows_with_referent_candidates += 1;
@@ -1455,6 +1700,16 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             if (Array.isArray(extracted)) {
                 const structurallyAccepted = [];
                 for (const candidate of extracted) {
+                    if (isRecord(candidate) && typeof candidate.observation === "string") {
+                        const observation = validateExtractedObservationCandidate(candidate, window);
+                        if (observation && options?.collectObservations) {
+                            const key = `${observation.observation}\u0000${observation.signature_text ?? observation.summary}\u0000${[...observation.source_exchange_ids].sort().join(",")}`;
+                            if (!options.collectObservations.some((existing) => `${existing.observation}\u0000${existing.signature_text ?? existing.summary}\u0000${[...existing.source_exchange_ids].sort().join(",")}` === key)) {
+                                options.collectObservations.push(observation);
+                            }
+                        }
+                        continue;
+                    }
                     const validation = validateExtractedFactCandidateDetailed(candidate, window, referentCandidates);
                     if (!validation.accepted) {
                         recordCandidateObservation(options?.observability, validation);
@@ -1499,8 +1754,6 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                             ];
                             continue;
                         }
-                        if (allFacts.length >= MAX_FACTS_PER_SESSION)
-                            break;
                         factIndexByKey.set(key, allFacts.length);
                         allFacts.push({
                             fact: fact.fact,
@@ -1512,9 +1765,15 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
                             evidence: fact.evidence,
                             context_dependencies: fact.context_dependencies,
                             source_exchange_ids: sourceExchangeIds,
+                            ...(fact.subject_key ? { subject_key: fact.subject_key } : {}),
+                            ...(fact.change_context ? { change_context: fact.change_context } : {}),
+                            ...(fact.classifier_notes ? { classifier_notes: fact.classifier_notes } : {}),
                         });
                     }
                 }
+            }
+            if (options?.progress) {
+                options.progress.processedThroughRowid = Math.max(options.progress.processedThroughRowid, ...window.map((exchange) => exchange.rowid));
             }
         }
         catch (error) {
@@ -1532,13 +1791,32 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
             const cls = classifyLlmError(error);
             if (cls === "deterministic") {
-                // 요청 자체가 잘못됨(400/413/max_tokens): 같은 입력은 같은 결과이므로 이
-                // 배치만 포기하고 진행한다 — 여기서 이연하면 세션이 큐를 영구히 막는다.
-                // 단 폐기를 **기록**한다(dead-letter): 조용히 버리면 그 교환들의 fact 가
-                // 사라진 사실 자체가 보이지 않는다 (Codex 리뷰 2026-07-17).
+                if (window.length > 1) {
+                    const middle = Math.ceil(window.length / 2);
+                    windowQueue.splice(b, 1, window.slice(0, middle), window.slice(middle));
+                    b -= 1;
+                    continue;
+                }
                 if (stats)
                     stats.droppedBatches += 1;
-                console.error(`Window ${b} extraction failed (deterministic — window dropped, recorded):`, error);
+                const targetIdSet = new Set(options?.targetExchangeIds ?? []);
+                const exchangeIds = window
+                    .filter((exchange) => targetIdSet.size === 0 || targetIdSet.has(exchange.id))
+                    .map((exchange) => exchange.id);
+                // A historical context-only row may be split into a singleton before
+                // the current target row. It is not an extraction target and cannot be
+                // recorded as this target's failed range; continue with the target half.
+                if (exchangeIds.length === 0)
+                    continue;
+                options?.progress?.irreducibleFailures.push({
+                    exchangeIds,
+                    payloadFingerprint: createHash("sha256")
+                        .update(prompt, "utf8")
+                        .digest("hex"),
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                console.error(`Window ${b} extraction failed (irreducible deterministic):`, error);
+                break;
             }
             else {
                 transientFailures.push(error);
@@ -1553,8 +1831,37 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     }
     return allFacts;
 }
-/** Save facts and the completion marker in one transaction. */
-export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, renewLease, commitMarker) {
+function groundedFieldsFor(fact) {
+    const context = fact.change_context;
+    if (!context)
+        return undefined;
+    const map = (ref) => ref ? { text: ref.text, exchangeId: ref.exchange_id, supportingSpan: ref.supporting_span, toolCallId: ref.tool_call_id } : undefined;
+    return { problem: map(context.problem), cause: map(context.cause), rationale: map(context.rationale) };
+}
+function toolEvidenceIds(fact) {
+    return (fact.evidence ?? [])
+        .filter((item) => item.source === "tool" && !!item.tool_call_id)
+        .map((item) => item.tool_call_id);
+}
+function maxExchangeTimestamp(db, exchangeIds) {
+    if (exchangeIds.length === 0)
+        return null;
+    const row = db.prepare(`
+    SELECT MAX(timestamp) AS ts FROM exchanges WHERE id IN (${exchangeIds.map(() => "?").join(",")})
+  `).get(...exchangeIds);
+    return row?.ts ?? null;
+}
+/**
+ * Save facts, their Chronicle events, event-only observations and the
+ * completion marker in one transaction. A semantic subject slot that is
+ * already occupied is resolved deterministically (merge / CHANGED /
+ * historical / CONTRADICTED) by source-effective time and authority — never by
+ * worker order — so the projection and its history commit together.
+ */
+export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
+    return (await saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras)).savedIds;
+}
+export async function saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
     await initEmbeddings();
     // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
     const prepared = [];
@@ -1566,23 +1873,211 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
             embeddingKr: fact.fact_kr ? await generateEmbedding(fact.fact_kr) : null,
         });
     }
-    // 2단계(동기·원자적): fact 삽입 + 완료 마커를 한 트랜잭션으로. 마커가 0행이면
-    // 선점을 잃은 것이므로 throw → 삽입까지 통째로 롤백된다(부분 저장 잔존 없음).
+    // 2단계(동기·원자적): fact 삽입 + Chronicle + 완료 마커를 한 트랜잭션으로. 마커가
+    // 0행이면 선점을 잃은 것이므로 throw → 삽입까지 통째로 롤백된다(부분 저장 잔존 없음).
     const savedIds = [];
+    const savedVectors = new Map();
+    const outcome = {
+        savedIds, asserted: 0, changed: 0, merged: 0, historical: 0, contradicted: 0, incidents: 0, validations: 0,
+    };
+    const observations = extras.observations ?? [];
     const commit = db.transaction(() => {
+        const now = new Date().toISOString();
         for (const p of prepared) {
-            const factId = insertFact(db, {
+            const factSources = p.fact.source_exchange_ids ?? sourceExchangeIds;
+            const insertParams = {
                 fact: p.fact.fact,
                 category: p.fact.category,
                 scope_type: p.fact.scope_type,
                 scope_project: p.fact.scope_type === "project" ? project : null,
-                source_exchange_ids: p.fact.source_exchange_ids ?? sourceExchangeIds,
+                source_exchange_ids: factSources,
                 embedding: p.embedding,
                 fact_kr: p.fact.fact_kr ?? null,
                 embedding_kr: p.embeddingKr,
+                subject_key: p.fact.subject_key ?? undefined,
+            };
+            const authority = evidenceAuthorityFromKinds(p.fact.evidence);
+            const effectiveAt = maxExchangeTimestamp(db, factSources);
+            const grounded = groundedFieldsFor(p.fact);
+            const classifierNote = p.fact.classifier_notes?.length ? p.fact.classifier_notes.join("\n") : null;
+            const evidenceIds = toolEvidenceIds(p.fact);
+            let existing = null;
+            let identity = null;
+            if (p.fact.scope_type === "project" && isSemanticSubjectKey(p.fact.subject_key)) {
+                identity = resolveFactInsertIdentity(db, insertParams);
+                existing = findCurrentSlotFact(db, {
+                    projectId: identity.projectId,
+                    subjectKey: p.fact.subject_key,
+                    promotionState: identity.promotionState,
+                    workspaceId: identity.workspaceId,
+                    workstreamId: identity.workstreamId,
+                });
+            }
+            if (!existing) {
+                const factId = insertFact(db, insertParams);
+                const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(factId);
+                recordChronicleEvent(db, {
+                    kind: "ASSERTED",
+                    projectId: row.project_id,
+                    subjectKey: row.subject_key,
+                    factId,
+                    fromSemanticGeneration: null,
+                    toSemanticGeneration: 1,
+                    previousValue: null,
+                    newValue: p.fact.fact,
+                    grounded,
+                    classifierNote,
+                    sourceExchangeIds: factSources,
+                    sourceEvidenceIds: evidenceIds,
+                    actor: "extractor",
+                    evidenceAuthority: authority,
+                    effectiveAt,
+                    recordedAt: now,
+                    projectionApplied: true,
+                });
+                insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
+                savedIds.push(factId);
+                savedVectors.set(factId, p.embedding);
+                outcome.asserted++;
+                continue;
+            }
+            if (normalizeFactText(existing.fact) === normalizeFactText(p.fact.fact)) {
+                // Rephrasing of the current value: provenance grows, no event (RFC §15.1).
+                let liveSources = factSources;
+                try {
+                    const parsed = JSON.parse(existing.source_exchange_ids ?? "[]");
+                    if (Array.isArray(parsed))
+                        liveSources = [...new Set([...parsed.filter((id) => typeof id === "string"), ...factSources])];
+                }
+                catch { /* keep new evidence side */ }
+                updateFact(db, existing.id, { consolidated_count_increment: true, source_exchange_ids: liveSources });
+                outcome.merged++;
+                continue;
+            }
+            const judgement = judgeCompetingEvidence({
+                existingEffectiveAt: currentEffectiveAt(db, existing.id),
+                existingAuthority: currentEvidenceAuthority(db, existing.id),
+                incomingEffectiveAt: effectiveAt ?? now,
+                incomingAuthority: authority,
             });
-            insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
-            savedIds.push(factId);
+            if (judgement.verdict === "apply") {
+                applyFactMeaningMutation(db, {
+                    factId: existing.id,
+                    newText: p.fact.fact,
+                    source: { exchangeIds: factSources },
+                    lineageMode: "preserve-identity",
+                    expectedSemanticGeneration: existing.semantic_generation,
+                    expectedLifecycleGeneration: existing.lifecycle_generation,
+                    chronicle: {
+                        actor: "extractor",
+                        grounded,
+                        classifierNote,
+                        evidenceAuthority: authority,
+                        effectiveAt,
+                        sourceEvidenceIds: evidenceIds,
+                        outcome: { temporal: judgement.reason },
+                    },
+                }, p.embedding);
+                insertFactContextDependencies(db, existing.id, p.fact.context_dependencies ?? []);
+                savedIds.push(existing.id);
+                savedVectors.set(existing.id, p.embedding);
+                outcome.changed++;
+                continue;
+            }
+            const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(existing.id);
+            recordChronicleEvent(db, {
+                kind: judgement.verdict === "historical" ? "ASSERTED" : "CONTRADICTED",
+                projectId: row.project_id,
+                subjectKey: row.subject_key,
+                factId: existing.id,
+                fromSemanticGeneration: existing.semantic_generation,
+                toSemanticGeneration: null,
+                previousValue: judgement.verdict === "historical" ? null : existing.fact,
+                newValue: p.fact.fact,
+                grounded,
+                classifierNote,
+                outcome: {
+                    resolution: judgement.verdict === "historical" ? "historical" : "unresolved",
+                    temporal: judgement.reason,
+                },
+                sourceExchangeIds: factSources,
+                sourceEvidenceIds: evidenceIds,
+                actor: "extractor",
+                evidenceAuthority: authority,
+                effectiveAt,
+                recordedAt: now,
+                projectionApplied: false,
+            });
+            if (judgement.verdict === "historical")
+                outcome.historical++;
+            else
+                outcome.contradicted++;
+        }
+        for (const observation of observations) {
+            const identity = resolveFactInsertIdentity(db, {
+                scope_type: "project",
+                scope_project: project,
+                source_exchange_ids: observation.source_exchange_ids,
+            });
+            if (!identity.projectId)
+                continue;
+            const sessionRow = db.prepare(`
+        SELECT session_id FROM exchanges WHERE id IN (${observation.source_exchange_ids.map(() => "?").join(",")}) LIMIT 1
+      `).get(...observation.source_exchange_ids);
+            const sessionId = extras.sessionId ?? sessionRow?.session_id ?? null;
+            const authority = observation.source_evidence_ids.length > 0 ? "trusted-tool" : "human";
+            if (observation.observation === "incident") {
+                recordIncidentOccurrence(db, {
+                    projectId: identity.projectId,
+                    workspaceId: identity.workspaceId,
+                    workstreamId: identity.workstreamId,
+                    sessionId,
+                    subjectKey: observation.subject_key ?? null,
+                    signatureText: observation.signature_text ?? observation.summary,
+                    summary: observation.summary,
+                    sourceExchangeIds: observation.source_exchange_ids,
+                    sourceEvidenceIds: observation.source_evidence_ids,
+                    evidenceAuthority: authority,
+                    userFlaggedRepeat: observation.user_flagged_repeat === true,
+                    recordedAt: now,
+                    actor: "extractor",
+                });
+                outcome.incidents++;
+                continue;
+            }
+            if (observation.remediates_signature_key) {
+                const known = db.prepare("SELECT 1 FROM incident_signatures WHERE project_id = ? AND signature_key = ?")
+                    .get(identity.projectId, observation.remediates_signature_key);
+                if (known) {
+                    recordIncidentRemediation(db, {
+                        projectId: identity.projectId,
+                        signatureKey: observation.remediates_signature_key,
+                        subjectKey: observation.subject_key ?? null,
+                        summary: observation.summary,
+                        sourceExchangeIds: observation.source_exchange_ids,
+                        sourceEvidenceIds: observation.source_evidence_ids,
+                        evidenceAuthority: authority,
+                        recordedAt: now,
+                        actor: "extractor",
+                    });
+                    outcome.validations++;
+                    continue;
+                }
+            }
+            recordChronicleEvent(db, {
+                kind: "VALIDATED",
+                projectId: identity.projectId,
+                subjectKey: observation.subject_key ?? null,
+                newValue: observation.summary,
+                outcome: { validation: "test_execution" },
+                sourceExchangeIds: observation.source_exchange_ids,
+                sourceEvidenceIds: observation.source_evidence_ids,
+                actor: "extractor",
+                evidenceAuthority: authority,
+                recordedAt: now,
+                projectionApplied: false,
+            });
+            outcome.validations++;
         }
         if (commitMarker && commitMarker(facts.length, savedIds.length) === 0) {
             throw new ClaimLostError("완료 마커가 0행 — 저장 중 선점을 잃었습니다. fact 삽입을 롤백합니다(중복 방지).");
@@ -1596,15 +2091,18 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
         throw e;
     }
     // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
-    for (let i = 0; i < savedIds.length; i++) {
+    for (const factId of savedIds) {
+        const vector = savedVectors.get(factId);
+        if (!vector)
+            continue;
         try {
-            await classifyAndLinkFact(db, savedIds[i], prepared[i].embedding);
+            await classifyAndLinkFact(db, factId, vector);
         }
         catch (err) {
-            console.error(`Ontology pipeline failed for fact ${savedIds[i]}:`, err);
+            console.error(`Ontology pipeline failed for fact ${factId}:`, err);
         }
     }
-    return savedIds;
+    return outcome;
 }
 export function classifyExtractionFailure(err) {
     if (err instanceof ClaimLostError)
@@ -1665,238 +2163,214 @@ export function failureConsumesBudget(kind) {
     return FAILURE_REPORT[kind].consumesBudget;
 }
 /** Claim a session, process unhandled rows, and atomically record completion. */
-export async function runFactExtraction(db, sessionId, project, opts) {
-    // Skip self-referential repos (Memex's own monitoring sessions) — mark
-    // as processed with zero facts so they are never re-attempted, no LLM calls.
+/**
+ * Continuity v1 extraction owner. A claim-time immutable target and its
+ * ordered item snapshot are the only completion authority; live session MAX
+ * is never consulted after model work starts.
+ */
+export async function runFactExtraction(db, sessionId, project, _opts) {
     if (isExcludedProject(project)) {
-        // 🚨 마커가 **실제로 써졌는지**를 반환값이 구분해야 한다. 삼키고 'excluded_project'
-        // 를 돌려주면 호출자가 "영구 마커가 써진 정상 흐름"으로 단정해 버킷·경보 없이
-        // 넘기고, INSERT 가 일시 실패한 세션은 마커 없이 매 run 슬롯만 점유한다
-        // (무경보 무진전 — 이 스레드가 계속 닫아온 클래스, Codex R20 MEDIUM).
-        let markerWritten = false;
         try {
-            // 🚨 다른 마커 쓰기는 전부 소유권·상태 가드가 있는데(claim WHERE owned,
-            // failureMarkerUpsertSql, writeCompletionMarker 의 ownGuard) **이 경로만 무가드**
-            // 였다. 살아있는 claim(-3) 위에 0/0 을 덮으면 소유자는 리스갱신 실패로 중단되고,
-            // 그 롤백은 extracted=-3 을 요구하므로 무효가 되어 행이 0/0 확정마커로 남는다 →
-            // 세션이 pending 에서 영구 제외되고 워커는 'handoff' 로 거짓 계상한다
-            // (Codex R21 HIGH, 재현됨). 처리 **중**인 세션만 건드리지 않는다 — 리스가
-            // 만료된 claim 은 죽은 소유자의 것이므로 회수 대상이다. `<> CLAIMED` 로 두면
-            // 만료 claim 까지 존중해 그 세션이 마커를 영원히 못 받고 매 run 재선정된다
-            // (R22 HIGH, 5/5 run 진전 0). 코드베이스의 다른 모든 경로와 같은 술어를 쓴다.
-            const res = db
-                .prepare(`
-        INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
-        VALUES (?, ?, 0, 0, (SELECT COALESCE(MAX(rowid), 0) FROM exchanges x WHERE x.session_id = ?))
-        ON CONFLICT(session_id) DO UPDATE SET processed_at = excluded.processed_at,
-          extracted = 0, saved = 0,
-          -- settled 마커의 워터마크가 뒤처지면 pending 쿼리의 watermark 분기가
-          -- 다시 집는다 — 제외 마커는 세션 전체를 커버해야 한다.
-          last_exchange_rowid = (SELECT COALESCE(MAX(rowid), 0) FROM exchanges x
-                                 WHERE x.session_id = extraction_log.session_id)
-        WHERE NOT (${freshClaimPredicate()})
-      `)
-                .run(sessionId, new Date().toISOString(), sessionId);
-            markerWritten = res.changes > 0;
-            if (!markerWritten) {
-                console.error(`extraction: session ${sessionId} 제외 마커를 쓰지 않았습니다 — 다른 러너가 선점 중`);
-            }
+            const through = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?").get(sessionId).m;
+            const result = db.prepare(`
+      INSERT INTO extraction_log
+        (session_id, processed_at, extracted, saved, dropped_batches,
+         claim_owner, last_exchange_rowid)
+      VALUES (?, ?, 0, 0, 0, NULL, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        processed_at = excluded.processed_at,
+        extracted = 0,
+        saved = 0,
+        dropped_batches = 0,
+        claim_owner = NULL,
+        last_exchange_rowid = MAX(extraction_log.last_exchange_rowid,
+                                  excluded.last_exchange_rowid)
+      WHERE NOT (${freshClaimPredicate()})
+      `).run(sessionId, new Date().toISOString(), through);
+            return {
+                extracted: 0,
+                saved: 0,
+                skipped: result.changes === 1 ? "excluded_project" : "excluded_project_unmarked",
+            };
         }
-        catch (e) {
-            console.error(`extraction: session ${sessionId} 제외 마커 기록 실패 — 다음 run 재선정됩니다: ` +
-                `${e instanceof Error ? e.message : String(e)}`);
-        }
-        return {
-            extracted: 0,
-            saved: 0,
-            skipped: markerWritten ? "excluded_project" : "excluded_project_unmarked",
-        };
-    }
-    // 🚨 동일 재실행 게이트(비용 최적화): 성공 상태 마커 + last_exchange_rowid 이후
-    // 새 exchange 가 없으면 claim 도 걸지 않고 즉시 종료한다. 안전성(중복 차단)은
-    // claim 성공 직후의 post-claim watermark read 가 소유한다 — 이 값은 다른 러너가
-    // 방금 완료한 최신 워터마크를 반영할 수 있다(UPDATE 는 이 컬럼을 건드리지 않음).
-    {
-        const marker = db
-            .prepare("SELECT extracted, last_exchange_rowid FROM extraction_log WHERE session_id = ?")
-            .get(sessionId);
-        const settled = !!marker &&
-            typeof marker.extracted === "number" &&
-            (marker.extracted >= 0 ||
-                marker.extracted === -1 ||
-                marker.extracted === -2);
-        if (settled && marker) {
-            const maxRow = db
-                .prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?")
-                .get(sessionId).m;
-            if (maxRow <= (marker.last_exchange_rowid ?? 0)) {
-                // 멱등 no-op: LLM 호출 없이 종료 — 중복 facts 도 생기지 않는다.
-                return { extracted: 0, saved: 0 };
-            }
+        catch (error) {
+            console.error(`extraction: session ${sessionId} exclusion marker failed: ${error instanceof Error ? error.message : String(error)}`);
+            return {
+                extracted: 0,
+                saved: 0,
+                skipped: "excluded_project_unmarked",
+            };
         }
     }
-    let onlyAfterRowid;
-    // 서로를 직렬화할 수단이 없고 마커는 파이프라인 끝에 써지므로, 선점이 없으면
-    // 둘이 같은 세션을 각자 추출해 fact 가 두 벌 저장된다(Codex R6 HIGH).
-    // 마커 시점에 막는 것은 늦다 — 그때는 이미 비용도 중복도 발생한 뒤다.
-    // 선점 이전 상태를 기억해 둔다 — 실패 시 그대로 되돌려야 재시도 카운터(saved)가
-    // 보존된다. 무조건 DELETE 로 풀면 매 run 카운터가 0 으로 리셋돼 예산이 영원히
-    // 소진되지 않는다(무한 재시도 = R3 기아의 다른 얼굴).
-    const owner = randomUUID();
-    let preClaim;
-    let holdsClaim = false;
-    try {
-        preClaim = db
-            .prepare("SELECT extracted, saved FROM extraction_log WHERE session_id = ?")
-            .get(sessionId);
-        const claimed = db
-            .prepare(claimSessionSql(opts?.claimVariant ?? "hook"))
-            .run(sessionId, new Date().toISOString(), owner).changes;
-        if (claimed === 0) {
-            console.error(`extraction: session ${sessionId} — 다른 라이터가 선점/확정함, 이번 실행은 건너뜁니다`);
-            return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
-        }
-        holdsClaim = true;
-        // 🚨 post-claim watermark read — race 소유 지점. 내 UPDATE 는 이 컬럼을 건드리지
-        // 않으므로, gate 이후 다른 러너가 방금 기록한 최신 last_exchange_rowid 를 그대로
-        // 읽는다. 이후 신규 rows 만 LLM 배치 후보가 된다.
-        const claimedRow = db
-            .prepare("SELECT last_exchange_rowid FROM extraction_log WHERE session_id = ?")
-            .get(sessionId);
-        onlyAfterRowid =
-            typeof claimedRow?.last_exchange_rowid === "number" &&
-                claimedRow.last_exchange_rowid > 0
-                ? claimedRow.last_exchange_rowid
-                : undefined;
+    const target = ensureExtractionTarget(db, {
+        sessionId,
+        project,
+        policyVersion: FACT_EXTRACTION_POLICY_VERSION,
+    });
+    if (!target)
+        return { extracted: 0, saved: 0 };
+    if (target.state === "dead") {
+        return { extracted: 0, saved: 0, skipped: "failed_visible" };
     }
-    catch (e) {
-        // 🚨 fresh-schema 계약: extraction_log 는 initDatabase 가 항상 보장한다.
-        // 스키마 오류를 포함한 모든 claim 실패는 예산 소모 없이 보류(claim_error)만
-        // 한다 — legacy ALTER/진행 분기는 없다.
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(`extraction: session ${sessionId} — claim 실패(${msg}), 이번 실행은 보류합니다`);
-        return { extracted: 0, saved: 0, skipped: "claim_error" };
+    const claimed = claimExtractionTarget(db, target);
+    if (!claimed) {
+        return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
     }
-    /**
-     * 리스 갱신 겸 소유권 확인. 잃었으면 즉시 throw 해서 중단한다 —
-     * 계속 진행하면 새 소유자와 중복 작업이 된다.
-     */
+    // Rows are a scheduling budget. Completion is based on the exact subset
+    // reported by progress; the suffix remains pending in target_items.
+    const page = readExtractionTargetItems(db, target.targetId, claimed.target.cursorOrdinal, maxExtractionWindowsPerSession() * MAX_EXCHANGES_PER_WINDOW);
+    if (page.length === 0) {
+        recordExtractionFailure(db, {
+            targetId: target.targetId,
+            items: readExtractionTargetItems(db, target.targetId, 0, 1),
+            payloadFingerprint: createHash("sha256")
+                .update(`empty-page:${target.targetId}`)
+                .digest("hex"),
+            errorKind: "internal",
+            errorMessage: "target has no pending page despite incomplete state",
+            retry: false,
+            owner: claimed.owner,
+            leaseGeneration: claimed.leaseGeneration,
+        });
+        return { extracted: 0, saved: 0, skipped: "failed_visible" };
+    }
     const renewLease = () => {
-        if (!holdsClaim)
-            return;
-        const renewed = db
-            .prepare(renewClaimSql())
-            .run(new Date().toISOString(), sessionId, owner).changes;
-        if (renewed === 0) {
-            holdsClaim = false; // 남의 행이 되었으므로 롤백도 하지 않는다
-            throw new ClaimLostError(`claim lost for session ${sessionId} (리스 회수됨) — 중복 방지를 위해 중단`);
+        if (!renewMemoryJobLease(db, {
+            jobId: target.jobId,
+            owner: claimed.owner,
+            leaseGeneration: claimed.leaseGeneration,
+        })) {
+            throw new ClaimLostError(`claim lost for extraction target ${target.targetId}`);
         }
     };
-    /** 내 claim 만 되돌린다 — 소유권 토큰으로 다른 러너의 claim 을 건드리지 않는다. */
-    const releaseClaim = () => {
-        if (!holdsClaim)
-            return;
-        try {
-            if (preClaim) {
-                db.prepare("UPDATE extraction_log SET extracted = ?, saved = ?, claim_owner = NULL " +
-                    `WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(preClaim.extracted, preClaim.saved, sessionId, owner);
-            }
-            else {
-                db.prepare(`DELETE FROM extraction_log WHERE session_id = ? AND extracted = ${EXTRACTION_STATE.CLAIMED} AND claim_owner = ?`).run(sessionId, owner);
-            }
-        }
-        catch {
-            /* best-effort release; the original extraction error is preserved */
-        }
+    const progress = {
+        processedThroughRowid: target.fromRowid,
+        budgetExhausted: false,
+        irreducibleFailures: [],
     };
-    /** 내부 실패 마커(-4 예산 / 소진 시 -2). 내 claim 위에서만 쓴다. */
-    const writeInternalFailureMarker = (kind = "internal") => {
-        if (!holdsClaim)
-            return;
-        try {
-            const attempts = (preClaim?.extracted === EXTRACTION_STATE.RETRIABLE_INTERNAL
-                ? preClaim.saved
-                : 0) + 1;
-            const exhausted = attempts >= MAX_INTERNAL_RETRIES;
-            db.prepare(failureMarkerUpsertSql()).run(sessionId, new Date().toISOString(), exhausted
-                ? EXTRACTION_STATE.PERMANENT
-                : EXTRACTION_STATE.RETRIABLE_INTERNAL, exhausted ? 0 : attempts, owner);
-            console.error(`extraction: session ${sessionId} 실패 [${kind}] (attempt ${attempts}/${MAX_INTERNAL_RETRIES}` +
-                `${exhausted ? " — 예산 소진, 영구 마커로 승격" : " — 다음 run 재시도"}) — ${FAILURE_REPORT[kind].note}`);
-        }
-        catch {
-            /* best-effort */
-        }
-    };
-    const stats = { droppedBatches: 0 };
+    const contextWatermark = claimed.target.cursorOrdinal > 0
+        ? db.prepare(`
+        SELECT exchange_rowid FROM extraction_target_items
+        WHERE target_id = ? AND ordinal = ?
+      `).get(target.targetId, claimed.target.cursorOrdinal)?.exchange_rowid ?? target.fromRowid
+        : target.fromRowid;
     let facts;
+    const observations = [];
+    try {
+        facts = await extractFactsFromExchanges(db, sessionId, undefined, renewLease, {
+            collectObservations: observations,
+            onlyAfterRowid: page.every((item) => item.exchange_rowid > contextWatermark)
+                ? contextWatermark
+                : undefined,
+            targetExchangeIds: page.map((item) => item.exchange_id),
+            throughRowid: page[page.length - 1].exchange_rowid,
+            modelCall: callMemoryModel,
+            progress,
+        });
+    }
+    catch (error) {
+        const kind = classifyLlmError(error);
+        if (!(error instanceof ClaimLostError)) {
+            recordExtractionFailure(db, {
+                targetId: target.targetId,
+                items: page,
+                payloadFingerprint: createHash("sha256")
+                    .update(page.map((item) => `${item.exchange_id}:${item.content_generation}`).join("|"))
+                    .digest("hex"),
+                errorKind: kind,
+                errorMessage: error instanceof Error ? error.message : String(error),
+                retry: kind !== "deterministic",
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+            });
+        }
+        throw error;
+    }
+    if (progress.irreducibleFailures.length > 0) {
+        const failed = progress.irreducibleFailures[0];
+        const failedIds = new Set(failed.exchangeIds);
+        const exactItems = page.filter((item) => failedIds.has(item.exchange_id));
+        recordExtractionFailure(db, {
+            targetId: target.targetId,
+            items: exactItems,
+            payloadFingerprint: failed.payloadFingerprint,
+            errorKind: "deterministic",
+            errorMessage: failed.error,
+            retry: false,
+            owner: claimed.owner,
+            leaseGeneration: claimed.leaseGeneration,
+        });
+        return { extracted: 0, saved: 0, skipped: "failed_visible" };
+    }
+    let committedItems = page.filter((item) => item.exchange_rowid <= progress.processedThroughRowid);
+    // A page containing only deterministic non-candidates makes no model call,
+    // but policy did inspect every row. It is a successful zero-fact page.
+    if (committedItems.length === 0 && !progress.budgetExhausted) {
+        committedItems = page;
+    }
+    if (committedItems.length === 0) {
+        recordExtractionFailure(db, {
+            targetId: target.targetId,
+            items: page,
+            payloadFingerprint: createHash("sha256")
+                .update(`no-progress:${target.targetId}:${claimed.target.cursorOrdinal}`)
+                .digest("hex"),
+            errorKind: "budget",
+            errorMessage: "extraction budget produced no contiguous progress",
+            retry: true,
+            owner: claimed.owner,
+            leaseGeneration: claimed.leaseGeneration,
+        });
+        return { extracted: 0, saved: 0 };
+    }
+    const commitMarker = (extracted, saved) => commitExtractionPage(db, {
+        target: claimed.target,
+        items: committedItems,
+        owner: claimed.owner,
+        leaseGeneration: claimed.leaseGeneration,
+        extracted,
+        saved,
+    })
+        ? 1
+        : 0;
     let saved = 0;
     try {
-        facts = await extractFactsFromExchanges(db, sessionId, stats, renewLease, {
-            onlyAfterRowid,
-        });
-        // 🚨 저장 **직전** 소유권을 재확인한다. 마지막 갱신 이후에 claim 을 빼앗겼다면
-        // (배치가 1개뿐이면 갱신도 1회뿐이라 창이 넓다) 여기서 멈춰야 한다 — 그대로
-        // 저장하면 새 소유자와 함께 fact 를 두 벌 쓰게 된다.
         renewLease();
-        if (facts.length > 0) {
-            saved = (await saveExtractedFacts(db, facts, project, [], renewLease, writeCompletionMarker)).length;
-        }
-    }
-    catch (e) {
-        // 실패를 분류한다 — 이 판정을 워커가 아니라 **선점 소유자**가 내려야
-        // 소유권 토큰으로 안전하게 마커를 쓸 수 있다(호출자 간 로직 중복도 사라진다).
-        //  · 공급자 실패(LlmCallError, transient/unknown) → claim 해제 후 rethrow.
-        //    예산을 쓰지 않고 다음 run 에 즉시 재시도된다.
-        //  · 내부 실패(임베딩/DB/파서) → 재시도 예산 마커(-4, 소진 시 -2) 후 rethrow.
-        // 분류·라우팅을 소비자와 **같은 함수**로 판정한다(문구와 동작이 어긋나지 않게).
-        const kind = classifyExtractionFailure(e);
-        if (kind === "handoff") {
-            // 남의 행이므로 해제할 것도 기록할 것도 없다(SQL 가드가 이미 0행이지만 계약을 코드로).
-            console.error(`extraction: session ${sessionId} — 다른 러너가 인수함(claim 이양), 이번 실행 종료`);
-        }
-        else if (failureConsumesBudget(kind)) {
-            writeInternalFailureMarker(kind); // deterministic 거절 · 내부 실패 — 예산 소모
+        if (facts.length > 0 || observations.length > 0) {
+            saved = (await saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId })).length;
         }
         else {
-            releaseClaim(); // 공급자 일시 실패 — 예산 미소모, 즉시 재시도
+            const commitZero = db.transaction(() => {
+                if (commitMarker(0, 0) === 0) {
+                    throw new ClaimLostError(`stale generation or lease while committing target ${target.targetId}`);
+                }
+            });
+            commitZero.immediate();
         }
-        throw e;
     }
-    // 완료 마커 — saveExtractedFacts 의 트랜잭션 안에서 호출된다(원자적 커밋).
-    // fact 가 0건이면 트랜잭션이 없으므로 여기서 직접 호출한다.
-    function writeCompletionMarker(extracted, savedCount) {
-        const now = new Date().toISOString();
-        // 워터마크: 처리 시점의 세션 MAX(rowid). 완료 마커와 같은 문장에서 기록돼
-        // 마커·워터마크가 항상 한 세트로 커밋된다.
-        const watermark = db
-            .prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM exchanges WHERE session_id = ?")
-            .get(sessionId).m;
-        const res = db
-            .prepare(`
-      UPDATE extraction_log
-      SET processed_at = ?, extracted = ?, saved = ?, dropped_batches = ?,
-          last_exchange_rowid = ?, claim_owner = NULL
-      WHERE session_id = ? AND claim_owner = ?
-    `)
-            .run(now, extracted, savedCount, stats.droppedBatches, watermark, sessionId, owner);
-        if (stats.droppedBatches > 0 && res.changes > 0) {
-            console.error(`extraction: session ${sessionId} completed with ${stats.droppedBatches} dropped batch(es) ` +
-                `(deterministic LLM failures — those exchanges produced no facts; ` +
-                `query: SELECT session_id, dropped_batches FROM extraction_log WHERE dropped_batches > 0)`);
+    catch (error) {
+        if (error instanceof ClaimLostError) {
+            supersedeStaleExtractionTarget(db, {
+                targetId: target.targetId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+            });
         }
-        return res.changes; // 0 = 소유권 상실 → 호출자가 롤백/표면화
-    }
-    if (facts.length === 0) {
-        try {
-            if (writeCompletionMarker(0, 0) === 0 && holdsClaim) {
-                console.error(`extraction: session ${sessionId} 완료 마커 미기록(소유권 상실 추정) — 다음 run 재시도`);
-            }
+        else {
+            recordExtractionFailure(db, {
+                targetId: target.targetId,
+                items: committedItems,
+                payloadFingerprint: createHash("sha256")
+                    .update(`commit:${target.targetId}:${committedItems[0].ordinal}`)
+                    .digest("hex"),
+                errorKind: "internal",
+                errorMessage: error instanceof Error ? error.message : String(error),
+                retry: true,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+            });
         }
-        catch (e) {
-            console.error(`extraction: session ${sessionId} 마커 기록 실패 — 다음 run 에서 재추출될 수 있습니다: ` +
-                `${e instanceof Error ? e.message : String(e)}`);
-        }
+        throw error;
     }
     return { extracted: facts.length, saved };
 }

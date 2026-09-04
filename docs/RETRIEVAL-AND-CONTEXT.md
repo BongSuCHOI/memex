@@ -32,7 +32,8 @@ conversation과 fact 검색은 같은 원칙을 사용합니다.
 
 project-sensitive retrieval은 다음 중 하나를 명시합니다.
 
-- canonical absolute project path
+- stable `project_id`, `workspace_id`, `workstream_id`, 또는 `session_id`
+- 지원 기간의 canonical absolute project path compatibility key
 - `scope=global`
 - `scope=all`
 
@@ -44,13 +45,13 @@ project-sensitive retrieval은 다음 중 하나를 명시합니다.
 sequenceDiagram
     participant H as Hook
     participant R as Retrieval core
-    participant L as Session dedup ledger
+    participant L as Session memory state
     participant P as Recall receipts
     participant C as Codex
 
     H->>R: prompt + session + project
     R->>R: retrieve, scope, relevance, budget
-    R->>L: remove already injected fact IDs
+    R->>L: remove resident fact revision tuples in current epoch
     R->>P: write prepared receipt
     P-->>R: event id
     R-->>H: context
@@ -60,16 +61,79 @@ sequenceDiagram
 
 warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
 
+## 4a. Pre-retrieval cheap gate (Phase 5)
+
+`UserPromptSubmit` hook은 매번 실행되지만, embedding/vector search/graph expansion/model call은
+`src/recall-gate.ts`의 cheap gate가 `retrieve`로 판정할 때만 실행됩니다. gate는 local session state와
+lexical fingerprint만 사용하고 LLM을 호출하지 않습니다.
+
+| 순서 | 판정 | 결과 |
+| --- | --- | --- |
+| 1 | state trigger: explicit memory intent(왜/언제/이전/기록/출처/why/history/source/again…), verified incident signature match, `project.memory_revision > seen`, resident revision stale(이 epoch에 주입된 fact의 semantic/lifecycle generation이 바뀌었거나 비활성화됨 — workstream truth는 project revision을 올리지 않으므로 residency 자체가 invalidation token, D-036), Capsule generation 변경, context epoch 변경(compact/clear 뒤 첫 prompt, epoch 내 첫 prompt) | retrieve (길이·ack 여부 무관) |
+| 2 | acknowledgement/continuation lexicon(KR/EN, ≤ 4 tokens), 짧은 minor correction | skip, embedding 0 |
+| 3 | high-impact intent(decide/switch/migrate/rollback/전환/롤백…), safety refresh(substantive skip 6회) | retrieve |
+| 4 | topic drift: prompt tokens vs topic fingerprint Jaccard < 0.12 (≥ 5 tokens) | retrieve |
+| 5 | low resident coverage: ≥ 8 tokens인데 resident fact vocabulary와 교집합 0 | retrieve |
+| 6 | 짧은 prompt가 topic과 겹침(Jaccard ≥ 0.3) 또는 substantive prompt가 강하게 겹침(≥ 0.35) | skip, embedding 0 |
+| 7 | 그 외 | ambiguous → embedding 1회: `cos(prompt, topic) - baseline ≥ 0.08`이면 skip(coherent), 아니면 retrieve(embedding_drift); topic embedding이 없으면 retrieve |
+
+state trigger(1)는 acknowledgement보다 먼저 평가됩니다. 그래서 새 session/epoch의 첫 prompt가 "계속해"여도
+Capsule(`[WORK NOW]`)과 pending correction은 전달됩니다. 다만 ack/continuation은 vector 없이 처리됩니다
+(embedding 0, CURRENT TRUTH 검색 없음, topic fingerprint 유지). 그 외 retrieve path는 embedding을 정확히
+1회 계산하고 ambiguous path의 embedding은 retrieval에 그대로 재사용됩니다.
+
+fingerprint tokenizer는 소문자·stopword 제거 뒤 한국어 token의 꼬리 조사/어미(을/를/도/에서/해줘/해주세요 …)를
+한 개 벗겨 "클라이언트를"과 "클라이언트"를 같은 token으로 만듭니다(retrieval embedding에는 영향 없음).
+기본값은 `DEFAULT_RECALL_GATE_CONFIG`에 있으며 threshold는 deterministic이고 소수입니다. embedding이
+불가능하면(model 없음/offline) skip은 그대로 무료이고 retrieve path는 vector가 필요 없는 section(CORRECTION,
+WORK NOW, WATCH, RECENT EVIDENCE)만 렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
+
+session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embedding`,
+`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`(Hot Evidence watermark),
+`watch_emitted_json`(WATCH/TRACE hint ledger). 새 session은 생성 시점의 `projects.memory_revision`을
+`memory_revision_seen`으로 시작합니다(resident가 없으므로 correct할 것이 없음).
+
+## 4b. Memory Bundle
+
+`src/memory-bundle.ts`가 section을 고정 우선순위로 렌더링합니다.
+
+| Section | 조건 |
+| --- | --- |
+| `[MEMEX CORRECTION]` | residency에서 도출: resident revision의 fact가 새 generation이면 `Updated (supersedes earlier context): … — earlier: "…"`, 비활성화됐으면 `No longer active`. prompt와 무관하게 모든 resident fact를 검사하며, stale project revision(sibling 변경)은 이 검사를 강제할 뿐 never-resident fact를 밀어넣지 않습니다. budget 때문에 남은 correction이 있으면 `memory_revision_seen`을 올리지 않고 다음 prompt에서 이어서 내보냅니다 |
+| `[WORK NOW]` | 현재 Capsule generation이 이 epoch에 resident가 아닐 때(새 session, compact/clear, 새 generation). SessionStart(compact/resume) rehydration이 이미 넣은 generation은 반복하지 않으며, 빈 Capsule도 resident로 표시해 retrieval loop를 막습니다 (Capsule은 context-only) |
+| `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
+| `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; 같은 signature는 새 verified episode가 없으면 substantive prompt 5회 동안 반복하지 않음 |
+| `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 `trace_fact subject_key=… — N Chronicle event(s), latest …` pointer(전체 history 주입 금지). 같은 subject는 Chronicle이 바뀌지 않는 한 epoch 동안 반복하지 않음 |
+| `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 Hot Evidence만(자기 session 것은 이미 context에 있음), `last_retrieval_at` 이후 index된 것만. epoch 변경 시 watermark가 초기화되고 rehydration이 다시 stamp합니다 |
+| `[ASSISTANT CONTEXT-ONLY — NOT AUTHORITATIVE]` | current truth/correction이 없고 explicit memory intent일 때만 source-linked 과거 답변 1건 |
+
+예산: normal prompt target 700 / hard 1,000자(line 160자), resume/compact target 1,500 / hard 2,000자.
+ranking은 section 우선순위 → caller 순서(score desc, id asc)이며 truncation은 deterministic입니다.
+relation 1-hop expansion은 why/related/dependency/contradiction/trace intent에서만 실행됩니다.
+
 ## 5. Selection 규칙
 
 1. 비정보성 prompt는 skip할 수 있습니다.
 2. relevance gate를 통과한 scoped result만 후보입니다.
-3. 이미 같은 session에 주입한 fact를 제거합니다.
+3. 현재 `context_epoch`에 이미 resident인 `(fact_id, semantic_generation, lifecycle_generation)`만 제거합니다.
 4. 필요하면 허용 scope relation을 1-hop 확장합니다.
 5. fact별 길이와 전체 char/token budget을 적용합니다.
 6. 결과가 없으면 context block을 만들지 않습니다.
 
-session dedup ledger는 운영 최적화라 fail-open이지만, recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 context를 주입하지 않습니다.
+Project `memory_revision`이 stale이면 normal semantic match보다 `[MEMEX CORRECTION]`을 먼저 냅니다.
+비활성화된 resident fact는 `No longer active`로 철회합니다. 예산 때문에 correction 일부만 들어가면
+실제 emitted revision만 resident로 기록하고 다음 natural boundary에서 나머지를 이어서 처리합니다.
+관련 correction을 모두 소진했거나 현재 workspace/workstream에 해당하는 변경이 없음을 확인한 뒤에만
+scalar revision을 seen 처리합니다.
+
+Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
+
+`SessionStart(compact)`는 semantic query를 실행하지 않습니다. 최신 Work Capsule을 우선하고, 없거나 `through_checkpoint_id`가 session latest checkpoint보다 오래됐으면 latest substantive user request·plan item·touched files·trusted test·unresolved error로 만든 deterministic tail baton을 함께 사용합니다. 여기에 이전 epoch carry candidate의 latest active revision만 더해 2,000자 이하 `additionalContext`를 만들고, 실제 포함한 revision을 새 epoch residency로 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
+
+Recent human과 learnable trusted repo/Git/test observation은 별도 Hot Evidence lane에서 TTL과 keyset
+cursor로 제한됩니다. 자동 context와 MCP 출력은 `[RECENT EVIDENCE — NOT YET DISTILLED]`로 표시하며
+Current Fact 문법으로 렌더링하지 않습니다. Assistant, compact summary, Capsule은 Assistant Continuity
+lane의 context-only 자료이고 Fact extraction authority로 재진입할 수 없습니다.
 
 ## 6. Recall provenance
 
@@ -125,6 +189,26 @@ KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.
 
 Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 실제로 context를 소비했다는 별도 receipt가 없다면 `consumed`를 주장하지 않습니다.
 
+## 8a. Metrics와 calibration
+
+`continuity_telemetry`에 측정 sample만 기록합니다: `retrieval_gate_skip_count`(reason),
+`retrieval_execute_count`(triggers, vector 여부), `embedding_calls`(embedding module이 센 실제 model
+inference 수 — probe warm-up 포함), `embedding_cache_hits`(query memo hit), `candidate_facts`, `current_facts`,
+`delta_facts`, `injected_facts`, `injected_chars`, `section_chars`(section), `bundle_size`, `estimated_tokens`,
+`correction_count`, `correction_delay_prompts`, `watch_emissions`, `project_revision_invalidations`,
+`repeated_context_turns`. `summarizeTelemetry`는 `TELEMETRY — MEASURED, NOT A FACT` 보고서를 만들며 fact나
+Chronicle event를 만들지 않습니다.
+
+`node scripts/continuity-recall-benchmark.mjs`는 deterministic embedding stub 위에서 Prompt 5A/5B workload
+(follow-up, ack, topic shift, explicit history/source, same-fact evolution/rollback/correction, 200-turn
+compaction with continuation carry, Korean follow-up/ack, same project same/different workstream, incident
+recurrence, embeddings unavailable)를 baseline(gate off)과 gated로 두 번 실행하고
+`docs/verification/continuity-v1/recall-calibration.json`을 씁니다. harness는 prompt text를 재사용하므로
+embedding 비용은 request(inference + memo hit)로 보고합니다. Phase 5B 측정(prompts 365): retrievals 365 →
+142(−61.1%), embedding requests 370 → 224, ack prompt embedding 85 → 0, injected chars 7,557 → 6,035,
+stale/wrong-workstream/duplicate injection 0, mandatory memory intent miss 0/20, max bundle 432자.
+production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027에 기록되어 있습니다.
+
 ## 9. 관측 상태
 
 대표 injection status:
@@ -132,8 +216,10 @@ Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 �
 - `injected`
 - `no-match`
 - `deduped`
-- `skipped`
+- `skipped` (`gate: skip:<reason>`, `embedding_calls`)
 - `no-session-provenance`
 - `error`
+
+`injected` 로그는 `gate: retrieve:<triggers>`, `embedding_calls`, `sections`를 함께 기록합니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

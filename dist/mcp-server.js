@@ -1057,10 +1057,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -3257,8 +3257,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path11) {
-      let input = path11;
+    function removeDotSegments(path13) {
+      let input = path13;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3663,8 +3663,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path11 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
+        const path13 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7170,12 +7170,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs10, exportName) {
+    function addFormats(ajv, list, fs11, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs10[f]);
+        ajv.addFormat(f, fs11[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7661,8 +7661,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path11, errorMaps, issueData } = params;
-  const fullPath = [...path11, ...issueData.path || []];
+  const { data, path: path13, errorMaps, issueData } = params;
+  const fullPath = [...path13, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7778,11 +7778,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path11, key) {
+  constructor(parent, value, path13, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path11;
+    this._path = path13;
     this._key = key;
   }
   get path() {
@@ -11420,10 +11420,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path11) {
-  if (!path11)
+function getElementAtPath(obj, path13) {
+  if (!path13)
     return obj;
-  return path11.reduce((acc, key) => acc?.[key], obj);
+  return path13.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11743,11 +11743,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path11, issues) {
+function prefixIssues(path13, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path11);
+    iss.path.unshift(path13);
     return iss;
   });
 }
@@ -18320,8 +18320,8 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 import net from "node:net";
-import fs7 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 
 // src/paths.ts
 import os2 from "os";
@@ -18385,9 +18385,9 @@ var LLM_WORKDIR_BASENAME = "memex-llm";
 
 // src/db.ts
 import Database from "better-sqlite3";
-import { createHash, randomUUID } from "node:crypto";
-import fs2 from "node:fs";
-import path3 from "path";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import fs3 from "node:fs";
+import path6 from "path";
 import * as sqliteVec from "sqlite-vec";
 
 // src/embeddings.ts
@@ -18408,7 +18408,32 @@ function modelVersion(model) {
 }
 var EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
 var embeddingPipeline = null;
+function embeddingStubEnabled() {
+  return process.env.MEMEX_EMBEDDING_STUB === "1" || process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function embeddingStubFails() {
+  return process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function stubEmbedding(text, dimensions = 384) {
+  const vector = new Array(dimensions).fill(0);
+  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
+  for (const token of tokens2) {
+    let hash2 = 2166136261;
+    for (let i = 0; i < token.length; i++) {
+      hash2 ^= token.charCodeAt(i);
+      hash2 = Math.imul(hash2, 16777619) >>> 0;
+    }
+    vector[hash2 % dimensions] += 1;
+    vector[(hash2 >>> 8) % dimensions] += 0.5;
+  }
+  let norm = 0;
+  for (const value of vector) norm += value * value;
+  norm = Math.sqrt(norm) || 1;
+  return vector.map((value) => value / norm);
+}
 async function initEmbeddings() {
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) return;
   if (!embeddingPipeline) {
     console.error(`Loading embedding model ${EMBEDDING_MODEL} (first run may take time)...`);
     embeddingPipeline = await pipeline(
@@ -18426,19 +18451,33 @@ function applyModePrefix(text, mode) {
 }
 var QUERY_EMBED_MEMO_MAX = 32;
 var queryEmbedMemo = /* @__PURE__ */ new Map();
+var modelCalls = 0;
+var cacheHits = 0;
+function embeddingCallStats() {
+  return { modelCalls, cacheHits };
+}
 async function generateEmbedding(text, mode = "passage") {
   if (mode === "query") {
     const hit = queryEmbedMemo.get(text);
     if (hit) {
       queryEmbedMemo.delete(text);
       queryEmbedMemo.set(text, hit);
+      cacheHits++;
       return hit.slice();
     }
+  }
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) {
+    modelCalls++;
+    const stub = stubEmbedding(text);
+    if (mode === "query") queryEmbedMemo.set(text, stub.slice());
+    return stub;
   }
   if (!embeddingPipeline) {
     await initEmbeddings();
   }
   const truncated = applyModePrefix(text.substring(0, 2e3), mode);
+  modelCalls++;
   const output = await embeddingPipeline(truncated, {
     pooling: "mean",
     normalize: true
@@ -18477,6 +18516,1420 @@ async function queryBaseline(queryEmbedding) {
     if (dot > max) max = dot;
   }
   return max;
+}
+
+// src/continuity-store.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import path5 from "node:path";
+
+// src/project-identity.ts
+import path3 from "node:path";
+function canonicalizeProjectPath(cwd) {
+  if (typeof cwd !== "string") return "";
+  let p = cwd.trim();
+  if (!p) return "";
+  if (!path3.isAbsolute(p)) p = path3.resolve("/", p);
+  const resolved = path3.normalize(p);
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
+// src/continuity-identity.ts
+import { createHash, randomUUID } from "node:crypto";
+import fs2 from "node:fs";
+import path4 from "node:path";
+function hash(...parts) {
+  const h = createHash("sha256");
+  for (const part of parts) h.update(String(part ?? "")).update("\0");
+  return h.digest("hex");
+}
+function nowIso(value) {
+  return value ?? (/* @__PURE__ */ new Date()).toISOString();
+}
+function deviceId(db) {
+  const existing = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
+  if (existing) return existing.value;
+  const value = randomUUID();
+  db.prepare("INSERT INTO sync_meta(key, value) VALUES ('device_id', ?)").run(value);
+  return value;
+}
+function audit(db, input) {
+  const at = nowIso(input.now);
+  const detail = JSON.stringify(input.detail ?? {});
+  const auditId = `identity-audit-${hash(input.action, input.projectId, input.workspaceId, input.workstreamId, input.sessionId, input.reason, detail).slice(0, 32)}`;
+  db.prepare(`
+    INSERT OR IGNORE INTO project_identity_audit
+      (audit_id, action, project_id, workspace_id, workstream_id, session_id, reason, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    auditId,
+    input.action,
+    input.projectId ?? null,
+    input.workspaceId ?? null,
+    input.workstreamId ?? null,
+    input.sessionId ?? null,
+    input.reason,
+    detail,
+    at
+  );
+}
+function readGitFile(file) {
+  try {
+    return fs2.readFileSync(file, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+function inspectWorkspaceLocation(cwd) {
+  const canonical = canonicalizeProjectPath(cwd);
+  const dotGit = path4.join(canonical, ".git");
+  let gitDir = null;
+  let locationKind = "directory";
+  try {
+    const stat = fs2.statSync(dotGit);
+    if (stat.isDirectory()) {
+      gitDir = fs2.realpathSync(dotGit);
+      locationKind = "clone";
+    } else if (stat.isFile()) {
+      const pointer = readGitFile(dotGit)?.match(/^gitdir:\s*(.+)$/i)?.[1];
+      if (pointer) {
+        gitDir = fs2.realpathSync(path4.resolve(canonical, pointer));
+        locationKind = "worktree";
+      }
+    }
+  } catch {
+  }
+  if (!gitDir) return { gitCommonDir: null, remoteFingerprint: null, locationKind, branch: null, gitCommonIdentity: null, gitDirIdentity: null };
+  const commonPointer = readGitFile(path4.join(gitDir, "commondir"));
+  let common = gitDir;
+  if (commonPointer) {
+    try {
+      common = fs2.realpathSync(path4.resolve(gitDir, commonPointer));
+    } catch {
+      common = path4.resolve(gitDir, commonPointer);
+    }
+  }
+  const config2 = readGitFile(path4.join(common, "config")) ?? "";
+  const origin = config2.match(/\[remote\s+"origin"\][\s\S]*?\n\s*url\s*=\s*([^\n]+)/i)?.[1]?.trim();
+  const head = readGitFile(path4.join(gitDir, "HEAD"));
+  const inodeIdentity = (value) => {
+    try {
+      const stat = fs2.statSync(value);
+      return `${stat.dev}:${stat.ino}`;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    gitCommonDir: canonicalizeProjectPath(common),
+    remoteFingerprint: origin ? hash("remote-v1", origin).slice(0, 40) : null,
+    locationKind,
+    branch: head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null,
+    gitCommonIdentity: inodeIdentity(common),
+    gitDirIdentity: inodeIdentity(gitDir)
+  };
+}
+function projectRow(db, projectId) {
+  return db.prepare(`
+    SELECT project_id, portable_project_key, memory_revision FROM projects WHERE project_id = ?
+  `).get(projectId);
+}
+function resolveProjectWorkspace(db, input) {
+  if (input.projectId && !/^[A-Za-z0-9_-]{8,128}$/.test(input.projectId)) {
+    throw new Error("invalid project_id");
+  }
+  if (input.portableProjectKey && !/^[A-Za-z0-9_.:-]{4,160}$/.test(input.portableProjectKey)) {
+    throw new Error("invalid portable_project_key");
+  }
+  if (input.branch && input.branch.length > 512) throw new Error("branch hint is too long");
+  const canonicalPath = canonicalizeProjectPath(input.cwd);
+  if (!canonicalPath || canonicalPath === "unknown") throw new Error("canonical workspace path is required");
+  const at = nowIso(input.now);
+  const device = deviceId(db);
+  const inspected = input.gitCommonDir === void 0 && input.remoteFingerprint === void 0 ? inspectWorkspaceLocation(canonicalPath) : { gitCommonDir: input.gitCommonDir ?? null, remoteFingerprint: input.remoteFingerprint ?? null, locationKind: input.locationKind ?? "directory", branch: input.branch ?? null, gitCommonIdentity: null, gitDirIdentity: null };
+  const gitCommonDir = input.gitCommonDir ?? inspected.gitCommonDir;
+  const remoteFingerprint = input.remoteFingerprint ?? inspected.remoteFingerprint;
+  const locationKind = input.locationKind ?? inspected.locationKind;
+  const tx = db.transaction(() => {
+    const byPath = db.prepare(`
+      SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+             p.portable_project_key, p.memory_revision
+      FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+      WHERE w.device_id = ? AND w.canonical_path = ?
+    `).get(device, canonicalPath);
+    if (byPath) {
+      if (input.projectId && input.projectId !== String(byPath.project_id)) {
+        throw new Error("workspace is already linked to another project; use explicit linkWorkspaceToProject");
+      }
+      if (input.portableProjectKey && input.portableProjectKey !== byPath.portable_project_key) {
+        throw new Error("workspace portable_project_key conflicts with its linked project");
+      }
+      db.prepare(`
+        UPDATE workspaces SET git_common_dir = COALESCE(?, git_common_dir),
+          git_common_identity = COALESCE(?, git_common_identity),
+          git_dir_identity = COALESCE(?, git_dir_identity),
+          remote_fingerprint = COALESCE(?, remote_fingerprint), location_kind = ?,
+          branch = COALESCE(?, branch), last_seen_at = ? WHERE workspace_id = ?
+      `).run(
+        gitCommonDir,
+        inspected.gitCommonIdentity,
+        inspected.gitDirIdentity,
+        remoteFingerprint,
+        locationKind,
+        input.branch ?? inspected.branch ?? null,
+        at,
+        byPath.workspace_id
+      );
+      return {
+        projectId: String(byPath.project_id),
+        workspaceId: String(byPath.workspace_id),
+        canonicalPath,
+        portableProjectKey: byPath.portable_project_key ? String(byPath.portable_project_key) : null,
+        memoryRevision: Number(byPath.memory_revision),
+        locationKind,
+        branch: input.branch ?? inspected.branch ?? (byPath.branch ? String(byPath.branch) : null),
+        reason: "existing-path"
+      };
+    }
+    if (inspected.gitDirIdentity) {
+      const moved = db.prepare(`
+        SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+               p.portable_project_key, p.memory_revision
+        FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+        WHERE w.device_id = ? AND w.git_dir_identity = ?
+      `).all(device, inspected.gitDirIdentity);
+      if (moved.length === 1) {
+        const row = moved[0];
+        if (input.projectId && input.projectId !== String(row.project_id)) {
+          throw new Error("moved workspace is linked to another project; use explicit linkWorkspaceToProject");
+        }
+        db.prepare(`
+          UPDATE workspaces SET canonical_path = ?, git_common_dir = ?,
+            git_common_identity = ?, remote_fingerprint = COALESCE(?, remote_fingerprint),
+            location_kind = ?, branch = COALESCE(?, branch), last_seen_at = ?
+          WHERE workspace_id = ?
+        `).run(
+          canonicalPath,
+          gitCommonDir,
+          inspected.gitCommonIdentity,
+          remoteFingerprint,
+          locationKind,
+          input.branch ?? inspected.branch ?? null,
+          at,
+          row.workspace_id
+        );
+        audit(db, { action: "resolve", projectId: String(row.project_id), workspaceId: String(row.workspace_id), reason: "local git location moved", detail: { canonicalPath }, now: at });
+        return {
+          projectId: String(row.project_id),
+          workspaceId: String(row.workspace_id),
+          canonicalPath,
+          portableProjectKey: row.portable_project_key ? String(row.portable_project_key) : null,
+          memoryRevision: Number(row.memory_revision),
+          locationKind,
+          branch: input.branch ?? inspected.branch ?? (row.branch ? String(row.branch) : null),
+          reason: "existing-path"
+        };
+      }
+    }
+    let selectedProject;
+    let reason = "new-isolated";
+    if (input.projectId) {
+      selectedProject = projectRow(db, input.projectId);
+      if (!selectedProject) throw new Error("explicit project_id does not exist");
+      if (input.portableProjectKey && selectedProject.portable_project_key !== input.portableProjectKey) {
+        throw new Error("explicit project_id conflicts with portable_project_key");
+      }
+      reason = "explicit";
+    } else if (input.portableProjectKey) {
+      selectedProject = db.prepare(`
+        SELECT project_id, portable_project_key, memory_revision FROM projects WHERE portable_project_key = ?
+      `).get(input.portableProjectKey);
+      if (!selectedProject) {
+        const projectId = `project-${randomUUID()}`;
+        db.prepare(`
+          INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+          VALUES (?, ?, ?, 0, ?, ?)
+        `).run(projectId, input.portableProjectKey, path4.basename(canonicalPath) || "unknown", at, at);
+        selectedProject = { project_id: projectId, portable_project_key: input.portableProjectKey, memory_revision: 0 };
+      }
+      reason = "explicit";
+    }
+    if (!selectedProject && gitCommonDir) {
+      const rows = db.prepare(`
+        SELECT DISTINCT p.project_id, p.portable_project_key, p.memory_revision
+        FROM workspaces w JOIN projects p ON p.project_id = w.project_id
+        WHERE w.device_id = ? AND (
+          w.git_common_dir = ? OR (? IS NOT NULL AND w.git_common_identity = ?)
+        )
+      `).all(device, canonicalizeProjectPath(gitCommonDir), inspected.gitCommonIdentity, inspected.gitCommonIdentity);
+      if (rows.length === 1) {
+        selectedProject = rows[0];
+        reason = "git-common-dir";
+      }
+    }
+    if (!selectedProject && remoteFingerprint) {
+      const rows = db.prepare(`
+        SELECT p.project_id, p.portable_project_key, p.memory_revision
+        FROM approved_remote_mappings m JOIN projects p ON p.project_id = m.project_id
+        WHERE m.remote_fingerprint = ?
+      `).all(remoteFingerprint);
+      if (rows.length === 1) {
+        selectedProject = rows[0];
+        reason = "approved-remote";
+      } else {
+        const candidates = db.prepare(`
+          SELECT DISTINCT project_id FROM workspaces WHERE remote_fingerprint = ?
+        `).all(remoteFingerprint);
+        if (candidates.length > 0 || rows.length > 1) {
+          audit(db, {
+            action: "suggest",
+            reason: rows.length > 1 ? "remote has conflicting approved project mappings" : "same remote requires explicit approval",
+            detail: {
+              canonicalPath,
+              remoteFingerprint,
+              candidates: [.../* @__PURE__ */ new Set([
+                ...rows.map((row) => row?.project_id).filter(Boolean),
+                ...candidates.map((row) => row.project_id)
+              ])]
+            },
+            now: at
+          });
+        }
+      }
+    }
+    if (!selectedProject) {
+      const projectId = `project-${randomUUID()}`;
+      db.prepare(`
+        INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?)
+      `).run(projectId, input.portableProjectKey ?? null, path4.basename(canonicalPath) || "unknown", at, at);
+      selectedProject = { project_id: projectId, portable_project_key: input.portableProjectKey ?? null, memory_revision: 0 };
+    }
+    const workspaceId = `workspace-${randomUUID()}`;
+    db.prepare(`
+      INSERT INTO workspaces
+        (workspace_id, project_id, device_id, canonical_path, git_common_dir, remote_fingerprint,
+         git_common_identity, git_dir_identity, location_kind, branch, last_seen_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      workspaceId,
+      selectedProject.project_id,
+      device,
+      canonicalPath,
+      gitCommonDir ? canonicalizeProjectPath(gitCommonDir) : null,
+      remoteFingerprint,
+      inspected.gitCommonIdentity,
+      inspected.gitDirIdentity,
+      locationKind,
+      input.branch ?? inspected.branch ?? null,
+      at,
+      at
+    );
+    audit(db, { action: "resolve", projectId: selectedProject.project_id, workspaceId, reason, detail: { canonicalPath }, now: at });
+    return {
+      projectId: selectedProject.project_id,
+      workspaceId,
+      canonicalPath,
+      portableProjectKey: selectedProject.portable_project_key,
+      memoryRevision: selectedProject.memory_revision,
+      locationKind,
+      branch: input.branch ?? inspected.branch ?? null,
+      reason
+    };
+  });
+  return db.inTransaction ? tx() : tx.immediate();
+}
+function tokens(value) {
+  return new Set(value.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}_-]{2,}/gu) ?? []);
+}
+function jaccard(left, right) {
+  if (left.size === 0 || right.size === 0) return 0;
+  let intersection2 = 0;
+  for (const value of left) if (right.has(value)) intersection2++;
+  return intersection2 / (left.size + right.size - intersection2);
+}
+function bindSessionWorkstream(db, input) {
+  if (!db.inTransaction) {
+    const tx = db.transaction(() => bindSessionWorkstream(db, input));
+    return tx.immediate();
+  }
+  const existing = db.prepare(`
+    SELECT workstream_id, binding_reason, binding_confidence, project_id, workspace_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+  if (existing) {
+    if (existing.project_id && existing.project_id !== input.projectId) {
+      throw new Error("resumed session is outside the resolved project");
+    }
+    if (existing.workspace_id && existing.workspace_id !== input.workspaceId) {
+      throw new Error("resumed session is outside the resolved workspace");
+    }
+    return { workstreamId: existing.workstream_id, reason: "resume-exact", confidence: 1 };
+  }
+  const at = nowIso(input.now);
+  let workstreamId = null;
+  let reason = "session-local";
+  let confidence = 1;
+  if (input.explicitWorkstreamId) {
+    const explicit = db.prepare("SELECT project_id FROM minimal_workstreams WHERE workstream_id = ?").get(input.explicitWorkstreamId);
+    if (!explicit || explicit.project_id !== input.projectId) throw new Error("explicit workstream is outside the resolved project");
+    workstreamId = input.explicitWorkstreamId;
+    reason = "explicit";
+  }
+  if (!workstreamId && input.branch) {
+    const candidates = db.prepare(`
+      SELECT workstream_id FROM minimal_workstreams
+      WHERE project_id = ? AND workspace_id = ? AND status = 'active' AND branch_hint = ?
+      ORDER BY updated_at DESC
+    `).all(input.projectId, input.workspaceId, input.branch);
+    if (candidates.length === 1) {
+      workstreamId = candidates[0].workstream_id;
+      reason = "unique-workspace-branch";
+      confidence = 0.9;
+    }
+  }
+  if (!workstreamId && input.prompt?.trim()) {
+    const query = tokens(input.prompt);
+    const rows = db.prepare(`
+      SELECT w.workstream_id, c.objective, c.current_state
+      FROM minimal_workstreams w JOIN work_capsules c ON c.workstream_id = w.workstream_id
+      WHERE w.project_id = ? AND w.status = 'active'
+    `).all(input.projectId);
+    const ranked = rows.map((row) => ({ id: row.workstream_id, score: jaccard(query, tokens(`${row.objective} ${row.current_state}`)) })).sort((a, b2) => b2.score - a.score || a.id.localeCompare(b2.id));
+    if (ranked[0] && ranked[0].score >= 0.45 && ranked[0].score - (ranked[1]?.score ?? 0) >= 0.15) {
+      workstreamId = ranked[0].id;
+      reason = "strong-topic-margin";
+      confidence = ranked[0].score;
+    }
+  }
+  if (!workstreamId) {
+    workstreamId = `ws-${hash("session-workstream-v2", input.projectId, input.sessionId).slice(0, 32)}`;
+    db.prepare(`
+      INSERT OR IGNORE INTO minimal_workstreams
+        (workstream_id, project, session_id, branch_hint, binding_reason, project_id, workspace_id,
+         status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'session-local', ?, ?, 'active', ?, ?)
+    `).run(workstreamId, input.projectPath, input.sessionId, input.branch ?? null, input.projectId, input.workspaceId, at, at);
+  }
+  db.prepare(`
+    INSERT INTO workstream_sessions(session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(input.sessionId, workstreamId, input.workspaceId, reason, confidence, at);
+  db.prepare(`
+    INSERT INTO session_memory_state
+      (session_id, project, project_id, workspace_id, workstream_id, context_epoch,
+       binding_reason, binding_confidence, last_source, memory_revision_seen, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'binding',
+      COALESCE((SELECT memory_revision FROM projects WHERE project_id = ?), 0), ?, ?)
+  `).run(input.sessionId, input.projectPath, input.projectId, input.workspaceId, workstreamId, reason, confidence, input.projectId, at, at);
+  audit(db, { action: "rebind", projectId: input.projectId, workspaceId: input.workspaceId, workstreamId, sessionId: input.sessionId, reason, detail: { confidence }, now: at });
+  return { workstreamId, reason, confidence };
+}
+function readHotEvidence(db, input) {
+  const where = ["project_id = ?", "expires_at > ?"];
+  const args = [input.projectId, nowIso(input.now)];
+  if (input.workspaceId) {
+    where.push("workspace_id = ?");
+    args.push(input.workspaceId);
+  }
+  if (input.workstreamId) {
+    where.push("workstream_id = ?");
+    args.push(input.workstreamId);
+  }
+  if (input.sessionId) {
+    where.push("session_id = ?");
+    args.push(input.sessionId);
+  }
+  if (input.excludeSessionId) {
+    where.push("session_id <> ?");
+    args.push(input.excludeSessionId);
+  }
+  if (input.afterCreatedAt) {
+    where.push("created_at > ?");
+    args.push(input.afterCreatedAt);
+  }
+  if (input.beforeCreatedAt) {
+    where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
+    args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");
+  }
+  args.push(Math.max(1, Math.min(100, input.limit ?? 20)));
+  return db.prepare(`
+    SELECT evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
+           evidence_kind, source_type, evidence_text, authority, created_at, expires_at,
+           'HOT EVIDENCE \u2014 NOT YET DISTILLED' AS lane
+    FROM hot_evidence WHERE ${where.join(" AND ")}
+    ORDER BY created_at DESC, evidence_id LIMIT ?
+  `).all(...args);
+}
+function sessionProjectRevisionState(db, sessionId) {
+  const row = db.prepare(`
+    SELECT s.project_id, s.memory_revision_seen, p.memory_revision
+    FROM session_memory_state s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.session_id = ?
+  `).get(sessionId);
+  return {
+    projectId: row?.project_id ?? null,
+    seen: Number(row?.memory_revision_seen ?? 0),
+    current: Number(row?.memory_revision ?? 0)
+  };
+}
+function markSessionProjectRevisionSeen(db, sessionId, expectedRevision) {
+  return db.prepare(`
+    UPDATE session_memory_state SET memory_revision_seen = ?, updated_at = ?
+    WHERE session_id = ? AND project_id IS NOT NULL
+      AND (SELECT memory_revision FROM projects WHERE project_id = session_memory_state.project_id) = ?
+  `).run(expectedRevision, (/* @__PURE__ */ new Date()).toISOString(), sessionId, expectedRevision).changes === 1;
+}
+
+// src/continuity-store.ts
+var CONTINUITY_SCHEMA_VERSION = 6;
+function sha256(value) {
+  return createHash2("sha256").update(value, "utf8").digest("hex");
+}
+function parseStoredJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+function columnNames(db, table) {
+  return new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(
+      ({ name }) => name
+    )
+  );
+}
+function tableExists(db, table) {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== void 0;
+}
+function ensureContinuitySchema(db, options = {}) {
+  const migrate = db.transaction(() => {
+    const columns = columnNames(db, "exchanges");
+    if (!columns.has("exchange_seq")) {
+      db.exec("ALTER TABLE exchanges ADD COLUMN exchange_seq INTEGER NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("exchange-seq-column");
+    }
+    if (!columns.has("content_hash")) {
+      db.exec("ALTER TABLE exchanges ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''");
+      options.afterMigrationStage?.("content-hash-column");
+    }
+    if (!columns.has("content_generation")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN content_generation INTEGER NOT NULL DEFAULT 0"
+      );
+      options.afterMigrationStage?.("content-generation-column");
+    }
+    if (!columns.has("closure_state")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN closure_state TEXT NOT NULL DEFAULT 'closed' CHECK(closure_state IN ('open','interrupted','closed','final'))"
+      );
+      options.afterMigrationStage?.("closure-state-column");
+    }
+    if (!columns.has("parser_version")) {
+      db.exec(
+        "ALTER TABLE exchanges ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 1"
+      );
+      options.afterMigrationStage?.("parser-version-column");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS continuity_schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        workspace_id TEXT,
+        workstream_id TEXT,
+        stream_epoch INTEGER NOT NULL DEFAULT 0,
+        ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('stop','interrupt','precompact','final','extraction')),
+        turn_id TEXT,
+        from_byte INTEGER,
+        through_byte INTEGER,
+        from_line INTEGER,
+        through_line INTEGER,
+        from_cursor INTEGER,
+        through_cursor INTEGER,
+        segment_hash TEXT,
+        prefix_hash TEXT,
+        parser_version INTEGER NOT NULL DEFAULT 1,
+        closure_state TEXT NOT NULL DEFAULT 'closed'
+          CHECK(closure_state IN ('open','interrupted','closed','final')),
+        context_epoch_before INTEGER,
+        state TEXT NOT NULL DEFAULT 'captured'
+          CHECK(state IN ('captured','pending','processing','processed','retry','superseded','failed-visible','dead-letter')),
+        capture_gap_reason TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_jobs (
+        job_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        partition_key TEXT NOT NULL,
+        checkpoint_id TEXT REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+        target_id TEXT,
+        from_cursor INTEGER,
+        through_cursor INTEGER,
+        policy_version TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','running','retry','completed','superseded','dead')),
+        available_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_until TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        last_error TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_targets (
+        target_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project TEXT NOT NULL,
+        from_rowid INTEGER NOT NULL,
+        through_rowid INTEGER NOT NULL,
+        cursor_ordinal INTEGER NOT NULL DEFAULT 0,
+        item_count INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','running','retry','completed','superseded','dead')),
+        lease_owner TEXT,
+        lease_until TEXT,
+        lease_generation INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_target_items (
+        target_id TEXT NOT NULL REFERENCES extraction_targets(target_id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        -- Keep immutable target identity if canonical reconciliation removes
+        -- an exchange during async model work. Privacy purge deletes the
+        -- target first, so this non-FK reference does not retain purged state.
+        exchange_id TEXT NOT NULL,
+        exchange_rowid INTEGER NOT NULL,
+        content_generation INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','processing','processed','retry','superseded','failed-visible')),
+        PRIMARY KEY(target_id, ordinal),
+        UNIQUE(target_id, exchange_id, content_generation)
+      );
+
+      CREATE TABLE IF NOT EXISTS exchange_extraction_state (
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        content_generation INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','processing','processed','retry','superseded','failed-visible')),
+        target_id TEXT,
+        processed_at TEXT,
+        PRIMARY KEY(exchange_id, content_generation, policy_version)
+      );
+
+      CREATE TABLE IF NOT EXISTS extraction_failed_ranges (
+        failure_id TEXT PRIMARY KEY,
+        target_id TEXT NOT NULL REFERENCES extraction_targets(target_id) ON DELETE CASCADE,
+        from_ordinal INTEGER NOT NULL,
+        through_ordinal INTEGER NOT NULL,
+        from_rowid INTEGER NOT NULL,
+        through_rowid INTEGER NOT NULL,
+        payload_fingerprint TEXT NOT NULL,
+        error_kind TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('retry','failed-visible')),
+        attempts INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(target_id, from_ordinal, through_ordinal, payload_fingerprint)
+      );
+
+      CREATE TABLE IF NOT EXISTS journal_streams (
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        source_path TEXT NOT NULL,
+        source_realpath TEXT NOT NULL,
+        source_dev TEXT NOT NULL,
+        source_ino TEXT NOT NULL,
+        source_mtime_ms REAL NOT NULL DEFAULT 0,
+        source_guard_start INTEGER NOT NULL DEFAULT 0,
+        source_guard_hash TEXT NOT NULL DEFAULT '',
+        copied_byte_end INTEGER NOT NULL DEFAULT 0,
+        copied_line_end INTEGER NOT NULL DEFAULT 0,
+        journal_byte_end INTEGER NOT NULL DEFAULT 0,
+        journal_path TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL DEFAULT '',
+        parser_version INTEGER NOT NULL DEFAULT 1,
+        state TEXT NOT NULL DEFAULT 'active'
+          CHECK(state IN ('active','replaced','gap','purged')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(session_id, stream_epoch)
+      );
+
+      CREATE TABLE IF NOT EXISTS journal_blocks (
+        block_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        source_from_byte INTEGER NOT NULL,
+        source_through_byte INTEGER NOT NULL,
+        journal_from_byte INTEGER NOT NULL,
+        journal_through_byte INTEGER NOT NULL,
+        from_line INTEGER NOT NULL,
+        through_line INTEGER NOT NULL,
+        segment_hash TEXT NOT NULL,
+        prefix_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id, stream_epoch)
+          REFERENCES journal_streams(session_id, stream_epoch) ON DELETE CASCADE,
+        UNIQUE(session_id, stream_epoch, ordinal),
+        UNIQUE(session_id, stream_epoch, source_through_byte, prefix_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS capture_gaps (
+        gap_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        stream_epoch INTEGER,
+        source_path TEXT,
+        event_kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'open'
+          CHECK(state IN ('open','recovered','purged')),
+        created_at TEXT NOT NULL,
+        recovered_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS conversation_exclusions (
+        session_id TEXT PRIMARY KEY,
+        source_path TEXT,
+        reason TEXT NOT NULL,
+        excluded_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS minimal_workstreams (
+        workstream_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL UNIQUE,
+        branch_hint TEXT,
+        binding_reason TEXT NOT NULL DEFAULT 'session-local',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_memory_state (
+        session_id TEXT PRIMARY KEY,
+        project TEXT NOT NULL,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        context_epoch INTEGER NOT NULL DEFAULT 0,
+        epoch_token TEXT NOT NULL DEFAULT '',
+        resident_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        capsule_generation_seen INTEGER NOT NULL DEFAULT 0,
+        memory_revision_seen INTEGER NOT NULL DEFAULT 0,
+        latest_checkpoint_id TEXT,
+        last_source TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS work_capsules (
+        workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL DEFAULT 0,
+        objective TEXT NOT NULL DEFAULT '',
+        current_state TEXT NOT NULL DEFAULT '',
+        verified_progress_json TEXT NOT NULL DEFAULT '[]',
+        hypotheses_json TEXT NOT NULL DEFAULT '[]',
+        blockers_json TEXT NOT NULL DEFAULT '[]',
+        open_questions_json TEXT NOT NULL DEFAULT '[]',
+        next_actions_json TEXT NOT NULL DEFAULT '[]',
+        touched_areas_json TEXT NOT NULL DEFAULT '[]',
+        carry_fact_revisions_json TEXT NOT NULL DEFAULT '[]',
+        source_exchange_ids_json TEXT NOT NULL DEFAULT '[]',
+        through_checkpoint_id TEXT,
+        authority TEXT NOT NULL DEFAULT 'context-only'
+          CHECK(authority = 'context-only'),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS capsule_checkpoint_state (
+        checkpoint_id TEXT PRIMARY KEY REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK(state IN ('pending','processing','processed','retry','failed-visible')),
+        expected_generation INTEGER NOT NULL,
+        last_error TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+    `);
+    options.afterMigrationStage?.("continuity-tables");
+    options.afterMigrationStage?.("continuity-core-tables");
+    const journalColumns = columnNames(db, "journal_streams");
+    if (!journalColumns.has("source_mtime_ms")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_mtime_ms REAL NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-mtime-column");
+    }
+    const guardedJournalColumns = columnNames(db, "journal_streams");
+    if (!guardedJournalColumns.has("source_guard_start")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_start INTEGER NOT NULL DEFAULT 0");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
+    if (!guardedJournalColumns.has("source_guard_hash")) {
+      db.exec("ALTER TABLE journal_streams ADD COLUMN source_guard_hash TEXT NOT NULL DEFAULT ''");
+      options.afterMigrationStage?.("journal-source-guard-columns");
+    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        project_id TEXT PRIMARY KEY,
+        portable_project_key TEXT UNIQUE,
+        display_name TEXT NOT NULL,
+        memory_revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workspaces (
+        workspace_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+        device_id TEXT NOT NULL,
+        canonical_path TEXT NOT NULL,
+        git_common_dir TEXT,
+        git_common_identity TEXT,
+        git_dir_identity TEXT,
+        remote_fingerprint TEXT,
+        location_kind TEXT NOT NULL DEFAULT 'directory'
+          CHECK(location_kind IN ('worktree','clone','directory')),
+        branch TEXT,
+        last_seen_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(device_id, canonical_path)
+      );
+
+      CREATE TABLE IF NOT EXISTS approved_remote_mappings (
+        remote_fingerprint TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        approved_at TEXT NOT NULL,
+        approved_by TEXT NOT NULL DEFAULT 'user',
+        PRIMARY KEY(remote_fingerprint, project_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_identity_audit (
+        audit_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL CHECK(action IN ('resolve','suggest','link','split','rebind')),
+        project_id TEXT,
+        workspace_id TEXT,
+        workstream_id TEXT,
+        session_id TEXT,
+        reason TEXT NOT NULL,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS workstream_sessions (
+        session_id TEXT PRIMARY KEY,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        binding_reason TEXT NOT NULL,
+        binding_confidence REAL NOT NULL DEFAULT 1.0,
+        bound_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS hot_evidence (
+        evidence_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+        workspace_id TEXT REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
+        workstream_id TEXT,
+        session_id TEXT NOT NULL,
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('human','trusted_tool')),
+        source_type TEXT NOT NULL,
+        evidence_text TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        authority TEXT NOT NULL DEFAULT 'hot-evidence'
+          CHECK(authority = 'hot-evidence'),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        UNIQUE(exchange_id, evidence_kind, source_type, content_hash)
+      );
+    `);
+    options.afterMigrationStage?.("identity-tables");
+    const identityColumns = [
+      ["exchanges", "project_id", "TEXT"],
+      ["exchanges", "workspace_id", "TEXT"],
+      ["exchanges", "workstream_id", "TEXT"],
+      ["facts", "project_id", "TEXT"],
+      ["facts", "workspace_id", "TEXT"],
+      ["facts", "workstream_id", "TEXT"],
+      ["facts", "subject_key", "TEXT"],
+      ["facts", "promotion_state", "TEXT NOT NULL DEFAULT 'legacy-project'"],
+      ["recall_events", "project_id", "TEXT"],
+      ["recall_events", "workspace_id", "TEXT"],
+      ["recall_events", "workstream_id", "TEXT"],
+      ["recall_events", "context_epoch", "INTEGER NOT NULL DEFAULT 0"],
+      ["recall_events", "project_memory_revision", "INTEGER NOT NULL DEFAULT 0"],
+      ["minimal_workstreams", "project_id", "TEXT"],
+      ["minimal_workstreams", "workspace_id", "TEXT"],
+      ["minimal_workstreams", "status", "TEXT NOT NULL DEFAULT 'active'"],
+      ["minimal_workstreams", "topic_fingerprint", "TEXT"],
+      ["session_memory_state", "project_id", "TEXT"],
+      ["session_memory_state", "workspace_id", "TEXT"],
+      ["session_memory_state", "binding_reason", "TEXT NOT NULL DEFAULT 'session-local'"],
+      ["session_memory_state", "binding_confidence", "REAL NOT NULL DEFAULT 1.0"],
+      ["work_capsules", "source_workspace_id", "TEXT"],
+      ["work_capsules", "source_session_id", "TEXT"],
+      ["workspaces", "git_common_identity", "TEXT"],
+      ["workspaces", "git_dir_identity", "TEXT"]
+    ];
+    for (const [table, column, definition] of identityColumns) {
+      if (!tableExists(db, table)) continue;
+      if (!columnNames(db, table).has(column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    }
+    options.afterMigrationStage?.("identity-columns");
+    db.exec(`CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
+    if (!device) {
+      device = { value: randomUUID2() };
+      db.prepare("INSERT INTO sync_meta(key, value) VALUES ('device_id', ?)").run(device.value);
+    }
+    const pathSources = [];
+    if (tableExists(db, "exchanges")) pathSources.push("SELECT project AS value FROM exchanges");
+    if (columnNames(db, "facts").has("scope_project") && columnNames(db, "facts").has("scope_type")) {
+      pathSources.push("SELECT scope_project AS value FROM facts WHERE scope_type = 'project' AND scope_project IS NOT NULL");
+    }
+    if (columnNames(db, "recall_events").has("project")) pathSources.push("SELECT project AS value FROM recall_events");
+    if (columnNames(db, "minimal_workstreams").has("project")) pathSources.push("SELECT project AS value FROM minimal_workstreams");
+    if (columnNames(db, "session_memory_state").has("project")) pathSources.push("SELECT project AS value FROM session_memory_state");
+    const pathRows = pathSources.length > 0 ? db.prepare(pathSources.join(" UNION ")).all() : [];
+    const nowIdentity = (/* @__PURE__ */ new Date()).toISOString();
+    const identityByPath = /* @__PURE__ */ new Map();
+    const commonProjectByDir = /* @__PURE__ */ new Map();
+    for (const row of pathRows) {
+      const raw = row.value ?? "";
+      const canonical = canonicalizeProjectPath(raw);
+      if (!canonical || canonical === "unknown") continue;
+      const existingWorkspace = db.prepare(`
+        SELECT workspace_id, project_id FROM workspaces
+        WHERE device_id = ? AND canonical_path = ?
+      `).get(device.value, canonical);
+      const inspected = inspectWorkspaceLocation(canonical);
+      const linkedByCommonDir = inspected.gitCommonDir ? commonProjectByDir.get(inspected.gitCommonDir) ?? db.prepare(`
+              SELECT project_id FROM workspaces
+              WHERE device_id = ? AND git_common_dir = ?
+              ORDER BY created_at, workspace_id LIMIT 1
+            `).get(device.value, inspected.gitCommonDir)?.project_id : void 0;
+      const projectId = linkedByCommonDir ?? existingWorkspace?.project_id ?? `project-${sha256(`path-project-v1\0${canonical}`).slice(0, 32)}`;
+      const workspaceId = existingWorkspace?.workspace_id ?? `workspace-${sha256(`workspace-v1\0${device.value}\0${canonical}`).slice(0, 32)}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO projects
+          (project_id, display_name, memory_revision, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?)
+      `).run(projectId, path5.basename(canonical) || "unknown", nowIdentity, nowIdentity);
+      db.prepare(`
+        INSERT OR IGNORE INTO workspaces
+          (workspace_id, project_id, device_id, canonical_path, git_common_dir,
+           git_common_identity, git_dir_identity, remote_fingerprint,
+           location_kind, branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        workspaceId,
+        projectId,
+        device.value,
+        canonical,
+        inspected.gitCommonDir,
+        inspected.gitCommonIdentity,
+        inspected.gitDirIdentity,
+        inspected.remoteFingerprint,
+        inspected.locationKind,
+        inspected.branch,
+        nowIdentity,
+        nowIdentity
+      );
+      if (existingWorkspace && existingWorkspace.project_id !== projectId && inspected.gitCommonDir) {
+        db.prepare(`
+          UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
+            git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
+            branch = COALESCE(?, branch), last_seen_at = ?
+          WHERE workspace_id = ?
+        `).run(
+          projectId,
+          inspected.gitCommonDir,
+          inspected.remoteFingerprint,
+          inspected.gitCommonIdentity,
+          inspected.gitDirIdentity,
+          inspected.locationKind,
+          inspected.branch,
+          nowIdentity,
+          existingWorkspace.workspace_id
+        );
+      }
+      if (inspected.gitCommonDir) commonProjectByDir.set(inspected.gitCommonDir, projectId);
+      identityByPath.set(raw, { canonical, projectId, workspaceId });
+    }
+    const updateIdentity = (table, pathColumn) => {
+      const columns2 = columnNames(db, table);
+      if (!columns2.has(pathColumn) || !columns2.has("project_id") || !columns2.has("workspace_id")) return;
+      const update = db.prepare(`UPDATE ${table} SET project_id = ?, workspace_id = ? WHERE ${pathColumn} = ?`);
+      for (const [raw, identity] of identityByPath) {
+        update.run(identity.projectId, identity.workspaceId, raw);
+      }
+    };
+    updateIdentity("exchanges", "project");
+    updateIdentity("recall_events", "project");
+    updateIdentity("minimal_workstreams", "project");
+    updateIdentity("session_memory_state", "project");
+    const factColumnsForIdentity = columnNames(db, "facts");
+    if (factColumnsForIdentity.has("scope_project") && factColumnsForIdentity.has("scope_type") && factColumnsForIdentity.has("subject_key")) {
+      const updateFacts = db.prepare(`
+        UPDATE facts SET project_id = ?, subject_key = COALESCE(subject_key, 'legacy.fact.' || id)
+        WHERE scope_type = 'project' AND scope_project = ?
+      `);
+      for (const [raw, identity] of identityByPath) updateFacts.run(identity.projectId, raw);
+      db.prepare("UPDATE facts SET subject_key = COALESCE(subject_key, 'global.fact.' || id) WHERE scope_type = 'global'").run();
+    }
+    if (tableExists(db, "minimal_workstreams")) {
+      db.prepare(`
+        UPDATE workstream_sessions
+        SET workspace_id = (SELECT workspace_id FROM minimal_workstreams w WHERE w.workstream_id = workstream_sessions.workstream_id)
+        WHERE workspace_id IS NULL
+      `).run();
+    }
+    if (tableExists(db, "session_memory_state")) {
+      db.prepare(`
+        INSERT OR IGNORE INTO workstream_sessions
+          (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+        SELECT s.session_id, s.workstream_id, s.workspace_id,
+               COALESCE(s.binding_reason, 'session-local'), COALESCE(s.binding_confidence, 1.0), s.created_at
+        FROM session_memory_state s
+      `).run();
+      if (tableExists(db, "checkpoints")) {
+        db.prepare(`
+          UPDATE checkpoints
+          SET workspace_id = (SELECT workspace_id FROM session_memory_state s WHERE s.session_id = checkpoints.session_id)
+          WHERE workspace_id IS NULL
+        `).run();
+      }
+    }
+    options.afterMigrationStage?.("identity-backfill");
+    const factColumnsForTriggers = columnNames(db, "facts");
+    if (["scope_type", "project_id", "fact", "semantic_generation", "lifecycle_generation", "is_active", "updated_at", "promotion_state", "subject_key", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      DROP TRIGGER IF EXISTS facts_project_revision_insert;
+      DROP TRIGGER IF EXISTS facts_project_revision_semantic;
+      DROP TRIGGER IF EXISTS facts_project_revision_move_old;
+      DROP TRIGGER IF EXISTS facts_project_revision_delete;
+      CREATE TRIGGER facts_project_revision_insert
+      AFTER INSERT ON facts
+      WHEN NEW.scope_type = 'project' AND NEW.project_id IS NOT NULL
+        AND NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_semantic
+      AFTER UPDATE OF fact, semantic_generation, lifecycle_generation, is_active, project_id,
+        promotion_state, subject_key, workspace_id, workstream_id ON facts
+      WHEN COALESCE(NEW.project_id, '') <> ''
+        AND (NEW.promotion_state IN ('legacy-project','decision','project-current','workspace')
+          OR OLD.promotion_state IN ('legacy-project','decision','project-current','workspace'))
+        AND (
+        OLD.fact IS NOT NEW.fact OR OLD.semantic_generation IS NOT NEW.semantic_generation OR
+        OLD.lifecycle_generation IS NOT NEW.lifecycle_generation OR OLD.is_active IS NOT NEW.is_active OR
+        OLD.project_id IS NOT NEW.project_id OR OLD.promotion_state IS NOT NEW.promotion_state OR
+        OLD.subject_key IS NOT NEW.subject_key OR OLD.workspace_id IS NOT NEW.workspace_id OR
+        OLD.workstream_id IS NOT NEW.workstream_id
+      )
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = NEW.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_move_old
+      AFTER UPDATE OF project_id ON facts
+      WHEN OLD.project_id IS NOT NULL AND OLD.project_id IS NOT NEW.project_id
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = NEW.updated_at
+        WHERE project_id = OLD.project_id;
+      END;
+      CREATE TRIGGER facts_project_revision_delete
+      AFTER DELETE ON facts
+      WHEN OLD.scope_type = 'project' AND OLD.project_id IS NOT NULL
+        AND OLD.promotion_state IN ('legacy-project','decision','project-current','workspace')
+      BEGIN
+        UPDATE projects SET memory_revision = memory_revision + 1, updated_at = datetime('now')
+        WHERE project_id = OLD.project_id;
+      END;
+    `);
+    options.afterMigrationStage?.("identity-triggers");
+    if (tableExists(db, "ontology_relations") && factColumnsForTriggers.has("project_id")) {
+      db.exec(`
+        DROP TRIGGER IF EXISTS ontology_relations_scope_insert_guard;
+        DROP TRIGGER IF EXISTS ontology_relations_scope_update_guard;
+        CREATE TRIGGER ontology_relations_scope_insert_guard
+        BEFORE INSERT ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+        CREATE TRIGGER ontology_relations_scope_update_guard
+        BEFORE UPDATE OF source_fact_id, target_fact_id ON ontology_relations
+        WHEN EXISTS (
+          SELECT 1 FROM facts AS source JOIN facts AS target
+            ON source.id = NEW.source_fact_id AND target.id = NEW.target_fact_id
+          WHERE source.scope_type = 'project' AND target.scope_type = 'project'
+            AND COALESCE(source.project_id, 'path:' || source.scope_project)
+                IS NOT COALESCE(target.project_id, 'path:' || target.scope_project)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'cross-project ontology relation is not allowed');
+        END;
+      `);
+    }
+    ensureChronicleSchema(db, options);
+    const gateColumns = [
+      ["topic_fingerprint_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["topic_embedding", "BLOB"],
+      ["informative_prompts_since_retrieval", "INTEGER NOT NULL DEFAULT 0"],
+      ["last_retrieval_epoch", "INTEGER NOT NULL DEFAULT -1"],
+      ["last_retrieval_at", "TEXT"],
+      ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
+      ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"]
+    ];
+    const sessionColumns = columnNames(db, "session_memory_state");
+    for (const [name, type] of gateColumns) {
+      if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
+    }
+    options.afterMigrationStage?.("recall-gate-columns");
+    db.exec(`
+
+      CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
+        ON memory_jobs(state, available_at, priority DESC, created_at, job_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_jobs_partition
+        ON memory_jobs(partition_key, state, lease_until);
+      CREATE INDEX IF NOT EXISTS idx_extraction_targets_session
+        ON extraction_targets(session_id, policy_version, state, created_at);
+      CREATE INDEX IF NOT EXISTS idx_extraction_items_state
+        ON extraction_target_items(target_id, state, ordinal);
+      CREATE INDEX IF NOT EXISTS idx_exchange_generation_pending
+        ON exchange_extraction_state(policy_version, state, exchange_id);
+      CREATE INDEX IF NOT EXISTS idx_journal_streams_source
+        ON journal_streams(source_realpath, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_journal_blocks_range
+        ON journal_blocks(session_id, stream_epoch, source_through_byte);
+      CREATE INDEX IF NOT EXISTS idx_capture_gaps_state
+        ON capture_gaps(state, session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_session_memory_workstream
+        ON session_memory_state(workstream_id, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_capsule_checkpoint_state
+        ON capsule_checkpoint_state(workstream_id, state, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_project
+        ON workspaces(project_id, device_id, canonical_path);
+      CREATE INDEX IF NOT EXISTS idx_workspaces_common_dir
+        ON workspaces(device_id, git_common_dir) WHERE git_common_dir IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_workspaces_git_identity
+        ON workspaces(device_id, git_common_identity, git_dir_identity);
+      CREATE INDEX IF NOT EXISTS idx_workstreams_scope
+        ON minimal_workstreams(project_id, workspace_id, status, branch_hint);
+      CREATE INDEX IF NOT EXISTS idx_hot_evidence_scope
+        ON hot_evidence(project_id, workstream_id, expires_at, created_at);
+    `);
+    if (["project_id", "subject_key", "is_active", "promotion_state", "workspace_id", "workstream_id"].every((name) => factColumnsForTriggers.has(name))) db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_facts_project_subject
+        ON facts(project_id, subject_key, is_active);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active_subject_slot
+        ON facts(
+          project_id,
+          subject_key,
+          promotion_state,
+          COALESCE(workspace_id, ''),
+          COALESCE(workstream_id, '')
+        )
+        WHERE is_active = 1 AND project_id IS NOT NULL AND subject_key IS NOT NULL;
+    `);
+    options.afterMigrationStage?.("continuity-indexes");
+    options.afterMigrationStage?.("continuity-core-indexes");
+    options.afterStructuralDdl?.();
+    const priorVersion = Number(
+      db.prepare(
+        "SELECT value FROM continuity_schema_meta WHERE key = 'schema_version'"
+      ).get()?.value ?? 0
+    );
+    const ftsExists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'exchanges_fts'"
+    ).get();
+    if (ftsExists && priorVersion < CONTINUITY_SCHEMA_VERSION) {
+      db.exec("INSERT INTO exchanges_fts(exchanges_fts) VALUES('rebuild')");
+      options.afterMigrationStage?.("fts-rebuild");
+    }
+    refreshExchangeMetadata(db);
+    options.afterMigrationStage?.("exchange-metadata");
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    db.prepare(`
+      INSERT INTO continuity_schema_meta(key, value, updated_at)
+      VALUES ('schema_version', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(CONTINUITY_SCHEMA_VERSION), now);
+    options.afterMigrationStage?.("schema-meta");
+    db.pragma(`user_version = ${CONTINUITY_SCHEMA_VERSION}`);
+    options.afterMigrationStage?.("user-version");
+  });
+  migrate.immediate();
+}
+var CHRONICLE_EVENT_KINDS = [
+  "ASSERTED",
+  "CHANGED",
+  "RETIRED",
+  "RESTORED",
+  "VALIDATED",
+  "INCIDENT",
+  "CONTRADICTED"
+];
+var CHRONICLE_COLUMNS = [
+  ["project_id", "TEXT"],
+  ["subject_key", "TEXT"],
+  ["event_kind", "TEXT NOT NULL DEFAULT 'CHANGED'"],
+  ["from_semantic_generation", "INTEGER"],
+  ["to_semantic_generation", "INTEGER"],
+  ["lifecycle_generation", "INTEGER"],
+  ["problem", "TEXT"],
+  ["grounded_cause", "TEXT"],
+  ["rationale", "TEXT"],
+  ["classifier_note", "TEXT"],
+  ["outcome_json", "TEXT"],
+  ["source_exchange_ids", "TEXT NOT NULL DEFAULT '[]'"],
+  ["source_evidence_ids", "TEXT NOT NULL DEFAULT '[]'"],
+  ["reverts_event_id", "TEXT"],
+  ["related_event_ids", "TEXT NOT NULL DEFAULT '[]'"],
+  ["actor", "TEXT NOT NULL DEFAULT 'legacy'"],
+  ["policy_version", "TEXT NOT NULL DEFAULT 'legacy-revision-v0'"],
+  ["evidence_authority", "TEXT NOT NULL DEFAULT 'unknown'"],
+  ["effective_at", "TEXT NOT NULL DEFAULT ''"],
+  ["effective_at_source", "TEXT NOT NULL DEFAULT 'recorded'"],
+  ["recorded_at", "TEXT NOT NULL DEFAULT ''"],
+  ["projection_applied", "INTEGER NOT NULL DEFAULT 1"],
+  // Local monotonic append order; the deterministic tie-breaker when two
+  // events share effective_at and recorded_at (never a history clock).
+  ["chronicle_seq", "INTEGER"]
+];
+function ensureChronicleSchema(db, options) {
+  const BASE_REVISION_COLUMNS = [
+    ["id", "TEXT PRIMARY KEY"],
+    // Nullable so event-only rows exist; the reference keeps orphan detection.
+    ["fact_id", "TEXT REFERENCES facts(id)"],
+    ["previous_fact", "TEXT"],
+    ["new_fact", "TEXT"],
+    ["reason", "TEXT"],
+    ["source_exchange_id", "TEXT"],
+    ["created_at", "TEXT NOT NULL DEFAULT ''"]
+  ];
+  if (!tableExists(db, "fact_revisions")) {
+    db.exec(`CREATE TABLE fact_revisions (${BASE_REVISION_COLUMNS.map(([n, t]) => `${n} ${t}`).join(", ")})`);
+  }
+  const revisionInfo = db.prepare("PRAGMA table_info(fact_revisions)").all();
+  const relaxable = /* @__PURE__ */ new Set(["fact_id", "previous_fact", "new_fact"]);
+  const needsRebuild = revisionInfo.some((column) => relaxable.has(column.name) && column.notnull === 1);
+  if (needsRebuild) {
+    const known = new Map(BASE_REVISION_COLUMNS);
+    const existingNames = revisionInfo.map((column) => column.name);
+    const ddl = revisionInfo.map((column) => {
+      if (known.has(column.name)) return `${column.name} ${known.get(column.name)}`;
+      const type = column.type || "TEXT";
+      const notNull = column.notnull === 1 ? " NOT NULL" : "";
+      const dflt = column.dflt_value !== null ? ` DEFAULT ${column.dflt_value}` : "";
+      return `${column.name} ${type}${notNull}${dflt}`;
+    });
+    for (const [name, type] of BASE_REVISION_COLUMNS) {
+      if (!existingNames.includes(name)) ddl.push(`${name} ${type}`);
+    }
+    const copyColumns = existingNames.join(", ");
+    db.exec(`
+      CREATE TABLE fact_revisions_chronicle (${ddl.join(", ")});
+      INSERT INTO fact_revisions_chronicle (${copyColumns})
+      SELECT ${copyColumns} FROM fact_revisions;
+      DROP TABLE fact_revisions;
+      ALTER TABLE fact_revisions_chronicle RENAME TO fact_revisions;
+    `);
+  }
+  for (const [name, type] of BASE_REVISION_COLUMNS) {
+    if (!columnNames(db, "fact_revisions").has(name)) {
+      db.exec(`ALTER TABLE fact_revisions ADD COLUMN ${name} ${type}`);
+    }
+  }
+  const revisionColumns = columnNames(db, "fact_revisions");
+  for (const [name, type] of CHRONICLE_COLUMNS) {
+    if (!revisionColumns.has(name)) {
+      db.exec(`ALTER TABLE fact_revisions ADD COLUMN ${name} ${type}`);
+    }
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chronicle_tombstones (
+      event_id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL,
+      reason TEXT
+    )
+  `);
+  options.afterMigrationStage?.("chronicle-table");
+  const factColumns = columnNames(db, "facts");
+  const hasFactIdentity = factColumns.has("project_id") && factColumns.has("subject_key");
+  const migrationNow = (/* @__PURE__ */ new Date()).toISOString();
+  db.prepare("UPDATE fact_revisions SET created_at = ? WHERE created_at = '' OR created_at IS NULL").run(migrationNow);
+  db.prepare(`
+    UPDATE fact_revisions SET
+      event_kind = CASE WHEN event_kind IS NULL OR event_kind = '' THEN 'CHANGED' ELSE event_kind END,
+      actor = 'legacy',
+      policy_version = 'legacy-revision-v0',
+      classifier_note = COALESCE(classifier_note, reason),
+      source_exchange_ids = CASE
+        WHEN source_exchange_id IS NOT NULL AND source_exchange_id <> '' THEN json_array(source_exchange_id)
+        ELSE '[]' END,
+      effective_at = COALESCE(
+        (SELECT e.timestamp FROM exchanges e WHERE e.id = fact_revisions.source_exchange_id),
+        created_at),
+      effective_at_source = CASE
+        WHEN EXISTS (SELECT 1 FROM exchanges e WHERE e.id = fact_revisions.source_exchange_id) THEN 'source'
+        ELSE 'recorded' END,
+      recorded_at = created_at,
+      projection_applied = 1
+    WHERE recorded_at = ''
+  `).run();
+  db.prepare("UPDATE fact_revisions SET chronicle_seq = rowid WHERE chronicle_seq IS NULL").run();
+  if (hasFactIdentity) {
+    db.prepare(`
+      UPDATE fact_revisions SET
+        project_id = COALESCE(project_id, (SELECT f.project_id FROM facts f WHERE f.id = fact_revisions.fact_id)),
+        subject_key = COALESCE(subject_key, (SELECT f.subject_key FROM facts f WHERE f.id = fact_revisions.fact_id))
+      WHERE fact_id IS NOT NULL AND (project_id IS NULL OR subject_key IS NULL)
+    `).run();
+  }
+  options.afterMigrationStage?.("chronicle-backfill");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS incident_occurrences (
+      occurrence_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      workspace_id TEXT,
+      workstream_id TEXT,
+      session_id TEXT,
+      signature_key TEXT NOT NULL,
+      signature_text TEXT NOT NULL,
+      subject_key TEXT,
+      event_id TEXT NOT NULL REFERENCES fact_revisions(id) ON DELETE CASCADE,
+      source_exchange_ids TEXT NOT NULL DEFAULT '[]',
+      source_evidence_ids TEXT NOT NULL DEFAULT '[]',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      evidence_authority TEXT NOT NULL DEFAULT 'trusted-tool',
+      effective_at TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      last_retry_at TEXT,
+      state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','remediated')),
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS incident_signatures (
+      project_id TEXT NOT NULL,
+      signature_key TEXT NOT NULL,
+      signature_text TEXT NOT NULL,
+      first_effective_at TEXT NOT NULL,
+      last_effective_at TEXT NOT NULL,
+      episode_count INTEGER NOT NULL DEFAULT 0,
+      user_flagged_repeat INTEGER NOT NULL DEFAULT 0,
+      pattern_state TEXT NOT NULL DEFAULT 'candidate'
+        CHECK(pattern_state IN ('candidate','pattern','remediated')),
+      remediation_event_id TEXT,
+      remediation_summary TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, signature_key)
+    );
+  `);
+  options.afterMigrationStage?.("incident-tables");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS continuity_telemetry (
+      sample_id TEXT PRIMARY KEY,
+      metric TEXT NOT NULL,
+      value REAL NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'count',
+      project_id TEXT,
+      session_id TEXT,
+      dims_json TEXT NOT NULL DEFAULT '{}',
+      recorded_at TEXT NOT NULL
+    )
+  `);
+  options.afterMigrationStage?.("telemetry-table");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_revisions_fact ON fact_revisions(fact_id);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_subject_time
+      ON fact_revisions(project_id, subject_key, effective_at, recorded_at, chronicle_seq);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_fact_time
+      ON fact_revisions(fact_id, effective_at, recorded_at, chronicle_seq);
+    CREATE INDEX IF NOT EXISTS idx_chronicle_kind
+      ON fact_revisions(project_id, event_kind, effective_at);
+    CREATE INDEX IF NOT EXISTS idx_incident_signature_scope
+      ON incident_occurrences(project_id, signature_key, session_id, effective_at);
+    CREATE INDEX IF NOT EXISTS idx_incident_event
+      ON incident_occurrences(event_id);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_metric
+      ON continuity_telemetry(metric, project_id, recorded_at);
+  `);
+  options.afterMigrationStage?.("chronicle-indexes");
+}
+function refreshExchangeMetadata(db, sessionId) {
+  const rows = db.prepare(`
+      SELECT rowid, id, session_id, user_message, assistant_message, line_end,
+             exchange_seq, content_hash, content_generation
+      FROM exchanges
+      ${sessionId ? "WHERE session_id = ?" : ""}
+      ORDER BY session_id, timestamp, rowid
+    `).all(...sessionId ? [sessionId] : []);
+  const nextBySession = /* @__PURE__ */ new Map();
+  const update = db.prepare(`
+    UPDATE exchanges
+    SET exchange_seq = ?, content_hash = ?, content_generation = ?
+    WHERE id = ?
+  `);
+  const selectTools = db.prepare(`
+    SELECT id, tool_name, tool_input, tool_result, is_error
+    FROM tool_calls WHERE exchange_id = ? ORDER BY id
+  `);
+  for (const row of rows) {
+    const key = row.session_id ?? `__row__${row.rowid}`;
+    const next = (nextBySession.get(key) ?? 0) + 1;
+    nextBySession.set(key, Math.max(next, row.exchange_seq));
+    const tools = selectTools.all(row.id);
+    const hash2 = sha256(JSON.stringify({
+      user: row.user_message,
+      assistant: row.assistant_message,
+      lineEnd: row.line_end,
+      tools: tools.map((tool) => ({
+        id: tool.id,
+        name: tool.tool_name,
+        input: parseStoredJson(tool.tool_input),
+        result: tool.tool_result,
+        error: !!tool.is_error
+      }))
+    }));
+    const changed = !!row.content_hash && row.content_hash !== hash2;
+    update.run(
+      row.exchange_seq > 0 ? row.exchange_seq : next,
+      hash2,
+      changed ? Math.max(1, row.content_generation) + 1 : row.content_generation > 0 ? row.content_generation : 1,
+      row.id
+    );
+  }
 }
 
 // src/db.ts
@@ -18535,12 +19988,13 @@ function initializeConnection(db, mode) {
   }
 }
 function openWriteDb(dbPath = getDbPath()) {
-  fs2.mkdirSync(path3.dirname(dbPath), { recursive: true });
+  fs3.mkdirSync(path6.dirname(dbPath), { recursive: true });
   return initializeConnection(new Database(dbPath), "write");
 }
 function initDatabase(options = {}) {
-  const dbPath = getDbPath();
-  ensureDbDir();
+  const dbPath = options.dbPath ?? getDbPath();
+  if (options.dbPath) fs3.mkdirSync(path6.dirname(dbPath), { recursive: true });
+  else ensureDbDir();
   const db = openWriteDb(dbPath);
   if (options.busyTimeoutMs !== void 0) {
     db.pragma(`busy_timeout = ${Math.max(0, Math.trunc(options.busyTimeoutMs))}`);
@@ -18711,14 +20165,22 @@ function initDatabase(options = {}) {
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
     END
   `);
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE ON exchanges BEGIN
-      INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
-      VALUES('delete', old.rowid, old.user_message, old.assistant_message);
-      INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
-      VALUES (new.rowid, new.user_message, new.assistant_message);
-    END
-  `);
+  db.transaction(() => {
+    const auTrigger = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'exchanges_fts_au'"
+    ).get();
+    if (auTrigger?.sql && !/AFTER UPDATE OF user_message, assistant_message ON exchanges/i.test(auTrigger.sql)) {
+      db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
+    }
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
+        INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
+        VALUES('delete', old.rowid, old.user_message, old.assistant_message);
+        INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
+        VALUES (new.rowid, new.user_message, new.assistant_message);
+      END
+    `);
+  }).immediate();
   db.exec(`
     CREATE TABLE IF NOT EXISTS facts (
       id TEXT PRIMARY KEY,
@@ -18860,13 +20322,12 @@ function initDatabase(options = {}) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,
-      fact_id TEXT NOT NULL,
-      previous_fact TEXT NOT NULL,
-      new_fact TEXT NOT NULL,
+      fact_id TEXT REFERENCES facts(id),
+      previous_fact TEXT,
+      new_fact TEXT,
       reason TEXT,
       source_exchange_id TEXT,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (fact_id) REFERENCES facts(id)
+      created_at TEXT NOT NULL
     )
   `);
   db.exec(`
@@ -19004,27 +20465,425 @@ function initDatabase(options = {}) {
       last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
+  ensureContinuitySchema(db);
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash("sha256").update(prompt, "utf8").digest("hex");
+  return createHash3("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0) return null;
-  const id = randomUUID();
+  const id = randomUUID3();
   db.prepare(`
     INSERT INTO recall_events
-      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
     event.project,
     hashRecallPrompt(event.prompt),
     JSON.stringify([...new Set(event.factIds)]),
+    event.projectId ?? null,
+    event.workspaceId ?? null,
+    event.workstreamId ?? null,
+    event.contextEpoch ?? 0,
+    event.projectMemoryRevision ?? 0,
     (/* @__PURE__ */ new Date()).toISOString()
   );
   return id;
+}
+
+// src/chronicle.ts
+import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
+var INCIDENT_COALESCE_WINDOW_MS = 30 * 60 * 1e3;
+var CHRONICLE_TIMELINE_MAX_LIMIT = 100;
+var CHRONICLE_LANE_LABELS = {
+  currentFact: "CURRENT FACT",
+  event: "CHRONICLE EVENT",
+  rawEvidence: "RAW EVIDENCE",
+  assistantContext: "ASSISTANT CONTEXT-ONLY",
+  hotEvidence: "HOT EVIDENCE \u2014 NOT YET DISTILLED",
+  telemetry: "TELEMETRY \u2014 MEASURED, NOT A FACT"
+};
+var KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
+function sha2562(value) {
+  return createHash4("sha256").update(value, "utf8").digest("hex");
+}
+function parseStringArray(raw) {
+  if (typeof raw !== "string" || raw === "") return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v2) => typeof v2 === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function parseOutcome(raw) {
+  if (typeof raw !== "string" || raw === "") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function rowToChronicleEvent(row) {
+  return {
+    id: String(row["id"]),
+    project_id: row["project_id"] ?? null,
+    subject_key: row["subject_key"] ?? null,
+    fact_id: row["fact_id"] ?? null,
+    event_kind: String(row["event_kind"] ?? "CHANGED"),
+    from_semantic_generation: row["from_semantic_generation"] == null ? null : Number(row["from_semantic_generation"]),
+    to_semantic_generation: row["to_semantic_generation"] == null ? null : Number(row["to_semantic_generation"]),
+    lifecycle_generation: row["lifecycle_generation"] == null ? null : Number(row["lifecycle_generation"]),
+    previous_value: row["previous_fact"] ?? null,
+    new_value: row["new_fact"] ?? null,
+    problem: row["problem"] ?? null,
+    grounded_cause: row["grounded_cause"] ?? null,
+    rationale: row["rationale"] ?? null,
+    classifier_note: row["classifier_note"] ?? null,
+    outcome: parseOutcome(row["outcome_json"]),
+    source_exchange_ids: (() => {
+      const ids = parseStringArray(row["source_exchange_ids"]);
+      const legacy = row["source_exchange_id"];
+      return ids.length === 0 && typeof legacy === "string" && legacy !== "" ? [legacy] : ids;
+    })(),
+    source_evidence_ids: parseStringArray(row["source_evidence_ids"]),
+    reverts_event_id: row["reverts_event_id"] ?? null,
+    related_event_ids: parseStringArray(row["related_event_ids"]),
+    actor: String(row["actor"] ?? "legacy"),
+    policy_version: String(row["policy_version"] ?? "legacy-revision-v0"),
+    evidence_authority: String(row["evidence_authority"] ?? "unknown"),
+    effective_at: String(row["effective_at"] || row["created_at"] || ""),
+    effective_at_source: String(row["effective_at_source"] || "recorded"),
+    recorded_at: String(row["recorded_at"] || row["created_at"] || ""),
+    projection_applied: Number(row["projection_applied"] ?? 1) === 1,
+    created_at: String(row["created_at"] ?? "")
+  };
+}
+function encodeTimelineCursor(cursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+function decodeTimelineCursor(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+    if (parsed && typeof parsed === "object" && typeof parsed.effective_at === "string" && typeof parsed.recorded_at === "string" && typeof parsed.seq === "number") {
+      return parsed;
+    }
+  } catch {
+  }
+  throw new Error("invalid chronicle timeline cursor");
+}
+function readChronicleTimeline(db, query) {
+  const limit = Math.max(1, Math.min(CHRONICLE_TIMELINE_MAX_LIMIT, Math.trunc(query.limit ?? 20)));
+  const order = query.order ?? "asc";
+  const clauses = [];
+  const params = [];
+  if (query.factId) {
+    clauses.push("r.fact_id = ?");
+    params.push(query.factId);
+  }
+  if (query.projectId) {
+    if (query.includeGlobal) {
+      clauses.push("(r.project_id = ? OR r.project_id IS NULL)");
+    } else {
+      clauses.push("r.project_id = ?");
+    }
+    params.push(query.projectId);
+  }
+  if (query.subjectKey) {
+    clauses.push("r.subject_key = ?");
+    params.push(query.subjectKey);
+  }
+  if (query.kinds && query.kinds.length > 0) {
+    clauses.push(`r.event_kind IN (${query.kinds.map(() => "?").join(",")})`);
+    params.push(...query.kinds);
+  }
+  const PROJECT_TRUTH = "f.promotion_state IN ('legacy-project','decision','project-current')";
+  const factVisible = (extra) => `EXISTS (SELECT 1 FROM facts f WHERE f.id = r.fact_id AND (${PROJECT_TRUTH}${extra}))`;
+  const evidenceIn = (column) => `EXISTS (SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.${column} = ?)`;
+  if (query.workstreamId) {
+    clauses.push(`(${factVisible(
+      " OR (f.promotion_state = 'workstream' AND f.workstream_id = ?) OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)"
+    )} OR ${evidenceIn("workstream_id")})`);
+    params.push(query.workstreamId, query.workspaceId ?? "", query.workstreamId);
+  } else if (query.workspaceId) {
+    clauses.push(`(${factVisible(" OR (f.promotion_state = 'workspace' AND f.workspace_id = ?)")} OR ${evidenceIn("workspace_id")})`);
+    params.push(query.workspaceId, query.workspaceId);
+  } else if (query.projectTruthOnly) {
+    clauses.push(`(r.fact_id IS NULL OR ${factVisible("")})`);
+  }
+  if (query.sessionId) {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM json_each(r.source_exchange_ids) j JOIN exchanges e ON e.id = j.value WHERE e.session_id = ?
+    )`);
+    params.push(query.sessionId);
+  }
+  const cursor = decodeTimelineCursor(query.cursor);
+  if (cursor) {
+    const cmp = order === "asc" ? ">" : "<";
+    clauses.push(`(r.effective_at, r.recorded_at, COALESCE(r.chronicle_seq, r.rowid)) ${cmp} (?, ?, ?)`);
+    params.push(cursor.effective_at, cursor.recorded_at, cursor.seq);
+  }
+  const direction = order === "asc" ? "ASC" : "DESC";
+  const rows = db.prepare(`
+    SELECT r.*, COALESCE(r.chronicle_seq, r.rowid) AS chronicle_seq FROM fact_revisions r
+    ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
+    ORDER BY r.effective_at ${direction}, r.recorded_at ${direction}, COALESCE(r.chronicle_seq, r.rowid) ${direction}
+    LIMIT ?
+  `).all(...params, limit + 1);
+  const events = rows.slice(0, limit).map(rowToChronicleEvent);
+  const lastRow = rows[Math.min(limit, rows.length) - 1];
+  return {
+    events,
+    nextCursor: rows.length > limit && lastRow ? encodeTimelineCursor({ effective_at: String(lastRow["effective_at"]), recorded_at: String(lastRow["recorded_at"]), seq: Number(lastRow["chronicle_seq"]) }) : null,
+    limit
+  };
+}
+function currentFactRevision(db, factId) {
+  const row = db.prepare(`
+    SELECT id, project_id, subject_key, promotion_state, is_active, fact, semantic_generation,
+           lifecycle_generation, semantic_updated_at, lifecycle_updated_at
+    FROM facts WHERE id = ?
+  `).get(factId);
+  if (!row) return null;
+  const latest = db.prepare(`
+    SELECT id, effective_at, effective_at_source FROM fact_revisions
+    WHERE fact_id = ? AND projection_applied = 1
+    ORDER BY effective_at DESC, recorded_at DESC, COALESCE(chronicle_seq, rowid) DESC LIMIT 1
+  `).get(factId);
+  return {
+    factId,
+    projectId: row["project_id"] ?? null,
+    subjectKey: row["subject_key"] ?? null,
+    promotionState: String(row["promotion_state"] ?? "legacy-project"),
+    isActive: Number(row["is_active"]) === 1,
+    fact: String(row["fact"]),
+    semanticGeneration: Number(row["semantic_generation"] ?? 1),
+    lifecycleGeneration: Number(row["lifecycle_generation"] ?? 1),
+    semanticUpdatedAt: String(row["semantic_updated_at"] ?? ""),
+    lifecycleUpdatedAt: String(row["lifecycle_updated_at"] ?? ""),
+    latestEventId: latest?.id ?? null,
+    latestEffectiveAt: latest?.effective_at ?? null,
+    latestEffectiveAtSource: latest ? String(latest.effective_at_source || "recorded") : null
+  };
+}
+var SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
+function isSemanticSubjectKey(key) {
+  return !!key && SUBJECT_KEY_PATTERN.test(key) && !/\.fact\.[0-9a-f-]{36}$/.test(key);
+}
+var ANSI_PATTERN = /\[[0-9;]*m/g;
+function normalizeIncidentSignature(raw) {
+  const text = String(raw ?? "").replace(ANSI_PATTERN, "").toLowerCase().replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, "<uuid>").replace(/\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(z|[+-]\d{2}:?\d{2})?/g, "<time>").replace(/(?:\/[\w.-]+){2,}/g, "<path>").replace(/0x[0-9a-f]+/g, "<hex>").replace(/\b[0-9a-f]{7,}\b/g, "<hex>").replace(/\d+(\.\d+)?/g, "<n>").replace(/\s+/g, " ").trim().slice(0, 240);
+  return { key: sha2562(text).slice(0, 24), text };
+}
+function signatureTokens(text) {
+  return new Set(
+    text.split(/[^a-z0-9_]+/).filter((token) => token.length >= 3 && !token.startsWith("<"))
+  );
+}
+function matchIncidentPatterns(db, input) {
+  const limit = Math.max(1, Math.min(20, Math.trunc(input.limit ?? 5)));
+  const minScore = input.minScore ?? 0.5;
+  const probe = normalizeIncidentSignature(input.text.slice(0, 4e3));
+  const probeTokens = signatureTokens(probe.text);
+  if (probeTokens.size === 0 && probe.text.length < 4) return [];
+  const rows = db.prepare(`
+    SELECT signature_key, signature_text, pattern_state, episode_count, first_effective_at, last_effective_at,
+           remediation_summary, remediation_event_id
+    FROM incident_signatures WHERE project_id = ?
+    ORDER BY last_effective_at DESC LIMIT 500
+  `).all(input.projectId);
+  const matches = [];
+  for (const row of rows) {
+    if (row.pattern_state === "candidate" && !input.includeCandidates) continue;
+    if (row.pattern_state === "remediated" && !input.includeRemediated) continue;
+    const tokens2 = signatureTokens(row.signature_text);
+    let score = 0;
+    if (row.signature_text.length >= 20 && probe.text.includes(row.signature_text)) {
+      score = 1;
+    } else if (tokens2.size > 0) {
+      let overlap = 0;
+      for (const token of tokens2) if (probeTokens.has(token)) overlap++;
+      const union2 = (/* @__PURE__ */ new Set([...tokens2, ...probeTokens])).size;
+      score = union2 === 0 ? 0 : overlap / union2;
+    }
+    if (score >= minScore) {
+      matches.push({
+        signatureKey: row.signature_key,
+        signatureText: row.signature_text,
+        patternState: row.pattern_state,
+        episodeCount: Number(row.episode_count),
+        firstEffectiveAt: row.first_effective_at,
+        lastEffectiveAt: row.last_effective_at,
+        remediationSummary: row.remediation_summary,
+        remediationEventId: row.remediation_event_id,
+        score
+      });
+    }
+  }
+  matches.sort((a, b2) => b2.score - a.score || b2.episodeCount - a.episodeCount || a.signatureKey.localeCompare(b2.signatureKey));
+  return matches.slice(0, limit);
+}
+function listIncidentOccurrences(db, input) {
+  const limit = Math.max(1, Math.min(CHRONICLE_TIMELINE_MAX_LIMIT, Math.trunc(input.limit ?? 20)));
+  const clauses = ["project_id = ?"];
+  const params = [input.projectId];
+  if (input.signatureKey) {
+    clauses.push("signature_key = ?");
+    params.push(input.signatureKey);
+  }
+  if (input.subjectKey) {
+    clauses.push("subject_key = ?");
+    params.push(input.subjectKey);
+  }
+  if (input.sessionId) {
+    clauses.push("session_id = ?");
+    params.push(input.sessionId);
+  }
+  const rows = db.prepare(`
+    SELECT * FROM incident_occurrences WHERE ${clauses.join(" AND ")}
+    ORDER BY effective_at DESC, recorded_at DESC LIMIT ?
+  `).all(...params, limit);
+  return rows.map((row) => ({
+    occurrence_id: String(row["occurrence_id"]),
+    project_id: String(row["project_id"]),
+    workspace_id: row["workspace_id"] ?? null,
+    workstream_id: row["workstream_id"] ?? null,
+    session_id: row["session_id"] ?? null,
+    signature_key: String(row["signature_key"]),
+    signature_text: String(row["signature_text"]),
+    subject_key: row["subject_key"] ?? null,
+    event_id: String(row["event_id"]),
+    source_exchange_ids: (() => {
+      const ids = parseStringArray(row["source_exchange_ids"]);
+      const legacy = row["source_exchange_id"];
+      return ids.length === 0 && typeof legacy === "string" && legacy !== "" ? [legacy] : ids;
+    })(),
+    source_evidence_ids: parseStringArray(row["source_evidence_ids"]),
+    retry_count: Number(row["retry_count"] ?? 0),
+    evidence_authority: String(row["evidence_authority"]),
+    effective_at: String(row["effective_at"]),
+    recorded_at: String(row["recorded_at"]),
+    last_retry_at: row["last_retry_at"] ?? null,
+    state: String(row["state"])
+  }));
+}
+var TELEMETRY_METRICS = [
+  "semantic_retrieval_calls",
+  "retrieval_gate_skip_count",
+  "retrieval_execute_count",
+  "embedding_calls",
+  "embedding_cache_hits",
+  "candidate_facts",
+  "current_facts",
+  "delta_facts",
+  "injected_facts",
+  "injected_chars",
+  "section_chars",
+  "bundle_size",
+  "estimated_tokens",
+  "correction_count",
+  "correction_delay_prompts",
+  "watch_emissions",
+  "watch_confirmed",
+  "warning_precision",
+  "project_revision_invalidations",
+  "duplicate_tool_calls",
+  "repeated_context_turns",
+  "time_to_first_correct_action_ms",
+  "incident_recurrence",
+  "mcp_trace_success",
+  "worker_extraction_tokens",
+  "worker_extraction_latency_ms",
+  "worker_extraction_retries",
+  "worker_extraction_dead"
+];
+var TELEMETRY_SET = new Set(TELEMETRY_METRICS);
+function recordTelemetrySample(db, input) {
+  if (!TELEMETRY_SET.has(input.metric)) throw new Error(`unknown telemetry metric: ${input.metric}`);
+  if (!Number.isFinite(input.value)) throw new Error("telemetry value must be finite");
+  const id = randomUUID4();
+  db.prepare(`
+    INSERT INTO continuity_telemetry (sample_id, metric, value, unit, project_id, session_id, dims_json, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    input.metric,
+    input.value,
+    input.unit ?? "count",
+    input.projectId ?? null,
+    input.sessionId ?? null,
+    JSON.stringify(input.dims ?? {}),
+    input.recordedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+  );
+  return id;
+}
+function describeEventSources(db, event) {
+  return event.source_exchange_ids.map((exchangeId) => {
+    const row = db.prepare(`
+      SELECT project, timestamp, session_id, archive_path, line_start, line_end, user_message FROM exchanges WHERE id = ?
+    `).get(exchangeId);
+    if (!row) return { exchangeId, available: false };
+    return {
+      exchangeId,
+      available: true,
+      project: row["project"] ?? null,
+      timestamp: row["timestamp"] ?? null,
+      sessionId: row["session_id"] ?? null,
+      archivePath: row["archive_path"] ?? null,
+      lineStart: Number(row["line_start"]),
+      lineEnd: Number(row["line_end"]),
+      excerpt: String(row["user_message"] ?? "").replace(/\s+/g, " ").slice(0, 160)
+    };
+  });
+}
+function formatChronicleEvent(db, event, options = {}) {
+  const lines = [];
+  const effect = event.projection_applied ? "projection changed" : "event-only, current unchanged";
+  lines.push(`- [${CHRONICLE_LANE_LABELS.event}] ${event.event_kind} \xB7 effective ${event.effective_at} (${event.effective_at_source}) \xB7 recorded ${event.recorded_at} \xB7 ${effect} \xB7 actor ${event.actor} \xB7 authority ${event.evidence_authority}`);
+  lines.push(`  id: ${event.id}${event.subject_key ? ` \xB7 subject: ${event.subject_key}` : ""}${event.fact_id ? ` \xB7 fact: ${event.fact_id}` : ""}`);
+  if (event.fact_id) {
+    const placement = db.prepare("SELECT promotion_state, workspace_id, workstream_id FROM facts WHERE id = ?").get(event.fact_id);
+    if (placement?.promotion_state === "workstream" || placement?.promotion_state === "workspace") {
+      const id = placement.promotion_state === "workstream" ? placement.workstream_id : placement.workspace_id;
+      lines.push(`  scope: ${placement.promotion_state} ${id ?? "?"} (unmerged; not project-wide truth)`);
+    }
+  }
+  if (event.previous_value !== null || event.new_value !== null) {
+    lines.push(`  value: ${event.previous_value === null ? "(none)" : JSON.stringify(event.previous_value)} \u2192 ${event.new_value === null ? "(none)" : JSON.stringify(event.new_value)}`);
+  }
+  if (event.from_semantic_generation !== null || event.to_semantic_generation !== null) {
+    lines.push(`  semantic generation: ${event.from_semantic_generation ?? "-"} \u2192 ${event.to_semantic_generation ?? "-"}`);
+  }
+  if (event.lifecycle_generation !== null) lines.push(`  lifecycle generation: ${event.lifecycle_generation}`);
+  if (event.reverts_event_id) lines.push(`  reverts event: ${event.reverts_event_id}`);
+  if (event.related_event_ids.length > 0) lines.push(`  related events: ${event.related_event_ids.join(", ")}`);
+  if (event.problem) lines.push(`  problem (source-cited): ${event.problem}`);
+  lines.push(`  grounded cause (source-cited): ${event.grounded_cause ?? "null \u2014 no cause stated in evidence"}`);
+  if (event.rationale) lines.push(`  rationale (source-cited): ${event.rationale}`);
+  if (event.classifier_note) lines.push(`  classifier note (model inference, NOT authoritative): ${event.classifier_note}`);
+  if (event.outcome) lines.push(`  outcome: ${JSON.stringify(event.outcome)}`);
+  if (options.includeSources !== false) {
+    const sources = describeEventSources(db, event);
+    if (sources.length === 0) {
+      lines.push(`  sources: none recorded`);
+    }
+    for (const source of sources) {
+      if (!source.available) {
+        lines.push(`  [${CHRONICLE_LANE_LABELS.rawEvidence}] ${source.exchangeId}: source unavailable (purged or missing)`);
+      } else {
+        lines.push(`  [${CHRONICLE_LANE_LABELS.rawEvidence}] ${source.exchangeId} \xB7 ${source.timestamp} \xB7 session ${source.sessionId ?? "?"} \xB7 lines ${source.lineStart}-${source.lineEnd} in ${source.archivePath}`);
+        if (source.excerpt) lines.push(`    "${source.excerpt}"`);
+      }
+    }
+    if (event.source_evidence_ids.length > 0) lines.push(`  tool evidence ids: ${event.source_evidence_ids.join(", ")}`);
+  }
+  return lines.join("\n");
 }
 
 // src/fact-db.ts
@@ -19033,11 +20892,21 @@ function vecParamFor(db, table, embedding) {
   return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
 }
 function getRevisions(db, factId) {
-  return db.prepare(
-    "SELECT * FROM fact_revisions WHERE fact_id = ? ORDER BY created_at DESC"
-  ).all(factId);
+  const page = readChronicleTimeline(db, { factId, order: "desc", limit: 100 });
+  return page.events.map((event) => ({
+    id: event.id,
+    fact_id: event.fact_id ?? factId,
+    previous_fact: event.previous_value ?? "",
+    new_fact: event.new_value ?? "",
+    reason: event.rationale ?? event.grounded_cause ?? event.classifier_note ?? null,
+    source_exchange_id: event.source_exchange_ids[0] ?? null,
+    created_at: event.recorded_at,
+    event_kind: event.event_kind,
+    effective_at: event.effective_at,
+    projection_applied: event.projection_applied
+  }));
 }
-function factMatchesSearch(fact, scope, filters) {
+function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
   if (filters.category && fact.category !== filters.category) return false;
   switch (scope.type) {
     case "global":
@@ -19050,10 +20919,29 @@ function factMatchesSearch(fact, scope, filters) {
       return fact.scope_type === "project" && fact.scope_project === scope.project;
     case "other-projects":
       return fact.scope_type === "project" && fact.scope_project !== scope.project;
+    case "other-project-id":
+      return fact.scope_type === "project" && fact.project_id !== scope.projectId;
+    case "project-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current");
+    case "workspace-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" || fact.promotion_state === "workspace" && fact.workspace_id === scope.workspaceId);
+    case "workstream-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && (fact.promotion_state === "legacy-project" || fact.promotion_state === "decision" || fact.promotion_state === "project-current" || fact.promotion_state === "workspace" && !!scope.workspaceId && fact.workspace_id === scope.workspaceId || fact.promotion_state === "workstream" && fact.workstream_id === scope.workstreamId);
+    case "session-id":
+      return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && fact.source_exchange_ids.some((id) => sessionExchangeIds?.has(id));
   }
+}
+function listFactsByScope(db, scope) {
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
+  return db.prepare("SELECT * FROM facts WHERE is_active = 1").all().map(rowToFact).filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
+}
+function factMatchesScope(db, fact, scope) {
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
+  return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
 }
 function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
   if (limit <= 0) return [];
+  const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
   const fetch = (table, count) => {
     try {
       const p = vecParamFor(db, table, embedding);
@@ -19106,7 +20994,7 @@ function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, f
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) break;
       const fact = loadFact(vr.id);
-      if (!fact || !factMatchesSearch(fact, scope, filters)) continue;
+      if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
     }
@@ -19147,6 +21035,11 @@ function rowToFact(row) {
     category: row["category"],
     scope_type: row["scope_type"],
     scope_project: row["scope_project"] ?? null,
+    project_id: row["project_id"] ?? null,
+    workspace_id: row["workspace_id"] ?? null,
+    workstream_id: row["workstream_id"] ?? null,
+    subject_key: row["subject_key"] ?? null,
+    promotion_state: row["promotion_state"] ?? "legacy-project",
     source_exchange_ids: sourceExchangeIds,
     embedding,
     created_at: row["created_at"],
@@ -19171,19 +21064,20 @@ function listCategories(db, domainId) {
   }
   return db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all();
 }
-function getFactsByCategory(db, categoryId, scopeProject, scopeType) {
+function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
   let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
   const params = [categoryId];
-  if (scopeType === "global") {
+  if (!identityScope && scopeType === "global") {
     query += ` AND scope_type = 'global'`;
-  } else if (scopeProject && scopeType !== "all") {
+  } else if (!identityScope && scopeProject && scopeType !== "all") {
     query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
     params.push(scopeProject);
   }
   query += ` ORDER BY consolidated_count DESC`;
-  return db.prepare(query).all(...params).map(rowToFact2);
+  const facts = db.prepare(query).all(...params).map(rowToFact2);
+  return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
 }
-function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType) {
+function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType, identityScope) {
   const visited = /* @__PURE__ */ new Set([factId]);
   const results = [];
   let frontier = [factId];
@@ -19212,8 +21106,9 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [targetId, rows] of outByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (scopeType === "global" && fact.scope_type !== "global") continue;
-        if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
+        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -19249,8 +21144,9 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [sourceId, rows] of inByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (scopeType === "global" && fact.scope_type !== "global") continue;
-        if (scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
+        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -19273,7 +21169,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
   results.sort((a, b2) => b2.relevance - a.relevance);
   return results;
 }
-function getOntologyTree(db, scopeProject, scopeType) {
+function getOntologyTree(db, scopeProject, scopeType, identityScope) {
   const domains = listDomains(db);
   const tree = [];
   for (const domain of domains) {
@@ -19283,7 +21179,7 @@ function getOntologyTree(db, scopeProject, scopeType) {
       categories: []
     };
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
       if (facts.length > 0 || !scopeProject && !scopeType) {
         domainEntry.categories.push({ category, facts });
       }
@@ -19308,6 +21204,11 @@ function rowToFact2(row) {
     category: row["category"],
     scope_type: row["scope_type"],
     scope_project: row["scope_project"] ?? null,
+    project_id: row["project_id"] ?? null,
+    workspace_id: row["workspace_id"] ?? null,
+    workstream_id: row["workstream_id"] ?? null,
+    subject_key: row["subject_key"] ?? null,
+    promotion_state: row["promotion_state"] ?? "legacy-project",
     source_exchange_ids: row["source_exchange_ids"] ? JSON.parse(row["source_exchange_ids"]) : [],
     embedding,
     created_at: row["created_at"],
@@ -19315,7 +21216,9 @@ function rowToFact2(row) {
     consolidated_count: row["consolidated_count"],
     is_active: Boolean(row["is_active"]),
     semantic_generation: Number(row["semantic_generation"] ?? 1),
-    semantic_updated_at: row["semantic_updated_at"] ?? null
+    semantic_updated_at: row["semantic_updated_at"] ?? null,
+    lifecycle_generation: Number(row["lifecycle_generation"] ?? 1),
+    lifecycle_updated_at: row["lifecycle_updated_at"] ?? null
   };
 }
 function rowToRelation(row) {
@@ -19330,11 +21233,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs4 from "fs";
+import fs5 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs3 from "fs";
+import fs4 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -19354,7 +21257,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs3.statSync(p);
+      return fs4.statSync(p);
     } catch {
       return null;
     }
@@ -19403,7 +21306,7 @@ function readArchiveFile(filePath) {
       code: "ENOENT"
     });
   }
-  const buf = fs3.readFileSync(resolved);
+  const buf = fs4.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -19412,27 +21315,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs3.createReadStream(filePath);
+    return fs4.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs3.createReadStream(resolved);
+      const source = fs4.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs3.readFileSync(resolved));
+    const content = requireZstdSync()(fs4.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs3.createReadStream(resolved);
+  return fs4.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs3.statSync(resolved);
+    return fs4.statSync(resolved);
   } catch {
     return null;
   }
@@ -19444,7 +21347,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs4.statSync(p);
+    const st = fs5.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -19476,7 +21379,7 @@ function validateISODate(dateStr, paramName) {
   }
 }
 async function searchConversations(query, options = {}) {
-  const { limit = 10, mode = "both", after, before, project } = options;
+  const { limit = 10, mode = "both", after, before, project, identityScope } = options;
   if (after) validateISODate(after, "--after");
   if (before) validateISODate(before, "--before");
   const db = getSearchDb();
@@ -19487,6 +21390,19 @@ async function searchConversations(query, options = {}) {
     if (project) {
       filterParts.push(`e.project = ?`);
       filterParams.push(project);
+    }
+    if (identityScope?.type === "project") {
+      filterParts.push(`e.project_id = ?`);
+      filterParams.push(identityScope.projectId);
+    } else if (identityScope?.type === "workspace") {
+      filterParts.push(`e.workspace_id = ?`);
+      filterParams.push(identityScope.workspaceId);
+    } else if (identityScope?.type === "workstream") {
+      filterParts.push(`e.workstream_id = ?`);
+      filterParams.push(identityScope.workstreamId);
+    } else if (identityScope?.type === "session") {
+      filterParts.push(`e.session_id = ?`);
+      filterParams.push(identityScope.sessionId);
     }
     if (after) {
       filterParts.push(`e.timestamp >= ?`);
@@ -20023,127 +21939,712 @@ async function detectRepeat(prompt, project, limit = 3, threshold = 0.82, opts =
     if (ownDb) db.close();
   }
 }
-function formatRepeatContext(matches) {
-  if (matches.length === 0) return "";
-  const lines = ["\u{1F504} \uBE44\uC2B7\uD55C \uC9C8\uBB38\uC744 \uC774\uC804\uC5D0 \uD558\uC2E0 \uC801\uC774 \uC788\uC2B5\uB2C8\uB2E4:"];
-  for (const m2 of matches) {
-    const date3 = m2.timestamp.slice(0, 10);
-    const sim = Math.round(m2.similarity * 100);
-    lines.push(`
-[${date3}, ${sim}% \uC720\uC0AC] "${m2.userMessage.trim()}..."`);
-    lines.push(`\u2192 ${m2.assistantSummary.trim()}`);
-    lines.push(`  (Lines ${m2.lineStart}-${m2.lineEnd} in ${m2.archivePath})`);
-  }
-  return lines.join("\n");
-}
 
 // src/inject-log.ts
-import fs5 from "fs";
-import path4 from "path";
+import fs6 from "fs";
+import path7 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path4.join(getIndexDir(), "logs");
-  if (!fs5.existsSync(dir)) {
-    fs5.mkdirSync(dir, { recursive: true });
+  const dir = path7.join(getIndexDir(), "logs");
+  if (!fs6.existsSync(dir)) {
+    fs6.mkdirSync(dir, { recursive: true });
   }
-  return path4.join(dir, "inject-context.jsonl");
+  return path7.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs5.statSync(logPath);
+      const stat = fs6.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs5.renameSync(logPath, `${logPath}.old`);
+        fs6.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs5.appendFileSync(logPath, line + "\n");
+    fs6.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
 
-// src/inject-ledger.ts
-import fs6 from "node:fs";
-import path5 from "node:path";
-var MAX_IDS = 400;
-var TTL_MS = 7 * 24 * 60 * 60 * 1e3;
-function ledgerDir() {
-  return path5.join(getIndexDir(), "state", "inject-ledger");
+// src/observe-hook-event.ts
+import fs7 from "node:fs";
+import path8 from "node:path";
+import { fileURLToPath } from "node:url";
+function dataRoot() {
+  return getMemexHome();
 }
-function sanitizeSessionId(sessionId) {
-  if (!sessionId) return null;
-  const clean = String(sessionId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
-  return clean.length >= 4 ? clean : null;
+function observationLogPath() {
+  return path8.join(dataRoot(), "logs", "hook-events.jsonl");
 }
-function ledgerPath(cleanId) {
-  return path5.join(ledgerDir(), cleanId + ".json");
-}
-function loadLedger(sessionId) {
-  const id = sanitizeSessionId(sessionId);
-  if (!id) return /* @__PURE__ */ new Set();
+function recordHookEvent(event, info) {
   try {
-    const raw = fs6.readFileSync(ledgerPath(id), "utf8");
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return new Set(arr.filter((x2) => typeof x2 === "string"));
-  } catch {
-  }
-  return /* @__PURE__ */ new Set();
-}
-function appendLedger(sessionId, existing, newIds) {
-  const id = sanitizeSessionId(sessionId);
-  if (!id || newIds.length === 0) return;
-  try {
-    const dir = ledgerDir();
-    fs6.mkdirSync(dir, { recursive: true });
-    const ordered = [...existing, ...newIds.filter((n) => !existing.has(n))];
-    const bounded = ordered.length > MAX_IDS ? ordered.slice(ordered.length - MAX_IDS) : ordered;
-    const p = ledgerPath(id);
-    const tmp = p + ".tmp";
-    fs6.writeFileSync(tmp, JSON.stringify(bounded));
-    fs6.renameSync(tmp, p);
-    pruneOldLedgers(dir);
+    const line = JSON.stringify({
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      event,
+      session_id: typeof info.sessionId === "string" ? info.sessionId : "",
+      cwd: typeof info.cwd === "string" ? info.cwd : ""
+    }) + "\n";
+    const file = observationLogPath();
+    fs7.mkdirSync(path8.dirname(file), { recursive: true });
+    fs7.appendFileSync(file, line);
   } catch {
   }
 }
-function pruneOldLedgers(dir) {
+if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  recordHookEvent(process.argv[2] || "Unknown", {});
+}
+
+// src/continuity-core.ts
+var MAX_CAPTURE_DELTA_BYTES = 64 * 1024 * 1024;
+var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
+function parseJsonArray(raw, fallback = []) {
+  if (typeof raw !== "string") return fallback;
   try {
-    const now = Date.now();
-    for (const f of fs6.readdirSync(dir)) {
-      if (!f.endsWith(".json")) continue;
-      const fp = path5.join(dir, f);
-      try {
-        if (now - fs6.statSync(fp).mtimeMs > TTL_MS) fs6.unlinkSync(fp);
-      } catch {
-      }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function ensureSessionMemoryState(db, input) {
+  const now = input.now ?? (/* @__PURE__ */ new Date()).toISOString();
+  const identity = resolveProjectWorkspace(db, {
+    cwd: input.project,
+    branch: input.branch,
+    now
+  });
+  const existing = db.prepare(`
+    SELECT workstream_id, context_epoch, project, project_id, workspace_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(input.sessionId);
+  if (existing) {
+    if (existing.project_id && existing.project_id !== identity.projectId) {
+      throw new Error("session project identity does not match resolved logical project");
     }
-  } catch {
+    db.prepare(`
+      UPDATE session_memory_state
+      SET project = ?, project_id = ?, workspace_id = ?, last_source = ?, updated_at = ?
+      WHERE session_id = ?
+    `).run(input.project, identity.projectId, identity.workspaceId, input.source ?? null, now, input.sessionId);
+    db.prepare(`
+      INSERT INTO workstream_sessions
+        (session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
+      VALUES (?, ?, ?, 'resume-exact', 1.0, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        binding_reason = 'resume-exact',
+        binding_confidence = 1.0,
+        bound_at = excluded.bound_at
+    `).run(input.sessionId, existing.workstream_id, identity.workspaceId, now);
+    return {
+      workstreamId: existing.workstream_id,
+      contextEpoch: existing.context_epoch,
+      projectId: identity.projectId,
+      workspaceId: identity.workspaceId
+    };
   }
+  const binding = bindSessionWorkstream(db, {
+    sessionId: input.sessionId,
+    projectId: identity.projectId,
+    workspaceId: identity.workspaceId,
+    projectPath: input.project,
+    explicitWorkstreamId: input.explicitWorkstreamId,
+    branch: input.branch,
+    prompt: input.prompt,
+    now
+  });
+  db.prepare("UPDATE session_memory_state SET last_source = ? WHERE session_id = ?").run(input.source ?? null, input.sessionId);
+  return {
+    workstreamId: binding.workstreamId,
+    contextEpoch: 0,
+    projectId: identity.projectId,
+    workspaceId: identity.workspaceId
+  };
+}
+function readResidentFactRevisions(db, sessionId) {
+  const row = db.prepare(`
+    SELECT context_epoch, resident_fact_revisions_json, carry_fact_revisions_json
+    FROM session_memory_state WHERE session_id = ?
+  `).get(sessionId);
+  return {
+    contextEpoch: Number(row?.context_epoch ?? 0),
+    resident: parseJsonArray(row?.resident_fact_revisions_json),
+    carry: parseJsonArray(row?.carry_fact_revisions_json)
+  };
+}
+function recordResidentFactRevisions(db, sessionId, contextEpoch, revisions, now = (/* @__PURE__ */ new Date()).toISOString()) {
+  const current = readResidentFactRevisions(db, sessionId);
+  if (current.contextEpoch !== contextEpoch) return false;
+  const map = new Map(current.resident.map((entry) => [entry[0], entry]));
+  for (const entry of revisions) {
+    if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[0] !== "string" || !Number.isInteger(entry[1]) || !Number.isInteger(entry[2])) continue;
+    map.set(entry[0], entry);
+  }
+  const bounded = [...map.values()].slice(-400);
+  return db.prepare(`
+    UPDATE session_memory_state
+    SET resident_fact_revisions_json = ?, updated_at = ?
+    WHERE session_id = ? AND context_epoch = ?
+  `).run(JSON.stringify(bounded), now, sessionId, contextEpoch).changes === 1;
+}
+function readResidentRevisionCorrections(db, sessionId) {
+  const { resident } = readResidentFactRevisions(db, sessionId);
+  if (resident.length === 0) return [];
+  const rows = db.prepare(`
+    SELECT id, fact, category, semantic_generation, lifecycle_generation, is_active
+    FROM facts WHERE id IN (${resident.map(() => "?").join(",")})
+  `).all(...resident.map(([id]) => id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const previous = db.prepare(`
+    SELECT previous_fact FROM fact_revisions
+    WHERE fact_id = ? AND previous_fact IS NOT NULL AND previous_fact <> ''
+    ORDER BY chronicle_seq DESC LIMIT 1
+  `);
+  const corrections = [];
+  for (const [id, semantic, lifecycle] of resident) {
+    const row = byId.get(id);
+    if (!row) continue;
+    if (Number(row.semantic_generation) === semantic && Number(row.lifecycle_generation) === lifecycle) continue;
+    const prior = row.is_active === 1 ? previous.get(id)?.previous_fact ?? null : null;
+    corrections.push({
+      ...row,
+      semantic_generation: Number(row.semantic_generation),
+      lifecycle_generation: Number(row.lifecycle_generation),
+      is_active: Number(row.is_active),
+      previous_fact: prior
+    });
+  }
+  corrections.sort((a, b2) => a.id.localeCompare(b2.id));
+  return corrections;
+}
+function readWorkCapsule(db, workstreamId) {
+  const row = db.prepare(`
+    SELECT * FROM work_capsules WHERE workstream_id = ?
+  `).get(workstreamId);
+  if (!row) return null;
+  return {
+    workstreamId,
+    generation: Number(row.generation),
+    objective: String(row.objective),
+    currentState: String(row.current_state),
+    verifiedProgress: parseJsonArray(row.verified_progress_json),
+    hypotheses: parseJsonArray(row.hypotheses_json),
+    blockers: parseJsonArray(row.blockers_json),
+    openQuestions: parseJsonArray(row.open_questions_json),
+    nextActions: parseJsonArray(row.next_actions_json),
+    touchedAreas: parseJsonArray(row.touched_areas_json),
+    carryFactRevisions: parseJsonArray(row.carry_fact_revisions_json),
+    sourceExchangeIds: parseJsonArray(row.source_exchange_ids_json),
+    throughCheckpointId: row.through_checkpoint_id ? String(row.through_checkpoint_id) : null,
+    authority: "context-only",
+    sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
+    sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
+    updatedAt: String(row.updated_at)
+  };
+}
+
+// src/recall-gate.ts
+var DEFAULT_RECALL_GATE_CONFIG = {
+  ackMaxTokens: 4,
+  safetyRefreshInterval: 6,
+  driftJaccard: 0.12,
+  driftMinTokens: 5,
+  coverageMinTokens: 8,
+  coherentMargin: 0.08,
+  substantiveMinTokens: 5,
+  lexicalCoherentJaccard: 0.35
+};
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "to",
+  "of",
+  "and",
+  "or",
+  "in",
+  "on",
+  "for",
+  "is",
+  "are",
+  "it",
+  "this",
+  "that",
+  "with",
+  "be",
+  "as",
+  "at",
+  "by",
+  "we",
+  "i",
+  "you",
+  "do",
+  "can",
+  "please",
+  "let",
+  "me",
+  "us",
+  "our",
+  "my",
+  "your",
+  "\uC740",
+  "\uB294",
+  "\uC774",
+  "\uAC00",
+  "\uC744",
+  "\uB97C",
+  "\uC5D0",
+  "\uC758",
+  "\uB85C",
+  "\uC73C\uB85C",
+  "\uC640",
+  "\uACFC",
+  "\uB3C4",
+  "\uC880",
+  "\uADF8",
+  "\uC800",
+  "\uAC83",
+  "\uC218",
+  "\uD574",
+  "\uD574\uC918",
+  "\uD558\uC790",
+  "\uD574\uC694",
+  "\uD569\uB2C8\uB2E4",
+  "\uC788\uC5B4",
+  "\uC5C6\uC5B4",
+  "\uADF8\uB9AC\uACE0",
+  "\uB610",
+  "\uADF8\uB7FC"
+]);
+var ACK_PATTERNS = [
+  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$/i,
+  /^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$/
+];
+var CONTINUE_PATTERNS = [
+  /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
+  /^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$/,
+  /^(가자|고|해줘|해봐|ㄱ)[.! ~]*$/
+];
+var MINOR_CORRECTION_PATTERNS = [
+  /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
+  /^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)/
+];
+var MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\b|\bbefore\b|\bearlier\b|\brepeat(ed|ing)?\b|\bagain\b|\bremember\b|\brecall\b|\bwhat did we\b|\bwhat was\b|\bhow did\b|\bwhere did\b|\borigin\b|\bdecided\b|왜|언제|이전|예전|과거|전에|기록|출처|근거|이유|히스토리|history|반복|또\s*(그|이)|기억|다시|했었|였었|결정했|정했|바꿨|변경했|어디서)/i;
+var TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
+var HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
+var KR_SUFFIX = /(해주세요|해줘요|합니다|하세요|했어요|해요|해줘|해봐|하자|할까|했어|했다|한다|해서|에서|에게|한테|으로|까지|부터|처럼|이랑|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$/u;
+function normalizeToken(token) {
+  if (!/[\u3131-\uD79D]/u.test(token)) return token;
+  const stripped = token.replace(KR_SUFFIX, "");
+  return stripped.length >= 2 ? stripped : token;
+}
+function tokenizePrompt(text) {
+  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_.-]+/u).map((token) => token.replace(/^[.-]+|[.-]+$/g, "")).filter((token) => token.length >= 2 && !STOPWORDS.has(token)).map(normalizeToken).filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+  return [...new Set(tokens2)];
+}
+function jaccard2(a, b2) {
+  const left = new Set(a);
+  const right = new Set(b2);
+  if (left.size === 0 || right.size === 0) return 0;
+  let overlap = 0;
+  for (const token of left) if (right.has(token)) overlap++;
+  return overlap / (left.size + right.size - overlap);
+}
+var ACK_WORDS = /* @__PURE__ */ new Set([
+  "ok",
+  "okay",
+  "k",
+  "yes",
+  "yep",
+  "yeah",
+  "no",
+  "nope",
+  "sure",
+  "thanks",
+  "thank",
+  "thx",
+  "ty",
+  "cool",
+  "great",
+  "nice",
+  "good",
+  "got",
+  "understood",
+  "done",
+  "fine",
+  "alright",
+  "perfect",
+  "right",
+  "awesome",
+  "\uC751",
+  "\uB124",
+  "\uB135",
+  "\uB139",
+  "\uC608",
+  "\uC544\uB2C8",
+  "\uC544\uB2C8\uC694",
+  "\uACE0\uB9C8\uC6CC",
+  "\uACE0\uB9C8\uC6CC\uC694",
+  "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
+  "\uAC10\uC0AC",
+  "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
+  "\uAC10\uC0AC\uD574\uC694",
+  "\uC88B\uC544",
+  "\uC88B\uC544\uC694",
+  "\uC88B\uB124",
+  "\uC88B\uC2B5\uB2C8\uB2E4",
+  "\uC54C\uACA0\uC5B4",
+  "\uC54C\uACA0\uC5B4\uC694",
+  "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
+  "\uC624\uCF00\uC774",
+  "\u3147\u314B",
+  "\u3147\u3147",
+  "\uAD7F",
+  "\uB9DE\uC544",
+  "\uB9DE\uC544\uC694",
+  "\uADF8\uB798",
+  "\uADF8\uB798\uC694",
+  "\uD655\uC778"
+]);
+var CONTINUE_WORDS = /* @__PURE__ */ new Set([
+  "continue",
+  "go",
+  "on",
+  "keep",
+  "going",
+  "next",
+  "proceed",
+  "carry",
+  "ahead",
+  "resume",
+  "\uACC4\uC18D",
+  "\uACC4\uC18D\uD574",
+  "\uACC4\uC18D\uD574\uC918",
+  "\uACC4\uC18D\uD574\uC918\uC694",
+  "\uACC4\uC18D\uD574\uC8FC\uC138\uC694",
+  "\uACC4\uC18D\uD558\uC790",
+  "\uC9C4\uD589",
+  "\uC9C4\uD589\uD574",
+  "\uC9C4\uD589\uD574\uC918",
+  "\uC9C4\uD589\uD574\uC8FC\uC138\uC694",
+  "\uC9C4\uD589\uD560\uAC8C",
+  "\uC9C4\uD589\uD560\uAC8C\uC694",
+  "\uB2E4\uC74C",
+  "\uB2E4\uC74C\uC73C\uB85C",
+  "\uB118\uC5B4\uAC00\uC790",
+  "\uB118\uC5B4\uAC00\uC694",
+  "\uB118\uC5B4\uAC00",
+  "\uC774\uC5B4\uC11C",
+  "\uC774\uC5B4",
+  "\uAC00\uC790",
+  "\uD574\uC918",
+  "\uD574\uC8FC\uC138\uC694",
+  "\uD574\uBD10",
+  "\u3131\u3131"
+]);
+var FILLER_WORDS = /* @__PURE__ */ new Set([
+  "you",
+  "it",
+  "that",
+  "this",
+  "the",
+  "and",
+  "then",
+  "now",
+  "please",
+  "let",
+  "lets",
+  "s",
+  "do",
+  "for",
+  "with",
+  "sounds",
+  "looks",
+  "work",
+  "job",
+  "well",
+  "really",
+  "very",
+  "much",
+  "so",
+  "all",
+  "too",
+  "\uC800",
+  "\uADF8",
+  "\uC880",
+  "\uC694",
+  "\uB124\uC694",
+  "\uC785\uB2C8\uB2E4",
+  "\uC774\uC81C",
+  "\uADF8\uB7FC",
+  "\uADF8\uB7EC\uBA74",
+  "\uC77C\uB2E8"
+]);
+function detectPromptIntents(prompt) {
+  const trimmed = prompt.trim();
+  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+  const allAck = rawTokens.length > 0 && rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || FILLER_WORDS.has(token));
+  const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && rawTokens.some((token) => ACK_WORDS.has(token));
+  const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && !acknowledgement && rawTokens.some((token) => CONTINUE_WORDS.has(token));
+  return {
+    memory: MEMORY_INTENT.test(trimmed),
+    trace: TRACE_INTENT.test(trimmed),
+    highImpact: HIGH_IMPACT_INTENT.test(trimmed),
+    acknowledgement,
+    continuation
+  };
+}
+function cosineSimilarity(a, b2) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b2.length);
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b2[i];
+    na += a[i] * a[i];
+    nb += b2[i] * b2[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+function decideRecall(input) {
+  const config2 = { ...DEFAULT_RECALL_GATE_CONFIG, ...input.config ?? {} };
+  const tokens2 = tokenizePrompt(input.prompt);
+  const intents = detectPromptIntents(input.prompt);
+  const triggers = [];
+  const fingerprint = input.state.topicFingerprint;
+  const topicOverlap = fingerprint.length > 0 ? jaccard2(tokens2, fingerprint) : null;
+  const substantive = !(intents.acknowledgement || intents.continuation) && (tokens2.length >= config2.substantiveMinTokens || intents.memory || intents.highImpact);
+  const base = (action, skipReason = null) => ({
+    action,
+    triggers,
+    skipReason,
+    intents,
+    tokens: tokens2,
+    substantive,
+    topicOverlap
+  });
+  if (input.prompt.trim().length === 0) return base("skip", "empty_prompt");
+  if (intents.memory) triggers.push("explicit_memory_intent");
+  if (input.incidentMatched) triggers.push("incident_signature_match");
+  if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
+  if (input.residentRevisionStale) triggers.push("resident_revision_stale");
+  if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
+  if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
+    triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
+  }
+  if (triggers.length > 0) return base("retrieve");
+  if ((intents.acknowledgement || intents.continuation) && tokens2.length <= config2.ackMaxTokens) {
+    return base("skip", intents.acknowledgement ? "acknowledgement" : "continuation");
+  }
+  if (!substantive && MINOR_CORRECTION_PATTERNS.some((pattern) => pattern.test(input.prompt.trim())) && tokens2.length <= config2.ackMaxTokens + 2) {
+    return base("skip", "minor_correction");
+  }
+  if (intents.highImpact) triggers.push("high_impact_intent");
+  if (input.state.informativePromptsSinceRetrieval >= config2.safetyRefreshInterval) triggers.push("safety_refresh");
+  if (topicOverlap !== null && tokens2.length >= config2.driftMinTokens && topicOverlap < config2.driftJaccard) {
+    triggers.push("topic_drift");
+  }
+  if (tokens2.length >= config2.coverageMinTokens && input.state.residentTokens.size > 0) {
+    let covered = 0;
+    for (const token of tokens2) if (input.state.residentTokens.has(token)) covered++;
+    if (covered === 0) triggers.push("low_resident_coverage");
+  }
+  if (triggers.length > 0) return base("retrieve");
+  if (!substantive && topicOverlap !== null && topicOverlap >= 0.3) return base("skip", "continuation");
+  if (topicOverlap !== null && topicOverlap >= config2.lexicalCoherentJaccard) return base("skip", "coherent_topic");
+  if (!input.state.hasTopicEmbedding) {
+    triggers.push("no_topic_embedding");
+    return base("retrieve");
+  }
+  return base("ambiguous");
+}
+function resolveAmbiguousDecision(decision, promptEmbedding, topicEmbedding, baseline, config2 = {}) {
+  const merged = { ...DEFAULT_RECALL_GATE_CONFIG, ...config2 };
+  if (!topicEmbedding) {
+    return { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
+  }
+  const similarity = cosineSimilarity(promptEmbedding, topicEmbedding);
+  if (similarity - baseline >= merged.coherentMargin) {
+    return { ...decision, action: "skip", skipReason: "coherent_topic" };
+  }
+  return { ...decision, action: "retrieve", triggers: [...decision.triggers, "embedding_drift"], skipReason: null };
+}
+function embeddingToBlob(embedding) {
+  return Buffer.from(new Float32Array(embedding).buffer);
+}
+function blobToEmbedding(blob) {
+  if (!blob || !(blob instanceof Buffer) || blob.byteLength === 0) return null;
+  const view = new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
+  return Array.from(view);
+}
+
+// src/memory-bundle.ts
+var BUNDLE_SECTION_ORDER = [
+  "CORRECTION",
+  "WORK NOW",
+  "CURRENT TRUTH",
+  "WATCH",
+  "TRACE",
+  "RECENT EVIDENCE",
+  "ASSISTANT CONTEXT"
+];
+var BUNDLE_HEADINGS = {
+  CORRECTION: "[MEMEX CORRECTION]",
+  "WORK NOW": "[WORK NOW]",
+  "CURRENT TRUTH": "[CURRENT TRUTH]",
+  WATCH: "[WATCH \u2014 VERIFIED INCIDENT PATTERN]",
+  TRACE: "[TRACE \u2014 HISTORY AVAILABLE]",
+  "RECENT EVIDENCE": "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]",
+  "ASSISTANT CONTEXT": "[ASSISTANT CONTEXT-ONLY \u2014 NOT AUTHORITATIVE]"
+};
+var NORMAL_BUNDLE_BUDGET = {
+  target: 700,
+  hard: 1e3,
+  lineChars: 160,
+  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 }
+};
+function normalizeLine(text, cap) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > cap ? flat.slice(0, cap - 1) + "\u2026" : flat;
+}
+function renderMemoryBundle(sections, budget) {
+  const byKind = new Map(sections.map((section) => [section.kind, section]));
+  const blocks = [];
+  const report = [];
+  let used = 0;
+  let truncated = false;
+  for (const kind of BUNDLE_SECTION_ORDER) {
+    const section = byKind.get(kind);
+    if (!section || section.items.length === 0) continue;
+    const maxItems = budget.maxItems[kind] ?? section.items.length;
+    const heading = BUNDLE_HEADINGS[kind];
+    const accepted = [];
+    const emitted = [];
+    for (const item of section.items) {
+      if (emitted.length >= maxItems) {
+        truncated = true;
+        break;
+      }
+      const line = item.raw ? item.text.trim().slice(0, budget.hard) : `- ${normalizeLine(item.text, budget.lineChars)}`;
+      const prospective = item.raw && accepted.length === 0 && line.startsWith("[") ? line : `${heading}
+${[...accepted, line].join("\n")}`;
+      const separator = blocks.length > 0 ? 2 : 0;
+      if (used + separator + prospective.length > budget.hard) {
+        truncated = true;
+        break;
+      }
+      if (used + separator + prospective.length > budget.target && line.length > budget.lineChars / 2 && accepted.length > 0) {
+        truncated = true;
+        break;
+      }
+      accepted.push(line);
+      emitted.push(item);
+    }
+    if (accepted.length === 0) continue;
+    const block = accepted.length === 1 && section.items[0]?.raw && accepted[0].startsWith("[") ? accepted[0] : `${heading}
+${accepted.join("\n")}`;
+    used += (blocks.length > 0 ? 2 : 0) + block.length;
+    blocks.push(block);
+    report.push({ kind, emitted, chars: block.length });
+  }
+  const text = blocks.join("\n\n");
+  return { text, chars: text.length, sections: report, truncated };
+}
+function estimateTokens(chars) {
+  return Math.ceil(chars / 3);
 }
 
 // src/inject-core.ts
+function sampleTelemetry(db, input) {
+  try {
+    recordTelemetrySample(db, input);
+  } catch {
+  }
+}
 var TOP_K = 5;
 var BASELINE_MARGIN = 0.045;
 var MAX_CONTEXT_FACTS = 8;
-var FACT_CHAR_CAP = 160;
-var BLOCK_CHAR_BUDGET = 1e3;
 var REPEAT_ELAPSED_BUDGET_MS = 700;
-function truncateFact(text) {
-  const t = text.replace(/\s+/g, " ").trim();
-  return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + "\u2026" : t;
-}
-async function computeInjectContext(userPrompt, project, via, sessionId) {
-  const t0 = Date.now();
-  if (!userPrompt || userPrompt.length < 20) {
-    appendInjectLog({
-      status: "skipped",
-      project,
-      prompt_len: userPrompt?.length ?? 0,
-      via
-    });
-    return "";
+var WATCH_TTL_PROMPTS = 5;
+var TOPIC_FINGERPRINT_MAX = 64;
+function commitInjectionState(db, input) {
+  const write = () => {
+    const receipt = recordRecallEvent(db, input);
+    if (!receipt) throw new Error("Failed to persist prepared recall receipt");
+    if (!recordResidentFactRevisions(db, input.sessionId, input.contextEpoch, input.revisions)) {
+      throw new Error("context epoch changed before residency commit");
+    }
+    if (input.markProjectRevision && !markSessionProjectRevisionSeen(db, input.sessionId, input.projectMemoryRevision)) {
+      throw new Error("project memory revision changed before injection commit");
+    }
+  };
+  if (typeof db.transaction !== "function") {
+    write();
+    return;
   }
+  const tx = db.transaction(write);
+  if (db.inTransaction) tx();
+  else tx.immediate();
+}
+function canQuery(db) {
+  return typeof db.prepare === "function";
+}
+function readGateRow(db, sessionId) {
+  if (!canQuery(db)) return null;
+  return db.prepare(`
+    SELECT context_epoch, last_source, capsule_generation_seen, memory_revision_seen,
+           topic_fingerprint_json, topic_embedding, informative_prompts_since_retrieval,
+           last_retrieval_epoch, last_retrieval_at, watch_emitted_json, resident_fact_revisions_json, workstream_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(sessionId) ?? null;
+}
+function parseJson(raw, fallback) {
+  if (typeof raw !== "string" || raw === "") return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+function noteSkippedPrompt(db, sessionId, substantive, now) {
+  if (!substantive || !canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET informative_prompts_since_retrieval = informative_prompts_since_retrieval + 1, updated_at = ?
+    WHERE session_id = ?
+  `).run(now, sessionId);
+}
+function commitGateState(db, input) {
+  if (!canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET topic_fingerprint_json = COALESCE(?, topic_fingerprint_json), topic_embedding = COALESCE(?, topic_embedding),
+        informative_prompts_since_retrieval = 0, last_retrieval_epoch = ?, last_retrieval_at = ?,
+        watch_emitted_json = ?, updated_at = ?
+    WHERE session_id = ?
+  `).run(
+    input.tokens ? JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)) : null,
+    input.embedding ? embeddingToBlob(input.embedding) : null,
+    input.contextEpoch,
+    input.now,
+    JSON.stringify(input.watchLedger.slice(-20)),
+    input.now,
+    input.sessionId
+  );
+}
+function markCapsuleGenerationSeen(db, sessionId, contextEpoch, generation) {
+  if (!canQuery(db)) return;
+  db.prepare("UPDATE session_memory_state SET capsule_generation_seen = ? WHERE session_id = ? AND context_epoch = ?").run(generation, sessionId, contextEpoch);
+}
+function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > cap ? t.slice(0, cap - 1) + "\u2026" : t;
+}
+async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
+  const t0 = Date.now();
+  const now = options.now ?? (/* @__PURE__ */ new Date()).toISOString();
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
@@ -20154,125 +22655,373 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
     return "";
   }
   try {
-    await initEmbeddings();
-    const embedding = await generateEmbedding(userPrompt, "query");
-    const baseline = await queryBaseline(embedding);
     const db = getSearchDb();
-    {
-      const candidates = searchFactsByScope(
-        db,
-        embedding,
-        { type: "project", project },
-        TOP_K,
-        0
-      );
-      const results = candidates.filter((r) => {
-        const similarity = l2DistanceToSimilarity(r.distance);
-        return similarity - baseline >= BASELINE_MARGIN;
-      });
-      if (results.length === 0) {
-        appendInjectLog({
-          status: "no-match",
-          project,
-          prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
-          duration_ms: Date.now() - t0,
-          via
-        });
-        return "";
+    const sessionScope = ensureSessionMemoryState(db, {
+      sessionId,
+      project,
+      prompt: userPrompt,
+      source: "UserPromptSubmit"
+    });
+    const revisionState = sessionProjectRevisionState(db, sessionId);
+    const currentProjectRevision = revisionState.current;
+    const gateRow = readGateRow(db, sessionId);
+    const capsule = readWorkCapsule(db, sessionScope.workstreamId);
+    const currentCapsuleGeneration = capsule?.generation ?? 0;
+    const capsuleGenerationSeen = Number(gateRow?.capsule_generation_seen ?? 0);
+    const residentTuples = parseJson(gateRow?.resident_fact_revisions_json, []);
+    const residentTexts = residentTuples.length > 0 && canQuery(db) ? db.prepare(`
+          SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
+        `).all(...residentTuples.map(([id]) => id)) : [];
+    const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
+    const residency = readResidentFactRevisions(db, sessionId);
+    const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
+    const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
+    const incidents = canQuery(db) ? matchIncidentPatterns(db, {
+      projectId: sessionScope.projectId,
+      text: userPrompt,
+      limit: 2
+    }) : [];
+    const statsBefore = embeddingCallStats();
+    const embeddingMetrics = () => {
+      const current = embeddingCallStats();
+      return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
+    };
+    const sampleEmbeddingMetrics = (path13, unavailable) => {
+      const { calls: calls2, hits } = embeddingMetrics();
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path13, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path13 } });
+      return calls2;
+    };
+    let embedding = null;
+    let decision = decideRecall({
+      prompt: userPrompt,
+      state: {
+        contextEpoch: sessionScope.contextEpoch,
+        lastRetrievalEpoch: Number(gateRow?.last_retrieval_epoch ?? -1),
+        lastSource: gateRow?.last_source ?? null,
+        capsuleGenerationSeen,
+        memoryRevisionSeen: revisionState.seen,
+        topicFingerprint: parseJson(gateRow?.topic_fingerprint_json, []),
+        hasTopicEmbedding: !!gateRow?.topic_embedding,
+        informativePromptsSinceRetrieval: Number(gateRow?.informative_prompts_since_retrieval ?? 0),
+        residentTokens
+      },
+      currentCapsuleGeneration,
+      currentProjectRevision,
+      incidentMatched: incidents.length > 0,
+      residentRevisionStale: revisionCorrections.length > 0,
+      config: options.gateConfig
+    });
+    if (options.gate === false) {
+      decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
+    }
+    let embeddingUnavailable = false;
+    const embedOnce = async () => {
+      try {
+        await initEmbeddings();
+        return await generateEmbedding(userPrompt, "query");
+      } catch {
+        embeddingUnavailable = true;
+        return null;
       }
-      const seenIds = new Set(results.map((r) => r.fact.id));
-      const expandedFacts = [
-        ...results.map((r) => ({ fact: r.fact, note: "" }))
-      ];
-      for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
-        for (const { fact: relFact, relation } of related) {
-          if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
-            seenIds.add(relFact.id);
-            expandedFacts.push({
-              fact: relFact,
-              note: `[${relation.relation_type}]`
-            });
-          }
-        }
+    };
+    let baseline = null;
+    if (decision.action === "ambiguous") {
+      embedding = await embedOnce();
+      if (embedding) {
+        baseline = await queryBaseline(embedding);
+        decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, options.gateConfig);
+      } else {
+        decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
       }
-      const ledger = loadLedger(sessionId);
-      const fresh = expandedFacts.filter(({ fact }) => !ledger.has(fact.id));
-      const dedupedCount = expandedFacts.length - fresh.length;
-      if (fresh.length === 0) {
-        appendInjectLog({
-          status: "deduped",
-          project,
-          prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
-          deduped: dedupedCount,
-          duration_ms: Date.now() - t0,
-          via
-        });
-        return "";
-      }
-      const lines = ["\u{1F4CC} \uAD00\uB828 \uACFC\uAC70 \uACB0\uC815:"];
-      let blockChars = lines[0].length;
-      const injectedIds = [];
-      for (const { fact, note } of fresh) {
-        const dateStr = fact.created_at.slice(0, 10);
-        const line = `- ${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
-        if (blockChars + line.length > BLOCK_CHAR_BUDGET && injectedIds.length > 0)
-          break;
-        lines.push(line);
-        blockChars += line.length + 1;
-        injectedIds.push(fact.id);
-      }
-      if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
-        try {
-          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
-            embedding,
-            db
-          });
-          let repeatCtx = formatRepeatContext(repeats);
-          if (repeatCtx) {
-            const remaining = BLOCK_CHAR_BUDGET - blockChars;
-            if (remaining <= 0) {
-            } else {
-              if (repeatCtx.length > remaining) {
-                repeatCtx = repeatCtx.slice(0, Math.max(0, remaining - 1)) + "\u2026";
-              }
-              if (repeatCtx.trim().length > 0) {
-                lines.push("");
-                lines.push(repeatCtx);
-              }
-            }
-          }
-        } catch {
-        }
-      }
-      const recallEventId = recordRecallEvent(db, {
+    }
+    if (decision.action === "skip") {
+      noteSkippedPrompt(db, sessionId, decision.substantive, now);
+      sampleTelemetry(db, {
+        metric: "retrieval_gate_skip_count",
+        value: 1,
+        projectId: sessionScope.projectId,
         sessionId,
-        project,
-        prompt: userPrompt,
-        factIds: injectedIds
+        dims: { reason: decision.skipReason, substantive: decision.substantive }
       });
-      if (!recallEventId) {
-        throw new Error("Failed to persist prepared recall receipt");
-      }
-      appendLedger(sessionId, ledger, injectedIds);
-      const block = lines.join("\n") + "\n";
+      const calls2 = sampleEmbeddingMetrics("skip", embeddingUnavailable);
       appendInjectLog({
-        status: "injected",
+        status: "skipped",
         project,
         prompt_len: userPrompt.length,
-        candidates: candidates.length,
-        injected: injectedIds.length,
-        deduped: dedupedCount,
-        chars: block.length,
+        gate: `skip:${decision.skipReason}`,
+        embedding_calls: calls2,
         duration_ms: Date.now() - t0,
         via
       });
-      return block;
+      return "";
     }
+    const needsVector = options.gate === false || decision.intents.memory || !(decision.intents.acknowledgement || decision.intents.continuation);
+    if (needsVector && !embedding && !embeddingUnavailable) embedding = await embedOnce();
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    sampleTelemetry(db, {
+      metric: "retrieval_execute_count",
+      value: 1,
+      projectId: sessionScope.projectId,
+      sessionId,
+      dims: { triggers: decision.triggers, vector: needsVector }
+    });
+    sampleTelemetry(db, { metric: "semantic_retrieval_calls", value: needsVector ? 1 : 0, projectId: sessionScope.projectId, sessionId });
+    const staleProjectMemory = currentProjectRevision > revisionState.seen;
+    if (staleProjectMemory) {
+      sampleTelemetry(db, { metric: "project_revision_invalidations", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    if (baseline === null) baseline = embedding ? await queryBaseline(embedding) : 0;
+    const watchLedger = parseJson(gateRow?.watch_emitted_json, []);
+    const informativeCounter = Number(gateRow?.informative_prompts_since_retrieval ?? 0);
+    const corrections = revisionCorrections.map((row) => ({
+      text: row.is_active === 1 ? `Updated (supersedes earlier context): [${row.category}] ${truncateFact(row.fact)}${row.previous_fact ? ` \u2014 earlier: "${truncateFact(row.previous_fact, 60)}"` : ""}` : `No longer active: ${truncateFact(row.fact)}`,
+      revision: [row.id, row.semantic_generation, row.lifecycle_generation]
+    }));
+    const correctedIds = new Set(revisionCorrections.map((row) => row.id));
+    const scope = {
+      type: "workstream-id",
+      projectId: sessionScope.projectId,
+      workspaceId: sessionScope.workspaceId,
+      workstreamId: sessionScope.workstreamId
+    };
+    const candidates = embedding ? searchFactsByScope(db, embedding, scope, TOP_K, 0) : [];
+    const results = candidates.filter((r) => {
+      const similarity = l2DistanceToSimilarity(r.distance);
+      return similarity - baseline >= BASELINE_MARGIN;
+    });
+    sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
+    const hot = readHotEvidence(db, {
+      projectId: sessionScope.projectId,
+      workstreamId: sessionScope.workstreamId,
+      excludeSessionId: sessionId,
+      afterCreatedAt: gateRow?.last_retrieval_at ?? null,
+      limit: 2
+    });
+    const seenIds = new Set(results.map((r) => r.fact.id));
+    const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
+    if (decision.intents.trace) {
+      for (const { fact } of results.slice(0, 3)) {
+        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, null, "project", scope);
+        for (const { fact: relFact, relation } of related) {
+          if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
+            seenIds.add(relFact.id);
+            expandedFacts.push({ fact: relFact, note: `[${relation.relation_type}]` });
+          }
+        }
+      }
+    }
+    const revisionOf = (fact) => [
+      fact.id,
+      fact.semantic_generation ?? 1,
+      fact.lifecycle_generation ?? 1
+    ];
+    const fresh = [];
+    let dedupedCount = 0;
+    for (const entry of expandedFacts) {
+      const [id, semantic, lifecycle] = revisionOf(entry.fact);
+      const resident = residentById.get(id);
+      if (!resident) {
+        fresh.push(entry);
+        continue;
+      }
+      if (resident[1] === semantic && resident[2] === lifecycle) {
+        dedupedCount++;
+        continue;
+      }
+      if (!correctedIds.has(id)) {
+        correctedIds.add(id);
+        corrections.push({
+          text: `Updated (supersedes earlier context): [${entry.fact.category}] ${truncateFact(entry.fact.fact)}`,
+          revision: [id, semantic, lifecycle]
+        });
+      }
+    }
+    sampleTelemetry(db, { metric: "delta_facts", value: fresh.length + corrections.length, projectId: sessionScope.projectId, sessionId });
+    const sections = [];
+    if (corrections.length > 0) {
+      sections.push({ kind: "CORRECTION", items: corrections.map((c) => ({ text: c.text, ref: c.revision })) });
+    }
+    const wantsWorkNow = !!capsule && capsule.generation > capsuleGenerationSeen;
+    let workNowRenderable = false;
+    if (wantsWorkNow && capsule) {
+      const lines = ["[WORK NOW]"];
+      if (capsule.objective) lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
+      if (capsule.currentState) lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
+      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
+      if (capsule.nextActions[0]) lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+      workNowRenderable = lines.length > 1;
+      if (workNowRenderable) sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
+    }
+    if (fresh.length > 0) {
+      sections.push({
+        kind: "CURRENT TRUTH",
+        items: fresh.map(({ fact, note }) => ({
+          text: `${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${fact.created_at.slice(0, 10)})`,
+          ref: revisionOf(fact)
+        }))
+      });
+    }
+    const hintResident = (key, changeToken, ttl) => {
+      const prior = watchLedger.find((entry) => entry.key === key);
+      if (!prior) return false;
+      const changed = changeToken > prior.lastEffectiveAt;
+      const withinTtl = prior.epoch === sessionScope.contextEpoch && prior.at + informativeCounter < ttl;
+      return !changed && withinTtl;
+    };
+    const watchItems = [];
+    for (const pattern of incidents) {
+      const key = `watch:${pattern.signatureKey}`;
+      if (hintResident(key, pattern.lastEffectiveAt, WATCH_TTL_PROMPTS)) continue;
+      watchItems.push({
+        key,
+        lastEffectiveAt: pattern.lastEffectiveAt,
+        text: `Known incident pattern (${pattern.episodeCount} verified episodes, last ${pattern.lastEffectiveAt.slice(0, 10)}): "${pattern.signatureText}"${pattern.remediationSummary ? ` \u2014 verified remediation: ${pattern.remediationSummary}` : ""}`
+      });
+    }
+    if (watchItems.length > 0) sections.push({ kind: "WATCH", items: watchItems.map((w2) => ({ text: w2.text })) });
+    const traceItems = [];
+    if ((decision.intents.trace || decision.intents.memory) && canQuery(db)) {
+      for (const { fact } of results.slice(0, 2)) {
+        if (!fact.subject_key || !fact.project_id) continue;
+        const latest = readChronicleTimeline(db, {
+          projectId: fact.project_id,
+          subjectKey: fact.subject_key,
+          order: "desc",
+          limit: 1
+        });
+        const count = db.prepare("SELECT COUNT(*) AS n FROM fact_revisions WHERE project_id = ? AND subject_key = ?").get(fact.project_id, fact.subject_key).n;
+        const event = latest.events[0];
+        if (!event || Number(count) === 0) continue;
+        const key = `trace:${fact.subject_key}`;
+        const changeToken = `${String(count).padStart(8, "0")}@${event.effective_at}`;
+        if (hintResident(key, changeToken, Number.POSITIVE_INFINITY)) continue;
+        traceItems.push({
+          key,
+          lastEffectiveAt: changeToken,
+          // Pointer first so the actionable call survives the line cap.
+          text: `trace_fact subject_key=${fact.subject_key} \u2014 ${count} Chronicle event(s), latest ${event.event_kind} effective ${event.effective_at.slice(0, 10)}${event.grounded_cause ? `; cause: ${truncateFact(event.grounded_cause, 80)}` : ""}`
+        });
+      }
+      if (traceItems.length > 0) sections.push({ kind: "TRACE", items: traceItems.map((t) => ({ text: t.text })) });
+    }
+    if (hot.length > 0) {
+      sections.push({ kind: "RECENT EVIDENCE", items: hot.map((item) => ({ text: String(item.evidence_text).slice(0, 180) })) });
+    }
+    if (embedding && fresh.length === 0 && corrections.length === 0 && decision.intents.memory && Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
+      try {
+        const repeats = await detectRepeat(userPrompt, project, 1, 0.85, { embedding, db });
+        const match = repeats[0];
+        if (match) {
+          sections.push({
+            kind: "ASSISTANT CONTEXT",
+            items: [{
+              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" \u2014 lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`
+            }]
+          });
+        }
+      } catch {
+      }
+    }
+    const rendered = renderMemoryBundle(sections, NORMAL_BUNDLE_BUDGET);
+    const emittedRevisions = [];
+    for (const section of rendered.sections) {
+      for (const item of section.emitted) if (item.ref) emittedRevisions.push(item.ref);
+    }
+    const emittedCorrections = rendered.sections.find((s) => s.kind === "CORRECTION")?.emitted.length ?? 0;
+    const correctionsComplete = emittedCorrections === corrections.length;
+    const emittedWatch = rendered.sections.find((s) => s.kind === "WATCH")?.emitted.length ?? 0;
+    const emittedTrace = rendered.sections.find((s) => s.kind === "TRACE")?.emitted.length ?? 0;
+    const emittedHints = [...watchItems.slice(0, emittedWatch), ...traceItems.slice(0, emittedTrace)];
+    const emittedWatchKeys = new Set(emittedHints.map((hint) => hint.key));
+    const promptsSinceLastRetrieval = informativeCounter + (decision.substantive ? 1 : 0);
+    const nextWatchLedger = watchLedger.filter((entry) => !emittedWatchKeys.has(entry.key)).map((entry) => ({ ...entry, at: entry.at + promptsSinceLastRetrieval }));
+    for (const hint of emittedHints) {
+      nextWatchLedger.push({ key: hint.key, epoch: sessionScope.contextEpoch, at: 0, lastEffectiveAt: hint.lastEffectiveAt });
+    }
+    const workNowEmitted = rendered.sections.some((s) => s.kind === "WORK NOW");
+    const capsuleResident = wantsWorkNow && capsule && (workNowEmitted || !workNowRenderable);
+    const fingerprintTokens = needsVector ? decision.tokens : null;
+    if (rendered.chars === 0) {
+      if (staleProjectMemory && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+        throw new Error("project memory revision changed during correction check");
+      }
+      if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
+      commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+      const calls2 = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
+      appendInjectLog({
+        status: dedupedCount > 0 ? "deduped" : "no-match",
+        project,
+        prompt_len: userPrompt.length,
+        candidates: candidates.length,
+        injected: 0,
+        deduped: dedupedCount,
+        gate: gateLabel,
+        embedding_calls: calls2,
+        duration_ms: Date.now() - t0,
+        via
+      });
+      if (dedupedCount > 0) {
+        sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+      }
+      return "";
+    }
+    const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+    if (injectedIds.length > 0) {
+      commitInjectionState(db, {
+        sessionId,
+        project,
+        prompt: userPrompt,
+        factIds: injectedIds,
+        projectId: sessionScope.projectId,
+        workspaceId: sessionScope.workspaceId,
+        workstreamId: sessionScope.workstreamId,
+        contextEpoch: residency.contextEpoch,
+        projectMemoryRevision: currentProjectRevision,
+        revisions: emittedRevisions,
+        markProjectRevision: !staleProjectMemory || correctionsComplete
+      });
+    } else if (staleProjectMemory && correctionsComplete && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+      throw new Error("project memory revision changed before injection commit");
+    }
+    commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+    if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
+    const block = rendered.text + "\n";
+    const sectionKinds = rendered.sections.map((s) => s.kind);
+    const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
+    sampleTelemetry(db, { metric: "injected_facts", value: injectedIds.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "estimated_tokens", value: estimateTokens(block.length), unit: "tokens", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "bundle_size", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { kind: "normal", sections: sectionKinds } });
+    for (const section of rendered.sections) {
+      sampleTelemetry(db, { metric: "section_chars", value: section.chars, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { section: section.kind } });
+    }
+    if (emittedCorrections > 0) {
+      sampleTelemetry(db, { metric: "correction_count", value: emittedCorrections, projectId: sessionScope.projectId, sessionId, dims: { path: staleProjectMemory ? "project_revision" : "revision_delta" } });
+      sampleTelemetry(db, { metric: "correction_delay_prompts", value: informativeCounter, projectId: sessionScope.projectId, sessionId });
+    }
+    if (emittedWatch > 0) {
+      sampleTelemetry(db, { metric: "watch_emissions", value: emittedWatch, projectId: sessionScope.projectId, sessionId, dims: { keys: watchItems.slice(0, emittedWatch).map((w2) => w2.key) } });
+    }
+    if (dedupedCount > 0) {
+      sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    appendInjectLog({
+      status: "injected",
+      project,
+      prompt_len: userPrompt.length,
+      candidates: candidates.length,
+      injected: injectedIds.length,
+      deduped: dedupedCount,
+      chars: block.length,
+      gate: gateLabel,
+      embedding_calls: calls,
+      sections: sectionKinds,
+      duration_ms: Date.now() - t0,
+      via
+    });
+    return block;
   } catch (error2) {
     const message = error2 instanceof Error ? error2.message : String(error2);
     appendInjectLog({
@@ -20289,7 +23038,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId) {
 
 // src/inject-daemon.ts
 function injectSocketPath() {
-  return path6.join(getIndexDir(), "inject-daemon.sock");
+  return path9.join(getIndexDir(), "inject-daemon.sock");
 }
 function startInjectDaemon() {
   ensureIndexDir();
@@ -20333,7 +23082,7 @@ function startInjectDaemon() {
     probe.on("connect", () => probe.destroy());
     probe.on("error", () => {
       try {
-        fs7.unlinkSync(sockPath);
+        fs8.unlinkSync(sockPath);
         server2.listen(sockPath, onListen);
       } catch {
       }
@@ -20341,7 +23090,7 @@ function startInjectDaemon() {
   });
   const onListen = () => {
     try {
-      fs7.chmodSync(sockPath, 384);
+      fs8.chmodSync(sockPath, 384);
     } catch {
     }
     void initEmbeddings().catch(() => {
@@ -21826,19 +24575,8 @@ ${JSON.stringify(value, null, 2)}
   return output;
 }
 
-// src/project-identity.ts
-import path7 from "node:path";
-function canonicalizeProjectPath(cwd) {
-  if (typeof cwd !== "string") return "";
-  let p = cwd.trim();
-  if (!p) return "";
-  if (!path7.isAbsolute(p)) p = path7.resolve("/", p);
-  const resolved = path7.normalize(p);
-  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
-}
-
 // src/llm.ts
-import path9 from "node:path";
+import path11 from "node:path";
 import os4 from "node:os";
 
 // src/llm-error-class.ts
@@ -21894,9 +24632,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import os3 from "node:os";
-import path8 from "node:path";
+import path10 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 function buildPrompt(systemPrompt, userMessage) {
@@ -22039,8 +24777,8 @@ async function runCodex(opts = {}) {
   }
   const bin = opts.codexBin || process.env.MEMEX_CODEX_BIN || "codex";
   const timeoutMs = opts.timeoutMs ?? 18e4;
-  const workdir = fs8.mkdtempSync(path8.join(os3.tmpdir(), "memex-llm-"));
-  const outPath = path8.join(workdir, "last-message.txt");
+  const workdir = fs9.mkdtempSync(path10.join(os3.tmpdir(), "memex-llm-"));
+  const outPath = path10.join(workdir, "last-message.txt");
   const started = performance.now();
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
@@ -22048,7 +24786,7 @@ async function runCodex(opts = {}) {
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
     let text = "";
     try {
-      text = fs8.readFileSync(outPath, "utf8").trim();
+      text = fs9.readFileSync(outPath, "utf8").trim();
     } catch {
     }
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
@@ -22067,12 +24805,12 @@ async function runCodex(opts = {}) {
     }
     return text;
   } finally {
-    fs8.rmSync(workdir, { recursive: true, force: true });
+    fs9.rmSync(workdir, { recursive: true, force: true });
   }
 }
 
 // src/llm.ts
-var LLM_WORKDIR = path9.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path11.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -22196,11 +24934,11 @@ You represent their past engineering decisions, preferences, and patterns.
 - 0.7-0.9: inferred from related decisions
 - 0.5-0.7: weak inference, needs verification
 - below 0.5: not enough information`;
-async function askAvatar(db, question, project, scope) {
+async function askAvatar(db, question, project, scope, identityScope) {
   await initEmbeddings();
   const questionEmbedding = await generateEmbedding(question, "query");
   const scopeProject = project ?? null;
-  const factScope = scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" };
+  const factScope = identityScope ?? (scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" });
   const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
   if (vectorResults.length === 0) {
     return {
@@ -22219,7 +24957,7 @@ async function askAvatar(db, question, project, scope) {
   const relatedDecisions = [];
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope);
+    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope, identityScope);
     for (const { fact: relFact, relation } of related) {
       if (scope === "global" && relFact.scope_type !== "global") continue;
       if (!expandedFactIds.has(relFact.id)) {
@@ -22295,10 +25033,11 @@ async function askAvatar(db, question, project, scope) {
 }
 
 // src/mcp-server.ts
-import path10 from "path";
-import fs9 from "fs";
+import path12 from "path";
+import fs10 from "fs";
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
+var ContinuityScopeEnum = external_exports.enum(["project", "workspace", "workstream", "session", "global", "all"]);
 var SearchInputSchema = external_exports.object({
   query: external_exports.union([
     external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
@@ -22312,6 +25051,11 @@ var SearchInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd. When provided, RAG knowledge-context facts are scoped to this project + global; without it, no fact context is attached implicitly."
   ),
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional(),
   limit: external_exports.number().int().min(1).max(50).default(10).describe("Maximum number of results to return (default: 10)"),
   after: external_exports.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be in YYYY-MM-DD format").optional().describe(
     "Only return conversations after this date (YYYY-MM-DD format)"
@@ -22332,15 +25076,21 @@ var ShowConversationInputSchema = external_exports.object({
     "Ending line number (1-indexed, inclusive). Omit to read to end."
   )
 }).strict();
-var ScopeEnum = external_exports.enum(["project", "global", "all"]);
 var SearchFactsInputSchema = external_exports.object({
   query: external_exports.string().min(2, "Query must be at least 2 characters").max(1e4, "Query too long (max 10000 chars)"),
   project: external_exports.string().max(500).optional().describe(
-    "Canonical absolute Codex thread cwd (required unless scope is global/all)"
+    "Legacy canonical cwd compatibility key for project scope; prefer project_id"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope. Project accepts project_id or legacy canonical path."
   ),
+  include_hot_evidence: external_exports.boolean().default(false),
+  hot_before: external_exports.string().datetime().optional(),
+  hot_before_evidence_id: external_exports.string().max(128).optional(),
   category: external_exports.enum(["decision", "preference", "pattern", "knowledge", "constraint"]).optional(),
   include_revisions: external_exports.boolean().default(false),
   limit: external_exports.number().int().min(1).max(50).default(10)
@@ -22352,8 +25102,12 @@ var SearchOntologyInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd (required unless scope is global/all)"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope"
   )
 }).strict();
 var AskAvatarInputSchema = external_exports.object({
@@ -22361,29 +25115,119 @@ var AskAvatarInputSchema = external_exports.object({
   project: external_exports.string().max(500).optional().describe(
     "Canonical absolute Codex thread cwd (required unless scope is global/all)"
   ),
-  scope: ScopeEnum.optional().describe(
-    '"project" (default, requires project), "global" (global facts only), or "all"'
+  project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+  workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+  scope: ContinuityScopeEnum.optional().describe(
+    "Explicit project/workspace/workstream/session/global/all scope"
   )
 }).strict();
-function toFactSearchScope(resolved) {
-  if (resolved.scope === "global") return { type: "global" };
-  if (resolved.scope === "all") return { type: "all" };
-  return { type: "project", project: resolved.project };
-}
-function resolveProjectScope(raw, tool, field = "project") {
+function resolveStableScope(db, raw, tool) {
   const scope = raw.scope ?? "project";
-  if (scope === "global" || scope === "all") return { project: null, scope };
-  const value = (field === "current_project" ? raw.current_project : raw.project) ?? "";
-  if (!value.trim()) {
-    throw new Error(
-      JSON.stringify({
-        error: `${tool}: ${field} is required for project-scoped queries`,
-        expected: 'canonical absolute Codex thread cwd (session_meta.cwd), or scope: "global" | "all"',
-        example: { [field]: "/Users/me/work/app-a" }
-      })
-    );
+  if (scope === "global" || scope === "all") {
+    if (raw.project || raw.project_id || raw.workspace_id || raw.workstream_id || raw.session_id) {
+      throw new Error(`${tool}: ${scope} scope cannot be combined with project/workspace/workstream/session identity`);
+    }
+    return {
+      factScope: scope === "global" ? { type: "global" } : { type: "all" },
+      scope,
+      projectId: null,
+      workspaceId: null,
+      workstreamId: null,
+      sessionId: null,
+      legacyProject: null,
+      label: scope
+    };
   }
-  return { project: canonicalizeProjectPath(value.trim()), scope };
+  if (scope !== "project" && raw.project) {
+    throw new Error(`${tool}: legacy project path cannot be combined with ${scope} scope; use stable IDs`);
+  }
+  if (scope === "session") {
+    if (!raw.session_id) throw new Error(`${tool}: session_id is required for session scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, workstream_id, project
+      FROM session_memory_state WHERE session_id = ?
+    `).get(raw.session_id);
+    if (!row?.project_id) throw new Error(`${tool}: unknown session_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: session_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: session_id is outside workspace_id`);
+    if (raw.workstream_id && raw.workstream_id !== row.workstream_id) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "session-id", projectId: row.project_id, sessionId: raw.session_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: row.workstream_id, sessionId: raw.session_id, legacyProject: row.project, label: `session:${raw.session_id}` };
+  }
+  if (scope === "workstream") {
+    if (!raw.workstream_id) throw new Error(`${tool}: workstream_id is required for workstream scope`);
+    const row = db.prepare(`
+      SELECT project_id, workspace_id, project FROM minimal_workstreams WHERE workstream_id = ?
+    `).get(raw.workstream_id);
+    if (!row?.project_id) throw new Error(`${tool}: unknown workstream_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workstream_id is outside project_id`);
+    if (raw.workspace_id && raw.workspace_id !== row.workspace_id) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM workstream_sessions WHERE session_id = ? AND workstream_id = ?
+    `).get(raw.session_id, raw.workstream_id)) throw new Error(`${tool}: session_id is outside workstream_id`);
+    return { factScope: { type: "workstream-id", projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id }, scope, projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: raw.workstream_id, sessionId: null, legacyProject: row.project, label: `workstream:${raw.workstream_id}` };
+  }
+  if (scope === "workspace") {
+    if (!raw.workspace_id) throw new Error(`${tool}: workspace_id is required for workspace scope`);
+    const row = db.prepare(`
+      SELECT project_id, canonical_path FROM workspaces WHERE workspace_id = ?
+    `).get(raw.workspace_id);
+    if (!row) throw new Error(`${tool}: unknown workspace_id`);
+    if (raw.project_id && raw.project_id !== row.project_id) throw new Error(`${tool}: workspace_id is outside project_id`);
+    if (raw.workstream_id && !db.prepare(`
+      SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND workspace_id = ?
+    `).get(raw.workstream_id, raw.workspace_id)) throw new Error(`${tool}: workstream_id is outside workspace_id`);
+    if (raw.session_id && !db.prepare(`
+      SELECT 1 FROM session_memory_state WHERE session_id = ? AND workspace_id = ?
+    `).get(raw.session_id, raw.workspace_id)) throw new Error(`${tool}: session_id is outside workspace_id`);
+    return { factScope: { type: "workspace-id", projectId: row.project_id, workspaceId: raw.workspace_id }, scope, projectId: row.project_id, workspaceId: raw.workspace_id, workstreamId: null, sessionId: null, legacyProject: row.canonical_path, label: `workspace:${raw.workspace_id}` };
+  }
+  let projectId = raw.project_id ?? null;
+  let legacyProject = null;
+  if (projectId) {
+    if (raw.project?.trim()) {
+      throw new Error(`${tool}: choose project_id or legacy project path, not both`);
+    }
+    const workspace = db.prepare(`
+      SELECT canonical_path FROM workspaces WHERE project_id = ? ORDER BY last_seen_at DESC LIMIT 1
+    `).get(projectId);
+    if (!db.prepare("SELECT 1 FROM projects WHERE project_id = ?").get(projectId)) {
+      throw new Error(`${tool}: unknown project_id`);
+    }
+    legacyProject = workspace?.canonical_path ?? null;
+  } else if (raw.project?.trim()) {
+    legacyProject = canonicalizeProjectPath(raw.project);
+    const known = db.prepare(`
+      SELECT project_id FROM workspaces WHERE canonical_path = ?
+      ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+    `).get(legacyProject);
+    if (!known) {
+      return {
+        factScope: { type: "project", project: legacyProject },
+        scope,
+        projectId: null,
+        workspaceId: null,
+        workstreamId: null,
+        sessionId: null,
+        legacyProject,
+        label: `legacy-project:${legacyProject}`
+      };
+    }
+    projectId = known.project_id;
+  } else {
+    throw new Error(`${tool}: project is required for project scope; provide project_id or canonical absolute project path`);
+  }
+  if (raw.workspace_id && !db.prepare("SELECT 1 FROM workspaces WHERE workspace_id = ? AND project_id = ?").get(raw.workspace_id, projectId)) {
+    throw new Error(`${tool}: workspace_id is outside project_id`);
+  }
+  if (raw.workstream_id && !db.prepare("SELECT 1 FROM minimal_workstreams WHERE workstream_id = ? AND project_id = ?").get(raw.workstream_id, projectId)) {
+    throw new Error(`${tool}: workstream_id is outside project_id`);
+  }
+  if (raw.session_id && !db.prepare("SELECT 1 FROM session_memory_state WHERE session_id = ? AND project_id = ?").get(raw.session_id, projectId)) {
+    throw new Error(`${tool}: session_id is outside project_id`);
+  }
+  return { factScope: { type: "project-id", projectId }, scope, projectId, workspaceId: null, workstreamId: null, sessionId: null, legacyProject, label: `project:${projectId}` };
 }
 function handleError(error2) {
   if (error2 instanceof Error) {
@@ -22394,7 +25238,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.3.0"
+    version: "0.4.0"
   },
   {
     capabilities: {
@@ -22406,7 +25250,7 @@ function getToolDefinitions() {
   return [
     {
       name: "search",
-      description: `Gives you memory across sessions. You don't automatically remember past conversations - this tool restores context by searching them. Use BEFORE every task to recover decisions, solutions, and avoid reinventing work. Single string for semantic search or array of 2-5 concepts for precise AND matching. Returns ranked results with project, date, snippets, and file paths.`,
+      description: `Search raw conversation evidence across sessions with optional explicit project/workspace/workstream/session scope. Single string performs semantic/text search; an array of 2-5 concepts performs precise AND matching. Stable IDs are preferred and process cwd is never inferred.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -22430,6 +25274,14 @@ function getToolDefinitions() {
             type: "string",
             maxLength: 500,
             description: "Canonical absolute cwd. When set, attached RAG fact context is scoped to this project + global."
+          },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          scope: {
+            type: "string",
+            enum: ["project", "workspace", "workstream", "session", "global", "all"]
           },
           limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
           after: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
@@ -22474,7 +25326,7 @@ function getToolDefinitions() {
     },
     {
       name: "search_facts",
-      description: "Search extracted facts from past conversations. Returns project-scoped and global facts. Facts are long-term knowledge automatically extracted and consolidated from conversations.",
+      description: "Search extracted facts with explicit project/workspace/workstream/session/global/all scope. Optionally returns separately labeled recent Hot Evidence.",
       inputSchema: {
         type: "object",
         properties: {
@@ -22487,12 +25339,16 @@ function getToolDefinitions() {
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd (session_meta.cwd). Required unless scope is global/all."
+            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global" (global facts only), or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all."
           },
           category: {
             type: "string",
@@ -22510,6 +25366,13 @@ function getToolDefinitions() {
             description: "Include revision history",
             default: false
           },
+          include_hot_evidence: {
+            type: "boolean",
+            description: "Include recent authoritative raw evidence with a NOT YET DISTILLED label",
+            default: false
+          },
+          hot_before: { type: "string", format: "date-time" },
+          hot_before_evidence_id: { type: "string", maxLength: 128 },
           limit: {
             type: "number",
             minimum: 1,
@@ -22553,10 +25416,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         additionalProperties: false
@@ -22584,12 +25451,16 @@ function getToolDefinitions() {
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+            description: "Legacy canonical cwd compatibility key for project scope; prefer project_id."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         required: ["question"],
@@ -22605,7 +25476,7 @@ function getToolDefinitions() {
     },
     {
       name: "trace_fact",
-      description: "Trace a fact to authoritative source conversations and separately labeled non-authoritative interpretive context.",
+      description: "Deep memory path: trace a current fact (by query, fact_id, or subject_key) to its Chronicle timeline (ASSERTED/CHANGED/RETIRED/RESTORED/VALIDATED/INCIDENT/CONTRADICTED), previous values and rollbacks, source-cited causes versus classifier notes, incident occurrences, and authoritative source conversations with separately labeled non-authoritative context. History is bounded and cursor-paginated.",
       inputSchema: {
         type: "object",
         properties: {
@@ -22613,17 +25484,31 @@ function getToolDefinitions() {
             type: "string",
             minLength: 2,
             maxLength: 1e4,
-            description: "Search query to find the fact to trace"
+            description: "Search query to find the fact to trace (optional when fact_id or subject_key is given)"
+          },
+          fact_id: {
+            type: "string",
+            pattern: "^[0-9a-fA-F-]{36}$",
+            description: "Exact fact UUID to trace"
+          },
+          subject_key: {
+            type: "string",
+            pattern: "^[a-z0-9_.]{3,200}$",
+            description: "Stable subject slot to trace (e.g. state.runtime.session_store)"
           },
           project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
+            description: "Legacy canonical cwd compatibility key for project scope; prefer project_id."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit project/workspace/workstream/session/global/all scope; the matching stable ID is required except for global/all."
           },
           limit: {
             type: "number",
@@ -22631,13 +25516,19 @@ function getToolDefinitions() {
             maximum: 10,
             default: 3,
             description: "Max facts to trace"
-          }
+          },
+          include_timeline: { type: "boolean", default: true, description: "Include the Chronicle timeline" },
+          timeline_limit: { type: "number", minimum: 1, maximum: 50, default: 10, description: "Events per page" },
+          timeline_cursor: { type: "string", maxLength: 512, description: "Keyset cursor from a previous page" },
+          timeline_order: { type: "string", enum: ["asc", "desc"], default: "asc", description: "Effective-time order" },
+          include_incidents: { type: "boolean", default: true, description: "Include incident occurrences and matching patterns" },
+          include_sources: { type: "boolean", default: true, description: "Include raw source evidence for each event" },
+          include_hot_evidence: { type: "boolean", default: false, description: "Append recent not-yet-distilled evidence for the scope" }
         },
-        required: ["query"],
         additionalProperties: false
       },
       annotations: {
-        title: "Trace Fact Provenance",
+        title: "Trace Fact Provenance and Chronicle",
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
@@ -22655,10 +25546,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         additionalProperties: false
@@ -22686,12 +25581,17 @@ function getToolDefinitions() {
           current_project: {
             type: "string",
             maxLength: 500,
-            description: "Canonical absolute Codex thread cwd to exclude (required)."
+            description: "Canonical absolute Codex thread cwd to exclude. Required unless current_project_id is provided."
+          },
+          current_project_id: {
+            type: "string",
+            pattern: "^[A-Za-z0-9_-]{8,128}$",
+            description: "Stable logical project ID to exclude. Required unless current_project is provided."
           },
           scope: {
             type: "string",
             enum: ["project"],
-            description: "cross_project_insights always excludes the given current_project; pass its cwd explicitly."
+            description: "cross_project_insights excludes the explicit current project identity."
           },
           limit: {
             type: "number",
@@ -22701,7 +25601,7 @@ function getToolDefinitions() {
             description: "Max results"
           }
         },
-        required: ["query", "current_project"],
+        required: ["query"],
         additionalProperties: false
       },
       annotations: {
@@ -22736,10 +25636,14 @@ function getToolDefinitions() {
             maxLength: 500,
             description: "Canonical absolute Codex thread cwd. Required unless scope is global/all."
           },
+          project_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workspace_id: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" },
+          workstream_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
+          session_id: { type: "string", pattern: "^[A-Za-z0-9_-]{4,128}$" },
           scope: {
             type: "string",
-            enum: ["project", "global", "all"],
-            description: '"project" (default, requires project), "global", or "all"'
+            enum: ["project", "workspace", "workstream", "session", "global", "all"],
+            description: "Explicit stable scope; project may use a legacy canonical path."
           }
         },
         required: ["query"],
@@ -22767,12 +25671,36 @@ async function handleToolCall(name, args) {
     if (name === "search") {
       const params = SearchInputSchema.parse(args);
       let resultText;
+      let identityScope;
+      let legacyProjectScope = params.project;
+      const hasExplicitIdentity = !!(params.scope || params.project_id || params.workspace_id || params.workstream_id || params.session_id);
+      if (hasExplicitIdentity) {
+        const identityDb = initDatabase();
+        try {
+          const resolved = resolveStableScope(identityDb, params, "search");
+          legacyProjectScope = resolved.scope === "project" && !resolved.projectId ? resolved.legacyProject ?? void 0 : void 0;
+          if (resolved.scope === "project" && resolved.projectId) {
+            identityScope = { type: "project", projectId: resolved.projectId };
+          } else if (resolved.scope === "workspace" && resolved.workspaceId) {
+            identityScope = { type: "workspace", workspaceId: resolved.workspaceId };
+          } else if (resolved.scope === "workstream" && resolved.workstreamId) {
+            identityScope = { type: "workstream", workstreamId: resolved.workstreamId };
+          } else if (resolved.scope === "session" && resolved.sessionId) {
+            identityScope = { type: "session", sessionId: resolved.sessionId };
+          } else if (resolved.scope === "global") {
+            return { content: [{ type: "text", text: "No conversation evidence exists in global fact scope." }] };
+          }
+        } finally {
+          identityDb.close();
+        }
+      }
       if (Array.isArray(params.query)) {
         const options = {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project
+          project: legacyProjectScope,
+          identityScope
         };
         const results = await searchMultipleConcepts(params.query, options);
         if (params.response_format === "json") {
@@ -22794,7 +25722,8 @@ async function handleToolCall(name, args) {
           limit: params.limit,
           after: params.after,
           before: params.before,
-          project: params.project
+          project: legacyProjectScope,
+          identityScope
         };
         const results = await searchConversations(params.query, options);
         if (params.response_format === "json") {
@@ -22837,7 +25766,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path10.resolve(params.path);
+      const resolvedPath = path12.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -22845,16 +25774,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs9.realpathSync(resolvedFile);
+      const realFile = fs10.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs9.realpathSync(root);
+          return fs10.realpathSync(root);
         } catch {
-          return path10.resolve(root);
+          return path12.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path10.sep)
+        (root) => realFile === root || realFile.startsWith(root + path12.sep)
       );
       if (!isAllowed) {
         throw new Error(
@@ -22878,21 +25807,20 @@ async function handleToolCall(name, args) {
     }
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
-      const scopeInfo = resolveProjectScope(params, "search_facts");
-      const scopeFilter = scopeInfo.scope;
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const scopeInfo = resolveStableScope(db, params, "search_facts");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const results = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(scopeInfo),
+          scopeInfo.factScope,
           params.limit,
           0.85,
           { category: params.category }
         );
-        const scopeLabel = scopeFilter === "project" ? scopeInfo.project : `${scopeFilter} facts only`;
+        const scopeLabel = scopeInfo.label;
         let output = `# Facts Search Results
 
 Query: "${params.query}"
@@ -22930,9 +25858,9 @@ Results: ${results.length}
           if (params.include_revisions) {
             const revisions = getRevisions(db, fact.id);
             if (revisions.length > 0) {
-              output += "- Revisions:\n";
+              output += "- Chronicle (use trace_fact for grounded cause vs classifier note):\n";
               for (const rev of revisions) {
-                output += `  - ${rev.created_at}: "${rev.previous_fact}" \u2192 "${rev.new_fact}" (${rev.reason})
+                output += `  - ${rev.event_kind ?? "CHANGED"} effective ${rev.effective_at ?? rev.created_at}: "${rev.previous_fact}" \u2192 "${rev.new_fact}"${rev.reason ? ` (note: ${rev.reason})` : ""}
 `;
               }
             }
@@ -22943,8 +25871,8 @@ Results: ${results.length}
             1,
             0.6,
             0.2,
-            scopeInfo.project,
-            scopeInfo.scope
+            scopeInfo.legacyProject,
+            scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project"
           );
           if (related.length > 0) {
             output += `- Related:
@@ -22954,6 +25882,26 @@ Results: ${results.length}
 `;
             }
           }
+          output += "\n";
+        }
+        if (params.include_hot_evidence && scopeInfo.projectId) {
+          const hot = readHotEvidence(db, {
+            projectId: scopeInfo.projectId,
+            workspaceId: scopeInfo.scope === "workspace" ? scopeInfo.workspaceId : null,
+            workstreamId: scopeInfo.scope === "workstream" ? scopeInfo.workstreamId : null,
+            sessionId: scopeInfo.scope === "session" ? scopeInfo.sessionId : null,
+            beforeCreatedAt: params.hot_before ?? null,
+            beforeEvidenceId: params.hot_before_evidence_id ?? null,
+            limit: params.limit
+          });
+          output += `
+## Recent Evidence \u2014 NOT YET DISTILLED (${hot.length})
+
+`;
+          output += hot.map(
+            (item) => `- [${item.source_type}] ${item.evidence_text}
+  - Cursor: ${item.created_at} / ${item.evidence_id}`
+          ).join("\n") || "_No recent evidence._";
           output += "\n";
         }
         return {
@@ -22972,10 +25920,15 @@ Results: ${results.length}
       const params = SearchOntologyInputSchema.parse(
         args
       );
-      const scopeInfo = resolveProjectScope(params, "search_ontology");
       try {
         const db = initDatabase();
-        const tree = getOntologyTree(db, scopeInfo.project, scopeInfo.scope);
+        const scopeInfo = resolveStableScope(db, params, "search_ontology");
+        const tree = getOntologyTree(
+          db,
+          scopeInfo.legacyProject,
+          scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+          scopeInfo.factScope
+        );
         const domainFilter = params.domain?.toLowerCase();
         const categoryFilter = params.category?.toLowerCase();
         const filtered = tree.filter((entry) => {
@@ -23023,8 +25976,9 @@ Results: ${results.length}
                   1,
                   0.6,
                   0.2,
-                  scopeInfo.project,
-                  scopeInfo.scope
+                  scopeInfo.legacyProject,
+                  scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
+                  scopeInfo.factScope
                 );
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
@@ -23048,14 +26002,15 @@ Results: ${results.length}
     }
     if (name === "ask_avatar") {
       const params = AskAvatarInputSchema.parse(args);
-      const avatarScope = resolveProjectScope(params, "ask_avatar");
       try {
         const db = initDatabase();
+        const avatarScope = resolveStableScope(db, params, "ask_avatar");
         const result = await askAvatar(
           db,
           params.question,
-          avatarScope.project ?? void 0,
-          avatarScope.scope
+          avatarScope.legacyProject ?? void 0,
+          avatarScope.scope === "global" || avatarScope.scope === "all" ? avatarScope.scope : "project",
+          avatarScope.factScope
         );
         db.close();
         const confidenceLabel = result.confidence >= 0.9 ? "HIGH" : result.confidence >= 0.7 ? "MEDIUM" : result.confidence >= 0.5 ? "LOW" : "INSUFFICIENT";
@@ -23102,61 +26057,142 @@ Results: ${results.length}
     }
     if (name === "trace_fact") {
       const params = external_exports.object({
-        query: external_exports.string().min(2).max(1e4),
+        query: external_exports.string().min(2).max(1e4).optional(),
+        fact_id: external_exports.string().regex(/^[0-9a-fA-F-]{36}$/).optional(),
+        subject_key: external_exports.string().regex(/^[a-z0-9_.]{3,200}$/).optional(),
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional(),
-        limit: external_exports.number().int().min(1).max(10).default(3)
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional(),
+        limit: external_exports.number().int().min(1).max(10).default(3),
+        include_timeline: external_exports.boolean().default(true),
+        timeline_limit: external_exports.number().int().min(1).max(50).default(10),
+        timeline_cursor: external_exports.string().max(512).optional(),
+        timeline_order: external_exports.enum(["asc", "desc"]).default("asc"),
+        include_incidents: external_exports.boolean().default(true),
+        include_sources: external_exports.boolean().default(true),
+        include_hot_evidence: external_exports.boolean().default(false)
       }).strict().parse(args);
-      const traceScope = resolveProjectScope(params, "trace_fact");
-      await initEmbeddings();
+      if (!params.query && !params.fact_id && !params.subject_key) {
+        return {
+          content: [{ type: "text", text: "trace_fact: provide query, fact_id, or subject_key" }],
+          isError: true
+        };
+      }
       const db = initDatabase();
       try {
-        const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchFactsByScope(
-          db,
-          queryEmbedding,
-          toFactSearchScope(traceScope),
-          params.limit,
-          0.5
-        );
+        const traceScope = resolveStableScope(db, params, "trace_fact");
+        let results = [];
+        if (params.fact_id) {
+          const row = db.prepare("SELECT * FROM facts WHERE id = ?").get(params.fact_id);
+          if (!row) {
+            return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} not found` }] };
+          }
+          const fact = rowToFact(row);
+          if (!factMatchesScope(db, fact, traceScope.factScope)) {
+            return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} is outside ${traceScope.label}` }], isError: true };
+          }
+          results = [{ fact, distance: null }];
+        } else if (params.subject_key) {
+          const rows = db.prepare(`
+            SELECT * FROM facts WHERE subject_key = ? ORDER BY is_active DESC, updated_at DESC LIMIT 50
+          `).all(params.subject_key);
+          results = rows.map(rowToFact).filter((fact) => factMatchesScope(db, fact, traceScope.factScope)).slice(0, params.limit).map((fact) => ({ fact, distance: null }));
+        } else {
+          await initEmbeddings();
+          const queryEmbedding = await generateEmbedding(params.query, "query");
+          results = searchFactsByScope(
+            db,
+            queryEmbedding,
+            traceScope.factScope,
+            params.limit,
+            0.5
+          ).map(({ fact, distance }) => ({ fact, distance }));
+        }
+        let output = `# Fact Provenance Trace
+
+Scope: ${traceScope.label}${params.query ? `
+Query: "${params.query}"` : ""}${params.subject_key ? `
+Subject: ${params.subject_key}` : ""}
+
+`;
+        output += `_Lanes: ${CHRONICLE_LANE_LABELS.currentFact} is authoritative current truth; ${CHRONICLE_LANE_LABELS.event} is append-only history; ${CHRONICLE_LANE_LABELS.rawEvidence} is source; ${CHRONICLE_LANE_LABELS.assistantContext} and ${CHRONICLE_LANE_LABELS.hotEvidence} are not fact authority._
+
+`;
         if (results.length === 0) {
+          if (params.subject_key && traceScope.projectId && params.include_timeline) {
+            const page = readChronicleTimeline(db, {
+              projectId: traceScope.projectId,
+              subjectKey: params.subject_key,
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
+              workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+              sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
+              cursor: params.timeline_cursor ?? null,
+              limit: params.timeline_limit,
+              order: params.timeline_order
+            });
+            if (page.events.length > 0) {
+              output += `## Subject ${params.subject_key} \u2014 no current fact, ${page.events.length} historical event(s)
+
+`;
+              output += page.events.map((event) => formatChronicleEvent(db, event, { includeSources: params.include_sources })).join("\n") + "\n";
+              if (page.nextCursor) output += `
+_Next timeline cursor: ${page.nextCursor}_
+`;
+              return { content: [{ type: "text", text: output }] };
+            }
+          }
           return {
             content: [
               { type: "text", text: "No matching facts found to trace." }
             ]
           };
         }
-        let output = `# Fact Provenance Trace
-
-Query: "${params.query}"
-
-`;
         for (const { fact, distance } of results) {
-          const similarity = (1 - distance * distance / 2).toFixed(3);
-          output += `## ${fact.fact}
+          const revision = currentFactRevision(db, fact.id);
+          output += `## [${CHRONICLE_LANE_LABELS.currentFact}] ${fact.fact}
 `;
-          output += `- Category: ${fact.category} | Scope: ${fact.scope_type}
+          output += `- Fact ID: ${fact.id} | Active: ${fact.is_active ? "yes" : "no (retired)"}
 `;
-          output += `- Similarity: ${similarity} | Confirmed: ${fact.consolidated_count}x
+          output += `- Category: ${fact.category} | Scope: ${fact.scope_type} | Promotion: ${fact.promotion_state ?? "legacy-project"}
 `;
+          output += `- Subject: ${fact.subject_key ?? "(none)"}${isSemanticSubjectKey(fact.subject_key) ? "" : " (per-fact slot, not a semantic subject)"}
+`;
+          output += `- Revision: semantic ${revision?.semanticGeneration ?? "?"} / lifecycle ${revision?.lifecycleGeneration ?? "?"} | Current since: ${revision?.latestEffectiveAt ?? fact.updated_at}
+`;
+          if (distance !== null) {
+            const similarity = (1 - distance * distance / 2).toFixed(3);
+            output += `- Similarity: ${similarity} | Confirmed: ${fact.consolidated_count}x
+`;
+          } else {
+            output += `- Confirmed: ${fact.consolidated_count}x
+`;
+          }
           output += `- Created: ${fact.created_at}
 `;
           if (fact.source_exchange_ids && fact.source_exchange_ids.length > 0) {
             output += `
-### Source Conversations
+### Source Conversations [${CHRONICLE_LANE_LABELS.rawEvidence}]
 
 `;
             for (const exchangeId of fact.source_exchange_ids) {
               const exchange = db.prepare(
-                "SELECT id, project, timestamp, user_message, archive_path, line_start, line_end FROM exchanges WHERE id = ?"
+                "SELECT id, project, timestamp, session_id, user_message, archive_path, line_start, line_end FROM exchanges WHERE id = ?"
               ).get(exchangeId);
               if (exchange) {
                 const userMsg = exchange["user_message"].substring(0, 200).replace(/\s+/g, " ");
-                output += `- **[${exchange["project"]}, ${exchange["timestamp"].slice(0, 10)}]**
+                output += `- **[${exchange["project"]}, ${exchange["timestamp"].slice(0, 10)}, session ${exchange["session_id"] ?? "?"}]**
 `;
                 output += `  "${userMsg}..."
 `;
                 output += `  Lines ${exchange["line_start"]}-${exchange["line_end"]} in ${exchange["archive_path"]}
+
+`;
+              } else {
+                output += `- ${exchangeId}: source unavailable (purged or missing)
 
 `;
               }
@@ -23177,7 +26213,7 @@ _Source exchanges not available._
             ORDER BY d.created_at, d.exchange_id, d.dependency_kind
           `).all(fact.id);
           if (contextDependencies.length > 0) {
-            output += `### Interpretive Context (Non-Authoritative)
+            output += `### Interpretive Context (Non-Authoritative) [${CHRONICLE_LANE_LABELS.assistantContext}]
 
 `;
             output += `_These exchanges helped resolve meaning but are not Fact evidence._
@@ -23194,16 +26230,55 @@ _Source exchanges not available._
 `;
             }
           }
-          const revisions = getRevisions(db, fact.id);
-          if (revisions.length > 0) {
-            output += `### Revision History
+          if (params.include_timeline) {
+            const bySubject = isSemanticSubjectKey(fact.subject_key) && !!fact.project_id;
+            const page = readChronicleTimeline(db, {
+              ...bySubject ? { projectId: fact.project_id, subjectKey: fact.subject_key } : { factId: fact.id },
+              workspaceId: traceScope.scope === "workspace" || traceScope.scope === "workstream" ? traceScope.workspaceId : null,
+              workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+              sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+              projectTruthOnly: traceScope.scope === "project",
+              cursor: params.timeline_cursor ?? null,
+              limit: params.timeline_limit,
+              order: params.timeline_order
+            });
+            output += `### Chronicle Timeline (${bySubject ? "subject" : "fact"}, ${params.timeline_order} by effective time, ${page.events.length} of max ${page.limit})
 
 `;
-            for (const rev of revisions) {
-              output += `- ${rev.created_at.slice(0, 10)}: "${rev.previous_fact}" \u2192 "${rev.new_fact}" (${rev.reason})
+            if (page.events.length === 0) {
+              output += `_No Chronicle events recorded._
 `;
+            } else {
+              output += page.events.map((event) => formatChronicleEvent(db, event, { includeSources: params.include_sources })).join("\n") + "\n";
             }
+            if (page.nextCursor) output += `
+_Next timeline cursor: ${page.nextCursor}_
+`;
             output += "\n";
+          }
+          if (params.include_incidents && fact.project_id) {
+            const occurrences = isSemanticSubjectKey(fact.subject_key) ? listIncidentOccurrences(db, { projectId: fact.project_id, subjectKey: fact.subject_key, limit: 10 }) : [];
+            const patterns = matchIncidentPatterns(db, {
+              projectId: fact.project_id,
+              text: `${params.query ?? ""} ${fact.fact}`,
+              limit: 3,
+              includeRemediated: true
+            });
+            if (occurrences.length > 0 || patterns.length > 0) {
+              output += `### Incidents
+
+`;
+              for (const occurrence of occurrences) {
+                output += `- [${CHRONICLE_LANE_LABELS.event}] INCIDENT occurrence ${occurrence.occurrence_id} \xB7 ${occurrence.effective_at} \xB7 session ${occurrence.session_id ?? "?"} \xB7 retries ${occurrence.retry_count} \xB7 ${occurrence.state} \xB7 signature ${occurrence.signature_key}
+  "${occurrence.signature_text}"
+`;
+              }
+              for (const pattern of patterns) {
+                output += `- Pattern ${pattern.signatureKey} (${pattern.patternState}, ${pattern.episodeCount} episode(s), score ${pattern.score.toFixed(2)}): "${pattern.signatureText}"${pattern.remediationSummary ? ` \u2014 remediation: ${pattern.remediationSummary}` : ""}
+`;
+              }
+              output += "\n";
+            }
           }
           const related = getRelatedFacts(
             db,
@@ -23211,8 +26286,8 @@ _Source exchanges not available._
             1,
             0.6,
             0.2,
-            traceScope.project,
-            traceScope.scope
+            traceScope.legacyProject,
+            traceScope.scope === "global" || traceScope.scope === "all" ? traceScope.scope : "project"
           );
           if (related.length > 0) {
             output += `### Related Facts (1-hop)
@@ -23224,6 +26299,26 @@ _Source exchanges not available._
             }
             output += "\n";
           }
+        }
+        if (params.include_hot_evidence && traceScope.projectId) {
+          const hot = readHotEvidence(db, {
+            projectId: traceScope.projectId,
+            workspaceId: traceScope.scope === "workspace" ? traceScope.workspaceId : null,
+            workstreamId: traceScope.scope === "workstream" ? traceScope.workstreamId : null,
+            sessionId: traceScope.scope === "session" ? traceScope.sessionId : null,
+            beforeCreatedAt: null,
+            beforeEvidenceId: null,
+            limit: params.limit
+          });
+          output += `
+## Recent Evidence \u2014 NOT YET DISTILLED (${hot.length})
+
+`;
+          output += hot.map(
+            (item) => `- [${item.source_type}] ${item.evidence_text}
+  - Cursor: ${item.created_at} / ${item.evidence_id}`
+          ).join("\n") || "_No recent evidence._";
+          output += "\n";
         }
         return { content: [{ type: "text", text: output }] };
       } catch (error2) {
@@ -23238,61 +26333,42 @@ _Source exchanges not available._
     if (name === "graph_stats") {
       const gs = external_exports.object({
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional()
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional()
       }).strict().parse(args);
-      const gsScope = resolveProjectScope(gs, "graph_stats");
       const db = initDatabase();
       try {
-        const factWhere = gsScope.scope === "global" ? "f.is_active = 1 AND f.scope_type = 'global'" : gsScope.project ? "f.is_active = 1 AND (f.scope_type = 'global' OR f.scope_project = ?)" : "f.is_active = 1";
-        const factArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project] : [];
-        const totalFacts = db.prepare(`SELECT COUNT(*) as count FROM facts f WHERE ${factWhere}`).get(...factArgs).count;
-        const totalDomains = db.prepare(`
-          SELECT COUNT(DISTINCT d.id) as count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const totalCategories = db.prepare(`
-          SELECT COUNT(DISTINCT c.id) as count
-          FROM ontology_categories c
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const relWhere = gsScope.scope === "global" ? "s.is_active = 1 AND t.is_active = 1 AND s.scope_type = 'global' AND t.scope_type = 'global'" : gsScope.project ? "s.is_active = 1 AND t.is_active = 1 AND (s.scope_type = 'global' OR s.scope_project = ?) AND (t.scope_type = 'global' OR t.scope_project = ?)" : "s.is_active = 1 AND t.is_active = 1";
-        const relArgs = gsScope.scope === "project" && gsScope.project ? [gsScope.project, gsScope.project] : [];
-        const totalRelations = db.prepare(`
-          SELECT COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-        `).get(...relArgs).count;
-        const totalRevisions = db.prepare(`
-          SELECT COUNT(*) as count
-          FROM fact_revisions fr
-          JOIN facts f ON fr.fact_id = f.id
-          WHERE ${factWhere}
-        `).get(...factArgs).count;
-        const categoryBreakdown = db.prepare(
-          `SELECT f.category, COUNT(*) as count FROM facts f WHERE ${factWhere} GROUP BY f.category ORDER BY count DESC`
-        ).all(...factArgs);
-        const topDomains = db.prepare(`
-          SELECT d.name, COUNT(f.id) as fact_count
-          FROM ontology_domains d
-          JOIN ontology_categories c ON c.domain_id = d.id
-          JOIN facts f ON f.ontology_category_id = c.id
-          WHERE ${factWhere}
-          GROUP BY d.id ORDER BY fact_count DESC LIMIT 10
-        `).all(...factArgs);
-        const relationBreakdown = db.prepare(`
-          SELECT r.relation_type, COUNT(*) as count
-          FROM ontology_relations r
-          JOIN facts s ON r.source_fact_id = s.id
-          JOIN facts t ON r.target_fact_id = t.id
-          WHERE ${relWhere}
-          GROUP BY r.relation_type ORDER BY count DESC
-        `).all(...relArgs);
+        const gsScope = resolveStableScope(db, gs, "graph_stats");
+        const facts = listFactsByScope(db, gsScope.factScope);
+        const factIds = new Set(facts.map((fact) => fact.id));
+        const categoryRows = listCategories(db);
+        const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
+        const domainById = new Map(listDomains(db).map((domain) => [domain.id, domain]));
+        const categories = new Set(facts.map((fact) => fact.ontology_category_id).filter(Boolean));
+        const domains = new Set([...categories].map((id) => categoryById.get(id)?.domain_id).filter(Boolean));
+        const relations = db.prepare(`
+          SELECT source_fact_id, target_fact_id, relation_type FROM ontology_relations
+        `).all().filter((row) => factIds.has(row.source_fact_id) && factIds.has(row.target_fact_id));
+        const revisions = db.prepare("SELECT fact_id FROM fact_revisions").all().filter((row) => factIds.has(row.fact_id));
+        const countBy = (values) => {
+          const counts = /* @__PURE__ */ new Map();
+          for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+          return [...counts].map(([key, count]) => ({ key, count })).sort((a, b2) => b2.count - a.count || a.key.localeCompare(b2.key));
+        };
+        const totalFacts = facts.length;
+        const totalDomains = domains.size;
+        const totalCategories = categories.size;
+        const totalRelations = relations.length;
+        const totalRevisions = revisions.length;
+        const categoryBreakdown = countBy(facts.map((fact) => fact.category)).map(({ key: category, count }) => ({ category, count }));
+        const topDomains = countBy(facts.map((fact) => {
+          const category = fact.ontology_category_id ? categoryById.get(fact.ontology_category_id) : void 0;
+          return category ? domainById.get(category.domain_id)?.name ?? "Unknown" : "Unknown";
+        })).slice(0, 10).map(({ key: name2, count: fact_count }) => ({ name: name2, fact_count }));
+        const relationBreakdown = countBy(relations.map((row) => row.relation_type)).map(({ key: relation_type, count }) => ({ relation_type, count }));
         let output = `# Knowledge Graph Statistics
 
 `;
@@ -23351,26 +26427,23 @@ _Source exchanges not available._
       const params = external_exports.object({
         query: external_exports.string().min(2).max(1e4),
         current_project: external_exports.string().max(500).optional(),
+        current_project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
         scope: external_exports.enum(["project"]).optional(),
         limit: external_exports.number().int().min(1).max(20).default(5)
       }).strict().parse(args);
-      const cxScope = resolveProjectScope(
-        params,
-        "cross_project_insights",
-        "current_project"
-      );
-      if (cxScope.scope !== "project") {
-        throw new Error("cross_project_insights requires project scope");
-      }
-      const currentProject = cxScope.project;
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const cxScope = resolveStableScope(db, {
+          project: params.current_project,
+          project_id: params.current_project_id,
+          scope: "project"
+        }, "cross_project_insights");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const crossProjectResults = searchFactsByScope(
           db,
           queryEmbedding,
-          { type: "other-projects", project: currentProject },
+          cxScope.projectId ? { type: "other-project-id", projectId: cxScope.projectId } : { type: "other-projects", project: cxScope.legacyProject },
           params.limit,
           0.5
         );
@@ -23386,14 +26459,14 @@ _Source exchanges not available._
         }
         const byProject = /* @__PURE__ */ new Map();
         for (const { fact, distance } of crossProjectResults) {
-          const proj = fact.scope_project || "global";
+          const proj = fact.project_id || fact.scope_project || "global";
           if (!byProject.has(proj)) byProject.set(proj, []);
           byProject.get(proj).push({ fact, distance });
         }
         let output = `# Cross-Project Insights
 
 Query: "${params.query}"
-Excluding: ${currentProject}
+Excluding: ${cxScope.label}
 
 `;
         for (const [project, facts] of byProject) {
@@ -23424,17 +26497,21 @@ Excluding: ${currentProject}
         query: external_exports.string().min(2).max(1e4),
         hops: external_exports.number().int().min(1).max(3).default(2),
         project: external_exports.string().max(500).optional(),
-        scope: ScopeEnum.optional()
+        project_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workspace_id: external_exports.string().regex(/^[A-Za-z0-9_-]{8,128}$/).optional(),
+        workstream_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        session_id: external_exports.string().regex(/^[A-Za-z0-9_-]{4,128}$/).optional(),
+        scope: ContinuityScopeEnum.optional()
       }).strict().parse(args);
-      const egScope = resolveProjectScope(params, "explore_graph");
       await initEmbeddings();
       const db = initDatabase();
       try {
+        const egScope = resolveStableScope(db, params, "explore_graph");
         const queryEmbedding = await generateEmbedding(params.query, "query");
         const seedFacts = searchFactsByScope(
           db,
           queryEmbedding,
-          toFactSearchScope(egScope),
+          egScope.factScope,
           3,
           0.5
         );
@@ -23481,8 +26558,9 @@ Seed: "${params.query}" | Depth: ${params.hops} hops
             params.hops,
             0.6,
             0.2,
-            egScope.project,
-            egScope.scope
+            egScope.legacyProject,
+            egScope.scope === "global" || egScope.scope === "all" ? egScope.scope : "project",
+            egScope.factScope
           ).slice(0, 20);
           void seedIds;
           if (related.length === 0) {

@@ -37,6 +37,12 @@ export interface InjectLogEntry {
  error?: string;
  /** Which execution path served this injection: warm MCP-server daemon or cold fallback. */
  via?: "daemon" | "fallback";
+ /** Phase 5 cheap gate outcome: why retrieval ran or was skipped. */
+ gate?: string;
+ /** Number of embedding model calls made for this prompt (0 on the skip path). */
+ embedding_calls?: number;
+ /** Memory Bundle sections emitted, in order. */
+ sections?: string[];
 }
 
 export function getInjectLogPath(): string {

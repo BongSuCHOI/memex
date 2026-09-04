@@ -9,6 +9,7 @@
  * counts (revisions/relations/vectors) before removing anything.
  */
 import type Database from 'better-sqlite3';
+import { type ChronicleActor, type ChronicleEvent, type EffectiveAtSource, type EvidenceAuthority, type GroundedField } from './chronicle.js';
 export interface FactRow {
     id: string;
     fact: string;
@@ -74,6 +75,32 @@ export interface MutateFactMeaningOptions {
         expectedSemanticGeneration: number;
         expectedLifecycleGeneration?: number;
     }>;
+    /** Chronicle context for the CHANGED event written in the same transaction. */
+    chronicle?: ChronicleMutationContext;
+}
+/**
+ * Who changed the projection and what the evidence proves. `reason` on the
+ * mutation is model/consolidator text and lands in `classifier_note`; only
+ * `grounded` fields verified against a stored source, or a rationale typed by
+ * the user, become authoritative cause/rationale.
+ */
+export interface ChronicleMutationContext {
+    actor: ChronicleActor;
+    grounded?: {
+        problem?: GroundedField;
+        cause?: GroundedField;
+        rationale?: GroundedField;
+    };
+    userStatedRationale?: string | null;
+    classifierNote?: string | null;
+    evidenceAuthority?: EvidenceAuthority;
+    effectiveAt?: string | null;
+    /** How `effectiveAt` was established; a caller passing a worker clock must say `recorded`. */
+    effectiveAtSource?: EffectiveAtSource;
+    sourceEvidenceIds?: string[];
+    revertsEventId?: string | null;
+    relatedEventIds?: string[];
+    outcome?: Record<string, unknown> | null;
 }
 export interface SemanticMutationResult extends EditResult {
     deactivatedFactIds: string[];
@@ -92,9 +119,18 @@ export declare class StaleFactMutationError extends Error {
 /**
  * Replace one fact's meaning while preserving its identity and revision chain.
  * Embedding generation happens before the write; every durable generation
- * transition and invalidation commits in one transaction.
+ * transition, its Chronicle CHANGED event, and invalidation commit in one
+ * transaction.
  */
 export declare function mutateFactMeaning(db: Database.Database, opts: MutateFactMeaningOptions): Promise<SemanticMutationResult>;
+/**
+ * Synchronous core of the semantic mutation. Callers that already hold a
+ * vector (the extractor's slot resolver) run it inside their own transaction;
+ * better-sqlite3 nests it as a savepoint. The CHANGED event is appended after
+ * the projection UPDATE inside the same transaction, so a failed projection
+ * update leaves no event and a failed event leaves no projection change.
+ */
+export declare function applyFactMeaningMutation(db: Database.Database, opts: MutateFactMeaningOptions, embedding: number[]): SemanticMutationResult;
 /**
  * Edit a fact's text. One transaction covers:
  *   revision(old/new/reason) -> text update -> fresh embedding + vector swap ->
@@ -109,14 +145,31 @@ export declare function editFact(db: Database.Database, id: string, opts: {
 /** Deactivate (default delete). Removes from search/vector immediately.
  * Lifecycle 전환이므로 lifecycle_generation을 올린다(재감사 P1-3 v4) — sync는
  * 이 시계로 deactivate를 전파하고, restore은 이 토큰으로 await race를 폐기한다. */
-export declare function deactivateFactTransactional(db: Database.Database, id: string): {
+export interface LifecycleChronicleOptions {
+    /**
+     * `false` absorbs the row silently (consolidation merged its meaning into a
+     * survivor, so no truth was retired). Otherwise a RETIRED/RESTORED event is
+     * appended in the same transaction; user surfaces are the default actor.
+     */
+    chronicle?: false | {
+        actor: ChronicleActor;
+        userStatedRationale?: string | null;
+        classifierNote?: string | null;
+        sourceExchangeIds?: string[];
+        effectiveAt?: string | null;
+        evidenceAuthority?: EvidenceAuthority;
+    };
+}
+export declare function deactivateFactTransactional(db: Database.Database, id: string, options?: LifecycleChronicleOptions): {
     deactivated: true;
     removedFromVectorIndex: boolean;
+    eventId: string | null;
 };
-export declare function restoreFact(db: Database.Database, id: string): Promise<{
+export declare function restoreFact(db: Database.Database, id: string, options?: LifecycleChronicleOptions): Promise<{
     restored: true;
     vectorRestored: boolean;
     reembedded: boolean;
+    eventId: string | null;
 }>;
 export type ReplicatedLifecycleOutcome = 'applied' | 'moot';
 /**
@@ -134,7 +187,8 @@ export type ReplicatedLifecycleOutcome = 'applied' | 'moot';
  * which stamp `now` because they genuinely ARE new events.
  */
 export declare function applyReplicatedLifecycle(db: Database.Database, id: string, desiredActive: 0 | 1, eventAt: string): Promise<ReplicatedLifecycleOutcome>;
-export declare function factHistory(db: Database.Database, id: string): Array<Record<string, unknown>>;
+/** Chronicle timeline for one fact in effective order (oldest first). */
+export declare function factHistory(db: Database.Database, id: string): ChronicleEvent[];
 export interface HardDeleteImpact {
     exists: boolean;
     revisions: number;

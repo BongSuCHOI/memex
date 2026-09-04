@@ -258,6 +258,9 @@ describe('Consolidator', () => {
     it('should use newFact.fact when merged_fact is empty on CONTRADICTION', async () => {
       const id1 = insertFact(db, { fact: 'Old approach', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
       const id2 = insertFact(db, { fact: 'New approach', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+      // Phase 4: the newer statement only replaces the current one when its
+      // evidence is provably later; give the old fact an earlier effective clock.
+      db.prepare("UPDATE facts SET semantic_updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(id1);
 
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
@@ -272,6 +275,7 @@ describe('Consolidator', () => {
     it('should use newFact.fact when merged_fact is whitespace on EVOLUTION', async () => {
       const id1 = insertFact(db, { fact: 'v1 config', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
       const id2 = insertFact(db, { fact: 'v2 config', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
+      db.prepare("UPDATE facts SET semantic_updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(id1);
 
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {

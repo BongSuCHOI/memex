@@ -2,7 +2,9 @@
 
 ## 1. MCP server
 
-`.mcp.json`의 server id는 `memex`입니다. installed plugin의 `cli/runtime-exec.js`가 `github:BongSuCHOI/memex#main` package의 `memex-mcp-server`를 isolated npm cache에서 실행합니다.
+`.mcp.json`의 server id는 `memex`입니다. installed plugin의 `cli/runtime-exec.js`는 materialized된
+version-pinned local artifact의 `memex-mcp-server`를 실행합니다. `github:BongSuCHOI/memex#main`은
+dependency materialization 전 raw registration을 위한 compatibility fallback일 뿐입니다.
 
 MCP 전용 cache:
 
@@ -15,15 +17,26 @@ $XDG_CACHE_HOME/memex/npm-mcp
 
 ## 2. Scope 계약
 
-project-sensitive tool은 canonical absolute project 또는 explicit scope를 요구합니다.
+Project-sensitive MCP surfaces(`search`, `search_facts`, `search_ontology`, `ask_avatar`,
+`trace_fact`, `graph_stats`, `explore_graph`)는 stable identity의 explicit scope를 지원합니다.
 
 ```text
-project: "/absolute/project"
+scope: "project"    + project_id (또는 legacy canonical path)
+scope: "workspace"  + workspace_id
+scope: "workstream" + workstream_id
+scope: "session"    + session_id
 scope: "global"
 scope: "all"
 ```
 
 MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project identity로 사용하지 않습니다.
+Workspace/workstream/session ID는 DB membership을 검증하며 다른 project의 ID 조합을 허용하지 않습니다.
+`search`는 raw conversation evidence를 같은 stable scope로 제한합니다. Ontology/avatar/graph도
+동일 membership 검사를 거치며 relation traversal의 모든 hop을 요청 scope로 제한합니다.
+`include_hot_evidence`는
+stable scope 안의 recent raw evidence를 `NOT YET DISTILLED`로 분리하고
+`hot_before` + `hot_before_evidence_id` keyset cursor를 지원합니다. Legacy canonical path는 read-only
+compatibility surface이며 process cwd 추론이나 identity registry mutation 없이 explicit path로만 받습니다.
 
 ## 3. 9개 도구
 
@@ -34,7 +47,7 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 | `search_facts` | 증류된 fact 검색 |
 | `search_ontology` | domain/category별 fact 탐색 |
 | `ask_avatar` | 저장된 evidence를 바탕으로 답변 합성 |
-| `trace_fact` | authoritative revision/source와 non-authoritative interpretive context 추적 |
+| `trace_fact` | current fact → Chronicle timeline(previous value, rollback, grounded cause vs classifier note, validation/incident, contradiction) → source evidence 추적. `query|fact_id|subject_key`, bounded cursor pagination, stable scope filter |
 | `explore_graph` | 1–3 hop relation 탐색 |
 | `cross_project_insights` | 다른 project의 유사 해결책 탐색 |
 | `graph_stats` | graph 규모와 health 확인 |
@@ -49,6 +62,16 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 `Interpretive Context (Non-Authoritative)` 절에 local `fact_context_dependencies`를 표시합니다.
 Context는 model-declared index가 bounded causal check를 통과한 뒤 server-resolved된 관계입니다.
 두 절의 exchange가 같아 보이더라도 context 절은 Fact evidence로 승격되지 않습니다.
+
+Phase 4부터 `trace_fact`는 lane label을 출력합니다: `CURRENT FACT`(authoritative current), `CHRONICLE EVENT`
+(append-only history, `effective`/`recorded` 시각과 `projection changed|event-only` 표시), `RAW EVIDENCE`(source
+exchange, purge된 경우 `source unavailable`), `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`.
+event의 `grounded cause (source-cited)`와 `classifier note (model inference, NOT authoritative)`는 항상 분리됩니다.
+history는 `timeline_limit`(≤50)과 `timeline_cursor`로 bounded pagination됩니다.
+timeline의 scope 가시성은 fact search 계약과 같습니다: `project` scope는 project-wide truth와 event-only
+observation만 보여주고 unmerged workspace/workstream fact의 history는 숨깁니다. `workspace`/`workstream`
+scope는 정확히 그 workspace/workstream의 fact와 evidence를 추가하며 sibling workstream의 history는 보이지 않습니다.
+unmerged fact의 event는 `scope: workstream <id> (unmerged; not project-wide truth)`로 표시됩니다.
 
 같은 turn의 별도 repo/Git/test tool result는 call ID별로 독립 분류합니다. Memex MCP call 하나가 sibling evidence를 자동으로 taint하지 않습니다.
 

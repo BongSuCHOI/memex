@@ -85,7 +85,7 @@ describe('inactive fact restore vs embedding model upgrade (P2-3)', () => {
 
     const result = await restoreFact(db, id);
 
-    expect(result).toEqual({ restored: true, vectorRestored: true, reembedded: true });
+    expect(result).toEqual({ restored: true, vectorRestored: true, reembedded: true, eventId: expect.any(String) });
     expect(embedCalls).toEqual(['fact@0.3']); // re-embedded with the current model
     const row = db.prepare('SELECT embedding_version, is_active FROM facts WHERE id = ?').get(id) as {
       embedding_version: number;
@@ -106,7 +106,7 @@ describe('inactive fact restore vs embedding model upgrade (P2-3)', () => {
 
     const result = await restoreFact(db, id);
 
-    expect(result).toEqual({ restored: true, vectorRestored: true, reembedded: false });
+    expect(result).toEqual({ restored: true, vectorRestored: true, reembedded: false, eventId: expect.any(String) });
     expect(embedCalls).toHaveLength(0); // no re-embed — bytes are reusable
     const hits = searchFactsByScope(db, vec(0.5), { type: 'all' }, 5, 0.85);
     expect(hits.map((h) => h.fact.id)).toContain(id);
@@ -125,7 +125,7 @@ describe('inactive fact restore vs embedding model upgrade (P2-3)', () => {
 
     const result = await restoreFact(db, id);
 
-    expect(result).toEqual({ restored: true, vectorRestored: false, reembedded: false });
+    expect(result).toEqual({ restored: true, vectorRestored: false, reembedded: false, eventId: expect.any(String) });
     expect(embedCalls).toHaveLength(0);
     const row = db.prepare('SELECT is_active FROM facts WHERE id = ?').get(id) as { is_active: number };
     expect(row.is_active).toBe(1);

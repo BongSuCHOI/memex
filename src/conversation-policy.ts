@@ -5,7 +5,10 @@ import { createArchiveReadStream } from "./archive-io.js";
 import { SUMMARIZER_CONTEXT_MARKER } from "./constants.js";
 import { isExcludedProject } from "./paths.js";
 import { recordFactTombstone } from "./fact-management.js";
+import { purgeChronicleForSources } from "./chronicle.js";
 import { bumpTaxonomyEpoch } from "./ontology-db.js";
+import { getMemexHome } from "./paths.js";
+import path from "node:path";
 
 export const USER_EXCLUSION_MARKERS = [
   "<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>",
@@ -41,6 +44,15 @@ export interface ConversationPurgeResult {
   exchanges: number;
   facts: number;
   summaries: number;
+}
+
+export function isConversationExcludedSession(
+  db: Database.Database,
+  sessionId: string,
+): boolean {
+  return !!db.prepare(
+    "SELECT 1 FROM conversation_exclusions WHERE session_id = ?",
+  ).get(sessionId);
 }
 
 /**
@@ -138,6 +150,22 @@ export function purgeConversationFromIndex(
   db: Database.Database,
   input: { archivePath: string; sessionId?: string | null },
 ): ConversationPurgeResult {
+  const continuityTablesBefore = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name),
+  );
+  const identityCandidates: Array<{ project_id: string | null; workspace_id: string | null }> = [];
+  if (input.sessionId) {
+    if (continuityTablesBefore.has("session_memory_state")) {
+      identityCandidates.push(...db.prepare(`
+        SELECT project_id, workspace_id FROM session_memory_state WHERE session_id = ?
+      `).all(input.sessionId) as Array<{ project_id: string | null; workspace_id: string | null }>);
+    }
+    if (continuityTablesBefore.has("exchanges")) {
+      identityCandidates.push(...db.prepare(`
+        SELECT DISTINCT project_id, workspace_id FROM exchanges WHERE session_id = ?
+      `).all(input.sessionId) as Array<{ project_id: string | null; workspace_id: string | null }>);
+    }
+  }
   const rows = (
     input.sessionId
       ? db
@@ -165,11 +193,13 @@ export function purgeConversationFromIndex(
     }
     const revisions = db
       .prepare(
-        "SELECT fact_id, source_exchange_id FROM fact_revisions WHERE source_exchange_id IS NOT NULL",
+        "SELECT fact_id, source_exchange_id, source_exchange_ids FROM fact_revisions WHERE fact_id IS NOT NULL",
       )
-      .all() as Array<{ fact_id: string; source_exchange_id: string }>;
+      .all() as Array<{ fact_id: string; source_exchange_id: string | null; source_exchange_ids: string | null }>;
     for (const revision of revisions) {
-      if (exchangeIds.has(revision.source_exchange_id)) {
+      const cited = parseSourceIds(revision.source_exchange_ids);
+      if (revision.source_exchange_id) cited.push(revision.source_exchange_id);
+      if (cited.some((id) => exchangeIds.has(id))) {
         factIds.add(revision.fact_id);
       }
     }
@@ -189,21 +219,37 @@ export function purgeConversationFromIndex(
   }
 
   const purge = db.transaction(() => {
+    if (input.sessionId) {
+      db.prepare(`
+        INSERT INTO conversation_exclusions(session_id, source_path, reason, excluded_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          source_path = excluded.source_path,
+          reason = excluded.reason,
+          excluded_at = excluded.excluded_at
+      `).run(
+        input.sessionId,
+        input.archivePath,
+        PRIVACY_TOMBSTONE_REASON,
+        new Date().toISOString(),
+      );
+    }
     const deleteRelation = db.prepare(
       "DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?",
     );
     const deleteFactVector = db.prepare("DELETE FROM vec_facts WHERE id = ?");
     const deleteFactVectorKr = db.prepare("DELETE FROM vec_facts_kr WHERE id = ?");
-    const deleteRevisions = db.prepare(
-      "DELETE FROM fact_revisions WHERE fact_id = ?",
-    );
     const deleteFact = db.prepare("DELETE FROM facts WHERE id = ?");
+    // Chronicle events, incident occurrences and their signatures that belong
+    // to a purged fact or cite a purged exchange are removed and tombstoned in
+    // this same transaction, so a peer replay or pending worker cannot
+    // resurrect purged history (PRIVACY).
+    purgeChronicleForSources(db, { exchangeIds, factIds, reason: PRIVACY_TOMBSTONE_REASON });
     for (const factId of factIds) {
       recordFactTombstone(db, factId, PRIVACY_TOMBSTONE_REASON);
       deleteRelation.run(factId, factId);
       deleteFactVector.run(factId);
       deleteFactVectorKr.run(factId);
-      deleteRevisions.run(factId);
       deleteFact.run(factId);
     }
 
@@ -235,15 +281,153 @@ export function purgeConversationFromIndex(
     // 다시 만들지 못한다. bump는 taxonomy 삭제와 같은 transaction 안에 있다.
     bumpTaxonomyEpoch(db);
     if (input.sessionId) {
+      const continuityTables = new Set(
+        (db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table'",
+        ).all() as Array<{ name: string }>).map(({ name }) => name),
+      );
+      if (continuityTables.has("checkpoints")) {
+        // Cascade removes checkpoint-owned jobs before target/exchange rows.
+        // This prevents a queued worker from recreating purged knowledge.
+        db.prepare("DELETE FROM checkpoints WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("journal_streams")) {
+        db.prepare("DELETE FROM journal_streams WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("capture_gaps")) {
+        db.prepare("DELETE FROM capture_gaps WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("hot_evidence")) {
+        db.prepare("DELETE FROM hot_evidence WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("session_memory_state")) {
+        db.prepare("DELETE FROM session_memory_state WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("workstream_sessions")) {
+        db.prepare("DELETE FROM workstream_sessions WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
+      if (continuityTables.has("work_capsules")) {
+        // A Work Capsule is a model-derived projection. One built from the
+        // purged session, or citing any purged exchange, must not survive as
+        // a sibling's context; the sibling rebuilds from its own evidence and
+        // re-receives WORK NOW because its seen generation is reset.
+        const capsules = db.prepare(`
+          SELECT workstream_id, source_session_id, source_exchange_ids_json FROM work_capsules
+        `).all() as Array<{ workstream_id: string; source_session_id: string | null; source_exchange_ids_json: string | null }>;
+        for (const capsule of capsules) {
+          const cites = parseSourceIds(capsule.source_exchange_ids_json).some((id) => exchangeIds.has(id));
+          if (capsule.source_session_id !== input.sessionId && !cites) continue;
+          db.prepare("DELETE FROM work_capsules WHERE workstream_id = ?").run(capsule.workstream_id);
+          if (continuityTables.has("session_memory_state")) {
+            db.prepare("UPDATE session_memory_state SET capsule_generation_seen = 0 WHERE workstream_id = ?")
+              .run(capsule.workstream_id);
+          }
+        }
+      }
+      if (continuityTables.has("minimal_workstreams")) {
+        // Phase 3 permits several sessions to share one workstream Capsule.
+        // Purging one source session must remove its binding but must not erase
+        // a sibling session's continuity projection. Re-home the compatibility
+        // owner when another binding remains; delete only orphan workstreams.
+        const owned = db.prepare(`
+          SELECT workstream_id FROM minimal_workstreams WHERE session_id = ?
+        `).all(input.sessionId) as Array<{ workstream_id: string }>;
+        for (const row of owned) {
+          const sibling = continuityTables.has("workstream_sessions")
+            ? db.prepare(`
+                SELECT session_id FROM workstream_sessions
+                WHERE workstream_id = ? ORDER BY bound_at, session_id LIMIT 1
+              `).get(row.workstream_id) as { session_id: string } | undefined
+            : undefined;
+          if (sibling) {
+            db.prepare(`
+              UPDATE minimal_workstreams SET session_id = ?, updated_at = ?
+              WHERE workstream_id = ?
+            `).run(sibling.session_id, new Date().toISOString(), row.workstream_id);
+          } else {
+            db.prepare("DELETE FROM minimal_workstreams WHERE workstream_id = ?")
+              .run(row.workstream_id);
+          }
+        }
+      }
+      if (continuityTables.has("extraction_targets")) {
+        db.prepare("DELETE FROM extraction_targets WHERE session_id = ?").run(
+          input.sessionId,
+        );
+      }
       db.prepare("DELETE FROM extraction_log WHERE session_id = ?").run(
         input.sessionId,
       );
       db.prepare("DELETE FROM recall_events WHERE session_id = ?").run(
         input.sessionId,
       );
+      if (continuityTables.has("project_identity_audit")) {
+        db.prepare("DELETE FROM project_identity_audit WHERE session_id = ?").run(input.sessionId);
+      }
+      for (const candidate of identityCandidates) {
+        if (candidate.workspace_id && continuityTables.has("workspaces")) {
+          const used = db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM exchanges WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM facts WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM session_memory_state WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM minimal_workstreams WHERE workspace_id = ?) +
+              (SELECT COUNT(*) FROM hot_evidence WHERE workspace_id = ?) AS n
+          `).get(
+            candidate.workspace_id, candidate.workspace_id, candidate.workspace_id,
+            candidate.workspace_id, candidate.workspace_id,
+          ) as { n: number };
+          if (used.n === 0) {
+            db.prepare("DELETE FROM project_identity_audit WHERE workspace_id = ?").run(candidate.workspace_id);
+            db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(candidate.workspace_id);
+          }
+        }
+        if (candidate.project_id && continuityTables.has("projects")) {
+          const used = db.prepare(`
+            SELECT
+              (SELECT COUNT(*) FROM workspaces WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM exchanges WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM facts WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM recall_events WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM hot_evidence WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM session_memory_state WHERE project_id = ?) +
+              (SELECT COUNT(*) FROM minimal_workstreams WHERE project_id = ?) AS n
+          `).get(
+            candidate.project_id, candidate.project_id, candidate.project_id,
+            candidate.project_id, candidate.project_id, candidate.project_id,
+            candidate.project_id,
+          ) as { n: number };
+          if (used.n === 0) {
+            db.prepare("DELETE FROM project_identity_audit WHERE project_id = ?").run(candidate.project_id);
+            db.prepare("DELETE FROM projects WHERE project_id = ?").run(candidate.project_id);
+          }
+        }
+      }
     }
   });
   purge.immediate();
+
+  if (input.sessionId && /^[A-Za-z0-9_-]{4,128}$/.test(input.sessionId)) {
+    // Journal bytes are user-source-derived durable evidence. Privacy purge is
+    // the sole normal destructive path and removes the session-owned directory
+    // only after the DB transaction has made every queued worker unreachable.
+    fs.rmSync(path.join(getMemexHome(), "journals", input.sessionId), {
+      recursive: true,
+      force: true,
+    });
+  }
 
   const summaryPath = input.archivePath.replace(
     /\.jsonl(?:\.zst)?$/,

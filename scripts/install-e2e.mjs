@@ -128,7 +128,10 @@ try {
   const realState = {
     installed_cache_authoritative: installedRoot === expectedRoot,
     plugin_manifest_declares_hooks: installedManifest.hooks === './hooks.json',
-    plugin_hooks_complete: ['SessionStart', 'UserPromptSubmit', 'SessionEnd']
+    plugin_hooks_complete: [
+      'SessionStart', 'UserPromptSubmit', 'Stop', 'Interrupt',
+      'PreCompact', 'PostCompact', 'SessionEnd',
+    ]
       .every((event) => Array.isArray(installedHooks.hooks?.[event]) && installedHooks.hooks[event].length > 0),
     fallback_hooks_absent: !fs.existsSync(hooksFile),
     mcp_nine_tools: /MCP handshake.*9 tools/.test(real.stdout),

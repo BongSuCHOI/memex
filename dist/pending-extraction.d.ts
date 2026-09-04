@@ -17,7 +17,8 @@ export interface ExtractionConfig {
 /** Env-derived config, identical for the worker and the hook. */
 export declare function getExtractionConfig(): ExtractionConfig;
 /**
- * extraction_log.extracted 의 상태 코드 (음수는 전부 "fact 0건"의 사유 구분).
+ * Legacy extraction_log.extracted 상태 코드. Continuity의 완료 권한은
+ * exchange_extraction_state의 exact current generation이며 이 값들은 호환/진단용이다.
  *
  * 🚨 이 3-상태가 없으면 세션 처리는 두 나쁜 선택 사이를 왕복한다 — 실패를 기록하면
  * pending 에서 영구 제외되어 fact 가 영영 안 생기고(손실), 기록하지 않고 이연하면
@@ -99,7 +100,7 @@ export declare function failureMarkerUpsertSql(): string;
  *   hook:   `SELECT 1 FROM (${sql}) LIMIT 1`     (params)
  * Columns: sid, ts, n.
  */
-export declare function pendingExtractionCoreQuery(cfg: ExtractionConfig): {
+export declare function pendingExtractionCoreQuery(cfg: ExtractionConfig, mode?: "legacy" | "continuity"): {
     sql: string;
     params: string[];
 };

@@ -19,6 +19,14 @@ export interface ConversationExchange {
     archivePath: string;
     lineStart: number;
     lineEnd: number;
+    exchangeSeq?: number;
+    contentHash?: string;
+    contentGeneration?: number;
+    closureState?: 'open' | 'interrupted' | 'closed' | 'final';
+    parserVersion?: number;
+    projectId?: string | null;
+    workspaceId?: string | null;
+    workstreamId?: string | null;
     parentUuid?: string;
     isSidechain?: boolean;
     sessionId?: string;
@@ -79,6 +87,11 @@ export interface Fact {
     category: FactCategory;
     scope_type: FactScopeType;
     scope_project: string | null;
+    project_id?: string | null;
+    workspace_id?: string | null;
+    workstream_id?: string | null;
+    subject_key?: string | null;
+    promotion_state?: 'legacy-project' | 'decision' | 'project-current' | 'workspace' | 'workstream';
     source_exchange_ids: string[];
     embedding: Float32Array | null;
     created_at: string;
@@ -117,10 +130,50 @@ export interface FactRevision {
     reason: string | null;
     source_exchange_id: string | null;
     created_at: string;
+    /** Chronicle (Phase 4) view fields; absent on rows read by legacy tooling. */
+    event_kind?: 'ASSERTED' | 'CHANGED' | 'RETIRED' | 'RESTORED' | 'VALIDATED' | 'INCIDENT' | 'CONTRADICTED';
+    effective_at?: string;
+    projection_applied?: boolean;
 }
 export interface FactSearchResult {
     fact: Fact;
     similarity: number;
+}
+/** A cause/problem/rationale statement the model located in an authoritative source. */
+export interface ExtractedGroundedRef {
+    exchange_index: number;
+    supporting_span: string;
+    /** Normalized statement; defaults to the span. */
+    text?: string;
+    /** Required when the span lives in a trusted tool result. */
+    tool_call_id?: string;
+}
+/** Server-resolved grounded reference (exchange UUID, verified span). */
+export interface ResolvedGroundedRef {
+    exchange_id: string;
+    supporting_span: string;
+    text: string;
+    tool_call_id?: string;
+}
+export interface ExtractedChangeContext {
+    problem?: ResolvedGroundedRef;
+    cause?: ResolvedGroundedRef;
+    rationale?: ResolvedGroundedRef;
+}
+/** Event-only Chronicle observation (incident or validation) proven by trusted evidence. */
+export interface ExtractedObservation {
+    observation: 'incident' | 'validated';
+    summary: string;
+    subject_key?: string | null;
+    /** Exact failure text taken from the cited evidence; incidents only. */
+    signature_text?: string;
+    /** Incident signature key this validation remediates; validated only. */
+    remediates_signature_key?: string;
+    user_flagged_repeat?: boolean;
+    confidence: number;
+    evidence: ExtractedFactEvidence[];
+    source_exchange_ids: string[];
+    source_evidence_ids: string[];
 }
 export interface ExtractedFact {
     fact: string;
@@ -128,6 +181,12 @@ export interface ExtractedFact {
     category: FactCategory;
     scope_type: FactScopeType;
     confidence: number;
+    /** Stable semantic slot proposed by the model and validated by grammar; absent when ambiguous. */
+    subject_key?: string | null;
+    /** Source-cited change context resolved by the server; unproven statements land in classifier notes. */
+    change_context?: ExtractedChangeContext;
+    /** Model statements that could not be proven against a source (never authoritative). */
+    classifier_notes?: string[];
     /** Transient extraction diagnostics; not part of durable fact sync state. */
     grounding_type?: FactGroundingType;
     durable?: boolean;

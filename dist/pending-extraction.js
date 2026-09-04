@@ -11,6 +11,7 @@
  * session start forever, for nothing.
  */
 import { fileURLToPath } from "node:url";
+import { FACT_EXTRACTION_POLICY_VERSION } from "./continuity-store.js";
 import { llmWorkdirCwdSql } from "./paths.js";
 function boundedInt(raw, def, cap) {
     if (raw === undefined || !/^\d+$/.test(raw.trim()))
@@ -37,7 +38,8 @@ export function getExtractionConfig() {
     return { minExchanges, excludeProjects };
 }
 /**
- * extraction_log.extracted 의 상태 코드 (음수는 전부 "fact 0건"의 사유 구분).
+ * Legacy extraction_log.extracted 상태 코드. Continuity의 완료 권한은
+ * exchange_extraction_state의 exact current generation이며 이 값들은 호환/진단용이다.
  *
  * 🚨 이 3-상태가 없으면 세션 처리는 두 나쁜 선택 사이를 왕복한다 — 실패를 기록하면
  * pending 에서 영구 제외되어 fact 가 영영 안 생기고(손실), 기록하지 않고 이연하면
@@ -166,7 +168,7 @@ export function failureMarkerUpsertSql() {
  *   hook:   `SELECT 1 FROM (${sql}) LIMIT 1`     (params)
  * Columns: sid, ts, n.
  */
-export function pendingExtractionCoreQuery(cfg) {
+export function pendingExtractionCoreQuery(cfg, mode = "legacy") {
     const exTerms = cfg.excludeProjects;
     // `x.session_id IS NOT NULL` is load-bearing: one NULL inside NOT IN makes the
     // whole predicate NULL (3-valued logic) → zero pending sessions → silent drain.
@@ -176,48 +178,50 @@ export function pendingExtractionCoreQuery(cfg) {
         AND (${llmWorkdirCwdSql("x.cwd")}
       ${exTerms.length ? "OR " + exTerms.map(() => "x.cwd = ?").join(" OR ") : ""})
     )`;
-    // FACT-LIFECYCLE 계약: extraction_log.last_exchange_rowid 이후에 rowid 가 더 큰
-    // exchange 가 생기면(settled 마커라도) 세션은 다시 pending 이다. 이 조건이 없으면
-    // resume 으로 교환이 늘어난 세션의 suffix 가 영구 추출 누락된다.
-    //   - SEED(-1)는 제외한다: seed 마커는 seed 시점의 세션 MAX(rowid)로 심인다
-    //     (backfill-extract-worker seedFromExistingFacts). watermark 분기에 넣으면
-    //     suffix 가 붙은 seed 세션이 백필 재추출 큐로 돌아온다 — seed 이후의
-    //     suffix 는 SessionEnd 훅이 담당한다(훅 variant 는 확정 마커 위에서도 선점 가능).
-    //   - 살아있는 claim(-3, fresh)도 watermark 분기에서 제외한다: 다른 러너가 처리
-    //     중이다. stale claim 은 위의 회수 분기가 이미 pending 으로 만든다.
-    // extraction_log.session_id 는 PRIMARY KEY 이므로 LEFT JOIN 결과는 세션당 최대 1행.
-    const sql = `
+    if (mode === "legacy") {
+        const sql = `
     SELECT e.session_id AS sid, MAX(e.timestamp) AS ts, COUNT(*) AS n
     FROM exchanges e
     LEFT JOIN extraction_log l ON l.session_id = e.session_id
     WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
       AND (
         l.session_id IS NULL
-          -- 재시도 예산이 남은 내부 실패(-4)는 '처리됨'이 아니다 → 여전히 pending.
-          -- 이 예외가 없으면 일시적 런타임 장애 한 번에 세션이 영구 손실된다.
         OR (l.extracted = ${EXTRACTION_STATE.RETRIABLE_INTERNAL}
             AND l.saved < ${MAX_INTERNAL_RETRIES})
-          -- 리스가 만료된 claim(-3)도 미처리다. 소유자가 죽었을 수 있으므로
-          -- 회수해야 한다 — 그렇지 않으면 claim 자체가 새로운 영구손실 통로가 된다.
         OR (l.extracted = ${EXTRACTION_STATE.CLAIMED}
-            -- 손상 타임스탬프(NULL·파싱불가)도 회수 대상이다(R24) — COALESCE 로
-            -- 3치논리가 판정을 먹지 못하게 한다. 원래 NOT EXISTS 구조가 암묵적으로
-            -- 제공하던 "판정 불가 = 회수 대상" 의미를 명시적으로 보존한다.
             AND COALESCE(datetime(l.processed_at) <= datetime('now', '-${CLAIM_LEASE_MINUTES} minutes'), 1))
-          -- settled(성공) 마커라도 워터마크가 뒤처지면 새 suffix 가 있다.
-          --   · SEED(-1) 는 제외: seed 마커는 seed 시점의 세션 MAX(rowid)로 심이고
-          --     그 이후 suffix 의 추출은 SessionEnd 훅이 담당한다. watermark 분기에
-          --     넣으면 suffix 가 붙은 seed 세션이 백필 큐로 되돌아온다.
-          --   · PERMANENT(-2) 도 제외: failureMarkerUpsertSql 은 워터마크를
-          --     갱신하지 않아(항상 claim 시점의 0) 넣으면 영구 실패 세션이
-          --     매 run 무한 재시도된다(R3 큐 물림). suffix 재시도는 훅 경로만.
-          --   · 살아있는 claim(-3, fresh) 도 제외: 다른 러너가 처리 중이다.
-          --     stale claim 은 위의 회수 분기가 이미 pending 으로 만든다.
         OR (l.extracted >= 0
             AND l.last_exchange_rowid < (
               SELECT COALESCE(MAX(x.rowid), 0) FROM exchanges x
               WHERE x.session_id = e.session_id))
       )
+      ${exClause}
+    GROUP BY e.session_id
+    HAVING COUNT(*) >= ${cfg.minExchanges}`;
+        return { sql, params: exTerms };
+    }
+    // Continuity completion is exact per exchange generation. Legacy SEED,
+    // PERMANENT, and live-MAX watermarks cannot prove presentation because the
+    // old pipeline sampled, capped, and dropped deterministic failures.
+    const sql = `
+    SELECT e.session_id AS sid, MAX(e.timestamp) AS ts, COUNT(*) AS n
+    FROM exchanges e
+    WHERE e.is_sidechain = 0 AND e.session_id IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM exchanges ce
+          LEFT JOIN exchange_extraction_state ces
+            ON ces.exchange_id = ce.id
+           AND ces.content_generation = ce.content_generation
+           AND ces.policy_version = '${FACT_EXTRACTION_POLICY_VERSION}'
+          WHERE ce.session_id = e.session_id
+            AND ce.closure_state IN ('closed','final')
+            AND (ces.exchange_id IS NULL
+              OR (ces.state IN ('pending','processing','retry')
+                AND NOT EXISTS (
+                  SELECT 1 FROM extraction_targets cet
+                  WHERE cet.target_id = ces.target_id AND cet.state = 'dead'
+                )))
+        )
       ${exClause}
     GROUP BY e.session_id
     HAVING COUNT(*) >= ${cfg.minExchanges}`;

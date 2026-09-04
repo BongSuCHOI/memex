@@ -46,6 +46,27 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
+            scope: {
+                type: string;
+                enum: string[];
+                description?: undefined;
+            };
             limit: {
                 type: string;
                 minimum: number;
@@ -69,13 +90,24 @@ export declare function getToolDefinitions(): ({
             path?: undefined;
             startLine?: undefined;
             endLine?: undefined;
-            scope?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -108,18 +140,34 @@ export declare function getToolDefinitions(): ({
             };
             query?: undefined;
             mode?: undefined;
-            readonly project?: undefined;
+            project?: undefined;
+            project_id?: undefined;
+            workspace_id?: undefined;
+            workstream_id?: undefined;
+            session_id?: undefined;
+            scope?: undefined;
             limit?: undefined;
             after?: undefined;
             before?: undefined;
             response_format?: undefined;
-            scope?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -150,6 +198,22 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -164,6 +228,19 @@ export declare function getToolDefinitions(): ({
                 type: string;
                 description: string;
                 default: boolean;
+            };
+            include_hot_evidence: {
+                type: string;
+                description: string;
+                default: boolean;
+            };
+            hot_before: {
+                type: string;
+                format: string;
+            };
+            hot_before_evidence_id: {
+                type: string;
+                maxLength: number;
             };
             limit: {
                 type: string;
@@ -182,7 +259,16 @@ export declare function getToolDefinitions(): ({
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -220,6 +306,22 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -235,8 +337,20 @@ export declare function getToolDefinitions(): ({
             startLine?: undefined;
             endLine?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         additionalProperties: boolean;
@@ -266,6 +380,22 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -282,9 +412,21 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -310,10 +452,36 @@ export declare function getToolDefinitions(): ({
                 description: string;
                 oneOf?: undefined;
             };
+            fact_id: {
+                type: string;
+                pattern: string;
+                description: string;
+            };
+            subject_key: {
+                type: string;
+                pattern: string;
+                description: string;
+            };
             project: {
                 type: string;
                 maxLength: number;
                 description: string;
+            };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
             };
             scope: {
                 type: string;
@@ -327,6 +495,44 @@ export declare function getToolDefinitions(): ({
                 default: number;
                 description: string;
             };
+            include_timeline: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            timeline_limit: {
+                type: string;
+                minimum: number;
+                maximum: number;
+                default: number;
+                description: string;
+            };
+            timeline_cursor: {
+                type: string;
+                maxLength: number;
+                description: string;
+            };
+            timeline_order: {
+                type: string;
+                enum: string[];
+                default: string;
+                description: string;
+            };
+            include_incidents: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            include_sources: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
+            include_hot_evidence: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
             mode?: undefined;
             after?: undefined;
             before?: undefined;
@@ -336,14 +542,17 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
-        required: string[];
         additionalProperties: boolean;
+        required?: undefined;
     };
     annotations: {
         title: string;
@@ -363,6 +572,22 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -379,10 +604,22 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
             hops?: undefined;
         };
         additionalProperties: boolean;
@@ -413,6 +650,11 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            current_project_id: {
+                type: string;
+                pattern: string;
+                description: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -426,7 +668,11 @@ export declare function getToolDefinitions(): ({
                 description: string;
             };
             mode?: undefined;
-            readonly project?: undefined;
+            project?: undefined;
+            project_id?: undefined;
+            workspace_id?: undefined;
+            workstream_id?: undefined;
+            session_id?: undefined;
             after?: undefined;
             before?: undefined;
             response_format?: undefined;
@@ -435,9 +681,20 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             hops?: undefined;
         };
         required: string[];
@@ -475,6 +732,22 @@ export declare function getToolDefinitions(): ({
                 maxLength: number;
                 description: string;
             };
+            project_id: {
+                type: string;
+                pattern: string;
+            };
+            workspace_id: {
+                type: string;
+                pattern: string;
+            };
+            workstream_id: {
+                type: string;
+                pattern: string;
+            };
+            session_id: {
+                type: string;
+                pattern: string;
+            };
             scope: {
                 type: string;
                 enum: string[];
@@ -490,10 +763,22 @@ export declare function getToolDefinitions(): ({
             endLine?: undefined;
             category?: undefined;
             include_revisions?: undefined;
+            include_hot_evidence?: undefined;
+            hot_before?: undefined;
+            hot_before_evidence_id?: undefined;
             domain?: undefined;
             include_relations?: undefined;
             question?: undefined;
+            fact_id?: undefined;
+            subject_key?: undefined;
+            include_timeline?: undefined;
+            timeline_limit?: undefined;
+            timeline_cursor?: undefined;
+            timeline_order?: undefined;
+            include_incidents?: undefined;
+            include_sources?: undefined;
             current_project?: undefined;
+            current_project_id?: undefined;
         };
         required: string[];
         additionalProperties: boolean;

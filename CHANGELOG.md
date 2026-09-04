@@ -4,6 +4,80 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+## 0.4.0 - 2026-09-04
+
+### Memex Continuity Architecture v1
+
+Normative target: `docs/architecture/memex-continuity-v1.md` (SHA-locked). As-built map:
+`docs/CONTINUITY.md`. Deviations: `docs/verification/continuity-v1/rfc-deviations.md` (D-000–D-036).
+Final gate: `docs/verification/continuity-v1/final-integration-gate.md`.
+
+#### Added
+
+- Rolling journal + hash-verified checkpoints with an atomic outbox and a durable
+  priority queue (`capture_index` → `capsule_update` → exact extraction), detached
+  worker wake, lease/retry/dead-visible states, and capture-gap recovery.
+- Exact extraction spine: immutable ordered targets, contiguous cursor, generation
+  reprocessing for grown exchanges, exact failed ranges (no sampling loss).
+- Work Capsule (typed, context-only) with generation CAS and a deterministic tail
+  baton; immediate `SessionStart(compact|resume)` rehydration without PostCompact.
+- Stable `project_id → workspace_id → workstream_id → session_id` identity with
+  additive migration, explicit link/split/remote approval, conservative workstream
+  binding, promotion slots, project `memory_revision` invalidation, Hot Evidence lane.
+- Chronicle: `fact_revisions` extended into the append-only event history (7 kinds,
+  content-hashed idempotent ids, `effective_at` vs `recorded_at`, grounded cause vs
+  classifier note, rollback linkage), subject-slot resolution at extraction, incident
+  episodes/patterns/remediation with a bounded match API, `trace_fact` timeline
+  pagination, `memex facts history|explain`.
+- Adaptive recall: lexical pre-retrieval gate (no LLM), single reused embedding on
+  the ambiguous path, revision-aware delta/correction, deterministic Memory Bundle
+  under hard budgets, verified-only WATCH, TRACE pointers, demoted assistant lane,
+  measured telemetry, `npm run bench:recall` calibration harness and artifact.
+
+#### Changed
+
+- Continuity schema `6` (`PRAGMA user_version`), additive and rerunnable; sync
+  protocol stays `4` with additive stable-identity, Chronicle event and event
+  tombstone rows (older peers reject such generations visibly).
+- Extracted facts default to `workstream` scope; `decision`/`project-current`
+  truth requires explicit evidence-bearing promotion (BRANCH TRUTH).
+- `PostCompact` is registered as telemetry only; correctness never depends on it.
+- New sessions start at the current project memory revision; short explicit memory
+  questions reach the gate (the 20-character hook floor was removed).
+- Consolidator verdicts pass a source-effective temporal judge; its reason is a
+  classifier note, never a grounded cause.
+
+#### Fixed
+
+- Concurrent `initDatabase()` could fail with `trigger exchanges_fts_au already exists`.
+- Paged extraction jobs could block capture indexing in the same session partition.
+- A Work Capsule sourced from a purged session could survive privacy purge.
+- Sibling changes to workstream-scoped resident facts were not corrected on
+  acknowledgement prompts.
+
+#### Migration notes
+
+- First run after upgrade performs the v1→v6 additive migration inside one immediate
+  transaction; interrupted migrations resume. No manual step is required.
+- `session-end-hook.js` remains as a final-fence alias; plugin registration uses
+  `continuity-hook.js`. Legacy path queries and extraction markers remain read-only
+  compatibility surfaces.
+
+#### Rollback notes
+
+- Older plugin versions ignore the new tables/columns; the DB does not need to be
+  downgraded. Older sync peers reject new-shape generations rather than importing
+  them partially. Restore a pre-upgrade DB backup only if a full revert is required.
+
+#### Known limitations
+
+- Cost figures are counts of calls and bytes (calibration on the deterministic
+  embedding stub plus a 20-pair real-model spot check); no time or money savings are
+  claimed. Production-model calibration replay and the product A/B remain manual.
+- `SessionStart(resume|compact)` rehydration still uses the Phase 3 scope-wide
+  correction list; the prompt path is residency-derived.
+- Formal `codex plugin validate` is unavailable in CLI 0.153.2; substitute checks apply.
+
 ## 0.3.0 - 2026-09-03
 
 ### Added

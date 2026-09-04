@@ -1,6 +1,11 @@
 # Memex SQLite 스키마와 불변식
 
-schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
+schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
+
+Continuity DB schema version은 `PRAGMA user_version = 4`와
+`continuity_schema_meta.schema_version = 4`에 함께 기록됩니다. Migration은 기존 table/rowid를
+rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
+마지막에만 기록됩니다.
 
 기본 DB:
 
@@ -15,6 +20,19 @@ schema의 최종 소유자는 `src/db.ts`입니다. 이 문서는 모든 SQL 세
 ```mermaid
 erDiagram
     EXCHANGES ||--o{ TOOL_CALLS : contains
+    PROJECTS ||--o{ WORKSPACES : locates
+    PROJECTS ||--o{ MINIMAL_WORKSTREAMS : scopes
+    WORKSPACES ||--o{ MINIMAL_WORKSTREAMS : hosts
+    MINIMAL_WORKSTREAMS ||--o{ WORKSTREAM_SESSIONS : binds
+    EXCHANGES ||--o{ HOT_EVIDENCE : indexes
+    EXCHANGES ||--o{ EXTRACTION_TARGET_ITEMS : snapshots
+    CHECKPOINTS ||--o{ MEMORY_JOBS : enqueues
+    JOURNAL_STREAMS ||--o{ JOURNAL_BLOCKS : chains
+    MINIMAL_WORKSTREAMS ||--|| SESSION_MEMORY_STATE : binds
+    MINIMAL_WORKSTREAMS ||--o| WORK_CAPSULES : projects
+    CHECKPOINTS ||--o| CAPSULE_CHECKPOINT_STATE : distills
+    EXTRACTION_TARGETS ||--o{ EXTRACTION_TARGET_ITEMS : pages
+    EXTRACTION_TARGETS ||--o{ EXTRACTION_FAILED_RANGES : accounts
     EXCHANGES }o--o{ FACTS : provenance
     EXCHANGES ||--o{ FACT_CONTEXT_DEPENDENCIES : interpretive_context
     FACTS ||--o{ FACT_CONTEXT_DEPENDENCIES : depends_on
@@ -38,6 +56,15 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 - `tool_calls`
 - `recall_events`
 - `extraction_log`
+- `checkpoints`, `memory_jobs`
+- `journal_streams`, `journal_blocks`, `capture_gaps`
+- `conversation_exclusions`
+- `projects`, `workspaces`, `approved_remote_mappings`, `project_identity_audit`
+- `workstream_sessions`, `hot_evidence`
+- `minimal_workstreams`, `session_memory_state`
+- `work_capsules`, `capsule_checkpoint_state`
+- `extraction_targets`, `extraction_target_items`, `extraction_failed_ranges`
+- `exchange_extraction_state`
 - summary/FTS metadata
 - `exchanges_fts`
 - `vec_exchanges`
@@ -47,6 +74,57 @@ SQLite writer는 `foreign_keys = ON`을 명시적으로 설정합니다. 기존 
 exchange ID는 session과 user turn 위치에서 결정론적으로 파생됩니다. `archive_path`는 identity가 아니라 location metadata입니다.
 
 동일 exchange re-index는 rowid를 보존합니다. extraction watermark가 rowid를 기준으로 하므로 `INSERT OR REPLACE`처럼 rowid를 바꾸는 update는 금지합니다.
+
+각 exchange는 `exchange_seq`, `content_hash`, `content_generation`, `closure_state`,
+`parser_version`을 가집니다. `line_end` 또는 canonical content hash가 변하면 generation이 증가합니다.
+명시적 lower generation, shorter `line_end`, 같은 generation의 다른 hash, 같은 generation의 closure
+regression은 `insertExchange()` transaction에서 거절됩니다. `open|interrupted`는 closed extraction
+fence에 들어가지 않습니다. Released reader가 직접 쓴 legacy row는 startup backfill에서 hash/sequence와
+generation 1을 얻되 rowid는 유지됩니다.
+
+### Correctness Spine state
+
+`extraction_targets`는 model call 전 고정한 immutable rowid fence와 ordered generation snapshot을
+소유합니다. Legacy watermark가 unseen row를 건넜다면 fence는 첫 missing item 직전부터 다시
+형성되며, 완료 권한은 target item이지 `extraction_log.last_exchange_rowid`가 아닙니다.
+`cursor_ordinal`은 오직 contiguous page commit에서 증가합니다. 각 target item은
+`pending|processing|processed|retry|superseded|failed-visible` 중 하나이며,
+`exchange_extraction_state`의 identity는 `(exchange_id, content_generation, policy_version)`입니다.
+`superseded`는 async work 중 source generation/hash/closure/deletion이 바뀐 obsolete work이며 failure나
+completion으로 계산하지 않습니다. `extraction_target_items.exchange_id`는 이 stale identity를 commit
+검증까지 보존하려고 FK cascade를 두지 않습니다. Privacy purge는 source delete와 같은 transaction에서
+target을 먼저 지워 private identity가 commit 후 남지 않게 합니다.
+
+`extraction_failed_ranges`는 exact ordinal/rowid range, payload SHA-256, error kind/message를 저장합니다.
+`failed-visible` target/job은 completed가 아니며 pipeline readiness를 막습니다. Zero-fact page도 policy가
+실제로 page 전체를 성공 처리한 경우에만 cursor를 전진합니다.
+
+`checkpoints`와 `memory_jobs`는 같은 SQLite transaction에서 생성됩니다. Job idempotency key는 UNIQUE이며,
+claim마다 `lease_generation`이 증가합니다. Completion은 running state, owner, generation, unexpired lease가
+모두 일치할 때만 성공합니다. Partial page 성공은 job을 pending으로 되돌리고 attempts를 reset합니다.
+Crash/restart 뒤 `pending|retry|running with expired lease|dead`는 durable query로 식별할 수 있습니다.
+동일 partition은 priority lane(P0 `capture_index` 100 > P1 `capsule_update` 80 > P2 `fact_extract` 20)
+순서로 먼저, 같은 lane 안에서는 checkpoint ordinal 순서로만 claim됩니다. Capture checkpoint ordinal은
+journal byte 기준이고 extraction checkpoint ordinal은 exchange rowid 기준이라 lane을 넘어 비교하지
+않습니다(Final Integration D-034). Semantic target이 다른 idempotency-key 충돌은 기존 row 재사용 대신
+전체 transaction을 rollback합니다.
+
+Prefix ingest는 `ingestPrefixExchanges()`만 사용하며 desired-set delete를 수행하지 않습니다. Full
+archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를 호출합니다.
+
+### Continuity Core state
+
+`journal_streams`는 `(session_id, stream_epoch)`별 source realpath/dev/inode/mtime, copied source byte/line, journal byte, parser version, current prefix hash와 copied boundary 직전 최대 4KiB의 source guard hash를 저장합니다. Capture는 session writer transaction을 먼저 선점한 뒤 journal을 append하므로 competing hook process가 같은 boundary를 동시에 쓰지 못합니다. `journal_blocks`는 contiguous source/journal range와 segment/prefix SHA-256 chain을 가집니다. Checkpoint worker는 exact prefix boundary까지만 읽고 모든 block hash를 다시 검증한 뒤 ingest합니다. Source rewind/replace, same-size rewrite, 기존 prefix를 바꾸고 더 길어진 rewrite, committed journal 손상은 기존 stream row와 journal을 보존한 채 새 epoch을 생성합니다.
+
+`conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.
+
+`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch를 local provenance로 가집니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+
+`session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
+
+`work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation CAS와 capsule job의 lease completion은 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. 최신 checkpoint가 Capsule의 `through_checkpoint_id`보다 앞서 있으면 compact/resume bundle에 deterministic tail baton도 함께 들어갑니다.
+
+Capture checkpoint마다 P0 `capture_index` job이 있고, P1 `capsule_update`는 Stop/Interrupt boundary 6개 또는 accumulated 8KiB, PreCompact, SessionEnd에서 coalesce됩니다. Checkpoint와 outbox insert는 atomic입니다. Capture gap은 `open|recovered|purged`로 명시되며 silent completion으로 계산하지 않습니다. Retry가 소진된 checkpoint는 `dead-letter`, 관련 Capsule state는 `failed-visible`이고, dependency가 죽은 Capsule job을 pending으로 남기지 않습니다.
 
 ### Provenance
 
@@ -118,9 +196,19 @@ facts (
   semantic_generation,
   semantic_updated_at,
   lifecycle_generation,
-  lifecycle_updated_at
+  lifecycle_updated_at,
+  project_id,
+  workspace_id,
+  workstream_id,
+  subject_key,
+  promotion_state
 )
 ```
+
+`promotion_state`는 `legacy-project|decision|project-current|workspace|workstream`입니다. Active subject
+slot은 project와 optional workspace/workstream 범위에서 unique입니다. `decision`은 explicit decision,
+`project-current`는 merged/validated evidence만 허용하고 experimental state는 `workstream` 또는 Capsule에
+남습니다. Branch 전체 fact graph는 만들지 않습니다.
 
 ### Semantic fields
 
@@ -138,11 +226,52 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 
 `source_exchange_ids`와 `consolidated_count`는 sync/concurrent writer에서 각각 union/max로 수렴합니다. 의미 winner의 metadata로 단순 덮어쓰지 않습니다.
 
-## 4. Revisions와 tombstones
+## 4. Chronicle (extended `fact_revisions`)와 tombstones
 
-`fact_revisions`는 기존 fact identity의 의미 변화를 보존합니다.
+`fact_revisions`는 Phase 4부터 Chronicle event table입니다. 별도의 history table을 두지 않고 released
+revision row를 같은 table 안에서 CHANGED event로 확장합니다(schema v5 rebuild: `fact_id`/`previous_fact`/`new_fact`
+nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chronicle은 append-only 의미 전환 계보입니다.
+매 query마다 event replay로 current를 계산하지 않습니다.
+
+| Column | 의미 |
+| --- | --- |
+| `id` | content-derived event id(sha256 32hex). 같은 내용의 duplicate delivery/sync replay는 같은 id로 수렴 |
+| `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
+| `previous_fact` / `new_fact` | previous/new value |
+| `project_id`, `subject_key` | stable slot |
+| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED` |
+| `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
+| `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
+| `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
+| `outcome_json` | validation/incident/temporal 판정 결과 |
+| `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
+| `reverts_event_id`, `related_event_ids` | rollback/관계 |
+| `actor` | `extractor|consolidator|user|sync|legacy` |
+| `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision|human|trusted-tool|unknown` |
+| `effective_at` / `effective_at_source` | 실제 사건 시점(`source`) 또는 처리 시점 fallback(`recorded`), peer 수신(`peer`) |
+| `recorded_at` | worker 처리 시점 |
+| `projection_applied` | 1이면 같은 transaction에서 current가 바뀜, 0이면 event-only/historical/candidate |
+| `chronicle_seq` | local append 순서 tie-breaker(clock 아님) |
+
+Timeline 정렬은 항상 `effective_at, recorded_at, chronicle_seq`이며 worker 완료 순서나 generation 번호로
+정렬하지 않습니다. Legacy row backfill: `event_kind=CHANGED`, `actor=legacy`, `reason → classifier_note`,
+`effective_at`은 cited source exchange timestamp(없으면 `created_at`, `recorded`).
+
+`incident_occurrences`는 source-linked incident episode(session, signature_key, retry_count, state)이고
+`incident_signatures`는 project별 stable failure signature(`episode_count`, `pattern_state`
+`candidate|pattern|remediated`, remediation event)입니다. `continuity_telemetry`는 측정된 outcome sample이며
+fact/event가 아닙니다(allowlist metric은 `TELEMETRY_METRICS`).
+
+`session_memory_state`는 Phase 5 recall gate state를 additive column으로 가집니다(schema v6):
+`topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`,
+`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. `last_retrieval_at`은 Hot Evidence
+residency watermark를 겸합니다(epoch 변경 시 NULL, SessionStart rehydration과 prompt path retrieval이 stamp).
+`watch_emitted_json`은 hint ledger(`watch:<signature>`/`trace:<subject>` key, epoch, substantive prompt
+counter, change token)입니다. `resident_bundle_hash`는 RFC §12.2 예약 column이며 현재 쓰지 않습니다.
+새 session row의 `memory_revision_seen`은 생성 시점의 project revision입니다.
 
 `fact_tombstones`는 hard-delete event이며 fact row가 없어져도 남아 stale peer snapshot의 resurrection을 막습니다.
+`chronicle_tombstones`는 purge된 event id를 같은 목적으로 보존합니다.
 
 `reason = source_conversation_excluded`는 terminal privacy tombstone으로 취급합니다. 일반 newer lifecycle event만으로 복원하지 않습니다.
 
@@ -229,6 +358,18 @@ fact_revisions
 fact_tombstones
 recall_events
 ```
+
+Project-scoped wire rows는 stable project/portable identity를 사용하고 `scope_project = null`입니다.
+`fact-revisions.jsonl`은 Chronicle event 전체 shape(legacy 7-field + event field, `portable_project_key`)를 additive로
+실어 나르며 device-local generation 번호는 내보내지 않습니다. importer는 legacy 7-field row와 event row를 모두
+받아 stable event id로 replay-idempotent하게 append하고, 같은 id에 다른 내용이 오면 local history를 보존한 채
+`malformedRows`에 conflict를 기록합니다. event row의 grounded field는 origin에서 검증된 값으로 신뢰하되
+구조 검증을 통과해야 합니다(source 없는 `problem`/`grounded_cause`, actor `user`가 아닌 source 없는 `rationale`,
+`fact_id` 없는 `projection_applied=1`은 schema-invalid로 generation 전체 reject). `fact-tombstones.jsonl`에는
+`{fact_id: null, event_id, ...}` 형태의 Chronicle tombstone row가 추가됩니다(구 peer는 generation 전체를 visible reject).
+Workspace path, Git common-dir, branch와 Hot Evidence는 device-local/ephemeral이므로 export하지 않습니다.
+Legacy v4 path row는 importer가 canonical local workspace로 migration할 수 있지만, 새 path-free shape를
+모르는 peer는 generation 전체를 visible하게 reject해야 하며 partial compatibility import는 금지합니다.
 
 `fact_context_dependencies`는 local conversation corpus에 종속된 interpretive lineage이므로
 export/import하지 않습니다. Remote semantic winner가 local fact 의미를 교체하면 이전 의미에

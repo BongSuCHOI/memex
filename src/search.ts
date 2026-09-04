@@ -54,6 +54,11 @@ export interface SearchOptions {
   after?: string;  // ISO date string
   before?: string; // ISO date string
   project?: string;
+  identityScope?:
+    | { type: 'project'; projectId: string }
+    | { type: 'workspace'; workspaceId: string }
+    | { type: 'workstream'; workstreamId: string }
+    | { type: 'session'; sessionId: string };
 }
 
 interface ExchangeRow {
@@ -84,7 +89,7 @@ export async function searchConversations(
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResult[]> {
-  const { limit = 10, mode = 'both', after, before, project } = options;
+  const { limit = 10, mode = 'both', after, before, project, identityScope } = options;
 
   // Validate date parameters
   if (after) validateISODate(after, '--after');
@@ -100,6 +105,19 @@ export async function searchConversations(
     if (project) {
       filterParts.push(`e.project = ?`);
       filterParams.push(project);
+    }
+    if (identityScope?.type === 'project') {
+      filterParts.push(`e.project_id = ?`);
+      filterParams.push(identityScope.projectId);
+    } else if (identityScope?.type === 'workspace') {
+      filterParts.push(`e.workspace_id = ?`);
+      filterParams.push(identityScope.workspaceId);
+    } else if (identityScope?.type === 'workstream') {
+      filterParts.push(`e.workstream_id = ?`);
+      filterParams.push(identityScope.workstreamId);
+    } else if (identityScope?.type === 'session') {
+      filterParts.push(`e.session_id = ?`);
+      filterParams.push(identityScope.sessionId);
     }
     if (after) {
       filterParts.push(`e.timestamp >= ?`);

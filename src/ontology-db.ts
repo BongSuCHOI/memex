@@ -10,6 +10,7 @@ import type {
   Fact,
 } from './types.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
+import { factMatchesScope, type FactSearchScope } from './fact-db.js';
 
 // === Taxonomy epoch (재감사 Privacy-P1 v4) ===
 
@@ -248,19 +249,21 @@ export function getFactsByCategory(
   categoryId: string,
   scopeProject?: string | null,
   scopeType?: 'project' | 'global' | 'all',
+  identityScope?: FactSearchScope,
 ): Fact[] {
   let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
   const params: unknown[] = [categoryId];
 
-  if (scopeType === 'global') {
+  if (!identityScope && scopeType === 'global') {
     query += ` AND scope_type = 'global'`;
-  } else if (scopeProject && scopeType !== 'all') {
+  } else if (!identityScope && scopeProject && scopeType !== 'all') {
     query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
     params.push(scopeProject);
   }
 
   query += ` ORDER BY consolidated_count DESC`;
-  return (db.prepare(query).all(...params) as Record<string, unknown>[]).map(rowToFact);
+  const facts = (db.prepare(query).all(...params) as Record<string, unknown>[]).map(rowToFact);
+  return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
 }
 
 
@@ -393,6 +396,7 @@ export function getRelatedFacts(
   minRelevance: number = 0.2,
   scopeProject?: string | null,
   scopeType?: 'project' | 'global' | 'all',
+  identityScope?: FactSearchScope,
 ): Array<{ fact: Fact; relation: OntologyRelation; relevance: number; hop: number }> {
   const visited = new Set<string>([factId]);
   const results: Array<{ fact: Fact; relation: OntologyRelation; relevance: number; hop: number }> = [];
@@ -441,8 +445,9 @@ export function getRelatedFacts(
         const fact = rowToFact(rows[0]);
 
         // Scope filter:
-        if (scopeType === 'global' && fact.scope_type !== 'global') continue;
-        if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global') continue;
+        if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
 
         // Select the surfaced edge FIRST: a neighbour with no qualifying
         // edge is PRUNED — it must not enter the frontier, or traversal
@@ -494,8 +499,9 @@ export function getRelatedFacts(
         const fact = rowToFact(rows[0]);
 
         // Scope filter:
-        if (scopeType === 'global' && fact.scope_type !== 'global') continue;
-        if (scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
+        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
+        if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global') continue;
+        if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject) continue;
 
         // Same pruning contract as the outgoing side: no qualifying edge →
         // no frontier entry, no path leak.
@@ -546,6 +552,7 @@ export function getOntologyTree(
   db: Database.Database,
   scopeProject?: string | null,
   scopeType?: 'project' | 'global' | 'all',
+  identityScope?: FactSearchScope,
 ): DomainTree[] {
   const domains = listDomains(db);
   const tree: DomainTree[] = [];
@@ -558,7 +565,7 @@ export function getOntologyTree(
     };
 
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType);
+      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
       if (facts.length > 0 || (!scopeProject && !scopeType)) {
         domainEntry.categories.push({ category, facts });
       }
@@ -590,6 +597,11 @@ function rowToFact(row: Record<string, unknown>): Fact {
     category: row['category'] as Fact['category'],
     scope_type: row['scope_type'] as Fact['scope_type'],
     scope_project: (row['scope_project'] as string | null) ?? null,
+    project_id: (row['project_id'] as string | null) ?? null,
+    workspace_id: (row['workspace_id'] as string | null) ?? null,
+    workstream_id: (row['workstream_id'] as string | null) ?? null,
+    subject_key: (row['subject_key'] as string | null) ?? null,
+    promotion_state: (row['promotion_state'] as Fact['promotion_state']) ?? 'legacy-project',
     source_exchange_ids: row['source_exchange_ids']
       ? JSON.parse(row['source_exchange_ids'] as string)
       : [],
@@ -600,6 +612,8 @@ function rowToFact(row: Record<string, unknown>): Fact {
     is_active: Boolean(row['is_active']),
     semantic_generation: Number(row['semantic_generation'] ?? 1),
     semantic_updated_at: (row['semantic_updated_at'] as string | null) ?? null,
+    lifecycle_generation: Number(row['lifecycle_generation'] ?? 1),
+    lifecycle_updated_at: (row['lifecycle_updated_at'] as string | null) ?? null,
   };
 }
 

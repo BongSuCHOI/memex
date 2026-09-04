@@ -207,7 +207,7 @@ export async function parseRolloutStream(
   let lineNo = 0;
   let lastTs = "";
 
-  const flush = () => {
+  const flush = (boundary: "next_user" | "eof") => {
     if (
       !cur ||
       (cur.assistantMessages.length === 0 && cur.toolCalls.length === 0)
@@ -234,6 +234,9 @@ export async function parseRolloutStream(
           .update(`mx:u${cur.userLine}:${cur.userMessage}`)
           .digest("hex");
     const toolCalls = cur.toolCalls.map((tc) => ({ ...tc, exchangeId: id }));
+    const hasIncompleteTool = toolCalls.some(
+      (call) => (call as Record<string, unknown>).toolResult === undefined,
+    );
     exchanges.push({
       id,
       project: "",
@@ -243,6 +246,10 @@ export async function parseRolloutStream(
       archivePath,
       lineStart: cur.userLine,
       lineEnd: cur.assistantLine,
+      exchangeSeq: exchanges.length + 1,
+      closureState:
+        boundary === "eof" && hasIncompleteTool ? "interrupted" : "closed",
+      parserVersion: 2,
       sessionId: meta ? (meta.session_id ?? meta.id) : undefined,
       cwd: meta ? meta.cwd : undefined,
       codexVersion: meta ? meta.cli_version : undefined,
@@ -285,7 +292,7 @@ export async function parseRolloutStream(
       const text = textFromContent(p.content);
       if (role === "user") {
         if (isInternalContextMessage(text)) continue;
-        flush();
+        flush("next_user");
         cur = {
           userMessage: text,
           userLine: lineNo,
@@ -333,7 +340,7 @@ export async function parseRolloutStream(
       }
     }
   }
-  flush();
+  flush("eof");
 
   return { meta, isSubagent: isSubagentMeta(meta), exchanges };
 }
@@ -346,8 +353,12 @@ export async function parseConversation(
   filePath: string,
   projectName: string,
   archivePath: string = filePath,
+  throughByteExclusive?: number,
 ): Promise<Array<Record<string, unknown>>> {
-  const stream = fs.createReadStream(filePath);
+  if (throughByteExclusive !== undefined && throughByteExclusive <= 0) return [];
+  const stream = fs.createReadStream(filePath, throughByteExclusive === undefined
+    ? undefined
+    : { start: 0, end: Math.max(0, throughByteExclusive - 1) });
   try {
     const { meta, exchanges } = await parseRolloutStream(stream, {
       archivePath,

@@ -15,6 +15,7 @@
 9. [시각화](VISUALIZATION.md) — Web UI와 3D Knowledge Galaxy
 10. [검증](VERIFICATION.md) — merge gate, E2E, receipt 규칙
 11. [계보](LINEAGE.md) — upstream attribution과 Codex-native 경계
+12. [Continuity as-built](CONTINUITY.md) — lifecycle/journal/outbox/worker, Capsule, identity, Chronicle, Memory Broker, sync/privacy의 실제 구현 지도. 규범은 [Final RFC](architecture/memex-continuity-v1.md), 차이는 [deviation record](verification/continuity-v1/rfc-deviations.md)
 
 ## 핵심 개념
 
@@ -46,6 +47,8 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | persistence | `src/db.ts`, `src/fact-db.ts`, `src/ontology-db.ts` | `SCHEMA.md` |
 | installation/package/update | `.codex-plugin/`, `cli/runtime-exec.js`, installer/update scripts | `GUIDE.md`, `ARCHITECTURE.md` |
 | release evidence | tests, E2E, `docs/verification/*` | `VERIFICATION.md` |
+| continuity capture/queue/worker | `src/continuity-core.ts`, `src/continuity-store.ts`, `src/continuity-worker.ts`, `scripts/continuity-hook.js` | `CONTINUITY.md`, `CONVERSATION-LIFECYCLE.md` |
+| identity/Chronicle/recall gate | `src/continuity-identity.ts`, `src/chronicle.ts`, `src/recall-gate.ts`, `src/memory-bundle.ts` | `CONTINUITY.md`, `FACT-LIFECYCLE.md`, `RETRIEVAL-AND-CONTEXT.md` |
 | project ancestry | license/upstream history | `LINEAGE.md` |
 
 ## 문서 유지 규칙

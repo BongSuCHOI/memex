@@ -25,6 +25,7 @@ function isolatedEnv(t) {
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'sync-import-hook.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-start-maintenance.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-end-hook.js'), '#!/usr/bin/env node\n');
+  fs.writeFileSync(path.join(pluginRoot, 'scripts', 'continuity-hook.js'), '#!/usr/bin/env node\n');
   fs.copyFileSync(
     path.join(REPO, 'scripts', 'inject-context-hook.sh'),
     path.join(pluginRoot, 'scripts', 'inject-context-hook.sh'),
@@ -56,13 +57,13 @@ const FOREIGN_HOOKS = JSON.stringify({
   },
 }, null, 2) + '\n';
 
-test('setup-hooks registers all three events and is idempotent; foreign entries preserved', (t) => {
+test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign entries preserved', (t) => {
   const { codexHome } = isolatedEnv(t);
   const file = path.join(codexHome, 'hooks.json');
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r1 = setupHooks();
-  assert.equal(r1.diff.add.length, 6);
+  assert.equal(r1.diff.add.length, 11);
   assert.equal(r1.changed, true);
   const afterFirst = fs.readFileSync(file, 'utf8');
 
@@ -78,7 +79,7 @@ test('setup-hooks registers all three events and is idempotent; foreign entries 
 
   // Ownership record exists with fingerprints.
   const reg = JSON.parse(fs.readFileSync(registrationPath(), 'utf8'));
-  assert.equal(reg.entries.length, 6);
+  assert.equal(reg.entries.length, 11);
   assert.ok(reg.entries.every((e) => e.fingerprint && /"(.+)"/.test(e.command)));
 
   // Desired commands use absolute paths under the plugin root.
@@ -93,7 +94,7 @@ test('dry-run mutates nothing', (t) => {
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r = setupHooks({ dryRun: true });
-  assert.equal(r.diff.add.length, 6);
+  assert.equal(r.diff.add.length, 11);
   assert.equal(fs.readFileSync(file, 'utf8'), FOREIGN_HOOKS);
   assert.ok(!fs.existsSync(registrationPath()));
 });
@@ -105,11 +106,12 @@ test('remove-hooks removes only owned entries and keeps foreign bytes intact', (
   setupHooks();
 
   const dry = removeHooks({ dryRun: true });
-  assert.equal(dry.removed, 6);
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).hooks.SessionStart[0].hooks.length, 5); // foreign + 4 ours
+  assert.equal(dry.removed, 11);
+  const configured = JSON.parse(fs.readFileSync(file, 'utf8')).hooks.SessionStart;
+  assert.equal(configured.flatMap((block) => block.hooks).length, 6); // foreign + 5 ours
 
   const r = removeHooks();
-  assert.equal(r.removed, 6);
+  assert.equal(r.removed, 11);
   assert.equal(r.preservedForeignEntries, 2); // atuin + foreign-canary
   const after = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual(after.hooks.PreToolUse[0].hooks[0].command, 'atuin hook codex');
@@ -148,7 +150,10 @@ test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.j
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin'), { recursive: true });
   fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, '.codex-plugin', 'plugin.json'), JSON.stringify({ hooks: './hooks.json' }));
   fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'hooks.json'), JSON.stringify({
-    hooks: { SessionStart: [{}], UserPromptSubmit: [{}], SessionEnd: [{}] },
+    hooks: {
+      SessionStart: [{}], UserPromptSubmit: [{}], Stop: [{}], Interrupt: [{}],
+      PreCompact: [{}], PostCompact: [{}], SessionEnd: [{}],
+    },
   }));
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true });
 

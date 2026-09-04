@@ -39,4 +39,4 @@ export declare function parseRolloutStream(input: NodeJS.ReadableStream, { archi
  * Legacy-compatible entry point: parse one rollout transcript into exchanges.
  * projectName is stamped onto every exchange (project scoping stays with sync).
  */
-export declare function parseConversation(filePath: string, projectName: string, archivePath?: string): Promise<Array<Record<string, unknown>>>;
+export declare function parseConversation(filePath: string, projectName: string, archivePath?: string, throughByteExclusive?: number): Promise<Array<Record<string, unknown>>>;

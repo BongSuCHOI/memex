@@ -90,7 +90,8 @@ test('edit writes revision + fresh embedding atomically; ontology goes observabl
     text: 'The API uses keyset pagination with rotating encrypted cursors.',
     reason: 'decision updated after review',
   });
-  assert.equal(r.revisionId.includes('-'), true);
+  // Phase 4: the revision id is the content-derived Chronicle event id (sha256[0:32]).
+  assert.match(r.revisionId, /^[0-9a-f]{32}$/);
   assert.equal(r.ontologyPending, true);
   assert.equal(r.affectedRelations, 1, 'Stale relation should be counted and removed');
 
@@ -108,8 +109,15 @@ test('edit writes revision + fresh embedding atomically; ontology goes observabl
 
   const revs = fm.factHistory(db, id);
   assert.equal(revs.length, 1);
-  assert.equal(revs[0].reason, 'decision updated after review');
-  assert.equal(revs[0].previous_fact, 'The API uses cursor pagination.');
+  assert.equal(revs[0].id, r.revisionId);
+  assert.equal(revs[0].event_kind, 'CHANGED');
+  assert.equal(revs[0].actor, 'user');
+  // A reason typed by the user is a stated rationale, never a model note or a source-cited cause.
+  assert.equal(revs[0].rationale, 'decision updated after review');
+  assert.equal(revs[0].classifier_note, null);
+  assert.equal(revs[0].grounded_cause, null);
+  assert.equal(revs[0].previous_value, 'The API uses cursor pagination.');
+  assert.equal(revs[0].projection_applied, true);
   assert.equal(
     db.prepare('SELECT COUNT(*) c FROM fact_context_dependencies WHERE fact_id = ?').get(id).c,
     0,

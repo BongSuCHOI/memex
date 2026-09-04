@@ -2,15 +2,63 @@ import { getSearchDb } from "./search.js";
 import { l2DistanceToSimilarity } from "./db.js";
 import { searchFactsByScope } from "./fact-db.js";
 import {
+  embeddingCallStats,
   generateEmbedding,
   initEmbeddings,
   queryBaseline,
 } from "./embeddings.js";
 import { getRelatedFacts } from "./ontology-db.js";
-import { detectRepeat, formatRepeatContext } from "./repeat-detector.js";
+import { detectRepeat } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
-import { loadLedger, appendLedger } from "./inject-ledger.js";
 import { recordRecallEvent } from "./db.js";
+import {
+  matchIncidentPatterns,
+  readChronicleTimeline,
+  recordTelemetrySample,
+  type TelemetryMetric,
+} from "./chronicle.js";
+import {
+  ensureSessionMemoryState,
+  readResidentFactRevisions,
+  readResidentRevisionCorrections,
+  readWorkCapsule,
+  recordResidentFactRevisions,
+  type ResidentFactRevision,
+} from "./continuity-core.js";
+import {
+  markSessionProjectRevisionSeen,
+  readHotEvidence,
+  sessionProjectRevisionState,
+} from "./continuity-identity.js";
+import {
+  blobToEmbedding,
+  decideRecall,
+  embeddingToBlob,
+  resolveAmbiguousDecision,
+  tokenizePrompt,
+  type RecallGateConfig,
+  type RecallGateDecision,
+} from "./recall-gate.js";
+import {
+  NORMAL_BUNDLE_BUDGET,
+  estimateTokens,
+  renderMemoryBundle,
+  type BundleSection,
+} from "./memory-bundle.js";
+
+type SearchDb = ReturnType<typeof getSearchDb>;
+
+/** Measured outcome sample; never blocks or fails the prompt path. */
+function sampleTelemetry(
+  db: SearchDb,
+  input: { metric: TelemetryMetric; value: number; unit?: string; projectId?: string | null; sessionId?: string | null; dims?: Record<string, unknown> },
+): void {
+  try {
+    recordTelemetrySample(db as Parameters<typeof recordTelemetrySample>[0], input);
+  } catch {
+    /* telemetry is best-effort */
+  }
+}
 
 const TOP_K = 5;
 // Probe-baseline relevance gate (e5 scores are compressed, so absolute
@@ -21,25 +69,168 @@ const TOP_K = 5;
 // +0.04~+0.045, so the margin sits just above that noise band.
 const BASELINE_MARGIN = 0.045;
 const MAX_CONTEXT_FACTS = 8;
-// Token budget: fact 평균 140자·p90 207자 실측 — 절단 없이 8건이면 ~470 tok/프롬프트.
-// fact 당 160자 + 블록 1,000자 예산으로 상한. 잘린 내용이 필요하면 search_facts 로 조회.
-const FACT_CHAR_CAP = 160;
-const BLOCK_CHAR_BUDGET = 1000;
+// Phase 5 budget (RFC §12.5): normal prompt delta target 700 / hard 1,000 chars.
 // detectRepeat 는 313k exchanges 벡터검색 (p50 21ms / p95 498ms 실측) — tail 이
 // 주입 지연 p90 을 끌어올린다. better-sqlite3 는 동기라 시작한 검색을 타이머로
 // 선점할 수 없다(Promise.race 는 무효 — Codex 리뷰 지적). 대신 시작 "전" 경과
 // 예산을 확인해, 파이프라인이 이미 이만큼 썼으면 반복감지를 통째로 생략한다.
 const REPEAT_ELAPSED_BUDGET_MS = 700;
+/** A WATCH signature or TRACE pointer is not repeated within this many substantive prompts unless it changed. */
+const WATCH_TTL_PROMPTS = 5;
+const TOPIC_FINGERPRINT_MAX = 64;
 
-function truncateFact(text: string): string {
+export interface InjectOptions {
+  /** Disable the cheap gate (calibration baseline only). */
+  gate?: boolean;
+  gateConfig?: Partial<RecallGateConfig>;
+  now?: string;
+}
+
+function commitInjectionState(
+  db: SearchDb,
+  input: {
+    sessionId: string;
+    project: string;
+    prompt: string;
+    factIds: string[];
+    projectId: string;
+    workspaceId: string;
+    workstreamId: string;
+    contextEpoch: number;
+    projectMemoryRevision: number;
+    revisions: ResidentFactRevision[];
+    /** False while stale-revision corrections are still being drained. */
+    markProjectRevision: boolean;
+  },
+): void {
+  const write = () => {
+    const receipt = recordRecallEvent(db, input);
+    if (!receipt) throw new Error("Failed to persist prepared recall receipt");
+    if (!recordResidentFactRevisions(db, input.sessionId, input.contextEpoch, input.revisions)) {
+      throw new Error("context epoch changed before residency commit");
+    }
+    if (input.markProjectRevision &&
+        !markSessionProjectRevisionSeen(db, input.sessionId, input.projectMemoryRevision)) {
+      throw new Error("project memory revision changed before injection commit");
+    }
+  };
+  if (typeof db.transaction !== "function") {
+    write();
+    return;
+  }
+  const tx = db.transaction(write);
+  if (db.inTransaction) tx();
+  else tx.immediate();
+}
+
+interface GateRow {
+  context_epoch: number;
+  last_source: string | null;
+  capsule_generation_seen: number;
+  memory_revision_seen: number;
+  topic_fingerprint_json: string;
+  topic_embedding: Buffer | null;
+  informative_prompts_since_retrieval: number;
+  last_retrieval_epoch: number;
+  last_retrieval_at: string | null;
+  watch_emitted_json: string;
+  resident_fact_revisions_json: string;
+  workstream_id: string;
+}
+
+/** Per-session residency for hint lines (WATCH `watch:<signature>`, TRACE `trace:<subject>`). */
+interface WatchLedgerEntry {
+  key: string;
+  epoch: number;
+  /** Substantive prompts processed since the emission, as of the last retrieval commit. */
+  at: number;
+  /** Change token: newest verified episode (WATCH) or Chronicle state (TRACE). */
+  lastEffectiveAt: string;
+}
+
+/** Test doubles may hand in a bare object; state reads then degrade to defaults. */
+function canQuery(db: SearchDb): boolean {
+  return typeof (db as { prepare?: unknown }).prepare === "function";
+}
+
+function readGateRow(db: SearchDb, sessionId: string): GateRow | null {
+  if (!canQuery(db)) return null;
+  return (db.prepare(`
+    SELECT context_epoch, last_source, capsule_generation_seen, memory_revision_seen,
+           topic_fingerprint_json, topic_embedding, informative_prompts_since_retrieval,
+           last_retrieval_epoch, last_retrieval_at, watch_emitted_json, resident_fact_revisions_json, workstream_id
+    FROM session_memory_state WHERE session_id = ?
+  `).get(sessionId) as GateRow | undefined) ?? null;
+}
+
+function parseJson<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string" || raw === "") return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Advance the substantive-prompt counter on a skip; bounded write, no retrieval. */
+function noteSkippedPrompt(db: SearchDb, sessionId: string, substantive: boolean, now: string): void {
+  if (!substantive || !canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET informative_prompts_since_retrieval = informative_prompts_since_retrieval + 1, updated_at = ?
+    WHERE session_id = ?
+  `).run(now, sessionId);
+}
+
+function commitGateState(
+  db: SearchDb,
+  input: {
+    sessionId: string;
+    contextEpoch: number;
+    /** Null keeps the previous fingerprint (vector-free acknowledgement turns). */
+    tokens: string[] | null;
+    embedding: number[] | null;
+    watchLedger: WatchLedgerEntry[];
+    now: string;
+  },
+): void {
+  if (!canQuery(db)) return;
+  db.prepare(`
+    UPDATE session_memory_state
+    SET topic_fingerprint_json = COALESCE(?, topic_fingerprint_json), topic_embedding = COALESCE(?, topic_embedding),
+        informative_prompts_since_retrieval = 0, last_retrieval_epoch = ?, last_retrieval_at = ?,
+        watch_emitted_json = ?, updated_at = ?
+    WHERE session_id = ?
+  `).run(
+    input.tokens ? JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)) : null,
+    input.embedding ? embeddingToBlob(input.embedding) : null,
+    input.contextEpoch,
+    input.now,
+    JSON.stringify(input.watchLedger.slice(-20)),
+    input.now,
+    input.sessionId,
+  );
+}
+
+function markCapsuleGenerationSeen(db: SearchDb, sessionId: string, contextEpoch: number, generation: number): void {
+  if (!canQuery(db)) return;
+  db.prepare("UPDATE session_memory_state SET capsule_generation_seen = ? WHERE session_id = ? AND context_epoch = ?")
+    .run(generation, sessionId, contextEpoch);
+}
+
+function truncateFact(text: string, cap = NORMAL_BUNDLE_BUDGET.lineChars): string {
   const t = text.replace(/\s+/g, " ").trim();
-  return t.length > FACT_CHAR_CAP ? t.slice(0, FACT_CHAR_CAP - 1) + "…" : t;
+  return t.length > cap ? t.slice(0, cap - 1) + "…" : t;
 }
 
 /**
- * Compute the UserPromptSubmit context block for a prompt: top-K similar
- * facts gated by the probe baseline, expanded with 1-hop ontology relations,
- * plus repeated-prompt detection. Returns '' when there is nothing to inject.
+ * Compute the UserPromptSubmit context block for a prompt.
+ *
+ * Phase 5 flow: cheap gate (no model, no embedding) → optional single
+ * embedding on the ambiguous path → revision-aware delta retrieval → Memory
+ * Bundle (CORRECTION, WORK NOW, CURRENT TRUTH, WATCH, TRACE, RECENT EVIDENCE,
+ * ASSISTANT CONTEXT-ONLY) under a deterministic hard budget. Returns '' when
+ * there is nothing to inject.
  *
  * Shared by BOTH execution paths:
  *  - the warm in-process daemon inside the MCP server (embeddings already
@@ -59,17 +250,10 @@ export async function computeInjectContext(
   project: string,
   via: "daemon" | "fallback",
   sessionId?: string,
+  options: InjectOptions = {},
 ): Promise<string> {
   const t0 = Date.now();
-  if (!userPrompt || userPrompt.length < 20) {
-    appendInjectLog({
-      status: "skipped",
-      project,
-      prompt_len: userPrompt?.length ?? 0,
-      via,
-    });
-    return "";
-  }
+  const now = options.now ?? new Date().toISOString();
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
@@ -81,157 +265,433 @@ export async function computeInjectContext(
   }
 
   try {
-    await initEmbeddings();
-    const embedding = await generateEmbedding(userPrompt, "query");
-    const baseline = await queryBaseline(embedding);
-
     // Cached long-lived handle (file-identity checked) — initDatabase()'s
     // full migration pass per request costs ~38ms and is pure overhead in the
     // warm daemon. NOT closed here: getSearchDb owns its lifecycle.
     const db = getSearchDb();
-    {
-      // threshold 0: take top-k by distance, then gate by baseline margin below
-      const candidates = searchFactsByScope(
-        db,
-        embedding,
-        { type: "project", project },
-        TOP_K,
-        0,
-      );
-      const results = candidates.filter((r) => {
-        const similarity = l2DistanceToSimilarity(r.distance);
-        return similarity - baseline >= BASELINE_MARGIN;
+    const sessionScope = ensureSessionMemoryState(db, {
+      sessionId,
+      project,
+      prompt: userPrompt,
+      source: "UserPromptSubmit",
+    });
+    const revisionState = sessionProjectRevisionState(db, sessionId);
+    const currentProjectRevision = revisionState.current;
+    const gateRow = readGateRow(db, sessionId);
+    const capsule = readWorkCapsule(db, sessionScope.workstreamId);
+    const currentCapsuleGeneration = capsule?.generation ?? 0;
+    const capsuleGenerationSeen = Number(gateRow?.capsule_generation_seen ?? 0);
+    const residentTuples = parseJson<ResidentFactRevision[]>(gateRow?.resident_fact_revisions_json, []);
+    const residentTexts = residentTuples.length > 0 && canQuery(db)
+      ? (db.prepare(`
+          SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
+        `).all(...residentTuples.map(([id]) => id)) as Array<{ id: string; fact: string }>)
+      : [];
+    const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
+    // Corrections come from residency, not from the search results: every
+    // resident revision whose fact moved to a new generation or was
+    // deactivated is corrected, whether or not the prompt is about it. This is
+    // also a gate trigger, because workstream-scoped truth changes carry no
+    // project revision token and the stale statement must still be corrected
+    // at the next prompt boundary, even an acknowledgement (vector-free).
+    const residency = readResidentFactRevisions(db, sessionId);
+    const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
+    const revisionCorrections = residentById.size > 0 ? readResidentRevisionCorrections(db, sessionId) : [];
+    // Verified incident patterns only (independent episodes or explicit user
+    // repeat); candidates and remediated signatures never wake retrieval.
+    const incidents = canQuery(db)
+      ? matchIncidentPatterns(db as Parameters<typeof matchIncidentPatterns>[0], {
+          projectId: sessionScope.projectId,
+          text: userPrompt,
+          limit: 2,
+        })
+      : [];
+
+    // Model-call accounting is read from the embedding module itself so the
+    // metric equals real inferences (probe warm-up included) and memo hits.
+    const statsBefore = embeddingCallStats();
+    const embeddingMetrics = () => {
+      const current = embeddingCallStats();
+      return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
+    };
+    const sampleEmbeddingMetrics = (path: "skip" | "retrieve", unavailable: boolean) => {
+      const { calls, hits } = embeddingMetrics();
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls, projectId: sessionScope.projectId, sessionId, dims: { path, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path } });
+      return calls;
+    };
+
+    let embedding: number[] | null = null;
+    let decision: RecallGateDecision = decideRecall({
+      prompt: userPrompt,
+      state: {
+        contextEpoch: sessionScope.contextEpoch,
+        lastRetrievalEpoch: Number(gateRow?.last_retrieval_epoch ?? -1),
+        lastSource: gateRow?.last_source ?? null,
+        capsuleGenerationSeen,
+        memoryRevisionSeen: revisionState.seen,
+        topicFingerprint: parseJson<string[]>(gateRow?.topic_fingerprint_json, []),
+        hasTopicEmbedding: !!gateRow?.topic_embedding,
+        informativePromptsSinceRetrieval: Number(gateRow?.informative_prompts_since_retrieval ?? 0),
+        residentTokens,
+      },
+      currentCapsuleGeneration,
+      currentProjectRevision,
+      incidentMatched: incidents.length > 0,
+      residentRevisionStale: revisionCorrections.length > 0,
+      config: options.gateConfig,
+    });
+    if (options.gate === false) {
+      decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
+    }
+    // Embeddings may be unavailable (model missing, offline, cache failure).
+    // The gate is lexical, so skips still cost nothing; on the retrieve path the
+    // bundle degrades to the sections that need no vector (CORRECTION, WORK
+    // NOW, WATCH, RECENT EVIDENCE) and the failure is logged, never thrown.
+    let embeddingUnavailable = false;
+    const embedOnce = async (): Promise<number[] | null> => {
+      try {
+        await initEmbeddings();
+        return await generateEmbedding(userPrompt, "query");
+      } catch {
+        embeddingUnavailable = true;
+        return null;
+      }
+    };
+    let baseline: number | null = null;
+    if (decision.action === "ambiguous") {
+      embedding = await embedOnce();
+      if (embedding) {
+        baseline = await queryBaseline(embedding);
+        decision = resolveAmbiguousDecision(decision, embedding, blobToEmbedding(gateRow?.topic_embedding), baseline, options.gateConfig);
+      } else {
+        decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
+      }
+    }
+    if (decision.action === "skip") {
+      noteSkippedPrompt(db, sessionId, decision.substantive, now);
+      sampleTelemetry(db, {
+        metric: "retrieval_gate_skip_count", value: 1, projectId: sessionScope.projectId, sessionId,
+        dims: { reason: decision.skipReason, substantive: decision.substantive },
       });
+      const calls = sampleEmbeddingMetrics("skip", embeddingUnavailable);
+      appendInjectLog({
+        status: "skipped",
+        project,
+        prompt_len: userPrompt.length,
+        gate: `skip:${decision.skipReason}`,
+        embedding_calls: calls,
+        duration_ms: Date.now() - t0,
+        via,
+      });
+      return "";
+    }
 
-      if (results.length === 0) {
-        appendInjectLog({
-          status: "no-match",
-          project,
-          prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
-          duration_ms: Date.now() - t0,
-          via,
-        });
-        return "";
-      }
+    // An acknowledgement/continuation only reaches this path through a state
+    // trigger (new epoch, Capsule, project revision, incident): it carries the
+    // Capsule/corrections without a vector, and never disturbs the topic
+    // fingerprint. Everything else pays exactly one embedding.
+    const needsVector = options.gate === false || decision.intents.memory ||
+      !(decision.intents.acknowledgement || decision.intents.continuation);
+    if (needsVector && !embedding && !embeddingUnavailable) embedding = await embedOnce();
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    sampleTelemetry(db, {
+      metric: "retrieval_execute_count", value: 1, projectId: sessionScope.projectId, sessionId,
+      dims: { triggers: decision.triggers, vector: needsVector },
+    });
+    sampleTelemetry(db, { metric: "semantic_retrieval_calls", value: needsVector ? 1 : 0, projectId: sessionScope.projectId, sessionId });
+    const staleProjectMemory = currentProjectRevision > revisionState.seen;
+    if (staleProjectMemory) {
+      sampleTelemetry(db, { metric: "project_revision_invalidations", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    if (baseline === null) baseline = embedding ? await queryBaseline(embedding) : 0;
+    const watchLedger = parseJson<WatchLedgerEntry[]>(gateRow?.watch_emitted_json, []);
+    const informativeCounter = Number(gateRow?.informative_prompts_since_retrieval ?? 0);
 
-      // Expand with 1-hop relations
-      const seenIds = new Set(results.map((r) => r.fact.id));
-      const expandedFacts = [
-        ...results.map((r) => ({ fact: r.fact, note: "" })),
-      ];
+    // A stale project revision (sibling change) or a stale resident revision
+    // forces this pass; never-resident facts are not corrections and arrive
+    // only through relevance below.
+    const corrections: Array<{ text: string; revision: ResidentFactRevision }> = revisionCorrections.map((row) => ({
+      text: row.is_active === 1
+        ? `Updated (supersedes earlier context): [${row.category}] ${truncateFact(row.fact)}${row.previous_fact ? ` — earlier: "${truncateFact(row.previous_fact, 60)}"` : ""}`
+        : `No longer active: ${truncateFact(row.fact)}`,
+      revision: [row.id, row.semantic_generation, row.lifecycle_generation],
+    }));
+    const correctedIds = new Set(revisionCorrections.map((row) => row.id));
+
+    // threshold 0: take top-k by distance, then gate by baseline margin below
+    const scope = {
+      type: "workstream-id" as const,
+      projectId: sessionScope.projectId,
+      workspaceId: sessionScope.workspaceId,
+      workstreamId: sessionScope.workstreamId,
+    };
+    const candidates = embedding ? searchFactsByScope(db, embedding, scope, TOP_K, 0) : [];
+    const results = candidates.filter((r) => {
+      const similarity = l2DistanceToSimilarity(r.distance);
+      return similarity - baseline >= BASELINE_MARGIN;
+    });
+    sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
+    // Sibling-lane Hot Evidence (RFC §11.2): the session's own evidence is
+    // already in its context, and evidence emitted earlier in this epoch is
+    // resident (watermark reset by the epoch change, stamped by rehydration).
+    const hot = readHotEvidence(db, {
+      projectId: sessionScope.projectId,
+      workstreamId: sessionScope.workstreamId,
+      excludeSessionId: sessionId,
+      afterCreatedAt: gateRow?.last_retrieval_at ?? null,
+      limit: 2,
+    });
+
+    // Intent-gated 1-hop expansion (RFC §12.7): only why/related/dependency/
+    // contradiction/trace prompts pay for graph expansion.
+    const seenIds = new Set(results.map((r) => r.fact.id));
+    const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
+    if (decision.intents.trace) {
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project);
+        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, null, "project", scope);
         for (const { fact: relFact, relation } of related) {
-          if (
-            !seenIds.has(relFact.id) &&
-            expandedFacts.length < MAX_CONTEXT_FACTS
-          ) {
+          if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
-            expandedFacts.push({
-              fact: relFact,
-              note: `[${relation.relation_type}]`,
-            });
+            expandedFacts.push({ fact: relFact, note: `[${relation.relation_type}]` });
           }
         }
       }
+    }
 
-      // 세션 dedup: 이 세션에서 이미 주입한 fact 는 대화 컨텍스트에 이미 있다 —
-      // 재주입은 순수 토큰 낭비. 원장에 없는 fact 만 주입한다.
-      const ledger = loadLedger(sessionId);
-      const fresh = expandedFacts.filter(({ fact }) => !ledger.has(fact.id));
-      const dedupedCount = expandedFacts.length - fresh.length;
-      if (fresh.length === 0) {
-        appendInjectLog({
-          status: "deduped",
-          project,
-          prompt_len: userPrompt.length,
-          candidates: candidates.length,
-          injected: 0,
-          deduped: dedupedCount,
-          duration_ms: Date.now() - t0,
-          via,
+    // Revision-aware delta: identical resident revisions are suppressed; a
+    // resident fact seen in a newer generation is a correction (normally
+    // already collected above from residency).
+    const revisionOf = (fact: { id: string; semantic_generation?: number; lifecycle_generation?: number }): ResidentFactRevision => [
+      fact.id,
+      fact.semantic_generation ?? 1,
+      fact.lifecycle_generation ?? 1,
+    ];
+    const fresh: typeof expandedFacts = [];
+    let dedupedCount = 0;
+    for (const entry of expandedFacts) {
+      const [id, semantic, lifecycle] = revisionOf(entry.fact);
+      const resident = residentById.get(id);
+      if (!resident) { fresh.push(entry); continue; }
+      if (resident[1] === semantic && resident[2] === lifecycle) { dedupedCount++; continue; }
+      if (!correctedIds.has(id)) {
+        correctedIds.add(id);
+        corrections.push({
+          text: `Updated (supersedes earlier context): [${entry.fact.category}] ${truncateFact(entry.fact.fact)}`,
+          revision: [id, semantic, lifecycle],
         });
-        return "";
       }
+    }
+    sampleTelemetry(db, { metric: "delta_facts", value: fresh.length + corrections.length, projectId: sessionScope.projectId, sessionId });
 
-      // Format context block — fact 당 160자 절단 + 블록 1,000자 예산
-      // (하위 관련도부터 탈락: fresh 는 관련도순이므로 뒤에서 끊긴다)
-      const lines = ["📌 관련 과거 결정:"];
-      let blockChars = lines[0].length;
-      const injectedIds: string[] = [];
-      for (const { fact, note } of fresh) {
-        const dateStr = fact.created_at.slice(0, 10);
-        const line = `- ${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${dateStr})`;
-        if (
-          blockChars + line.length > BLOCK_CHAR_BUDGET &&
-          injectedIds.length > 0
-        )
-          break;
-        lines.push(line);
-        blockChars += line.length + 1;
-        injectedIds.push(fact.id);
+    const sections: BundleSection<ResidentFactRevision | undefined>[] = [];
+    if (corrections.length > 0) {
+      sections.push({ kind: "CORRECTION", items: corrections.map((c) => ({ text: c.text, ref: c.revision })) });
+    }
+    // WORK NOW whenever the current Capsule generation is not resident in this
+    // epoch (new session, compact/clear, or a new generation); SessionStart
+    // rehydration marks the generation it already injected.
+    const wantsWorkNow = !!capsule && capsule.generation > capsuleGenerationSeen;
+    let workNowRenderable = false;
+    if (wantsWorkNow && capsule) {
+      const lines = ["[WORK NOW]"];
+      if (capsule.objective) lines.push(`Objective: ${truncateFact(capsule.objective, 200)}`);
+      if (capsule.currentState) lines.push(`State: ${truncateFact(capsule.currentState, 200)}`);
+      if (capsule.blockers[0]) lines.push(`Blocker: ${truncateFact(capsule.blockers[0], 160)}`);
+      if (capsule.nextActions[0]) lines.push(`Next: ${truncateFact(capsule.nextActions[0], 160)}`);
+      workNowRenderable = lines.length > 1;
+      if (workNowRenderable) sections.push({ kind: "WORK NOW", items: [{ text: lines.join("\n"), raw: true }] });
+    }
+    if (fresh.length > 0) {
+      sections.push({
+        kind: "CURRENT TRUTH",
+        items: fresh.map(({ fact, note }) => ({
+          text: `${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${fact.created_at.slice(0, 10)})`,
+          ref: revisionOf(fact),
+        })),
+      });
+    }
+    // WATCH: verified patterns only, bounded, with a per-session TTL counted in
+    // substantive prompts so the same signature is not repeated on every
+    // prompt unless it recurred (a newer verified episode).
+    // A hint line is resident for the epoch until its change token moves (a
+    // newer verified episode, a Chronicle change). WATCH additionally expires
+    // after `ttl` substantive prompts so a live signature is re-warned; TRACE
+    // is a pointer and stays resident for the whole epoch.
+    const hintResident = (key: string, changeToken: string, ttl: number): boolean => {
+      const prior = watchLedger.find((entry) => entry.key === key);
+      if (!prior) return false;
+      const changed = changeToken > prior.lastEffectiveAt;
+      const withinTtl = prior.epoch === sessionScope.contextEpoch && prior.at + informativeCounter < ttl;
+      return !changed && withinTtl;
+    };
+    const watchItems: Array<{ text: string; key: string; lastEffectiveAt: string }> = [];
+    for (const pattern of incidents) {
+      const key = `watch:${pattern.signatureKey}`;
+      if (hintResident(key, pattern.lastEffectiveAt, WATCH_TTL_PROMPTS)) continue;
+      watchItems.push({
+        key,
+        lastEffectiveAt: pattern.lastEffectiveAt,
+        text: `Known incident pattern (${pattern.episodeCount} verified episodes, last ${pattern.lastEffectiveAt.slice(0, 10)}): "${pattern.signatureText}"${pattern.remediationSummary ? ` — verified remediation: ${pattern.remediationSummary}` : ""}`,
+      });
+    }
+    if (watchItems.length > 0) sections.push({ kind: "WATCH", items: watchItems.map((w) => ({ text: w.text })) });
+    // TRACE: explicit why/history/source intent → point at the Chronicle instead of injecting it.
+    const traceItems: Array<{ text: string; key: string; lastEffectiveAt: string }> = [];
+    if ((decision.intents.trace || decision.intents.memory) && canQuery(db)) {
+      for (const { fact } of results.slice(0, 2)) {
+        if (!fact.subject_key || !fact.project_id) continue;
+        const latest = readChronicleTimeline(db as Parameters<typeof readChronicleTimeline>[0], {
+          projectId: fact.project_id, subjectKey: fact.subject_key, order: "desc", limit: 1,
+        });
+        const count = (db.prepare("SELECT COUNT(*) AS n FROM fact_revisions WHERE project_id = ? AND subject_key = ?")
+          .get(fact.project_id, fact.subject_key) as { n: number }).n;
+        const event = latest.events[0];
+        if (!event || Number(count) === 0) continue;
+        const key = `trace:${fact.subject_key}`;
+        const changeToken = `${String(count).padStart(8, "0")}@${event.effective_at}`;
+        if (hintResident(key, changeToken, Number.POSITIVE_INFINITY)) continue;
+        traceItems.push({
+          key,
+          lastEffectiveAt: changeToken,
+          // Pointer first so the actionable call survives the line cap.
+          text: `trace_fact subject_key=${fact.subject_key} — ${count} Chronicle event(s), latest ${event.event_kind} effective ${event.effective_at.slice(0, 10)}${event.grounded_cause ? `; cause: ${truncateFact(event.grounded_cause, 80)}` : ""}`,
+        });
       }
-
-      // Detect repeated prompts (best-effort). 동기 sqlite 검색이라 시작 후엔
-      // 선점 불가 — 주입이 이미 예산을 소진했으면 시작 자체를 생략 (tail 상한).
-      // repeat 컨텍스트도 블록 예산 안에 포함된다(RETRIEVAL-AND-CONTEXT.md:60-64):
-      // 남은 예산을 넘으면 절단하고, 예산이 사실상 없으면 생략한다.
-      if (Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
-        try {
-          const repeats = await detectRepeat(userPrompt, project, 2, 0.85, {
-            embedding,
-            db,
+      if (traceItems.length > 0) sections.push({ kind: "TRACE", items: traceItems.map((t) => ({ text: t.text })) });
+    }
+    if (hot.length > 0) {
+      sections.push({ kind: "RECENT EVIDENCE", items: hot.map((item) => ({ text: String(item.evidence_text).slice(0, 180) })) });
+    }
+    // Assistant repeat context is demoted: only when no current truth answers
+    // the prompt and the user explicitly asks about memory, as a labeled
+    // source-linked hint that never outranks current facts.
+    if (embedding && fresh.length === 0 && corrections.length === 0 && decision.intents.memory && Date.now() - t0 < REPEAT_ELAPSED_BUDGET_MS) {
+      try {
+        const repeats = await detectRepeat(userPrompt, project, 1, 0.85, { embedding, db });
+        const match = repeats[0];
+        if (match) {
+          sections.push({
+            kind: "ASSISTANT CONTEXT",
+            items: [{
+              text: `Earlier answer (${match.timestamp.slice(0, 10)}, may be stale; verify with MCP search): "${truncateFact(match.assistantSummary, 200)}" — lines ${match.lineStart}-${match.lineEnd} in ${match.archivePath}`,
+            }],
           });
-          let repeatCtx = formatRepeatContext(repeats);
-          if (repeatCtx) {
-            const remaining = BLOCK_CHAR_BUDGET - blockChars;
-            if (remaining <= 0) {
-              // 예산 소진 — repeat 를 생략한다.
-            } else {
-              if (repeatCtx.length > remaining) {
-                repeatCtx =
-                  repeatCtx.slice(0, Math.max(0, remaining - 1)) + "…";
-              }
-              if (repeatCtx.trim().length > 0) {
-                lines.push("");
-                lines.push(repeatCtx);
-              }
-            }
-          }
-        } catch {
-          /* best-effort */
         }
+      } catch {
+        /* best-effort */
       }
+    }
 
-      // Provenance is the fail-closed durability gate; the dedup ledger is
-      // only best-effort operational state. Writing the ledger first would
-      // suppress a later retry when the prepared receipt fails to persist.
-      const recallEventId = recordRecallEvent(db, {
+    const rendered = renderMemoryBundle(sections, NORMAL_BUNDLE_BUDGET);
+    const emittedRevisions: ResidentFactRevision[] = [];
+    for (const section of rendered.sections) {
+      for (const item of section.emitted) if (item.ref) emittedRevisions.push(item.ref);
+    }
+    const emittedCorrections = rendered.sections.find((s) => s.kind === "CORRECTION")?.emitted.length ?? 0;
+    // Drain corrections across prompts under the budget: the project revision
+    // is acknowledged only once every stale resident revision has been corrected.
+    const correctionsComplete = emittedCorrections === corrections.length;
+    const emittedWatch = rendered.sections.find((s) => s.kind === "WATCH")?.emitted.length ?? 0;
+    const emittedTrace = rendered.sections.find((s) => s.kind === "TRACE")?.emitted.length ?? 0;
+    const emittedHints = [...watchItems.slice(0, emittedWatch), ...traceItems.slice(0, emittedTrace)];
+    const emittedWatchKeys = new Set(emittedHints.map((hint) => hint.key));
+    const promptsSinceLastRetrieval = informativeCounter + (decision.substantive ? 1 : 0);
+    const nextWatchLedger: WatchLedgerEntry[] = watchLedger
+      .filter((entry) => !emittedWatchKeys.has(entry.key))
+      .map((entry) => ({ ...entry, at: entry.at + promptsSinceLastRetrieval }));
+    for (const hint of emittedHints) {
+      nextWatchLedger.push({ key: hint.key, epoch: sessionScope.contextEpoch, at: 0, lastEffectiveAt: hint.lastEffectiveAt });
+    }
+    const workNowEmitted = rendered.sections.some((s) => s.kind === "WORK NOW");
+    const capsuleResident = wantsWorkNow && capsule && (workNowEmitted || !workNowRenderable);
+    const fingerprintTokens = needsVector ? decision.tokens : null;
+
+    if (rendered.chars === 0) {
+      if (staleProjectMemory && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+        throw new Error("project memory revision changed during correction check");
+      }
+      if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
+      commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+      const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
+      appendInjectLog({
+        status: dedupedCount > 0 ? "deduped" : "no-match",
+        project,
+        prompt_len: userPrompt.length,
+        candidates: candidates.length,
+        injected: 0,
+        deduped: dedupedCount,
+        gate: gateLabel,
+        embedding_calls: calls,
+        duration_ms: Date.now() - t0,
+        via,
+      });
+      if (dedupedCount > 0) {
+        sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+      }
+      return "";
+    }
+
+    // Provenance is the fail-closed durability gate; the dedup ledger is
+    // only best-effort operational state. Writing the ledger first would
+    // suppress a later retry when the prepared receipt fails to persist.
+    const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+    if (injectedIds.length > 0) {
+      commitInjectionState(db, {
         sessionId,
         project,
         prompt: userPrompt,
         factIds: injectedIds,
+        projectId: sessionScope.projectId,
+        workspaceId: sessionScope.workspaceId,
+        workstreamId: sessionScope.workstreamId,
+        contextEpoch: residency.contextEpoch,
+        projectMemoryRevision: currentProjectRevision,
+        revisions: emittedRevisions,
+        markProjectRevision: !staleProjectMemory || correctionsComplete,
       });
-      if (!recallEventId) {
-        throw new Error("Failed to persist prepared recall receipt");
-      }
-      appendLedger(sessionId, ledger, injectedIds);
-      const block = lines.join("\n") + "\n";
-      appendInjectLog({
-        status: "injected",
-        project,
-        prompt_len: userPrompt.length,
-        candidates: candidates.length,
-        injected: injectedIds.length,
-        deduped: dedupedCount,
-        chars: block.length,
-        duration_ms: Date.now() - t0,
-        via,
-      });
-      return block;
+    } else if (staleProjectMemory && correctionsComplete &&
+        !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+      throw new Error("project memory revision changed before injection commit");
     }
+    commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+    if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
+    const block = rendered.text + "\n";
+    const sectionKinds = rendered.sections.map((s) => s.kind);
+    const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
+    sampleTelemetry(db, { metric: "injected_facts", value: injectedIds.length, projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "estimated_tokens", value: estimateTokens(block.length), unit: "tokens", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "bundle_size", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { kind: "normal", sections: sectionKinds } });
+    for (const section of rendered.sections) {
+      sampleTelemetry(db, { metric: "section_chars", value: section.chars, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { section: section.kind } });
+    }
+    if (emittedCorrections > 0) {
+      sampleTelemetry(db, { metric: "correction_count", value: emittedCorrections, projectId: sessionScope.projectId, sessionId, dims: { path: staleProjectMemory ? "project_revision" : "revision_delta" } });
+      sampleTelemetry(db, { metric: "correction_delay_prompts", value: informativeCounter, projectId: sessionScope.projectId, sessionId });
+    }
+    if (emittedWatch > 0) {
+      sampleTelemetry(db, { metric: "watch_emissions", value: emittedWatch, projectId: sessionScope.projectId, sessionId, dims: { keys: watchItems.slice(0, emittedWatch).map((w) => w.key) } });
+    }
+    if (dedupedCount > 0) {
+      sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
+    }
+    appendInjectLog({
+      status: "injected",
+      project,
+      prompt_len: userPrompt.length,
+      candidates: candidates.length,
+      injected: injectedIds.length,
+      deduped: dedupedCount,
+      chars: block.length,
+      gate: gateLabel,
+      embedding_calls: calls,
+      sections: sectionKinds,
+      duration_ms: Date.now() - t0,
+      via,
+    });
+    return block;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     appendInjectLog({

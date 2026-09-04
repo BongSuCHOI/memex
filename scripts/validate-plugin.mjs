@@ -146,7 +146,15 @@ function validateManifest(installedRoot) {
     );
   }
   const hooks = parseJsonFile(hooksPath, "hooks manifest").hooks;
-  for (const event of ["SessionStart", "UserPromptSubmit", "SessionEnd"]) {
+  for (const event of [
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "Interrupt",
+    "PreCompact",
+    "PostCompact",
+    "SessionEnd",
+  ]) {
     if (!Array.isArray(hooks?.[event]) || hooks[event].length === 0) {
       throw new Error(`hooks manifest missing ${event}`);
     }

@@ -1,14 +1,16 @@
-export declare const HOOK_EVENTS: readonly ["SessionStart", "UserPromptSubmit", "SessionEnd"];
+export declare const HOOK_EVENTS: readonly ["SessionStart", "UserPromptSubmit", "Stop", "Interrupt", "PreCompact", "PostCompact", "SessionEnd"];
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 export interface LifecycleCommandConfig {
     script: string;
     args?: string[];
     async?: boolean;
+    matcher?: string;
+    timeout?: number;
 }
 /** Relative-to-plugin-root commands registered for each event. */
 export declare const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]>;
 export interface LifecycleRegistration {
-    schemaVersion: 1;
+    schemaVersion: 2;
     installedAt: string;
     pluginRoot: string;
     codexHome: string;
@@ -18,6 +20,8 @@ export interface LifecycleRegistration {
         command: string;
         fingerprint: string;
         async?: boolean;
+        matcher?: string;
+        timeout?: number;
     }>;
 }
 export declare function hooksFilePath(): string;
@@ -31,12 +35,16 @@ export declare function desiredEntries(root?: string): Array<{
     event: HookEvent;
     command: string;
     async?: boolean;
+    matcher?: string;
+    timeout?: number;
 }>;
 export interface PlanDiff {
     targetFile: string;
     add: Array<{
         event: HookEvent;
         command: string;
+        matcher?: string;
+        timeout?: number;
     }>;
     remove: Array<{
         event: HookEvent;

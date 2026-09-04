@@ -13,6 +13,11 @@ import {
 import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
+import {
+  ensureContinuitySchema,
+  exchangeContentHash,
+} from "./continuity-store.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
 
 // === vec table dtype handling ===
 // int8 quantization: q = clamp(round(x*127)). e5 embeddings are L2-normalized
@@ -153,11 +158,12 @@ export function openWriteDb(dbPath: string = getDbPath()): Database.Database {
   return initializeConnection(new Database(dbPath), "write");
 }
 
-export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database.Database {
-  const dbPath = getDbPath();
+export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string } = {}): Database.Database {
+  const dbPath = options.dbPath ?? getDbPath();
 
   // Ensure directory exists
-  ensureDbDir();
+  if (options.dbPath) fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  else ensureDbDir();
 
   const db = openWriteDb(dbPath);
   if (options.busyTimeoutMs !== undefined) {
@@ -395,14 +401,34 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
       VALUES('delete', old.rowid, old.user_message, old.assistant_message);
     END
   `);
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE ON exchanges BEGIN
-      INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
-      VALUES('delete', old.rowid, old.user_message, old.assistant_message);
-      INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
-      VALUES (new.rowid, new.user_message, new.assistant_message);
-    END
-  `);
+  // Identity/provenance-only updates must not touch the external-content FTS
+  // index. Recreate the legacy broad trigger as a content-column trigger before
+  // Continuity's Phase 3 backfill updates project/workspace IDs.
+  //
+  // initDatabase() runs in every hook/MCP process, so several processes can
+  // reach this point at once. An unconditional DROP + plain CREATE lets a second
+  // process observe the trigger the first one just created and fail with
+  // "trigger exchanges_fts_au already exists", which crashes a capture hook.
+  // Decide and apply inside one immediate transaction so processes serialize
+  // on the write lock and only a legacy-shaped trigger is ever replaced.
+  db.transaction(() => {
+    const auTrigger = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'exchanges_fts_au'",
+      )
+      .get() as { sql?: string } | undefined;
+    if (auTrigger?.sql && !/AFTER UPDATE OF user_message, assistant_message ON exchanges/i.test(auTrigger.sql)) {
+      db.exec(`DROP TRIGGER IF EXISTS exchanges_fts_au`);
+    }
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS exchanges_fts_au AFTER UPDATE OF user_message, assistant_message ON exchanges BEGIN
+        INSERT INTO exchanges_fts(exchanges_fts, rowid, user_message, assistant_message)
+        VALUES('delete', old.rowid, old.user_message, old.assistant_message);
+        INSERT INTO exchanges_fts(rowid, user_message, assistant_message)
+        VALUES (new.rowid, new.user_message, new.assistant_message);
+      END
+    `);
+  }).immediate();
 
   // === Facts Schema ===
   db.exec(`
@@ -574,13 +600,12 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_revisions (
       id TEXT PRIMARY KEY,
-      fact_id TEXT NOT NULL,
-      previous_fact TEXT NOT NULL,
-      new_fact TEXT NOT NULL,
+      fact_id TEXT REFERENCES facts(id),
+      previous_fact TEXT,
+      new_fact TEXT,
       reason TEXT,
       source_exchange_id TEXT,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (fact_id) REFERENCES facts(id)
+      created_at TEXT NOT NULL
     )
   `);
 
@@ -769,6 +794,7 @@ export function initDatabase(options: { busyTimeoutMs?: number } = {}): Database
       last_exchange_rowid INTEGER NOT NULL DEFAULT 0
     )
   `);
+  ensureContinuitySchema(db);
   return db;
 }
 
@@ -777,7 +803,7 @@ export function insertExchange(
   exchange: ConversationExchange,
   embedding: number[],
   _toolNames?: string[],
-): void {
+): boolean {
   const now = Date.now();
   const promptHash = hashRecallPrompt(exchange.userMessage);
   const recall = exchange.sessionId
@@ -813,6 +839,83 @@ export function insertExchange(
   // the table dtype inside that write transaction so the blob always matches
   // the actual vec schema.
   const insertAll = db.transaction(() => {
+    const identityPath = exchange.cwd || exchange.project;
+    const identity = identityPath && identityPath !== "unknown"
+      ? resolveProjectWorkspace(db, {
+          cwd: identityPath,
+          projectId: exchange.projectId ?? null,
+          branch: exchange.gitBranch ?? null,
+        })
+      : null;
+    if (exchange.workspaceId && identity && exchange.workspaceId !== identity.workspaceId) {
+      throw new Error("exchange workspace_id does not match resolved workspace");
+    }
+    const sessionScope = exchange.sessionId
+      ? db.prepare(`
+          SELECT project_id, workspace_id, workstream_id
+          FROM session_memory_state WHERE session_id = ?
+        `).get(exchange.sessionId) as
+          | { project_id: string | null; workspace_id: string | null; workstream_id: string }
+          | undefined
+      : undefined;
+    if (sessionScope?.project_id && identity && sessionScope.project_id !== identity.projectId) {
+      throw new Error("exchange session belongs to a different logical project");
+    }
+    const projectId = identity?.projectId ?? exchange.projectId ?? null;
+    const workspaceId = identity?.workspaceId ?? exchange.workspaceId ?? null;
+    const workstreamId = exchange.workstreamId ?? sessionScope?.workstream_id ?? null;
+    const existing = db.prepare(`
+      SELECT line_end, exchange_seq, content_hash, content_generation, closure_state,
+             project_id, workspace_id, workstream_id
+      FROM exchanges WHERE id = ?
+    `).get(exchange.id) as {
+      line_end: number;
+      exchange_seq: number;
+      content_hash: string;
+      content_generation: number;
+      closure_state: string;
+      project_id: string | null;
+      workspace_id: string | null;
+      workstream_id: string | null;
+    } | undefined;
+    const contentHash = exchange.contentHash ?? exchangeContentHash(exchange);
+    const explicitGeneration = exchange.contentGeneration;
+    if (existing) {
+      if (exchange.lineEnd < existing.line_end) return false;
+      if (
+        explicitGeneration !== undefined &&
+        explicitGeneration < existing.content_generation
+      ) return false;
+      if (
+        explicitGeneration !== undefined &&
+        explicitGeneration === existing.content_generation &&
+        existing.content_hash &&
+        contentHash !== existing.content_hash
+      ) return false;
+    }
+    const contentGeneration = explicitGeneration ?? (
+      existing &&
+      (contentHash !== existing.content_hash || exchange.lineEnd > existing.line_end)
+        ? existing.content_generation + 1
+        : Math.max(1, existing?.content_generation ?? 1)
+    );
+    const closureRank: Record<string, number> = {
+      open: 0,
+      interrupted: 1,
+      closed: 2,
+      final: 3,
+    };
+    const closureState = exchange.closureState ?? "closed";
+    if (
+      existing &&
+      contentGeneration === existing.content_generation &&
+      closureRank[closureState] < closureRank[existing.closure_state]
+    ) return false;
+    const exchangeSeq = exchange.exchangeSeq ?? existing?.exchange_seq ?? (
+      (db.prepare(
+        "SELECT COALESCE(MAX(exchange_seq), 0) + 1 AS n FROM exchanges WHERE session_id IS ?",
+      ).get(exchange.sessionId ?? null) as { n: number }).n
+    );
     // The embedding parameter was just generated with the current model, so
     // stamp the current version — search filters on it and the re-embed
     // worker must not redo freshly indexed rows.
@@ -821,8 +924,10 @@ export function insertExchange(
       (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, last_indexed,
        parent_uuid, is_sidechain, session_id, cwd, git_branch, codex_version,
        thinking_level, thinking_disabled, thinking_triggers, embedding_version,
-       provenance, assistant_learnable, has_memex_recall)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       provenance, assistant_learnable, has_memex_recall, exchange_seq,
+       content_hash, content_generation, closure_state, parser_version,
+       project_id, workspace_id, workstream_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project = excluded.project,
         timestamp = excluded.timestamp,
@@ -844,7 +949,15 @@ export function insertExchange(
         embedding_version = excluded.embedding_version,
         provenance = excluded.provenance,
         assistant_learnable = excluded.assistant_learnable,
-        has_memex_recall = excluded.has_memex_recall
+        has_memex_recall = excluded.has_memex_recall,
+        exchange_seq = excluded.exchange_seq,
+        content_hash = excluded.content_hash,
+        content_generation = excluded.content_generation,
+        closure_state = excluded.closure_state,
+        parser_version = excluded.parser_version,
+        project_id = excluded.project_id,
+        workspace_id = excluded.workspace_id,
+        workstream_id = excluded.workstream_id
     `).run(
       exchange.id,
       exchange.project,
@@ -868,6 +981,14 @@ export function insertExchange(
       JSON.stringify(provenance),
       assistantLearnable ? 1 : 0,
       hasMemexRecall ? 1 : 0,
+      exchangeSeq,
+      contentHash,
+      contentGeneration,
+      closureState,
+      exchange.parserVersion ?? 1,
+      projectId,
+      workspaceId,
+      workstreamId,
     );
 
     // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
@@ -912,9 +1033,10 @@ export function insertExchange(
         );
       }
     }
+    return true;
   });
   // .immediate(): acquire the write lock at BEGIN, before any schema read.
-  insertAll.immediate();
+  return insertAll.immediate();
 }
 
 const MEMEX_RECALL_TOOLS = new Set([
@@ -1479,20 +1601,31 @@ export function recordRecallEvent(
     project: string;
     prompt: string;
     factIds: string[];
+    projectId?: string | null;
+    workspaceId?: string | null;
+    workstreamId?: string | null;
+    contextEpoch?: number;
+    projectMemoryRevision?: number;
   },
 ): string | null {
   if (!event.sessionId || event.factIds.length === 0) return null;
   const id = randomUUID();
   db.prepare(`
     INSERT INTO recall_events
-      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?)
+      (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
     event.project,
     hashRecallPrompt(event.prompt),
     JSON.stringify([...new Set(event.factIds)]),
+    event.projectId ?? null,
+    event.workspaceId ?? null,
+    event.workstreamId ?? null,
+    event.contextEpoch ?? 0,
+    event.projectMemoryRevision ?? 0,
     new Date().toISOString(),
   );
   return id;

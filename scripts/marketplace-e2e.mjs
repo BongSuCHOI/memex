@@ -123,7 +123,7 @@ try {
     blocks.flatMap((block) => block.hooks.map((hook) => hook.command)),
   );
   if (
-    hookCommands.length !== 6 ||
+    hookCommands.length !== 11 ||
     hookCommands.some(
       (command) => !command.includes("${PLUGIN_ROOT}/cli/runtime-exec.js"),
     )
@@ -134,8 +134,10 @@ try {
     path.join(installedRoot, "cli", "runtime-exec.js"),
     "utf8",
   );
-  if (!launcher.includes("github:BongSuCHOI/memex#main"))
-    throw new Error("runtime launcher does not target latest main");
+  if (!launcher.includes("LOCAL_BINARIES") ||
+      !launcher.includes("github:BongSuCHOI/memex#main")) {
+    throw new Error("runtime launcher lacks pinned-local preference or remote compatibility fallback");
+  }
 
   const help = run(
     process.execPath,
@@ -194,9 +196,12 @@ try {
         plugin: plugin.pluginId,
         version: plugin.version,
         installedPath: installedRoot,
-        runtimeLauncher: "github:BongSuCHOI/memex#main",
+        runtimeLauncher: "materialized installed artifact; github main compatibility fallback",
         skills: 3,
-        hooks: ["SessionStart", "UserPromptSubmit", "SessionEnd"],
+        hooks: [
+          "SessionStart", "UserPromptSubmit", "Stop", "Interrupt",
+          "PreCompact", "PostCompact", "SessionEnd",
+        ],
         cleanup: "PASS",
       },
       null,

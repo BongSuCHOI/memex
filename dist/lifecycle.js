@@ -1,7 +1,7 @@
 /**
  * CX-01 — Codex lifecycle registration, diagnosis, removal.
  *
- * Contract (documented in docs/CONVERSATION-LIFECYCLE.md, codex-cli 0.149.1):
+ * Contract (documented in docs/CONVERSATION-LIFECYCLE.md, codex-cli 0.150.1):
  *  - The hook config owner is $CODEX_HOME/hooks.json (user scope). Plugin
  *    marketplace plugins declare hooks through plugin.json; explicit setup is
  *    retained only as a fingerprinted fallback for non-plugin hosts.
@@ -31,18 +31,27 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const HOOK_EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
+    "Stop",
+    "Interrupt",
+    "PreCompact",
+    "PostCompact",
     "SessionEnd",
 ];
 /** Relative-to-plugin-root commands registered for each event. */
 export const LIFECYCLE_COMMANDS = {
     SessionStart: [
-        { script: "scripts/version-drift-check.js", async: true },
-        { script: "cli/memex.js", args: ["sync", "--background"], async: true },
-        { script: "scripts/sync-import-hook.js", async: true },
-        { script: "scripts/session-start-maintenance.js", async: true },
+        { script: "scripts/continuity-hook.js", matcher: "startup|resume|clear|compact", timeout: 3 },
+        { script: "scripts/version-drift-check.js", async: true, matcher: "startup|resume" },
+        { script: "cli/memex.js", args: ["sync", "--background"], async: true, matcher: "startup|resume" },
+        { script: "scripts/sync-import-hook.js", async: true, matcher: "startup|resume" },
+        { script: "scripts/session-start-maintenance.js", async: true, matcher: "startup|resume" },
     ],
     UserPromptSubmit: [{ script: "scripts/inject-context-hook.sh" }],
-    SessionEnd: [{ script: "scripts/session-end-hook.js" }],
+    Stop: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+    Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+    PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],
+    PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 3 }],
+    SessionEnd: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
 };
 const OWNERSHIP_KEY = "_memex";
 function codexHome() {
@@ -119,6 +128,8 @@ export function desiredEntries(root = pluginRoot()) {
                 event,
                 command: commandFor(root, c),
                 ...(c.async ? { async: true } : {}),
+                ...(c.matcher ? { matcher: c.matcher } : {}),
+                ...(c.timeout ? { timeout: c.timeout } : {}),
             });
         }
     }
@@ -129,7 +140,7 @@ export function planSetup(root = pluginRoot()) {
     const hooks = readHooksFile(hooksFilePath());
     const desired = desiredEntries(root);
     const desiredCmds = new Set(desired.map((d) => d.command));
-    const existingCommands = new Set();
+    const existingKeys = new Set();
     let preservedForeign = 0;
     let staleOwned = 0;
     for (const event of HOOK_EVENTS) {
@@ -138,7 +149,7 @@ export function planSetup(root = pluginRoot()) {
                 if (!h.command || typeof h.command !== "string")
                     continue;
                 if (h[OWNERSHIP_KEY] === true) {
-                    existingCommands.add(h.command);
+                    existingKeys.add(`${event}\0${block.matcher ?? ""}\0${h.command}`);
                     // Owned entry pointing at a path that no longer exists or not desired -> stale
                     const m = h.command.match(/"([^"]+)"/);
                     const p = m ? m[1] : "";
@@ -152,8 +163,8 @@ export function planSetup(root = pluginRoot()) {
         }
     }
     const add = desired
-        .filter((d) => !existingCommands.has(d.command))
-        .map(({ event, command }) => ({ event, command }));
+        .filter((d) => !existingKeys.has(`${d.event}\0${d.matcher ?? ""}\0${d.command}`))
+        .map(({ event, command, matcher, timeout }) => ({ event, command, matcher, timeout }));
     return {
         targetFile: hooksFilePath(),
         add,
@@ -179,7 +190,7 @@ export function setupHooks({ dryRun = false, root = pluginRoot(), } = {}) {
     const diff = planSetup(root);
     if (!dryRun) {
         const desired = desiredEntries(root);
-        const desiredCmds = new Set(desired.map((d) => d.command));
+        const desiredKeys = new Set(desired.map((d) => `${d.event}\0${d.matcher ?? ""}\0${d.command}`));
         // Prune owned entries whose registered path no longer exists (plugin
         // relocation / cache-version bump) or that are not in desired commands,
         // then re-add at the current root.
@@ -197,7 +208,7 @@ export function setupHooks({ dryRun = false, root = pluginRoot(), } = {}) {
                         const m = h.command ? h.command.match(/"([^"]+)"/) : null;
                         if (m && !fs.existsSync(m[1]))
                             return false;
-                        return desiredCmds.has(h.command ?? "");
+                        return desiredKeys.has(`${event}\0${block.matcher ?? ""}\0${h.command ?? ""}`);
                     });
                 }
                 hooks.hooks[event] = blocks.filter((b) => (b.hooks ?? []).length > 0);
@@ -208,12 +219,13 @@ export function setupHooks({ dryRun = false, root = pluginRoot(), } = {}) {
     if (!dryRun && diff.add.length > 0) {
         if (!hooks.hooks)
             hooks.hooks = {};
-        for (const { event, command, async } of desiredEntries(root).filter((x) => diff.add.some((a) => a.command === x.command))) {
+        for (const { event, command, async, matcher, timeout } of desiredEntries(root).filter((x) => diff.add.some((a) => a.event === x.event && a.command === x.command &&
+            (a.matcher ?? "") === (x.matcher ?? "")))) {
             if (!hooks.hooks[event])
                 hooks.hooks[event] = [];
-            let block = hooks.hooks[event].find((b) => !b.matcher);
+            let block = hooks.hooks[event].find((b) => (b.matcher ?? "") === (matcher ?? ""));
             if (!block) {
-                block = { matcher: "", hooks: [] };
+                block = { matcher: matcher ?? "", hooks: [] };
                 hooks.hooks[event].push(block);
             }
             if (!block.hooks)
@@ -223,6 +235,7 @@ export function setupHooks({ dryRun = false, root = pluginRoot(), } = {}) {
                 command,
                 ...{ [OWNERSHIP_KEY]: true },
                 ...(async ? { async: true } : {}),
+                ...(timeout ? { timeout } : {}),
             });
         }
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -230,7 +243,7 @@ export function setupHooks({ dryRun = false, root = pluginRoot(), } = {}) {
     }
     // Persist/refresh the ownership record regardless (cheap, local).
     const reg = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         installedAt: new Date().toISOString(),
         pluginRoot: root,
         codexHome: codexHome(),

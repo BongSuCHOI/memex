@@ -6,6 +6,8 @@ import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256, }
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 import { applyReplicatedLifecycle, compareTimestamps } from "./fact-management.js";
+import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { CHRONICLE_EVENT_KINDS, insertReplicatedChronicleEvent, purgeChronicleForSources, recordChronicleTombstone, } from "./chronicle.js";
 const ALLOWED_CATEGORIES = new Set([
     "decision",
     "preference",
@@ -243,15 +245,34 @@ function parseSyncFact(value) {
         !Number.isInteger(value.consolidated_count) || Number(value.consolidated_count) < 0 ||
         (value.is_active !== 0 && value.is_active !== 1))
         return null;
-    const scopeProject = canonicalScopeProject(value.scope_type, value.scope_project);
-    if (scopeProject === undefined)
+    const stableProjectId = typeof value.project_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value.project_id)
+        ? value.project_id
+        : null;
+    const portableProjectKey = typeof value.portable_project_key === "string" && /^[A-Za-z0-9_.:-]{4,160}$/.test(value.portable_project_key)
+        ? value.portable_project_key
+        : null;
+    const isStableProject = value.scope_type === "project" && stableProjectId !== null;
+    const scopeProject = isStableProject
+        ? (value.scope_project === null || value.scope_project === undefined ? null : undefined)
+        : canonicalScopeProject(value.scope_type, value.scope_project);
+    if (scopeProject === undefined || (value.scope_type === "project" && !stableProjectId && scopeProject === null))
         return null;
+    const promotionState = value.promotion_state === "decision" || value.promotion_state === "project-current"
+        ? value.promotion_state
+        : "legacy-project";
+    const subjectKey = typeof value.subject_key === "string" && /^[a-z][a-z0-9_.-]{2,160}$/.test(value.subject_key)
+        ? value.subject_key
+        : null;
     return {
         id: value.id,
         fact: value.fact,
         category: value.category,
         scope_type: value.scope_type,
         scope_project: scopeProject,
+        project_id: value.scope_type === "global" ? null : stableProjectId,
+        portable_project_key: value.scope_type === "global" ? null : portableProjectKey,
+        subject_key: subjectKey,
+        promotion_state: promotionState,
         source_exchange_ids: value.source_exchange_ids,
         created_at: value.created_at,
         updated_at: value.updated_at,
@@ -273,30 +294,167 @@ function parseTombstone(value) {
         reason: typeof value.reason === "string" ? value.reason : null,
     };
 }
-function parseRevision(value) {
-    if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
-        typeof value.fact_id !== "string" || !value.fact_id ||
-        typeof value.previous_fact !== "string" || typeof value.new_fact !== "string" ||
-        !isTimestamp(value.created_at) ||
-        (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string") ||
-        (value.source_exchange_id !== undefined && value.source_exchange_id !== null &&
-            typeof value.source_exchange_id !== "string")) {
+function parseEventTombstone(value) {
+    if (!isRecord(value) || (value.fact_id !== null && value.fact_id !== undefined) ||
+        typeof value.event_id !== "string" || !value.event_id || value.event_id.length > 200 ||
+        !isTimestamp(value.deleted_at) ||
+        (value.reason !== undefined && value.reason !== null && typeof value.reason !== "string")) {
         return null;
     }
     return {
-        id: value.id,
-        fact_id: value.fact_id,
-        previous_fact: value.previous_fact,
-        new_fact: value.new_fact,
+        event_id: value.event_id,
+        deleted_at: value.deleted_at,
         reason: typeof value.reason === "string" ? value.reason : null,
-        source_exchange_id: typeof value.source_exchange_id === "string" ? value.source_exchange_id : null,
+    };
+}
+function parseAnyTombstone(value) {
+    return parseTombstone(value) !== null || parseEventTombstone(value) !== null;
+}
+const CHRONICLE_ACTORS = new Set(["extractor", "consolidator", "user", "sync", "legacy"]);
+const EVIDENCE_AUTHORITIES = new Set(["human-decision", "human", "trusted-tool", "unknown"]);
+const CHRONICLE_KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
+function optionalString(value) {
+    if (value === undefined || value === null)
+        return null;
+    return typeof value === "string" ? value : undefined;
+}
+function optionalStringArray(value) {
+    if (value === undefined || value === null)
+        return [];
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) && parsed.every((v) => typeof v === "string") ? parsed : undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    return Array.isArray(value) && value.every((v) => typeof v === "string") ? value : undefined;
+}
+function parseRevision(value) {
+    if (!isRecord(value) || typeof value.id !== "string" || !value.id || !isTimestamp(value.created_at)) {
+        return null;
+    }
+    const reason = optionalString(value.reason);
+    const sourceExchangeId = optionalString(value.source_exchange_id);
+    if (reason === undefined || sourceExchangeId === undefined)
+        return null;
+    const isChronicle = value.event_kind !== undefined && value.event_kind !== null;
+    if (!isChronicle) {
+        // Released 7-field revision row.
+        if (typeof value.fact_id !== "string" || !value.fact_id ||
+            typeof value.previous_fact !== "string" || typeof value.new_fact !== "string") {
+            return null;
+        }
+        return {
+            id: value.id,
+            fact_id: value.fact_id,
+            previous_fact: value.previous_fact,
+            new_fact: value.new_fact,
+            reason,
+            source_exchange_id: sourceExchangeId,
+            created_at: value.created_at,
+            chronicle: null,
+        };
+    }
+    if (typeof value.event_kind !== "string" || !CHRONICLE_KIND_SET.has(value.event_kind))
+        return null;
+    if (value.id.length > 200)
+        return null;
+    const factId = optionalString(value.fact_id);
+    const previous = optionalString(value.previous_fact);
+    const next = optionalString(value.new_fact);
+    const projectId = optionalString(value.project_id);
+    const portableKey = optionalString(value.portable_project_key);
+    const subjectKey = optionalString(value.subject_key);
+    const problem = optionalString(value.problem);
+    const groundedCause = optionalString(value.grounded_cause);
+    const rationale = optionalString(value.rationale);
+    const classifierNote = optionalString(value.classifier_note);
+    const revertsEventId = optionalString(value.reverts_event_id);
+    const outcomeRaw = optionalString(value.outcome_json);
+    const sourceExchangeIds = optionalStringArray(value.source_exchange_ids);
+    const sourceEvidenceIds = optionalStringArray(value.source_evidence_ids);
+    const relatedEventIds = optionalStringArray(value.related_event_ids);
+    if ([factId, previous, next, projectId, portableKey, subjectKey, problem, groundedCause, rationale,
+        classifierNote, revertsEventId, outcomeRaw].includes(undefined) ||
+        !sourceExchangeIds || !sourceEvidenceIds || !relatedEventIds) {
+        return null;
+    }
+    if (projectId && !/^[A-Za-z0-9_-]{8,128}$/.test(projectId))
+        return null;
+    if (typeof value.actor !== "string" || !CHRONICLE_ACTORS.has(value.actor))
+        return null;
+    if (typeof value.policy_version !== "string" || !value.policy_version)
+        return null;
+    if (typeof value.evidence_authority !== "string" || !EVIDENCE_AUTHORITIES.has(value.evidence_authority))
+        return null;
+    if (!isTimestamp(value.effective_at) || !isTimestamp(value.recorded_at))
+        return null;
+    const projection = value.projection_applied;
+    if (projection !== 0 && projection !== 1 && projection !== true && projection !== false)
+        return null;
+    const projectionApplied = projection === 1 || projection === true;
+    // Structural GROUNDED CAUSE guard for replicated rows: the exporting peer
+    // verified grounded fields against its own sources, so a grounded field
+    // must always travel with cited sources (a user-stated rationale is the one
+    // source-free exception, and only for actor `user`). A projection change
+    // must name the fact it changed. Anything else is not a Memex-written row.
+    if ((problem || groundedCause) && sourceExchangeIds.length === 0)
+        return null;
+    if (rationale && sourceExchangeIds.length === 0 && value.actor !== "user")
+        return null;
+    if (projectionApplied && !factId)
+        return null;
+    let outcome = null;
+    if (outcomeRaw) {
+        try {
+            const parsed = JSON.parse(outcomeRaw);
+            if (!isRecord(parsed))
+                return null;
+            outcome = parsed;
+        }
+        catch {
+            return null;
+        }
+    }
+    return {
+        id: value.id,
+        fact_id: factId ?? null,
+        previous_fact: previous ?? null,
+        new_fact: next ?? null,
+        reason,
+        source_exchange_id: sourceExchangeId,
         created_at: value.created_at,
+        chronicle: {
+            project_id: projectId ?? null,
+            portable_project_key: portableKey ?? null,
+            subject_key: subjectKey ?? null,
+            event_kind: value.event_kind,
+            problem: problem ?? null,
+            grounded_cause: groundedCause ?? null,
+            rationale: rationale ?? null,
+            classifier_note: classifierNote ?? null,
+            outcome,
+            source_exchange_ids: sourceExchangeIds,
+            source_evidence_ids: sourceEvidenceIds,
+            reverts_event_id: revertsEventId ?? null,
+            related_event_ids: relatedEventIds,
+            actor: value.actor,
+            policy_version: value.policy_version,
+            evidence_authority: value.evidence_authority,
+            effective_at: value.effective_at,
+            recorded_at: value.recorded_at,
+            projection_applied: projectionApplied,
+        },
     };
 }
 function parseRecallEvent(value) {
     if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
         typeof value.session_id !== "string" || !value.session_id ||
-        typeof value.project !== "string" || !value.project ||
+        !((typeof value.project === "string" && value.project) ||
+            (typeof value.project_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(value.project_id))) ||
         typeof value.prompt_hash !== "string" || !value.prompt_hash ||
         !isStringArrayJson(value.fact_ids) ||
         (value.status !== "prepared" && value.status !== "emitted") ||
@@ -311,12 +469,19 @@ function parseRecallEvent(value) {
     return {
         id: value.id,
         session_id: value.session_id,
-        project: value.project,
+        project: typeof value.project === "string" && value.project ? value.project : null,
+        project_id: typeof value.project_id === "string" ? value.project_id : null,
+        portable_project_key: typeof value.portable_project_key === "string" &&
+            /^[A-Za-z0-9_.:-]{4,160}$/.test(value.portable_project_key)
+            ? value.portable_project_key
+            : null,
         prompt_hash: value.prompt_hash,
         fact_ids: value.fact_ids,
         status: value.status,
         created_at: value.created_at,
         emitted_at: typeof value.emitted_at === "string" ? value.emitted_at : null,
+        context_epoch: Number.isInteger(value.context_epoch) ? Number(value.context_epoch) : 0,
+        project_memory_revision: Number.isInteger(value.project_memory_revision) ? Number(value.project_memory_revision) : 0,
     };
 }
 /** Semantic identity of a fact row — the ONLY fields that may decide a
@@ -334,7 +499,9 @@ function semanticConflictKey(fact) {
         fact.fact,
         fact.category,
         fact.scope_type,
-        fact.scope_project,
+        fact.project_id ?? fact.scope_project,
+        fact.subject_key,
+        fact.promotion_state,
         fact.created_at,
     ]);
 }
@@ -370,6 +537,10 @@ function localFactView(row) {
         category: row.category,
         scope_type: row.scope_type,
         scope_project: row.scope_project ?? null,
+        project_id: row.project_id ?? null,
+        portable_project_key: null,
+        subject_key: row.subject_key ?? null,
+        promotion_state: row.promotion_state ?? "legacy-project",
         source_exchange_ids: row.source_exchange_ids ?? "[]",
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -386,7 +557,7 @@ function deleteFactState(db, factId) {
     db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(factId);
     db.prepare("DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?")
         .run(factId, factId);
-    db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(factId);
+    purgeChronicleForSources(db, { exchangeIds: new Set(), factIds: new Set([factId]), reason: "sync_tombstone" });
     db.prepare("DELETE FROM facts WHERE id = ?").run(factId);
 }
 /**
@@ -410,14 +581,44 @@ function mergeTombstones(a, b) {
 }
 function importTombstones(db, generations, result) {
     const byFact = new Map();
+    const byEvent = new Map();
     for (const generation of generations) {
         for (const value of parseFromPinned(generation, "fact-tombstones.jsonl", result.malformedRows)) {
+            const eventRow = parseEventTombstone(value);
+            if (eventRow) {
+                const previous = byEvent.get(eventRow.event_id);
+                if (!previous || compareTimestamps(eventRow.deleted_at, previous.deleted_at) > 0 ||
+                    eventRow.reason === PRIVACY_TOMBSTONE_REASON) {
+                    byEvent.set(eventRow.event_id, eventRow);
+                }
+                continue;
+            }
             const row = parseTombstone(value);
             if (!row)
                 continue;
             const previous = byFact.get(row.fact_id);
             byFact.set(row.fact_id, previous ? mergeTombstones(previous, row) : row);
         }
+    }
+    // Chronicle events are immutable, so an event tombstone is terminal: the
+    // local copy is removed (with its incident occurrence) and the id is
+    // remembered so later replays cannot resurrect it.
+    for (const tombstone of byEvent.values()) {
+        const existing = db.prepare("SELECT deleted_at FROM chronicle_tombstones WHERE event_id = ?")
+            .get(tombstone.event_id);
+        const commit = db.transaction(() => {
+            const present = !!db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(tombstone.event_id);
+            if (present) {
+                db.prepare("DELETE FROM incident_occurrences WHERE event_id = ?").run(tombstone.event_id);
+                db.prepare("UPDATE fact_revisions SET reverts_event_id = NULL WHERE reverts_event_id = ?").run(tombstone.event_id);
+                db.prepare("DELETE FROM fact_revisions WHERE id = ?").run(tombstone.event_id);
+            }
+            recordChronicleTombstone(db, tombstone.event_id, tombstone.reason, tombstone.deleted_at);
+            return present;
+        });
+        commit();
+        if (!existing)
+            result.newTombstones++;
     }
     for (const tombstone of byFact.values()) {
         const localFact = db.prepare("SELECT COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock, updated_at FROM facts WHERE id = ?").get(tombstone.fact_id);
@@ -466,14 +667,167 @@ function importTombstones(db, generations, result) {
         result.newTombstones++;
     }
 }
+function resolveSyncedFactScope(db, fact) {
+    const subjectKey = fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`;
+    if (fact.scope_type === "global")
+        return { ...fact, project_id: null, scope_project: null, subject_key: subjectKey };
+    if (!fact.project_id) {
+        const identity = resolveProjectWorkspace(db, { cwd: fact.scope_project });
+        return { ...fact, project_id: identity.projectId, scope_project: identity.canonicalPath, subject_key: subjectKey };
+    }
+    const byId = db.prepare(`
+    SELECT project_id, portable_project_key FROM projects WHERE project_id = ?
+  `).get(fact.project_id);
+    const byPortable = fact.portable_project_key
+        ? db.prepare(`
+        SELECT project_id, portable_project_key FROM projects WHERE portable_project_key = ?
+      `).get(fact.portable_project_key)
+        : undefined;
+    if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+        throw new Error("stable project id and portable key resolve to different local projects");
+    }
+    if (byId?.portable_project_key && fact.portable_project_key &&
+        byId.portable_project_key !== fact.portable_project_key) {
+        throw new Error("stable project id conflicts with local portable key");
+    }
+    const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
+    if (!byId && !byPortable) {
+        db.prepare(`
+      INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+      VALUES (?, ?, ?, 0, ?, ?)
+    `).run(localProjectId, fact.portable_project_key, localProjectId, fact.created_at, fact.updated_at);
+    }
+    else if (fact.portable_project_key) {
+        db.prepare(`
+      UPDATE projects SET portable_project_key = COALESCE(portable_project_key, ?), updated_at = ?
+      WHERE project_id = ?
+    `).run(fact.portable_project_key, fact.updated_at, localProjectId);
+    }
+    const workspace = db.prepare(`
+    SELECT canonical_path FROM workspaces WHERE project_id = ?
+    ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+  `).get(localProjectId);
+    return { ...fact, project_id: localProjectId, scope_project: workspace?.canonical_path ?? null, subject_key: subjectKey };
+}
+function rejectStableIdentityConflicts(db, generations, errors) {
+    const rejected = new Set();
+    const remoteKeys = new Map();
+    const slots = new Map();
+    const reject = (generation, message, related = new Set(), file = "facts.jsonl") => {
+        const key = generationKey(generation);
+        rejected.add(key);
+        for (const other of related)
+            rejected.add(other);
+        errors.push({ file: path.join(generation.source, file), line: 0, error: message });
+    };
+    for (const generation of generations) {
+        const generationId = generationKey(generation);
+        for (const value of parseFromPinned(generation, "facts.jsonl", errors)) {
+            const fact = parseSyncFact(value);
+            if (!fact || fact.scope_type !== "project" || !fact.project_id)
+                continue;
+            const priorRemote = remoteKeys.get(fact.project_id);
+            if (priorRemote && priorRemote.key && fact.portable_project_key && priorRemote.key !== fact.portable_project_key) {
+                reject(generation, "stable project_id is paired with conflicting portable_project_key values", priorRemote.generations);
+            }
+            else if (!priorRemote) {
+                remoteKeys.set(fact.project_id, { key: fact.portable_project_key, generations: new Set([generationId]) });
+            }
+            else {
+                priorRemote.key ??= fact.portable_project_key;
+                priorRemote.generations.add(generationId);
+            }
+            const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                .get(fact.project_id);
+            const byPortable = fact.portable_project_key
+                ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                    .get(fact.portable_project_key)
+                : undefined;
+            if (byId?.portable_project_key && fact.portable_project_key &&
+                byId.portable_project_key !== fact.portable_project_key) {
+                reject(generation, "stable project_id conflicts with the local portable_project_key");
+                continue;
+            }
+            if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+                reject(generation, "stable project_id and portable_project_key resolve to different local projects");
+                continue;
+            }
+            const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
+            const subjectKey = fact.subject_key ?? `legacy.fact.${fact.id}`;
+            const slotKey = `${localProjectId}\0${fact.promotion_state}\0${subjectKey}`;
+            const localConflict = db.prepare(`
+        SELECT id FROM facts
+        WHERE is_active = 1 AND project_id = ? AND promotion_state = ? AND subject_key = ? AND id <> ?
+        LIMIT 1
+      `).get(localProjectId, fact.promotion_state, subjectKey, fact.id);
+            if (localConflict) {
+                reject(generation, `stable subject slot conflicts with local fact ${localConflict.id}`);
+                continue;
+            }
+            const priorSlot = slots.get(slotKey);
+            if (priorSlot && priorSlot.factId !== fact.id) {
+                reject(generation, `stable subject slot has conflicting fact ids ${priorSlot.factId} and ${fact.id}`, priorSlot.generations);
+            }
+            else if (!priorSlot) {
+                slots.set(slotKey, { factId: fact.id, generations: new Set([generationId]) });
+            }
+            else {
+                priorSlot.generations.add(generationId);
+            }
+        }
+        for (const value of parseFromPinned(generation, "recall-events.jsonl", errors)) {
+            const event = parseRecallEvent(value);
+            if (!event?.project_id)
+                continue;
+            const priorRemote = remoteKeys.get(event.project_id);
+            if (priorRemote && priorRemote.key && event.portable_project_key && priorRemote.key !== event.portable_project_key) {
+                reject(generation, "recall project_id is paired with a conflicting portable_project_key", priorRemote.generations, "recall-events.jsonl");
+            }
+            else if (!priorRemote) {
+                remoteKeys.set(event.project_id, {
+                    key: event.portable_project_key,
+                    generations: new Set([generationId]),
+                });
+            }
+            else {
+                priorRemote.key ??= event.portable_project_key;
+                priorRemote.generations.add(generationId);
+            }
+            const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                .get(event.project_id);
+            const byPortable = event.portable_project_key
+                ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                    .get(event.portable_project_key)
+                : undefined;
+            if ((byId?.portable_project_key && event.portable_project_key &&
+                byId.portable_project_key !== event.portable_project_key) ||
+                (byId && byPortable && byId.project_id !== byPortable.project_id)) {
+                reject(generation, "recall stable identity conflicts with local project mapping", new Set(), "recall-events.jsonl");
+            }
+        }
+    }
+    return rejected;
+}
 async function importFacts(db, generations, result) {
     const plans = new Map();
     const remoteById = new Map();
     for (const generation of generations) {
         for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
-            const fact = parseSyncFact(value);
-            if (!fact)
+            const parsed = parseSyncFact(value);
+            if (!parsed)
                 continue; // strict validation already rejected this generation
+            let fact;
+            try {
+                fact = resolveSyncedFactScope(db, parsed);
+            }
+            catch (error) {
+                result.malformedRows.push({
+                    file: path.join(generation.source, "facts.jsonl"),
+                    line: 0,
+                    error: `project identity conflict: ${error instanceof Error ? error.message : String(error)}`,
+                });
+                continue;
+            }
             const agg = remoteById.get(fact.id);
             if (!agg) {
                 remoteById.set(fact.id, {
@@ -520,7 +874,8 @@ async function importFacts(db, generations, result) {
         const localRow = db.prepare(`
       SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active,
-             semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at
+             semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at,
+             project_id, subject_key, promotion_state
       FROM facts WHERE id = ?
     `).get(remote.id);
         const plan = {};
@@ -622,6 +977,7 @@ async function importFacts(db, generations, result) {
                         const claimed = db.prepare(`
               UPDATE facts SET
                 fact = ?, category = ?, scope_type = ?, scope_project = ?,
+                project_id = ?, subject_key = ?, promotion_state = ?,
                 source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
                 consolidated_count = ?, embedding_version = ?,
                 ontology_category_id = NULL, fact_kr = NULL,
@@ -629,7 +985,7 @@ async function importFacts(db, generations, result) {
                 needs_consolidation = ?, ontology_last_attempt_at = NULL,
                 semantic_generation = semantic_generation + 1, semantic_updated_at = ?
               WHERE id = ? AND semantic_generation = ?
-            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
+            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
                         if (claimed.changes === 0)
                             return false;
                         // Context dependencies are local interpretive lineage for the
@@ -659,9 +1015,10 @@ async function importFacts(db, generations, result) {
                  embedding, created_at, updated_at, consolidated_count, is_active,
                  embedding_version, needs_consolidation,
                  semantic_generation, semantic_updated_at,
-                 lifecycle_generation, lifecycle_updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?)
-            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at);
+                 lifecycle_generation, lifecycle_updated_at,
+                 project_id, subject_key, promotion_state)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?)
+            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at, fact.project_id, fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`, fact.promotion_state);
                         // A strictly newer semantic event resurrected over a stale
                         // non-privacy tombstone — clear the inert deletion marker.
                         db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(factId);
@@ -732,17 +1089,117 @@ async function importFacts(db, generations, result) {
 }
 function importRevisions(db, generations, result) {
     for (const generation of generations) {
+        let lineNo = 0;
         for (const value of parseFromPinned(generation, "fact-revisions.jsonl", result.malformedRows)) {
+            lineNo++;
             const revision = parseRevision(value);
-            if (!revision || !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id) ||
-                db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id))
+            if (!revision)
                 continue;
-            db.prepare(`
-        INSERT INTO fact_revisions
-          (id, fact_id, previous_fact, new_fact, reason, source_exchange_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(revision.id, revision.fact_id, revision.previous_fact, revision.new_fact, revision.reason, revision.source_exchange_id, revision.created_at);
-            result.newRevisions++;
+            if (db.prepare("SELECT 1 FROM chronicle_tombstones WHERE event_id = ?").get(revision.id))
+                continue;
+            if (revision.fact_id && !db.prepare("SELECT 1 FROM facts WHERE id = ?").get(revision.fact_id))
+                continue;
+            if (!revision.chronicle) {
+                // Released peer row: a CHANGED transition whose reason is model text.
+                if (db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(revision.id))
+                    continue;
+                const fact = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?")
+                    .get(revision.fact_id);
+                const status = insertReplicatedChronicleEvent(db, {
+                    id: revision.id,
+                    project_id: fact?.project_id ?? null,
+                    subject_key: fact?.subject_key ?? null,
+                    fact_id: revision.fact_id,
+                    event_kind: "CHANGED",
+                    previous_value: revision.previous_fact,
+                    new_value: revision.new_fact,
+                    problem: null,
+                    grounded_cause: null,
+                    rationale: null,
+                    classifier_note: revision.reason,
+                    outcome: null,
+                    source_exchange_ids: revision.source_exchange_id ? [revision.source_exchange_id] : [],
+                    source_evidence_ids: [],
+                    reverts_event_id: null,
+                    related_event_ids: [],
+                    actor: "legacy",
+                    policy_version: "legacy-revision-v0",
+                    evidence_authority: "unknown",
+                    effective_at: revision.created_at,
+                    effective_at_source: "peer",
+                    recorded_at: revision.created_at,
+                    projection_applied: true,
+                    created_at: revision.created_at,
+                });
+                if (status === "inserted")
+                    result.newRevisions++;
+                continue;
+            }
+            const event = revision.chronicle;
+            // Map the stable project through the portable key exactly like facts.
+            let localProjectId = null;
+            if (event.project_id) {
+                const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                    .get(event.project_id);
+                const byPortable = event.portable_project_key
+                    ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                        .get(event.portable_project_key)
+                    : undefined;
+                if ((byId?.portable_project_key && event.portable_project_key && byId.portable_project_key !== event.portable_project_key) ||
+                    (byId && byPortable && byId.project_id !== byPortable.project_id)) {
+                    result.malformedRows.push({
+                        file: path.join(generation.source, "fact-revisions.jsonl"), line: lineNo,
+                        error: `chronicle event ${revision.id} stable project identity conflicts with local mapping`,
+                    });
+                    continue;
+                }
+                localProjectId = byPortable?.project_id ?? byId?.project_id ?? null;
+                if (!localProjectId) {
+                    if (revision.fact_id) {
+                        localProjectId = db.prepare("SELECT project_id FROM facts WHERE id = ?").get(revision.fact_id)?.project_id ?? null;
+                    }
+                    if (!localProjectId)
+                        continue; // event-only row for a project this device has never seen
+                }
+            }
+            else if (revision.fact_id) {
+                localProjectId = db.prepare("SELECT project_id FROM facts WHERE id = ?").get(revision.fact_id)?.project_id ?? null;
+            }
+            const status = insertReplicatedChronicleEvent(db, {
+                id: revision.id,
+                project_id: localProjectId,
+                subject_key: event.subject_key,
+                fact_id: revision.fact_id,
+                event_kind: event.event_kind,
+                previous_value: revision.previous_fact,
+                new_value: revision.new_fact,
+                problem: event.problem,
+                grounded_cause: event.grounded_cause,
+                rationale: event.rationale,
+                classifier_note: event.classifier_note,
+                outcome: event.outcome,
+                source_exchange_ids: event.source_exchange_ids,
+                source_evidence_ids: event.source_evidence_ids,
+                reverts_event_id: event.reverts_event_id,
+                related_event_ids: event.related_event_ids,
+                actor: event.actor,
+                policy_version: event.policy_version,
+                evidence_authority: event.evidence_authority,
+                effective_at: event.effective_at,
+                effective_at_source: "peer",
+                recorded_at: event.recorded_at,
+                projection_applied: event.projection_applied,
+                created_at: revision.created_at,
+            });
+            if (status === "inserted")
+                result.newRevisions++;
+            else if (status === "conflict") {
+                // Same event id with different content: never overwrite silently.
+                result.malformedRows.push({
+                    file: path.join(generation.source, "fact-revisions.jsonl"), line: lineNo,
+                    error: `chronicle event ${revision.id} conflicts with the local event of the same id; local history preserved`,
+                });
+            }
         }
     }
 }
@@ -754,12 +1211,45 @@ function importRecallEvents(db, generations, result) {
                 continue;
             const existing = db.prepare("SELECT status FROM recall_events WHERE id = ?").get(event.id);
             if (!existing) {
+                let localProjectId = event.project_id;
+                let localProject = event.project;
+                if (localProjectId) {
+                    const byPortable = event.portable_project_key
+                        ? db.prepare("SELECT project_id FROM projects WHERE portable_project_key = ?")
+                            .get(event.portable_project_key)
+                        : undefined;
+                    const byId = db.prepare("SELECT project_id, portable_project_key FROM projects WHERE project_id = ?")
+                        .get(localProjectId);
+                    if (byId && byPortable && byId.project_id !== byPortable.project_id) {
+                        throw new Error("recall stable project id and portable key resolve to different local projects");
+                    }
+                    if (byId?.portable_project_key && event.portable_project_key &&
+                        byId.portable_project_key !== event.portable_project_key) {
+                        throw new Error("recall stable project id conflicts with local portable key");
+                    }
+                    localProjectId = byPortable?.project_id ?? byId?.project_id ?? localProjectId;
+                    if (!byId && !byPortable) {
+                        db.prepare(`
+              INSERT INTO projects(project_id, portable_project_key, display_name, memory_revision, created_at, updated_at)
+              VALUES (?, ?, ?, 0, ?, ?)
+            `).run(localProjectId, event.portable_project_key, localProjectId, event.created_at, event.created_at);
+                    }
+                    localProject = db.prepare(`
+            SELECT canonical_path FROM workspaces WHERE project_id = ?
+            ORDER BY last_seen_at DESC, workspace_id LIMIT 1
+          `).get(localProjectId)?.canonical_path ?? `project:${localProjectId}`;
+                }
+                else if (localProject) {
+                    const identity = resolveProjectWorkspace(db, { cwd: localProject });
+                    localProjectId = identity.projectId;
+                    localProject = identity.canonicalPath;
+                }
                 db.prepare(`
           INSERT INTO recall_events
             (id, session_id, project, prompt_hash, fact_ids, source_type, learnable,
-             status, created_at, emitted_at)
-          VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, ?, ?, ?)
-        `).run(event.id, event.session_id, event.project, event.prompt_hash, event.fact_ids, event.status, event.created_at, event.emitted_at);
+             status, project_id, context_epoch, project_memory_revision, created_at, emitted_at)
+          VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, ?, ?, ?, ?, ?, ?)
+        `).run(event.id, event.session_id, localProject, event.prompt_hash, event.fact_ids, event.status, localProjectId, event.context_epoch, event.project_memory_revision, event.created_at, event.emitted_at);
                 result.newRecallEvents++;
             }
             else if (existing.status === "prepared" && event.status === "emitted") {
@@ -811,7 +1301,7 @@ function generationKey(generation) {
 const ROW_VALIDATORS = [
     { file: "facts.jsonl", validate: (value) => parseSyncFact(value) !== null },
     { file: "fact-revisions.jsonl", validate: (value) => parseRevision(value) !== null },
-    { file: "fact-tombstones.jsonl", validate: (value) => parseTombstone(value) !== null },
+    { file: "fact-tombstones.jsonl", validate: (value) => parseAnyTombstone(value) },
     { file: "recall-events.jsonl", validate: (value) => parseRecallEvent(value) !== null },
 ];
 function rejectInvalidRows(generations, issues) {
@@ -888,13 +1378,19 @@ export async function importFromSync() {
     if (pinned.length === 0)
         return result;
     const rejected = rejectInvalidRows(pinned, result.malformedRows);
-    const generations = rejected.size === 0
+    let generations = rejected.size === 0
         ? pinned
         : pinned.filter((generation) => !rejected.has(generationKey(generation)));
     if (generations.length === 0)
         return result;
     const db = initDatabase();
     try {
+        const identityRejected = rejectStableIdentityConflicts(db, generations, result.malformedRows);
+        if (identityRejected.size > 0) {
+            generations = generations.filter((generation) => !identityRejected.has(generationKey(generation)));
+        }
+        if (generations.length === 0)
+            return result;
         importTombstones(db, generations, result);
         await importFacts(db, generations, result);
         importRevisions(db, generations, result);

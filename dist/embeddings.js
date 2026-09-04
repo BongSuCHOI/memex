@@ -47,7 +47,42 @@ function modelVersion(model) {
 }
 export const EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
 let embeddingPipeline = null;
+/**
+ * Reproducible-harness seam: `MEMEX_EMBEDDING_STUB=1` replaces the model with a
+ * deterministic hashed bag-of-words vector. Never enabled by default; the
+ * calibration benchmark and no-model test environments use it so gate
+ * behaviour can be measured without network or model downloads.
+ */
+function embeddingStubEnabled() {
+    return process.env.MEMEX_EMBEDDING_STUB === '1' || process.env.MEMEX_EMBEDDING_STUB === 'fail';
+}
+/** Harness seam: `MEMEX_EMBEDDING_STUB=fail` simulates an unavailable model. */
+function embeddingStubFails() {
+    return process.env.MEMEX_EMBEDDING_STUB === 'fail';
+}
+export function stubEmbedding(text, dimensions = 384) {
+    const vector = new Array(dimensions).fill(0);
+    const tokens = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
+    for (const token of tokens) {
+        let hash = 2166136261;
+        for (let i = 0; i < token.length; i++) {
+            hash ^= token.charCodeAt(i);
+            hash = Math.imul(hash, 16777619) >>> 0;
+        }
+        vector[hash % dimensions] += 1;
+        vector[(hash >>> 8) % dimensions] += 0.5;
+    }
+    let norm = 0;
+    for (const value of vector)
+        norm += value * value;
+    norm = Math.sqrt(norm) || 1;
+    return vector.map((value) => value / norm);
+}
 export async function initEmbeddings() {
+    if (embeddingStubFails())
+        throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
+    if (embeddingStubEnabled())
+        return;
     if (!embeddingPipeline) {
         // stderr: stdout of hook scripts is injected into the session as context,
         // so progress logs must never go to stdout.
@@ -70,6 +105,14 @@ function applyModePrefix(text, mode) {
 // callers embed unique content (indexing), where a memo is pure overhead.
 const QUERY_EMBED_MEMO_MAX = 32;
 const queryEmbedMemo = new Map();
+// Process-wide inference accounting so callers can report exactly how many
+// model calls a prompt cost (probe warm-up included) versus memo hits.
+let modelCalls = 0;
+let cacheHits = 0;
+/** Cumulative counts for this process; sample the delta around a unit of work. */
+export function embeddingCallStats() {
+    return { modelCalls, cacheHits };
+}
 /**
  * @param mode 'passage' for stored/indexed content (facts, exchanges),
  *             'query' for search queries. Defaults to 'passage' because most
@@ -82,14 +125,25 @@ export async function generateEmbedding(text, mode = 'passage') {
             // refresh LRU position
             queryEmbedMemo.delete(text);
             queryEmbedMemo.set(text, hit);
+            cacheHits++;
             return hit.slice();
         }
+    }
+    if (embeddingStubFails())
+        throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
+    if (embeddingStubEnabled()) {
+        modelCalls++;
+        const stub = stubEmbedding(text);
+        if (mode === 'query')
+            queryEmbedMemo.set(text, stub.slice());
+        return stub;
     }
     if (!embeddingPipeline) {
         await initEmbeddings();
     }
     // Truncate text to avoid token limits (512 tokens max for this model)
     const truncated = applyModePrefix(text.substring(0, 2000), mode);
+    modelCalls++;
     const output = await embeddingPipeline(truncated, {
         pooling: 'mean',
         normalize: true

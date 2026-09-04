@@ -483,6 +483,7 @@ async function main() {
       "Resilience and observability rules",
     );
     const factIds = [];
+    const factScopes = [];
     for (let i = 0; i < 50; i++) {
       const text = `Architecture rule ${i}: structured logging circuit breakers keyset pagination and blue-green deployment for project ${i % 7}`;
       const id = insertFact(db, {
@@ -498,11 +499,31 @@ async function main() {
         id,
       );
       factIds.push(id);
+      factScopes.push({
+        type: i % 4 === 0 ? "global" : "project",
+        project: i % 4 === 0 ? null : `/tmp/bench/proj-${i % 7}`,
+      });
     }
     for (let i = 1; i < factIds.length; i++) {
+      // Keep the synthetic corpus multi-project without violating the product
+      // invariant that direct project↔different-project edges are forbidden.
+      // A recent global fact is a valid bridge when adjacent facts belong to
+      // different projects, so the benchmark still creates one edge per fact.
+      let sourceIndex = i - 1;
+      const source = factScopes[sourceIndex];
+      const target = factScopes[i];
+      if (
+        source.type === "project" &&
+        target.type === "project" &&
+        source.project !== target.project
+      ) {
+        sourceIndex = factScopes.findLastIndex(
+          (scope, index) => index < i && scope.type === "global",
+        );
+      }
       createRelation(
         db,
-        factIds[i - 1],
+        factIds[sourceIndex],
         i % 2 ? "INFLUENCES" : "SUPPORTS",
         factIds[i],
         "benchmark relation",

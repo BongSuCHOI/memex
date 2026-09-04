@@ -1,7 +1,13 @@
 export declare const EMBEDDING_MODEL: string;
 export declare const EMBEDDING_VERSION: number;
 export type EmbeddingMode = 'query' | 'passage';
+export declare function stubEmbedding(text: string, dimensions?: number): number[];
 export declare function initEmbeddings(): Promise<void>;
+/** Cumulative counts for this process; sample the delta around a unit of work. */
+export declare function embeddingCallStats(): {
+    modelCalls: number;
+    cacheHits: number;
+};
 /**
  * @param mode 'passage' for stored/indexed content (facts, exchanges),
  *             'query' for search queries. Defaults to 'passage' because most

@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { suppressConsole } from './test-utils.js';
-import { craftCommittedGeneration, readCurrentGeneration } from './sync-fixture.js';
+import { craftCommittedGeneration, factRow, readCurrentGeneration } from './sync-fixture.js';
 
 // Mock embeddings (avoid loading the model)
 vi.mock('../src/embeddings.js', () => ({
@@ -104,6 +104,102 @@ describe('sync-export/import', () => {
     expect(meta.protocol_version).toBe(4);
     expect(meta.hostname).toBeTruthy();
     expect(meta.exported_at).toBeTruthy();
+  });
+
+  it('syncs stable project identity without device path leakage and replays idempotently', async () => {
+    const { initDatabase, recordRecallEvent } = await import('../src/db.js');
+    const { insertFact } = await import('../src/fact-db.js');
+    const { resolveProjectWorkspace } = await import('../src/continuity-identity.js');
+    const { exportForSync, getSyncDir } = await import('../src/sync-export.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const sourcePath = path.join(tmpDir, 'source-device', 'memex');
+    const targetPath = path.join(tmpDir, 'target-device', 'renamed-memex');
+    const sourceDbPath = path.join(tmpDir, 'source.sqlite');
+    const targetDbPath = path.join(tmpDir, 'target.sqlite');
+
+    process.env.MEMEX_DB_PATH = sourceDbPath;
+    let db = initDatabase();
+    const source = resolveProjectWorkspace(db, { cwd: sourcePath });
+    db.prepare("UPDATE projects SET portable_project_key = 'portable:continuity' WHERE project_id = ?").run(source.projectId);
+    const factId = insertFact(db, {
+      fact: 'stable identity fact', category: 'decision', scope_type: 'project',
+      scope_project: sourcePath, source_exchange_ids: [], embedding: null,
+      project_id: source.projectId, promotion_state: 'decision', promotion_evidence: 'explicit-decision', subject_key: 'decision.storage.target',
+    });
+    recordRecallEvent(db, {
+      sessionId: 'remote-recall-session', project: sourcePath,
+      projectId: source.projectId, prompt: 'remember stable identity', factIds: [factId],
+    });
+    db.close();
+    exportForSync();
+
+    const deviceDir = path.join(getSyncDir(), 'devices', fs.readdirSync(path.join(getSyncDir(), 'devices'))[0]);
+    const factsBody = fs.readFileSync(path.join(deviceDir, 'generations', readCurrentGeneration(deviceDir), 'facts.jsonl'), 'utf8');
+    const wire = JSON.parse(factsBody.trim()) as Record<string, unknown>;
+    expect(wire.scope_project).toBeNull();
+    expect(wire.project_id).toBe(source.projectId);
+    expect(factsBody).not.toContain(sourcePath);
+
+    process.env.MEMEX_DB_PATH = targetDbPath;
+    db = initDatabase();
+    const target = resolveProjectWorkspace(db, { cwd: targetPath });
+    db.prepare("UPDATE projects SET portable_project_key = 'portable:continuity' WHERE project_id = ?").run(target.projectId);
+    db.close();
+
+    const first = await importFromSync();
+    expect(first.newFacts).toBe(1);
+    const second = await importFromSync();
+    expect(second.newFacts).toBe(0);
+    expect(second.updatedFacts).toBe(0);
+
+    db = initDatabase();
+    try {
+      const imported = db.prepare("SELECT project_id, scope_project, subject_key, promotion_state FROM facts WHERE fact = 'stable identity fact'").get();
+      expect(imported).toEqual({
+        project_id: target.projectId,
+        scope_project: targetPath,
+        subject_key: 'decision.storage.target',
+        promotion_state: 'decision',
+      });
+      expect(db.prepare("SELECT project_id FROM recall_events WHERE session_id = 'remote-recall-session'").get())
+        .toEqual({ project_id: target.projectId });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a conflicting stable subject-slot generation before any row mutation', async () => {
+    const { initDatabase } = await import('../src/db.js');
+    const { insertFact } = await import('../src/fact-db.js');
+    const { resolveProjectWorkspace } = await import('../src/continuity-identity.js');
+    const { importFromSync } = await import('../src/sync-import.js');
+    const db = initDatabase();
+    const local = resolveProjectWorkspace(db, { cwd: path.join(tmpDir, 'local-project') });
+    db.prepare("UPDATE projects SET portable_project_key = 'portable:slot' WHERE project_id = ?").run(local.projectId);
+    const localFact = insertFact(db, {
+      fact: 'local current state', category: 'knowledge', scope_type: 'project',
+      scope_project: local.canonicalPath, source_exchange_ids: [], embedding: null,
+      project_id: local.projectId, subject_key: 'state.main.slot', promotion_state: 'project-current', promotion_evidence: 'validated',
+    });
+    db.close();
+    craftCommittedGeneration('conflicting-peer', {
+      'facts.jsonl': factRow({
+        id: 'remote-conflict', fact: 'remote conflicting state', scope_type: 'project',
+        scope_project: null, project_id: 'project-remote-conflict',
+        portable_project_key: 'portable:slot', subject_key: 'state.main.slot',
+        promotion_state: 'project-current',
+      }) + '\n',
+    });
+    const result = await importFromSync();
+    expect(result.newFacts).toBe(0);
+    expect(result.updatedFacts).toBe(0);
+    expect(result.malformedRows.some((row) => row.error.includes('subject slot conflicts'))).toBe(true);
+    const verify = initDatabase();
+    try {
+      expect(verify.prepare("SELECT id, fact FROM facts").all()).toEqual([{ id: localFact, fact: 'local current state' }]);
+    } finally {
+      verify.close();
+    }
   });
 
   it('should import returns zeros when no sync files exist', async () => {

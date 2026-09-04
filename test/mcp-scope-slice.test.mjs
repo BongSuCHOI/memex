@@ -57,9 +57,13 @@ test("tools/list publishes project and scope for every scoped graph tool", async
     assert.ok(properties.project, `${name} must publish project in tools/list`);
     assert.deepEqual(
       properties.scope?.enum,
-      ["project", "global", "all"],
+      ["project", "workspace", "workstream", "session", "global", "all"],
       `${name} must publish the scope enum`,
     );
+    assert.ok(properties.project_id, `${name} must publish project_id in tools/list`);
+    assert.ok(properties.workspace_id, `${name} must publish workspace_id in tools/list`);
+    assert.ok(properties.workstream_id, `${name} must publish workstream_id in tools/list`);
+    assert.ok(properties.session_id, `${name} must publish session_id in tools/list`);
   }
 });
 
@@ -108,13 +112,14 @@ test("search_facts without project or scope returns structured validation error 
   assert.ok(text.includes("canonical absolute"), text.slice(0, 300));
 });
 
-test("cross_project_insights without current_project errors instead of using cwd", async (t) => {
+test("cross_project_insights without current project identity errors instead of using cwd", async (t) => {
   await seedDb(t);
   const reply = await callTool("cross_project_insights", {
     query: "database decisions",
   });
   assert.equal(reply.isError, true);
-  assert.ok(reply.content[0].text.includes("current_project is required"));
+  assert.ok(reply.content[0].text.includes("project is required"));
+  assert.ok(reply.content[0].text.includes("project_id"));
 });
 
 test("ask_avatar / trace_fact without project error instead of using cwd", async (t) => {

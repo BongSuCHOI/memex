@@ -9,9 +9,6 @@
  * extraction pipeline, and records each session in extraction_log so work is
  * idempotent and resumable.
  *
- * Seed step: sessions that already produced facts (via source_exchange_ids)
- * are pre-marked as processed so they are not re-extracted into duplicates.
- *
  * Usage: node scripts/backfill-extract-worker.js [--max N]
  */
 
@@ -116,63 +113,13 @@ function releaseLock() {
   }
 }
 
-/** Pre-mark sessions that already yielded facts (historic batch runs). */
-function seedFromExistingFacts(db) {
-  const facts = db
-    .prepare(
-      "SELECT source_exchange_ids FROM facts WHERE source_exchange_ids IS NOT NULL AND source_exchange_ids != '[]'",
-    )
-    .all();
-  const exchangeIds = new Set();
-  for (const f of facts) {
-    try {
-      for (const id of JSON.parse(f.source_exchange_ids)) exchangeIds.add(id);
-    } catch {
-      /* skip malformed */
-    }
-  }
-  if (exchangeIds.size === 0) return 0;
-
-  const sessionStmt = db.prepare(
-    "SELECT session_id FROM exchanges WHERE id = ?",
-  );
-  // FACT-LIFECYCLE 계약: seed 마커의 워터마크는 **세션** MAX(rowid)다. 개별
-  // exchange 의 rowid 를 심으면 그 이후의 이미 fact 화된 suffix 가 SessionEnd
-  // 재추출 멱등 게이트를 통과해 다시 LLM 배치로 들어간다.
-  const watermarkStmt = db.prepare(
-    "SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM exchanges WHERE session_id = ?",
-  );
-  const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
-    VALUES (?, ?, -1, -1, ?)
-  `);
-  const now = new Date().toISOString();
-  let seeded = 0;
-  const tx = db.transaction(() => {
-    const seen = new Set();
-    for (const exId of exchangeIds) {
-      const row = sessionStmt.get(exId);
-      const sid = row?.session_id;
-      if (sid && !seen.has(sid)) {
-        seen.add(sid);
-        // seed 마커에도 워터마크를 기록한다 — seed 시점까지의 세션 전체가
-        // 이미 fact 화되어 있으므로 세션 MAX(rowid)로 덮는다. 이후 붙는
-        // resume suffix 는 SessionEnd 훅이 담당한다.
-        if (insertStmt.run(sid, now, watermarkStmt.get(sid).max_rowid).changes > 0) seeded++;
-      }
-    }
-  });
-  tx();
-  return seeded;
-}
-
 function pendingSessions(db, limit) {
   // Single source (pendingExtractionCoreQuery) shared with the SessionStart
   // hook's spawn condition so the two can never drift.
   const { sql, params } = pendingExtractionCoreQuery({
     minExchanges: MIN_EXCHANGES,
     excludeProjects: EXCLUDE_PROJECTS,
-  });
+  }, "continuity");
   return db.prepare(`${sql} ORDER BY ts DESC LIMIT ?`).all(...params, limit);
 }
 
@@ -233,9 +180,6 @@ async function main() {
   try {
     db = initDatabase();
 
-    const seeded = seedFromExistingFacts(db);
-    if (seeded) log(`seed: marked ${seeded} already-extracted sessions`);
-
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(
       `backfill-extract: ${sessions.length} sessions this run (concurrency ${CONCURRENCY})`,
@@ -244,7 +188,7 @@ async function main() {
     let done = 0,
       totalSaved = 0,
       escalateFailures = 0;
-    const buckets = { handoff: 0, transient: 0, budget: 0 };
+    const buckets = { handoff: 0, transient: 0, budget: 0, dead: 0 };
     const { isolated } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
@@ -320,6 +264,12 @@ async function main() {
             buckets.handoff += 1;
             log(
               `session ${next.sid}: HANDOFF (claim_not_acquired) — 다른 러너가 처리 중`,
+            );
+          } else if (result.skipped === "failed_visible") {
+            buckets.dead += 1;
+            escalateFailures += 1;
+            log(
+              `session ${next.sid}: DEAD (failed_visible) — exact range recorded, completed 아님 · 점검 필요`,
             );
           } else {
             buckets.transient += 1;
@@ -397,6 +347,9 @@ async function main() {
           : "") +
         (buckets.budget > 0
           ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)`
+          : "") +
+        (buckets.dead > 0
+          ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`
           : "") +
         // 운영 에스컬레이션 신호는 별도로 유지한다 — 예산 회계에 섞으면 "손대야 할 실패"가
         // 일반 통계로 묻힌다(R12 수정 중 사라졌던 경보의 복원).

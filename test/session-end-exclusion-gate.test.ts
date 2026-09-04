@@ -88,8 +88,8 @@ afterEach(() => {
   tmp = undefined;
 });
 
-describe("SessionEnd extraction user exclusion gate (P1-1 / T01)", () => {
-  it("purges before extraction, saves no fact, and exports only the privacy tombstone", async () => {
+describe("SessionEnd privacy exclusion across deferred workers (P1-1 / T01)", () => {
+  it("purges before extraction and terminally blocks deferred Continuity recapture", async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-end-exclusion-"));
     const dbPath = path.join(tmp, "conversation-index", "db.sqlite");
     const sessions = path.join(tmp, "sessions");
@@ -226,18 +226,20 @@ describe("SessionEnd extraction user exclusion gate (P1-1 / T01)", () => {
       expect(fs.existsSync(archiveCopy.replace(/\.jsonl$/, "-summary.txt"))).toBe(false);
       expect(fs.existsSync(archiveCopy)).toBe(true);
 
-      // 5단계: 실제 SessionEnd 훅 — 성공줄 증거로 sync-export 가 실행되고,
-      // 내보내는 payload 는 privacy tombstone 만 남긴다.
+      // 5단계: 실제 SessionEnd 훅은 final fence만 남기며 foreground
+      // extraction/export를 실행하지 않는다. P0 capture-index worker가 user-role
+      // terminal conversation exclusion이 hook 단계에서 journal/checkpoint
+      // 재생성을 차단한다. Worker에는 처리할 private source job이 남지 않는다.
       const hook = spawnSync(process.execPath, ["scripts/session-end-hook.js"], {
         cwd: process.cwd(),
         env: {
           ...env,
           MEMEX_PLUGIN_ROOT: process.cwd(),
-          MEMEX_STABILIZE_POLL_MS: "5",
-          MEMEX_STABILIZE_QUIET_MS: "10",
-          MEMEX_STABILIZE_MAX_WAIT_MS: "1000",
+          MEMEX_ALLOWED_TRANSCRIPT_ROOTS: sessions,
+          MEMEX_CONTINUITY_NO_WAKE: "1",
         },
         input: JSON.stringify({
+          hook_event_name: "SessionEnd",
           transcript_path: transcript,
           session_id: SESSION_ID,
           cwd: PROJECT,
@@ -246,32 +248,33 @@ describe("SessionEnd extraction user exclusion gate (P1-1 / T01)", () => {
         timeout: 30_000,
       });
       expect(hook.status).toBe(0);
-      expect(hook.stderr).not.toContain("no completion evidence");
+      expect(hook.stdout).toBe("");
+      expect(hook.stderr).toBe("");
+      expect(fs.existsSync(path.join(tmp, "conversation-index", "sync"))).toBe(false);
 
-      const syncDir = path.join(tmp, "conversation-index", "sync");
-      // P1-1: the exporter commits one generation per device — read it back
-      // from there, not from the removed root mirror.
-      const deviceDir = path.join(syncDir, "devices", fs.readdirSync(path.join(syncDir, "devices"))[0]);
-      const genDir = path.join(
-        deviceDir,
-        "generations",
-        (JSON.parse(fs.readFileSync(path.join(deviceDir, "CURRENT"), "utf8")) as { generation: string })
-          .generation,
-      );
-      expect(fs.existsSync(path.join(genDir, "meta.json"))).toBe(true);
-      const exportedFacts = fs
-        .readFileSync(path.join(genDir, "facts.jsonl"), "utf8")
-        .split("\n")
-        .filter((line) => line.trim());
-      expect(exportedFacts, "purge 된 fact 는 payload 에 남지 않는다").toEqual([]);
-      const exportedTombstones = fs
-        .readFileSync(path.join(genDir, "fact-tombstones.jsonl"), "utf8")
-        .split("\n")
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as { fact_id: string; reason: string });
-      expect(exportedTombstones).toEqual([
-        { fact_id: factId, reason: "source_conversation_excluded", deleted_at: expect.any(String) },
-      ]);
+      const continuity = spawnSync(process.execPath, ["scripts/continuity-worker.js"], {
+        cwd: process.cwd(),
+        env: { ...env, MEMEX_PLUGIN_ROOT: process.cwd() },
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      expect(continuity.status).toBe(0);
+      expect(continuity.stderr).toBe("");
+      const afterContinuity = initDatabase();
+      try {
+        expect(afterContinuity.prepare(
+          "SELECT COUNT(*) AS n FROM checkpoints WHERE session_id = ?",
+        ).get(SESSION_ID)).toEqual({ n: 0 });
+        expect(afterContinuity.prepare(
+          "SELECT COUNT(*) AS n FROM journal_streams WHERE session_id = ?",
+        ).get(SESSION_ID)).toEqual({ n: 0 });
+        expect(afterContinuity.prepare(
+          "SELECT COUNT(*) AS n FROM memory_jobs WHERE checkpoint_id IS NOT NULL",
+        ).get()).toEqual({ n: 0 });
+      } finally {
+        afterContinuity.close();
+      }
+      expect(fs.existsSync(path.join(tmp, "journals", SESSION_ID))).toBe(false);
     } finally {
       if (priorDb === undefined) delete process.env.MEMEX_DB_PATH;
       else process.env.MEMEX_DB_PATH = priorDb;

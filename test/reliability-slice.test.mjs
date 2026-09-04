@@ -95,6 +95,7 @@ test('interrupted extraction: expired lease recovers to pending without duplicat
   const ins = db.prepare(`INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, session_id)
     VALUES (?, '/tmp/p', '2026-08-26T01:00:00Z', 'q', 'a', '/tmp/p/x.jsonl', 1, 2, ?)`);
   ins.run('e1', 's-crash');
+  ins.run('e2', 's-crash');
   // Claimed then abandoned long ago -> lease expired -> recoverable pending.
   db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, claim_owner)
     VALUES ('s-crash', datetime('now','-3 hours'), -3, 0, 'dead-worker')`).run();
