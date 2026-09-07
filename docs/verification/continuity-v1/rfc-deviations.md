@@ -352,3 +352,12 @@ the historical Phase 0 observation remains in this record.
 - Alternatives considered: delete the aliases now; leave them undocumented.
 - Invariant evidence: `docs/GUIDE.md` §15 lists the surfaces; `test/codex-slice.test.mjs`, `test/session-end-*.test.ts` and `test/lifecycle-slice.test.mjs` pin their behavior; the F2 smoke matrix passed unchanged.
 - Reversal condition/trade-off: remove in a documented breaking release after installed callers migrate.
+
+## D-038 — Sequence coverage and reserved work context (schema v7)
+
+- RFC section/invariant: §6 Work Capsule, §7 capture/queue, §11.2 Hot Evidence, §12.5 rehydration; CONTIGUOUS CURSOR, RESIDENCY, PRIVACY.
+- Actual choice: the scalar Capsule checkpoint remains trigger provenance. Immutable workstream evidence uses a device-local SQLite sequence, fixed targets and bounded pages; each successful page commits projection/cursor/lease state atomically. Stop/byte scheduling uses capture insertion order across sessions. Hot Evidence uses its own sequence because content-hash/TTL items differ from Capsule generation fragments; only emitted prefixes advance the session/epoch cursor. Rehydration reserves bounded work context before corrections. Capture and block verification stream through 4MiB buffers.
+- Reason: alternating sessions replayed old Capsule input and suppressed sibling scheduling; correction pressure could omit both Capsule and baton; timestamp reads skipped unrendered Hot Evidence; a delta above 64MiB repeatedly failed before progress.
+- Contracts and migration: [SCHEMA.md](../../SCHEMA.md#sequence-cursors-schema-v7), [CONVERSATION-LIFECYCLE.md](../../CONVERSATION-LIFECYCLE.md), [RETRIEVAL-AND-CONTEXT.md](../../RETRIEVAL-AND-CONTEXT.md). v6 current snapshots replay once while the old Capsule remains until a new projection commits; old worker leases are fenced. Historical overwritten generations are not claimed to be recovered. Source replacement epochs have distinct indexed exchange/tool IDs.
+- Verification owners: `test/continuity-evidence.test.ts`, `test/continuity-rehydration-budget.test.ts`, `test/continuity-hot-cursor.test.ts`, `test/continuity-capture-streaming.test.ts`. Release/gate results belong to the receipt for the actual committed candidate, not to the earlier v1 receipts.
+- Trade-off: local snapshot storage grows with retained generations. Model calls and post-commit stdout delivery remain retryable/at-least-once mechanisms, not exactly-once claims. Locked RFC files and historical gate observations remain unchanged.

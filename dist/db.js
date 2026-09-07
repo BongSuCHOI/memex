@@ -9,6 +9,7 @@ import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { appendExchangeEvidence } from "./continuity-evidence.js";
 export const VEC_INT8_SCALE = 127;
 /**
  * Authoritative vector dtype for vec_exchanges.
@@ -800,6 +801,7 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
                     : 0);
             }
         }
+        appendExchangeEvidence(db, exchange.id);
         return true;
     });
     // .immediate(): acquire the write lock at BEGIN, before any schema read.

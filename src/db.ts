@@ -18,6 +18,7 @@ import {
   exchangeContentHash,
 } from "./continuity-store.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { appendExchangeEvidence } from "./continuity-evidence.js";
 
 // === vec table dtype handling ===
 // int8 quantization: q = clamp(round(x*127)). e5 embeddings are L2-normalized
@@ -1033,6 +1034,7 @@ export function insertExchange(
         );
       }
     }
+    appendExchangeEvidence(db, exchange.id);
     return true;
   });
   // .immediate(): acquire the write lock at BEGIN, before any schema read.

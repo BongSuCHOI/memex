@@ -89,7 +89,7 @@ fingerprint tokenizer는 소문자·stopword 제거 뒤 한국어 token의 꼬�
 WORK NOW, WATCH, RECENT EVIDENCE)만 렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
 
 session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embedding`,
-`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`(Hot Evidence watermark),
+`informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`(retrieval 시각), `hot_evidence_cursor`,
 `watch_emitted_json`(WATCH/TRACE hint ledger). 새 session은 생성 시점의 `projects.memory_revision`을
 `memory_revision_seen`으로 시작합니다(resident가 없으므로 correct할 것이 없음).
 
@@ -104,7 +104,7 @@ session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embeddin
 | `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
 | `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; 같은 signature는 새 verified episode가 없으면 substantive prompt 5회 동안 반복하지 않음 |
 | `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 `trace_fact subject_key=… — N Chronicle event(s), latest …` pointer(전체 history 주입 금지). 같은 subject는 Chronicle이 바뀌지 않는 한 epoch 동안 반복하지 않음 |
-| `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 Hot Evidence만(자기 session 것은 이미 context에 있음), `last_retrieval_at` 이후 index된 것만. epoch 변경 시 watermark가 초기화되고 rehydration이 다시 stamp합니다 |
+| `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 미소비 Hot Evidence를 sequence 오름차순으로 조회합니다. 실제 출력한 prefix만 session/epoch cursor로 기록하며, query limit·budget에 남은 suffix는 다음 prompt에서 재시도합니다. epoch 변경·명시 rebind는 cursor를 0으로 초기화합니다 |
 | `[ASSISTANT CONTEXT-ONLY — NOT AUTHORITATIVE]` | current truth/correction이 없고 explicit memory intent일 때만 source-linked 과거 답변 1건 |
 
 예산: normal prompt target 700 / hard 1,000자(line 160자), resume/compact target 1,500 / hard 2,000자.
@@ -128,7 +128,9 @@ scalar revision을 seen 처리합니다.
 
 Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
 
-`SessionStart(compact)`는 semantic query를 실행하지 않습니다. 최신 Work Capsule을 우선하고, 없거나 `through_checkpoint_id`가 session latest checkpoint보다 오래됐으면 latest substantive user request·plan item·touched files·trusted test·unresolved error로 만든 deterministic tail baton을 함께 사용합니다. 여기에 이전 epoch carry candidate의 latest active revision만 더해 2,000자 이하 `additionalContext`를 만들고, 실제 포함한 revision을 새 epoch residency로 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
+`SessionStart(compact)`는 semantic query를 실행하지 않습니다. 전체 500~2,000자 budget의 최대 60% 안에서 Capsule 작업 맥락을 먼저 렌더링·예약하고, 나머지 공간에 correction/current truth를 넣습니다. 출력 순서는 correction 우선이지만 작업 맥락을 굶기지 않습니다. Capsule은 objective·next action·state·blocker 순서로 공간을 나눠 요약합니다. Capsule을 출력하지 못했거나 미소비 evidence/미완료 capture가 있으면 deterministic tail baton을 병합하며, stale Capsule은 작업 슬롯 절반을 baton에 남깁니다. Baton은 최근 user request·plan item·touched files·trusted test·unresolved error를 사용하고, 아직 indexed 정보가 없으면 label만 남깁니다. 실제 포함한 revision과 Hot Evidence prefix만 residency에 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
+
+미소비 sibling Hot Evidence 자체가 cheap gate trigger입니다. 짧은 acknowledgement/continuation도 vector 호출 없이 남은 항목을 전달합니다. Prompt의 receipt·fact residency·Hot Evidence cursor·gate 상태는 한 transaction에서 commit합니다. Cursor commit은 scope/epoch/기존 cursor와 출력 prefix의 생존을 검증하므로 purge·rebind race는 전체 bundle을 재시도 가능하게 남깁니다. Compact/resume도 timestamp 대신 실제 출력 sequence만 commit합니다. DB commit 이후 stdout 전송까지 exactly-once인 것은 아닙니다.
 
 Recent human과 learnable trusted repo/Git/test observation은 별도 Hot Evidence lane에서 TTL과 keyset
 cursor로 제한됩니다. 자동 context와 MCP 출력은 `[RECENT EVIDENCE — NOT YET DISTILLED]`로 표시하며

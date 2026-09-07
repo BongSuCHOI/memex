@@ -149,6 +149,7 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/continuity-store.ts` | additive schema v4, project/workspace/workstream/session identity, journal/session/Capsule/privacy-guard tables, immutable extraction targets/pages, checkpoint+outbox, lease/CAS, failed-visible accounting |
 | `src/continuity-identity.ts` | stable resolver, approved remote mapping, explicit link/split/rebind, subject promotion, project revision, Hot Evidence |
 | `src/continuity-core.ts` | hook payload/path/session-meta validation, serialized rolling journal, checkpoint identity, context epoch/residency, Capsule/tail baton, compact rehydration |
+| `src/continuity-evidence.ts` | immutable workstream evidence fragments, fixed-target Capsule pages, frontier CAS |
 | `src/continuity-worker.ts` | P0 hash-verified prefix ingest와 P1 typed Capsule update; partition ordering/retry/CAS |
 | `src/archive-ingestion.ts` | canonical desired-set ingest와 monotonic prefix ingest 분리 |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |

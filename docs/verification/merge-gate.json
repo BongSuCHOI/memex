@@ -1,129 +1,170 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-03T06:55:43Z",
+  "recordedAt": "2026-09-07T05:40:01.745166+00:00",
   "environment": {
-    "codexCli": "codex-cli 0.150.1",
+    "codexCli": "codex-cli 0.153.4",
     "node": "v26.0.0",
-    "platform": "darwin arm64"
+    "platform": "darwin arm64",
+    "isolation": "Fresh temporary CODEX_HOME/MEMEX_HOME for installer, marketplace, package and lifecycle E2E; network and Unix sockets allowed for the final required gate"
   },
   "candidate": {
     "repository": "memex",
-    "branch": "codex/fact-extraction-context-grounding-v030",
-    "codeSha": "18fd60f6fedde42595e721c19c9a7380d8c7e364",
-    "productionEvidenceSha": "8358d9c0dce943a7cd1ff36dbe0d73692f236d68",
-    "note": "candidate.codeSha restores the complete, already-gated release tree byte-for-byte from merge f8e6702 so the full fact-extraction change is presented in one PR; no product, prompt, fixture, generated, or public-file content changed during reconstruction. The final required, installer, marketplace, package-runtime, and lifecycle gates ran on the identical pre-receipt release tree at 621d226 for release 0.3.0. The browser result is reused from fdd3408 because the Web UI and server implementation did not change. This receipt-only commit follows."
+    "branch": "codex/continuity-sequence-v7",
+    "codeSha": "2c18f66838955e1cf9b65d3ce66f1b8203c7346f",
+    "productionEvidenceSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
+    "packageVersion": "0.4.1",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "note": "All nine required gates ran on this committed clean SHA. Only this receipt is committed afterward. Final source-archive package verification is reported separately with the published release to avoid a self-referential artifact hash."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
     {
       "name": "typecheck",
       "command": "npm run typecheck",
-      "status": "PASS"
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:36:40.872425+00:00",
+      "durationSeconds": 3.05,
+      "logSha256": "6791526fda8dcd6e9e3d39446d2abc9b8dc83b8219bf383d79a2ddc92948d2e8",
+      "observed": "TypeScript noEmit exit 0"
     },
     {
       "name": "build",
       "command": "npm run build",
-      "status": "PASS"
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:36:43.924326+00:00",
+      "durationSeconds": 3.23,
+      "logSha256": "f227a3b5c7c7a89c1dac1c496bebca2b34426f400c551ee11799cd619af4826b",
+      "observed": "tsc and MCP bundle exit 0; tracked artifacts unchanged"
     },
     {
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "observed": "70 files / 691 tests passed"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:36:47.150597+00:00",
+      "durationSeconds": 18.32,
+      "logSha256": "4483f33843db2b6024ad68e5ebf119f03157bf77f8f4280f17149f5b081a987c",
+      "observed": "84 files / 904 tests passed"
     },
     {
       "name": "codex-slice",
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
-      "observed": "24 pass / 0 fail"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:37:05.472756+00:00",
+      "durationSeconds": 3.87,
+      "logSha256": "c00f6469f09b763b73da9e6c7af24395b6bc9029fe6426a03d8e4ae328cd0596",
+      "observed": "26 pass / 0 fail"
     },
     {
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
-      "observed": "93 pass / 0 fail in the required isolated run that permits the Unix inject-daemon socket"
-    },
-    {
-      "name": "fact-extraction-legacy-17",
-      "command": "npm run eval:fact-extraction -- --baseline docs/verification/fact-extraction-baseline.json --out .fact-extraction-eval/final-17-8358d9c.json",
-      "status": "PASS",
-      "evidenceSha256": "707b66e05851164da1395acce8f9092981130fa8a0bef60b85fa1f6abef25fcf",
-      "observed": "clean productionEvidenceSha; fixture f45b4f0a...5bcd6; 17/17, candidate/accepted/matched/observed 11/11/11/11, verifier rejection 0, false positives 0, self-amplification leakage 0, execution errors 0"
-    },
-    {
-      "name": "fact-extraction-p2-composite",
-      "command": "one full P2 evaluation plus same-productionEvidenceSha targeted diagnostics; no full-run redraw",
-      "status": "PASS-WITH-NOTES",
-      "evidence": {
-        "fullSha256": "ec89ab9ce3b7b7228bce8e4512dfacaa009b31875ef161e69d061494c56dda08",
-        "priorFailureSetTargetedSha256": "8807e134484d6547c59122bdd9bc55509f5d86805e3caacec02c014f7c5a424d",
-        "l6TargetedSha256": "a29dae6e156b4c8053b5873b372c6294e4bed33ad99fa84d467489391f82b669"
-      },
-      "observed": "full evaluation 21/23. Failed cases: lg2 after one semantic verifier rejection, and l6 after truncated malformed verifier JSON; both failed closed. At identical code/prompt/fixture SHA, the prior failure-set targeted run including lg2 passed 3/3 and l6 targeted passed 1/1 with verifier ENTAILED. Hard false positives, authority leakage, and self-amplification leakage remained 0. This is not reported as a 23/23 full run, and the full P2 run was not repeated."
-    },
-    {
-      "name": "archive-shadow-baseline-v2",
-      "command": "same frozen latest-three eligible archived user sessions, evaluated against an isolated read-only database without replacing IDs",
-      "status": "PASS-WITH-NOTES",
-      "evidence": {
-        "selectionReceiptSha256": "0874a5f9d970836854b269bd3da0d1030a10dbabc1a15afa25d3e73fdeb858c9",
-        "rawReportSha256": "7db190ca24aaf999637ad9473bf341fbe0ca44cf349ecb56fb7ad8f1657fc525",
-        "manualReceiptSha256": "19b55bf4c3e077aa6da953fcd90aacc26b1a8cc03f6835773ca3c4334a67c0f5",
-        "missTaxonomyReceiptSha256": "6460c22fc0df6bbec7659a4f302203f1f9954ad8e45b0de6a27fb1da35b05622"
-      },
-      "observed": "new non-comparable baseline; 36 eligible sessions, fixed latest 3 before content review, 40 human exchanges, candidate/accepted 32/23, execution errors 0; manual KEEP 19, DROP-noise 4, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/AMBIGUOUS 0; accepted local-only/long-range-resolved/context-noise 22/1/0; miss authority forms direct explicit project requirement 6, human-ratified project decision 1, verified tool 0; generator/verifier calls 13/12; input/output/cache tokens 750361/17680/341760; latency 441234ms; database SHA-256 unchanged. Per-miss generator/retrieval/verifier attribution is NOT_PROVEN because rejected model payloads are not retained."
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:37:09.342169+00:00",
+      "durationSeconds": 8.79,
+      "logSha256": "6f27850771dad8289951f8bc0d6430f008e0c770b37db3118e61e48b7e34bdf2",
+      "observed": "96 pass / 0 fail"
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
-      "observed": "dry-run no-mutation, real install with 9 MCP tools, doctor, first sync, idempotent rerun, removal, and user-environment isolation all passed"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:37:18.128099+00:00",
+      "durationSeconds": 8.21,
+      "logSha256": "57cda175740c4e551611dcca85e1c08ced03aed1d1fe16b186d62a18f1ed332e",
+      "observed": "Isolated install, idempotence, 9 MCP tools, doctor, first sync, removal and user-environment isolation passed"
     },
     {
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
-      "observed": "isolated marketplace install exposed version 0.3.0, 3 skills, and 3 hook events; cleanup PASS"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:37:26.338035+00:00",
+      "durationSeconds": 0.41,
+      "logSha256": "feb636eb95aa09738e355cfeb7b4f59794457ccd616665210199c168515b0025",
+      "observed": "Plugin 0.4.1; 3 skills; 7 lifecycle events; cleanup passed"
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "observed": "memex-0.3.0.tgz, 191 files, 766117 packed bytes / 3032736 unpacked bytes, 9 MCP tools, setup --dry-run, sync, backfill all, status, and UserPromptSubmit valid-or-empty contract passed"
-    },
-    {
-      "name": "web-ui-browser-e2e",
-      "command": "node scripts/web-ui-browser-e2e.mjs",
-      "status": "PASS",
-      "observed": "reused fdd3408 Google Chrome headless observation at 1440x900 because UI/server code is unchanged through candidate.codeSha; Fact Detail rendered the authoritative-provenance/non-authoritative-context heading, context_only authority, assistant_context dependency kind, and context exchange ID; horizontal overflow false and runtime errors 0"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:37:26.748667+00:00",
+      "durationSeconds": 84.44,
+      "logSha256": "70c0134566b23b55f1841821e25d32125e379f8ca60751b89534950ffbac8df2",
+      "observed": "memex-0.4.1.tgz; 231 files; 1108605 packed bytes / 4440095 unpacked bytes; 9 MCP tools; onboarding and prompt/final-fence hooks passed"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
-      "observed": "9/9 steps passed against isolated plugin version 0.3.0; plugin registration, owned hooks, temp data, workers, inject sockets, listeners, and user-environment isolation cleanup checks all passed"
+      "exitCode": 0,
+      "startedAt": "2026-09-07T05:38:51.191010+00:00",
+      "durationSeconds": 8.25,
+      "logSha256": "4cfd0735dbdbb06ba7ed96991483b74fdfcc05698d5020c980ff4ecf4463d260",
+      "observed": "Offline 9/9; owned workers/sockets/listeners zero and user environment isolated"
     }
   ],
+  "regressionCoverage": {
+    "workContextBudget": "Fresh/stale/oversized/empty/missing Capsule under 500 and 2000 character pressure",
+    "capsuleSequence": "Twenty alternating A/C updates; immutable generations; oversized fragments; fixed target and late input; sixth sibling Stop; retry/lease/purge/rebind CAS; v6 atomic replay; immutable page authority",
+    "hotEvidence": "Rendered eligible prefix only; budget/query suffix retained; insert/purge during await; compact and rebind cursor behavior",
+    "capture": "64 MiB + 1 byte and 256 MiB source; allocations bounded to 4 MiB; hashes, partial/oversized lines, crash seams, source mutation and replacement-epoch ingestion",
+    "capsuleOutputSchema": "Native object arrays only for Capsule, unchanged opt-out behavior for other callers, schema retained across retries, per-call file isolation/cleanup, exact local revision/provenance/length guards and rolling state metadata"
+  },
   "hardSafety": {
-    "assistantOnlyPersistedFact": 0,
-    "recallOnlyPersistedFact": 0,
-    "contextOnlyAuthorityLeakage": 0,
-    "preWatermarkAuthorityLeakage": 0,
-    "selfAmplificationLeakage": 0,
-    "shadowDbMutation": 0
+    "evidence": "Required automated tests and isolated E2E at candidate.codeSha",
+    "sourceRollouts": "Synthetic isolated fixtures only; production source rollouts not modified",
+    "privacyAndScope": "Purge/rebind/lease/epoch regression tests passed",
+    "liveModelAuthorityQuality": "Prior bounded synthetic cases only, attributed under reusedModelEvidence; not rerun at candidate.codeSha."
   },
   "archiveShadow": {
-    "baseline": "archive-shadow-baseline-v2",
-    "historicalDatasetReproduced": false,
-    "historicalCountsDirectlyComparable": false,
-    "selectionFrozenBeforeContentReview": true,
-    "sessionsReplacedAfterResults": false,
-    "privateArtifactsContainExactIds": true,
-    "knownMissTaxonomyRecorded": true,
-    "systematicAuthorityClassFailureObserved": false,
-    "systematicWorkflowAdoptionVerifierFailureObserved": false,
-    "perMissPipelineLayerAttribution": "NOT_PROVEN",
-    "verdict": "PASS-WITH-NOTES"
+    "status": "NOT_RUN",
+    "note": "Production archive evaluation and backfill were not run for this patch."
   },
-  "releaseConclusion": "PASS-WITH-NOTES: release 0.3.0 deterministic repository, installer, marketplace, package-runtime, and lifecycle gates passed at candidate.codeSha; the unchanged Web UI retains the preceding browser PASS; all hard-safety conditions passed. Notes preserve observed evidence without redrawing model runs: legacy 17-case was 17/17; P2 full was 21/23 with same-SHA targeted PASS for lg2 and l6; the frozen archive baseline observed four semantic duplicates and at least seven important miss clusters. The archive run accepted 16 direct/explicit facts and seven context-resolved ratifications, so no systematic authority-class or workflow-adoption verifier failure was observed. Exact per-miss generator/retrieval/verifier attribution remains NOT_PROVEN rather than inferred."
+  "reusedModelEvidence": {
+    "status": "PASS",
+    "evidenceMode": "REUSED_NOT_RERUN",
+    "codeSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
+    "receipt": "docs/verification/merge-gate-2026-09-07-capsule-schema.json",
+    "evidence": "docs/verification/capsule-output-schema-evaluation.json",
+    "evidenceSha256": "80fa0d4812aefb2c559f5c09c6c34e25a1fe5f0db82a1e7b1f7102971d553727",
+    "unchangedSourceFiles": [
+      "src/continuity-core.ts",
+      "src/continuity-worker.ts",
+      "src/continuity-evidence.ts",
+      "src/codex-exec.ts",
+      "src/llm.ts"
+    ],
+    "observed": "Prior clean-SHA real Luna default-worker long fixture: 31996 characters / 24 exchanges / 3 pages, plus one revision-carry page, completed without retries. Supplemental precommit first-call probe was 5/5. Intermediate failure and controls remain in the evidence. No live model rerun is claimed at this release code SHA."
+  },
+  "cleanup": {
+    "unusedImportsRemoved": 3,
+    "orphanGeneratedModules": 0,
+    "missingCurrentDocFileLinks": 0,
+    "compatibility": "Released positional parameters, optional reader filters and executable aliases retained; no breaking removal.",
+    "testResources": "Offline lifecycle cleanup verified owned workers, inject sockets and test listeners zero; temporary plugin/hooks/data removed.",
+    "historicalReceipts": "Previous Capsule schema receipt preserved byte for byte as a0d2c55122fad6b1393f182cc16bb55c0055d7d94410e984de1c35d387336f48."
+  },
+  "historicalEvidence": {
+    "receipt": "docs/verification/merge-gate-2026-09-03.json",
+    "sha256": "32a7f956a84fd31931ededdaecdbd9cf4e5d3b4696bde306536e278a060743c2",
+    "preservedByteForByte": true,
+    "lockedRfcSha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a",
+    "sequenceReceipt": "docs/verification/merge-gate-2026-09-07-sequence.json",
+    "sequenceReceiptSha256": "46eb8629690c4e35c5c5d894a9cbbc54c960b4d35520c2cd9d188d3fb1adc108"
+  },
+  "limitations": [
+    "The authenticated installed-lifecycle tier was not rerun; the fresh lifecycle gate is the offline tier.",
+    "Real Luna observations are bounded synthetic evidence at their original SHA; no corpus-wide completeness or production failure-rate claim.",
+    "Historical extraction quality limitations remain in docs/verification/merge-gate-2026-09-03.json and were not reevaluated.",
+    "Schema 7 replays surviving evidence but cannot reconstruct already overwritten generations; older writers must not share the migrated database.",
+    "Package byte counts describe candidate.codeSha before this receipt-only commit. The final release source archive is separately exercised before publication."
+  ],
+  "releaseConclusion": "PASS-WITH-NOTES: all nine required gates passed on the clean 0.4.1 code candidate; unchanged Capsule model implementation reuses explicitly attributed synthetic real-model evidence. Historical model quality limits are not erased. Publication requires the final source-archive package check."
 }

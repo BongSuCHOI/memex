@@ -6,7 +6,6 @@
  * from ledger/table state, not from file existence or live PIDs.
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { openReadDb } from "./db.js";

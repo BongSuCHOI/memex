@@ -104,9 +104,7 @@ claim마다 `lease_generation`이 증가합니다. Completion은 running state, 
 모두 일치할 때만 성공합니다. Partial page 성공은 job을 pending으로 되돌리고 attempts를 reset합니다.
 Crash/restart 뒤 `pending|retry|running with expired lease|dead`는 durable query로 식별할 수 있습니다.
 동일 partition은 priority lane(P0 `capture_index` 100 > P1 `capsule_update` 80 > P2 `fact_extract` 20)
-순서로 먼저, 같은 lane 안에서는 checkpoint ordinal 순서로만 claim됩니다. Capture checkpoint ordinal은
-journal byte 기준이고 extraction checkpoint ordinal은 exchange rowid 기준이라 lane을 넘어 비교하지
-않습니다(Final Integration D-034). Semantic target이 다른 idempotency-key 충돌은 기존 row 재사용 대신
+순서로 먼저 claim됩니다. Session partition의 capture/extraction lane은 각각 checkpoint ordinal을 사용하지만, 여러 session이 생산하는 Capsule lane은 job 삽입 순서를 사용합니다. Capture checkpoint ordinal은 journal byte 기준이고 extraction checkpoint ordinal은 exchange rowid 기준이라 lane을 넘어 비교하지 않습니다(Final Integration D-034). Semantic target이 다른 idempotency-key 충돌은 기존 row 재사용 대신
 전체 transaction을 rollback합니다.
 
 Prefix ingest는 `ingestPrefixExchanges()`만 사용하며 desired-set delete를 수행하지 않습니다. Full
@@ -122,9 +120,19 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 
 `session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
 
-`work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation CAS와 capsule job의 lease completion은 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. 최신 checkpoint가 Capsule의 `through_checkpoint_id`보다 앞서 있으면 compact/resume bundle에 deterministic tail baton도 함께 들어갑니다.
+`work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation·frontier revision·lease CAS와 Capsule/cursor/job write는 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. `through_checkpoint_id`는 trigger/provenance이고 다중 세션 coverage는 아래 sequence frontier가 결정합니다. 미소비 evidence 또는 미완료 capture가 있으면 compact/resume에 deterministic tail baton을 함께 넣습니다.
 
 Capture checkpoint마다 P0 `capture_index` job이 있고, P1 `capsule_update`는 Stop/Interrupt boundary 6개 또는 accumulated 8KiB, PreCompact, SessionEnd에서 coalesce됩니다. Checkpoint와 outbox insert는 atomic입니다. Capture gap은 `open|recovered|purged`로 명시되며 silent completion으로 계산하지 않습니다. Retry가 소진된 checkpoint는 `dead-letter`, 관련 Capsule state는 `failed-visible`이고, dependency가 죽은 Capsule job을 pending으로 남기지 않습니다.
+
+### Sequence cursors (schema v7)
+
+- `workstream_evidence.seq`는 SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`인 device-local 순서입니다. Workstream별로 필터링한 순서를 소비하므로 다른 stream·privacy deletion의 빈 번호는 누락이 아닙니다. `(workstream_id, exchange_id, content_generation, part)`는 unique입니다. Exchange/vector/tool write와 같은 transaction에서 human·assistant-context·trusted-tool 본문 snapshot을 고정합니다. 새 generation은 새 입력이고, 동일 generation 재index는 추가하지 않습니다. 긴 text는 최대 3,000 UTF-16 code unit fragment로 나눠 원문 suffix를 보존합니다.
+- `capsule_frontiers(workstream_id, through_seq, revision)`은 성공 처리 위치와 invalidation revision을 분리합니다. `capsule_checkpoint_state.target_seq/target_revision`은 첫 페이지에서 고정되며 새 evidence가 도착해도 target을 늘리지 않습니다. 삭제·scope 이동은 revision을 올려 in-flight CAS를 차단합니다. 이미 소비한 evidence를 삭제하면 Capsule을 지우고 cursor를 0으로 되돌려 살아 있는 evidence로 rebuild합니다. Coverage가 불명인 구버전 Capsule도 같은 stream의 evidence 삭제 시 제거합니다. 그 외 미소비 evidence 삭제는 기존 Capsule을 지우지 않습니다.
+- P1 페이지는 최대 8개 fragment이며 JSON payload 길이 합계는 24,000 UTF-16 code unit 이하입니다. Fragment `textOffset`도 UTF-16 code unit 기준입니다. 실패는 cursor를 전진시키지 않습니다. 성공한 partial page는 Capsule generation과 cursor를 함께 commit하고 job을 pending으로 되돌리며 attempts를 reset합니다. 고정 target을 drain한 후 새 evidence는 다음 경계/job에서 처리하며, 완료된 job을 다시 열면 target을 초기화합니다. 모델 호출은 재시도로 반복될 수 있고, exactly-once 호출을 주장하지 않습니다.
+- `hot_evidence_sequence(seq, evidence_id)`도 never-reused local sequence입니다. Hot Evidence는 content-hash/TTL 단위이므로 Capsule의 generation fragment와 독립된 sequence를 사용합니다. `session_memory_state.hot_evidence_cursor`는 session/context epoch/workstream에 귀속합니다. 실제 출력된 eligible prefix만 전진하고, 만료·자기 session·삭제 행은 조회에서 제외합니다. Scope/content 이동은 새 sequence를 발급합니다. 자세한 출력 규칙은 [retrieval](RETRIEVAL-AND-CONTEXT.md#5-selection-규칙)을 따릅니다.
+- v6 migration은 scalar checkpoint로 모든 session의 과거 coverage를 추정하지 않습니다. 기존 Capsule을 유지한 채 현재 남은 exchange generation을 sequence로 backfill하고 cursor 0부터 한 번 replay합니다. 과거에 이미 덮어쓴 generation은 복원했다고 주장하지 않습니다. 기존 in-flight Capsule lease를 fencing하고 policy `continuity-capsule-v2`로 pending 전환합니다. 새로운 projection의 첫 성공 commit부터 기존 Capsule을 대체합니다. Checkpoint/journal이 없는 stream은 다음 capture 경계가 생길 때 처리합니다.
+- 이 state는 전부 local-derived입니다. Protocol v4 export 파일은 늘리지 않습니다. Locked v1 RFC의 scalar frontier를 대체하는 as-built amendment이며 이전 gate receipt의 관측값은 변경하지 않습니다.
+- Capsule의 verified source 판정은 실제 page의 immutable human/trusted-tool payload를 사용합니다. 같은 exchange의 최신 행이나 앞 페이지의 human text가 현재 assistant-only fragment의 authority를 대신하지 않습니다.
 
 ### Provenance
 
@@ -264,8 +272,7 @@ fact/event가 아닙니다(allowlist metric은 `TELEMETRY_METRICS`).
 
 `session_memory_state`는 Phase 5 recall gate state를 additive column으로 가집니다(schema v6):
 `topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`,
-`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. `last_retrieval_at`은 Hot Evidence
-residency watermark를 겸합니다(epoch 변경 시 NULL, SessionStart rehydration과 prompt path retrieval이 stamp).
+`last_retrieval_at`, `resident_bundle_hash`, `watch_emitted_json`. Schema v7은 `hot_evidence_cursor`를 추가합니다. `last_retrieval_at`은 retrieval 시각 기록이며 Hot Evidence 누락/중복 판단에는 사용하지 않습니다.
 `watch_emitted_json`은 hint ledger(`watch:<signature>`/`trace:<subject>` key, epoch, substantive prompt
 counter, change token)입니다. `resident_bundle_hash`는 RFC §12.2 예약 column이며 현재 쓰지 않습니다.
 새 session row의 `memory_revision_seen`은 생성 시점의 project revision입니다.

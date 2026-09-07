@@ -6,14 +6,51 @@ import { initDatabase } from "./db.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookEvent } from "./observe-hook-event.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
-import { bindSessionWorkstream, markSessionProjectRevisionSeen, projectRevision, readHotEvidence, resolveProjectWorkspace, } from "./continuity-identity.js";
+import { CAPSULE_POLICY_VERSION, capsulePageIsCurrent, commitCapsulePage } from "./continuity-evidence.js";
+import { bindSessionWorkstream, commitHotEvidenceCursor, markSessionProjectRevisionSeen, projectRevision, readHotEvidence, resolveProjectWorkspace, } from "./continuity-identity.js";
 export const CONTINUITY_CAPTURE_POLICY_VERSION = "continuity-capture-v1";
-export const CAPSULE_POLICY_VERSION = "continuity-capsule-v1";
+export { CAPSULE_POLICY_VERSION } from "./continuity-evidence.js";
 export const CONTINUITY_PARSER_VERSION = 2;
-const MAX_CAPTURE_DELTA_BYTES = 64 * 1024 * 1024;
+export const CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 const SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 const MAX_CAPSULE_CHARS = 2_000;
 const MAX_ARRAY_ITEMS = 8;
+const capsuleStringListSchema = { type: "array", items: { type: "string" } };
+const capsuleEvidenceListSchema = {
+    type: "array",
+    items: {
+        type: "object",
+        properties: { text: { type: "string" }, sourceExchangeIds: capsuleStringListSchema },
+        required: ["text", "sourceExchangeIds"],
+        additionalProperties: false,
+    },
+};
+const capsuleOutputProperties = {
+    objective: { type: "string" },
+    currentState: {
+        type: "string",
+        description: "Merged current state of the whole workstream. Carry forward still-applicable decisions and constraints from previousCapsule, including specific values needed for continuation; revise them when the current evidence changes or resolves them.",
+    },
+    verifiedProgress: capsuleEvidenceListSchema,
+    hypotheses: capsuleEvidenceListSchema,
+    blockers: capsuleStringListSchema,
+    openQuestions: capsuleStringListSchema,
+    nextActions: capsuleStringListSchema,
+    touchedAreas: capsuleStringListSchema,
+    // Encode member types here; exact [factId, semantic, lifecycle] tuple
+    // positions and revision identity are still checked by the local validator.
+    carryFactRevisions: {
+        type: "array", items: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+    },
+    sourceExchangeIds: capsuleStringListSchema,
+};
+/** Native generation shape only; provenance, bounds and CAS remain local. */
+export const WORK_CAPSULE_OUTPUT_SCHEMA = {
+    type: "object",
+    properties: capsuleOutputProperties,
+    required: Object.keys(capsuleOutputProperties),
+    additionalProperties: false,
+};
 function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
@@ -263,6 +300,93 @@ function checkpointOrdinal(streamEpoch, throughByte) {
         throw new Error("checkpoint ordinal overflow");
     return ordinal;
 }
+/** Preserve Stop/byte coalescing using database capture order, never session ordinals. */
+export function scheduleCapsuleForCheckpoint(db, checkpointId, now = new Date().toISOString(), force = false) {
+    const tx = db.transaction(() => {
+        const checkpoint = db.prepare("SELECT workstream_id, kind FROM checkpoints WHERE checkpoint_id = ?")
+            .get(checkpointId);
+        if (!checkpoint?.workstream_id || checkpoint.kind === "extraction")
+            return;
+        const capsuleJobId = stableId("capsule-job", checkpointId);
+        const lastCapsuleBoundary = db.prepare(`
+      SELECT c.rowid AS capture_order
+      FROM capsule_checkpoint_state s
+      JOIN checkpoints c ON c.checkpoint_id = s.checkpoint_id
+      WHERE s.workstream_id = ?
+      ORDER BY c.rowid DESC LIMIT 1
+    `).get(checkpoint.workstream_id);
+        const pendingCapsule = db.prepare(`
+      SELECT 1 FROM memory_jobs
+      WHERE kind = 'capsule_update' AND partition_key = ?
+        AND state IN ('pending','running','retry')
+      LIMIT 1
+    `).get(`workstream:${checkpoint.workstream_id}`);
+        const accumulated = db.prepare(`
+      SELECT COUNT(*) AS boundaries,
+             COALESCE(SUM(CASE
+               WHEN through_byte > from_byte THEN through_byte - from_byte ELSE 0 END), 0) AS bytes
+      FROM checkpoints
+      WHERE workstream_id = ? AND rowid > ?
+        AND rowid <= (SELECT rowid FROM checkpoints WHERE checkpoint_id = ?)
+        AND kind IN ('stop','interrupt')
+    `).get(checkpoint.workstream_id, lastCapsuleBoundary?.capture_order ?? -1, checkpointId);
+        const forceCapsule = force || checkpoint.kind === "precompact" || checkpoint.kind === "final";
+        const pendingFence = db.prepare(`SELECT 1 FROM checkpoints
+      WHERE workstream_id = ? AND rowid > ? AND kind IN ('precompact','final')
+        AND rowid <= (SELECT rowid FROM checkpoints WHERE checkpoint_id = ?) LIMIT 1`)
+            .get(checkpoint.workstream_id, lastCapsuleBoundary?.capture_order ?? -1, checkpointId);
+        const scheduleCapsule = !pendingCapsule && (forceCapsule || pendingFence || (accumulated.boundaries >= 6 || accumulated.bytes >= 8 * 1024));
+        if (scheduleCapsule) {
+            db.prepare("INSERT OR IGNORE INTO capsule_frontiers(workstream_id) VALUES (?)").run(checkpoint.workstream_id);
+            const currentGeneration = db.prepare(`
+        SELECT generation FROM work_capsules WHERE workstream_id = ?
+      `).get(checkpoint.workstream_id)?.generation ?? 0;
+            db.prepare(`
+        INSERT OR IGNORE INTO capsule_checkpoint_state
+          (checkpoint_id, workstream_id, state, expected_generation, updated_at)
+        VALUES (?, ?, 'pending', ?, ?)
+      `).run(checkpointId, checkpoint.workstream_id, currentGeneration, now);
+            db.prepare(`
+        INSERT OR IGNORE INTO memory_jobs
+          (job_id, kind, partition_key, checkpoint_id, policy_version, priority,
+           state, available_at, max_attempts, idempotency_key, created_at, updated_at)
+        VALUES (?, 'capsule_update', ?, ?, ?, 80, 'pending', ?, 5, ?, ?, ?)
+      `).run(capsuleJobId, `workstream:${checkpoint.workstream_id}`, checkpointId, CAPSULE_POLICY_VERSION, now, `capsule:${checkpointId}`, now, now);
+            // A migrated or invalidated projection can require a new bounded drain
+            // even when its last trigger checkpoint already completed. Dead jobs stay
+            // failed-visible; this is not an unbounded retry path.
+            const reopened = db.prepare(`UPDATE memory_jobs
+        SET state = 'pending', attempts = 0, available_at = ?, updated_at = ?
+        WHERE job_id = ? AND state = 'completed' AND EXISTS (
+          SELECT 1 FROM workstream_evidence e JOIN capsule_frontiers f USING(workstream_id)
+          WHERE e.workstream_id = ? AND e.seq > f.through_seq
+        )`).run(now, now, capsuleJobId, checkpoint.workstream_id);
+            if (reopened.changes)
+                db.prepare(`UPDATE capsule_checkpoint_state
+        SET state = 'pending', target_seq = NULL, target_revision = NULL, updated_at = ?
+        WHERE checkpoint_id = ?`).run(now, checkpointId);
+        }
+    });
+    db.inTransaction ? tx() : tx.immediate();
+}
+export function scheduleCapsuleBacklog(db) {
+    const streams = db.prepare(`
+    SELECT f.workstream_id, f.revision, f.through_seq,
+      EXISTS (SELECT 1 FROM work_capsules w WHERE w.workstream_id = f.workstream_id) AS has_capsule,
+      (SELECT c.checkpoint_id FROM checkpoints c WHERE c.workstream_id = f.workstream_id
+        AND c.kind <> 'extraction' ORDER BY c.rowid DESC LIMIT 1) AS checkpoint_id
+    FROM capsule_frontiers f
+    WHERE EXISTS (SELECT 1 FROM workstream_evidence e
+      WHERE e.workstream_id = f.workstream_id AND e.seq > f.through_seq)
+      AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.partition_key = 'workstream:' || f.workstream_id
+        AND j.kind = 'capsule_update' AND j.state IN ('pending','running','retry'))
+    ORDER BY f.workstream_id LIMIT 32
+  `).all();
+    for (const stream of streams) {
+        if (stream.checkpoint_id)
+            scheduleCapsuleForCheckpoint(db, stream.checkpoint_id, undefined, stream.through_seq === 0 && (stream.revision > 0 || !!stream.has_capsule));
+    }
+}
 export function captureTranscriptPrefix(db, input) {
     const capture = db.transaction(() => captureTranscriptPrefixInTransaction(db, input));
     try {
@@ -361,20 +485,8 @@ function captureTranscriptPrefixInTransaction(db, input) {
     const journalByteEnd = previous && !replaced ? Number(previous.journal_byte_end) : 0;
     const priorPrefixHash = previous && !replaced ? String(previous.prefix_hash) : "";
     const deltaSize = source.stat.size - copiedByteEnd;
-    if (deltaSize < 0 || deltaSize > MAX_CAPTURE_DELTA_BYTES) {
-        const reason = deltaSize < 0
-            ? "source transcript rewound unexpectedly"
-            : `capture delta exceeds ${MAX_CAPTURE_DELTA_BYTES} bytes`;
-        recordCaptureGap(db, {
-            sessionId: input.sessionId,
-            streamEpoch,
-            sourcePath: source.realpath,
-            eventKind: input.kind,
-            reason,
-            now,
-        });
-        throw new Error(reason);
-    }
+    if (deltaSize < 0)
+        throw new Error("source transcript rewound unexpectedly");
     if (journalDamaged) {
         recordCaptureGap(db, {
             sessionId: input.sessionId,
@@ -385,96 +497,90 @@ function captureTranscriptPrefixInTransaction(db, input) {
             now,
         });
     }
+    const journalPath = journalFile(input.sessionId, streamEpoch);
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
     const fd = fs.openSync(source.realpath, "r");
-    let delta = Buffer.alloc(deltaSize);
-    let sourceAfterRead;
+    let sourceThroughByte = copiedByteEnd;
     let sourceGuardStart = 0;
     let sourceGuardHash = sha256(Buffer.alloc(0));
+    let addedLines = 0;
+    const segmentDigest = createHash("sha256");
+    const prefixDigest = createHash("sha256").update(priorPrefixHash, "utf8").update(Buffer.from([0]));
     try {
-        let offset = 0;
-        while (offset < delta.length) {
-            const read = fs.readSync(fd, delta, offset, delta.length - offset, copiedByteEnd + offset);
-            if (read === 0)
+        const buffer = Buffer.alloc(Math.min(CAPTURE_CHUNK_BYTES, Math.max(1, deltaSize)));
+        // Find the fixed fence's last complete JSONL line without retaining a
+        // potentially enormous incomplete record in memory.
+        for (let end = source.stat.size; end > copiedByteEnd;) {
+            const start = Math.max(copiedByteEnd, end - buffer.length);
+            const length = end - start;
+            if (fs.readSync(fd, buffer, 0, length, start) !== length)
+                throw new Error("source transcript changed during capture");
+            const newline = buffer.subarray(0, length).lastIndexOf(0x0a);
+            if (newline >= 0) {
+                sourceThroughByte = start + newline + 1;
                 break;
-            offset += read;
+            }
+            end = start;
         }
-        delta = delta.subarray(0, offset);
-        sourceAfterRead = fs.fstatSync(fd);
+        const journalFd = fs.openSync(journalPath, "a+");
+        try {
+            const currentSize = fs.fstatSync(journalFd).size;
+            if (currentSize < journalByteEnd)
+                throw new Error("journal file is shorter than committed boundary");
+            // Only the uncommitted tail is disposable. A failure anywhere below
+            // leaves the committed DB boundary intact for an exact retry.
+            if (currentSize > journalByteEnd)
+                fs.ftruncateSync(journalFd, journalByteEnd);
+            let copied = 0;
+            while (copiedByteEnd + copied < sourceThroughByte) {
+                const length = Math.min(buffer.length, sourceThroughByte - copiedByteEnd - copied);
+                const read = fs.readSync(fd, buffer, 0, length, copiedByteEnd + copied);
+                if (!read)
+                    throw new Error("source transcript changed during capture");
+                const chunk = buffer.subarray(0, read);
+                segmentDigest.update(chunk);
+                prefixDigest.update(chunk);
+                for (let i = chunk.indexOf(0x0a); i !== -1; i = chunk.indexOf(0x0a, i + 1))
+                    addedLines++;
+                let written = 0;
+                while (written < read) {
+                    const count = fs.writeSync(journalFd, chunk, written, read - written, journalByteEnd + copied + written);
+                    if (!count)
+                        throw new Error("journal append made no progress");
+                    written += count;
+                }
+                copied += read;
+                input.afterJournalChunk?.(copied);
+            }
+            sourceGuardStart = Math.max(0, sourceThroughByte - SOURCE_PREFIX_GUARD_BYTES);
+            const guard = Buffer.alloc(sourceThroughByte - sourceGuardStart);
+            if (fs.readSync(fd, guard, 0, guard.length, sourceGuardStart) !== guard.length) {
+                throw new Error("source transcript changed before guard capture");
+            }
+            sourceGuardHash = sha256(guard);
+            // Validate both the open handle and its path: replacement can leave an
+            // unchanged old inode open while the path already names a new source.
+            for (const observed of [fs.fstatSync(fd), fs.statSync(source.realpath)]) {
+                if (String(observed.dev) !== sourceDev || String(observed.ino) !== sourceIno ||
+                    observed.size !== source.stat.size || observed.mtimeMs !== source.stat.mtimeMs) {
+                    throw new Error("source transcript changed during capture");
+                }
+            }
+            fs.fsyncSync(journalFd);
+        }
+        finally {
+            fs.closeSync(journalFd);
+        }
     }
     finally {
         fs.closeSync(fd);
     }
-    if (String(sourceAfterRead.dev) !== sourceDev ||
-        String(sourceAfterRead.ino) !== sourceIno ||
-        sourceAfterRead.size !== source.stat.size ||
-        sourceAfterRead.mtimeMs !== source.stat.mtimeMs) {
-        throw new Error("source transcript changed during capture");
-    }
-    const finalNewline = delta.lastIndexOf(0x0a);
-    const complete = finalNewline >= 0 ? delta.subarray(0, finalNewline + 1) : Buffer.alloc(0);
-    const sourceThroughByte = copiedByteEnd + complete.length;
-    sourceGuardStart = Math.max(0, sourceThroughByte - SOURCE_PREFIX_GUARD_BYTES);
-    const guardLength = sourceThroughByte - sourceGuardStart;
-    if (guardLength > 0) {
-        const guard = Buffer.alloc(guardLength);
-        const guardFd = fs.openSync(source.realpath, "r");
-        try {
-            const read = fs.readSync(guardFd, guard, 0, guard.length, sourceGuardStart);
-            if (read !== guard.length)
-                throw new Error("source transcript changed before guard capture");
-            sourceGuardHash = sha256(guard);
-        }
-        finally {
-            fs.closeSync(guardFd);
-        }
-    }
-    const sourceAfterGuard = fs.statSync(source.realpath);
-    if (String(sourceAfterGuard.dev) !== sourceDev ||
-        String(sourceAfterGuard.ino) !== sourceIno ||
-        sourceAfterGuard.size !== source.stat.size ||
-        sourceAfterGuard.mtimeMs !== source.stat.mtimeMs) {
-        throw new Error("source transcript changed before journal append");
-    }
-    const addedLines = complete.length === 0
-        ? 0
-        : complete.reduce((count, byte) => count + (byte === 0x0a ? 1 : 0), 0);
+    const completeBytes = sourceThroughByte - copiedByteEnd;
     const throughLine = copiedLineEnd + addedLines;
-    const segmentHash = sha256(complete);
-    const prefixHash = complete.length > 0
-        ? sha256(Buffer.concat([Buffer.from(priorPrefixHash, "utf8"), Buffer.from([0]), complete]))
-        : priorPrefixHash || sha256(Buffer.alloc(0));
-    const journalPath = journalFile(input.sessionId, streamEpoch);
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-    const journalFd = fs.openSync(journalPath, "a+");
-    try {
-        const currentSize = fs.fstatSync(journalFd).size;
-        if (currentSize < journalByteEnd) {
-            const reason = "journal file is shorter than committed boundary";
-            recordCaptureGap(db, {
-                sessionId: input.sessionId,
-                streamEpoch,
-                sourcePath: source.realpath,
-                eventKind: input.kind,
-                reason,
-                now,
-            });
-            throw new Error(reason);
-        }
-        if (currentSize > journalByteEnd) {
-            // Bytes beyond the committed DB boundary are an orphan from a crash
-            // after fsync and before the transaction. They were never a checkpointed
-            // journal prefix, so deterministically discard only that uncommitted tail.
-            fs.ftruncateSync(journalFd, journalByteEnd);
-        }
-        if (complete.length > 0)
-            fs.writeSync(journalFd, complete, 0, complete.length, journalByteEnd);
-        fs.fsyncSync(journalFd);
-    }
-    finally {
-        fs.closeSync(journalFd);
-    }
+    const segmentHash = segmentDigest.digest("hex");
+    const prefixHash = completeBytes > 0 ? prefixDigest.digest("hex") : priorPrefixHash || sha256(Buffer.alloc(0));
     input.afterJournalFsync?.();
-    const journalThroughByte = journalByteEnd + complete.length;
+    const journalThroughByte = journalByteEnd + completeBytes;
     const blockId = stableId("journal-block", input.sessionId, streamEpoch, sourceThroughByte, prefixHash);
     const checkpointId = stableId("checkpoint", input.sessionId, streamEpoch, sourceThroughByte, prefixHash, input.kind);
     const capsuleJobId = stableId("capsule-job", checkpointId);
@@ -514,7 +620,7 @@ function captureTranscriptPrefixInTransaction(db, input) {
         parser_version = excluded.parser_version,
         state = 'active', updated_at = excluded.updated_at
     `).run(input.sessionId, streamEpoch, source.path, source.realpath, sourceDev, sourceIno, source.stat.mtimeMs, sourceGuardStart, sourceGuardHash, sourceThroughByte, throughLine, journalThroughByte, journalPath, prefixHash, CONTINUITY_PARSER_VERSION, now, now);
-        if (complete.length > 0) {
+        if (completeBytes > 0) {
             const blockOrdinal = db.prepare(`
         SELECT COALESCE(MAX(ordinal), 0) + 1 AS n FROM journal_blocks
         WHERE session_id = ? AND stream_epoch = ?
@@ -536,7 +642,7 @@ function captureTranscriptPrefixInTransaction(db, input) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         (SELECT context_epoch FROM session_memory_state WHERE session_id = ?),
         'pending', ?, ?)
-    `).run(checkpointId, input.sessionId, session.workspaceId, session.workstreamId, streamEpoch, ordinal, input.kind, input.turnId ?? null, copiedByteEnd, sourceThroughByte, copiedLineEnd + (complete.length > 0 ? 1 : 0), throughLine, segmentHash, prefixHash, CONTINUITY_PARSER_VERSION, closureState, input.sessionId, `capture:${checkpointId}`, now);
+    `).run(checkpointId, input.sessionId, session.workspaceId, session.workstreamId, streamEpoch, ordinal, input.kind, input.turnId ?? null, copiedByteEnd, sourceThroughByte, copiedLineEnd + (completeBytes > 0 ? 1 : 0), throughLine, segmentHash, prefixHash, CONTINUITY_PARSER_VERSION, closureState, input.sessionId, `capture:${checkpointId}`, now);
         input.afterCheckpoint?.();
         db.prepare(`
       INSERT OR IGNORE INTO memory_jobs
@@ -544,45 +650,7 @@ function captureTranscriptPrefixInTransaction(db, input) {
          state, available_at, max_attempts, idempotency_key, created_at, updated_at)
       VALUES (?, 'capture_index', ?, ?, ?, 100, 'pending', ?, 5, ?, ?, ?)
     `).run(captureIndexJobId, `session:${input.sessionId}`, checkpointId, CONTINUITY_CAPTURE_POLICY_VERSION, now, `capture-index:${checkpointId}`, now, now);
-        const lastCapsuleBoundary = db.prepare(`
-      SELECT c.ordinal, c.through_byte
-      FROM capsule_checkpoint_state s
-      JOIN checkpoints c ON c.checkpoint_id = s.checkpoint_id
-      WHERE s.workstream_id = ?
-      ORDER BY c.ordinal DESC LIMIT 1
-    `).get(session.workstreamId);
-        const pendingCapsule = db.prepare(`
-      SELECT 1 FROM memory_jobs
-      WHERE kind = 'capsule_update' AND partition_key = ?
-        AND state IN ('pending','running','retry')
-      LIMIT 1
-    `).get(`workstream:${session.workstreamId}`);
-        const accumulated = db.prepare(`
-      SELECT COUNT(*) AS boundaries,
-             COALESCE(SUM(CASE
-               WHEN through_byte > from_byte THEN through_byte - from_byte ELSE 0 END), 0) AS bytes
-      FROM checkpoints
-      WHERE workstream_id = ? AND ordinal > ? AND ordinal <= ?
-        AND kind IN ('stop','interrupt')
-    `).get(session.workstreamId, lastCapsuleBoundary?.ordinal ?? -1, ordinal);
-        const forceCapsule = input.kind === "precompact" || input.kind === "final";
-        const scheduleCapsule = forceCapsule || (!pendingCapsule && (accumulated.boundaries >= 6 || accumulated.bytes >= 8 * 1024));
-        if (scheduleCapsule) {
-            const currentGeneration = db.prepare(`
-        SELECT generation FROM work_capsules WHERE workstream_id = ?
-      `).get(session.workstreamId)?.generation ?? 0;
-            db.prepare(`
-        INSERT OR IGNORE INTO capsule_checkpoint_state
-          (checkpoint_id, workstream_id, state, expected_generation, updated_at)
-        VALUES (?, ?, 'pending', ?, ?)
-      `).run(checkpointId, session.workstreamId, currentGeneration, now);
-            db.prepare(`
-        INSERT OR IGNORE INTO memory_jobs
-          (job_id, kind, partition_key, checkpoint_id, policy_version, priority,
-           state, available_at, max_attempts, idempotency_key, created_at, updated_at)
-        VALUES (?, 'capsule_update', ?, ?, ?, 80, 'pending', ?, 5, ?, ?, ?)
-      `).run(capsuleJobId, `workstream:${session.workstreamId}`, checkpointId, CAPSULE_POLICY_VERSION, now, `capsule:${checkpointId}`, now, now);
-        }
+        scheduleCapsuleForCheckpoint(db, checkpointId, now);
         input.afterJob?.();
         db.prepare(`
       UPDATE session_memory_state
@@ -616,11 +684,11 @@ function captureTranscriptPrefixInTransaction(db, input) {
         streamEpoch,
         sourceFromByte: copiedByteEnd,
         sourceThroughByte,
-        fromLine: copiedLineEnd + (complete.length > 0 ? 1 : 0),
+        fromLine: copiedLineEnd + (completeBytes > 0 ? 1 : 0),
         throughLine,
         segmentHash,
         prefixHash,
-        appendedBytes: complete.length,
+        appendedBytes: completeBytes,
         journalPath,
         created,
     };
@@ -650,6 +718,7 @@ export function advanceContextEpoch(db, input) {
         resident_fact_revisions_json = '[]',
         capsule_generation_seen = 0,
         last_retrieval_at = NULL,
+        hot_evidence_cursor = 0,
         last_source = ?, updated_at = ?
     WHERE session_id = ? AND context_epoch = ?
   `).run(next, token, input.source, input.source, now, input.sessionId, state.context_epoch);
@@ -773,11 +842,7 @@ export function validateWorkCapsulePatch(value) {
         throw new Error("capsule patch must be an object");
     }
     const input = value;
-    const fields = [
-        "objective", "currentState", "verifiedProgress", "hypotheses", "blockers",
-        "openQuestions", "nextActions", "touchedAreas", "carryFactRevisions",
-        "sourceExchangeIds",
-    ];
+    const fields = WORK_CAPSULE_OUTPUT_SCHEMA.required;
     const keys = Object.keys(input);
     if (keys.length !== fields.length ||
         fields.some((field) => !Object.prototype.hasOwnProperty.call(input, field)) ||
@@ -831,10 +896,20 @@ export function validateWorkCapsulePatch(value) {
     }
     return patch;
 }
-function assertVerifiedSources(db, verified) {
+function assertVerifiedSources(db, verified, page) {
     const ids = [...new Set(verified.flatMap((item) => item.sourceExchangeIds))];
     if (ids.length === 0)
         return;
+    if (page) {
+        // Authority belongs to the immutable generation/part actually presented,
+        // not to the exchange's possibly newer live row or an unseen fragment.
+        for (const id of ids) {
+            if (!page.evidence.some((item) => item.exchangeId === id && ((typeof item.human === "string" && item.human.trim().length > 0) ||
+                (Array.isArray(item.trustedTools) && item.trustedTools.length > 0))))
+                throw new Error(`verified progress source is not authoritative in this page: ${id}`);
+        }
+        return;
+    }
     const select = db.prepare(`
     SELECT e.id,
       CASE WHEN length(trim(e.user_message)) > 0 OR EXISTS (
@@ -848,17 +923,24 @@ function assertVerifiedSources(db, verified) {
             throw new Error(`verified progress source is not authoritative: ${id}`);
     }
 }
-function assertCapsuleSourcesExist(db, patch) {
-    const select = db.prepare("SELECT 1 FROM exchanges WHERE id = ?");
+function assertCapsuleSourcesExist(db, patch, workstreamId) {
+    const select = db.prepare(`SELECT 1 FROM exchanges e
+    JOIN minimal_workstreams w ON w.workstream_id = ?
+    LEFT JOIN session_memory_state s ON s.session_id = e.session_id
+    WHERE e.id = ? AND e.project_id = w.project_id
+      AND COALESCE(e.workstream_id, s.workstream_id) = w.workstream_id
+      AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)`);
     for (const id of patch.sourceExchangeIds) {
-        if (!select.get(id))
-            throw new Error(`capsule source exchange does not exist: ${id}`);
+        if (!select.get(workstreamId, id))
+            throw new Error(`capsule source exchange is missing or outside workstream: ${id}`);
     }
 }
 export function applyWorkCapsulePatch(db, input) {
     const patch = validateWorkCapsulePatch(input.patch);
     const now = input.now ?? new Date().toISOString();
     const tx = db.transaction(() => {
+        if (input.evidencePage && !capsulePageIsCurrent(db, input.workstreamId, input.evidencePage))
+            return null;
         if (input.jobLease) {
             const owned = db.prepare(`
         SELECT 1 FROM memory_jobs
@@ -880,8 +962,14 @@ export function applyWorkCapsulePatch(db, input) {
     `).get(input.throughCheckpointId, input.workstreamId);
         if (!checkpoint)
             throw new Error("checkpoint does not belong to workstream");
-        assertCapsuleSourcesExist(db, patch);
-        assertVerifiedSources(db, patch.verifiedProgress);
+        assertCapsuleSourcesExist(db, patch, input.workstreamId);
+        if (input.evidencePage) {
+            const presented = new Set(input.evidencePage.evidence.map((item) => item.exchangeId));
+            if (patch.sourceExchangeIds.some((id) => !presented.has(id))) {
+                throw new Error("capsule source was not present in the fixed evidence page");
+            }
+        }
+        assertVerifiedSources(db, patch.verifiedProgress, input.evidencePage);
         const current = db.prepare(`
       SELECT generation FROM work_capsules WHERE workstream_id = ?
     `).get(input.workstreamId);
@@ -917,23 +1005,28 @@ export function applyWorkCapsulePatch(db, input) {
     `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, input.expectedGeneration);
         if (result.changes !== 1)
             return null;
+        if (input.evidencePage && !commitCapsulePage(db, input.workstreamId, input.evidencePage)) {
+            throw new Error("Capsule frontier changed during atomic completion");
+        }
+        const drained = !input.evidencePage || input.evidencePage.throughSeq >= input.evidencePage.targetSeq;
         db.prepare(`
       UPDATE capsule_checkpoint_state
-      SET state = 'processed', updated_at = ? WHERE checkpoint_id = ?
-    `).run(now, input.throughCheckpointId);
+      SET state = ?, updated_at = ? WHERE checkpoint_id = ?
+    `).run(drained ? "processed" : "pending", now, input.throughCheckpointId);
         if (input.jobLease) {
             const completed = db.prepare(`
         UPDATE memory_jobs
-        SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
+        SET state = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?,
+            attempts = CASE WHEN ? THEN attempts ELSE 0 END
         WHERE job_id = ? AND state = 'running' AND lease_owner = ?
           AND lease_generation = ? AND lease_until > ?
-      `).run(now, input.jobLease.jobId, input.jobLease.owner, input.jobLease.leaseGeneration, now);
+      `).run(drained ? "completed" : "pending", now, drained ? 1 : 0, input.jobLease.jobId, input.jobLease.owner, input.jobLease.leaseGeneration, now);
             if (completed.changes !== 1) {
                 throw new Error("capsule job lease changed during atomic completion");
             }
             db.prepare(`
-        UPDATE checkpoints SET state = 'processed' WHERE checkpoint_id = ?
-      `).run(input.throughCheckpointId);
+        UPDATE checkpoints SET state = ? WHERE checkpoint_id = ?
+      `).run(drained ? "processed" : "processing", input.throughCheckpointId);
         }
         return readWorkCapsule(db, input.workstreamId);
     });
@@ -942,6 +1035,10 @@ export function applyWorkCapsulePatch(db, input) {
 export function completeEmptyCapsuleCheckpoint(db, input) {
     const now = input.now ?? new Date().toISOString();
     const tx = db.transaction(() => {
+        const workstream = db.prepare("SELECT workstream_id FROM capsule_checkpoint_state WHERE checkpoint_id = ?")
+            .get(input.checkpointId);
+        if (input.evidencePage && (!workstream || !capsulePageIsCurrent(db, workstream.workstream_id, input.evidencePage)))
+            return false;
         const completed = db.prepare(`
       UPDATE memory_jobs
       SET state = 'completed', lease_owner = NULL, lease_until = NULL, updated_at = ?
@@ -951,6 +1048,9 @@ export function completeEmptyCapsuleCheckpoint(db, input) {
     `).run(now, input.jobId, input.checkpointId, input.owner, input.leaseGeneration, now);
         if (completed.changes !== 1)
             return false;
+        if (input.evidencePage && !commitCapsulePage(db, workstream.workstream_id, input.evidencePage)) {
+            throw new Error("empty Capsule frontier changed during atomic completion");
+        }
         db.prepare(`
       UPDATE capsule_checkpoint_state SET state = 'processed', updated_at = ?
       WHERE checkpoint_id = ?
@@ -963,7 +1063,8 @@ export function completeEmptyCapsuleCheckpoint(db, input) {
 }
 export function readWorkCapsule(db, workstreamId) {
     const row = db.prepare(`
-    SELECT * FROM work_capsules WHERE workstream_id = ?
+    SELECT w.*, COALESCE(f.through_seq, 0) AS through_seq
+    FROM work_capsules w LEFT JOIN capsule_frontiers f USING(workstream_id) WHERE w.workstream_id = ?
   `).get(workstreamId);
     if (!row)
         return null;
@@ -981,6 +1082,7 @@ export function readWorkCapsule(db, workstreamId) {
         carryFactRevisions: parseJsonArray(row.carry_fact_revisions_json),
         sourceExchangeIds: parseJsonArray(row.source_exchange_ids_json),
         throughCheckpointId: row.through_checkpoint_id ? String(row.through_checkpoint_id) : null,
+        throughSeq: Number(row.through_seq),
         authority: "context-only",
         sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
         sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
@@ -992,7 +1094,7 @@ function extractPlanLine(text) {
     return lines.find((line) => /(?:next|다음|todo|계속|해야)/i.test(line)) ?? null;
 }
 export function buildDeterministicTailBaton(db, input) {
-    const maxChars = Math.max(200, Math.min(1_500, input.maxChars ?? 1_200));
+    const maxChars = Math.max(0, Math.min(1_500, input.maxChars ?? 1_200));
     const exchanges = db.prepare(`
     SELECT id, user_message, assistant_message FROM exchanges
     WHERE session_id = ? ORDER BY exchange_seq DESC, rowid DESC LIMIT 8
@@ -1022,17 +1124,23 @@ export function buildDeterministicTailBaton(db, input) {
         lines.push(`Unresolved: ${unresolved.tool_result.replace(/\s+/g, " ").slice(0, 300)}`);
     return lines.join("\n").slice(0, maxChars);
 }
-function renderCapsule(capsule) {
-    const lines = ["[WORK NOW]"];
-    if (capsule.objective)
-        lines.push(`Objective: ${capsule.objective}`);
-    if (capsule.currentState)
-        lines.push(`State: ${capsule.currentState}`);
-    if (capsule.blockers[0])
-        lines.push(`Blocker: ${capsule.blockers[0]}`);
-    if (capsule.nextActions[0])
-        lines.push(`Next: ${capsule.nextActions[0]}`);
-    return lines.join("\n");
+function renderCapsule(capsule, maxChars) {
+    const fields = [
+        ["Objective", capsule.objective],
+        ["Next", capsule.nextActions[0]],
+        ["State", capsule.currentState],
+        ["Blocker", capsule.blockers[0]],
+    ].filter((entry) => !!entry[1]);
+    if (!fields.length)
+        return "";
+    let block = "[WORK NOW]";
+    for (const [index, [label, value]] of fields.entries()) {
+        const allowance = Math.floor((maxChars - block.length) / (fields.length - index));
+        const text = value.replace(/\s+/g, " ").slice(0, Math.max(0, allowance - label.length - 3));
+        if (text)
+            block += `\n${label}: ${text}`;
+    }
+    return block === "[WORK NOW]" ? "" : block;
 }
 export function buildRehydrationContext(db, input) {
     if (!db.inTransaction) {
@@ -1042,7 +1150,7 @@ export function buildRehydrationContext(db, input) {
     const state = db.prepare(`
     SELECT workstream_id, context_epoch, carry_fact_revisions_json,
            resident_fact_revisions_json, latest_checkpoint_id, project_id,
-           workspace_id, memory_revision_seen
+           workspace_id, memory_revision_seen, hot_evidence_cursor
     FROM session_memory_state WHERE session_id = ?
   `).get(input.sessionId);
     if (!state) {
@@ -1052,6 +1160,7 @@ export function buildRehydrationContext(db, input) {
             capsuleGeneration: 0,
             projectRevisionComplete: true,
             projectMemoryRevision: 0,
+            contextEpoch: 0, projectId: null, workstreamId: null, hotEvidenceCursor: 0, hotEvidenceSeqs: [],
         };
     }
     const capsule = readWorkCapsule(db, String(state.workstream_id));
@@ -1082,9 +1191,13 @@ export function buildRehydrationContext(db, input) {
         }
     }
     const maxChars = Math.max(500, Math.min(2_000, input.maxChars ?? 2_000));
-    const capsuleIsStale = !!capsule &&
-        !!state.latest_checkpoint_id &&
-        capsule.throughCheckpointId !== String(state.latest_checkpoint_id);
+    const capsuleIsStale = !!capsule && (!!db.prepare(`SELECT 1 FROM workstream_evidence
+      WHERE workstream_id = ? AND seq > ? LIMIT 1`).get(state.workstream_id, capsule.throughSeq)
+        || !!db.prepare(`SELECT 1 FROM memory_jobs WHERE checkpoint_id = ? AND kind = 'capture_index'
+      AND state <> 'completed' LIMIT 1`).get(state.latest_checkpoint_id ?? null)
+        // Legacy/manual projections have no sequence coverage yet.
+        || (capsule.throughSeq === 0 && !!state.latest_checkpoint_id &&
+            capsule.throughCheckpointId !== String(state.latest_checkpoint_id)));
     const projectId = state.project_id ? String(state.project_id) : null;
     const currentProjectRevision = projectId ? projectRevision(db, projectId) : 0;
     let freshCorrections = carryCorrections;
@@ -1117,6 +1230,20 @@ export function buildRehydrationContext(db, input) {
     }
     const sections = [];
     const emittedRevisions = [];
+    // Reserve actual rendered work context before corrections can consume the
+    // bundle. A stale Capsule shares its slot with the session's latest baton.
+    const workBudget = Math.floor(maxChars * 0.6);
+    const capsuleBlock = capsule
+        ? renderCapsule(capsule, capsuleIsStale ? Math.floor(workBudget / 2) : workBudget)
+        : "";
+    const baton = (!capsuleBlock || capsuleIsStale)
+        ? buildDeterministicTailBaton(db, {
+            sessionId: input.sessionId,
+            maxChars: workBudget - capsuleBlock.length - (capsuleBlock ? 2 : 0),
+        })
+        : "";
+    const workBlock = [capsuleBlock, baton].filter(Boolean).join("\n\n");
+    let sectionBudget = maxChars - workBlock.length - (workBlock ? 2 : 0);
     let used = 0;
     const appendSection = (heading, items) => {
         if (items.length === 0)
@@ -1127,7 +1254,7 @@ export function buildRehydrationContext(db, input) {
             const line = `- ${item.text.replace(/\s+/g, " ").slice(0, 260)}`;
             const prospective = `${heading}\n${[...accepted, line].join("\n")}`;
             const separator = sections.length > 0 ? 2 : 0;
-            if (used + separator + prospective.length > maxChars)
+            if (used + separator + prospective.length > sectionBudget)
                 break;
             accepted.push(line);
             if (item.revision)
@@ -1146,35 +1273,26 @@ export function buildRehydrationContext(db, input) {
         revision: [fact.id, fact.semantic_generation, fact.lifecycle_generation],
     })));
     appendSection("[CURRENT TRUTH]", validFacts.slice(0, 4).map(({ text, revision }) => ({ text, revision })));
-    let capsuleGeneration = 0;
-    if (capsule) {
-        const block = renderCapsule(capsule);
-        const remaining = Math.max(0, maxChars - used - (sections.length ? 2 : 0));
-        if (block.length <= remaining) {
-            used += (sections.length ? 2 : 0) + block.length;
-            sections.push(block);
-            capsuleGeneration = capsule.generation;
-        }
+    const capsuleGeneration = capsuleBlock && capsule ? capsule.generation : 0;
+    if (workBlock) {
+        used += (sections.length ? 2 : 0) + workBlock.length;
+        sections.push(workBlock);
     }
-    if (!capsule || capsuleIsStale) {
-        const remaining = maxChars - used - (sections.length ? 2 : 0);
-        if (remaining >= 40) {
-            const baton = buildDeterministicTailBaton(db, { sessionId: input.sessionId, maxChars: remaining });
-            if (baton) {
-                used += (sections.length ? 2 : 0) + baton.length;
-                sections.push(baton);
-            }
-        }
-    }
+    sectionBudget = maxChars;
+    const hotEvidenceCursor = Number(state.hot_evidence_cursor ?? 0);
+    let hotEvidenceSeqs = [];
     if (projectId) {
         const recent = readHotEvidence(db, {
             projectId,
             workstreamId: String(state.workstream_id),
+            excludeSessionId: input.sessionId,
+            afterSeq: hotEvidenceCursor,
             limit: 3,
         });
-        appendSection("[RECENT EVIDENCE — NOT YET DISTILLED]", recent.map((item) => ({
+        const emitted = appendSection("[RECENT EVIDENCE — NOT YET DISTILLED]", recent.map((item) => ({
             text: String(item.evidence_text),
         })));
+        hotEvidenceSeqs = recent.slice(0, emitted).map((item) => Number(item.seq));
     }
     return {
         context: sections.join("\n\n"),
@@ -1182,6 +1300,8 @@ export function buildRehydrationContext(db, input) {
         capsuleGeneration,
         projectRevisionComplete: emittedCorrectionCount === freshCorrections.length,
         projectMemoryRevision: currentProjectRevision,
+        contextEpoch: Number(state.context_epoch), projectId, workstreamId: String(state.workstream_id),
+        hotEvidenceCursor, hotEvidenceSeqs,
     };
 }
 function emitAdditionalContext(event, context) {
@@ -1298,7 +1418,7 @@ export function handleContinuityHook(payloadValue, options = {}) {
             }
             if (source === "resume" || source === "compact") {
                 const rehydrated = buildRehydrationContext(db, { sessionId: payload.sessionId });
-                const epoch = readResidentFactRevisions(db, payload.sessionId).contextEpoch;
+                const epoch = rehydrated.contextEpoch;
                 const commitRehydration = db.transaction(() => {
                     if (rehydrated.factRevisions.length &&
                         !recordResidentFactRevisions(db, payload.sessionId, epoch, rehydrated.factRevisions)) {
@@ -1317,13 +1437,12 @@ export function handleContinuityHook(payloadValue, options = {}) {
                             throw new Error("context epoch changed before Capsule residency commit");
                         }
                     }
-                    if (rehydrated.context) {
-                        // Hot Evidence emitted here is resident for the epoch; the prompt
-                        // path only injects evidence indexed after this watermark.
-                        db.prepare(`
-              UPDATE session_memory_state SET last_retrieval_at = ?, updated_at = ?
-              WHERE session_id = ? AND context_epoch = ?
-            `).run(new Date().toISOString(), new Date().toISOString(), payload.sessionId, epoch);
+                    if (rehydrated.projectId && rehydrated.workstreamId) {
+                        commitHotEvidenceCursor(db, {
+                            sessionId: payload.sessionId, projectId: rehydrated.projectId,
+                            workstreamId: rehydrated.workstreamId, contextEpoch: epoch,
+                            fromSeq: rehydrated.hotEvidenceCursor, emittedSeqs: rehydrated.hotEvidenceSeqs,
+                        });
                     }
                 });
                 commitRehydration.immediate();

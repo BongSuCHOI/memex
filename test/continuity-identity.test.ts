@@ -234,6 +234,8 @@ describe("stable project/workspace resolver", () => {
               'legacy-checkpoint', ?)
     `).run(state.workstreamId, "2026-09-03T00:00:00.000Z");
 
+    // Emulate pre-v7 rows without firing a v7 privacy invalidation during fixture conversion.
+    db.exec("DROP TRIGGER exchanges_evidence_scope_change");
     db.prepare("DELETE FROM workstream_sessions").run();
     db.prepare("UPDATE exchanges SET project_id = NULL, workspace_id = NULL, workstream_id = NULL").run();
     db.prepare("UPDATE facts SET project_id = NULL, workspace_id = NULL, workstream_id = NULL, subject_key = NULL").run();
@@ -293,6 +295,7 @@ describe("stable project/workspace resolver", () => {
     db.prepare("INSERT INTO work_capsules(workstream_id, generation, objective, through_checkpoint_id, updated_at) VALUES (?, 1, 'released objective', 'released-cp', ?)")
       .run(state.workstreamId, "2026-09-03T00:00:00.000Z");
     db.exec(`
+      DROP TRIGGER IF EXISTS exchanges_evidence_scope_change;
       DROP TRIGGER IF EXISTS facts_project_revision_insert;
       DROP TRIGGER IF EXISTS facts_project_revision_semantic;
       DROP TRIGGER IF EXISTS facts_project_revision_move_old;

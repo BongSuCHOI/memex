@@ -46,11 +46,11 @@ const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.
  * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
  * The resolved id is always forwarded via -m.
  */
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation) {
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}) {
     const model = process.env.MEMEX_CODEX_MODEL || null;
     const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
     const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
-    return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
+    return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation, outputSchema: options.outputSchema });
 }
 function summarizeObservations(attempts, started, observations) {
     const withUsage = observations.filter((observation) => observation.token_usage !== null);
@@ -90,14 +90,14 @@ function summarizeObservations(attempts, started, observations) {
  *    보류·재시도, deterministic 은 attempt 소모)가 비로소 작동한다 (fail-loud).
  * 호출자 계약: 성공 반환값은 **비어있지 않음이 보장**된다.
  */
-async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048) {
+async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048, options = {}) {
     const retries = retryBudget();
     let lastError;
     const observations = [];
     const started = performance.now();
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const text = await callOnce(systemPrompt, userMessage, maxTokens, (observation) => observations.push(observation));
+            const text = await callOnce(systemPrompt, userMessage, maxTokens, (observation) => observations.push(observation), options);
             if (text && text.trim() !== '') {
                 return {
                     text,
@@ -119,11 +119,11 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
-export async function callMemoryModelObserved(systemPrompt, userMessage, maxTokens = 2048) {
-    return callMemoryModelInternal(systemPrompt, userMessage, maxTokens);
+export async function callMemoryModelObserved(systemPrompt, userMessage, maxTokens = 2048, options = {}) {
+    return callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options);
 }
-export async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
-    return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
+export async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048, options = {}) {
+    return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options)).text;
 }
 export function parseJsonResponse(text) {
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/)

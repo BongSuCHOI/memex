@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalizeProjectPath } from "./project-identity.js";
+import { appendSessionEvidence } from "./continuity-evidence.js";
 function hash(...parts) {
     const h = createHash("sha256");
     for (const part of parts)
@@ -346,6 +347,7 @@ export function linkWorkspaceToProject(db, input) {
             db.prepare("DELETE FROM approved_remote_mappings WHERE project_id = ?").run(sourceProjectId);
             db.prepare("DELETE FROM projects WHERE project_id = ?").run(sourceProjectId);
         }
+        refreshWorkspaceEvidence(db, input.workspaceId);
     });
     db.inTransaction ? tx() : tx.immediate();
 }
@@ -386,6 +388,7 @@ export function splitWorkspace(db, input) {
       )
     `).run(projectId, input.workspaceId, workspace.project_id, workspace.canonical_path);
         audit(db, { action: "split", projectId, workspaceId: input.workspaceId, reason: "explicit workspace split", detail: { sourceProjectId: workspace.project_id }, now: at });
+        refreshWorkspaceEvidence(db, input.workspaceId);
         return projectId;
     });
     return db.inTransaction ? tx() : tx.immediate();
@@ -519,7 +522,7 @@ export function rebindSessionWorkstream(db, input) {
         db.prepare(`
       UPDATE session_memory_state
       SET workstream_id = ?, binding_reason = 'explicit-rebind', binding_confidence = 1.0,
-          capsule_generation_seen = 0, updated_at = ?
+          capsule_generation_seen = 0, hot_evidence_cursor = 0, updated_at = ?
       WHERE session_id = ?
     `).run(input.workstreamId, at, input.sessionId);
         db.prepare(`
@@ -537,6 +540,19 @@ export function rebindSessionWorkstream(db, input) {
             .run(input.workstreamId, input.sessionId);
         db.prepare("UPDATE hot_evidence SET workstream_id = ? WHERE session_id = ?")
             .run(input.workstreamId, input.sessionId);
+        db.prepare("UPDATE checkpoints SET workstream_id = ? WHERE session_id = ?")
+            .run(input.workstreamId, input.sessionId);
+        db.prepare(`UPDATE capsule_checkpoint_state
+      SET workstream_id = ?, target_seq = NULL, target_revision = NULL
+      WHERE checkpoint_id IN (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)`)
+            .run(input.workstreamId, input.sessionId);
+        db.prepare(`UPDATE memory_jobs SET partition_key = ?,
+      state = CASE WHEN state = 'running' THEN 'pending' ELSE state END,
+      lease_generation = lease_generation + 1, lease_owner = NULL, lease_until = NULL
+      WHERE kind = 'capsule_update' AND checkpoint_id IN
+        (SELECT checkpoint_id FROM checkpoints WHERE session_id = ?)`)
+            .run(`workstream:${input.workstreamId}`, input.sessionId);
+        appendSessionEvidence(db, input.sessionId);
         audit(db, {
             action: "rebind", projectId: session.project_id, workspaceId: session.workspace_id,
             workstreamId: input.workstreamId, sessionId: input.sessionId,
@@ -544,6 +560,12 @@ export function rebindSessionWorkstream(db, input) {
         });
     });
     db.inTransaction ? tx() : tx.immediate();
+}
+function refreshWorkspaceEvidence(db, workspaceId) {
+    const sessions = db.prepare("SELECT session_id FROM session_memory_state WHERE workspace_id = ?")
+        .all(workspaceId);
+    for (const session of sessions)
+        appendSessionEvidence(db, session.session_id);
 }
 export function indexHotEvidenceForSession(db, sessionId, options = {}) {
     const at = nowIso(options.now);
@@ -609,18 +631,44 @@ export function readHotEvidence(db, input) {
         where.push("created_at > ?");
         args.push(input.afterCreatedAt);
     }
+    if (input.afterSeq !== undefined) {
+        where.push("seq > ?");
+        args.push(input.afterSeq);
+    }
     if (input.beforeCreatedAt) {
         where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
         args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");
     }
     args.push(Math.max(1, Math.min(100, input.limit ?? 20)));
     return db.prepare(`
-    SELECT evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
+    SELECT seq, evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
            evidence_kind, source_type, evidence_text, authority, created_at, expires_at,
            'HOT EVIDENCE — NOT YET DISTILLED' AS lane
-    FROM hot_evidence WHERE ${where.join(" AND ")}
-    ORDER BY created_at DESC, evidence_id LIMIT ?
+    FROM hot_evidence JOIN hot_evidence_sequence USING(evidence_id) WHERE ${where.join(" AND ")}
+    ORDER BY ${input.afterSeq === undefined ? "created_at DESC, evidence_id" : "seq"} LIMIT ?
   `).all(...args);
+}
+/** Commit only the emitted eligible prefix; a purge/rebind/epoch race retries. */
+export function commitHotEvidenceCursor(db, input) {
+    if (!db.inTransaction)
+        throw new Error("Hot Evidence cursor requires the residency transaction");
+    if (!input.emittedSeqs.length)
+        return;
+    const end = input.emittedSeqs.at(-1);
+    const current = readHotEvidence(db, {
+        projectId: input.projectId, workstreamId: input.workstreamId, excludeSessionId: input.sessionId,
+        afterSeq: input.fromSeq, limit: input.emittedSeqs.length,
+    });
+    if (current.length !== input.emittedSeqs.length ||
+        current.some((row, i) => Number(row.seq) !== input.emittedSeqs[i])) {
+        throw new Error("Hot Evidence prefix changed before residency commit");
+    }
+    const updated = db.prepare(`UPDATE session_memory_state SET hot_evidence_cursor = ?
+    WHERE session_id = ? AND project_id = ? AND workstream_id = ?
+      AND context_epoch = ? AND hot_evidence_cursor = ?`)
+        .run(end, input.sessionId, input.projectId, input.workstreamId, input.contextEpoch, input.fromSeq);
+    if (updated.changes !== 1)
+        throw new Error("Hot Evidence scope or cursor changed before residency commit");
 }
 export function assignFactSubject(db, input) {
     if (!/^[a-z][a-z0-9_.-]{2,160}$/.test(input.subjectKey))

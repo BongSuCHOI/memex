@@ -151,6 +151,8 @@ export function decideRecall(input) {
         triggers.push("project_revision_stale");
     if (input.residentRevisionStale)
         triggers.push("resident_revision_stale");
+    if (input.hotEvidencePending)
+        triggers.push("hot_evidence_pending");
     if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen)
         triggers.push("capsule_generation_changed");
     if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
-export const CONTINUITY_SCHEMA_VERSION = 6;
+import { CAPSULE_POLICY_VERSION, appendExchangeEvidence } from "./continuity-evidence.js";
+export const CONTINUITY_SCHEMA_VERSION = 7;
 export const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 class ContinuityCasRejected extends Error {
 }
@@ -646,6 +647,7 @@ export function ensureContinuitySchema(db, options = {}) {
             ["informative_prompts_since_retrieval", "INTEGER NOT NULL DEFAULT 0"],
             ["last_retrieval_epoch", "INTEGER NOT NULL DEFAULT -1"],
             ["last_retrieval_at", "TEXT"],
+            ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
             ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
             ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"],
         ];
@@ -655,6 +657,75 @@ export function ensureContinuitySchema(db, options = {}) {
                 db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
         }
         options.afterMigrationStage?.("recall-gate-columns");
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS capsule_frontiers (
+        workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        through_seq INTEGER NOT NULL DEFAULT 0,
+        revision INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS workstream_evidence (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        source_session_id TEXT NOT NULL,
+        workspace_id TEXT,
+        content_generation INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        part INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(workstream_id, exchange_id, content_generation, part)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workstream_evidence_sequence ON workstream_evidence(workstream_id, seq);
+      CREATE INDEX IF NOT EXISTS idx_workstream_evidence_exchange ON workstream_evidence(exchange_id);
+      CREATE TABLE IF NOT EXISTS hot_evidence_sequence (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        evidence_id TEXT NOT NULL UNIQUE REFERENCES hot_evidence(evidence_id) ON DELETE CASCADE
+      );
+      CREATE TRIGGER IF NOT EXISTS hot_evidence_sequence_insert AFTER INSERT ON hot_evidence
+      BEGIN
+        INSERT INTO hot_evidence_sequence(evidence_id) VALUES (NEW.evidence_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS hot_evidence_sequence_change
+      AFTER UPDATE OF project_id, workspace_id, workstream_id, session_id, evidence_text, content_hash ON hot_evidence
+      WHEN OLD.project_id IS NOT NEW.project_id OR OLD.workspace_id IS NOT NEW.workspace_id
+        OR OLD.workstream_id IS NOT NEW.workstream_id OR OLD.session_id IS NOT NEW.session_id
+        OR OLD.evidence_text IS NOT NEW.evidence_text OR OLD.content_hash IS NOT NEW.content_hash
+      BEGIN
+        DELETE FROM hot_evidence_sequence WHERE evidence_id = OLD.evidence_id;
+        INSERT INTO hot_evidence_sequence(evidence_id) VALUES (NEW.evidence_id);
+      END;
+      INSERT OR IGNORE INTO hot_evidence_sequence(evidence_id)
+        SELECT evidence_id FROM hot_evidence h WHERE NOT EXISTS
+          (SELECT 1 FROM hot_evidence_sequence s WHERE s.evidence_id = h.evidence_id)
+        ORDER BY created_at, evidence_id;
+      CREATE TRIGGER IF NOT EXISTS workstream_evidence_delete_projection
+      BEFORE DELETE ON workstream_evidence
+      BEGIN
+        UPDATE session_memory_state SET capsule_generation_seen = 0 WHERE workstream_id = OLD.workstream_id
+          AND EXISTS (SELECT 1 FROM capsule_frontiers f JOIN work_capsules c USING(workstream_id)
+            WHERE f.workstream_id = OLD.workstream_id AND (f.through_seq >= OLD.seq OR (f.through_seq = 0 AND c.generation > 0)));
+        DELETE FROM work_capsules WHERE workstream_id = OLD.workstream_id
+          AND EXISTS (SELECT 1 FROM capsule_frontiers f WHERE f.workstream_id = OLD.workstream_id
+            AND (f.through_seq >= OLD.seq OR (f.through_seq = 0 AND work_capsules.generation > 0)));
+        UPDATE capsule_frontiers SET through_seq = CASE WHEN through_seq >= OLD.seq THEN 0 ELSE through_seq END,
+          revision = revision + 1 WHERE workstream_id = OLD.workstream_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS exchanges_evidence_scope_change
+      BEFORE UPDATE OF project_id, workspace_id, workstream_id, session_id ON exchanges
+      WHEN OLD.project_id IS NOT NEW.project_id OR OLD.workspace_id IS NOT NEW.workspace_id
+        OR OLD.workstream_id IS NOT NEW.workstream_id OR OLD.session_id IS NOT NEW.session_id
+      BEGIN
+        DELETE FROM workstream_evidence WHERE exchange_id = OLD.id;
+      END;
+      INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
+    `);
+        const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
+        for (const name of ["target_seq", "target_revision"]) {
+            if (!capsuleCheckpointColumns.has(name))
+                db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
+        }
+        options.afterMigrationStage?.("evidence-sequence");
         db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -716,6 +787,19 @@ export function ensureContinuitySchema(db, options = {}) {
         }
         refreshExchangeMetadata(db);
         options.afterMigrationStage?.("exchange-metadata");
+        if (priorVersion < 7) {
+            // A scalar legacy checkpoint cannot prove multi-session coverage. Keep
+            // the old Capsule until a replacement commits, replay surviving snapshots
+            // once, and let normal bounded workers rebuild from sequence zero.
+            const rows = db.prepare("SELECT id FROM exchanges ORDER BY rowid").all();
+            for (const row of rows)
+                appendExchangeEvidence(db, row.id);
+            // An old process may still be awaiting its model. Its scalar-only write
+            // must lose ownership before any sequence-aware worker can commit.
+            db.prepare(`UPDATE memory_jobs SET policy_version = ?, state = 'pending',
+        lease_generation = lease_generation + 1, lease_owner = NULL, lease_until = NULL, attempts = 0
+        WHERE kind = 'capsule_update' AND state IN ('pending','retry','running')`).run(CAPSULE_POLICY_VERSION);
+        }
         const now = new Date().toISOString();
         db.prepare(`
       INSERT INTO continuity_schema_meta(key, value, updated_at)
@@ -1118,17 +1202,17 @@ export function claimMemoryJobById(db, input) {
             return null;
         }
         // A partition is drained by priority lane first (P0 capture > P1 Capsule >
-        // P2 extraction), then by checkpoint ordinal within a lane. Ordinals are
-        // only comparable inside one lane: capture checkpoints use journal bytes,
-        // extraction checkpoints use exchange rowids.
+        // P2 extraction). Capsule producers are different sessions, so their
+        // checkpoint ordinals are incomparable: that lane uses job insertion order.
         const firstOutstanding = db.prepare(`
       SELECT j.job_id
       FROM memory_jobs j
       LEFT JOIN checkpoints c ON c.checkpoint_id = j.checkpoint_id
       WHERE j.partition_key = ? AND j.state NOT IN ('completed','superseded','dead')
       ORDER BY j.priority DESC,
-               CASE WHEN c.ordinal IS NULL THEN 1 ELSE 0 END,
-               c.ordinal, j.created_at, j.job_id
+               CASE WHEN j.kind = 'capsule_update' THEN 0 WHEN c.ordinal IS NULL THEN 1 ELSE 0 END,
+               CASE WHEN j.kind = 'capsule_update' THEN j.rowid ELSE c.ordinal END,
+               j.created_at, j.job_id
       LIMIT 1
     `).get(row.partition_key);
         if (firstOutstanding?.job_id !== row.job_id)
