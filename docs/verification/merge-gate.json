@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-07T04:49:30.229987+00:00",
+  "recordedAt": "2026-09-07T05:25:57.703539+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.0.0",
@@ -10,21 +10,21 @@
   "candidate": {
     "repository": "memex",
     "branch": "codex/continuity-sequence-v7",
-    "codeSha": "b3cdf776457c52ea6148ec58f93fab1e5ba7a67d",
-    "productionEvidenceSha": null,
+    "codeSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
+    "productionEvidenceSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
     "packageVersion": "0.4.0",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
-    "note": "Approved continuity fixes, schema v7, tests, generated artifacts and owner docs committed before this complete gate. Receipt-only commit follows. This is a merge gate, not a release or independent phase gate."
+    "note": "Runtime, tests, generated artifacts and owner docs committed before all nine required gates. Live default-worker integration ran at this clean SHA. Only the receipt and companion raw evaluation evidence are committed afterward. No release or independent phase gate is claimed."
   },
-  "verdict": "PASS-WITH-NOTES",
+  "verdict": "PASS",
   "gates": [
     {
       "name": "typecheck",
       "command": "npm run typecheck",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:03.857696+00:00",
-      "durationSeconds": 3.08,
+      "startedAt": "2026-09-07T05:22:28.087629+00:00",
+      "durationSeconds": 3.15,
       "observed": "TypeScript noEmit exit 0",
       "logSha256": "50f686aab1abb949d0fc43fec20d1ff034a52703399490b664cb5a35016d1c01"
     },
@@ -32,86 +32,96 @@
       "name": "build",
       "command": "npm run build",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:06.936928+00:00",
-      "durationSeconds": 3.77,
-      "observed": "tsc and bundled MCP build exit 0; generated files unchanged after build",
-      "logSha256": "31a7af31e7a9aade9525c2f42ede41a547252e8506e74094f413ea0cbd7cb4ee"
+      "startedAt": "2026-09-07T05:22:31.235835+00:00",
+      "durationSeconds": 3.41,
+      "observed": "tsc and MCP bundle exit 0; tracked generated files unchanged after build",
+      "logSha256": "d1795ab1e73d34829edfb73af8accf4bb0cc94367a46b3b489439634a75732d0"
     },
     {
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:10.707104+00:00",
-      "durationSeconds": 17.45,
-      "observed": "84 files / 898 tests passed",
-      "logSha256": "15f6968e711879f13631d20029498cb865a554f8ccbf0e429f7a71946c0f4d79"
+      "startedAt": "2026-09-07T05:22:34.650544+00:00",
+      "durationSeconds": 18.19,
+      "observed": "84 files / 904 tests passed",
+      "logSha256": "b809e90fc7740568bb106f69c234b700e97da39e5462baac1c3ffeda9147e5a3"
     },
     {
       "name": "codex-slice",
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:28.155440+00:00",
-      "durationSeconds": 2.8,
-      "observed": "24 pass / 0 fail",
-      "logSha256": "d14841bbb6671b00f1109801db92ac9a196b5f23c6b9e8ab12add62ec18787a6"
+      "startedAt": "2026-09-07T05:22:52.837015+00:00",
+      "durationSeconds": 3.79,
+      "observed": "26 pass / 0 fail; concurrent native schema isolation, permissions, success/failure cleanup and no unconstrained fallback",
+      "logSha256": "7b860c0da96403c334a9e522750e3d1c3e5b770d19a1819acfeb402663ea9c63"
     },
     {
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:30.954760+00:00",
-      "durationSeconds": 8.75,
-      "observed": "94 pass / 0 fail; isolated Unix inject-daemon socket allowed",
-      "logSha256": "5514130e31229c70e13131c0ef4ff4a1f3bbe24af69ae4d5ca75a3762a5fe225"
+      "startedAt": "2026-09-07T05:22:56.625221+00:00",
+      "durationSeconds": 8.94,
+      "observed": "96 pass / 0 fail; Unix inject-daemon socket allowed",
+      "logSha256": "aaf2a3db6ac2e74d4fe3a71d1b277be49dc78c8fc2eef447614250df24997771"
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:39.710152+00:00",
-      "durationSeconds": 8.09,
-      "observed": "Dry-run, installed-root authority, 9 MCP tools, doctor, first sync, idempotence, removal and user-environment isolation passed",
-      "logSha256": "78f66b3696a49eaa704d807cdd6dfb3a57a2071f2157bbc3085c0f4ad39ca6ab"
+      "startedAt": "2026-09-07T05:23:05.570886+00:00",
+      "durationSeconds": 7.81,
+      "observed": "Dry-run, authoritative installed root, 9 MCP tools, doctor, first sync, idempotence, removal and user-environment isolation passed",
+      "logSha256": "65eaebac7e5525a22736133e88e01e0e7752feec4d8c3c8713790bf03a4610cb"
     },
     {
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:47.798887+00:00",
+      "startedAt": "2026-09-07T05:23:13.383758+00:00",
       "durationSeconds": 0.4,
       "observed": "Plugin 0.4.0, 3 skills, 7 lifecycle hook events, cleanup PASS",
-      "logSha256": "3aeda44687c84cf0b847198edba3170d7c8eeaa7b9471b80d2c34369399d11d7"
+      "logSha256": "6798e06f7e3e8bd06c73918c1d5b47a87b759df236d8a2fc40a523b7a8d344df"
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:46:48.201241+00:00",
-      "durationSeconds": 82.48,
-      "observed": "memex-0.4.0.tgz; 228 files; 1085964 packed bytes / 4224092 unpacked bytes; 9 MCP tools; setup dry-run, sync, backfill all, status, prompt hook and final fence/deferred worker passed",
-      "logSha256": "442dc6b82f552035a0314457d03b7e698b4be119ade509ea6971cc6005bed4ac"
+      "startedAt": "2026-09-07T05:23:13.785961+00:00",
+      "durationSeconds": 81.97,
+      "observed": "memex-0.4.0.tgz; 229 files; 1090796 packed bytes / 4238674 unpacked bytes; 9 MCP tools; setup dry-run, sync, backfill all, status, prompt hook, final fence/deferred worker passed",
+      "logSha256": "58972bf6583795d9829c63086098d59756a4d8c501b5cc284c23b21c09e0539f"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
-      "startedAt": "2026-09-07T04:48:10.685267+00:00",
-      "durationSeconds": 8.42,
-      "observed": "Offline tier 9/9 passed; 11 owned hook entries removed; plugin registration, hooks, temp data, workers, sockets, listeners and user-environment isolation cleanup passed",
-      "logSha256": "b1d73938333ac02afa26a93939bca905b2dd6af0b65567034cd69fc7d7535758"
+      "startedAt": "2026-09-07T05:24:35.753316+00:00",
+      "durationSeconds": 8.09,
+      "observed": "Offline tier 9/9 passed; owned hook entries removed; plugin, hooks, temp data, workers, sockets, listeners and user-environment isolation cleanup passed",
+      "logSha256": "134137178e3aa6c23fa6593d0b63980a5640616a0146e0a54d78447457cb9600"
+    },
+    {
+      "name": "capsule-native-schema-live",
+      "status": "PASS",
+      "command": "Isolated default runContinuityWorker with gpt-5.6-luna; fixed long/carry fixtures and no model override",
+      "codeSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
+      "evidence": "docs/verification/capsule-output-schema-evaluation.json",
+      "evidenceSha256": "80fa0d4812aefb2c559f5c09c6c34e25a1fe5f0db82a1e7b1f7102971d553727",
+      "observed": "Long fixture 31996 characters / 24 exchanges / 3 pages and revision carry 1 page completed without retries; required decisions, constraints, exact revision tuple and next action preserved. Supplemental precommit first-call probe: 5/5 structurally valid nonempty hypothesis arrays, versus original 4/5. Intermediate retention failure and both unconstrained controls remain in the evidence."
     }
   ],
   "regressionCoverage": {
     "workContextBudget": "Fresh/stale/oversized/empty/missing Capsule under 500 and 2000 character pressure",
     "capsuleSequence": "Twenty alternating A/C updates; immutable generations; oversized fragments; fixed target and late input; sixth sibling Stop; retry/lease/purge/rebind CAS; v6 atomic replay; immutable page authority",
     "hotEvidence": "Rendered eligible prefix only; budget/query suffix retained; insert/purge during await; compact and rebind cursor behavior",
-    "capture": "64 MiB + 1 byte and 256 MiB source; allocations bounded to 4 MiB; hashes, partial/oversized lines, crash seams, source mutation and replacement-epoch ingestion"
+    "capture": "64 MiB + 1 byte and 256 MiB source; allocations bounded to 4 MiB; hashes, partial/oversized lines, crash seams, source mutation and replacement-epoch ingestion",
+    "capsuleOutputSchema": "Native object arrays only for Capsule, unchanged opt-out behavior for other callers, schema retained across retries, per-call file isolation/cleanup, exact local revision/provenance/length guards and rolling state metadata"
   },
   "hardSafety": {
     "evidence": "Required automated tests and isolated E2E at candidate.codeSha",
     "sourceRollouts": "Synthetic isolated fixtures only; production source rollouts not modified",
     "privacyAndScope": "Purge/rebind/lease/epoch regression tests passed",
-    "liveModelAuthorityQuality": "NOT_PROVEN"
+    "liveModelAuthorityQuality": "PASS for the bounded synthetic cases recorded in companion evidence; no production failure-rate or corpus-wide quality claim"
   },
   "archiveShadow": {
     "status": "NOT_RUN",
@@ -121,17 +131,20 @@
     "receipt": "docs/verification/merge-gate-2026-09-03.json",
     "sha256": "32a7f956a84fd31931ededdaecdbd9cf4e5d3b4696bde306536e278a060743c2",
     "preservedByteForByte": true,
-    "lockedRfcSha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a"
+    "lockedRfcSha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a",
+    "sequenceReceipt": "docs/verification/merge-gate-2026-09-07-sequence.json",
+    "sequenceReceiptSha256": "46eb8629690c4e35c5c5d894a9cbbc54c960b4d35520c2cd9d188d3fb1adc108"
   },
   "priorAttempt": {
-    "codeSha": "0e500c1684fa24cbc119c37e1bf7daa39fb34c87",
+    "codeSha": "26a071525db4ea32ce9b973d5bc3b8679c971613",
     "status": "SUPERSEDED",
-    "note": "Sandbox slice run observed listen EPERM. Package npm installation in the network-restricted run was stopped and cleaned up. These attempts are not counted as final gate evidence; all nine gates were rerun on final clean candidate.codeSha with required permissions."
+    "note": "Native schema fixed the hypothesis object shape, but a long-page result omitted prior masking and expiry constraints. Existing unconstrained control calls preserved them. The final schema includes explicit rolling-state field semantics and the full fixed long fixture passed at candidate.codeSha. All intermediate outputs remain in the companion evaluation."
   },
   "limitations": [
-    "Authenticated lifecycle/model semantic-quality tier was not run. Deterministic model seams prove state transitions, not live Luna summarization quality.",
-    "Migration replays currently surviving exchange generations; previously overwritten historical generations cannot be reconstructed.",
-    "Package measurements apply to candidate.codeSha before the receipt-only commit; no release artifact was published or claimed fully release-verified."
+    "Live tests are bounded synthetic smoke, manually reviewed by the fixture author; they do not establish corpus-wide semantic completeness or a production failure rate.",
+    "The full authenticated installed-lifecycle tier was not run; the default Capsule worker was exercised with real Luna separately from the offline installed-lifecycle gate.",
+    "Migration preserves its previously documented limits: already overwritten historical generations cannot be reconstructed.",
+    "Package measurements apply to candidate.codeSha before the evidence-only commit; no release artifact was published or claimed fully release-verified."
   ],
-  "releaseConclusion": "PASS-WITH-NOTES: all nine required deterministic, installer, marketplace, packaged-runtime and offline lifecycle gates passed on the exact clean candidate.codeSha. Live model quality remains NOT_PROVEN. Package version remains 0.4.0 with changes under Unreleased; no push, tag, publish or production data migration was performed."
+  "releaseConclusion": "PASS for the approved Capsule formatting fix and bounded quality regression scope: all nine required gates passed on clean candidate.codeSha; final real Luna default-worker long/carry cases passed. Native generation shape is opt-in only for Capsule, with existing semantic/provenance/CAS validation and retry behavior preserved. No push, tag, publish or production data migration was performed."
 }
