@@ -6,6 +6,7 @@ import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
 import {
   runCodex,
   type CodexExecObservation,
+  type CodexExecOptions,
   type CodexTokenUsage,
 } from './codex-exec.js';
 
@@ -47,6 +48,8 @@ function backoffMs(attempt: number): number {
 
 const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
+export type MemoryModelOptions = Pick<CodexExecOptions, 'outputSchema'>;
+
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
@@ -59,12 +62,13 @@ async function callOnce(
   userMessage: string,
   _maxTokens: number,
   onObservation?: (observation: CodexExecObservation) => void,
+  options: MemoryModelOptions = {},
 ): Promise<string> {
   const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
     timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
-  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
+  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation, outputSchema: options.outputSchema });
 }
 
 export interface MemoryModelObservation {
@@ -141,6 +145,7 @@ async function callMemoryModelInternal(
   systemPrompt: string,
   userMessage: string,
   maxTokens: number = 2048,
+  options: MemoryModelOptions = {},
 ): Promise<ObservedMemoryModelResult> {
   const retries = retryBudget();
   let lastError: unknown;
@@ -154,6 +159,7 @@ async function callMemoryModelInternal(
         userMessage,
         maxTokens,
         (observation) => observations.push(observation),
+        options,
       );
       if (text && text.trim() !== '') {
         return {
@@ -187,16 +193,18 @@ export async function callMemoryModelObserved(
   systemPrompt: string,
   userMessage: string,
   maxTokens: number = 2048,
+  options: MemoryModelOptions = {},
 ): Promise<ObservedMemoryModelResult> {
-  return callMemoryModelInternal(systemPrompt, userMessage, maxTokens);
+  return callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options);
 }
 
 export async function callMemoryModel(
   systemPrompt: string,
   userMessage: string,
   maxTokens: number = 2048,
+  options: MemoryModelOptions = {},
 ): Promise<string> {
-  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
+  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options)).text;
 }
 
 export function parseJsonResponse<T>(text: string): T | null {

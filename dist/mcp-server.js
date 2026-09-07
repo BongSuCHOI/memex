@@ -22172,6 +22172,39 @@ if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.m
 // src/continuity-core.ts
 var CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
+var capsuleStringListSchema = { type: "array", items: { type: "string" } };
+var capsuleEvidenceListSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: { text: { type: "string" }, sourceExchangeIds: capsuleStringListSchema },
+    required: ["text", "sourceExchangeIds"],
+    additionalProperties: false
+  }
+};
+var capsuleOutputProperties = {
+  objective: { type: "string" },
+  currentState: { type: "string" },
+  verifiedProgress: capsuleEvidenceListSchema,
+  hypotheses: capsuleEvidenceListSchema,
+  blockers: capsuleStringListSchema,
+  openQuestions: capsuleStringListSchema,
+  nextActions: capsuleStringListSchema,
+  touchedAreas: capsuleStringListSchema,
+  // Encode member types here; exact [factId, semantic, lifecycle] tuple
+  // positions and revision identity are still checked by the local validator.
+  carryFactRevisions: {
+    type: "array",
+    items: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } }
+  },
+  sourceExchangeIds: capsuleStringListSchema
+};
+var WORK_CAPSULE_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: capsuleOutputProperties,
+  required: Object.keys(capsuleOutputProperties),
+  additionalProperties: false
+};
 function parseJsonArray(raw, fallback = []) {
   if (typeof raw !== "string") return fallback;
   try {
@@ -24862,6 +24895,7 @@ function buildCodexExecArgs(opts) {
   const trimmed = model ? String(model).trim() : "";
   if (trimmed) args.push("-m", trimmed);
   if (opts.outputLast) args.push("-o", opts.outputLast);
+  if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   args.push("--json", "-");
   return args;
 }
@@ -24984,7 +25018,9 @@ async function runCodex(opts = {}) {
   const started = performance.now();
   try {
     const prompt = buildPrompt(opts.systemPrompt || "", opts.userMessage || "");
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath });
+    const schemaPath = opts.outputSchema ? path10.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs9.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
     let text = "";
     try {
@@ -25027,11 +25063,11 @@ function backoffMs(attempt) {
   return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation) {
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}) {
   const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
-  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation });
+  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation, outputSchema: options.outputSchema });
 }
 function summarizeObservations(attempts, started, observations) {
   const withUsage = observations.filter(
@@ -25058,7 +25094,7 @@ function summarizeObservations(attempts, started, observations) {
     token_usage_status: status
   };
 }
-async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048) {
+async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 2048, options = {}) {
   const retries = retryBudget();
   let lastError;
   const observations = [];
@@ -25069,7 +25105,8 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
         systemPrompt,
         userMessage,
         maxTokens,
-        (observation) => observations.push(observation)
+        (observation) => observations.push(observation),
+        options
       );
       if (text && text.trim() !== "") {
         return {
@@ -25097,8 +25134,8 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
-async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048) {
-  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens)).text;
+async function callMemoryModel(systemPrompt, userMessage, maxTokens = 2048, options = {}) {
+  return (await callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options)).text;
 }
 function parseJsonResponse(text) {
   const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\])/) || text.match(/(\{[\s\S]*\})/);

@@ -1,5 +1,6 @@
-import { type CodexTokenUsage } from './codex-exec.js';
+import { type CodexExecOptions, type CodexTokenUsage } from './codex-exec.js';
 export declare function llmWorkdir(): string;
+export type MemoryModelOptions = Pick<CodexExecOptions, 'outputSchema'>;
 export interface MemoryModelObservation {
     attempts: number;
     total_latency_ms: number;
@@ -10,6 +11,6 @@ export interface ObservedMemoryModelResult {
     text: string;
     observation: MemoryModelObservation;
 }
-export declare function callMemoryModelObserved(systemPrompt: string, userMessage: string, maxTokens?: number): Promise<ObservedMemoryModelResult>;
-export declare function callMemoryModel(systemPrompt: string, userMessage: string, maxTokens?: number): Promise<string>;
+export declare function callMemoryModelObserved(systemPrompt: string, userMessage: string, maxTokens?: number, options?: MemoryModelOptions): Promise<ObservedMemoryModelResult>;
+export declare function callMemoryModel(systemPrompt: string, userMessage: string, maxTokens?: number, options?: MemoryModelOptions): Promise<string>;
 export declare function parseJsonResponse<T>(text: string): T | null;

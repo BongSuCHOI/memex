@@ -222,6 +222,7 @@ test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-
   assert.notEqual(mi, -1, 'DEFAULT_CODEX_MODEL must always be forwarded');
   assert.equal(args[mi + 1], 'gpt-5.6-luna');
   assert.deepEqual(args.slice(-2), ['--json', '-']);
+  assert.equal(args.includes('--output-schema'), false, 'ordinary callers keep their existing output behavior');
 
   // Explicit option wins over the default.
   const withModel = buildCodexExecArgs({ workdir: '/w', model: ' gpt-5.7-mini ' });
@@ -282,6 +283,54 @@ test('runCodex end-to-end against a fake codex binary (no network, no install)',
   fs.chmodSync(bin, 0o755);
   const reply = await runCodex({ codexBin: bin, systemPrompt: 'sys', userMessage: 'usr', timeoutMs: 15_000 });
   assert.equal(reply, 'FAKE-REPLY');
+});
+
+test('runCodex isolates concurrent native output schemas and removes them after use', async () => {
+  const binDir = tmpdir();
+  const bin = path.join(binDir, 'schema-codex');
+  fs.writeFileSync(bin, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.readFileSync(0, 'utf8');
+const schemaPath = args[args.indexOf('--output-schema') + 1];
+const text = JSON.stringify({ schemaPath, cwd: process.cwd(), schemaDirectory: fs.realpathSync(require('node:path').dirname(schemaPath)),
+  mode: fs.statSync(schemaPath).mode & 0o777, schema: JSON.parse(fs.readFileSync(schemaPath, 'utf8')) });
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } }));
+`);
+  fs.chmodSync(bin, 0o755);
+  try {
+    const schemas = ['first', 'second'].map((value) => ({ type: 'object', properties: { value: { const: value } } }));
+    const replies = await Promise.all(schemas.map(async (outputSchema) => JSON.parse(await runCodex({
+      codexBin: bin, userMessage: 'schema test', outputSchema,
+    }))));
+    assert.notEqual(replies[0].cwd, replies[1].cwd);
+    for (const [i, reply] of replies.entries()) {
+      assert.deepEqual(reply.schema, schemas[i]);
+      assert.equal(reply.schemaDirectory, reply.cwd);
+      assert.equal(reply.mode, 0o600);
+      assert.equal(fs.existsSync(reply.cwd), false, 'schema and workdir removed after success');
+    }
+  } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
+});
+
+test('runCodex cleans rejected schemas without falling back to an unconstrained call', async () => {
+  const binDir = tmpdir();
+  const bin = path.join(binDir, 'reject-schema-codex');
+  const calls = path.join(binDir, 'calls.jsonl');
+  fs.writeFileSync(bin, `#!${process.execPath}
+const fs = require('node:fs');
+fs.readFileSync(0, 'utf8');
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }) + '\\n');
+console.error('unsupported --output-schema'); process.exit(2);
+`);
+  fs.chmodSync(bin, 0o755);
+  try {
+    await assert.rejects(() => runCodex({ codexBin: bin, userMessage: 'x', outputSchema: { type: 'object' } }), /unsupported --output-schema/);
+    const recorded = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(recorded.length, 1);
+    assert.ok(recorded[0].args.includes('--output-schema'));
+    assert.equal(fs.existsSync(recorded[0].cwd), false, 'schema and workdir removed after failure');
+  } finally { fs.rmSync(binDir, { recursive: true, force: true }); }
 });
 
 test('runCodex surfaces timeout as error', async () => {

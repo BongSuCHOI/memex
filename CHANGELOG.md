@@ -4,6 +4,9 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+- Constrain Work Capsule generation with a native Codex output schema so evidence
+  and hypothesis items retain their typed source IDs. Other model calls remain
+  opt-in; local provenance, size, revision and CAS validation still applies.
 - Reserve compact/resume work context before corrections consume the bundle budget.
 - Replace scalar Capsule coverage with immutable, ordered workstream evidence and
   bounded fixed-target pages. Preserve six-Stop/8KiB coalescing across sessions;

@@ -8,6 +8,7 @@ import {
 import {
   applyLatestLifecycleClosure,
   CAPTURE_CHUNK_BYTES,
+  WORK_CAPSULE_OUTPUT_SCHEMA,
   applyWorkCapsulePatch,
   completeEmptyCapsuleCheckpoint,
   readWorkCapsule,
@@ -475,7 +476,9 @@ export async function runContinuityWorker(
 ): Promise<ContinuityWorkerResult[]> {
   const maxJobs = Math.max(1, Math.min(32, options.maxJobs ?? 8));
   const owner = options.owner ?? randomUUID();
-  const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048));
+  const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048, {
+    outputSchema: WORK_CAPSULE_OUTPUT_SCHEMA,
+  }));
   const results: ContinuityWorkerResult[] = [];
   for (let index = 0; index < maxJobs; index++) {
     scheduleCapsuleBacklog(db);

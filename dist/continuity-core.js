@@ -15,6 +15,39 @@ export const CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 const SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 const MAX_CAPSULE_CHARS = 2_000;
 const MAX_ARRAY_ITEMS = 8;
+const capsuleStringListSchema = { type: "array", items: { type: "string" } };
+const capsuleEvidenceListSchema = {
+    type: "array",
+    items: {
+        type: "object",
+        properties: { text: { type: "string" }, sourceExchangeIds: capsuleStringListSchema },
+        required: ["text", "sourceExchangeIds"],
+        additionalProperties: false,
+    },
+};
+const capsuleOutputProperties = {
+    objective: { type: "string" },
+    currentState: { type: "string" },
+    verifiedProgress: capsuleEvidenceListSchema,
+    hypotheses: capsuleEvidenceListSchema,
+    blockers: capsuleStringListSchema,
+    openQuestions: capsuleStringListSchema,
+    nextActions: capsuleStringListSchema,
+    touchedAreas: capsuleStringListSchema,
+    // Encode member types here; exact [factId, semantic, lifecycle] tuple
+    // positions and revision identity are still checked by the local validator.
+    carryFactRevisions: {
+        type: "array", items: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+    },
+    sourceExchangeIds: capsuleStringListSchema,
+};
+/** Native generation shape only; provenance, bounds and CAS remain local. */
+export const WORK_CAPSULE_OUTPUT_SCHEMA = {
+    type: "object",
+    properties: capsuleOutputProperties,
+    required: Object.keys(capsuleOutputProperties),
+    additionalProperties: false,
+};
 function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
@@ -806,11 +839,7 @@ export function validateWorkCapsulePatch(value) {
         throw new Error("capsule patch must be an object");
     }
     const input = value;
-    const fields = [
-        "objective", "currentState", "verifiedProgress", "hypotheses", "blockers",
-        "openQuestions", "nextActions", "touchedAreas", "carryFactRevisions",
-        "sourceExchangeIds",
-    ];
+    const fields = WORK_CAPSULE_OUTPUT_SCHEMA.required;
     const keys = Object.keys(input);
     if (keys.length !== fields.length ||
         fields.some((field) => !Object.prototype.hasOwnProperty.call(input, field)) ||

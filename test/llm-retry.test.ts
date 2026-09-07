@@ -17,10 +17,12 @@ const scenarios: Array<{
   usage?: { input_tokens: number; output_tokens: number; cached_input_tokens?: number };
 }> = [];
 let queryCalls = 0;
+const requestedSchemas: Array<unknown> = [];
 
 vi.mock('../src/codex-exec.js', () => ({
   INNER_GUARD_ENV: 'MEMEX_CODEX_EXEC_INNER',
-  runCodex: (_args: { onObservation?: (value: unknown) => void }) => {
+  runCodex: (_args: { onObservation?: (value: unknown) => void; outputSchema?: unknown }) => {
+    requestedSchemas.push(_args.outputSchema);
     const scenario = scenarios[Math.min(queryCalls, scenarios.length - 1)];
     queryCalls++;
     if (scenario?.throws) return Promise.reject(scenario.throws);
@@ -36,6 +38,7 @@ async function llm() {
 beforeEach(() => {
   scenarios.length = 0;
   queryCalls = 0;
+  requestedSchemas.length = 0;
   process.env.MEMEX_LLM_RETRY_BASE_MS = '0'; // 테스트에서 백오프 대기 없음
 });
 afterEach(() => {
@@ -44,6 +47,15 @@ afterEach(() => {
 });
 
 describe('callMemoryModel 재시도/복구', () => {
+  it('forwards an opt-in schema through every retry and leaves ordinary calls unconstrained', async () => {
+    const { callMemoryModel, callMemoryModelObserved } = await llm();
+    const outputSchema = { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false };
+    scenarios.push({ result: '' }, { result: '{"value":"ok"}' }, { result: 'ordinary' }, { result: '{"value":"observed"}' });
+    expect(await callMemoryModel('sys', 'user', 2048, { outputSchema })).toBe('{"value":"ok"}');
+    expect(await callMemoryModel('sys', 'user')).toBe('ordinary');
+    expect((await callMemoryModelObserved('sys', 'user', 2048, { outputSchema })).text).toBe('{"value":"observed"}');
+    expect(requestedSchemas).toEqual([outputSchema, outputSchema, undefined, outputSchema]);
+  });
   it('AC1: 빈 응답을 재시도하고, 재시도가 성공하면 결과를 반환한다', async () => {
     const { callMemoryModel } = await llm();
     scenarios.push({ result: '' }, { result: '{"ok":true}' });

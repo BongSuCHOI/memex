@@ -44,7 +44,7 @@ node scripts/web-ui-browser-e2e.mjs
 | rolling journal | delta-only byte accounting, partial-line deferral, same-size/growing rewrite and damaged-journal epoch, competing-process serialization, block/prefix hash verification, fsync/DB crash seams |
 | lifecycle capture | Stop closed, Interrupt open, PreCompact/final fence, event stdout shape, model/embedding 0, bounded latency |
 | compact continuity | no-PostCompact epoch transition, immediate Capsule/tail baton, active latest carry, clear reset |
-| Work Capsule | exact typed authority/source bounds, strict JSON, generation+lease CAS, stale-projection tail baton, coalescing, retry exhaustion accounting |
+| Work Capsule | exact typed authority/source bounds, strict JSON, native output schema opt-in and temporary-file isolation/cleanup, default-worker schema forwarding, malformed/foreign-source rejection, generation+lease CAS, stale-projection tail baton, coalescing, retry exhaustion accounting |
 | prefix ingestion | CP2→CP1 out-of-order delivery에서 delete/generation/line regression 0 |
 | context dependency | server mapping, atomic save, consolidation union, edit/sync clear, privacy/FK cascade |
 | extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |

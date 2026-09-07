@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { claimMemoryJobById, failMemoryJob, } from "./continuity-store.js";
-import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, validateWorkCapsulePatch, } from "./continuity-core.js";
+import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, WORK_CAPSULE_OUTPUT_SCHEMA, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, validateWorkCapsulePatch, } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
@@ -379,7 +379,9 @@ async function processCapsule(db, jobId, owner, now, model) {
 export async function runContinuityWorker(db, options = {}) {
     const maxJobs = Math.max(1, Math.min(32, options.maxJobs ?? 8));
     const owner = options.owner ?? randomUUID();
-    const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048));
+    const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048, {
+        outputSchema: WORK_CAPSULE_OUTPUT_SCHEMA,
+    }));
     const results = [];
     for (let index = 0; index < maxJobs; index++) {
         scheduleCapsuleBacklog(db);

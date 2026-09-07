@@ -1,0 +1,137 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-07T04:49:30.229987+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Fresh temporary CODEX_HOME/MEMEX_HOME for installer, marketplace, package and lifecycle E2E; network and Unix sockets allowed for the final required gate"
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/continuity-sequence-v7",
+    "codeSha": "b3cdf776457c52ea6148ec58f93fab1e5ba7a67d",
+    "productionEvidenceSha": null,
+    "packageVersion": "0.4.0",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "note": "Approved continuity fixes, schema v7, tests, generated artifacts and owner docs committed before this complete gate. Receipt-only commit follows. This is a merge gate, not a release or independent phase gate."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:03.857696+00:00",
+      "durationSeconds": 3.08,
+      "observed": "TypeScript noEmit exit 0",
+      "logSha256": "50f686aab1abb949d0fc43fec20d1ff034a52703399490b664cb5a35016d1c01"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:06.936928+00:00",
+      "durationSeconds": 3.77,
+      "observed": "tsc and bundled MCP build exit 0; generated files unchanged after build",
+      "logSha256": "31a7af31e7a9aade9525c2f42ede41a547252e8506e74094f413ea0cbd7cb4ee"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:10.707104+00:00",
+      "durationSeconds": 17.45,
+      "observed": "84 files / 898 tests passed",
+      "logSha256": "15f6968e711879f13631d20029498cb865a554f8ccbf0e429f7a71946c0f4d79"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:28.155440+00:00",
+      "durationSeconds": 2.8,
+      "observed": "24 pass / 0 fail",
+      "logSha256": "d14841bbb6671b00f1109801db92ac9a196b5f23c6b9e8ab12add62ec18787a6"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:30.954760+00:00",
+      "durationSeconds": 8.75,
+      "observed": "94 pass / 0 fail; isolated Unix inject-daemon socket allowed",
+      "logSha256": "5514130e31229c70e13131c0ef4ff4a1f3bbe24af69ae4d5ca75a3762a5fe225"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:39.710152+00:00",
+      "durationSeconds": 8.09,
+      "observed": "Dry-run, installed-root authority, 9 MCP tools, doctor, first sync, idempotence, removal and user-environment isolation passed",
+      "logSha256": "78f66b3696a49eaa704d807cdd6dfb3a57a2071f2157bbc3085c0f4ad39ca6ab"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:47.798887+00:00",
+      "durationSeconds": 0.4,
+      "observed": "Plugin 0.4.0, 3 skills, 7 lifecycle hook events, cleanup PASS",
+      "logSha256": "3aeda44687c84cf0b847198edba3170d7c8eeaa7b9471b80d2c34369399d11d7"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:46:48.201241+00:00",
+      "durationSeconds": 82.48,
+      "observed": "memex-0.4.0.tgz; 228 files; 1085964 packed bytes / 4224092 unpacked bytes; 9 MCP tools; setup dry-run, sync, backfill all, status, prompt hook and final fence/deferred worker passed",
+      "logSha256": "442dc6b82f552035a0314457d03b7e698b4be119ade509ea6971cc6005bed4ac"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "startedAt": "2026-09-07T04:48:10.685267+00:00",
+      "durationSeconds": 8.42,
+      "observed": "Offline tier 9/9 passed; 11 owned hook entries removed; plugin registration, hooks, temp data, workers, sockets, listeners and user-environment isolation cleanup passed",
+      "logSha256": "b1d73938333ac02afa26a93939bca905b2dd6af0b65567034cd69fc7d7535758"
+    }
+  ],
+  "regressionCoverage": {
+    "workContextBudget": "Fresh/stale/oversized/empty/missing Capsule under 500 and 2000 character pressure",
+    "capsuleSequence": "Twenty alternating A/C updates; immutable generations; oversized fragments; fixed target and late input; sixth sibling Stop; retry/lease/purge/rebind CAS; v6 atomic replay; immutable page authority",
+    "hotEvidence": "Rendered eligible prefix only; budget/query suffix retained; insert/purge during await; compact and rebind cursor behavior",
+    "capture": "64 MiB + 1 byte and 256 MiB source; allocations bounded to 4 MiB; hashes, partial/oversized lines, crash seams, source mutation and replacement-epoch ingestion"
+  },
+  "hardSafety": {
+    "evidence": "Required automated tests and isolated E2E at candidate.codeSha",
+    "sourceRollouts": "Synthetic isolated fixtures only; production source rollouts not modified",
+    "privacyAndScope": "Purge/rebind/lease/epoch regression tests passed",
+    "liveModelAuthorityQuality": "NOT_PROVEN"
+  },
+  "archiveShadow": {
+    "status": "NOT_RUN",
+    "note": "No production archive shadow or backfill was run for this change."
+  },
+  "historicalEvidence": {
+    "receipt": "docs/verification/merge-gate-2026-09-03.json",
+    "sha256": "32a7f956a84fd31931ededdaecdbd9cf4e5d3b4696bde306536e278a060743c2",
+    "preservedByteForByte": true,
+    "lockedRfcSha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a"
+  },
+  "priorAttempt": {
+    "codeSha": "0e500c1684fa24cbc119c37e1bf7daa39fb34c87",
+    "status": "SUPERSEDED",
+    "note": "Sandbox slice run observed listen EPERM. Package npm installation in the network-restricted run was stopped and cleaned up. These attempts are not counted as final gate evidence; all nine gates were rerun on final clean candidate.codeSha with required permissions."
+  },
+  "limitations": [
+    "Authenticated lifecycle/model semantic-quality tier was not run. Deterministic model seams prove state transitions, not live Luna summarization quality.",
+    "Migration replays currently surviving exchange generations; previously overwritten historical generations cannot be reconstructed.",
+    "Package measurements apply to candidate.codeSha before the receipt-only commit; no release artifact was published or claimed fully release-verified."
+  ],
+  "releaseConclusion": "PASS-WITH-NOTES: all nine required deterministic, installer, marketplace, packaged-runtime and offline lifecycle gates passed on the exact clean candidate.codeSha. Live model quality remains NOT_PROVEN. Package version remains 0.4.0 with changes under Unreleased; no push, tag, publish or production data migration was performed."
+}

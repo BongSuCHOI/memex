@@ -81,6 +81,41 @@ export interface WorkCapsulePatch {
   sourceExchangeIds: string[];
 }
 
+const capsuleStringListSchema = { type: "array", items: { type: "string" } };
+const capsuleEvidenceListSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: { text: { type: "string" }, sourceExchangeIds: capsuleStringListSchema },
+    required: ["text", "sourceExchangeIds"],
+    additionalProperties: false,
+  },
+};
+const capsuleOutputProperties = {
+  objective: { type: "string" },
+  currentState: { type: "string" },
+  verifiedProgress: capsuleEvidenceListSchema,
+  hypotheses: capsuleEvidenceListSchema,
+  blockers: capsuleStringListSchema,
+  openQuestions: capsuleStringListSchema,
+  nextActions: capsuleStringListSchema,
+  touchedAreas: capsuleStringListSchema,
+  // Encode member types here; exact [factId, semantic, lifecycle] tuple
+  // positions and revision identity are still checked by the local validator.
+  carryFactRevisions: {
+    type: "array", items: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+  },
+  sourceExchangeIds: capsuleStringListSchema,
+} satisfies Record<keyof WorkCapsulePatch, object>;
+
+/** Native generation shape only; provenance, bounds and CAS remain local. */
+export const WORK_CAPSULE_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: capsuleOutputProperties,
+  required: Object.keys(capsuleOutputProperties),
+  additionalProperties: false,
+};
+
 export interface WorkCapsule extends WorkCapsulePatch {
   workstreamId: string;
   generation: number;
@@ -1099,11 +1134,7 @@ export function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch {
     throw new Error("capsule patch must be an object");
   }
   const input = value as Record<string, unknown>;
-  const fields = [
-    "objective", "currentState", "verifiedProgress", "hypotheses", "blockers",
-    "openQuestions", "nextActions", "touchedAreas", "carryFactRevisions",
-    "sourceExchangeIds",
-  ];
+  const fields = WORK_CAPSULE_OUTPUT_SCHEMA.required;
   const keys = Object.keys(input);
   if (keys.length !== fields.length ||
     fields.some((field) => !Object.prototype.hasOwnProperty.call(input, field)) ||

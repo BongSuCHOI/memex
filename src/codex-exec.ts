@@ -31,6 +31,8 @@ export interface CodexExecOptions {
   /** Explicit model override; when absent, MEMEX_CODEX_MODEL then
    *  DEFAULT_CODEX_MODEL applies. */
   model?: string | null;
+  /** Opt-in native response structure; callers still validate domain semantics. */
+  outputSchema?: Record<string, unknown>;
   /** Best-effort provider telemetry. Failure to observe never fails the call. */
   onObservation?: (observation: CodexExecObservation) => void;
 }
@@ -65,6 +67,7 @@ export function buildCodexExecArgs(opts: {
   model?: string | null;
   workdir: string;
   outputLast?: string;
+  outputSchemaPath?: string;
 }): string[] {
   const args = [
     'exec',
@@ -81,6 +84,7 @@ export function buildCodexExecArgs(opts: {
   const trimmed = model ? String(model).trim() : '';
   if (trimmed) args.push('-m', trimmed);
   if (opts.outputLast) args.push('-o', opts.outputLast);
+  if (opts.outputSchemaPath) args.push('--output-schema', opts.outputSchemaPath);
   args.push('--json', '-'); // prompt via stdin
   return args;
 }
@@ -246,7 +250,9 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
   const started = performance.now();
   try {
     const prompt = buildPrompt(opts.systemPrompt || '', opts.userMessage || '');
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath });
+    const schemaPath = opts.outputSchema ? path.join(workdir, 'output-schema.json') : undefined;
+    if (schemaPath) fs.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 0o600 });
+    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
     const res = await runChild(bin, args, workdir, prompt, timeoutMs);
 
     let text = '';

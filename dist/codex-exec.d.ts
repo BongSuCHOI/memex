@@ -10,6 +10,8 @@ export interface CodexExecOptions {
     /** Explicit model override; when absent, MEMEX_CODEX_MODEL then
      *  DEFAULT_CODEX_MODEL applies. */
     model?: string | null;
+    /** Opt-in native response structure; callers still validate domain semantics. */
+    outputSchema?: Record<string, unknown>;
     /** Best-effort provider telemetry. Failure to observe never fails the call. */
     onObservation?: (observation: CodexExecObservation) => void;
 }
@@ -27,6 +29,7 @@ export declare function buildCodexExecArgs(opts: {
     model?: string | null;
     workdir: string;
     outputLast?: string;
+    outputSchemaPath?: string;
 }): string[];
 /** Pull the last agent answer out of --json JSONL events (fallback path). */
 export declare function lastAgentMessageFromEvents(stdout: string): string;

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { initDatabase, insertExchange } from "../src/db.js";
-import { applyWorkCapsulePatch, captureTranscriptPrefix, ensureSessionMemoryState, readWorkCapsule } from "../src/continuity-core.js";
+import { applyWorkCapsulePatch, captureTranscriptPrefix, ensureSessionMemoryState, readWorkCapsule, WORK_CAPSULE_OUTPUT_SCHEMA } from "../src/continuity-core.js";
 import { runContinuityWorker } from "../src/continuity-worker.js";
 import { rebindSessionWorkstream, createWorkstream } from "../src/continuity-identity.js";
 import { purgeConversationFromIndex } from "../src/conversation-policy.js";
@@ -16,6 +16,7 @@ let db: Database.Database;
 let workstream: string;
 let scopes: ReturnType<typeof ensureSessionMemoryState>;
 const vector = new Array(384).fill(0.01);
+const originalCodexBin = process.env.MEMEX_CODEX_BIN;
 const patch = {
   objective: "Maintain continuity", currentState: "Captured work", verifiedProgress: [], hypotheses: [],
   blockers: [], openQuestions: [], nextActions: ["Verify the next step"], touchedAreas: [],
@@ -51,6 +52,22 @@ function maximum(): number {
     .get(workstream) as { n: number }).n;
 }
 
+function useFakeCodex(response: unknown): string {
+  const bin = path.join(root, "fake-codex");
+  const observation = path.join(root, "schema-observation.json");
+  fs.writeFileSync(bin, `#!${process.execPath}
+const fs = require('node:fs');
+fs.readFileSync(0, 'utf8');
+const args = process.argv.slice(2);
+const schemaPath = args[args.indexOf('--output-schema') + 1];
+fs.writeFileSync(${JSON.stringify(observation)}, fs.readFileSync(schemaPath));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: ${JSON.stringify(JSON.stringify(response))} } }));
+`);
+  fs.chmodSync(bin, 0o755);
+  process.env.MEMEX_CODEX_BIN = bin;
+  return observation;
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-evidence-"));
   process.env.MEMEX_HOME = path.join(root, "home");
@@ -68,7 +85,39 @@ afterEach(() => {
   delete process.env.MEMEX_HOME;
   delete process.env.MEMEX_DB_PATH;
   delete process.env.MEMEX_ALLOWED_TRANSCRIPT_ROOTS;
+  if (originalCodexBin === undefined) delete process.env.MEMEX_CODEX_BIN;
+  else process.env.MEMEX_CODEX_BIN = originalCodexBin;
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+it("the default Capsule worker passes its native object schema through the real provider path", async () => {
+  put("session-A", "source");
+  capture("session-A");
+  const response = { ...patch, sourceExchangeIds: ["source"],
+    hypotheses: [{ text: "Unverified proposal", sourceExchangeIds: ["source"] }] };
+  const observation = useFakeCodex(response);
+  const result = await runContinuityWorker(db, { maxJobs: 1 });
+  expect(result[0].state).toBe("completed");
+  expect(JSON.parse(fs.readFileSync(observation, "utf8"))).toEqual(WORK_CAPSULE_OUTPUT_SCHEMA);
+  expect(WORK_CAPSULE_OUTPUT_SCHEMA.properties.hypotheses.items.type).toBe("object");
+  expect(readWorkCapsule(db, workstream)?.hypotheses).toEqual(response.hypotheses);
+  expect(frontier().through_seq).toBe(maximum());
+});
+
+it.each([
+  { change: { hypotheses: ["Unverified proposal"] }, error: "hypotheses contains invalid item" },
+  { change: { objective: "x".repeat(501) }, error: "objective must be text" },
+  { change: { carryFactRevisions: [["fact", 1, "2"]] }, error: "invalid revision identity" },
+  { change: { hypotheses: [{ text: "Proposal", sourceExchangeIds: ["foreign"] }], sourceExchangeIds: ["foreign"] }, error: "missing or outside workstream" },
+])("still rejects invalid Capsule content after native generation: $error", async ({ change, error }) => {
+  put("session-A", "source");
+  capture("session-A");
+  useFakeCodex({ ...patch, ...change });
+  const result = await runContinuityWorker(db, { maxJobs: 1 });
+  expect(result[0].state).toBe("retry");
+  expect(result[0].detail).toContain(error);
+  expect(readWorkCapsule(db, workstream)).toBeNull();
+  expect(frontier().through_seq).toBe(0);
 });
 
 it("drains twenty alternating A/C updates without repeating unchanged generations", async () => {

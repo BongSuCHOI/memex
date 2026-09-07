@@ -56,6 +56,99 @@ export interface WorkCapsulePatch {
     carryFactRevisions: ResidentFactRevision[];
     sourceExchangeIds: string[];
 }
+/** Native generation shape only; provenance, bounds and CAS remain local. */
+export declare const WORK_CAPSULE_OUTPUT_SCHEMA: {
+    type: string;
+    properties: {
+        objective: {
+            type: string;
+        };
+        currentState: {
+            type: string;
+        };
+        verifiedProgress: {
+            type: string;
+            items: {
+                type: string;
+                properties: {
+                    text: {
+                        type: string;
+                    };
+                    sourceExchangeIds: {
+                        type: string;
+                        items: {
+                            type: string;
+                        };
+                    };
+                };
+                required: string[];
+                additionalProperties: boolean;
+            };
+        };
+        hypotheses: {
+            type: string;
+            items: {
+                type: string;
+                properties: {
+                    text: {
+                        type: string;
+                    };
+                    sourceExchangeIds: {
+                        type: string;
+                        items: {
+                            type: string;
+                        };
+                    };
+                };
+                required: string[];
+                additionalProperties: boolean;
+            };
+        };
+        blockers: {
+            type: string;
+            items: {
+                type: string;
+            };
+        };
+        openQuestions: {
+            type: string;
+            items: {
+                type: string;
+            };
+        };
+        nextActions: {
+            type: string;
+            items: {
+                type: string;
+            };
+        };
+        touchedAreas: {
+            type: string;
+            items: {
+                type: string;
+            };
+        };
+        carryFactRevisions: {
+            type: string;
+            items: {
+                type: string;
+                items: {
+                    anyOf: {
+                        type: string;
+                    }[];
+                };
+            };
+        };
+        sourceExchangeIds: {
+            type: string;
+            items: {
+                type: string;
+            };
+        };
+    };
+    required: string[];
+    additionalProperties: boolean;
+};
 export interface WorkCapsule extends WorkCapsulePatch {
     workstreamId: string;
     generation: number;
