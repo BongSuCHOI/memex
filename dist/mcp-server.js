@@ -22184,7 +22184,10 @@ var capsuleEvidenceListSchema = {
 };
 var capsuleOutputProperties = {
   objective: { type: "string" },
-  currentState: { type: "string" },
+  currentState: {
+    type: "string",
+    description: "Merged current state of the whole workstream. Carry forward still-applicable decisions and constraints from previousCapsule, including specific values needed for continuation; revise them when the current evidence changes or resolves them."
+  },
   verifiedProgress: capsuleEvidenceListSchema,
   hypotheses: capsuleEvidenceListSchema,
   blockers: capsuleStringListSchema,

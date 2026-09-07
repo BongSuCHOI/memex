@@ -30,7 +30,7 @@
 
 `work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Capsule이 없거나 latest checkpoint보다 오래되면 deterministic tail baton(마지막 요청, plan line, touched files, trusted test, unresolved error)이 대신합니다. 어느 것도 fact evidence로 재진입하지 않습니다.
 
-P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec --output-schema`로 전달합니다. `verifiedProgress`와 `hypotheses`는 `{text, sourceExchangeIds}` 객체 배열로 생성하며 문자열 배열을 사후 변환하거나 source ID를 추정하지 않습니다. Schema는 호출별 임시 workdir에만 기록하고 성공·실패 모두 삭제합니다. 공통 model provider의 선택 옵션이며 Capsule 이외 호출에는 자동 적용하지 않습니다.
+P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec --output-schema`로 전달합니다. `verifiedProgress`와 `hypotheses`는 `{text, sourceExchangeIds}` 객체 배열로 생성하며 문자열 배열을 사후 변환하거나 source ID를 추정하지 않습니다. `currentState`의 schema 설명은 기존 Capsule의 유효한 결정·제약·구체적인 수치를 이어받고 새 evidence가 변경한 부분을 갱신하도록 명시합니다. 이 설명은 요약 지침이며 의미 보존의 자동 검증을 대신하지 않습니다. Schema는 호출별 임시 workdir에만 기록하고 성공·실패 모두 삭제합니다. 공통 model provider의 선택 옵션이며 Capsule 이외 호출에는 자동 적용하지 않습니다.
 
 Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·list 수·정확한 revision tuple·출처 선언을 검사하고, commit 시 page authority·scope·generation/lease CAS를 다시 확인합니다. Schema 미지원·잘못된 응답은 기존 bounded retry/dead 경로로 남으며 schema 없는 호출로 fallback하지 않습니다. `--json`은 이벤트 전송 형식이므로 final 응답의 구조 제약을 대신하지 않습니다. CLI의 [native schema 계약](https://learn.chatgpt.com/docs/non-interactive-mode#create-structured-outputs-with-a-schema)을 사용합니다.
 

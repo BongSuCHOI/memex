@@ -65,6 +65,7 @@ export declare const WORK_CAPSULE_OUTPUT_SCHEMA: {
         };
         currentState: {
             type: string;
+            description: string;
         };
         verifiedProgress: {
             type: string;
