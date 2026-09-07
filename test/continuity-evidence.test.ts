@@ -128,6 +128,35 @@ it("pins the target, bounds pages and retries the whole unconsumed suffix withou
   expect(new Set(seen.map((x) => x.evidenceSeq)).size).toBe(seen.length);
 });
 
+it("checks verified authority against the presented immutable generation", async () => {
+  put("session-A", "changed", "Human verified this", 1);
+  put("session-A", "changed", "", 2);
+  capture("session-A");
+  const result = await runContinuityWorker(db, { maxJobs: 1, model: async () => JSON.stringify({
+    ...patch, sourceExchangeIds: ["changed"],
+    verifiedProgress: [{ text: "Human verified this", sourceExchangeIds: ["changed"] }],
+  }) });
+  expect(result[0].state).toBe("completed");
+});
+
+it("cannot promote an assistant-only fragment using authority from an earlier page", async () => {
+  insertExchange(db, {
+    id: "fragmented", sessionId: "session-A", project: root, cwd: root, archivePath: transcript("session-A"),
+    timestamp: new Date().toISOString(), userMessage: "Human context", assistantMessage: "a".repeat(40_000),
+    lineStart: 2, lineEnd: 2,
+  }, vector);
+  capture("session-A");
+  await runContinuityWorker(db, { maxJobs: 1, model: async () => JSON.stringify(patch) });
+  const before = frontier().through_seq;
+  const result = await runContinuityWorker(db, { maxJobs: 1, model: async (_, user) => {
+    expect(JSON.parse(user).contiguousSegment.every((item: { human: string }) => !item.human)).toBe(true);
+    return JSON.stringify({ ...patch, sourceExchangeIds: ["fragmented"],
+      verifiedProgress: [{ text: "Assistant claim", sourceExchangeIds: ["fragmented"] }] });
+  } });
+  expect(result[0].state).toBe("retry");
+  expect(frontier().through_seq).toBe(before);
+});
+
 it("schedules the sixth small sibling Stop after a large A checkpoint", async () => {
   put("session-A", "large-A");
   capture("session-A", "final", 20_000);

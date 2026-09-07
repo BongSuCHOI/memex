@@ -132,6 +132,7 @@ Capture checkpoint마다 P0 `capture_index` job이 있고, P1 `capsule_update`�
 - `hot_evidence_sequence(seq, evidence_id)`도 never-reused local sequence입니다. Hot Evidence는 content-hash/TTL 단위이므로 Capsule의 generation fragment와 독립된 sequence를 사용합니다. `session_memory_state.hot_evidence_cursor`는 session/context epoch/workstream에 귀속합니다. 실제 출력된 eligible prefix만 전진하고, 만료·자기 session·삭제 행은 조회에서 제외합니다. Scope/content 이동은 새 sequence를 발급합니다. 자세한 출력 규칙은 [retrieval](RETRIEVAL-AND-CONTEXT.md#5-selection-규칙)을 따릅니다.
 - v6 migration은 scalar checkpoint로 모든 session의 과거 coverage를 추정하지 않습니다. 기존 Capsule을 유지한 채 현재 남은 exchange generation을 sequence로 backfill하고 cursor 0부터 한 번 replay합니다. 과거에 이미 덮어쓴 generation은 복원했다고 주장하지 않습니다. 기존 in-flight Capsule lease를 fencing하고 policy `continuity-capsule-v2`로 pending 전환합니다. 새로운 projection의 첫 성공 commit부터 기존 Capsule을 대체합니다. Checkpoint/journal이 없는 stream은 다음 capture 경계가 생길 때 처리합니다.
 - 이 state는 전부 local-derived입니다. Protocol v4 export 파일은 늘리지 않습니다. Locked v1 RFC의 scalar frontier를 대체하는 as-built amendment이며 이전 gate receipt의 관측값은 변경하지 않습니다.
+- Capsule의 verified source 판정은 실제 page의 immutable human/trusted-tool payload를 사용합니다. 같은 exchange의 최신 행이나 앞 페이지의 human text가 현재 assistant-only fragment의 authority를 대신하지 않습니다.
 
 ### Provenance
 

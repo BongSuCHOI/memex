@@ -864,10 +864,20 @@ export function validateWorkCapsulePatch(value) {
     }
     return patch;
 }
-function assertVerifiedSources(db, verified) {
+function assertVerifiedSources(db, verified, page) {
     const ids = [...new Set(verified.flatMap((item) => item.sourceExchangeIds))];
     if (ids.length === 0)
         return;
+    if (page) {
+        // Authority belongs to the immutable generation/part actually presented,
+        // not to the exchange's possibly newer live row or an unseen fragment.
+        for (const id of ids) {
+            if (!page.evidence.some((item) => item.exchangeId === id && ((typeof item.human === "string" && item.human.trim().length > 0) ||
+                (Array.isArray(item.trustedTools) && item.trustedTools.length > 0))))
+                throw new Error(`verified progress source is not authoritative in this page: ${id}`);
+        }
+        return;
+    }
     const select = db.prepare(`
     SELECT e.id,
       CASE WHEN length(trim(e.user_message)) > 0 OR EXISTS (
@@ -927,7 +937,7 @@ export function applyWorkCapsulePatch(db, input) {
                 throw new Error("capsule source was not present in the fixed evidence page");
             }
         }
-        assertVerifiedSources(db, patch.verifiedProgress);
+        assertVerifiedSources(db, patch.verifiedProgress, input.evidencePage);
         const current = db.prepare(`
       SELECT generation FROM work_capsules WHERE workstream_id = ?
     `).get(input.workstreamId);
