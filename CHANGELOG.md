@@ -2,7 +2,7 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-## Unreleased
+## 0.4.1 - 2026-09-07
 
 - Constrain Work Capsule generation with a native Codex output schema so evidence
   and hypothesis items retain their typed source IDs. Other model calls remain
@@ -16,7 +16,21 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 - Stream large capture deltas and journal verification through 4MiB buffers,
   preserving JSONL boundaries, hash chains, fsync/outbox atomicity and orphan retry.
 - Add schema v7 replay migration with old-worker fencing. Source replacement
-  epochs retain distinct exchange/tool identities. Package version is unchanged.
+  epochs retain distinct exchange/tool identities.
+- Refresh current architecture/installation/verification docs and remove unused imports.
+
+### Upgrade and verification
+
+The first run migrates the local DB to schema `7`; sync protocol stays `4`.
+Migration replays surviving evidence but cannot recover already overwritten
+historical generations. Older writers must not share the migrated DB; rollback
+requires the pre-upgrade DB backup and matching plugin version. See
+[GUIDE.md](docs/GUIDE.md#15-continuity-운영).
+
+The current clean-SHA gate is [merge-gate.json](docs/verification/merge-gate.json).
+Bounded synthetic Luna output-schema and rolling-state results are retained in
+[capsule-output-schema-evaluation.json](docs/verification/capsule-output-schema-evaluation.json);
+they do not establish corpus-wide completeness or production failure rates.
 
 ## 0.4.0 - 2026-09-04
 

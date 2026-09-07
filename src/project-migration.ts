@@ -9,7 +9,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { getDbPath } from './paths.js';
 import { canonicalizeProjectPath, projectStorageKey } from './project-identity.js';
 
 export interface MigrationPlan {

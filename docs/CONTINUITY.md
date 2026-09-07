@@ -1,6 +1,6 @@
 # Continuity Architecture v1 — as-built
 
-이 문서는 **실제 구현**을 설명합니다. 규범 문서는 `architecture/memex-continuity-v1.md`(Final RFC, `verification/continuity-v1/rfc-lock.json`으로 SHA 고정)이며, RFC 예시와 구현이 다른 지점은 `verification/continuity-v1/rfc-deviations.md`(D-000~D-036)에 기록되어 있습니다. RFC는 수정하지 않습니다. 이전 초안과 이전 worker prompt pack은 규범이 아닙니다.
+이 문서는 **실제 구현**을 설명합니다. 규범 문서는 `architecture/memex-continuity-v1.md`(Final RFC, `verification/continuity-v1/rfc-lock.json`으로 SHA 고정)이며, RFC 예시와 구현이 다른 지점은 [deviation record](verification/continuity-v1/rfc-deviations.md)에 기록되어 있습니다. RFC는 수정하지 않습니다. 이전 초안과 이전 worker prompt pack은 규범이 아닙니다.
 
 ## 1. Lifecycle과 event contract (§6)
 
@@ -13,12 +13,12 @@
 | `PostCompact` | `manual\|auto` | telemetry only (D-009) | 어떤 correctness transition도 없음 |
 | `SessionEnd` | `""` | final delta + final fence + outbox; foreground extraction/export 없음 (D-011) | — |
 
-검증된 runtime: Codex CLI `0.150.1`(Phase 0 계약) ~ `0.153.2`(Phase 2~F1 검증), Node `v26.0.0`, macOS arm64. hook 실행은 `cli/runtime-exec.js`가 설치된 artifact의 local binary를 고정 실행합니다(D-013). 공식 `codex plugin validate`는 `0.153.2`에 없어 `scripts/validate-plugin.mjs`가 substitute 검사를 수행합니다.
+현재 검증 환경과 CLI 버전은 [merge-gate receipt](verification/merge-gate.json)의 `environment`를 확인하십시오. hook 실행은 `cli/runtime-exec.js`가 설치된 artifact의 local binary를 고정 실행합니다(D-013). `scripts/validate-plugin.mjs`는 repository 소유 검증 도구이며 Codex 공식 validator가 아닙니다.
 
 ## 2. Journal · checkpoint · outbox · worker (§7, §9)
 
 - `journal_streams`/`journal_blocks`: transcript prefix를 byte 단위로 rolling append하고 segment/prefix hash를 기록합니다. inode/size/mtime + 4KiB copied-prefix guard로 rewrite를 감지해 새 stream epoch을 엽니다(D-012).
-- `checkpoints` + `memory_jobs`: 한 SQLite immediate transaction에서 checkpoint와 `capture_index`(P0)/`capsule_update`(P1) job을 함께 씁니다. lease/generation CAS, retry/dead-visible, `superseded` 상태(D-008). partition claim은 priority lane → ordinal 순서입니다(D-034).
+- `checkpoints` + `memory_jobs`: 한 SQLite immediate transaction에서 checkpoint와 `capture_index`(P0)/`capsule_update`(P1) job을 함께 씁니다. lease/generation CAS, retry/dead-visible, `superseded` 상태(D-008). partition claim은 priority lane을 먼저 적용하며 Capsule job은 삽입 순서, 나머지는 session checkpoint ordinal로 정렬합니다(D-034, D-038).
 - `scripts/continuity-worker.js`: P0 hash 검증 + monotonic prefix ingest → P1 typed Capsule patch(strict JSON, generation CAS) → P2 exact extraction. expired lease는 startup/resume에서 회수됩니다.
 - `capture_gaps`: capture 실패는 gap row + warning으로 남기고(`MEMEX_STRICT_CAPTURE=1`일 때만 block) 다음 hook이 복구합니다.
 
@@ -28,7 +28,7 @@
 
 ## 4. Work Capsule과 tail baton (§4.2, §14)
 
-`work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Capsule이 없거나 latest checkpoint보다 오래되면 deterministic tail baton(마지막 요청, plan line, touched files, trusted test, unresolved error)이 대신합니다. 어느 것도 fact evidence로 재진입하지 않습니다.
+`work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Capsule이 없으면 deterministic tail baton(마지막 요청, plan line, touched files, trusted test, unresolved error)을 사용합니다. 아직 소비하지 않은 workstream evidence나 미완료 capture가 있으면 stale Capsule과 baton을 함께 표시합니다. Compact/resume은 correction을 채우기 전에 한도 내 work context 예산을 확보합니다. Sequence coverage와 replay 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다. 어느 것도 fact evidence로 재진입하지 않습니다.
 
 P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec --output-schema`로 전달합니다. `verifiedProgress`와 `hypotheses`는 `{text, sourceExchangeIds}` 객체 배열로 생성하며 문자열 배열을 사후 변환하거나 source ID를 추정하지 않습니다. `currentState`의 schema 설명은 기존 Capsule의 유효한 결정·제약·구체적인 수치를 이어받고 새 evidence가 변경한 부분을 갱신하도록 명시합니다. 이 설명은 요약 지침이며 의미 보존의 자동 검증을 대신하지 않습니다. Schema는 호출별 임시 workdir에만 기록하고 성공·실패 모두 삭제합니다. 공통 model provider의 선택 옵션이며 Capsule 이외 호출에는 자동 적용하지 않습니다.
 
@@ -46,7 +46,7 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 ## 7. Context epoch · residency · Memory Broker (§11–12)
 
-`session_memory_state`: `context_epoch`, resident/carry `(fact_id, semantic_generation, lifecycle_generation)`, `capsule_generation_seen`, `memory_revision_seen`, Phase 5 gate state(`topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`, `watch_emitted_json`). cheap gate 규칙, Memory Bundle section/budget, correction semantics는 `RETRIEVAL-AND-CONTEXT.md` §4a/4b. 비용 수치는 `verification/continuity-v1/recall-calibration.json`(call/byte count만).
+`session_memory_state`: `context_epoch`, resident/carry `(fact_id, semantic_generation, lifecycle_generation)`, `capsule_generation_seen`, `memory_revision_seen`, Phase 5 gate state(`topic_fingerprint_json`, `topic_embedding`, `informative_prompts_since_retrieval`, `last_retrieval_epoch`, `watch_emitted_json`), v7 `hot_evidence_cursor`. 자동 Hot Evidence는 실제 출력한 적격 prefix만 session/epoch별로 소비하며 예산으로 잘린 suffix는 다음 prompt에서 다시 시도합니다. cheap gate 규칙, Memory Bundle section/budget, correction semantics는 `RETRIEVAL-AND-CONTEXT.md` §4a/4b. 비용 수치는 `verification/continuity-v1/recall-calibration.json`(call/byte count만).
 
 ## 8. 자동 injection vs MCP (§13)
 

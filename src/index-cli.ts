@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { verifyIndex, repairIndex } from './verify.js';
 import { indexSession, indexUnprocessed, indexConversations } from './indexer.js';
-import { initDatabase } from './db.js';
 import { getDbPath, getArchiveDir } from './paths.js';
 import fs from 'fs';
 import path from 'path';

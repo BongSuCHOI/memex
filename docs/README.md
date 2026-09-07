@@ -1,6 +1,6 @@
 # Memex documentation
 
-이 디렉터리는 Memex의 **현재 제품 계약**을 설명합니다. 개발 과정의 임시 계획이나 감사 로그가 아니라, 구현과 함께 유지해야 하는 owner documentation만 둡니다.
+이 디렉터리의 owner 문서는 Memex의 **현재 제품 계약**을 설명합니다. `architecture/`의 잠긴 RFC와 `verification/`의 과거 실행 기록은 해당 시점의 증거로 보존하며, 현행 구현과의 차이는 [Continuity as-built](CONTINUITY.md)와 [deviation record](verification/continuity-v1/rfc-deviations.md)에서 확인합니다.
 
 ## 처음 읽는 순서
 
@@ -47,7 +47,7 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | persistence | `src/db.ts`, `src/fact-db.ts`, `src/ontology-db.ts` | `SCHEMA.md` |
 | installation/package/update | `.codex-plugin/`, `cli/runtime-exec.js`, installer/update scripts | `GUIDE.md`, `ARCHITECTURE.md` |
 | release evidence | tests, E2E, `docs/verification/*` | `VERIFICATION.md` |
-| continuity capture/queue/worker | `src/continuity-core.ts`, `src/continuity-store.ts`, `src/continuity-worker.ts`, `scripts/continuity-hook.js` | `CONTINUITY.md`, `CONVERSATION-LIFECYCLE.md` |
+| continuity capture/queue/worker | `src/continuity-core.ts`, `src/continuity-store.ts`, `src/continuity-evidence.ts`, `src/continuity-worker.ts`, `scripts/continuity-hook.js` | `CONTINUITY.md`, `CONVERSATION-LIFECYCLE.md` |
 | identity/Chronicle/recall gate | `src/continuity-identity.ts`, `src/chronicle.ts`, `src/recall-gate.ts`, `src/memory-bundle.ts` | `CONTINUITY.md`, `FACT-LIFECYCLE.md`, `RETRIEVAL-AND-CONTEXT.md` |
 | project ancestry | license/upstream history | `LINEAGE.md` |
 

@@ -121,7 +121,7 @@ receipt에서 확인할 필드:
 
 receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 상속되지 않습니다.
 
-## 6. 이번 baseline에서 검증된 주요 회귀 경계
+## 6. 지속적으로 검증하는 주요 회귀 경계
 
 - remote semantic winner와 lifecycle winner의 독립 fold
 - fresh insert의 lineage union/max
@@ -251,13 +251,13 @@ consumer와 retrieval surface까지 연결합니다. Parser가 legacy fixture에
 `required_term_groups`는 fixture identity hash에서 제외해 기존 17-case baseline SHA와 비교
 호환성을 유지합니다.
 
-최신 production evidence SHA의 real-model 결과는 legacy 17-case 17/17과 P2 full 21/23입니다.
+2026-09-03 extraction 검증의 real-model 결과는 legacy 17-case 17/17과 P2 full 21/23입니다.
 P2 full에서 `lg2`는 verifier semantic rejection, `l6`는 truncated malformed verifier JSON으로
 fail-closed됐습니다. 같은 code/prompt/fixture SHA의 targeted evidence는 `lg2`를 포함한 직전 failure
 set 3/3, `l6` 1/1 `ENTAILED`였습니다. Full 결과를 23/23으로 다시 쓰거나 P2 full을 재추첨하지 않고
 `21/23 full + same-SHA targeted PASS`, verdict `PASS-WITH-NOTES`로 기록합니다. Hard false positive 및
-authority/self-amplification leakage는 0입니다. 정확한 SHA와 private evidence hash는 최신
-`docs/verification/merge-gate.json`을 기준으로 확인합니다.
+authority/self-amplification leakage는 0입니다. 해당 run의 SHA와 private evidence hash는
+[2026-09-03 receipt](verification/merge-gate-2026-09-03.json)에서 확인합니다. 현재 release의 재실행 결과로 해석하지 않습니다.
 
 - verifier-used `context_id` dependency는 `source_exchange_ids`에 저장되지 않음
 - overlap/consolidation/sync는 authoritative lineage만 set-union하고 count는 max로 수렴
@@ -323,7 +323,7 @@ human exchange 5개 이상 조건을 만족하는 36개를 `ended_at DESC, sessi
 검토 전에 최신 3개를 고정했습니다. Exact IDs와 selection query는 private selection receipt에만
 보관하며 결과가 나빠도 교체하지 않았습니다.
 
-최신 production evidence SHA의 새 baseline은 같은 frozen 3 sessions / 40 exchanges를 교체 없이
+위 [2026-09-03 receipt](verification/merge-gate-2026-09-03.json)의 archive baseline은 같은 frozen 3 sessions / 40 exchanges를 교체 없이
 사용했고 candidate/accepted 32/23, execution error 0을 관측했습니다. 수동 taxonomy는 KEEP 19,
 DROP-noise 4, MISS-important >= 7, DROP-unsupported/WRONG-category/WRONG-scope/WRONG-provenance/
 AMBIGUOUS 0입니다. Accepted context는 local-only 22, long-range-resolved 1, context-noise 0입니다.

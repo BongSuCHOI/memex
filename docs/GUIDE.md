@@ -29,7 +29,7 @@ repository 자체를 수정하거나 air-gapped validation을 할 때만 local c
 ```bash
 git clone https://github.com/BongSuCHOI/memex.git
 cd memex
-npm ci
+npm install
 npm run build
 ```
 

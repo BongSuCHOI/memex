@@ -83,7 +83,7 @@ export declare function readHotEvidence(db: Database.Database, input: {
     excludeSessionId?: string | null;
     beforeCreatedAt?: string | null;
     beforeEvidenceId?: string | null;
-    /** Residency watermark: only evidence indexed after this instant. */
+    /** Optional timestamp filter; automatic residency uses afterSeq. */
     afterCreatedAt?: string | null;
     /** Automatic continuity reads the oldest unconsumed eligible sequence. */
     afterSeq?: number;
