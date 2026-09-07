@@ -288,7 +288,7 @@ rm -rf "$(memex home)"
 
 ### 업그레이드
 
-기존 설치(0.3.0 이하 DB)를 최신 plugin으로 올리면 첫 hook/MCP/CLI 실행에서 Continuity schema `6`으로 additive migration이 한 번 실행됩니다(`PRAGMA user_version`으로 확인). 중단되면 다음 실행에서 이어서 재실행되며 released row와 rowid는 보존됩니다. 절차는 §12와 같고, 완료 후 Codex를 재시작하십시오.
+기존 설치(0.4.0 이하 DB)를 최신 plugin으로 올리면 첫 hook/MCP/CLI 실행에서 Continuity schema `7`으로 additive migration이 한 번 실행됩니다(`PRAGMA user_version`으로 확인). 중단되면 다음 실행에서 이어서 재실행되며 released row와 rowid는 보존됩니다. 절차는 §12와 같고, 완료 후 Codex를 재시작하십시오. v7은 현재 남은 evidence를 한 번 replay하며 기존 Capsule은 첫 새 projection commit까지 유지합니다. 구버전 진행 중 Capsule job의 lease는 폐기됩니다. Migration·cursor 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다.
 
 ```bash
 memex update
@@ -346,7 +346,7 @@ MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가
 
 ### Rollback
 
-이전 plugin 버전으로 되돌릴 때 DB는 그대로 두어도 됩니다. schema `6`은 additive이므로 구버전은 새 column/table을 무시하며, `fact_revisions`의 nullable column은 구버전 reader와 호환됩니다. 구버전 peer는 새 sync row shape(stable identity, Chronicle event, event tombstone)를 포함한 generation 전체를 visible하게 거부합니다. DB를 완전히 되돌리려면 업그레이드 전 백업 파일을 복원하십시오.
+schema `7`의 column/table은 additive이지만 구버전 writer는 evidence sequence와 frontier를 유지하지 못합니다. 따라서 같은 DB에 구버전 worker를 함께 실행하거나 그대로 downgrade하는 방식은 지원하지 않습니다. 되돌릴 때는 worker를 중지하고 업그레이드 전 DB 백업과 해당 plugin 버전을 함께 복원하십시오. 구버전 peer는 새 sync row shape(stable identity, Chronicle event, event tombstone)를 포함한 generation 전체를 visible하게 거부합니다.
 
 ### 호환 surface (support window)
 

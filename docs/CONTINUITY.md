@@ -54,7 +54,7 @@ protocol v4 다섯 파일에 stable project identity, subject/promotion, Chronic
 
 ## 10. Schema와 flag
 
-Continuity schema `6` (`PRAGMA user_version`, `continuity_schema_meta`): v1 correctness spine → v2/v3 capture guards → v4 identity → v5 Chronicle → v6 recall gate columns. 모든 migration은 additive·idempotent·crash-injected(`test/continuity-correctness-spine.test.ts`).
+Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 correctness spine → v2/v3 capture guards → v4 identity → v5 Chronicle → v6 recall gate columns → v7 evidence sequence/cursor. Locked RFC의 scalar Capsule frontier에 대한 현행 amendment는 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다. 모든 migration은 additive·idempotent·crash-injected(`test/continuity-correctness-spine.test.ts`).
 
 | 환경 변수 | 기본 | 의미 |
 | --- | --- | --- |

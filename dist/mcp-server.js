@@ -18537,6 +18537,81 @@ function canonicalizeProjectPath(cwd) {
 import { createHash, randomUUID } from "node:crypto";
 import fs2 from "node:fs";
 import path4 from "node:path";
+
+// src/continuity-evidence.ts
+var TEXT_PART_CHARS = 3e3;
+var CAPSULE_POLICY_VERSION = "continuity-capsule-v2";
+function appendExchangeEvidence(db, exchangeId) {
+  if (!db.inTransaction) throw new Error("evidence append requires the exchange write transaction");
+  const row = db.prepare(`
+    SELECT e.id, e.session_id, e.workspace_id, e.content_generation, e.content_hash,
+           e.line_start, e.line_end, e.timestamp, e.user_message, e.assistant_message,
+           COALESCE(e.workstream_id, s.workstream_id) AS workstream_id
+    FROM exchanges e JOIN session_memory_state s ON s.session_id = e.session_id
+    JOIN minimal_workstreams w ON w.workstream_id = COALESCE(e.workstream_id, s.workstream_id)
+    WHERE e.id = ? AND e.project_id = s.project_id AND e.project_id = w.project_id
+      AND COALESCE(e.workstream_id, s.workstream_id) = s.workstream_id
+      AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)
+  `).get(exchangeId);
+  if (!row) return 0;
+  if (db.prepare(`SELECT 1 FROM workstream_evidence
+    WHERE workstream_id = ? AND exchange_id = ? AND content_generation = ? LIMIT 1`).get(row.workstream_id, exchangeId, row.content_generation)) return 0;
+  const tools = db.prepare(`
+    SELECT id, tool_name, tool_result, source_type FROM tool_calls
+    WHERE exchange_id = ? AND learnable = 1 AND is_error = 0
+      AND source_type IN ('repo_file','git_history','test_execution')
+    ORDER BY timestamp, id
+  `).all(exchangeId);
+  const base = {
+    exchangeId,
+    contentGeneration: Number(row.content_generation),
+    contentHash: row.content_hash,
+    sourceSessionId: row.session_id,
+    effectiveAt: row.timestamp,
+    lines: [Number(row.line_start), Number(row.line_end)]
+  };
+  const full = { ...base, human: row.user_message, assistantContextOnly: row.assistant_message, trustedTools: tools };
+  const parts = [];
+  if (JSON.stringify(full).length <= 8e3) {
+    parts.push(full);
+  } else {
+    const split = (text, make) => {
+      for (let offset = 0; offset < text.length; ) {
+        let end = Math.min(text.length, offset + TEXT_PART_CHARS);
+        if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+        parts.push({ ...base, human: "", assistantContextOnly: "", trustedTools: [], ...make(text.slice(offset, end), offset) });
+        offset = end;
+      }
+    };
+    split(String(row.user_message), (human, textOffset) => ({ human, textOffset }));
+    split(String(row.assistant_message), (assistantContextOnly, textOffset) => ({ assistantContextOnly, textOffset }));
+    for (const tool of tools) split(String(tool.tool_result ?? ""), (tool_result, textOffset) => ({
+      trustedTools: [{ ...tool, tool_result }],
+      textOffset
+    }));
+  }
+  db.prepare("INSERT OR IGNORE INTO capsule_frontiers(workstream_id) VALUES (?)").run(row.workstream_id);
+  const insert = db.prepare(`INSERT INTO workstream_evidence
+    (workstream_id, exchange_id, source_session_id, workspace_id, content_generation,
+     content_hash, part, payload_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const [part, payload] of parts.entries()) {
+    insert.run(
+      row.workstream_id,
+      exchangeId,
+      row.session_id,
+      row.workspace_id,
+      row.content_generation,
+      row.content_hash,
+      part,
+      JSON.stringify({ ...payload, part, parts: parts.length }),
+      (/* @__PURE__ */ new Date()).toISOString()
+    );
+  }
+  return parts.length;
+}
+
+// src/continuity-identity.ts
 function hash(...parts) {
   const h = createHash("sha256");
   for (const part of parts) h.update(String(part ?? "")).update("\0");
@@ -18947,18 +19022,41 @@ function readHotEvidence(db, input) {
     where.push("created_at > ?");
     args.push(input.afterCreatedAt);
   }
+  if (input.afterSeq !== void 0) {
+    where.push("seq > ?");
+    args.push(input.afterSeq);
+  }
   if (input.beforeCreatedAt) {
     where.push("(created_at < ? OR (created_at = ? AND evidence_id > ?))");
     args.push(input.beforeCreatedAt, input.beforeCreatedAt, input.beforeEvidenceId ?? "");
   }
   args.push(Math.max(1, Math.min(100, input.limit ?? 20)));
   return db.prepare(`
-    SELECT evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
+    SELECT seq, evidence_id, project_id, workspace_id, workstream_id, session_id, exchange_id,
            evidence_kind, source_type, evidence_text, authority, created_at, expires_at,
            'HOT EVIDENCE \u2014 NOT YET DISTILLED' AS lane
-    FROM hot_evidence WHERE ${where.join(" AND ")}
-    ORDER BY created_at DESC, evidence_id LIMIT ?
+    FROM hot_evidence JOIN hot_evidence_sequence USING(evidence_id) WHERE ${where.join(" AND ")}
+    ORDER BY ${input.afterSeq === void 0 ? "created_at DESC, evidence_id" : "seq"} LIMIT ?
   `).all(...args);
+}
+function commitHotEvidenceCursor(db, input) {
+  if (!db.inTransaction) throw new Error("Hot Evidence cursor requires the residency transaction");
+  if (!input.emittedSeqs.length) return;
+  const end = input.emittedSeqs.at(-1);
+  const current = readHotEvidence(db, {
+    projectId: input.projectId,
+    workstreamId: input.workstreamId,
+    excludeSessionId: input.sessionId,
+    afterSeq: input.fromSeq,
+    limit: input.emittedSeqs.length
+  });
+  if (current.length !== input.emittedSeqs.length || current.some((row, i) => Number(row.seq) !== input.emittedSeqs[i])) {
+    throw new Error("Hot Evidence prefix changed before residency commit");
+  }
+  const updated = db.prepare(`UPDATE session_memory_state SET hot_evidence_cursor = ?
+    WHERE session_id = ? AND project_id = ? AND workstream_id = ?
+      AND context_epoch = ? AND hot_evidence_cursor = ?`).run(end, input.sessionId, input.projectId, input.workstreamId, input.contextEpoch, input.fromSeq);
+  if (updated.changes !== 1) throw new Error("Hot Evidence scope or cursor changed before residency commit");
 }
 function sessionProjectRevisionState(db, sessionId) {
   const row = db.prepare(`
@@ -18981,7 +19079,7 @@ function markSessionProjectRevisionSeen(db, sessionId, expectedRevision) {
 }
 
 // src/continuity-store.ts
-var CONTINUITY_SCHEMA_VERSION = 6;
+var CONTINUITY_SCHEMA_VERSION = 7;
 function sha256(value) {
   return createHash2("sha256").update(value, "utf8").digest("hex");
 }
@@ -19609,6 +19707,7 @@ function ensureContinuitySchema(db, options = {}) {
       ["informative_prompts_since_retrieval", "INTEGER NOT NULL DEFAULT 0"],
       ["last_retrieval_epoch", "INTEGER NOT NULL DEFAULT -1"],
       ["last_retrieval_at", "TEXT"],
+      ["hot_evidence_cursor", "INTEGER NOT NULL DEFAULT 0"],
       ["resident_bundle_hash", "TEXT NOT NULL DEFAULT ''"],
       ["watch_emitted_json", "TEXT NOT NULL DEFAULT '[]'"]
     ];
@@ -19617,6 +19716,74 @@ function ensureContinuitySchema(db, options = {}) {
       if (!sessionColumns.has(name)) db.exec(`ALTER TABLE session_memory_state ADD COLUMN ${name} ${type}`);
     }
     options.afterMigrationStage?.("recall-gate-columns");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS capsule_frontiers (
+        workstream_id TEXT PRIMARY KEY REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        through_seq INTEGER NOT NULL DEFAULT 0,
+        revision INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS workstream_evidence (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        workstream_id TEXT NOT NULL REFERENCES minimal_workstreams(workstream_id) ON DELETE CASCADE,
+        exchange_id TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE,
+        source_session_id TEXT NOT NULL,
+        workspace_id TEXT,
+        content_generation INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        part INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(workstream_id, exchange_id, content_generation, part)
+      );
+      CREATE INDEX IF NOT EXISTS idx_workstream_evidence_sequence ON workstream_evidence(workstream_id, seq);
+      CREATE INDEX IF NOT EXISTS idx_workstream_evidence_exchange ON workstream_evidence(exchange_id);
+      CREATE TABLE IF NOT EXISTS hot_evidence_sequence (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        evidence_id TEXT NOT NULL UNIQUE REFERENCES hot_evidence(evidence_id) ON DELETE CASCADE
+      );
+      CREATE TRIGGER IF NOT EXISTS hot_evidence_sequence_insert AFTER INSERT ON hot_evidence
+      BEGIN
+        INSERT INTO hot_evidence_sequence(evidence_id) VALUES (NEW.evidence_id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS hot_evidence_sequence_change
+      AFTER UPDATE OF project_id, workspace_id, workstream_id, session_id, evidence_text, content_hash ON hot_evidence
+      WHEN OLD.project_id IS NOT NEW.project_id OR OLD.workspace_id IS NOT NEW.workspace_id
+        OR OLD.workstream_id IS NOT NEW.workstream_id OR OLD.session_id IS NOT NEW.session_id
+        OR OLD.evidence_text IS NOT NEW.evidence_text OR OLD.content_hash IS NOT NEW.content_hash
+      BEGIN
+        DELETE FROM hot_evidence_sequence WHERE evidence_id = OLD.evidence_id;
+        INSERT INTO hot_evidence_sequence(evidence_id) VALUES (NEW.evidence_id);
+      END;
+      INSERT OR IGNORE INTO hot_evidence_sequence(evidence_id)
+        SELECT evidence_id FROM hot_evidence h WHERE NOT EXISTS
+          (SELECT 1 FROM hot_evidence_sequence s WHERE s.evidence_id = h.evidence_id)
+        ORDER BY created_at, evidence_id;
+      CREATE TRIGGER IF NOT EXISTS workstream_evidence_delete_projection
+      BEFORE DELETE ON workstream_evidence
+      BEGIN
+        UPDATE session_memory_state SET capsule_generation_seen = 0 WHERE workstream_id = OLD.workstream_id
+          AND EXISTS (SELECT 1 FROM capsule_frontiers f JOIN work_capsules c USING(workstream_id)
+            WHERE f.workstream_id = OLD.workstream_id AND (f.through_seq >= OLD.seq OR (f.through_seq = 0 AND c.generation > 0)));
+        DELETE FROM work_capsules WHERE workstream_id = OLD.workstream_id
+          AND EXISTS (SELECT 1 FROM capsule_frontiers f WHERE f.workstream_id = OLD.workstream_id
+            AND (f.through_seq >= OLD.seq OR (f.through_seq = 0 AND work_capsules.generation > 0)));
+        UPDATE capsule_frontiers SET through_seq = CASE WHEN through_seq >= OLD.seq THEN 0 ELSE through_seq END,
+          revision = revision + 1 WHERE workstream_id = OLD.workstream_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS exchanges_evidence_scope_change
+      BEFORE UPDATE OF project_id, workspace_id, workstream_id, session_id ON exchanges
+      WHEN OLD.project_id IS NOT NEW.project_id OR OLD.workspace_id IS NOT NEW.workspace_id
+        OR OLD.workstream_id IS NOT NEW.workstream_id OR OLD.session_id IS NOT NEW.session_id
+      BEGIN
+        DELETE FROM workstream_evidence WHERE exchange_id = OLD.id;
+      END;
+      INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
+    `);
+    const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
+    for (const name of ["target_seq", "target_revision"]) {
+      if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
+    }
+    options.afterMigrationStage?.("evidence-sequence");
     db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -19680,6 +19847,13 @@ function ensureContinuitySchema(db, options = {}) {
     }
     refreshExchangeMetadata(db);
     options.afterMigrationStage?.("exchange-metadata");
+    if (priorVersion < 7) {
+      const rows = db.prepare("SELECT id FROM exchanges ORDER BY rowid").all();
+      for (const row of rows) appendExchangeEvidence(db, row.id);
+      db.prepare(`UPDATE memory_jobs SET policy_version = ?, state = 'pending',
+        lease_generation = lease_generation + 1, lease_owner = NULL, lease_until = NULL, attempts = 0
+        WHERE kind = 'capsule_update' AND state IN ('pending','retry','running')`).run(CAPSULE_POLICY_VERSION);
+    }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     db.prepare(`
       INSERT INTO continuity_schema_meta(key, value, updated_at)
@@ -21996,7 +22170,7 @@ if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.m
 }
 
 // src/continuity-core.ts
-var MAX_CAPTURE_DELTA_BYTES = 64 * 1024 * 1024;
+var CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 var SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 function parseJsonArray(raw, fallback = []) {
   if (typeof raw !== "string") return fallback;
@@ -22120,7 +22294,8 @@ function readResidentRevisionCorrections(db, sessionId) {
 }
 function readWorkCapsule(db, workstreamId) {
   const row = db.prepare(`
-    SELECT * FROM work_capsules WHERE workstream_id = ?
+    SELECT w.*, COALESCE(f.through_seq, 0) AS through_seq
+    FROM work_capsules w LEFT JOIN capsule_frontiers f USING(workstream_id) WHERE w.workstream_id = ?
   `).get(workstreamId);
   if (!row) return null;
   return {
@@ -22137,6 +22312,7 @@ function readWorkCapsule(db, workstreamId) {
     carryFactRevisions: parseJsonArray(row.carry_fact_revisions_json),
     sourceExchangeIds: parseJsonArray(row.source_exchange_ids_json),
     throughCheckpointId: row.through_checkpoint_id ? String(row.through_checkpoint_id) : null,
+    throughSeq: Number(row.through_seq),
     authority: "context-only",
     sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
     sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
@@ -22430,6 +22606,7 @@ function decideRecall(input) {
   if (input.incidentMatched) triggers.push("incident_signature_match");
   if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
   if (input.residentRevisionStale) triggers.push("resident_revision_stale");
+  if (input.hotEvidencePending) triggers.push("hot_evidence_pending");
   if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
   if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
     triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");
@@ -22596,7 +22773,7 @@ function readGateRow(db, sessionId) {
   return db.prepare(`
     SELECT context_epoch, last_source, capsule_generation_seen, memory_revision_seen,
            topic_fingerprint_json, topic_embedding, informative_prompts_since_retrieval,
-           last_retrieval_epoch, last_retrieval_at, watch_emitted_json, resident_fact_revisions_json, workstream_id
+           last_retrieval_epoch, last_retrieval_at, hot_evidence_cursor, watch_emitted_json, resident_fact_revisions_json, workstream_id
     FROM session_memory_state WHERE session_id = ?
   `).get(sessionId) ?? null;
 }
@@ -22618,12 +22795,12 @@ function noteSkippedPrompt(db, sessionId, substantive, now) {
 }
 function commitGateState(db, input) {
   if (!canQuery(db)) return;
-  db.prepare(`
+  const changed = db.prepare(`
     UPDATE session_memory_state
     SET topic_fingerprint_json = COALESCE(?, topic_fingerprint_json), topic_embedding = COALESCE(?, topic_embedding),
         informative_prompts_since_retrieval = 0, last_retrieval_epoch = ?, last_retrieval_at = ?,
         watch_emitted_json = ?, updated_at = ?
-    WHERE session_id = ?
+    WHERE session_id = ? AND context_epoch = ? AND workstream_id = ?
   `).run(
     input.tokens ? JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)) : null,
     input.embedding ? embeddingToBlob(input.embedding) : null,
@@ -22631,8 +22808,11 @@ function commitGateState(db, input) {
     input.now,
     JSON.stringify(input.watchLedger.slice(-20)),
     input.now,
-    input.sessionId
+    input.sessionId,
+    input.contextEpoch,
+    input.workstreamId
   );
+  if (changed.changes !== 1) throw new Error("session scope changed before gate commit");
 }
 function markCapsuleGenerationSeen(db, sessionId, contextEpoch, generation) {
   if (!canQuery(db)) return;
@@ -22665,6 +22845,14 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const revisionState = sessionProjectRevisionState(db, sessionId);
     const currentProjectRevision = revisionState.current;
     const gateRow = readGateRow(db, sessionId);
+    const hotCursor = Number(gateRow?.hot_evidence_cursor ?? 0);
+    const hot = readHotEvidence(db, {
+      projectId: sessionScope.projectId,
+      workstreamId: sessionScope.workstreamId,
+      excludeSessionId: sessionId,
+      afterSeq: hotCursor,
+      limit: 2
+    });
     const capsule = readWorkCapsule(db, sessionScope.workstreamId);
     const currentCapsuleGeneration = capsule?.generation ?? 0;
     const capsuleGenerationSeen = Number(gateRow?.capsule_generation_seen ?? 0);
@@ -22710,6 +22898,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       currentProjectRevision,
       incidentMatched: incidents.length > 0,
       residentRevisionStale: revisionCorrections.length > 0,
+      hotEvidencePending: hot.length > 0,
       config: options.gateConfig
     });
     if (options.gate === false) {
@@ -22792,13 +22981,6 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     });
     sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
     sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
-    const hot = readHotEvidence(db, {
-      projectId: sessionScope.projectId,
-      workstreamId: sessionScope.workstreamId,
-      excludeSessionId: sessionId,
-      afterCreatedAt: gateRow?.last_retrieval_at ?? null,
-      limit: 2
-    });
     const seenIds = new Set(results.map((r) => r.fact.id));
     const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
     if (decision.intents.trace) {
@@ -22943,12 +23125,52 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const workNowEmitted = rendered.sections.some((s) => s.kind === "WORK NOW");
     const capsuleResident = wantsWorkNow && capsule && (workNowEmitted || !workNowRenderable);
     const fingerprintTokens = needsVector ? decision.tokens : null;
-    if (rendered.chars === 0) {
-      if (staleProjectMemory && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
-        throw new Error("project memory revision changed during correction check");
+    const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+    const commitBundle = () => {
+      if (injectedIds.length > 0) {
+        commitInjectionState(db, {
+          sessionId,
+          project,
+          prompt: userPrompt,
+          factIds: injectedIds,
+          projectId: sessionScope.projectId,
+          workspaceId: sessionScope.workspaceId,
+          workstreamId: sessionScope.workstreamId,
+          contextEpoch: residency.contextEpoch,
+          projectMemoryRevision: currentProjectRevision,
+          revisions: emittedRevisions,
+          markProjectRevision: !staleProjectMemory || correctionsComplete
+        });
+      } else if (staleProjectMemory && correctionsComplete && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+        throw new Error("project memory revision changed before injection commit");
       }
+      if (canQuery(db)) {
+        const emitted = rendered.sections.find((s) => s.kind === "RECENT EVIDENCE")?.emitted.length ?? 0;
+        commitHotEvidenceCursor(db, {
+          sessionId,
+          projectId: sessionScope.projectId,
+          workstreamId: sessionScope.workstreamId,
+          contextEpoch: residency.contextEpoch,
+          fromSeq: hotCursor,
+          emittedSeqs: hot.slice(0, emitted).map((item) => Number(item.seq))
+        });
+      }
+      commitGateState(db, {
+        sessionId,
+        workstreamId: sessionScope.workstreamId,
+        contextEpoch: residency.contextEpoch,
+        tokens: fingerprintTokens,
+        embedding,
+        watchLedger: nextWatchLedger,
+        now
+      });
       if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
-      commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+    };
+    if (typeof db.transaction === "function") {
+      const tx = db.transaction(commitBundle);
+      db.inTransaction ? tx() : tx.immediate();
+    } else commitBundle();
+    if (rendered.chars === 0) {
       const calls2 = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
       appendInjectLog({
         status: dedupedCount > 0 ? "deduped" : "no-match",
@@ -22967,26 +23189,6 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       }
       return "";
     }
-    const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
-    if (injectedIds.length > 0) {
-      commitInjectionState(db, {
-        sessionId,
-        project,
-        prompt: userPrompt,
-        factIds: injectedIds,
-        projectId: sessionScope.projectId,
-        workspaceId: sessionScope.workspaceId,
-        workstreamId: sessionScope.workstreamId,
-        contextEpoch: residency.contextEpoch,
-        projectMemoryRevision: currentProjectRevision,
-        revisions: emittedRevisions,
-        markProjectRevision: !staleProjectMemory || correctionsComplete
-      });
-    } else if (staleProjectMemory && correctionsComplete && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
-      throw new Error("project memory revision changed before injection commit");
-    }
-    commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
-    if (capsuleResident) markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
     const block = rendered.text + "\n";
     const sectionKinds = rendered.sections.map((s) => s.kind);
     const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);

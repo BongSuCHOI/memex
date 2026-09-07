@@ -50,6 +50,7 @@ export type RecallTrigger =
   | "capsule_generation_changed"
   | "project_revision_stale"
   | "resident_revision_stale"
+  | "hot_evidence_pending"
   | "incident_signature_match"
   | "high_impact_intent"
   | "safety_refresh"
@@ -101,6 +102,7 @@ export interface RecallGateInput {
    * signal (RFC §11.4, §12.6).
    */
   residentRevisionStale?: boolean;
+  hotEvidencePending?: boolean;
   config?: Partial<RecallGateConfig>;
 }
 
@@ -249,6 +251,7 @@ export function decideRecall(input: RecallGateInput): RecallGateDecision {
   if (input.incidentMatched) triggers.push("incident_signature_match");
   if (input.currentProjectRevision > input.state.memoryRevisionSeen) triggers.push("project_revision_stale");
   if (input.residentRevisionStale) triggers.push("resident_revision_stale");
+  if (input.hotEvidencePending) triggers.push("hot_evidence_pending");
   if (input.currentCapsuleGeneration > input.state.capsuleGenerationSeen) triggers.push("capsule_generation_changed");
   if (input.state.lastRetrievalEpoch !== input.state.contextEpoch) {
     triggers.push(input.state.lastSource === "compact" ? "compact_first_prompt" : input.state.lastRetrievalEpoch < 0 ? "first_substantive_in_epoch" : "context_epoch_changed");

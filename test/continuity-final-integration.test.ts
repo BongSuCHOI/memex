@@ -314,7 +314,11 @@ describe("Final Integration: cross-phase end-to-end", () => {
     db.prepare("UPDATE memory_jobs SET available_at = '2000-01-01T00:00:00.000Z' WHERE kind = 'capsule_update' AND state = 'retry'").run();
     for (let guard = 0; guard < 20 && count("SELECT COUNT(*) AS n FROM memory_jobs WHERE kind = 'capsule_update' AND state IN ('pending','retry')") > 0; guard++) {
       const [result] = await runContinuityWorker(db, { maxJobs: 1, model: capsuleModel });
-      expect(result).toMatchObject({ kind: "capsule_update", state: "completed" });
+      expect(result.kind).toBe("capsule_update");
+      expect(["partial", "completed"]).toContain(result.state);
+      if (result.state === "partial") {
+        expect(db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?").get(result.jobId)).toEqual({ state: "pending" });
+      }
     }
     const capsule = db.prepare("SELECT generation, objective, source_session_id FROM work_capsules WHERE workstream_id = ?").get(stateA.workstreamId) as { generation: number; objective: string; source_session_id: string };
     expect(capsule.generation).toBeGreaterThanOrEqual(1);

@@ -8,7 +8,7 @@ import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
 import { matchIncidentPatterns, readChronicleTimeline, recordTelemetrySample, } from "./chronicle.js";
 import { ensureSessionMemoryState, readResidentFactRevisions, readResidentRevisionCorrections, readWorkCapsule, recordResidentFactRevisions, } from "./continuity-core.js";
-import { markSessionProjectRevisionSeen, readHotEvidence, sessionProjectRevisionState, } from "./continuity-identity.js";
+import { commitHotEvidenceCursor, markSessionProjectRevisionSeen, readHotEvidence, sessionProjectRevisionState, } from "./continuity-identity.js";
 import { blobToEmbedding, decideRecall, embeddingToBlob, resolveAmbiguousDecision, tokenizePrompt, } from "./recall-gate.js";
 import { NORMAL_BUNDLE_BUDGET, estimateTokens, renderMemoryBundle, } from "./memory-bundle.js";
 /** Measured outcome sample; never blocks or fails the prompt path. */
@@ -71,7 +71,7 @@ function readGateRow(db, sessionId) {
     return db.prepare(`
     SELECT context_epoch, last_source, capsule_generation_seen, memory_revision_seen,
            topic_fingerprint_json, topic_embedding, informative_prompts_since_retrieval,
-           last_retrieval_epoch, last_retrieval_at, watch_emitted_json, resident_fact_revisions_json, workstream_id
+           last_retrieval_epoch, last_retrieval_at, hot_evidence_cursor, watch_emitted_json, resident_fact_revisions_json, workstream_id
     FROM session_memory_state WHERE session_id = ?
   `).get(sessionId) ?? null;
 }
@@ -98,13 +98,15 @@ function noteSkippedPrompt(db, sessionId, substantive, now) {
 function commitGateState(db, input) {
     if (!canQuery(db))
         return;
-    db.prepare(`
+    const changed = db.prepare(`
     UPDATE session_memory_state
     SET topic_fingerprint_json = COALESCE(?, topic_fingerprint_json), topic_embedding = COALESCE(?, topic_embedding),
         informative_prompts_since_retrieval = 0, last_retrieval_epoch = ?, last_retrieval_at = ?,
         watch_emitted_json = ?, updated_at = ?
-    WHERE session_id = ?
-  `).run(input.tokens ? JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)) : null, input.embedding ? embeddingToBlob(input.embedding) : null, input.contextEpoch, input.now, JSON.stringify(input.watchLedger.slice(-20)), input.now, input.sessionId);
+    WHERE session_id = ? AND context_epoch = ? AND workstream_id = ?
+  `).run(input.tokens ? JSON.stringify(input.tokens.slice(0, TOPIC_FINGERPRINT_MAX)) : null, input.embedding ? embeddingToBlob(input.embedding) : null, input.contextEpoch, input.now, JSON.stringify(input.watchLedger.slice(-20)), input.now, input.sessionId, input.contextEpoch, input.workstreamId);
+    if (changed.changes !== 1)
+        throw new Error("session scope changed before gate commit");
 }
 function markCapsuleGenerationSeen(db, sessionId, contextEpoch, generation) {
     if (!canQuery(db))
@@ -164,6 +166,13 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         const revisionState = sessionProjectRevisionState(db, sessionId);
         const currentProjectRevision = revisionState.current;
         const gateRow = readGateRow(db, sessionId);
+        const hotCursor = Number(gateRow?.hot_evidence_cursor ?? 0);
+        // Read a fixed eligible prefix before any await. Only emitted sequence IDs
+        // are acknowledged, so query limits and budget cutoffs remain retryable.
+        const hot = readHotEvidence(db, {
+            projectId: sessionScope.projectId, workstreamId: sessionScope.workstreamId,
+            excludeSessionId: sessionId, afterSeq: hotCursor, limit: 2,
+        });
         const capsule = readWorkCapsule(db, sessionScope.workstreamId);
         const currentCapsuleGeneration = capsule?.generation ?? 0;
         const capsuleGenerationSeen = Number(gateRow?.capsule_generation_seen ?? 0);
@@ -223,6 +232,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             currentProjectRevision,
             incidentMatched: incidents.length > 0,
             residentRevisionStale: revisionCorrections.length > 0,
+            hotEvidencePending: hot.length > 0,
             config: options.gateConfig,
         });
         if (options.gate === false) {
@@ -318,16 +328,6 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         });
         sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
         sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
-        // Sibling-lane Hot Evidence (RFC §11.2): the session's own evidence is
-        // already in its context, and evidence emitted earlier in this epoch is
-        // resident (watermark reset by the epoch change, stamped by rehydration).
-        const hot = readHotEvidence(db, {
-            projectId: sessionScope.projectId,
-            workstreamId: sessionScope.workstreamId,
-            excludeSessionId: sessionId,
-            afterCreatedAt: gateRow?.last_retrieval_at ?? null,
-            limit: 2,
-        });
         // Intent-gated 1-hop expansion (RFC §12.7): only why/related/dependency/
         // contradiction/trace prompts pay for graph expansion.
         const seenIds = new Set(results.map((r) => r.fact.id));
@@ -509,13 +509,45 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         const workNowEmitted = rendered.sections.some((s) => s.kind === "WORK NOW");
         const capsuleResident = wantsWorkNow && capsule && (workNowEmitted || !workNowRenderable);
         const fingerprintTokens = needsVector ? decision.tokens : null;
-        if (rendered.chars === 0) {
-            if (staleProjectMemory && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
-                throw new Error("project memory revision changed during correction check");
+        const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+        const commitBundle = () => {
+            if (injectedIds.length > 0) {
+                commitInjectionState(db, {
+                    sessionId, project, prompt: userPrompt, factIds: injectedIds,
+                    projectId: sessionScope.projectId, workspaceId: sessionScope.workspaceId,
+                    workstreamId: sessionScope.workstreamId, contextEpoch: residency.contextEpoch,
+                    projectMemoryRevision: currentProjectRevision, revisions: emittedRevisions,
+                    markProjectRevision: !staleProjectMemory || correctionsComplete,
+                });
             }
+            else if (staleProjectMemory && correctionsComplete &&
+                !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
+                throw new Error("project memory revision changed before injection commit");
+            }
+            if (canQuery(db)) {
+                const emitted = rendered.sections.find((s) => s.kind === "RECENT EVIDENCE")?.emitted.length ?? 0;
+                commitHotEvidenceCursor(db, {
+                    sessionId, projectId: sessionScope.projectId, workstreamId: sessionScope.workstreamId,
+                    contextEpoch: residency.contextEpoch, fromSeq: hotCursor,
+                    emittedSeqs: hot.slice(0, emitted).map((item) => Number(item.seq)),
+                });
+            }
+            commitGateState(db, { sessionId, workstreamId: sessionScope.workstreamId,
+                contextEpoch: residency.contextEpoch, tokens: fingerprintTokens,
+                embedding, watchLedger: nextWatchLedger, now });
             if (capsuleResident)
                 markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
-            commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
+        };
+        // Receipt, fact residency, Hot Evidence prefix and gate state either commit
+        // together or remain retryable when this transaction fails. Delivery on
+        // stdout happens afterwards; it is not an exactly-once transport.
+        if (typeof db.transaction === "function") {
+            const tx = db.transaction(commitBundle);
+            db.inTransaction ? tx() : tx.immediate();
+        }
+        else
+            commitBundle();
+        if (rendered.chars === 0) {
             const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
             appendInjectLog({
                 status: dedupedCount > 0 ? "deduped" : "no-match",
@@ -534,32 +566,6 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             }
             return "";
         }
-        // Provenance is the fail-closed durability gate; the dedup ledger is
-        // only best-effort operational state. Writing the ledger first would
-        // suppress a later retry when the prepared receipt fails to persist.
-        const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
-        if (injectedIds.length > 0) {
-            commitInjectionState(db, {
-                sessionId,
-                project,
-                prompt: userPrompt,
-                factIds: injectedIds,
-                projectId: sessionScope.projectId,
-                workspaceId: sessionScope.workspaceId,
-                workstreamId: sessionScope.workstreamId,
-                contextEpoch: residency.contextEpoch,
-                projectMemoryRevision: currentProjectRevision,
-                revisions: emittedRevisions,
-                markProjectRevision: !staleProjectMemory || correctionsComplete,
-            });
-        }
-        else if (staleProjectMemory && correctionsComplete &&
-            !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
-            throw new Error("project memory revision changed before injection commit");
-        }
-        commitGateState(db, { sessionId, contextEpoch: residency.contextEpoch, tokens: fingerprintTokens, embedding, watchLedger: nextWatchLedger, now });
-        if (capsuleResident)
-            markCapsuleGenerationSeen(db, sessionId, residency.contextEpoch, capsule.generation);
         const block = rendered.text + "\n";
         const sectionKinds = rendered.sections.map((s) => s.kind);
         const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);

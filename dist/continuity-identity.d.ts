@@ -85,9 +85,20 @@ export declare function readHotEvidence(db: Database.Database, input: {
     beforeEvidenceId?: string | null;
     /** Residency watermark: only evidence indexed after this instant. */
     afterCreatedAt?: string | null;
+    /** Automatic continuity reads the oldest unconsumed eligible sequence. */
+    afterSeq?: number;
     limit?: number;
     now?: string;
 }): Array<Record<string, unknown>>;
+/** Commit only the emitted eligible prefix; a purge/rebind/epoch race retries. */
+export declare function commitHotEvidenceCursor(db: Database.Database, input: {
+    sessionId: string;
+    projectId: string;
+    workstreamId: string;
+    contextEpoch: number;
+    fromSeq: number;
+    emittedSeqs: number[];
+}): void;
 export declare function assignFactSubject(db: Database.Database, input: {
     factId: string;
     projectId: string;

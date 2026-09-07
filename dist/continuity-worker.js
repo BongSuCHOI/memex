@@ -1,13 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { claimMemoryJobById, failMemoryJob, } from "./continuity-store.js";
-import { applyLatestLifecycleClosure, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, validateWorkCapsulePatch, } from "./continuity-core.js";
+import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, validateWorkCapsulePatch, } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
 import { isUserExcludedConversation, isConversationExcludedSession, purgeConversationFromIndex, } from "./conversation-policy.js";
+import { appendSessionEvidence, readCapsulePage } from "./continuity-evidence.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
-const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one contiguous transcript segment.
+const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one ordered workstream evidence page.
+contiguousSegment can include multiple sessions and immutable content generations.
+Long exchanges arrive as labeled parts; textOffset is a UTF-16 code-unit offset.
+Do not assume a part is the whole exchange or that all parts arrive in this page.
 Return exactly one JSON object and no markdown. It must have exactly these keys:
 {"objective":"","currentState":"","verifiedProgress":[],"hypotheses":[],"blockers":[],"openQuestions":[],"nextActions":[],"touchedAreas":[],"carryFactRevisions":[],"sourceExchangeIds":[]}
 Each verifiedProgress/hypotheses item must be exactly
@@ -33,11 +37,11 @@ function nextJob(db, kind, now) {
           AND earlier.state IN ('pending','retry','running')
           AND (earlier.priority > j.priority
             OR (earlier.priority = j.priority
-              AND (COALESCE(ec.ordinal, 0) < COALESCE(c.ordinal, 0)
-                OR (COALESCE(ec.ordinal, 0) = COALESCE(c.ordinal, 0)
+              AND (CASE WHEN earlier.kind = 'capsule_update' THEN earlier.rowid ELSE COALESCE(ec.ordinal, 0) END < CASE WHEN j.kind = 'capsule_update' THEN j.rowid ELSE COALESCE(c.ordinal, 0) END
+                OR (CASE WHEN earlier.kind = 'capsule_update' THEN earlier.rowid ELSE COALESCE(ec.ordinal, 0) END = CASE WHEN j.kind = 'capsule_update' THEN j.rowid ELSE COALESCE(c.ordinal, 0) END
                   AND earlier.created_at < j.created_at))))
       )
-    ORDER BY j.priority DESC, COALESCE(c.ordinal, 0), j.created_at, j.job_id
+    ORDER BY j.priority DESC, CASE WHEN j.kind = 'capsule_update' THEN j.rowid ELSE COALESCE(c.ordinal, 0) END, j.created_at, j.job_id
     LIMIT 1
   `).get(kind, now) ?? null;
 }
@@ -76,6 +80,7 @@ function verifyCheckpointJournal(db, checkpoint) {
     ORDER BY ordinal
   `).all(checkpoint.session_id, checkpoint.stream_epoch, checkpoint.through_byte);
     const fd = fs.openSync(checkpoint.journal_path, "r");
+    const buffer = Buffer.alloc(CAPTURE_CHUNK_BYTES);
     let expectedOffset = 0;
     let prefixHash = "";
     try {
@@ -83,16 +88,19 @@ function verifyCheckpointJournal(db, checkpoint) {
             if (block.journal_from_byte !== expectedOffset || block.journal_through_byte < expectedOffset) {
                 throw new Error("journal block chain is not contiguous");
             }
-            const bytes = Buffer.alloc(block.journal_through_byte - block.journal_from_byte);
-            const read = fs.readSync(fd, bytes, 0, bytes.length, block.journal_from_byte);
-            if (read !== bytes.length || sha256(bytes) !== block.segment_hash) {
-                throw new Error("journal segment hash mismatch");
+            const segment = createHash("sha256");
+            const prefix = createHash("sha256").update(prefixHash, "utf8").update(Buffer.from([0]));
+            for (let offset = block.journal_from_byte; offset < block.journal_through_byte;) {
+                const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, block.journal_through_byte - offset), offset);
+                if (!read)
+                    throw new Error("journal segment hash mismatch");
+                segment.update(buffer.subarray(0, read));
+                prefix.update(buffer.subarray(0, read));
+                offset += read;
             }
-            prefixHash = sha256(Buffer.concat([
-                Buffer.from(prefixHash, "utf8"),
-                Buffer.from([0]),
-                bytes,
-            ]));
+            if (segment.digest("hex") !== block.segment_hash)
+                throw new Error("journal segment hash mismatch");
+            prefixHash = prefix.digest("hex");
             if (prefixHash !== block.prefix_hash)
                 throw new Error("journal prefix hash mismatch");
             expectedOffset = block.journal_through_byte;
@@ -157,7 +165,17 @@ async function processCaptureIndex(db, jobId, owner, now, beforePrefixIngest) {
         }
         const parsed = await parseConversation(checkpoint.journal_path, checkpoint.project, checkpoint.journal_path, checkpoint.journal_through_byte);
         const prefix = parsed.filter((exchange) => exchange.sessionId === checkpoint.session_id &&
-            exchange.lineEnd <= checkpoint.through_line);
+            exchange.lineEnd <= checkpoint.through_line).map((exchange) => {
+            if (checkpoint.stream_epoch === 0)
+                return exchange;
+            // A replaced transcript can reuse user-line positions with different or
+            // shorter content. Give the new journal epoch its own immutable identity
+            // instead of defeating insertExchange's monotonic old-prefix guard.
+            const id = sha256(`${exchange.id}\0journal-epoch:${checkpoint.stream_epoch}`);
+            return { ...exchange, id, toolCalls: exchange.toolCalls?.map((tool) => ({
+                    ...tool, exchangeId: id, id: sha256(`${tool.id}\0${id}`),
+                })) };
+        });
         beforePrefixIngest?.();
         if (isConversationExcludedSession(db, checkpoint.session_id)) {
             purgeConversationFromIndex(db, {
@@ -234,39 +252,6 @@ async function processCaptureIndex(db, jobId, owner, now, beforePrefixIngest) {
         };
     }
 }
-function capsuleEvidence(db, checkpoint, previousCheckpointId) {
-    const previous = previousCheckpointId
-        ? db.prepare(`
-        SELECT session_id, stream_epoch, through_line
-        FROM checkpoints WHERE checkpoint_id = ?
-      `).get(previousCheckpointId)
-        : undefined;
-    const fromLine = previous &&
-        previous.session_id === checkpoint.session_id &&
-        previous.stream_epoch === checkpoint.stream_epoch
-        ? previous.through_line + 1
-        : 0;
-    const rows = db.prepare(`
-    SELECT id, user_message, assistant_message, line_start, line_end
-    FROM exchanges
-    WHERE session_id = ? AND line_end >= ? AND line_start <= ?
-    ORDER BY exchange_seq, rowid
-  `).all(checkpoint.session_id, fromLine, checkpoint.through_line);
-    const trustedTools = db.prepare(`
-    SELECT id, tool_name, tool_result, source_type
-    FROM tool_calls
-    WHERE exchange_id = ? AND learnable = 1
-      AND source_type IN ('repo_file','git_history','test_execution')
-    ORDER BY timestamp, id
-  `);
-    return rows.map((row) => ({
-        exchangeId: row.id,
-        lines: [row.line_start, row.line_end],
-        human: row.user_message,
-        assistantContextOnly: row.assistant_message,
-        trustedTools: trustedTools.all(row.id),
-    }));
-}
 async function processCapsule(db, jobId, owner, now, model) {
     const pending = db.prepare(`
     SELECT j.checkpoint_id FROM memory_jobs j
@@ -297,13 +282,18 @@ async function processCapsule(db, jobId, owner, now, model) {
       SET state = 'processing', expected_generation = ?, last_error = NULL, updated_at = ?
       WHERE checkpoint_id = ?
     `).run(expectedGeneration, new Date().toISOString(), checkpoint.checkpoint_id);
-        const evidence = capsuleEvidence(db, checkpoint, previous?.throughCheckpointId ?? null);
+        // Existing exchanges can predate session binding. Backfill only that
+        // session's missing immutable generations before freezing this job target.
+        appendSessionEvidence(db, checkpoint.session_id);
+        const page = db.transaction(() => readCapsulePage(db, checkpoint.checkpoint_id)).immediate();
+        const evidence = page.evidence;
         if (evidence.length === 0) {
             if (!completeEmptyCapsuleCheckpoint(db, {
                 checkpointId: checkpoint.checkpoint_id,
                 jobId,
                 owner,
                 leaseGeneration: claim.lease_generation,
+                evidencePage: page,
             })) {
                 return { jobId, kind: "capsule_update", state: "stale", detail: "lease lost" };
             }
@@ -329,6 +319,7 @@ async function processCapsule(db, jobId, owner, now, model) {
             expectedGeneration,
             throughCheckpointId: checkpoint.checkpoint_id,
             patch,
+            evidencePage: page,
             jobLease: {
                 jobId,
                 owner,
@@ -355,7 +346,9 @@ async function processCapsule(db, jobId, owner, now, model) {
             }
             return { jobId, kind: "capsule_update", state: "stale", detail: "generation CAS rejected" };
         }
-        return { jobId, kind: "capsule_update", state: "completed", detail: `generation=${applied.generation}` };
+        return { jobId, kind: "capsule_update",
+            state: page.throughSeq >= page.targetSeq ? "completed" : "partial",
+            detail: `generation=${applied.generation} through_seq=${page.throughSeq} target_seq=${page.targetSeq}` };
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -389,6 +382,7 @@ export async function runContinuityWorker(db, options = {}) {
     const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048));
     const results = [];
     for (let index = 0; index < maxJobs; index++) {
+        scheduleCapsuleBacklog(db);
         const now = options.now ?? new Date();
         const capture = nextJob(db, "capture_index", now.toISOString());
         if (capture) {

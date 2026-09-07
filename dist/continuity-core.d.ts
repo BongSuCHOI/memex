@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import type Database from "better-sqlite3";
+import { type CapsulePage } from "./continuity-evidence.js";
 export declare const CONTINUITY_CAPTURE_POLICY_VERSION = "continuity-capture-v1";
-export declare const CAPSULE_POLICY_VERSION = "continuity-capsule-v1";
+export { CAPSULE_POLICY_VERSION } from "./continuity-evidence.js";
 export declare const CONTINUITY_PARSER_VERSION = 2;
+export declare const CAPTURE_CHUNK_BYTES: number;
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];
@@ -58,6 +60,7 @@ export interface WorkCapsule extends WorkCapsulePatch {
     workstreamId: string;
     generation: number;
     throughCheckpointId: string | null;
+    throughSeq: number;
     authority: "context-only";
     sourceWorkspaceId: string | null;
     sourceSessionId: string | null;
@@ -88,6 +91,9 @@ export declare function ensureSessionMemoryState(db: Database.Database, input: {
     projectId: string;
     workspaceId: string;
 };
+/** Preserve Stop/byte coalescing using database capture order, never session ordinals. */
+export declare function scheduleCapsuleForCheckpoint(db: Database.Database, checkpointId: string, now?: string, force?: boolean): void;
+export declare function scheduleCapsuleBacklog(db: Database.Database): void;
 export declare function captureTranscriptPrefix(db: Database.Database, input: {
     sessionId: string;
     project: string;
@@ -96,6 +102,7 @@ export declare function captureTranscriptPrefix(db: Database.Database, input: {
     turnId?: string | null;
     workstreamId?: string | null;
     now?: string;
+    afterJournalChunk?: (bytesCopied: number) => void;
     afterJournalFsync?: () => void;
     afterCheckpoint?: () => void;
     afterJob?: () => void;
@@ -136,6 +143,7 @@ export declare function applyWorkCapsulePatch(db: Database.Database, input: {
     expectedGeneration: number;
     throughCheckpointId: string;
     patch: unknown;
+    evidencePage?: CapsulePage;
     jobLease?: {
         jobId: string;
         owner: string;
@@ -148,6 +156,7 @@ export declare function completeEmptyCapsuleCheckpoint(db: Database.Database, in
     jobId: string;
     owner: string;
     leaseGeneration: number;
+    evidencePage?: CapsulePage;
     now?: string;
 }): boolean;
 export declare function readWorkCapsule(db: Database.Database, workstreamId: string): WorkCapsule | null;
@@ -164,6 +173,11 @@ export declare function buildRehydrationContext(db: Database.Database, input: {
     capsuleGeneration: number;
     projectRevisionComplete: boolean;
     projectMemoryRevision: number;
+    contextEpoch: number;
+    projectId: string | null;
+    workstreamId: string | null;
+    hotEvidenceCursor: number;
+    hotEvidenceSeqs: number[];
 };
 export declare function handleContinuityHook(payloadValue: unknown, options?: {
     db?: Database.Database;

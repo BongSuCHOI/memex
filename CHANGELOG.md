@@ -4,6 +4,17 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+- Reserve compact/resume work context before corrections consume the bundle budget.
+- Replace scalar Capsule coverage with immutable, ordered workstream evidence and
+  bounded fixed-target pages. Preserve six-Stop/8KiB coalescing across sessions;
+  commit projection/cursor/lease atomically and invalidate stale purge/rebind work.
+- Retry unrendered Hot Evidence using per-session/epoch sequence cursors, including
+  on acknowledgement prompts; commit emitted prefix and fact residency together.
+- Stream large capture deltas and journal verification through 4MiB buffers,
+  preserving JSONL boundaries, hash chains, fsync/outbox atomicity and orphan retry.
+- Add schema v7 replay migration with old-worker fencing. Source replacement
+  epochs retain distinct exchange/tool identities. Package version is unchanged.
+
 ## 0.4.0 - 2026-09-04
 
 ### Memex Continuity Architecture v1
