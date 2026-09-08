@@ -1,16 +1,16 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-08T07:25:24.177679+00:00",
+  "recordedAt": "2026-09-08T07:47:10.907386+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.0.0",
     "platform": "darwin arm64",
-    "isolation": "Temporary homes for install, package and lifecycle gates. The blocked authenticated stale-content probe was not rerun by this gate."
+    "isolation": "Temporary homes for install, package and lifecycle gates. The approved authenticated stale-content follow-up is recorded separately; this gate uses offline fixture tests."
   },
   "candidate": {
     "repository": "memex",
     "branch": "codex/memory-integrity",
-    "codeSha": "894a337567f4d219c3d59f056c190f98f81aef56",
+    "codeSha": "63db46b6d8fd62ace6503e4730de49209cde4f3c",
     "packageVersion": "0.4.1",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
@@ -24,8 +24,8 @@
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:22:36.680159+00:00",
-      "durationSeconds": 3.19,
+      "startedAt": "2026-09-08T07:44:21.809192+00:00",
+      "durationSeconds": 3.103,
       "logSha256": "6791526fda8dcd6e9e3d39446d2abc9b8dc83b8219bf383d79a2ddc92948d2e8",
       "observed": "TypeScript noEmit exit 0"
     },
@@ -34,9 +34,9 @@
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:22:39.871373+00:00",
-      "durationSeconds": 3.412,
-      "logSha256": "5709d7e3914d0467d9dcfbd7a649db7ed47f9b07cf90347cbf76379cc2f4a560",
+      "startedAt": "2026-09-08T07:44:24.913572+00:00",
+      "durationSeconds": 3.442,
+      "logSha256": "dfa8d01f45c67f0348e7e373ad59dfeb22ccc3b603347caf62cb19328c0605af",
       "observed": "TypeScript and MCP bundle exit 0; tracked generated artifacts unchanged"
     },
     {
@@ -44,9 +44,9 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:22:43.283235+00:00",
-      "durationSeconds": 18.541,
-      "logSha256": "5c6ea704a14f0e5ffff3a4c972c9ac0f384339b24d6cc922ac5372d06e0a64ba",
+      "startedAt": "2026-09-08T07:44:28.355542+00:00",
+      "durationSeconds": 18.115,
+      "logSha256": "dcc648bf2d1eda0074e7049ebb409f2912de3db39b064abb20a551b0e76ae9be",
       "observed": "94 files / 984 tests passed"
     },
     {
@@ -54,9 +54,9 @@
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:23:01.824951+00:00",
-      "durationSeconds": 3.853,
-      "logSha256": "493284854cec1de6a6bff28f7ed5f0f5b67e3245d199695ce26a39e830fc2eaa",
+      "startedAt": "2026-09-08T07:44:46.471263+00:00",
+      "durationSeconds": 3.831,
+      "logSha256": "7011b940688a3bbc5b2e6697ba9c9b71b15dd377d8213ade381d71303c255ad7",
       "observed": "26 passed / 0 failed"
     },
     {
@@ -64,9 +64,9 @@
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:23:05.678022+00:00",
-      "durationSeconds": 10.234,
-      "logSha256": "ca9d83b034f7b8a1b2cfedbbfdb79fc6a4d32fd426076f40ec6dd158281778fa",
+      "startedAt": "2026-09-08T07:44:50.302950+00:00",
+      "durationSeconds": 10.254,
+      "logSha256": "29058bb566160cbd4e91a6ad2aacbb4a1c4765c43b39d4f4e42e6d51a73ed2a5",
       "observed": "100 passed / 0 failed"
     },
     {
@@ -74,9 +74,9 @@
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:23:15.912941+00:00",
-      "durationSeconds": 8.853,
-      "logSha256": "a8a17b8a030d5ea943b14f7bb5acea104358cf5da4794c3d97f33c83ee805071",
+      "startedAt": "2026-09-08T07:45:00.559815+00:00",
+      "durationSeconds": 9.126,
+      "logSha256": "98dae08e832539fe4e0d72e8be8a169ebc6c6fc883a03601c5d7fb581289bc03",
       "observed": "Isolated install, idempotence, 9 MCP tools, sync, removal and unchanged user surfaces passed"
     },
     {
@@ -84,9 +84,9 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:23:24.766116+00:00",
-      "durationSeconds": 0.408,
-      "logSha256": "8adf9d7f65e47f3bf3e14956b758789a72129ba03bc18f56cd1e30af83704965",
+      "startedAt": "2026-09-08T07:45:09.686357+00:00",
+      "durationSeconds": 0.426,
+      "logSha256": "bc6387f10aa8bb03b08997a69bd026acae9bc0a25c6f6a1d2fd61a3918c93a54",
       "observed": "Plugin 0.4.1, 3 skills, 7 lifecycle events and cleanup passed"
     },
     {
@@ -94,19 +94,19 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:23:25.174459+00:00",
-      "durationSeconds": 82.057,
-      "logSha256": "7a9ae2f41d0e5676491b41f026406d6c040553269cc989d9272be5997f4b39be",
-      "observed": "memex-0.4.1.tgz: 269 files; 1262358 packed bytes / 5101266 unpacked bytes; 9 MCP tools; isolated onboarding and hook checks passed"
+      "startedAt": "2026-09-08T07:45:10.112653+00:00",
+      "durationSeconds": 83.755,
+      "logSha256": "48bc651fc79bc4d40081999d36c48bc0f4024a52c9f2e1f3aeb5d677bb5a5cdb",
+      "observed": "memex-0.4.1.tgz: 271 files; 1268617 packed bytes / 5122442 unpacked bytes; 9 MCP tools; isolated onboarding and hooks passed"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:24:47.230247+00:00",
-      "durationSeconds": 8.804,
-      "logSha256": "4110a1e349d49b2b9a4a45a5251590771f2b962f679b90623e3af5a57bdbd3a4",
+      "startedAt": "2026-09-08T07:46:33.986126+00:00",
+      "durationSeconds": 9.064,
+      "logSha256": "2f9d3db4ced5e016098713869a66d255625e687051e61253f16f0f3441346a90",
       "observed": "Offline lifecycle 9/9 steps and seven-surface cleanup passed"
     },
     {
@@ -114,19 +114,19 @@
       "command": "node --test test/codex-host-compat.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:24:56.034976+00:00",
-      "durationSeconds": 0.179,
-      "logSha256": "9b2e50727bdd267b00b44e3f8ffe08e8ca669a20b0e333a7cd38c3b9c7e9532f",
-      "observed": "1 test passed; sanitized 0.153.4 lifecycle inputs and delivery evidence"
+      "startedAt": "2026-09-08T07:46:43.050310+00:00",
+      "durationSeconds": 1.247,
+      "logSha256": "c2cea1740f9152bc10dbe384fd5ffd42f45f97dfd38c6e2dbec5df8220abdd1e",
+      "observed": "2 tests passed: sanitized versioned inputs, fresh capture-index preparation, neutral query and correction-field positive/negative regression"
     },
     {
       "name": "comparison-harness",
       "command": "node --test test/codex-memory-comparison.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-08T07:24:56.214190+00:00",
-      "durationSeconds": 0.444,
-      "logSha256": "231d496ffc90fc1d53ec284b7cc03278d9fd5818362e6ccfc09c634d3e307156",
+      "startedAt": "2026-09-08T07:46:44.298126+00:00",
+      "durationSeconds": 0.447,
+      "logSha256": "1fe54555c32bbfc07c139191abdc0a4268df03f03ac7886e036f99558912a347",
       "observed": "2 tests passed; last nonempty answer grading and actual derived-path rewrite"
     }
   ],
@@ -137,8 +137,9 @@
       "version": "0.153.4",
       "realTuiLifecycle": "Normal, interrupt, kill and same-session resume, manual/repeated compaction observed",
       "transportBoundary": "App-server operation success is separate from plugin hook delivery; TUI used explicit setup-hooks fallback",
-      "staleCapsule": "Production stale/context-only output observed after actual compaction; full seven-field host content consumption NOT_PROVEN",
-      "approvalBlock": "Authenticated synthetic stale-content retry was rejected before execution by automatic approval review; no workaround or further retry."
+      "staleCapsule": "PASS for the approved synthetic Luna case: seven-field continuity JSON, current correction, unverified hypothesis and stale/pending state observed.",
+      "approvalBlock": "Historical retry rejection was resolved by subsequent explicit user approval. One preparation failure was fixed locally, followed by the successful actual host run.",
+      "contentEvidence": "docs/verification/codex-usability/stale-content.json"
     },
     "modelWork": {
       "durableBudget": "Actual provider attempts including retries; deadline/input/output bounds; usage coverage and pending targets",
@@ -170,6 +171,13 @@
       "mandatoryRecall": "20/20",
       "corrections": "3/3",
       "limitations": "Existing gate versus forced retrieval; not prior-release or real-model quality comparison"
+    },
+    "approvedFollowUp": {
+      "evidence": "docs/verification/codex-usability/stale-content.json",
+      "status": "PASS",
+      "durationMs": 56117,
+      "acceptanceBasis": "Final model response preserves both hook-only pending-work descriptions; nonce echo was not required or observed.",
+      "rawScorer": "Original currentGoal-only correction false negative preserved; corrected recentCorrections scorer passes all four assertions on the recorded response without another model call."
     }
   },
   "cleanup": {
@@ -178,33 +186,36 @@
     "missingCurrentDocFileLinks": 0,
     "unusedLocalsCheck": "Precommit npx tsc --noEmit --noUnusedLocals passed; not a separate clean-SHA gate",
     "removedUnusedCode": "Two unreferenced never-published model-budget helpers and one unused import removed",
-    "temporaryAuth": "17 comparison/native auth copies removed; host worker separately removed its isolated auth and PTY evidence root",
+    "temporaryAuth": "Both approved follow-up homes had auth copies removed in finally; after preserving private raw results, both owned temporary homes were removed.",
     "processes": "Escalated ps scan found no process containing this task comparison/host/reembed temporary root markers before final gate; gate cleanup is recorded in hashed logs",
-    "durableData": "No live-data migration or installed-plugin upgrade during stages 6-8"
+    "durableData": "No live-data migration, installed-plugin upgrade, user config or user hooks change."
   },
   "historicalEvidence": {
-    "receipt": "docs/verification/codex-usability/prior-merge-gate.json",
-    "sha256": "56cfa9ecc3cb7c247e276221ebb01843aff29b68e7337d9546e0e400839b2b8c",
+    "receipt": "docs/verification/codex-usability/pre-stale-merge-gate.json",
+    "sha256": "bd5d262f6ee864389990aa48fff007d2c9d9761a013a2f6e2621f64cf6d510d8",
     "preservedByteForByte": true,
-    "note": "Prior memory-integrity measurements remain historical; this gate does not repeat the earlier live repair."
+    "earlierReceipt": "docs/verification/codex-usability/prior-merge-gate.json",
+    "note": "Previous blocked stale-content status and comparison results are retained in their original receipts; the successful approved follow-up is separate."
   },
   "artifactHashes": {
-    "README.md": "b8ac2235404e1dde7d97b8c959ee510226959edcebece068090a9b612e9c7c0b",
+    "README.md": "72fe142a714a830bf8eb49b6f4b99319c6fa2c6d63c6181ff3fa96f94800ebee",
     "comparison-adjudication.json": "43947af5bcd8bf5a735c6fdee41ba9eb73d80474bccf7d6684bbeb638c4ec3ec",
     "comparison.json": "667adfb7adb08fee0998ce34450d25261e6e3701ae03413c80747ffb87e7105d",
     "host-compatibility.json": "bc1b07a3e2508809fa227388a5f2ed7e9e6a1a72682f446cb601b894eb601457",
     "native-generation.json": "f909910df53b0403c58e0ce0082cfd3ce9a79ec936bbe578eb2b269e148e4ac1",
+    "pre-stale-merge-gate.json": "bd5d262f6ee864389990aa48fff007d2c9d9761a013a2f6e2621f64cf6d510d8",
     "prior-merge-gate.json": "56cfa9ecc3cb7c247e276221ebb01843aff29b68e7337d9546e0e400839b2b8c",
-    "recall-calibration.json": "9e76e0106f55c76518d24cf5ac406733620275694e459626cda4666638cd8869"
+    "recall-calibration.json": "9e76e0106f55c76518d24cf5ac406733620275694e459626cda4666638cd8869",
+    "stale-content.json": "dbfd787d993caf526b109e9659af4943e84752b98ff23b9ac035863be28a39bf"
   },
   "limitations": [
-    "Stale Capsule seven-field host consumption remains NOT_PROVEN: DNS failure followed by automatic approval review rejection of the authenticated retry.",
+    "Approved stale content consumption passes one synthetic seeded-Capsule case. Native compacted history remains available, and automatic Capsule distillation quality is not measured.",
     "Native learned-memory generation remains NOT_PROVEN; configured built-in answer quality cannot establish mature memory superiority.",
     "One synthetic corpus and same-task authored scorer are not an independent holdout. Shared post-compaction history prevents attributing correct answers solely to memory.",
     "Core strict JSON quality remains FAIL (12/13) despite separately observed correct semantic content.",
     "Host compaction token usage and total host provider calls are NOT_PROVEN. Each Memex comparison arm retains three post-query capture/Capsule jobs with auto-wake disabled; recorded model workers were idle.",
-    "Actual host/model observations preceded the final implementation SHA. Final automated gates cover this exact SHA; no claim that the authenticated host comparison was repeated on it.",
+    "Actual host/model observations preceded the final committed harness SHA; the subsequent grading-only correction was replayed on the recorded answer, without another model call. Final automated gates cover this exact SHA.",
     "No push, tag, release, publication, installed-plugin upgrade or live-data migration performed."
   ],
-  "releaseConclusion": "All eleven automated gates PASS on the clean committed implementation. Actual host/content and native-memory limits remain explicit; stages 6-8 are not represented as unconditional end-to-end PASS. No release."
+  "releaseConclusion": "All eleven automated gates PASS on the clean committed follow-up. The explicitly approved synthetic stale-Capsule content case passes; native-memory and four-arm comparison limitations remain unchanged. No release."
 }
