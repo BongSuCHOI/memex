@@ -18,6 +18,12 @@ import {
 } from "./db.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { readChronicleTimeline, recordChronicleEvent } from "./chronicle.js";
+import { isInternalContextMessage } from "./codex-rollout.js";
+import {
+  captureSourceSnapshot,
+  sourceSnapshotValid,
+  type SourceSnapshot,
+} from "./fact-policy.js";
 
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 
@@ -662,13 +668,13 @@ function isPathCharacter(character: string | undefined): boolean {
   return character !== undefined && /[A-Za-z0-9_$.\\/\\-]/u.test(character);
 }
 
-function containsExactIdentifier(text: string, query: string): boolean {
+function exactIdentifierOffset(text: string, query: string): number {
   const haystack = text.toLocaleLowerCase();
   const needle = query.toLocaleLowerCase();
   let offset = 0;
   while (offset <= haystack.length - needle.length) {
     const start = haystack.indexOf(needle, offset);
-    if (start < 0) return false;
+    if (start < 0) return -1;
     const end = start + needle.length;
     const pathLike = /[/\\.]/u.test(query);
     const before = text[start - 1];
@@ -680,10 +686,14 @@ function containsExactIdentifier(text: string, query: string): boolean {
     if (pathLike && after === "." && !isIdentifierCharacter(text[end + 1])) {
       afterMatches = false;
     }
-    if (!beforeMatches && !afterMatches) return true;
+    if (!beforeMatches && !afterMatches) return start;
     offset = start + 1;
   }
-  return false;
+  return -1;
+}
+
+function containsExactIdentifier(text: string, query: string): boolean {
+  return exactIdentifierOffset(text, query) >= 0;
 }
 
 /**
@@ -742,6 +752,101 @@ export function searchFactsLexicallyInScope(
   }
   results.sort((a, b) => b.lexicalScore - a.lexicalScore || a.fact.id.localeCompare(b.fact.id));
   return results.slice(0, limit);
+}
+
+export interface HumanSourceIdentifierEvidence {
+  exchangeId: string;
+  identifier: string;
+  /** Already bounded, source-linked context; never a Fact or resident revision. */
+  text: string;
+  snapshot: SourceSnapshot;
+  coordinates: string;
+}
+
+// Shared workstreams can span workspaces. Both the source workspace and its
+// session must still belong to the same project/workstream at read and commit.
+function humanSourceRows(db: Database.Database, scope: ReadScope, identifier: string, exchangeId?: string): Array<Record<string, unknown>> {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id") return [];
+  return db.prepare(`
+    SELECT e.* FROM exchanges e
+    JOIN session_memory_state s ON s.session_id = e.session_id
+      AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
+      AND s.workstream_id = e.workstream_id
+    JOIN workspaces w ON w.workspace_id = e.workspace_id AND w.project_id = e.project_id
+    WHERE e.project_id = ? AND e.workstream_id = ? AND COALESCE(e.is_sidechain, 0) = 0
+      AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)
+      AND LOWER(e.user_message) LIKE LOWER(?) ESCAPE '\\'
+      ${exchangeId ? "AND e.id = ?" : ""}
+    ORDER BY e.timestamp DESC, e.id LIMIT 128
+  `).all(scope.projectId, scope.workstreamId, `%${escapeLikePattern(identifier)}%`,
+    ...(exchangeId ? [exchangeId] : [])) as Array<Record<string, unknown>>;
+}
+
+function humanSourceText(row: Record<string, unknown>): string | null {
+  // The indexed user field is assembled from real user messages, not tool or
+  // replacement-history records. Recall in the assistant half of a turn does
+  // not invalidate an independent human assertion in this field.
+  try {
+    const provenance: unknown = JSON.parse(String(row.provenance));
+    if (!Array.isArray(provenance) || !provenance.includes("human_assertion")) return null;
+  } catch { return null; }
+  const text = String(row.user_message ?? "").trim();
+  if (!text || isInternalContextMessage(text) ||
+      /^(?:<local-command-stdout>|<local-command-caveat>|<command-name>|Caveat:|\/[\w:-]+$)/u.test(text)) return null;
+  return text.replace(/\s+/gu, " ");
+}
+
+function humanSourceCoordinates(row: Record<string, unknown>): string {
+  return JSON.stringify([row.session_id, row.archive_path, row.line_start, row.line_end,
+    row.content_hash, row.content_generation]);
+}
+
+/** Exact-query escape hatch for lossy fact summaries; no learning or vector work. */
+export function searchHumanSourceIdentifiersInScope(
+  db: Database.Database, query: string, scope: ReadScope, limit = 2,
+): HumanSourceIdentifierEvidence[] {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id" || limit <= 0) return [];
+  const results: HumanSourceIdentifierEvidence[] = [];
+  const parsed = extractFactIdentifiers(query).filter(term => term.length <= MAX_LITERAL_QUERY_CHARS);
+  const literal = normalizeFactQuery(query).replace(/\(\)$/u, "");
+  const identifiers = parsed.includes(literal) ? [literal] : parsed;
+  for (const identifier of identifiers) {
+    // The broader fact lane may also match a path's basename. Only a full
+    // identifier match covers this source lookup request.
+    if (searchFactsLexicallyInScope(db, identifier, scope, Number.MAX_SAFE_INTEGER)
+      .some(({ fact }) => containsExactIdentifier(fact.fact, identifier))) continue;
+    for (const row of humanSourceRows(db, scope, identifier)) {
+      if (results.some(item => item.exchangeId === row.id && containsExactIdentifier(item.text, identifier))) continue;
+      const source = humanSourceText(row);
+      const offset = source === null ? -1 : exactIdentifierOffset(source, identifier);
+      if (source === null || offset < 0) continue;
+      const prefix = `[exchange ${row.id}:${row.line_start}-${row.line_end}] `;
+      const available = 160 - prefix.length;
+      // A partial literal or an unresolvable truncated source ID is not useful.
+      if (identifier.length > available) continue;
+      const start = Math.max(0, offset - Math.min(24, available - identifier.length));
+      const snapshot = captureSourceSnapshot(db, [String(row.id)]);
+      if (!snapshot) continue;
+      results.push({ exchangeId: String(row.id), identifier,
+        text: prefix + source.slice(start, start + available), snapshot,
+        coordinates: humanSourceCoordinates(row) });
+      break;
+    }
+    if (results.length >= Math.min(2, limit)) break;
+  }
+  return results;
+}
+
+/** Called inside the receipt transaction after any intervening async work. */
+export function validateHumanSourceIdentifierEvidence(
+  db: Database.Database, evidence: HumanSourceIdentifierEvidence, scope: ReadScope,
+): boolean {
+  const row = humanSourceRows(db, scope, evidence.identifier, evidence.exchangeId)[0];
+  if (!row || humanSourceCoordinates(row) !== evidence.coordinates) return false;
+  const text = humanSourceText(row);
+  return text !== null && containsExactIdentifier(text, evidence.identifier) && sourceSnapshotValid(db, evidence.snapshot);
 }
 
 /** Merge literal and semantic lanes with exact lexical hits taking priority. */

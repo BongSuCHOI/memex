@@ -6,6 +6,8 @@ import {
   searchFactsInScope,
   searchFactsLexicallyInScope,
   isExactFactIdentifierQuery,
+  searchHumanSourceIdentifiersInScope,
+  validateHumanSourceIdentifierEvidence,
 } from "./fact-db.js";
 import { readScopeForSession } from './read-scope.js';
 import {
@@ -518,6 +520,11 @@ export async function computeInjectContext(
       const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
       return similarity - baseline >= BASELINE_MARGIN;
     });
+    let rawEvidence: ReturnType<typeof searchHumanSourceIdentifiersInScope> = [];
+    if (canQuery(db)) {
+      try { rawEvidence = searchHumanSourceIdentifiersInScope(db, userPrompt, scope); }
+      catch { /* Missing source identity/provenance support leaves this lane empty. */ }
+    }
     sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
     sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
     // Intent-gated 1-hop expansion (RFC §12.7): only why/related/dependency/
@@ -637,6 +644,9 @@ export async function computeInjectContext(
       }
       if (traceItems.length > 0) sections.push({ kind: "TRACE", items: traceItems.map((t) => ({ text: t.text })) });
     }
+    if (rawEvidence.length > 0) {
+      sections.push({ kind: "RAW EVIDENCE", items: rawEvidence.map(item => ({ text: item.text })) });
+    }
     if (hot.length > 0) {
       sections.push({ kind: "RECENT EVIDENCE", items: hot.map((item) => ({ text: String(item.evidence_text).slice(0, 180) })) });
     }
@@ -688,6 +698,12 @@ export async function computeInjectContext(
     let preparedReceiptId: string | null = null;
     const commitBundle = () => {
       if (canQuery(db)) {
+        const emittedRaw = rendered.sections.find(section => section.kind === "RAW EVIDENCE")?.emitted.length ?? 0;
+        for (const evidence of rawEvidence.slice(0, emittedRaw)) {
+          if (!validateHumanSourceIdentifierEvidence(db, evidence, scope)) {
+            throw new Error("raw source content or scope changed before injection commit");
+          }
+        }
         for (const [id, semantic, lifecycle] of emittedRevisions) {
           const row = db.prepare('SELECT * FROM facts WHERE id = ?').get(id) as Record<string, unknown> | undefined;
           const revoked = revisionCorrections.some(correction => correction.id === id && correction.scope_revoked);

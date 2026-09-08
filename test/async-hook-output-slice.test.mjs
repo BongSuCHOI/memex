@@ -1,0 +1,215 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = path.join(ROOT, "cli", "memex.js");
+const VERSION_DRIFT_HOOK = path.join(
+  ROOT,
+  "scripts",
+  "version-drift-check.js",
+);
+const SYNC_IMPORT_HOOK = path.join(ROOT, "scripts", "sync-import-hook.js");
+
+function runNode(script, args = [], options = {}) {
+  return spawnSync(process.execPath, [script, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  });
+}
+
+function makeSyncImportSandbox() {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "memex-async-hook-"));
+  const scripts = path.join(sandbox, "scripts");
+  const dist = path.join(sandbox, "dist");
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(dist, { recursive: true });
+  fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}\n');
+  fs.copyFileSync(SYNC_IMPORT_HOOK, path.join(scripts, "sync-import-hook.js"));
+
+  const positive = {
+    newFacts: 1,
+    updatedFacts: 2,
+    deletedFacts: 3,
+    newRevisions: 4,
+    newTombstones: 5,
+    newRecallEvents: 6,
+    updatedRecallEvents: 7,
+    malformedRows: [],
+  };
+  const malformed = {
+    ...positive,
+    newFacts: 0,
+    updatedFacts: 0,
+    deletedFacts: 0,
+    newRevisions: 0,
+    newTombstones: 0,
+    newRecallEvents: 0,
+    updatedRecallEvents: 0,
+    malformedRows: [
+      { file: "facts.jsonl", line: 2, error: "invalid JSON" },
+    ],
+  };
+  fs.writeFileSync(
+    path.join(dist, "sync-import.js"),
+    `const positive = ${JSON.stringify(positive)};
+const malformed = ${JSON.stringify(malformed)};
+export async function importFromSync() {
+  return process.env.FAKE_SYNC_IMPORT_MODE === "malformed" ? malformed : positive;
+}
+`,
+  );
+  return { sandbox, script: path.join(scripts, "sync-import-hook.js") };
+}
+
+async function waitForPathToDisappear(target, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (fs.existsSync(target) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function waitForPathToAppear(target, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(target) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return fs.existsSync(target);
+}
+
+test("sync --background keeps its operational notice off stdout", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-sync-hook-"));
+  const home = path.join(root, "memex-home");
+  const sessions = path.join(root, "missing-sessions");
+  const locks = path.join(root, "locks");
+  const workerExitMarker = path.join(root, "sync-worker-exited");
+  const preload = path.join(root, "sync-exit-marker.cjs");
+  fs.writeFileSync(
+    preload,
+    `const fs = require("node:fs");
+const marker = process.env.MEMEX_TEST_SYNC_EXIT_MARKER;
+const isSyncWorker = process.argv.some((arg) => /(?:^|[/\\\\])dist[/\\\\]sync-cli\\.js$/.test(arg)) &&
+  !process.argv.includes("--background");
+if (marker && isSyncWorker) {
+  process.once("exit", () => {
+    try { fs.writeFileSync(marker, String(process.pid)); } catch {}
+  });
+}
+`,
+  );
+  try {
+    const result = runNode(CLI, ["sync", "--background"], {
+      env: {
+        ...process.env,
+        MEMEX_HOME: home,
+        MEMEX_SESSIONS_DIR: sessions,
+        MEMEX_RUN_LOCKS_DIR: locks,
+        MEMEX_TEST_SYNC_EXIT_MARKER: workerExitMarker,
+        NODE_OPTIONS: `--require=${preload}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^Sync started in background\.\.\.\n$/);
+
+    // The detached child sees the intentionally missing source and exits
+    // without contacting a provider. Its inherited preload marks that exact
+    // child at exit, so cleanup cannot race a late lock acquisition.
+    assert.equal(
+      await waitForPathToAppear(workerExitMarker),
+      true,
+      "detached sync worker did not exit within the test bound",
+    );
+    await waitForPathToDisappear(path.join(locks, "memex-sync.lock"));
+    assert.equal(
+      fs.existsSync(path.join(locks, "memex-sync.lock")),
+      false,
+      "detached sync worker did not release its isolated lock",
+    );
+  } finally {
+    // If an assertion fails before the marker check, still give the detached
+    // child a bounded chance to finish before removing its isolated root.
+    await waitForPathToAppear(workerExitMarker);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sync-import hook writes positive and malformed summaries to stderr", () => {
+  const { sandbox, script } = makeSyncImportSandbox();
+  try {
+    const positive = runNode(script, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_IMPORT_MODE: "positive" },
+    });
+    assert.equal(positive.status, 0, positive.stderr);
+    assert.equal(positive.stdout, "");
+    assert.match(
+      positive.stderr,
+      /sync-import: facts \+1\/~2\/-3, \+4 revisions, \+5 tombstones, \+6\/~7 recall events\n/,
+    );
+
+    const malformed = runNode(script, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_IMPORT_MODE: "malformed" },
+    });
+    assert.equal(malformed.status, 0, malformed.stderr);
+    assert.equal(malformed.stdout, "");
+    assert.match(
+      malformed.stderr,
+      /sync-import: payload issue at facts\.jsonl:2 — invalid JSON\n/,
+    );
+    assert.match(
+      malformed.stderr,
+      /sync-import: 1 payload issue\(s\) reported \(see stderr\)\n/,
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("version drift warning stays on stderr", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-version-hook-"));
+  const fakeBin = path.join(root, "bin");
+  const codexHome = path.join(root, "codex-home");
+  const newerVersion = "99.0.0";
+  try {
+    fs.mkdirSync(fakeBin, { recursive: true });
+    fs.mkdirSync(
+      path.join(
+        codexHome,
+        "plugins",
+        "cache",
+        "test-marketplace",
+        "memex",
+        newerVersion,
+      ),
+      { recursive: true },
+    );
+    const fakePs = path.join(fakeBin, "ps");
+    fs.writeFileSync(fakePs, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(fakePs, 0o755);
+
+    const result = runNode(VERSION_DRIFT_HOOK, [], {
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(
+      result.stderr,
+      new RegExp(
+        `\\[memex\\] version drift: this session runs v[^ ]+ but v${newerVersion} is installed\\.`,
+      ),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

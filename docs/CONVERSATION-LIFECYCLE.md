@@ -124,6 +124,11 @@ flowchart LR
 
 Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → deterministic topic margin → session-local 순서로 bind하며, branch는 hint이고 latest session은 fallback이 아닙니다.
 
+Async SessionStart의 sync/import/version 상태 안내는 stderr로만 출력합니다. stdout은
+호스트가 모델 입력으로 전달할 수 있으므로 운영 로그를 쓰지 않습니다. 동기 Continuity와
+UserPromptSubmit의 JSON additionalContext는 계속 stdout으로 전달하며, 공통 launcher에서
+전체 stdout을 차단하지 않습니다.
+
 ### UserPromptSubmit
 
 prompt/session/project를 받아 stable project/workspace/workstream scope를 확정한 뒤 warm sidecar를 우선 사용하고 불가능하면 같은 retrieval core의 cold path로 fallback합니다. `project.memory_revision > session.memory_revision_seen`이면 semantic match보다 correction을 먼저 처리합니다. Bounded correction이 여러 boundary에 걸치면 실제 emitted revision만 residency에 누적하고 모든 관련 correction이 소진되기 전에는 revision을 seen 처리하지 않습니다. context를 반환하기 전에 `recall_events`에 durable `prepared` receipt를 기록하고, hook stdout emit 후 `emitted`로 전환합니다.

@@ -410,6 +410,18 @@ Fixture replay, 실제 host 이벤트, context prepared, stdout emitted, host ac
 Host 수락 증거가 없으면 `NOT_PROVEN`으로 남깁니다.
 네 조건 비교의 host 답변은 공통 type-only JSON Schema를 `--output-schema`로 전달합니다.
 스키마 준수와 정답 일치는 별도이며, null이나 설명 문자열을 정답 숫자로 변환하지 않습니다.
+Async 운영 안내는 `test/async-hook-output-slice.test.mjs`에서 실제 background CLI와
+분리된 import/version hook process로 stdout 비어 있음과 stderr 출력을 검증합니다.
+[출력 채널 통제 실험](verification/codex-usability/hook-output-control.json)은 stdout의
+developer 메시지 전달과 추가 답변을 관측했으며, 이전 all-null 응답 자체를 재현한 것은 아닙니다.
+`test/identifier-source-evidence.test.ts`와 `test/continuity-recall.test.ts`는 식별자 누락,
+basename/full-path 구분, 같은 원문의 여러 식별자, scope/provenance, offline 주입과
+receipt 직전 edit/delete/exclusion/rebind race를 검증합니다. 기존 parser fixture는 compaction
+replacement-history가 user evidence로 저장되지 않는 경계를 검증합니다.
+[동일 DB 재현](verification/codex-usability/identifier-replay-review.json)은 재추출 없이
+fresh epoch의 식별자 검색이 4/5에서 5/5로 개선됐음을 기록합니다.
+[수정 후 네 조건 비교](verification/codex-usability/comparison-rootfix-review.json)는
+모든 최종 답변 13/13과 Memex 두 조건의 식별자 검색 5/5를 별도로 기록합니다.
 Stale-Capsule content probe는 정답을 query에 넣지 않고, 새 DB의 capture-index를 먼저 완료한 뒤
 실제 답변의 `recentCorrections`와 stale/pending 상태를 검사합니다. 색인 준비 단계의 모델 호출은
 금지합니다. [승인 후 실제 관측](verification/codex-usability/stale-content.json)은 이전 차단 기록을

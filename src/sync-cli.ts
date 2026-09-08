@@ -57,7 +57,7 @@ if (isBackground) {
   });
 
   child.unref(); // Allow parent to exit
-  console.log('Sync started in background...');
+  console.error('Sync started in background...');
   process.exit(0);
 }
 

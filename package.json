@@ -16,6 +16,7 @@
     "test/fixtures/fact-extraction-cases.json",
     "test/fixtures/fact-extraction-p2-cases.json",
     "test/fixtures/codex-usability.json",
+    "test/fixtures/codex-usability-output-schema.json",
     "test/fixtures/codex-host/",
     "ui/",
     "AGENTS.md",

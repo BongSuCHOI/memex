@@ -1,0 +1,175 @@
+{
+  "recordedAt": "2026-09-08T09:40:32.973900+00:00",
+  "report": "comparison-rootfix.json",
+  "reportSha256": "e863fe42d18520b1bb160ac731676694f3e610e8d5a220ece09c002dc5f19db1",
+  "quality": {
+    "compaction_only": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "NOT_APPLICABLE"
+    },
+    "memex_core": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "observed"
+    },
+    "memex_core_plus_optional": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "observed"
+    },
+    "codex_builtin_memory": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "NOT_APPLICABLE"
+    },
+    "status": "PASS"
+  },
+  "arms": {
+    "compaction_only": {
+      "hostChecksPassed": 13,
+      "hostChecksTotal": 13,
+      "assistantMessages": 1,
+      "finalAnswer": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Random delay may reduce worker contention; unverified hypothesis, not a confirmed fix.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject and recapture the copied prefix."
+      },
+      "asyncStatusDeveloperMessages": 0,
+      "temporaryAuthRemoved": true,
+      "exactRetrieval": null,
+      "modelWork": null
+    },
+    "memex_core": {
+      "hostChecksPassed": 13,
+      "hostChecksTotal": 13,
+      "assistantMessages": 1,
+      "finalAnswer": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Random delay may reduce worker contention; unverified.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting staging credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject and recapture the copied prefix."
+      },
+      "asyncStatusDeveloperMessages": 0,
+      "temporaryAuthRemoved": true,
+      "exactRetrieval": {
+        "passed": 5,
+        "total": 5
+      },
+      "modelWork": {
+        "attempts": 7,
+        "completed": 7,
+        "failed": 0,
+        "unknown": 0,
+        "durationMs": 93630,
+        "inputChars": 95666,
+        "outputChars": 7167,
+        "usageObserved": 7,
+        "usagePartial": 0,
+        "usageNotProven": 0,
+        "tokenUsageStatus": "observed",
+        "tokens": {
+          "input_tokens": 95730,
+          "output_tokens": 3357,
+          "cached_input_tokens": 20736
+        }
+      }
+    },
+    "memex_core_plus_optional": {
+      "hostChecksPassed": 13,
+      "hostChecksTotal": 13,
+      "assistantMessages": 1,
+      "finalAnswer": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Adding random delay may reduce worker contention; unverified.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting staging credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject the copied prefix and recapture it."
+      },
+      "asyncStatusDeveloperMessages": 0,
+      "temporaryAuthRemoved": true,
+      "exactRetrieval": {
+        "passed": 5,
+        "total": 5
+      },
+      "modelWork": {
+        "attempts": 8,
+        "completed": 8,
+        "failed": 0,
+        "unknown": 0,
+        "durationMs": 102248,
+        "inputChars": 98095,
+        "outputChars": 7693,
+        "usageObserved": 8,
+        "usagePartial": 0,
+        "usageNotProven": 0,
+        "tokenUsageStatus": "observed",
+        "tokens": {
+          "input_tokens": 106807,
+          "output_tokens": 3552,
+          "cached_input_tokens": 20736
+        }
+      }
+    },
+    "codex_builtin_memory": {
+      "hostChecksPassed": 13,
+      "hostChecksTotal": 13,
+      "assistantMessages": 1,
+      "finalAnswer": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Unverified hypothesis: random delay may reduce worker contention.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject and recapture the copied prefix."
+      },
+      "asyncStatusDeveloperMessages": 0,
+      "temporaryAuthRemoved": true,
+      "exactRetrieval": null,
+      "modelWork": null
+    }
+  },
+  "sourceRolloutUnmodified": true,
+  "temporaryNativeAuthRemoved": true,
+  "limitations": [
+    "Single frozen synthetic fixture, not a broad benchmark.",
+    "All four answer outputs pass; exclusive attribution to Memex is not established by shared training history.",
+    "Codex built-in learned-memory generation remains NOT_PROVEN.",
+    "The all-null optional response from comparison-structured.json remains historical evidence; the stdout control reproduced extra input/generation but not all-null.",
+    "Total host provider calls and compaction token usage remain unobserved."
+  ]
+}

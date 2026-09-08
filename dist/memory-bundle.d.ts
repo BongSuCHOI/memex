@@ -9,7 +9,7 @@
  * exactly which items were emitted so residency can be committed precisely.
  */
 import { type ContextBudget } from "./context-envelope.js";
-export type BundleSectionKind = "CORRECTION" | "WORK NOW" | "CURRENT TRUTH" | "WATCH" | "TRACE" | "RECENT EVIDENCE" | "ASSISTANT CONTEXT";
+export type BundleSectionKind = "CORRECTION" | "WORK NOW" | "CURRENT TRUTH" | "RAW EVIDENCE" | "WATCH" | "TRACE" | "RECENT EVIDENCE" | "ASSISTANT CONTEXT";
 export declare const BUNDLE_SECTION_ORDER: BundleSectionKind[];
 export declare const BUNDLE_HEADINGS: Record<BundleSectionKind, string>;
 export interface BundleBudget {

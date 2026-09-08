@@ -19907,7 +19907,7 @@ import path9 from "node:path";
 init_paths();
 init_codex_rollout();
 import Database2 from "better-sqlite3";
-import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
 import fs3 from "node:fs";
 import path6 from "path";
 import * as sqliteVec from "sqlite-vec";
@@ -20041,7 +20041,7 @@ async function queryBaseline(queryEmbedding) {
 }
 
 // src/continuity-store.ts
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
 import path5 from "node:path";
 
 // src/project-identity.ts
@@ -20056,14 +20056,30 @@ function canonicalizeProjectPath(cwd) {
 }
 
 // src/continuity-identity.ts
-import { createHash, randomUUID } from "node:crypto";
+import { createHash as createHash2, randomUUID } from "node:crypto";
 import fs2 from "node:fs";
 import path4 from "node:path";
 
 // src/fact-policy.ts
+import { createHash } from "node:crypto";
 var SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
 function isSemanticSubjectKey(key) {
   return !!key && SUBJECT_KEY_PATTERN.test(key) && !/\.fact\.[0-9a-f-]{36}$/.test(key);
+}
+function captureSourceSnapshot(db, ids) {
+  const result = [];
+  for (const id of [...new Set(ids)].sort()) {
+    const row = db.prepare(`SELECT id, timestamp, user_message, assistant_message, provenance,
+      assistant_learnable, has_memex_recall, project_id, workspace_id, workstream_id
+      FROM exchanges WHERE id = ?`).get(id);
+    if (!row) return null;
+    const toolRows = db.prepare("SELECT * FROM tool_calls WHERE exchange_id = ? ORDER BY id").all(id);
+    result.push({ id, hash: createHash("sha256").update(JSON.stringify([row, toolRows])).digest("hex") });
+  }
+  return result;
+}
+function sourceSnapshotValid(db, snapshot) {
+  return JSON.stringify(captureSourceSnapshot(db, snapshot.map((row) => row.id))) === JSON.stringify(snapshot);
 }
 
 // src/continuity-evidence.ts
@@ -20141,7 +20157,7 @@ function appendExchangeEvidence(db, exchangeId) {
 
 // src/continuity-identity.ts
 function hash(...parts) {
-  const h = createHash("sha256");
+  const h = createHash2("sha256");
   for (const part of parts) h.update(String(part ?? "")).update("\0");
   return h.digest("hex");
 }
@@ -20609,7 +20625,7 @@ function markSessionProjectRevisionSeen(db, sessionId, expectedRevision) {
 // src/continuity-store.ts
 var CONTINUITY_SCHEMA_VERSION = 7;
 function sha256(value) {
-  return createHash2("sha256").update(value, "utf8").digest("hex");
+  return createHash3("sha256").update(value, "utf8").digest("hex");
 }
 function parseStoredJson(value) {
   if (!value) return null;
@@ -22183,7 +22199,7 @@ function initDatabase(options = {}) {
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash3("sha256").update(prompt, "utf8").digest("hex");
+  return createHash4("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0 && !event.context?.trim()) return null;
@@ -22273,7 +22289,7 @@ function assertReadScope(db, scope) {
 }
 
 // src/chronicle.ts
-import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
 var INCIDENT_COALESCE_WINDOW_MS = 30 * 60 * 1e3;
 var CHRONICLE_TIMELINE_MAX_LIMIT = 100;
 var CHRONICLE_LANE_LABELS = {
@@ -22286,7 +22302,7 @@ var CHRONICLE_LANE_LABELS = {
 };
 var KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
 function sha2562(value) {
-  return createHash4("sha256").update(value, "utf8").digest("hex");
+  return createHash5("sha256").update(value, "utf8").digest("hex");
 }
 function parseStringArray(raw) {
   if (typeof raw !== "string" || raw === "") return [];
@@ -22660,6 +22676,7 @@ function formatChronicleEvent(db, event, options = {}) {
 }
 
 // src/fact-db.ts
+init_codex_rollout();
 function vecParamFor(db, table, embedding) {
   const dt = getVecTableDtype(db, table);
   return { sql: vecParamSql(dt), blob: embeddingToVecBlob(embedding, dt), dt };
@@ -22820,13 +22837,13 @@ function isIdentifierCharacter(character) {
 function isPathCharacter(character) {
   return character !== void 0 && /[A-Za-z0-9_$.\\/\\-]/u.test(character);
 }
-function containsExactIdentifier(text, query) {
+function exactIdentifierOffset(text, query) {
   const haystack = text.toLocaleLowerCase();
   const needle = query.toLocaleLowerCase();
   let offset = 0;
   while (offset <= haystack.length - needle.length) {
     const start = haystack.indexOf(needle, offset);
-    if (start < 0) return false;
+    if (start < 0) return -1;
     const end = start + needle.length;
     const pathLike = /[/\\.]/u.test(query);
     const before = text[start - 1];
@@ -22836,10 +22853,13 @@ function containsExactIdentifier(text, query) {
     if (pathLike && after === "." && !isIdentifierCharacter(text[end + 1])) {
       afterMatches = false;
     }
-    if (!beforeMatches && !afterMatches) return true;
+    if (!beforeMatches && !afterMatches) return start;
     offset = start + 1;
   }
-  return false;
+  return -1;
+}
+function containsExactIdentifier(text, query) {
+  return exactIdentifierOffset(text, query) >= 0;
 }
 function searchFactsLexicallyInScope(db, query, scope, limit = 5, filters = {}) {
   assertReadScope(db, scope);
@@ -22879,6 +22899,87 @@ function searchFactsLexicallyInScope(db, query, scope, limit = 5, filters = {}) 
   }
   results.sort((a, b2) => b2.lexicalScore - a.lexicalScore || a.fact.id.localeCompare(b2.fact.id));
   return results.slice(0, limit);
+}
+function humanSourceRows(db, scope, identifier, exchangeId) {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id") return [];
+  return db.prepare(`
+    SELECT e.* FROM exchanges e
+    JOIN session_memory_state s ON s.session_id = e.session_id
+      AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
+      AND s.workstream_id = e.workstream_id
+    JOIN workspaces w ON w.workspace_id = e.workspace_id AND w.project_id = e.project_id
+    WHERE e.project_id = ? AND e.workstream_id = ? AND COALESCE(e.is_sidechain, 0) = 0
+      AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)
+      AND LOWER(e.user_message) LIKE LOWER(?) ESCAPE '\\'
+      ${exchangeId ? "AND e.id = ?" : ""}
+    ORDER BY e.timestamp DESC, e.id LIMIT 128
+  `).all(
+    scope.projectId,
+    scope.workstreamId,
+    `%${escapeLikePattern(identifier)}%`,
+    ...exchangeId ? [exchangeId] : []
+  );
+}
+function humanSourceText(row) {
+  try {
+    const provenance = JSON.parse(String(row.provenance));
+    if (!Array.isArray(provenance) || !provenance.includes("human_assertion")) return null;
+  } catch {
+    return null;
+  }
+  const text = String(row.user_message ?? "").trim();
+  if (!text || isInternalContextMessage(text) || /^(?:<local-command-stdout>|<local-command-caveat>|<command-name>|Caveat:|\/[\w:-]+$)/u.test(text)) return null;
+  return text.replace(/\s+/gu, " ");
+}
+function humanSourceCoordinates(row) {
+  return JSON.stringify([
+    row.session_id,
+    row.archive_path,
+    row.line_start,
+    row.line_end,
+    row.content_hash,
+    row.content_generation
+  ]);
+}
+function searchHumanSourceIdentifiersInScope(db, query, scope, limit = 2) {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id" || limit <= 0) return [];
+  const results = [];
+  const parsed = extractFactIdentifiers(query).filter((term) => term.length <= MAX_LITERAL_QUERY_CHARS);
+  const literal2 = normalizeFactQuery(query).replace(/\(\)$/u, "");
+  const identifiers = parsed.includes(literal2) ? [literal2] : parsed;
+  for (const identifier of identifiers) {
+    if (searchFactsLexicallyInScope(db, identifier, scope, Number.MAX_SAFE_INTEGER).some(({ fact }) => containsExactIdentifier(fact.fact, identifier))) continue;
+    for (const row of humanSourceRows(db, scope, identifier)) {
+      if (results.some((item) => item.exchangeId === row.id && containsExactIdentifier(item.text, identifier))) continue;
+      const source = humanSourceText(row);
+      const offset = source === null ? -1 : exactIdentifierOffset(source, identifier);
+      if (source === null || offset < 0) continue;
+      const prefix = `[exchange ${row.id}:${row.line_start}-${row.line_end}] `;
+      const available = 160 - prefix.length;
+      if (identifier.length > available) continue;
+      const start = Math.max(0, offset - Math.min(24, available - identifier.length));
+      const snapshot = captureSourceSnapshot(db, [String(row.id)]);
+      if (!snapshot) continue;
+      results.push({
+        exchangeId: String(row.id),
+        identifier,
+        text: prefix + source.slice(start, start + available),
+        snapshot,
+        coordinates: humanSourceCoordinates(row)
+      });
+      break;
+    }
+    if (results.length >= Math.min(2, limit)) break;
+  }
+  return results;
+}
+function validateHumanSourceIdentifierEvidence(db, evidence, scope) {
+  const row = humanSourceRows(db, scope, evidence.identifier, evidence.exchangeId)[0];
+  if (!row || humanSourceCoordinates(row) !== evidence.coordinates) return false;
+  const text = humanSourceText(row);
+  return text !== null && containsExactIdentifier(text, evidence.identifier) && sourceSnapshotValid(db, evidence.snapshot);
 }
 function searchFactsCombinedInScope(db, query, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
   assertReadScope(db, scope);
@@ -24508,6 +24609,7 @@ var BUNDLE_SECTION_ORDER = [
   "CORRECTION",
   "WORK NOW",
   "CURRENT TRUTH",
+  "RAW EVIDENCE",
   "WATCH",
   "TRACE",
   "RECENT EVIDENCE",
@@ -24517,6 +24619,7 @@ var BUNDLE_HEADINGS = {
   CORRECTION: "[MEMEX CORRECTION]",
   "WORK NOW": "[WORK NOW]",
   "CURRENT TRUTH": "[CURRENT TRUTH]",
+  "RAW EVIDENCE": "[RAW EVIDENCE \u2014 CONTEXT-ONLY, MAY BE STALE]",
   WATCH: "[WATCH \u2014 VERIFIED INCIDENT PATTERN]",
   TRACE: "[TRACE \u2014 HISTORY AVAILABLE]",
   "RECENT EVIDENCE": "[RECENT EVIDENCE \u2014 NOT YET DISTILLED]",
@@ -24526,7 +24629,7 @@ var NORMAL_BUNDLE_BUDGET = {
   target: 700,
   hard: 1e3,
   lineChars: 160,
-  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 },
+  maxItems: { CORRECTION: 4, "WORK NOW": 1, "CURRENT TRUTH": 4, "RAW EVIDENCE": 2, WATCH: 2, TRACE: 2, "RECENT EVIDENCE": 2, "ASSISTANT CONTEXT": 1 },
   contextLimits: NORMAL_CONTEXT_LIMITS
 };
 function normalizeLine(text, cap) {
@@ -24903,6 +25006,13 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
       return similarity - baseline >= BASELINE_MARGIN;
     });
+    let rawEvidence = [];
+    if (canQuery(db)) {
+      try {
+        rawEvidence = searchHumanSourceIdentifiersInScope(db, userPrompt, scope);
+      } catch {
+      }
+    }
     sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
     sampleTelemetry(db, { metric: "current_facts", value: results.length, projectId: sessionScope.projectId, sessionId });
     const seenIds = new Set(results.map((r) => r.fact.id));
@@ -25012,6 +25122,9 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       }
       if (traceItems.length > 0) sections.push({ kind: "TRACE", items: traceItems.map((t) => ({ text: t.text })) });
     }
+    if (rawEvidence.length > 0) {
+      sections.push({ kind: "RAW EVIDENCE", items: rawEvidence.map((item) => ({ text: item.text })) });
+    }
     if (hot.length > 0) {
       sections.push({ kind: "RECENT EVIDENCE", items: hot.map((item) => ({ text: String(item.evidence_text).slice(0, 180) })) });
     }
@@ -25053,6 +25166,12 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     let preparedReceiptId = null;
     const commitBundle = () => {
       if (canQuery(db)) {
+        const emittedRaw = rendered.sections.find((section) => section.kind === "RAW EVIDENCE")?.emitted.length ?? 0;
+        for (const evidence of rawEvidence.slice(0, emittedRaw)) {
+          if (!validateHumanSourceIdentifierEvidence(db, evidence, scope)) {
+            throw new Error("raw source content or scope changed before injection commit");
+          }
+        }
         for (const [id, semantic, lifecycle] of emittedRevisions) {
           const row = db.prepare("SELECT * FROM facts WHERE id = ?").get(id);
           const revoked = revisionCorrections.some((correction) => correction.id === id && correction.scope_revoked);

@@ -80,6 +80,17 @@ sequenceDiagram
 
 warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
 
+정확한 경로·심볼·오류 코드가 active scoped fact에서 누락됐을 때는 검증된 사용자 원문을
+제한적으로 조회합니다. Fact 요약은 원문의 모든 식별자를 보존하는 색인이 아니므로, 누락을
+고치기 위해 검증된 fact 본문에 문자열을 덧붙이거나 extraction을 다시 실행하지 않습니다.
+이 원문은 현재 사실이 아닌 잠재적으로 오래된 context-only 참고 근거입니다. Assistant,
+tool output, recall과 compaction 전달문은 이 사용자 원문 경로에 포함하지 않습니다.
+현재 source session과 exchange의 project/workspace/workstream이 일치해야 하며, workspace도
+같은 project 소속이어야 합니다. 명시적으로 공유한 workstream의 다른 workspace는 허용합니다.
+같은 turn에 Memex 도구를 호출했어도 독립된 사용자 발언은 그대로 조회할 수 있습니다.
+질의당 최대 4개 식별자, 식별자당 최근 후보 최대 128개, 최종 원문 최대 2개로 제한하며,
+정확한 식별자와 exchange ID/line pointer가 함께 들어가지 않는 긴 항목은 생략합니다.
+
 ## 4a. Pre-retrieval cheap gate (Phase 5)
 
 `UserPromptSubmit` hook은 매번 실행되지만, embedding/vector search/graph expansion/model call은
@@ -123,6 +134,7 @@ session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embeddin
 | `[MEMEX CORRECTION]` | residency에서 도출: resident revision의 fact가 새 generation이면 `Updated (supersedes earlier context): … — earlier: "…"`, 비활성화됐으면 `No longer active`. prompt와 무관하게 모든 resident fact를 검사하며, stale project revision(sibling 변경)은 이 검사를 강제할 뿐 never-resident fact를 밀어넣지 않습니다. budget 때문에 남은 correction이 있으면 `memory_revision_seen`을 올리지 않고 다음 prompt에서 이어서 내보냅니다 |
 | `[WORK NOW]` | 현재 Capsule generation이 이 epoch에 resident가 아닐 때(새 session, compact/clear, 새 generation). SessionStart(compact/resume) rehydration이 이미 넣은 generation은 반복하지 않으며, 빈 Capsule도 resident로 표시해 retrieval loop를 막습니다 (Capsule은 context-only) |
 | `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
+| `[RAW EVIDENCE — CONTEXT-ONLY, MAY BE STALE]` | exact identifier를 active scoped fact에서 찾지 못했을 때만 같은 workstream의 사용자 원문을 source pointer와 함께 반환합니다. Own session도 명시적인 질의에 응답할 수 있지만 fact residency와 Hot Evidence cursor는 변경하지 않습니다 |
 | `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; 같은 signature는 새 verified episode가 없으면 substantive prompt 5회 동안 반복하지 않음 |
 | `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 `trace_fact subject_key=… — N Chronicle event(s), latest …` pointer(전체 history 주입 금지). 같은 subject는 Chronicle이 바뀌지 않는 한 epoch 동안 반복하지 않음 |
 | `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 미소비 Hot Evidence를 sequence 오름차순으로 조회합니다. 실제 출력한 prefix만 session/epoch cursor로 기록하며, query limit·budget에 남은 suffix는 다음 prompt에서 재시도합니다. epoch 변경·명시 rebind는 cursor를 0으로 초기화합니다 |
@@ -152,6 +164,11 @@ Project `memory_revision`이 stale이면 normal semantic match보다 `[MEMEX COR
 실제 emitted revision만 resident로 기록하고 다음 natural boundary에서 나머지를 이어서 처리합니다.
 관련 correction을 모두 소진했거나 현재 workspace/workstream에 해당하는 변경이 없음을 확인한 뒤에만
 scalar revision을 seen 처리합니다.
+
+실제 출력할 RAW EVIDENCE도 receipt transaction에서 원문의 내용·provenance snapshot,
+source 좌표, session/scope membership과 exclusion 상태를 다시 확인합니다. 비공개 삭제나
+수정·rebind가 감지되면 해당 bundle을 전달하지 않고 다음 질의에서 재시도할 수 있게 남깁니다.
+Source ID는 참고 위치이며, `source_exchange_ids`나 current fact로 승격하지 않습니다.
 
 Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
 

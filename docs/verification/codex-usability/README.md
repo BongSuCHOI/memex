@@ -177,7 +177,7 @@ in the schema, and the original frozen training prompts and grader remain unchan
 answers comply with the schema; core now passes 13/13 host checks with numeric
 `verifiedCases: 11`. The previous type FAIL remains in the original report.
 
-Overall quality of the new run is still FAIL. Both Memex arms retrieve 4/5 exact
+Overall quality of that recorded run is FAIL. Both Memex arms retrieve 4/5 exact
 identifiers because the fresh extraction omitted `E_QUEUE_LEASE_EXPIRED` from its
 four facts. The optional host first answered correctly, then received an async
 `Sync started in background...` message and ended with all-null JSON. Its final
@@ -185,6 +185,38 @@ answer scores 0/13, while the other three arms score 13/13. This sequence is
 observed; a controlled follow-up is needed to establish causality. Schema
 compliance must not be confused with correct recall, and valid nulls do not pass
 known-answer checks. Neither failure is removed or regraded to obtain PASS.
+
+## Root-cause follow-up
+
+[hook-output-control.json](hook-output-control.json) compares the same precompacted
+synthetic conversation with one async status notice on stdout, on stderr, or no
+notice. Stdout became a developer message and the host generated two answers;
+stderr and silence produced no developer notice and one answer each. All three
+final answers passed 13/13 checks. This proves the extra-input/extra-answer path
+in this trial, but does not reproduce or prove the cause of the earlier all-null
+answer. Async operational notices now use stderr; synchronous context JSON still
+uses stdout.
+
+The [retained-DB replay review](identifier-replay-review.json) links the raw
+[before](identifier-fresh-before.json) and [after](identifier-fresh-after.json)
+outputs. Each query gets the same database copy and a fresh context epoch through
+the existing clear operation. The committed baseline runtime retrieves 4/5
+identifiers; the patch retrieves 5/5. The source database hash is unchanged and
+no extraction is rerun. `E_QUEUE_LEASE_EXPIRED` appears as source-linked,
+potentially stale raw context, without altering the four stored facts. A separate
+post-host diagnostic retained residency and therefore suppressed an already-seen
+checkpoint fact; it is not used as the fresh-context comparison.
+
+[comparison-rootfix.json](comparison-rootfix.json) and its
+[output review](comparison-rootfix-review.json) record the fresh four-arm rerun.
+All four final answers pass 13/13 checks, and both Memex arms retrieve 5/5 exact
+identifiers. Each arm produces one assistant answer; no async status developer
+message is present. The frozen fixture, schema and grader are unchanged. Core
+uses 7 measured Memex attempts (93.630 seconds); optional processing adds one
+attempt (8.618 seconds). The optional increment does not change the six retrieval
+contexts. These costs belong to this fresh extraction, not the historical runs.
+Built-in learned-memory generation and exclusive answer attribution remain
+`NOT_PROVEN`; correct output alone does not establish either.
 
 ## Deterministic recall calibration
 

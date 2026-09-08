@@ -4,6 +4,10 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+- Send asynchronous startup status notices to stderr so they cannot become
+  extra model context and trigger another answer.
+- Recover exact identifiers omitted by fact summarization from scoped human
+  source evidence, labeled as potentially stale context rather than current truth.
 - Make automatic ontology opt-in with `MEMEX_AUTO_ONTOLOGY=1` after the isolated
   comparison; retain manual ontology, existing derived data, and core embeddings.
 

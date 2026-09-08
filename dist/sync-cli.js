@@ -51,7 +51,7 @@ if (isBackground) {
         windowsHide: true
     });
     child.unref(); // Allow parent to exit
-    console.log('Sync started in background...');
+    console.error('Sync started in background...');
     process.exit(0);
 }
 // ---- singleton lock (2026-07-02): SessionStart hook fires sync --background on EVERY

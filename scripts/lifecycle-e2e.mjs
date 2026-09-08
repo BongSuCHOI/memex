@@ -394,7 +394,8 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
   fs.appendFileSync(${JSON.stringify(canaryLog)}, JSON.stringify({event:parsed.hook_event_name,stdin:parsed})+'\\n');
 });`,
     );
-    // Mock the sync command to avoid "Sync started..." output interfering with model reply
+    // Keep sync mocked so this canary remains isolated from real sync data and
+    // model/provider work; the real background command is covered separately.
     const syncCanaryPath = path.join(ACTIVE_PLUGIN, "cli", "memex.js");
     fs.writeFileSync(
       syncCanaryPath,

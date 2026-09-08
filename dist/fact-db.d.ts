@@ -2,6 +2,7 @@ import { type ReadScope } from './read-scope.js';
 import { type LegacyReadScope } from './legacy-read-scope.js';
 import Database from "better-sqlite3";
 import type { Fact, FactCategory, FactContextDependency, FactRevision } from "./types.js";
+import { type SourceSnapshot } from "./fact-policy.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 /** Dtype-aware MATCH/INSERT parameter for a fact-side vector table. */
 export declare function vecParamFor(db: Database.Database, table: FactVecTable, embedding: number[]): {
@@ -119,6 +120,18 @@ export declare function isExactFactIdentifierQuery(query: string): boolean;
  * Active/category/scope predicates are evaluated before `limit` is applied.
  */
 export declare function searchFactsLexicallyInScope(db: Database.Database, query: string, scope: ReadScope, limit?: number, filters?: FactSearchFilters): LexicalFactSearchResult[];
+export interface HumanSourceIdentifierEvidence {
+    exchangeId: string;
+    identifier: string;
+    /** Already bounded, source-linked context; never a Fact or resident revision. */
+    text: string;
+    snapshot: SourceSnapshot;
+    coordinates: string;
+}
+/** Exact-query escape hatch for lossy fact summaries; no learning or vector work. */
+export declare function searchHumanSourceIdentifiersInScope(db: Database.Database, query: string, scope: ReadScope, limit?: number): HumanSourceIdentifierEvidence[];
+/** Called inside the receipt transaction after any intervening async work. */
+export declare function validateHumanSourceIdentifierEvidence(db: Database.Database, evidence: HumanSourceIdentifierEvidence, scope: ReadScope): boolean;
 /** Merge literal and semantic lanes with exact lexical hits taking priority. */
 export declare function searchFactsCombinedInScope(db: Database.Database, query: string, embedding: number[] | null, scope: ReadScope, limit?: number, threshold?: number, filters?: FactSearchFilters): CombinedFactSearchResult[];
 /** @deprecated Resolve legacy paths at the edge, then use listFactsInScope. */

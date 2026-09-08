@@ -15,7 +15,7 @@ async function main() {
       factChanges > 0 || result.newRevisions > 0 || result.newTombstones > 0 ||
       result.newRecallEvents > 0 || result.updatedRecallEvents > 0
     ) {
-      console.log(
+      console.error(
         `sync-import: facts +${result.newFacts}/~${result.updatedFacts}/-${result.deletedFacts}, ` +
         `+${result.newRevisions} revisions, +${result.newTombstones} tombstones, ` +
         `+${result.newRecallEvents}/~${result.updatedRecallEvents} recall events`,
@@ -29,7 +29,7 @@ async function main() {
       );
     }
     if (result.malformedRows.length > 0) {
-      console.log(`sync-import: ${result.malformedRows.length} payload issue(s) reported (see stderr)`);
+      console.error(`sync-import: ${result.malformedRows.length} payload issue(s) reported (see stderr)`);
     }
   } catch (error) {
     // Non-fatal
