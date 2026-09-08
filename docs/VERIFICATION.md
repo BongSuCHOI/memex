@@ -408,6 +408,10 @@ preview fingerprint, exact selection, durable row hash 불변, 반복 적용 0�
 App-server compaction/interrupt 성공은 Memex hook 전달 성공을 대신하지 않습니다.
 Fixture replay, 실제 host 이벤트, context prepared, stdout emitted, host acceptance를 각각 구분합니다.
 Host 수락 증거가 없으면 `NOT_PROVEN`으로 남깁니다.
+Stale-Capsule content probe는 정답을 query에 넣지 않고, 새 DB의 capture-index를 먼저 완료한 뒤
+실제 답변의 `recentCorrections`와 stale/pending 상태를 검사합니다. 색인 준비 단계의 모델 호출은
+금지합니다. [승인 후 실제 관측](verification/codex-usability/stale-content.json)은 이전 차단 기록을
+덮어쓰지 않는 별도 receipt입니다.
 
 비교 입력과 학습 전 snapshot은 hash로 고정합니다. 각 조건은 분리된 Codex/Memex home을 쓰며
 기본 메모리의 background 생성 자격이 아직 충족되지 않은 결과를 성숙한 메모리 품질로 해석하지 않습니다.

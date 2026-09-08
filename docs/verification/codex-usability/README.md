@@ -57,15 +57,29 @@ untrusted override. The TUI used the explicit `setup-hooks` fallback in isolated
 homes; app-server protocol operations succeeded but its plugin hook delivery
 remained `NOT_PROVEN`. These transport results are not interchangeable.
 
-The stale-Capsule fixture emitted production `stale` / `context-only` status and
-pending newer evidence after actual compaction. The old Capsule was seeded test
-state, not model distillation evidence. Its hook nonce was not reflected, and a
-fresh content probe stopped after DNS/reconnection failures without a final model
-JSON response. The subsequent authenticated network retry was rejected before
-execution by automatic approval review, which required explicit authorization for
-the test payload and model-service destination. No workaround or further retry was
-performed. Full host consumption of the seven-field stale restoration therefore
-remains `NOT_PROVEN`; hook events and emitted bytes alone are insufficient.
+The earlier [host report](host-compatibility.json) preserves the stale-Capsule
+transport observation and the initially blocked content retry. The user subsequently
+approved the synthetic payload and authenticated Codex model destination.
+
+The follow-up [stale-content.json](stale-content.json) records an actual Luna TUI
+run with a neutral post-compaction query. Its final JSON retains the current retry
+count 4, explicitly supersedes 2, preserves the unverified hypothesis, blocker,
+next action and evidence location, and reports `stale/context-only` plus both
+pending-work descriptions emitted by Memex. Those descriptions were absent from
+the training prompt and query, providing content-consumption evidence even though
+the host did not echo the hook nonce. The seven-field content check passes for
+this synthetic case. Native compacted history is still available, so the latest
+retry value alone is not proof of Memex's exclusive contribution.
+
+The first approved attempt exposed a fresh-DB harness bug: asynchronous capture
+had not reached `exchanges` before the older Capsule was seeded. The harness now
+drains deterministic capture-index jobs before reading evidence and explicitly
+forbids model-backed indexing. A regression covers this fresh state. The original
+scorer also searched only `currentGoal` for the old-count explanation even though
+it belongs in `recentCorrections`; its raw false negative is preserved, with a
+separate adjudication and positive/negative regression for the corrected scorer.
+No model rerun was needed for that grading correction. The older Capsule remains
+seeded test state, not evidence of automatic model distillation quality.
 
 ## Frozen comparison input
 
