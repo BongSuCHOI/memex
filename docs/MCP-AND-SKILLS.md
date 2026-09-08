@@ -35,6 +35,11 @@ Workspace/workstream/session ID는 DB membership을 검증하며 다른 project�
 동일 membership 검사를 거치며 relation traversal의 모든 hop을 요청 scope로 제한합니다.
 `search_facts`와 `trace_fact`의 관련 사실도 resolved `ReadScope`를 필수 graph core에 전달합니다.
 기본 fact, seed, 관련 fact와 최종 결과가 같은 범위를 사용합니다.
+`search_facts`는 파일 경로·함수명·에러 코드의 exact text 후보와 semantic 후보를 함께 찾습니다.
+임베딩을 사용할 수 없어도 lexical 조회는 유지합니다. 텍스트 응답은 `exact text match` /
+`lexical match`와 semantic 점수를 구분합니다. 내부 `KnowledgeContext`의 `lane`,
+`semanticSimilarity`, `lexicalScore`도 구분하며 lexical-only 결과의 semantic 값은 `null`입니다.
+Exact text 일치를 semantic similarity 100%로 표시하지 않습니다.
 `include_hot_evidence`는
 stable scope 안의 recent raw evidence를 `NOT YET DISTILLED`로 분리하고
 `hot_before` + `hot_before_evidence_id` keyset cursor를 지원합니다. Legacy canonical path는 read-only

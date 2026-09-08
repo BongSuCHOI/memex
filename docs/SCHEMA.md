@@ -112,6 +112,18 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 
 ### Continuity Core state
 
+`model_work_budgets`와 `model_work_attempts`는 local operational ledger입니다. Budget은 parent wave,
+호출 상한·예약 수, 입력/출력 문자 상한, deadline과 상태를 보존합니다. Attempt는 실제 provider
+시도마다 예약되며 stage/job/target, 지연, 문자 수와 nullable usage를 연결합니다. 재시도·실패도
+상한을 소비하고, 사용량을 받지 못한 시도는 0이 아닌 미관측 상태로 남습니다.
+`model_work_targets`는 시도 예약 전 선택한 파생 작업의 stage/target membership과 pending 상태를
+보존합니다. 아직 첫 호출을 하지 못한 batch 항목도 완료 판정에서 빠지지 않게 합니다.
+`memory_jobs.budget_id`와 `maintenance_wave_id`는 작업의 예산 귀속입니다. 기존 귀속을 환경 변수로
+덮어써서 상한을 우회할 수 없습니다. 예약은 `BEGIN IMMEDIATE` 안에서 처리하며 완료된 작업의
+새 run과 미완료 작업의 명시적 예산 갱신을 구분합니다. Ledger는 protocol v4에 export하지 않습니다.
+이 additive ledger를 모르는 이전 worker와 현재 worker를 같은 DB에서 혼용하면 예산 보장이 성립하지
+않습니다. 업그레이드 시 이전 worker를 종료하고 같은 코드 버전으로 재시작해야 합니다.
+
 `journal_streams`는 `(session_id, stream_epoch)`별 source realpath/dev/inode/mtime, copied source byte/line, journal byte, parser version, current prefix hash와 copied boundary 직전 최대 4KiB의 source guard hash를 저장합니다. Capture는 session writer transaction을 먼저 선점한 뒤 journal을 append하므로 competing hook process가 같은 boundary를 동시에 쓰지 못합니다. `journal_blocks`는 contiguous source/journal range와 segment/prefix SHA-256 chain을 가집니다. Checkpoint worker는 exact prefix boundary까지만 읽고 모든 block hash를 다시 검증한 뒤 ingest합니다. Source rewind/replace, same-size rewrite, 기존 prefix를 바꾸고 더 길어진 rewrite, committed journal 손상은 기존 stream row와 journal을 보존한 채 새 epoch을 생성합니다.
 
 `conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.

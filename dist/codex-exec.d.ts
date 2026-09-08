@@ -12,6 +12,15 @@ export interface CodexExecOptions {
     model?: string | null;
     /** Opt-in native response structure; callers still validate domain semantics. */
     outputSchema?: Record<string, unknown>;
+    /** Durable model-work input bound, measured in UTF-16 code units. */
+    maxInputChars?: number;
+    /** Durable model-work final-answer bound, measured in UTF-16 code units. */
+    maxOutputChars?: number;
+    /** Absolute ISO deadline inherited from the durable model-work budget. */
+    deadlineAt?: string | null;
+    /** Explicit compatibility escape hatch for providers that exit non-zero
+     * after writing a complete answer. Normal memory work leaves this false. */
+    allowOutputOnNonzero?: boolean;
     /** Best-effort provider telemetry. Failure to observe never fails the call. */
     onObservation?: (observation: CodexExecObservation) => void;
 }
@@ -24,6 +33,7 @@ export interface CodexExecObservation {
     duration_ms: number;
     token_usage: CodexTokenUsage | null;
 }
+export declare function buildCodexPrompt(systemPrompt: string, userMessage: string): string;
 /** Pure arg builder — unit-tested without spawning anything. */
 export declare function buildCodexExecArgs(opts: {
     model?: string | null;

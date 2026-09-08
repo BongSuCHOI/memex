@@ -28,7 +28,7 @@
 
 ## 4. Work Capsule과 tail baton (§4.2, §14)
 
-`work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Capsule이 없으면 deterministic tail baton(마지막 요청, plan line, touched files, trusted test, unresolved error)을 사용합니다. 아직 소비하지 않은 workstream evidence나 미완료 capture가 있으면 stale Capsule과 baton을 함께 표시합니다. Compact/resume은 correction을 채우기 전에 한도 내 work context 예산을 확보합니다. Sequence coverage와 replay 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다. 어느 것도 fact evidence로 재진입하지 않습니다.
+`work_capsules`(workstream-scoped, `authority = context-only`): objective/current_state/verified_progress(evidence 필수)/hypotheses/blockers/open_questions/next_actions. Compact/resume 출력은 현재 목표·확인된 결과·미검증 가설·최근 정정·막힌 지점·다음 행동·근거 위치를 구분합니다. Capsule이 없으면 deterministic tail baton을 사용합니다. 미소비 workstream evidence나 미완료 capture/Capsule 작업이 있으면 `stale/context-only` 표시와 최신 source/pending 상태를 함께 냅니다. 과거 superseded 작업은 현재 상태를 stale로 만들지 않습니다. Work context 예산을 먼저 확보하고 최종 wrapper 크기까지 확인합니다. Sequence coverage와 replay 계약은 [SCHEMA.md](SCHEMA.md#sequence-cursors-schema-v7)에 있습니다. 어느 것도 fact evidence로 재진입하지 않습니다.
 
 P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec --output-schema`로 전달합니다. `verifiedProgress`와 `hypotheses`는 `{text, sourceExchangeIds}` 객체 배열로 생성하며 문자열 배열을 사후 변환하거나 source ID를 추정하지 않습니다. `currentState`의 schema 설명은 기존 Capsule의 유효한 결정·제약·구체적인 수치를 이어받고 새 evidence가 변경한 부분을 갱신하도록 명시합니다. 이 설명은 요약 지침이며 의미 보존의 자동 검증을 대신하지 않습니다. Schema는 호출별 임시 workdir에만 기록하고 성공·실패 모두 삭제합니다. 공통 model provider의 선택 옵션이며 Capsule 이외 호출에는 자동 적용하지 않습니다.
 
@@ -50,7 +50,12 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 ## 8. 자동 injection vs MCP (§13)
 
-자동 injection = 작은 working-memory fast path(hard 1,000자 / rehydration 2,000자). `trace_fact`/`search_facts`/`explore_graph`는 current → Chronicle → source → other session을 bounded cursor로 탐색하는 deep path이며 gate skip의 영향을 받지 않습니다. lane label: `CURRENT FACT`, `CHRONICLE EVENT`, `RAW EVIDENCE`, `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`.
+자동 injection은 고정 안내와 비신뢰 JSON memory를 포함한 최종 문자열을 제한합니다(normal 1,000자/추정 320 tokens, rehydration 2,000자/추정 640 tokens; 추정에 25% 여유 적용). `trace_fact`/`search_facts`/`explore_graph`는 current → Chronicle → source → other session을 bounded cursor로 탐색하는 deep path이며 gate skip의 영향을 받지 않습니다. `search_facts`는 임베딩이 없어도 scoped lexical 조회를 유지합니다. lane label: `CURRENT FACT`, `CHRONICLE EVENT`, `RAW EVIDENCE`, `ASSISTANT CONTEXT-ONLY`, `HOT EVIDENCE — NOT YET DISTILLED`.
+
+Prompt와 compact/resume 모두 context-only 출력을 포함해 `prepared` receipt를 먼저 기록합니다.
+stdout callback 성공 뒤 정확한 receipt ID만 `emitted`로 바꿉니다. Host acceptance는 별도 host 증거가
+없으면 `NOT_PROVEN`이며 stdout 기록을 host 수락으로 승격하지 않습니다. 현재 버전별 시나리오 결과는
+[Codex usability 검증 기록](verification/codex-usability/README.md)을 확인하십시오.
 
 ## 9. Sync · privacy (§9, §20)
 
@@ -70,6 +75,7 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_CODEX_BIN`, `MEMEX_CODEX_MODEL`, `MEMEX_CODEX_EXEC_TIMEOUT_MS`, `MEMEX_LLM_RETRIES`, `MEMEX_LLM_RETRY_BASE_MS` | 설치 기본 | worker model 호출 |
 | `MEMEX_EMBEDDING_MODEL` | e5 | embedding model |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
+| `MEMEX_AUTO_ONTOLOGY` | unset (off) | `1`일 때만 fact 저장 후와 SessionStart의 자동 ontology 분류 활성화; `memex backfill ontology` 명시 실행은 유지 |
 | `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용 |
 
-Feature flag는 없습니다. PostCompact 등록은 optional telemetry입니다.
+PostCompact 등록은 optional telemetry입니다.

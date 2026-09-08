@@ -18,6 +18,9 @@ describe('search formatting', () => {
           domain: 'Testing',
           categoryName: 'Framework',
           similarity: 0.95,
+          lane: 'semantic',
+          semanticSimilarity: 0.95,
+          lexicalScore: null,
           relatedFacts: [],
         }],
       });
@@ -36,6 +39,9 @@ describe('search formatting', () => {
           domain: 'Frontend',
           categoryName: 'Framework',
           similarity: 0.9,
+          lane: 'semantic',
+          semanticSimilarity: 0.9,
+          lexicalScore: null,
           relatedFacts: [
             { fact: 'Use TypeScript strictly', relationType: 'SUPPORTS' },
             { fact: 'Prefer hooks over classes', relationType: 'INFLUENCES' },
@@ -58,6 +64,9 @@ describe('search formatting', () => {
             domain: 'Backend',
             categoryName: 'API',
             similarity: 0.8,
+            lane: 'semantic',
+            semanticSimilarity: 0.8,
+            lexicalScore: null,
             relatedFacts: [],
           },
           {
@@ -66,6 +75,9 @@ describe('search formatting', () => {
             domain: 'Frontend',
             categoryName: 'UI',
             similarity: 0.7,
+            lane: 'semantic',
+            semanticSimilarity: 0.7,
+            lexicalScore: null,
             relatedFacts: [],
           },
         ],
@@ -87,6 +99,9 @@ describe('search formatting', () => {
           domain: 'General',
           categoryName: 'Misc',
           similarity: 0.6,
+          lane: 'semantic',
+          semanticSimilarity: 0.6,
+          lexicalScore: null,
           relatedFacts: [],
         }],
       });
@@ -102,11 +117,53 @@ describe('search formatting', () => {
           domain: 'Infra',
           categoryName: 'Limits',
           similarity: 0,
+          lane: 'semantic',
+          semanticSimilarity: 0,
+          lexicalScore: null,
           relatedFacts: [],
         }],
       });
 
       expect(result).toContain('0%');
+    });
+
+    it('labels lexical-only matches without inventing a semantic score', () => {
+      const result = formatKnowledgeContext({
+        facts: [{
+          fact: 'E_QUEUE_LEASE_EXPIRED is handled by acquireLease',
+          category: 'decision',
+          domain: 'Runtime',
+          categoryName: 'Leasing',
+          similarity: null,
+          lane: 'lexical',
+          semanticSimilarity: null,
+          lexicalScore: 2,
+          relatedFacts: [],
+        }],
+      });
+
+      expect(result).toContain('exact text match');
+      expect(result).not.toContain('100%');
+      expect(result).not.toContain('relevant');
+    });
+
+    it('keeps the observed semantic score and identifies a combined match', () => {
+      const result = formatKnowledgeContext({
+        facts: [{
+          fact: 'The queue lease is renewed before expiry',
+          category: 'decision',
+          domain: 'Runtime',
+          categoryName: 'Leasing',
+          similarity: 0.91,
+          lane: 'both',
+          semanticSimilarity: 0.91,
+          lexicalScore: 2,
+          relatedFacts: [],
+        }],
+      });
+
+      expect(result).toContain('91% semantic');
+      expect(result).toContain('exact text match');
     });
   });
 });

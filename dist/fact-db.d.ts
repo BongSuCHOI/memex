@@ -72,7 +72,7 @@ export declare function getRevisions(db: Database.Database, factId: string): Fac
 /** @deprecated New core callers use ReadScope; paths are read-only adapters. */
 export type FactSearchScope = ReadScope | LegacyReadScope;
 export type { ReadScope } from './read-scope.js';
-interface FactSearchFilters {
+export interface FactSearchFilters {
     category?: FactCategory;
     /** Mutation eligibility is evaluated before the search limit. */
     accept?: (fact: Fact) => boolean;
@@ -92,6 +92,35 @@ export declare function searchFactsInScope(db: Database.Database, embedding: num
     fact: Fact;
     distance: number;
 }>;
+export type FactSearchLane = "lexical" | "semantic" | "both";
+export interface LexicalFactSearchResult {
+    fact: Fact;
+    /** Higher values indicate a stronger literal match. */
+    lexicalScore: number;
+    /** Kept compatible with semantic result consumers; exact matches have 0 distance. */
+    distance: number;
+}
+export interface CombinedFactSearchResult {
+    fact: Fact;
+    /** Semantic distance when available, or 0 for a lexical-only result. */
+    distance: number;
+    /** Semantic similarity is null when no semantic lane matched the fact. */
+    semanticSimilarity: number | null;
+    /** Null means the fact was not returned by the lexical lane. */
+    lexicalScore: number | null;
+    lane: FactSearchLane;
+}
+/** True for a concrete identifier query, including one embedded in prose. */
+export declare function isExactFactIdentifierQuery(query: string): boolean;
+/**
+ * Literal fact search with the same required ReadScope as the semantic lane.
+ * The SQL pattern is parameterized/escaped, while exact identifier boundaries
+ * are checked in memory so a symbol does not match a longer symbol or path.
+ * Active/category/scope predicates are evaluated before `limit` is applied.
+ */
+export declare function searchFactsLexicallyInScope(db: Database.Database, query: string, scope: ReadScope, limit?: number, filters?: FactSearchFilters): LexicalFactSearchResult[];
+/** Merge literal and semantic lanes with exact lexical hits taking priority. */
+export declare function searchFactsCombinedInScope(db: Database.Database, query: string, embedding: number[] | null, scope: ReadScope, limit?: number, threshold?: number, filters?: FactSearchFilters): CombinedFactSearchResult[];
 /** @deprecated Resolve legacy paths at the edge, then use listFactsInScope. */
 export declare function listFactsByScope(db: Database.Database, scope: FactSearchScope): Fact[];
 /** @deprecated Use factMatchesReadScope with a required ReadScope. */

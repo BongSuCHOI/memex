@@ -164,6 +164,13 @@ export interface HandleHookResult {
     stdout: string;
     warning?: string;
     capture?: CaptureResult;
+    /** Durable recall provenance is prepared before residency and emitted by the hook after stdout. */
+    recallReceipt?: ContinuityRecallReceipt;
+}
+export interface ContinuityRecallReceipt {
+    id: string;
+    prompt: string;
+    status: "prepared";
 }
 export declare function normalizeHookPayload(input: unknown): NormalizedHookPayload;
 export declare function validateTranscriptPath(candidate: string): {
@@ -258,6 +265,7 @@ export declare function readWorkCapsule(db: Database.Database, workstreamId: str
 export declare function buildDeterministicTailBaton(db: Database.Database, input: {
     sessionId: string;
     maxChars?: number;
+    pending?: string[];
 }): string;
 export declare function buildRehydrationContext(db: Database.Database, input: {
     sessionId: string;

@@ -8,6 +8,7 @@
  * cap, no randomness), the hard cap is never exceeded, and the render reports
  * exactly which items were emitted so residency can be committed precisely.
  */
+import { type ContextBudget } from "./context-envelope.js";
 export type BundleSectionKind = "CORRECTION" | "WORK NOW" | "CURRENT TRUTH" | "WATCH" | "TRACE" | "RECENT EVIDENCE" | "ASSISTANT CONTEXT";
 export declare const BUNDLE_SECTION_ORDER: BundleSectionKind[];
 export declare const BUNDLE_HEADINGS: Record<BundleSectionKind, string>;
@@ -20,6 +21,8 @@ export interface BundleBudget {
     lineChars: number;
     /** Max items per section. */
     maxItems: Partial<Record<BundleSectionKind, number>>;
+    /** Final wrapped-output limits; wrapper overhead is reserved during selection. */
+    contextLimits?: ContextBudget;
 }
 export declare const NORMAL_BUNDLE_BUDGET: BundleBudget;
 export declare const REHYDRATION_BUNDLE_BUDGET: BundleBudget;
@@ -35,13 +38,19 @@ export interface BundleSection<T = unknown> {
     items: BundleItem<T>[];
 }
 export interface RenderedBundle<T = unknown> {
+    /** Final host-facing output, including the fixed instruction and envelope. */
     text: string;
+    /** Candidate text before the untrusted-data envelope is applied. */
+    rawText: string;
     chars: number;
+    estimatedTokens: number;
     sections: Array<{
         kind: BundleSectionKind;
         emitted: BundleItem<T>[];
         chars: number;
     }>;
+    /** References belonging only to items actually emitted in `text`. */
+    emittedRefs: T[];
     truncated: boolean;
 }
 /** Render sections in priority order under the budget. Deterministic for identical input. */

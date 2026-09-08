@@ -188,7 +188,7 @@ async function main() {
     let done = 0,
       totalSaved = 0,
       escalateFailures = 0;
-    const buckets = { handoff: 0, transient: 0, budget: 0, dead: 0 };
+    const buckets = { handoff: 0, transient: 0, budget: 0, budget_exhausted: 0, dead: 0 };
     const { isolated } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
@@ -240,6 +240,10 @@ async function main() {
         // 버려서 훅 변형으로 선점했다 — settled 마커 위를 덮는 의도 위반 계약.
         const result = await runFactExtraction(db, next.sid, project ?? "unknown", {
           claimVariant: "worker",
+          modelContext: {
+            parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || "maintenance",
+            budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
+          },
         });
         // 🚨 claim 미획득은 "fact 0건 처리 완료"가 아니다. 구분하지 않으면 done++ 만
         // 되고 버킷·경보·로그 어디에도 안 남으며, 유일한 흔적인 console.error 는
@@ -264,6 +268,11 @@ async function main() {
             buckets.handoff += 1;
             log(
               `session ${next.sid}: HANDOFF (claim_not_acquired) — 다른 러너가 처리 중`,
+            );
+          } else if (result.skipped === "budget_exhausted") {
+            buckets.budget_exhausted += 1;
+            log(
+              `session ${next.sid}: DEFERRED (budget_exhausted) — exact target/cursor 보존, 새 model run 전까지 pending`,
             );
           } else if (result.skipped === "failed_visible") {
             buckets.dead += 1;
@@ -347,6 +356,9 @@ async function main() {
           : "") +
         (buckets.budget > 0
           ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)`
+          : "") +
+        (buckets.budget_exhausted > 0
+          ? `, budget-exhausted ${buckets.budget_exhausted} — target/cursor pending, explicit new run 필요`
           : "") +
         (buckets.dead > 0
           ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`

@@ -201,6 +201,7 @@ memex status
 | `memex analyze` | deterministic 전체 이력 보고서 생성 |
 | `memex facts` | durable fact 조회·관리 |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
+| `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | pipeline readiness 확인 |
 | `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
@@ -224,6 +225,8 @@ Memex는 Codex의 전체 continuity lifecycle과 연결됩니다.
 | **Interrupt** | delta append와 interrupted/open fence 보존 |
 | **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
 | **PostCompact** | optional telemetry 전용; correctness 비의존 |
+
+자동 ontology는 명시적 opt-in(`MEMEX_AUTO_ONTOLOGY=1`)입니다. 수동 `memex backfill ontology`와 core embedding은 유지합니다. [실측 결과와 한계](docs/verification/codex-usability/README.md#four-arm-result-and-default-decision)를 참고하세요.
 | **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음 |
 
 Capture hook은 bounded local I/O만 수행합니다. Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.

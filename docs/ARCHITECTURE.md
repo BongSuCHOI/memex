@@ -263,6 +263,14 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
   taxonomy 전체를 invalidate하며 taxonomy epoch를 증가시켜 in-flight classifier를 폐기합니다.
 - 실패한 background 작업은 완료로 가장하지 않으며 다음 lifecycle에서 재시도할 수 있어야 합니다.
 
+모델 호출은 기존 Codex usage 관측을 local `model_work_budgets` / `model_work_attempts`에 연결합니다.
+`model_work_targets`는 호출을 시작하기 전에 선택한 파생 작업을 기록하여, 한도 때문에 아직
+호출하지 못한 대상도 대기 상태와 재개 범위에 포함합니다.
+같은 maintenance wave의 추출·검증·재시도·Capsule·통합·요청된 분류는 durable budget ID를 공유합니다.
+프로세스 안의 context 전달은 ID 운반 수단이며 실제 상한은 SQLite reservation이 집행합니다.
+예산이 소진되면 미완료 작업과 이유를 보존하고, 새 한도는 명시적 `model-work resume --new-run`으로
+부여합니다. 완료된 wave 이후의 새 증거는 별도 run으로 처리합니다.
+
 ## 8. 보안과 신뢰 경계
 
 | 경계 | 방어 |

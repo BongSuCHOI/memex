@@ -49,8 +49,9 @@ export function startInjectDaemon() {
             void (async () => {
                 try {
                     const req = JSON.parse(line);
-                    const context = await computeInjectContext(String(req.prompt ?? ''), String(req.cwd ?? process.cwd()), 'daemon', req.session_id ? String(req.session_id) : undefined);
-                    conn.end(JSON.stringify({ ok: true, context }) + '\n');
+                    let receiptId = null;
+                    const context = await computeInjectContext(String(req.prompt ?? ''), String(req.cwd ?? process.cwd()), 'daemon', req.session_id ? String(req.session_id) : undefined, { onPreparedReceipt: (id) => { receiptId = id; } });
+                    conn.end(JSON.stringify({ ok: true, context, receiptId }) + '\n');
                 }
                 catch {
                     try {

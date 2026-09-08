@@ -4,6 +4,18 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+- Make automatic ontology opt-in with `MEMEX_AUTO_ONTOLOGY=1` after the isolated
+  comparison; retain manual ontology, existing derived data, and core embeddings.
+
+- Separate fixed host guidance from JSON-encoded, untrusted memory and restore
+  concise work state with explicit stale/pending evidence. Track prepared and
+  emitted context separately; host acceptance requires independent evidence.
+- Combine identifier/path/error fact lookup with semantic retrieval, preserving
+  scoped lexical fallback during embedding outages. Apply character and
+  conservative estimated-token budgets to the complete injected context.
+- Connect model attempts, retries, usage and pending targets to durable work
+  budgets. Add read-only diagnostics and explicit bounded run renewal while
+  preserving the prior attempt ledger and active job leases.
 - Separate required fact `ReadScope` from `MutationPolicy`; isolate legacy path readers
   and check graph seeds, every hop, related search/trace results and resident corrections.
 - Block cross-workstream/promotion consolidation before model calls and revalidate

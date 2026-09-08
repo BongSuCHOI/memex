@@ -58,10 +58,14 @@ export declare function recordRecallEvent(db: Database.Database, event: {
     workstreamId?: string | null;
     contextEpoch?: number;
     projectMemoryRevision?: number;
+    /** Context-only delivery can be recorded even without fact IDs. The
+     * context body is intentionally not persisted in this receipt. */
+    context?: string;
 }): string | null;
 export declare function markRecallEventEmitted(db: Database.Database, event: {
     sessionId: string;
     prompt: string;
+    id?: string;
 }): boolean;
 export declare function getAllExchanges(db: Database.Database): Array<{
     id: string;

@@ -79,7 +79,12 @@ async function main() {
     db = initDatabase();
     // Queue membership is stored with each fact. Historical created_at never
     // controls local processing order, so late sync imports cannot be skipped.
-    const result = await consolidateAllPending(db);
+    const result = await consolidateAllPending(db, {
+      modelContext: {
+        parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+        budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
+      },
+    });
     if (result.processed > 0 || result.llmCalls > 0) {
       log(`worker: processed=${result.processed} llmCalls=${result.llmCalls} merged=${result.merged} contradictions=${result.contradictions} evolutions=${result.evolutions} remaining=${result.remaining}`);
     }

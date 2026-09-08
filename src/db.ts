@@ -17,6 +17,7 @@ import {
   ensureContinuitySchema,
   exchangeContentHash,
 } from "./continuity-store.js";
+import { ensureModelBudgetSchema } from "./model-budget.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { appendExchangeEvidence } from "./continuity-evidence.js";
 
@@ -806,6 +807,10 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
     )
   `);
   ensureContinuitySchema(db);
+  // Model work budgets are additive operational state. Initialize them after
+  // Continuity creates memory_jobs because the budget migration adds only
+  // nullable correlation columns to that queue.
+  ensureModelBudgetSchema(db);
   return db;
 }
 
@@ -1618,9 +1623,12 @@ export function recordRecallEvent(
     workstreamId?: string | null;
     contextEpoch?: number;
     projectMemoryRevision?: number;
+    /** Context-only delivery can be recorded even without fact IDs. The
+     * context body is intentionally not persisted in this receipt. */
+    context?: string;
   },
 ): string | null {
-  if (!event.sessionId || event.factIds.length === 0) return null;
+  if (!event.sessionId || (event.factIds.length === 0 && !event.context?.trim())) return null;
   const id = randomUUID();
   db.prepare(`
     INSERT INTO recall_events
@@ -1645,15 +1653,16 @@ export function recordRecallEvent(
 
 export function markRecallEventEmitted(
   db: Database.Database,
-  event: { sessionId: string; prompt: string },
+  event: { sessionId: string; prompt: string; id?: string },
 ): boolean {
   const row = db
     .prepare(`
     SELECT id FROM recall_events
     WHERE session_id = ? AND prompt_hash = ? AND status = 'prepared'
+      AND (? IS NULL OR id = ?)
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `)
-    .get(event.sessionId, hashRecallPrompt(event.prompt)) as
+    .get(event.sessionId, hashRecallPrompt(event.prompt), event.id ?? null, event.id ?? null) as
     | { id: string }
     | undefined;
   if (!row) return false;

@@ -47,6 +47,7 @@ function writeRuntimeFixture(): void {
   fs.writeFileSync(path.join(dist, 'ontology-db.js'), moduleReexport('dist/ontology-db.js'));
   fs.writeFileSync(path.join(dist, 'reembed-selector.js'), moduleReexport('dist/reembed-selector.js'));
   fs.writeFileSync(path.join(dist, 'exchange-reembed.js'), moduleReexport('dist/exchange-reembed.js'));
+  fs.writeFileSync(path.join(dist, 'model-budget.js'), moduleReexport('dist/model-budget.js'));
   fs.writeFileSync(path.join(dist, 'pending-extraction.js'), `
 export function getExtractionConfig() { return {}; }
 export function pendingExtractionCoreQuery() {

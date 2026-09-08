@@ -406,3 +406,47 @@ Apply는 `BEGIN IMMEDIATE` 안에서 finding fingerprint를 다시 확인합니�
 transaction입니다. 동일 선택 재실행은 `applied=[]`, `alreadyApplied=[…]`로 종료합니다. 이미 고친
 손상이 재발했다면 자동 재삭제하지 않고 새 검토를 요구합니다. 전체 preview/report에는 private
 fact/source identity가 있을 수 있으므로 repository에는 집계와 hash만 기록합니다.
+
+## 17. 모델 작업 예산과 대기 진단
+
+```bash
+memex model-work status
+memex model-work status <budget-id> --json
+```
+
+Status는 read-only입니다. Parent wave별로 실제 시도·stage/job/target, 관측된 토큰·지연,
+미관측 usage와 남은 작업을 확인합니다. 시도 수에는 실패와 재시도가 포함됩니다.
+Process가 끝났다는 사실만으로 증거 처리 작업이 완료되었다고 표시하지 않습니다.
+
+| 설정 | 기본값 | 실제 제한 |
+| --- | --- | --- |
+| `MEMEX_MODEL_BUDGET_MAX_ATTEMPTS` | 64 | 같은 작업 run의 provider 시도 수 |
+| `MEMEX_MODEL_BUDGET_DEADLINE_MS` | 900000 | run 전체 deadline |
+| `MEMEX_CODEX_EXEC_TIMEOUT_MS` | 180000 | 호출 timeout; 남은 run 시간보다 길게 실행하지 않음 |
+| `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS` | 120000 | 호출 입력 UTF-16 문자 수 |
+| `MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS` | 16000 | 최종 답변 문자 수; domain schema/필드 검증은 추가 적용 |
+
+`maxTokens`는 기존 호출 API의 호환 인자이며 provider 출력 토큰 상한으로 집행되지 않습니다.
+토큰 수는 provider 관측값이고, 자동 주입의 token budget은 별도의 보수적 추정치입니다.
+사용량 미관측은 `null` / `NOT_PROVEN`, 일부 시도만 관측되면 `partial`로 읽어야 합니다.
+달러 비용이나 누락 usage를 0으로 추정하지 않습니다.
+
+한도가 소진된 작업은 pending 사유를 보존합니다. 원인을 검토하고 새 run을 허용할 때만:
+
+```bash
+memex model-work resume <budget-id> --new-run --max-attempts 32
+```
+
+이 명령은 기존 attempt ledger를 보존하고 active lease가 없는 미완료 작업만 새 budget에 연결합니다.
+출력된 worker 명령으로 처리를 재개한 뒤 status를 다시 확인합니다. 단순 프로세스 재시작이나
+환경 변수 변경은 이미 귀속된 작업의 한도를 초기화하지 않습니다.
+
+Ledger는 local-derived operational state이고 sync하지 않습니다. 업데이트 전에 이전 Memex worker를
+종료해야 합니다. 같은 DB를 읽는 이전 코드가 새 예산을 준수한다고 가정하지 않습니다.
+
+자동 ontology는 기본 비활성화입니다. `MEMEX_AUTO_ONTOLOGY=1`을 지정한 경우에만 자동
+분류와 관련 후속 작업을 수행합니다. 필요할 때 `memex backfill ontology`로 수동 실행할 수
+있으며 기존 derived 데이터는 유지됩니다. Core fact/exchange embedding과 stale-vector
+복구는 유지하고, 번역은 수동 스크립트로 실행합니다. 이번 작은 비교에서는 optional 경로가
+호출 1회와 관측 모델 시간 9.773초를 추가했지만 검색 context는 같았습니다.
+[실측 결과와 한계](verification/codex-usability/README.md#four-arm-result-and-default-decision)를 참고하세요.

@@ -437,6 +437,16 @@ stale 결과가 domain/category/relation을 다시 만들지 않습니다.
 
 classification이 반복 실패하면 bounded attempt ledger를 사용하고 MAX 이후 General/Misc fallback으로 park할 수 있습니다. privacy purge는 surviving fact의 attempts를 0으로 리셋해 새 taxonomy에서 다시 분류할 수 있게 합니다.
 
+자동 ontology 분류는 기본 비활성화이며 `MEMEX_AUTO_ONTOLOGY=1`로 명시적으로 활성화합니다.
+수동 `memex backfill ontology`는 유지됩니다. 기존 분류·관계 데이터는 보존하며 core fact/exchange
+embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 추가 재작성 단계는 추가하지 않습니다.
+
+모델 비용과 대기 상태는 `memex model-work status [budget-id] --json`으로 확인합니다.
+추출의 완료 상태와 이후 local-derived 분류 상태는 별개입니다. Fact commit 뒤 분류 예산이
+소진되어도 유효한 fact를 rollback하거나 extraction watermark를 다시 소비하지 않습니다.
+분류 overlay는 pending으로 유지합니다. 호출별 usage가 빠진 경우 전체 합계를 완전 관측으로
+해석하지 않습니다. 실제 한도와 재개 방법은 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단)를 따릅니다.
+
 ## 10. KR translation
 
 `fact_kr`는 local derived state이며 sync하지 않습니다. 자동 SessionStart translation은 수행하지 않습니다. 번역 모델 호출 비용을 명시적으로 통제하기 위해 현재는 수동 스크립트를 사용합니다.

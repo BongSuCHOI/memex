@@ -201,6 +201,7 @@ Common commands:
 | `memex analyze` | Generate a deterministic history report |
 | `memex facts` | Inspect and manage durable facts |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
+| `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | Inspect pipeline readiness |
 | `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
 | `memex update` | Refresh the marketplace/plugin while preserving data |
@@ -224,6 +225,8 @@ Memex integrates with the full Codex continuity lifecycle:
 | **Interrupt** | append delta and preserve an interrupted/open fence |
 | **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
 | **PostCompact** | optional telemetry only; correctness never depends on it |
+
+Automatic ontology is opt-in (`MEMEX_AUTO_ONTOLOGY=1`); manual `memex backfill ontology` and core embeddings remain available. See [measured results and limits](docs/verification/codex-usability/README.md#four-arm-result-and-default-decision).
 | **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export |
 
 Capture hooks perform bounded local I/O only. The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.

@@ -5,6 +5,7 @@ import { getPendingConsolidationFacts, mergeFactContextDependencies, searchFacts
 import { assertMutationPolicy, captureMutationPolicy, captureSourceSnapshot, consolidationEligibility, consolidationSnapshotValid, hasLocalMeaningEvidence } from './fact-policy.js';
 import { deactivateFactTransactional, mutateFactMeaningWithPolicy, StaleFactMutationError } from './fact-management.js';
 import { currentEffectiveAt, currentEffectiveTime, currentEvidenceAuthority, judgeCompetingEvidence, recordChronicleEvent, } from './chronicle.js';
+import { getModelWorkContext, isModelBudgetExhausted, registerModelWorkTargets, settleModelWorkTargets, withResolvedModelWorkContext, withModelWorkContext, } from './model-budget.js';
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
 ## Relationship types (choose one)
@@ -49,7 +50,7 @@ export { LlmCallError, EmptyLlmResponseError, classifyLlmError, isTransientLlmEr
  * malformed/unparseable text still consumed the budget even though its verdict
  * is 'none'. Throws only on a transient LLM failure the caller should retry.
  */
-async function consolidateOne(db, newFact) {
+async function consolidateOne(db, newFact, modelContext) {
     if (!newFact.embedding)
         return { called: false, verdict: 'none' };
     const embeddingArray = Array.from(newFact.embedding);
@@ -82,7 +83,7 @@ async function consolidateOne(db, newFact) {
     // treating it as a skippable "bad fact".
     let response;
     try {
-        response = await callMemoryModel(CONSOLIDATION_SYSTEM_PROMPT, buildConsolidationPrompt(closest.fact.fact, newFact.fact));
+        response = await withModelWorkContext({ stage: 'consolidation', targetId: newFact.id }, () => callMemoryModel(CONSOLIDATION_SYSTEM_PROMPT, buildConsolidationPrompt(closest.fact.fact, newFact.fact), 2_048, { modelContext }));
     }
     catch (e) {
         throw new LlmCallError(e);
@@ -105,6 +106,29 @@ async function drainPending(db, project) {
     // initialize embeddings: only EVOLUTION/CONTRADICTION needs a replacement
     // vector, and mutateFactMeaning initializes the model lazily for that verdict.
     const newFacts = getPendingConsolidationFacts(db, 2000, project);
+    const budgetId = getModelWorkContext()?.budgetId;
+    if (budgetId && newFacts.length > 0) {
+        // Register the complete selected page before the first comparison await.
+        // One provider reservation can represent only one attempt, while every
+        // selected fact must remain owned by this wave across a crash or cap stop.
+        registerModelWorkTargets(db, {
+            budgetId,
+            stage: 'consolidation',
+            targetIds: newFacts.map((fact) => fact.id),
+            jobId: getModelWorkContext()?.jobId,
+        });
+    }
+    const settle = (targetId, state = 'completed', reason) => {
+        if (!budgetId)
+            return;
+        settleModelWorkTargets(db, {
+            budgetId,
+            stage: 'consolidation',
+            targetIds: [targetId],
+            state,
+            reason,
+        });
+    };
     let llmCalls = 0;
     let merged = 0;
     let contradictions = 0;
@@ -142,8 +166,16 @@ async function drainPending(db, project) {
                 // bumps semantic_generation and keeps the newer generation dirty for
                 // the next run.
                 db.prepare('UPDATE facts SET needs_consolidation = 0, consolidation_attempts = 0 WHERE id = ? AND semantic_generation = ?').run(newFact.id, newFact.semantic_generation);
+                settle(newFact.id);
             }
             catch (error) {
+                if (isModelBudgetExhausted(error)) {
+                    // The dirty fact remains untouched and observable. A durable budget
+                    // stop is scheduling state, so do not count a provider call or turn
+                    // it into a skipped/failed consolidation verdict.
+                    console.error(`Consolidation deferred by exhausted model budget for fact ${newFact.id}:`, error);
+                    break;
+                }
                 llmCalls++;
                 console.error(`Consolidation call failed for fact ${newFact.id}:`, error);
                 if (error instanceof StaleFactMutationError) {
@@ -179,6 +211,7 @@ async function drainPending(db, project) {
                     if (attempts >= MAX_CONSOLIDATION_ATTEMPTS) {
                         console.error(`Consolidation skip fact ${newFact.id} after ${attempts} deterministic failures`);
                         db.prepare('UPDATE facts SET needs_consolidation = 0 WHERE id = ? AND semantic_generation = ?').run(newFact.id, newFact.semantic_generation);
+                        settle(newFact.id, 'completed', 'skipped_after_bounded_failures');
                         processed++;
                         continue;
                     }
@@ -202,7 +235,11 @@ async function drainPending(db, project) {
  * local ingestion and semantic mutation, never historical created_at.
  */
 export async function consolidateFacts(db, project, _lastConsolidatedAt) {
-    const result = await drainPending(db, project);
+    const result = await withResolvedModelWorkContext({
+        db,
+        parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || `consolidation:${project}`,
+        stage: 'consolidation',
+    }, () => drainPending(db, project));
     return {
         processed: result.processed,
         merged: result.merged,
@@ -211,8 +248,15 @@ export async function consolidateFacts(db, project, _lastConsolidatedAt) {
     };
 }
 /** Drain the durable local dirty queue across every project and global scope. */
-export async function consolidateAllPending(db) {
-    return drainPending(db);
+export async function consolidateAllPending(db, options = {}) {
+    return withResolvedModelWorkContext({
+        ...options.modelContext,
+        db,
+        parentWaveId: options.modelContext?.parentWaveId ||
+            process.env.MEMEX_MAINTENANCE_WAVE_ID ||
+            'consolidation',
+        stage: 'consolidation',
+    }, () => drainPending(db));
 }
 export async function applyConsolidationResult(db, existingFact, newFact, result, expectedSources) {
     if (!consolidationSnapshotValid(db, [existingFact, newFact])) {

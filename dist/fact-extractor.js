@@ -10,6 +10,7 @@ import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
 import { claimExtractionTarget, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, supersedeStaleExtractionTarget, } from "./continuity-store.js";
+import { deferMemoryJobForModelBudget, isAutomaticOntologyEnabled, isModelBudgetExhausted, withResolvedModelWorkContext, } from "./model-budget.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
@@ -1674,7 +1675,9 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     if (options?.progress) {
         options.progress.budgetExhausted = windows.length > selectedWindows.length;
     }
-    const modelCall = options?.modelCall ?? callMemoryModel;
+    const modelCall = options?.modelCall ?? ((systemPrompt, userMessage) => callMemoryModel(systemPrompt, userMessage, 2_048, {
+        modelContext: options?.modelContext,
+    }));
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
@@ -2099,15 +2102,27 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
         throw e;
     }
     // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
-    for (const factId of savedIds) {
-        const vector = savedVectors.get(factId);
-        if (!vector)
-            continue;
-        try {
-            await classifyAndLinkFact(db, factId, vector);
-        }
-        catch (err) {
-            console.error(`Ontology pipeline failed for fact ${factId}:`, err);
+    // MEMEX_AUTO_ONTOLOGY=0 is an intentional experiment/operations switch:
+    // extraction remains durable while the explicit ontology backfill command
+    // can classify the resulting local-derived backlog later.
+    if (isAutomaticOntologyEnabled()) {
+        for (const factId of savedIds) {
+            const vector = savedVectors.get(factId);
+            if (!vector)
+                continue;
+            try {
+                await classifyAndLinkFact(db, factId, vector, extras.modelContext);
+            }
+            catch (err) {
+                if (isModelBudgetExhausted(err)) {
+                    // Fact persistence and ontology are separate phases. A budget stop
+                    // leaves the newly saved fact valid and its ontology overlay pending;
+                    // do not roll back or fail the extraction target after its commit.
+                    console.error(`Ontology deferred by exhausted model budget for fact ${factId}:`, err);
+                    continue;
+                }
+                console.error(`Ontology pipeline failed for fact ${factId}:`, err);
+            }
         }
     }
     return outcome;
@@ -2251,6 +2266,16 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             throw new ClaimLostError(`claim lost for extraction target ${target.targetId}`);
         }
     };
+    const modelContext = {
+        db,
+        parentWaveId: _opts?.modelContext?.parentWaveId ||
+            process.env.MEMEX_MAINTENANCE_WAVE_ID ||
+            `extraction:${sessionId}`,
+        stage: "fact_extract",
+        jobId: target.jobId,
+        targetId: target.targetId,
+        ..._opts?.modelContext,
+    };
     const progress = {
         processedThroughRowid: target.fromRowid,
         budgetExhausted: false,
@@ -2272,11 +2297,23 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
                 : undefined,
             targetExchangeIds: page.map((item) => item.exchange_id),
             throughRowid: page[page.length - 1].exchange_rowid,
-            modelCall: callMemoryModel,
+            modelContext,
             progress,
         });
     }
     catch (error) {
+        if (isModelBudgetExhausted(error)) {
+            deferMemoryJobForModelBudget(db, {
+                jobId: target.jobId,
+                budgetId: error.budgetId,
+                parentWaveId: error.parentWaveId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+                reason: error.reason,
+                now: new Date(),
+            });
+            return { extracted: 0, saved: 0, skipped: "budget_exhausted" };
+        }
         const kind = classifyLlmError(error);
         if (!(error instanceof ClaimLostError)) {
             recordExtractionFailure(db, {
@@ -2345,7 +2382,7 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
     try {
         renewLease();
         if (facts.length > 0 || observations.length > 0) {
-            saved = (await saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId })).length;
+            saved = (await withResolvedModelWorkContext(modelContext, () => saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId, modelContext }))).length;
         }
         else {
             const commitZero = db.transaction(() => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,52 @@ function readStdin(timeoutMs = 1_500) {
   });
 }
 
+async function markRecallEmitted(sessionId, receipt) {
+  if (!sessionId || !receipt?.id || !receipt?.prompt) return;
+  try {
+    const { initDatabase, markRecallEventEmitted } = await import(
+      path.join(here, "../dist/db.js")
+    );
+    const db = initDatabase();
+    try {
+      if (!markRecallEventEmitted(db, {
+        id: receipt.id,
+        sessionId,
+        prompt: receipt.prompt,
+      })) {
+        throw new Error("prepared receipt not found");
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    process.stderr.write(
+      `[memex continuity] recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+}
+
+/** Resolve after stdout's write callback succeeds; host consumption is separate. */
+export function writeStdout(data, stdout = process.stdout) {
+  return new Promise((resolve, reject) => {
+    try {
+      stdout.write(data, (error) => error ? reject(error) : resolve());
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/** Keep receipt state prepared until stdout delivery succeeds. */
+export async function emitContinuityResult(
+  result,
+  sessionId,
+  { stdout = process.stdout, markEmitted = markRecallEmitted } = {},
+) {
+  if (result.stdout) await writeStdout(result.stdout, stdout);
+  if (result.recallReceipt) await markEmitted(sessionId, result.recallReceipt);
+}
+
 async function main() {
   const raw = await readStdin();
   if (!raw.trim()) throw new Error("empty hook payload");
@@ -41,7 +87,10 @@ async function main() {
   if (result.warning) {
     process.stderr.write(`[memex continuity] capture gap: ${result.warning}\n`);
   }
-  if (result.stdout) process.stdout.write(result.stdout);
+  await emitContinuityResult(
+    result,
+    String(payload.session_id ?? payload.sessionId ?? ""),
+  );
   if (process.env.MEMEX_CONTINUITY_NO_WAKE !== "1") {
     try {
       const child = spawn(process.execPath, [path.join(here, "continuity-worker.js")], {
@@ -57,9 +106,15 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `[memex continuity] ${error instanceof Error ? error.message : String(error)}\n`,
-  );
-  process.exitCode = 1;
-});
+const entryPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+const isEntrypoint = entryPath === import.meta.url ||
+  (path.basename(process.argv[1] ?? "") === "session-end-hook.js" &&
+    entryPath.endsWith("/scripts/session-end-hook.js"));
+if (isEntrypoint) {
+  main().catch((error) => {
+    process.stderr.write(
+      `[memex continuity] ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  });
+}

@@ -217,7 +217,11 @@ test('parseConversation stamps project and cwd from meta', async () => {
 test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-luna', () => {
   delete process.env.MEMEX_CODEX_MODEL;
   const args = buildCodexExecArgs({ workdir: '/w' });
-  assert.deepEqual(args.slice(0, 8), ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'read-only', '--skip-git-repo-check', '-C']);
+  assert.deepEqual(args.slice(0, 9), [
+    'exec', '--ephemeral', '--ignore-user-config',
+    '--disable', 'memories', '--disable', 'hooks', '--disable', 'plugins',
+  ]);
+  assert.deepEqual(args.slice(9, 14), ['--ignore-rules', '--sandbox', 'read-only', '--skip-git-repo-check', '-C']);
   const mi = args.indexOf('-m');
   assert.notEqual(mi, -1, 'DEFAULT_CODEX_MODEL must always be forwarded');
   assert.equal(args[mi + 1], 'gpt-5.6-luna');

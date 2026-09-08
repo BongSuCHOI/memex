@@ -1,6 +1,12 @@
 import { getSearchDb } from "./search.js";
 import { l2DistanceToSimilarity } from "./db.js";
-import { factMatchesReadScope, rowToFact, searchFactsInScope } from "./fact-db.js";
+import {
+  factMatchesReadScope,
+  rowToFact,
+  searchFactsInScope,
+  searchFactsLexicallyInScope,
+  isExactFactIdentifierQuery,
+} from "./fact-db.js";
 import { readScopeForSession } from './read-scope.js';
 import {
   embeddingCallStats,
@@ -43,7 +49,6 @@ import {
 } from "./recall-gate.js";
 import {
   NORMAL_BUNDLE_BUDGET,
-  estimateTokens,
   renderMemoryBundle,
   type BundleSection,
 } from "./memory-bundle.js";
@@ -86,6 +91,8 @@ export interface InjectOptions {
   gate?: boolean;
   gateConfig?: Partial<RecallGateConfig>;
   now?: string;
+  /** Receives the exact prepared receipt only after its transaction commits. */
+  onPreparedReceipt?: (id: string) => void;
 }
 
 function commitInjectionState(
@@ -101,13 +108,16 @@ function commitInjectionState(
     contextEpoch: number;
     projectMemoryRevision: number;
     revisions: ResidentFactRevision[];
+    /** Final host-facing context; allows a context-only receipt with no facts. */
+    context?: string;
     /** False while stale-revision corrections are still being drained. */
     markProjectRevision: boolean;
   },
-): void {
+): string | null {
+  let receiptId: string | null = null;
   const write = () => {
-    const receipt = recordRecallEvent(db, input);
-    if (!receipt) throw new Error("Failed to persist prepared recall receipt");
+    receiptId = recordRecallEvent(db, input);
+    if (!receiptId) throw new Error("Failed to persist prepared recall receipt");
     if (!recordResidentFactRevisions(db, input.sessionId, input.contextEpoch, input.revisions)) {
       throw new Error("context epoch changed before residency commit");
     }
@@ -118,11 +128,12 @@ function commitInjectionState(
   };
   if (typeof db.transaction !== "function") {
     write();
-    return;
+    return receiptId;
   }
   const tx = db.transaction(write);
   if (db.inTransaction) tx();
   else tx.immediate();
+  return receiptId;
 }
 
 interface GateRow {
@@ -363,6 +374,21 @@ export async function computeInjectContext(
     if (options.gate === false) {
       decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
     }
+    // Exact paths, symbols and error identifiers are useful even when they
+    // are short enough to look like a coherent continuation. Keep ordinary
+    // acknowledgements vector-free while allowing the literal lane to answer
+    // this high-signal query shape.
+    if (canQuery(db) && decision.action === "skip" &&
+        !decision.intents.acknowledgement && !decision.intents.continuation) {
+      let identifierQuery = false;
+      try {
+        identifierQuery = isExactFactIdentifierQuery(userPrompt);
+      } catch {
+        // Partial test doubles and older integrations may not expose the
+        // optional lexical helper; preserve the gate's normal skip behavior.
+      }
+      if (identifierQuery) decision = { ...decision, action: "retrieve", skipReason: null };
+    }
     // Embeddings may be unavailable (model missing, offline, cache failure).
     // The gate is lexical, so skips still cost nothing; on the retrieve path the
     // bundle degrades to the sections that need no vector (CORRECTION, WORK
@@ -445,9 +471,51 @@ export async function computeInjectContext(
       workspaceId: sessionScope.workspaceId,
       workstreamId: sessionScope.workstreamId,
     };
-    const candidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
-    const results = candidates.filter((r) => {
-      const similarity = l2DistanceToSimilarity(r.distance);
+    // Keep the existing semantic call as its own lane so the expanding KNN
+    // behavior and testable failure boundary remain unchanged. Literal
+    // matches are fetched independently and then given deterministic priority.
+    const semanticCandidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
+    let lexicalCandidates: Array<{ fact: ReturnType<typeof rowToFact>; lexicalScore: number; distance: number }> = [];
+    if (canQuery(db)) {
+      try {
+        lexicalCandidates = searchFactsLexicallyInScope(db, userPrompt, scope, TOP_K);
+      } catch {
+        // Semantic retrieval and correction/hot evidence remain available if
+        // a legacy database or partial integration lacks lexical columns.
+      }
+    }
+    const candidates = [...([...semanticCandidates.map((result) => ({
+      ...result,
+      semanticSimilarity: l2DistanceToSimilarity(result.distance),
+      lexicalScore: null as number | null,
+    })), ...lexicalCandidates.map((result) => ({
+      ...result,
+      semanticSimilarity: null as number | null,
+      lexicalScore: result.lexicalScore,
+    }))].reduce((merged, result) => {
+      const existing = merged.get(result.fact.id);
+      if (!existing) {
+        merged.set(result.fact.id, result);
+      } else {
+        existing.distance = result.lexicalScore !== null ? existing.distance : result.distance;
+        existing.semanticSimilarity = existing.semanticSimilarity ?? result.semanticSimilarity;
+        existing.lexicalScore = Math.max(existing.lexicalScore ?? 0, result.lexicalScore ?? 0) || null;
+      }
+      return merged;
+    }, new Map<string, (typeof semanticCandidates[number] & { semanticSimilarity: number | null; lexicalScore: number | null })>())
+      .values())];
+    const orderedCandidates = [...candidates].sort((a, b) => {
+      const aLexical = a.lexicalScore ?? 0;
+      const bLexical = b.lexicalScore ?? 0;
+      if ((aLexical > 0) !== (bLexical > 0)) return aLexical > 0 ? -1 : 1;
+      if (aLexical !== bLexical) return bLexical - aLexical;
+      const aSemantic = a.semanticSimilarity ?? -Infinity;
+      const bSemantic = b.semanticSimilarity ?? -Infinity;
+      return bSemantic - aSemantic || a.fact.id.localeCompare(b.fact.id);
+    }).slice(0, TOP_K);
+    const results = orderedCandidates.filter((r) => {
+      if (r.lexicalScore !== null) return true;
+      const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
       return similarity - baseline >= BASELINE_MARGIN;
     });
     sampleTelemetry(db, { metric: "candidate_facts", value: candidates.length, projectId: sessionScope.projectId, sessionId });
@@ -617,6 +685,7 @@ export async function computeInjectContext(
     const fingerprintTokens = needsVector ? decision.tokens : null;
 
     const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
+    let preparedReceiptId: string | null = null;
     const commitBundle = () => {
       if (canQuery(db)) {
         for (const [id, semantic, lifecycle] of emittedRevisions) {
@@ -628,12 +697,13 @@ export async function computeInjectContext(
           }
         }
       }
-      if (injectedIds.length > 0) {
-        commitInjectionState(db, {
+      if (rendered.rawText.length > 0) {
+        preparedReceiptId = commitInjectionState(db, {
           sessionId, project, prompt: userPrompt, factIds: injectedIds,
           projectId: sessionScope.projectId, workspaceId: sessionScope.workspaceId,
           workstreamId: sessionScope.workstreamId, contextEpoch: residency.contextEpoch,
           projectMemoryRevision: currentProjectRevision, revisions: emittedRevisions,
+          context: rendered.text,
           markProjectRevision: !staleProjectMemory || correctionsComplete,
         });
       } else if (staleProjectMemory && correctionsComplete &&
@@ -660,8 +730,13 @@ export async function computeInjectContext(
       const tx = db.transaction(commitBundle);
       db.inTransaction ? tx() : tx.immediate();
     } else commitBundle();
+    // The receipt is durable at this point. The transport can now carry its
+    // exact id and mark only this delivery after stdout succeeds.
+    if (preparedReceiptId && options.onPreparedReceipt) {
+      try { options.onPreparedReceipt(preparedReceiptId); } catch { /* callback is best-effort */ }
+    }
 
-    if (rendered.chars === 0) {
+    if (rendered.rawText.length === 0) {
       const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
       appendInjectLog({
         status: dedupedCount > 0 ? "deduped" : "no-match",
@@ -681,12 +756,14 @@ export async function computeInjectContext(
       return "";
     }
 
-    const block = rendered.text + "\n";
+    // `rendered.text` is already the complete host-facing envelope. Do not
+    // append an unmeasured transport newline after references are committed.
+    const block = rendered.text;
     const sectionKinds = rendered.sections.map((s) => s.kind);
     const calls = sampleEmbeddingMetrics("retrieve", embeddingUnavailable);
     sampleTelemetry(db, { metric: "injected_facts", value: injectedIds.length, projectId: sessionScope.projectId, sessionId });
     sampleTelemetry(db, { metric: "injected_chars", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId });
-    sampleTelemetry(db, { metric: "estimated_tokens", value: estimateTokens(block.length), unit: "tokens", projectId: sessionScope.projectId, sessionId });
+    sampleTelemetry(db, { metric: "estimated_tokens", value: rendered.estimatedTokens, unit: "tokens", projectId: sessionScope.projectId, sessionId });
     sampleTelemetry(db, { metric: "bundle_size", value: block.length, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { kind: "normal", sections: sectionKinds } });
     for (const section of rendered.sections) {
       sampleTelemetry(db, { metric: "section_chars", value: section.chars, unit: "chars", projectId: sessionScope.projectId, sessionId, dims: { section: section.kind } });

@@ -5,6 +5,9 @@
 //   --ephemeral            no session rollout written for the child
 //   --ignore-user-config   user config.toml/plugins/hooks are not loaded
 //                          (auth still resolves through CODEX_HOME)
+//   --disable memories    disable built-in memory injection explicitly
+//   --disable hooks       disable hook execution even if project config enables it
+//   --disable plugins     disable plugin loading for the isolated child
 //   --ignore-rules         no execpolicy rules loaded
 //   --sandbox read-only    child cannot mutate the filesystem
 //   --skip-git-repo-check  allows running inside the throwaway workdir
@@ -33,6 +36,15 @@ export interface CodexExecOptions {
   model?: string | null;
   /** Opt-in native response structure; callers still validate domain semantics. */
   outputSchema?: Record<string, unknown>;
+  /** Durable model-work input bound, measured in UTF-16 code units. */
+  maxInputChars?: number;
+  /** Durable model-work final-answer bound, measured in UTF-16 code units. */
+  maxOutputChars?: number;
+  /** Absolute ISO deadline inherited from the durable model-work budget. */
+  deadlineAt?: string | null;
+  /** Explicit compatibility escape hatch for providers that exit non-zero
+   * after writing a complete answer. Normal memory work leaves this false. */
+  allowOutputOnNonzero?: boolean;
   /** Best-effort provider telemetry. Failure to observe never fails the call. */
   onObservation?: (observation: CodexExecObservation) => void;
 }
@@ -56,7 +68,19 @@ interface ExecResult {
   timedOut: boolean;
 }
 
-function buildPrompt(systemPrompt: string, userMessage: string): string {
+// A Codex JSONL stream includes tool events in addition to the final answer.
+// Keep a bounded diagnostic/event buffer so a noisy or hostile child cannot
+// turn one background model call into unbounded parent memory growth. The
+// authoritative final answer is captured separately by -o.
+const MAX_EVENT_CAPTURE_CHARS = 4 * 1024 * 1024;
+const MAX_STDERR_CAPTURE_CHARS = 64 * 1024;
+
+function appendBounded(current: string, chunk: Buffer, limit: number): string {
+  if (current.length >= limit) return current;
+  return current + chunk.toString().slice(0, Math.max(0, limit - current.length));
+}
+
+export function buildCodexPrompt(systemPrompt: string, userMessage: string): string {
   return systemPrompt
     ? `${systemPrompt}\n\n---\n\n${userMessage}`
     : userMessage;
@@ -73,6 +97,9 @@ export function buildCodexExecArgs(opts: {
     'exec',
     '--ephemeral',
     '--ignore-user-config',
+    '--disable', 'memories',
+    '--disable', 'hooks',
+    '--disable', 'plugins',
     '--ignore-rules',
     '--sandbox', 'read-only',
     '--skip-git-repo-check',
@@ -177,7 +204,13 @@ function textFromContent(content: unknown): string {
     .join('\n');
 }
 
-function runChild(bin: string, args: string[], cwd: string, prompt: string, timeoutMs: number): Promise<ExecResult> {
+function runChild(
+  bin: string,
+  args: string[],
+  cwd: string,
+  prompt: string,
+  timeoutMs: number,
+): Promise<ExecResult> {
   return new Promise<ExecResult>((resolve, reject) => {
   let settled = false;
   let timedOut = false;
@@ -211,10 +244,10 @@ function runChild(bin: string, args: string[], cwd: string, prompt: string, time
     reject(err);
   });
   child.stdout?.on('data', (d: Buffer) => {
-    stdout += d.toString();
+    stdout = appendBounded(stdout, d, MAX_EVENT_CAPTURE_CHARS);
   });
   child.stderr?.on('data', (d: Buffer) => {
-    stderr += d.toString();
+    stderr = appendBounded(stderr, d, MAX_STDERR_CAPTURE_CHARS);
   });
   child.on('close', (code, signal) => {
     if (settled) return;
@@ -226,6 +259,74 @@ function runChild(bin: string, args: string[], cwd: string, prompt: string, time
   child.stdin.on('error', () => {/* EPIPE if child exits early — surfaced via close */});
   child.stdin.end(prompt);
   });
+}
+
+function assertLimit(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function remainingDeadlineMs(deadlineAt: string | null | undefined): number | null {
+  if (deadlineAt == null) return null;
+  const parsed = Date.parse(deadlineAt);
+  if (!Number.isFinite(parsed)) throw new Error('deadlineAt must be a valid ISO timestamp');
+  return Math.max(0, parsed - Date.now());
+}
+
+/**
+ * Keep this provider module usable by the plain-Node Codex slice. Node's
+ * built-in type stripping can execute this `.ts` file directly, but it cannot
+ * resolve a source-side `./model-budget.js` import before the TypeScript build
+ * has emitted `dist/model-budget.js`. Budget limit errors are only needed on
+ * bounded calls, so load the production module at that branch and preserve
+ * the shared error class identity for compiled callers and tests.
+ */
+async function modelBudgetLimitError(
+  kind: 'input' | 'output',
+  observed: number,
+  limit: number,
+): Promise<Error> {
+  const budget = await import('./model-budget.js');
+  return kind === 'input'
+    ? new budget.ModelBudgetInputLimitError(observed, limit)
+    : new budget.ModelBudgetOutputLimitError(observed, limit);
+}
+
+/** Read only enough bytes to decide whether the final answer exceeds its
+ * character bound. UTF-8 uses at most four bytes per code point, so this cap
+ * avoids a large synchronous allocation while preserving the exact character
+ * check for valid output under the configured limit. */
+function readOutputFile(
+  filePath: string,
+  maxOutputChars: number | undefined,
+): { text: string; exceeded: boolean } {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return { text: '', exceeded: false };
+  }
+  const charCap = maxOutputChars ?? MAX_EVENT_CAPTURE_CHARS;
+  const byteCap = Math.min(
+    MAX_EVENT_CAPTURE_CHARS * 4,
+    Math.max(1, charCap * 4 + 4),
+  );
+  const bytesToRead = Math.min(stat.size, byteCap + 1);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(bytesToRead);
+    const read = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+    const text = buffer.subarray(0, read).toString('utf8').trim();
+    return {
+      text,
+      exceeded: stat.size > byteCap || text.length > charCap,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
@@ -244,40 +345,92 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
     || process.env.MEMEX_CODEX_BIN
     || 'codex';
   const timeoutMs = opts.timeoutMs ?? 180_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new Error('timeoutMs must be a non-negative finite number');
+  }
+  const maxInputChars = assertLimit(opts.maxInputChars, 'maxInputChars');
+  const maxOutputChars = assertLimit(opts.maxOutputChars, 'maxOutputChars');
 
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-llm-'));
   const outPath = path.join(workdir, 'last-message.txt');
   const started = performance.now();
-  try {
-    const prompt = buildPrompt(opts.systemPrompt || '', opts.userMessage || '');
-    const schemaPath = opts.outputSchema ? path.join(workdir, 'output-schema.json') : undefined;
-    if (schemaPath) fs.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 0o600 });
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
-    const res = await runChild(bin, args, workdir, prompt, timeoutMs);
-
-    let text = '';
-    try {
-      text = fs.readFileSync(outPath, 'utf8').trim();
-    } catch {
-      /* -o file absent (old CLI?) — fall through to event parsing */
-    }
-    if (!text) text = lastAgentMessageFromEvents(res.stdout);
+  let observed = false;
+  const observe = (token_usage: CodexTokenUsage | null): void => {
+    if (observed) return;
+    observed = true;
     try {
       opts.onObservation?.({
         duration_ms: performance.now() - started,
-        token_usage: tokenUsageFromEvents(res.stdout),
+        token_usage,
       });
     } catch {
       // Telemetry is optional and must never change model-call behavior.
     }
-    if (!text && res.timedOut) throw new Error(`codex exec timed out after ${timeoutMs}ms`);
+  };
+  try {
+    const prompt = buildCodexPrompt(opts.systemPrompt || '', opts.userMessage || '');
+    if (maxInputChars !== undefined && prompt.length > maxInputChars) {
+      observe(null);
+      throw await modelBudgetLimitError('input', prompt.length, maxInputChars);
+    }
+    const remaining = remainingDeadlineMs(opts.deadlineAt);
+    if (remaining !== null && remaining <= 0) {
+      observe(null);
+      throw new Error('codex exec deadline exhausted before provider spawn');
+    }
+    const effectiveTimeoutMs = Math.max(
+      1,
+      Math.min(timeoutMs, remaining === null ? timeoutMs : remaining),
+    );
+    const schemaPath = opts.outputSchema ? path.join(workdir, 'output-schema.json') : undefined;
+    if (schemaPath) fs.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 0o600 });
+    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
+    const res = await runChild(bin, args, workdir, prompt, effectiveTimeoutMs);
+    const tokenUsage = tokenUsageFromEvents(res.stdout);
+    observe(tokenUsage);
+
+    // A timeout/non-zero exit is a failed provider attempt even when the CLI
+    // happened to flush a partial -o file. Returning that text would let
+    // extraction or consolidation commit incomplete work as successful.
+    if (res.timedOut) {
+      throw new Error(`codex exec timed out after ${effectiveTimeoutMs}ms`);
+    }
+    if (res.code !== 0 && !opts.allowOutputOnNonzero) {
+      throw new Error(
+        `codex exec failed (code=${res.code}${res.signal ? ` signal=${res.signal}` : ''}): ${res.stderr.slice(-400)}`,
+      );
+    }
+
+    const output = readOutputFile(outPath, maxOutputChars);
+    if (output.exceeded) {
+      const observedChars = maxOutputChars === undefined
+        ? output.text.length
+        : Math.max(output.text.length, maxOutputChars + 1);
+      throw await modelBudgetLimitError(
+        'output',
+        observedChars,
+        maxOutputChars ?? MAX_EVENT_CAPTURE_CHARS,
+      );
+    }
+    let text = output.text;
+    if (!text) text = lastAgentMessageFromEvents(res.stdout);
+    if (maxOutputChars !== undefined && text.length > maxOutputChars) {
+      throw await modelBudgetLimitError('output', text.length, maxOutputChars);
+    }
     if (!text && res.code !== 0) {
       throw new Error(
         `codex exec failed (code=${res.code}${res.signal ? ` signal=${res.signal}` : ''}): ${res.stderr.slice(-400)}`,
       );
     }
     return text;
+  } catch (error) {
+    observe(null);
+    throw error;
   } finally {
-    fs.rmSync(workdir, { recursive: true, force: true });
+    try {
+      fs.rmSync(workdir, { recursive: true, force: true });
+    } catch {
+      // Best effort cleanup; never mask the provider result.
+    }
   }
 }

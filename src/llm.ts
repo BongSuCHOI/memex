@@ -9,6 +9,18 @@ import {
   type CodexExecOptions,
   type CodexTokenUsage,
 } from './codex-exec.js';
+import {
+  finishModelAttempt,
+  exhaustModelBudget,
+  getModelWorkContext,
+  ModelBudgetInputLimitError,
+  ModelBudgetOutputLimitError,
+  ModelBudgetOutputSchemaError,
+  reserveModelAttempt,
+  withResolvedModelWorkContext,
+  type ModelWorkContext,
+  type ModelAttemptReservation,
+} from './model-budget.js';
 
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
@@ -48,7 +60,11 @@ function backoffMs(attempt: number): number {
 
 const sleep = (ms: number) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 
-export type MemoryModelOptions = Pick<CodexExecOptions, 'outputSchema'>;
+export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema'> {
+  /** Durable model-work context. Existing callers may omit this; a stable
+   * standalone budget is created for the enclosing call. */
+  modelContext?: Partial<ModelWorkContext>;
+}
 
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
@@ -63,12 +79,23 @@ async function callOnce(
   _maxTokens: number,
   onObservation?: (observation: CodexExecObservation) => void,
   options: MemoryModelOptions = {},
+  reservation?: ModelAttemptReservation,
 ): Promise<string> {
   const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
     timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
-  return runCodex({ systemPrompt, userMessage, model, timeoutMs, onObservation, outputSchema: options.outputSchema });
+  return runCodex({
+    systemPrompt,
+    userMessage,
+    model,
+    timeoutMs,
+    deadlineAt: reservation?.deadlineAt,
+    maxInputChars: reservation?.maxInputChars,
+    maxOutputChars: reservation?.maxOutputChars,
+    onObservation,
+    outputSchema: options.outputSchema,
+  });
 }
 
 export interface MemoryModelObservation {
@@ -83,6 +110,69 @@ export interface ObservedMemoryModelResult {
   observation: MemoryModelObservation;
 }
 
+function matchesJsonSchema(value: unknown, schema: Record<string, unknown>): boolean {
+  const anyOf = schema.anyOf;
+  if (Array.isArray(anyOf)) {
+    return anyOf.some((candidate) =>
+      candidate && typeof candidate === 'object' && !Array.isArray(candidate) &&
+      matchesJsonSchema(value, candidate as Record<string, unknown>));
+  }
+  if (Object.prototype.hasOwnProperty.call(schema, 'const') && value !== schema.const) {
+    return false;
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(candidate, value))) {
+    return false;
+  }
+  switch (schema.type) {
+    case 'object': {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const object = value as Record<string, unknown>;
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      if (required.some((key) => typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(object, key))) {
+        return false;
+      }
+      const properties = schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+        ? schema.properties as Record<string, unknown>
+        : {};
+      if (schema.additionalProperties === false && Object.keys(object).some((key) => !Object.prototype.hasOwnProperty.call(properties, key))) {
+        return false;
+      }
+      return Object.entries(properties).every(([key, child]) =>
+        !Object.prototype.hasOwnProperty.call(object, key) ||
+        !child || typeof child !== 'object' || Array.isArray(child) ||
+        matchesJsonSchema(object[key], child as Record<string, unknown>),
+      );
+    }
+    case 'array':
+      return Array.isArray(value) && (schema.items == null ||
+        (typeof schema.items === 'object' && !Array.isArray(schema.items) &&
+          (value as unknown[]).every((item) => matchesJsonSchema(item, schema.items as Record<string, unknown>))));
+    case 'string': return typeof value === 'string';
+    case 'integer': return typeof value === 'number' && Number.isInteger(value);
+    case 'number': return typeof value === 'number' && Number.isFinite(value);
+    case 'boolean': return typeof value === 'boolean';
+    case 'null': return value === null;
+    default: return true;
+  }
+}
+
+function validateOutputSchema(text: string, schema: Record<string, unknown>): boolean {
+  try {
+    const value = JSON.parse(text);
+    return matchesJsonSchema(value, schema);
+  } catch {
+    return false;
+  }
+}
+
+function errorClassFor(error: unknown): string {
+  if (error instanceof Error && error.name) return error.name;
+  if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
+    return String((error as { code: string }).code);
+  }
+  return 'unknown';
+}
+
 function summarizeObservations(
   attempts: number,
   started: number,
@@ -92,10 +182,13 @@ function summarizeObservations(
     (observation): observation is CodexExecObservation & { token_usage: CodexTokenUsage } =>
       observation.token_usage !== null,
   );
+  const withCachedUsage = withUsage.filter(
+    (observation) => observation.token_usage.cached_input_tokens !== undefined,
+  );
   const status =
     withUsage.length === 0
       ? 'NOT_PROVEN'
-      : withUsage.length === attempts
+      : withUsage.length === attempts && withCachedUsage.length === withUsage.length
         ? 'observed'
         : 'partial';
   return {
@@ -113,11 +206,15 @@ function summarizeObservations(
               (sum, observation) => sum + observation.token_usage.output_tokens,
               0,
             ),
-            cached_input_tokens: withUsage.reduce(
-              (sum, observation) =>
-                sum + (observation.token_usage.cached_input_tokens ?? 0),
-              0,
-            ),
+            ...(withCachedUsage.length === withUsage.length
+              ? {
+                cached_input_tokens: withUsage.reduce(
+                    (sum, observation) =>
+                      sum + (observation.token_usage.cached_input_tokens ?? 0),
+                    0,
+                  ),
+                }
+              : {}),
           },
     token_usage_status: status,
   };
@@ -147,43 +244,111 @@ async function callMemoryModelInternal(
   maxTokens: number = 2048,
   options: MemoryModelOptions = {},
 ): Promise<ObservedMemoryModelResult> {
+  const existingContext = getModelWorkContext();
+  if (!existingContext?.db || !existingContext.budgetId) {
+    return withResolvedModelWorkContext(
+      options.modelContext ?? {},
+      () => callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options),
+    );
+  }
+
   const retries = retryBudget();
   let lastError: unknown;
   const observations: CodexExecObservation[] = [];
   const started = performance.now();
+  const context = existingContext;
+  const db = context.db!;
+  const budgetId = context.budgetId!;
+  const inputChars = (systemPrompt
+    ? `${systemPrompt}\n\n---\n\n${userMessage}`
+    : userMessage).length;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const attemptStarted = performance.now();
+    // Reservation is deliberately outside the provider catch. Exhaustion is
+    // scheduling state, not a provider failure: it must hold the work item
+    // pending and must never be converted into a dead/failed job by callers.
+    const reservation = reserveModelAttempt(db, {
+      budgetId,
+      stage: context.stage ?? 'model',
+      jobId: context.jobId ?? null,
+      targetId: context.targetId ?? null,
+      inputChars,
+    });
+    let attemptObservation: CodexExecObservation | undefined;
     try {
       const text = await callOnce(
         systemPrompt,
         userMessage,
         maxTokens,
-        (observation) => observations.push(observation),
+        (observation) => {
+          attemptObservation = observation;
+          observations.push(observation);
+        },
         options,
+        reservation,
       );
-      if (text && text.trim() !== '') {
-        return {
-          text,
-          observation: summarizeObservations(
-            attempt + 1,
-            started,
-            observations,
-          ),
-        };
+      if (!text || text.trim() === '') {
+        throw new EmptyLlmResponseError(
+          `LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`,
+        );
       }
-      lastError = new EmptyLlmResponseError(
-        `LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`,
-      );
+      if (text.length > reservation.maxOutputChars) {
+        throw new ModelBudgetOutputLimitError(text.length, reservation.maxOutputChars);
+      }
+      if (options.outputSchema && !validateOutputSchema(text, options.outputSchema)) {
+        throw new ModelBudgetOutputSchemaError();
+      }
+      finishModelAttempt(db, {
+        attemptId: reservation.attemptId,
+        state: 'completed',
+        durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+        outputChars: text.length,
+        tokenUsage: attemptObservation?.token_usage ?? null,
+        tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+      });
+      return {
+        text,
+        observation: summarizeObservations(
+          attempt + 1,
+          started,
+          observations,
+        ),
+      };
     } catch (error) {
+      const localDeterministic =
+        error instanceof ModelBudgetOutputLimitError ||
+        error instanceof ModelBudgetOutputSchemaError ||
+        error instanceof ModelBudgetInputLimitError;
+      finishModelAttempt(db, {
+        attemptId: reservation.attemptId,
+        state: localDeterministic ? 'failed' : 'unknown',
+        durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+        outputChars: attemptObservation ? undefined : null,
+        tokenUsage: attemptObservation?.token_usage ?? null,
+        tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+        errorClass: errorClassFor(error),
+      });
       lastError = error;
-      // 이 요청 자체가 잘못된 경우는 재시도해도 동일 — 즉시 표면화.
-      if (classifyLlmError(error) === 'deterministic') throw error;
+      // This request cannot succeed by retrying: local output/input/schema
+      // bounds and recognized deterministic provider rejections stop here.
+      if (localDeterministic || classifyLlmError(error) === 'deterministic') throw error;
     }
     if (attempt < retries) {
+      const remaining = reservation.deadlineAt
+        ? Math.max(0, Date.parse(reservation.deadlineAt) - Date.now())
+        : null;
+      const backoff = backoffMs(attempt);
+      if (remaining !== null && remaining <= backoff) {
+        throw exhaustModelBudget(db, {
+          budgetId: reservation.budgetId,
+          reason: 'deadline',
+        });
+      }
       console.error(
         `callMemoryModel: attempt ${attempt + 1}/${retries + 1} failed (${lastError instanceof Error ? lastError.message : lastError}) — retrying`,
       );
-      await sleep(backoffMs(attempt));
+      await sleep(backoff);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

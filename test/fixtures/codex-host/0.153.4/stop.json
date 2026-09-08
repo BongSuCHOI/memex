@@ -1,0 +1,25 @@
+{
+  "host": "codex-cli",
+  "version": "0.153.4",
+  "transport": "codex-cli-pty",
+  "event": "Stop",
+  "input": {
+    "cwd": "<project-cwd>",
+    "hook_event_name": "Stop",
+    "last_assistant_message": "<assistant-message>",
+    "model": "gpt-5.6-luna",
+    "permission_mode": "bypassPermissions",
+    "session_id": "<session_id>",
+    "stop_hook_active": false,
+    "transcript_path": "<codex-session-rollout>",
+    "turn_id": "<turn_id>"
+  },
+  "prepared": true,
+  "stdoutEmitted": false,
+  "outputShape": "empty",
+  "hostAcceptance": null,
+  "hookOnlyNonceReflected": null,
+  "untrustedMemoryOverrideObserved": false,
+  "replay": false,
+  "source": "sanitized actual host-delivered payload"
+}

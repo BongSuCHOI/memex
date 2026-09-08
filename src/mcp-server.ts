@@ -29,6 +29,7 @@ import { canonicalizeProjectPath } from "./project-identity.js";
 import { initDatabase } from "./db.js";
 import {
   searchFactsInScope,
+  searchFactsCombinedInScope,
   listFactsInScope,
   getRevisions,
   factMatchesReadScope,
@@ -1031,15 +1032,21 @@ export async function handleToolCall(
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
 
-      await initEmbeddings();
       const db = initDatabase();
       try {
         // Stable identity is resolved from explicit IDs or a caller-supplied
         // compatibility path. MCP process cwd is never consulted.
         const scopeInfo = resolveStableScope(db, params, "search_facts");
-        const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchFactsInScope(
+        let queryEmbedding: number[] | null = null;
+        try {
+          await initEmbeddings();
+          queryEmbedding = await generateEmbedding(params.query, "query");
+        } catch {
+          queryEmbedding = null;
+        }
+        const results = searchFactsCombinedInScope(
           db,
+          params.query,
           queryEmbedding,
           scopeInfo.factScope,
           params.limit,
@@ -1064,8 +1071,13 @@ export async function handleToolCall(
           ]),
         );
 
-        for (const { fact, distance } of results) {
-          const similarity = (1 - (distance * distance) / 2).toFixed(3);
+        for (const { fact, distance, lane, semanticSimilarity, lexicalScore } of results) {
+          const lexicalLabel = (lexicalScore ?? 0) >= 2 ? "exact text match" : "lexical match";
+          const similarity = semanticSimilarity === null
+            ? lexicalLabel
+            : lane === "both"
+              ? `${semanticSimilarity.toFixed(3)} (semantic) + ${lexicalLabel}`
+              : (1 - (distance * distance) / 2).toFixed(3);
           const catInfo = fact.ontology_category_id
             ? catMap.get(fact.ontology_category_id)
             : undefined;

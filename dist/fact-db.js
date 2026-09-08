@@ -387,6 +387,199 @@ export function searchFactsInScope(db, embedding, scope, limit = 5, threshold = 
     }
     return results;
 }
+// Keep ordinary prose out of SQLite LIKE parameters. Identifier terms are
+// still extracted below for long prompts, while semantic retrieval remains
+// responsible for the broad meaning of the prompt.
+const MAX_LITERAL_QUERY_CHARS = 512;
+function escapeLikePattern(value) {
+    return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+function normalizeFactQuery(query) {
+    return query
+        .trim()
+        .replace(/^[`'\"]+|[`'\"]+$/g, "")
+        .replace(/[?!,;:]+$/g, "")
+        .trim();
+}
+/**
+ * Pull only concrete code-like tokens from a natural-language query. A
+ * general word search would make every prompt a lexical retrieval request;
+ * these shapes are bounded to paths, symbols, function calls and snake-case
+ * identifiers commonly used for error/configuration names.
+ */
+function extractFactIdentifiers(query) {
+    const value = normalizeFactQuery(query);
+    if (!value)
+        return [];
+    const maxIdentifiers = 4;
+    const found = new Set();
+    const add = (token) => {
+        const normalized = token
+            .replace(/\(\)$/u, "")
+            .replace(/^[`'\"]+|[`'\"]+$/g, "")
+            .replace(/[.!?,;:]+$/u, "");
+        if (normalized.length >= 2 && found.size < maxIdentifiers)
+            found.add(normalized);
+    };
+    const patterns = [
+        /(?:\/?[A-Za-z0-9_$.-]+[\\/])+(?:[A-Za-z0-9_$.-]+)/gu,
+        /\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+\b/gu,
+        /\b[A-Za-z_$][A-Za-z0-9_$]*\(\)/gu,
+        /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/gu,
+        /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gu,
+        /\b[A-Za-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/gu,
+    ];
+    for (const pattern of patterns) {
+        for (const match of value.matchAll(pattern))
+            add(match[0]);
+    }
+    return [...found];
+}
+/** True for a concrete identifier query, including one embedded in prose. */
+export function isExactFactIdentifierQuery(query) {
+    const value = normalizeFactQuery(query);
+    if (!value)
+        return false;
+    const identifiers = extractFactIdentifiers(value);
+    return identifiers.length > 0 || (!/\s/u.test(value) && /\.[A-Za-z0-9]+$/u.test(value));
+}
+function isIdentifierCharacter(character) {
+    return character !== undefined && /[A-Za-z0-9_$]/u.test(character);
+}
+function isPathCharacter(character) {
+    return character !== undefined && /[A-Za-z0-9_$.\\/\\-]/u.test(character);
+}
+function containsExactIdentifier(text, query) {
+    const haystack = text.toLocaleLowerCase();
+    const needle = query.toLocaleLowerCase();
+    let offset = 0;
+    while (offset <= haystack.length - needle.length) {
+        const start = haystack.indexOf(needle, offset);
+        if (start < 0)
+            return false;
+        const end = start + needle.length;
+        const pathLike = /[/\\.]/u.test(query);
+        const before = text[start - 1];
+        const after = text[end];
+        const beforeMatches = pathLike ? isPathCharacter(before) : isIdentifierCharacter(before);
+        let afterMatches = pathLike ? isPathCharacter(after) : isIdentifierCharacter(after);
+        // A sentence-ending period is a boundary, while `.bak` after a path is a
+        // longer path/filename and must not satisfy an exact path query.
+        if (pathLike && after === "." && !isIdentifierCharacter(text[end + 1])) {
+            afterMatches = false;
+        }
+        if (!beforeMatches && !afterMatches)
+            return true;
+        offset = start + 1;
+    }
+    return false;
+}
+/**
+ * Literal fact search with the same required ReadScope as the semantic lane.
+ * The SQL pattern is parameterized/escaped, while exact identifier boundaries
+ * are checked in memory so a symbol does not match a longer symbol or path.
+ * Active/category/scope predicates are evaluated before `limit` is applied.
+ */
+export function searchFactsLexicallyInScope(db, query, scope, limit = 5, filters = {}) {
+    assertReadScope(db, scope);
+    if (limit <= 0)
+        return [];
+    const normalizedQuery = normalizeFactQuery(query);
+    if (!normalizedQuery)
+        return [];
+    const sessionExchangeIds = scope.type === "session-id"
+        ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id))
+        : undefined;
+    const categorySql = filters.category ? " AND category = ?" : "";
+    const identifiers = extractFactIdentifiers(normalizedQuery);
+    const lexicalTerms = [
+        ...(normalizedQuery.length <= MAX_LITERAL_QUERY_CHARS ? [normalizedQuery] : []),
+        ...identifiers.filter((identifier) => identifier !== normalizedQuery),
+    ];
+    if (lexicalTerms.length === 0)
+        return [];
+    const lexicalSql = lexicalTerms
+        .map(() => "(LOWER(fact) LIKE LOWER(?) ESCAPE '\\' OR LOWER(COALESCE(fact_kr, '')) LIKE LOWER(?) ESCAPE '\\')")
+        .join(" OR ");
+    const patterns = lexicalTerms.flatMap((term) => {
+        const pattern = `%${escapeLikePattern(term)}%`;
+        return [pattern, pattern];
+    });
+    const rows = db.prepare(`
+    SELECT * FROM facts
+    WHERE is_active = 1
+      ${categorySql}
+      AND (${lexicalSql})
+  `).all(...(filters.category ? [filters.category] : []), ...patterns);
+    const results = [];
+    for (const row of rows) {
+        const rawTexts = [String(row.fact ?? ""), String(row.fact_kr ?? "")];
+        const fact = adaptLegacyFactForRead(db, rowToFact(row));
+        if (!factMatchesSearch(fact, scope, filters, sessionExchangeIds))
+            continue;
+        const match = identifiers.length > 0
+            ? rawTexts.some((text) => identifiers.some((identifier) => containsExactIdentifier(text, identifier)))
+            : rawTexts.some((text) => text.toLocaleLowerCase().includes(normalizedQuery.toLocaleLowerCase()));
+        if (!match)
+            continue;
+        results.push({ fact, lexicalScore: identifiers.length > 0 ? 2 : 1, distance: 0 });
+    }
+    results.sort((a, b) => b.lexicalScore - a.lexicalScore || a.fact.id.localeCompare(b.fact.id));
+    return results.slice(0, limit);
+}
+/** Merge literal and semantic lanes with exact lexical hits taking priority. */
+export function searchFactsCombinedInScope(db, query, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
+    assertReadScope(db, scope);
+    if (limit <= 0)
+        return [];
+    const lexical = searchFactsLexicallyInScope(db, query, scope, limit, filters);
+    const semantic = embedding
+        ? searchFactsInScope(db, embedding, scope, limit, threshold, filters)
+        : [];
+    const merged = new Map();
+    for (const result of lexical) {
+        merged.set(result.fact.id, {
+            fact: result.fact,
+            distance: result.distance,
+            semanticSimilarity: null,
+            lexicalScore: result.lexicalScore,
+            lane: "lexical",
+        });
+    }
+    for (const result of semantic) {
+        const existing = merged.get(result.fact.id);
+        const semanticSimilarity = l2DistanceToSimilarity(result.distance);
+        if (existing) {
+            existing.distance = result.distance;
+            existing.semanticSimilarity = semanticSimilarity;
+            existing.lane = "both";
+        }
+        else {
+            merged.set(result.fact.id, {
+                fact: result.fact,
+                distance: result.distance,
+                semanticSimilarity,
+                lexicalScore: null,
+                lane: "semantic",
+            });
+        }
+    }
+    return [...merged.values()]
+        .sort((a, b) => {
+        const aLexical = a.lexicalScore ?? 0;
+        const bLexical = b.lexicalScore ?? 0;
+        if ((aLexical > 0) !== (bLexical > 0))
+            return aLexical > 0 ? -1 : 1;
+        if (aLexical !== bLexical)
+            return bLexical - aLexical;
+        const aSemantic = a.semanticSimilarity ?? -Infinity;
+        const bSemantic = b.semanticSimilarity ?? -Infinity;
+        if (aSemantic !== bSemantic)
+            return bSemantic - aSemantic;
+        return a.fact.id.localeCompare(b.fact.id);
+    })
+        .slice(0, limit);
+}
 /** @deprecated Resolve legacy paths at the edge, then use listFactsInScope. */
 export function listFactsByScope(db, scope) {
     return listFactsInScope(db, adaptLegacyReadScope(db, scope));

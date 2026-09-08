@@ -1,0 +1,21 @@
+{
+  "kind": "native-memory-generation-observation",
+  "recordedAt": "2026-09-08T06:23:53.174728+00:00",
+  "codexCli": "0.153.4",
+  "source": "isolated home restored from the frozen synthetic training snapshot; generated-memory state only was inspected",
+  "job": {
+    "kind": "memory_consolidate_global",
+    "status": "done",
+    "started_at": 1788846220,
+    "finished_at": 1788846261,
+    "retry_at": null,
+    "last_error": null,
+    "input_watermark": 0,
+    "last_success_watermark": 0
+  },
+  "stage1Outputs": 0,
+  "rawMemoryBytes": 37,
+  "rawMemorySha256": "e400b00d691e2d5feac0f108f677a27999d516039592438cea172a3acd81cbf4",
+  "generationStatus": "NOT_PROVEN",
+  "interpretation": "Global job completion with input watermark 0 is not proof that the training corpus was learned. The built-in arm has no learned-memory input; mature built-in-memory recall quality and Memex superiority remain NOT_PROVEN."
+}

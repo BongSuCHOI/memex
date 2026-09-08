@@ -57,18 +57,21 @@ function injectSocketPath() {
 
 /** Emit valid Codex 0.149 UserPromptSubmit JSON — never raw context text. */
 function emitContext(context) {
-  process.stdout.write(
-    JSON.stringify({
-      continue: true,
-      hookSpecificOutput: {
-        hookEventName: "UserPromptSubmit",
-        additionalContext: context,
-      },
-    }) + "\n",
-  );
+  return new Promise((resolve, reject) => {
+    process.stdout.write(
+      JSON.stringify({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: context,
+        },
+      }) + "\n",
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
 }
 
-async function markRecallEmitted(sessionId, prompt) {
+async function markRecallEmitted(sessionId, prompt, receiptId = null) {
   if (!sessionId || !prompt) return;
   try {
     const { initDatabase, markRecallEventEmitted } = await import(
@@ -76,7 +79,9 @@ async function markRecallEmitted(sessionId, prompt) {
     );
     const db = initDatabase();
     try {
-      markRecallEventEmitted(db, { sessionId, prompt });
+      if (!markRecallEventEmitted(db, { sessionId, prompt, ...(receiptId ? { id: receiptId } : {}) })) {
+        throw new Error("prepared receipt not found");
+      }
     } finally {
       db.close();
     }
@@ -121,7 +126,9 @@ function askDaemon(prompt, cwd, sessionId) {
         if (nl < 0) return;
         try {
           const res = JSON.parse(buf.slice(0, nl));
-          done(res && res.ok ? String(res.context ?? "") : null);
+          done(res && res.ok
+            ? { context: String(res.context ?? ""), receiptId: res.receiptId ? String(res.receiptId) : null }
+            : null);
         } catch {
           done(null);
         }
@@ -170,11 +177,11 @@ async function main() {
   if (!prompt || prompt.trim().length === 0) return;
 
   // FAST PATH — warm daemon inside a running MCP server.
-  const daemonContext = await askDaemon(prompt, cwd, sessionId);
-  if (daemonContext !== null) {
-    if (daemonContext) {
-      emitContext(daemonContext);
-      await markRecallEmitted(sessionId, prompt);
+  const daemonResult = await askDaemon(prompt, cwd, sessionId);
+  if (daemonResult !== null) {
+    if (daemonResult.context) {
+      await emitContext(daemonResult.context);
+      await markRecallEmitted(sessionId, prompt, daemonResult.receiptId);
     }
     return;
   }
@@ -184,15 +191,17 @@ async function main() {
     const { computeInjectContext } = await import(
       path.join(__dirname, "../dist/inject-core.js")
     );
+    let receiptId = null;
     const context = await computeInjectContext(
       prompt,
       cwd,
       "fallback",
       sessionId || undefined,
+      { onPreparedReceipt: (id) => { receiptId = id; } },
     );
     if (context) {
-      emitContext(context);
-      await markRecallEmitted(sessionId, prompt);
+      await emitContext(context);
+      await markRecallEmitted(sessionId, prompt, receiptId);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

@@ -401,7 +401,19 @@ scope, unsupported rewrite, source/participant CAS와 tombstone 경계가 지켜
 preview fingerprint, exact selection, durable row hash 불변, 반복 적용 0건과 후속 audit를 증거로 남깁니다.
 원문·정확한 fact/source ID·전체 보고서는 ignored private 경로에 보존하고 public receipt는 집계만 싣습니다.
 
-## 10. Release 원칙
+## 10. Codex 실사용: lifecycle, 호출 예산, 검색
+
+[Codex usability run](verification/codex-usability/README.md)은 지원 host 버전의 실제 이벤트,
+고정 입력의 네 조건 비교, 작업별 호출 관측과 최종 주입 예산을 기록합니다.
+App-server compaction/interrupt 성공은 Memex hook 전달 성공을 대신하지 않습니다.
+Fixture replay, 실제 host 이벤트, context prepared, stdout emitted, host acceptance를 각각 구분합니다.
+Host 수락 증거가 없으면 `NOT_PROVEN`으로 남깁니다.
+
+비교 입력과 학습 전 snapshot은 hash로 고정합니다. 각 조건은 분리된 Codex/Memex home을 쓰며
+기본 메모리의 background 생성 자격이 아직 충족되지 않은 결과를 성숙한 메모리 품질로 해석하지 않습니다.
+검색의 deterministic 정답 검사와 실제 모델의 답변 품질도 별도 결과입니다.
+
+## 11. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:
 
