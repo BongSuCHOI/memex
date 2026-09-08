@@ -37,9 +37,9 @@ vi.mock("../src/fact-db.js", async (io) => {
   const actual = await io<typeof import("../src/fact-db.js")>();
   return {
     ...actual,
-    searchFactsByScope: (...args: Parameters<typeof actual.searchFactsByScope>) => {
+    searchFactsInScope: (...args: Parameters<typeof actual.searchFactsInScope>) => {
       if (factSearch.fail) throw new Error("vector index unavailable");
-      return actual.searchFactsByScope(...args);
+      return actual.searchFactsInScope(...args);
     },
   };
 });

@@ -8,7 +8,7 @@ export * from './search.js';
 export * from './summarizer.js';
 export * from './paths.js';
 // P2-2: the public package surface exposes read/search primitives only. Raw
-// fact writers (insertFact/updateFact/deactivateFact/deleteFact/insertRevision)
+// fact writers (insertFact/updateFact/deactivateFact/insertRevision)
 // stay internal — every semantic mutation must go through fact-management's
 // transactional service so the revision/vector/ontology/relation invariants
 // cannot be bypassed by package consumers. In-repo callers import fact-db.js
@@ -18,6 +18,9 @@ export {
   getFactsByProject,
   getRevisions,
   searchFactsByScope,
+  searchFactsInScope,
+  listFactsInScope,
+  factMatchesReadScope,
   searchSimilarFacts,
   searchSimilarFactsSameScope,
   getTopFacts,
@@ -47,3 +50,7 @@ export type { WorkspaceIdentity, WorkspaceLocationKind } from './continuity-iden
 export * from './chronicle.js';
 export * from './consolidator.js';
 export * from './llm.js';
+export * from './read-scope.js';
+export { captureMutationPolicy } from './fact-policy.js';
+export type { MutationPolicy } from './fact-policy.js';
+export { auditMemoryIntegrity, applyIntegrityRepairs } from './fact-integrity.js';

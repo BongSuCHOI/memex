@@ -1,0 +1,162 @@
+{
+  "kind": "memory-integrity-baseline",
+  "recordedAt": "2026-09-08T02:53:50.679Z",
+  "candidate": {
+    "codeSha": "06220363654f121391b7fbd1ee66f35e7e775984",
+    "runtimeUnmodified": true
+  },
+  "environment": {
+    "codex": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "memexVersion": "0.4.1",
+    "configuredWorkerModel": "gpt-5.6-luna",
+    "evaluationModel": "deterministic mock (no real model calls)",
+    "embedding": "fixed 384-dimensional fixture; integration stub",
+    "codexModel": "gpt-6-astra",
+    "codexReasoning": "medium",
+    "codexMemories": true,
+    "disableOnExternalContext": false,
+    "otherMemexEnvironment": {}
+  },
+  "command": "npx vitest run test/memory-integrity.test.ts test/continuity-hot-cursor.test.ts test/continuity-final-integration.test.ts --reporter=json --outputFile=REPORT.json",
+  "fixtures": [
+    {
+      "file": "test/memory-integrity.test.ts",
+      "sha256": "6e1d9a9cbea1cf33b6e01a725ac7fe9feeec852dc2f594a4bc8384cfd6ba8cde"
+    },
+    {
+      "file": "test/continuity-hot-cursor.test.ts",
+      "sha256": "d55efefc99f4d7c61eed49689f3b7376026ed645129a156be4ff773eefa6bd48"
+    },
+    {
+      "file": "test/continuity-final-integration.test.ts",
+      "sha256": "ea5e69b7838e77610e96a0c99052cf9081d05c6168ad5320a64cde00ffa66e6d"
+    }
+  ],
+  "results": {
+    "total": 18,
+    "passed": 12,
+    "failed": 6,
+    "assertions": [
+      {
+        "file": "continuity-final-integration.test.ts",
+        "name": "capture → outbox → worker → extraction → Chronicle → injection → sync → purge → replay with crash/duplicate seams and zero-count accounting",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-final-integration.test.ts",
+        "name": "P0 capture indexing is never blocked by a pending P2 extraction job in the same session partition",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-final-integration.test.ts",
+        "name": "privacy purge removes a Capsule projection derived from the purged session even when a sibling shares the workstream",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "drains the query-limited suffix on acknowledgement prompts with zero embeddings",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "does not advance across a budget cutoff and retries after corrections drain",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "leaves evidence inserted during the embedding await for the next prompt",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "rolls back the whole injection when fetched evidence is purged during await",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "compact/resume advances only its emitted prefix, then prompts drain the rest",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "a fresh Capsule with correction pressure cannot acknowledge unrendered rehydration evidence",
+        "status": "passed"
+      },
+      {
+        "file": "continuity-hot-cursor.test.ts",
+        "name": "sequence commit rejects epoch/rebind races and sequence IDs are never reused after deletion",
+        "status": "passed"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "same project/path sibling workstreams never consolidate",
+        "status": "failed",
+        "error": "AssertionError: expected [ { …(21) } ] to have a length of 2 but got 1"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "candidate selection filters sibling workstreams before calling a model",
+        "status": "failed",
+        "error": "AssertionError: expected \"spy\" to not be called at all, but actually been called 1 times"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "a workstream fact cannot overwrite or absorb project-wide truth",
+        "status": "failed",
+        "error": "AssertionError: expected [ { …(21) } ] to have a length of 2 but got 1"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "automatic consolidation cannot introduce unsupported merged wording",
+        "status": "failed",
+        "error": "AssertionError: expected true to be false // Object.is equality"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "semantic mutation during embedding rejects the stale consolidation",
+        "status": "passed"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "search_facts applies identity scope to related facts",
+        "status": "failed",
+        "error": "AssertionError: expected '# Facts Search Results\\n\\nQuery: \"Vis…' not to contain 'PRIVATE sibling workstream B'"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "trace_fact applies identity scope to related facts",
+        "status": "failed",
+        "error": "AssertionError: expected '# Fact Provenance Trace\\n\\nScope: wor…' not to contain 'PRIVATE sibling workstream B'"
+      },
+      {
+        "file": "memory-integrity.test.ts",
+        "name": "graph traversal prunes out-of-scope bridges at every hop",
+        "status": "passed"
+      }
+    ]
+  },
+  "recovery": {
+    "manifestSha256": "52d679ca7ded392812b0dd7ad342ee28f0bc4e6c1d316d77fbb4dfe6bb500a0f",
+    "files": 796,
+    "bytes": 2937136801,
+    "unstableFiles": 0,
+    "restore": {
+      "integrity": [
+        {
+          "integrity_check": "ok"
+        }
+      ],
+      "foreignKeys": [],
+      "hashesVerified": 796,
+      "status": "PASS"
+    },
+    "scope": "Memex DB via SQLite online backup; archive, journals, index and sync state; all current Codex sessions. Ephemeral locks/sockets/WAL/SHM and .log files excluded. Private snapshot and restored clone retained under ignored tmp/memory-integrity-20260908/recovery.",
+    "consistency": "SQLite online backup is transaction-consistent. Cross-file/source capture is NOT_PROVEN atomic while writers run. Offline drill verifies bytes and DB integrity; original absolute path mappings must be retained for an actual restore. Never replace live tombstones with an older snapshot."
+  },
+  "limitations": [
+    "Production data not modified; no archive reprocessing.",
+    "Synthetic deterministic regression baseline, not real-model accuracy measurement.",
+    "No coordinated writer pause; whole-root point-in-time recovery NOT_PROVEN."
+  ]
+}

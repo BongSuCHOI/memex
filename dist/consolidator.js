@@ -1,8 +1,9 @@
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 // 값 사용분은 별도 import — `export … from` 은 재수출만 하고 로컬 바인딩을 만들지 않는다.
 import { LlmCallError, classifyLlmError } from './llm-error-class.js';
-import { getPendingConsolidationFacts, mergeFactContextDependencies, searchFactsByScope, updateFact, } from './fact-db.js';
-import { deactivateFactTransactional, mutateFactMeaning, StaleFactMutationError } from './fact-management.js';
+import { getPendingConsolidationFacts, mergeFactContextDependencies, searchFactsInScope, updateFact, } from './fact-db.js';
+import { assertMutationPolicy, captureMutationPolicy, captureSourceSnapshot, consolidationEligibility, consolidationSnapshotValid, hasLocalMeaningEvidence } from './fact-policy.js';
+import { deactivateFactTransactional, mutateFactMeaningWithPolicy, StaleFactMutationError } from './fact-management.js';
 import { currentEffectiveAt, currentEffectiveTime, currentEvidenceAuthority, judgeCompetingEvidence, recordChronicleEvent, } from './chronicle.js';
 export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine their relationship.
 
@@ -12,10 +13,16 @@ export const CONSOLIDATION_SYSTEM_PROMPT = `Compare two facts and determine thei
 - EVOLUTION: old fact evolved - update
 - INDEPENDENT: separate - keep both
 
+CONTRADICTION and EVOLUTION require the SAME subject and the SAME applicability
+conditions (environment, time interval, exceptions and qualifiers). Different or
+uncertain conditions mean INDEPENDENT. Never invent a merged sentence: the
+server can only adopt an already verified input fact after its own policy checks.
+
 ## Output format
 {
   "relation": "DUPLICATE|CONTRADICTION|EVOLUTION|INDEPENDENT",
-  "merged_fact": "final sentence for merge/replace",
+  "same_subject": true,
+  "same_conditions": true,
   "reason": "one-line justification"
 }`;
 const MAX_LLM_CALLS = 10;
@@ -46,21 +53,29 @@ async function consolidateOne(db, newFact) {
     if (!newFact.embedding)
         return { called: false, verdict: 'none' };
     const embeddingArray = Array.from(newFact.embedding);
-    // SAME-SCOPE only (no cross-scope leak): project fact → its own project,
-    // global fact → global. The scope gate is inside the search, before its
-    // limit, so an in-scope match isn't starved by closer out-of-scope rows.
-    const scope = newFact.scope_type === 'global'
-        ? { type: 'global' }
-        : newFact.scope_project
-            ? { type: 'exact-project', project: newFact.scope_project }
-            : null;
+    // A readable project fact is not necessarily writable from this workstream.
+    // Legacy path-only facts remain searchable but await explicit identity review.
+    let scope = null;
+    if (newFact.scope_type === 'global')
+        scope = { type: 'global' };
+    else if (newFact.project_id && newFact.promotion_state && newFact.promotion_state !== 'legacy-project') {
+        scope = newFact.promotion_state === 'workstream' && newFact.workstream_id
+            ? { type: 'workstream-id', projectId: newFact.project_id, workstreamId: newFact.workstream_id, workspaceId: newFact.workspace_id, includeGlobal: false }
+            : newFact.promotion_state === 'workspace' && newFact.workspace_id
+                ? { type: 'workspace-id', projectId: newFact.project_id, workspaceId: newFact.workspace_id, includeGlobal: false }
+                : { type: 'project-id', projectId: newFact.project_id, includeGlobal: false };
+    }
     if (!scope)
         return { called: false, verdict: 'none' };
-    const candidates = searchFactsByScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD)
-        .filter((s) => s.fact.id !== newFact.id);
+    const candidates = searchFactsInScope(db, embeddingArray, scope, 5, SIMILARITY_THRESHOLD, {
+        accept: candidate => consolidationEligibility(candidate, newFact) === null,
+    });
     if (candidates.length === 0)
         return { called: false, verdict: 'none' };
     const closest = candidates[0];
+    const sources = captureSourceSnapshot(db, [...closest.fact.source_exchange_ids, ...newFact.source_exchange_ids]);
+    if (!sources)
+        return { called: false, verdict: 'none' };
     // Tag ONLY the provider call's rejection as an LlmCallError. Anything after
     // this (parseJsonResponse, applyConsolidationResult DB writes) throws as a
     // plain error, so the drain loop can hold on an internal bug instead of
@@ -82,8 +97,8 @@ async function consolidateOne(db, newFact) {
     // deliberately "poison" candidate) can hold the queue and starve the backlog.
     if (!result)
         return { called: true, verdict: 'none' };
-    await applyConsolidationResult(db, closest.fact, newFact, result);
-    return { called: true, verdict: result.relation };
+    const applied = await applyConsolidationResult(db, closest.fact, newFact, result, sources);
+    return { called: true, verdict: applied ? result.relation : 'none' };
 }
 async function drainPending(db, project) {
     // Candidate comparison uses ALREADY-STORED vectors and an LLM. Do not eagerly
@@ -199,9 +214,38 @@ export async function consolidateFacts(db, project, _lastConsolidatedAt) {
 export async function consolidateAllPending(db) {
     return drainPending(db);
 }
-export async function applyConsolidationResult(db, existingFact, newFact, result) {
-    // Normalize merged_fact: treat empty/whitespace-only as absent
-    const mergedFact = result.merged_fact?.trim() || null;
+export async function applyConsolidationResult(db, existingFact, newFact, result, expectedSources) {
+    if (!consolidationSnapshotValid(db, [existingFact, newFact])) {
+        throw new StaleFactMutationError('consolidation discarded: participant state or identity changed');
+    }
+    const preserveReason = (reason) => {
+        // One fact's local review note must not disclose a sibling's text/identity.
+        recordChronicleEvent(db, {
+            kind: 'ASSERTED', factId: newFact.id, projectId: newFact.project_id, subjectKey: newFact.subject_key,
+            actor: 'consolidator', classifierNote: `consolidation withheld: ${reason}`,
+            effectiveAt: newFact.semantic_updated_at ?? newFact.created_at, effectiveAtSource: 'recorded',
+            outcome: { consolidation: 'preserved', reason, semantic_generation: newFact.semantic_generation ?? 1 },
+            projectionApplied: false,
+        });
+        return false;
+    };
+    if (!['DUPLICATE', 'CONTRADICTION', 'EVOLUTION', 'INDEPENDENT'].includes(result.relation))
+        return preserveReason('invalid model verdict');
+    if (result.relation === 'INDEPENDENT')
+        return false;
+    const blocked = consolidationEligibility(existingFact, newFact, result.relation);
+    if (blocked) {
+        return preserveReason(blocked);
+    }
+    const sources = expectedSources ?? captureSourceSnapshot(db, [...existingFact.source_exchange_ids, ...newFact.source_exchange_ids]);
+    if (!sources)
+        return preserveReason('source evidence is missing');
+    const policy = { ...captureMutationPolicy(db, 'consolidation', [existingFact.id, newFact.id], { verifiedText: newFact.fact }), sources };
+    const guard = () => assertMutationPolicy(db, policy, existingFact.id);
+    guard();
+    if ([existingFact, newFact].some(fact => fact.source_exchange_ids.length > 0 && !hasLocalMeaningEvidence(db, fact))) {
+        return preserveReason('participant evidence has no current local verification');
+    }
     const mergedSources = [...new Set([
             ...existingFact.source_exchange_ids,
             ...newFact.source_exchange_ids,
@@ -209,41 +253,17 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
     const newEvidenceSource = newFact.source_exchange_ids[0] ?? null;
     switch (result.relation) {
         case 'DUPLICATE': {
-            // One transaction: the survivor's count/provenance update and the
-            // duplicate's deactivation are a single semantic step (SCHEMA §7 —
-            // derived state never straddles commits). updateFact's inner vec
-            // transaction nests as a savepoint inside this one.
-            // 재감사 P1-2: 비교에 쓴 의미가 아직 현재인지 commit 시점에 CAS한다 —
-            // LLM 왕복 동안 어느 쪽이든 변이됐으면 이 판정은 폐기된다(dirty 유지).
-            // 재감사 P1-2(v4): provenance는 commit 시점에 live row를 다시 읽어
-            // union한다 — sync import가 LLM 왕복 동안 provenance를 union했어도
-            // (semantic_generation을 올리지 않는 metadata 쓰기) 이 읽기가 그 결과를
-            // 흡수해 monotone union이 어떤 교차 순서에서도 유실되지 않는다.
+            // Meaning/lifecycle/scope/source guards and both live lineage reads share
+            // the survivor update + incoming deactivation transaction.
             const apply = db.transaction(() => {
-                // 재감사 P1-4(v4): lifecycle_generation까지 재판정한다 — 참가자가 LLM
-                // 왕복 동안 deactivate/restore 됐어도 semantic_generation은 그대로다.
-                const genStmt = db.prepare('SELECT semantic_generation, lifecycle_generation, source_exchange_ids FROM facts WHERE id = ?');
-                const existingNow = genStmt.get(existingFact.id);
-                const newNow = genStmt.get(newFact.id);
-                if (!existingNow ||
-                    existingNow.semantic_generation !== existingFact.semantic_generation ||
-                    existingNow.lifecycle_generation !== Number(existingFact.lifecycle_generation ?? 1) ||
-                    !newNow ||
-                    newNow.semantic_generation !== newFact.semantic_generation ||
-                    newNow.lifecycle_generation !== Number(newFact.lifecycle_generation ?? 1)) {
-                    return false;
-                }
-                let liveSources = newFact.source_exchange_ids;
-                try {
-                    const parsed = JSON.parse(existingNow.source_exchange_ids ?? '[]');
-                    if (Array.isArray(parsed)) {
-                        liveSources = [...new Set([
-                                ...parsed.filter((id) => typeof id === 'string'),
-                                ...newFact.source_exchange_ids,
-                            ])];
-                    }
-                }
-                catch { /* unparseable local provenance — keep the new evidence side */ }
+                guard();
+                const liveSources = [...new Set([existingFact.id, newFact.id].flatMap(id => {
+                        const row = db.prepare('SELECT source_exchange_ids FROM facts WHERE id = ?').get(id);
+                        const ids = JSON.parse(row.source_exchange_ids);
+                        if (!Array.isArray(ids) || !ids.every(value => typeof value === 'string'))
+                            throw new Error('invalid participant lineage');
+                        return ids;
+                    }))];
                 updateFact(db, existingFact.id, {
                     consolidated_count_increment: true,
                     source_exchange_ids: liveSources,
@@ -261,18 +281,12 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
         }
         case 'CONTRADICTION':
         case 'EVOLUTION': {
-            // 재감사 P1-2: CONTRADICTION/EVOLUTION도 DUPLICATE와 같은 CAS 계약이다 —
-            // LLM 왕복 동안 어느 쪽이든 의미가 변이됐으면 이 판정은 폐기된다.
-            // expectedSemanticGeneration은 existing 쪽(expectedPreviousFact는 텍스트
-            // 우연 복귀를 못 잡는다), deactivateFacts의 세대 CAS는 driver 쪽을 지킨다.
-            // 재감사 P1-4(v4): 양쪽 참가자 모두 lifecycle_generation까지 CAS한다 —
-            // active 참가자끼리 내린 판정이므로 활성 상태가 움직이면 stale이다.
-            //
-            // Phase 4 TEMPORAL ORDER / CURRENT VS HISTORY: the verdict says the two
-            // facts compete for one meaning; which one is current is decided by the
-            // evidence's effective time and authority, never by which worker ran
-            // last. The consolidator's own reason is model inference and is stored
-            // only as a classifier note.
+            if (result.same_subject !== true || result.same_conditions !== true)
+                return preserveReason('subject or applicability is unconfirmed');
+            if (!hasLocalMeaningEvidence(db, newFact))
+                return preserveReason('incoming meaning has no current local verification');
+            // Effective source time and authority choose the current value.
+            // The model's reason remains a non-authoritative classifier note.
             const existingEffective = currentEffectiveAt(db, existingFact.id);
             // A candidate without any source-effective time falls back to its local
             // write clock; the event then says `recorded` so the uncertainty is
@@ -287,9 +301,16 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                 incomingAuthority: currentEvidenceAuthority(db, newFact.id),
             });
             if (judgement.verdict === 'apply') {
-                await mutateFactMeaning(db, {
+                await mutateFactMeaningWithPolicy(db, {
+                    policy,
+                    commitGuard: () => {
+                        guard();
+                        if (!hasLocalMeaningEvidence(db, newFact)) {
+                            throw new StaleFactMutationError('consolidation discarded: incoming verification changed');
+                        }
+                    },
                     factId: existingFact.id,
-                    newText: mergedFact || newFact.fact,
+                    newText: newFact.fact,
                     source: { exchangeId: newEvidenceSource ?? undefined, exchangeIds: mergedSources },
                     lineageMode: 'preserve-identity',
                     expectedPreviousFact: existingFact.fact,
@@ -310,7 +331,8 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
                         effectiveAt: incomingEffective,
                         effectiveAtSource: incomingEffectiveSource,
                         evidenceAuthority: currentEvidenceAuthority(db, newFact.id),
-                        outcome: { consolidation: result.relation, temporal: judgement.reason, absorbed_fact_id: newFact.id },
+                        outcome: { consolidation: result.relation, temporal: judgement.reason, absorbed_fact_id: newFact.id,
+                            verified_input_fact_id: newFact.id, automatic_rewrite: false },
                     },
                 });
                 break;
@@ -319,16 +341,7 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
             // Chronicle history (older evidence) or as an unresolved contradiction
             // candidate; neither overwrites the projection.
             const preserve = db.transaction(() => {
-                const genStmt = db.prepare('SELECT semantic_generation, lifecycle_generation, is_active FROM facts WHERE id = ?');
-                const existingNow = genStmt.get(existingFact.id);
-                const newNow = genStmt.get(newFact.id);
-                if (!existingNow || !newNow || existingNow.is_active !== 1 || newNow.is_active !== 1 ||
-                    existingNow.semantic_generation !== (existingFact.semantic_generation ?? 1) ||
-                    existingNow.lifecycle_generation !== Number(existingFact.lifecycle_generation ?? 1) ||
-                    newNow.semantic_generation !== (newFact.semantic_generation ?? 1) ||
-                    newNow.lifecycle_generation !== Number(newFact.lifecycle_generation ?? 1)) {
-                    return false;
-                }
+                guard();
                 recordChronicleEvent(db, {
                     kind: judgement.verdict === 'historical' ? 'ASSERTED' : 'CONTRADICTED',
                     projectId: existingFact.project_id ?? null,
@@ -365,8 +378,6 @@ export async function applyConsolidationResult(db, existingFact, newFact, result
             }
             break;
         }
-        case 'INDEPENDENT':
-            // Keep both, do nothing
-            break;
     }
+    return true;
 }

@@ -2,6 +2,21 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## Unreleased
+
+- Separate required fact `ReadScope` from `MutationPolicy`; isolate legacy path readers
+  and check graph seeds, every hop, related search/trace results and resident corrections.
+- Block cross-workstream/promotion consolidation before model calls and revalidate
+  participant meaning, lifecycle, placement and source fingerprints at commit.
+- Adopt verified incoming text instead of model-generated merged wording. Preserve
+  ambiguous facts with review reasons and distinguish local verification from peer origin.
+- Preserve both participants' live provenance across embedding races and keep terminal
+  privacy tombstone reasons through subsequent deletion.
+- Add read-only integrity previews, exact selected/idempotent repairs, and backup/restore
+  verification tools. Keep unresolved legacy/semantic findings for review.
+- Update owner contracts and retain frozen before/after regressions plus recovery evidence.
+  This change does not publish a release or change the package version.
+
 ## 0.4.1 - 2026-09-07
 
 - Constrain Work Capsule generation with a native Codex output schema so evidence

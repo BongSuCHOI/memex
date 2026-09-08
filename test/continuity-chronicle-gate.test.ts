@@ -1,3 +1,4 @@
+import { captureMutationPolicy } from '../src/fact-policy.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -126,6 +127,7 @@ describe("projection/event atomicity under injected failure", () => {
     const fact = getActiveFacts(db)[0];
     expect(() => applyFactMeaningMutation(db, {
       factId: fact.id, newText: "Runtime session store is Redis", source: { exchangeIds: ["ex-2"] },
+      policy: captureMutationPolicy(db, "verified-extraction", [fact.id], { sourceExchangeIds: ["ex-2"], verifiedText: "Runtime session store is Redis" }),
       chronicle: { actor: "extractor", grounded: { cause: { text: "made up", exchangeId: "ex-2", supportingSpan: "not in the source at all" } } },
     }, emb)).toThrow(ChronicleGroundingError);
     const after = getActiveFacts(db)[0];

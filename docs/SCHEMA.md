@@ -2,8 +2,8 @@
 
 schema의 최종 소유자는 `src/db.ts`와 `src/continuity-store.ts`입니다. 이 문서는 모든 SQL 세부를 복제하기보다 **외부 동작에 영향을 주는 persisted state와 transaction invariant**를 설명합니다.
 
-Continuity DB schema version은 `PRAGMA user_version = 4`와
-`continuity_schema_meta.schema_version = 4`에 함께 기록됩니다. Migration은 기존 table/rowid를
+Continuity DB schema version은 `PRAGMA user_version = 7`와
+`continuity_schema_meta.schema_version = 7`에 함께 기록됩니다. Migration은 기존 table/rowid를
 rewrite하지 않는 additive DDL + deterministic backfill이며, version은 전체 migration transaction의
 마지막에만 기록됩니다.
 
@@ -234,6 +234,26 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 
 `source_exchange_ids`와 `consolidated_count`는 sync/concurrent writer에서 각각 union/max로 수렴합니다. 의미 winner의 metadata로 단순 덮어쓰지 않습니다.
 
+### Local evidence and repair receipts
+
+`fact_evidence_receipts`는 schema v7 DB 초기화 시 additive로 생성하며 protocol v4에 포함하지 않습니다.
+
+```text
+fact_id (PK, facts FK ON DELETE CASCADE)
+semantic_generation, fact_hash, source_snapshot_json
+method (extractor | user | consolidator), verified_at
+```
+
+Local verified projection의 exact meaning과 source/tool snapshot만 기록합니다. Source content/identity가
+바뀌거나 누락되면 receipt는 사용할 수 없고, remote semantic replacement는 receipt를 제거합니다.
+Peer Chronicle를 import하는 것만으로 local verification이 생성되지 않습니다. Legacy row의 receipt는
+자동 backfill하지 않습니다. 이 table은 entailment model의 상세 verdict/payload를 보존하는 telemetry가 아닙니다.
+
+`fact_integrity_repairs`는 선별 복구 transaction에서만 생성합니다. `finding_id` PK,
+`plan_id`, `reason`, `target_json`, `evidence_json`, `applied_at`으로 무엇을 왜 적용했는지 기록하며
+같은 finding의 재적용을 막습니다. 부모를 제거한 뒤에도 남는 local audit ledger이므로 fact FK는
+없습니다. 동일 손상이 재발하면 성공으로 숨기지 않고 새 검토를 요구합니다. 두 table 모두 sync되지 않습니다.
+
 ## 4. Chronicle (extended `fact_revisions`)와 tombstones
 
 `fact_revisions`는 Phase 4부터 Chronicle event table입니다. 별도의 history table을 두지 않고 released
@@ -328,11 +348,11 @@ vector는 물리 FK가 없을 수 있으므로 parent delete/semantic mutation �
 
 | Writer | Guard |
 | --- | --- |
-| fact semantic mutation | expected semantic generation (+ 필요한 lifecycle generation) |
+| fact semantic mutation | 필수 MutationPolicy: exact targets, semantic/lifecycle/placement, 자동 변경의 verified text와 source fingerprint |
 | restore | semantic + lifecycle generation |
-| consolidation | 양 participant semantic + lifecycle generation |
+| consolidation | 양 participant meaning/lifecycle/placement + 검증 source snapshot; commit-time 양쪽 lineage union |
 | ontology classification | semantic generation + taxonomy epoch |
-| relation creation | 양 endpoint semantic generation |
+| relation creation | 자동 writer의 필수 ReadScope + 양 endpoint MutationPolicy |
 | fact/KR reembed | semantic generation/content |
 | exchange reembed | exchange content hash |
 | translation script | semantic generation + exact fact text |

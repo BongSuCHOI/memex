@@ -1,13 +1,14 @@
 import { getSearchDb } from "./search.js";
 import { l2DistanceToSimilarity } from "./db.js";
-import { searchFactsByScope } from "./fact-db.js";
+import { factMatchesReadScope, rowToFact, searchFactsInScope } from "./fact-db.js";
+import { readScopeForSession } from './read-scope.js';
 import {
   embeddingCallStats,
   generateEmbedding,
   initEmbeddings,
   queryBaseline,
 } from "./embeddings.js";
-import { getRelatedFacts } from "./ontology-db.js";
+import { getRelatedFactsInScope } from "./ontology-db.js";
 import { detectRepeat } from "./repeat-detector.js";
 import { appendInjectLog } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
@@ -297,8 +298,12 @@ export async function computeInjectContext(
     const residentTuples = parseJson<ResidentFactRevision[]>(gateRow?.resident_fact_revisions_json, []);
     const residentTexts = residentTuples.length > 0 && canQuery(db)
       ? (db.prepare(`
-          SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
-        `).all(...residentTuples.map(([id]) => id)) as Array<{ id: string; fact: string }>)
+          SELECT * FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
+        `).all(...residentTuples.map(([id]) => id)) as Array<Record<string, unknown>>)
+          .map(rowToFact).filter(fact => {
+            const readScope = readScopeForSession(db, sessionId);
+            return !!readScope && factMatchesReadScope(db, fact, readScope);
+          })
       : [];
     const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
     // Corrections come from residency, not from the search results: every
@@ -440,7 +445,7 @@ export async function computeInjectContext(
       workspaceId: sessionScope.workspaceId,
       workstreamId: sessionScope.workstreamId,
     };
-    const candidates = embedding ? searchFactsByScope(db, embedding, scope, TOP_K, 0) : [];
+    const candidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
     const results = candidates.filter((r) => {
       const similarity = l2DistanceToSimilarity(r.distance);
       return similarity - baseline >= BASELINE_MARGIN;
@@ -453,7 +458,7 @@ export async function computeInjectContext(
     const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
     if (decision.intents.trace) {
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, null, "project", scope);
+        const related = getRelatedFactsInScope(db, fact.id, scope);
         for (const { fact: relFact, relation } of related) {
           if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
@@ -613,6 +618,16 @@ export async function computeInjectContext(
 
     const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
     const commitBundle = () => {
+      if (canQuery(db)) {
+        for (const [id, semantic, lifecycle] of emittedRevisions) {
+          const row = db.prepare('SELECT * FROM facts WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+          const revoked = revisionCorrections.some(correction => correction.id === id && correction.scope_revoked);
+          if (!row || Number(row.semantic_generation) !== semantic || Number(row.lifecycle_generation) !== lifecycle ||
+              (!revoked && !factMatchesReadScope(db, rowToFact(row), scope))) {
+            throw new Error('fact meaning or scope changed before injection commit');
+          }
+        }
+      }
       if (injectedIds.length > 0) {
         commitInjectionState(db, {
           sessionId, project, prompt: userPrompt, factIds: injectedIds,

@@ -530,6 +530,16 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   // conversation context helped resolve a fact, but they are never
   // authoritative evidence and never enter protocol v4 sync payloads.
   db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_evidence_receipts (
+      fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+      semantic_generation INTEGER NOT NULL,
+      fact_hash TEXT NOT NULL,
+      source_snapshot_json TEXT NOT NULL,
+      method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
+      verified_at TEXT NOT NULL
+    )
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,
       exchange_id TEXT NOT NULL,

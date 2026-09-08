@@ -1,3 +1,5 @@
+import { assertMutationPolicy, captureMutationPolicy, recordLocalMeaningEvidence, StaleFactMutationError } from './fact-policy.js';
+export { StaleFactMutationError } from './fact-policy.js';
 import { clearFactContextDependencies, getRevisions, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
 import { normalizeSlotText, purgeChronicleForSources, readChronicleTimeline, recordChronicleEvent, } from './chronicle.js';
@@ -76,12 +78,6 @@ export function showFact(db, id) {
  * discarded — callers treat this as "someone else moved the fact", not as
  * an internal failure.
  */
-export class StaleFactMutationError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'StaleFactMutationError';
-    }
-}
 function parseSourceExchangeIds(raw) {
     if (!raw)
         return [];
@@ -119,6 +115,14 @@ function deactivateWithinTransaction(db, id, expectedSemanticGeneration, expecte
  * transaction.
  */
 export async function mutateFactMeaning(db, opts) {
+    const policy = opts.policy ?? (opts.chronicle?.actor === 'user'
+        ? captureMutationPolicy(db, 'user-correction', [opts.factId, ...(opts.deactivateFacts ?? []).map(fact => fact.id)]) : null);
+    if (!policy)
+        throw new Error('MutationPolicy is required; explicit user edits may use editFact');
+    return mutateFactMeaningWithPolicy(db, { ...opts, policy });
+}
+export async function mutateFactMeaningWithPolicy(db, opts) {
+    assertMutationPolicy(db, opts.policy, opts.factId, opts.newText);
     if (opts.lineageMode && opts.lineageMode !== 'preserve-identity') {
         throw new Error(`unsupported fact lineage mode: ${opts.lineageMode}`);
     }
@@ -132,7 +136,7 @@ export async function mutateFactMeaning(db, opts) {
         throw new Error('semantic fact mutation requires an initialized vec_facts table');
     }
     const embedding = await generateEmbedding(newText, 'passage');
-    return applyFactMeaningMutation(db, opts, embedding);
+    return applyFactMeaningMutationWithPolicy(db, opts, embedding);
 }
 /**
  * Synchronous core of the semantic mutation. Callers that already hold a
@@ -142,6 +146,11 @@ export async function mutateFactMeaning(db, opts) {
  * update leaves no event and a failed event leaves no projection change.
  */
 export function applyFactMeaningMutation(db, opts, embedding) {
+    if (!opts.policy)
+        throw new Error('MutationPolicy is required for synchronous semantic mutation');
+    return applyFactMeaningMutationWithPolicy(db, { ...opts, policy: opts.policy }, embedding);
+}
+export function applyFactMeaningMutationWithPolicy(db, opts, embedding) {
     const newText = String(opts.newText || '').trim();
     if (newText.length < 4)
         throw new Error('new fact text too short (min 4 chars)');
@@ -157,6 +166,8 @@ export function applyFactMeaningMutation(db, opts, embedding) {
     }
     const chronicle = opts.chronicle ?? { actor: 'consolidator' };
     const tx = db.transaction(() => {
+        assertMutationPolicy(db, opts.policy, opts.factId, newText);
+        opts.commitGuard?.();
         const current = db.prepare('SELECT fact, source_exchange_ids, semantic_generation, lifecycle_generation, project_id, subject_key FROM facts WHERE id = ?').get(opts.factId);
         if (!current)
             throw new Error(`fact not found: ${opts.factId}`);
@@ -176,6 +187,11 @@ export function applyFactMeaningMutation(db, opts, embedding) {
         }
         const sourceExchangeIds = [...new Set([
                 ...parseSourceExchangeIds(current.source_exchange_ids),
+                // Absorbed participants can gain monotonic peer lineage during embedding.
+                ...deactivateFacts.flatMap(({ id }) => {
+                    const row = db.prepare('SELECT source_exchange_ids FROM facts WHERE id = ?').get(id);
+                    return parseSourceExchangeIds(row?.source_exchange_ids ?? null);
+                }),
                 ...(opts.source?.exchangeIds ?? []),
             ])];
         const countUpdate = opts.consolidatedCountIncrement
@@ -245,6 +261,11 @@ export function applyFactMeaningMutation(db, opts, embedding) {
             recordedAt: now,
             projectionApplied: true,
         });
+        // A Chronicle transition may cite one primary exchange, but the local
+        // verification receipt must retain the entire evidence set used by the policy.
+        if (opts.policy.sources && ['verified-extraction', 'consolidation'].includes(opts.policy.kind)) {
+            recordLocalMeaningEvidence(db, opts.factId, newText, opts.policy.kind === 'consolidation' ? 'consolidator' : 'extractor', opts.policy.sources.map(source => source.id));
+        }
         if (tableExists(db, 'fact_context_dependencies')) {
             if ((opts.mergeContextFromFactIds?.length ?? 0) > 0) {
                 mergeFactContextDependencies(db, opts.factId, opts.mergeContextFromFactIds ?? []);
@@ -557,7 +578,8 @@ export function recordFactTombstone(db, id, reason = null, deletedAt = new Date(
     VALUES (?, ?, ?)
     ON CONFLICT(fact_id) DO UPDATE SET
       deleted_at = excluded.deleted_at,
-      reason = excluded.reason
+      reason = CASE WHEN fact_tombstones.reason = 'source_conversation_excluded'
+        THEN fact_tombstones.reason ELSE excluded.reason END
     WHERE excluded.deleted_at > fact_tombstones.deleted_at
   `).run(id, deletedAt, reason);
 }
@@ -584,12 +606,14 @@ export function hardDeleteFact(db, id, opts) {
     if (!impact.exists)
         throw new Error(`fact not found: ${id}`);
     const tx = db.transaction(() => {
-        recordFactTombstone(db, id, 'hard_delete');
+        const prior = db.prepare('SELECT reason FROM fact_tombstones WHERE fact_id = ?').get(id);
+        const reason = prior?.reason === 'source_conversation_excluded' ? prior.reason : 'hard_delete';
+        recordFactTombstone(db, id, reason);
         if (tableExists(db, 'vec_facts'))
             db.prepare('DELETE FROM vec_facts WHERE id = ?').run(id);
         if (tableExists(db, 'vec_facts_kr'))
             db.prepare('DELETE FROM vec_facts_kr WHERE id = ?').run(id);
-        purgeChronicleForSources(db, { exchangeIds: new Set(), factIds: new Set([id]), reason: 'hard_delete' });
+        purgeChronicleForSources(db, { exchangeIds: new Set(), factIds: new Set([id]), reason });
         try {
             db.prepare('DELETE FROM ontology_relations WHERE source_fact_id = ? OR target_fact_id = ?').run(id, id);
         }

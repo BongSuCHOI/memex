@@ -33,6 +33,8 @@ MCP process cwd는 installed plugin/cache 위치일 수 있으므로 project ide
 Workspace/workstream/session ID는 DB membership을 검증하며 다른 project의 ID 조합을 허용하지 않습니다.
 `search`는 raw conversation evidence를 같은 stable scope로 제한합니다. Ontology/avatar/graph도
 동일 membership 검사를 거치며 relation traversal의 모든 hop을 요청 scope로 제한합니다.
+`search_facts`와 `trace_fact`의 관련 사실도 resolved `ReadScope`를 필수 graph core에 전달합니다.
+기본 fact, seed, 관련 fact와 최종 결과가 같은 범위를 사용합니다.
 `include_hot_evidence`는
 stable scope 안의 recent raw evidence를 `NOT YET DISTILLED`로 분리하고
 `hot_before` + `hot_before_evidence_id` keyset cursor를 지원합니다. Legacy canonical path는 read-only

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { factMatchesReadScope, rowToFact } from './fact-db.js';
+import { readScopeForSession } from './read-scope.js';
 import { initDatabase } from "./db.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookEvent } from "./observe-hook-event.js";
@@ -740,12 +742,17 @@ export function recordResidentFactRevisions(db, sessionId, contextEpoch, revisio
     if (current.contextEpoch !== contextEpoch)
         return false;
     const map = new Map(current.resident.map((entry) => [entry[0], entry]));
+    const scope = readScopeForSession(db, sessionId);
     for (const entry of revisions) {
         if (!Array.isArray(entry) || entry.length !== 3 ||
             typeof entry[0] !== "string" ||
             !Number.isInteger(entry[1]) || !Number.isInteger(entry[2]))
             continue;
-        map.set(entry[0], entry);
+        const row = db.prepare('SELECT * FROM facts WHERE id = ?').get(entry[0]);
+        if (scope && row && !factMatchesReadScope(db, rowToFact(row), scope))
+            map.delete(entry[0]);
+        else
+            map.set(entry[0], entry);
     }
     const bounded = [...map.values()].slice(-400);
     return db.prepare(`
@@ -765,8 +772,11 @@ export function readResidentRevisionCorrections(db, sessionId) {
     const { resident } = readResidentFactRevisions(db, sessionId);
     if (resident.length === 0)
         return [];
+    const scope = readScopeForSession(db, sessionId);
+    if (!scope)
+        return [];
     const rows = db.prepare(`
-    SELECT id, fact, category, semantic_generation, lifecycle_generation, is_active
+    SELECT *
     FROM facts WHERE id IN (${resident.map(() => "?").join(",")})
   `).all(...resident.map(([id]) => id));
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -780,6 +790,12 @@ export function readResidentRevisionCorrections(db, sessionId) {
         const row = byId.get(id);
         if (!row)
             continue;
+        if (!factMatchesReadScope(db, rowToFact(row), scope)) {
+            corrections.push({ id, fact: 'Memory is no longer available in this scope', category: 'knowledge',
+                semantic_generation: Number(row.semantic_generation), lifecycle_generation: Number(row.lifecycle_generation),
+                is_active: 0, previous_fact: null, scope_revoked: true });
+            continue;
+        }
         if (Number(row.semantic_generation) === semantic && Number(row.lifecycle_generation) === lifecycle)
             continue;
         const prior = row.is_active === 1

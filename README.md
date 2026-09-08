@@ -248,7 +248,7 @@ graph_stats
 
 Project-sensitive tools require either:
 
-- a canonical absolute project path,
+- a stable project/workspace/workstream/session ID or a legacy canonical absolute project path,
 - `scope: global`, or
 - `scope: all`.
 
@@ -293,15 +293,16 @@ See [Visualization](docs/VISUALIZATION.md).
 
 ## Scope and provenance
 
-Memex treats the canonical absolute `session_meta.cwd` as project identity.
+Memex resolves the canonical absolute `session_meta.cwd` to a local workspace and uses stable `project_id` for logical project identity.
 
 Supported fact/query scopes are:
 
-- **project** — the selected project plus global facts where appropriate
+- **project** — project-wide truth plus global facts where appropriate
+- **workspace/workstream/session** — the selected work scope and permitted parent truth
 - **global** — global facts only
 - **all** — explicit cross-project access
 
-Cross-project leakage is prevented at query, import, traversal, and relation-write boundaries.
+Read scope and consolidation permission are separate. Consolidation preserves different workstreams and promotion states, adopts only verified input wording, and leaves ambiguous legacy identity for review. Search, related facts, tracing, and every graph hop share the same scope. Existing data can be [backed up, audited, and selectively repaired](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구) without re-extracting every fact.
 
 Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records persisted long-range non-authoritative context dependencies used to interpret a fact; immediate local context usage is not stored. The persisted set is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
 

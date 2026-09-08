@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { assertMutationPolicy, captureMutationPolicy, StaleFactMutationError } from './fact-policy.js';
 import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql, hashRecallPrompt, } from "./db.js";
 import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION, } from "./embeddings.js";
 import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256, } from "./sync-export.js";
@@ -895,6 +896,7 @@ async function importFacts(db, generations, result) {
                 },
             };
             plans.set(remote.id, plan);
+            plan.policy = captureMutationPolicy(db, 'replicated', [remote.id]);
             continue;
         }
         const local = localFactView(localRow);
@@ -904,6 +906,7 @@ async function importFacts(db, generations, result) {
         const remoteKey = semanticConflictKey(remote);
         if (semanticTime > 0 || (semanticTime === 0 && remoteKey > localKey)) {
             plan.semantic = { mode: "replace", fact: remote, localGeneration: local.semantic_generation };
+            plan.policy = captureMutationPolicy(db, 'replicated', [remote.id]);
         }
         // Same clock AND same semantic content (tie-identical) is not a conflict —
         // the lineage/lifecycle axes below may still have something to converge.
@@ -948,6 +951,14 @@ async function importFacts(db, generations, result) {
                 const fact = semantic.fact;
                 const embedding = await generateEmbedding(fact.fact);
                 const commit = db.transaction(() => {
+                    try {
+                        assertMutationPolicy(db, plan.policy, factId, fact.fact);
+                    }
+                    catch (error) {
+                        if (error instanceof StaleFactMutationError)
+                            return false;
+                        throw error;
+                    }
                     // 재감사 P1-2: embedding await 동안 tombstone이 생겼으면 이
                     // reconcile은 폐기한다 — commit 직전 재검사다.
                     const tombstone = db.prepare("SELECT deleted_at, reason FROM fact_tombstones WHERE fact_id = ?").get(factId);
@@ -988,6 +999,7 @@ async function importFacts(db, generations, result) {
             `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
                         if (claimed.changes === 0)
                             return false;
+                        db.prepare('DELETE FROM fact_evidence_receipts WHERE fact_id = ?').run(factId);
                         // Context dependencies are local interpretive lineage for the
                         // previous local meaning and are intentionally absent from
                         // protocol v4. A remote semantic winner cannot inherit them.

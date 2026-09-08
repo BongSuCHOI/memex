@@ -1,7 +1,8 @@
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
 import { insertFact, insertFactContextDependencies, resolveFactInsertIdentity, updateFact, } from "./fact-db.js";
-import { applyFactMeaningMutation } from "./fact-management.js";
+import { applyFactMeaningMutationWithPolicy } from "./fact-management.js";
+import { captureMutationPolicy, captureSourceSnapshot, sourceSnapshotValid, StaleFactMutationError } from "./fact-policy.js";
 import { currentEffectiveAt, currentEvidenceAuthority, evidenceAuthorityFromKinds, findCurrentSlotFact, isSemanticSubjectKey, judgeCompetingEvidence, normalizeSubjectKey, recordChronicleEvent, recordIncidentOccurrence, recordIncidentRemediation, } from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { isLlmWorkdirPath } from "./paths.js";
@@ -1862,6 +1863,10 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     return (await saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras)).savedIds;
 }
 export async function saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
+    const sources = captureSourceSnapshot(db, [...sourceExchangeIds, ...facts.flatMap(fact => fact.source_exchange_ids ?? []),
+        ...(extras.observations ?? []).flatMap(observation => observation.source_exchange_ids)]);
+    if (!sources)
+        throw new StaleFactMutationError('extraction source evidence is missing');
     await initEmbeddings();
     // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
     const prepared = [];
@@ -1882,6 +1887,8 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
     };
     const observations = extras.observations ?? [];
     const commit = db.transaction(() => {
+        if (!sourceSnapshotValid(db, sources))
+            throw new StaleFactMutationError('extraction source evidence changed during embedding');
         const now = new Date().toISOString();
         for (const p of prepared) {
             const factSources = p.fact.source_exchange_ids ?? sourceExchangeIds;
@@ -1961,7 +1968,8 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                 incomingAuthority: authority,
             });
             if (judgement.verdict === "apply") {
-                applyFactMeaningMutation(db, {
+                applyFactMeaningMutationWithPolicy(db, {
+                    policy: captureMutationPolicy(db, 'verified-extraction', [existing.id], { sourceExchangeIds: factSources, verifiedText: p.fact.fact }),
                     factId: existing.id,
                     newText: p.fact.fact,
                     source: { exchangeIds: factSources },

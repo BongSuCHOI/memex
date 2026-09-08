@@ -1,3 +1,5 @@
+import { type ReadScope } from './read-scope.js';
+import { type LegacyReadScope } from './legacy-read-scope.js';
 import Database from "better-sqlite3";
 import type { Fact, FactCategory, FactContextDependency, FactRevision } from "./types.js";
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
@@ -53,10 +55,10 @@ export interface ResolvedFactInsertIdentity {
 export declare function resolveFactInsertIdentity(db: Database.Database, params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence'>): ResolvedFactInsertIdentity;
 export declare function insertFact(db: Database.Database, params: InsertFactParams): string;
 export declare function getActiveFacts(db: Database.Database): Fact[];
+/** @deprecated Canonical path reader; new callers use listFactsInScope. */
 export declare function getFactsByProject(db: Database.Database, project: string): Fact[];
 export declare function updateFact(db: Database.Database, id: string, params: UpdateFactParams): void;
 export declare function deactivateFact(db: Database.Database, id: string): void;
-export declare function deleteFact(db: Database.Database, id: string): void;
 /**
  * Compatibility writer for callers that only know the released revision
  * shape. It appends a Chronicle CHANGED event; the free-text reason is a
@@ -67,48 +69,16 @@ export declare function insertRevision(db: Database.Database, params: InsertRevi
 }): string;
 /** Released revision view over the Chronicle: newest effective change first. */
 export declare function getRevisions(db: Database.Database, factId: string): FactRevision[];
-export type FactSearchScope = {
-    type: "project";
-    project: string;
-} | {
-    type: "global";
-} | {
-    type: "all";
-} | {
-    type: "exact-project";
-    project: string;
-} | {
-    type: "other-projects";
-    project: string;
-} | {
-    type: "other-project-id";
-    projectId: string;
-} | {
-    type: "project-id";
-    projectId: string;
-    includeGlobal?: boolean;
-} | {
-    type: "workspace-id";
-    projectId: string;
-    workspaceId: string;
-    includeGlobal?: boolean;
-} | {
-    type: "workstream-id";
-    projectId: string;
-    workspaceId?: string | null;
-    workstreamId: string;
-    includeGlobal?: boolean;
-} | {
-    type: "session-id";
-    projectId: string;
-    sessionId: string;
-    includeGlobal?: boolean;
-};
+/** @deprecated New core callers use ReadScope; paths are read-only adapters. */
+export type FactSearchScope = ReadScope | LegacyReadScope;
+export type { ReadScope } from './read-scope.js';
 interface FactSearchFilters {
     category?: FactCategory;
+    /** Mutation eligibility is evaluated before the search limit. */
+    accept?: (fact: Fact) => boolean;
 }
-export declare function listFactsByScope(db: Database.Database, scope: FactSearchScope): Fact[];
-export declare function factMatchesScope(db: Database.Database, fact: Fact, scope: FactSearchScope): boolean;
+export declare function listFactsInScope(db: Database.Database, scope: ReadScope): Fact[];
+export declare function factMatchesReadScope(db: Database.Database, fact: Fact, scope: ReadScope): boolean;
 /**
  * Scope-aware semantic fact search SSOT.
  *
@@ -118,6 +88,15 @@ export declare function factMatchesScope(db: Database.Database, fact: Fact, scop
  * language indexes. This prevents a dense out-of-scope population from
  * starving a valid project/global result.
  */
+export declare function searchFactsInScope(db: Database.Database, embedding: number[], scope: ReadScope, limit?: number, threshold?: number, filters?: FactSearchFilters): Array<{
+    fact: Fact;
+    distance: number;
+}>;
+/** @deprecated Resolve legacy paths at the edge, then use listFactsInScope. */
+export declare function listFactsByScope(db: Database.Database, scope: FactSearchScope): Fact[];
+/** @deprecated Use factMatchesReadScope with a required ReadScope. */
+export declare function factMatchesScope(db: Database.Database, fact: Fact, scope: FactSearchScope): boolean;
+/** @deprecated Compatibility adapter; new core callers use searchFactsInScope. */
 export declare function searchFactsByScope(db: Database.Database, embedding: number[], scope: FactSearchScope, limit?: number, threshold?: number, filters?: FactSearchFilters): Array<{
     fact: Fact;
     distance: number;
@@ -152,6 +131,7 @@ export declare function searchSimilarFactsSameScope(db: Database.Database, embed
  * forever, so project context would never surface in injection.
  */
 export declare function getTopFacts(db: Database.Database, project: string, limit?: number): Fact[];
+/** @deprecated Canonical path reader; new callers use listFactsInScope. */
 export declare function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[];
 /**
  * Local consolidation dirty queue. Membership is explicit and independent of
@@ -165,4 +145,3 @@ export declare function searchAllFacts(db: Database.Database, embedding: number[
     distance: number;
 }>;
 export declare function rowToFact(row: Record<string, unknown>): Fact;
-export {};

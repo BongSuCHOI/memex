@@ -1,8 +1,9 @@
 import { initDatabase, getVecDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
 import { getDbPath } from './paths.js';
 import { initEmbeddings, generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
-import { searchFactsByScope } from './fact-db.js';
-import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
+import { legacyOptionalReadScope } from './legacy-read-scope.js';
+import { searchFactsInScope } from './fact-db.js';
+import { getRelatedFactsInScope, listDomains, listCategories } from './ontology-db.js';
 import { SearchResult, ConversationExchange, MultiConceptResult } from './types.js';
 import type DatabaseType from 'better-sqlite3';
 import fs from 'fs';
@@ -135,7 +136,7 @@ export async function searchConversations(
       await initEmbeddings();
       const queryEmbedding = await generateEmbedding(query, 'query');
 
-      // Expanding KNN window (mirrors searchFactsByScope): sqlite-vec's `k`
+      // Expanding KNN window (mirrors searchFactsInScope): sqlite-vec's `k`
       // caps the candidate set BEFORE the project/date/embedding_version
       // filters run, so a fixed k = caller limit starves scoped or dated
       // searches whenever unrelated rows own the nearest positions — the valid
@@ -725,10 +726,11 @@ export async function getKnowledgeContext(
 
   try {
     const queryEmbedding = await generateEmbedding(query, 'query');
-    const factResults = searchFactsByScope(
+    const scope = legacyOptionalReadScope(db, project);
+    const factResults = searchFactsInScope(
       db,
       queryEmbedding,
-      project ? { type: 'project', project } : { type: 'all' },
+      scope,
       limit,
       0.6,
     );
@@ -754,7 +756,7 @@ export async function getKnowledgeContext(
       const catName = catInfo ? catInfo.name : 'Unclassified';
 
       // Expand via 1-hop graph traversal
-      const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project ?? null);
+      const related = getRelatedFactsInScope(db, fact.id, scope);
       const relatedFacts = related.map(({ fact: relFact, relation }) => ({
         fact: relFact.fact,
         relationType: relation.relation_type,

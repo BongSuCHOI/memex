@@ -1,9 +1,11 @@
 import { l2DistanceToSimilarity } from './db.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
-import { searchFactsByScope } from './fact-db.js';
+import { searchFactsInScope } from './fact-db.js';
+import { readScopeForFact } from './read-scope.js';
+import { captureMutationPolicy } from './fact-policy.js';
 import { StaleFactMutationError } from './fact-management.js';
-import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelation, searchSimilarCategories, upsertCategoryEmbedding, getTaxonomyEpoch, } from './ontology-db.js';
+import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelationInScope, searchSimilarCategories, upsertCategoryEmbedding, getTaxonomyEpoch, } from './ontology-db.js';
 // Nearest existing categories presented per fact as reuse candidates —
 // embedding top-K instead of dumping ALL categories (measured 1,612 ≈ 95K
 // tokens); kept small so a 20-fact batch stays a few KB. The full domain
@@ -794,30 +796,24 @@ topK = 2) {
         return;
     const embeddingArray = Array.from(newFact.embedding);
     // e5 scale: related-but-distinct ~0.91, unrelated <=0.86 → 0.89 selects relation candidates
-    const searchScope = newFact.scope_type === 'global'
-        ? { type: 'global' }
-        : { type: 'project', project: newFact.scope_project };
-    const similar = searchFactsByScope(db, embeddingArray, searchScope, topK, 0.89);
+    const searchScope = readScopeForFact(newFact);
+    if (!searchScope)
+        return;
+    const similar = searchFactsInScope(db, embeddingArray, searchScope, topK, 0.89, { accept: fact => fact.id !== newFact.id });
     const candidates = similar.filter((s) => s.fact.id !== newFact.id);
     for (const { fact: existingFact } of candidates) {
+        const policy = captureMutationPolicy(db, 'identity', [newFact.id, existingFact.id]);
         const prompt = [
             `New fact: "${newFact.fact}"`,
             `Existing fact: "${existingFact.fact}"`,
             `New fact category: ${newFact.category}`,
             `Existing fact category: ${existingFact.category}`,
         ].join('\n');
-        // 재감사 P1-2: relation은 이전 의미의 문장을 근거로 만들어진다. LLM 왕복
-        // 동안 endpoint가 변이됐으면 원자적 CAS 검증에서 관계 생성이 거절된다.
-        const expectedSourceGeneration = newFact.semantic_generation;
-        const expectedTargetGeneration = existingFact.semantic_generation;
         try {
             const response = await callMemoryModel(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256);
             const result = parseJsonResponse(response);
             if (result && result.has_relation && result.relation_type) {
-                const created = createRelation(db, newFact.id, result.relation_type, existingFact.id, result.reasoning, {
-                    expectedSourceGeneration,
-                    expectedTargetGeneration,
-                });
+                const created = createRelationInScope(db, newFact.id, result.relation_type, existingFact.id, searchScope, policy, result.reasoning);
                 if (created === null) {
                     console.error(`Relation detection stale for facts ${newFact.id} / ${existingFact.id}: an endpoint changed meaning during detection`);
                 }

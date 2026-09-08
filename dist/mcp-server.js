@@ -18538,6 +18538,12 @@ import { createHash, randomUUID } from "node:crypto";
 import fs2 from "node:fs";
 import path4 from "node:path";
 
+// src/fact-policy.ts
+var SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
+function isSemanticSubjectKey(key) {
+  return !!key && SUBJECT_KEY_PATTERN.test(key) && !/\.fact\.[0-9a-f-]{36}$/.test(key);
+}
+
 // src/continuity-evidence.ts
 var TEXT_PART_CHARS = 3e3;
 var CAPSULE_POLICY_VERSION = "continuity-capsule-v2";
@@ -20428,6 +20434,16 @@ function initDatabase(options = {}) {
     CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(is_active)
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_evidence_receipts (
+      fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+      semantic_generation INTEGER NOT NULL,
+      fact_hash TEXT NOT NULL,
+      source_snapshot_json TEXT NOT NULL,
+      method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
+      verified_at TEXT NOT NULL
+    )
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,
       exchange_id TEXT NOT NULL,
@@ -20669,6 +20685,66 @@ function recordRecallEvent(db, event) {
   return id;
 }
 
+// src/legacy-read-scope.ts
+var hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+function adaptLegacyFactForRead(db, fact) {
+  if (fact.scope_type !== "project" || fact.project_id || !fact.scope_project || fact.promotion_state && fact.promotion_state !== "legacy-project" || !hasTable(db, "workspaces")) return fact;
+  const row = db.prepare("SELECT project_id FROM workspaces WHERE canonical_path = ? ORDER BY workspace_id LIMIT 1").get(canonicalizeProjectPath(fact.scope_project));
+  return row ? { ...fact, project_id: row.project_id, promotion_state: "legacy-project" } : fact;
+}
+function adaptLegacyReadScope(db, scope) {
+  if (!scope) throw new Error("ReadScope is required");
+  if (scope.type !== "project" && scope.type !== "exact-project" && scope.type !== "other-projects") return scope;
+  if (!scope.project?.trim()) throw new Error("legacy read scope requires a project path");
+  const project = canonicalizeProjectPath(scope.project);
+  const row = hasTable(db, "workspaces") ? db.prepare("SELECT project_id FROM workspaces WHERE canonical_path = ? ORDER BY workspace_id LIMIT 1").get(project) : void 0;
+  if (row) return scope.type === "other-projects" ? { type: "other-project-id", projectId: row.project_id } : { type: "project-id", projectId: row.project_id, includeGlobal: scope.type === "project" };
+  const columns = new Set(db.prepare("PRAGMA table_info(facts)").all().map((row2) => row2.name));
+  const ids = db.prepare(`SELECT id, scope_type, scope_project FROM facts
+    ${columns.has("promotion_state") ? "WHERE COALESCE(promotion_state, 'legacy-project') IN ('legacy-project', 'decision', 'project-current')" : ""}`).all().filter((fact) => {
+    if (fact.scope_type === "global") return scope.type === "project";
+    if (fact.scope_type !== "project" || !fact.scope_project) return false;
+    const same = canonicalizeProjectPath(fact.scope_project) === project;
+    return scope.type === "other-projects" ? !same : same;
+  });
+  return { type: "fact-ids", factIds: ids.map((row2) => row2.id) };
+}
+function legacyOptionalReadScope(db, project, type, identity) {
+  return adaptLegacyReadScope(db, identity ?? (type === "all" ? { type: "all" } : type === "global" || !project ? { type: "global" } : { type: "project", project }));
+}
+
+// src/read-scope.ts
+function readScopeForSession(db, sessionId) {
+  const row = db.prepare("SELECT project_id, workspace_id, workstream_id FROM session_memory_state WHERE session_id = ?").get(sessionId);
+  return row?.project_id && row.workstream_id ? {
+    type: "workstream-id",
+    projectId: row.project_id,
+    workspaceId: row.workspace_id,
+    workstreamId: row.workstream_id
+  } : null;
+}
+function assertReadScope(db, scope) {
+  if (!scope || typeof scope !== "object") throw new Error("ReadScope is required");
+  if (scope.type === "global" || scope.type === "all") return;
+  if (scope.type === "fact-ids") {
+    if (!Array.isArray(scope.factIds) || !scope.factIds.every((id) => typeof id === "string" && id.length > 0)) throw new Error("invalid fact-id ReadScope");
+    return;
+  }
+  if (!["project-id", "workspace-id", "workstream-id", "session-id", "other-project-id"].includes(scope.type)) throw new Error("unsupported ReadScope");
+  if (!scope.projectId || typeof scope.projectId !== "string") throw new Error("ReadScope requires projectId");
+  const belongs = (table, column, id) => {
+    if (!id || typeof id !== "string") throw new Error(`ReadScope requires ${column}`);
+    const row = db.prepare(`SELECT project_id FROM ${table} WHERE ${column} = ?`).get(id);
+    if (!row || row.project_id !== scope.projectId) throw new Error(`${column} is outside ReadScope projectId`);
+  };
+  if (scope.type === "workspace-id") belongs("workspaces", "workspace_id", scope.workspaceId);
+  if (scope.type === "workstream-id") {
+    belongs("minimal_workstreams", "workstream_id", scope.workstreamId);
+    if (scope.workspaceId) belongs("workspaces", "workspace_id", scope.workspaceId);
+  }
+  if (scope.type === "session-id") belongs("session_memory_state", "session_id", scope.sessionId);
+}
+
 // src/chronicle.ts
 import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
 var INCIDENT_COALESCE_WINDOW_MS = 30 * 60 * 1e3;
@@ -20845,10 +20921,6 @@ function currentFactRevision(db, factId) {
     latestEffectiveAt: latest?.effective_at ?? null,
     latestEffectiveAtSource: latest ? String(latest.effective_at_source || "recorded") : null
   };
-}
-var SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
-function isSemanticSubjectKey(key) {
-  return !!key && SUBJECT_KEY_PATTERN.test(key) && !/\.fact\.[0-9a-f-]{36}$/.test(key);
 }
 var ANSI_PATTERN = /\[[0-9;]*m/g;
 function normalizeIncidentSignature(raw) {
@@ -21082,17 +21154,14 @@ function getRevisions(db, factId) {
 }
 function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
   if (filters.category && fact.category !== filters.category) return false;
+  if (filters.accept && !filters.accept(fact)) return false;
   switch (scope.type) {
     case "global":
       return fact.scope_type === "global";
     case "all":
       return true;
-    case "project":
-      return fact.scope_type === "global" || fact.scope_type === "project" && fact.scope_project === scope.project;
-    case "exact-project":
-      return fact.scope_type === "project" && fact.scope_project === scope.project;
-    case "other-projects":
-      return fact.scope_type === "project" && fact.scope_project !== scope.project;
+    case "fact-ids":
+      return scope.factIds.includes(fact.id);
     case "other-project-id":
       return fact.scope_type === "project" && fact.project_id !== scope.projectId;
     case "project-id":
@@ -21105,15 +21174,18 @@ function factMatchesSearch(fact, scope, filters, sessionExchangeIds) {
       return scope.includeGlobal !== false && fact.scope_type === "global" || fact.scope_type === "project" && fact.project_id === scope.projectId && fact.source_exchange_ids.some((id) => sessionExchangeIds?.has(id));
   }
 }
-function listFactsByScope(db, scope) {
+function listFactsInScope(db, scope) {
+  assertReadScope(db, scope);
   const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
-  return db.prepare("SELECT * FROM facts WHERE is_active = 1").all().map(rowToFact).filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
+  return db.prepare("SELECT * FROM facts WHERE is_active = 1").all().map((row) => adaptLegacyFactForRead(db, rowToFact(row))).filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
 }
-function factMatchesScope(db, fact, scope) {
+function factMatchesReadScope(db, fact, scope) {
+  assertReadScope(db, scope);
   const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
-  return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
+  return factMatchesSearch(adaptLegacyFactForRead(db, fact), scope, {}, sessionExchangeIds);
 }
-function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
+function searchFactsInScope(db, embedding, scope, limit = 5, threshold = 0.85, filters = {}) {
+  assertReadScope(db, scope);
   if (limit <= 0) return [];
   const sessionExchangeIds = scope.type === "session-id" ? new Set(db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId).map((row) => row.id)) : void 0;
   const fetch = (table, count) => {
@@ -21167,7 +21239,8 @@ function searchFactsByScope(db, embedding, scope, limit = 5, threshold = 0.85, f
     for (const vr of merged) {
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) break;
-      const fact = loadFact(vr.id);
+      const loaded = loadFact(vr.id);
+      const fact = loaded ? adaptLegacyFactForRead(db, loaded) : null;
       if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
@@ -21238,20 +21311,14 @@ function listCategories(db, domainId) {
   }
   return db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all();
 }
-function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
-  let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
-  const params = [categoryId];
-  if (!identityScope && scopeType === "global") {
-    query += ` AND scope_type = 'global'`;
-  } else if (!identityScope && scopeProject && scopeType !== "all") {
-    query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
-    params.push(scopeProject);
-  }
-  query += ` ORDER BY consolidated_count DESC`;
-  const facts = db.prepare(query).all(...params).map(rowToFact2);
-  return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
+function getFactsByCategoryInScope(db, categoryId, scope) {
+  assertReadScope(db, scope);
+  return db.prepare("SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1 ORDER BY consolidated_count DESC").all(categoryId).map(rowToFact2).filter((fact) => factMatchesReadScope(db, fact, scope));
 }
-function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType, identityScope) {
+function getRelatedFactsInScope(db, factId, scope, { hops = 1, decay = 0.6, minRelevance = 0.2 } = {}) {
+  assertReadScope(db, scope);
+  const seed = db.prepare("SELECT * FROM facts WHERE id = ? AND is_active = 1").get(factId);
+  if (!seed || !factMatchesReadScope(db, rowToFact2(seed), scope)) return [];
   const visited = /* @__PURE__ */ new Set([factId]);
   const results = [];
   let frontier = [factId];
@@ -21280,9 +21347,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [targetId, rows] of outByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
-        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
-        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (!factMatchesReadScope(db, fact, scope)) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -21318,9 +21383,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
       }
       for (const [sourceId, rows] of inByNeighbour) {
         const fact = rowToFact2(rows[0]);
-        if (identityScope && !factMatchesScope(db, fact, identityScope)) continue;
-        if (!identityScope && scopeType === "global" && fact.scope_type !== "global") continue;
-        if (!identityScope && scopeProject && fact.scope_type === "project" && fact.scope_project !== scopeProject) continue;
+        if (!factMatchesReadScope(db, fact, scope)) continue;
         let chosen = null;
         for (const row of rows) {
           const relation = rowToRelation(row);
@@ -21344,6 +21407,7 @@ function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, 
   return results;
 }
 function getOntologyTree(db, scopeProject, scopeType, identityScope) {
+  const scope = legacyOptionalReadScope(db, scopeProject, scopeType, identityScope);
   const domains = listDomains(db);
   const tree = [];
   for (const domain of domains) {
@@ -21353,12 +21417,12 @@ function getOntologyTree(db, scopeProject, scopeType, identityScope) {
       categories: []
     };
     for (const category of categories) {
-      const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
-      if (facts.length > 0 || !scopeProject && !scopeType) {
+      const facts = getFactsByCategoryInScope(db, category.id, scope);
+      if (facts.length > 0 || scope.type === "all") {
         domainEntry.categories.push({ category, facts });
       }
     }
-    if (domainEntry.categories.length > 0 || !scopeProject && !scopeType) {
+    if (domainEntry.categories.length > 0 || scope.type === "all") {
       tree.push(domainEntry);
     }
   }
@@ -21971,10 +22035,11 @@ async function getKnowledgeContext(query, project, limit = 5) {
   const db = initDatabase();
   try {
     const queryEmbedding = await generateEmbedding(query, "query");
-    const factResults = searchFactsByScope(
+    const scope = legacyOptionalReadScope(db, project);
+    const factResults = searchFactsInScope(
       db,
       queryEmbedding,
-      project ? { type: "project", project } : { type: "all" },
+      scope,
       limit,
       0.6
     );
@@ -21991,7 +22056,7 @@ async function getKnowledgeContext(query, project, limit = 5) {
       const catInfo = fact.ontology_category_id ? categoryMap.get(fact.ontology_category_id) : void 0;
       const domainName = catInfo ? domainMap.get(catInfo.domainId) ?? "Unclassified" : "Unclassified";
       const catName = catInfo ? catInfo.name : "Unclassified";
-      const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project ?? null);
+      const related = getRelatedFactsInScope(db, fact.id, scope);
       const relatedFacts = related.map(({ fact: relFact, relation }) => ({
         fact: relFact.fact,
         relationType: relation.relation_type
@@ -22287,9 +22352,12 @@ function recordResidentFactRevisions(db, sessionId, contextEpoch, revisions, now
   const current = readResidentFactRevisions(db, sessionId);
   if (current.contextEpoch !== contextEpoch) return false;
   const map = new Map(current.resident.map((entry) => [entry[0], entry]));
+  const scope = readScopeForSession(db, sessionId);
   for (const entry of revisions) {
     if (!Array.isArray(entry) || entry.length !== 3 || typeof entry[0] !== "string" || !Number.isInteger(entry[1]) || !Number.isInteger(entry[2])) continue;
-    map.set(entry[0], entry);
+    const row = db.prepare("SELECT * FROM facts WHERE id = ?").get(entry[0]);
+    if (scope && row && !factMatchesReadScope(db, rowToFact(row), scope)) map.delete(entry[0]);
+    else map.set(entry[0], entry);
   }
   const bounded = [...map.values()].slice(-400);
   return db.prepare(`
@@ -22301,8 +22369,10 @@ function recordResidentFactRevisions(db, sessionId, contextEpoch, revisions, now
 function readResidentRevisionCorrections(db, sessionId) {
   const { resident } = readResidentFactRevisions(db, sessionId);
   if (resident.length === 0) return [];
+  const scope = readScopeForSession(db, sessionId);
+  if (!scope) return [];
   const rows = db.prepare(`
-    SELECT id, fact, category, semantic_generation, lifecycle_generation, is_active
+    SELECT *
     FROM facts WHERE id IN (${resident.map(() => "?").join(",")})
   `).all(...resident.map(([id]) => id));
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -22315,6 +22385,19 @@ function readResidentRevisionCorrections(db, sessionId) {
   for (const [id, semantic, lifecycle] of resident) {
     const row = byId.get(id);
     if (!row) continue;
+    if (!factMatchesReadScope(db, rowToFact(row), scope)) {
+      corrections.push({
+        id,
+        fact: "Memory is no longer available in this scope",
+        category: "knowledge",
+        semantic_generation: Number(row.semantic_generation),
+        lifecycle_generation: Number(row.lifecycle_generation),
+        is_active: 0,
+        previous_fact: null,
+        scope_revoked: true
+      });
+      continue;
+    }
     if (Number(row.semantic_generation) === semantic && Number(row.lifecycle_generation) === lifecycle) continue;
     const prior = row.is_active === 1 ? previous.get(id)?.previous_fact ?? null : null;
     corrections.push({
@@ -22894,8 +22977,11 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const capsuleGenerationSeen = Number(gateRow?.capsule_generation_seen ?? 0);
     const residentTuples = parseJson(gateRow?.resident_fact_revisions_json, []);
     const residentTexts = residentTuples.length > 0 && canQuery(db) ? db.prepare(`
-          SELECT id, fact FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
-        `).all(...residentTuples.map(([id]) => id)) : [];
+          SELECT * FROM facts WHERE id IN (${residentTuples.map(() => "?").join(",")})
+        `).all(...residentTuples.map(([id]) => id)).map(rowToFact).filter((fact) => {
+      const readScope = readScopeForSession(db, sessionId);
+      return !!readScope && factMatchesReadScope(db, fact, readScope);
+    }) : [];
     const residentTokens = new Set(residentTexts.flatMap((row) => tokenizePrompt(row.fact)));
     const residency = readResidentFactRevisions(db, sessionId);
     const residentById = new Map(residency.resident.map((entry) => [entry[0], entry]));
@@ -23010,7 +23096,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       workspaceId: sessionScope.workspaceId,
       workstreamId: sessionScope.workstreamId
     };
-    const candidates = embedding ? searchFactsByScope(db, embedding, scope, TOP_K, 0) : [];
+    const candidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
     const results = candidates.filter((r) => {
       const similarity = l2DistanceToSimilarity(r.distance);
       return similarity - baseline >= BASELINE_MARGIN;
@@ -23021,7 +23107,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const expandedFacts = [...results.map((r) => ({ fact: r.fact, note: "" }))];
     if (decision.intents.trace) {
       for (const { fact } of results.slice(0, 3)) {
-        const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, null, "project", scope);
+        const related = getRelatedFactsInScope(db, fact.id, scope);
         for (const { fact: relFact, relation } of related) {
           if (!seenIds.has(relFact.id) && expandedFacts.length < MAX_CONTEXT_FACTS) {
             seenIds.add(relFact.id);
@@ -23163,6 +23249,15 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const fingerprintTokens = needsVector ? decision.tokens : null;
     const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
     const commitBundle = () => {
+      if (canQuery(db)) {
+        for (const [id, semantic, lifecycle] of emittedRevisions) {
+          const row = db.prepare("SELECT * FROM facts WHERE id = ?").get(id);
+          const revoked = revisionCorrections.some((correction) => correction.id === id && correction.scope_revoked);
+          if (!row || Number(row.semantic_generation) !== semantic || Number(row.lifecycle_generation) !== lifecycle || !revoked && !factMatchesReadScope(db, rowToFact(row), scope)) {
+            throw new Error("fact meaning or scope changed before injection commit");
+          }
+        }
+      }
       if (injectedIds.length > 0) {
         commitInjectionState(db, {
           sessionId,
@@ -25180,8 +25275,8 @@ async function askAvatar(db, question, project, scope, identityScope) {
   await initEmbeddings();
   const questionEmbedding = await generateEmbedding(question, "query");
   const scopeProject = project ?? null;
-  const factScope = identityScope ?? (scope === "global" ? { type: "global" } : scope === "all" ? { type: "all" } : scopeProject ? { type: "project", project: scopeProject } : { type: "all" });
-  const vectorResults = searchFactsByScope(db, questionEmbedding, factScope, 10, 0.6);
+  const factScope = legacyOptionalReadScope(db, scopeProject, scope, identityScope);
+  const vectorResults = searchFactsInScope(db, questionEmbedding, factScope, 10, 0.6);
   if (vectorResults.length === 0) {
     return {
       answer: "\uAD00\uB828\uB41C \uACFC\uAC70 \uACB0\uC815\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC544\uC9C1 \uCDA9\uBD84\uD55C \uAE30\uC5B5\uC774 \uC313\uC774\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",
@@ -25199,7 +25294,7 @@ async function askAvatar(db, question, project, scope, identityScope) {
   const relatedDecisions = [];
   const expandedFactIds = new Set(vectorResults.map((r) => r.fact.id));
   for (const { fact } of vectorResults.slice(0, 5)) {
-    const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, scopeProject, scope, identityScope);
+    const related = getRelatedFactsInScope(db, fact.id, factScope);
     for (const { fact: relFact, relation } of related) {
       if (scope === "global" && relFact.scope_type !== "global") continue;
       if (!expandedFactIds.has(relFact.id)) {
@@ -25446,7 +25541,7 @@ function resolveStableScope(db, raw, tool) {
     `).get(legacyProject);
     if (!known) {
       return {
-        factScope: { type: "project", project: legacyProject },
+        factScope: adaptLegacyReadScope(db, { type: "project", project: legacyProject }),
         scope,
         projectId: null,
         workspaceId: null,
@@ -26054,7 +26149,7 @@ async function handleToolCall(name, args) {
       try {
         const scopeInfo = resolveStableScope(db, params, "search_facts");
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchFactsByScope(
+        const results = searchFactsInScope(
           db,
           queryEmbedding,
           scopeInfo.factScope,
@@ -26107,15 +26202,7 @@ Results: ${results.length}
               }
             }
           }
-          const related = getRelatedFacts(
-            db,
-            fact.id,
-            1,
-            0.6,
-            0.2,
-            scopeInfo.legacyProject,
-            scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project"
-          );
+          const related = getRelatedFactsInScope(db, fact.id, scopeInfo.factScope, { hops: 1 });
           if (related.length > 0) {
             output += `- Related:
 `;
@@ -26212,16 +26299,7 @@ Results: ${results.length}
               output += `  - ID: ${fact.id} | Confirmed: ${fact.consolidated_count}x | ${fact.created_at.slice(0, 10)}
 `;
               if (params.include_relations) {
-                const related = getRelatedFacts(
-                  db,
-                  fact.id,
-                  1,
-                  0.6,
-                  0.2,
-                  scopeInfo.legacyProject,
-                  scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
-                  scopeInfo.factScope
-                );
+                const related = getRelatedFactsInScope(db, fact.id, scopeInfo.factScope, { hops: 1 });
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
                     output += `  - \u2194 [${relation.relation_type}] "${relFact.fact}"
@@ -26333,7 +26411,7 @@ Results: ${results.length}
             return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} not found` }] };
           }
           const fact = rowToFact(row);
-          if (!factMatchesScope(db, fact, traceScope.factScope)) {
+          if (!factMatchesReadScope(db, fact, traceScope.factScope)) {
             return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} is outside ${traceScope.label}` }], isError: true };
           }
           results = [{ fact, distance: null }];
@@ -26341,11 +26419,11 @@ Results: ${results.length}
           const rows = db.prepare(`
             SELECT * FROM facts WHERE subject_key = ? ORDER BY is_active DESC, updated_at DESC LIMIT 50
           `).all(params.subject_key);
-          results = rows.map(rowToFact).filter((fact) => factMatchesScope(db, fact, traceScope.factScope)).slice(0, params.limit).map((fact) => ({ fact, distance: null }));
+          results = rows.map(rowToFact).filter((fact) => factMatchesReadScope(db, fact, traceScope.factScope)).slice(0, params.limit).map((fact) => ({ fact, distance: null }));
         } else {
           await initEmbeddings();
           const queryEmbedding = await generateEmbedding(params.query, "query");
-          results = searchFactsByScope(
+          results = searchFactsInScope(
             db,
             queryEmbedding,
             traceScope.factScope,
@@ -26522,15 +26600,7 @@ _Next timeline cursor: ${page.nextCursor}_
               output += "\n";
             }
           }
-          const related = getRelatedFacts(
-            db,
-            fact.id,
-            1,
-            0.6,
-            0.2,
-            traceScope.legacyProject,
-            traceScope.scope === "global" || traceScope.scope === "all" ? traceScope.scope : "project"
-          );
+          const related = getRelatedFactsInScope(db, fact.id, traceScope.factScope, { hops: 1 });
           if (related.length > 0) {
             output += `### Related Facts (1-hop)
 
@@ -26584,7 +26654,7 @@ _Next timeline cursor: ${page.nextCursor}_
       const db = initDatabase();
       try {
         const gsScope = resolveStableScope(db, gs, "graph_stats");
-        const facts = listFactsByScope(db, gsScope.factScope);
+        const facts = listFactsInScope(db, gsScope.factScope);
         const factIds = new Set(facts.map((fact) => fact.id));
         const categoryRows = listCategories(db);
         const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
@@ -26682,10 +26752,10 @@ _Next timeline cursor: ${page.nextCursor}_
           scope: "project"
         }, "cross_project_insights");
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const crossProjectResults = searchFactsByScope(
+        const crossProjectResults = searchFactsInScope(
           db,
           queryEmbedding,
-          cxScope.projectId ? { type: "other-project-id", projectId: cxScope.projectId } : { type: "other-projects", project: cxScope.legacyProject },
+          cxScope.projectId ? { type: "other-project-id", projectId: cxScope.projectId } : adaptLegacyReadScope(db, { type: "other-projects", project: cxScope.legacyProject }),
           params.limit,
           0.5
         );
@@ -26750,14 +26820,13 @@ Excluding: ${cxScope.label}
       try {
         const egScope = resolveStableScope(db, params, "explore_graph");
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const seedFacts = searchFactsByScope(
+        const seedFacts = searchFactsInScope(
           db,
           queryEmbedding,
           egScope.factScope,
           3,
           0.5
         );
-        const seedIds = new Set(seedFacts.map((r) => r.fact.id));
         if (seedFacts.length === 0) {
           return {
             content: [
@@ -26794,17 +26863,7 @@ Seed: "${params.query}" | Depth: ${params.hops} hops
 
 `;
           allDiscovered.add(seedFact.id);
-          const related = getRelatedFacts(
-            db,
-            seedFact.id,
-            params.hops,
-            0.6,
-            0.2,
-            egScope.legacyProject,
-            egScope.scope === "global" || egScope.scope === "all" ? egScope.scope : "project",
-            egScope.factScope
-          ).slice(0, 20);
-          void seedIds;
+          const related = getRelatedFactsInScope(db, seedFact.id, egScope.factScope, { hops: params.hops }).slice(0, 20);
           if (related.length === 0) {
             output += `_No connected facts found._
 

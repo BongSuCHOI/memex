@@ -8,15 +8,18 @@ export * from './search.js';
 export * from './summarizer.js';
 export * from './paths.js';
 // P2-2: the public package surface exposes read/search primitives only. Raw
-// fact writers (insertFact/updateFact/deactivateFact/deleteFact/insertRevision)
+// fact writers (insertFact/updateFact/deactivateFact/insertRevision)
 // stay internal — every semantic mutation must go through fact-management's
 // transactional service so the revision/vector/ontology/relation invariants
 // cannot be bypassed by package consumers. In-repo callers import fact-db.js
 // directly.
-export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, searchSimilarFacts, searchSimilarFactsSameScope, getTopFacts, getNewFactsSince, getPendingConsolidationFacts, searchAllFacts, } from './fact-db.js';
+export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, searchFactsInScope, listFactsInScope, factMatchesReadScope, searchSimilarFacts, searchSimilarFactsSameScope, getTopFacts, getNewFactsSince, getPendingConsolidationFacts, searchAllFacts, } from './fact-db.js';
 export * from './fact-extractor.js';
 export * from './fact-management.js';
 export { inspectWorkspaceLocation, resolveProjectWorkspace, approveRemoteProjectMapping, linkWorkspaceToProject, splitWorkspace, createWorkstream, bindSessionWorkstream, rebindSessionWorkstream, readHotEvidence, assignFactSubject, projectRevision, sessionProjectRevisionState, markSessionProjectRevisionSeen, } from './continuity-identity.js';
 export * from './chronicle.js';
 export * from './consolidator.js';
 export * from './llm.js';
+export * from './read-scope.js';
+export { captureMutationPolicy } from './fact-policy.js';
+export { auditMemoryIntegrity, applyIntegrityRepairs } from './fact-integrity.js';

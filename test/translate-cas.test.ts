@@ -70,7 +70,7 @@ describe('translation CAS contract (P2 v4)', () => {
     const snapshot = db.prepare(READ_FOR_TRANSLATE).get() as { id: string; fact: string; semantic_generation: number };
 
     // A semantic edit lands mid-await: generation bumps, fact_kr resets to NULL.
-    await mutateFactMeaning(db, { factId: id, newText: 'New meaning text' });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: 'New meaning text' });
 
     // The stale translation arrives — the CAS must reject it, otherwise the
     // NEW meaning would carry the OLD text's Korean translation and the

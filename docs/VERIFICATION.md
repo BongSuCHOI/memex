@@ -379,7 +379,29 @@ npx vitest run \
   test/fact-extraction-eval.test.ts
 ```
 
-## 9. Release 원칙
+## 9. 기억 정합성 회귀와 복구 증거
+
+[Memory integrity run](verification/memory-integrity/README.md)은 runtime 수정 전 고정한 입력과
+환경, 수정 전 실패, 같은 입력의 수정 후 비교 및 복구 집계를 소유합니다. `baseline.json`은
+과거 관측으로 보존하며 결과를 덮어쓰지 않습니다.
+
+```bash
+npx vitest run test/memory-integrity.test.ts test/continuity-hot-cursor.test.ts test/continuity-final-integration.test.ts
+npx vitest run test/memory-integrity-policy.test.ts test/fact-integrity.test.ts
+node --test test/memory-integrity-tools-slice.test.mjs
+```
+
+첫 명령의 세 fixture hash를 before/after에서 비교합니다. 이는 deterministic model/embedding seam과
+실제 SQLite transaction을 사용한 구조적 회귀 증거입니다. 같은 구현자가 fixture와 변경을 만들었으므로
+독립 holdout이나 real-model accuracy/recall 평가로 해석하지 않습니다. 실패 verdict를 고정해도
+scope, unsupported rewrite, source/participant CAS와 tombstone 경계가 지켜지는지 검증합니다.
+독립 cold read의 우려와 채택/미채택 이유도 run 문서에 남깁니다.
+
+백업은 파일 개수만 세지 않고 독립 restore hash와 DB integrity/FK를 검사합니다. Live 감사/복구는
+preview fingerprint, exact selection, durable row hash 불변, 반복 적용 0건과 후속 audit를 증거로 남깁니다.
+원문·정확한 fact/source ID·전체 보고서는 ignored private 경로에 보존하고 public receipt는 집계만 싣습니다.
+
+## 10. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:
 

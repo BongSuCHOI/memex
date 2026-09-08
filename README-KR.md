@@ -248,7 +248,7 @@ graph_stats
 
 project-sensitive 도구는 다음 중 하나가 필요합니다.
 
-- canonical absolute project path
+- stable project/workspace/workstream/session ID 또는 legacy canonical absolute project path
 - `scope: global`
 - `scope: all`
 
@@ -293,15 +293,16 @@ http://localhost:3847
 
 ## Scope와 Provenance
 
-Memex는 canonical absolute `session_meta.cwd`를 project identity로 사용합니다.
+Memex는 canonical absolute `session_meta.cwd`에서 로컬 workspace를 식별하고, stable `project_id`로 논리적 프로젝트를 구분합니다.
 
 지원하는 scope:
 
-- **project** — 해당 project와 필요한 global fact
+- **project** — project-wide truth와 필요한 global fact
+- **workspace/workstream/session** — 명시한 작업 범위와 허용된 상위 truth
 - **global** — global fact만
 - **all** — 사용자가 명시적으로 요청한 cross-project 접근
 
-cross-project leakage는 query, sync import, graph traversal, relation write 경계에서 차단합니다.
+읽기 범위와 통합 권한은 분리됩니다. 통합기는 다른 workstream이나 승격 상태의 fact를 흡수하지 않고, 검증된 새 문장만 채택합니다. 불명확한 legacy identity는 검토 대상으로 보존합니다. 검색·관련 사실·추적·graph의 모든 hop은 같은 scope를 적용합니다. 기존 DB의 [감사·백업·선별 복구](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구)는 전체 fact 재추출 없이 수행할 수 있습니다.
 
 Fact provenance는 두 경로를 분리합니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고 sync에서 단조 union하며, `consolidated_count`는 max로 수렴합니다. Local `fact_context_dependencies`는 fact 해석에 사용된 persisted long-range non-authoritative context dependency만 기록하며 immediate local context 사용은 저장하지 않습니다. Persisted set은 semantic verifier 사용 결과에서 canonicalize하고, authority로 승격하거나 protocol v4로 sync하지 않습니다.
 

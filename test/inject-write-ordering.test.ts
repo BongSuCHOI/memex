@@ -26,10 +26,10 @@ vi.mock("../src/embeddings.js", () => ({
   embeddingCallStats: () => ({ modelCalls: 0, cacheHits: 0 }),
 }));
 vi.mock("../src/fact-db.js", () => ({
-  searchFactsByScope: () => factResults.value,
+  searchFactsInScope: () => factResults.value,
 }));
 vi.mock("../src/ontology-db.js", () => ({
-  getRelatedFacts: () => [],
+  getRelatedFactsInScope: () => [],
 }));
 vi.mock("../src/repeat-detector.js", () => ({
   detectRepeat: vi.fn().mockResolvedValue([]),

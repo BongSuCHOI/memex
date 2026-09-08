@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import type { OntologyDomain, OntologyCategory, OntologyRelation, RelationType, DomainTree, Fact } from './types.js';
 import { type FactSearchScope } from './fact-db.js';
+import { type ReadScope } from './read-scope.js';
+import { type MutationPolicy } from './fact-policy.js';
 /** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
  * privacy purge). In-flight classification captures this value before its
  * LLM/embedding awaits and re-checks it at commit: a stale result must leave
@@ -46,8 +48,11 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
  */
 export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): number;
 export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Fact[];
+export declare function getFactsByCategoryInScope(db: Database.Database, categoryId: string, scope: ReadScope): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];
 export interface CreateRelationOptions {
+    policy?: MutationPolicy;
+    readScope?: ReadScope;
     /**
      * 재감사 P1-2: async relation writers (LLM 왕복을 기다린 뒤 쓴다)가 캡처한
      * 양 endpoint의 의미 세대. 제공되면 검증+삽입을 한 transaction으로 원자화하고,
@@ -57,6 +62,8 @@ export interface CreateRelationOptions {
     expectedSourceGeneration?: number;
     expectedTargetGeneration?: number;
 }
+/** Automatic relation writers must supply both read scope and participant policy. */
+export declare function createRelationInScope(db: Database.Database, sourceFactId: string, relationType: RelationType, targetFactId: string, scope: ReadScope, policy: MutationPolicy, reasoning?: string): OntologyRelation | null;
 export declare function createRelation(db: Database.Database, sourceFactId: string, relationType: RelationType, targetFactId: string, reasoning?: string, opts?: CreateRelationOptions): OntologyRelation | null;
 /**
  * Get related facts with relevance decay.
@@ -69,12 +76,19 @@ export declare function createRelation(db: Database.Database, sourceFactId: stri
  * Results are sorted by relevance descending.
  * Facts below minRelevance are pruned.
  */
-/**
- * @param scopeProject - If provided, only return facts from this project or global scope.
- *                       Prevents cross-project noise in graph traversal.
- *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
- */
+/** @deprecated Read-only positional adapter; missing scope defaults to global. */
 export declare function getRelatedFacts(db: Database.Database, factId: string, hops?: number, decay?: number, minRelevance?: number, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Array<{
+    fact: Fact;
+    relation: OntologyRelation;
+    relevance: number;
+    hop: number;
+}>;
+/** Scope is mandatory for the seed and every node before it can enter the frontier. */
+export declare function getRelatedFactsInScope(db: Database.Database, factId: string, scope: ReadScope, { hops, decay, minRelevance }?: {
+    hops?: number;
+    decay?: number;
+    minRelevance?: number;
+}): Array<{
     fact: Fact;
     relation: OntologyRelation;
     relevance: number;

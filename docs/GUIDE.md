@@ -351,3 +351,58 @@ schema `7`의 column/table은 additive이지만 구버전 writer는 evidence seq
 ### 호환 surface (support window)
 
 `scripts/session-end-hook.js`(final-fence alias, D-011), legacy canonical path query(D-016), `extraction_log`/`SEED`/`PERMANENT` marker(D-007)는 읽기/호환 용도로만 남아 있으며 completion authority가 아닙니다.
+
+## 16. 기억 정합성 감사와 선별 복구
+
+이 절의 도구는 source checkout에서 `npm run build` 후 실행합니다. 전체 backfill이나 fact 삭제로
+시작하지 않습니다. 먼저 `memex home --json`으로 실제 root/DB를 확인합니다.
+
+### 백업과 독립 복원 확인
+
+```bash
+node scripts/memory-integrity-snapshot.mjs \
+  /absolute/memex-home /absolute/codex-home/sessions /outside/source-roots/new-backup-dir
+```
+
+출력 directory의 부모는 미리 존재해야 하며 두 source root 밖이어야 합니다. 도구는 원문을
+수정하지 않고 SQLite online backup과 archive/journal/sync 파일, Codex sessions를 `snapshot/`에
+복사한 뒤 `restored/`에 복원합니다. Manifest의 SHA-256 전체 일치와 SQLite integrity/FK 검사를
+확인합니다. Locks/socket, DB WAL/SHM와 `.log`는 제외하고 symlink는 명시적 mapping 없이는 거부합니다.
+이 도구의 DB 경로는 `MEMEX_HOME/conversation-index/db.sqlite`입니다. 별도 `MEMEX_DB_PATH`나
+root 밖 저장소를 쓴다면 그 저장소도 별도로 백업하고 복원 범위에 기록해야 합니다.
+
+`restore.status=PASS`는 복사한 bytes와 DB 복원 검사입니다. `capture.fileStability=FAIL`이면 원문이
+복사 중 바뀐 것이므로 전체 status는 FAIL, CLI exit는 1입니다. Writer를 일괄 중지하지 않았다면
+root 간 한 시점의 정합성은 `capture.crossRootAtomicity=NOT_PROVEN`입니다. 실제 rollback은 writer를
+중지한 뒤 exact absolute path mapping과 plugin 버전을 함께 복원하고, 백업 이후의 privacy tombstone을
+잃지 않는 별도 계획이 필요합니다. 이 도구는 live root를 교체하지 않습니다.
+
+### 미리보기 → 선택 → 적용 → 재검증
+
+```bash
+node scripts/fact-integrity.mjs audit /absolute/db.sqlite /private/new-preview.json
+```
+
+Audit는 DB를 read-only로 열고 migration하지 않으며 report도 새 파일로만 씁니다.
+`review` 항목은 mixed/foreign workstream lineage, 승격 근거 누락, 과거 자동/출처 불명 재서술,
+legacy identity, 원문 누락입니다. 원문과 revision을 검토하되 이 목록 자체를 오류 확정으로 보지 않습니다.
+
+`repairable`은 부재/비활성 fact의 vector/relation, 부모가 없는 interpretive context, 기존 terminal
+privacy tombstone과 충돌하는 fact입니다. Inactive fact의 유효한 context는 history/privacy용으로 유지합니다.
+Report의 `id`를 직접 검토하여 선택한 문자열 배열을 `/private/selection.json`에 저장합니다.
+의미나 scope를 자동 수정하는 선택은 지원하지 않습니다.
+
+```bash
+# selection.json: ["<reviewed finding id>", "<another reviewed finding id>"]
+# 우선 복원본/clone에 적용하고 durable fact/revision/tombstone 보존을 확인
+node scripts/fact-integrity.mjs apply /absolute/clone.sqlite /private/new-preview.json /private/selection.json
+# 동일 preview가 아직 유효한 경우에만 live DB에 적용
+node scripts/fact-integrity.mjs apply /absolute/db.sqlite /private/new-preview.json /private/selection.json
+node scripts/fact-integrity.mjs audit /absolute/db.sqlite /private/new-after.json
+```
+
+Apply는 `BEGIN IMMEDIATE` 안에서 finding fingerprint를 다시 확인합니다. 대상이 달라지면 전체
+선택을 rollback하고 새 preview를 요구합니다. 수정과 `fact_integrity_repairs` ledger는 같은
+transaction입니다. 동일 선택 재실행은 `applied=[]`, `alreadyApplied=[…]`로 종료합니다. 이미 고친
+손상이 재발했다면 자동 재삭제하지 않고 새 검토를 요구합니다. 전체 preview/report에는 private
+fact/source identity가 있을 수 있으므로 repository에는 집계와 hash만 기록합니다.

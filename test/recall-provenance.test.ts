@@ -1,3 +1,4 @@
+import { prepareVerifiedGlobalPair } from './consolidation-fixture.js';
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
@@ -972,12 +973,13 @@ describe("Memex recall provenance", () => {
       source_exchange_ids: ["exchange-repo-observation"],
       embedding: null,
     });
+    prepareVerifiedGlobalPair(db, oldId, newId);
     const [oldFact, newFact] = [oldId, newId].map(
       (id) => getActiveFacts(db!).find((fact) => fact.id === id)!,
     );
 
     await applyConsolidationResult(db, oldFact, newFact, {
-      relation: "EVOLUTION",
+      relation: "EVOLUTION", same_subject: true, same_conditions: true,
       merged_fact: "Project database is PostgreSQL",
       reason: "Repository configuration now points to PostgreSQL",
     });

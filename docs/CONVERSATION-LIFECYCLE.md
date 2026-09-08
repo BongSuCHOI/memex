@@ -160,6 +160,7 @@ meta.json   # integrity manifest
 - ontology relations
 - `vec_*` tables
 - `fact_context_dependencies`
+- `fact_evidence_receipts`, `fact_integrity_repairs`
 
 ### Generation commit
 
@@ -200,6 +201,9 @@ partial generation이나 malformed row를 일부만 적용하지 않습니다.
 ### Semantic winner
 
 `semantic_updated_at`이 더 최신인 의미가 승리합니다. 정확한 timestamp tie는 canonical semantic key로 결정합니다.
+Import plan은 embedding 전에 `replicated` MutationPolicy를 캡처하고 최종 transaction에서 local
+semantic/placement 상태를 확인합니다. Lifecycle 축은 별도 LWW를 유지합니다. Peer authority는 보존하되
+local entailment receipt로 승격하지 않으며 semantic replacement는 이전 local receipt를 지웁니다.
 
 ### Lifecycle winner
 
@@ -262,4 +266,5 @@ archive/index는 재구축 가능해야 합니다. `verify --repair`와 일반 i
 sync durable state는 DB를 새로 만들더라도 peer generations에서 다시 import할 수 있습니다. 반면
 ontology, KR translation, relation, vectors와 `fact_context_dependencies`는 local state입니다.
 Context dependency는 peer generation에서 재구성하지 않으며 새 local extraction/consolidation이
-만드는 해석 lineage만 유지합니다.
+만드는 해석 lineage만 유지합니다. 기존 fact의 정합성 문제는 전체 삭제/재추출 대신
+[선별 복구](GUIDE.md#16-기억-정합성-감사와-선별-복구)로 preview와 exact finding 선택을 먼저 고정합니다.

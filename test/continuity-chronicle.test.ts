@@ -1,3 +1,5 @@
+import { prepareVerifiedGlobalPair } from './consolidation-fixture.js';
+import { captureMutationPolicy } from '../src/fact-policy.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -286,6 +288,7 @@ describe("Chronicle projection and events", () => {
     await mutateFactMeaning(db, { factId: fact.id, newText: "Runtime session store is Redis", chronicle: { actor: "user", userStatedRationale: "migrated" } });
     expect(() => applyFactMeaningMutation(db, {
       factId: fact.id, newText: "Runtime session store is Postgres", expectedSemanticGeneration: 1,
+      policy: captureMutationPolicy(db, "user-correction", [fact.id]),
       chronicle: { actor: "consolidator" },
     }, emb)).toThrow(StaleFactMutationError);
     expect(getActiveFacts(db)[0].fact).toBe("Runtime session store is Redis");
@@ -329,8 +332,9 @@ describe("Chronicle projection and events", () => {
     // Consolidator verdicts are model inference: reason lands in classifier_note.
     const a = insertFact(db, { fact: "Config version is v1", category: "knowledge", scope_type: "project", scope_project: cwd, source_exchange_ids: ["ex-1"], embedding: emb });
     const b = insertFact(db, { fact: "Config version is v2", category: "knowledge", scope_type: "project", scope_project: cwd, source_exchange_ids: ["ex-2"], embedding: emb });
+    prepareVerifiedGlobalPair(db, a, b);
     const facts = getActiveFacts(db);
-    await applyConsolidationResult(db, facts.find((f) => f.id === a)!, facts.find((f) => f.id === b)!, { relation: "EVOLUTION", merged_fact: "Config version is v2", reason: "model thinks it evolved" });
+    await applyConsolidationResult(db, facts.find((f) => f.id === a)!, facts.find((f) => f.id === b)!, { relation: "EVOLUTION", same_subject: true, same_conditions: true, merged_fact: "Config version is v2", reason: "model thinks it evolved" });
     const consolidated = factHistory(db, a).find((e) => e.event_kind === "CHANGED")!;
     expect(consolidated.actor).toBe("consolidator");
     expect(consolidated.grounded_cause).toBeNull();

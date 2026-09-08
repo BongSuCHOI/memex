@@ -214,6 +214,7 @@ export declare function readResidentFactRevisions(db: Database.Database, session
 };
 export declare function recordResidentFactRevisions(db: Database.Database, sessionId: string, contextEpoch: number, revisions: ResidentFactRevision[], now?: string): boolean;
 export interface ResidentRevisionCorrection {
+    scope_revoked?: boolean;
     id: string;
     fact: string;
     category: string;

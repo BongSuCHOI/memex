@@ -30,14 +30,27 @@ conversation과 fact 검색은 같은 원칙을 사용합니다.
 
 ## 3. Scope
 
-project-sensitive retrieval은 다음 중 하나를 명시합니다.
+새 fact core는 `src/read-scope.ts`의 `ReadScope`를 필수로 받습니다.
+`searchFactsInScope`, `listFactsInScope`, `factMatchesReadScope`, `getRelatedFactsInScope`,
+`getFactsByCategoryInScope`는 누락/잘못된 scope를 런타임에서도 거부합니다.
 
-- stable `project_id`, `workspace_id`, `workstream_id`, 또는 `session_id`
-- 지원 기간의 canonical absolute project path compatibility key
-- `scope=global`
-- `scope=all`
+- `project-id`: project-wide/legacy fact; `includeGlobal` 기본 true, false일 때만 global 제외
+- `workspace-id`: 해당 workspace truth와 project-wide truth
+- `workstream-id`: 해당 workstream truth와 허용 workspace/project-wide truth
+- `session-id`: 같은 project에서 해당 session의 source exchange를 인용한 fact
+- `global`: global만
+- `all`/`other-project-id`: 명시적 관리/교차 프로젝트 조회
+- `fact-ids`: legacy adapter가 확정한 유한 ID 집합
 
-`process.cwd()`나 MCP server의 설치 경로를 project로 추측하지 않습니다. graph relation을 확장할 때도 각 hop에서 같은 scope gate를 다시 적용합니다.
+`legacy-read-scope.ts`만 canonical path compatibility를 해석합니다. 기존 positional reader는 이
+adapter를 거치며 scope 생략 시 global만 읽습니다. Legacy row의 read-time identity overlay는 DB를
+수정하지 않습니다. 새 core에 path 비교를 추가하거나 생략된 scope를 all로 확장하지 않습니다.
+Workspace/workstream/session은 project membership을 검증합니다. 명시적으로 공유한 workstream은
+여러 workspace의 session에서 사용할 수 있으므로 workstream의 최초 workspace를 독점 owner로 보지 않습니다.
+
+`process.cwd()`나 MCP 설치 경로는 project 추론 근거가 아닙니다. Graph는 seed와 모든 hop에 같은
+scope를 적용하고 범위 밖 node를 다음 hop의 bridge로 쓰지 않습니다. 읽기 범위는
+[MutationPolicy](FACT-LIFECYCLE.md#6-semantic-mutation)의 수정 권한을 부여하지 않습니다.
 
 ## 4. UserPromptSubmit injection
 
@@ -121,7 +134,9 @@ relation 1-hop expansion은 why/related/dependency/contradiction/trace intent에
 6. 결과가 없으면 context block을 만들지 않습니다.
 
 Project `memory_revision`이 stale이면 normal semantic match보다 `[MEMEX CORRECTION]`을 먼저 냅니다.
-비활성화된 resident fact는 `No longer active`로 철회합니다. 예산 때문에 correction 일부만 들어가면
+비활성화된 resident fact는 `No longer active`로 철회합니다. 다른 scope로 이동한 resident fact는 새
+본문을 노출하지 않는 unavailable notice로 철회하고 실제 출력 후 residency에서 제거합니다. 최종
+주입 receipt transaction에서도 emitted fact의 현재 scope와 generation을 검사합니다. 예산 때문에 correction 일부만 들어가면
 실제 emitted revision만 resident로 기록하고 다음 natural boundary에서 나머지를 이어서 처리합니다.
 관련 correction을 모두 소진했거나 현재 workspace/workstream에 해당하는 변경이 없음을 확인한 뒤에만
 scalar revision을 seen 처리합니다.
