@@ -7,7 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const { gradeHostOutput, rewriteDerivedPaths } = await import(
+const { gradeHostOutput, rewriteDerivedPaths, buildHostQueryArgs } = await import(
   pathToFileURL(path.join(ROOT, "scripts", "codex-memory-comparison.mjs")),
 );
 
@@ -90,4 +90,27 @@ test("rewrites every copied derived path and refreshes transcript identity", asy
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test("all host modes share a type-only schema while numeric grading stays strict", () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, "test/fixtures/codex-usability.json"), "utf8"));
+  const paths = [false, true].map((hooks) => {
+    const args = buildHostQueryArgs("session", hooks);
+    assert.equal(args.filter((arg) => arg === "--output-schema").length, 1);
+    return args[args.indexOf("--output-schema") + 1];
+  });
+  assert.equal(paths[0], paths[1]);
+  const schema = JSON.parse(fs.readFileSync(paths[0], "utf8"));
+  assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.required.length, 13);
+  assert.deepEqual(new Set(schema.required), new Set(Object.keys(fixture.expected).map((key) => key.replace(/Contains$/, ""))));
+  for (const [key, value] of Object.entries(schema.properties)) {
+    assert.deepEqual(Object.keys(value), ["type"]);
+    assert.deepEqual(value.type, [key === "retryCount" || key === "verifiedCases" ? "integer" : "string", "null"]);
+  }
+  const grade = (verifiedCases) => gradeHostOutput(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ verifiedCases }) } }), { expected: { verifiedCases: 11 }, forbiddenCurrentValues: [] });
+  assert.equal(grade(11).expectedPass, true);
+  assert.equal(grade("11 user-asserted cases; not run by assistant").expectedPass, false);
+  assert.equal(grade(null).expectedPass, false);
 });

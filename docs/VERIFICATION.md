@@ -408,6 +408,8 @@ preview fingerprint, exact selection, durable row hash 불변, 반복 적용 0�
 App-server compaction/interrupt 성공은 Memex hook 전달 성공을 대신하지 않습니다.
 Fixture replay, 실제 host 이벤트, context prepared, stdout emitted, host acceptance를 각각 구분합니다.
 Host 수락 증거가 없으면 `NOT_PROVEN`으로 남깁니다.
+네 조건 비교의 host 답변은 공통 type-only JSON Schema를 `--output-schema`로 전달합니다.
+스키마 준수와 정답 일치는 별도이며, null이나 설명 문자열을 정답 숫자로 변환하지 않습니다.
 Stale-Capsule content probe는 정답을 query에 넣지 않고, 새 DB의 capture-index를 먼저 완료한 뒤
 실제 답변의 `recentCorrections`와 stale/pending 상태를 검사합니다. 색인 준비 단계의 모델 호출은
 금지합니다. [승인 후 실제 관측](verification/codex-usability/stale-content.json)은 이전 차단 기록을

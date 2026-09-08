@@ -33,6 +33,7 @@ const FIXTURE_DEFAULT = path.join(REPO, "test", "fixtures", "codex-usability.jso
 const EXPECTED_FIXTURE_SHA = "fc84bf57a8cd1bf4e6f714053dc21c1c886c562ea58bac5fb5e4ccc794628a98";
 const DEFAULT_ROOT = "/private/tmp/memex-comparison-E7b4Kt";
 const EXPECTED_MANIFEST_SHA = "851c0d2fd7de5c490424912a406ad6422694e0fffead665636576277dcca6a99";
+const HOST_OUTPUT_SCHEMA = path.join(REPO, "test", "fixtures", "codex-usability-output-schema.json");
 const DEFAULT_MAX_CALLS = 32;
 const DEFAULT_TIMEOUT_MS = 180_000;
 
@@ -905,13 +906,18 @@ function hostEvidence(memexHome, sessionId) {
   };
 }
 
+function buildHostQueryArgs(sessionId, enableHooks) {
+  const args = ["exec", "resume", sessionId, "--skip-git-repo-check", "--ignore-rules", "-m", "gpt-5.6-luna", "--json", "--output-schema", HOST_OUTPUT_SCHEMA, "-"];
+  if (enableHooks) args.splice(5, 0, "--enable", "hooks", "--dangerously-bypass-hook-trust");
+  return args;
+}
+
 async function hostQuery(home, memexHome, sessionId, fixture, enableHooks, budget = null) {
   if (!RUN_HOST) return { status: "NOT_RUN", reason: "--run-host not provided" };
   const budgetId = typeof budget === "string" ? budget : budget?.budgetId ?? null;
   const parentWaveId = typeof budget === "object" ? budget?.parentWaveId ?? null : null;
   const compaction = await compactSession(home, memexHome, sessionId, budgetId, parentWaveId);
-  const args = ["exec", "resume", sessionId, "--skip-git-repo-check", "--ignore-rules", "-m", "gpt-5.6-luna", "--json", "-"];
-  if (enableHooks) args.splice(5, 0, "--enable", "hooks", "--dangerously-bypass-hook-trust");
+  const args = buildHostQueryArgs(sessionId, enableHooks);
   const hostExtra = { CWD: PROJECT };
   if (budgetId) hostExtra.MEMEX_MODEL_BUDGET_ID = budgetId;
   if (parentWaveId) hostExtra.MEMEX_MAINTENANCE_WAVE_ID = parentWaveId;
@@ -1059,6 +1065,7 @@ async function main() {
       hostProviderCallCap: "NOT_PROVEN: host operations may contain multiple turns/tool calls",
       timeoutMs: TIMEOUT_MS,
     },
+    outputContract: { schema: path.relative(REPO, HOST_OUTPUT_SCHEMA), sha256: sha256File(HOST_OUTPUT_SCHEMA), sharedAcrossAllArms: true, expectedValuesIncluded: false },
     frozenInput: { fixture: path.relative(REPO, FIXTURE), fixtureSha256: validated.fixtureSha, trainingPrompts: validated.fixture.training.length, initialState: INITIAL_STATE, manifestSha256: validated.manifestSha, manifestFiles: validated.manifestFiles, sourceSessionId: sessionId, sourceRolloutSha256: sha256File(rollout), project: PROJECT },
     isolation: { commonSnapshotRestored: true, sourceRolloutUnmodified: "NOT_PROVEN: checked after all arms", nativeSourceRollout: nativeSourceRollout, nativeSourceRolloutBeforeSha256, authSource: fs.existsSync(path.join(NATIVE_HOME, "auth.json")) ? "copied mode 0600 into isolated arms" : "NOT_PROVEN: source auth absent", commonProject: PROJECT, expectedAnswersUsedOnlyForEvaluation: true },
     nativeGeneration: nativeGenerationObservation(),
@@ -1127,7 +1134,7 @@ async function main() {
   }
 }
 
-export { gradeHostOutput, rewriteDerivedPaths };
+export { gradeHostOutput, rewriteDerivedPaths, buildHostQueryArgs };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

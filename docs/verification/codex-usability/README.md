@@ -165,6 +165,27 @@ capture/Capsule jobs pending because automatic wake was disabled; active workers
 were idle before temporary authentication removal. The measured Memex attempt
 ledger is complete for the recorded processing run.
 
+## Structured-output follow-up
+
+The [type-only schema](../../../test/fixtures/codex-usability-output-schema.json)
+requires integer-or-null counts and string-or-null text fields. Every arm receives
+the same `codex exec resume --output-schema` argument. No expected values appear
+in the schema, and the original frozen training prompts and grader remain unchanged.
+
+[comparison-structured.json](comparison-structured.json) and its separate
+[review](comparison-structured-review.json) record the actual rerun. All four final
+answers comply with the schema; core now passes 13/13 host checks with numeric
+`verifiedCases: 11`. The previous type FAIL remains in the original report.
+
+Overall quality of the new run is still FAIL. Both Memex arms retrieve 4/5 exact
+identifiers because the fresh extraction omitted `E_QUEUE_LEASE_EXPIRED` from its
+four facts. The optional host first answered correctly, then received an async
+`Sync started in background...` message and ended with all-null JSON. Its final
+answer scores 0/13, while the other three arms score 13/13. This sequence is
+observed; a controlled follow-up is needed to establish causality. Schema
+compliance must not be confused with correct recall, and valid nulls do not pass
+known-answer checks. Neither failure is removed or regraded to obtain PASS.
+
 ## Deterministic recall calibration
 
 [recall-calibration.json](recall-calibration.json) reruns the existing planted-corpus harness into a new

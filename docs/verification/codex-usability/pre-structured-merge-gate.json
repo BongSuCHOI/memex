@@ -1,0 +1,221 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-08T07:47:10.907386+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Temporary homes for install, package and lifecycle gates. The approved authenticated stale-content follow-up is recorded separately; this gate uses offline fixture tests."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/memory-integrity",
+    "codeSha": "63db46b6d8fd62ace6503e4730de49209cde4f3c",
+    "packageVersion": "0.4.1",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "All eleven automated gates ran on this clean committed SHA. Only this receipt changes afterward; no release or fully verified post-receipt package is claimed."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:44:21.809192+00:00",
+      "durationSeconds": 3.103,
+      "logSha256": "6791526fda8dcd6e9e3d39446d2abc9b8dc83b8219bf383d79a2ddc92948d2e8",
+      "observed": "TypeScript noEmit exit 0"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:44:24.913572+00:00",
+      "durationSeconds": 3.442,
+      "logSha256": "dfa8d01f45c67f0348e7e373ad59dfeb22ccc3b603347caf62cb19328c0605af",
+      "observed": "TypeScript and MCP bundle exit 0; tracked generated artifacts unchanged"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:44:28.355542+00:00",
+      "durationSeconds": 18.115,
+      "logSha256": "dcc648bf2d1eda0074e7049ebb409f2912de3db39b064abb20a551b0e76ae9be",
+      "observed": "94 files / 984 tests passed"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:44:46.471263+00:00",
+      "durationSeconds": 3.831,
+      "logSha256": "7011b940688a3bbc5b2e6697ba9c9b71b15dd377d8213ade381d71303c255ad7",
+      "observed": "26 passed / 0 failed"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:44:50.302950+00:00",
+      "durationSeconds": 10.254,
+      "logSha256": "29058bb566160cbd4e91a6ad2aacbb4a1c4765c43b39d4f4e42e6d51a73ed2a5",
+      "observed": "100 passed / 0 failed"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:45:00.559815+00:00",
+      "durationSeconds": 9.126,
+      "logSha256": "98dae08e832539fe4e0d72e8be8a169ebc6c6fc883a03601c5d7fb581289bc03",
+      "observed": "Isolated install, idempotence, 9 MCP tools, sync, removal and unchanged user surfaces passed"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:45:09.686357+00:00",
+      "durationSeconds": 0.426,
+      "logSha256": "bc6387f10aa8bb03b08997a69bd026acae9bc0a25c6f6a1d2fd61a3918c93a54",
+      "observed": "Plugin 0.4.1, 3 skills, 7 lifecycle events and cleanup passed"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:45:10.112653+00:00",
+      "durationSeconds": 83.755,
+      "logSha256": "48bc651fc79bc4d40081999d36c48bc0f4024a52c9f2e1f3aeb5d677bb5a5cdb",
+      "observed": "memex-0.4.1.tgz: 271 files; 1268617 packed bytes / 5122442 unpacked bytes; 9 MCP tools; isolated onboarding and hooks passed"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:46:33.986126+00:00",
+      "durationSeconds": 9.064,
+      "logSha256": "2f9d3db4ced5e016098713869a66d255625e687051e61253f16f0f3441346a90",
+      "observed": "Offline lifecycle 9/9 steps and seven-surface cleanup passed"
+    },
+    {
+      "name": "codex-host-fixtures",
+      "command": "node --test test/codex-host-compat.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:46:43.050310+00:00",
+      "durationSeconds": 1.247,
+      "logSha256": "c2cea1740f9152bc10dbe384fd5ffd42f45f97dfd38c6e2dbec5df8220abdd1e",
+      "observed": "2 tests passed: sanitized versioned inputs, fresh capture-index preparation, neutral query and correction-field positive/negative regression"
+    },
+    {
+      "name": "comparison-harness",
+      "command": "node --test test/codex-memory-comparison.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T07:46:44.298126+00:00",
+      "durationSeconds": 0.447,
+      "logSha256": "1fe54555c32bbfc07c139191abdc0a4268df03f03ac7886e036f99558912a347",
+      "observed": "2 tests passed; last nonempty answer grading and actual derived-path rewrite"
+    }
+  ],
+  "codexUsability": {
+    "summary": "docs/verification/codex-usability/README.md",
+    "host": {
+      "evidence": "docs/verification/codex-usability/host-compatibility.json",
+      "version": "0.153.4",
+      "realTuiLifecycle": "Normal, interrupt, kill and same-session resume, manual/repeated compaction observed",
+      "transportBoundary": "App-server operation success is separate from plugin hook delivery; TUI used explicit setup-hooks fallback",
+      "staleCapsule": "PASS for the approved synthetic Luna case: seven-field continuity JSON, current correction, unverified hypothesis and stale/pending state observed.",
+      "approvalBlock": "Historical retry rejection was resolved by subsequent explicit user approval. One preparation failure was fixed locally, followed by the successful actual host run.",
+      "contentEvidence": "docs/verification/codex-usability/stale-content.json"
+    },
+    "modelWork": {
+      "durableBudget": "Actual provider attempts including retries; deadline/input/output bounds; usage coverage and pending targets",
+      "independentReview": "Astra PASS on model-budget and resume follow-up; 5 files / 26 tests independently passed before the final clean gate",
+      "outputTokens": "maxTokens remains compatibility-only, not a provider-enforced token ceiling"
+    },
+    "comparison": {
+      "raw": "docs/verification/codex-usability/comparison.json",
+      "adjudication": "docs/verification/codex-usability/comparison-adjudication.json",
+      "actualHostArms": 4,
+      "sourceHashesUnchanged": true,
+      "coreReadyBeforeClone": true,
+      "identifierRecall": "5/5 both Memex arms",
+      "semanticRecall": "PASS both Memex arms",
+      "sixRetrievalContextsByteIdentical": true,
+      "coreProviderAttempts": 6,
+      "optionalProviderAttempts": 7,
+      "coreModelDurationMs": 88950,
+      "optionalModelDurationMs": 98723,
+      "rawQualityVerdict": "FAIL",
+      "coreStrictJson": "12/13; verifiedCases string versus numeric 11",
+      "separateContentReading": "No important memory omission, incorrect current fact or execution of planted untrusted instruction observed in the final core response",
+      "nativeLearnedMemory": "NOT_PROVEN",
+      "defaultDecision": "MEMEX_AUTO_ONTOLOGY=1 opt-in; retain manual optional work, existing data and core embeddings"
+    },
+    "calibration": {
+      "evidence": "docs/verification/codex-usability/recall-calibration.json",
+      "mode": "365-prompt deterministic planted corpus with stub embeddings",
+      "mandatoryRecall": "20/20",
+      "corrections": "3/3",
+      "limitations": "Existing gate versus forced retrieval; not prior-release or real-model quality comparison"
+    },
+    "approvedFollowUp": {
+      "evidence": "docs/verification/codex-usability/stale-content.json",
+      "status": "PASS",
+      "durationMs": 56117,
+      "acceptanceBasis": "Final model response preserves both hook-only pending-work descriptions; nonce echo was not required or observed.",
+      "rawScorer": "Original currentGoal-only correction false negative preserved; corrected recentCorrections scorer passes all four assertions on the recorded response without another model call."
+    }
+  },
+  "cleanup": {
+    "orphanGeneratedModules": 0,
+    "missingGeneratedModules": 0,
+    "missingCurrentDocFileLinks": 0,
+    "unusedLocalsCheck": "Precommit npx tsc --noEmit --noUnusedLocals passed; not a separate clean-SHA gate",
+    "removedUnusedCode": "Two unreferenced never-published model-budget helpers and one unused import removed",
+    "temporaryAuth": "Both approved follow-up homes had auth copies removed in finally; after preserving private raw results, both owned temporary homes were removed.",
+    "processes": "Escalated ps scan found no process containing this task comparison/host/reembed temporary root markers before final gate; gate cleanup is recorded in hashed logs",
+    "durableData": "No live-data migration, installed-plugin upgrade, user config or user hooks change."
+  },
+  "historicalEvidence": {
+    "receipt": "docs/verification/codex-usability/pre-stale-merge-gate.json",
+    "sha256": "bd5d262f6ee864389990aa48fff007d2c9d9761a013a2f6e2621f64cf6d510d8",
+    "preservedByteForByte": true,
+    "earlierReceipt": "docs/verification/codex-usability/prior-merge-gate.json",
+    "note": "Previous blocked stale-content status and comparison results are retained in their original receipts; the successful approved follow-up is separate."
+  },
+  "artifactHashes": {
+    "README.md": "72fe142a714a830bf8eb49b6f4b99319c6fa2c6d63c6181ff3fa96f94800ebee",
+    "comparison-adjudication.json": "43947af5bcd8bf5a735c6fdee41ba9eb73d80474bccf7d6684bbeb638c4ec3ec",
+    "comparison.json": "667adfb7adb08fee0998ce34450d25261e6e3701ae03413c80747ffb87e7105d",
+    "host-compatibility.json": "bc1b07a3e2508809fa227388a5f2ed7e9e6a1a72682f446cb601b894eb601457",
+    "native-generation.json": "f909910df53b0403c58e0ce0082cfd3ce9a79ec936bbe578eb2b269e148e4ac1",
+    "pre-stale-merge-gate.json": "bd5d262f6ee864389990aa48fff007d2c9d9761a013a2f6e2621f64cf6d510d8",
+    "prior-merge-gate.json": "56cfa9ecc3cb7c247e276221ebb01843aff29b68e7337d9546e0e400839b2b8c",
+    "recall-calibration.json": "9e76e0106f55c76518d24cf5ac406733620275694e459626cda4666638cd8869",
+    "stale-content.json": "dbfd787d993caf526b109e9659af4943e84752b98ff23b9ac035863be28a39bf"
+  },
+  "limitations": [
+    "Approved stale content consumption passes one synthetic seeded-Capsule case. Native compacted history remains available, and automatic Capsule distillation quality is not measured.",
+    "Native learned-memory generation remains NOT_PROVEN; configured built-in answer quality cannot establish mature memory superiority.",
+    "One synthetic corpus and same-task authored scorer are not an independent holdout. Shared post-compaction history prevents attributing correct answers solely to memory.",
+    "Core strict JSON quality remains FAIL (12/13) despite separately observed correct semantic content.",
+    "Host compaction token usage and total host provider calls are NOT_PROVEN. Each Memex comparison arm retains three post-query capture/Capsule jobs with auto-wake disabled; recorded model workers were idle.",
+    "Actual host/model observations preceded the final committed harness SHA; the subsequent grading-only correction was replayed on the recorded answer, without another model call. Final automated gates cover this exact SHA.",
+    "No push, tag, release, publication, installed-plugin upgrade or live-data migration performed."
+  ],
+  "releaseConclusion": "All eleven automated gates PASS on the clean committed follow-up. The explicitly approved synthetic stale-Capsule content case passes; native-memory and four-arm comparison limitations remain unchanged. No release."
+}

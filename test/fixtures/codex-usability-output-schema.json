@@ -1,0 +1,99 @@
+{
+  "type": "object",
+  "properties": {
+    "retryFunction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retryPath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "retryCount": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "leaseError": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "leaseRepair": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verifiedCases": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "evidencePath": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hypothesisStatus": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blocker": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nextAction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkpointFunction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkpointError": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checkpointAction": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "retryFunction",
+    "retryPath",
+    "retryCount",
+    "leaseError",
+    "leaseRepair",
+    "verifiedCases",
+    "evidencePath",
+    "hypothesisStatus",
+    "blocker",
+    "nextAction",
+    "checkpointFunction",
+    "checkpointError",
+    "checkpointAction"
+  ],
+  "additionalProperties": false
+}

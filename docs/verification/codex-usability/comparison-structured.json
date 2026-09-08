@@ -1,0 +1,1748 @@
+{
+  "schemaVersion": 1,
+  "kind": "codex-memory-comparison",
+  "recordedAt": "2026-09-08T08:40:18.184Z",
+  "environment": {
+    "node": "v26.0.0",
+    "platform": "darwin",
+    "arch": "arm64",
+    "codex": "codex",
+    "maxCallsPerArm": 30,
+    "memexWorkerMaxCalls": 28,
+    "hostOperationsReserved": 2,
+    "hostProviderCallCap": "NOT_PROVEN: host operations may contain multiple turns/tool calls",
+    "timeoutMs": 180000
+  },
+  "outputContract": {
+    "schema": "test/fixtures/codex-usability-output-schema.json",
+    "sha256": "134bf4a5fd07032c120b3099224e312b2174fe376d458de53072b514569d164a",
+    "sharedAcrossAllArms": true,
+    "expectedValuesIncluded": false
+  },
+  "frozenInput": {
+    "fixture": "test/fixtures/codex-usability.json",
+    "fixtureSha256": "fc84bf57a8cd1bf4e6f714053dc21c1c886c562ea58bac5fb5e4ccc794628a98",
+    "trainingPrompts": 8,
+    "initialState": "/private/tmp/memex-comparison-E7b4Kt/initial-state",
+    "manifestSha256": "851c0d2fd7de5c490424912a406ad6422694e0fffead665636576277dcca6a99",
+    "manifestFiles": 101,
+    "sourceSessionId": "01a07f40-5821-76b3-879c-bd0ea097bfa9",
+    "sourceRolloutSha256": "3180276220afcd9a9b3f5ddcda9da417ab7495cc2a3e14062fd5ee0ca118290e",
+    "project": "/private/tmp/memex-comparison-E7b4Kt/project"
+  },
+  "isolation": {
+    "commonSnapshotRestored": true,
+    "sourceRolloutUnmodified": true,
+    "nativeSourceRollout": "/private/tmp/memex-comparison-E7b4Kt/native-keepalive/sessions/2026/09/08/rollout-2026-09-08T13-21-58-01a07f40-5821-76b3-879c-bd0ea097bfa9.jsonl",
+    "nativeSourceRolloutBeforeSha256": "3180276220afcd9a9b3f5ddcda9da417ab7495cc2a3e14062fd5ee0ca118290e",
+    "authSource": "copied mode 0600 into isolated arms",
+    "commonProject": "/private/tmp/memex-comparison-E7b4Kt/project",
+    "expectedAnswersUsedOnlyForEvaluation": true,
+    "nativeSourceRolloutAfterSha256": "3180276220afcd9a9b3f5ddcda9da417ab7495cc2a3e14062fd5ee0ca118290e"
+  },
+  "nativeGeneration": {
+    "status": "NOT_PROVEN",
+    "source": "/private/tmp/memex-comparison-E7b4Kt/native-keepalive",
+    "rawMemoriesChars": 37,
+    "rawMemoriesSha256": "e400b00d691e2d5feac0f108f677a27999d516039592438cea172a3acd81cbf4",
+    "detail": "native memory remains empty; asynchronous generation is not claimed"
+  },
+  "lifecycle": {
+    "compaction": "per-arm app-server thread/resume -> thread/compact/start -> close is required and recorded under each host result"
+  },
+  "arms": {
+    "compaction_only": {
+      "configuration": {
+        "memories": false,
+        "hooks": false,
+        "plugins": false,
+        "authCopied": true
+      },
+      "preparation": {
+        "status": "not-applicable"
+      },
+      "budget": null,
+      "hooks": null,
+      "capture": null,
+      "processing": null,
+      "statePaths": {
+        "status": "prepared",
+        "updated": 1,
+        "rolloutPath": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-R7XDLK/codex-home/sessions/2026/09/08/rollout-2026-09-08T13-21-58-01a07f40-5821-76b3-879c-bd0ea097bfa9.jsonl",
+        "detail": null
+      },
+      "derivedPaths": {
+        "status": "not-needed"
+      },
+      "metrics": null,
+      "retrieval": null,
+      "host": {
+        "compaction": {
+          "status": "observed",
+          "protocol": "app-server stdio",
+          "sequence": [
+            "thread/resume",
+            "thread/compact/start",
+            "close"
+          ],
+          "resumed": true,
+          "evidence": {
+            "mode": "context-compaction-item",
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a0802c-de4d-7672-97d8-2b301c6b26d3"
+            },
+            "turnCompleted": true,
+            "usage": null
+          },
+          "usage": null,
+          "appServerCalls": 3,
+          "close": {
+            "code": 0,
+            "signal": null
+          },
+          "messagesObserved": 15
+        },
+        "command": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 8515,
+          "stdoutChars": 1037,
+          "stderrChars": 0,
+          "stdoutSha256": "402879e4cd8a06bb63dff57e531025a2ff9a27da897de6b02cc838c0cd0846fc",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "usage": {
+            "input_tokens": 12018,
+            "output_tokens": 200,
+            "cached_input_tokens": 0
+          },
+          "turns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "hostObservation": {
+          "providerCalls": "NOT_PROVEN: host may issue multiple provider calls per operation",
+          "compactionUsage": null,
+          "queryUsage": {
+            "input_tokens": 12018,
+            "output_tokens": 200,
+            "cached_input_tokens": 0
+          },
+          "queryTurns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          }
+        },
+        "lifecycle": {
+          "status": "observed",
+          "durationMs": 1905,
+          "state": {
+            "status": "observed",
+            "modelReserved": 0,
+            "memoryJobsRunning": 0,
+            "extractionTargetRunning": 0,
+            "extractionItemsProcessing": 0,
+            "locks": [],
+            "active": false,
+            "detail": null
+          }
+        },
+        "acceptance": {
+          "status": "NOT_PROVEN",
+          "hookObservation": "NOT_PROVEN",
+          "hostAcceptance": "NOT_PROVEN: hook observation does not prove host acceptance",
+          "hookEvents": {},
+          "userPromptSubmit": 0,
+          "contextEmitted": 0,
+          "noContextOutcome": 0,
+          "acceptanceEvidence": "no isolated hook event observed"
+        },
+        "output": {
+          "status": "observed",
+          "assistantMessages": 1,
+          "selectedMessageId": "item_0",
+          "responseChars": 647,
+          "responseSha256": "2271708e2f35b73a39c305dfe5858c30f8c690fb6194c08e9a2bb11b7eeed5e2",
+          "forbiddenPresent": [],
+          "expectedChecks": [
+            {
+              "key": "retryFunction",
+              "pass": true
+            },
+            {
+              "key": "retryPath",
+              "pass": true
+            },
+            {
+              "key": "retryCount",
+              "pass": true
+            },
+            {
+              "key": "leaseError",
+              "pass": true
+            },
+            {
+              "key": "verifiedCases",
+              "pass": true
+            },
+            {
+              "key": "evidencePath",
+              "pass": true
+            },
+            {
+              "key": "checkpointFunction",
+              "pass": true
+            },
+            {
+              "key": "checkpointError",
+              "pass": true
+            },
+            {
+              "key": "leaseRepairContains",
+              "pass": true
+            },
+            {
+              "key": "hypothesisStatusContains",
+              "pass": true
+            },
+            {
+              "key": "blockerContains",
+              "pass": true
+            },
+            {
+              "key": "nextActionContains",
+              "pass": true
+            },
+            {
+              "key": "checkpointActionContains",
+              "pass": true
+            }
+          ],
+          "expectedPass": true,
+          "outputOnlyEvidence": true
+        },
+        "metricsAfter": {
+          "exchanges": 0,
+          "facts": 0,
+          "capsules": 0,
+          "relations": 0,
+          "jobsPending": 0,
+          "modelAttempts": 0,
+          "modelWork": {
+            "attempts": 0,
+            "completed": 0,
+            "failed": 0,
+            "unknown": 0,
+            "durationMs": 0,
+            "inputChars": 0,
+            "outputChars": 0,
+            "usageObserved": 0,
+            "usagePartial": 0,
+            "usageNotProven": 0,
+            "tokenUsageStatus": "NOT_PROVEN",
+            "tokens": null
+          }
+        },
+        "hookConfigEnabled": false
+      },
+      "isolatedRoot": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-R7XDLK"
+    },
+    "memex_core": {
+      "configuration": {
+        "memories": false,
+        "hooks": true,
+        "plugins": false,
+        "authCopied": true
+      },
+      "preparation": {
+        "status": "prepared"
+      },
+      "budget": {
+        "budgetId": "98712366-80ca-4242-9251-8bc78c26c3e8",
+        "maxAttempts": 28,
+        "reservedAttempts": 0,
+        "state": "active"
+      },
+      "hooks": {
+        "status": "prepared",
+        "exitCode": 0,
+        "durationMs": 145,
+        "detail": "absolute Memex lifecycle handlers registered in isolated CODEX_HOME"
+      },
+      "capture": {
+        "status": "prepared",
+        "exitCode": 0,
+        "durationMs": 177,
+        "capture": {
+          "checkpointId": "5e2fdfad203edc45772f868b4dcb822752f8540605c0278cdebc36b90db46736",
+          "appendedBytes": 107792,
+          "journalPath": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-xqInPh/memex-home/journals/01a07f40-5821-76b3-879c-bd0ea097bfa9/0.jsonl",
+          "capsuleJobId": "a14a04d26278ec19da1786593b4e4deafb8825b903cab08da05105a08ffac544"
+        },
+        "detail": "production captureTranscriptPrefix accepted the frozen rollout"
+      },
+      "processing": {
+        "status": "prepared",
+        "index": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 1108,
+          "stdoutChars": 243,
+          "stderrChars": 105,
+          "stdoutSha256": "a5c1ad6ac7b8938ebb1d414849d61947fd1ee5f242657e517feaca4c52a34ef6",
+          "stderrSha256": "e832a9d8647d36ab2a7e35bff0515333a7a2d7c2be8436d9794216ebcf44d9f7",
+          "usage": null,
+          "turns": {
+            "started": 0,
+            "completed": 0,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "continuityBeforeExtraction": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 27308,
+          "stdoutChars": 0,
+          "stderrChars": 346,
+          "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderrSha256": "c5ae307dc39e381c9fdecf3460fc1a25e67363e8a479a9a7a5b9a3efa8721a73",
+          "usage": null,
+          "turns": {
+            "started": 0,
+            "completed": 0,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "extraction": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 49931,
+          "stdoutChars": 244,
+          "stderrChars": 105,
+          "stdoutSha256": "961586961cd7e05778e67da3603267f0d17045af50c3715ea0fa656c28b7d71c",
+          "stderrSha256": "e832a9d8647d36ab2a7e35bff0515333a7a2d7c2be8436d9794216ebcf44d9f7",
+          "usage": null,
+          "turns": {
+            "started": 0,
+            "completed": 0,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "foregroundBackfill": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 204,
+          "stdoutChars": 168,
+          "stderrChars": 0,
+          "stdoutSha256": "e051381f36b758fe4b5fe4e6b50959c5e12030dc504fa7504053e53afa165261",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "usage": null,
+          "turns": {
+            "started": 0,
+            "completed": 0,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "extractionDrain": {
+          "status": "observed",
+          "targetCount": 1,
+          "latest": {
+            "state": "completed",
+            "item_count": 8,
+            "cursor_ordinal": 8
+          },
+          "pending": 0,
+          "unresolved": [],
+          "detail": null
+        },
+        "continuity": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 159,
+          "stdoutChars": 0,
+          "stderrChars": 0,
+          "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "usage": null,
+          "turns": {
+            "started": 0,
+            "completed": 0,
+            "failed": 0
+          },
+          "detail": null
+        }
+      },
+      "statePaths": {
+        "status": "prepared",
+        "updated": 1,
+        "rolloutPath": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-xqInPh/codex-home/sessions/2026/09/08/rollout-2026-09-08T13-21-58-01a07f40-5821-76b3-879c-bd0ea097bfa9.jsonl",
+        "detail": null
+      },
+      "derivedPaths": {
+        "status": "not-needed"
+      },
+      "metrics": {
+        "exchanges": 8,
+        "facts": 4,
+        "capsules": 1,
+        "relations": 0,
+        "jobsPending": 0,
+        "modelAttempts": 6,
+        "modelWork": {
+          "attempts": 6,
+          "completed": 6,
+          "failed": 0,
+          "unknown": 0,
+          "durationMs": 75406,
+          "inputChars": 89990,
+          "outputChars": 5411,
+          "usageObserved": 6,
+          "usagePartial": 0,
+          "usageNotProven": 0,
+          "tokenUsageStatus": "observed",
+          "tokens": {
+            "input_tokens": 83442,
+            "output_tokens": 2768,
+            "cached_input_tokens": 26880
+          }
+        }
+      },
+      "retrieval": {
+        "status": "observed",
+        "calls": 6,
+        "exact": {
+          "pass": false,
+          "records": [
+            {
+              "query": "src/queue/retry.ts",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 558,
+              "retrieval": {
+                "contextChars": 701,
+                "estimatedTokens": 220,
+                "contextSha256": "db981b6668175af465572405e97e64646787e6e3952344ee8ee1d9702d45a3d4",
+                "exact": [
+                  {
+                    "query": "src/queue/retry.ts",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "acquireLease",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 546,
+              "retrieval": {
+                "contextChars": 769,
+                "estimatedTokens": 242,
+                "contextSha256": "84905829082ddbed65eebb654ec91315f2068c1472fb286816a209b4e5fbf89a",
+                "exact": [
+                  {
+                    "query": "acquireLease",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "E_QUEUE_LEASE_EXPIRED",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 546,
+              "retrieval": {
+                "contextChars": 587,
+                "estimatedTokens": 185,
+                "contextSha256": "448bd11c756fedd09e23f2bd0d2b873b04f41b4930e556244448c67459c84c7c",
+                "exact": [
+                  {
+                    "query": "E_QUEUE_LEASE_EXPIRED",
+                    "hit": false
+                  }
+                ],
+                "exactPass": false,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "src/storage/checkpoint.ts",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 550,
+              "retrieval": {
+                "contextChars": 739,
+                "estimatedTokens": 232,
+                "contextSha256": "49f5e2418c787ef91f20c79edb00c1d69f8334e0d2f752b1b38287b0eb598be7",
+                "exact": [
+                  {
+                    "query": "src/storage/checkpoint.ts",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "E_CHECKPOINT_HASH_MISMATCH",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 574,
+              "retrieval": {
+                "contextChars": 715,
+                "estimatedTokens": 225,
+                "contextSha256": "84f5c3bffa4c478bbbc70455ee5ef16f6d82b4eb87632e3af865ad03ea6de337",
+                "exact": [
+                  {
+                    "query": "E_CHECKPOINT_HASH_MISMATCH",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            }
+          ]
+        },
+        "semantic": {
+          "query": "How should we safely recover when a worker loses ownership before writing its result?",
+          "lane": "semantic",
+          "status": "observed",
+          "durationMs": 558,
+          "retrieval": {
+            "contextChars": 587,
+            "estimatedTokens": 185,
+            "contextSha256": "448bd11c756fedd09e23f2bd0d2b873b04f41b4930e556244448c67459c84c7c",
+            "exact": [],
+            "exactPass": null,
+            "semanticHits": [
+              {
+                "needle": "lease",
+                "hit": true
+              },
+              {
+                "needle": "generation",
+                "hit": true
+              },
+              {
+                "needle": "ownership",
+                "hit": false
+              },
+              {
+                "needle": "commit",
+                "hit": true
+              }
+            ],
+            "semanticPass": true,
+            "forbidden": [
+              {
+                "value": "retryCount=2",
+                "present": false
+              },
+              {
+                "value": "ORANGE_OVERRIDE",
+                "present": false
+              }
+            ],
+            "demotedForbidden": [],
+            "forbiddenPass": true
+          },
+          "error": null
+        }
+      },
+      "host": {
+        "compaction": {
+          "status": "observed",
+          "protocol": "app-server stdio",
+          "sequence": [
+            "thread/resume",
+            "thread/compact/start",
+            "close"
+          ],
+          "resumed": true,
+          "evidence": {
+            "mode": "context-compaction-item",
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a0802e-6f65-7a23-965e-7d1b1f05b739"
+            },
+            "turnCompleted": true,
+            "usage": null
+          },
+          "usage": null,
+          "appServerCalls": 3,
+          "close": {
+            "code": 0,
+            "signal": null
+          },
+          "messagesObserved": 15
+        },
+        "command": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 19694,
+          "stdoutChars": 2157,
+          "stderrChars": 0,
+          "stdoutSha256": "3a5ec406dd26eaf61d8ebe7bc4515e273f43f5863169ef9fae6834a583cf0d11",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "usage": {
+            "input_tokens": 25183,
+            "output_tokens": 525,
+            "cached_input_tokens": 22016
+          },
+          "turns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "hostObservation": {
+          "providerCalls": "NOT_PROVEN: host may issue multiple provider calls per operation",
+          "compactionUsage": null,
+          "queryUsage": {
+            "input_tokens": 25183,
+            "output_tokens": 525,
+            "cached_input_tokens": 22016
+          },
+          "queryTurns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          }
+        },
+        "lifecycle": {
+          "status": "observed",
+          "durationMs": 1912,
+          "state": {
+            "status": "observed",
+            "modelReserved": 0,
+            "memoryJobsRunning": 0,
+            "extractionTargetRunning": 0,
+            "extractionItemsProcessing": 0,
+            "locks": [],
+            "active": false,
+            "detail": null
+          }
+        },
+        "acceptance": {
+          "status": "NOT_PROVEN",
+          "hookObservation": "observed",
+          "hostAcceptance": "NOT_PROVEN: hook observation does not prove host acceptance",
+          "hookEvents": {
+            "SessionStart": 2,
+            "UserPromptSubmit": 1,
+            "Stop": 1,
+            "SessionEnd": 1
+          },
+          "userPromptSubmit": 1,
+          "contextEmitted": 1,
+          "noContextOutcome": 0,
+          "acceptanceEvidence": "Memex UserPromptSubmit hook observed; host acceptance remains NOT_PROVEN"
+        },
+        "output": {
+          "status": "observed",
+          "assistantMessages": 2,
+          "selectedMessageId": "item_3",
+          "responseChars": 636,
+          "responseSha256": "5e461a320e1f8735dfb3fb99ab7ecaf2676c2291904f1d8c92391342b3ebef48",
+          "forbiddenPresent": [],
+          "expectedChecks": [
+            {
+              "key": "retryFunction",
+              "pass": true
+            },
+            {
+              "key": "retryPath",
+              "pass": true
+            },
+            {
+              "key": "retryCount",
+              "pass": true
+            },
+            {
+              "key": "leaseError",
+              "pass": true
+            },
+            {
+              "key": "verifiedCases",
+              "pass": true
+            },
+            {
+              "key": "evidencePath",
+              "pass": true
+            },
+            {
+              "key": "checkpointFunction",
+              "pass": true
+            },
+            {
+              "key": "checkpointError",
+              "pass": true
+            },
+            {
+              "key": "leaseRepairContains",
+              "pass": true
+            },
+            {
+              "key": "hypothesisStatusContains",
+              "pass": true
+            },
+            {
+              "key": "blockerContains",
+              "pass": true
+            },
+            {
+              "key": "nextActionContains",
+              "pass": true
+            },
+            {
+              "key": "checkpointActionContains",
+              "pass": true
+            }
+          ],
+          "expectedPass": true,
+          "outputOnlyEvidence": true
+        },
+        "metricsAfter": {
+          "exchanges": 8,
+          "facts": 4,
+          "capsules": 1,
+          "relations": 0,
+          "jobsPending": 3,
+          "modelAttempts": 6,
+          "modelWork": {
+            "attempts": 6,
+            "completed": 6,
+            "failed": 0,
+            "unknown": 0,
+            "durationMs": 75406,
+            "inputChars": 89990,
+            "outputChars": 5411,
+            "usageObserved": 6,
+            "usagePartial": 0,
+            "usageNotProven": 0,
+            "tokenUsageStatus": "observed",
+            "tokens": {
+              "input_tokens": 83442,
+              "output_tokens": 2768,
+              "cached_input_tokens": 26880
+            }
+          }
+        },
+        "hookConfigEnabled": true
+      },
+      "isolatedRoot": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-xqInPh"
+    },
+    "memex_core_plus_optional": {
+      "configuration": {
+        "memories": false,
+        "hooks": true,
+        "plugins": false,
+        "authCopied": true
+      },
+      "preparation": {
+        "status": "prepared"
+      },
+      "budget": "98712366-80ca-4242-9251-8bc78c26c3e8",
+      "hooks": {
+        "status": "prepared",
+        "exitCode": 0,
+        "durationMs": 143,
+        "detail": "absolute Memex lifecycle handlers registered in isolated CODEX_HOME"
+      },
+      "capture": null,
+      "processing": {
+        "optional": [
+          {
+            "feature": "ontology",
+            "command": "/Users/choebongsu/Documents/memex/scripts/backfill-ontology-worker.js --max 8",
+            "status": "PASS",
+            "exitCode": 0,
+            "signal": null,
+            "timedOut": false,
+            "durationMs": 8635,
+            "stdoutChars": 343,
+            "stderrChars": 105,
+            "stdoutSha256": "d6d5bba84d419c1cc12c883fbdeba686ba2ed43016b17202ec83e34b5b1f74b3",
+            "stderrSha256": "e832a9d8647d36ab2a7e35bff0515333a7a2d7c2be8436d9794216ebcf44d9f7",
+            "usage": null,
+            "turns": {
+              "started": 0,
+              "completed": 0,
+              "failed": 0
+            },
+            "detail": null
+          },
+          {
+            "feature": "relations",
+            "status": "PASS",
+            "includedIn": "ontology invocation via BACKFILL_RELATIONS=1"
+          }
+        ]
+      },
+      "statePaths": {
+        "status": "prepared",
+        "updated": 1,
+        "rolloutPath": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-4qb5Tf/codex-home/sessions/2026/09/08/rollout-2026-09-08T13-21-58-01a07f40-5821-76b3-879c-bd0ea097bfa9.jsonl",
+        "detail": null
+      },
+      "derivedPaths": {
+        "status": "prepared",
+        "updated": 12,
+        "missing": [],
+        "sourceUpdated": true,
+        "detail": null
+      },
+      "metrics": {
+        "exchanges": 8,
+        "facts": 4,
+        "capsules": 1,
+        "relations": 0,
+        "jobsPending": 0,
+        "modelAttempts": 7,
+        "modelWork": {
+          "attempts": 7,
+          "completed": 7,
+          "failed": 0,
+          "unknown": 0,
+          "durationMs": 83260,
+          "inputChars": 92343,
+          "outputChars": 5937,
+          "usageObserved": 7,
+          "usagePartial": 0,
+          "usageNotProven": 0,
+          "tokenUsageStatus": "observed",
+          "tokens": {
+            "input_tokens": 94498,
+            "output_tokens": 2973,
+            "cached_input_tokens": 26880
+          }
+        }
+      },
+      "retrieval": {
+        "status": "observed",
+        "calls": 6,
+        "exact": {
+          "pass": false,
+          "records": [
+            {
+              "query": "src/queue/retry.ts",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 633,
+              "retrieval": {
+                "contextChars": 701,
+                "estimatedTokens": 220,
+                "contextSha256": "db981b6668175af465572405e97e64646787e6e3952344ee8ee1d9702d45a3d4",
+                "exact": [
+                  {
+                    "query": "src/queue/retry.ts",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "acquireLease",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 571,
+              "retrieval": {
+                "contextChars": 769,
+                "estimatedTokens": 242,
+                "contextSha256": "84905829082ddbed65eebb654ec91315f2068c1472fb286816a209b4e5fbf89a",
+                "exact": [
+                  {
+                    "query": "acquireLease",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "E_QUEUE_LEASE_EXPIRED",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 580,
+              "retrieval": {
+                "contextChars": 587,
+                "estimatedTokens": 185,
+                "contextSha256": "448bd11c756fedd09e23f2bd0d2b873b04f41b4930e556244448c67459c84c7c",
+                "exact": [
+                  {
+                    "query": "E_QUEUE_LEASE_EXPIRED",
+                    "hit": false
+                  }
+                ],
+                "exactPass": false,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "src/storage/checkpoint.ts",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 560,
+              "retrieval": {
+                "contextChars": 739,
+                "estimatedTokens": 232,
+                "contextSha256": "49f5e2418c787ef91f20c79edb00c1d69f8334e0d2f752b1b38287b0eb598be7",
+                "exact": [
+                  {
+                    "query": "src/storage/checkpoint.ts",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            },
+            {
+              "query": "E_CHECKPOINT_HASH_MISMATCH",
+              "lane": "exact-identifier",
+              "status": "observed",
+              "durationMs": 637,
+              "retrieval": {
+                "contextChars": 715,
+                "estimatedTokens": 225,
+                "contextSha256": "84f5c3bffa4c478bbbc70455ee5ef16f6d82b4eb87632e3af865ad03ea6de337",
+                "exact": [
+                  {
+                    "query": "E_CHECKPOINT_HASH_MISMATCH",
+                    "hit": true
+                  }
+                ],
+                "exactPass": true,
+                "semanticHits": [
+                  {
+                    "needle": "lease",
+                    "hit": true
+                  },
+                  {
+                    "needle": "generation",
+                    "hit": true
+                  },
+                  {
+                    "needle": "ownership",
+                    "hit": false
+                  },
+                  {
+                    "needle": "commit",
+                    "hit": true
+                  }
+                ],
+                "semanticPass": true,
+                "forbidden": [
+                  {
+                    "value": "retryCount=2",
+                    "present": false
+                  },
+                  {
+                    "value": "ORANGE_OVERRIDE",
+                    "present": false
+                  }
+                ],
+                "demotedForbidden": [],
+                "forbiddenPass": true
+              },
+              "error": null
+            }
+          ]
+        },
+        "semantic": {
+          "query": "How should we safely recover when a worker loses ownership before writing its result?",
+          "lane": "semantic",
+          "status": "observed",
+          "durationMs": 581,
+          "retrieval": {
+            "contextChars": 587,
+            "estimatedTokens": 185,
+            "contextSha256": "448bd11c756fedd09e23f2bd0d2b873b04f41b4930e556244448c67459c84c7c",
+            "exact": [],
+            "exactPass": null,
+            "semanticHits": [
+              {
+                "needle": "lease",
+                "hit": true
+              },
+              {
+                "needle": "generation",
+                "hit": true
+              },
+              {
+                "needle": "ownership",
+                "hit": false
+              },
+              {
+                "needle": "commit",
+                "hit": true
+              }
+            ],
+            "semanticPass": true,
+            "forbidden": [
+              {
+                "value": "retryCount=2",
+                "present": false
+              },
+              {
+                "value": "ORANGE_OVERRIDE",
+                "present": false
+              }
+            ],
+            "demotedForbidden": [],
+            "forbiddenPass": true
+          },
+          "error": null
+        }
+      },
+      "host": {
+        "compaction": {
+          "status": "observed",
+          "protocol": "app-server stdio",
+          "sequence": [
+            "thread/resume",
+            "thread/compact/start",
+            "close"
+          ],
+          "resumed": true,
+          "evidence": {
+            "mode": "context-compaction-item",
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a0802f-1f02-7ee0-9407-7e97cc2cbd85"
+            },
+            "turnCompleted": true,
+            "usage": null
+          },
+          "usage": null,
+          "appServerCalls": 3,
+          "close": {
+            "code": 0,
+            "signal": null
+          },
+          "messagesObserved": 15
+        },
+        "command": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 13450,
+          "stdoutChars": 1772,
+          "stderrChars": 0,
+          "stdoutSha256": "b4f73f1aa7c24a015ea10aee1bb85172fb79367c3340077a16f41294fb9a2bbc",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "usage": {
+            "input_tokens": 25148,
+            "output_tokens": 338,
+            "cached_input_tokens": 22016
+          },
+          "turns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "hostObservation": {
+          "providerCalls": "NOT_PROVEN: host may issue multiple provider calls per operation",
+          "compactionUsage": null,
+          "queryUsage": {
+            "input_tokens": 25148,
+            "output_tokens": 338,
+            "cached_input_tokens": 22016
+          },
+          "queryTurns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          }
+        },
+        "lifecycle": {
+          "status": "observed",
+          "durationMs": 1800,
+          "state": {
+            "status": "observed",
+            "modelReserved": 0,
+            "memoryJobsRunning": 0,
+            "extractionTargetRunning": 0,
+            "extractionItemsProcessing": 0,
+            "locks": [],
+            "active": false,
+            "detail": null
+          }
+        },
+        "acceptance": {
+          "status": "NOT_PROVEN",
+          "hookObservation": "observed",
+          "hostAcceptance": "NOT_PROVEN: hook observation does not prove host acceptance",
+          "hookEvents": {
+            "SessionStart": 2,
+            "UserPromptSubmit": 1,
+            "Stop": 1,
+            "SessionEnd": 1
+          },
+          "userPromptSubmit": 1,
+          "contextEmitted": 1,
+          "noContextOutcome": 0,
+          "acceptanceEvidence": "Memex UserPromptSubmit hook observed; host acceptance remains NOT_PROVEN"
+        },
+        "output": {
+          "status": "observed",
+          "assistantMessages": 2,
+          "selectedMessageId": "item_3",
+          "responseChars": 265,
+          "responseSha256": "15e0220d440952177238382a45aa72c2ff6ccae01bdb1c207c66133d1ddfcc49",
+          "forbiddenPresent": [],
+          "expectedChecks": [
+            {
+              "key": "retryFunction",
+              "pass": false
+            },
+            {
+              "key": "retryPath",
+              "pass": false
+            },
+            {
+              "key": "retryCount",
+              "pass": false
+            },
+            {
+              "key": "leaseError",
+              "pass": false
+            },
+            {
+              "key": "verifiedCases",
+              "pass": false
+            },
+            {
+              "key": "evidencePath",
+              "pass": false
+            },
+            {
+              "key": "checkpointFunction",
+              "pass": false
+            },
+            {
+              "key": "checkpointError",
+              "pass": false
+            },
+            {
+              "key": "leaseRepairContains",
+              "pass": false
+            },
+            {
+              "key": "hypothesisStatusContains",
+              "pass": false
+            },
+            {
+              "key": "blockerContains",
+              "pass": false
+            },
+            {
+              "key": "nextActionContains",
+              "pass": false
+            },
+            {
+              "key": "checkpointActionContains",
+              "pass": false
+            }
+          ],
+          "expectedPass": false,
+          "outputOnlyEvidence": true
+        },
+        "metricsAfter": {
+          "exchanges": 8,
+          "facts": 4,
+          "capsules": 1,
+          "relations": 0,
+          "jobsPending": 3,
+          "modelAttempts": 7,
+          "modelWork": {
+            "attempts": 7,
+            "completed": 7,
+            "failed": 0,
+            "unknown": 0,
+            "durationMs": 83260,
+            "inputChars": 92343,
+            "outputChars": 5937,
+            "usageObserved": 7,
+            "usagePartial": 0,
+            "usageNotProven": 0,
+            "tokenUsageStatus": "observed",
+            "tokens": {
+              "input_tokens": 94498,
+              "output_tokens": 2973,
+              "cached_input_tokens": 26880
+            }
+          }
+        },
+        "hookConfigEnabled": true
+      },
+      "isolatedRoot": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-4qb5Tf"
+    },
+    "codex_builtin_memory": {
+      "configuration": {
+        "memories": true,
+        "hooks": false,
+        "plugins": false,
+        "authCopied": true
+      },
+      "preparation": {
+        "status": "not-applicable"
+      },
+      "budget": null,
+      "hooks": null,
+      "capture": null,
+      "processing": null,
+      "statePaths": {
+        "status": "prepared",
+        "updated": 1,
+        "rolloutPath": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-RnUWTy/codex-home/sessions/2026/09/08/rollout-2026-09-08T13-21-58-01a07f40-5821-76b3-879c-bd0ea097bfa9.jsonl",
+        "detail": null
+      },
+      "derivedPaths": {
+        "status": "not-needed"
+      },
+      "metrics": null,
+      "retrieval": null,
+      "host": {
+        "compaction": {
+          "status": "observed",
+          "protocol": "app-server stdio",
+          "sequence": [
+            "thread/resume",
+            "thread/compact/start",
+            "close"
+          ],
+          "resumed": true,
+          "evidence": {
+            "mode": "context-compaction-item",
+            "item": {
+              "type": "contextCompaction",
+              "id": "01a0802f-86fc-71f0-b733-36717a46bf32"
+            },
+            "turnCompleted": true,
+            "usage": null
+          },
+          "usage": null,
+          "appServerCalls": 3,
+          "close": {
+            "code": 0,
+            "signal": null
+          },
+          "messagesObserved": 15
+        },
+        "command": {
+          "status": "PASS",
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "durationMs": 8182,
+          "stdoutChars": 1026,
+          "stderrChars": 134,
+          "stdoutSha256": "707f1ad0ef92b213fc148d7351c26de6f507cf07c0e4763117b2c426e7ee80a1",
+          "stderrSha256": "4f5a55e807dc5e6504b5a6900d419b34142ef6035bfb7a1707186fff5e6ee5c0",
+          "usage": {
+            "input_tokens": 12067,
+            "output_tokens": 195,
+            "cached_input_tokens": 9984
+          },
+          "turns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          },
+          "detail": null
+        },
+        "hostObservation": {
+          "providerCalls": "NOT_PROVEN: host may issue multiple provider calls per operation",
+          "compactionUsage": null,
+          "queryUsage": {
+            "input_tokens": 12067,
+            "output_tokens": 195,
+            "cached_input_tokens": 9984
+          },
+          "queryTurns": {
+            "started": 1,
+            "completed": 1,
+            "failed": 0
+          }
+        },
+        "lifecycle": {
+          "status": "observed",
+          "durationMs": 1947,
+          "state": {
+            "status": "observed",
+            "modelReserved": 0,
+            "memoryJobsRunning": 0,
+            "extractionTargetRunning": 0,
+            "extractionItemsProcessing": 0,
+            "locks": [],
+            "active": false,
+            "detail": null
+          }
+        },
+        "acceptance": {
+          "status": "NOT_PROVEN",
+          "hookObservation": "NOT_PROVEN",
+          "hostAcceptance": "NOT_PROVEN: hook observation does not prove host acceptance",
+          "hookEvents": {},
+          "userPromptSubmit": 0,
+          "contextEmitted": 0,
+          "noContextOutcome": 0,
+          "acceptanceEvidence": "no isolated hook event observed"
+        },
+        "output": {
+          "status": "observed",
+          "assistantMessages": 1,
+          "selectedMessageId": "item_0",
+          "responseChars": 633,
+          "responseSha256": "3e09a9c61bd8b07caaeda566301a293b8e03a44c85298f2f5a83c3cb644ae1e2",
+          "forbiddenPresent": [],
+          "expectedChecks": [
+            {
+              "key": "retryFunction",
+              "pass": true
+            },
+            {
+              "key": "retryPath",
+              "pass": true
+            },
+            {
+              "key": "retryCount",
+              "pass": true
+            },
+            {
+              "key": "leaseError",
+              "pass": true
+            },
+            {
+              "key": "verifiedCases",
+              "pass": true
+            },
+            {
+              "key": "evidencePath",
+              "pass": true
+            },
+            {
+              "key": "checkpointFunction",
+              "pass": true
+            },
+            {
+              "key": "checkpointError",
+              "pass": true
+            },
+            {
+              "key": "leaseRepairContains",
+              "pass": true
+            },
+            {
+              "key": "hypothesisStatusContains",
+              "pass": true
+            },
+            {
+              "key": "blockerContains",
+              "pass": true
+            },
+            {
+              "key": "nextActionContains",
+              "pass": true
+            },
+            {
+              "key": "checkpointActionContains",
+              "pass": true
+            }
+          ],
+          "expectedPass": true,
+          "outputOnlyEvidence": true
+        },
+        "metricsAfter": {
+          "exchanges": 0,
+          "facts": 0,
+          "capsules": 0,
+          "relations": 0,
+          "jobsPending": 0,
+          "modelAttempts": 0,
+          "modelWork": {
+            "attempts": 0,
+            "completed": 0,
+            "failed": 0,
+            "unknown": 0,
+            "durationMs": 0,
+            "inputChars": 0,
+            "outputChars": 0,
+            "usageObserved": 0,
+            "usagePartial": 0,
+            "usageNotProven": 0,
+            "tokenUsageStatus": "NOT_PROVEN",
+            "tokens": null
+          }
+        },
+        "hookConfigEnabled": false
+      },
+      "isolatedRoot": "/var/folders/4y/xjgtdy595014zznf8qk631gc0000gn/T/memex-comparison-arm-RnUWTy"
+    }
+  },
+  "optional": {
+    "components": [
+      "ontology",
+      "relations"
+    ],
+    "API": {
+      "ontology": "scripts/backfill-ontology-worker.js --max 8",
+      "relations": "BACKFILL_RELATIONS=1 scripts/backfill-ontology-worker.js --max 8",
+      "consolidation": "scripts/fact-consolidate-worker.js"
+    },
+    "preparationSharedWithOptional": true
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "execution": {
+    "status": "PASS-WITH-NOTES"
+  },
+  "quality": {
+    "compaction_only": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "NOT_APPLICABLE"
+    },
+    "memex_core": {
+      "status": "FAIL",
+      "misses": [
+        "exact identifier retrieval miss"
+      ],
+      "retrievalStatus": "observed"
+    },
+    "memex_core_plus_optional": {
+      "status": "FAIL",
+      "misses": [
+        "exact identifier retrieval miss",
+        "host expected answer mismatch"
+      ],
+      "retrievalStatus": "observed"
+    },
+    "codex_builtin_memory": {
+      "status": "PASS",
+      "misses": [],
+      "retrievalStatus": "NOT_APPLICABLE"
+    },
+    "status": "FAIL"
+  },
+  "limitations": [
+    "Codex built-in memory generation is asynchronous; empty native state remains NOT_PROVEN.",
+    "Host consumption is NOT_PROVEN when --run-host is omitted or hooks do not emit observable output.",
+    "Expected answers are evaluator-only and are never placed in prompts or memory state."
+  ]
+}
