@@ -55,6 +55,7 @@ import {
 } from "./continuity-store.js";
 import {
   deferMemoryJobForModelBudget,
+  findExhaustedModelBudgetForClaim,
   isAutomaticOntologyEnabled,
   isModelBudgetExhausted,
   withResolvedModelWorkContext,
@@ -2826,6 +2827,8 @@ export async function runFactExtraction(
     | "excluded_project_unmarked"
     | "failed_visible"
     | "budget_exhausted";
+  /** Only for `budget_exhausted`: which exhaustion fenced this session. */
+  budgetReason?: "attempts" | "deadline" | "cancelled" | "window";
 }> {
   if (isExcludedProject(project)) {
     try {
@@ -2878,7 +2881,31 @@ export async function runFactExtraction(
   if (target.state === "dead") {
     return { extracted: 0, saved: 0, skipped: "failed_visible" };
   }
-  const claimed = claimExtractionTarget(db, target);
+  // 🚨 이슈 #12 — 선점보다 **예산 확정이 먼저**다.
+  // 선점은 memory_jobs.attempts 를 1 태우는 되돌릴 수 없는 쓰기다. 예산 해석은
+  // 지금까지 모델 호출 직전(withResolvedModelWorkContext) 에야 일어났고, 그때
+  // deadline 이 이미 지난 예산이면 reserveModelAttempt 가 **attempt 행을 만들기
+  // 전에** 던져서 — 공급자 호출은 0회인데 — attempts=1 과 1시간 backoff 만 남았다.
+  // 같은 wake 가 26초 뒤 새 예산을 만들어도 유일한 작업은 backoff 안이라 창이 통째로
+  // 비었다. 죽은 예산이 추출기에 도달하지 못하게 선점 전에 막는다.
+  const claimedAt = new Date();
+  const spentBudget = findExhaustedModelBudgetForClaim(db, {
+    jobId: target.jobId,
+    budgetId:
+      _opts?.modelContext?.budgetId?.trim() ||
+      process.env.MEMEX_MODEL_BUDGET_ID?.trim() ||
+      null,
+    now: claimedAt,
+  });
+  if (spentBudget) {
+    return {
+      extracted: 0,
+      saved: 0,
+      skipped: "budget_exhausted",
+      budgetReason: spentBudget.reason,
+    };
+  }
+  const claimed = claimExtractionTarget(db, target, undefined, claimedAt);
   if (!claimed) {
     return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
   }
@@ -2963,6 +2990,10 @@ export async function runFactExtraction(
     });
   } catch (error) {
     if (isModelBudgetExhausted(error)) {
+      // 🚨 이슈 #12 안전망. 위의 사전 확인과 예약 사이에서 deadline/window 가
+      // 넘어가는 경주가 남아 있다. `claimedAt` 을 넘기면 이 선점이 공급자 attempt
+      // 를 **한 번도** 쓰지 않은 경우에 한해 선점이 태운 attempt 를 환불하고
+      // 1시간 backoff 대신 즉시 pending 으로 돌려놓는다(attempts 소진은 종전대로).
       deferMemoryJobForModelBudget(db, {
         jobId: target.jobId,
         budgetId: error.budgetId,
@@ -2971,8 +3002,14 @@ export async function runFactExtraction(
         leaseGeneration: claimed.leaseGeneration,
         reason: error.reason,
         now: new Date(),
+        claimedAt,
       });
-      return { extracted: 0, saved: 0, skipped: "budget_exhausted" };
+      return {
+        extracted: 0,
+        saved: 0,
+        skipped: "budget_exhausted",
+        budgetReason: error.reason,
+      };
     }
     const kind = classifyLlmError(error);
     if (!(error instanceof ClaimLostError)) {

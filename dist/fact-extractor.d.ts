@@ -228,4 +228,6 @@ export declare function runFactExtraction(db: Database.Database, sessionId: stri
     extracted: number;
     saved: number;
     skipped?: "claim_not_acquired" | "claim_error" | "excluded_project" | "excluded_project_unmarked" | "failed_visible" | "budget_exhausted";
+    /** Only for `budget_exhausted`: which exhaustion fenced this session. */
+    budgetReason?: "attempts" | "deadline" | "cancelled" | "window";
 }>;

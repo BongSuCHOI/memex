@@ -272,8 +272,11 @@ async function main() {
             );
           } else if (result.skipped === "budget_exhausted") {
             buckets.budget_exhausted += 1;
+            // 사유(deadline/attempts/window/cancelled)를 남긴다 — "왜 멈췄는지"가
+            // 없으면 시계로 죽은 예산과 정말 다 쓴 예산을 구분할 수 없다(이슈 #12).
             log(
-              `session ${next.sid}: DEFERRED (budget_exhausted) — exact target/cursor 보존, 새 model run 전까지 pending`,
+              `session ${next.sid}: DEFERRED (budget_exhausted${result.budgetReason ? `: ${result.budgetReason}` : ""})` +
+                " — exact target/cursor 보존, 새 model run 전까지 pending",
             );
           } else if (result.skipped === "failed_visible") {
             buckets.dead += 1;
