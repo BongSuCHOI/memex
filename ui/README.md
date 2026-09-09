@@ -9,7 +9,7 @@
 - `lib/core.cjs`: 기존 `dist/db.js`, `fact-management.js`, `pipeline-status.js` 연결
 - `lib/logs.cjs`: 제한된 로그 tail, UI 감사 메타데이터
 - `lib/operations.cjs`: 기존 CLI allowlist 실행, 취소, 출력 제한
-- `public/pages/`: 개요, 대화 원장, 기억, 분류, 지도, 활동, 관리
+- `public/pages/`: 개요, 대화 원장, 기억·사실, 분류, 지도, 활동, 관리
 - `public/details.mjs`: 기억·대화·작업·모델 시도·Chronicle·관리 실행 상세
 - `public/graph-engine.mjs`: 네이티브 WebGL, Canvas2D fallback
 

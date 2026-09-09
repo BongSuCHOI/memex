@@ -7,6 +7,19 @@ test('project includes globals and excludes unpromoted local facts',()=>{const s
 test('global inclusion is independently switchable',()=>assert.equal(store.facts(q({state:'all'}),scope({scope:'project',project:PROJECT,includeGlobal:'0'})).total,64));
 test('explicit all projects reveals the complete fixture',()=>assert.equal(store.facts(q({state:'all'}),scope({scope:'all'})).total,84));
 test('the scope total is reported next to the filtered total',()=>{const s=scope({scope:'all'});assert.equal(store.facts(q({state:'all'}),s).scopeTotal,84);const none=store.facts(q({q:'존재하지 않는 문자열'}),s);assert.equal(none.total,0);assert.equal(none.scopeTotal,84);assert.equal(store.facts(q(),scope()).scopeTotal,6);assert.equal(store.facts(q(),scope({scope:'project',project:OTHER,includeGlobal:'0'})).scopeTotal,12);});
+test('범위 선택 라벨용 기억 수는 활성 기억만 프로젝트별로 센다',()=>{
+ const list=store.projects();
+ const memex=list.find(x=>x.project===PROJECT),other=list.find(x=>x.project===OTHER);
+ // 라벨의 수는 계층과 무관하게 그 프로젝트에 저장된 활성 기억이다. 기본 술어가 감추는 브랜치 계층 기억도 포함한다(#22).
+ const stored=p=>store.count("SELECT COUNT(*) AS n FROM facts WHERE is_active=1 AND scope_type='project' AND scope_project=?",[p]);
+ assert.equal(memex.facts,stored(PROJECT));
+ assert.equal(other.facts,stored(OTHER));
+ assert(memex.facts>store.facts(q({limit:'200'}),scope({scope:'project',project:PROJECT,includeGlobal:'0'})).total,'계층으로 가려진 기억이 수에서 빠졌습니다');
+ const totals=store.factTotals();
+ assert.equal(totals.global,store.facts(q(),scope()).total);
+ assert.equal(totals.all,store.facts(q({limit:'200'}),scope({scope:'all'})).total);
+ assert.equal(totals.all,memex.facts+other.facts+totals.global);
+});
 test('workspace scope adds only matching promoted rows',()=>{const s=scope({scope:'project',project:PROJECT,workspace:'workspace-0'});assert.equal(store.facts(q({state:'all'}),s).total,71);});
 test('workstream selection adds only its local facts',()=>{const s=scope({scope:'project',project:PROJECT,workspace:'workspace-0',workstream:'stream-5'});assert.equal(store.facts(q({state:'all'}),s).total,72);});
 test('foreign workspace and malformed scopes fail closed',()=>{assert.throws(()=>scope({scope:'project',project:PROJECT,workspace:'workspace-1'}),{status:403});assert.throws(()=>scope({scope:'project',project:'relative/path'}),{status:400});assert.throws(()=>scope({scope:'all',project:PROJECT}),{status:400});assert.throws(()=>scope({scope:'unknown'}),{status:400});});

@@ -104,7 +104,30 @@ class Store {
         if (!known.has(r.project)) { rows.push({ ...r, exchanges:0, sessions:0 }); known.add(r.project); }
       }
     }
-    return rows.filter(r => r.project && r.project.startsWith('/')).map(r => ({ ...r, name: r.project.split('/').filter(Boolean).pop() || '/' }));
+    const list = rows.filter(r => r.project && r.project.startsWith('/')).map(r => ({ ...r, name: r.project.split('/').filter(Boolean).pop() || '/' }));
+    // Scope selector counts. Identity resolution mirrors factWhere(): a stable project_id wins,
+    // and a path-only row counts only while it carries no project_id of its own.
+    if (this.has('facts', 'scope_project')) {
+      const idByPath = new Map();
+      if (this.has('workspaces', 'project_id')) for (const w of this.all('SELECT canonical_path, project_id FROM workspaces')) if (w.project_id && !idByPath.has(w.canonical_path)) idByPath.set(w.canonical_path, w.project_id);
+      const byId = new Map(), byPath = new Map();
+      const hasId = this.has('facts', 'project_id');
+      for (const r of this.all(`SELECT f.scope_project AS project, ${hasId ? 'f.project_id' : 'NULL AS project_id'}, COUNT(*) AS n FROM facts f WHERE f.scope_type='project' AND f.is_active=1 GROUP BY f.scope_project, ${hasId ? 'f.project_id' : "''"}`)) {
+        const n = Number(r.n || 0);
+        if (r.project_id) byId.set(r.project_id, (byId.get(r.project_id) || 0) + n);
+        else if (r.project) byPath.set(r.project, (byPath.get(r.project) || 0) + n);
+      }
+      for (const row of list) {
+        const projectId = row.project_id || idByPath.get(row.project) || null;
+        row.facts = (projectId ? byId.get(projectId) || 0 : 0) + (byPath.get(row.project) || 0);
+      }
+    }
+    return list;
+  }
+  /** Totals behind the scope selector labels. Active facts only; null when the table is absent. */
+  factTotals() {
+    if (!this.has('facts')) return null;
+    return { all: this.count('SELECT COUNT(*) AS n FROM facts WHERE is_active=1'), global: this.count("SELECT COUNT(*) AS n FROM facts WHERE is_active=1 AND scope_type='global'") };
   }
   scopeOptions(s) {
     if (!s.projectId) return { workspaces: [], workstreams: [] };

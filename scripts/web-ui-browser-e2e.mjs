@@ -1239,6 +1239,74 @@ try {
   const projectScope =
     "?scope=project&project=" + encodeURIComponent(CONTEXT_PROJECT);
 
+  // #24: with no scope in the URL the workspace must land on 전체 프로젝트 (조회), not
+  // common memory. This probe runs before anything that calls changeScope(), because
+  // the browser profile is shared and a persisted scope would mask the default.
+  const scopeDefaults = await pageProbe(
+    cdp,
+    base + "/facts",
+    probe(`
+      await until('facts row',()=>document.querySelector('#main .data-table .fact-text'));
+      const select=document.querySelector('#scope-select');
+      const hint=document.querySelector('#scope-hint');
+      return {
+        urlScope:new URL(location.href).searchParams.get('scope'),
+        selected:select.value,
+        options:[...select.options].map(o=>o.textContent.trim()),
+        groups:[...select.querySelectorAll('optgroup')].map(g=>g.label),
+        navLabels:[...document.querySelectorAll('#sidebar .nav-item .nav-label')].map(x=>x.textContent),
+        heading:text('#main .page-header h1'),
+        title:document.title,
+        hint:hint?.textContent?.trim()||'',
+        hintTitle:hint?.getAttribute('title')||'',
+        scopeLine:text('#topbar .scope-line'),
+      };
+    `),
+    "facts-default-scope.png",
+    false,
+  );
+
+  // #26: /facts?fact=<id> opens the same drawer as the /facts/<id> path form.
+  const factDeepLink = await pageProbe(
+    cdp,
+    base + "/facts?scope=all&fact=" + encodeURIComponent(factId),
+    probe(`
+      await until('deep-linked drawer',()=>document.querySelector('#detail[open] .drawer-meta'));
+      const params=new URL(location.href).searchParams;
+      return {
+        factId:text('#detail .drawer-meta'),
+        panel:params.get('panel'),
+        item:params.get('item'),
+        leftoverFactParam:params.get('fact'),
+      };
+    `),
+    "facts-deep-link.png",
+    false,
+  );
+
+  // #24: common memory has no conversations, so the banner must switch scope in one click.
+  const scopeSwitch = await pageProbe(
+    cdp,
+    base + "/conversations?scope=global",
+    probe(`
+      const button=await until('scope switch',()=>document.querySelector('#main [data-action="scope-all"]'));
+      const bannerText=text('#main .banner');
+      button.click();
+      await until('scope switched',()=>new URL(location.href).searchParams.get('scope')==='all');
+      // The gate fixture stores one session-less exchange, so the ledger legitimately
+      // renders its empty state here; what must change is the scope, not the row count.
+      await until('ledger rendered',()=>document.querySelector('#main .session-card')||document.querySelector('#main .empty'));
+      return {
+        bannerText,
+        scope:new URL(location.href).searchParams.get('scope'),
+        selected:document.querySelector('#scope-select').value,
+        bannerCleared:!document.querySelector('#main [data-action="scope-all"]'),
+      };
+    `),
+    "conversations-scope-switch.png",
+    false,
+  );
+
   const facts = await pageProbe(
     cdp,
     base + "/facts" + allScope,
@@ -1546,12 +1614,51 @@ try {
   );
 
   if (
+    scopeDefaults.urlScope !== "all" ||
+    scopeDefaults.selected !== "all" ||
+    !scopeDefaults.options[0]?.startsWith("전체 프로젝트 (조회)") ||
+    !scopeDefaults.options[1]?.startsWith("공통 기억") ||
+    !scopeDefaults.options.slice(0, 2).every((o) => /기억 \d/.test(o)) ||
+    !scopeDefaults.groups.includes("프로젝트") ||
+    !scopeDefaults.navLabels.includes("기억·사실") ||
+    scopeDefaults.heading !== "기억·사실" ||
+    !scopeDefaults.title.startsWith("기억·사실 · ") ||
+    !scopeDefaults.hint.includes("주입") ||
+    !scopeDefaults.hintTitle.includes("공통 기억") ||
+    !scopeDefaults.scopeLine.includes("조회 전용")
+  ) {
+    throw new Error(
+      "Default scope assertion failed: " + JSON.stringify(scopeDefaults),
+    );
+  }
+  if (
+    factDeepLink.factId !== factId ||
+    factDeepLink.panel !== "fact" ||
+    factDeepLink.item !== factId ||
+    factDeepLink.leftoverFactParam !== null
+  ) {
+    throw new Error(
+      "fact= deep link assertion failed: " + JSON.stringify(factDeepLink),
+    );
+  }
+  if (
+    scopeSwitch.scope !== "all" ||
+    scopeSwitch.selected !== "all" ||
+    !scopeSwitch.bannerText.includes("공통 기억 범위에는 대화가 없습니다") ||
+    !scopeSwitch.bannerCleared
+  ) {
+    throw new Error(
+      "Common-scope switch assertion failed: " + JSON.stringify(scopeSwitch),
+    );
+  }
+  if (
     facts.hasInjectedImage ||
     facts.injectedFlag ||
     facts.rowCount !== 1 ||
     facts.pageOverflowX ||
     !facts.factText.includes("한글 사실") ||
     facts.navItems.length !== 7 ||
+    facts.navItems[2] !== "기억·사실" ||
     facts.scopeSelected !== "all"
   ) {
     throw new Error("Facts browser assertion failed: " + JSON.stringify(facts));
@@ -1699,6 +1806,9 @@ try {
         },
         verdict: "PASS",
         checks: {
+          scopeDefaults,
+          factDeepLink,
+          scopeSwitch,
           facts,
           factDetail,
           factsTaxonomy,

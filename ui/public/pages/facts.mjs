@@ -8,7 +8,7 @@ export async function render(ctx){
   // 분류는 파생 정보라 범위 밖의 값이 딥링크로 들어올 수 있다. 선택값은 목록에 없어도 잃지 않는다.
   const taxonomySelect=`<select name="taxonomy" aria-label="주제 분류"><option value="" ${taxonomy?'':'selected'}>전체 분류</option>${tax.available?`<option value="unclassified" ${taxonomy==='unclassified'?'selected':''}>미분류 · 분류 대기${tax.unclassified===null||tax.unclassified===undefined?'':' · '+number(tax.unclassified)+'개'}</option>`:''}${groups}${taxonomy&&taxonomy!=='unclassified'&&!known.has(taxonomy)?`<option value="${esc(taxonomy)}" selected>${esc(taxonomy)} · 현재 범위 밖</option>`:''}</select>`;
   const filtered=!!(q||category||taxonomy||state!=='active');
-  const html=`${header('기억','Memex가 기억하는 내용과, 그 기억을 뒷받침하는 근거를 확인하세요.',`${btn('현재 페이지 내보내기','download','data-action="export-facts"')}`,'MEMORY / FACTS')}
+  const html=`${header('기억·사실','Memex가 기억하는 내용과, 그 기억을 뒷받침하는 근거를 확인하세요.',`${btn('현재 페이지 내보내기','download','data-action="export-facts"')}`,'MEMORY / FACTS')}
   <form class="toolbar" data-filter>${searchField(q,'기억 내용 검색 · 원문과 한국어')}
   <select name="state" aria-label="기억 상태">${options([['active','활성 기억'],['inactive','비활성 기억'],['all','모든 상태']],state)}</select>
   ${taxonomySelect}

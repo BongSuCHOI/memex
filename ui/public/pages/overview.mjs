@@ -12,7 +12,7 @@ export async function render(ctx){
   ]:[];
   const errors=(data.failed||0)+(data.retry||0);
   return {html:`${header('기억의 흐름을 한눈에','대화가 기억이 되고, 다시 맥락으로 돌아오는 과정을 살펴보세요.',`<span class="date-caption">${esc(today)} · 로컬 워크스페이스</span>${linkBtn('활동 보기','activity',ctx.href('/activity'))}`,'MEMEX / OVERVIEW')}
-    ${ctx.scope.scope==='global'?banner('현재 <strong>공통 기억</strong> 범위입니다. 대화와 처리 작업을 보려면 상단에서 프로젝트 또는 전체 프로젝트를 선택하세요.'):''}
+    ${ctx.scope.scope==='global'?banner(`<div class="spread"><div><strong>현재 공통 기억 범위입니다</strong><p>대화와 처리 작업은 프로젝트에 종속되므로 이 범위에서는 보이지 않습니다.</p></div>${btn('전체 프로젝트로 보기','layers','data-action="scope-all"','small')}</div>`):''}
     ${errors?banner(`<div class="spread"><div><strong>확인이 필요한 작업 ${number(errors)}개</strong><p>실패 종료와 재시도 대기 작업이 있습니다. 상태와 저장된 오류를 확인하세요.</p></div>${linkBtn('작업 확인','arrow',ctx.href('/activity',{tab:'jobs'}),'small')}</div>`,'warning','warning'):''}
     <section class="metrics" aria-label="선택 범위 요약">${metric('보관된 대화 턴',data.exchanges,`${number(data.sessions)}개 세션에서 수집`,'chat')}${metric('활성 기억',data.facts.active,`비활성 ${number(data.facts.inactive)} · 분류 대기 ${number(data.facts.unclassified)}`,'memory',true)}${metric('진행 중인 작업',data.running,'기록된 큐 상태 기준 · 플러그인 연결과 별개','activity')}${metric('확인이 필요한 작업',errors,'실패 종료 + 재시도 대기','shield')}</section>
     <div class="two-col"><section class="card"><div class="card-head"><div><h2>최근 기억의 변화</h2><p>현재 범위의 기록된 변경 이력</p></div><a class="text-link" data-nav href="${esc(ctx.href('/activity',{tab:'chronicle'}))}">전체 보기 ${icon('arrow')}</a></div>${data.recent.length?data.recent.map(eventRow).join(''):empty('아직 변경 이력이 없습니다','새 기억의 생성과 변경이 기록되면 이곳에 표시됩니다.','','clock')}</section>

@@ -29,8 +29,8 @@ function createServer(options={}){
     for(const res of clients)res.write(`: heartbeat ${Date.now()}\n\n`);
   },5000);interval.unref();
   async function bootstrap(){
-    let store=null,error=null,projects=[];try{store=await core.connect();projects=store.projects();}catch(e){error={message:e.message,code:e.code};}
-    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,commands:COMMANDS,revision,serverStartedAt:startedAt};
+    let store=null,error=null,projects=[],factTotals=null;try{store=await core.connect();projects=store.projects();factTotals=store.factTotals();}catch(e){error={message:e.message,code:e.code};}
+    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,commands:COMMANDS,revision,serverStartedAt:startedAt};
   }
   const startedAt=new Date().toISOString();
   function guard(req,write){
