@@ -74,6 +74,14 @@ async function main() {
       }
     };
 
+    // 0.6.0 tier ladder (#19): evidence-based automatic promotion/demotion.
+    // Model-free and bounded — a few indexed SQL passes over the projection —
+    // so it runs before the priority gate below and never spends model budget.
+    try {
+      const { reconcileFactTiers } = await import('../dist/fact-management.js');
+      reconcileFactTiers(db);
+    } catch { /* non-fatal: the ladder retries on a later session */ }
+
     // P0/P1 always outrank fact/derived maintenance. The Continuity worker
     // itself claims only durable queue rows and is restart-safe.
     let continuityPending = false;

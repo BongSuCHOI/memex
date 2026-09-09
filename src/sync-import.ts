@@ -44,6 +44,8 @@ interface SyncFact {
   portable_project_key: string | null;
   subject_key: string | null;
   promotion_state: "legacy-project" | "decision" | "project-current";
+  /** 0.6.0 (#18/#19) additive: why the fact sits in its tier. Absent on pre-0.6.0 payloads. */
+  tier_reason: string | null;
   source_exchange_ids: string;
   created_at: string;
   updated_at: string;
@@ -432,6 +434,9 @@ function parseSyncFact(value: unknown): SyncFact | null {
     portable_project_key: value.scope_type === "global" ? null : portableProjectKey,
     subject_key: subjectKey,
     promotion_state: promotionState,
+    tier_reason: typeof value.tier_reason === "string" && value.tier_reason.length <= 200
+      ? value.tier_reason
+      : null,
     source_exchange_ids: value.source_exchange_ids,
     created_at: value.created_at,
     updated_at: value.updated_at,
@@ -696,6 +701,7 @@ function localFactView(row: Record<string, unknown>): SyncFact & {
     portable_project_key: null,
     subject_key: (row.subject_key as string | null) ?? null,
     promotion_state: (row.promotion_state as SyncFact["promotion_state"]) ?? "legacy-project",
+    tier_reason: (row.tier_reason as string | null) ?? null,
     source_exchange_ids: (row.source_exchange_ids as string | null) ?? "[]",
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -1079,7 +1085,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
       SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active,
              semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at,
-             project_id, subject_key, promotion_state
+             project_id, subject_key, promotion_state, tier_reason
       FROM facts WHERE id = ?
     `).get(remote.id) as Record<string, unknown> | undefined;
 
@@ -1193,7 +1199,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
             const claimed = db.prepare(`
               UPDATE facts SET
                 fact = ?, category = ?, scope_type = ?, scope_project = ?,
-                project_id = ?, subject_key = ?, promotion_state = ?,
+                project_id = ?, subject_key = ?, promotion_state = ?, tier_reason = ?,
                 source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
                 consolidated_count = ?, embedding_version = ?,
                 ontology_category_id = NULL, fact_kr = NULL,
@@ -1203,7 +1209,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
               WHERE id = ? AND semantic_generation = ?
             `).run(
               fact.fact, fact.category, fact.scope_type, fact.scope_project,
-              fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state,
+              fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, fact.tier_reason,
               liveSources, Buffer.from(new Float32Array(embedding).buffer),
               fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION,
               isActive, fact.semantic_updated_at,
@@ -1241,8 +1247,8 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
                  embedding_version, needs_consolidation,
                  semantic_generation, semantic_updated_at,
                  lifecycle_generation, lifecycle_updated_at,
-                 project_id, subject_key, promotion_state)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?)
+                 project_id, subject_key, promotion_state, tier_reason)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?)
             `).run(
               fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project,
               fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
@@ -1253,6 +1259,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
               fact.project_id,
               fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`,
               fact.promotion_state,
+              fact.tier_reason,
             );
             // A strictly newer semantic event resurrected over a stale
             // non-privacy tombstone — clear the inert deletion marker.

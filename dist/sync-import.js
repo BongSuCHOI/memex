@@ -274,6 +274,9 @@ function parseSyncFact(value) {
         portable_project_key: value.scope_type === "global" ? null : portableProjectKey,
         subject_key: subjectKey,
         promotion_state: promotionState,
+        tier_reason: typeof value.tier_reason === "string" && value.tier_reason.length <= 200
+            ? value.tier_reason
+            : null,
         source_exchange_ids: value.source_exchange_ids,
         created_at: value.created_at,
         updated_at: value.updated_at,
@@ -542,6 +545,7 @@ function localFactView(row) {
         portable_project_key: null,
         subject_key: row.subject_key ?? null,
         promotion_state: row.promotion_state ?? "legacy-project",
+        tier_reason: row.tier_reason ?? null,
         source_exchange_ids: row.source_exchange_ids ?? "[]",
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -876,7 +880,7 @@ async function importFacts(db, generations, result) {
       SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active,
              semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at,
-             project_id, subject_key, promotion_state
+             project_id, subject_key, promotion_state, tier_reason
       FROM facts WHERE id = ?
     `).get(remote.id);
         const plan = {};
@@ -988,7 +992,7 @@ async function importFacts(db, generations, result) {
                         const claimed = db.prepare(`
               UPDATE facts SET
                 fact = ?, category = ?, scope_type = ?, scope_project = ?,
-                project_id = ?, subject_key = ?, promotion_state = ?,
+                project_id = ?, subject_key = ?, promotion_state = ?, tier_reason = ?,
                 source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
                 consolidated_count = ?, embedding_version = ?,
                 ontology_category_id = NULL, fact_kr = NULL,
@@ -996,7 +1000,7 @@ async function importFacts(db, generations, result) {
                 needs_consolidation = ?, ontology_last_attempt_at = NULL,
                 semantic_generation = semantic_generation + 1, semantic_updated_at = ?
               WHERE id = ? AND semantic_generation = ?
-            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
+            `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, fact.tier_reason, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
                         if (claimed.changes === 0)
                             return false;
                         db.prepare('DELETE FROM fact_evidence_receipts WHERE fact_id = ?').run(factId);
@@ -1028,9 +1032,9 @@ async function importFacts(db, generations, result) {
                  embedding_version, needs_consolidation,
                  semantic_generation, semantic_updated_at,
                  lifecycle_generation, lifecycle_updated_at,
-                 project_id, subject_key, promotion_state)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?)
-            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at, fact.project_id, fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`, fact.promotion_state);
+                 project_id, subject_key, promotion_state, tier_reason)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?)
+            `).run(fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, fact.consolidated_count, fact.is_active, EMBEDDING_VERSION, fact.is_active, fact.semantic_updated_at, fact.lifecycle_updated_at, fact.project_id, fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`, fact.promotion_state, fact.tier_reason);
                         // A strictly newer semantic event resurrected over a stale
                         // non-privacy tombstone — clear the inert deletion marker.
                         db.prepare("DELETE FROM fact_tombstones WHERE fact_id = ?").run(factId);

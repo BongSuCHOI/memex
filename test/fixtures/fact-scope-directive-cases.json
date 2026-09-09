@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "name": "fact scope directive cases",
+  "description": "0.6.0 (#19) in-session scope directives. Each case is a human sentence that explicitly states WHERE a memory should live. The directive sentence itself is the human assertion, so the extractor emits scope_directive and the server moves the fact's tier with Chronicle actor `user-directive`. Cases tagged `negative` state a scoped fact but give no placement instruction and must carry no directive.",
+  "cases": [
+    {
+      "id": "kr-project-directive",
+      "title": "KR — remember this for the whole project",
+      "tags": ["positive", "directive", "kr", "project"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "kr-project-directive-1",
+          "user_message": "로더는 단일 진입점만 쓰기로 했어. 이건 프로젝트 공용으로 기억하자.",
+          "assistant_message": "프로젝트 공용으로 남기겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["로더"],
+            "category": "decision",
+            "scope_type": "project",
+            "scope_directive": "project",
+            "resulting_tier": "project",
+            "authoritative_exchange_ids": ["kr-project-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "kr-global-directive",
+      "title": "KR — make this a global memory (two rungs, two events)",
+      "tags": ["positive", "directive", "kr", "global", "two_step"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "kr-global-directive-1",
+          "user_message": "커밋 메시지는 항상 영어로 쓴다. 이건 글로벌 기억으로 남겨줘.",
+          "assistant_message": "글로벌로 남기겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["커밋"],
+            "category": "preference",
+            "scope_type": "project",
+            "scope_directive": "global",
+            "resulting_tier": "global",
+            "expected_steps": ["workstream->project", "project->global"],
+            "authoritative_exchange_ids": ["kr-global-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "kr-branch-directive",
+      "title": "KR — keep this decision to this branch only",
+      "tags": ["positive", "directive", "kr", "workstream"],
+      "session": { "branch": null },
+      "exchanges": [
+        {
+          "id": "kr-branch-directive-1",
+          "user_message": "이 실험은 Redis 캐시를 쓴다. 이 결정은 이 브랜치에서만 기억해.",
+          "assistant_message": "이 브랜치 범위로만 남기겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["redis"],
+            "category": "decision",
+            "scope_type": "project",
+            "scope_directive": "workstream",
+            "resulting_tier": "workstream",
+            "authoritative_exchange_ids": ["kr-branch-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "en-project-directive",
+      "title": "EN — remember this for the whole project",
+      "tags": ["positive", "directive", "en", "project"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "en-project-directive-1",
+          "user_message": "We run lint before tests. Let's remember this for the whole project.",
+          "assistant_message": "Recorded for the whole project."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["lint"],
+            "category": "pattern",
+            "scope_type": "project",
+            "scope_directive": "project",
+            "resulting_tier": "project",
+            "authoritative_exchange_ids": ["en-project-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "en-global-directive",
+      "title": "EN — make this a global memory",
+      "tags": ["positive", "directive", "en", "global", "two_step"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "en-global-directive-1",
+          "user_message": "Always double-check completed work. Make this a global memory.",
+          "assistant_message": "Stored globally."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["double-check"],
+            "category": "preference",
+            "scope_type": "project",
+            "scope_directive": "global",
+            "resulting_tier": "global",
+            "expected_steps": ["workstream->project", "project->global"],
+            "authoritative_exchange_ids": ["en-global-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "en-branch-directive",
+      "title": "EN — keep this to this branch only",
+      "tags": ["positive", "directive", "en", "workstream"],
+      "session": { "branch": null },
+      "exchanges": [
+        {
+          "id": "en-branch-directive-1",
+          "user_message": "This spike uses an in-memory queue. Keep this decision to this branch only.",
+          "assistant_message": "Scoped to this branch."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["queue"],
+            "category": "decision",
+            "scope_type": "project",
+            "scope_directive": "workstream",
+            "resulting_tier": "workstream",
+            "authoritative_exchange_ids": ["en-branch-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "en-no-directive",
+      "title": "EN — a project-scoped fact is not a placement instruction",
+      "tags": ["negative", "directive", "en"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "en-no-directive-1",
+          "user_message": "This project uses SQLite for local persistence.",
+          "assistant_message": "Understood."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["sqlite"],
+            "category": "knowledge",
+            "scope_type": "project",
+            "scope_directive": null,
+            "resulting_tier": "workstream",
+            "authoritative_exchange_ids": ["en-no-directive-1"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "kr-no-directive",
+      "title": "KR — \"remember this\" with no scope named",
+      "tags": ["negative", "directive", "kr"],
+      "session": { "branch": "feature/loader" },
+      "exchanges": [
+        {
+          "id": "kr-no-directive-1",
+          "user_message": "이 프로젝트는 pnpm을 쓴다. 기억해줘.",
+          "assistant_message": "기억하겠습니다."
+        }
+      ],
+      "expected": {
+        "outcome": "facts",
+        "facts": [
+          {
+            "required_terms": ["pnpm"],
+            "category": "knowledge",
+            "scope_type": "project",
+            "scope_directive": null,
+            "resulting_tier": "workstream",
+            "authoritative_exchange_ids": ["kr-no-directive-1"]
+          }
+        ]
+      }
+    }
+  ]
+}

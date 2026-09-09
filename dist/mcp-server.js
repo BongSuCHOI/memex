@@ -24359,6 +24359,11 @@ if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.m
 
 // src/conversation-policy.ts
 init_paths();
+
+// src/fact-management.ts
+init_paths();
+
+// src/conversation-policy.ts
 init_paths();
 
 // src/continuity-core.ts

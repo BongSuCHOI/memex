@@ -81,7 +81,7 @@ COMMANDS:
   recover     Reset terminal (dead) work back to claimable in one transaction
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
-  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|migrate-tiers|delete
+  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -210,7 +210,7 @@ Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
 Run backlog work explicitly; never auto-started by status. 'all' runs each stage
 in order and stops at the first failure. Foreground is the default; exit 2 means
 the run completed with outstanding work.`,
-  facts: `Usage: memex facts <list|show|edit|deactivate|restore|history|explain|delete> [options]
+  facts: `Usage: memex facts <list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete> [options]
 
   list        [--project <p>] [--scope global|all] [--all] [--limit n] [--offset n]
   show        --id <uuid>
@@ -219,7 +219,17 @@ the run completed with outstanding work.`,
   restore     --id <uuid>
   history     --id <uuid> | --subject <subject_key> --project-id <project_id>
   explain     (alias of history)
-  delete      --id <full-uuid> --hard --yes   (default delete is deactivate)`,
+  tier        <id> [--json]
+  promote     <id> [--to workstream|project|global] [--reason "why"] [--json]
+  demote      <id> [--to workstream|project|global] [--reason "why"] [--json]
+  migrate-tiers --dry-run | --apply [--json]
+  delete      --id <full-uuid> --hard --yes   (default delete is deactivate)
+
+The tier ladder is workstream <-> project <-> global and moves ONE rung at a
+time; a skipped rung is refused. promote/demote by a user are recorded as
+Chronicle PROMOTED/DEMOTED plus one metadata line in logs/ui-audit.jsonl.
+migrate-tiers needs --dry-run or --apply explicitly: it lists (or moves) the
+pre-0.6.0 workstream facts that the branch-signal rule makes project-common.`,
 };
 
 const KNOWN_COMMANDS = new Set([
@@ -524,7 +534,37 @@ async function main() {
             console.log(
               `Deleted: ${id} (revisions=${r.impact.revisions}, relations=${r.impact.relations})`,
             );
-          // --- 0.6.0 tier ladder (#18) -------------------------------------
+          // --- 0.6.0 tier ladder (#18/#19) ---------------------------------
+          } else if (sub === "tier") {
+            const id = rest.find((a) => !a.startsWith("-")) || optValue("--id");
+            if (!id) throw new Error("usage: memex facts tier <id> [--json]");
+            const state = fm.readFactTier(db, id);
+            if (flag("--json")) {
+              console.log(JSON.stringify(state, null, 2));
+            } else {
+              console.log(
+                `${state.id}\ntier: ${state.tier} (promotion_state=${state.promotionState}, scope_type=${state.scopeType})\n` +
+                  `project: ${state.projectId ?? "-"}\nworkstream: ${state.workstreamId ?? "-"}\n` +
+                  `subject: ${state.subjectKey ?? "-"}\ntier_reason: ${state.tierReason ?? "-"}`,
+              );
+            }
+          } else if (sub === "promote" || sub === "demote") {
+            const id = rest.find((a) => !a.startsWith("-")) || optValue("--id");
+            if (!id) {
+              throw new Error(
+                `usage: memex facts ${sub} <id> [--to workstream|project|global] [--reason "why"] [--json]`,
+              );
+            }
+            const move = sub === "promote"
+              ? fm.promoteFact(db, id, { actor: "user", reason: optValue("--reason"), to: optValue("--to") })
+              : fm.demoteFact(db, id, { actor: "user", reason: optValue("--reason"), to: optValue("--to") });
+            if (flag("--json")) {
+              console.log(JSON.stringify(move, null, 2));
+            } else {
+              console.log(
+                `${move.id}: ${move.from} → ${move.to} (${move.steps.length} Chronicle event(s): ${move.steps.map((s) => s.eventId).join(", ")})`,
+              );
+            }
           } else if (sub === "migrate-tiers") {
             const apply = flag("--apply");
             if (!apply && !flag("--dry-run")) {
@@ -554,7 +594,7 @@ async function main() {
           // --- end 0.6.0 tier ladder ---------------------------------------
           } else {
             console.error(
-              "Usage: memex facts <list|show|edit|deactivate|restore|history|migrate-tiers|delete> [--id <uuid>] ...",
+              "Usage: memex facts <list|show|edit|deactivate|restore|history|tier|promote|demote|migrate-tiers|delete> [--id <uuid>] ...",
             );
             process.exitCode = 1;
           }

@@ -1,7 +1,7 @@
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
 import { insertFact, insertFactContextDependencies, resolveFactInsertIdentity, updateFact, } from "./fact-db.js";
-import { applyFactMeaningMutationWithPolicy } from "./fact-management.js";
+import { applyFactMeaningMutationWithPolicy, applyScopeDirective } from "./fact-management.js";
 import { captureMutationPolicy, captureSourceSnapshot, sourceSnapshotValid, StaleFactMutationError } from "./fact-policy.js";
 import { currentEffectiveAt, currentEvidenceAuthority, evidenceAuthorityFromKinds, findCurrentSlotFact, isSemanticSubjectKey, judgeCompetingEvidence, normalizeSubjectKey, recordChronicleEvent, recordIncidentOccurrence, recordIncidentRemediation, } from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
@@ -307,6 +307,18 @@ A fact candidate MAY add:
   preference→preference, pattern→pattern. Examples: "state.runtime.session_store",
   "decision.runtime.session_store.target", "constraint.session.ttl". Two statements about different
   things must never share a slot. Omit subject_key when the slot is ambiguous.
+- scope_directive: "workstream" | "project" | "global". Emit ONLY when the human explicitly states
+  where the memory should live, not when you infer it. The directive sentence itself must be the
+  human evidence you cite. "workstream" = only this branch/worktree, "project" = shared by the whole
+  project, "global" = every project. Directives, one per line:
+    "let's remember this for the whole project"
+    "make this a global memory"
+    "keep this decision to this branch only"
+    "이건 프로젝트 공용으로 기억하자"
+    "이건 글로벌 기억으로"
+    "이 결정은 이 브랜치에서만"
+  Examples that do NOT: "this project uses SQLite" (a project-scoped fact, not an instruction about
+  where to store it), "remember this" with no scope named. Omit the field when no scope was stated.
 - change_context: {"problem"?: R, "cause"?: R, "rationale"?: R} where
   R = {"exchange_index": n, "supporting_span": "<exact substring>", "text"?: "<normalized statement>",
   "tool_call_id"?: "<id when the span is inside a trusted tool result>"}. Each span must be an exact
@@ -1205,6 +1217,19 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
         classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
     }
     const changeContext = resolveChangeContext(candidate.change_context, exchanges, evidence, classifierNotes);
+    // #19 — an explicit scope directive is a placement instruction, never a
+    // reason to accept or reject the fact itself. An unrecognised value is
+    // dropped to a classifier note so a bad directive can never move a tier.
+    const rawDirective = candidate.scope_directive;
+    let scopeDirective;
+    if (rawDirective !== undefined && rawDirective !== null) {
+        if (rawDirective === "workstream" || rawDirective === "project" || rawDirective === "global") {
+            scopeDirective = rawDirective;
+        }
+        else {
+            classifierNotes.push(`unrecognized scope_directive: ${String(rawDirective).slice(0, 40)}`);
+        }
+    }
     return {
         accepted: true,
         fact: {
@@ -1221,6 +1246,7 @@ function validateExtractedFactCandidateDetailed(candidate, exchanges, referentCa
             source_exchange_ids: [...authoritativeIds],
             ...(subjectKey ? { subject_key: subjectKey } : {}),
             ...(changeContext ? { change_context: changeContext } : {}),
+            ...(scopeDirective ? { scope_directive: scopeDirective } : {}),
             ...(classifierNotes.length > 0 ? { classifier_notes: classifierNotes } : {}),
         },
     };
@@ -1889,6 +1915,10 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
         savedIds, asserted: 0, changed: 0, merged: 0, historical: 0, contradicted: 0, incidents: 0, validations: 0,
     };
     const observations = extras.observations ?? [];
+    // #19 — in-session scope directives are applied after the slot resolution
+    // above, inside the same transaction, so the placement and its PROMOTED /
+    // DEMOTED events commit with the fact they describe.
+    const directiveMoves = [];
     const commit = db.transaction(() => {
         if (!sourceSnapshotValid(db, sources))
             throw new StaleFactMutationError('extraction source evidence changed during embedding');
@@ -1948,6 +1978,9 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                     projectionApplied: true,
                 });
                 insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
+                if (p.fact.scope_directive) {
+                    directiveMoves.push({ factId, directive: p.fact.scope_directive, sources: factSources });
+                }
                 savedIds.push(factId);
                 savedVectors.set(factId, p.embedding);
                 outcome.asserted++;
@@ -1992,6 +2025,9 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                     },
                 }, p.embedding);
                 insertFactContextDependencies(db, existing.id, p.fact.context_dependencies ?? []);
+                if (p.fact.scope_directive) {
+                    directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+                }
                 savedIds.push(existing.id);
                 savedVectors.set(existing.id, p.embedding);
                 outcome.changed++;
@@ -2025,6 +2061,18 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                 outcome.historical++;
             else
                 outcome.contradicted++;
+        }
+        for (const move of directiveMoves) {
+            // A directive is a human assertion about placement. It never rejects the
+            // fact: an impossible move (missing workstream, occupied slot) is
+            // recorded as a classifier-visible failure and the fact keeps its tier.
+            try {
+                applyScopeDirective(db, move.factId, move.directive, {
+                    evidence: move.sources,
+                    now,
+                });
+            }
+            catch { /* placement stays as extracted */ }
         }
         for (const observation of observations) {
             const identity = resolveFactInsertIdentity(db, {

@@ -229,6 +229,7 @@ memex status
 | `memex stats` | corpus/index 통계 |
 | `memex analyze` | deterministic 전체 이력 보고서 생성 |
 | `memex facts` | durable fact 조회·관리 |
+| `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
 | `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |

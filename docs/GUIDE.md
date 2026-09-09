@@ -154,6 +154,9 @@ memex facts edit --id <uuid> --text "updated fact"
 memex facts deactivate --id <uuid>
 memex facts restore --id <uuid>
 memex facts history --id <uuid>
+memex facts tier <id>
+memex facts promote <id> --reason "team agreed"
+memex facts demote <id> --reason "branch only"
 memex facts migrate-tiers --dry-run
 memex facts migrate-tiers --apply
 memex facts delete --id <full-uuid> --hard --yes
@@ -161,8 +164,16 @@ memex facts delete --id <full-uuid> --hard --yes
 
 | 명령 | 하는 일 |
 | --- | --- |
+| `memex facts tier <id>` | 그 기억의 현재 tier(`workstream`/`project`/`global`)와 판단 근거(`tier_reason`) 조회 |
+| `memex facts promote <id>` | 사다리 한 칸 위로. Chronicle `PROMOTED`(actor `user`) + `logs/ui-audit.jsonl` 한 줄 |
+| `memex facts demote <id>` | 사다리 한 칸 아래로. Chronicle `DEMOTED`(actor `user`) |
 | `memex facts migrate-tiers --dry-run` | 0.6.0 기본 tier 규칙대로면 프로젝트 공용이어야 하는 기존 `workstream` fact 목록만 출력(변경 없음) |
 | `memex facts migrate-tiers --apply` | 위 목록을 `project-current`로 이동. fact마다 Chronicle `PROMOTED`(actor `migration`, reason `no-branch-signal`) 한 건 |
+
+- 사다리는 `workstream ⇄ project ⇄ global`이며 **한 칸씩만** 움직입니다. 두 칸을 요구하면
+  `TierStepError`로 거절되고 기억은 그대로 남습니다. `--reason`은 Chronicle에 사용자 진술로,
+  `--json`은 이동 결과와 이벤트 ID를 기계가 읽을 수 있게 출력합니다.
+- 근거 기반 자동 승격·강등은 세션 시작 유지보수 단계에서 모델 호출 없이 SQL로만 판정합니다.
 
 - edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
 - deactivate/restore는 의미 편집과 독립적인 lifecycle event입니다.

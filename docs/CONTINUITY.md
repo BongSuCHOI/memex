@@ -57,7 +57,7 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 ## 6. Current facts · subject · Chronicle (§4.3–4.4, §15–17)
 
-- `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다(§5): 신호가 없으면(비-git 또는 기본 브랜치) 바로 프로젝트 공용 `project-current`, 그 외 브랜치/워크트리 세션이면 `workstream`. 근거는 `facts.tier_reason`에 남습니다(BRANCH TRUTH).
+- `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다(§5): 신호가 없으면(비-git 또는 기본 브랜치) 바로 프로젝트 공용 `project-current`, 그 외 브랜치/워크트리 세션이면 `workstream`. 근거는 `facts.tier_reason`에 남습니다(BRANCH TRUTH). 이후 이동은 사다리 `workstream ⇄ project ⇄ global`을 한 칸씩만 따르며, ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(모델 호출 없이 SQL) ③ 세션 내 명시 범위 지시 세 채널 모두 Chronicle `PROMOTED`/`DEMOTED`를 남깁니다. 전체 표는 `FACT-LIFECYCLE.md` §1.
 - `fact_revisions` = Chronicle(단일 append-only history table, D-018): 9 event kind(0.6.0에서 `PROMOTED`/`DEMOTED` 추가), content-hash event id, `effective_at`(source) vs `recorded_at`, grounded cause vs classifier note, `reverts_event_id`, `projection_applied`. 정책은 `FACT-LIFECYCLE.md` §13.
 - `incident_occurrences`/`incident_signatures`: coalescing, independent episode, remediation, `matchIncidentPatterns`(WATCH 원천).
 
