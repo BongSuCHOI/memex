@@ -14,12 +14,25 @@ export declare function getTaxonomyEpoch(db: Database.Database): number;
  * (the privacy purge) so classifiers can never observe the wipe without the
  * epoch move, or the epoch move without the wipe. */
 export declare function bumpTaxonomyEpoch(db: Database.Database): void;
+/**
+ * Resolve-or-create a domain (이슈 #47).
+ *
+ * The old unconditional INSERT relied on the caller's prior
+ * `getDomainByName` miss, and that read+write pair sat inside better-sqlite3's
+ * DEFERRED transaction: two connections (insert-time extraction and the
+ * detached backfill worker) could both observe "absent" and both insert.
+ * `ON CONFLICT DO NOTHING` + re-select makes the loser adopt the winner's row
+ * instead of forking the taxonomy — the unique index created in db.ts is what
+ * turns the second INSERT into a no-op.
+ */
 export declare function createDomain(db: Database.Database, name: string, description?: string): OntologyDomain;
 export declare function listDomains(db: Database.Database): OntologyDomain[];
 export declare function getDomain(db: Database.Database, id: string): OntologyDomain | null;
 export declare function getDomainByName(db: Database.Database, name: string): OntologyDomain | null;
+/** Resolve-or-create a category. Same race contract as createDomain (이슈 #47). */
 export declare function createCategory(db: Database.Database, domainId: string, name: string, description?: string): OntologyCategory;
 export declare function listCategories(db: Database.Database, domainId?: string): OntologyCategory[];
+export declare function getCategory(db: Database.Database, id: string): OntologyCategory | null;
 export declare function getCategoryByName(db: Database.Database, name: string, domainId?: string): OntologyCategory | null;
 /**
  * Store/replace a category's embedding in vec_categories (atomic DELETE+INSERT,
@@ -46,7 +59,14 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
  * changes and the caller must discard the stale result instead of stamping
  * it onto the newer meaning.
  */
-export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): number;
+export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number, 
+/**
+ * 이슈 #47: 할당 시점의 코사인 유사도. 저장해 두지 않으면 0.42로 붙은
+ * 할당과 0.98로 붙은 할당이 사후 구분 불가다(재분류 대상 선별의 입력).
+ * undefined면 기존 값을 유지하지 않고 NULL로 지운다 — 새 할당의 신뢰도를
+ * 옛 할당의 값으로 설명하면 안 되기 때문이다.
+ */
+similarity?: number | null): number;
 export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Fact[];
 export declare function getFactsByCategoryInScope(db: Database.Database, categoryId: string, scope: ReadScope): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];

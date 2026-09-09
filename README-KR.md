@@ -270,8 +270,9 @@ memex status
 | `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`. `list --all`은 비활성 fact까지(`--limit`·`--offset`), `edit --source-exchange <id>`는 근거 지정 |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
-| `memex backfill` | extraction / ontology / embedding backlog 처리 |
-| `memex status` | pipeline readiness와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
+| `memex backfill` | extraction / ontology / embedding / 증거 영수증 backlog 처리 |
+| `memex ontology` | local taxonomy 조회·수리: `list\|merge\|rename` (더 이상 append-only가 아님) |
+| `memex status` | pipeline readiness(`Ontology: … classified, … parked, … pending`)와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex model-work` | 모델 작업 예산 확인과 명시적 재개; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |

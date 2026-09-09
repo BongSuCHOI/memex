@@ -49,6 +49,17 @@ export function bumpTaxonomyEpoch(db: Database.Database): void {
 
 // === Domain CRUD ===
 
+/**
+ * Resolve-or-create a domain (이슈 #47).
+ *
+ * The old unconditional INSERT relied on the caller's prior
+ * `getDomainByName` miss, and that read+write pair sat inside better-sqlite3's
+ * DEFERRED transaction: two connections (insert-time extraction and the
+ * detached backfill worker) could both observe "absent" and both insert.
+ * `ON CONFLICT DO NOTHING` + re-select makes the loser adopt the winner's row
+ * instead of forking the taxonomy — the unique index created in db.ts is what
+ * turns the second INSERT into a no-op.
+ */
 export function createDomain(
   db: Database.Database,
   name: string,
@@ -57,8 +68,13 @@ export function createDomain(
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
   ).run(id, name, description ?? null, now);
+  const existing = getDomainByName(db, name);
+  if (existing) return existing;
+  // No unique index (very old database) and no row: the insert really did
+  // land under a name the NOCASE lookup cannot see. Report what we wrote.
   return { id, name, description: description ?? null, created_at: now };
 }
 
@@ -73,15 +89,21 @@ export function getDomain(db: Database.Database, id: string): OntologyDomain | n
 }
 
 export function getDomainByName(db: Database.Database, name: string): OntologyDomain | null {
+  // Deterministic winner (oldest row) so a database that predates the unique
+  // index still converges on ONE row per name instead of alternating.
   return (
     (db
-      .prepare(`SELECT * FROM ontology_domains WHERE name = ? COLLATE NOCASE`)
+      .prepare(
+        `SELECT * FROM ontology_domains WHERE name = ? COLLATE NOCASE
+         ORDER BY created_at, id LIMIT 1`,
+      )
       .get(name) as OntologyDomain | undefined) ?? null
   );
 }
 
 // === Category CRUD ===
 
+/** Resolve-or-create a category. Same race contract as createDomain (이슈 #47). */
 export function createCategory(
   db: Database.Database,
   domainId: string,
@@ -91,8 +113,11 @@ export function createCategory(
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
   ).run(id, domainId, name, description ?? null, now);
+  const existing = getCategoryByName(db, name, domainId);
+  if (existing) return existing;
   return { id, domain_id: domainId, name, description: description ?? null, created_at: now, embedding_version: 0 };
 }
 
@@ -108,6 +133,14 @@ export function listCategories(
   return (db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all() as OntologyCategory[]);
 }
 
+export function getCategory(db: Database.Database, id: string): OntologyCategory | null {
+  return (
+    (db.prepare(`SELECT * FROM ontology_categories WHERE id = ?`).get(id) as
+      | OntologyCategory
+      | undefined) ?? null
+  );
+}
+
 export function getCategoryByName(
   db: Database.Database,
   name: string,
@@ -117,14 +150,18 @@ export function getCategoryByName(
     return (
       (db
         .prepare(
-          `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE AND domain_id = ?`,
+          `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE AND domain_id = ?
+           ORDER BY created_at, id LIMIT 1`,
         )
         .get(name, domainId) as OntologyCategory | undefined) ?? null
     );
   }
   return (
     (db
-      .prepare(`SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE`)
+      .prepare(
+        `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE
+         ORDER BY created_at, id LIMIT 1`,
+      )
       .get(name) as OntologyCategory | undefined) ?? null
   );
 }
@@ -229,6 +266,13 @@ export function classifyFact(
   categoryId: string,
   expectedSemanticGeneration?: number,
   expectedTaxonomyEpoch?: number,
+  /**
+   * 이슈 #47: 할당 시점의 코사인 유사도. 저장해 두지 않으면 0.42로 붙은
+   * 할당과 0.98로 붙은 할당이 사후 구분 불가다(재분류 대상 선별의 입력).
+   * undefined면 기존 값을 유지하지 않고 NULL로 지운다 — 새 할당의 신뢰도를
+   * 옛 할당의 값으로 설명하면 안 되기 때문이다.
+   */
+  similarity?: number | null,
 ): number {
   // 재감사 Privacy-P1(v4): epoch 캡처 이후 purge로 taxonomy가 invalidate됐으면
   // 0행으로 폐기한다. 이 검사와 아래 UPDATE는 동기 실행이라 원자적이다 —
@@ -236,15 +280,23 @@ export function classifyFact(
   if (expectedTaxonomyEpoch !== undefined && getTaxonomyEpoch(db) !== expectedTaxonomyEpoch) {
     return 0;
   }
+  // 이슈 #41: 성공적인 할당은 파킹 표시를 반드시 지운다 — 재시도로 분류된
+  // fact가 parked로 계속 집계되면 status가 다시 거짓말을 한다.
+  const similarityValue = similarity === undefined || similarity === null || !Number.isFinite(similarity)
+    ? null
+    : similarity;
   if (expectedSemanticGeneration === undefined) {
     return db.prepare(
-      `UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`,
-    ).run(categoryId, new Date().toISOString(), factId).changes;
+      `UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+         ontology_state = NULL, ontology_parked_at = NULL, ontology_similarity = ?
+       WHERE id = ?`,
+    ).run(categoryId, new Date().toISOString(), similarityValue, factId).changes;
   }
   return db.prepare(
-    `UPDATE facts SET ontology_category_id = ?, updated_at = ?
+    `UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+       ontology_state = NULL, ontology_parked_at = NULL, ontology_similarity = ?
      WHERE id = ? AND semantic_generation = ?`,
-  ).run(categoryId, new Date().toISOString(), factId, expectedSemanticGeneration).changes;
+  ).run(categoryId, new Date().toISOString(), similarityValue, factId, expectedSemanticGeneration).changes;
 }
 
 export function getFactsByCategory(

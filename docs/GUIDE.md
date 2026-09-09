@@ -74,10 +74,29 @@ memex status --json
 - `memex status` — 단계별 준비 상태. 격리된 프로젝트가 있으면 `Quarantined projects: N` 줄과
   프로젝트 ID·표시 이름·fact 수를 함께 출력합니다(0.6.0 #38: `/`처럼 신뢰할 수 없는 cwd에서 생긴
   프로젝트. fact는 보존하고 주입·조회 범위에서만 제외합니다).
+  - Ontology 줄은 `Ontology: READY (N classified, P parked, Q pending)` 형태입니다(0.6.1 #41).
+    `parked`는 분류 시도를 소진해 General/Misc에 보관 중인 fact이며 **classified가 아닙니다**.
+    이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
+    정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
+  - `facts without local evidence: N / M` 줄은(0.6.1 #45) 로컬 의미 검증 영수증이 없는 활성 fact
+    수입니다. 그 fact들은 자동 통합 대상에서 사실상 제외되고(사용자에게는 "중복 fact가 계속 쌓인다"로
+    보입니다) 동기화 시 피어에게 집니다. `memex backfill receipts`로 재구성합니다.
+  - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
+    (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
+    extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
+    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유로 3회 연속 건너뛰면 다음 호출에서
+    하위 레인을 한 번 강제로 통과시킵니다(우선순위는 유지, 기아는 방지). 백로그 자체는
+    `memex jobs list --state retry` / `memex recover`로 해소합니다.
+  - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
+    self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
+    재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.
 - `memex sync` — `$CODEX_HOME/sessions` rollout을 archive/index/search corpus로 반영
 - `memex backfill extract` — durable fact 추출
 - `memex backfill ontology` — local ontology/relation 생성
 - `memex backfill embeddings` — 누락된 semantic vector 생성
+- `memex backfill receipts` — 누락된 로컬 의미 검증 영수증(`fact_evidence_receipts`) 재구성.
+  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되고 sync tie-break에서
+  지므로, `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
 - `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
 `backfill`은 기본 foreground 실행이며 다음 exit code를 반환합니다.
@@ -93,6 +112,30 @@ extract 단계에서 세션 선점이 실패하면 워커는 사유를 구분해
 - `HANDOFF (lease held by another runner)` — 다른 러너가 같은 partition의 lease를 쥐고 있음. 실패가 아니며 그 러너가 끝내면 진행됩니다.
 - `DEFERRED (retry backoff until <ISO>)` — 러너는 없고 재시도 backoff만 남은 상태. 표시된 시각 이후에 다시 선정됩니다. 요약줄의 `backoff-deferred N`과 `memex status`의 `N backoff` / `earliest retry <ISO>`가 같은 큐를 셉니다(모두 `pending`의 내역이며 terminal `deferred`와 다릅니다).
 - `SKIPPED (attempt cap reached)` — 시도 상한 도달. exact range가 failed-visible로 기록되며 운영 점검 대상입니다.
+
+### Ontology taxonomy 수리 (0.6.1 #47)
+
+0.6.1 이전 taxonomy는 append-only였습니다 — merge도 rename도 delete도 없어서, 근사 중복 category
+(`Auth` / `Authentication` / `AuthN`)가 생기면 온톨로지 전체를 날리는 것 외에 방법이 없었습니다.
+(이 classifier는 과거에 category 1,612개 ≈ 95K 토큰까지 번진 적이 있습니다.)
+
+```bash
+memex ontology list [--json]                                        # id / domain / category
+memex ontology merge <from-category-id> <to-category-id> --dry-run  # 계획만
+memex ontology merge <from-category-id> <to-category-id>            # fact 재지정 + 원본 삭제
+memex ontology rename <category-id> "Authentication"                # label만 변경
+```
+
+- `merge`는 `from`의 모든 fact를 `to`로 옮기고 `from` 행과 그 vector를 삭제합니다.
+- `rename`은 fact 할당을 유지하고 category vector만 무효화합니다 — `memex backfill embeddings`(또는
+  다음 분류의 self-heal)가 새 label로 다시 임베딩합니다. 같은 domain에 이미 있는 이름으로는 거부되며
+  merge를 안내합니다.
+- 둘 다 fact 의미를 건드리지 않습니다: Chronicle 이벤트 없음, semantic/lifecycle generation bump 없음,
+  attempt ledger reset 없음, taxonomy epoch bump 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+
+0.6.1부터 domain 이름과 domain 내 category 이름에 unique index가 생기고, 기존 대소문자 중복은 DB를
+열 때 자동 병합됩니다(가장 오래된 행 유지). 무비용 결정론적 재사용 레인은 `MEMEX_ONTOLOGY_DET_GATE`를
+설정하지 않으면 꺼져 있습니다(기본 `+Infinity`).
 
 ### KR translation은 별도 수동 단계
 
@@ -700,6 +743,12 @@ Process가 끝났다는 사실만으로 증거 처리 작업이 완료되었다�
 - 같은 데이터 루트의 자동 유지보수 전체가 최근 24시간 호출 한도 미만
 - 활성 job lease 없음 AND (provider 호출 종료 OR 해당 run의 deadline 경과 후 1분)
 - deadline이 없는 run의 미확인 예약은 자동으로 종료됐다고 추정하지 않음
+
+Rollover는 wave 이름에 접미사를 누적하지 않습니다(0.6.1 #42). `parent_wave_id`는 root(`maintenance`)와
+그 다음 run(`maintenance#2`, `maintenance#3`)만 갖고, 계보는 `root_wave_id` / `run_seq` 컬럼이 들고
+있습니다. 0.6.1 이전에는 rollover 1회마다 `:run:<uuid>` 41자가 붙어 무한히 자랐고, 확장된 id가
+환경변수로 자식 워커에 전파되면 그 워커의 계보 조회 범위가 좁아져 공통 rolling 한도에서 이탈했습니다.
+DB를 열 때 기존 중첩 id는 자동으로 정규화됩니다. 자식 워커에는 항상 root wave id를 전달합니다.
 
 공통 호출 한도는 `MEMEX_AUTO_MODEL_MAX_ATTEMPTS=256`이 기본값이며 실패·재시도·결과 미확인
 예약도 계산합니다. 예약 1건이 1회이며 재시도는 새 예약 1회를 소비합니다. 성공 여부와 무관하게

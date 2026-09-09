@@ -283,7 +283,12 @@ export function recordChronicleEvent(db, input) {
     if (input.factId && input.newValue && input.projectionApplied && effectiveAtSource !== 'peer' &&
         input.evidenceAuthority && input.evidenceAuthority !== 'unknown' &&
         (input.actor === 'extractor' || input.actor === 'user' || input.actor === 'consolidator')) {
-        recordLocalMeaningEvidence(db, input.factId, input.newValue, input.actor, sourceExchangeIds);
+        // 이슈 #45: 실패를 조용히 삼키지 않는다. 영수증이 없는 fact는 자동 통합
+        // 대상에서 사실상 제외되므로, 만들어지지 않았다는 사실이 관측 가능해야 한다.
+        if (!recordLocalMeaningEvidence(db, input.factId, input.newValue, input.actor, sourceExchangeIds)) {
+            console.error(`local meaning evidence NOT recorded for fact ${input.factId} (${input.actor}): ` +
+                'source evidence changed or is unresolvable — rebuild with: memex backfill receipts');
+        }
     }
     return { event, inserted: true };
 }
@@ -1016,6 +1021,9 @@ export const TELEMETRY_METRICS = [
     "worker_extraction_latency_ms",
     "worker_extraction_retries",
     "worker_extraction_dead",
+    // 이슈 #43: P0/P1 백로그 때문에 파생 레인을 건너뛴 사건. dims에 사유와
+    // 연속 횟수, 강제 통과 여부가 들어간다.
+    "derived_lane_skipped",
 ];
 const TELEMETRY_SET = new Set(TELEMETRY_METRICS);
 export function recordTelemetrySample(db, input) {

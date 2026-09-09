@@ -8,6 +8,10 @@ import {
   getExtractionConfig,
   pendingExtractionCoreQuery,
 } from "./pending-extraction.js";
+import {
+  countFactsWithoutLocalEvidence,
+  countRepairableLocalEvidence,
+} from "./evidence-backfill.js";
 import { getPipelineStatus } from "./pipeline-status.js";
 import {
   buildCategoryReembedPending,
@@ -22,6 +26,8 @@ export interface BackfillWorkStatus {
     extract: number;
     ontology: number;
     embeddings: number;
+    /** 이슈 #45: 지금 즉시 재구성 가능한 로컬 증거 영수증 수(model-free). */
+    receipts: number;
   };
   active: { total: number; extract: number };
   unresolved: {
@@ -38,6 +44,9 @@ export interface BackfillWorkStatus {
     factVectors: number;
     koreanFactVectors: number;
     exchangeVectors: number;
+    /** Facts with no CURRENT local receipt, whether repairable or not. */
+    factsWithoutLocalEvidence: number;
+    repairableReceipts: number;
   };
 }
 
@@ -61,7 +70,7 @@ export function getBackfillWorkStatus(
   const dbPath = opts.dbPath ?? getDbPath();
   const empty: BackfillWorkStatus = {
     total: 0,
-    stages: { extract: 0, ontology: 0, embeddings: 0 },
+    stages: { extract: 0, ontology: 0, embeddings: 0, receipts: 0 },
     active: { total: 0, extract: 0 },
     unresolved: {
       total: 0,
@@ -77,6 +86,8 @@ export function getBackfillWorkStatus(
       factVectors: 0,
       koreanFactVectors: 0,
       exchangeVectors: 0,
+      factsWithoutLocalEvidence: 0,
+      repairableReceipts: 0,
     },
   };
   if (!fs.existsSync(dbPath)) return empty;
@@ -143,7 +154,12 @@ export function getBackfillWorkStatus(
           ...(pendingExtraction?.params ?? []),
         )
       : 0;
-    const ontologyFacts = pipeline.ontology.pendingFacts;
+    // 이슈 #41: 파킹된 fact 중 현재 정책/임베딩 세대에서 아직 재시도를 쓰지
+    // 않은 것은 `memex backfill ontology`가 실제로 처리할 일감이다 — 여기에
+    // 세지 않으면 backfill이 "남은 일 없음"이라 보고한 직후 워커가 그것들을
+    // 집는 모순이 생긴다.
+    const ontologyFacts =
+      pipeline.ontology.pendingFacts + pipeline.ontology.parkedRetryable;
     const relationTargets = tableExists(db, "model_work_targets")
       ? count(
           db,
@@ -213,14 +229,19 @@ export function getBackfillWorkStatus(
       );
     }
 
+    // 이슈 #45: model-free 영수증 백필도 backfill이 실제로 하는 일감이다.
+    const factsWithoutLocalEvidence = countFactsWithoutLocalEvidence(db);
+    const repairableReceipts = countRepairableLocalEvidence(db);
+
     const stages = {
       extract: extractionSessions,
       ontology: ontologyFacts + relationTargets,
       embeddings:
         categoryVectors + factVectors + koreanFactVectors + exchangeVectors,
+      receipts: repairableReceipts,
     };
     const status = {
-      total: stages.extract + stages.ontology + stages.embeddings,
+      total: stages.extract + stages.ontology + stages.embeddings + stages.receipts,
       stages,
       active: {
         total: activeExtractionSessions,
@@ -240,6 +261,8 @@ export function getBackfillWorkStatus(
         factVectors,
         koreanFactVectors,
         exchangeVectors,
+        factsWithoutLocalEvidence,
+        repairableReceipts,
       },
     };
     db.exec("COMMIT");

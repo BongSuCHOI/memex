@@ -115,7 +115,7 @@ test('read-only commands answer --help with exit 0 instead of an error', (t) => 
   const fixture = isolated(t);
   for (const [command, usage] of [
     ['facts', /memex facts <list\|show\|edit/],
-    ['backfill', /memex backfill <all\|extract\|ontology\|embeddings>/],
+    ['backfill', /memex backfill <all\|extract\|ontology\|embeddings\|receipts>/],
     ['home', /Usage: memex home/],
     ['status', /Usage: memex status \[--json\]/],
     ['jobs', /memex jobs list/],

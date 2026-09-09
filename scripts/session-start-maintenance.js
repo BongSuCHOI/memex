@@ -89,7 +89,13 @@ async function main() {
     });
     const childEnv = {
       ...process.env,
-      MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.parentWaveId,
+      // Issue #42: children receive the ROOT wave id, never the rolled-over
+      // one. Passing the expanded id made each detached worker append another
+      // `:run:<uuid>` to it AND narrowed its lineage lookup to that prefix,
+      // which silently detached the worker from the shared rolling attempt cap
+      // (the deepest row in the audited data root was created by exactly this
+      // path — it carried automatic = 0).
+      MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.rootWaveId ?? maintenanceBudget.parentWaveId,
       MEMEX_MODEL_BUDGET_ID: maintenanceBudget.budgetId,
     };
 
@@ -141,11 +147,50 @@ async function main() {
       }
     } catch { /* non-fatal */ }
 
-    // Keep process-level priority strict: lower lanes resume on the next
-    // SessionStart after P0/P1 has drained instead of competing for SQLite or
-    // local model capacity in the same maintenance invocation.
+    // Issue #43: keep process-level priority strict, but BOUNDED and visible.
+    //
+    // The old code returned here, so a Capsule job that fails deterministically
+    // — and is re-created at every new checkpoint — could skip all four derived
+    // lanes indefinitely, with no log, no telemetry sample and nothing in
+    // `memex status` connecting "fact extraction is not progressing" to the
+    // Continuity backlog that actually caused it.
+    //
+    // Now every skip is counted durably; after DERIVED_LANE_FORCE_AFTER
+    // consecutive skips for the SAME reason the lanes are let through once and
+    // the counter resets. P0/P1 still wins the other N-1 invocations.
     if (continuityPending) {
-      return;
+      let forced = false;
+      try {
+        const { recordDerivedLaneSkip } = await import('../dist/derived-lane-skip.js');
+        const skip = recordDerivedLaneSkip(db, 'continuity_backlog');
+        forced = skip.forced;
+        try {
+          const { recordTelemetrySample } = await import('../dist/chronicle.js');
+          recordTelemetrySample(db, {
+            metric: 'derived_lane_skipped',
+            value: 1,
+            dims: {
+              reason: 'continuity_backlog',
+              consecutive: skip.consecutive,
+              forced: skip.forced,
+            },
+          });
+        } catch { /* telemetry is best-effort; never blocks maintenance */ }
+      } catch {
+        // The counter itself is unavailable (pre-0.6.1 database, read-only
+        // filesystem): fall back to the historical strict-priority behaviour.
+        return;
+      }
+      if (!forced) return;
+      console.error(
+        'session-start-maintenance: derived lanes forced through after ' +
+          'consecutive skips (reason: continuity backlog)',
+      );
+    } else {
+      try {
+        const { clearDerivedLaneSkips } = await import('../dist/derived-lane-skip.js');
+        clearDerivedLaneSkips(db);
+      } catch { /* non-fatal */ }
     }
 
     // Derived work begins only when the Continuity queue is currently drained.
@@ -177,9 +222,20 @@ async function main() {
 
     // 3. Auto-resume ontology classification backfill.
     try {
+      // Issue #41: a fact parked in General/Misc after bounded failures keeps
+      // a category id, so the old `IS NULL` probe could never re-spawn the
+      // worker for it. The shared selector reopens each parked fact exactly
+      // once per (classifier policy, embedding generation) token.
+      const { buildOntologyPendingClause, MAX_CLASSIFY_ATTEMPTS } = await import('../dist/ontology-selector.js');
+      const { EMBEDDING_VERSION: ontologyEmbeddingVersion } = await import('../dist/embeddings.js');
+      const ontoSelector = buildOntologyPendingClause({
+        embeddingVersion: ontologyEmbeddingVersion,
+        maxAttempts: MAX_CLASSIFY_ATTEMPTS,
+        alias: 'f',
+      });
       const pendingOnto = db.prepare(
-        'SELECT 1 FROM facts WHERE is_active = 1 AND ontology_category_id IS NULL LIMIT 1'
-      ).get();
+        `SELECT 1 FROM facts f WHERE ${ontoSelector.clause} LIMIT 1`
+      ).get(...ontoSelector.params);
       // Existing relation memberships are durable pending work. The
       // BACKFILL_RELATIONS switch controls creating new relation probes while
       // classifying an ontology page; it must not hide already queued work.

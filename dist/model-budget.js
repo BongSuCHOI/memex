@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { getDbPath } from "./paths.js";
+import { EMBEDDING_VERSION } from "./embeddings.js";
+import { ontologyPendingSqlInline } from "./ontology-selector.js";
 /**
  * Durable accounting for model work.
  *
@@ -114,6 +116,39 @@ function hasDerivedFactQueue(db) {
         columns.has("ontology_category_id") && columns.has("needs_consolidation");
 }
 /**
+ * 이슈 #42: wave 계보를 문자열이 아니라 컬럼으로 읽는다.
+ *
+ * 역사적으로 rollover는 `parent_wave_id`에 `:run:<uuid>`(41자)를 이어붙여
+ * 표현했고 상한이 없었다. 실데이터에는 이미 3단계 중첩이 있었다:
+ *   maintenance
+ *   maintenance:run:f11b5103-…
+ *   maintenance:run:f11b5103-…:run:7344dd28-…
+ * 이 함수는 어떤 형태의 id에서도 ROOT를 뽑는다 — 옛 `:run:` 사슬과 새
+ * `#<seq>` 접미사 둘 다. 환경변수로 옛 id를 물려받은 워커가 여전히 같은
+ * 계보(=같은 rolling cap)로 해석되게 하는 것이 목적이다.
+ */
+export function rootWaveIdOf(parentWaveId) {
+    const withoutRun = parentWaveId.split(":run:")[0];
+    const compact = /^(.*)#\d+$/.exec(withoutRun);
+    return compact ? compact[1] : withoutRun;
+}
+/** Parse a wave id into (root, explicit run number when the name carries one). */
+function parseWaveId(parentWaveId) {
+    const root = rootWaveIdOf(parentWaveId);
+    const compact = /^(.*)#(\d+)$/.exec(parentWaveId.split(":run:")[0]);
+    return { root, seq: compact ? Number(compact[2]) : null };
+}
+/** Human-readable, BOUNDED name for run `seq` of `root`. Run 1 IS the root. */
+function runWaveId(root, seq) {
+    return seq <= 1 ? root : `${root}#${seq}`;
+}
+function nextRunSeq(db, rootWaveId) {
+    const row = db
+        .prepare("SELECT COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id = ?")
+        .get(rootWaveId);
+    return Number(row?.n ?? 0) + 1;
+}
+/**
  * Additive, idempotent local telemetry migration. This is intentionally
  * separate from the Continuity schema version: budgets are operational state
  * and do not alter transcript/fact protocol meaning.
@@ -195,6 +230,62 @@ export function ensureModelBudgetSchema(db) {
         if (!columnNames(db, MODEL_BUDGET_TABLE).has("automatic")) {
             db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
         }
+        // 이슈 #42: rollover 계보를 컬럼으로 옮긴다(둘 다 additive nullable).
+        // `UNIQUE(parent_wave_id)`는 테이블 제약이라 그대로 두고, 계보 유일성은
+        // 추가 UNIQUE INDEX로 표현한다 — 테이블 재작성 없이 additive하게.
+        const budgetColumns = columnNames(db, MODEL_BUDGET_TABLE);
+        if (!budgetColumns.has("root_wave_id")) {
+            db.exec("ALTER TABLE model_work_budgets ADD COLUMN root_wave_id TEXT");
+        }
+        if (!budgetColumns.has("run_seq")) {
+            db.exec("ALTER TABLE model_work_budgets ADD COLUMN run_seq INTEGER");
+        }
+        // 기존 중첩 id 정규화. 실제 root는 3단계까지 중첩돼 있었고, rolling cap은
+        // "모든 자동 작업이 하나의 wave 계보를 공유한다"는 전제 위에 서 있으므로
+        // 계보 연결을 잃지 않는 것이 이 마이그레이션의 유일한 요구사항이다.
+        // 같은 root 안에서 created_at 순서가 곧 run 순서다.
+        const legacyRows = db
+            .prepare(`SELECT budget_id, parent_wave_id, root_wave_id, run_seq FROM model_work_budgets
+         WHERE root_wave_id IS NULL OR run_seq IS NULL OR parent_wave_id LIKE '%:run:%'
+         ORDER BY created_at, budget_id`)
+            .all();
+        if (legacyRows.length > 0) {
+            const seqByRoot = new Map();
+            const seeded = db
+                .prepare("SELECT root_wave_id, COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id IS NOT NULL GROUP BY root_wave_id")
+                .all();
+            for (const row of seeded)
+                seqByRoot.set(row.root_wave_id, Number(row.n));
+            const takenNames = new Set(db.prepare("SELECT parent_wave_id FROM model_work_budgets").all()
+                .map((row) => row.parent_wave_id));
+            for (const row of legacyRows) {
+                const parsed = parseWaveId(row.parent_wave_id);
+                const root = parsed.root;
+                const seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+                seqByRoot.set(root, Math.max(seqByRoot.get(root) ?? 0, seq));
+                let name = runWaveId(root, seq);
+                // A compact name that is already taken by a DIFFERENT budget must not
+                // collide with UNIQUE(parent_wave_id): keep the legacy string instead.
+                if (name !== row.parent_wave_id && takenNames.has(name))
+                    name = row.parent_wave_id;
+                if (name !== row.parent_wave_id) {
+                    takenNames.delete(row.parent_wave_id);
+                    takenNames.add(name);
+                    db.prepare("UPDATE model_work_budgets SET parent_wave_id = ? WHERE budget_id = ?")
+                        .run(name, row.budget_id);
+                    // Queue rows carry the wave marker as a plain string; a rewritten
+                    // budget name must not orphan them from their lineage.
+                    if (tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("maintenance_wave_id")) {
+                        db.prepare("UPDATE memory_jobs SET maintenance_wave_id = ? WHERE maintenance_wave_id = ?")
+                            .run(name, row.parent_wave_id);
+                    }
+                }
+                db.prepare("UPDATE model_work_budgets SET root_wave_id = ?, run_seq = ? WHERE budget_id = ?")
+                    .run(root, seq, row.budget_id);
+            }
+        }
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
+         ON model_work_budgets(root_wave_id, run_seq)`);
         // memory_jobs is created by ensureContinuitySchema. Keep these columns
         // nullable so old rows remain valid and bind once their first model call
         // is reserved. The ledger remains the authority for the binding while the
@@ -268,9 +359,12 @@ function normalizeLimits(input = {}) {
     };
 }
 function budgetFromRow(row) {
+    const parentWaveId = String(row.parent_wave_id);
     return {
         budgetId: String(row.budget_id),
-        parentWaveId: String(row.parent_wave_id),
+        parentWaveId,
+        rootWaveId: row.root_wave_id == null ? rootWaveIdOf(parentWaveId) : String(row.root_wave_id),
+        runSeq: row.run_seq == null ? 1 : Number(row.run_seq),
         state: String(row.state),
         maxAttempts: Number(row.max_attempts),
         reservedAttempts: Number(row.reserved_attempts),
@@ -449,12 +543,16 @@ function insertModelWorkBudget(db, input) {
     const budgetId = input.budgetId?.trim() || randomUUID();
     const limits = normalizeLimits(input.limits);
     const now = (input.now ?? new Date()).toISOString();
+    // 이슈 #42: 계보는 이름이 아니라 컬럼이다. 이름이 `<root>#<n>` 형태면 그
+    // n을 존중하고, 아니면 이 root의 다음 run 번호를 잡는다.
+    const parsed = parseWaveId(input.parentWaveId);
+    const runSeq = parsed.seq ?? nextRunSeq(db, parsed.root);
     db.prepare(`
     INSERT INTO model_work_budgets
-      (budget_id, parent_wave_id, state, max_attempts, reserved_attempts,
+      (budget_id, parent_wave_id, root_wave_id, run_seq, state, max_attempts, reserved_attempts,
        max_input_chars, max_output_chars, deadline_at, created_at, updated_at)
-    VALUES (?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
-  `).run(budgetId, input.parentWaveId, limits.maxAttempts, limits.maxInputChars, limits.maxOutputChars, limits.deadlineAt, now, now);
+    VALUES (?, ?, ?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
+  `).run(budgetId, input.parentWaveId, parsed.root, runSeq, limits.maxAttempts, limits.maxInputChars, limits.maxOutputChars, limits.deadlineAt, now, now);
     return readBudgetById(db, budgetId);
 }
 export function getModelWorkBudget(db, budgetId) {
@@ -626,8 +724,9 @@ export function startNewModelWorkRunForJob(db, input) {
     if (requestedWave && requestedWave === oldBudget?.parentWaveId) {
         throw new Error("new model work run requires a distinct parentWaveId");
     }
-    const parentWaveId = requestedWave ||
-        `${oldBudget?.parentWaveId ?? "job"}:run:${randomUUID()}`;
+    // 이슈 #42: job 재개도 같은 root의 다음 run 번호를 쓴다.
+    const jobRoot = rootWaveIdOf(oldBudget?.parentWaveId ?? "job");
+    const parentWaveId = requestedWave || runWaveId(jobRoot, nextRunSeq(db, jobRoot));
     const next = startNewModelWorkRun(db, { parentWaveId, limits: input.limits });
     rebindMemoryJobToBudget(db, {
         jobId: input.jobId,
@@ -671,8 +770,10 @@ export function startNewModelWorkRunForBudget(db, input) {
         throw new Error("new model work run requires a distinct parentWaveId");
     }
     const createBudget = input.automatic ? insertModelWorkBudget : startNewModelWorkRun;
+    // 이슈 #42: 이름을 이어붙이지 않고 같은 root의 다음 run을 연다.
+    const previousRoot = previousBudget.rootWaveId || rootWaveIdOf(previousBudget.parentWaveId);
     const budget = createBudget(db, {
-        parentWaveId: requestedWave || `${previousBudget.parentWaveId}:run:${randomUUID()}`,
+        parentWaveId: requestedWave || runWaveId(previousRoot, nextRunSeq(db, previousRoot)),
         limits: input.limits,
         now: input.now,
     });
@@ -1109,6 +1210,22 @@ function envContext() {
         targetId: process.env.MEMEX_MODEL_TARGET_ID || undefined,
     };
 }
+/**
+ * 이슈 #41: 유지보수 wave가 "남은 파생 일감"을 판정하는 술어.
+ *
+ * 예전에는 `ontology_category_id IS NULL`만 봤다. 실패로 파킹된 fact는
+ * category id가 채워져 있으므로 여기에 걸리지 않았고, 그래서 wave가
+ * completed로 닫혔으며 SessionStart는 ontology 워커를 아예 띄우지 않았다 —
+ * 파킹이 영구가 된 마지막 고리다. 현재 (정책, 임베딩) 세대에서 아직 재시도를
+ * 쓰지 않은 파킹 행은 진짜 일감이므로 pending으로 센다. 손으로 만든 옛 스키마
+ * (컬럼 없음)에서는 예전 술어로 정확히 되돌아간다.
+ */
+function ontologyPendingPredicate(db, alias = "f") {
+    if (!columnNames(db, "facts").has("ontology_state")) {
+        return `${alias}.ontology_category_id IS NULL`;
+    }
+    return ontologyPendingSqlInline(alias, EMBEDDING_VERSION);
+}
 function countPendingModelWork(db, budgetId) {
     const counts = { pending: 0, reserved: 0, unbound: 0 };
     const derivedFactQueue = hasDerivedFactQueue(db);
@@ -1138,7 +1255,7 @@ function countPendingModelWork(db, budgetId) {
       FROM model_work_targets t
       JOIN facts f ON f.id = t.target_id
       WHERE t.state = 'pending' AND f.is_active = 1
-        AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+        AND ((t.stage = 'ontology' AND ${ontologyPendingPredicate(db)})
           OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
           OR (t.stage = 'relation' AND f.is_active = 1))
         ${scope}
@@ -1160,8 +1277,9 @@ function countPendingModelWork(db, budgetId) {
         // their provider attempts to a budget and therefore use the full pending
         // predicate below when a budgetId is supplied.
         const includeUnboundOntology = budgetId !== undefined || isAutomaticOntologyEnabled();
+        const ontologyPending = ontologyPendingPredicate(db);
         const pendingFactCondition = includeUnboundOntology
-            ? "(f.ontology_category_id IS NULL OR f.needs_consolidation = 1)"
+            ? `(${ontologyPending} OR f.needs_consolidation = 1)`
             : "f.needs_consolidation = 1";
         const pendingFactsSql = budgetId
             ? `
@@ -1174,7 +1292,7 @@ function countPendingModelWork(db, budgetId) {
               SELECT 1 FROM model_work_targets t
               WHERE t.budget_id = ? AND t.state = 'pending'
                 AND t.target_id = f.id
-                AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+                AND ((t.stage = 'ontology' AND ${ontologyPending})
                   OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
                   OR (t.stage = 'relation' AND f.is_active = 1))
             )
@@ -1199,7 +1317,7 @@ function countPendingModelWork(db, budgetId) {
         WHERE f.is_active = 1
           AND ${pendingFactCondition}
           AND (
-            (f.ontology_category_id IS NULL AND NOT EXISTS (
+            (${ontologyPending} AND NOT EXISTS (
               SELECT 1 FROM model_work_targets t
               WHERE t.target_id = f.id AND t.stage = 'ontology' AND t.state = 'pending'
             ) AND NOT EXISTS (
@@ -1221,16 +1339,22 @@ function countPendingModelWork(db, budgetId) {
     }
     return counts;
 }
-function maintenanceWavePattern(parentWaveId) {
-    return `${parentWaveId.replace(/[\\%_]/g, "\\$&")}:run:%`;
-}
+/**
+ * 이슈 #42: 계보 매칭은 LIKE 접두 패턴이 아니라 root 컬럼이다.
+ *
+ * 옛 방식은 자식이 확장된 id를 루트로 삼아 조회하면 범위가 그 접두사 이하로
+ * 좁아져 원래 `maintenance` 계보의 이력 — shared rolling attempt cap이 근거로
+ * 삼는 바로 그 이력 — 을 채택하지 못했다. 인자로 어떤 형태의 id가 들어와도
+ * (옛 `:run:` 사슬, 새 `#<n>`, 순수 root) 같은 root로 정규화한다.
+ */
 function latestMaintenanceBudget(db, parentWaveId) {
+    const root = rootWaveIdOf(parentWaveId);
     const row = db.prepare(`
     SELECT * FROM model_work_budgets
-    WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    ORDER BY created_at DESC, budget_id DESC
+    WHERE root_wave_id = ?
+    ORDER BY run_seq DESC, created_at DESC, budget_id DESC
     LIMIT 1
-  `).get(parentWaveId, maintenanceWavePattern(parentWaveId));
+  `).get(root);
     return row ? budgetFromRow(row) : null;
 }
 /** One rolling cap across all automatic maintenance waves in this data root. */
@@ -1275,9 +1399,10 @@ export function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
     const maintain = db.transaction(() => {
         // Adopt the existing named maintenance history, including pre-upgrade
         // attempts. Changing the wave name cannot bypass the shared rolling cap.
-        db.prepare(`UPDATE model_work_budgets SET automatic = 1
-      WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    `).run(parentWaveId, maintenanceWavePattern(parentWaveId));
+        // 이슈 #42: 계보 채택은 root 컬럼 기준이다. 인자가 옛 중첩 id여도 같은
+        // 계보로 정규화되므로 shared rolling cap의 전제가 깨지지 않는다.
+        const rootWaveId = rootWaveIdOf(parentWaveId);
+        db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE root_wave_id = ?").run(rootWaveId);
         let latest = latestMaintenanceBudget(db, parentWaveId);
         const window = automaticMaintenanceWindow(db, now);
         const lastAttempt = latest ? db.prepare(`
@@ -1325,13 +1450,17 @@ export function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
             if (window.remaining === 0 || now.getTime() < retryAt)
                 return latest;
         }
+        // 이슈 #42: rollover는 접미사 누적이 아니라 run 번호 증가다.
+        // `maintenance` → `maintenance#2` → `maintenance#3` — 길이가 유한하고
+        // root_wave_id 컬럼이 계보를 들고 있다.
+        const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
         const next = latest?.state === "exhausted"
             ? startNewModelWorkRunForBudget(db, {
-                budgetId: latest.budgetId, parentWaveId: `${parentWaveId}:run:${randomUUID()}`,
+                budgetId: latest.budgetId, parentWaveId: nextWaveId,
                 limits, now, automatic: true,
             }).budget
             : insertModelWorkBudget(db, {
-                parentWaveId: latest ? `${parentWaveId}:run:${randomUUID()}` : parentWaveId,
+                parentWaveId: latest ? nextWaveId : parentWaveId,
                 limits, now,
             });
         db.prepare("UPDATE model_work_budgets SET automatic = 1, state = ? WHERE budget_id = ?")
@@ -1381,9 +1510,9 @@ function getOrCreateWaveModelBudget(db, input) {
             allPending.unbound === 0) {
             return latest;
         }
-        const nextWave = latest
-            ? `${parentWaveId}:run:${randomUUID()}`
-            : parentWaveId;
+        // 이슈 #42: 여기도 접미사 누적이 아니라 run 번호 증가.
+        const root = rootWaveIdOf(parentWaveId);
+        const nextWave = latest ? runWaveId(root, nextRunSeq(db, root)) : parentWaveId;
         return insertModelWorkBudget(db, {
             parentWaveId: nextWave,
             limits: input.limits,
@@ -1641,7 +1770,7 @@ export function getModelWorkDiagnostics(db, filter = {}) {
         const ontologyRows = db.prepare(`
       SELECT f.id
       FROM facts f
-      WHERE f.is_active = 1 AND f.ontology_category_id IS NULL
+      WHERE f.is_active = 1 AND ${ontologyPendingPredicate(db)}
         AND NOT (${targetLink("ontology")} OR ${attemptLink("'ontology'")})
       ORDER BY f.id
     `).all();

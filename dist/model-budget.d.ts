@@ -30,6 +30,15 @@ export interface ModelBudgetLimits {
 export interface ModelWorkBudget {
     budgetId: string;
     parentWaveId: string;
+    /**
+     * 이슈 #42: rollover 계보의 ROOT. `parent_wave_id`에 `:run:<uuid>`를 계속
+     * 이어붙이던 것이 rollover 1회당 41자씩 무한히 자랐고(실데이터에 이미 3단계
+     * 중첩), 확장된 id가 환경변수로 자식 워커에 전파돼 또 붙었다. 계보는 이제
+     * 문자열이 아니라 이 컬럼이다: 공유 rolling cap 조회의 기준이기도 하다.
+     */
+    rootWaveId: string;
+    /** 이 root 안에서 몇 번째 run인지(1부터). `UNIQUE(root_wave_id, run_seq)`. */
+    runSeq: number;
     state: ModelBudgetState;
     maxAttempts: number;
     reservedAttempts: number;
@@ -135,6 +144,19 @@ export declare class ModelBudgetAffinityError extends Error {
 export declare function getModelWorkContext(): ModelWorkContext | undefined;
 /** Run work with context merged into the current async context. */
 export declare function withModelWorkContext<T>(context: Partial<ModelWorkContext>, fn: () => T | Promise<T>): Promise<T>;
+/**
+ * 이슈 #42: wave 계보를 문자열이 아니라 컬럼으로 읽는다.
+ *
+ * 역사적으로 rollover는 `parent_wave_id`에 `:run:<uuid>`(41자)를 이어붙여
+ * 표현했고 상한이 없었다. 실데이터에는 이미 3단계 중첩이 있었다:
+ *   maintenance
+ *   maintenance:run:f11b5103-…
+ *   maintenance:run:f11b5103-…:run:7344dd28-…
+ * 이 함수는 어떤 형태의 id에서도 ROOT를 뽑는다 — 옛 `:run:` 사슬과 새
+ * `#<seq>` 접미사 둘 다. 환경변수로 옛 id를 물려받은 워커가 여전히 같은
+ * 계보(=같은 rolling cap)로 해석되게 하는 것이 목적이다.
+ */
+export declare function rootWaveIdOf(parentWaveId: string): string;
 /**
  * Additive, idempotent local telemetry migration. This is intentionally
  * separate from the Continuity schema version: budgets are operational state

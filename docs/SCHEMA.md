@@ -125,6 +125,16 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 데이터 루트 공통 rolling
 호출 수를 계산합니다. 새 run 생성·미완료 membership 이동은 같은 `BEGIN IMMEDIATE`에 묶고,
 자동 재개는 완료 기록·실패 횟수·미확인 호출 비용을 보존합니다.
+`model_work_budgets.root_wave_id` / `run_seq`(0.6.1 additive, nullable + backfill)는 rollover 계보를
+문자열이 아니라 컬럼으로 표현합니다. 0.6.1 이전에는 rollover마다 `parent_wave_id`에
+`:run:<uuid>`(41자)를 이어붙였고 상한도 삭제 경로도 없어 단조 증가했습니다(실측 데이터에 이미 3단계
+중첩). 이제 rollover는 같은 root의 다음 `run_seq`이고 이름은 `<root>` / `<root>#2` / `<root>#3` 형태로
+유한합니다. 계보 조회(shared rolling attempt cap의 근거)는 LIKE 접두 매칭이 아니라 `root_wave_id`
+컬럼으로 하며, 옛 `:run:` 사슬을 환경변수로 물려받은 워커도 같은 root로 정규화됩니다.
+`UNIQUE(parent_wave_id)` 테이블 제약은 그대로 두고 계보 유일성은
+`CREATE UNIQUE INDEX idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
+표현합니다(테이블 재작성 없이 additive). 마이그레이션은 기존 중첩 id를 `<root>#<n>`으로 정규화하고
+`memory_jobs.maintenance_wave_id`의 같은 문자열도 함께 갱신합니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
 원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
 이 상태와 ledger는 protocol v5에 export하지 않습니다.
@@ -248,6 +258,10 @@ facts (
   embedding_version,
   ontology_attempts,
   ontology_last_attempt_at,
+  ontology_state,
+  ontology_parked_at,
+  ontology_parked_version,
+  ontology_similarity,
   consolidation_attempts,
   needs_consolidation,
   semantic_generation,
@@ -277,6 +291,65 @@ slot은 project와 optional workspace/workstream 범위에서 unique입니다. `
 덮어써집니다(누가 옮겼는지가 그 시점의 근거이므로). 즉 `tier_reason`은 "지금 이 tier에 있는 이유"이지
 추출 시점 브랜치 신호의 영구 기록이 아닙니다. Sync import는 peer가 보낸 200자 이하의 값을 그대로 받습니다.
 
+### Ontology parking fields (0.6.1 additive)
+
+`ontology_state` / `ontology_parked_at` / `ontology_parked_version` / `ontology_similarity`는 전부 additive
+nullable column이며 Continuity schema version(=7)을 올리지 않습니다. Ontology overlay는 local-derived
+state이고 protocol v4 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
+
+- `ontology_state`: `'parked'` 이면 bounded 분류 실패 후 General/Misc에 보관 중이라는 뜻입니다. LLM이
+  실제로 Misc를 고른 assignment는 `NULL`입니다. 이 구분이 없으면 status가 park를 classified로 셉니다.
+- `ontology_parked_at`: park된 시각.
+- `ontology_parked_version`: park 당시의 `(classifier policy, embedding generation)` 토큰(`p<n>:e<n>`).
+  재시도 selector는 이 값이 현재 토큰과 다를 때만 park를 pending으로 되돌립니다 — 세대당 정확히 한 번.
+- `ontology_similarity`: assignment 시점의 코사인 유사도(nullable). 낮은 신뢰도 할당의 사후 선별 입력.
+
+### Ontology taxonomy uniqueness (0.6.1)
+
+```sql
+CREATE UNIQUE INDEX idx_ontology_domains_name           ON ontology_domains(name COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_ontology_categories_domain_name ON ontology_categories(domain_id, name COLLATE NOCASE);
+```
+
+index 생성 전에 idempotent migration이 기존 대소문자 중복을 병합합니다: 가장 오래된 행을 남기고
+category/fact를 재지정한 뒤 나머지 행과 그 vector를 지웁니다. Chronicle 이벤트도 generation bump도
+없습니다(taxonomy는 local-derived overlay이고 fact 의미는 바뀌지 않습니다). `COLLATE NOCASE`는 ASCII만
+접으므로 `Café`/`café`는 여전히 별개입니다. Index 생성이 실패해도 초기화는 계속되며, 이때
+`createDomain`/`createCategory`의 "가장 오래된 행 재조회"가 수렴을 보장합니다(느릴 뿐).
+
+### Derived lane skips (0.6.1 additive)
+
+```text
+derived_lane_skips (
+  id (PK, always 1),
+  reason,                  -- 'continuity_backlog'
+  consecutive,             -- 강제 통과로 아직 해소되지 않은 연속 skip 수
+  total_skips,             -- 이 사유 run에서 관측된 전체 skip 수(status가 읽는 값)
+  last_skipped_at, last_forced_at
+)
+```
+
+P0/P1(capture_index, capsule_update) 백로그 때문에 파생 레인 4개(consolidation, re-embed, ontology,
+extraction)를 건너뛴 사실을 durable하게 남깁니다. 같은 사유로 3회 연속 skip되면 그 호출에서 파생
+레인을 한 번 통과시키고 `consecutive`를 0으로 되돌립니다 — 우선순위는 유지하되 기아를 막습니다.
+`memex status`가 `Derived lanes: skipped N times (reason: ...)` 줄로 읽고, 각 skip은
+`continuity_telemetry`의 `derived_lane_skipped` 샘플로도 남습니다(dims: reason/consecutive/forced).
+
+### Ontology index repair state (0.6.1 additive)
+
+```text
+ontology_index_repair_state (
+  id (PK, always 1),
+  state (blocked | clear),
+  blocked_reason (embed | write | purge | scan),
+  detail, detected_at, cleared_at
+)
+```
+
+`vec_categories`를 self-heal로 고칠 수 없을 때 기록되는 단일 행입니다. `memex status`의
+`ontology category index: MANUAL REPAIR REQUIRED (...)` 줄과 `memex doctor`의 `ontology-index` check가
+이 행을 읽습니다. 이전에는 같은 문장이 `logs/backfill-ontology.log`에만 존재했습니다.
+
 ### Semantic fields
 
 `semantic_generation`은 local CAS token이며 의미 변경마다 증가합니다. `semantic_updated_at`은 cross-device semantic event clock입니다.
@@ -301,7 +374,20 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 fact_id (PK, facts FK ON DELETE CASCADE)
 semantic_generation, fact_hash, source_snapshot_json
 method (extractor | user | consolidator), verified_at
+authority (0.6.1 additive, nullable)
 ```
+
+`authority`(0.6.1 additive)는 `'peer-authority'`일 때 그 영수증이 **로컬 검증이 아니라 peer 권위로
+대체된 흔적**임을 뜻합니다. 0.6.1 이전에는 sync-import가 remote semantic win마다 영수증을 무조건
+DELETE했고, 영수증은 설계상 export되지 않으므로 그 fact는 해당 기기에서 증거 결속을 영구히 잃었습니다
+(재생성 경로도 없었습니다). 이제는 삭제하지 않고 강등합니다 — `hasLocalMeaningEvidence`는 여전히
+false를 반환하지만, 무엇이 결속을 끊었는지가 남고 `memex backfill receipts`가 다시 로컬로 승격할 수
+있습니다. `method`의 CHECK 제약을 건드리지 않으려고(테이블 재작성 회피) 별도 컬럼을 씁니다.
+
+`memex backfill receipts`(model-free)는 `source_exchange_ids`가 전부 해석되는 활성 fact에 대해
+영수증을 재구성합니다. 영수증 행 자체가 resume 마커라 중단해도 다음 실행이 나머지를 이어서 처리합니다.
+`memex status`는 `facts without local evidence: N / M` 줄로 남은 수를 보고합니다 — 영수증이 없는 fact는
+자동 통합에서 제외되고 sync tie-break에서 집니다.
 
 Local verified projection의 exact meaning과 source/tool snapshot만 기록합니다. Source content/identity가
 바뀌거나 누락되면 receipt는 사용할 수 없고, remote semantic replacement는 receipt를 제거합니다.

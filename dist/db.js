@@ -359,6 +359,10 @@ export function initDatabase(options = {}) {
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT,
+      ontology_state TEXT,
+      ontology_parked_at TEXT,
+      ontology_parked_version TEXT,
+      ontology_similarity REAL,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
       semantic_updated_at TEXT NOT NULL DEFAULT '',
       lifecycle_generation INTEGER NOT NULL DEFAULT 1,
@@ -400,6 +404,57 @@ export function initDatabase(options = {}) {
         db.exec("ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''");
     }
     db.prepare("UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''").run();
+    // 이슈 #41: "LLM이 Misc를 골랐다"와 "실패해서 파킹됐다"를 스키마로 구분한다.
+    // ontology_state = 'parked' 인 행만 실패 파킹이고, ontology_parked_version은
+    // 그 파킹이 어떤 (분류 정책, 임베딩 세대)에서 일어났는지를 기록한다 —
+    // 재시도 셀렉터는 이 토큰이 현재 토큰과 다를 때만 파킹을 pending으로 되돌리므로
+    // 파킹된 fact는 정책/임베딩 세대당 정확히 한 번만 재시도된다.
+    // ontology_similarity(이슈 #47)는 할당 시점의 코사인 유사도로, 0.42로 붙은
+    // 할당과 0.98로 붙은 할당을 나중에 구분할 수 있게 한다. 전부 additive.
+    if (!factColumns.has("ontology_state")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_state TEXT");
+    }
+    if (!factColumns.has("ontology_parked_at")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_at TEXT");
+    }
+    if (!factColumns.has("ontology_parked_version")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_version TEXT");
+    }
+    if (!factColumns.has("ontology_similarity")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_similarity REAL");
+    }
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_facts_ontology_state
+      ON facts(ontology_state, ontology_parked_version)
+      WHERE ontology_state IS NOT NULL
+  `);
+    // 이슈 #41: "manual repair required"가 아무도 읽지 않는 로그 파일에만 남던
+    // 문제. IndexRepairError는 이 한 행짜리 테이블에 기록되고 status/doctor가
+    // 읽는다. 카테고리 인덱스가 다시 정합해지면 같은 행이 cleared로 바뀐다.
+    // 이슈 #43: 하위 레인 4개(consolidation / re-embed / ontology / extraction)를
+    // P0/P1 백로그 때문에 건너뛴 사실을 durable하게 센다. 예전에는 조기 return이
+    // 아무 기록도 남기지 않아, 운영자는 pending이 안 줄어드는 것만 보고 원인이
+    // 완전히 다른 파이프라인(Capsule)에 있다는 것을 알 방법이 없었다.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS derived_lane_skips (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reason TEXT NOT NULL,
+      consecutive INTEGER NOT NULL DEFAULT 0,
+      total_skips INTEGER NOT NULL DEFAULT 0,
+      last_skipped_at TEXT,
+      last_forced_at TEXT
+    )
+  `);
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ontology_index_repair_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL CHECK (state IN ('blocked','clear')),
+      blocked_reason TEXT,
+      detail TEXT,
+      detected_at TEXT,
+      cleared_at TEXT
+    )
+  `);
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);
@@ -419,9 +474,21 @@ export function initDatabase(options = {}) {
       fact_hash TEXT NOT NULL,
       source_snapshot_json TEXT NOT NULL,
       method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
-      verified_at TEXT NOT NULL
+      verified_at TEXT NOT NULL,
+      authority TEXT
     )
   `);
+    // 이슈 #45: sync-import는 remote semantic win마다 영수증을 무조건 DELETE했다.
+    // 영수증은 설계상 로컬 전용이라 export되지 않으므로, 그 fact는 해당 기기에서
+    // 증거 결속을 영구히 잃었고 재생성 경로도 없었다. 이제는 지우지 않고
+    // `authority = 'peer-authority'`로 강등한다 — 로컬 검증으로는 세지 않되
+    // (hasLocalMeaningEvidence가 false), 무엇이 그 결속을 끊었는지는 남고
+    // 백필이 다시 로컬로 승격할 수 있다. `method`의 CHECK 제약을 건드리지 않으려고
+    // 새 값을 method에 넣는 대신 별도 additive 컬럼을 쓴다(테이블 재작성 회피).
+    const receiptColumns = new Set(db.prepare("PRAGMA table_info(fact_evidence_receipts)").all().map((row) => row.name));
+    if (!receiptColumns.has("authority")) {
+        db.exec("ALTER TABLE fact_evidence_receipts ADD COLUMN authority TEXT");
+    }
     db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,
@@ -582,6 +649,68 @@ export function initDatabase(options = {}) {
     const ontologyCategoryColumns = new Set(db.prepare("PRAGMA table_info(ontology_categories)").all().map((row) => row.name));
     if (!ontologyCategoryColumns.has("embedding_version")) {
         db.exec("ALTER TABLE ontology_categories ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0");
+    }
+    // 이슈 #47: taxonomy 유일성을 애플리케이션 조회가 아니라 스키마로 보장한다.
+    //
+    // dedup은 지금까지 getDomainByName/getCategoryByName(둘 다 COLLATE NOCASE)
+    // 조회에만 의존했고, 그 읽기와 INSERT가 better-sqlite3 기본 DEFERRED
+    // transaction 안에 있었다 — 추출 경로(MCP 서버 프로세스)와 분리된 backfill
+    // 워커가 서로 다른 커넥션에서 동시에 "없음"을 읽고 둘 다 INSERT할 수 있고,
+    // unique index가 없으니 안전망도 없었다. 과거에 카테고리가 1,612개(≈95K
+    // 토큰)까지 번진 적이 있으므로 스프롤은 가설이 아니다.
+    //
+    // 인덱스를 만들기 전에 이미 존재하는 대소문자 중복을 먼저 병합한다:
+    // 가장 오래된 행을 남기고 fact/카테고리를 그쪽으로 재지정한 뒤 나머지를
+    // 지운다. Chronicle 이벤트는 남기지 않는다 — taxonomy는 local-derived
+    // overlay이고 fact 의미는 전혀 바뀌지 않기 때문이다(protocol v4 payload에도
+    // 없다). SQLite의 NOCASE/LOWER는 ASCII만 접으므로 'Café' vs 'café'는 여전히
+    // 다른 이름이다(문서화된 한계).
+    const mergeTaxonomyDuplicates = db.transaction(() => {
+        const domains = db
+            .prepare("SELECT id, name, created_at FROM ontology_domains ORDER BY created_at, id")
+            .all();
+        const domainKeeper = new Map();
+        for (const domain of domains) {
+            const key = domain.name.toLowerCase();
+            const keeper = domainKeeper.get(key);
+            if (keeper === undefined) {
+                domainKeeper.set(key, domain.id);
+                continue;
+            }
+            db.prepare("UPDATE ontology_categories SET domain_id = ? WHERE domain_id = ?").run(keeper, domain.id);
+            db.prepare("DELETE FROM ontology_domains WHERE id = ?").run(domain.id);
+        }
+        const categories = db
+            .prepare("SELECT id, domain_id, name, created_at FROM ontology_categories ORDER BY created_at, id")
+            .all();
+        const categoryKeeper = new Map();
+        for (const category of categories) {
+            const key = `${category.domain_id} ${category.name.toLowerCase()}`;
+            const keeper = categoryKeeper.get(key);
+            if (keeper === undefined) {
+                categoryKeeper.set(key, category.id);
+                continue;
+            }
+            db.prepare("UPDATE facts SET ontology_category_id = ? WHERE ontology_category_id = ?").run(keeper, category.id);
+            db.prepare("DELETE FROM ontology_categories WHERE id = ?").run(category.id);
+            try {
+                db.prepare("DELETE FROM vec_categories WHERE id = ?").run(category.id);
+            }
+            catch { /* vec table may be absent on very old databases */ }
+        }
+    });
+    try {
+        mergeTaxonomyDuplicates.immediate();
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_domains_name
+         ON ontology_domains(name COLLATE NOCASE)`);
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_categories_domain_name
+         ON ontology_categories(domain_id, name COLLATE NOCASE)`);
+    }
+    catch (error) {
+        // A database that still refuses the constraint must not brick startup:
+        // createDomain/createCategory keep their oldest-row re-select, which is
+        // correct (only slower to converge) without the index.
+        console.error("ontology taxonomy uniqueness migration skipped:", error);
     }
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (

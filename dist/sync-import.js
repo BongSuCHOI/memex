@@ -1105,7 +1105,12 @@ async function importFacts(db, generations, result) {
             `).run(fact.fact, fact.category, fact.scope_type, fact.scope_project, fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, fact.tier_reason, fact.workspace_id, fact.workstream_id, liveSources, Buffer.from(new Float32Array(embedding).buffer), fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION, isActive, fact.semantic_updated_at, factId, semantic.localGeneration);
                         if (claimed.changes === 0)
                             return false;
-                        db.prepare('DELETE FROM fact_evidence_receipts WHERE fact_id = ?').run(factId);
+                        // 이슈 #45: 무조건 DELETE가 아니라 peer-authority로 강등한다.
+                        // 영수증은 export되지 않는 로컬 전용 state라 삭제하면 이 기기에서
+                        // 증거 결속이 영구히 사라졌다(재생성 경로도 없었다). 강등된 행은
+                        // hasLocalMeaningEvidence에서 false지만, 무엇이 결속을 끊었는지
+                        // 남고 `memex backfill receipts`가 다시 로컬로 승격할 수 있다.
+                        db.prepare("UPDATE fact_evidence_receipts SET authority = 'peer-authority' WHERE fact_id = ?").run(factId);
                         // Context dependencies are local interpretive lineage for the
                         // previous local meaning and are intentionally absent from
                         // protocol v4. A remote semantic winner cannot inherit them.

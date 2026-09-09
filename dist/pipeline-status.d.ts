@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { type DerivedLaneSkipState } from "./derived-lane-skip.js";
 export interface StageCounters {
     total: number;
     done: number;
@@ -55,11 +56,43 @@ export interface PipelineStatus {
         activeFacts: number;
         factVectorsPending: number;
     };
+    /**
+     * Issue #41. `classifiedFacts` counts only facts a classifier actually
+     * placed; facts PARKED in General/Misc after bounded failures are their own
+     * bucket. Before this split a parked fact was counted as classified, drove
+     * `pendingFacts` to 0 and made status report `Ontology: READY` while the
+     * overlay was silently stuck.
+     */
     ontology: {
         classifiedFacts: number;
         pendingFacts: number;
+        /** Facts held in General/Misc because classification exhausted its attempts. */
+        parkedFacts: number;
+        /** …of which still owed their one retry for the current policy/embedding token. */
+        parkedRetryable: number;
+        /**
+         * `IndexRepairError` — "manual repair required" used to exist only inside
+         * logs/backfill-ontology.log, which no status command reads.
+         */
+        indexRepair: {
+            blocked: boolean;
+            reason: string | null;
+            detail: string | null;
+            detectedAt: string | null;
+        };
     };
     relations: number;
+    /**
+     * Issue #45 — active facts carrying source evidence that have no CURRENT
+     * local verification receipt. `hasLocalMeaningEvidence` gates automatic
+     * consolidation in three places and every sync tie-break, so this number is
+     * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
+     * with no surface reporting it anywhere.
+     */
+    evidence: {
+        factsWithoutLocalEvidence: number;
+        activeFactsWithSources: number;
+    };
     /**
      * Terminal and retry state across the Continuity queue (issues #20, #39).
      *
@@ -96,6 +129,13 @@ export interface PipelineStatus {
      * command could not answer the runbook's question.
      */
     jobs: JobCounters;
+    /**
+     * Issue #43 — how often the derived lanes (consolidation, re-embed, ontology,
+     * extraction) were skipped for a higher-priority backlog. Without this the
+     * operator sees only "pending is not going down" while the cause lives in a
+     * different pipeline entirely. `null` when nothing has ever been skipped.
+     */
+    derivedLaneSkips: DerivedLaneSkipState | null;
     /** #38 — projects isolated because their identity came from an untrusted cwd. */
     quarantinedProjects: Array<{
         projectId: string;
@@ -115,6 +155,8 @@ export declare function getPipelineStatus(opts?: {
 }): PipelineStatus;
 /** Zero counters for a data root with no queue table yet. */
 export declare function emptyJobCounters(): JobCounters;
+/** Zero counters for a data root with no ontology overlay yet. */
+export declare function emptyOntology(): PipelineStatus["ontology"];
 /** Zero counters for a data root with no database yet. */
 export declare function emptyAttention(): PipelineStatus["attention"];
 export declare function formatPipelineStatus(s: PipelineStatus): string;

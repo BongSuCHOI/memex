@@ -7257,6 +7257,160 @@ var init_paths = __esm({
   }
 });
 
+// src/embeddings.ts
+import { pipeline } from "@xenova/transformers";
+function modelVersion(model) {
+  const known = KNOWN_MODEL_VERSIONS[model];
+  if (known !== void 0) return known;
+  let h = 0;
+  for (let i = 0; i < model.length; i++) h = h * 31 + model.charCodeAt(i) >>> 0;
+  return 1e3 + h % 1e6;
+}
+function embeddingStubEnabled() {
+  return process.env.MEMEX_EMBEDDING_STUB === "1" || process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function embeddingStubFails() {
+  return process.env.MEMEX_EMBEDDING_STUB === "fail";
+}
+function stubEmbedding(text, dimensions = 384) {
+  const vector = new Array(dimensions).fill(0);
+  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
+  for (const token of tokens2) {
+    let hash2 = 2166136261;
+    for (let i = 0; i < token.length; i++) {
+      hash2 ^= token.charCodeAt(i);
+      hash2 = Math.imul(hash2, 16777619) >>> 0;
+    }
+    vector[hash2 % dimensions] += 1;
+    vector[(hash2 >>> 8) % dimensions] += 0.5;
+  }
+  let norm = 0;
+  for (const value of vector) norm += value * value;
+  norm = Math.sqrt(norm) || 1;
+  return vector.map((value) => value / norm);
+}
+async function initEmbeddings() {
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) return;
+  if (!embeddingPipeline) {
+    console.error(`Loading embedding model ${EMBEDDING_MODEL} (first run may take time)...`);
+    embeddingPipeline = await pipeline(
+      "feature-extraction",
+      EMBEDDING_MODEL
+    );
+    console.error("Embedding model loaded");
+  }
+}
+function applyModePrefix(text, mode) {
+  if (EMBEDDING_MODEL.toLowerCase().includes("e5")) {
+    return `${mode}: ${text}`;
+  }
+  return text;
+}
+function embeddingCallStats() {
+  return { modelCalls, cacheHits };
+}
+async function generateEmbedding(text, mode = "passage") {
+  if (mode === "query") {
+    const hit = queryEmbedMemo.get(text);
+    if (hit) {
+      queryEmbedMemo.delete(text);
+      queryEmbedMemo.set(text, hit);
+      cacheHits++;
+      return hit.slice();
+    }
+  }
+  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
+  if (embeddingStubEnabled()) {
+    modelCalls++;
+    const stub = stubEmbedding(text);
+    if (mode === "query") queryEmbedMemo.set(text, stub.slice());
+    return stub;
+  }
+  if (!embeddingPipeline) {
+    await initEmbeddings();
+  }
+  const truncated = applyModePrefix(text.substring(0, 2e3), mode);
+  modelCalls++;
+  const output = await embeddingPipeline(truncated, {
+    pooling: "mean",
+    normalize: true
+  });
+  const embedding = Array.from(output.data);
+  if (mode === "query") {
+    queryEmbedMemo.set(text, embedding.slice());
+    if (queryEmbedMemo.size > QUERY_EMBED_MEMO_MAX) {
+      queryEmbedMemo.delete(queryEmbedMemo.keys().next().value);
+    }
+  }
+  return embedding;
+}
+async function queryBaseline(queryEmbedding) {
+  if (!probeEmbeddings) {
+    probeEmbeddings = [];
+    for (const p of BACKGROUND_PROBES) {
+      probeEmbeddings.push(await generateEmbedding(p, "passage"));
+    }
+  }
+  let max = -1;
+  for (const probe of probeEmbeddings) {
+    let dot = 0;
+    for (let i = 0; i < probe.length; i++) dot += probe[i] * queryEmbedding[i];
+    if (dot > max) max = dot;
+  }
+  return max;
+}
+var DEFAULT_EMBEDDING_MODEL, EMBEDDING_MODEL, KNOWN_MODEL_VERSIONS, EMBEDDING_VERSION, embeddingPipeline, QUERY_EMBED_MEMO_MAX, queryEmbedMemo, modelCalls, cacheHits, BACKGROUND_PROBES, probeEmbeddings;
+var init_embeddings = __esm({
+  "src/embeddings.ts"() {
+    "use strict";
+    DEFAULT_EMBEDDING_MODEL = "Xenova/multilingual-e5-small";
+    EMBEDDING_MODEL = process.env.MEMEX_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+    KNOWN_MODEL_VERSIONS = {
+      "Xenova/all-MiniLM-L6-v2": 1,
+      "Xenova/paraphrase-multilingual-MiniLM-L12-v2": 2,
+      [DEFAULT_EMBEDDING_MODEL]: 3
+    };
+    EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
+    embeddingPipeline = null;
+    QUERY_EMBED_MEMO_MAX = 32;
+    queryEmbedMemo = /* @__PURE__ */ new Map();
+    modelCalls = 0;
+    cacheHits = 0;
+    BACKGROUND_PROBES = [
+      "\uC624\uB298 \uB0A0\uC528\uAC00 \uCC38 \uC88B\uB124\uC694",
+      "\uC8FC\uB9D0\uC5D0 \uBB50 \uD560\uC9C0 \uACE0\uBBFC \uC911\uC774\uC57C",
+      "\uB9DB\uC788\uB294 \uC800\uB141 \uC2DD\uC0AC\uB97C \uD588\uB2E4",
+      "The weather is nice today",
+      "I went for a walk in the park",
+      "\uC74C\uC545\uC744 \uB4E4\uC73C\uBA74\uC11C \uD734\uC2DD\uC744 \uCDE8\uD588\uB2E4",
+      "\uC0C8\uB85C\uC6B4 \uCDE8\uBBF8\uB97C \uC2DC\uC791\uD574\uBCFC\uAE4C \uC0DD\uAC01 \uC911",
+      "Let me think about what to do next"
+    ];
+    probeEmbeddings = null;
+  }
+});
+
+// src/ontology-selector.ts
+function ontologyParkToken(embeddingVersion) {
+  return `p${ONTOLOGY_POLICY_VERSION}:e${embeddingVersion}`;
+}
+function ontologyPendingSqlInline(alias, embeddingVersion) {
+  const token = ontologyParkToken(embeddingVersion);
+  if (!/^p\d+:e\d+$/.test(token)) throw new Error(`unsafe ontology park token: ${token}`);
+  return `(${alias}.ontology_category_id IS NULL
+      OR (${alias}.ontology_state = '${ONTOLOGY_STATE_PARKED}'
+          AND COALESCE(${alias}.ontology_parked_version, '') <> '${token}'))`;
+}
+var ONTOLOGY_POLICY_VERSION, ONTOLOGY_STATE_PARKED;
+var init_ontology_selector = __esm({
+  "src/ontology-selector.ts"() {
+    "use strict";
+    ONTOLOGY_POLICY_VERSION = 1;
+    ONTOLOGY_STATE_PARKED = "parked";
+  }
+});
+
 // src/model-budget.ts
 var model_budget_exports = {};
 __export(model_budget_exports, {
@@ -7298,6 +7452,7 @@ __export(model_budget_exports, {
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
   registerModelWorkTargets: () => registerModelWorkTargets,
   reserveModelAttempt: () => reserveModelAttempt,
+  rootWaveIdOf: () => rootWaveIdOf,
   settleModelWorkTargets: () => settleModelWorkTargets,
   startNewModelWorkRun: () => startNewModelWorkRun,
   startNewModelWorkRunForBudget: () => startNewModelWorkRunForBudget,
@@ -7332,6 +7487,23 @@ function hasDerivedFactQueue(db) {
   if (!tableExists2(db, "facts")) return false;
   const columns = columnNames2(db, "facts");
   return columns.has("id") && columns.has("is_active") && columns.has("ontology_category_id") && columns.has("needs_consolidation");
+}
+function rootWaveIdOf(parentWaveId) {
+  const withoutRun = parentWaveId.split(":run:")[0];
+  const compact = /^(.*)#\d+$/.exec(withoutRun);
+  return compact ? compact[1] : withoutRun;
+}
+function parseWaveId(parentWaveId) {
+  const root = rootWaveIdOf(parentWaveId);
+  const compact = /^(.*)#(\d+)$/.exec(parentWaveId.split(":run:")[0]);
+  return { root, seq: compact ? Number(compact[2]) : null };
+}
+function runWaveId(root, seq) {
+  return seq <= 1 ? root : `${root}#${seq}`;
+}
+function nextRunSeq(db, rootWaveId) {
+  const row = db.prepare("SELECT COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id = ?").get(rootWaveId);
+  return Number(row?.n ?? 0) + 1;
 }
 function ensureModelBudgetSchema(db) {
   const migrate = db.transaction(() => {
@@ -7410,6 +7582,47 @@ function ensureModelBudgetSchema(db) {
     if (!columnNames2(db, MODEL_BUDGET_TABLE).has("automatic")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
     }
+    const budgetColumns = columnNames2(db, MODEL_BUDGET_TABLE);
+    if (!budgetColumns.has("root_wave_id")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN root_wave_id TEXT");
+    }
+    if (!budgetColumns.has("run_seq")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN run_seq INTEGER");
+    }
+    const legacyRows = db.prepare(
+      `SELECT budget_id, parent_wave_id, root_wave_id, run_seq FROM model_work_budgets
+         WHERE root_wave_id IS NULL OR run_seq IS NULL OR parent_wave_id LIKE '%:run:%'
+         ORDER BY created_at, budget_id`
+    ).all();
+    if (legacyRows.length > 0) {
+      const seqByRoot = /* @__PURE__ */ new Map();
+      const seeded = db.prepare("SELECT root_wave_id, COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id IS NOT NULL GROUP BY root_wave_id").all();
+      for (const row of seeded) seqByRoot.set(row.root_wave_id, Number(row.n));
+      const takenNames = new Set(
+        db.prepare("SELECT parent_wave_id FROM model_work_budgets").all().map((row) => row.parent_wave_id)
+      );
+      for (const row of legacyRows) {
+        const parsed = parseWaveId(row.parent_wave_id);
+        const root = parsed.root;
+        const seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        seqByRoot.set(root, Math.max(seqByRoot.get(root) ?? 0, seq));
+        let name = runWaveId(root, seq);
+        if (name !== row.parent_wave_id && takenNames.has(name)) name = row.parent_wave_id;
+        if (name !== row.parent_wave_id) {
+          takenNames.delete(row.parent_wave_id);
+          takenNames.add(name);
+          db.prepare("UPDATE model_work_budgets SET parent_wave_id = ? WHERE budget_id = ?").run(name, row.budget_id);
+          if (tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("maintenance_wave_id")) {
+            db.prepare("UPDATE memory_jobs SET maintenance_wave_id = ? WHERE maintenance_wave_id = ?").run(name, row.parent_wave_id);
+          }
+        }
+        db.prepare("UPDATE model_work_budgets SET root_wave_id = ?, run_seq = ? WHERE budget_id = ?").run(root, seq, row.budget_id);
+      }
+    }
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
+         ON model_work_budgets(root_wave_id, run_seq)`
+    );
     if (tableExists2(db, "memory_jobs")) {
       const columns = columnNames2(db, "memory_jobs");
       if (!columns.has("budget_id")) {
@@ -7486,9 +7699,12 @@ function normalizeLimits(input = {}) {
   };
 }
 function budgetFromRow(row) {
+  const parentWaveId = String(row.parent_wave_id);
   return {
     budgetId: String(row.budget_id),
-    parentWaveId: String(row.parent_wave_id),
+    parentWaveId,
+    rootWaveId: row.root_wave_id == null ? rootWaveIdOf(parentWaveId) : String(row.root_wave_id),
+    runSeq: row.run_seq == null ? 1 : Number(row.run_seq),
     state: String(row.state),
     maxAttempts: Number(row.max_attempts),
     reservedAttempts: Number(row.reserved_attempts),
@@ -7648,14 +7864,18 @@ function insertModelWorkBudget(db, input) {
   const budgetId = input.budgetId?.trim() || randomUUID3();
   const limits = normalizeLimits(input.limits);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  const parsed = parseWaveId(input.parentWaveId);
+  const runSeq = parsed.seq ?? nextRunSeq(db, parsed.root);
   db.prepare(`
     INSERT INTO model_work_budgets
-      (budget_id, parent_wave_id, state, max_attempts, reserved_attempts,
+      (budget_id, parent_wave_id, root_wave_id, run_seq, state, max_attempts, reserved_attempts,
        max_input_chars, max_output_chars, deadline_at, created_at, updated_at)
-    VALUES (?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
   `).run(
     budgetId,
     input.parentWaveId,
+    parsed.root,
+    runSeq,
     limits.maxAttempts,
     limits.maxInputChars,
     limits.maxOutputChars,
@@ -7817,7 +8037,8 @@ function startNewModelWorkRunForJob(db, input) {
   if (requestedWave && requestedWave === oldBudget?.parentWaveId) {
     throw new Error("new model work run requires a distinct parentWaveId");
   }
-  const parentWaveId = requestedWave || `${oldBudget?.parentWaveId ?? "job"}:run:${randomUUID3()}`;
+  const jobRoot = rootWaveIdOf(oldBudget?.parentWaveId ?? "job");
+  const parentWaveId = requestedWave || runWaveId(jobRoot, nextRunSeq(db, jobRoot));
   const next = startNewModelWorkRun(db, { parentWaveId, limits: input.limits });
   rebindMemoryJobToBudget(db, {
     jobId: input.jobId,
@@ -7849,8 +8070,9 @@ function startNewModelWorkRunForBudget(db, input) {
     throw new Error("new model work run requires a distinct parentWaveId");
   }
   const createBudget = input.automatic ? insertModelWorkBudget : startNewModelWorkRun;
+  const previousRoot = previousBudget.rootWaveId || rootWaveIdOf(previousBudget.parentWaveId);
   const budget = createBudget(db, {
-    parentWaveId: requestedWave || `${previousBudget.parentWaveId}:run:${randomUUID3()}`,
+    parentWaveId: requestedWave || runWaveId(previousRoot, nextRunSeq(db, previousRoot)),
     limits: input.limits,
     now: input.now
   });
@@ -8176,6 +8398,12 @@ function envContext() {
     targetId: process.env.MEMEX_MODEL_TARGET_ID || void 0
   };
 }
+function ontologyPendingPredicate(db, alias = "f") {
+  if (!columnNames2(db, "facts").has("ontology_state")) {
+    return `${alias}.ontology_category_id IS NULL`;
+  }
+  return ontologyPendingSqlInline(alias, EMBEDDING_VERSION);
+}
 function countPendingModelWork(db, budgetId) {
   const counts = { pending: 0, reserved: 0, unbound: 0 };
   const derivedFactQueue = hasDerivedFactQueue(db);
@@ -8205,7 +8433,7 @@ function countPendingModelWork(db, budgetId) {
       FROM model_work_targets t
       JOIN facts f ON f.id = t.target_id
       WHERE t.state = 'pending' AND f.is_active = 1
-        AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+        AND ((t.stage = 'ontology' AND ${ontologyPendingPredicate(db)})
           OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
           OR (t.stage = 'relation' AND f.is_active = 1))
         ${scope}
@@ -8222,7 +8450,8 @@ function countPendingModelWork(db, budgetId) {
   }
   if (derivedFactQueue) {
     const includeUnboundOntology = budgetId !== void 0 || isAutomaticOntologyEnabled();
-    const pendingFactCondition = includeUnboundOntology ? "(f.ontology_category_id IS NULL OR f.needs_consolidation = 1)" : "f.needs_consolidation = 1";
+    const ontologyPending = ontologyPendingPredicate(db);
+    const pendingFactCondition = includeUnboundOntology ? `(${ontologyPending} OR f.needs_consolidation = 1)` : "f.needs_consolidation = 1";
     const pendingFactsSql = budgetId ? `
         SELECT COUNT(*) AS pending
         FROM facts f
@@ -8233,7 +8462,7 @@ function countPendingModelWork(db, budgetId) {
               SELECT 1 FROM model_work_targets t
               WHERE t.budget_id = ? AND t.state = 'pending'
                 AND t.target_id = f.id
-                AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+                AND ((t.stage = 'ontology' AND ${ontologyPending})
                   OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
                   OR (t.stage = 'relation' AND f.is_active = 1))
             )
@@ -8257,7 +8486,7 @@ function countPendingModelWork(db, budgetId) {
         WHERE f.is_active = 1
           AND ${pendingFactCondition}
           AND (
-            (f.ontology_category_id IS NULL AND NOT EXISTS (
+            (${ontologyPending} AND NOT EXISTS (
               SELECT 1 FROM model_work_targets t
               WHERE t.target_id = f.id AND t.stage = 'ontology' AND t.state = 'pending'
             ) AND NOT EXISTS (
@@ -8279,16 +8508,14 @@ function countPendingModelWork(db, budgetId) {
   }
   return counts;
 }
-function maintenanceWavePattern(parentWaveId) {
-  return `${parentWaveId.replace(/[\\%_]/g, "\\$&")}:run:%`;
-}
 function latestMaintenanceBudget(db, parentWaveId) {
+  const root = rootWaveIdOf(parentWaveId);
   const row = db.prepare(`
     SELECT * FROM model_work_budgets
-    WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    ORDER BY created_at DESC, budget_id DESC
+    WHERE root_wave_id = ?
+    ORDER BY run_seq DESC, created_at DESC, budget_id DESC
     LIMIT 1
-  `).get(parentWaveId, maintenanceWavePattern(parentWaveId));
+  `).get(root);
   return row ? budgetFromRow(row) : null;
 }
 function automaticMaintenanceWindow(db, now = /* @__PURE__ */ new Date()) {
@@ -8326,9 +8553,8 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
   const nowIso2 = now.toISOString();
   const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
   const maintain = db.transaction(() => {
-    db.prepare(`UPDATE model_work_budgets SET automatic = 1
-      WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    `).run(parentWaveId, maintenanceWavePattern(parentWaveId));
+    const rootWaveId = rootWaveIdOf(parentWaveId);
+    db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE root_wave_id = ?").run(rootWaveId);
     let latest = latestMaintenanceBudget(db, parentWaveId);
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
@@ -8361,14 +8587,15 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       if (latest.state === "active") return latest;
       if (window.remaining === 0 || now.getTime() < retryAt) return latest;
     }
+    const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
     const next = latest?.state === "exhausted" ? startNewModelWorkRunForBudget(db, {
       budgetId: latest.budgetId,
-      parentWaveId: `${parentWaveId}:run:${randomUUID3()}`,
+      parentWaveId: nextWaveId,
       limits,
       now,
       automatic: true
     }).budget : insertModelWorkBudget(db, {
-      parentWaveId: latest ? `${parentWaveId}:run:${randomUUID3()}` : parentWaveId,
+      parentWaveId: latest ? nextWaveId : parentWaveId,
       limits,
       now
     });
@@ -8409,7 +8636,8 @@ function getOrCreateWaveModelBudget(db, input) {
     if (latest && (latest.state === "completed" || latest.state === "cancelled") && (input.reuseCompletedIfIdle ?? true) && allPending.unbound === 0) {
       return latest;
     }
-    const nextWave = latest ? `${parentWaveId}:run:${randomUUID3()}` : parentWaveId;
+    const root = rootWaveIdOf(parentWaveId);
+    const nextWave = latest ? runWaveId(root, nextRunSeq(db, root)) : parentWaveId;
     return insertModelWorkBudget(db, {
       parentWaveId: nextWave,
       limits: input.limits
@@ -8631,7 +8859,7 @@ function getModelWorkDiagnostics(db, filter = {}) {
     const ontologyRows = db.prepare(`
       SELECT f.id
       FROM facts f
-      WHERE f.is_active = 1 AND f.ontology_category_id IS NULL
+      WHERE f.is_active = 1 AND ${ontologyPendingPredicate(db)}
         AND NOT (${targetLink("ontology")} OR ${attemptLink("'ontology'")})
       ORDER BY f.id
     `).all();
@@ -8856,6 +9084,8 @@ var init_model_budget = __esm({
   "src/model-budget.ts"() {
     "use strict";
     init_paths();
+    init_embeddings();
+    init_ontology_selector();
     MODEL_BUDGET_SCHEMA_VERSION = 1;
     MODEL_BUDGET_TABLE = "model_work_budgets";
     MODEL_ATTEMPT_TABLE = "model_work_attempts";
@@ -20088,134 +20318,7 @@ import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypt
 import fs3 from "node:fs";
 import path6 from "path";
 import * as sqliteVec from "sqlite-vec";
-
-// src/embeddings.ts
-import { pipeline } from "@xenova/transformers";
-var DEFAULT_EMBEDDING_MODEL = "Xenova/multilingual-e5-small";
-var EMBEDDING_MODEL = process.env.MEMEX_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
-var KNOWN_MODEL_VERSIONS = {
-  "Xenova/all-MiniLM-L6-v2": 1,
-  "Xenova/paraphrase-multilingual-MiniLM-L12-v2": 2,
-  [DEFAULT_EMBEDDING_MODEL]: 3
-};
-function modelVersion(model) {
-  const known = KNOWN_MODEL_VERSIONS[model];
-  if (known !== void 0) return known;
-  let h = 0;
-  for (let i = 0; i < model.length; i++) h = h * 31 + model.charCodeAt(i) >>> 0;
-  return 1e3 + h % 1e6;
-}
-var EMBEDDING_VERSION = modelVersion(EMBEDDING_MODEL);
-var embeddingPipeline = null;
-function embeddingStubEnabled() {
-  return process.env.MEMEX_EMBEDDING_STUB === "1" || process.env.MEMEX_EMBEDDING_STUB === "fail";
-}
-function embeddingStubFails() {
-  return process.env.MEMEX_EMBEDDING_STUB === "fail";
-}
-function stubEmbedding(text, dimensions = 384) {
-  const vector = new Array(dimensions).fill(0);
-  const tokens2 = text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2);
-  for (const token of tokens2) {
-    let hash2 = 2166136261;
-    for (let i = 0; i < token.length; i++) {
-      hash2 ^= token.charCodeAt(i);
-      hash2 = Math.imul(hash2, 16777619) >>> 0;
-    }
-    vector[hash2 % dimensions] += 1;
-    vector[(hash2 >>> 8) % dimensions] += 0.5;
-  }
-  let norm = 0;
-  for (const value of vector) norm += value * value;
-  norm = Math.sqrt(norm) || 1;
-  return vector.map((value) => value / norm);
-}
-async function initEmbeddings() {
-  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
-  if (embeddingStubEnabled()) return;
-  if (!embeddingPipeline) {
-    console.error(`Loading embedding model ${EMBEDDING_MODEL} (first run may take time)...`);
-    embeddingPipeline = await pipeline(
-      "feature-extraction",
-      EMBEDDING_MODEL
-    );
-    console.error("Embedding model loaded");
-  }
-}
-function applyModePrefix(text, mode) {
-  if (EMBEDDING_MODEL.toLowerCase().includes("e5")) {
-    return `${mode}: ${text}`;
-  }
-  return text;
-}
-var QUERY_EMBED_MEMO_MAX = 32;
-var queryEmbedMemo = /* @__PURE__ */ new Map();
-var modelCalls = 0;
-var cacheHits = 0;
-function embeddingCallStats() {
-  return { modelCalls, cacheHits };
-}
-async function generateEmbedding(text, mode = "passage") {
-  if (mode === "query") {
-    const hit = queryEmbedMemo.get(text);
-    if (hit) {
-      queryEmbedMemo.delete(text);
-      queryEmbedMemo.set(text, hit);
-      cacheHits++;
-      return hit.slice();
-    }
-  }
-  if (embeddingStubFails()) throw new Error("embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)");
-  if (embeddingStubEnabled()) {
-    modelCalls++;
-    const stub = stubEmbedding(text);
-    if (mode === "query") queryEmbedMemo.set(text, stub.slice());
-    return stub;
-  }
-  if (!embeddingPipeline) {
-    await initEmbeddings();
-  }
-  const truncated = applyModePrefix(text.substring(0, 2e3), mode);
-  modelCalls++;
-  const output = await embeddingPipeline(truncated, {
-    pooling: "mean",
-    normalize: true
-  });
-  const embedding = Array.from(output.data);
-  if (mode === "query") {
-    queryEmbedMemo.set(text, embedding.slice());
-    if (queryEmbedMemo.size > QUERY_EMBED_MEMO_MAX) {
-      queryEmbedMemo.delete(queryEmbedMemo.keys().next().value);
-    }
-  }
-  return embedding;
-}
-var BACKGROUND_PROBES = [
-  "\uC624\uB298 \uB0A0\uC528\uAC00 \uCC38 \uC88B\uB124\uC694",
-  "\uC8FC\uB9D0\uC5D0 \uBB50 \uD560\uC9C0 \uACE0\uBBFC \uC911\uC774\uC57C",
-  "\uB9DB\uC788\uB294 \uC800\uB141 \uC2DD\uC0AC\uB97C \uD588\uB2E4",
-  "The weather is nice today",
-  "I went for a walk in the park",
-  "\uC74C\uC545\uC744 \uB4E4\uC73C\uBA74\uC11C \uD734\uC2DD\uC744 \uCDE8\uD588\uB2E4",
-  "\uC0C8\uB85C\uC6B4 \uCDE8\uBBF8\uB97C \uC2DC\uC791\uD574\uBCFC\uAE4C \uC0DD\uAC01 \uC911",
-  "Let me think about what to do next"
-];
-var probeEmbeddings = null;
-async function queryBaseline(queryEmbedding) {
-  if (!probeEmbeddings) {
-    probeEmbeddings = [];
-    for (const p of BACKGROUND_PROBES) {
-      probeEmbeddings.push(await generateEmbedding(p, "passage"));
-    }
-  }
-  let max = -1;
-  for (const probe of probeEmbeddings) {
-    let dot = 0;
-    for (let i = 0; i < probe.length; i++) dot += probe[i] * queryEmbedding[i];
-    if (dot > max) max = dot;
-  }
-  return max;
-}
+init_embeddings();
 
 // src/continuity-store.ts
 import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
@@ -22374,6 +22477,10 @@ function initDatabase(options = {}) {
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT,
+      ontology_state TEXT,
+      ontology_parked_at TEXT,
+      ontology_parked_version TEXT,
+      ontology_similarity REAL,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
       semantic_updated_at TEXT NOT NULL DEFAULT '',
       lifecycle_generation INTEGER NOT NULL DEFAULT 1,
@@ -22417,6 +22524,43 @@ function initDatabase(options = {}) {
   db.prepare(
     "UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''"
   ).run();
+  if (!factColumns.has("ontology_state")) {
+    db.exec("ALTER TABLE facts ADD COLUMN ontology_state TEXT");
+  }
+  if (!factColumns.has("ontology_parked_at")) {
+    db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_at TEXT");
+  }
+  if (!factColumns.has("ontology_parked_version")) {
+    db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_version TEXT");
+  }
+  if (!factColumns.has("ontology_similarity")) {
+    db.exec("ALTER TABLE facts ADD COLUMN ontology_similarity REAL");
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_facts_ontology_state
+      ON facts(ontology_state, ontology_parked_version)
+      WHERE ontology_state IS NOT NULL
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS derived_lane_skips (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reason TEXT NOT NULL,
+      consecutive INTEGER NOT NULL DEFAULT 0,
+      total_skips INTEGER NOT NULL DEFAULT 0,
+      last_skipped_at TEXT,
+      last_forced_at TEXT
+    )
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ontology_index_repair_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL CHECK (state IN ('blocked','clear')),
+      blocked_reason TEXT,
+      detail TEXT,
+      detected_at TEXT,
+      cleared_at TEXT
+    )
+  `);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);
@@ -22433,9 +22577,18 @@ function initDatabase(options = {}) {
       fact_hash TEXT NOT NULL,
       source_snapshot_json TEXT NOT NULL,
       method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
-      verified_at TEXT NOT NULL
+      verified_at TEXT NOT NULL,
+      authority TEXT
     )
   `);
+  const receiptColumns = new Set(
+    db.prepare("PRAGMA table_info(fact_evidence_receipts)").all().map(
+      (row) => row.name
+    )
+  );
+  if (!receiptColumns.has("authority")) {
+    db.exec("ALTER TABLE fact_evidence_receipts ADD COLUMN authority TEXT");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,
@@ -22579,6 +22732,49 @@ function initDatabase(options = {}) {
       "ALTER TABLE ontology_categories ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0"
     );
   }
+  const mergeTaxonomyDuplicates = db.transaction(() => {
+    const domains = db.prepare("SELECT id, name, created_at FROM ontology_domains ORDER BY created_at, id").all();
+    const domainKeeper = /* @__PURE__ */ new Map();
+    for (const domain of domains) {
+      const key = domain.name.toLowerCase();
+      const keeper = domainKeeper.get(key);
+      if (keeper === void 0) {
+        domainKeeper.set(key, domain.id);
+        continue;
+      }
+      db.prepare("UPDATE ontology_categories SET domain_id = ? WHERE domain_id = ?").run(keeper, domain.id);
+      db.prepare("DELETE FROM ontology_domains WHERE id = ?").run(domain.id);
+    }
+    const categories = db.prepare("SELECT id, domain_id, name, created_at FROM ontology_categories ORDER BY created_at, id").all();
+    const categoryKeeper = /* @__PURE__ */ new Map();
+    for (const category of categories) {
+      const key = `${category.domain_id}\0${category.name.toLowerCase()}`;
+      const keeper = categoryKeeper.get(key);
+      if (keeper === void 0) {
+        categoryKeeper.set(key, category.id);
+        continue;
+      }
+      db.prepare("UPDATE facts SET ontology_category_id = ? WHERE ontology_category_id = ?").run(keeper, category.id);
+      db.prepare("DELETE FROM ontology_categories WHERE id = ?").run(category.id);
+      try {
+        db.prepare("DELETE FROM vec_categories WHERE id = ?").run(category.id);
+      } catch {
+      }
+    }
+  });
+  try {
+    mergeTaxonomyDuplicates.immediate();
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_domains_name
+         ON ontology_domains(name COLLATE NOCASE)`
+    );
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_categories_domain_name
+         ON ontology_categories(domain_id, name COLLATE NOCASE)`
+    );
+  } catch (error2) {
+    console.error("ontology taxonomy uniqueness migration skipped:", error2);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,
@@ -22681,6 +22877,7 @@ function recordRecallEvent(db, event) {
 
 // src/search.ts
 init_paths();
+init_embeddings();
 
 // src/legacy-read-scope.ts
 var hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
@@ -22743,6 +22940,9 @@ function assertReadScope(db, scope) {
   }
   if (scope.type === "session-id") belongs("session_memory_state", "session_id", scope.sessionId);
 }
+
+// src/fact-db.ts
+init_embeddings();
 
 // src/chronicle.ts
 import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
@@ -23052,7 +23252,10 @@ var TELEMETRY_METRICS = [
   "worker_extraction_tokens",
   "worker_extraction_latency_ms",
   "worker_extraction_retries",
-  "worker_extraction_dead"
+  "worker_extraction_dead",
+  // 이슈 #43: P0/P1 백로그 때문에 파생 레인을 건너뛴 사건. dims에 사유와
+  // 연속 횟수, 강제 통과 여부가 들어간다.
+  "derived_lane_skipped"
 ];
 var TELEMETRY_SET = new Set(TELEMETRY_METRICS);
 function recordTelemetrySample(db, input) {
@@ -23536,6 +23739,7 @@ function rowToFact(row) {
 }
 
 // src/ontology-db.ts
+init_embeddings();
 function listDomains(db) {
   return db.prepare(`SELECT * FROM ontology_domains ORDER BY name`).all();
 }
@@ -24372,7 +24576,11 @@ async function formatMultiConceptResults(results, concepts) {
   return output;
 }
 
+// src/inject-core.ts
+init_embeddings();
+
 // src/repeat-detector.ts
+init_embeddings();
 async function detectRepeat(prompt, project, limit = 3, threshold = 0.82, opts = {}) {
   let embedding = opts.embedding;
   if (!embedding) {
@@ -24503,21 +24711,31 @@ function observationLogPath() {
   return path8.join(dataRoot(), "logs", "hook-events.jsonl");
 }
 function recordHookEvent(event, info) {
+  const name = typeof event === "string" ? event.trim() : "";
+  if (!name || name === "Unknown") return false;
   try {
     const line = JSON.stringify({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
-      event,
+      event: name,
       session_id: typeof info.sessionId === "string" ? info.sessionId : "",
       cwd: typeof info.cwd === "string" ? info.cwd : ""
     }) + "\n";
     const file = observationLogPath();
     fs7.mkdirSync(path8.dirname(file), { recursive: true });
     fs7.appendFileSync(file, line);
+    return true;
   } catch {
+    return false;
   }
 }
-if (process.argv[1] && path8.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  recordHookEvent(process.argv[2] || "Unknown", {});
+if (process.argv[1] && path8.basename(process.argv[1]) === "observe-hook-event.js" && path8.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [event, sessionId, cwd] = process.argv.slice(2);
+  if (!recordHookEvent(event ?? "", { sessionId, cwd })) {
+    process.stderr.write(
+      "usage: observe-hook-event.js <hook_event_name> [session_id] [cwd]\nrefusing to log an unlabeled hook invocation\n"
+    );
+    process.exit(2);
+  }
 }
 
 // src/conversation-policy.ts
@@ -24525,6 +24743,7 @@ init_paths();
 
 // src/fact-management.ts
 init_paths();
+init_embeddings();
 
 // src/conversation-policy.ts
 init_paths();
@@ -25807,6 +26026,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
 }
 
 // src/inject-daemon.ts
+init_embeddings();
 function injectSocketPath() {
   return path9.join(getIndexDir(), "inject-daemon.sock");
 }
@@ -27350,6 +27570,9 @@ ${JSON.stringify(value, null, 2)}
   return output;
 }
 
+// src/mcp-server.ts
+init_embeddings();
+
 // src/llm.ts
 init_paths();
 import path11 from "node:path";
@@ -27932,6 +28155,7 @@ function parseJsonResponse(text) {
 }
 
 // src/avatar-responder.ts
+init_embeddings();
 var AVATAR_SYSTEM_PROMPT = `You are acting as the user's technical alter ego.
 You represent their past engineering decisions, preferences, and patterns.
 

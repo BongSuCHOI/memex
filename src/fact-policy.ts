@@ -119,25 +119,48 @@ export function sourceSnapshotValid(db: Database.Database, snapshot: SourceSnaps
   return JSON.stringify(captureSourceSnapshot(db, snapshot.map(row => row.id))) === JSON.stringify(snapshot);
 }
 
-/** Imported authority is retained as peer evidence, never mistaken for local verification. */
+/**
+ * 이슈 #45: `authority`가 채워진 영수증은 로컬 검증이 아니라 **peer 권위**의
+ * 흔적이다(remote semantic win). 이전에는 그 순간 영수증을 삭제했기 때문에
+ * 해당 기기가 증거 결속을 영구히 잃었다 — 이제는 강등해서 남기고, 로컬
+ * 검증으로는 세지 않는다. 로컬 재검증(백필 포함)이 성공하면 다시 NULL이 된다.
+ */
 export function hasLocalMeaningEvidence(db: Database.Database, fact: Fact): boolean {
-  const receipt = db.prepare('SELECT semantic_generation, fact_hash, source_snapshot_json FROM fact_evidence_receipts WHERE fact_id = ?')
-    .get(fact.id) as { semantic_generation: number; fact_hash: string; source_snapshot_json: string } | undefined;
-  if (!receipt || receipt.semantic_generation !== fact.semantic_generation ||
+  const receipt = db.prepare('SELECT semantic_generation, fact_hash, source_snapshot_json, authority FROM fact_evidence_receipts WHERE fact_id = ?')
+    .get(fact.id) as { semantic_generation: number; fact_hash: string; source_snapshot_json: string; authority: string | null } | undefined;
+  if (!receipt || receipt.authority || receipt.semantic_generation !== fact.semantic_generation ||
       receipt.fact_hash !== createHash('sha256').update(fact.fact).digest('hex')) return false;
   try { return sourceSnapshotValid(db, JSON.parse(receipt.source_snapshot_json) as SourceSnapshot); }
   catch { return false; }
 }
 
-/** Local verification receipt; never exported/imported as durable peer truth. */
+/**
+ * Local verification receipt; never exported/imported as durable peer truth.
+ *
+ * 이슈 #45: `void`가 아니라 boolean을 돌려준다. 예전에는 fact가 사라졌거나
+ * 텍스트가 달라졌거나 source exchange가 해석되지 않으면 조용히 return했고,
+ * 호출자는 영수증이 만들어지지 않았다는 사실 자체를 알 수 없었다 — 실측
+ * 데이터에서 127개 중 118개에 영수증이 없던 상태가 아무 데도 드러나지 않은
+ * 이유다. 컬럼을 명시적으로 나열하는 것도 의도적이다(additive `authority`
+ * 컬럼이 위치 기반 INSERT를 깨뜨리므로).
+ *
+ * @returns 영수증이 실제로 기록됐으면 true
+ */
 export function recordLocalMeaningEvidence(db: Database.Database, factId: string, text: string,
-  method: 'extractor' | 'user' | 'consolidator', sourceIds: readonly string[]): void {
+  method: 'extractor' | 'user' | 'consolidator', sourceIds: readonly string[]): boolean {
   const row = db.prepare('SELECT fact, semantic_generation FROM facts WHERE id = ?').get(factId) as { fact: string; semantic_generation: number } | undefined;
   const sources = captureSourceSnapshot(db, sourceIds);
-  if (!row || row.fact !== text || !sources) return;
-  db.prepare(`INSERT INTO fact_evidence_receipts VALUES (?, ?, ?, ?, ?, ?)
+  if (!row || row.fact !== text || !sources) return false;
+  db.prepare(`INSERT INTO fact_evidence_receipts
+      (fact_id, semantic_generation, fact_hash, source_snapshot_json, method, verified_at, authority)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
     ON CONFLICT(fact_id) DO UPDATE SET semantic_generation = excluded.semantic_generation,
       fact_hash = excluded.fact_hash, source_snapshot_json = excluded.source_snapshot_json,
-      method = excluded.method, verified_at = excluded.verified_at`).run(factId, row.semantic_generation,
+      method = excluded.method, verified_at = excluded.verified_at,
+      authority = NULL`).run(factId, row.semantic_generation,
     createHash('sha256').update(text).digest('hex'), JSON.stringify(sources), method, new Date().toISOString());
+  return true;
 }
+
+/** Peer authority replaced the local meaning: the receipt is DEMOTED, not deleted. */
+export const PEER_AUTHORITY_MARKER = 'peer-authority';

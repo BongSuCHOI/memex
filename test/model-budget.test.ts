@@ -193,7 +193,10 @@ describe("durable model work budget", () => {
       limits: { maxAttempts: 2, deadlineAt: null },
     });
     expect(next.budgetId).not.toBe(first.budgetId);
-    expect(next.parentWaveId).toMatch(/^maintenance:run:/);
+    // Issue #42: rollover is a bounded run number, not an appended uuid.
+    expect(next.parentWaveId).toBe("maintenance#2");
+    expect(next.rootWaveId).toBe("maintenance");
+    expect(next.runSeq).toBe(2);
     expect(next.state).toBe("active");
     db.close();
   });

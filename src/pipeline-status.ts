@@ -10,6 +10,20 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import { openReadDb } from "./db.js";
 import {
+  describeDerivedLaneSkipReason,
+  readDerivedLaneSkips,
+  type DerivedLaneSkipState,
+} from "./derived-lane-skip.js";
+import { EMBEDDING_VERSION } from "./embeddings.js";
+import {
+  countFactsWithoutLocalEvidence,
+  hasEvidenceSchema,
+} from "./evidence-backfill.js";
+import {
+  buildOntologyParkedClause,
+  buildOntologyParkedRetryClause,
+} from "./ontology-selector.js";
+import {
   getDbPath,
   getArchiveDir,
   getMemexHome,
@@ -77,8 +91,40 @@ export interface PipelineStatus {
     lastErrorAt: string | null;
   };
   embeddings: { activeFacts: number; factVectorsPending: number };
-  ontology: { classifiedFacts: number; pendingFacts: number };
+  /**
+   * Issue #41. `classifiedFacts` counts only facts a classifier actually
+   * placed; facts PARKED in General/Misc after bounded failures are their own
+   * bucket. Before this split a parked fact was counted as classified, drove
+   * `pendingFacts` to 0 and made status report `Ontology: READY` while the
+   * overlay was silently stuck.
+   */
+  ontology: {
+    classifiedFacts: number;
+    pendingFacts: number;
+    /** Facts held in General/Misc because classification exhausted its attempts. */
+    parkedFacts: number;
+    /** …of which still owed their one retry for the current policy/embedding token. */
+    parkedRetryable: number;
+    /**
+     * `IndexRepairError` — "manual repair required" used to exist only inside
+     * logs/backfill-ontology.log, which no status command reads.
+     */
+    indexRepair: {
+      blocked: boolean;
+      reason: string | null;
+      detail: string | null;
+      detectedAt: string | null;
+    };
+  };
   relations: number;
+  /**
+   * Issue #45 — active facts carrying source evidence that have no CURRENT
+   * local verification receipt. `hasLocalMeaningEvidence` gates automatic
+   * consolidation in three places and every sync tie-break, so this number is
+   * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
+   * with no surface reporting it anywhere.
+   */
+  evidence: { factsWithoutLocalEvidence: number; activeFactsWithSources: number };
   /**
    * Terminal and retry state across the Continuity queue (issues #20, #39).
    *
@@ -115,6 +161,13 @@ export interface PipelineStatus {
    * command could not answer the runbook's question.
    */
   jobs: JobCounters;
+  /**
+   * Issue #43 — how often the derived lanes (consolidation, re-embed, ontology,
+   * extraction) were skipped for a higher-priority backlog. Without this the
+   * operator sees only "pending is not going down" while the cause lives in a
+   * different pipeline entirely. `null` when nothing has ever been skipped.
+   */
+  derivedLaneSkips: DerivedLaneSkipState | null;
   /** #38 — projects isolated because their identity came from an untrusted cwd. */
   quarantinedProjects: Array<{ projectId: string; displayName: string; facts: number }>;
   lifecycleLastEventAt: Partial<Record<string, string>>;
@@ -202,10 +255,12 @@ export function getPipelineStatus(
         lastErrorAt: null,
       },
       embeddings: { activeFacts: 0, factVectorsPending: 0 },
-      ontology: { classifiedFacts: 0, pendingFacts: 0 },
+      ontology: emptyOntology(),
       relations: 0,
+      evidence: { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 },
       attention: emptyAttention(),
       jobs: emptyJobCounters(),
+      derivedLaneSkips: null,
       quarantinedProjects: [],
       lifecycleLastEventAt,
       readiness: {
@@ -506,7 +561,7 @@ export function getPipelineStatus(
 
     // ── Embeddings / ontology / relations ────────────────────────────────
     const embeddings = { activeFacts: 0, factVectorsPending: 0 };
-    const ontology = { classifiedFacts: 0, pendingFacts: 0 };
+    const ontology = emptyOntology();
     let relations = 0;
     if (hasFacts) {
       embeddings.activeFacts = count(
@@ -525,14 +580,51 @@ export function getPipelineStatus(
         // Missing table: report every active fact as vector-pending.
         embeddings.factVectorsPending = embeddings.activeFacts;
       }
+      // 이슈 #41: parked는 classified가 아니다. 예전 카운트는 파킹된 fact를
+      // classified로 세어 pending을 0으로 만들었고 graph-ready: YES가 됐다.
+      const hasParkState = new Set(
+        (db.prepare("PRAGMA table_info(facts)").all() as Array<{ name: string }>).map((r) => r.name),
+      ).has("ontology_state");
+      ontology.parkedFacts = hasParkState
+        ? count(db, `SELECT COUNT(*) AS c FROM facts f WHERE ${buildOntologyParkedClause("f")}`)
+        : 0;
+      if (hasParkState) {
+        const retry = buildOntologyParkedRetryClause({
+          embeddingVersion: EMBEDDING_VERSION,
+          alias: "f",
+        });
+        ontology.parkedRetryable = count(
+          db,
+          `SELECT COUNT(*) AS c FROM facts f WHERE ${retry.clause}`,
+          ...retry.params,
+        );
+      }
       ontology.classifiedFacts = count(
         db,
-        "SELECT COUNT(*) AS c FROM facts WHERE is_active = 1 AND ontology_category_id IS NOT NULL",
+        `SELECT COUNT(*) AS c FROM facts f
+         WHERE f.is_active = 1 AND f.ontology_category_id IS NOT NULL
+           ${hasParkState ? "AND (f.ontology_state IS NULL OR f.ontology_state <> 'parked')" : ""}`,
       );
-      ontology.pendingFacts = embeddings.activeFacts - ontology.classifiedFacts;
+      ontology.pendingFacts = Math.max(
+        0,
+        embeddings.activeFacts - ontology.classifiedFacts - ontology.parkedFacts,
+      );
+      ontology.indexRepair = readOntologyIndexRepair(db);
     }
     if (hasRelations)
       relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
+
+    // 이슈 #45: 통합이 조용히 보류되는 이유를 한 화면에서 볼 수 있어야 한다.
+    const evidence = { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 };
+    if (hasFacts && hasEvidenceSchema(db)) {
+      evidence.factsWithoutLocalEvidence = countFactsWithoutLocalEvidence(db);
+      evidence.activeFactsWithSources = count(
+        db,
+        `SELECT COUNT(*) AS c FROM facts
+         WHERE is_active = 1 AND source_exchange_ids IS NOT NULL
+           AND source_exchange_ids NOT IN ('', '[]')`,
+      );
+    }
 
     const attention = readAttention(db);
     const jobs = readJobCounters(db);
@@ -546,6 +638,10 @@ export function getPipelineStatus(
       extraction.failedPermanent === 0 &&
       extraction.failedVisible === 0 &&
       embeddings.factVectorsPending === 0;
+    // 이슈 #41: parked는 pendingFacts에서 빠진 별도 버킷이다 — graph 준비
+    // 여부의 입력이 아니고(무한 재분류를 강요하지 않는다), 대신 status 줄에
+    // 자기 이름으로 보고된다. 예전에는 parked가 classified로 집계돼 pending을
+    // 0으로 만들어 graph-ready: YES를 만들었다: 같은 YES라도 근거가 다르다.
     const graphReady = factReady && ontology.pendingFacts === 0;
 
     return {
@@ -560,8 +656,10 @@ export function getPipelineStatus(
       embeddings,
       ontology,
       relations,
+      evidence,
       attention,
       jobs,
+      derivedLaneSkips: readDerivedLaneSkips(db),
       quarantinedProjects: readQuarantinedProjects(db),
       lifecycleLastEventAt,
       readiness: { conversationReady, factReady, graphReady },
@@ -601,6 +699,44 @@ function readJobCounters(db: Database.Database): JobCounters {
     counters.byState[state] = (counters.byState[state] ?? 0) + count;
   }
   return counters;
+}
+
+/** Zero counters for a data root with no ontology overlay yet. */
+export function emptyOntology(): PipelineStatus["ontology"] {
+  return {
+    classifiedFacts: 0,
+    pendingFacts: 0,
+    parkedFacts: 0,
+    parkedRetryable: 0,
+    indexRepair: { blocked: false, reason: null, detail: null, detectedAt: null },
+  };
+}
+
+/**
+ * Issue #41: the durable channel for `IndexRepairError`. The message names the
+ * next action ("manual repair required") and used to live only in
+ * logs/backfill-ontology.log — a file no status command reads.
+ */
+function readOntologyIndexRepair(
+  db: Database.Database,
+): PipelineStatus["ontology"]["indexRepair"] {
+  if (!tableExists(db, "ontology_index_repair_state")) {
+    return { blocked: false, reason: null, detail: null, detectedAt: null };
+  }
+  const row = db
+    .prepare("SELECT state, blocked_reason, detail, detected_at FROM ontology_index_repair_state WHERE id = 1")
+    .get() as
+    | { state: string; blocked_reason: string | null; detail: string | null; detected_at: string | null }
+    | undefined;
+  if (!row || row.state !== "blocked") {
+    return { blocked: false, reason: null, detail: null, detectedAt: null };
+  }
+  return {
+    blocked: true,
+    reason: row.blocked_reason ?? null,
+    detail: row.detail ?? null,
+    detectedAt: row.detected_at ?? null,
+  };
 }
 
 /** Zero counters for a data root with no database yet. */
@@ -744,9 +880,32 @@ export function formatPipelineStatus(s: PipelineStatus): string {
     `Embeddings: ${s.embeddings.factVectorsPending === 0 ? "READY" : "PENDING"} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`,
   );
   lines.push(
-    `Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`,
+    `Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.parkedFacts} parked, ${s.ontology.pendingFacts} pending)`,
   );
+  if (s.ontology.parkedFacts > 0) {
+    lines.push(
+      "  parked: held in General/Misc after bounded classification failures — not classified, excluded from the classified count" +
+        (s.ontology.parkedRetryable > 0
+          ? `; ${s.ontology.parkedRetryable} are owed one retry (runs on the next: memex backfill ontology)`
+          : "; retried once per classifier/embedding generation, this generation is spent"),
+    );
+  }
+  if (s.ontology.indexRepair.blocked) {
+    lines.push(
+      `  ontology category index: MANUAL REPAIR REQUIRED (${s.ontology.indexRepair.reason ?? "unknown"}` +
+        (s.ontology.indexRepair.detectedAt ? `, detected ${s.ontology.indexRepair.detectedAt}` : "") +
+        ") — classification is blocked; rebuild vectors: memex backfill embeddings",
+    );
+  }
   lines.push(`Relations: ${s.relations}`);
+  if (s.evidence.factsWithoutLocalEvidence > 0) {
+    lines.push(
+      `facts without local evidence: ${s.evidence.factsWithoutLocalEvidence} / ${s.evidence.activeFactsWithSources}`,
+    );
+    lines.push(
+      "  no current local verification receipt — these facts are held back from automatic consolidation and lose sync tie-breaks; rebuild: memex backfill receipts",
+    );
+  }
 
   // Issue #46 (15.2): the per-kind queue breakdown GUIDE §15 asks for. Printed
   // above `Needs attention` because it is the wider view the two dead/retry
@@ -793,6 +952,19 @@ export function formatPipelineStatus(s: PipelineStatus): string {
     if (a.terminal.modelWorkBudgetsExhausted > 0) {
       lines.push("  exhausted model-work budgets: memex model-work status");
     }
+  }
+
+  // Issue #43: name the pipeline that is holding the derived lanes back.
+  if (s.derivedLaneSkips && s.derivedLaneSkips.totalSkips > 0) {
+    const skips = s.derivedLaneSkips;
+    lines.push(
+      `Derived lanes: skipped ${skips.totalSkips} time${skips.totalSkips === 1 ? "" : "s"} (reason: ${describeDerivedLaneSkipReason(skips.reason)})`,
+    );
+    lines.push(
+      "  derived lanes are consolidation, re-embed, ontology and extraction backfill; P0/P1 (capture index, capsule) outranks them" +
+        (skips.lastForcedAt ? `, last forced through ${skips.lastForcedAt}` : "") +
+        ". Drain the backlog: memex jobs list --state retry",
+    );
   }
 
   if (s.quarantinedProjects.length > 0) {
