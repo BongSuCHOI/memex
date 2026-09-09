@@ -8819,7 +8819,7 @@ var init_model_budget = __esm({
     AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 6e4;
     AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 6e4;
     DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
-    MAINTENANCE_WAKE_INTERVAL_MS = 6e4;
+    MAINTENANCE_WAKE_INTERVAL_MS = 3 * 6e4;
     ModelBudgetError = class extends Error {
       code = "MEMEX_MODEL_BUDGET";
       budgetId;
@@ -27878,7 +27878,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.4.2"
+    version: "0.4.4"
   },
   {
     capabilities: {

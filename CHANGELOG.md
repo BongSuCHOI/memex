@@ -2,6 +2,16 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.4.4 - 2026-09-09
+
+- Report foreground backfill as partially complete when retryable, active or
+  terminally unresolved work remains, including exact post-run per-stage counts
+  and exit code `2` instead of a false all-complete message. Fatal worker errors
+  stop later stages and return `1`.
+- Coalesce automatic maintenance wake checks once every three minutes per data
+  root while preserving the existing one-hour resume cooldown, rolling 24-hour
+  model-attempt cap, job cursor, retry and active-claim state.
+
 ## 0.4.3 - 2026-09-09
 
 - Resume unfinished automatic maintenance from `SessionStart` and asynchronously

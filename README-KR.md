@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.4.3-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.4-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -164,6 +164,12 @@ memex status
 4. **`memex status`** — conversation/fact/graph readiness와 남은 backlog를 보여줍니다.
 
 backfill 단계는 idempotent하게 다시 실행할 수 있습니다.
+
+foreground backfill은 처리 가능하거나 실행 중이거나 해결되지 않은 작업이 없을 때만
+exit code `0`을 반환합니다. 유계 실행 뒤 재시도 가능한 backlog가 남으면
+`completed with deferred work`와 선택한 단계별 실행 후 건수를 출력하고 `2`를
+반환합니다. active claim과 terminal extraction failure도 outstanding work와 `2`로
+보고합니다. worker 실패는 우선하여 이후 단계를 중단하고 `1`을 반환합니다.
 
 ### 선택적 한국어 fact 번역
 
