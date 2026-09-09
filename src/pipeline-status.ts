@@ -103,10 +103,10 @@ function countArchiveFiles(archiveDir: string): number {
 }
 
 export function getPipelineStatus(
-  opts: { dbPath?: string } = {},
+  opts: { dbPath?: string; db?: Database.Database } = {},
 ): PipelineStatus {
   const dbPath = opts.dbPath ?? getDbPath();
-  const dbExists = fs.existsSync(dbPath);
+  const dbExists = opts.db !== undefined || fs.existsSync(dbPath);
   // Worker eligibility config — shared source with backfill-extract-worker
   // (pendingExtractionCoreQuery) so status counts what the pipeline does.
   const extractionGate = getExtractionConfig();
@@ -152,7 +152,8 @@ export function getPipelineStatus(
     };
   }
 
-  const db = openReadDb(dbPath);
+  const db = opts.db ?? openReadDb(dbPath);
+  const ownsDb = opts.db === undefined;
   try {
     const hasExchanges = tableExists(db, "exchanges");
     const hasExtractionLog = tableExists(db, "extraction_log");
@@ -464,7 +465,7 @@ export function getPipelineStatus(
       readiness: { conversationReady, factReady, graphReady },
     };
   } finally {
-    db.close();
+    if (ownsDb) db.close();
   }
 }
 

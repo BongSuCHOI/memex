@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.4.3-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.4-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -164,6 +164,13 @@ What these commands do:
 4. **`memex status`** reports readiness and remaining backlog.
 
 All backfill stages are designed to be idempotent.
+
+Foreground backfill exits `0` only when no processable, active, or unresolved
+work remains. If a bounded run leaves retryable backlog for a later wake, it
+reports `completed with deferred work`, prints the post-run count for each
+selected stage, and exits `2`. Active claims or terminal extraction failures are
+also reported as outstanding work with exit `2`. A worker failure takes
+precedence, stops later stages, and exits `1`.
 
 ### Optional Korean fact translations
 

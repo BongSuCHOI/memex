@@ -178,9 +178,15 @@ try {
         sync.stdout.slice(-500),
     );
   }
-  installedBin("memex", ["backfill", "all"], {
+  const backfill = installedBin("memex", ["backfill", "all"], {
     timeout: 4 * 60 * 1000,
   });
+  if (!backfill.stdout.includes("no outstanding work remains")) {
+    throw new Error(
+      "packaged backfill omitted its verified-complete status: " +
+        backfill.stdout.slice(-500),
+    );
+  }
   const status = installedBin("memex", ["status", "--json"]);
   const parsedStatus = JSON.parse(status.stdout);
   if (

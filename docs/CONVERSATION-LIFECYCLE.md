@@ -133,7 +133,7 @@ UserPromptSubmit의 JSON additionalContext는 계속 stdout으로 전달하며, 
 
 Context injection과 별도로 `memex-hook-maintenance --prompt`를 async 실행합니다.
 같은 세션에서 유휴 후 메시지를 보내도 유지보수 재개 기회가 됩니다. 시작·메시지 이벤트는
-같은 데이터 루트에서 1분 단위로 묶으며, 모델 재개 cooldown·rolling cap·worker lock은 유지합니다.
+같은 데이터 루트에서 3분 단위로 묶으며, 모델 재개 cooldown·rolling cap·worker lock은 유지합니다.
 이 비동기 경로는 stdout으로 추가 context를 출력하거나 worker 완료를 기다리지 않습니다.
 
 

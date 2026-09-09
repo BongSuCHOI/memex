@@ -1,3 +1,4 @@
+import type Database from "better-sqlite3";
 export interface StageCounters {
     total: number;
     done: number;
@@ -48,5 +49,6 @@ export interface PipelineStatus {
 }
 export declare function getPipelineStatus(opts?: {
     dbPath?: string;
+    db?: Database.Database;
 }): PipelineStatus;
 export declare function formatPipelineStatus(s: PipelineStatus): string;

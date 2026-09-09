@@ -218,7 +218,7 @@ function validateSkills(installedRoot) {
   return checked;
 }
 
-function mcpHandshake(installedRoot) {
+function mcpHandshake(installedRoot, expectedVersion) {
   const messages = [
     {
       jsonrpc: "2.0",
@@ -271,12 +271,21 @@ function mcpHandshake(installedRoot) {
   const call = responses.find((response) => response.id === 3);
   if (!initialize?.result?.serverInfo)
     throw new Error("MCP initialize response missing serverInfo");
+  if (initialize.result.serverInfo.version !== expectedVersion) {
+    throw new Error(
+      `MCP server version mismatch: ${initialize.result.serverInfo.version} != ${expectedVersion}`,
+    );
+  }
   const tools = (list?.result?.tools || []).map((tool) => tool.name).sort();
   if (JSON.stringify(tools) !== JSON.stringify(EXPECTED_TOOLS))
     throw new Error(`MCP tool mismatch: ${tools.join(", ")}`);
   if (!call?.result || call.result.isError)
     throw new Error(`MCP graph_stats call failed: ${JSON.stringify(call)}`);
-  return { tools, called: "graph_stats" };
+  return {
+    serverInfo: initialize.result.serverInfo,
+    tools,
+    called: "graph_stats",
+  };
 }
 
 async function main() {
@@ -344,7 +353,7 @@ async function main() {
     if (!fs.existsSync(path.join(installedRoot, relative)))
       throw new Error(`installed Web UI missing ${relative}`);
   }
-  const mcp = mcpHandshake(installedRoot);
+  const mcp = mcpHandshake(installedRoot, pluginManifest.version);
 
   command("codex", ["plugin", "remove", PLUGIN_ID, "--json"]);
   pluginAdded = false;
@@ -419,7 +428,7 @@ async function main() {
       {
         name: "MCP initialize and tools/list",
         status: "PASS",
-        observed: mcp.tools,
+        observed: { serverInfo: mcp.serverInfo, tools: mcp.tools },
       },
       {
         name: "MCP tools/call graph_stats",

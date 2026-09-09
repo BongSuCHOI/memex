@@ -30,6 +30,31 @@ function runScript(scriptPath, args) {
   });
 }
 
+function remainingBackfillWork(status, targets) {
+  const deferred = Object.fromEntries(
+    targets.map((target) => [target, status.stages[target]]),
+  );
+  const active = targets.includes("extract") ? status.active.extract : 0;
+  const unresolved = targets.includes("extract")
+    ? status.unresolved.extract
+    : 0;
+  return {
+    deferred,
+    deferredTotal: Object.values(deferred).reduce(
+      (sum, count) => sum + count,
+      0,
+    ),
+    active,
+    unresolved,
+  };
+}
+
+function formatStageCounts(counts) {
+  return Object.entries(counts)
+    .map(([stage, count]) => `${stage}=${count}`)
+    .join(", ");
+}
+
 function showHelp() {
   console.log(`memex - Collect, connect, and retrieve knowledge from Codex conversations
 
@@ -634,8 +659,44 @@ resume options:
               break;
             }
           }
-          if (!process.exitCode && target === "all") {
-            console.log("All backfill stages completed.");
+          if (!process.exitCode) {
+            const { getBackfillWorkStatus } = await import(
+              join(distDir, "backfill-status.js")
+            );
+            const remaining = remainingBackfillWork(
+              getBackfillWorkStatus(),
+              targets,
+            );
+            if (
+              remaining.deferredTotal > 0 ||
+              remaining.active > 0 ||
+              remaining.unresolved > 0
+            ) {
+              if (remaining.active === 0 && remaining.unresolved === 0) {
+                console.log(
+                  `Backfill completed with deferred work: ${remaining.deferredTotal} item(s) remain (${formatStageCounts(remaining.deferred)}).`,
+                );
+              } else {
+                const parts = [];
+                if (remaining.deferredTotal > 0)
+                  parts.push(
+                    `deferred=${remaining.deferredTotal} (${formatStageCounts(remaining.deferred)})`,
+                  );
+                if (remaining.active > 0)
+                  parts.push(`active extract=${remaining.active}`);
+                if (remaining.unresolved > 0)
+                  parts.push(`unresolved extract=${remaining.unresolved}`);
+                console.log(
+                  `Backfill completed with outstanding work: ${parts.join("; ")}.`,
+                );
+              }
+              console.log("Check progress: memex status");
+              process.exitCode = 2;
+            } else if (target === "all") {
+              console.log("All backfill stages completed; no outstanding work remains.");
+            } else {
+              console.log(`${target} backfill completed; no outstanding work remains.`);
+            }
           }
           break;
         }
