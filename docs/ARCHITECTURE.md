@@ -31,7 +31,7 @@ flowchart TB
       ArchiveIndex[Archive + indexing]
       Extract[Fact extraction]
       Consolidate[Consolidation]
-      Sync[Protocol v4 sync]
+      Sync[Protocol v5 sync]
       Retrieve[Retrieval + injection]
       Ontology[Ontology + relations]
     end
@@ -332,5 +332,15 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
 ## 9. 배포 단위
 
 일반 사용자는 source checkout을 직접 build하지 않습니다. Codex plugin cache에는 manifest, skills, hook/MCP launcher와 materialized production dependencies가 설치됩니다. `cli/runtime-exec.js`는 version-pinned installed artifact의 로컬 binary를 우선 실행하여 foreground hook이 moving `github:...#main` revision이나 package-manager/network latency에 의존하지 않게 합니다. Dependency materialization 전의 raw plugin registration에는 기존 `npx` 경로가 compatibility fallback으로만 남습니다.
+
+0.6.1부터 "설치된 plugin root"를 해석하는 곳은 `src/plugin-root.ts` 하나이고, `memex doctor`의
+`dependencies` 판정과 `cli/runtime-exec.js`의 폴백 메시지, `memex deps materialize`가 같은 값을 씁니다
+(#53). 해석 순서는 `MEMEX_PLUGIN_ROOT` → `$CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest
+version>` → `codex plugin list --json`의 `installedPath` → 실행 중인 launcher의 루트입니다. cache
+후보는 `cli/memex.js`와 `.codex-plugin/plugin.json`이 **둘 다** 있는 디렉터리만 인정합니다. 예전에는
+`~/.local/bin/memex` shim의 npx cache가 설치본으로 오인되어, 실제 설치본과 다른 판정이 나왔습니다.
+`memex update`는 재설치 뒤 새 root에 의존성을 자동으로 materialize하고(`--no-materialize`면 명령만
+안내), `memex install`은 source checkout에 production closure가 없으면 preflight를 실패시키는 대신
+설치본에서 `npm install --omit=dev`로 떨어집니다.
 
 MCP는 `$XDG_CACHE_HOME/memex/npm-mcp`(기본 `~/.cache/memex/npm-mcp`) 전용 cache를 사용합니다. `main`이 runtime release channel이므로 **검증된 commit만 main에 들어가는 것**이 release safety boundary입니다.

@@ -74,19 +74,30 @@ memex status --json
 - `memex status` — 단계별 준비 상태. 격리된 프로젝트가 있으면 `Quarantined projects: N` 줄과
   프로젝트 ID·표시 이름·fact 수를 함께 출력합니다(0.6.0 #38: `/`처럼 신뢰할 수 없는 cwd에서 생긴
   프로젝트. fact는 보존하고 주입·조회 범위에서만 제외합니다).
-  - Ontology 줄은 `Ontology: READY (N classified, P parked, Q pending)` 형태입니다(0.6.1 #41).
+  - Ontology 줄은 `Ontology: READY|PENDING (N classified, P parked, Q pending)` 형태이고
+    `pending`이 0일 때만 `READY`입니다(0.6.1 #41).
     `parked`는 분류 시도를 소진해 General/Misc에 보관 중인 fact이며 **classified가 아닙니다**.
     이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
     정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
   - `facts without local evidence: N / M` 줄은(0.6.1 #45) 로컬 의미 검증 영수증이 없는 활성 fact
-    수입니다. 그 fact들은 자동 통합 대상에서 사실상 제외되고(사용자에게는 "중복 fact가 계속 쌓인다"로
-    보입니다) 동기화 시 피어에게 집니다. `memex backfill receipts`로 재구성합니다.
+    수입니다. 그 fact들은 자동 통합 대상에서 제외되며(사용자에게는 "중복 fact가 계속 쌓인다"로
+    보입니다) `memex backfill receipts`로 재구성합니다. 동기화와의 관계는 **한 방향**입니다:
+    영수증은 sync 충돌 판정에 들어가지 않고, 반대로 peer의 semantic win이 로컬 영수증을
+    `peer-authority`로 강등시켜 그 fact의 통합을 막습니다(아래 `backfill receipts` 항목 참고).
   - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
     (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
     extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
-    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유로 3회 연속 건너뛰면 다음 호출에서
-    하위 레인을 한 번 강제로 통과시킵니다(우선순위는 유지, 기아는 방지). 백로그 자체는
+    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유의 **3번째 연속 호출에서** 하위 레인을
+    한 번 통과시키고 연속 카운터를 0으로 되돌립니다 — 앞의 두 번은 P0/P1이 이깁니다(우선순위는
+    유지, 기아는 방지). 백로그 자체는
     `memex jobs list --state retry` / `memex recover`로 해소합니다.
+  - `Memory jobs: N (state=…, …)` 줄과 그 아래 kind별 줄은(0.6.1 #46) `memory_jobs`를 kind × state로
+    집계한 것입니다. `Needs attention`의 dead/retry는 이 표의 부분집합입니다. `--json`에서는
+    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다([§15](#작업이-실패했을-때-terminal-상태-복구)).
+  - 0.6.1이 `memex status --json`에 더한 키: `evidence`(`factsWithoutLocalEvidence` ·
+    `activeFactsWithSources`), `jobs`, `derivedLaneSkips`(`reason` · `consecutive` · `totalSkips` ·
+    `lastSkippedAt` · `lastForcedAt`, 한 번도 건너뛴 적이 없으면 `null`), 그리고 `ontology`에 붙은
+    `parkedFacts` · `parkedRetryable` · `indexRepair`.
   - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
     self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
     재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.
@@ -95,8 +106,13 @@ memex status --json
 - `memex backfill ontology` — local ontology/relation 생성
 - `memex backfill embeddings` — 누락된 semantic vector 생성
 - `memex backfill receipts` — 누락된 로컬 의미 검증 영수증(`fact_evidence_receipts`) 재구성.
-  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되고 sync tie-break에서
-  지므로, `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
+  model 호출이 없습니다(0.6.1 #45). 한 번에 기본 1,000건까지 훑으므로(`BACKFILL_RECEIPTS_MAX`)
+  백로그가 크면 `facts without local evidence`가 0이 될 때까지 반복 실행하십시오.
+  영수증이 없는 fact는 자동 통합에서 제외되므로,
+  `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
+  (`memex status`와 `memex backfill --help`는 이 상태를 "lose sync tie-breaks"라고도 표현하지만,
+  실제 sync 충돌 판정은 `semantic_updated_at`과 내용 키만 봅니다 — 영수증을 읽는 코드 경로는
+  없습니다. 영향을 주는 방향은 sync → 영수증 강등 → 통합 차단입니다.)
 - `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
 `backfill`은 기본 foreground 실행이며 다음 exit code를 반환합니다.
@@ -431,8 +447,9 @@ node scripts/package-runtime-e2e.mjs
 node scripts/lifecycle-e2e.mjs
 ```
 
-`memex doctor`가 출력하는 점검 항목은 다음 순서로 11개입니다. 하나라도 `FAIL`이면 전체가 `FAIL`이고
-exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
+`memex doctor`가 출력하는 점검 항목은 다음 순서로 **항상 11개**이고, `ontology-index`는 repair
+marker가 있을 때만 추가되어 최대 12개입니다. 하나라도 `FAIL`이면 전체가 `FAIL`이고 exit code는 `1`,
+전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 
 | 점검 | ok / warn / fail |
 | --- | --- |
@@ -446,6 +463,7 @@ exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
+| `ontology-index` (0.6.1, 조건부) | `ontology_index_repair_state`에 marker가 있을 때만 나타납니다. category vector index 수리가 `blocked`면 fail(분류가 멈춘 상태 — `memex backfill embeddings`로 벡터 재생성), 화해되었으면 ok |
 | `sync-export` | 동기화가 꺼져 있으면 `skipped(off)`로 ok(경고 아님). 켜져 있는데 export 훅이 어느 hook에도 등록되지 않았거나 한 번도 내보낸 적이 없으면 warn. 마지막 export가 실패면 fail, 성공이면 ok |
 
 `dependencies`가 검사하는 **설치된 plugin root**는 다음 순서로 해석하며, `memex install`,
@@ -572,7 +590,7 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 보여줍니다. 존재하지 않는 조합은 `0`으로 채우지 않고 아예 나오지 않습니다. 텍스트 출력에도
 `Memory jobs: …`와 kind별 줄로 같은 값이 나옵니다.
 
-### 대화 인덱스 무결성 (`memex index --verify` / `--repair`)
+### 대화 인덱스 무결성 (`memex index`)
 
 fact 파이프라인과 별개로, **대화 인덱스** 자체가 깨질 수 있습니다(FK 위반, orphan 행, 요약 누락,
 손상된 아카이브 파일). 진단과 복구는 `memex index`가 담당합니다.
@@ -799,7 +817,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
-| `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session`·`--concurrency`·`--no-summaries` | [§4](#4-최초-onboarding), [§15](#대화-인덱스-무결성-memex-index---verify--repair) |
+| `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session`·`--concurrency`·`--no-summaries` | [§4](#4-최초-onboarding), [§15](#대화-인덱스-무결성-memex-index) |
 | `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
 | `memex show` | archive conversation 읽기 (`--format markdown\|html`) | [§6](#6-검색과-분석) |
 | `memex stats` | corpus/index 통계 | [§6](#6-검색과-분석) |
@@ -807,8 +825,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`. `list`는 `--all`(비활성 포함)·`--limit`·`--offset`, `edit`는 `--source-exchange` | [§7](#7-fact-관리) |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) | [§7](#7-fact-관리) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) | [§7](#7-fact-관리) |
-| `memex backfill` | `all\|extract\|ontology\|embeddings` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
-| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계 (`--json`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
+| `memex ontology` | 로컬 taxonomy 조회·수리: `list\|merge\|rename`. `merge`는 `--dry-run` | [§4](#ontology-taxonomy-수리-061-47) |
+| `memex backfill` | `all\|extract\|ontology\|embeddings\|receipts` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
+| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계(`--json`의 `jobs.total`·`byKind`·`byState`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
@@ -847,7 +866,8 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (허용 `0`–`1`) | 주입 관련성 게이트가 요구하는 baseline 대비 마진. 범위를 벗어난 값은 기본값으로 되돌아갑니다. **`baseline_margin_gap`으로 측정한 뒤에 조정하십시오** |
-| `MEMEX_AUTO_ONTOLOGY` | unset (= on) | `0`이면 자동 ontology 분류와 후속 관계 작업을 끕니다. 수동 `memex backfill ontology`는 유지 |
+| `MEMEX_AUTO_ONTOLOGY` | unset (= on) | 자동 ontology 분류와 후속 관계 작업 스위치. **on으로 인정하는 값은 미설정·빈 문자열·`1` 뿐**이고 그 밖의 값(`0`은 물론 `true`·`yes`도)은 끕니다. 수동 `memex backfill ontology`는 유지 |
+| `MEMEX_ONTOLOGY_DET_GATE` | unset (= `+Infinity`, 꺼짐) | 무비용 결정론적 category 재사용 레인의 유사도 임계값. 설정하지 않으면 어떤 후보도 통과하지 못합니다(0.6.1 #47). 켤 때는 현재 taxonomy에서 `facts.ontology_similarity`로 **측정한** `(0,1)` 값을 쓰십시오 |
 | `MEMEX_MAX_EXTRACT_WINDOWS` | `12` | 세션당 extraction generator window 예산. 미설정이면 `MEMEX_MAX_EXTRACT_CALLS`를 봅니다 |
 | `MEMEX_MAX_EXTRACT_CALLS` | `12` | 위 변수의 이전 이름 (호환) |
 
@@ -875,6 +895,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_AUTO_MODEL_MAX_ATTEMPTS` | `256` | 한 data root의 자동 유지보수 24시간 공통 호출 한도. `0`이면 차단 |
 
 `BACKFILL_RELATIONS=1`은 `memex backfill ontology`에 새 관계 검사도 함께 요청합니다.
+`BACKFILL_RECEIPTS_MAX`는 `memex backfill receipts` 한 번이 훑을 fact 수입니다(기본 `1000`, 상한
+`20000`). CLI는 워커에 인자를 넘기지 않으므로 `memex backfill receipts --max N`은 무시됩니다 —
+한 번에 더 많이 처리하려면 이 환경 변수를 쓰거나 워커를 직접 실행하십시오.
 
 ## 20. 문제가 생겼을 때 — 실패 클래스별 복구
 
@@ -903,6 +926,10 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
 | 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
+| ontology 분류 보류(parked) | `memex status`의 `Ontology: … (N classified, P parked, Q pending)`에서 `P > 0` | 분류 시도를 소진해 `General`/`Misc`에 보관된 fact. **classified가 아닙니다** | `memex backfill ontology`. 재시도는 분류 정책/embedding 세대당 정확히 1회이므로, 세대가 그대로면 다시 돌려도 같은 fact를 재시도하지 않습니다 |
+| ontology category index 수리 필요 | `memex status`의 `ontology category index: MANUAL REPAIR REQUIRED (…)`, `doctor`의 `ontology-index: fail` | category vector index가 self-heal로 고칠 수 없는 상태라 분류 자체가 멈춤 | `memex backfill embeddings`로 vector를 재생성한 뒤 `memex status`에서 줄이 사라졌는지 확인 |
+| 하위(derived) 레인이 계속 밀림 | `memex status`의 `Derived lanes: skipped N times (reason: continuity backlog)` | P0/P1(capture index / Work Capsule) 백로그 때문에 consolidation·re-embed·ontology·extraction이 그 세션에서 양보됨 | 고장이 아닙니다. 같은 사유의 3번째 연속 호출에서 하위 레인이 한 번 통과하고 카운터가 0으로 돌아갑니다. 백로그 자체는 `memex jobs list --state retry` → `memex recover`로 해소 |
+| 로컬 의미 검증 영수증 없음 | `memex status`의 `facts without local evidence: N / M` | `fact_evidence_receipts`가 없는 활성 fact. 자동 통합에서 빠짐("중복 fact가 계속 쌓인다"). peer의 semantic win이 영수증을 `peer-authority`로 강등해도 같은 상태가 됨 | `memex backfill receipts` — model 호출이 없는 재구성입니다. 원본 exchange가 이미 사라진 fact는 복구 대상이 아닙니다 |
 | sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남(대개 공유 폴더에 쓸 수 없음) | `memex sync status`로 공유 폴더·쓰기 가능 여부 확인 → 원인 수정 → `memex sync export`. 다음 SessionEnd/유지보수 wake에서도 재시도합니다 |
 | 동기화가 켜져 있는데 한 번도 나가지 않음 | `doctor`의 `sync-export: warn` | 스위치는 on인데 export 기록이 없음(또는 export 훅이 어느 hook에도 등록되지 않음) | `memex sync export`로 첫 세대를 만들고 `memex sync status`로 확인 |
 | 동기화가 꺼져 있음 | `doctor`의 `sync-export: ok` + `skipped(off)` | 기본값. 고장이 아님 | 쓰려면 `memex sync enable --dir <공유 폴더>` |

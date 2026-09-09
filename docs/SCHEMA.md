@@ -132,7 +132,7 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 유한합니다. 계보 조회(shared rolling attempt cap의 근거)는 LIKE 접두 매칭이 아니라 `root_wave_id`
 컬럼으로 하며, 옛 `:run:` 사슬을 환경변수로 물려받은 워커도 같은 root로 정규화됩니다.
 `UNIQUE(parent_wave_id)` 테이블 제약은 그대로 두고 계보 유일성은
-`CREATE UNIQUE INDEX idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
+`CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
 표현합니다(테이블 재작성 없이 additive). 마이그레이션은 기존 중첩 id를 `<root>#<n>`으로 정규화하고
 `memory_jobs.maintenance_wave_id`의 같은 문자열도 함께 갱신합니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
@@ -295,21 +295,39 @@ slot은 project와 optional workspace/workstream 범위에서 unique입니다. `
 
 `ontology_state` / `ontology_parked_at` / `ontology_parked_version` / `ontology_similarity`는 전부 additive
 nullable column이며 Continuity schema version(=7)을 올리지 않습니다. Ontology overlay는 local-derived
-state이고 protocol v4 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
+state이고 protocol v5 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
 
 - `ontology_state`: `'parked'` 이면 bounded 분류 실패 후 General/Misc에 보관 중이라는 뜻입니다. LLM이
   실제로 Misc를 고른 assignment는 `NULL`입니다. 이 구분이 없으면 status가 park를 classified로 셉니다.
 - `ontology_parked_at`: park된 시각.
 - `ontology_parked_version`: park 당시의 `(classifier policy, embedding generation)` 토큰(`p<n>:e<n>`).
   재시도 selector는 이 값이 현재 토큰과 다를 때만 park를 pending으로 되돌립니다 — 세대당 정확히 한 번.
-- `ontology_similarity`: assignment 시점의 코사인 유사도(nullable). 낮은 신뢰도 할당의 사후 선별 입력.
+- `ontology_similarity`: assignment 시점의 코사인 유사도(nullable). 낮은 신뢰도 할당의 사후 선별
+  입력입니다. **현재 이 값을 읽는 코드는 없습니다** — 0.6.1은 측정값을 남기는 데까지만 갑니다.
+
+park 선택은 부분 index로 좁힙니다.
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_facts_ontology_state
+  ON facts(ontology_state, ontology_parked_version)
+  WHERE ontology_state IS NOT NULL;
+```
+
+네 컬럼 어디에도 CHECK 제약은 없습니다. `ontology_state`에 코드가 쓰는 값은 `NULL`과 `'parked'`
+둘뿐이고, 분류에 성공하면 `ontology_state`·`ontology_parked_at`은 NULL로 되돌아가지만
+`ontology_parked_version`은 **그대로 둡니다**(재시도 1회 제한이 그 값으로 유지되기 때문입니다).
 
 ### Ontology taxonomy uniqueness (0.6.1)
 
 ```sql
-CREATE UNIQUE INDEX idx_ontology_domains_name           ON ontology_domains(name COLLATE NOCASE);
-CREATE UNIQUE INDEX idx_ontology_categories_domain_name ON ontology_categories(domain_id, name COLLATE NOCASE);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_domains_name
+  ON ontology_domains(name COLLATE NOCASE);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_categories_domain_name
+  ON ontology_categories(domain_id, name COLLATE NOCASE);
 ```
+
+domain 이름은 전역 유일, category 이름은 **domain 안에서만** 유일합니다(`domain_id`는 UUID이므로
+대소문자 접기의 대상이 아닙니다).
 
 index 생성 전에 idempotent migration이 기존 대소문자 중복을 병합합니다: 가장 오래된 행을 남기고
 category/fact를 재지정한 뒤 나머지 행과 그 vector를 지웁니다. Chronicle 이벤트도 generation bump도
@@ -330,8 +348,9 @@ derived_lane_skips (
 ```
 
 P0/P1(capture_index, capsule_update) 백로그 때문에 파생 레인 4개(consolidation, re-embed, ontology,
-extraction)를 건너뛴 사실을 durable하게 남깁니다. 같은 사유로 3회 연속 skip되면 그 호출에서 파생
-레인을 한 번 통과시키고 `consecutive`를 0으로 되돌립니다 — 우선순위는 유지하되 기아를 막습니다.
+extraction)를 건너뛴 사실을 durable하게 남깁니다. `consecutive`가 3이 되는 호출에서 파생 레인을
+한 번 통과시키고 `consecutive`를 0으로 되돌립니다(`DERIVED_LANE_FORCE_AFTER = 3`) — 우선순위는
+유지하되 기아를 막습니다. 사유가 달라지면 `consecutive`와 `total_skips`가 함께 0에서 다시 셉니다.
 `memex status`가 `Derived lanes: skipped N times (reason: ...)` 줄로 읽고, 각 skip은
 `continuity_telemetry`의 `derived_lane_skipped` 샘플로도 남습니다(dims: reason/consecutive/forced).
 
@@ -387,7 +406,13 @@ false를 반환하지만, 무엇이 결속을 끊었는지가 남고 `memex back
 `memex backfill receipts`(model-free)는 `source_exchange_ids`가 전부 해석되는 활성 fact에 대해
 영수증을 재구성합니다. 영수증 행 자체가 resume 마커라 중단해도 다음 실행이 나머지를 이어서 처리합니다.
 `memex status`는 `facts without local evidence: N / M` 줄로 남은 수를 보고합니다 — 영수증이 없는 fact는
-자동 통합에서 제외되고 sync tie-break에서 집니다.
+자동 통합에서 제외됩니다(`hasLocalMeaningEvidence`를 읽는 곳은 `src/consolidator.ts` 세 군데뿐입니다).
+
+`memex status`와 `memex backfill --help`의 문구는 여기에 "lose sync tie-breaks"를 덧붙이지만, 그 경로는
+아직 구현되어 있지 않습니다: `src/sync-import.ts`는 `hasLocalMeaningEvidence`를 호출하지 않고 semantic
+승자를 `semantic_updated_at`과 `semanticConflictKey`(fact 문장·category·scope·project·subject·promotion
+state·created_at)로만 정합니다. 실제 인과는 반대 방향입니다 — sync가 영수증을 강등시켜 그 다음
+consolidation을 막습니다.
 
 Local verified projection의 exact meaning과 source/tool snapshot만 기록합니다. Source content/identity가
 바뀌거나 누락되면 receipt는 사용할 수 없고, remote semantic replacement는 receipt를 제거합니다.

@@ -12,7 +12,7 @@
 6. [검색과 컨텍스트](RETRIEVAL-AND-CONTEXT.md) — FTS/vector/RAG/injection
 7. [스키마](SCHEMA.md) — SQLite 테이블과 transaction 불변식
 8. [MCP와 스킬](MCP-AND-SKILLS.md) — 9개 MCP 도구와 3개 스킬
-9. [Web UI](WEBUI-WORKSPACE.md) — Memex Workspace 로컬 화면, 범위 선택, 지식 지도
+9. [Web UI](WEBUI-WORKSPACE.md) — Memex Workspace 로컬 화면, 범위 선택, 계층 배지와 승격/강등, 동기화 탭, 지식 지도
 10. [검증](VERIFICATION.md) — merge gate, E2E, receipt 규칙
 11. [계보](LINEAGE.md) — upstream attribution과 Codex-native 경계
 12. [Continuity as-built](CONTINUITY.md) — lifecycle/journal/outbox/worker, Capsule, identity, Chronicle, Memory Broker, sync/privacy의 실제 구현 지도. 규범은 [Final RFC](architecture/memex-continuity-v1.md), 차이는 [deviation record](verification/continuity-v1/rfc-deviations.md)
@@ -43,6 +43,7 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | Codex rollout parsing | `src/codex-rollout.ts`, `src/parser.ts` | `CONVERSATION-LIFECYCLE.md` |
 | archive/index | `src/sync.ts`, `src/indexer.ts`, `src/archive-io.ts` | `CONVERSATION-LIFECYCLE.md` |
 | cross-device sync | `src/sync-export.ts`, `src/sync-import.ts`, `src/fact-management.ts` | `CONVERSATION-LIFECYCLE.md`, `FACT-LIFECYCLE.md` |
+| 동기화 스위치·공유 폴더 | `src/sync-control.ts`, `src/sync-paths.ts`, `scripts/sync-export-hook.js`, `scripts/sync-import-hook.js` | `GUIDE.md`, `WEBUI-WORKSPACE.md` |
 | facts/provenance | `src/fact-extractor.ts`, `src/fact-db.ts` | `FACT-LIFECYCLE.md` |
 | fact mutation/consolidation | `src/fact-management.ts`, `src/consolidator.ts` | `FACT-LIFECYCLE.md`, `SCHEMA.md` |
 | 기억 계층·승격 사다리 | `src/fact-management.ts`(`promoteFact`/`demoteFact`/`reconcileFactTiers`), `src/fact-db.ts`(`defaultTierFor`) | `FACT-LIFECYCLE.md`, `SCHEMA.md` |
@@ -50,12 +51,16 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | terminal 상태 복구 | `src/job-recovery.ts`, `src/pipeline-status.ts` | `GUIDE.md` |
 | 주입 관측 로그 | `src/inject-log.ts`, `src/inject-core.ts` | `RETRIEVAL-AND-CONTEXT.md`, `GUIDE.md` |
 | ontology/relations | `src/ontology-classifier.ts`, `src/ontology-db.ts` | `KNOWLEDGE-GRAPH.md` |
+| taxonomy 수리·parking selector | `src/ontology-admin.ts`, `src/ontology-selector.ts` | `KNOWLEDGE-GRAPH.md`, `GUIDE.md` |
+| 근거 영수증 backfill | `src/evidence-backfill.ts`, `scripts/backfill-receipts-worker.js` | `FACT-LIFECYCLE.md`, `GUIDE.md` |
+| 유지보수 계보·derived lane 기아 | `src/model-budget.ts`, `src/derived-lane-skip.ts` | `SCHEMA.md`, `CONVERSATION-LIFECYCLE.md` |
 | search/RAG/injection | `src/search.ts`, `src/inject-*.ts` | `RETRIEVAL-AND-CONTEXT.md` |
 | lifecycle/hooks | `src/lifecycle.ts`, `scripts/*hook*` | `GUIDE.md`, `CONVERSATION-LIFECYCLE.md` |
 | MCP | `src/mcp-server.ts`, `.mcp.json` | `MCP-AND-SKILLS.md` |
 | Web UI | `ui/server.cjs`, `ui/lib/`, `ui/public/` | `WEBUI-WORKSPACE.md` |
 | persistence | `src/db.ts`, `src/fact-db.ts`, `src/ontology-db.ts` | `SCHEMA.md` |
 | installation/package/update | `.codex-plugin/`, `cli/runtime-exec.js`, installer/update scripts | `GUIDE.md`, `ARCHITECTURE.md` |
+| 설치본 root 해석·의존성 materialize | `src/plugin-root.ts`, `scripts/materialize-deps.mjs` | `GUIDE.md` |
 | release evidence | tests, E2E, `docs/verification/*` | `VERIFICATION.md` |
 | continuity capture/queue/worker | `src/continuity-core.ts`, `src/continuity-store.ts`, `src/continuity-evidence.ts`, `src/continuity-worker.ts`, `scripts/continuity-hook.js` | `CONTINUITY.md`, `CONVERSATION-LIFECYCLE.md` |
 | identity/Chronicle/recall gate | `src/continuity-identity.ts`, `src/chronicle.ts`, `src/recall-gate.ts`, `src/memory-bundle.ts` | `CONTINUITY.md`, `FACT-LIFECYCLE.md`, `RETRIEVAL-AND-CONTEXT.md` |
@@ -66,7 +71,8 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 - public 명령이나 설치 경로가 바뀌면 `GUIDE.md`와 public README를 함께 갱신합니다.
 - persisted field나 transaction 불변식이 바뀌면 `SCHEMA.md`와 해당 lifecycle 문서를 함께 갱신합니다.
 - MCP schema가 바뀌면 `MCP-AND-SKILLS.md`와 skill reference를 같은 변경에서 갱신합니다.
-- sync protocol이 바뀌면 `ARCHITECTURE.md`, `CONVERSATION-LIFECYCLE.md`, `FACT-LIFECYCLE.md`, `SCHEMA.md`를 함께 검토합니다.
+- sync protocol이 바뀌면 `ARCHITECTURE.md`, `CONVERSATION-LIFECYCLE.md`, `FACT-LIFECYCLE.md`, `SCHEMA.md`와 두 README의 멀티디바이스 절을 함께 검토합니다.
+- Web UI가 문서 앵커를 인용하므로(`ui/public/help.mjs`·`guidance.mjs`) `GUIDE.md`·`WEBUI-WORKSPACE.md`·`FACT-LIFECYCLE.md`의 헤딩을 바꾸면 `ui/test/help.test.cjs`가 먼저 실패합니다.
 - 검증 수치나 PASS receipt는 **실제 명령을 실행한 경우에만** 기록합니다.
 
 ## 상태 표기

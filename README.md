@@ -89,7 +89,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | --- | --- |
 | `/` overview | pipeline readiness, recent memory changes, activity |
 | `/conversations` conversation ledger | sessions, exchanges, source text |
-| `/facts` memory & facts | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete |
+| `/facts` memory & facts | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete, and one-rung tier promote/demote; a tier badge on every row and a banner for branch-tier memory the project scope hides |
 | `/taxonomy` classification | ontology domains and categories |
 | `/graph` knowledge map | WebGL 2D/3D relation graph with a Canvas2D fallback |
 | `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
@@ -175,7 +175,7 @@ flowchart TB
 
 ### Fact state model
 
-Sync protocol v4 separates fact state into independent axes:
+Sync protocol v5 separates fact state into independent axes:
 
 | Axis | Examples | Merge rule |
 | --- | --- | --- |
@@ -272,9 +272,9 @@ memex status
 | `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`; `list --all` includes inactive facts (`--limit`, `--offset`), `edit --source-exchange <id>` names the evidence |
 | `memex facts tier\|promote\|demote` | Inspect or move a memory on the `workstream ⇄ project ⇄ global` ladder, one rung at a time |
 | `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
-| `memex backfill` | Run extraction / ontology / embedding / evidence-receipt backlog work |
+| `memex backfill` | Run backlog work explicitly: `all\|extract\|ontology\|embeddings\|receipts`; `--background` |
 | `memex ontology` | Inspect and repair the local taxonomy: `list\|merge\|rename` (the taxonomy is no longer append-only) |
-| `memex status` | Inspect pipeline readiness (`Ontology: … classified, … parked, … pending`), `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
+| `memex status` | Inspect pipeline readiness (`Ontology: … classified, … parked, … pending`, `facts without local evidence: N / M`, `Derived lanes: skipped …`), `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
@@ -321,7 +321,7 @@ Three bundled Codex skills cover remembering conversations, analyzing all conver
 | **Interrupt** | append delta and preserve an interrupted/open fence |
 | **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
 | **PostCompact** | optional telemetry only; correctness never depends on it |
-| **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export |
+| **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export. A separate async entry on the same event publishes a cross-device sync generation when sync is on |
 
 The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.
 
@@ -346,6 +346,8 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 │   │   ├── export-status.json
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed workers
+├── sync/
+│   └── config.json                     # cross-device sync switch + shared folder (off by default)
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript journal
 ├── run-locks/
 ├── ui/
@@ -367,7 +369,8 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 | `XDG_CONFIG_HOME` | Fallback root: `$XDG_CONFIG_HOME/memex` |
 | `MEMEX_DB_PATH` | Overrides the index DB path independently of the data root |
 | `CODEX_HOME` | Codex home; `$CODEX_HOME/sessions` is the read-only rollout source |
-| `MEMEX_AUTO_ONTOLOGY` | Automatic ontology is on by default; `0` disables it |
+| `MEMEX_SYNC_DIR` | Cross-device shared folder; overrides the folder stored by `memex sync enable --dir` (default `<data root>/conversation-index/sync`) |
+| `MEMEX_AUTO_ONTOLOGY` | Automatic ontology is on unless this is set to something other than `1` (an empty value still counts as on) |
 | `MEMEX_STRICT_CAPTURE` | `1` makes a capture hook fail instead of recording a capture gap |
 | `MEMEX_CAPSULE_MAX_CHARS` | Bounded storage size for one Work Capsule generation (default `12000`, floor `2000`); an oversized patch is truncated by priority and recorded, never dropped |
 | `MEMEX_INJECT_BASELINE_MARGIN` | Relevance margin a fact must clear over the prompt's background baseline to be injected (default `0.045`, 0-1); measure first with the `baseline_margin_gap` telemetry metric |

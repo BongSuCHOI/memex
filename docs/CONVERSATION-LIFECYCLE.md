@@ -141,7 +141,7 @@ flowchart LR
     E --> B[Capsule or tail baton plus active carry]
 ```
 
-Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. 이 양보는 0.6.1(#43)부터 유한합니다: 같은 사유로 3회 연속 미뤄지면 그 다음 호출에서 derived lane을 한 번 통과시키고, 매 skip은 `derived_lane_skips`와 `continuity_telemetry`의 `derived_lane_skipped` 샘플에 기록되어 `memex status`의 `Derived lanes: skipped N times (reason: ...)` 줄로 드러납니다. 결정론적으로 실패하는 Capsule job이 checkpoint마다 재생성되면 예전에는 하위 레인이 무기한·무기록으로 굶을 수 있었습니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → **결정론적 stream id**(`(project_id, branch)`, 브랜치 신호가 없으면 project당 기본 stream 하나) → deterministic topic margin 순서로 bind하고, 어디에도 걸리지 않으면 그 결정론적 stream을 만듭니다(binding reason `workspace-branch` 또는 `project-default`). latest session은 fallback이 아닙니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 0.6.0에서 없어졌습니다 — 그 폴백이 한 프로젝트를 세션 수만큼의 workstream으로 쪼개 새 기억이 다음 세션에 주입되지 않던 원인이었습니다.
+Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. 이 양보는 0.6.1(#43)부터 유한합니다: 같은 사유의 3번째 연속 호출에서 derived lane을 한 번 통과시키고 연속 카운터를 0으로 되돌리며, 매 skip은 `derived_lane_skips`와 `continuity_telemetry`의 `derived_lane_skipped` 샘플에 기록되어 `memex status`의 `Derived lanes: skipped N times (reason: ...)` 줄로 드러납니다. 결정론적으로 실패하는 Capsule job이 checkpoint마다 재생성되면 예전에는 하위 레인이 무기한·무기록으로 굶을 수 있었습니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → **결정론적 stream id**(`(project_id, branch)`, 브랜치 신호가 없으면 project당 기본 stream 하나) → deterministic topic margin 순서로 bind하고, 어디에도 걸리지 않으면 그 결정론적 stream을 만듭니다(binding reason `workspace-branch` 또는 `project-default`). latest session은 fallback이 아닙니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 0.6.0에서 없어졌습니다 — 그 폴백이 한 프로젝트를 세션 수만큼의 workstream으로 쪼개 새 기억이 다음 세션에 주입되지 않던 원인이었습니다.
 
 Async SessionStart의 sync/import/version 상태 안내는 stderr로만 출력합니다. stdout은
 호스트가 모델 입력으로 전달할 수 있으므로 운영 로그를 쓰지 않습니다. 동기 Continuity와
@@ -214,12 +214,12 @@ exporter는 local DB에서 하나의 consistent snapshot을 읽고 generation te
 importer는 `CURRENT`가 가리키는 generation을 DB mutation 전에 pin합니다. 다음 중 하나라도 실패하면 그 device generation 전체를 reject합니다.
 
 - `meta.json` 누락/파싱 실패
-- protocol version != 4
+- protocol version ∉ {4, 5}
 - generation/device mismatch
 - payload file 누락
 - SHA-256/row count mismatch
 - JSON parse failure
-- v4 row schema failure
+- row schema failure (모르는 `promotion_state`와 불법 tier 조합 포함, 0.6.1 #37)
 - pinning 중 파일이 사라지거나 읽기 실패
 
 partial generation이나 malformed row를 일부만 적용하지 않습니다.
@@ -233,7 +233,10 @@ partial generation이나 malformed row를 일부만 적용하지 않습니다.
 `semantic_updated_at`이 더 최신인 의미가 승리합니다. 정확한 timestamp tie는 canonical semantic key로 결정합니다.
 Import plan은 embedding 전에 `replicated` MutationPolicy를 캡처하고 최종 transaction에서 local
 semantic/placement 상태를 확인합니다. Lifecycle 축은 별도 LWW를 유지합니다. Peer authority는 보존하되
-local entailment receipt로 승격하지 않으며 semantic replacement는 이전 local receipt를 지웁니다.
+local entailment receipt로 승격하지 않습니다. 0.6.1(#45)부터 remote semantic win은 이전 local receipt를
+**삭제하지 않고** `fact_evidence_receipts.authority = 'peer-authority'`로 강등합니다 — 영수증은 설계상
+export되지 않으므로 삭제하면 그 기기에서 증거 결속이 영구히 사라졌습니다. `hasLocalMeaningEvidence`는
+여전히 false이지만 `memex backfill receipts`가 다시 로컬로 승격할 수 있습니다.
 
 ### Lifecycle winner
 

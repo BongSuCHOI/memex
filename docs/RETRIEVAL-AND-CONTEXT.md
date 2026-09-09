@@ -241,6 +241,19 @@ score fallback으로 유지해 open-vocabulary recommendation을 verifier까지 
 
 KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.mjs`를 실행해 `fact_kr`를 만든 뒤 reembed worker가 `vec_facts_kr`를 생성합니다.
 
+0.6.1부터 분류에 반복 실패한 fact는 `facts.ontology_state = 'parked'`로 General/Misc에 보관됩니다
+(#41). Parked fact는 fact 검색·주입에서 그대로 후보이고, 달라지는 것은 ontology surface입니다 —
+`search_ontology`와 `/taxonomy`에서 General/Misc 아래에 나타나고, `memex status`는 이들을
+`classified`가 아니라 `parked`로 셉니다. 재시도는 분류 정책/embedding 세대당 정확히 한 번이므로,
+같은 세대에서 `memex backfill ontology`를 반복해도 같은 fact를 다시 부르지 않습니다.
+
+로컬 의미 검증 영수증(`fact_evidence_receipts`)이 없는 fact도 검색·주입에서는 정상 후보입니다.
+영향은 통합 쪽입니다: `hasLocalMeaningEvidence`가 `src/consolidator.ts`의 세 게이트를 막아 자동
+통합에서 제외됩니다(#45). sync는 반대 방향으로만 얽힙니다 — 충돌 판정 자체는 영수증을 읽지 않고,
+peer의 semantic win이 로컬 영수증을 `peer-authority`로 강등시켜 통합을 막습니다.
+`memex status`의 `facts without local evidence: N / M`이 그 수이고 `memex backfill receipts`가
+model 호출 없이 재구성합니다.
+
 ## 8. Hook output contract
 
 성공한 UserPromptSubmit hook은 Codex가 요구하는 `hookSpecificOutput.additionalContext` shape를 사용합니다. host version이 바뀌면 output shape와 실제 model turn consumption을 함께 재검증해야 합니다.
@@ -296,7 +309,7 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
-계획된 후속(0.6.0에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,
-추출 규칙의 durable 구조화 오버레이는 #30이며 둘 다 0.6.1 대상입니다. 현재는 내장 규칙만 동작합니다.
+계획된 후속(0.6.1에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,
+추출 규칙의 durable 구조화 오버레이는 #30이며 둘 다 0.6.2 대상입니다. 현재는 내장 규칙만 동작합니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

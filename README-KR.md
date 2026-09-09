@@ -89,7 +89,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | --- | --- |
 | `/` 개요 | 파이프라인 준비 상태, 최근 기억 변화, 활동 |
 | `/conversations` 대화 원장 | 세션, 대화 턴, 원문 |
-| `/facts` 기억·사실 | fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제 |
+| `/facts` 기억·사실 | fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제와 한 칸짜리 계층 승격/강등. 행마다 주입 계층 배지가 붙고, 프로젝트 범위가 가린 브랜치 계층 기억은 배너로 알립니다 |
 | `/taxonomy` 분류 | ontology domain과 category |
 | `/graph` 지식 지도 | WebGL 2D/3D 관계 그래프, Canvas2D fallback |
 | `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 — 각 탭에 [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 실패 클래스 표에서 파생한 "다음 행동" 안내 |
@@ -175,7 +175,7 @@ flowchart TB
 
 ### Fact 상태 모델
 
-sync protocol v4는 fact 상태를 서로 독립적인 축으로 나눕니다.
+sync protocol v5는 fact 상태를 서로 독립적인 축으로 나눕니다.
 
 | 축 | 예시 | 병합 규칙 |
 | --- | --- | --- |
@@ -272,9 +272,9 @@ memex status
 | `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`. `list --all`은 비활성 fact까지(`--limit`·`--offset`), `edit --source-exchange <id>`는 근거 지정 |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
-| `memex backfill` | extraction / ontology / embedding / 증거 영수증 backlog 처리 |
+| `memex backfill` | backlog를 명시적으로 실행: `all\|extract\|ontology\|embeddings\|receipts`. `--background` |
 | `memex ontology` | local taxonomy 조회·수리: `list\|merge\|rename` (더 이상 append-only가 아님) |
-| `memex status` | pipeline readiness(`Ontology: … classified, … parked, … pending`)와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
+| `memex status` | pipeline readiness(`Ontology: … classified, … parked, … pending`·`facts without local evidence: N / M`·`Derived lanes: skipped …`)와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex model-work` | 모델 작업 예산 확인과 명시적 재개; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
@@ -321,7 +321,7 @@ Bundled Codex skill 3개는 과거 대화 기억, 전체 대화 분석, Memex da
 | **Interrupt** | delta append와 interrupted/open fence 보존 |
 | **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
 | **PostCompact** | optional telemetry 전용; correctness 비의존 |
-| **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음 |
+| **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음. 같은 이벤트의 **별도 async 항목**이 동기화가 켜져 있을 때 크로스디바이스 세대를 내보냅니다 |
 
 Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
 
@@ -346,6 +346,8 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 │   │   ├── export-status.json
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
+├── sync/
+│   └── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
@@ -367,7 +369,8 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 | `XDG_CONFIG_HOME` | 대체 경로 `$XDG_CONFIG_HOME/memex` |
 | `MEMEX_DB_PATH` | data root와 별개로 index DB 경로를 지정 |
 | `CODEX_HOME` | Codex home. `$CODEX_HOME/sessions`가 read-only rollout 원본 |
-| `MEMEX_AUTO_ONTOLOGY` | 자동 ontology는 기본 활성화이며 `0`이면 끔 |
+| `MEMEX_SYNC_DIR` | 크로스디바이스 공유 폴더. `memex sync enable --dir`로 저장한 값보다 우선합니다 (기본 `<data root>/conversation-index/sync`) |
+| `MEMEX_AUTO_ONTOLOGY` | 자동 ontology는 기본 활성화. `1`(또는 빈 값)이 아닌 값을 넣으면 꺼집니다 |
 | `MEMEX_STRICT_CAPTURE` | `1`이면 capture gap 대신 hook이 실패 |
 | `MEMEX_CAPSULE_MAX_CHARS` | Work Capsule 한 세대의 bounded storage size (기본 `12000`, 하한 `2000`). 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | 주입 관련성 게이트가 요구하는 baseline 대비 마진 (기본 `0.045`, 0~1). 조정 전에 `baseline_margin_gap` 텔레메트리로 측정 |
