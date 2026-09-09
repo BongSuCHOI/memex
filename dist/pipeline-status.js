@@ -78,6 +78,7 @@ export function getPipelineStatus(opts = {}) {
             embeddings: { activeFacts: 0, factVectorsPending: 0 },
             ontology: { classifiedFacts: 0, pendingFacts: 0 },
             relations: 0,
+            attention: emptyAttention(),
             lifecycleLastEventAt,
             readiness: {
                 conversationReady: false,
@@ -330,6 +331,7 @@ export function getPipelineStatus(opts = {}) {
         }
         if (hasRelations)
             relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
+        const attention = readAttention(db);
         const archiveFiles = countArchiveFiles(getArchiveDir());
         const conversationReady = exchanges > 0;
         const factReady = conversationReady &&
@@ -351,6 +353,7 @@ export function getPipelineStatus(opts = {}) {
             embeddings,
             ontology,
             relations,
+            attention,
             lifecycleLastEventAt,
             readiness: { conversationReady, factReady, graphReady },
         };
@@ -359,6 +362,50 @@ export function getPipelineStatus(opts = {}) {
         if (ownsDb)
             db.close();
     }
+}
+/** Zero counters for a data root with no database yet. */
+export function emptyAttention() {
+    return {
+        total: 0,
+        memoryJobsDead: 0,
+        memoryJobsRetry: 0,
+        memoryJobsBackoff: 0,
+        terminal: {
+            checkpointsDeadLetter: 0,
+            checkpointsFailedVisible: 0,
+            extractionTargetsDead: 0,
+            extractionTargetItemsFailedVisible: 0,
+            capsuleCheckpointFailedVisible: 0,
+            extractionFailedRanges: 0,
+            captureGapsOpen: 0,
+            modelWorkBudgetsExhausted: 0,
+        },
+    };
+}
+/**
+ * Issue #39: all eight terminal states, counted. Seven of them had no operator
+ * surface at all before this — a stalled pipeline was indistinguishable from an
+ * idle one.
+ */
+function readAttention(db) {
+    const attention = emptyAttention();
+    const nowIso = new Date().toISOString();
+    const stateCount = (table, predicate, ...params) => tableExists(db, table) ? count(db, `SELECT COUNT(*) AS c FROM ${table} WHERE ${predicate}`, ...params) : 0;
+    attention.memoryJobsDead = stateCount("memory_jobs", "state = 'dead'");
+    attention.memoryJobsRetry = stateCount("memory_jobs", "state = 'retry'");
+    attention.memoryJobsBackoff = stateCount("memory_jobs", "state = 'retry' AND available_at > ?", nowIso);
+    attention.total = attention.memoryJobsDead + attention.memoryJobsRetry;
+    attention.terminal = {
+        checkpointsDeadLetter: stateCount("checkpoints", "state = 'dead-letter'"),
+        checkpointsFailedVisible: stateCount("checkpoints", "state = 'failed-visible'"),
+        extractionTargetsDead: stateCount("extraction_targets", "state = 'dead'"),
+        extractionTargetItemsFailedVisible: stateCount("extraction_target_items", "state = 'failed-visible'"),
+        capsuleCheckpointFailedVisible: stateCount("capsule_checkpoint_state", "state = 'failed-visible'"),
+        extractionFailedRanges: stateCount("extraction_failed_ranges", "state = 'failed-visible'"),
+        captureGapsOpen: stateCount("capture_gaps", "state = 'open'"),
+        modelWorkBudgetsExhausted: stateCount("model_work_budgets", "state = 'exhausted'"),
+    };
+    return attention;
 }
 /** Privacy-safe: reads only ts/event fields from logs/hook-events.jsonl. */
 function readHookEvents() {
@@ -422,6 +469,25 @@ export function formatPipelineStatus(s) {
     lines.push(`Embeddings: ${s.embeddings.factVectorsPending === 0 ? "READY" : "PENDING"} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`);
     lines.push(`Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`);
     lines.push(`Relations: ${s.relations}`);
+    // Issues #20/#39: the actionable count, then the terminal states behind it.
+    const a = s.attention;
+    lines.push(`Needs attention: ${a.total}` +
+        ` (${a.memoryJobsDead} dead, ${a.memoryJobsRetry} retry` +
+        (a.memoryJobsBackoff > 0 ? `, of which ${a.memoryJobsBackoff} in backoff` : "") +
+        ")");
+    if (a.total > 0) {
+        lines.push("  inspect: memex jobs list --state dead   recover: memex recover --all-dead   retire: memex jobs dismiss <id> --reason \"...\"");
+    }
+    const terminal = Object.entries(a.terminal).filter(([, count]) => count > 0);
+    if (terminal.length > 0) {
+        lines.push(`  terminal state: ${terminal.map(([name, count]) => `${name}=${count}`).join(", ")}`);
+        if (a.terminal.captureGapsOpen > 0) {
+            lines.push(`  capture gaps: ${a.terminal.captureGapsOpen} open — the next successful capture on that session closes them`);
+        }
+        if (a.terminal.modelWorkBudgetsExhausted > 0) {
+            lines.push("  exhausted model-work budgets: memex model-work status");
+        }
+    }
     for (const [ev, ts] of Object.entries(s.lifecycleLastEventAt)) {
         lines.push(`Lifecycle ${ev}: observed ${ts}`);
     }

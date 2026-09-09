@@ -326,12 +326,41 @@ memex status --json
 capture hook은 commit 후 detached worker를 깨웁니다. wake 실패·expired lease·retry 잔량은 다음 `SessionStart(startup|resume)`에서 복구되고, 수동으로는 다음으로 확인합니다.
 
 ```bash
-memex status --json                 # 단계별 pending/processing/retry/dead
+memex status --json                 # 단계별 pending/processing/retry/dead + 종료 상태 카운트
 node scripts/continuity-worker.js   # 즉시 drain (설치 artifact에서는 memex-continuity-worker)
 memex backfill all                  # extraction/ontology/embedding backlog
 ```
 
-`dead` job/target과 `failed-visible` range는 완료로 위장되지 않습니다. 원인을 고친 뒤 재실행하면 lease가 회수됩니다.
+worker 재실행이 회수하는 것은 **만료된 lease를 가진 비-terminal 행**뿐입니다.
+
+### 작업이 실패했을 때 (terminal 상태 복구)
+
+`dead` job/target, `dead-letter`/`failed-visible` checkpoint, `failed-visible` range는 완료로 위장되지 않지만, **재실행으로는 회복되지 않습니다.** worker를 몇 번 다시 돌려도 dead target이나 failed-visible range는 다시 선택되지 않습니다(`pending-extraction`이 dead target을 가진 세션을 제외하고, claim은 `pending/retry/running`만 봅니다). 회복은 명시적으로 실행합니다.
+
+```bash
+memex status                        # "Needs attention: N" + 종료 상태 내역
+memex jobs list --state dead        # 무엇이 왜 죽었는지 (last_error 포함)
+memex jobs show <job-id>            # checkpoint / target / 실패 range / retry_history
+memex recover <job-id> --dry-run    # 무엇을 되돌릴지 먼저 확인
+memex recover <job-id>              # 한 트랜잭션에서 6개 테이블을 함께 리셋
+memex recover --all-dead            # dead job/target 전부
+memex jobs retry <job-id|--all-dead> [--kind capsule_update]   # recover와 동일 동작
+memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시도하지 않고 정리
+```
+
+| 명령 | 하는 일 |
+| --- | --- |
+| `memex jobs list [--state dead\|retry\|running\|pending\|all] [--kind <kind>] [--limit n] [--json]` | 큐 상태 조회(읽기 전용). 만료된 lease를 `[lease expired]`로 표시 |
+| `memex jobs show <job-id> [--json]` | 한 job의 checkpoint·capsule state·target·실패 range·`retry_history` |
+| `memex jobs retry <job-id\|--all-dead> [--kind <kind>] [--dry-run]` | `memex recover`와 같은 복구 |
+| `memex jobs dismiss <job-id> --reason "..."` | job을 `superseded`로 정리. `last_error = 'user dismissed: <reason>'` + `logs/ui-audit.jsonl` 감사 1줄 |
+| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다 |
+
+`recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+
+복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
+
+`capture_gaps.state = 'open'`과 `model_work_budgets.state = 'exhausted'`는 `recover` 대상이 아닙니다. 전자는 다음 성공 캡처에서 자동 해소되고(둘 다 `memex status`에 카운트로 표시), 후자는 `memex model-work resume <budget-id> --new-run`으로 복구합니다.
 
 ### Journal/checkpoint 무결성과 capture gap
 

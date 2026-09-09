@@ -76,6 +76,8 @@ COMMANDS:
   migrate-projects  Re-derive project identity from cwd evidence (CX-02 migration)
   home        Print the resolved Memex data root (read-only)
   status      Show pipeline readiness per stage (read-only)
+  jobs        Inspect and recover memory jobs: list|show|retry|dismiss
+  recover     Reset terminal (dead) work back to claimable in one transaction
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|delete
@@ -367,6 +369,145 @@ async function main() {
               "Usage: memex facts <list|show|edit|deactivate|restore|history|delete> [--id <uuid>] ...",
             );
             process.exitCode = 1;
+          }
+        } finally {
+          db.close();
+        }
+        break;
+      }
+
+      // Issues #20/#39: dead work used to be a dead end. `jobs` inspects the
+      // queue; `jobs retry` and `recover` are the same one-transaction reset of
+      // every table that was made terminal together.
+      case "jobs":
+      case "recover": {
+        const json = args.includes("--json");
+        const dryRun = args.includes("--dry-run");
+        const allDead = args.includes("--all-dead");
+        const valueFlags = new Set(["--state", "--kind", "--limit", "--reason"]);
+        const optValue = (name) => {
+          const index = args.indexOf(name);
+          if (index < 0) return undefined;
+          const value = args[index + 1];
+          if (value === undefined || value.startsWith("--")) {
+            throw new Error(`missing value for ${name}`);
+          }
+          return value;
+        };
+        const positional = [];
+        for (let i = 0; i < args.length; i++) {
+          if (valueFlags.has(args[i])) i++;
+          else if (!args[i].startsWith("-")) positional.push(args[i]);
+        }
+        const sub = command === "recover" ? "recover" : positional[0];
+        const id = command === "recover" ? positional[0] : positional[1];
+        if (command === "jobs" && !["list", "show", "retry", "dismiss"].includes(sub ?? "")) {
+          console.error(
+            "Usage: memex jobs <list|show|retry|dismiss> [...] (see: memex jobs --help)",
+          );
+          process.exitCode = 1;
+          break;
+        }
+
+        const { getDbPath } = await import(join(distDir, "paths.js"));
+        const dbPath = getDbPath();
+        if (!fsSync(dbPath)) {
+          console.error(`No database at ${dbPath} — nothing to inspect or recover.`);
+          process.exitCode = 1;
+          break;
+        }
+        const recovery = await import(join(distDir, "job-recovery.js"));
+        const readOnly = sub === "list" || sub === "show";
+        let db;
+        if (readOnly) {
+          const { openReadDb } = await import(join(distDir, "db.js"));
+          db = openReadDb(dbPath);
+        } else {
+          const { initDatabase } = await import(join(distDir, "db.js"));
+          db = initDatabase();
+        }
+        try {
+          if (sub === "list") {
+            const state = optValue("--state") ?? "all";
+            const rows = recovery.listMemoryJobs(db, {
+              state,
+              kind: optValue("--kind"),
+              limit: Number.parseInt(optValue("--limit") ?? "50", 10),
+            });
+            if (json) {
+              console.log(JSON.stringify(rows, null, 2));
+            } else {
+              for (const row of rows) {
+                console.log(
+                  `${row.state.padEnd(10)} ${row.kind.padEnd(14)} ${row.jobId}  attempts=${row.attempts}/${row.maxAttempts}  ${row.partitionKey}` +
+                    (row.leaseExpired && row.state === "running" ? "  [lease expired]" : ""),
+                );
+                if (row.lastError) console.log(`    last_error: ${row.lastError.slice(0, 160)}`);
+              }
+              console.log(`(${rows.length} job${rows.length === 1 ? "" : "s"}${state === "all" ? "" : `, state=${state}`})`);
+            }
+            break;
+          }
+          if (sub === "show") {
+            if (!id) throw new Error("usage: memex jobs show <job-id> [--json]");
+            const detail = recovery.showMemoryJob(db, id);
+            if (!detail) throw new Error(`no memory job with id ${id}`);
+            console.log(JSON.stringify(detail, null, 2));
+            break;
+          }
+          if (sub === "dismiss") {
+            if (!id) throw new Error('usage: memex jobs dismiss <job-id> --reason "why"');
+            const reason = optValue("--reason");
+            if (!reason) throw new Error('memex jobs dismiss requires --reason "why"');
+            const result = recovery.dismissMemoryJob(db, { jobId: id, reason });
+            if (json) {
+              console.log(JSON.stringify(result, null, 2));
+            } else {
+              console.log(`Dismissed ${result.jobId} (${result.fromState} -> superseded)`);
+              console.log(`Reason recorded in last_error: user dismissed: ${result.reason}`);
+              for (const [table, count] of Object.entries(result.reset)) {
+                console.log(`  ${table}: ${count}`);
+              }
+              if (result.auditPath) console.log(`Audit: ${result.auditPath}`);
+              console.log("Nothing was deleted. Check the count: memex status");
+            }
+            break;
+          }
+          // retry / recover
+          if (!id && !allDead) {
+            throw new Error(
+              command === "recover"
+                ? "usage: memex recover <job-id|target-id|--all-dead> [--dry-run]"
+                : "usage: memex jobs retry <job-id|--all-dead> [--kind <kind>] [--dry-run]",
+            );
+          }
+          const result = recovery.recoverTerminalWork(db, {
+            jobId: id && !allDead ? id : undefined,
+            targetId: undefined,
+            allDead,
+            kind: optValue("--kind"),
+            dryRun,
+          });
+          if (!dryRun) recovery.recordRecoveryAudit(result, `${command} ${sub === "recover" ? "" : sub}`.trim());
+          if (json) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            const label = dryRun ? "[dry-run] would recover" : "Recovered";
+            console.log(`${label}: ${result.entries.length} unit(s)`);
+            for (const entry of result.entries) {
+              const tables = Object.entries(entry.reset)
+                .map(([table, count]) => `${table}=${count}`)
+                .join(" ");
+              console.log(
+                `  ${entry.kind} ${entry.jobId ?? entry.targetId} (${entry.fromState}) ${tables || "no rows"}`,
+              );
+            }
+            for (const note of result.notes) console.log(`  note: ${note}`);
+            if (!dryRun && result.entries.length > 0) {
+              console.log("Run the worker to drain the recovered work:");
+              console.log("  memex-continuity-worker    # or: node scripts/continuity-worker.js");
+              console.log("  memex backfill extract     # for fact extraction targets");
+            }
           }
         } finally {
           db.close();

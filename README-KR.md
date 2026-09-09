@@ -232,6 +232,8 @@ memex status
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
 | `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | pipeline readiness 확인 |
+| `memex jobs` | memory job 조회·복구: `list|show|retry|dismiss` |
+| `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
 

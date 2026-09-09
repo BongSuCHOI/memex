@@ -232,6 +232,8 @@ memex status
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
 | `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | Inspect pipeline readiness |
+| `memex jobs` | Inspect and recover memory jobs: `list|show|retry|dismiss` |
+| `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
 | `memex update` | Refresh the marketplace/plugin while preserving data |
 

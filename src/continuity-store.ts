@@ -215,7 +215,10 @@ export function ensureContinuitySchema(
         last_error TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #20: memex jobs retry clears last_error; the failure it
+        -- cleared is preserved here as a JSON array, never deleted.
+        retry_history TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -840,6 +843,10 @@ export function ensureContinuitySchema(
     }
     if (!capsuleColumns.has("original_chars")) {
       db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
+    }
+    // Issue #20: operator retry preserves the failure it clears.
+    if (!columnNames(db, "memory_jobs").has("retry_history")) {
+      db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
 

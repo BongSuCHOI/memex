@@ -48,6 +48,32 @@ export interface PipelineStatus {
         pendingFacts: number;
     };
     relations: number;
+    /**
+     * Terminal and retry state across the Continuity queue (issues #20, #39).
+     *
+     * `total` is the "needs a decision" count: dead jobs plus jobs waiting on a
+     * retry. `memex jobs retry|dismiss` and `memex recover` both reduce it. The
+     * `terminal` block is the rest of the eight terminal states that were
+     * previously invisible everywhere — `extraction_failed_ranges` was the only
+     * one status reported at all.
+     */
+    attention: {
+        total: number;
+        memoryJobsDead: number;
+        memoryJobsRetry: number;
+        /** Subset of `memoryJobsRetry` whose backoff has not elapsed. */
+        memoryJobsBackoff: number;
+        terminal: {
+            checkpointsDeadLetter: number;
+            checkpointsFailedVisible: number;
+            extractionTargetsDead: number;
+            extractionTargetItemsFailedVisible: number;
+            capsuleCheckpointFailedVisible: number;
+            extractionFailedRanges: number;
+            captureGapsOpen: number;
+            modelWorkBudgetsExhausted: number;
+        };
+    };
     lifecycleLastEventAt: Partial<Record<string, string>>;
     readiness: {
         conversationReady: boolean;
@@ -59,4 +85,6 @@ export declare function getPipelineStatus(opts?: {
     dbPath?: string;
     db?: Database.Database;
 }): PipelineStatus;
+/** Zero counters for a data root with no database yet. */
+export declare function emptyAttention(): PipelineStatus["attention"];
 export declare function formatPipelineStatus(s: PipelineStatus): string;
