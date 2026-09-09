@@ -387,7 +387,7 @@ function handleError(error: unknown): string {
 const server = new Server(
   {
     name: "memex",
-    version: "0.5.1",
+    version: "0.5.2",
   },
   {
     capabilities: {

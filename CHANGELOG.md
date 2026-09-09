@@ -2,6 +2,22 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.5.2 - 2026-09-10
+
+- Mark a deadline- or window-expired model budget `exhausted` in durable state
+  before refusing a claim. 0.5.1 refused the claim without the transition that
+  `reserveModelAttempt` used to perform, so `memex model-work resume --new-run`
+  rejected the budget as still active and foreground backfills deferred
+  forever. The exhaustion predicate and transition are now one shared helper
+  used by the pre-claim check, attempt reservation, explicit exhaustion and
+  automatic maintenance; `resume --new-run` also accepts an active budget whose
+  deadline or window has already passed. (#14)
+- Print the exact recovery command in the backfill worker's `DEFERRED
+  (budget_exhausted: …)` line and summary: `memex model-work resume
+  <budget-id> --new-run`.
+- Make the backfill claim test fixtures independent of the wall clock; the
+  0.5.1 fixtures pinned 2026-09-09 timestamps and began failing the next day.
+
 ## 0.5.1 - 2026-09-10
 
 - Resolve the model budget before claiming an extraction or capsule job. A
