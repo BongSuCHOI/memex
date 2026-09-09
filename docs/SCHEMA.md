@@ -121,11 +121,13 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 `memory_jobs.budget_id`와 `maintenance_wave_id`는 작업의 예산 귀속입니다. 기존 귀속을 환경 변수로
 덮어써서 상한을 우회할 수 없습니다. 예약은 `BEGIN IMMEDIATE` 안에서 처리하며 완료된 작업의
 새 run, 조건부 자동 재개와 명시적 수동 예산 갱신을 구분합니다.
-`model_work_budgets.automatic`은 additive local column이며 SessionStart가 채택한 유지보수
+`model_work_budgets.automatic`은 additive local column이며 시작·메시지 훅이 채택한 유지보수
 wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 데이터 루트 공통 rolling
 호출 수를 계산합니다. 새 run 생성·미완료 membership 이동은 같은 `BEGIN IMMEDIATE`에 묶고,
 자동 재개는 완료 기록·실패 횟수·미확인 호출 비용을 보존합니다.
-Ledger는 protocol v4에 export하지 않습니다.
+`model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
+원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
+이 상태와 ledger는 protocol v4에 export하지 않습니다.
 이 additive ledger를 모르는 이전 worker와 현재 worker를 같은 DB에서 혼용하면 예산 보장이 성립하지
 않습니다. 업그레이드 시 이전 worker를 종료하고 같은 코드 버전으로 재시작해야 합니다.
 

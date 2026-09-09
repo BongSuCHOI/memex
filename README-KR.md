@@ -220,14 +220,14 @@ Memex는 Codex의 전체 continuity lifecycle과 연결됩니다.
 | --- | --- |
 | **SessionStart(startup/resume)** | session state 복원과 durable queue recovery 후 background sync/import/maintenance |
 | **SessionStart(clear/compact)** | `context_epoch` 전환; compact는 bounded Capsule/current-fact bundle을 즉시 반환 |
-| **UserPromptSubmit** | scoped retrieval, relevance gate, deduplication, bounded context injection |
+| **UserPromptSubmit** | scoped retrieval·bounded context injection, 별도 비동기 유지보수 재개 검사 |
 | **Stop** | 새 complete transcript bytes만 append하고 closed-turn fence commit |
 | **Interrupt** | delta append와 interrupted/open fence 보존 |
 | **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
 | **PostCompact** | optional telemetry 전용; correctness 비의존 |
 | **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음 |
 
-자동 ontology는 기본 활성화이며 `MEMEX_AUTO_ONTOLOGY=0`으로 끕니다. 자동 유지보수는 대기 시간과 공통 호출 한도가 허용하는 다음 SessionStart에 미완료 작업을 재개합니다. 수동 `memex backfill ontology`, 기존 파생 데이터와 core embedding은 유지합니다. [유지보수 한도](docs/GUIDE.md#17-모델-작업-예산과-대기-진단)를 참고하세요.
+자동 ontology는 기본 활성화이며 `MEMEX_AUTO_ONTOLOGY=0`으로 끕니다. 자동 유지보수는 대기 시간과 공통 호출 한도가 허용하는 다음 SessionStart 또는 메시지 제출 때 미완료 작업을 재개합니다. 수동 `memex backfill ontology`, 기존 파생 데이터와 core embedding은 유지합니다. [유지보수 한도](docs/GUIDE.md#17-모델-작업-예산과-대기-진단)를 참고하세요.
 
 Capture hook은 bounded local I/O만 수행합니다. Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
 

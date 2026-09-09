@@ -27,6 +27,7 @@ const MAX_DEADLINE_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
+export const MAINTENANCE_WAKE_INTERVAL_MS = 60_000;
 
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
@@ -312,6 +313,11 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
         ON model_work_targets(job_id, state, updated_at);
       CREATE INDEX IF NOT EXISTS idx_model_work_budgets_state
         ON model_work_budgets(state, updated_at);
+
+      CREATE TABLE IF NOT EXISTS model_maintenance_wake (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        wake_after TEXT NOT NULL
+      );
     `);
 
     if (!columnNames(db, MODEL_BUDGET_TABLE).has("automatic")) {
@@ -1526,6 +1532,15 @@ export function automaticMaintenanceWindow(db: Database.Database, now = new Date
     maxAttempts, used, remaining: Math.max(0, maxAttempts - used),
     retryAt: oldest ? new Date(Date.parse(oldest.started_at) + AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString() : null,
   };
+}
+
+/** Coalesce prompt/startup wakeups before scanning queues; no model call. */
+export function claimMaintenanceWake(db: Database.Database, now = new Date()): boolean {
+  return db.prepare(`
+    INSERT INTO model_maintenance_wake(id, wake_after) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET wake_after = excluded.wake_after
+    WHERE model_maintenance_wake.wake_after <= ?
+  `).run(new Date(now.getTime() + MAINTENANCE_WAKE_INTERVAL_MS).toISOString(), now.toISOString()).changes === 1;
 }
 
 /**

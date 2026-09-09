@@ -437,6 +437,11 @@ Cooldown/window 제한, 완료 대상 제외, retry backoff·실패 횟수 보�
 격리 DB에서 검증합니다. `test/backfill-ontology-relation-worker.test.ts`는 실제 SQL의 이전
 미완료 작업 우선 선택을 확인합니다. 이 결과는 장기 실사용의 ontology 품질 비교가 아닙니다.
 
+`test/maintenance-prompt-wake.test.ts`는 plugin/fallback의 async 등록, 공유 wake 간격과
+실제 시작·메시지 프로세스 동시 실행을 검증합니다. 가짜 background worker를 완료시키지 않은
+상태에서 launcher가 종료되고 stdout이 비어 있는지 확인합니다. 실제 Codex UI의 응답 지연
+측정과는 구별합니다.
+
 ## 11. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:

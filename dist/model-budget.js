@@ -25,6 +25,7 @@ const MAX_DEADLINE_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
+export const MAINTENANCE_WAKE_INTERVAL_MS = 60_000;
 export class ModelBudgetError extends Error {
     code = "MEMEX_MODEL_BUDGET";
     budgetId;
@@ -185,6 +186,11 @@ export function ensureModelBudgetSchema(db) {
         ON model_work_targets(job_id, state, updated_at);
       CREATE INDEX IF NOT EXISTS idx_model_work_budgets_state
         ON model_work_budgets(state, updated_at);
+
+      CREATE TABLE IF NOT EXISTS model_maintenance_wake (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        wake_after TEXT NOT NULL
+      );
     `);
         if (!columnNames(db, MODEL_BUDGET_TABLE).has("automatic")) {
             db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
@@ -1121,6 +1127,14 @@ export function automaticMaintenanceWindow(db, now = new Date()) {
         maxAttempts, used, remaining: Math.max(0, maxAttempts - used),
         retryAt: oldest ? new Date(Date.parse(oldest.started_at) + AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString() : null,
     };
+}
+/** Coalesce prompt/startup wakeups before scanning queues; no model call. */
+export function claimMaintenanceWake(db, now = new Date()) {
+    return db.prepare(`
+    INSERT INTO model_maintenance_wake(id, wake_after) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET wake_after = excluded.wake_after
+    WHERE model_maintenance_wake.wake_after <= ?
+  `).run(new Date(now.getTime() + MAINTENANCE_WAKE_INTERVAL_MS).toISOString(), now.toISOString()).changes === 1;
 }
 /**
  * SessionStart continuation. Selection, rollover and target moves are one

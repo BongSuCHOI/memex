@@ -4,6 +4,10 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
 ## Unreleased
 
+- Check maintenance eligibility asynchronously on message submission as well as
+  session startup, coalescing wakeups across sessions once per minute without
+  resetting model budgets or waiting for workers.
+
 - Resume unfinished automatic maintenance on a later SessionStart after a one-hour
   cooldown and within a shared rolling 24-hour cap of 256 model attempts.
 - Preserve completed work, retry history and active claims across atomic budget

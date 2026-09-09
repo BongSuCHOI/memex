@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Codex SessionStart maintenance (non-blocking).
+ * Codex startup/prompt maintenance (asynchronous).
  *
- * Spawned from hooks.json after the background sync. Owns everything that
+ * Spawned independently from hooks.json. Owns everything that
  * must resume across sessions but must never block or emit context:
  *   1. Continuity capture index + Work Capsule queue (P0/P1)
  *   2. fact extraction (P2)
@@ -26,23 +26,28 @@ import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending
 import {
   getOrCreateAutomaticMaintenanceModelBudget,
   isAutomaticOntologyEnabled,
+  claimMaintenanceWake,
 } from '../dist/model-budget.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
+  let db;
   try {
     // 1. Offload LLM-based consolidation to a detached worker (non-blocking)
     // CX-01: privacy-safe event observation (event/ts/session/cwd only).
     try {
       const { recordHookEvent } = await import('../dist/observe-hook-event.js');
-      recordHookEvent('SessionStart', {
+      recordHookEvent(process.argv.includes('--prompt') ? 'UserPromptSubmit' : 'SessionStart', {
         sessionId: process.env.SESSION_ID || '',
         cwd: process.env.CWD || '',
       });
     } catch { /* observation is best-effort */ }
 
-    const db = initDatabase();
+    db = initDatabase();
+    // Shared across sessions and both entry points. A failed/crashed launch
+    // becomes eligible again after one minute; it never refunds model budget.
+    if (!claimMaintenanceWake(db)) return;
     // One named maintenance wave is shared by detached sibling workers. The
     // durable row survives restarts. Conditional rollover preserves its ledger
     // and is limited by a cooldown plus the shared rolling attempt cap.
@@ -90,7 +95,6 @@ async function main() {
     // SessionStart after P0/P1 has drained instead of competing for SQLite or
     // local model capacity in the same maintenance invocation.
     if (continuityPending) {
-      db.close();
       return;
     }
 
@@ -153,10 +157,11 @@ async function main() {
       if (pendingExtract && maintenanceBudget.state === 'active') spawnDetached('backfill-extract-worker.js');
     } catch { /* non-fatal */ }
 
-    db.close();
   } catch (error) {
     console.error('session-start-maintenance: Error:', error instanceof Error ? error.message : error);
-    process.exit(0); // never block session start
+    // Non-fatal: another start/prompt retries after the short wake interval.
+  } finally {
+    db?.close();
   }
 }
 

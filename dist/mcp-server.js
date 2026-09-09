@@ -7262,6 +7262,7 @@ var model_budget_exports = {};
 __export(model_budget_exports, {
   AUTOMATIC_MAINTENANCE_COOLDOWN_MS: () => AUTOMATIC_MAINTENANCE_COOLDOWN_MS,
   AUTOMATIC_MAINTENANCE_WINDOW_MS: () => AUTOMATIC_MAINTENANCE_WINDOW_MS,
+  MAINTENANCE_WAKE_INTERVAL_MS: () => MAINTENANCE_WAKE_INTERVAL_MS,
   MODEL_ATTEMPT_TABLE: () => MODEL_ATTEMPT_TABLE,
   MODEL_BUDGET_SCHEMA_VERSION: () => MODEL_BUDGET_SCHEMA_VERSION,
   MODEL_BUDGET_TABLE: () => MODEL_BUDGET_TABLE,
@@ -7275,6 +7276,7 @@ __export(model_budget_exports, {
   ModelBudgetOutputSchemaError: () => ModelBudgetOutputSchemaError,
   automaticMaintenanceWindow: () => automaticMaintenanceWindow,
   bindMemoryJobToBudget: () => bindMemoryJobToBudget,
+  claimMaintenanceWake: () => claimMaintenanceWake,
   deferMemoryJobForModelBudget: () => deferMemoryJobForModelBudget,
   ensureModelBudgetSchema: () => ensureModelBudgetSchema,
   exhaustModelBudget: () => exhaustModelBudget,
@@ -7398,6 +7400,11 @@ function ensureModelBudgetSchema(db) {
         ON model_work_targets(job_id, state, updated_at);
       CREATE INDEX IF NOT EXISTS idx_model_work_budgets_state
         ON model_work_budgets(state, updated_at);
+
+      CREATE TABLE IF NOT EXISTS model_maintenance_wake (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        wake_after TEXT NOT NULL
+      );
     `);
     if (!columnNames2(db, MODEL_BUDGET_TABLE).has("automatic")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
@@ -8257,6 +8264,13 @@ function automaticMaintenanceWindow(db, now = /* @__PURE__ */ new Date()) {
     retryAt: oldest ? new Date(Date.parse(oldest.started_at) + AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString() : null
   };
 }
+function claimMaintenanceWake(db, now = /* @__PURE__ */ new Date()) {
+  return db.prepare(`
+    INSERT INTO model_maintenance_wake(id, wake_after) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET wake_after = excluded.wake_after
+    WHERE model_maintenance_wake.wake_after <= ?
+  `).run(new Date(now.getTime() + MAINTENANCE_WAKE_INTERVAL_MS).toISOString(), now.toISOString()).changes === 1;
+}
 function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
   ensureModelBudgetSchema(db);
   const parentWaveId = input.parentWaveId?.trim() || "maintenance";
@@ -8788,7 +8802,7 @@ async function withResolvedModelWorkContext(requested, fn) {
     if (ownsDb) db.close();
   }
 }
-var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, modelWorkStorage;
+var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, modelWorkStorage;
 var init_model_budget = __esm({
   "src/model-budget.ts"() {
     "use strict";
@@ -8805,6 +8819,7 @@ var init_model_budget = __esm({
     AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 6e4;
     AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 6e4;
     DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
+    MAINTENANCE_WAKE_INTERVAL_MS = 6e4;
     ModelBudgetError = class extends Error {
       code = "MEMEX_MODEL_BUDGET";
       budgetId;

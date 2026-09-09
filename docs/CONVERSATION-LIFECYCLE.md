@@ -131,6 +131,12 @@ UserPromptSubmit의 JSON additionalContext는 계속 stdout으로 전달하며, 
 
 ### UserPromptSubmit
 
+Context injection과 별도로 `memex-hook-maintenance --prompt`를 async 실행합니다.
+같은 세션에서 유휴 후 메시지를 보내도 유지보수 재개 기회가 됩니다. 시작·메시지 이벤트는
+같은 데이터 루트에서 1분 단위로 묶으며, 모델 재개 cooldown·rolling cap·worker lock은 유지합니다.
+이 비동기 경로는 stdout으로 추가 context를 출력하거나 worker 완료를 기다리지 않습니다.
+
+
 prompt/session/project를 받아 stable project/workspace/workstream scope를 확정한 뒤 warm sidecar를 우선 사용하고 불가능하면 같은 retrieval core의 cold path로 fallback합니다. `project.memory_revision > session.memory_revision_seen`이면 semantic match보다 correction을 먼저 처리합니다. Bounded correction이 여러 boundary에 걸치면 실제 emitted revision만 residency에 누적하고 모든 관련 correction이 소진되기 전에는 revision을 seen 처리하지 않습니다. context를 반환하기 전에 `recall_events`에 durable `prepared` receipt를 기록하고, hook stdout emit 후 `emitted`로 전환합니다.
 
 receipt 저장이 실패하면 provenance 없는 context를 주입하지 않습니다.

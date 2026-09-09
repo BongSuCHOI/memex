@@ -16,6 +16,7 @@ export declare const MODEL_ATTEMPT_TABLE = "model_work_attempts";
 export declare const MODEL_TARGET_TABLE = "model_work_targets";
 export declare const AUTOMATIC_MAINTENANCE_WINDOW_MS: number;
 export declare const AUTOMATIC_MAINTENANCE_COOLDOWN_MS: number;
+export declare const MAINTENANCE_WAKE_INTERVAL_MS = 60000;
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
 export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled" | "window";
@@ -277,6 +278,8 @@ export declare function automaticMaintenanceWindow(db: Database.Database, now?: 
     remaining: number;
     retryAt: string | null;
 };
+/** Coalesce prompt/startup wakeups before scanning queues; no model call. */
+export declare function claimMaintenanceWake(db: Database.Database, now?: Date): boolean;
 /**
  * SessionStart continuation. Selection, rollover and target moves are one
  * write transaction; simultaneous sessions cannot mint independent budgets.
