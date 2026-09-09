@@ -1,3 +1,4 @@
+import {badgeHelp,helpFor} from './help.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -28,9 +29,22 @@ const paths={
  code:'M8 5L2 12l6 7 M16 5l6 7-6 7 M14 3l-4 18',external:'M14 3h7v7 M21 3L10 14 M10 3H3v18h18v-7',
 };
 export const icon=(name,cls='')=>`<svg class="icon ${esc(cls)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]||paths.info}"/></svg>`;
-export const label={ASSERTED:'기억 확정',RETIRED:'비활성화',RELATION_CREATED:'관계 생성',RELATION_REMOVED:'관계 제거',active:'활성',inactive:'비활성',running:'실행 중',pending:'대기',processing:'처리 중',processed:'처리 완료',completed:'완료',failed:'실패',dead:'실패 · 종료',retry:'재시도 대기',superseded:'새 버전으로 대체',reserved:'시도 예약',unknown:'상태 미확인',cancelled:'중단됨',cancelling:'중단 요청 중','timed-out':'시간 제한 종료','failed-visible':'실패 · 확인 필요',injected:'기억 제공',emitted:'컨텍스트 제공',prepared:'제공 준비',deduped:'중복 제공 생략','no-match':'관련 기억 없음',skipped:'정책상 생략',error:'오류',observed:'관측됨',partial:'부분 관측',NOT_PROVEN:'미수집',decision:'결정',preference:'선호',constraint:'제약',pattern:'패턴',knowledge:'지식',CREATED:'기억 생성',CHANGED:'기억 변경',DEACTIVATED:'비활성화',REACTIVATED:'다시 활성화',RESTORED:'복원',CONSOLIDATED:'통합',CONTRADICTED:'충돌 감지',INCIDENT:'문제 발생',VALIDATED:'검증',REVERTED:'되돌림',REVERT_REQUESTED:'되돌림 요청',LEGACY:'이전 버전 기록',SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충',fact_extract:'기억 추출',capture_index:'대화 인덱싱',capsule_update:'작업 맥락 갱신',ontology:'온톨로지 분류',extract:'기억 추출',user:'사용자',extractor:'추출기',consolidator:'통합기',sync:'기기 동기화',project:'프로젝트',global:'공통 기억',workspace:'워크스페이스',workstream:'작업 흐름','legacy-project':'이전 방식 배치','project-current':'프로젝트 현행','no-inject':'제공 없음'};
+export const label={ASSERTED:'기억 확정',RETIRED:'비활성화',RELATION_CREATED:'관계 생성',RELATION_REMOVED:'관계 제거',active:'활성',inactive:'비활성',running:'실행 중',pending:'대기',processing:'처리 중',processed:'처리 완료',completed:'완료',failed:'실패',dead:'실패 · 종료',retry:'재시도 대기',superseded:'새 버전으로 대체',reserved:'시도 예약',unknown:'상태 미확인',cancelled:'중단됨',cancelling:'중단 요청 중','timed-out':'시간 제한 종료','failed-visible':'실패 · 확인 필요',injected:'기억 제공',emitted:'컨텍스트 제공',prepared:'제공 준비',deduped:'중복 제공 생략','no-match':'관련 기억 없음',skipped:'정책상 생략',error:'오류',observed:'관측됨',partial:'부분 관측',NOT_PROVEN:'미수집',decision:'결정',preference:'선호',constraint:'제약',pattern:'패턴',knowledge:'지식',CREATED:'기억 생성',CHANGED:'기억 변경',DEACTIVATED:'비활성화',REACTIVATED:'다시 활성화',RESTORED:'복원',PROMOTED:'계층 승격',DEMOTED:'계층 강등',CONSOLIDATED:'통합',CONTRADICTED:'충돌 감지',INCIDENT:'문제 발생',VALIDATED:'검증',REVERTED:'되돌림',REVERT_REQUESTED:'되돌림 요청',LEGACY:'이전 버전 기록',SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충',fact_extract:'기억 추출',capture_index:'대화 인덱싱',capsule_update:'작업 맥락 갱신',ontology:'온톨로지 분류',extract:'기억 추출',user:'사용자',extractor:'추출기',consolidator:'통합기',sync:'기기 동기화',project:'프로젝트',global:'공통 기억',workspace:'워크스페이스',workstream:'작업 흐름','legacy-project':'이전 방식 배치','project-current':'프로젝트 현행','no-inject':'제공 없음'};
 export const name=v=>label[v]||v||'미수집';
-export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');return `<span class="tag ${esc(color)}">${esc(name(v))}</span>`;}
+// 계층은 src/fact-management.ts factTierOf()와 같은 순서로 읽는다: scope_type이 먼저, 그다음 promotion_state.
+export function tierOf(f){if(!f)return null;if(f.scope_type==='global')return 'global';const state=f.promotion_state||'legacy-project';return state==='workstream'||state==='workspace'?state:'project';}
+// 브랜치 이름은 facts.tier_reason('branch:<name>')이 우선이고, 없으면 작업 흐름의 branch_hint를 쓴다. 추정하지 않는다.
+export function tierBranch(f){const reason=String(f?.tier_reason||'');if(reason.startsWith('branch:'))return reason.slice(7)||null;return f?.workstream_branch||null;}
+export function tierLabel(f){const tier=tierOf(f),branch=tierBranch(f);if(tier==='global')return '글로벌 공용';if(tier==='workstream')return branch?`브랜치: ${branch}`:'브랜치';if(tier==='workspace')return '워크스페이스';return '프로젝트 공용';}
+export function tierExplain(f,project){const tier=tierOf(f),branch=tierBranch(f);
+ if(tier==='global')return '모든 프로젝트의 세션에 주입 후보로 올라갑니다.';
+ if(tier==='workstream')return branch?`브랜치 ${branch} 세션에만 주입됩니다.`:'이 기억을 만든 작업 흐름의 세션에만 주입됩니다.';
+ if(tier==='workspace')return '이 체크아웃(워크스페이스)의 세션에만 주입됩니다.';
+ return `프로젝트 ${project||'전체'}의 모든 세션에 주입됩니다.`;}
+export const tierBadge=(f,project)=>`<span class="tag outline" data-tier="${esc(tierOf(f))}" title="${esc(tierExplain(f,project))}">${esc(tierLabel(f))}</span>`;
+export const tierHiddenTotal=hidden=>hidden?Number(hidden.workstream||0)+Number(hidden.workspace||0):0;
+export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
+const tip=badgeHelp(v);return `<span class="tag ${esc(color)}"${tip?` title="${esc(tip)}"`:''}>${esc(name(v))}</span>`;}
 export const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('ko-KR');
 export const short=id=>id?String(id).slice(0,8):'—';
 export const basename=p=>p?p.split('/').filter(Boolean).pop()||'/':'공통 기억';
@@ -39,7 +53,12 @@ export function date(value,mode='full'){const d=parseDate(value);if(!d)return '�
 export function relative(value){const d=parseDate(value);if(!d)return '미수집';const delta=(Date.now()-d)/1000;if(delta<0)return date(value);if(delta<60)return '방금 전';if(delta<3600)return `${Math.floor(delta/60)}분 전`;if(delta<86400)return `${Math.floor(delta/3600)}시간 전`;if(delta<86400*7)return `${Math.floor(delta/86400)}일 전`;return date(value,'day');}
 export const duration=ms=>ms===null||ms===undefined?'미수집':ms<1000?`${number(ms)} ms`:ms<60000?`${(ms/1000).toFixed(1)} s`:`${Math.floor(ms/60000)}분 ${Math.round(ms%60000/1000)}초`;
 export const bytes=b=>b===null||b===undefined?'미수집':b<1024?`${b} B`:b<1024**2?`${(b/1024).toFixed(1)} KB`:`${(b/1024**2).toFixed(1)} MB`;
-export function header(title,subtitle,actions='',eyebrow='WORKSPACE'){return `<div class="page-header"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div><div class="page-actions">${actions}</div></div>`;}
+/** 표 머리글의 한 줄 툴팁(#28). 설명이 없는 열은 그대로 둔다. */
+export function th(label,key){const entry=helpFor('header:'+key);return entry?`<span title="${esc(entry.body)}">${esc(label)}</span>`:esc(label);}
+export function header(title,subtitle,actions='',eyebrow='WORKSPACE',help=null){
+ const entry=help?helpFor('page:'+help):null;
+ const button=entry?`<button class="icon-btn help-toggle" data-help="page:${esc(help)}" aria-label="${esc(entry.title)} 도움말" title="${esc(entry.title)} 도움말">${icon('info')}</button>`:'';
+ return `<div class="page-header"><div><div class="eyebrow">${esc(eyebrow)}</div><div class="row"><h1>${esc(title)}</h1>${button}</div><p>${esc(subtitle)}</p></div><div class="page-actions">${actions}</div></div>`;}
 export const btn=(title,ico,attrs='',cls='')=>`<button class="btn ${esc(cls)}" ${attrs}>${ico?icon(ico):''}${esc(title)}</button>`;
 export const linkBtn=(title,ico,href,cls='')=>`<a class="btn ${esc(cls)}" href="${esc(href)}" data-nav>${ico?icon(ico):''}${esc(title)}</a>`;
 export const empty=(title,description,action='',ico='memory')=>`<div class="empty"><div class="empty-icon">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;

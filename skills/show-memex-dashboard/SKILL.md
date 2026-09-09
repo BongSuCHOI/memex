@@ -29,17 +29,23 @@ the request:
 | --- | --- | --- |
 | 개요 | `/` | 범위 요약, 파이프라인 상태, 최근 기억 변화 |
 | 대화 원장 | `/conversations` | 세션·턴 원문과 추출 근거 |
-| 기억 | `/facts` | 기억 검색, 상세 패널에서 수정·비활성화·복원·삭제. 목록 행과 상세에 승격 상태가 한국어 이름으로 표시됩니다(`작업 흐름`·`워크스페이스` = 브랜치 계층, `프로젝트 현행` = 프로젝트 공용, 범위가 `공통 기억`이면 글로벌). `이전 방식 배치`(legacy-project)는 표시하지 않습니다. 계층 이동 버튼은 없습니다 — `memex facts promote\|demote`가 유일한 경로입니다 |
+| 기억·사실 | `/facts` | 기억 검색, 상세 패널에서 수정·비활성화·복원·삭제·계층 승격/강등. 목록 행과 상세에 **주입 계층** 배지(`글로벌 공용` / `프로젝트 공용` / `브랜치: <name>` / `워크스페이스`)와 그 계층의 주입 조건 툴팁이 붙습니다. 프로젝트 범위에서 브랜치·워크스페이스 계층 기억이 가려져 있으면 배너가 알려 주고, `?tiers=all`로 포함해서 볼 수 있습니다 |
 | 분류 | `/taxonomy` | 온톨로지 도메인과 주제 분류 |
 | 지식 지도 | `/graph` | 기억 관계 지도 (2D Map / 3D Galaxy) |
 | 활동 · 추적 | `/activity` | 처리 작업, 모델 시도, 변경 이력, 로그 |
-| 관리 | `/settings` | 런타임, 관리 작업, 화면 설정, 진단 |
+| 관리 | `/settings` | 런타임, 관리 작업, 다기기 동기화(기본 꺼짐), 화면 설정, 진단 |
 
-Scope is a query parameter on every route: no parameter means common (global)
-memory, `?scope=all` reads every project plus common memory, and
-`?scope=project&project=<encoded-canonical-absolute-cwd>` reads one project.
-Conversations, activity and interpretive-context rows are not visible from the
-global-only scope, so use `?scope=all` or a project scope for those.
+Scope is a query parameter on every route: `?scope=all` reads every project plus
+common memory, `?scope=global` reads common memory only, and
+`?scope=project&project=<encoded-canonical-absolute-cwd>` reads one project. With
+no parameter the browser falls back to the last scope it stored and otherwise to
+`all` (the JSON API alone still defaults to `global`). Conversations, activity and
+interpretive-context rows are not visible from the global-only scope, so use
+`?scope=all` or a project scope for those. The selector is labelled
+`전체 프로젝트 (조회)` because that scope is read-only breadth: injection always
+uses the current project plus common memory.
+
+`/facts?fact=<id>` and `/facts/<id>` both open the memory detail drawer.
 
 Report the URL and exact process started or reused. Do not install dependencies,
 register hooks/plugins, change facts, or expose the server beyond loopback merely

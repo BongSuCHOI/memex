@@ -32,6 +32,15 @@ const MALICIOUS =
   "<img src=x onerror=globalThis.__memexInjected=true> 한글 사실은 안전하게 표시됩니다";
 const EDITED =
   "The Memex Workspace mutation path uses an initialized vec0 connection.";
+// #22 branch-tier seed: a project memory the default project predicate hides.
+const TIER_WORKSTREAM_ID = "stream-web-ui";
+const TIER_BRANCH = "feature/tier-ladder";
+const TIER_AT = "2026-08-01T00:00:00.000Z";
+const BRANCH_FACT =
+  "브랜치 계층 기억은 그 브랜치 세션에만 주입된다.";
+// #23 failure-class seed.
+const DEAD_JOB_ID = "e2e-dead-capsule-job";
+const DEAD_JOB_ERROR = "capsule patch exceeds bounded storage size";
 
 class Cdp {
   constructor(url) {
@@ -1178,6 +1187,9 @@ try {
   const { insertFact, insertFactContextDependencies } = await import(
     path.join(ROOT, "dist", "fact-db.js")
   );
+  const { resolveProjectWorkspace } = await import(
+    path.join(ROOT, "dist", "continuity-identity.js")
+  );
   const db = initDatabase();
   const contextExchangeId = "web-ui-context-exchange";
   db.prepare(`
@@ -1224,6 +1236,45 @@ try {
     CATEGORY_ID,
     factId,
   );
+  // #22: one project memory parked on the branch tier. It is invisible to the project
+  // screen's default predicate, which is exactly what the hiddenByTier banner, the
+  // tiers=all toggle and a real promoteFact() call have to prove.
+  // Identity comes from the core, not from invented rows: resolveProjectWorkspace keys the
+  // workspace on this device, so a hand-written row would let a later core call mint a second
+  // project for the same path and make every project-scoped read AMBIGUOUS_PROJECT.
+  const identity = resolveProjectWorkspace(db, {
+    cwd: CONTEXT_PROJECT,
+    locationKind: "directory",
+    branch: TIER_BRANCH,
+    gitCommonDir: null,
+    remoteFingerprint: null,
+  });
+  db.prepare(
+    "INSERT INTO minimal_workstreams (workstream_id, project, session_id, branch_hint, binding_reason, created_at, updated_at, project_id, workspace_id, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+  ).run(TIER_WORKSTREAM_ID, CONTEXT_PROJECT, "web-ui-tier-session", TIER_BRANCH, "session-local", TIER_AT, TIER_AT, identity.projectId, identity.workspaceId, "active");
+  const branchFactId = insertFact(db, {
+    fact: BRANCH_FACT,
+    category: "decision",
+    scope_type: "project",
+    scope_project: CONTEXT_PROJECT,
+    source_exchange_ids: [],
+    embedding: new Array(384).fill(0.2),
+    embedding_version: 1,
+    project_id: identity.projectId,
+    workspace_id: identity.workspaceId,
+    workstream_id: TIER_WORKSTREAM_ID,
+    promotion_state: "workstream",
+    promotion_evidence: "experimental",
+    tier_reason: "branch:" + TIER_BRANCH,
+  });
+  // Kept older than the hostile fact so every existing "first row" assertion still
+  // reads the row it was written for.
+  db.prepare("UPDATE facts SET created_at = ?, updated_at = ? WHERE id = ?").run(TIER_AT, TIER_AT, branchFactId);
+  // #23: one dead capsule job. Its stored error is the class the catalogue must call
+  // harmless-to-memory, and it is what `memex recover --all-dead` has to clear.
+  db.prepare(
+    "INSERT INTO memory_jobs (job_id, kind, partition_key, policy_version, priority, state, available_at, attempts, max_attempts, last_error, idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(DEAD_JOB_ID, "capsule_update", "session:web-ui-tier-session", "capsule-v1", 100, "dead", TIER_AT, 5, 5, DEAD_JOB_ERROR, "e2e-dead-job", TIER_AT, TIER_AT);
   db.close();
 
   const port = await freePort();
@@ -1238,6 +1289,104 @@ try {
   const allScope = "?scope=all";
   const projectScope =
     "?scope=project&project=" + encodeURIComponent(CONTEXT_PROJECT);
+
+  // #24: with no scope in the URL the workspace must land on 전체 프로젝트 (조회), not
+  // common memory. This probe runs before anything that calls changeScope(), because
+  // the browser profile is shared and a persisted scope would mask the default.
+  const scopeDefaults = await pageProbe(
+    cdp,
+    base + "/facts",
+    probe(`
+      await until('facts row',()=>document.querySelector('#main .data-table .fact-text'));
+      const select=document.querySelector('#scope-select');
+      const hint=document.querySelector('#scope-hint');
+      return {
+        urlScope:new URL(location.href).searchParams.get('scope'),
+        selected:select.value,
+        options:[...select.options].map(o=>o.textContent.trim()),
+        groups:[...select.querySelectorAll('optgroup')].map(g=>g.label),
+        navLabels:[...document.querySelectorAll('#sidebar nav .nav-item .nav-label')].map(x=>x.textContent),
+        heading:text('#main .page-header h1'),
+        title:document.title,
+        hint:hint?.textContent?.trim()||'',
+        hintTitle:hint?.getAttribute('title')||'',
+        scopeLine:text('#topbar .scope-line'),
+      };
+    `),
+    "facts-default-scope.png",
+    false,
+  );
+
+  // #26: /facts?fact=<id> opens the same drawer as the /facts/<id> path form.
+  const factDeepLink = await pageProbe(
+    cdp,
+    base + "/facts?scope=all&fact=" + encodeURIComponent(factId),
+    probe(`
+      await until('deep-linked drawer',()=>document.querySelector('#detail[open] .drawer-meta'));
+      const params=new URL(location.href).searchParams;
+      return {
+        factId:text('#detail .drawer-meta'),
+        panel:params.get('panel'),
+        item:params.get('item'),
+        leftoverFactParam:params.get('fact'),
+      };
+    `),
+    "facts-deep-link.png",
+    false,
+  );
+
+  // #24: common memory has no conversations, so the banner must switch scope in one click.
+  const scopeSwitch = await pageProbe(
+    cdp,
+    base + "/conversations?scope=global",
+    probe(`
+      const button=await until('scope switch',()=>document.querySelector('#main [data-action="scope-all"]'));
+      const bannerText=text('#main .banner');
+      button.click();
+      await until('scope switched',()=>new URL(location.href).searchParams.get('scope')==='all');
+      // The gate fixture stores one session-less exchange, so the ledger legitimately
+      // renders its empty state here; what must change is the scope, not the row count.
+      await until('ledger rendered',()=>document.querySelector('#main .session-card')||document.querySelector('#main .empty'));
+      return {
+        bannerText,
+        scope:new URL(location.href).searchParams.get('scope'),
+        selected:document.querySelector('#scope-select').value,
+        bannerCleared:!document.querySelector('#main [data-action="scope-all"]'),
+      };
+    `),
+    "conversations-scope-switch.png",
+    false,
+  );
+
+  // #28: the help layer must be reachable without documentation — page ⓘ, the doc link
+  // pinned to the release tag, native tooltips, and the ? glossary.
+  const helpLayer = await pageProbe(
+    cdp,
+    base + "/facts" + allScope,
+    probe(`
+      const toggle=await until('page help',()=>document.querySelector('#main [data-help="page:/facts"]'));
+      const badgeTitle=document.querySelector('#main .data-table .tag')?.getAttribute('title')||'';
+      const headerTitle=document.querySelector('#main .data-table th span[title]')?.getAttribute('title')||'';
+      const scopeTitle=document.querySelector('#scope-select')?.getAttribute('title')||'';
+      toggle.click();
+      const panel=await until('help modal',()=>document.querySelector('#modal[open] .modal-body'));
+      const helpText=panel.textContent;
+      const docHref=panel.querySelector('a[href^="https://github.com/"]')?.getAttribute('href')||'';
+      document.querySelector('#modal [data-action="close-modal"]').click();
+      await until('help closed',()=>!document.querySelector('#modal').open);
+      document.dispatchEvent(new KeyboardEvent('keydown',{key:'?',bubbles:true}));
+      const list=await until('glossary',()=>document.querySelector('#modal[open] #glossary-list'));
+      const terms=[...list.querySelectorAll('[data-term]')].length;
+      const input=document.querySelector('#glossary-input');
+      input.value='capsule';
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      await sleep(150);
+      const visible=[...list.querySelectorAll('[data-term]')].filter(x=>!x.hidden).map(x=>x.querySelector('strong').textContent);
+      return {helpText:helpText.slice(0,260),docHref,terms,visible,badgeTitle,headerTitle,scopeTitle,sidebarGlossary:Boolean(document.querySelector('#sidebar [data-action="glossary"]'))};
+    `),
+    "facts-help.png",
+    false,
+  );
 
   const facts = await pageProbe(
     cdp,
@@ -1256,7 +1405,7 @@ try {
         rowCount:document.querySelectorAll('#main .data-table tbody tr').length,
         wordBreak:getComputedStyle(cell).overflowWrap,
         pageOverflowX:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
-        navItems:[...document.querySelectorAll('#sidebar .nav-item .nav-label')].map(x=>x.textContent),
+        navItems:[...document.querySelectorAll('#sidebar nav .nav-item .nav-label')].map(x=>x.textContent),
         scopeSelected:document.querySelector('#scope-select')?.value,
       };
     `),
@@ -1409,7 +1558,7 @@ try {
         const badges=[...document.querySelectorAll('#detail .drawer-body .tag')].map(x=>x.textContent);
         return badges.includes('비활성')?badges:null;
       },30000);
-      const listEmpty=document.querySelector('#main .empty h3')?.textContent||'';
+      const listWhileInactive=[...document.querySelectorAll('#main .data-table .fact-text')].map(x=>x.textContent);
       (await drawerButton('restore')).click();
       await submit('restore');
       const active=await until('active fact',()=>{
@@ -1423,11 +1572,78 @@ try {
         rowText:row.textContent,
         inactiveBadges:inactive,
         activeBadges:active,
-        listEmptyWhileInactive:listEmpty,
+        listWhileInactive,
         toast:text('#toast'),
       };
     `),
     "facts-mutations.png",
+    false,
+  );
+
+  // #23: the jobs tab must say what the stored error means and what to do about it.
+  const jobGuidance = await pageProbe(
+    cdp,
+    base + "/activity" + allScope + "&tab=jobs",
+    probe(`
+      const row=await until('dead job row',()=>[...document.querySelectorAll('#main .data-table tbody tr')].find(r=>r.textContent.includes(${JSON.stringify(DEAD_JOB_ERROR)})));
+      const cells=[...row.querySelectorAll('td')];
+      const guidance=cells[cells.length-2];
+      return {
+        heads:[...document.querySelectorAll('#main .data-table thead th')].map(x=>x.textContent.trim()),
+        guidanceText:guidance.textContent,
+        ignorable:guidance.querySelector('.tag')?.textContent.trim(),
+        copyCommands:[...guidance.querySelectorAll('[data-copy-command]')].map(x=>x.dataset.copyCommand),
+        operationButtons:[...guidance.querySelectorAll('[data-command]')].map(x=>x.dataset.command),
+      };
+    `),
+    "activity-job-guidance.png",
+    false,
+  );
+
+  // #23: the overview groups by class and the action clears the group.
+  const attention = await pageProbe(
+    cdp,
+    base + "/" + allScope,
+    probe(`
+      const card=await until('attention card',()=>[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태')));
+      const before=card.textContent;
+      const recover=await until('recover action',()=>card.querySelector('[data-command="recover"]:not([disabled])'));
+      recover.click();
+      const form=await until('command modal',()=>document.querySelector('#modal[open] #modal-form'));
+      const modalText=form.textContent;
+      form.querySelector('input[name="confirm"]').checked=true;
+      form.requestSubmit();
+      await until('operation drawer',()=>{
+        const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+        if(error)throw new Error('recover rejected: '+error);
+        return document.querySelector('#detail[open] #operation-body');
+      },60000);
+      // The command's own label contains 실패, so completion is read from the status row,
+      // not from the drawer text; the cancel button only exists while it is still running.
+      const finished=await until('operation finished',()=>{
+        const body=document.querySelector('#detail[open] #operation-body');
+        if(!body||body.querySelector('[data-action="cancel-operation"]'))return null;
+        const term=[...body.querySelectorAll('.kv dt')].find(d=>d.textContent.trim()==='상태');
+        return term?.nextElementSibling?.textContent?.trim()||null;
+      },180000);
+      const output=(document.querySelector('#operation-output')?.textContent||'').slice(-600);
+      document.querySelector('#detail [data-action="close-detail"]').click();
+      await until('drawer closed',()=>!document.querySelector('#detail').open);
+      const staleMetrics=document.querySelector('#main .metrics');
+      document.querySelector('[data-action="refresh"]').click();
+      await until('overview reloaded',()=>{const now=document.querySelector('#main .metrics');return now&&now!==staleMetrics?now:null;},60000);
+      await sleep(400);
+      const after=[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태'))?.textContent||'';
+      return {
+        beforeHasDeadClass:before.includes('실패로 종료된 작업'),
+        beforeHasImpact:before.includes('기억으로 추출되지 않습니다'),
+        modalCommand:modalText.includes('memex recover --all-dead'),
+        output,
+        finishedState:finished,
+        afterHasDeadClass:after.includes('실패로 종료된 작업'),
+      };
+    `),
+    "overview-attention.png",
     false,
   );
 
@@ -1522,7 +1738,7 @@ try {
       const empty=await until('graph empty state',()=>{
         const el=document.querySelector('#graph-stage .empty');
         return el&&el.textContent.includes('표시할 기억이 없습니다')?el:null;
-      });
+      },20000).catch(e=>{throw new Error(e.message+' | main='+(document.querySelector('#main')?.innerText||'').slice(0,500).replace(/\\s+/g,' ')+' | nodes='+document.querySelectorAll('#node-list [data-fact]').length+' | meta='+text('#graph-stage .graph-meta'));});
       const canvas=document.querySelector('#graph-stage .graph-canvas');
       const surface=mapSurface(canvas);
       return {
@@ -1545,13 +1761,209 @@ try {
     true,
   );
 
+  // #48: the sync tab drives the real dist/sync-control.js. The shared folder lives inside this
+  // run's temp root, so nothing reaches a real data root.
+  const SHARED_SYNC = path.join(TEMP, "shared-sync");
+  const syncTab = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=sync",
+    probe(`
+      const submit=async(label)=>{
+        const form=await until(label+' modal',()=>document.querySelector('#modal[open] #modal-form'));
+        form.requestSubmit();
+        await until(label+' committed',()=>{
+          const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+          if(error)throw new Error(label+' rejected: '+error);
+          return !document.querySelector('#modal[open]');
+        },120000);
+      };
+      const tabText=()=>document.querySelector('#main')?.textContent||'';
+      await until('sync tab',()=>tabText().includes('다기기 동기화'));
+      const offSwitch=document.querySelector('#sync-switch');
+      const before={
+        checked:offSwitch.checked,
+        exportDisabled:document.querySelector('[data-sync="export"]').disabled,
+        importDisabled:document.querySelector('[data-sync="import"]').disabled,
+        footnote:document.querySelector('#main .footer-note')?.textContent||'',
+      };
+      offSwitch.click();
+      const enable=await until('enable modal',()=>document.querySelector('#modal[open] input[name="dir"]'));
+      enable.value=${JSON.stringify(SHARED_SYNC)};
+      await submit('enable');
+      await until('sync on',()=>document.querySelector('#sync-switch')?.checked===true,60000);
+      const on={
+        folder:tabText().includes(${JSON.stringify(SHARED_SYNC)}),
+        exportDisabled:document.querySelector('[data-sync="export"]').disabled,
+      };
+      document.querySelector('[data-sync="export"]').click();
+      (await until('export confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
+      await submit('export');
+      await until('export result',()=>tabText().includes('마지막 내보내기'),120000);
+      const exported=tabText();
+      document.querySelector('[data-sync="import"]').click();
+      (await until('import confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
+      await submit('import');
+      await until('import result',()=>tabText().includes('마지막 가져오기'),120000);
+      const imported=document.querySelector('#main').textContent;
+      return {
+        before,
+        on,
+        deviceAssigned:!/아직 없음 · 첫 내보내기에서 부여됩니다/.test(imported),
+        exportedHasCounts:/내보낸 행 수/.test(exported),
+        importSummary:(imported.match(/기억 \\+\\d+ \\/ ~\\d+ \\/ -\\d+/)||[''])[0],
+        rejected:imported.includes('거부된 세대가 없습니다'),
+      };
+    `),
+    "settings-sync.png",
+    false,
+  );
+
+  // #22: the project screen must admit the branch-tier memory exists and be able to include it.
+  const tierBanner = await pageProbe(
+    cdp,
+    base + "/facts" + projectScope,
+    probe(`
+      const node=await until('tier banner',()=>[...document.querySelectorAll('#main .banner')].find(b=>b.textContent.includes('브랜치/작업 흐름 범위 기억')));
+      const bannerText=node.textContent;
+      const before=document.querySelectorAll('#main .data-table tbody tr').length;
+      node.querySelector('[data-param-key="tiers"]').click();
+      await until('tiers applied',()=>new URL(location.href).searchParams.get('tiers')==='all');
+      await until('branch row',()=>[...document.querySelectorAll('#main .data-table tbody tr')].some(r=>r.textContent.includes(${JSON.stringify(BRANCH_FACT)})));
+      return {
+        bannerText,
+        before,
+        after:document.querySelectorAll('#main .data-table tbody tr').length,
+        badges:[...document.querySelectorAll('#main .data-table [data-tier]')].map(x=>({tier:x.dataset.tier,label:x.textContent.trim(),title:x.getAttribute('title')})),
+        hasRevert:Boolean(document.querySelector('#main [data-param-key="tiers"][data-param-value=""]')),
+      };
+    `),
+    "facts-tier-banner.png",
+    false,
+  );
+
+  // #22: promote through the real dist/fact-management.js ladder and read the Chronicle event back.
+  const tierPromote = await pageProbe(
+    cdp,
+    base +
+      "/facts" +
+      projectScope +
+      "&tiers=all&panel=fact&item=" +
+      encodeURIComponent(branchFactId) +
+      "&panelTab=reuse",
+    probe(`
+      const drawer=await until('injection section',()=>{
+        const el=document.querySelector('#detail[open] .drawer-body');
+        return el&&el.textContent.includes('이 기억이 주입되는 조건')?el:null;
+      });
+      const condition=drawer.textContent.slice(0,600);
+      const conditionBadge=drawer.querySelector('[data-tier]');
+      document.querySelector('#detail [data-panel-tab="summary"]').click();
+      const promote=await until('promote button',()=>{
+        const el=document.querySelector('#detail[open] [data-tier-move="promote"]');
+        return el&&!el.disabled?el:null;
+      });
+      const demoteDisabled=document.querySelector('#detail [data-tier-move="demote"]').disabled;
+      const summaryBadge=document.querySelector('#detail [data-tier]')?.textContent.trim();
+      promote.click();
+      const form=await until('promote modal',()=>document.querySelector('#modal[open] #modal-form'));
+      const rule=form.textContent;
+      form.querySelector('input[name="reason"]').value='browser E2E';
+      form.requestSubmit();
+      await until('promote committed',()=>{
+        const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+        if(error)throw new Error('promote rejected: '+error);
+        return !document.querySelector('#modal[open]');
+      },60000);
+      const history=await until('promotion event',()=>{
+        const el=document.querySelector('#detail[open] .drawer-body');
+        return el&&el.textContent.includes('계층 승격')?el:null;
+      },60000);
+      const historyTab=text('#detail .tab.active');
+      const promotedBadge=await until('promoted badge',()=>{
+        document.querySelector('#detail [data-panel-tab="summary"]')?.click();
+        const el=document.querySelector('#detail [data-tier]');
+        return el&&el.dataset.tier==='project'?el.textContent.trim():null;
+      },30000);
+      const bannerGone=await until('banner cleared',()=>
+        [...document.querySelectorAll('#main .banner')].every(b=>!b.textContent.includes('브랜치/작업 흐름 범위 기억'))?'cleared':null,30000);
+      return {
+        condition,
+        conditionTier:conditionBadge?.dataset.tier,
+        conditionLabel:conditionBadge?.textContent.trim(),
+        summaryBadge,
+        demoteDisabled,
+        rule,
+        historyTab,
+        historyHasPromotion:history.textContent.includes('계층 승격'),
+        promotedBadge,
+        bannerGone,
+      };
+    `),
+    "facts-tier-promote.png",
+    false,
+  );
+
+  if (
+    scopeDefaults.urlScope !== "all" ||
+    scopeDefaults.selected !== "all" ||
+    !scopeDefaults.options[0]?.startsWith("전체 프로젝트 (조회)") ||
+    !scopeDefaults.options[1]?.startsWith("공통 기억") ||
+    !scopeDefaults.options.slice(0, 2).every((o) => /기억 \d/.test(o)) ||
+    !scopeDefaults.groups.includes("프로젝트") ||
+    !scopeDefaults.navLabels.includes("기억·사실") ||
+    scopeDefaults.heading !== "기억·사실" ||
+    !scopeDefaults.title.startsWith("기억·사실 · ") ||
+    !scopeDefaults.hint.includes("주입") ||
+    !scopeDefaults.hintTitle.includes("공통 기억") ||
+    !scopeDefaults.scopeLine.includes("조회 전용")
+  ) {
+    throw new Error(
+      "Default scope assertion failed: " + JSON.stringify(scopeDefaults),
+    );
+  }
+  if (
+    factDeepLink.factId !== factId ||
+    factDeepLink.panel !== "fact" ||
+    factDeepLink.item !== factId ||
+    factDeepLink.leftoverFactParam !== null
+  ) {
+    throw new Error(
+      "fact= deep link assertion failed: " + JSON.stringify(factDeepLink),
+    );
+  }
+  if (
+    scopeSwitch.scope !== "all" ||
+    scopeSwitch.selected !== "all" ||
+    !scopeSwitch.bannerText.includes("공통 기억 범위에는 대화가 없습니다") ||
+    !scopeSwitch.bannerCleared
+  ) {
+    throw new Error(
+      "Common-scope switch assertion failed: " + JSON.stringify(scopeSwitch),
+    );
+  }
+  if (
+    !helpLayer.helpText.includes("Memex가 기억하는 문장과 그 근거") ||
+    !helpLayer.docHref.startsWith("https://github.com/BongSuCHOI/memex/blob/") ||
+    !helpLayer.docHref.includes("/docs/GUIDE.md#") ||
+    /blob\/main\//.test(helpLayer.docHref) ||
+    !helpLayer.badgeTitle ||
+    !helpLayer.headerTitle ||
+    !helpLayer.scopeTitle.includes("주입 범위와 다릅니다") ||
+    !helpLayer.sidebarGlossary ||
+    helpLayer.terms < 10 ||
+    !helpLayer.visible.includes("Capsule") ||
+    helpLayer.visible.length !== 1
+  ) {
+    throw new Error("Help layer assertion failed: " + JSON.stringify(helpLayer));
+  }
   if (
     facts.hasInjectedImage ||
     facts.injectedFlag ||
-    facts.rowCount !== 1 ||
+    facts.rowCount !== 2 ||
     facts.pageOverflowX ||
     !facts.factText.includes("한글 사실") ||
     facts.navItems.length !== 7 ||
+    facts.navItems[2] !== "기억·사실" ||
     facts.scopeSelected !== "all"
   ) {
     throw new Error("Facts browser assertion failed: " + JSON.stringify(facts));
@@ -1616,10 +2028,80 @@ try {
     !mutations.inactiveBadges.includes("비활성") ||
     !mutations.factText.includes("initialized vec0 connection") ||
     !mutations.rowText.includes("initialized vec0 connection") ||
-    mutations.listEmptyWhileInactive !== "조건에 맞는 기억이 없습니다"
+    // Deactivating drops the row from the default active list, and only that row.
+    mutations.listWhileInactive.some((t) => t.includes("initialized vec0 connection")) ||
+    !mutations.listWhileInactive.some((t) => t.includes(BRANCH_FACT))
   ) {
     throw new Error(
       "Facts mutation assertion failed: " + JSON.stringify(mutations),
+    );
+  }
+  if (
+    syncTab.before.checked ||
+    !syncTab.before.exportDisabled ||
+    !syncTab.before.importDisabled ||
+    !syncTab.before.footnote.includes("0.6.2") ||
+    !syncTab.on.folder ||
+    syncTab.on.exportDisabled ||
+    !syncTab.deviceAssigned ||
+    !syncTab.exportedHasCounts ||
+    !syncTab.importSummary ||
+    !syncTab.rejected
+  ) {
+    throw new Error("Sync tab assertion failed: " + JSON.stringify(syncTab));
+  }
+  if (
+    !tierBanner.bannerText.includes("브랜치/작업 흐름 범위 기억 1건이 더 있습니다") ||
+    tierBanner.before !== 1 ||
+    tierBanner.after !== 2 ||
+    !tierBanner.hasRevert ||
+    !tierBanner.badges.some(
+      (b) => b.tier === "workstream" && b.label === "브랜치: " + TIER_BRANCH &&
+        b.title === "브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.",
+    ) ||
+    !tierBanner.badges.some((b) => b.tier === "global" && b.label === "글로벌 공용")
+  ) {
+    throw new Error(
+      "Hidden tier banner assertion failed: " + JSON.stringify(tierBanner),
+    );
+  }
+  if (
+    tierPromote.conditionTier !== "workstream" ||
+    tierPromote.conditionLabel !== "브랜치: " + TIER_BRANCH ||
+    !tierPromote.condition.includes("브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.") ||
+    !tierPromote.condition.includes("활성 — 주입 후보") ||
+    tierPromote.summaryBadge !== "브랜치: " + TIER_BRANCH ||
+    !tierPromote.demoteDisabled ||
+    !tierPromote.rule.includes("글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요") ||
+    tierPromote.historyTab !== "변경 이력" ||
+    !tierPromote.historyHasPromotion ||
+    tierPromote.promotedBadge !== "프로젝트 공용" ||
+    tierPromote.bannerGone !== "cleared"
+  ) {
+    throw new Error(
+      "Tier promotion assertion failed: " + JSON.stringify(tierPromote),
+    );
+  }
+  if (
+    !jobGuidance.heads.includes("다음 행동") ||
+    !jobGuidance.guidanceText.includes("작업 맥락 Capsule이 잘림") ||
+    jobGuidance.ignorable !== "무시해도 됩니다" ||
+    !jobGuidance.guidanceText.includes("MEMEX_CAPSULE_MAX_CHARS")
+  ) {
+    throw new Error(
+      "Job guidance assertion failed: " + JSON.stringify(jobGuidance),
+    );
+  }
+  if (
+    !attention.beforeHasDeadClass ||
+    !attention.beforeHasImpact ||
+    !attention.modalCommand ||
+    attention.finishedState !== "완료" ||
+    !attention.output.includes("Recovered") ||
+    attention.afterHasDeadClass
+  ) {
+    throw new Error(
+      "Attention card assertion failed: " + JSON.stringify(attention),
     );
   }
   if (
@@ -1651,8 +2133,8 @@ try {
     !graph.labelPixels3d ||
     !graph.nodePixels ||
     !graph.nodePixels3d ||
-    graph.nodeButtons !== 1 ||
-    !graph.meta.includes("1 NODES") ||
+    graph.nodeButtons !== 2 ||
+    !graph.meta.includes("2 NODES") ||
     graph.relationFilters.length !== 4 ||
     !["LOCAL WEBGL", "CANVAS 2D · WEBGL 사용 불가"].includes(graph.renderer)
   ) {
@@ -1699,6 +2181,15 @@ try {
         },
         verdict: "PASS",
         checks: {
+          scopeDefaults,
+          factDeepLink,
+          scopeSwitch,
+          helpLayer,
+          tierBanner,
+          tierPromote,
+          jobGuidance,
+          attention,
+          syncTab,
           facts,
           factDetail,
           factsTaxonomy,

@@ -89,13 +89,15 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | --- | --- |
 | `/` 개요 | 파이프라인 준비 상태, 최근 기억 변화, 활동 |
 | `/conversations` 대화 원장 | 세션, 대화 턴, 원문 |
-| `/facts` 기억 | fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제 |
+| `/facts` 기억·사실 | fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제 |
 | `/taxonomy` 분류 | ontology domain과 category |
 | `/graph` 지식 지도 | WebGL 2D/3D 관계 그래프, Canvas2D fallback |
-| `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 |
-| `/settings` 관리 | 런타임, 관리 명령, 화면 설정, 진단 |
+| `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 — 각 탭에 [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 실패 클래스 표에서 파생한 "다음 행동" 안내 |
+| `/settings` 관리 | 런타임, 관리 명령, 다기기 동기화(기본 꺼짐), 화면 설정, 진단 |
 
-모든 화면은 프로젝트 / 공통 기억 / 전체 범위를 명시적으로 선택합니다. 화면을 여는 것만으로는 모델 작업이 시작되지 않습니다.
+모든 화면에 도움말이 붙어 있습니다 — 제목 옆 ⓘ가 한 문단 설명과 이 릴리스 태그의 문서 링크를 주고, 컨트롤·배지·표 머리글에는 한 줄 툴팁이, `?`에는 검색 가능한 용어집이 있습니다. 표시 정도는 관리 › 화면 설정에서 조절합니다.
+
+모든 화면은 프로젝트 / 공통 기억 / 전체 프로젝트 범위를 명시적으로 선택합니다. 기본값은 전체 프로젝트이고 이 범위는 **조회 전용**입니다 — 실제 주입 범위는 언제나 현재 프로젝트 + 공통 기억이며, 범위 선택 옆에 그 사실을 상시 표시합니다. 화면을 여는 것만으로는 모델 작업이 시작되지 않습니다.
 
 ![기억 상세 패널의 근거 탭. 직접 근거와 해석에 참고한 맥락이 별도 절로 나뉘어 있다](assets/readme/facts-detail.png)
 
@@ -193,7 +195,7 @@ sync protocol v4는 fact 상태를 서로 독립적인 축으로 나눕니다.
 | **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 자동으로 병합하지 않고, `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남긴 뒤 `approved_remote_mappings` 명시 승인을 기다립니다. |
 | **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청("이건 프로젝트 공용으로 기억하자" → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
 
-승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다** — Web UI의 기억 변경 allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다. 저장되는 값은 `facts.promotion_state`(`workstream` = 브랜치 tier, `project-current` = 프로젝트 공용, `scope_type = global` = 글로벌)이고, 그 자리에 놓인 근거는 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)에 남습니다.
+승격/강등 채널 ①은 0.6.1부터 CLI와 Web UI **둘 다** 있습니다 — 기억 상세 패널의 승격/강등 버튼이 `POST /api/v2/facts/promote|demote`를 통해 같은 `promoteFact`/`demoteFact` 서비스를 `actor=user`로 호출합니다. Web UI의 기억 변경 allowlist는 `edit|deactivate|restore|delete`에 이 두 계층 이동이 더해집니다. 저장되는 값은 `facts.promotion_state`(`workstream` = 브랜치 tier, `project-current` = 프로젝트 공용, `scope_type = global` = 글로벌)이고, 그 자리에 놓인 근거는 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)에 남습니다.
 
 지원하는 scope는 **project**(project-wide truth와 필요한 global fact), **workspace/workstream/session**(명시한 작업 범위와 허용된 상위 truth), **global**(global fact만), **all**(사용자가 명시적으로 요청한 cross-project 접근)입니다.
 

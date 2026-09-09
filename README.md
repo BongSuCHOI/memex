@@ -89,13 +89,15 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | --- | --- |
 | `/` overview | pipeline readiness, recent memory changes, activity |
 | `/conversations` conversation ledger | sessions, exchanges, source text |
-| `/facts` memory | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete |
+| `/facts` memory & facts | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete |
 | `/taxonomy` classification | ontology domains and categories |
 | `/graph` knowledge map | WebGL 2D/3D relation graph with a Canvas2D fallback |
-| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs |
-| `/settings` administration | runtime, admin commands, display preferences, diagnostics |
+| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
+| `/settings` administration | runtime, admin commands, cross-device sync (off by default), display preferences, diagnostics |
 
-Every page takes an explicit scope: one project, global memory, or all projects. Opening a page never starts model work.
+Every page carries its own help: an ⓘ next to the title linking the matching section of the docs at this release tag, one-line tooltips on controls, badges and table headers, and a searchable glossary on `?`. Turn it down or off in 관리 › 화면 설정.
+
+Every page takes an explicit scope: one project, common (global) memory, or all projects. All projects is the default view and is read-only breadth — injection always uses the current project plus common memory, and the scope selector says so permanently. Opening a page never starts model work.
 
 ![Fact detail drawer on the evidence tab, showing direct evidence and interpretive context as separate sections](assets/readme/facts-detail.png)
 
@@ -193,7 +195,7 @@ This separation matters because editing a fact and deactivating it are different
 | **Plain → Git transition** | `workspace_id` and `project_id` are unchanged; only the workspace metadata is refreshed, plus a `WORKSPACE_LOCATION_CHANGED` event. Existing project-common memory stays exactly as it is, with no data change. The branch rule applies from the next session onward. If you never create a branch, nothing changes. If the new common dir or remote already belongs to another project, nothing is merged automatically: the conflict is recorded on the `WORKSPACE_LOCATION_CHANGED` row as `requires_approval = 1` plus a `suggest` entry in `project_identity_audit`, and the merge waits for an explicit `approved_remote_mappings` approval. |
 | **Promotion / demotion** | The ladder is `branch ⇄ project-common ⇄ global`, one rung at a time. Three channels: (1) a user assertion in the Web UI or CLI, (2) evidence-based automation (re-confirmed on another branch or on the default branch → project; confirmed in two or more different projects → global; upper evidence gone → demotion), (3) an explicit in-session request ("remember this for the whole project" → `actor=user-directive`). All three write a Chronicle `PROMOTED`/`DEMOTED`. A personal preference classified as global at extraction time keeps that first classification. |
 
-In channel (1), only the CLI exists in 0.6.0: the Web UI's fact-mutation allowlist is `edit|deactivate|restore|delete`, and promote/demote buttons arrive in 0.6.1 (#22). The stored column is `facts.promotion_state` (`workstream` = branch tier, `project-current` = project-common, `scope_type = global`) and `facts.tier_reason` records the branch signal (`no-branch-signal` | `default-branch` | `branch:<name>`) that placed it there.
+Channel (1) has both surfaces from 0.6.1: the CLI, and the Web UI's memory detail panel, whose promote/demote buttons call the same `promoteFact`/`demoteFact` service with `actor=user` through `POST /api/v2/facts/promote|demote`. The Web UI's fact-mutation allowlist is `edit|deactivate|restore|delete` plus those two tier moves. The stored column is `facts.promotion_state` (`workstream` = branch tier, `project-current` = project-common, `scope_type = global`) and `facts.tier_reason` records the branch signal (`no-branch-signal` | `default-branch` | `branch:<name>`) that placed it there.
 
 Supported fact/query scopes are **project** (project-wide truth plus global facts where appropriate), **workspace/workstream/session** (the selected work scope and permitted parent truth), **global** (global facts only), and **all** (explicit cross-project access).
 

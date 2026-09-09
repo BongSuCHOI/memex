@@ -52,11 +52,80 @@ class Core {
       autoOntology:(v=>v===undefined||v===''||v==='1')(process.env.MEMEX_AUTO_ONTOLOGY?.trim()),
       mutable:fs.existsSync(path.join(this.root,'dist','fact-management.js')),
       commands:fs.existsSync(path.join(this.root,'cli','memex.js')),
+      sync:fs.existsSync(path.join(this.root,'dist','sync-control.js')),
     };
   }
   async impact(id,scope){
     const store=await this.connect();store.visibleFact(id,scope);
     const fm=await this.module('fact-management');return fm.hardDeleteImpact(this.db,id);
+  }
+  /**
+   * Cross-device sync through dist/sync-control.js (#48).
+   *
+   * The core module resolves its own paths from MEMEX_HOME / MEMEX_DB_PATH, and this UI may have
+   * derived a different home from an explicitly pointed DB. So the env is pinned to the home and
+   * DB this server actually resolved for the duration of the call and restored afterwards — a
+   * temp-DB session must never write sync state into the user's real data root. One sync call at a
+   * time keeps that window from overlapping with another.
+   */
+  async sync(action,body={}){
+    if(!['status','enable','disable','export','import'].includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
+    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 이미 진행 중입니다.','SYNC_BUSY');
+    if(action!=='status'&&this.busy.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
+    const m=await this.module('sync-control');
+    for(const fn of ['getSyncStatus','setSyncEnabled','runSyncExport','runSyncImport'])
+      if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 동기화 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+    this.syncBusy=true;
+    const saved={MEMEX_HOME:process.env.MEMEX_HOME,MEMEX_DB_PATH:process.env.MEMEX_DB_PATH};
+    process.env.MEMEX_HOME=this.home;process.env.MEMEX_DB_PATH=this.dbPath;
+    try{
+      if(action==='status')return {status:m.getSyncStatus()};
+      if(action==='enable'){
+        const dir=text(body.dir,4096).trim();
+        if(!dir)throw new HttpError(400,'공유 폴더 경로를 입력하세요.');
+        if(!path.isAbsolute(dir)||/[\x00-\x1f]/.test(dir))throw new HttpError(400,'공유 폴더는 정규화 가능한 절대 경로여야 합니다.','INVALID_SYNC_DIR');
+        return {status:m.setSyncEnabled({enabled:true,dir:path.normalize(dir)})};
+      }
+      if(action==='disable')return {status:m.setSyncEnabled({enabled:false})};
+      // 사용자가 버튼을 눌렀다면 변경이 없어도 내보낸다(force). 자동 훅만 빈 세대를 피한다.
+      const outcome=action==='export'?m.runSyncExport({force:true}):await m.runSyncImport();
+      return {outcome,status:m.getSyncStatus()};
+    }catch(e){
+      if(e.status)throw e;
+      if(/not writable/.test(e.message))throw new HttpError(400,'공유 폴더에 쓸 수 없습니다. 경로와 권한을 확인하세요: '+e.message,'SYNC_DIR_UNWRITABLE');
+      throw e;
+    }finally{
+      this.syncBusy=false;
+      for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+    }
+  }
+  /**
+   * Tier ladder move through dist/fact-management.js promoteFact/demoteFact.
+   * The ladder is branch ⇄ project-common ⇄ global, one rung per call: the core refuses a
+   * two-rung jump for actor 'user', and this UI never sends 'user-directive'.
+   */
+  async tier(body,scope){
+    const id=identifier(body.id);const action=body.action;
+    if(!['promote','demote'].includes(action))throw new HttpError(400,'지원하지 않는 계층 이동입니다.');
+    if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    const store=await this.connect();const current=store.visibleFact(id,scope);
+    if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
+    this.busy.add(id);let writer;
+    try{
+      const fm=await this.module('fact-management');
+      if(typeof fm.promoteFact!=='function'||typeof fm.demoteFact!=='function')throw new HttpError(503,'설치된 코어에 계층 이동 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+      const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);
+      const options={actor:'user',reason:text(body.reason,500)||null,projectId:scope.projectId||null,workstreamId:scope.workstreamId||null};
+      return action==='promote'?fm.promoteFact(writer,id,options):fm.demoteFact(writer,id,options);
+    }catch(e){
+      if(e.status)throw e;
+      if(e.name==='TierStepError')throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
+      if(/requires a target project/.test(e.message))throw new HttpError(400,'글로벌 기억을 강등하려면 상단에서 대상 프로젝트 범위를 먼저 선택하세요.','TIER_TARGET_REQUIRED');
+      if(/requires a workstream/.test(e.message))throw new HttpError(400,'브랜치 계층으로 강등하려면 상세 조회 범위에서 작업 흐름을 먼저 선택하세요.','TIER_TARGET_REQUIRED');
+      if(/requires project identity/.test(e.message))throw new HttpError(400,'이 기억에는 프로젝트 식별자가 없어 계층을 옮길 수 없습니다. CLI에서 확인하세요.','TIER_TARGET_REQUIRED');
+      throw e;
+    }
+    finally{this.busy.delete(id);if(writer&&writer!==this.db){try{writer.close();}catch{}}}
   }
   async mutate(body,scope){
     const id=identifier(body.id);const action=body.action;

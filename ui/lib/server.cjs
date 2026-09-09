@@ -29,8 +29,8 @@ function createServer(options={}){
     for(const res of clients)res.write(`: heartbeat ${Date.now()}\n\n`);
   },5000);interval.unref();
   async function bootstrap(){
-    let store=null,error=null,projects=[];try{store=await core.connect();projects=store.projects();}catch(e){error={message:e.message,code:e.code};}
-    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,commands:COMMANDS,revision,serverStartedAt:startedAt};
+    let store=null,error=null,projects=[],factTotals=null;try{store=await core.connect();projects=store.projects();factTotals=store.factTotals();}catch(e){error={message:e.message,code:e.code};}
+    return {uiVersion:VERSION,csrfToken:token,environment:core.environment(),db:{available:!!store,error},capabilities:store?.capabilities()||{},projects,factTotals,commands:COMMANDS,revision,serverStartedAt:startedAt};
   }
   const startedAt=new Date().toISOString();
   function guard(req,write){
@@ -64,6 +64,18 @@ function createServer(options={}){
         if(req.method!=='POST')throw new HttpError(405,'POST만 허용됩니다.');
         const b=await readBody(req);if(b.action!=='cancel')throw new HttpError(400,'cancel만 허용됩니다.');json(res,200,operations.cancel(b.id));return;
       }
+      if(p==='/api/v2/sync'){
+        // 조회는 DB 연결과 무관하다. DB가 없어도 동기화 설정은 읽을 수 있어야 한다.
+        if(req.method==='GET'){json(res,200,await core.sync('status'));return;}
+        if(req.method!=='POST')throw new HttpError(405,'GET 또는 POST만 허용됩니다.');
+        const b=await readBody(req);
+        if(b.confirm!==true)throw new HttpError(400,'동기화 작업은 명시적 확인이 필요합니다.','CONFIRMATION_REQUIRED');
+        if(operations.children?.size)throw new HttpError(409,'관리 명령이 실행 중입니다. 완료 후 실행하세요.','OPERATION_BUSY');
+        let result;
+        try{result=await core.sync(b.action,b);try{logs.audit({action:'sync.'+b.action,status:'completed'});}catch{}}
+        catch(e){try{logs.audit({action:'sync.'+String(b.action),status:'failed',error_code:e.code||e.name});}catch{}throw e;}
+        notify();json(res,200,result);return;
+      }
       if(p==='/api/v2/environment'){if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');json(res,200,core.environment());return;}
       if(p==='/api/v2/diagnostics'){
         if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');
@@ -82,6 +94,14 @@ function createServer(options={}){
       if(p.startsWith('/api/')){
         if(p==='/api/v2/pipeline'||p==='/api/pipeline-status'){if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');json(res,200,await core.pipeline());return;}
         const store=await core.connect();const s=store.scope(q);
+        if(p==='/api/v2/facts/promote'||p==='/api/v2/facts/demote'){
+          if(req.method!=='POST')throw new HttpError(405,'POST만 허용됩니다.');
+          const action=p.endsWith('promote')?'promote':'demote';
+          const b=await readBody(req);if(operations.children?.size)throw new HttpError(409,'관리 명령이 실행 중입니다. 완료 후 기억을 변경하세요.','OPERATION_BUSY');let result;
+          try{result=await core.tier({...b,action},s);try{logs.audit({action:'fact.'+action,status:'completed',id:b.id,project:s.project});}catch{}}
+          catch(e){try{logs.audit({action:'fact.'+action,status:'failed',id:b.id,project:s.project,error_code:e.code||e.name});}catch{}throw e;}
+          notify();json(res,200,result);return;
+        }
         if(p==='/api/v2/facts/mutate'||p==='/api/facts-mutate'){
           if(req.method!=='POST')throw new HttpError(405,'POST만 허용됩니다.');
           const b=await readBody(req);if(operations.children?.size)throw new HttpError(409,'관리 명령이 실행 중입니다. 완료 후 기억을 변경하세요.','OPERATION_BUSY');let result;
