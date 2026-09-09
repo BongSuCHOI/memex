@@ -2,6 +2,8 @@
 
 이 문서는 처음 설치하는 사용자와 repository 기여자가 Memex를 안전하게 운영하는 데 필요한 현재 절차만 설명합니다.
 
+빠른 이동: [문제가 생겼을 때 — 실패 클래스별 복구](#20-문제가-생겼을-때--실패-클래스별-복구) · [CLI 한눈에 보기](#18-cli-한눈에-보기) · [환경 변수](#19-환경-변수) · [기억 계층과 승격](#7-fact-관리)
+
 ## 1. 요구 사항
 
 - Node.js 22.15 이상
@@ -138,11 +140,15 @@ plugin hooks와 fallback hooks를 동시에 활성화하지 마십시오.
 
 ```bash
 memex search "인증 구조를 결정한 이유"
-memex search --both "SQLite migration"
+memex search --text "SQLITE_BUSY"          # 정확한 문자열만 (SHA·에러 코드)
+memex search --vector "SQLite로 옮긴 이유"   # 의미 검색만
 memex show /absolute/archive/path.jsonl
 memex stats
 memex analyze --top 30 --out ~/memex-report.md
 ```
+
+`memex search`의 mode 플래그는 `--vector`(의미만)와 `--text`(정확한 문자열만) 둘뿐이고, 아무것도 주지
+않으면 둘을 합친 hybrid가 기본입니다. 인자를 두 개 이상 주면 multi-concept AND 검색입니다.
 
 project-sensitive 명령과 MCP tool은 canonical absolute project 또는 explicit scope를 사용합니다. server process cwd를 project로 추측하지 않습니다.
 
@@ -174,8 +180,12 @@ memex facts delete --id <full-uuid> --hard --yes
 | `memex facts migrate-tiers --apply` | 위 목록을 `project-current`로 이동. fact마다 Chronicle `PROMOTED`(actor `migration`, reason `no-branch-signal`) 한 건 |
 
 - 사다리는 `workstream ⇄ project ⇄ global`이며 **한 칸씩만** 움직입니다. 두 칸을 요구하면
-  `TierStepError`로 거절되고 기억은 그대로 남습니다. `--reason`은 Chronicle에 사용자 진술로,
-  `--json`은 이동 결과와 이벤트 ID를 기계가 읽을 수 있게 출력합니다.
+  `TierStepError`(`tier ladder moves one step at a time: … is not adjacent`)로 거절되고 기억은 그대로
+  남습니다. `--to workstream|project|global`로 목적지를 명시할 수 있지만 인접하지 않으면 같은 이유로
+  거절됩니다. `--reason`은 Chronicle에 사용자 진술로, `--json`은 이동 결과와 이벤트 ID를 기계가 읽을 수
+  있게 출력합니다. CLI의 이동은 actor `user`이므로 `logs/ui-audit.jsonl`에도 한 줄이 남습니다.
+- 이동하면 `facts.tier_reason`은 추출 시점의 브랜치 신호 대신 `tier:user` / `tier:auto` /
+  `tier:user-directive`로 덮어써집니다 — "지금 이 계층에 있는 이유"를 담는 컬럼입니다.
 - 근거 기반 자동 승격·강등은 세션 시작 유지보수 단계에서 모델 호출 없이 SQL로만 판정합니다.
 
 - edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
@@ -233,19 +243,33 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 
 ```text
 ~/.config/memex/
-├── lifecycle-registration.json
-├── logs/
-│   └── ui-audit.jsonl
+├── lifecycle-registration.json         # 명시적 fallback hook 등록 기록
+├── conversation-archive/
+│   └── <project>--<hash>/              # 보관된 rollout(.jsonl)과 요약
+├── conversation-index/
+│   ├── db.sqlite                       # (+ -wal, -shm)
+│   ├── exclude.txt
+│   ├── inject-daemon.sock
+│   ├── logs/
+│   │   └── inject-context.jsonl        # (+ .old, 5 MB에서 회전)
+│   ├── state/
+│   │   └── inject-ledger/
+│   ├── sync/
+│   │   ├── export-status.json
+│   │   └── devices/<device>/CURRENT, generations/<id>/
+│   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
+├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
+├── run-locks/
 ├── ui/
 │   └── operations.json
-├── conversation-archive/
-└── conversation-index/
-    ├── db.sqlite
-    ├── sync/
-    └── logs/
+└── logs/
+    ├── hook-events.jsonl
+    └── ui-audit.jsonl
 ```
 
-`logs/ui-audit.jsonl`은 Web UI의 변경·관리 실행 감사 메타데이터이고, `ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터입니다. 둘 다 원문·출력이 아니라 메타데이터만 남깁니다.
+`logs/ui-audit.jsonl`은 Web UI와 코어의 변경·복구·관리 실행 감사 메타데이터이고(`memex facts promote/demote`와 `memex jobs dismiss`도 여기에 한 줄씩 남깁니다), `ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터입니다. 둘 다 원문·출력이 아니라 메타데이터만 남깁니다. `logs/hook-events.jsonl`은 관측된 lifecycle hook의 이벤트 이름·시각만, `conversation-index/logs/inject-context.jsonl`은 retrieval 1건당 상태·건수·소요 시간만 기록합니다.
+
+`conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있습니다. `run-locks/`, `*.lock`, `inject-daemon.sock`은 실행 중 파일이며 백업 대상이 아닙니다.
 
 우선순위:
 
@@ -295,6 +319,23 @@ node scripts/package-runtime-e2e.mjs
 node scripts/lifecycle-e2e.mjs
 ```
 
+`memex doctor`가 출력하는 점검 항목은 다음 순서로 11개입니다. 하나라도 `FAIL`이면 전체가 `FAIL`이고
+exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
+
+| 점검 | ok / warn / fail |
+| --- | --- |
+| `dependencies` | 설치된 plugin root의 `better-sqlite3`·`@xenova/transformers`·`sqlite-vec` 존재 여부. 없으면 fail |
+| `build` | plugin root의 `dist/db.js` 존재 여부 |
+| `codex-home` | `CODEX_HOME` 디렉터리 존재 여부 |
+| `lifecycle-configured` | 7개 hook event 전부 활성이면 ok, 일부면 warn, 전무하면 fail |
+| `lifecycle-observed` | 모든 event를 최소 1회 관측했으면 ok, 아니면 warn |
+| `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
+| `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
+| `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
+| `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
+| `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
+| `sync-export` | 마지막 export 결과. 실패면 fail, 상태 파일을 못 읽으면 warn, 기록이 없으면 ok |
+
 자주 확인할 항목:
 
 - `dependencies: fail` — **설치된 플러그인 루트**(`~/.codex/plugins/cache/.../<version>/`)에 `node_modules`가 없다는 뜻입니다. 이 상태에서는 모든 hook이 조용히 `npx github:BongSuCHOI/memex#main`으로 폴백해 고정한 버전이 아니라 `main` HEAD가 실행되고, foreground hook마다 npx 해석 비용이 붙습니다. 폴백이 실제로 일어나면 stderr에 `[memex] runtime deps missing at <ROOT>; falling back to npx … — run: memex install` 1줄이 남습니다. 복구는 `memex install`(idempotent, 네트워크 없이 이미 설치된 production 의존성만 Codex cache로 복사)입니다.
@@ -313,6 +354,7 @@ ORDER BY recorded_at DESC LIMIT 20;
 - stale socket — Memex-owned orphan socket만 정리
 - repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행
 
+실패 클래스별 원인과 복구 명령의 단일 출처는 [§20 문제가 생겼을 때](#20-문제가-생겼을-때--실패-클래스별-복구)입니다.
 검증 절차와 최신 merge-gate baseline은 [VERIFICATION.md](VERIFICATION.md)를 참조하십시오.
 
 모든 서브커맨드는 `--help`/`-h`를 인식하며, 사용법만 출력하고 exit 0으로 끝납니다. 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
@@ -393,6 +435,8 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 `recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
 
 복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
+
+여덟 가지 terminal 상태 전체와 각각의 복구 명령은 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)의 표에 정리되어 있습니다.
 
 `capture_gaps.state = 'open'`과 `model_work_budgets.state = 'exhausted'`는 `recover` 대상이 아닙니다. 전자는 다음 성공 캡처에서 자동 해소되고(둘 다 `memex status`에 카운트로 표시), 후자는 `memex model-work resume <budget-id> --new-run`으로 복구합니다.
 
@@ -575,3 +619,124 @@ Ledger는 local-derived operational state이고 sync하지 않습니다. 업데�
 검사도 요청합니다. 기존 파생 데이터·core embedding·stale-vector 복구는 유지합니다.
 번역은 계속 수동입니다. [이전 비교 결과와 한계](verification/codex-usability/README.md#four-arm-result-and-default-decision)는
 자동 재개 개선 이전에 측정된 결과이며, 기본 ON의 장기 실사용 품질을 증명하지 않습니다.
+
+## 18. CLI 한눈에 보기
+
+README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `--help` / `-h`를 인식해 사용법만
+출력하고 exit `0`으로 끝나며, 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`,
+`migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
+
+| 명령 | 역할 | 상세 |
+| --- | --- | --- |
+| `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 | [§3](#3-cli-shim과-codex-memory-충돌-점검) |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent, 네트워크 설치 없음) | [§13](#13-진단) |
+| `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) | [§5](#5-lifecycle-hooks), [§14](#14-제거와-데이터-보존) |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신 | [§12](#12-업데이트) |
+| `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
+| `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session` | [§4](#4-최초-onboarding) |
+| `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
+| `memex show` | archive conversation 읽기 (`--format markdown\|html`) | [§6](#6-검색과-분석) |
+| `memex stats` | corpus/index 통계 | [§6](#6-검색과-분석) |
+| `memex analyze` | deterministic 전체 이력 보고서 (`--json`, `--out`, `--top`, `--months`) | [§6](#6-검색과-분석) |
+| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` | [§7](#7-fact-관리) |
+| `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) | [§7](#7-fact-관리) |
+| `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) | [§7](#7-fact-관리) |
+| `memex backfill` | `all\|extract\|ontology\|embeddings` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
+| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트 (`--json`) | [§4](#4-최초-onboarding), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
+| `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
+| `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
+| `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
+| `memex doctor` | 의존성·빌드·Codex home·hook 등록/관측·주입 출력·recall provenance·sync export 진단 (`--json`) | [§13](#13-진단) |
+| `memex home` | 해석된 Memex data root 출력 (`--json`) | [§10](#10-저장-위치와-sync) |
+| `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02). `--dry-run` | — |
+
+`memex-ui`, `memex-continuity-worker`, `memex-mcp-server`는 `memex`의 서브커맨드가 아니라 별도 bin입니다.
+
+## 19. 환경 변수
+
+세 문서에 흩어져 있던 사용자 대면 환경 변수의 전체 목록입니다. Codex/Memex 프로세스가 상속해야
+하므로 변경 후에는 Codex를 재시작하십시오.
+
+### 경로와 실행
+
+| 변수 | 기본 | 의미 |
+| --- | --- | --- |
+| `MEMEX_HOME` | — | Memex data root. 가장 우선하는 지정 |
+| `XDG_CONFIG_HOME` | — | 대체 경로 `$XDG_CONFIG_HOME/memex` |
+| `MEMEX_DB_PATH` | `<home>/conversation-index/db.sqlite` | data root와 별개로 index DB 경로를 지정 |
+| `CODEX_HOME` | `~/.codex` | Codex home. `$CODEX_HOME/sessions`가 read-only rollout 원본 |
+| `MEMEX_ALLOWED_TRANSCRIPT_ROOTS` | Codex sessions root | hook이 읽어도 되는 transcript root |
+| `MEMEX_PLUGIN_ROOT` | 설치된 plugin | core/`dist` 해석 루트 (checkout 실행·진단용) |
+| `MEMEX_RUNTIME_FORCE_REMOTE` | unset | `runtime-exec`가 설치본 대신 `npx` 경로를 쓰게 강제 (진단용) |
+| `MEMEX_MCP_AUTOSTART` | unset | MCP wrapper가 서버를 자동 기동 (진단용) |
+| `PORT` | `3847` | Web UI 포트 |
+
+### 수집과 기억 계층
+
+| 변수 | 기본 | 의미 |
+| --- | --- | --- |
+| `MEMEX_STRICT_CAPTURE` | unset | `1`이면 capture 실패가 `capture_gaps` 대신 hook 실패가 됩니다 |
+| `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
+| `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |
+| `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (허용 `0`–`1`) | 주입 관련성 게이트가 요구하는 baseline 대비 마진. 범위를 벗어난 값은 기본값으로 되돌아갑니다. **`baseline_margin_gap`으로 측정한 뒤에 조정하십시오** |
+| `MEMEX_AUTO_ONTOLOGY` | unset (= on) | `0`이면 자동 ontology 분류와 후속 관계 작업을 끕니다. 수동 `memex backfill ontology`는 유지 |
+| `MEMEX_MAX_EXTRACT_WINDOWS` | `12` | 세션당 extraction generator window 예산. 미설정이면 `MEMEX_MAX_EXTRACT_CALLS`를 봅니다 |
+| `MEMEX_MAX_EXTRACT_CALLS` | `12` | 위 변수의 이전 이름 (호환) |
+
+### 모델과 임베딩
+
+| 변수 | 기본 | 의미 |
+| --- | --- | --- |
+| `MEMEX_CODEX_BIN` | `codex` | worker가 실행할 Codex CLI 경로 |
+| `MEMEX_CODEX_MODEL` | `gpt-5.6-luna` | worker 모델. 명시적 호출 옵션 > 이 변수 > 기본값 |
+| `MEMEX_CODEX_EXEC_TIMEOUT_MS` | `180000` | 호출 timeout. 남은 run 시간보다 길게 실행하지 않습니다 |
+| `MEMEX_LLM_RETRIES` | `2` (상한 `5`) | 재시도 횟수(총 시도 − 1) |
+| `MEMEX_LLM_RETRY_BASE_MS` | `500` (상한 `5000`) | 지수 백오프 기준값. 실제 대기는 최대 30초 |
+| `MEMEX_EMBEDDING_MODEL` | `Xenova/multilingual-e5-small` | embedding model. 바꾸면 embedding version이 함께 바뀝니다 |
+| `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용 |
+
+### 모델 작업 예산 ([§17](#17-모델-작업-예산과-대기-진단))
+
+| 변수 | 기본 | 실제 제한 |
+| --- | --- | --- |
+| `MEMEX_MODEL_BUDGET_MAX_ATTEMPTS` | `64` | 같은 작업 run의 provider 시도 수 |
+| `MEMEX_MODEL_BUDGET_DEADLINE_MS` | `900000` | run 전체 deadline |
+| `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS` | `120000` | 호출 입력 UTF-16 문자 수 |
+| `MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS` | `16000` | 최종 답변 문자 수. domain schema/필드 검증은 추가 적용 |
+| `MEMEX_AUTO_MODEL_MAX_ATTEMPTS` | `256` | 한 data root의 자동 유지보수 24시간 공통 호출 한도. `0`이면 차단 |
+
+`BACKFILL_RELATIONS=1`은 `memex backfill ontology`에 새 관계 검사도 함께 요청합니다.
+
+## 20. 문제가 생겼을 때 — 실패 클래스별 복구
+
+이 표가 실패 클래스 → 원인 → 명령의 **단일 출처**입니다. Web UI의 실패 안내도 이 표에서 파생합니다.
+먼저 `memex status`와 `memex doctor`를 읽고, 표의 "어디에 보이나" 문자열로 자기 상황을 찾으십시오.
+
+```bash
+memex status          # Needs attention / terminal state / Quarantined projects
+memex doctor          # dependencies / inject-output / recall-provenance / injection-yield ...
+```
+
+| 실패 클래스 | 어디에 보이나 | 원인 | 복구 명령 |
+| --- | --- | --- | --- |
+| `memory_jobs` dead | `Needs attention: N (N dead, …)` | 재시도 상한을 소진해 terminal이 된 작업 | `memex jobs show <job-id>` → `memex recover <job-id>` 또는 `memex recover --all-dead` |
+| `memory_jobs` retry (backoff) | `Needs attention: … of which N in backoff` | 실패 후 backoff 시각이 아직 안 됨. 고장이 아님 | 기다리거나 `memex-continuity-worker` 실행. 즉시 되돌리려면 `memex jobs retry <job-id>` |
+| checkpoint dead-letter / failed-visible | `terminal state: checkpointsDeadLetter=…` / `checkpointsFailedVisible=…` | P0 capture-index가 hash·journal 경계 검증에 반복 실패 | `memex recover <job-id> --dry-run` → `memex recover <job-id>` |
+| extraction target dead | `terminal state: extractionTargetsDead=…`, `Fact extraction … N deferred` | 추출 target이 재시도를 소진 | `memex recover <target-id>` 또는 `--all-dead` |
+| extraction target item failed-visible | `terminal state: extractionTargetItemsFailedVisible=…` | 특정 item이 결정론적으로 실패 | 같은 단위로 `memex recover` |
+| Capsule checkpoint failed-visible | `terminal state: capsuleCheckpointFailedVisible=…` | 최소 page로 줄여도 Capsule patch가 실패해 frontier를 전진시키고 표시한 상태 | `memex recover <job-id> --kind capsule_update` |
+| extraction failed range | `terminal state: extractionFailedRanges=…`, `N failed-visible` | 정확히 어떤 구간이 실패했는지 기록된 terminal range | `memex recover …` (CHECK 제약상 `retry`로 되돌아가며 오류 원문은 보존) |
+| capture gap open | `terminal state: captureGapsOpen=…` | capture가 fail-open으로 넘어간 구간 | **`recover` 대상 아님.** 같은 세션의 다음 성공 capture가 닫습니다. 실패를 즉시 드러내려면 `MEMEX_STRICT_CAPTURE=1` |
+| model-work budget exhausted | `terminal state: modelWorkBudgetsExhausted=…` | run 예산(시도·deadline) 소진 | `memex model-work status` → `memex model-work resume <budget-id> --new-run` |
+| 되살릴 가치가 없는 작업 | 위 어느 줄이든 | 원인이 사라졌거나 다른 방식으로 처리함 | `memex jobs dismiss <job-id> --reason "왜 포기하는가"` — `superseded`로 정리, 삭제 없음, 감사 1줄 |
+| 격리된 프로젝트 | `Quarantined projects: N (…)` | `/`처럼 프로젝트를 지목할 수 없는 cwd에서 만들어진 프로젝트. fact는 보존하고 주입·조회에서만 제외 | 복구 명령 없음(사람이 판단). 정상 cwd에서 다시 작업하면 올바른 프로젝트로 기록되고, 이전 fact가 필요하면 `memex facts list --scope all`로 확인 후 `memex facts promote/demote`로 옮깁니다 |
+| 런타임 의존성 없음 | `doctor`의 `dependencies: fail`, stderr `[memex] runtime deps missing at <ROOT>; falling back to npx …` | 설치된 플러그인 루트에 `better-sqlite3` / `@xenova/transformers` / `sqlite-vec` 중 하나라도 없어 모든 hook이 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)으로 폴백 | `memex install` (idempotent, 네트워크 설치 없음) |
+| 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
+| 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
+| 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
+| sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남 | `conversation-index/sync/export-status.json` 확인 후 원인 수정, 다음 SessionEnd에서 재시도 |
+| 기억이 브랜치에 갇혀 있음 | `memex facts list`에서 tier가 `workstream` | 0.6.0 이전 fact는 전부 브랜치 tier에 있음 | `memex facts migrate-tiers --dry-run` → `memex facts migrate-tiers --apply` |
+
+복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker` 또는 `memex backfill extract`).
+`memex recover`와 `memex jobs retry`는 **아무것도 삭제하지 않습니다**: 지워진 `last_error`는
+`memory_jobs.retry_history` JSON 배열에 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.

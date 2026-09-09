@@ -26,6 +26,15 @@ workspace provenance/legacy query key입니다.
 | **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 명시 승인 후 병합(`PROJECT_MERGED`). |
 | **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청(“이건 프로젝트 공용으로 기억하자” → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
 
+표의 `(workspace, branch)`는 계층을 가리키는 표기이고 실제 stream 키는 `(project_id, branch)`입니다
+(`deterministicWorkstreamId`, `src/continuity-identity.ts`). 그래서 같은 저장소의 워크트리 두 개가
+같은 브랜치를 쓰면 한 tier를 공유합니다. 표의 세 계층은 각각 `facts.promotion_state = workstream`
+(브랜치 tier), `project-current`(프로젝트 공용), `facts.scope_type = global`(글로벌)로 저장됩니다.
+표의 `PROJECT_MERGED`는 승인 단계의 이름이며 아직 존재하는 event kind가 아닙니다 — 0.6.0은 충돌을
+`workspace_location_events`의 `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`로,
+그리고 `project_identity_audit`의 `suggest` 행으로 남기고 병합은 기존 `approved_remote_mappings`
+승인 경로를 그대로 요구합니다.
+
 새 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다. 신호가 없으면(비-git 디렉터리, 또는 기본
 브랜치 세션) `project-current`, 그 외 브랜치·워크트리 세션이면 `workstream`이며 판단 근거는
 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)과 Chronicle `ASSERTED`
@@ -56,6 +65,11 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
   (Web UI 버튼도 같은 함수를 호출합니다).
 - 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v4에 additive로 실려 갑니다.
   이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
+
+0.6.0 이전에 추출된 fact는 모두 `workstream`(브랜치 tier)에 있습니다. `memex facts migrate-tiers --dry-run`이
+새 기본 tier 규칙상 프로젝트 공용이어야 하는 항목만 나열하고, `--apply`가 실제로 옮기며 fact마다 Chronicle
+`PROMOTED`(actor `migration`, reason `no-branch-signal`) 한 건을 남깁니다. 두 플래그 중 하나를 명시하지 않으면
+아무 일도 하지 않으며 자동 실행되지 않습니다. CLI 사용법은 [GUIDE §7](GUIDE.md#7-fact-관리)에 있습니다.
 
 ## 2. 네 종류의 상태
 
@@ -565,6 +579,7 @@ worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.
 | `VALIDATED` | trusted `test_execution` 성공 evidence를 가진 observation, remediation | 0 |
 | `INCIDENT` | trusted test failure 또는 human repeated_signal observation | 0 |
 | `CONTRADICTED` | 순서/authority가 모호한 경쟁 evidence, consolidator verdict가 temporal 판정에 실패한 경우 | 0 |
+| `PROMOTED` / `DEMOTED` (0.6.0) | 사다리 한 칸 이동. actor `user`(UI/CLI), `auto`(유지보수의 SQL 판정), `user-directive`(세션 내 명시 지시), `migrate-tiers`의 `migration`. `outcome`에 `from_tier`/`to_tier`/`actor`/`reason`/`evidence_ids` | 1 |
 
 기존 consolidation relation mapping: `DUPLICATE` → event 없음(재표현), `EVOLUTION`/`CONTRADICTION` →
 temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDENT` → 없음. consolidator `reason`은 항상

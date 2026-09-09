@@ -21,13 +21,13 @@ Conversation vector/text/hybrid retrieval.
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `query` | string or string[2–5] | yes | array is multi-concept AND search |
-| `mode` | `vector|text|both` | no | default `both`; ignored for query arrays |
+| `mode` | `vector\|text\|both` | no | default `both`; ignored for query arrays |
 | `project` | absolute path | no | scopes attached RAG facts to project + global |
 | `project_id`, `workspace_id`, `workstream_id`, `session_id` | stable ID | conditional | ID matching `scope` |
-| `scope` | `project|workspace|workstream|session|global|all` | no | stable raw-evidence filter; omitted keeps legacy all-project search |
+| `scope` | `project\|workspace\|workstream\|session\|global\|all` | no | stable raw-evidence filter; omitted keeps legacy all-project search |
 | `limit` | 1–50 | no | default 10 |
 | `after`, `before` | `YYYY-MM-DD` | no | date filters |
-| `response_format` | `markdown|json` | no | default markdown |
+| `response_format` | `markdown\|json` | no | default markdown |
 
 ## `read`
 
@@ -44,8 +44,8 @@ optional 1-indexed inclusive bounds. Prefer the result range from `search`.
 | `workspace_id` | stable ID | conditional | required for workspace scope |
 | `workstream_id` | stable ID | conditional | required for workstream scope |
 | `session_id` | stable ID | conditional | required for session scope |
-| `scope` | `project|workspace|workstream|session|global|all` | conditional | project is default |
-| `category` | `decision|preference|pattern|knowledge|constraint` | no | filter |
+| `scope` | `project\|workspace\|workstream\|session\|global\|all` | conditional | project is default |
+| `category` | `decision\|preference\|pattern\|knowledge\|constraint` | no | filter |
 | `include_revisions` | boolean | no | default false |
 | `include_hot_evidence` | boolean | no | labeled raw evidence lane, default false |
 | `hot_before`, `hot_before_evidence_id` | timestamp, ID | no | keyset cursor for Hot Evidence |
@@ -74,7 +74,7 @@ Optional history controls: `include_timeline` (default true), `timeline_limit` 1
 
 Output lanes: `[CURRENT FACT]` (id, active flag, promotion, subject, semantic/lifecycle revision),
 `Source Conversations [RAW EVIDENCE]`, `Interpretive Context (Non-Authoritative) [ASSISTANT CONTEXT-ONLY]`,
-`Chronicle Timeline` of `[CHRONICLE EVENT]` rows (`ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED`,
+`Chronicle Timeline` of `[CHRONICLE EVENT]` rows (`ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED|PROMOTED|DEMOTED`,
 `effective` vs `recorded` time, `projection changed` vs `event-only`, previous → new value, `reverts event`,
 `grounded cause (source-cited)` separated from `classifier note (model inference, NOT authoritative)`,
 per-event `[RAW EVIDENCE]` sources or `source unavailable (purged or missing)`), `Incidents` (occurrences and

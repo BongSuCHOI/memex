@@ -33,7 +33,9 @@ Memex는 로컬 Codex 세션 이력을 검색 가능한 대화 아카이브, 장
 
 **명시적인 실행 없이는 모델을 부르지 않습니다.** capture hook은 bounded local I/O만 수행합니다. Web UI 화면을 여는 것만으로는 모델 작업이 시작되지 않고, 자동 유지보수는 대기 시간과 공통 호출 한도가 허용할 때만 미완료 작업을 재개합니다.
 
-**프로젝트 격리.** Memex는 canonical absolute `session_meta.cwd`로 로컬 workspace를 식별하고 stable `project_id`로 논리적 프로젝트를 구분합니다. 검색·관련 사실·추적·graph의 모든 hop이 같은 scope를 사용하며, MCP server는 자신의 process cwd를 project identity로 추측하지 않습니다.
+**프로젝트 격리.** Memex는 canonical absolute `session_meta.cwd`로 로컬 workspace를 식별하고 stable `project_id`로 논리적 프로젝트를 구분합니다. 검색·관련 사실·추적·graph의 모든 hop이 같은 scope를 사용하며, MCP server는 자신의 process cwd를 project identity로 추측하지 않습니다. 프로젝트를 지목할 수 없는 cwd(`/`, `unknown`, basename이 비어 있는 경로)는 한 곳에 몰아넣지 않고 거절하며, 그런 세션은 글로벌 기억만 읽습니다.
+
+**기억은 한 덩어리가 아니라 계층입니다.** 깃 프로젝트에서는 디렉터리가 프로젝트이고 브랜치가 계층입니다. 기본 브랜치에서 한 작업은 프로젝트 공용 기억이 되고, 그 외 브랜치·워크트리의 작업은 자기 브랜치 tier에 남으며, `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌` 사다리를 한 칸씩 오르내릴 때마다 누가 왜 옮겼는지가 함께 기록됩니다. 일반 디렉터리에는 브랜치 계층이 아예 없습니다. [범위와 기억 계층](#범위와-기억-계층)을 참고하세요.
 
 자세한 내용은 [ARCHITECTURE.md](docs/ARCHITECTURE.md), [FACT-LIFECYCLE.md](docs/FACT-LIFECYCLE.md), [WEBUI-WORKSPACE.md](docs/WEBUI-WORKSPACE.md)를 참고하세요.
 
@@ -182,11 +184,22 @@ sync protocol v4는 fact 상태를 서로 독립적인 축으로 나눕니다.
 
 이 분리가 중요한 이유는 fact의 의미를 편집하는 것과 비활성화하는 것이 서로 다른 사건이기 때문입니다. 더 최신 semantic edit가 더 최신 deactivate를 되돌려서는 안 되고, 오래된 peer snapshot 때문에 provenance가 사라져서도 안 됩니다.
 
-### Scope와 통합
+### 범위와 기억 계층
+
+| 상황 | 동작 |
+|---|---|
+| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → **브랜치 tier** `(workspace, branch)`로 독립(서로 희석 안 됨; 같은 저장소의 워크트리 두 개가 같은 브랜치면 공유). 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
+| **일반(비-git) 프로젝트** | 디렉터리 = 프로젝트, 브랜치 계층 없음. 모든 기억 = 프로젝트 공용 (+ 글로벌). |
+| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 명시 승인 후 병합(`PROJECT_MERGED`). |
+| **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청("이건 프로젝트 공용으로 기억하자" → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
+
+표의 `(workspace, branch)`는 계층을 가리키는 표기이고 실제 stream 키는 `(project_id, branch)`입니다 — 그래서 같은 저장소의 워크트리 두 개가 같은 브랜치를 쓰면 하나의 tier를 공유합니다. 저장되는 값은 `facts.promotion_state`(`workstream` = 브랜치 tier, `project-current` = 프로젝트 공용, `scope_type = global` = 글로벌)이고, 그 자리에 놓인 근거는 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)에 남습니다. `PROJECT_MERGED`는 승인 단계를 가리키는 이름이며 아직 존재하는 event kind는 아닙니다 — 0.6.0은 충돌을 `WORKSPACE_LOCATION_CHANGED` 행의 `requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남기고, 병합 자체는 기존 `approved_remote_mappings` 승인 경로를 그대로 씁니다.
 
 지원하는 scope는 **project**(project-wide truth와 필요한 global fact), **workspace/workstream/session**(명시한 작업 범위와 허용된 상위 truth), **global**(global fact만), **all**(사용자가 명시적으로 요청한 cross-project 접근)입니다.
 
-읽기 범위와 통합 권한은 분리됩니다. 통합기는 다른 workstream이나 승격 상태의 fact를 흡수하지 않고 검증된 새 문장만 채택하며, 불명확한 legacy identity는 검토 대상으로 보존합니다. 기존 DB의 [감사·백업·선별 복구](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구)는 전체 fact 재추출 없이 수행할 수 있습니다.
+읽기 범위와 통합 권한은 분리됩니다. 통합기는 다른 계층이나 승격 상태의 fact를 흡수하지 않고 검증된 새 문장만 채택하며, 불명확한 legacy identity는 검토 대상으로 보존합니다. 기존 DB의 [감사·백업·선별 복구](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구)는 전체 fact 재추출 없이 수행할 수 있습니다.
+
+0.6.0 이전에 추출된 fact는 전부 브랜치 tier에 있습니다. `memex facts migrate-tiers --dry-run`이 새 규칙상 프로젝트 공용이어야 하는 항목을 나열하고, `--apply`가 실제로 옮깁니다.
 
 ### Recall이 자기 자신을 다시 학습하지 않도록
 
@@ -214,7 +227,7 @@ protocol v4는 기기별로 하나의 committed generation을 export하며, 각 
 
 ```bash
 memex search "왜 SQLite를 선택했지?"
-memex search --both "인증 마이그레이션"
+memex search --text "ERR_MODULE_NOT_FOUND"     # 임베딩 없이 정확한 문자열
 memex facts list
 memex stats
 memex analyze --top 30 --out ~/memex-report.md
@@ -223,22 +236,29 @@ memex status
 
 | 명령 | 역할 |
 | --- | --- |
+| `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent) |
+| `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
 | `memex sync` | 새 Codex rollout archive/index |
+| `memex index` | conversation index 생성·검증·복구·재구축 |
 | `memex search` | semantic / text / hybrid conversation search |
 | `memex show` | archive conversation 읽기 |
 | `memex stats` | corpus/index 통계 |
 | `memex analyze` | deterministic 전체 이력 보고서 생성 |
-| `memex facts` | durable fact 조회·관리 |
+| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
-| `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
-| `memex status` | pipeline readiness 확인 |
-| `memex jobs` | memory job 조회·복구: `list|show|retry|dismiss` |
+| `memex status` | pipeline readiness와 `Needs attention`·격리된 프로젝트 확인 |
+| `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
-| `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
-| `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
-| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent) |
+| `memex model-work` | 모델 작업 예산 확인과 명시적 재개; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
+| `memex doctor` | 의존성·빌드·hook·주입 출력·recall provenance 진단 |
+| `memex home` | 해석된 Memex data root 출력 |
+| `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02) |
+
+모든 서브커맨드는 `--help` / `-h`를 인식해 사용법만 출력하고 exit `0`으로 끝납니다. 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
 
 Fact 관리에는 edit, deactivate, restore, history, guarded hard delete가 포함됩니다. semantic edit는 fact ID와 revision history를 유지하면서 이전 의미에서 파생된 상태를 무효화합니다.
 
@@ -287,18 +307,31 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 
 ```text
 ~/.config/memex/
+├── lifecycle-registration.json         # 명시적 fallback hook 등록 기록
 ├── conversation-archive/
+│   └── <project>--<hash>/              # 보관된 rollout(.jsonl)과 요약
 ├── conversation-index/
-│   ├── db.sqlite
+│   ├── db.sqlite                       # (+ -wal, -shm)
+│   ├── exclude.txt
+│   ├── inject-daemon.sock
+│   ├── logs/
+│   │   └── inject-context.jsonl        # (+ .old, 5 MB에서 회전)
+│   ├── state/
+│   │   └── inject-ledger/
 │   ├── sync/
-│   └── logs/
+│   │   ├── export-status.json
+│   │   └── devices/<device>/CURRENT, generations/<id>/
+│   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
+├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
+├── run-locks/
 ├── ui/
 │   └── operations.json
 └── logs/
+    ├── hook-events.jsonl
     └── ui-audit.jsonl
 ```
 
-`ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터, `logs/ui-audit.jsonl`은 Web UI 감사 기록입니다. 둘 다 대화 원문·기억 원문·실행 출력이 아니라 메타데이터만 남깁니다. 원본 `$CODEX_HOME/sessions` rollout은 항상 read-only input으로 취급합니다. 삭제나 이동 전에는 `memex home`(또는 `memex home --json`)으로 정확한 경로를 확인하세요.
+`ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터, `logs/ui-audit.jsonl`은 Web UI 감사 기록입니다. 둘 다 대화 원문·기억 원문·실행 출력이 아니라 메타데이터만 남깁니다. `logs/hook-events.jsonl`에는 관측된 lifecycle hook의 이벤트 이름과 시각만 남고, `conversation-index/logs/inject-context.jsonl`에는 retrieval 1건당 상태·건수·소요 시간만 남습니다(프롬프트·기억 원문 없음). 반면 `conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있으므로 민감 정보로 취급하세요. 원본 `$CODEX_HOME/sessions` rollout은 항상 read-only input으로 취급합니다. 삭제나 이동 전에는 `memex home`(또는 `memex home --json`)으로 정확한 경로를 확인하세요.
 
 ---
 

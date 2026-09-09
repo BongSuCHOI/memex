@@ -51,6 +51,21 @@ explicit project ID 또는 user-approved remote mapping이 있어야 합칩니�
 remote URL만 같은 후보는 suggestion audit만 남기고 분리합니다. Local Git directory inode identity는
 동일 checkout rename을 탐지하는 device-local 보조 신호이며 sync하지 않습니다.
 
+**신뢰할 수 없는 cwd (0.6.0).** `/`, `unknown`, basename이 비어 있는 경로는 project identity로
+거절됩니다(`UntrustedProjectPathError`). 예전에는 이런 세션이 전부 하나의 catch-all project로 모여
+서로의 fact를 자기 프로젝트 기억처럼 읽었습니다. 그렇게 생긴 기존 project는 `projects.quarantined = 1`로
+격리되고(fact는 하나도 지우지 않습니다) `memex status`의 `Quarantined projects`에 나열되며, 격리된
+project나 project에 붙지 못한 세션의 read scope는 글로벌 전용으로 낮아집니다.
+
+**Workspace 전이 (0.6.0).** 경로가 실제로 존재하면 세션 시작의 재검사가 권위이며 workspace 행의
+`location_kind`/`git_common_dir`/`git_common_identity`/`git_dir_identity`/`remote_fingerprint`/`branch`/
+`default_branch`를 그 자리에서 갱신합니다. `workspace_id`·`project_id`는 바뀌지 않으므로 전이 이전의
+프로젝트 공용 기억·Capsule·이력은 데이터 변경 없이 그대로 남습니다. 변경이 있으면
+`workspace_location_events`에 `WORKSPACE_LOCATION_CHANGED` 한 건(내용 기반 id이므로 같은 전이는 한 번만)이
+남고, 새 common dir/remote가 이미 다른 project에 묶여 있으면 자동 병합 대신 `requires_approval = 1`로
+표시해 `approved_remote_mappings` 승인을 요구합니다. `.git`이 사라지면 행만 `directory`로 되돌리고
+브랜치 tier 기억은 삭제도 자동 강등도 하지 않습니다.
+
 Archive storage key와 absolute path는 location/provenance이지 logical identity가 아닙니다. 기존
 canonical-path query는 지원 기간 동안 compatibility reader로 유지하지만 새 code/MCP/sync는 stable
 ID scope를 우선합니다. 제거 시점은 future breaking migration에서 별도로 결정합니다.
@@ -69,6 +84,10 @@ exchange ID는 `(session_id, user turn line)`에서 결정론적으로 파생되
 - 사라진 tool call/죽은 provenance pointer 제거
 
 FTS5는 external-content trigger로 동기화하며 vector row는 현재 embedding generation과 같은 공간에서만 검색합니다.
+
+`exchanges.git_branch`는 rollout이 직접 알려준 브랜치 → 그 세션이 묶인 workstream의 `branch_hint` →
+workspace 행의 `branch` 순으로 채웁니다(0.6.0 #16). 예전에는 rollout이 브랜치를 실어 보내지 않으면
+`NULL`로 남아 브랜치가 exchange에도 workstream에도 전파되지 않았습니다.
 
 ### Exchange의 visibility/authority 매핑
 
@@ -103,9 +122,9 @@ source delta -> journal fsync -> checkpoint + capture_index job
 | --- | --- |
 | `Stop` | `closed`; delta/fence/outbox only |
 | `Interrupt` | `interrupted`; partial evidence, never completed |
-| `PreCompact(manual|auto)` | `interrupted` prefix, fsync, carry freeze |
+| `PreCompact(manual\|auto)` | `interrupted` prefix, fsync, carry freeze |
 | `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait |
-| `PostCompact(manual|auto)` | telemetry only; no correctness transition |
+| `PostCompact(manual\|auto)` | telemetry only; no correctness transition |
 
 Capture commit 뒤 worker wake는 detached best-effort입니다. Wake가 사라져도 durable job은 남으며 다음 lifecycle에서 재개됩니다.
 
@@ -122,7 +141,7 @@ flowchart LR
     E --> B[Capsule or tail baton plus active carry]
 ```
 
-Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → deterministic topic margin → session-local 순서로 bind하며, branch는 hint이고 latest session은 fallback이 아닙니다.
+Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → **결정론적 stream id**(`(project_id, branch)`, 브랜치 신호가 없으면 project당 기본 stream 하나) → deterministic topic margin 순서로 bind하고, 어디에도 걸리지 않으면 그 결정론적 stream을 만듭니다(binding reason `workspace-branch` 또는 `project-default`). latest session은 fallback이 아닙니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 0.6.0에서 없어졌습니다 — 그 폴백이 한 프로젝트를 세션 수만큼의 workstream으로 쪼개 새 기억이 다음 세션에 주입되지 않던 원인이었습니다.
 
 Async SessionStart의 sync/import/version 상태 안내는 stderr로만 출력합니다. stdout은
 호스트가 모델 입력으로 전달할 수 있으므로 운영 로그를 쓰지 않습니다. 동기 Continuity와

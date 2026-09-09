@@ -157,6 +157,18 @@ event_id는 시계가 아니라 전이의 모양에서 파생되므로 같은 �
 
 `session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
 
+`work_capsules`는 0.6.0에서 `truncated`(INTEGER NOT NULL DEFAULT 0), `truncated_fields_json`
+(TEXT NOT NULL DEFAULT `'[]'`), `original_chars`(nullable INTEGER)를 additive로 갖습니다. 한 세대의
+bounded storage size는 `MEMEX_CAPSULE_MAX_CHARS`(기본 12,000자, 하한 2,000자)이며, 초과한 patch는 job을
+죽이지 않고 우선순위대로 절단해 저장한 뒤 무엇이 줄었는지를 이 세 컬럼에 그대로 남깁니다.
+`capsule_checkpoint_state`의 `page_items_hint`/`page_chars_hint`(0.6.0 additive, nullable)는 실패한 시도가
+다음 evidence page를 절반으로 줄이도록 하는 힌트입니다. 최소 page에서도 실패하면 그 head fragment를
+건너뛰고 frontier를 전진시키므로 한 workstream이 영원히 멈추지 않습니다.
+`memory_jobs.retry_history`(0.6.0 additive, nullable TEXT)는 `recover`/`retry`가 지운 `last_error`를 JSON
+배열로 보존합니다 — 복구는 아무것도 삭제하지 않습니다. `failMemoryJob`은 실제 전이(`retry` | `dead`)를
+반환하고, worker는 terminal `failed-visible`을 `retry`로 덮어쓰지 않습니다(guarded `UPDATE` + 1회성
+`capsule-terminal-state-repair` 마이그레이션).
+
 `work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation·frontier revision·lease CAS와 Capsule/cursor/job write는 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. `through_checkpoint_id`는 trigger/provenance이고 다중 세션 coverage는 아래 sequence frontier가 결정합니다. 미소비 evidence 또는 미완료 capture가 있으면 compact/resume에 deterministic tail baton을 함께 넣습니다.
 
 Capture checkpoint마다 P0 `capture_index` job이 있고, P1 `capsule_update`는 Stop/Interrupt boundary 6개 또는 accumulated 8KiB, PreCompact, SessionEnd에서 coalesce됩니다. Checkpoint와 outbox insert는 atomic입니다. Capture gap은 `open|recovered|purged`로 명시되며 silent completion으로 계산하지 않습니다. Retry가 소진된 checkpoint는 `dead-letter`, 관련 Capsule state는 `failed-visible`이고, dependency가 죽은 Capsule job을 pending으로 남기지 않습니다.
@@ -261,7 +273,9 @@ slot은 project와 optional workspace/workstream 범위에서 unique입니다. `
 브랜치·워크트리 세션). 앞의 둘은 프로젝트 공용(`project-current`), 마지막은 브랜치 tier(`workstream`)로
 들어갑니다. "브랜치 신호 없음"은 추측이 아니라 그 자체가 근거이므로 `project-current`의 정당한 evidence
 값(`no-branch-signal`)입니다. 같은 값이 추출 시 Chronicle `ASSERTED` 이벤트 `outcome.tier_reason`에도
-남습니다.
+남습니다. 이후 사다리를 타고 이동하면 `tier_reason`은 `tier:user` / `tier:auto` / `tier:user-directive`로
+덮어써집니다(누가 옮겼는지가 그 시점의 근거이므로). 즉 `tier_reason`은 "지금 이 tier에 있는 이유"이지
+추출 시점 브랜치 신호의 영구 기록이 아닙니다. Sync import는 peer가 보낸 200자 이하의 값을 그대로 받습니다.
 
 ### Semantic fields
 
@@ -312,19 +326,26 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 | `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
 | `previous_fact` / `new_fact` | previous/new value |
 | `project_id`, `subject_key` | stable slot |
-| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED|PROMOTED|DEMOTED`(뒤 둘은 0.6.0 additive) |
+| `event_kind` | `ASSERTED\|CHANGED\|RETIRED\|RESTORED\|VALIDATED\|INCIDENT\|CONTRADICTED\|PROMOTED\|DEMOTED`(뒤 둘은 0.6.0 additive) |
 | `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
 | `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
 | `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
-| `outcome_json` | validation/incident/temporal 판정 결과 |
+| `outcome_json` | validation/incident/temporal 판정 결과. `PROMOTED`/`DEMOTED`는 `from_tier`, `to_tier`, `actor`, `reason`, `evidence_ids`(+근거 fact가 있으면 `evidence_fact_ids`)를 담습니다 |
 | `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
 | `reverts_event_id`, `related_event_ids` | rollback/관계 |
-| `actor` | `extractor|consolidator|user|sync|legacy|auto|user-directive|migration`(뒤 셋은 0.6.0 additive) |
-| `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision|human|trusted-tool|unknown` |
+| `actor` | `extractor\|consolidator\|user\|sync\|legacy\|auto\|user-directive\|migration`(뒤 셋은 0.6.0 additive) |
+| `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision\|human\|trusted-tool\|unknown` |
 | `effective_at` / `effective_at_source` | 실제 사건 시점(`source`) 또는 처리 시점 fallback(`recorded`), peer 수신(`peer`) |
 | `recorded_at` | worker 처리 시점 |
 | `projection_applied` | 1이면 같은 transaction에서 current가 바뀜, 0이면 event-only/historical/candidate |
 | `chronicle_seq` | local append 순서 tie-breaker(clock 아님) |
+
+`PROMOTED`/`DEMOTED`는 projection event이므로 `projection_applied = 1`이고 `effective_at_source`는
+`recorded`입니다. `evidence_authority`는 actor `auto`면 `unknown`, 그 외에는 `human-decision`이며
+`user`/`user-directive`의 `--reason`만 `rationale`(사용자 진술)로 기록합니다. 사다리 API는
+`outcome.to_tier`에 tier 이름(`workstream|project|global`)을 쓰지만 `facts migrate-tiers`의 일회성
+back-fill만 `promotion_state` 이름인 `project-current`를 씁니다 — 두 문자열이 실제 데이터에 함께
+존재하므로 `outcome_json`을 읽는 쪽은 둘 다 처리해야 합니다.
 
 Timeline 정렬은 항상 `effective_at, recorded_at, chronicle_seq`이며 worker 완료 순서나 generation 번호로
 정렬하지 않습니다. Legacy row backfill: `event_kind=CHANGED`, `actor=legacy`, `reason → classifier_note`,

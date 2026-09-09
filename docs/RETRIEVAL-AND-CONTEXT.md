@@ -54,6 +54,12 @@ adapter를 거치며 scope 생략 시 global만 읽습니다. Legacy row의 read
 Workspace/workstream/session은 project membership을 검증합니다. 명시적으로 공유한 workstream은
 여러 workspace의 session에서 사용할 수 있으므로 workstream의 최초 workspace를 독점 owner로 보지 않습니다.
 
+`readScopeForSession`(0.6.0)은 세션의 `session_memory_state`에서 scope를 유도합니다. project와
+workstream이 모두 있으면 `workstream-id` scope(= 글로벌 + 프로젝트 공용 + 현재 브랜치 tier)이고,
+project에 붙지 못했거나 그 project가 `quarantined = 1`이면 **글로벌 전용**으로 낮춥니다. 아무것도 못 읽는
+쪽이 남의 프로젝트 기억을 자기 것으로 읽는 쪽보다 안전하기 때문입니다(#38). 브랜치 tier 사이에는
+가시성이 없으므로 다른 브랜치의 기억은 승격되기 전까지 주입되지 않습니다.
+
 `process.cwd()`나 MCP 설치 경로는 project 추론 근거가 아닙니다. Graph는 seed와 모든 hop에 같은
 scope를 적용하고 범위 밖 node를 다음 hop의 bridge로 쓰지 않습니다. 읽기 범위는
 [MutationPolicy](FACT-LIFECYCLE.md#6-semantic-mutation)의 수정 권한을 부여하지 않습니다.
