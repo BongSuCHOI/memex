@@ -17,6 +17,25 @@ export declare function withExportTransaction<T>(db: Database.Database, operatio
  * domains/categories/relations and the KR translation are LOCAL DERIVED state
  * — every device rebuilds them from its own facts, so they no longer travel,
  * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
+/**
+ * Every promotion state a project fact can hold. Before 0.6.1 the export
+ * carried only the project-wide three, so branch/workspace-tier memories never
+ * reached a second device while their tombstones did (#37 problems 2 and 3).
+ * #48 decision 3: branch-tier memories ARE exported with their tier, workspace
+ * and branch metadata; the receiving device simply does not inject them unless
+ * it is on that branch.
+ */
+export declare const EXPORTED_PROMOTION_STATES: readonly ["legacy-project", "decision", "project-current", "workspace", "workstream"];
+/**
+ * Protocol 5 = protocol 4 plus the tier scope keys on each fact row
+ * (`workspace_id`, `workstream_id`, `workstream_branch`) and the two extra
+ * `promotion_state` values that now travel. The version is bumped rather than
+ * carried additively on purpose: a 0.6.0 importer rewrites any unknown
+ * promotion_state to `legacy-project`, which would silently widen a branch
+ * memory into project-wide scope on the older device. Fail closed instead —
+ * an older peer rejects the whole generation and says why.
+ */
+export declare const SYNC_PROTOCOL_VERSION = 5;
 export declare const SYNC_PAYLOAD_FILE_NAMES: readonly ["facts.jsonl", "fact-revisions.jsonl", "fact-tombstones.jsonl", "recall-events.jsonl"];
 /** Non-empty JSONL lines — a generation manifest pins this count per file. */
 export declare function countPayloadRows(content: string): number;

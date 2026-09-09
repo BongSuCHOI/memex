@@ -217,7 +217,16 @@ user-role message의 `DO NOT INDEX` marker는 해당 conversation 전체를 Meme
 
 ### 멀티디바이스 sync
 
-protocol v4는 기기별로 하나의 committed generation을 export하며, 각 generation은 `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`과 protocol version·device/generation identity·row count·payload별 SHA-256을 담은 `meta.json`으로 구성됩니다. Importer는 SQLite를 변경하기 전에 generation 전체를 pin하고 검증하며, 필수 파일 누락·hash 불일치·JSON 오류·row schema 오류가 하나라도 있으면 해당 device generation 전체를 reject합니다. 같은 local device의 exporter는 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화되므로 늦게 끝난 오래된 export가 `CURRENT`를 되돌릴 수 없고 cloud-sync되는 lockfile도 필요하지 않습니다. KR 번역, ontology category, relation, vector index는 각 기기에서 로컬로 다시 만듭니다.
+protocol v5는 기기별로 하나의 committed generation을 export하며, 각 generation은 `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`과 protocol version·device/generation identity·row count·payload별 SHA-256을 담은 `meta.json`으로 구성됩니다. Importer는 SQLite를 변경하기 전에 generation 전체를 pin하고 검증하며, 필수 파일 누락·hash 불일치·JSON 오류·row schema 오류가 하나라도 있으면 해당 device generation 전체를 reject합니다. 같은 local device의 exporter는 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화되므로 늦게 끝난 오래된 export가 `CURRENT`를 되돌릴 수 없고 cloud-sync되는 lockfile도 필요하지 않습니다. KR 번역, ontology category, relation, vector index는 각 기기에서 로컬로 다시 만듭니다.
+
+| 기억 계층 | 전송 | 받는 기기에서 |
+| --- | --- | --- |
+| 글로벌 | 예 | 어디서나 주입 |
+| 프로젝트 공용 (`legacy-project`, `project-current`, `decision`) | 예 | 해당 프로젝트에서 주입 |
+| workspace | 예 (`workspace_id` 포함) | 주입되지 않음 — workspace id는 기기 로컬 값 |
+| 브랜치 / workstream | 예 (`workstream_id`·`tier_reason`·브랜치 이름 포함) | 같은 프로젝트의 같은 브랜치에 있을 때만 주입 (`workstream_id`가 `hash(project_id, branch)`라 그대로 일치) |
+
+모든 promotion state가 전송되므로, 자체 tier를 가질 수 없는 fact tombstone이 export되는 fact와 정확히 같은 모집단을 가리킵니다. 프로젝트 전역 승격(`project-current` / `decision`)은 workspace·브랜치 키가 항상 비워진 채 도착하며(로컬 writer가 강제하는 것과 같은 불변식), 이 버전이 모르는 `promotion_state`는 프로젝트 범위로 뭉개지 않고 malformed row로 보고해 해당 generation을 거부합니다. protocol v4 generation은 계속 import되고, v4 피어는 v5 generation을 잘못 읽는 대신 거부합니다.
 
 더 깊은 내용: [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CONVERSATION-LIFECYCLE.md](docs/CONVERSATION-LIFECYCLE.md) · [FACT-LIFECYCLE.md](docs/FACT-LIFECYCLE.md) · [RETRIEVAL-AND-CONTEXT.md](docs/RETRIEVAL-AND-CONTEXT.md) · [SCHEMA.md](docs/SCHEMA.md)
 

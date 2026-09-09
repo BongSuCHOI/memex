@@ -307,7 +307,7 @@ Optional Phase 7 persistent context dependency gate는 authority 의미를 유�
 - manual semantic edit와 remote semantic replacement가 stale local context dependency를 제거
 - conversation exclusion이 excluded context에 의존한 fact도 terminal tombstone과 함께 purge
 - exchange canonical rename/delete와 fact hard delete 뒤 FK 정합성 유지
-- protocol v4 payload에 context dependency 파일/field가 추가되지 않음
+- protocol v5 payload에 context dependency 파일/field가 추가되지 않음
 - Fact Detail과 `trace_fact`가 context를 non-authoritative로 명시
 - real Chrome 1440×900 Fact Detail에서 context kind/ID/authority가 보이고 overflow/runtime error가 없음
 

@@ -62,6 +62,33 @@ export function withExportTransaction<T>(db: Database.Database, operation: () =>
  * domains/categories/relations and the KR translation are LOCAL DERIVED state
  * — every device rebuilds them from its own facts, so they no longer travel,
  * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
+/**
+ * Every promotion state a project fact can hold. Before 0.6.1 the export
+ * carried only the project-wide three, so branch/workspace-tier memories never
+ * reached a second device while their tombstones did (#37 problems 2 and 3).
+ * #48 decision 3: branch-tier memories ARE exported with their tier, workspace
+ * and branch metadata; the receiving device simply does not inject them unless
+ * it is on that branch.
+ */
+export const EXPORTED_PROMOTION_STATES = [
+  "legacy-project",
+  "decision",
+  "project-current",
+  "workspace",
+  "workstream",
+] as const;
+
+/**
+ * Protocol 5 = protocol 4 plus the tier scope keys on each fact row
+ * (`workspace_id`, `workstream_id`, `workstream_branch`) and the two extra
+ * `promotion_state` values that now travel. The version is bumped rather than
+ * carried additively on purpose: a 0.6.0 importer rewrites any unknown
+ * promotion_state to `legacy-project`, which would silently widen a branch
+ * memory into project-wide scope on the older device. Fail closed instead —
+ * an older peer rejects the whole generation and says why.
+ */
+export const SYNC_PROTOCOL_VERSION = 5;
+
 export const SYNC_PAYLOAD_FILE_NAMES = [
   'facts.jsonl',
   'fact-revisions.jsonl',
@@ -266,13 +293,25 @@ export function exportForSync(): SyncExportResult {
                f.semantic_updated_at, f.lifecycle_updated_at, f.project_id,
                p.portable_project_key, f.subject_key, f.promotion_state,
                -- 0.6.0 (#18/#19): the tier placement travels with the fact.
-               -- Additive: a pre-0.6.0 peer simply ignores the extra column.
-               f.tier_reason
-        FROM facts f LEFT JOIN projects p ON p.project_id = f.project_id
+               f.tier_reason,
+               -- 0.6.1 (#37/#48 decision 3): the tier's scope keys travel too.
+               -- workstream_id is deterministic — ws-hash(project_id, branch) —
+               -- so the same branch of the same logical project resolves to the
+               -- SAME id on the receiving device and the memory lands back in
+               -- its branch tier. workspace_id is a device-local UUID: it is
+               -- carried verbatim so a workspace-tier row stays legal, and it
+               -- simply never matches a local workspace, which is the intended
+               -- "not my branch, not injected" outcome.
+               f.workspace_id, f.workstream_id,
+               -- Human-readable branch behind workstream_id (hash preimage).
+               w.branch_hint AS workstream_branch
+        FROM facts f
+        LEFT JOIN projects p ON p.project_id = f.project_id
+        LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
         WHERE f.scope_type = 'global'
-           OR f.promotion_state IN ('legacy-project','decision','project-current')
+           OR f.promotion_state IN (${EXPORTED_PROMOTION_STATES.map(() => "?").join(",")})
         ORDER BY f.id
-      `).all() as Array<Record<string, unknown>>;
+      `).all(...EXPORTED_PROMOTION_STATES) as Array<Record<string, unknown>>;
       const facts = factRows.map((row) => ({
         ...row,
         // Device paths never leave the device. Stable logical identity is the
@@ -304,15 +343,21 @@ export function exportForSync(): SyncExportResult {
         LEFT JOIN facts f ON f.id = r.fact_id
         LEFT JOIN projects p ON p.project_id = COALESCE(r.project_id, f.project_id)
         WHERE (f.id IS NOT NULL AND (f.scope_type = 'global'
-                 OR f.promotion_state IN ('legacy-project','decision','project-current')))
+                 OR f.promotion_state IN (${EXPORTED_PROMOTION_STATES.map(() => "?").join(",")})))
            OR (r.fact_id IS NULL AND r.project_id IS NOT NULL)
         ORDER BY r.id
-      `).all() as Array<Record<string, unknown>>).map(({ source_exchange_ids_normalized, ...row }) => ({
+      `).all(...EXPORTED_PROMOTION_STATES) as Array<Record<string, unknown>>).map(({ source_exchange_ids_normalized, ...row }) => ({
         ...row,
         source_exchange_ids: source_exchange_ids_normalized,
         projection_applied: Number(row.projection_applied ?? 1) === 1 ? 1 : 0,
       }));
 
+      // Issue #37 problem 3 — the export/tombstone asymmetry. Tombstones carry
+      // no promotion_state (the fact row they describe is gone), so they cannot
+      // be filtered by tier. The asymmetry is closed on the OTHER side: every
+      // promotion state now travels (#48 decision 3), so the tombstone set and
+      // the fact set describe the same population by construction. Narrowing
+      // tombstones instead would have hidden real deletions from peers.
       const tombstones = [
         ...(db.prepare(`
           SELECT fact_id, NULL AS event_id, deleted_at, reason FROM fact_tombstones ORDER BY fact_id
@@ -350,7 +395,7 @@ export function exportForSync(): SyncExportResult {
     // row count and SHA-256, so an importer can fail closed on a partially
     // synced or corrupted generation instead of silently reading a prefix.
     const meta = {
-      protocol_version: 4,
+      protocol_version: SYNC_PROTOCOL_VERSION,
       identity_contract: 'stable-project-v1',
       generation: generationId,
       device_id: device.value,

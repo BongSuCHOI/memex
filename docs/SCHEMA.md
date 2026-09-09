@@ -127,7 +127,7 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 자동 재개는 완료 기록·실패 횟수·미확인 호출 비용을 보존합니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
 원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
-이 상태와 ledger는 protocol v4에 export하지 않습니다.
+이 상태와 ledger는 protocol v5에 export하지 않습니다.
 이 additive ledger를 모르는 이전 worker와 현재 worker를 같은 DB에서 혼용하면 예산 보장이 성립하지
 않습니다. 업그레이드 시 이전 worker를 종료하고 같은 코드 버전으로 재시작해야 합니다.
 
@@ -220,11 +220,11 @@ fact_context_dependencies (
 `dependency_kind`는 기존 local audit kind 외에 `ratified_proposition`, `referent_definition`,
 `style_reference`, `workflow_reference`, `recall_reference`를 허용합니다. 기존 DB는 초기화 시
 table을 transaction 안에서 rebuild해 old row를 보존하며 CHECK constraint를 확장합니다. 이 관계는
-local persistent audit lineage이지만 fact truth의 authority가 아니며 protocol v4 durable payload가
+local persistent audit lineage이지만 fact truth의 authority가 아니며 protocol v5 durable payload가
 아닙니다.
 
 Phase 6 evaluation의 candidate/accepted/rejection/grounding/ratification counter도 process-local
-report diagnostics입니다. `extraction_log`, `facts`, protocol v4 payload에 새 telemetry column이나
+report diagnostics입니다. `extraction_log`, `facts`, protocol v5 payload에 새 telemetry column이나
 field를 추가하지 않습니다.
 
 ## 3. Facts
@@ -295,7 +295,7 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 
 ### Local evidence and repair receipts
 
-`fact_evidence_receipts`는 schema v7 DB 초기화 시 additive로 생성하며 protocol v4에 포함하지 않습니다.
+`fact_evidence_receipts`는 schema v7 DB 초기화 시 additive로 생성하며 protocol v5에 포함하지 않습니다.
 
 ```text
 fact_id (PK, facts FK ON DELETE CASCADE)
@@ -391,7 +391,7 @@ CREATE TABLE taxonomy_state (
 
 privacy purge가 taxonomy를 전면 invalidate할 때 같은 transaction에서 epoch도 증가합니다. classifier는 epoch을 캡처하고 commit 전에 검증하여 purge 전 candidate에서 계산된 결과가 taxonomy를 다시 만들지 못하게 합니다.
 
-ontology/relation/category vector는 protocol v4 local-derived state입니다.
+ontology/relation/category vector는 protocol v5 local-derived state입니다.
 
 ## 6. Vector tables
 
@@ -443,7 +443,7 @@ conversation exclusion purge는 다음을 하나의 policy operation으로 다�
 
 `sync_meta.device_id`는 local DB writer identity입니다. 각 device는 자기 `sync/devices/<device-id>/` generation만 씁니다.
 
-protocol v4는 SQLite 파일을 복제하지 않습니다. JSONL generation으로 durable state만 교환합니다.
+protocol v5는 SQLite 파일을 복제하지 않습니다. JSONL generation으로 durable state만 교환합니다.
 
 ```text
 facts

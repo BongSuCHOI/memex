@@ -52,7 +52,7 @@ SSE는 조회 갱신 알림이다. 로그/추적 원장 전체 재생 프로토�
 아니다.** 도메인·관계 유형·최대 노드 수(기본 1,200, 최대 5,000)로 필터하며 관계는
 30,000개에서 잘린다. 잘린 경우 화면에 그 사실을 표시한다.
 
-ontology와 relation은 protocol v4의 local-derived state다. sync 직후 taxonomy
+ontology와 relation은 protocol v5의 local-derived state다. sync 직후 taxonomy
 backfill이 끝나기 전에는 durable fact가 있어도 지도가 부분적으로 비어 있을 수 있고,
 privacy purge 뒤에는 재분류 때문에 다시 대기로 보일 수 있다. 이는 오류가 아니다.
 빈 결과와 오류는 같은 빈 화면으로 합치지 않는다.

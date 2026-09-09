@@ -147,7 +147,7 @@ lineage는 semantic winner가 누구인지와 관계없이 단조 증가해야 �
 `fact_context_dependencies`는 Fact 해석에 실제로 사용된 exchange를 로컬에서 감사하기 위한 별도
 관계입니다. Generator dependency는 hint이고 entailment verifier가 removal test 뒤 사용한
 `context_id`를 server가 bounded causal constraint로 canonicalize합니다. Authoritative evidence가
-아니며 `source_exchange_ids`와 합치거나 protocol v4로 동기화하지 않습니다. 나머지 derived 값처럼
+아니며 `source_exchange_ids`와 합치거나 protocol v5로 동기화하지 않습니다. 나머지 derived 값처럼
 semantic state와 local conversation corpus에 종속됩니다.
 
 ## 4. 주요 컴포넌트
@@ -172,7 +172,7 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/fact-management.ts` | policy 기반 semantic/lifecycle transaction과 CAS |
 | `src/fact-integrity.ts` | read-only 감사, exact preview 선택, 멱등 선별 복구 |
 | `src/sync-export.ts` | durable generation export |
-| `src/sync-import.ts` | protocol v4 검증과 axis별 reconciliation |
+| `src/sync-import.ts` | protocol v5 검증과 axis별 reconciliation |
 | `src/ontology-classifier.ts` | taxonomy classification, attempt/fallback 관리 |
 | `src/ontology-db.ts` | taxonomy epoch, category/relation persistence |
 | `src/search.ts` | vector/text/hybrid retrieval |
@@ -244,7 +244,7 @@ Phase 5는 `UserPromptSubmit`에 cheap gate를 둡니다. ack/continuation과 to
 
 규범 문서와 as-built의 관계: [Final RFC](architecture/memex-continuity-v1.md)는 SHA로 고정된 목표이고, 이 문서와 [CONTINUITY.md](CONTINUITY.md)는 실제 구현을, [rfc-deviations.md](verification/continuity-v1/rfc-deviations.md)는 차이를 기록합니다.
 
-## 6. Sync protocol v4
+## 6. Sync protocol v5
 
 기기 간 이동하는 durable payload는 네 파일입니다.
 
@@ -261,16 +261,33 @@ export 전체(snapshot → generation write → `CURRENT` flip → prune)는 **l
 
 importer는 DB mutation 전에 generation 전체를 메모리에 pin하고 다음을 fail-closed로 검증합니다.
 
-- protocol version = 4
+- protocol version ∈ {4, 5}
 - `CURRENT`와 manifest generation 일치
 - device identity 일치
 - 필수 파일 존재
 - row count / SHA-256 일치
-- 모든 JSONL row가 JSON이며 v4 schema에 부합
+- 모든 JSONL row가 JSON이며 schema에 부합
 
 한 항목이라도 실패하면 그 device generation 전체를 적용하지 않습니다.
 
-Phase 3의 protocol-v4 payload는 project fact에 stable `project_id`, optional `portable_project_key`,
+### v5 델타 (0.6.1, #37/#48)
+
+v5 = v4 + fact row의 tier scope key(`workspace_id`, `workstream_id`, 읽을 수 있는
+`workstream_branch`) + 전송되는 `promotion_state` 집합 확대(`workspace`, `workstream` 추가).
+`workstream_id`는 `hash(project_id, branch)`이므로 다른 기기에서 같은 브랜치를 열면 그대로
+일치하고, 브랜치 기억이 브랜치 tier로 되살아납니다. `workspace_id`는 기기 로컬 UUID라 그대로
+실려 가지만 받는 기기에서 매칭되지 않습니다(의도된 "내 브랜치가 아니면 주입하지 않음").
+
+import는 로컬 writer의 불변식을 그대로 적용합니다: `decision`/`project-current`는
+`workspace_id`/`workstream_id`를 NULL로 강제하고, `workspace`는 자기 workspace가 있어야 하며
+workstream을 갖지 않고, `workstream`은 자기 workstream이 있어야 합니다. 모르는
+`promotion_state`는 `legacy-project`로 재작성하지 않고 malformed row로 보고합니다.
+
+version을 additive로 두지 않고 올린 이유: v4 importer는 모르는 `promotion_state`를
+`legacy-project`로 재작성하므로, 브랜치 기억이 구 기기에서 조용히 프로젝트 범위로 넓어집니다.
+v4 peer가 v5 generation을 통째로 거절하도록(fail-closed) 버전을 올렸습니다.
+
+Phase 3의 protocol-v5 payload는 project fact에 stable `project_id`, optional `portable_project_key`,
 `subject_key`, `promotion_state`를 싣고 `scope_project`는 `null`로 보냅니다. Device-local cwd,
 workspace path, Git directory는 wire truth가 아닙니다. 같은 portable key는 로컬 project에 매핑하고,
 서로 충돌하는 ID/key 조합은 generation을 적용하지 않습니다. Phase 3 shape를 모르는 기존 v4 peer는

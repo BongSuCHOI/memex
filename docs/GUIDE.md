@@ -291,7 +291,27 @@ memex home --json
 
 ### Sync에 포함되는 것
 
-protocol v4는 durable facts/revisions/tombstones/recall receipts만 sync합니다. KR translation, ontology, relation, vectors는 각 기기가 자체 rebuild합니다.
+protocol v5는 durable facts/revisions/tombstones/recall receipts만 sync합니다. KR translation, ontology, relation, vectors는 각 기기가 자체 rebuild합니다.
+
+기억 계층(#18/#19)은 **전부** 전송됩니다(0.6.1, #37/#48 결정 3).
+
+| 계층 | 전송 | 받는 기기에서 |
+| --- | --- | --- |
+| 글로벌 | 예 | 어디서나 주입 |
+| 프로젝트 공용 (`legacy-project`·`project-current`·`decision`) | 예 | 해당 프로젝트에서 주입 |
+| `workspace` | 예 (`workspace_id` 그대로) | 주입 안 됨 — workspace id는 기기 로컬 UUID |
+| `workstream`(브랜치) | 예 (`workstream_id`·`tier_reason`·`workstream_branch`) | 같은 프로젝트의 같은 브랜치일 때만 주입 |
+
+`workstream_id`는 `hash(project_id, branch)`로 결정되므로 다른 맥에서 같은 브랜치를 열면 같은 id가
+나오고, 브랜치 기억이 브랜치 tier 그대로 되살아납니다. 0.6.0까지는 브랜치 tier fact가 export에서
+빠지면서 그 삭제 기록(tombstone)만 전송되는 비대칭이 있었습니다(#37). 이제 모든 promotion state가
+전송되므로 tombstone과 fact가 같은 모집단을 가리킵니다.
+
+import는 로컬 writer와 같은 불변식을 강제합니다: `project-current` / `decision`으로 승격된 fact는
+`workspace_id`·`workstream_id`가 NULL로 강제되고, 이 버전이 모르는 `promotion_state`는
+`legacy-project`로 조용히 바뀌는 대신 malformed row로 보고되어 그 generation 전체가 거부됩니다.
+protocol v4 generation은 계속 읽습니다. v4 피어는 v5 generation을 **거부**합니다(잘못 읽는 대신
+실패하도록 버전을 올렸습니다) — 두 기기를 모두 0.6.1로 올린 뒤 sync가 재개됩니다.
 
 ## 11. DO NOT INDEX와 재분류 비용
 

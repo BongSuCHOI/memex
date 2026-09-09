@@ -84,7 +84,7 @@ stdout callback 성공 뒤 정확한 receipt ID만 `emitted`로 바꿉니다. Ho
 
 ## 9. Sync · privacy (§9, §20)
 
-protocol v4 다섯 파일에 stable project identity, subject/promotion, Chronicle event row, event tombstone row가 additive로 실립니다(D-015, D-018, D-019). 구 peer는 generation 전체를 visible reject합니다. privacy purge는 journal/checkpoint/job/exchange/fact/event/incident/Capsule(D-035)/vector/Hot Evidence/session state를 한 transaction에서 지우고 tombstone을 남겨 worker/sync/cache 재생성을 막습니다.
+protocol v5 다섯 파일에 stable project identity, subject/promotion, Chronicle event row, event tombstone row가 additive로 실립니다(D-015, D-018, D-019). 구 peer는 generation 전체를 visible reject합니다. privacy purge는 journal/checkpoint/job/exchange/fact/event/incident/Capsule(D-035)/vector/Hot Evidence/session state를 한 transaction에서 지우고 tombstone을 남겨 worker/sync/cache 재생성을 막습니다.
 
 ## 10. Schema와 flag
 

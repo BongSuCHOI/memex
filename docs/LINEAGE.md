@@ -49,6 +49,6 @@ upstream-specific runtime adapter나 개인 배포 artifact는 자동으로 Meme
 
 ## 5. 현재 설계가 diverged한 핵심 지점
 
-Memex는 multi-device sync를 protocol v4 generation으로 다루며 fact state를 semantic/lifecycle/lineage로 분리합니다. ontology/KR/relation/vector는 local derived state로 둡니다.
+Memex는 multi-device sync를 protocol v5 generation으로 다루며 fact state를 semantic/lifecycle/lineage로 분리합니다. ontology/KR/relation/vector는 local derived state로 둡니다.
 
 이 구조는 현재 Memex의 고유한 persistence/sync/privacy 계약이므로 upstream을 참고할 때도 이 불변식을 우선합니다.

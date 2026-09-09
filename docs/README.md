@@ -30,7 +30,7 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 - **Semantic fact state** — fact 문장, category, scope. `semantic_updated_at`으로 기기 간 충돌을 판단합니다.
 - **Lifecycle state** — active/inactive. 의미와 독립적인 `lifecycle_updated_at`을 사용합니다.
 - **Lineage metadata** — `source_exchange_ids`는 set union, `consolidated_count`는 max로 단조 수렴합니다.
-- **Local derived state** — `fact_kr`, ontology, relation, vector. protocol v4에서는 sync하지 않고 각 기기가 재구축합니다.
+- **Local derived state** — `fact_kr`, ontology, relation, vector. protocol v5에서는 sync하지 않고 각 기기가 재구축합니다.
 - **Durable sync state** — facts, revisions, tombstones, recall receipts만 generation snapshot으로 교환합니다.
 - **기억 계층(memory tier)** — 같은 fact라도 브랜치 tier / 프로젝트 공용 / 글로벌 중 어디에 있느냐가 주입과 조회 범위를 정합니다. `facts.promotion_state`와 `facts.tier_reason`이 그 위치와 근거이고, 이동은 Chronicle `PROMOTED`/`DEMOTED`로 남습니다.
 

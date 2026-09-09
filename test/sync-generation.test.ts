@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exportForSync, getSyncDir, pruneGenerations } from '../src/sync-export.js';
+import { exportForSync, getSyncDir, pruneGenerations, SYNC_PROTOCOL_VERSION } from '../src/sync-export.js';
 import { importFromSync } from '../src/sync-import.js';
 import { initDatabase } from '../src/db.js';
 import { insertFact } from '../src/fact-db.js';
@@ -164,7 +164,9 @@ describe('sync export generation atomicity (P2-5)', () => {
       protocol_version: number;
     };
     expect(meta.generation).toBe(id);
-    expect(meta.protocol_version).toBe(4);
+    // 0.6.1 (#37): protocol 5 = 4 + the tier scope keys on every fact row.
+    expect(meta.protocol_version).toBe(SYNC_PROTOCOL_VERSION);
+    expect(SYNC_PROTOCOL_VERSION).toBe(5);
 
     // New layout never leaves a partial device-root payload set.
     expect(
