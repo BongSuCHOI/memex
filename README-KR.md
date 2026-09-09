@@ -92,7 +92,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/facts` 기억·사실 | fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제 |
 | `/taxonomy` 분류 | ontology domain과 category |
 | `/graph` 지식 지도 | WebGL 2D/3D 관계 그래프, Canvas2D fallback |
-| `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 |
+| `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 — 각 탭에 [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 실패 클래스 표에서 파생한 "다음 행동" 안내 |
 | `/settings` 관리 | 런타임, 관리 명령, 화면 설정, 진단 |
 
 모든 화면은 프로젝트 / 공통 기억 / 전체 프로젝트 범위를 명시적으로 선택합니다. 기본값은 전체 프로젝트이고 이 범위는 **조회 전용**입니다 — 실제 주입 범위는 언제나 현재 프로젝트 + 공통 기억이며, 범위 선택 옆에 그 사실을 상시 표시합니다. 화면을 여는 것만으로는 모델 작업이 시작되지 않습니다.

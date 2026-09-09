@@ -92,7 +92,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/facts` memory & facts | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete |
 | `/taxonomy` classification | ontology domains and categories |
 | `/graph` knowledge map | WebGL 2D/3D relation graph with a Canvas2D fallback |
-| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs |
+| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
 | `/settings` administration | runtime, admin commands, display preferences, diagnostics |
 
 Every page takes an explicit scope: one project, common (global) memory, or all projects. All projects is the default view and is read-only breadth — injection always uses the current project plus common memory, and the scope selector says so permanently. Opening a page never starts model work.

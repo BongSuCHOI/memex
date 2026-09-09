@@ -33,13 +33,14 @@ const MALICIOUS =
 const EDITED =
   "The Memex Workspace mutation path uses an initialized vec0 connection.";
 // #22 branch-tier seed: a project memory the default project predicate hides.
-const TIER_PROJECT_ID = "project-web-ui";
-const TIER_WORKSPACE_ID = "workspace-web-ui";
 const TIER_WORKSTREAM_ID = "stream-web-ui";
 const TIER_BRANCH = "feature/tier-ladder";
 const TIER_AT = "2026-08-01T00:00:00.000Z";
 const BRANCH_FACT =
   "브랜치 계층 기억은 그 브랜치 세션에만 주입된다.";
+// #23 failure-class seed.
+const DEAD_JOB_ID = "e2e-dead-capsule-job";
+const DEAD_JOB_ERROR = "capsule patch exceeds bounded storage size";
 
 class Cdp {
   constructor(url) {
@@ -1186,6 +1187,9 @@ try {
   const { insertFact, insertFactContextDependencies } = await import(
     path.join(ROOT, "dist", "fact-db.js")
   );
+  const { resolveProjectWorkspace } = await import(
+    path.join(ROOT, "dist", "continuity-identity.js")
+  );
   const db = initDatabase();
   const contextExchangeId = "web-ui-context-exchange";
   db.prepare(`
@@ -1235,15 +1239,19 @@ try {
   // #22: one project memory parked on the branch tier. It is invisible to the project
   // screen's default predicate, which is exactly what the hiddenByTier banner, the
   // tiers=all toggle and a real promoteFact() call have to prove.
-  db.prepare(
-    "INSERT INTO projects (project_id, portable_project_key, display_name, memory_revision, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-  ).run(TIER_PROJECT_ID, "e2e:web-ui", "Memex Web UI", 0, TIER_AT, TIER_AT);
-  db.prepare(
-    "INSERT INTO workspaces (workspace_id, project_id, device_id, canonical_path, location_kind, branch, last_seen_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
-  ).run(TIER_WORKSPACE_ID, TIER_PROJECT_ID, "device-e2e", CONTEXT_PROJECT, "directory", TIER_BRANCH, TIER_AT, TIER_AT);
+  // Identity comes from the core, not from invented rows: resolveProjectWorkspace keys the
+  // workspace on this device, so a hand-written row would let a later core call mint a second
+  // project for the same path and make every project-scoped read AMBIGUOUS_PROJECT.
+  const identity = resolveProjectWorkspace(db, {
+    cwd: CONTEXT_PROJECT,
+    locationKind: "directory",
+    branch: TIER_BRANCH,
+    gitCommonDir: null,
+    remoteFingerprint: null,
+  });
   db.prepare(
     "INSERT INTO minimal_workstreams (workstream_id, project, session_id, branch_hint, binding_reason, created_at, updated_at, project_id, workspace_id, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-  ).run(TIER_WORKSTREAM_ID, CONTEXT_PROJECT, "web-ui-tier-session", TIER_BRANCH, "session-local", TIER_AT, TIER_AT, TIER_PROJECT_ID, TIER_WORKSPACE_ID, "active");
+  ).run(TIER_WORKSTREAM_ID, CONTEXT_PROJECT, "web-ui-tier-session", TIER_BRANCH, "session-local", TIER_AT, TIER_AT, identity.projectId, identity.workspaceId, "active");
   const branchFactId = insertFact(db, {
     fact: BRANCH_FACT,
     category: "decision",
@@ -1252,8 +1260,8 @@ try {
     source_exchange_ids: [],
     embedding: new Array(384).fill(0.2),
     embedding_version: 1,
-    project_id: TIER_PROJECT_ID,
-    workspace_id: TIER_WORKSPACE_ID,
+    project_id: identity.projectId,
+    workspace_id: identity.workspaceId,
     workstream_id: TIER_WORKSTREAM_ID,
     promotion_state: "workstream",
     promotion_evidence: "experimental",
@@ -1262,6 +1270,11 @@ try {
   // Kept older than the hostile fact so every existing "first row" assertion still
   // reads the row it was written for.
   db.prepare("UPDATE facts SET created_at = ?, updated_at = ? WHERE id = ?").run(TIER_AT, TIER_AT, branchFactId);
+  // #23: one dead capsule job. Its stored error is the class the catalogue must call
+  // harmless-to-memory, and it is what `memex recover --all-dead` has to clear.
+  db.prepare(
+    "INSERT INTO memory_jobs (job_id, kind, partition_key, policy_version, priority, state, available_at, attempts, max_attempts, last_error, idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(DEAD_JOB_ID, "capsule_update", "session:web-ui-tier-session", "capsule-v1", 100, "dead", TIER_AT, 5, 5, DEAD_JOB_ERROR, "e2e-dead-job", TIER_AT, TIER_AT);
   db.close();
 
   const port = await freePort();
@@ -1537,6 +1550,73 @@ try {
     false,
   );
 
+  // #23: the jobs tab must say what the stored error means and what to do about it.
+  const jobGuidance = await pageProbe(
+    cdp,
+    base + "/activity" + allScope + "&tab=jobs",
+    probe(`
+      const row=await until('dead job row',()=>[...document.querySelectorAll('#main .data-table tbody tr')].find(r=>r.textContent.includes(${JSON.stringify(DEAD_JOB_ERROR)})));
+      const cells=[...row.querySelectorAll('td')];
+      const guidance=cells[cells.length-2];
+      return {
+        heads:[...document.querySelectorAll('#main .data-table thead th')].map(x=>x.textContent.trim()),
+        guidanceText:guidance.textContent,
+        ignorable:guidance.querySelector('.tag')?.textContent.trim(),
+        copyCommands:[...guidance.querySelectorAll('[data-copy-command]')].map(x=>x.dataset.copyCommand),
+        operationButtons:[...guidance.querySelectorAll('[data-command]')].map(x=>x.dataset.command),
+      };
+    `),
+    "activity-job-guidance.png",
+    false,
+  );
+
+  // #23: the overview groups by class and the action clears the group.
+  const attention = await pageProbe(
+    cdp,
+    base + "/" + allScope,
+    probe(`
+      const card=await until('attention card',()=>[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태')));
+      const before=card.textContent;
+      const recover=await until('recover action',()=>card.querySelector('[data-command="recover"]:not([disabled])'));
+      recover.click();
+      const form=await until('command modal',()=>document.querySelector('#modal[open] #modal-form'));
+      const modalText=form.textContent;
+      form.querySelector('input[name="confirm"]').checked=true;
+      form.requestSubmit();
+      await until('operation drawer',()=>{
+        const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+        if(error)throw new Error('recover rejected: '+error);
+        return document.querySelector('#detail[open] #operation-body');
+      },60000);
+      // The command's own label contains 실패, so completion is read from the status row,
+      // not from the drawer text; the cancel button only exists while it is still running.
+      const finished=await until('operation finished',()=>{
+        const body=document.querySelector('#detail[open] #operation-body');
+        if(!body||body.querySelector('[data-action="cancel-operation"]'))return null;
+        const term=[...body.querySelectorAll('.kv dt')].find(d=>d.textContent.trim()==='상태');
+        return term?.nextElementSibling?.textContent?.trim()||null;
+      },180000);
+      const output=(document.querySelector('#operation-output')?.textContent||'').slice(-600);
+      document.querySelector('#detail [data-action="close-detail"]').click();
+      await until('drawer closed',()=>!document.querySelector('#detail').open);
+      const staleMetrics=document.querySelector('#main .metrics');
+      document.querySelector('[data-action="refresh"]').click();
+      await until('overview reloaded',()=>{const now=document.querySelector('#main .metrics');return now&&now!==staleMetrics?now:null;},60000);
+      await sleep(400);
+      const after=[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태'))?.textContent||'';
+      return {
+        beforeHasDeadClass:before.includes('실패로 종료된 작업'),
+        beforeHasImpact:before.includes('기억으로 추출되지 않습니다'),
+        modalCommand:modalText.includes('memex recover --all-dead'),
+        output,
+        finishedState:finished,
+        afterHasDeadClass:after.includes('실패로 종료된 작업'),
+      };
+    `),
+    "overview-attention.png",
+    false,
+  );
+
   const pipeline = await pageProbe(
     cdp,
     base + "/" + allScope,
@@ -1628,7 +1708,7 @@ try {
       const empty=await until('graph empty state',()=>{
         const el=document.querySelector('#graph-stage .empty');
         return el&&el.textContent.includes('표시할 기억이 없습니다')?el:null;
-      });
+      },20000).catch(e=>{throw new Error(e.message+' | main='+(document.querySelector('#main')?.innerText||'').slice(0,500).replace(/\\s+/g,' ')+' | nodes='+document.querySelectorAll('#node-list [data-fact]').length+' | meta='+text('#graph-stage .graph-meta'));});
       const canvas=document.querySelector('#graph-stage .graph-canvas');
       const surface=mapSurface(canvas);
       return {
@@ -1887,6 +1967,28 @@ try {
     );
   }
   if (
+    !jobGuidance.heads.includes("다음 행동") ||
+    !jobGuidance.guidanceText.includes("작업 맥락 Capsule이 잘림") ||
+    jobGuidance.ignorable !== "무시해도 됩니다" ||
+    !jobGuidance.guidanceText.includes("MEMEX_CAPSULE_MAX_CHARS")
+  ) {
+    throw new Error(
+      "Job guidance assertion failed: " + JSON.stringify(jobGuidance),
+    );
+  }
+  if (
+    !attention.beforeHasDeadClass ||
+    !attention.beforeHasImpact ||
+    !attention.modalCommand ||
+    attention.finishedState !== "완료" ||
+    !attention.output.includes("Recovered") ||
+    attention.afterHasDeadClass
+  ) {
+    throw new Error(
+      "Attention card assertion failed: " + JSON.stringify(attention),
+    );
+  }
+  if (
     pipeline.steps.length !== 4 ||
     !pipeline.text.includes("대화 수집") ||
     !pipeline.diagnosticsLink ||
@@ -1968,6 +2070,8 @@ try {
           scopeSwitch,
           tierBanner,
           tierPromote,
+          jobGuidance,
+          attention,
           facts,
           factDetail,
           factsTaxonomy,
