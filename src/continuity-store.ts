@@ -386,7 +386,12 @@ export function ensureContinuitySchema(
         through_checkpoint_id TEXT,
         authority TEXT NOT NULL DEFAULT 'context-only'
           CHECK(authority = 'context-only'),
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #17: a patch over MEMEX_CAPSULE_MAX_CHARS is stored shortened,
+        -- never dropped. These record exactly what the truncation removed.
+        truncated INTEGER NOT NULL DEFAULT 0,
+        truncated_fields_json TEXT NOT NULL DEFAULT '[]',
+        original_chars INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS capsule_checkpoint_state (
@@ -816,6 +821,17 @@ export function ensureContinuitySchema(
     const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
     for (const name of ["target_seq", "target_revision"]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
+    }
+    // Issue #17: priority-truncation bookkeeping on existing Capsule rows.
+    const capsuleColumns = columnNames(db, "work_capsules");
+    if (!capsuleColumns.has("truncated")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!capsuleColumns.has("truncated_fields_json")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN truncated_fields_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!capsuleColumns.has("original_chars")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
     }
     options.afterMigrationStage?.("evidence-sequence");
 

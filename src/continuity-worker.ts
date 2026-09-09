@@ -13,8 +13,6 @@ import {
   completeEmptyCapsuleCheckpoint,
   readWorkCapsule,
   scheduleCapsuleBacklog,
-  validateWorkCapsulePatch,
-  type WorkCapsulePatch,
 } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
@@ -446,12 +444,15 @@ async function processCapsule(
         : null;
     } catch { /* exact JSON is mandatory */ }
     if (!parsed) throw new Error("capsule model returned invalid JSON");
-    const patch: WorkCapsulePatch = validateWorkCapsulePatch(parsed);
+    // Issue #17: validate/truncate exactly once, inside the write transaction,
+    // so the Capsule row records what the truncation removed. Validating here
+    // first would hand `applyWorkCapsulePatch` an already-fitted patch and its
+    // `truncated` bookkeeping would read as "nothing was removed".
     const applied = applyWorkCapsulePatch(db, {
       workstreamId: checkpoint.workstream_id,
       expectedGeneration,
       throughCheckpointId: checkpoint.checkpoint_id,
-      patch,
+      patch: parsed,
       evidencePage: page,
       jobLease: {
         jobId,

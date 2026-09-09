@@ -32,6 +32,8 @@
 
 P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec --output-schema`로 전달합니다. `verifiedProgress`와 `hypotheses`는 `{text, sourceExchangeIds}` 객체 배열로 생성하며 문자열 배열을 사후 변환하거나 source ID를 추정하지 않습니다. `currentState`의 schema 설명은 기존 Capsule의 유효한 결정·제약·구체적인 수치를 이어받고 새 evidence가 변경한 부분을 갱신하도록 명시합니다. 이 설명은 요약 지침이며 의미 보존의 자동 검증을 대신하지 않습니다. Schema는 호출별 임시 workdir에만 기록하고 성공·실패 모두 삭제합니다. 공통 model provider의 선택 옵션이며 Capsule 이외 호출에는 자동 적용하지 않습니다.
 
+Capsule 한 세대의 bounded storage size는 기본 **12,000자**이며 `MEMEX_CAPSULE_MAX_CHARS`로 조정합니다(하한 2,000자). 초과한 patch는 버리지 않고 우선순위대로 줄여 저장합니다 — objective·current_state·verified_progress를 마지막까지 보존하고, touched_areas/open_questions/next_actions/hypotheses 항목 수 → carry revision(64→16→8) → blockers → evidence별 source 목록 → 텍스트 길이 → verified 항목 수 → 최상위 source 목록 순으로 줄입니다. 절단이 일어나면 `work_capsules.truncated` / `truncated_fields_json` / `original_chars`에 무엇이 줄었는지 그대로 기록하고 worker 로그에 WARN 1줄을 남깁니다(미수집을 수집으로 위장하지 않습니다). 이 상한은 Capsule projection에만 적용되며, 사용자 프롬프트 원문은 `exchanges`에 그대로 보관되고 추출은 `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS`(120,000자) 창으로 분할됩니다.
+
 Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·list 수·정확한 revision tuple·출처 선언을 검사하고, commit 시 page authority·scope·generation/lease CAS를 다시 확인합니다. Schema 미지원·잘못된 응답은 기존 bounded retry/dead 경로로 남으며 schema 없는 호출로 fallback하지 않습니다. `--json`은 이벤트 전송 형식이므로 final 응답의 구조 제약을 대신하지 않습니다. CLI의 [native schema 계약](https://learn.chatgpt.com/docs/non-interactive-mode#create-structured-outputs-with-a-schema)을 사용합니다.
 
 ## 5. Project · workspace · workstream · session (§10)

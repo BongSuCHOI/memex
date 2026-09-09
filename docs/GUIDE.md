@@ -365,6 +365,16 @@ memex facts explain --subject state.runtime.session_store --project-id <project_
 
 MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가 current → Chronicle → source → other session을 보여 줍니다. `grounded cause (source-cited)`와 `classifier note (…NOT authoritative)`는 항상 분리 표시됩니다.
 
+Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다.
+
+```sql
+-- sqlite3 "$(memex home)/conversation-index/db.sqlite"
+SELECT workstream_id, generation, truncated, original_chars, truncated_fields_json
+FROM work_capsules WHERE truncated = 1;
+```
+
+이 상한은 Capsule projection에만 적용됩니다. 긴 붙여넣기 프롬프트는 `exchanges`에 원문 그대로 보관되고, 추출은 `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS`(기본 120,000자) 창으로 분할되므로 이 상한과 무관합니다.
+
 ### Privacy purge
 
 §11의 conversation exclusion은 journal/checkpoint/job/exchange/fact/Chronicle event/incident/Capsule/vector/Hot Evidence/session state를 한 transaction에서 제거하고 `fact_tombstones`/`chronicle_tombstones`를 남깁니다. pending worker와 sync replay는 tombstone 때문에 재생성하지 못합니다.

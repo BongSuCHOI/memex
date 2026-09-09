@@ -5,6 +5,22 @@ export declare const CONTINUITY_CAPTURE_POLICY_VERSION = "continuity-capture-v1"
 export { CAPSULE_POLICY_VERSION } from "./continuity-evidence.js";
 export declare const CONTINUITY_PARSER_VERSION = 2;
 export declare const CAPTURE_CHUNK_BYTES: number;
+/**
+ * Bounded storage size for one Capsule patch (issue #17).
+ *
+ * The 2,000-character cap that shipped through v0.5.2 was below what the
+ * schema itself allows: 64 carry revisions plus 64 source exchange ids alone
+ * can pass 2,000 characters, so `capsule_update` jobs died deterministically
+ * (`capsule patch exceeds bounded storage size`) instead of storing a smaller
+ * projection. The cap is now a real budget, tunable per data root, and
+ * exceeding it truncates by priority instead of killing the job.
+ *
+ * The floor keeps the priority truncation below terminating: every step of
+ * `fitCapsulePatch` has to be able to reach it.
+ */
+export declare const DEFAULT_MAX_CAPSULE_CHARS = 12000;
+/** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
+export declare function capsuleMaxChars(): number;
 export type CaptureKind = "stop" | "interrupt" | "precompact" | "final";
 export type LifecycleSource = "startup" | "resume" | "clear" | "compact";
 export type ResidentFactRevision = [string, number, number];
@@ -159,6 +175,11 @@ export interface WorkCapsule extends WorkCapsulePatch {
     sourceWorkspaceId: string | null;
     sourceSessionId: string | null;
     updatedAt: string;
+    /** Issue #17: this generation was shortened to fit `MEMEX_CAPSULE_MAX_CHARS`. */
+    truncated: boolean;
+    truncatedFields: string[];
+    /** Character length of the model's patch before priority truncation. */
+    originalChars: number | null;
 }
 export interface HandleHookResult {
     stdout: string;
@@ -239,7 +260,23 @@ export interface ResidentRevisionCorrection {
  * corrections; they reach the context only through relevance retrieval.
  */
 export declare function readResidentRevisionCorrections(db: Database.Database, sessionId: string): ResidentRevisionCorrection[];
+/**
+ * What a size-driven priority truncation removed (issue #17). Recorded on the
+ * Capsule row so a shortened projection is never mistaken for the model's whole
+ * answer: nothing is silently dropped, and nothing is invented to fill it.
+ */
+export interface CapsuleTruncation {
+    truncated: boolean;
+    truncatedFields: string[];
+    originalChars: number;
+    finalChars: number;
+    maxChars: number;
+}
 export declare function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch;
+export declare function validateWorkCapsulePatchWithTruncation(value: unknown): {
+    patch: WorkCapsulePatch;
+    truncation: CapsuleTruncation;
+};
 export declare function applyWorkCapsulePatch(db: Database.Database, input: {
     workstreamId: string;
     expectedGeneration: number;

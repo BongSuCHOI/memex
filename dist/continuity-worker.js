@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { claimMemoryJobById, failMemoryJob, } from "./continuity-store.js";
-import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, WORK_CAPSULE_OUTPUT_SCHEMA, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, validateWorkCapsulePatch, } from "./continuity-core.js";
+import { applyLatestLifecycleClosure, CAPTURE_CHUNK_BYTES, WORK_CAPSULE_OUTPUT_SCHEMA, applyWorkCapsulePatch, completeEmptyCapsuleCheckpoint, readWorkCapsule, scheduleCapsuleBacklog, } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
@@ -349,12 +349,15 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
         catch { /* exact JSON is mandatory */ }
         if (!parsed)
             throw new Error("capsule model returned invalid JSON");
-        const patch = validateWorkCapsulePatch(parsed);
+        // Issue #17: validate/truncate exactly once, inside the write transaction,
+        // so the Capsule row records what the truncation removed. Validating here
+        // first would hand `applyWorkCapsulePatch` an already-fitted patch and its
+        // `truncated` bookkeeping would read as "nothing was removed".
         const applied = applyWorkCapsulePatch(db, {
             workstreamId: checkpoint.workstream_id,
             expectedGeneration,
             throughCheckpointId: checkpoint.checkpoint_id,
-            patch,
+            patch: parsed,
             evidencePage: page,
             jobLease: {
                 jobId,

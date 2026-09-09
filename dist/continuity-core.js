@@ -16,8 +16,35 @@ export { CAPSULE_POLICY_VERSION } from "./continuity-evidence.js";
 export const CONTINUITY_PARSER_VERSION = 2;
 export const CAPTURE_CHUNK_BYTES = 4 * 1024 * 1024;
 const SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
-const MAX_CAPSULE_CHARS = 2_000;
+/**
+ * Bounded storage size for one Capsule patch (issue #17).
+ *
+ * The 2,000-character cap that shipped through v0.5.2 was below what the
+ * schema itself allows: 64 carry revisions plus 64 source exchange ids alone
+ * can pass 2,000 characters, so `capsule_update` jobs died deterministically
+ * (`capsule patch exceeds bounded storage size`) instead of storing a smaller
+ * projection. The cap is now a real budget, tunable per data root, and
+ * exceeding it truncates by priority instead of killing the job.
+ *
+ * The floor keeps the priority truncation below terminating: every step of
+ * `fitCapsulePatch` has to be able to reach it.
+ */
+export const DEFAULT_MAX_CAPSULE_CHARS = 12_000;
+const MIN_MAX_CAPSULE_CHARS = 2_000;
 const MAX_ARRAY_ITEMS = 8;
+/** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
+export function capsuleMaxChars() {
+    const raw = process.env.MEMEX_CAPSULE_MAX_CHARS;
+    if (raw === undefined)
+        return DEFAULT_MAX_CAPSULE_CHARS;
+    const text = String(raw).trim();
+    if (!/^\d+$/.test(text))
+        return DEFAULT_MAX_CAPSULE_CHARS;
+    const parsed = Number.parseInt(text, 10);
+    if (!Number.isSafeInteger(parsed))
+        return DEFAULT_MAX_CAPSULE_CHARS;
+    return Math.max(MIN_MAX_CAPSULE_CHARS, parsed);
+}
 const capsuleStringListSchema = { type: "array", items: { type: "string" } };
 const capsuleEvidenceListSchema = {
     type: "array",
@@ -854,7 +881,99 @@ function cleanEvidence(values, field) {
         return { text, sourceExchangeIds: [...new Set(sources)].slice(0, 16) };
     });
 }
+/**
+ * Shrink a validated patch to `max` characters in priority order, mutating it
+ * in place and reporting which fields lost content.
+ *
+ * Priority (issue #17): objective / currentState / verifiedProgress survive
+ * longest; the bounded advisory lists go first, then carry revisions
+ * (64 -> 16 -> 8), then blockers, then per-item evidence sources, then text
+ * length, and only as a last resort the verified item count and the top-level
+ * source list. Every step strictly reduces `JSON.stringify(patch).length`, so
+ * the loop terminates at or below `MIN_MAX_CAPSULE_CHARS`.
+ */
+function fitCapsulePatch(patch, max) {
+    const originalChars = JSON.stringify(patch).length;
+    const truncatedFields = [];
+    const size = () => JSON.stringify(patch).length;
+    if (originalChars <= max) {
+        return { truncated: false, truncatedFields, originalChars, finalChars: originalChars, maxChars: max };
+    }
+    const note = (field) => {
+        if (!truncatedFields.includes(field))
+            truncatedFields.push(field);
+    };
+    const shrinkList = (field, limit) => {
+        if (size() <= max)
+            return;
+        const list = patch[field];
+        if (list.length > limit) {
+            list.length = limit;
+            note(field);
+        }
+    };
+    for (const limit of [4, 2, 1, 0]) {
+        for (const field of ["touchedAreas", "openQuestions", "nextActions", "hypotheses"]) {
+            shrinkList(field, limit);
+        }
+    }
+    for (const limit of [16, 8]) {
+        if (size() <= max)
+            break;
+        if (patch.carryFactRevisions.length > limit) {
+            patch.carryFactRevisions.length = limit;
+            note("carryFactRevisions");
+        }
+    }
+    for (const limit of [4, 2, 1, 0])
+        shrinkList("blockers", limit);
+    for (const limit of [4, 1]) {
+        if (size() <= max)
+            break;
+        for (const item of patch.verifiedProgress) {
+            if (item.sourceExchangeIds.length > limit) {
+                item.sourceExchangeIds.length = limit;
+                note("verifiedProgress.sourceExchangeIds");
+            }
+        }
+    }
+    for (const limit of [240, 120, 60]) {
+        if (size() <= max)
+            break;
+        for (const item of patch.verifiedProgress) {
+            if (item.text.length > limit) {
+                item.text = item.text.slice(0, limit);
+                note("verifiedProgress.text");
+            }
+        }
+    }
+    for (const field of ["currentState", "objective"]) {
+        if (size() <= max)
+            break;
+        if (patch[field].length > 240) {
+            patch[field] = patch[field].slice(0, 240);
+            note(field);
+        }
+    }
+    for (const limit of [4, 2, 1])
+        shrinkList("verifiedProgress", limit);
+    if (size() > max) {
+        // Last resort: provenance narrows to what the surviving evidence still
+        // cites. The declared-sources invariant only requires evidence sources to
+        // be a subset, so this keeps the patch valid.
+        const referenced = new Set(patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds));
+        const kept = patch.sourceExchangeIds.filter((id) => referenced.has(id));
+        if (kept.length !== patch.sourceExchangeIds.length) {
+            patch.sourceExchangeIds = kept;
+            note("sourceExchangeIds");
+        }
+    }
+    return { truncated: true, truncatedFields, originalChars, finalChars: size(), maxChars: max };
+}
 export function validateWorkCapsulePatch(value) {
+    return validateWorkCapsulePatchWithTruncation(value).patch;
+}
+export function validateWorkCapsulePatchWithTruncation(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("capsule patch must be an object");
     }
@@ -908,10 +1027,10 @@ export function validateWorkCapsulePatch(value) {
     if (patch.hypotheses.some((item) => verifiedText.has(item.text.toLowerCase()))) {
         throw new Error("capsule text cannot be both verified progress and hypothesis");
     }
-    if (JSON.stringify(patch).length > MAX_CAPSULE_CHARS) {
-        throw new Error("capsule patch exceeds bounded storage size");
-    }
-    return patch;
+    // Issue #17: an oversized patch is shortened by priority, never thrown away.
+    // Truncation is reported to the caller so the Capsule row can record it.
+    const truncation = fitCapsulePatch(patch, capsuleMaxChars());
+    return { patch, truncation };
 }
 function assertVerifiedSources(db, verified, page) {
     const ids = [...new Set(verified.flatMap((item) => item.sourceExchangeIds))];
@@ -953,7 +1072,14 @@ function assertCapsuleSourcesExist(db, patch, workstreamId) {
     }
 }
 export function applyWorkCapsulePatch(db, input) {
-    const patch = validateWorkCapsulePatch(input.patch);
+    const { patch, truncation } = validateWorkCapsulePatchWithTruncation(input.patch);
+    if (truncation.truncated) {
+        // Issue #17: one WARN line so a shortened projection is visible in the
+        // worker's log, not only in the Capsule row that records it durably.
+        console.warn(`[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
+            `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
+            `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}`);
+    }
     const now = input.now ?? new Date().toISOString();
     const tx = db.transaction(() => {
         if (input.evidencePage && !capsulePageIsCurrent(db, input.workstreamId, input.evidencePage))
@@ -1000,8 +1126,9 @@ export function applyWorkCapsulePatch(db, input) {
          verified_progress_json, hypotheses_json, blockers_json,
          open_questions_json, next_actions_json, touched_areas_json,
          carry_fact_revisions_json, source_exchange_ids_json,
-         through_checkpoint_id, authority, source_workspace_id, source_session_id, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'context-only', ?, ?, ?)
+         through_checkpoint_id, authority, source_workspace_id, source_session_id, updated_at,
+         truncated, truncated_fields_json, original_chars)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'context-only', ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workstream_id) DO UPDATE SET
         generation = excluded.generation,
         objective = excluded.objective,
@@ -1017,9 +1144,12 @@ export function applyWorkCapsulePatch(db, input) {
         through_checkpoint_id = excluded.through_checkpoint_id,
         source_workspace_id = excluded.source_workspace_id,
         source_session_id = excluded.source_session_id,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        truncated = excluded.truncated,
+        truncated_fields_json = excluded.truncated_fields_json,
+        original_chars = excluded.original_chars
       WHERE work_capsules.generation = ?
-    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, input.expectedGeneration);
+    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, truncation.truncated ? 1 : 0, JSON.stringify(truncation.truncatedFields), truncation.originalChars, input.expectedGeneration);
         if (result.changes !== 1)
             return null;
         if (input.evidencePage && !commitCapsulePage(db, input.workstreamId, input.evidencePage)) {
@@ -1104,6 +1234,9 @@ export function readWorkCapsule(db, workstreamId) {
         sourceWorkspaceId: row.source_workspace_id ? String(row.source_workspace_id) : null,
         sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
         updatedAt: String(row.updated_at),
+        truncated: Number(row.truncated ?? 0) === 1,
+        truncatedFields: parseJsonArray(row.truncated_fields_json),
+        originalChars: row.original_chars == null ? null : Number(row.original_chars),
     };
 }
 function extractPlanLine(text) {
