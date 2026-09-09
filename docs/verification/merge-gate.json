@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-09T11:34:35.745+00:00",
+  "recordedAt": "2026-09-09T12:14:33.578+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
@@ -11,12 +11,12 @@
   "candidate": {
     "repository": "memex",
     "branch": "feat/webui-workspace",
-    "codeSha": "c0066d950e8417755b2ddad7fe5862a2e650ee81",
+    "codeSha": "db073ce45e8a61656b55f8156a1affc461b38dd2",
     "packageVersion": "0.5.0",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
     "sameHead": true,
-    "note": "v0.5.0 release candidate after the docs-only correction commit c0066d95 (third-party notice, Workspace owner docs, GUIDE, READMEs, VERIFICATION acceptance-map rows). This receipt supersedes the earlier 236d7362 receipt: those docs are packaged files, so per the AGENTS.md merge-gate rule a new clean baseline was created and all thirteen gates were re-run on this SHA rather than carried over. `git status --porcelain` was empty before the gates and HEAD was unchanged after them; `npm run build` reproduced the tracked dist/ byte-for-byte, and the packaged artifact grew from 310 to 311 files, which is exactly the corrected documentation. Only docs/verification receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
+    "note": "v0.5.0 final candidate after the README/screenshot commit db073ce4 (README.md and README-KR.md rewritten, five assets/readme/*.png added, and an opt-in --screenshots pass added to scripts/web-ui-browser-e2e.mjs). This receipt supersedes the c0066d95 receipt and all thirteen gates were re-run on this SHA rather than carried over, because README.md and scripts/ ship inside the package. `git status --porcelain` was empty before the gates and HEAD was unchanged after them; `npm run build` reproduced the tracked dist/ byte-for-byte. The tarball still contains 311 files because assets/ is outside the package.json files list, while packed bytes grew from 1,226,104 to 1,239,798 for the rewritten README and the larger gate script. The web-ui-browser-e2e gate failed on its first attempt here from a pre-existing intermittent assertion and passed on re-run; see that gate entry and knownFlakiness. Only docs/verification receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -25,9 +25,9 @@
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:00.687+00:00",
-      "durationSeconds": 3.272,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/typecheck.log",
+      "startedAt": "2026-09-09T12:07:06.349+00:00",
+      "durationSeconds": 3.187,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/typecheck.log",
       "logSha256": "3650fd43dbc367020f18a7b6aeca7616f10122a7b6a984cd1776afc1c0e2a6ab"
     },
     {
@@ -35,9 +35,9 @@
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:03.999+00:00",
-      "durationSeconds": 3.562,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/build.log",
+      "startedAt": "2026-09-09T12:07:09.579+00:00",
+      "durationSeconds": 3.877,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/build.log",
       "logSha256": "39a88af44b8c95066bab8ea662d86813e432387865968a4bc8a756f4b885f8bc",
       "observed": "tsc + esbuild bundle reproduced the tracked dist/; `git status --porcelain` empty afterwards"
     },
@@ -46,10 +46,10 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:15.910+00:00",
-      "durationSeconds": 17.982,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/tests.log",
-      "logSha256": "716e635cc2bc232613f2118aa9518d199dc2882aedd00980364d244245012d40",
+      "startedAt": "2026-09-09T12:07:20.986+00:00",
+      "durationSeconds": 17.714,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/tests.log",
+      "logSha256": "3ec5d22e37e9979d2e1bd6b2525c57e1b34284627c90ad769e9975b27db92aeb",
       "observed": "98 files / 1015 Vitest tests passed"
     },
     {
@@ -57,10 +57,10 @@
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:33.944+00:00",
-      "durationSeconds": 3.398,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/codex-slice.log",
-      "logSha256": "1941d8be6c0e8b5838f9705b0c70e47d2d4743a06d225d634009b96b200bc887",
+      "startedAt": "2026-09-09T12:07:38.750+00:00",
+      "durationSeconds": 3.403,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/codex-slice.log",
+      "logSha256": "9c6fb9fc02edaecd66565787c430f282707a5738c0bfd7f9885c4fec688b8a1a",
       "observed": "26 slices passed"
     },
     {
@@ -68,10 +68,10 @@
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:37.408+00:00",
-      "durationSeconds": 8.198,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/slice-tests.log",
-      "logSha256": "7fe29c57b5cfe2fb0f33474920c45c330daf3fbf099c5f7b3b00045751795ce2",
+      "startedAt": "2026-09-09T12:07:42.221+00:00",
+      "durationSeconds": 7.835,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/slice-tests.log",
+      "logSha256": "635fcbc0af368a1f16a8af4ab09025f6bad743e2e22e11272c0ab30b39a92637",
       "observed": "105 slices / 1 suite passed"
     },
     {
@@ -79,10 +79,10 @@
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:52.000+00:00",
-      "durationSeconds": 6.804,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/install-e2e.log",
-      "logSha256": "19fcfaa8ec837159f50071ceef22400dbe4d36d4d8ee4a2032d481d40bfade33",
+      "startedAt": "2026-09-09T12:07:50.109+00:00",
+      "durationSeconds": 6.907,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/install-e2e.log",
+      "logSha256": "8b4ae0d4cc38ebc34b3ea8cb3c7cc424952ea06eef55033bec9a1850702a68d6",
       "observed": "dry-run, real install, idempotent re-run, removal and isolation checks all true in an isolated CODEX_HOME/MEMEX_HOME"
     },
     {
@@ -90,10 +90,10 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:58.847+00:00",
-      "durationSeconds": 0.357,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/marketplace-e2e.log",
-      "logSha256": "eec0679d13dffd5951ae4a484b0c411b4165936492af02cddba74aced1466de2",
+      "startedAt": "2026-09-09T12:07:57.058+00:00",
+      "durationSeconds": 0.369,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/marketplace-e2e.log",
+      "logSha256": "fd2b557952f840e2aed9a84c73396bcc207632666fce946bfc53a1b65122a7a9",
       "observed": "7 lifecycle events registered; cleanup PASS"
     },
     {
@@ -101,43 +101,53 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:30:59.248+00:00",
-      "durationSeconds": 82.355,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/package-runtime-e2e.log",
-      "logSha256": "66ebfb73fe35b3f2f08440a269776dc585cbe0b457046c8c7dfd6a0ce326a8db",
-      "observed": "memex-0.5.0.tgz, 311 files, 9 MCP tools; one file and 16,647 unpacked bytes more than the 236d7362 baseline, matching the corrected docs"
+      "startedAt": "2026-09-09T12:08:03.233+00:00",
+      "durationSeconds": 81.369,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/package-runtime-e2e.log",
+      "logSha256": "e692d06230e5ebaf964e2f10885d0da3722d6ef64022663ba5ebeaff02638216",
+      "observed": "memex-0.5.0.tgz, 311 files, 9 MCP tools; the file count is unchanged from c0066d95 because assets/readme/*.png sits outside the package.json files list, while packed bytes grew by 13,694 for the rewritten README and gate script"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:32:32.372+00:00",
-      "durationSeconds": 5.934,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/lifecycle-e2e.log",
-      "logSha256": "f5ffa2457ba48910c34908ef04b95829caf3560d6df0eb52f30881fc82c2d994",
+      "startedAt": "2026-09-09T12:09:36.830+00:00",
+      "durationSeconds": 5.935,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/lifecycle-e2e.log",
+      "logSha256": "8b298790081be5c54b1b4787def1118fa05042ec3435178b0e971e6b10a14001",
       "observed": "offline tier: 9/9 steps, 12 owned hook entries removed, 7-surface cleanup inventory all true"
     },
     {
       "name": "web-ui-browser-e2e",
       "command": "node scripts/web-ui-browser-e2e.mjs",
-      "status": "PASS",
+      "status": "PASS-ON-RERUN",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:32:38.354+00:00",
-      "durationSeconds": 6.318,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/web-ui-browser-e2e.log",
-      "logSha256": "65683ad55bafb33cbddfde0d7e9e232c55cfff98476425380049d29db3fff971",
-      "observed": "real headless Chrome via CDP at 1440x900 against Memex Workspace 1.0.0: 10 check groups PASS, runtimeErrors 0"
+      "startedAt": "2026-09-09T12:13:02.069+00:00",
+      "durationSeconds": 6.026,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/web-ui-browser-e2e.log",
+      "logSha256": "b7481cec732b45dc001eeed584a70e72fcaa30b424e228cbbb16e52c4617b03e",
+      "observed": "real headless Chrome via CDP at 1440x900 against Memex Workspace 1.0.0: 10 check groups PASS, runtimeErrors 0",
+      "firstAttempt": {
+        "status": "FAIL",
+        "exitCode": 1,
+        "startedAt": "2026-09-09T12:09:42.817+00:00",
+        "durationSeconds": 6.39,
+        "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/web-ui-browser-e2e-attempt1-FAILED.log",
+        "logSha256": "a30dc5880b1da448005dee8d910a59efb04f455cea67c49d9c3b7a61b6e6f658",
+        "failure": "Graph empty-state assertion failed: graphEmpty.nodePixels was 521550 instead of 0. 521550 is exactly the 915x570 canvas area, so the pixel readback classified every pixel as painted rather than finding drawn nodes."
+      },
+      "note": "The recorded PASS is a re-run. The failure is recorded rather than discarded; see knownFlakiness for the measured rate and why it is not attributed to this commit."
     },
     {
       "name": "ui-tests",
       "command": "node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:32:58.157+00:00",
-      "durationSeconds": 0.236,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/ui-tests.log",
-      "logSha256": "1922c735dc9e0237fbe1221cf759e2db43242942e17ca6c31ebf26c1a1c58c83",
+      "startedAt": "2026-09-09T12:09:49.250+00:00",
+      "durationSeconds": 0.234,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/ui-tests.log",
+      "logSha256": "339e9db123cd2813f026e4bea32ccb1962323f3632e426db3affb0afd999cc5c",
       "observed": "82 Workspace unit tests passed"
     },
     {
@@ -145,10 +155,10 @@
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:32:58.447+00:00",
-      "durationSeconds": 4.416,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/plugin-validation.log",
-      "logSha256": "15d23f8856b7b191db06f73eb890e66a4263cbff84f5864d83f6a9ed41dcf77d",
+      "startedAt": "2026-09-09T12:09:49.540+00:00",
+      "durationSeconds": 4.497,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/plugin-validation.log",
+      "logSha256": "a3e12ab058b1d183a5b4d840806b450643ea789b0e460f6f09091540dbb013f8",
       "observed": "11 isolated substitute checks PASS; formal `codex plugin validate` unavailable in this CLI"
     },
     {
@@ -156,18 +166,18 @@
       "command": "node --test test/benchmark-contract.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T11:33:02.907+00:00",
-      "durationSeconds": 0.109,
-      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/benchmark-contract.log",
-      "logSha256": "12e1f74268286dd3cc047f01ce35353ce1a31524b2d55784e4b085d2b0b110ba",
-      "observed": "1 test passed; unlike the 236d7362 run this gate ran on the pristine committed tree, because the /api/v2/graph-only transport set is already committed"
+      "startedAt": "2026-09-09T12:09:54.080+00:00",
+      "durationSeconds": 0.108,
+      "logPath": "/private/tmp/memex-0.5.0-gates-db073ce/benchmark-contract.log",
+      "logSha256": "c5055eda6c3349bc48553ce140ad9f62ad9dd19177681dd8db57c18712416c92",
+      "observed": "1 test passed on the pristine committed tree against the unchanged benchmark report"
     }
   ],
   "packageRuntime": {
     "status": "PASS",
     "artifact": "memex-0.5.0.tgz",
-    "packedBytes": 1226104,
-    "unpackedBytes": 4965953,
+    "packedBytes": 1239798,
+    "unpackedBytes": 5011223,
     "files": 311,
     "mcpTools": 9,
     "onboarding": [
@@ -187,7 +197,7 @@
     "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
     "isolatedSubstitute": "PASS: 11 checks — plugin 0.5.0 in the Codex cache, MCP serverInfo 0.5.0, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
     "receiptPath": "docs/verification/plugin-validation.json",
-    "receiptSha256": "15d23f8856b7b191db06f73eb890e66a4263cbff84f5864d83f6a9ed41dcf77d"
+    "receiptSha256": "a3e12ab058b1d183a5b4d840806b450643ea789b0e460f6f09091540dbb013f8"
   },
   "webUi": {
     "surface": "Memex Workspace 1.0.0 (replaces the previous Web UI)",
@@ -220,7 +230,7 @@
     "benchmark": {
       "status": "PASS",
       "rerunForThisCandidate": false,
-      "reason": "c0066d95 is documentation-only and scripts/benchmark.mjs, the UI runtime and dist/ are byte-identical to 236d7362, so the full acceptance benchmark was not re-run. The report below is prior evidence from the 236d7362 run and is not a measurement of this SHA.",
+      "reason": "db073ce4 changes READMEs, adds assets/readme/*.png and adds an opt-in screenshot pass to the gate script; scripts/benchmark.mjs, the UI runtime and dist/ are byte-identical to 236d7362, so the full acceptance benchmark was not re-run. The report below is prior evidence from the 236d7362 run and is not a measurement of this SHA.",
       "command": "node scripts/benchmark.mjs",
       "measuredOnCodeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
       "recordedAt": "2026-09-09T10:53:25.807Z",
@@ -262,6 +272,22 @@
     "liveUserData": "NOT_PROVEN: every Workspace gate and the referenced benchmark ran against synthetic fixtures in isolated MEMEX_HOME/XDG_CONFIG_HOME temp roots; the user's data root was never opened.",
     "realUserPerception": "NOT_PROVEN: no human usability session, screen reader run or multi-browser matrix was performed; evidence is one headless Chrome build at a single viewport."
   },
+  "knownFlakiness": {
+    "gate": "web-ui-browser-e2e",
+    "assertion": "graphEmpty.nodePixels === 0",
+    "observedOnThisSha": {
+      "runs": 12,
+      "passed": 10,
+      "failed": 2,
+      "failureValue": 521550,
+      "canvas": "915x570 = 521550 pixels",
+      "note": "Both failures reported the entire canvas as painted, not a partial or plausible node count."
+    },
+    "attributedToThisCommit": false,
+    "evidence": "db073ce4 modifies only five pre-existing lines of scripts/web-ui-browser-e2e.mjs, all default parameters on startServer() and startChrome(); every other change is an insertion guarded by `if (SCREENSHOTS)`, which is null without the opt-in --screenshots flag. The graph empty-state probe, mapPixels and the browser launch flags on the gate path are byte-identical to c0066d95, and the ui/ runtime is unchanged, so the flake is pre-existing and simply did not fire during the 236d7362 or c0066d95 runs.",
+    "likelyCause": "NOT_PROVEN: the full-canvas value is consistent with a WebGL clear/compositor readback race in which the canvas is sampled before the empty scene settles, but no root cause was isolated and no fix was attempted.",
+    "remediation": "Left unfixed on purpose: this receipt commit is restricted to docs/verification, and changing the gate script would invalidate the SHA these gates ran on. Recorded here so the next candidate can address it deliberately."
+  },
   "priorEvidence": [
     {
       "receipt": "merge-gate-pre-0.5.0.json",
@@ -279,7 +305,13 @@
       "receipt": "merge-gate.json at commit 44b4b5a (superseded, not archived as a file)",
       "sha256": "06430743507f292fc969821e9c34cdbd873c0ea07bfe6587f5545f0f60014eb2",
       "codeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
-      "note": "The first v0.5.0 receipt. It remains readable in git history; this file supersedes it in place because packaged documentation changed after it was written."
+      "note": "The first v0.5.0 receipt, superseded when the third-party notice and owner docs were corrected. It remains readable in git history."
+    },
+    {
+      "receipt": "merge-gate.json at commit db7223f (superseded, not archived as a file)",
+      "sha256": "8b238330056362d0da1dc54b3bbe7748d8b39b72f63d9ae2c92b74ee82de9c0d",
+      "codeSha": "c0066d950e8417755b2ddad7fe5862a2e650ee81",
+      "note": "The second v0.5.0 receipt, superseded when the READMEs were rewritten and the screenshot pass was added. It remains readable in git history; this file supersedes it in place."
     }
   ],
   "notProven": {
@@ -289,7 +321,8 @@
     "benchmarkOnThisSha": "NOT_PROVEN: the acceptance benchmark was measured on 236d7362 and not re-run here. The inference that a documentation-only commit cannot move those numbers is an argument, not a measurement.",
     "realWorldPerformance": "NOT_PROVEN: benchmark numbers come from a 200-rollout / 800-exchange synthetic corpus on one Apple-silicon host, not from production history or other hardware.",
     "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only.",
-    "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the correctness of the third-party notice and owner docs corrected by c0066d95 rests on human review, not on these gates."
+    "webUiGateStability": "NOT_PROVEN: the Workspace browser gate passed 10 of 12 runs on this SHA. The recorded PASS is a re-run, so a single clean execution of this gate is not evidence that it passes deterministically.",
+    "documentationAccuracy": "NOT_PROVEN: no gate reads prose or images, so the accuracy of the rewritten READMEs and the five committed Workspace screenshots rests on human review, not on these gates."
   },
-  "releaseConclusion": "All thirteen gates PASS on the clean, docs-corrected v0.5.0 candidate c0066d95: typecheck, a build that reproduced the tracked dist/, 98 files / 1015 Vitest tests, 26 Codex slices, 105 total slices, installer, marketplace, packaged runtime (memex-0.5.0.tgz, 311 files, 9 MCP tools), offline lifecycle 9/9, the real-Chrome Memex Workspace E2E (10 check groups, 0 runtime errors), 82 Workspace unit tests and the benchmark contract. Isolated plugin validation passes all 11 substitute checks with matching 0.5.0 plugin and MCP server versions, and is PASS-WITH-NOTES only because the formal `codex plugin validate` subcommand does not exist in codex-cli 0.153.4. Every gate was re-executed on this SHA rather than inherited from the superseded 236d7362 receipt, because the documentation corrected by c0066d95 ships inside the package — the artifact grew from 310 to 311 files. The full acceptance benchmark was NOT re-run: it is referenced as prior evidence measured on 236d7362 (PASS, 6/6 AC_PERF groups, knowledge map through `loopback HTTP /api/v2/graph` with 50 nodes and 49 edges on the native LOCAL WEBGL renderer), and the contract gate confirms that report still satisfies the committed contract. Live user data, an authenticated Codex tier run, the formal plugin validator, benchmark numbers for this exact SHA, real-world performance, model quality and the prose accuracy of the corrected docs are NOT_PROVEN."
+  "releaseConclusion": "Twelve of the thirteen gates PASS outright on the clean final v0.5.0 candidate db073ce4, and the thirteenth passes on re-run: typecheck, a build that reproduced the tracked dist/, 98 files / 1015 Vitest tests, 26 Codex slices, 105 total slices, installer, marketplace, packaged runtime (memex-0.5.0.tgz, 311 files, 9 MCP tools), offline lifecycle 9/9, 82 Workspace unit tests, isolated plugin validation (11 substitute checks, matching 0.5.0 plugin and MCP server versions) and the benchmark contract. The real-Chrome Memex Workspace E2E is recorded as PASS-ON-RERUN: its first attempt on this SHA failed the graph empty-state assertion with the whole canvas counted as painted, then it passed, and 12 runs on this SHA gave 10 passes and 2 failures. That flake is not attributed to this commit — the gate path is byte-identical apart from two default-parameter signatures, and everything else added is guarded behind the opt-in --screenshots flag — but it is a real stability defect in the gate and is recorded in knownFlakiness rather than papered over. Every gate was re-executed on this SHA rather than inherited from the superseded c0066d95 receipt, because README.md and scripts/ ship inside the package; the tarball file count correctly stayed at 311 since assets/ is outside the package.json files list. The full acceptance benchmark was NOT re-run: it is referenced as prior evidence measured on 236d7362 (PASS, 6/6 AC_PERF groups, knowledge map through `loopback HTTP /api/v2/graph` with 50 nodes and 49 edges on the native LOCAL WEBGL renderer), and the contract gate confirms that report still satisfies the committed contract. Live user data, an authenticated Codex tier run, the formal plugin validator, deterministic stability of the Workspace browser gate, benchmark numbers for this exact SHA, real-world performance, model quality and the accuracy of the rewritten README prose and screenshots are NOT_PROVEN."
 }
