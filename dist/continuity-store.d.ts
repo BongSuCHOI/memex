@@ -3,7 +3,7 @@ export declare const CONTINUITY_SCHEMA_VERSION = 7;
 export declare const FACT_EXTRACTION_POLICY_VERSION = "continuity-fact-v1";
 export type ClosureState = "open" | "interrupted" | "closed" | "final";
 export type MemoryJobState = "pending" | "running" | "retry" | "completed" | "superseded" | "dead";
-export type ContinuityMigrationStage = "exchange-seq-column" | "content-hash-column" | "content-generation-column" | "closure-state-column" | "parser-version-column" | "continuity-tables" | "continuity-core-tables" | "journal-source-mtime-column" | "journal-source-guard-columns" | "identity-tables" | "identity-columns" | "identity-backfill" | "identity-triggers" | "continuity-indexes" | "continuity-core-indexes" | "chronicle-table" | "chronicle-backfill" | "incident-tables" | "telemetry-table" | "chronicle-indexes" | "recall-gate-columns" | "evidence-sequence" | "fts-rebuild" | "exchange-metadata" | "schema-meta" | "user-version";
+export type ContinuityMigrationStage = "exchange-seq-column" | "content-hash-column" | "content-generation-column" | "closure-state-column" | "parser-version-column" | "continuity-tables" | "continuity-core-tables" | "journal-source-mtime-column" | "journal-source-guard-columns" | "identity-tables" | "identity-columns" | "identity-backfill" | "identity-triggers" | "continuity-indexes" | "continuity-core-indexes" | "chronicle-table" | "chronicle-backfill" | "incident-tables" | "telemetry-table" | "chronicle-indexes" | "recall-gate-columns" | "evidence-sequence" | "capsule-terminal-state-repair" | "fts-rebuild" | "exchange-metadata" | "schema-meta" | "user-version";
 export type ExtractionCommitStage = "target-items" | "generation-state" | "target-cursor" | "compatibility-watermark" | "checkpoint" | "job";
 export declare function exchangeContentHash(exchange: {
     userMessage: string;
@@ -129,6 +129,15 @@ export declare function completeMemoryJob(db: Database.Database, input: {
     leaseGeneration: number;
     now?: Date;
 }): boolean;
+/**
+ * Which transition a failed claim actually took (issue #34).
+ *
+ * `failMemoryJob` used to answer `true` for both, so callers that wanted to
+ * write "retry" alongside it could not tell that the queue had just made the
+ * job terminal — and they overwrote the store's own `failed-visible` with
+ * `retry`. `null` still means the CAS found no owned running row.
+ */
+export type MemoryJobFailureTransition = "retry" | "dead";
 export declare function failMemoryJob(db: Database.Database, input: {
     jobId: string;
     owner: string;
@@ -137,7 +146,7 @@ export declare function failMemoryJob(db: Database.Database, input: {
     retry: boolean;
     availableAt?: Date;
     now?: Date;
-}): boolean;
+}): MemoryJobFailureTransition | null;
 export interface ExtractionTargetItem {
     ordinal: number;
     exchange_id: string;

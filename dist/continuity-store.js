@@ -749,6 +749,21 @@ export function ensureContinuitySchema(db, options = {}) {
             db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
         }
         options.afterMigrationStage?.("evidence-sequence");
+        // Issue #34 repair: continuity-worker used to overwrite the terminal
+        // `failed-visible` that failMemoryJob had just written with `retry`. The
+        // result is a row nobody drains (its job is already `dead`) and no status
+        // surface reports as failed. Seven such rows existed on the real data root.
+        // Idempotent: only rows whose owning capsule job is terminal are corrected.
+        const repaired = db.prepare(`
+      UPDATE capsule_checkpoint_state
+      SET state = 'failed-visible', updated_at = ?
+      WHERE state IN ('retry','processing','pending') AND EXISTS (
+        SELECT 1 FROM memory_jobs j
+        WHERE j.checkpoint_id = capsule_checkpoint_state.checkpoint_id
+          AND j.kind = 'capsule_update' AND j.state = 'dead')
+    `).run(new Date().toISOString());
+        if (repaired.changes > 0)
+            options.afterMigrationStage?.("capsule-terminal-state-repair");
         db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -1314,7 +1329,7 @@ export function failMemoryJob(db, input) {
       AND lease_generation = ? AND lease_until > ?
   `).get(input.jobId, input.owner, input.leaseGeneration, nowIso);
     if (!row)
-        return false;
+        return null;
     const retry = input.retry && row.attempts < row.max_attempts;
     const state = retry ? "retry" : "dead";
     const defaultBackoffMs = Math.min(60 * 60_000, 1000 * 2 ** Math.max(0, row.attempts - 1));
@@ -1328,7 +1343,7 @@ export function failMemoryJob(db, input) {
         AND lease_generation = ? AND lease_until > ?
     `).run(state, availableAt.toISOString(), input.error, nowIso, input.jobId, input.owner, input.leaseGeneration, nowIso).changes;
         if (changed !== 1)
-            return false;
+            return null;
         // Extraction targets own their richer exact-range checkpoint state. For
         // checkpoint-native Continuity work, keep terminal/retry accountability
         // synchronized with the queue transition itself.
@@ -1356,7 +1371,7 @@ export function failMemoryJob(db, input) {
         `).run(retry ? "retry" : "failed-visible", input.error.slice(0, 1_000), nowIso, row.checkpoint_id);
             }
         }
-        return true;
+        return state;
     });
     return db.inTransaction ? fail() : fail.immediate();
 }

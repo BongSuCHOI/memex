@@ -374,7 +374,8 @@ describe("checkpoint outbox and lease", () => {
         retry: false,
         now: new Date(t0.getTime() + 1001),
       }),
-    ).toBe(false);
+      // Issue #34: a lost CAS answers null, not a transition.
+    ).toBeNull();
     const owner2 = claimMemoryJobById(db, {
       jobId: first.jobId,
       owner: "owner-2",
@@ -415,7 +416,8 @@ describe("checkpoint outbox and lease", () => {
         retry: true,
         now: new Date(input.now),
       }),
-    ).toBe(true);
+      // Issue #34: the queue reports which transition it took.
+    ).toBe("retry");
     expect(
       (db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?").get(created.jobId) as {
         state: string;
@@ -440,7 +442,7 @@ describe("checkpoint outbox and lease", () => {
       error: "again",
       retry: true,
       now: t0,
-    })).toBe(true);
+    })).toBe("retry");
     const retryRow = db.prepare(
       "SELECT state, available_at FROM memory_jobs WHERE job_id = ?",
     ).get(created.jobId) as { state: string; available_at: string };
@@ -458,7 +460,9 @@ describe("checkpoint outbox and lease", () => {
       error: "exhausted",
       retry: true,
       now: new Date(retryRow.available_at),
-    })).toBe(true);
+      // Issue #34: attempts exhausted is reported as 'dead', not as a bare true
+      // that callers used to read as "deferred, write retry over it".
+    })).toBe("dead");
     expect(db.prepare(
       "SELECT state FROM memory_jobs WHERE job_id = ?",
     ).get(created.jobId)).toEqual({ state: "dead" });

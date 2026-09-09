@@ -21524,6 +21524,15 @@ function ensureContinuitySchema(db, options = {}) {
       db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
     }
     options.afterMigrationStage?.("evidence-sequence");
+    const repaired = db.prepare(`
+      UPDATE capsule_checkpoint_state
+      SET state = 'failed-visible', updated_at = ?
+      WHERE state IN ('retry','processing','pending') AND EXISTS (
+        SELECT 1 FROM memory_jobs j
+        WHERE j.checkpoint_id = capsule_checkpoint_state.checkpoint_id
+          AND j.kind = 'capsule_update' AND j.state = 'dead')
+    `).run((/* @__PURE__ */ new Date()).toISOString());
+    if (repaired.changes > 0) options.afterMigrationStage?.("capsule-terminal-state-repair");
     db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready

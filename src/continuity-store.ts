@@ -40,6 +40,7 @@ export type ContinuityMigrationStage =
   | "chronicle-indexes"
   | "recall-gate-columns"
   | "evidence-sequence"
+  | "capsule-terminal-state-repair"
   | "fts-rebuild"
   | "exchange-metadata"
   | "schema-meta"
@@ -842,6 +843,21 @@ export function ensureContinuitySchema(
     }
     options.afterMigrationStage?.("evidence-sequence");
 
+    // Issue #34 repair: continuity-worker used to overwrite the terminal
+    // `failed-visible` that failMemoryJob had just written with `retry`. The
+    // result is a row nobody drains (its job is already `dead`) and no status
+    // surface reports as failed. Seven such rows existed on the real data root.
+    // Idempotent: only rows whose owning capsule job is terminal are corrected.
+    const repaired = db.prepare(`
+      UPDATE capsule_checkpoint_state
+      SET state = 'failed-visible', updated_at = ?
+      WHERE state IN ('retry','processing','pending') AND EXISTS (
+        SELECT 1 FROM memory_jobs j
+        WHERE j.checkpoint_id = capsule_checkpoint_state.checkpoint_id
+          AND j.kind = 'capsule_update' AND j.state = 'dead')
+    `).run(new Date().toISOString());
+    if (repaired.changes > 0) options.afterMigrationStage?.("capsule-terminal-state-repair");
+
     db.exec(`
 
       CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
@@ -1630,6 +1646,16 @@ export function completeMemoryJob(
   ).changes === 1;
 }
 
+/**
+ * Which transition a failed claim actually took (issue #34).
+ *
+ * `failMemoryJob` used to answer `true` for both, so callers that wanted to
+ * write "retry" alongside it could not tell that the queue had just made the
+ * job terminal — and they overwrote the store's own `failed-visible` with
+ * `retry`. `null` still means the CAS found no owned running row.
+ */
+export type MemoryJobFailureTransition = "retry" | "dead";
+
 export function failMemoryJob(
   db: Database.Database,
   input: {
@@ -1641,7 +1667,7 @@ export function failMemoryJob(
     availableAt?: Date;
     now?: Date;
   },
-): boolean {
+): MemoryJobFailureTransition | null {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const row = db.prepare(`
@@ -1657,9 +1683,9 @@ export function failMemoryJob(
         kind: string;
       }
     | undefined;
-  if (!row) return false;
+  if (!row) return null;
   const retry = input.retry && row.attempts < row.max_attempts;
-  const state = retry ? "retry" : "dead";
+  const state: MemoryJobFailureTransition = retry ? "retry" : "dead";
   const defaultBackoffMs = Math.min(
     60 * 60_000,
     1000 * 2 ** Math.max(0, row.attempts - 1),
@@ -1682,7 +1708,7 @@ export function failMemoryJob(
       input.leaseGeneration,
       nowIso,
     ).changes;
-    if (changed !== 1) return false;
+    if (changed !== 1) return null;
     // Extraction targets own their richer exact-range checkpoint state. For
     // checkpoint-native Continuity work, keep terminal/retry accountability
     // synchronized with the queue transition itself.
@@ -1715,7 +1741,7 @@ export function failMemoryJob(
         );
       }
     }
-    return true;
+    return state;
   });
   return db.inTransaction ? fail() : fail.immediate();
 }
