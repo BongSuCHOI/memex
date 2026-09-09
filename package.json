@@ -11,6 +11,8 @@
     "cli/",
     "dist/",
     "docs/",
+    "!docs/verification/merge-gate-pre-*.json",
+    "!docs/verification/benchmark-pre-*.json",
     "scripts/",
     "skills/",
     "test/fixtures/fact-extraction-cases.json",

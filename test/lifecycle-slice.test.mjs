@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const { setupHooks, removeHooks, doctor, desiredEntries, registrationPath } =
@@ -217,6 +218,50 @@ test('hook handlers record privacy-safe observation events', async (t) => {
   assert.deepEqual(Object.keys(rec).sort(), ['cwd', 'event', 'session_id', 'ts']);
   assert.notEqual(lastObserved('SessionStart'), null);
   assert.equal(lastObserved('SessionEnd'), null);
+});
+
+/**
+ * Issue #26 (item 6) — hook-events.jsonl collected `event: "Unknown"` rows with
+ * an empty session_id and cwd (observed at 19:19:51Z / 19:19:56Z / 19:30:41Z on
+ * a codex exec start), because the module's CLI entry defaulted a missing
+ * argv[2] to the literal "Unknown". `memex doctor` then printed
+ * `Lifecycle Unknown: observed …` beside the seven real events.
+ */
+test('an unlabeled hook invocation is refused instead of logged as "Unknown"', async (t) => {
+  const { env } = isolatedEnv(t);
+  const { recordHookEvent, observationLogPath } =
+    await import(path.join(REPO, 'dist/observe-hook-event.js'));
+
+  assert.equal(recordHookEvent('', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(recordHookEvent('   ', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(recordHookEvent('Unknown', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(fs.existsSync(observationLogPath()), false, 'nothing may be written');
+
+  assert.equal(recordHookEvent('SessionEnd', { sessionId: 's', cwd: '/p' }), true);
+  assert.equal(fs.readFileSync(observationLogPath(), 'utf8').trim().split('\n').length, 1);
+
+  // The CLI entry that produced those rows now requires the event name and
+  // accepts the session/cwd the hook payload carries.
+  const missing = spawnSync(process.execPath, [path.join(REPO, 'dist/observe-hook-event.js')], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  });
+  assert.equal(missing.status, 2, missing.stderr);
+  assert.match(missing.stderr, /refusing to log an unlabeled hook invocation/);
+
+  const labeled = spawnSync(
+    process.execPath,
+    [path.join(REPO, 'dist/observe-hook-event.js'), 'Stop', 'sess-42', '/work/project'],
+    { env: { ...process.env, ...env }, encoding: 'utf8' },
+  );
+  assert.equal(labeled.status, 0, labeled.stderr);
+  const rows = fs.readFileSync(observationLogPath(), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    { event: rows[1].event, session_id: rows[1].session_id, cwd: rows[1].cwd },
+    { event: 'Stop', session_id: 'sess-42', cwd: '/work/project' },
+  );
+  assert.equal(rows.some((row) => row.event === 'Unknown'), false);
 });
 
 test('commandFor separates script and args without path.join corruption and handles spaced roots', async () => {

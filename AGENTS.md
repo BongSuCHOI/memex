@@ -151,12 +151,18 @@ receipt values just to make them look current.
 Runtime changes normally require:
 
 ```bash
+node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before.json
 npm run typecheck
 npm run build
 npm test
-node --test test/codex-slice.test.mjs
-node --test test/*slice.test.mjs
+node --test test/*.test.mjs
+node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before.json
 ```
+
+`node --test test/*.test.mjs` replaces the old `codex-slice` + `*slice` pair: the
+narrower glob left six non-slice `.mjs` suites outside the documented gate.
+The isolation probe is read-only and proves the run left the real Memex data
+root byte-identical — see [docs/VERIFICATION.md](docs/VERIFICATION.md) §2.
 
 Run the nearest isolated E2E for installer/plugin/MCP/package/lifecycle/UI
 changes. Never weaken a failing test to obtain green output. Unobserved behavior

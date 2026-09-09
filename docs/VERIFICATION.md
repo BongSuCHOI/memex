@@ -15,16 +15,34 @@
 현재 repository의 최소 merge gate:
 
 ```bash
+node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before.json
 npm run typecheck
 npm run build
 npm test
-node --test test/codex-slice.test.mjs
-node --test test/*slice.test.mjs
+node --test test/*.test.mjs
 node scripts/install-e2e.mjs
 node scripts/marketplace-e2e.mjs
 node scripts/package-runtime-e2e.mjs
 node scripts/lifecycle-e2e.mjs
+node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before.json
 ```
+
+`node --test test/*.test.mjs`는 0.6.1에서 `test/*slice.test.mjs`를 대체합니다(#26 항목 1).
+이전 glob은 slice가 아닌 `.mjs` 테스트 6개 —
+`web-ui-db-factory`, `benchmark-contract`, `plugin-validation-contract`,
+`codex-host-compat`, `codex-memory-comparison`, `scope-isolation-probe` — 를 문서화된 gate 밖에
+두었습니다(0.5.0~0.5.2에서는 앞의 둘만 별도 gate로 돌려 receipt에 기록했습니다). 넓힌 glob은
+`codex-slice`를 포함한 모든 `.mjs` 테스트를 한 줄로 실행하므로, receipt의 `gates[]`도 개별 slice 줄
+대신 이 한 줄과 그 결과를 기록합니다.
+
+`scripts/check-real-root-untouched.mjs`는 **읽기 전용** 격리 검사입니다(#26 항목 5). gate 전후로 실
+data root(`MEMEX_HOME` > `$XDG_CONFIG_HOME/memex` > `~/.config/memex`)의 파일별 size·mtime·SHA-256을
+스냅숏하고 비교해, 추가·삭제·변경이 하나라도 있으면 exit 1로 실패합니다. 0.5.0 QA에서
+`test/web-ui-db-factory.test.mjs`가 `MEMEX_DB_PATH`만 격리해 실 루트의
+`logs/ui-audit.jsonl`에 21줄을 남긴 사례가 이 검사가 잡아야 하는 대상입니다. 판정은 **내용 해시**로
+하므로 읽기만 한 파일의 atime/mtime 변화는 실패로 보지 않습니다. Codex를 닫고 실행하십시오 — 살아
+있는 세션은 journal과 log를 정당하게 씁니다. 실행 중에만 존재하는 `run-locks/`와 unix socket은 기본
+제외이며 `--strict`로 포함합니다. 스냅숏 파일은 data root 밖(`--out`)에 씁니다.
 
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
 Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니다.
@@ -104,6 +122,18 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/runtime-exec-slice.test.mjs` | 설치본 의존성 부재 시 stderr 1줄 경고 후 npx 폴백(조용한 폴백 금지) |
 | `test/lifecycle-slice.test.mjs` | `doctor`의 `dependencies` 판정이 설치된 plugin root를 본다는 회귀 |
 
+0.6.1에서 추가된 회귀 suite(모두 `npm test` 또는 `node --test test/*.test.mjs`가 실행합니다):
+
+| Suite | 고정하는 회귀 |
+| --- | --- |
+| `test/plugin-root-slice.test.mjs` | npx shim 루트와 plugin 루트가 **같은** 설치본을 해석하는지, `doctor`가 실행 중인 사본이 아니라 설치본을 판정하는지, `memex deps materialize --dry-run`이 해석된 루트를 지목하고 아무것도 바꾸지 않는지 (#53) |
+| `test/sync-tier-import.test.ts` | 피어의 승격이 합법적인 project-wide 행을 만드는지(workspace/workstream NULL 강제), 모르는 `promotion_state`와 불법 tier 조합이 malformed로 보고되는지, 브랜치 tier 기억의 A→B 왕복, protocol 4/5 혼재 동작 (#37/#48) |
+| `test/sync-control.test.ts` | 기본 off·`MEMEX_SYNC_DIR` 우선순위·A export→B import(+N)→B 수정→export→A import(~N)·손상된 `meta.json` 세대 거부·disable 시 no-op, `doctor`의 `skipped(off)`→warn→ok 전이, SessionEnd async export 등록 (#35/#48) |
+| `test/async-hook-output-slice.test.mjs` | 동기화 off일 때 두 sync 훅이 stdout을 건드리지 않고 stderr 한 줄로 끝나는지, export 훅의 unchanged/published 보고 (#35) |
+| `test/pipeline-status-slice.test.mjs` | `status --json`의 `jobs`가 `memory_jobs`를 kind × state로 집계하는지, 큐가 없으면 빈 객체인지, `memex index --help`가 존재하는 문서만 가리키는지 (#46) |
+| `test/real-root-isolation-slice.test.mjs` | 격리 검사 자체의 회귀: 0.5.0의 `ui-audit.jsonl` 유출 형태를 잡는지, 추가/삭제 보고, 내용이 같은 mtime 변화는 실패로 보지 않는지, `run-locks`는 기본 제외·`--strict` 포함 (#26) |
+| `test/lifecycle-slice.test.mjs` (추가분) | 이름 없는 hook 호출이 `event: "Unknown"`으로 기록되지 않고 거절되는지, CLI 진입점이 event 이름을 요구하고 session_id/cwd를 받는지 (#26 항목 6) |
+
 ## 4. Merge-gate receipt 절차
 
 `docs/verification/merge-gate.json`은 **어떤 committed tree를 실제로 검증했는지** 기록하는 raw evidence입니다.
@@ -113,11 +143,26 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 ```text
 1. runtime/test/docs 수정 commit
 2. working tree clean 확인
-3. 그 committed SHA에서 전체 gate 실행
-4. merge-gate.json의 candidate.codeSha에 정확한 SHA 기록
-5. 관측값으로 receipt 갱신
-6. receipt-only commit
+3. 실 data root 스냅숏(check-real-root-untouched.mjs snapshot)
+4. 그 committed SHA에서 전체 gate 실행
+5. 실 data root 비교(check-real-root-untouched.mjs compare) — 변경 0이어야 함
+6. merge-gate.json의 candidate.codeSha에 정확한 SHA 기록
+7. 관측값으로 receipt 갱신 (아래 세 gate 포함)
+8. receipt-only commit
 ```
+
+receipt의 `gates[]`에 반드시 들어가야 하는 0.6.1 항목:
+
+| gate | 기록할 관측값 |
+| --- | --- |
+| `node --test test/*.test.mjs` | 실행한 test 수와 pass/fail 수 (개별 slice 줄을 대체) |
+| `check-real-root-untouched` | 비교한 파일 수와 added/removed/modified 각 0 |
+| `npm pack --dry-run` | tarball의 `total files`와, `docs/verification/`에서 현재 receipt 3개(`merge-gate.json`·`plugin-validation.json`·`benchmark.json`)는 포함되고 `merge-gate-pre-*.json`·`benchmark-pre-*.json`은 제외됨 |
+
+패키징 제외는 `package.json`의 `files` 안 `!docs/verification/merge-gate-pre-*.json` 부정 패턴이
+강제합니다(`files`가 끌어온 경로는 `.npmignore`로 제외되지 않습니다 — `.npmignore`의 같은 패턴은
+의도 기록이자 `files`가 사라졌을 때의 대비입니다). 릴리스마다 tarball 파일 수가 +1씩 늘던 원인이
+이 아카이브였습니다(#26 항목 2).
 
 receipt-only commit 뒤에는 runtime, tests, generated artifacts, scripts, owner docs를 변경하지 않습니다. 이후 코드가 바뀌면 기존 receipt는 현재 merge evidence가 아닙니다.
 
