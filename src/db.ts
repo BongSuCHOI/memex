@@ -595,9 +595,25 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
       fact_hash TEXT NOT NULL,
       source_snapshot_json TEXT NOT NULL,
       method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
-      verified_at TEXT NOT NULL
+      verified_at TEXT NOT NULL,
+      authority TEXT
     )
   `);
+  // 이슈 #45: sync-import는 remote semantic win마다 영수증을 무조건 DELETE했다.
+  // 영수증은 설계상 로컬 전용이라 export되지 않으므로, 그 fact는 해당 기기에서
+  // 증거 결속을 영구히 잃었고 재생성 경로도 없었다. 이제는 지우지 않고
+  // `authority = 'peer-authority'`로 강등한다 — 로컬 검증으로는 세지 않되
+  // (hasLocalMeaningEvidence가 false), 무엇이 그 결속을 끊었는지는 남고
+  // 백필이 다시 로컬로 승격할 수 있다. `method`의 CHECK 제약을 건드리지 않으려고
+  // 새 값을 method에 넣는 대신 별도 additive 컬럼을 쓴다(테이블 재작성 회피).
+  const receiptColumns = new Set(
+    (db.prepare("PRAGMA table_info(fact_evidence_receipts)").all() as Array<{ name: string }>).map(
+      (row) => row.name,
+    ),
+  );
+  if (!receiptColumns.has("authority")) {
+    db.exec("ALTER TABLE fact_evidence_receipts ADD COLUMN authority TEXT");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,

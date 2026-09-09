@@ -83,6 +83,17 @@ export interface PipelineStatus {
     };
     relations: number;
     /**
+     * Issue #45 — active facts carrying source evidence that have no CURRENT
+     * local verification receipt. `hasLocalMeaningEvidence` gates automatic
+     * consolidation in three places and every sync tie-break, so this number is
+     * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
+     * with no surface reporting it anywhere.
+     */
+    evidence: {
+        factsWithoutLocalEvidence: number;
+        activeFactsWithSources: number;
+    };
+    /**
      * Terminal and retry state across the Continuity queue (issues #20, #39).
      *
      * `total` is the "needs a decision" count: dead jobs plus jobs waiting on a

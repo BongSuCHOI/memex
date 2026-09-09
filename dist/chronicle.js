@@ -283,7 +283,12 @@ export function recordChronicleEvent(db, input) {
     if (input.factId && input.newValue && input.projectionApplied && effectiveAtSource !== 'peer' &&
         input.evidenceAuthority && input.evidenceAuthority !== 'unknown' &&
         (input.actor === 'extractor' || input.actor === 'user' || input.actor === 'consolidator')) {
-        recordLocalMeaningEvidence(db, input.factId, input.newValue, input.actor, sourceExchangeIds);
+        // 이슈 #45: 실패를 조용히 삼키지 않는다. 영수증이 없는 fact는 자동 통합
+        // 대상에서 사실상 제외되므로, 만들어지지 않았다는 사실이 관측 가능해야 한다.
+        if (!recordLocalMeaningEvidence(db, input.factId, input.newValue, input.actor, sourceExchangeIds)) {
+            console.error(`local meaning evidence NOT recorded for fact ${input.factId} (${input.actor}): ` +
+                'source evidence changed or is unresolvable — rebuild with: memex backfill receipts');
+        }
     }
     return { event, inserted: true };
 }

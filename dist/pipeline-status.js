@@ -10,6 +10,7 @@ import path from "node:path";
 import { openReadDb } from "./db.js";
 import { describeDerivedLaneSkipReason, readDerivedLaneSkips, } from "./derived-lane-skip.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
+import { countFactsWithoutLocalEvidence, hasEvidenceSchema, } from "./evidence-backfill.js";
 import { buildOntologyParkedClause, buildOntologyParkedRetryClause, } from "./ontology-selector.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
 import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, pendingExtractionCoreQuery, } from "./pending-extraction.js";
@@ -81,6 +82,7 @@ export function getPipelineStatus(opts = {}) {
             embeddings: { activeFacts: 0, factVectorsPending: 0 },
             ontology: emptyOntology(),
             relations: 0,
+            evidence: { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 },
             attention: emptyAttention(),
             jobs: emptyJobCounters(),
             derivedLaneSkips: null,
@@ -353,6 +355,14 @@ export function getPipelineStatus(opts = {}) {
         }
         if (hasRelations)
             relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
+        // 이슈 #45: 통합이 조용히 보류되는 이유를 한 화면에서 볼 수 있어야 한다.
+        const evidence = { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 };
+        if (hasFacts && hasEvidenceSchema(db)) {
+            evidence.factsWithoutLocalEvidence = countFactsWithoutLocalEvidence(db);
+            evidence.activeFactsWithSources = count(db, `SELECT COUNT(*) AS c FROM facts
+         WHERE is_active = 1 AND source_exchange_ids IS NOT NULL
+           AND source_exchange_ids NOT IN ('', '[]')`);
+        }
         const attention = readAttention(db);
         const jobs = readJobCounters(db);
         const archiveFiles = countArchiveFiles(getArchiveDir());
@@ -380,6 +390,7 @@ export function getPipelineStatus(opts = {}) {
             embeddings,
             ontology,
             relations,
+            evidence,
             attention,
             jobs,
             derivedLaneSkips: readDerivedLaneSkips(db),
@@ -595,6 +606,10 @@ export function formatPipelineStatus(s) {
             ") — classification is blocked; rebuild vectors: memex backfill embeddings");
     }
     lines.push(`Relations: ${s.relations}`);
+    if (s.evidence.factsWithoutLocalEvidence > 0) {
+        lines.push(`facts without local evidence: ${s.evidence.factsWithoutLocalEvidence} / ${s.evidence.activeFactsWithSources}`);
+        lines.push("  no current local verification receipt — these facts are held back from automatic consolidation and lose sync tie-breaks; rebuild: memex backfill receipts");
+    }
     // Issue #46 (15.2): the per-kind queue breakdown GUIDE §15 asks for. Printed
     // above `Needs attention` because it is the wider view the two dead/retry
     // numbers are a subset of.

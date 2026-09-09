@@ -22577,9 +22577,18 @@ function initDatabase(options = {}) {
       fact_hash TEXT NOT NULL,
       source_snapshot_json TEXT NOT NULL,
       method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
-      verified_at TEXT NOT NULL
+      verified_at TEXT NOT NULL,
+      authority TEXT
     )
   `);
+  const receiptColumns = new Set(
+    db.prepare("PRAGMA table_info(fact_evidence_receipts)").all().map(
+      (row) => row.name
+    )
+  );
+  if (!receiptColumns.has("authority")) {
+    db.exec("ALTER TABLE fact_evidence_receipts ADD COLUMN authority TEXT");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,

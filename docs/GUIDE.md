@@ -78,6 +78,9 @@ memex status --json
     `parked`는 분류 시도를 소진해 General/Misc에 보관 중인 fact이며 **classified가 아닙니다**.
     이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
     정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
+  - `facts without local evidence: N / M` 줄은(0.6.1 #45) 로컬 의미 검증 영수증이 없는 활성 fact
+    수입니다. 그 fact들은 자동 통합 대상에서 사실상 제외되고(사용자에게는 "중복 fact가 계속 쌓인다"로
+    보입니다) 동기화 시 피어에게 집니다. `memex backfill receipts`로 재구성합니다.
   - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
     (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
     extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
@@ -91,6 +94,9 @@ memex status --json
 - `memex backfill extract` — durable fact 추출
 - `memex backfill ontology` — local ontology/relation 생성
 - `memex backfill embeddings` — 누락된 semantic vector 생성
+- `memex backfill receipts` — 누락된 로컬 의미 검증 영수증(`fact_evidence_receipts`) 재구성.
+  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되고 sync tie-break에서
+  지므로, `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
 - `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
 `backfill`은 기본 foreground 실행이며 다음 exit code를 반환합니다.

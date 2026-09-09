@@ -5,6 +5,8 @@ export interface BackfillWorkStatus {
         extract: number;
         ontology: number;
         embeddings: number;
+        /** 이슈 #45: 지금 즉시 재구성 가능한 로컬 증거 영수증 수(model-free). */
+        receipts: number;
     };
     active: {
         total: number;
@@ -24,6 +26,9 @@ export interface BackfillWorkStatus {
         factVectors: number;
         koreanFactVectors: number;
         exchangeVectors: number;
+        /** Facts with no CURRENT local receipt, whether repairable or not. */
+        factsWithoutLocalEvidence: number;
+        repairableReceipts: number;
     };
 }
 export declare function getBackfillWorkStatus(opts?: {

@@ -374,7 +374,20 @@ semantic edit는 lifecycle clock을 건드리지 않고 deactivate/restore는 se
 fact_id (PK, facts FK ON DELETE CASCADE)
 semantic_generation, fact_hash, source_snapshot_json
 method (extractor | user | consolidator), verified_at
+authority (0.6.1 additive, nullable)
 ```
+
+`authority`(0.6.1 additive)는 `'peer-authority'`일 때 그 영수증이 **로컬 검증이 아니라 peer 권위로
+대체된 흔적**임을 뜻합니다. 0.6.1 이전에는 sync-import가 remote semantic win마다 영수증을 무조건
+DELETE했고, 영수증은 설계상 export되지 않으므로 그 fact는 해당 기기에서 증거 결속을 영구히 잃었습니다
+(재생성 경로도 없었습니다). 이제는 삭제하지 않고 강등합니다 — `hasLocalMeaningEvidence`는 여전히
+false를 반환하지만, 무엇이 결속을 끊었는지가 남고 `memex backfill receipts`가 다시 로컬로 승격할 수
+있습니다. `method`의 CHECK 제약을 건드리지 않으려고(테이블 재작성 회피) 별도 컬럼을 씁니다.
+
+`memex backfill receipts`(model-free)는 `source_exchange_ids`가 전부 해석되는 활성 fact에 대해
+영수증을 재구성합니다. 영수증 행 자체가 resume 마커라 중단해도 다음 실행이 나머지를 이어서 처리합니다.
+`memex status`는 `facts without local evidence: N / M` 줄로 남은 수를 보고합니다 — 영수증이 없는 fact는
+자동 통합에서 제외되고 sync tie-break에서 집니다.
 
 Local verified projection의 exact meaning과 source/tool snapshot만 기록합니다. Source content/identity가
 바뀌거나 누락되면 receipt는 사용할 수 없고, remote semantic replacement는 receipt를 제거합니다.

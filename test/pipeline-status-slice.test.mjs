@@ -428,3 +428,38 @@ test("status stays silent about derived lanes when nothing was skipped", async (
   assert.ok(!formatPipelineStatus(st).includes("Derived lanes:"));
   db.close();
 });
+
+// ── Issue #45 — facts without a current local verification receipt ─────────
+test("status counts facts without local evidence and names the consequence", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.exec(`CREATE TABLE facts (
+    id TEXT PRIMARY KEY, fact TEXT, category TEXT, scope_type TEXT,
+    scope_project TEXT, is_active INTEGER, ontology_category_id TEXT,
+    source_exchange_ids TEXT, semantic_generation INTEGER NOT NULL DEFAULT 1);
+  CREATE TABLE fact_evidence_receipts (
+    fact_id TEXT PRIMARY KEY, semantic_generation INTEGER NOT NULL,
+    fact_hash TEXT NOT NULL, source_snapshot_json TEXT NOT NULL,
+    method TEXT NOT NULL, verified_at TEXT NOT NULL, authority TEXT);`);
+  const insert = db.prepare(`INSERT INTO facts
+    (id, fact, category, scope_type, scope_project, is_active, source_exchange_ids)
+    VALUES (?, 'fact', 'decision', 'project', '/tmp/p', 1, '["e1"]')`);
+  for (const id of ["f1", "f2", "f3"]) insert.run(id);
+  // One verified locally, one demoted to peer authority, one never verified.
+  db.prepare(`INSERT INTO fact_evidence_receipts
+    (fact_id, semantic_generation, fact_hash, source_snapshot_json, method, verified_at, authority)
+    VALUES ('f1', 1, 'h', '[]', 'extractor', '2026-08-26T00:00:00Z', NULL)`).run();
+  db.prepare(`INSERT INTO fact_evidence_receipts
+    (fact_id, semantic_generation, fact_hash, source_snapshot_json, method, verified_at, authority)
+    VALUES ('f2', 1, 'h', '[]', 'extractor', '2026-08-26T00:00:00Z', 'peer-authority')`).run();
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.evidence.activeFactsWithSources, 3);
+  assert.equal(st.evidence.factsWithoutLocalEvidence, 2); // f2 (demoted) + f3
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("facts without local evidence: 2 / 3"), text);
+  assert.ok(text.includes("memex backfill receipts"), text);
+  db.close();
+});

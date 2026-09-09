@@ -278,7 +278,13 @@ export function applyFactMeaningMutationWithPolicy(db, opts, embedding) {
         // A Chronicle transition may cite one primary exchange, but the local
         // verification receipt must retain the entire evidence set used by the policy.
         if (opts.policy.sources && ['verified-extraction', 'consolidation'].includes(opts.policy.kind)) {
-            recordLocalMeaningEvidence(db, opts.factId, newText, opts.policy.kind === 'consolidation' ? 'consolidator' : 'extractor', opts.policy.sources.map(source => source.id));
+            // 이슈 #45: 예전에는 void였고 실패가 조용했다 — 영수증 없는 fact는
+            // 자동 통합에서 제외되고 sync tie-break에서 지는데 아무도 몰랐다.
+            const recorded = recordLocalMeaningEvidence(db, opts.factId, newText, opts.policy.kind === 'consolidation' ? 'consolidator' : 'extractor', opts.policy.sources.map(source => source.id));
+            if (!recorded) {
+                console.error(`local meaning evidence NOT recorded for fact ${opts.factId} (${opts.policy.kind}): ` +
+                    'source evidence changed or is unresolvable — rebuild with: memex backfill receipts');
+            }
         }
         if (tableExists(db, 'fact_context_dependencies')) {
             if ((opts.mergeContextFromFactIds?.length ?? 0) > 0) {

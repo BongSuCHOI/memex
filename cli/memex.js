@@ -81,7 +81,7 @@ COMMANDS:
   jobs        Inspect and recover memory jobs: list|show|retry|dismiss
   recover     Reset terminal (dead) work back to claimable in one transaction
   model-work  Inspect durable model-work budgets or explicitly resume one
-  backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
+  backfill    Run extract/ontology/embeddings/receipts backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
   ontology    Inspect and repair the local taxonomy: list|merge|rename
 
@@ -224,11 +224,16 @@ in ONE transaction — the same unit that was made terminal together.
 --dry-run reports exactly what would be reset and writes nothing.
 Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
   "model-work": MODEL_WORK_USAGE,
-  backfill: `Usage: memex backfill <all|extract|ontology|embeddings> [--background]
+  backfill: `Usage: memex backfill <all|extract|ontology|embeddings|receipts> [--background]
 
 Run backlog work explicitly; never auto-started by status. 'all' runs each stage
 in order and stops at the first failure. Foreground is the default; exit 2 means
-the run completed with outstanding work.`,
+the run completed with outstanding work.
+
+receipts rebuilds missing local meaning-evidence receipts
+(fact_evidence_receipts) for facts whose source exchanges all still resolve.
+It is model-free. Facts without a receipt are excluded from automatic
+consolidation and lose sync tie-breaks; 'memex status' counts them.`,
   ontology: `Usage:
   memex ontology list [--json]
   memex ontology merge <from-category-id> <to-category-id> [--dry-run] [--json]
@@ -1109,10 +1114,10 @@ async function main() {
         const background = args.includes("--background");
         if (
           !target ||
-          !["all", "extract", "ontology", "embeddings"].includes(target)
+          !["all", "extract", "ontology", "embeddings", "receipts"].includes(target)
         ) {
           console.error(
-            "Usage: memex backfill <all|extract|ontology|embeddings> [--background]",
+            "Usage: memex backfill <all|extract|ontology|embeddings|receipts> [--background]",
           );
           process.exitCode = 1;
           break;
@@ -1121,6 +1126,9 @@ async function main() {
           extract: "backfill-extract-worker.js",
           ontology: "backfill-ontology-worker.js",
           embeddings: "reembed-worker.js",
+          // Issue #45: model-free, so it runs last and never delays the stages
+          // that need the provider.
+          receipts: "backfill-receipts-worker.js",
         };
         const targets = target === "all" ? Object.keys(scriptMap) : [target];
         for (const t of targets) {

@@ -412,8 +412,14 @@ policy와 membership 검사를 통과합니다. Tag/KR/표시 overlay는 의미 
 
 Local `fact_evidence_receipts`는 exact text hash, semantic generation, 검증에 사용한 모든 source/tool
 fingerprint를 기록합니다. 자동 변경은 이 집합 전체를 보존하며 Chronicle의 primary source 한 개로
-축소하지 않습니다. 과거 row에 receipt를 추정 생성하거나 peer receipt를 import하지 않습니다.
-Remote semantic replacement는 local receipt를 제거합니다. 상세 persisted contract는
+축소하지 않습니다. peer receipt는 import하지 않습니다. Remote semantic replacement는 local receipt를
+**삭제하지 않고** `authority = 'peer-authority'`로 강등합니다(0.6.1 #45) — 삭제는 그 기기에서 증거
+결속을 영구히 잃게 했고 재생성 경로도 없었습니다. 강등된 receipt는 로컬 검증으로 세지 않습니다.
+
+`recordLocalMeaningEvidence`는 boolean을 반환하며 호출자가 실패를 집계합니다(예전에는 조용한 return).
+`memex backfill receipts`는 receipt를 **추정**하지 않고, `source_exchange_ids`가 전부 해석되는 fact에
+한해 로컬 행으로부터 그대로 재도출합니다(model 호출 없음). 해석되지 않는 fact는 손대지 않고
+`memex status`의 `facts without local evidence: N / M`에 정직하게 남습니다. 상세 persisted contract는
 [SCHEMA.md](SCHEMA.md#local-evidence-and-repair-receipts)에 있습니다.
 
 한 semantic commit에서 처리해야 하는 것:

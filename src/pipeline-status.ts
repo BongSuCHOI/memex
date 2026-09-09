@@ -16,6 +16,10 @@ import {
 } from "./derived-lane-skip.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
+  countFactsWithoutLocalEvidence,
+  hasEvidenceSchema,
+} from "./evidence-backfill.js";
+import {
   buildOntologyParkedClause,
   buildOntologyParkedRetryClause,
 } from "./ontology-selector.js";
@@ -113,6 +117,14 @@ export interface PipelineStatus {
     };
   };
   relations: number;
+  /**
+   * Issue #45 — active facts carrying source evidence that have no CURRENT
+   * local verification receipt. `hasLocalMeaningEvidence` gates automatic
+   * consolidation in three places and every sync tie-break, so this number is
+   * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
+   * with no surface reporting it anywhere.
+   */
+  evidence: { factsWithoutLocalEvidence: number; activeFactsWithSources: number };
   /**
    * Terminal and retry state across the Continuity queue (issues #20, #39).
    *
@@ -245,6 +257,7 @@ export function getPipelineStatus(
       embeddings: { activeFacts: 0, factVectorsPending: 0 },
       ontology: emptyOntology(),
       relations: 0,
+      evidence: { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 },
       attention: emptyAttention(),
       jobs: emptyJobCounters(),
       derivedLaneSkips: null,
@@ -601,6 +614,18 @@ export function getPipelineStatus(
     if (hasRelations)
       relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
 
+    // 이슈 #45: 통합이 조용히 보류되는 이유를 한 화면에서 볼 수 있어야 한다.
+    const evidence = { factsWithoutLocalEvidence: 0, activeFactsWithSources: 0 };
+    if (hasFacts && hasEvidenceSchema(db)) {
+      evidence.factsWithoutLocalEvidence = countFactsWithoutLocalEvidence(db);
+      evidence.activeFactsWithSources = count(
+        db,
+        `SELECT COUNT(*) AS c FROM facts
+         WHERE is_active = 1 AND source_exchange_ids IS NOT NULL
+           AND source_exchange_ids NOT IN ('', '[]')`,
+      );
+    }
+
     const attention = readAttention(db);
     const jobs = readJobCounters(db);
 
@@ -631,6 +656,7 @@ export function getPipelineStatus(
       embeddings,
       ontology,
       relations,
+      evidence,
       attention,
       jobs,
       derivedLaneSkips: readDerivedLaneSkips(db),
@@ -872,6 +898,14 @@ export function formatPipelineStatus(s: PipelineStatus): string {
     );
   }
   lines.push(`Relations: ${s.relations}`);
+  if (s.evidence.factsWithoutLocalEvidence > 0) {
+    lines.push(
+      `facts without local evidence: ${s.evidence.factsWithoutLocalEvidence} / ${s.evidence.activeFactsWithSources}`,
+    );
+    lines.push(
+      "  no current local verification receipt — these facts are held back from automatic consolidation and lose sync tie-breaks; rebuild: memex backfill receipts",
+    );
+  }
 
   // Issue #46 (15.2): the per-kind queue breakdown GUIDE §15 asks for. Printed
   // above `Needs attention` because it is the wider view the two dead/retry

@@ -1,7 +1,7 @@
 // memex backfill CLI contract (v0.2 UX):
 //   - default execution mode is FOREGROUND (completion observable from exit code)
-//   - 'all' orchestrates extract -> ontology -> embeddings sequentially,
-//     stopping at the first failure
+//   - 'all' orchestrates extract -> ontology -> embeddings -> receipts
+//     sequentially, stopping at the first failure (receipts is model-free, #45)
 //   - --background detaches (kept as opt-in); output only reports start
 //   - --foreground is accepted as a deprecated no-op for pre-v0.2 scripts
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -82,7 +82,7 @@ describe("memex backfill CLI 계약", () => {
     }
     assert.match(
       stderr,
-      /Usage: memex backfill <all\|extract\|ontology\|embeddings>/,
+      /Usage: memex backfill <all\|extract\|ontology\|embeddings\|receipts>/,
     );
     assert.match(stderr, /\[--background\]/);
   });
@@ -101,7 +101,7 @@ describe("memex backfill CLI 계약", () => {
     const out = runMemex(["backfill", "all"], {
       MEMEX_EMBEDDING_STUB: "1",
     });
-    for (const stage of ["extract", "ontology", "embeddings"]) {
+    for (const stage of ["extract", "ontology", "embeddings", "receipts"]) {
       assert.match(
         out,
         new RegExp(`Running ${stage} backfill in foreground\\.\\.\\.`),
@@ -125,7 +125,7 @@ describe("memex backfill CLI 계약", () => {
       assert.equal(err.status, 2);
       assert.match(
         err.stdout,
-        /Backfill completed with deferred work: 8 item\(s\) remain \(extract=2, ontology=0, embeddings=6\)\./,
+        /Backfill completed with deferred work: 8 item\(s\) remain \(extract=2, ontology=0, embeddings=6, receipts=0\)\./,
       );
       assert.match(err.stdout, /Check progress: memex status/);
       assert.doesNotMatch(err.stdout, /All backfill stages completed/);
@@ -273,7 +273,7 @@ describe("memex backfill CLI 계약", () => {
     const out = runMemex(["--help"]);
     assert.match(
       out,
-      /backfill\s+Run extract\/ontology\/embeddings backlog explicitly \('all' runs each stage in order\)/,
+      /backfill\s+Run extract\/ontology\/embeddings\/receipts backlog explicitly \('all' runs each stage in order\)/,
     );
   });
 });
