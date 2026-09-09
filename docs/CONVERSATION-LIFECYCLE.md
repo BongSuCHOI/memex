@@ -123,7 +123,7 @@ source delta -> journal fsync -> checkpoint + capture_index job
 | `Stop` | `closed`; delta/fence/outbox only |
 | `Interrupt` | `interrupted`; partial evidence, never completed |
 | `PreCompact(manual\|auto)` | `interrupted` prefix, fsync, carry freeze |
-| `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait |
+| `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait. 0.6.1부터 같은 이벤트에 **별도 async 항목**으로 크로스디바이스 export(`scripts/sync-export-hook.js`)가 등록되지만 fence는 그것을 기다리지 않습니다 |
 | `PostCompact(manual\|auto)` | telemetry only; no correctness transition |
 
 Capture commit 뒤 worker wake는 detached best-effort입니다. Wake가 사라져도 durable job은 남으며 다음 lifecycle에서 재개됩니다.

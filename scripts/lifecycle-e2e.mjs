@@ -24,6 +24,16 @@ import { fileURLToPath } from "node:url";
 import { materializePluginDependencies } from "./materialize-plugin-dependencies.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * Memex-owned entries `setup-hooks` registers across the seven events.
+ *
+ * 7 events / 13 entries: SessionStart 5, UserPromptSubmit 2, Stop 1,
+ * Interrupt 1, PreCompact 1, PostCompact 1, and SessionEnd 2 — the bounded
+ * synchronous capture fence (`scripts/continuity-hook.js`) plus the async
+ * cross-device export (`scripts/sync-export-hook.js`, issue #35). It was 12
+ * before the export hook was registered at all.
+ */
+const OWNED_HOOK_ENTRIES = 13;
 const args = process.argv.slice(2);
 const TIER = args.includes("--tier")
   ? args[args.indexOf("--tier") + 1]
@@ -241,8 +251,8 @@ async function main() {
     const file = path.join(CODEX_HOME, "hooks.json");
     const after1 = fs.readFileSync(file, "utf8");
     const owned1 = (after1.match(/_memex/g) || []).length;
-    if (owned1 !== 12)
-      throw new Error(`expected 12 owned entries, got ${owned1}`);
+    if (owned1 !== OWNED_HOOK_ENTRIES)
+      throw new Error(`expected ${OWNED_HOOK_ENTRIES} owned entries, got ${owned1}`);
 
     r = MB(["setup-hooks"]);
     if (r.status !== 0) throw new Error(r.stderr);
@@ -646,7 +656,7 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
     ) {
       throw new Error("owned entries not removed");
     }
-    return `removed 12 owned, foreign preserved`;
+    return `removed ${OWNED_HOOK_ENTRIES} owned, foreign preserved`;
   });
 
   await step("remove isolated plugin and marketplace registrations", () => {

@@ -95,8 +95,12 @@ Phase 2의 mandatory matrix는 `test/continuity-core.test.ts`와
 `test/continuity-adversarial.test.ts`가 담당합니다. 후자는 200 turns, 6 auto + 2 manual compact,
 same-turn double compact, repeated Stop/Interrupt, zero PostCompact, byte-total accounting, hash mismatch,
 Capsule stale CAS/failure fallback을 한 deterministic fixture에서 검증합니다. Installed lifecycle은 7 event,
-12 owned hook entry이며 `scripts/lifecycle-e2e.mjs --tier offline`이 setup/reinstall/remove와 final-fence process
-boundary를 검증합니다. Unix socket `listen EPERM`이 발생한 managed sandbox run은 정확한 isolated suite를
+**13 owned hook entry**입니다 — SessionStart 5, UserPromptSubmit 2, Stop 1, Interrupt 1, PreCompact 1,
+PostCompact 1, SessionEnd **2**(bounded 동기 capture fence `scripts/continuity-hook.js` +
+async 크로스디바이스 export `scripts/sync-export-hook.js`, 0.6.1 #35). 0.6.0까지는 export 훅이 어느
+이벤트에도 등록되어 있지 않아 12였습니다. `scripts/lifecycle-e2e.mjs --tier offline`이
+setup/reinstall/remove와 final-fence process boundary를 검증하며, 두 번째 `setup-hooks`가 파일을
+바이트 그대로 두는 idempotency 단언은 그대로입니다. Unix socket `listen EPERM`이 발생한 managed sandbox run은 정확한 isolated suite를
 socket 허용 환경에서 재실행해 product failure와 구분합니다.
 Authenticated tier는 격리된 `CODEX_HOME`과 복사된 사용자 auth에서 실제 `codex exec`를 실행해
 installed plugin의 SessionStart/UserPromptSubmit/Stop/SessionEnd stdin, JSON additionalContext,
