@@ -311,6 +311,7 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 | `MEMEX_AUTO_ONTOLOGY` | Automatic ontology is on by default; `0` disables it |
 | `MEMEX_STRICT_CAPTURE` | `1` makes a capture hook fail instead of recording a capture gap |
 | `MEMEX_CAPSULE_MAX_CHARS` | Bounded storage size for one Work Capsule generation (default `12000`, floor `2000`); an oversized patch is truncated by priority and recorded, never dropped |
+| `MEMEX_INJECT_BASELINE_MARGIN` | Relevance margin a fact must clear over the prompt's background baseline to be injected (default `0.045`, 0-1); measure first with the `baseline_margin_gap` telemetry metric |
 | `PORT` | Web UI port (default `3847`) |
 
 Automatic ontology stays available through manual `memex backfill ontology`, and existing derived data and core embeddings remain in place when it is disabled.

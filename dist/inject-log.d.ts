@@ -1,7 +1,16 @@
 export interface InjectLogEntry {
     ts: string;
     /** 'deduped': 후보 전부가 이 세션에서 이미 주입됨 → 재주입 0 (토큰 절약 관측용). */
-    status: "injected" | "no-match" | "skipped" | "error" | "deduped" | "no-session-provenance"
+    status: 
+    /** At least one extracted fact entered the prompt. */
+    "injected"
+    /**
+     * Issue #32: a bundle was emitted but it carried zero facts — Capsule or
+     * assistant-context sections only. This used to be logged as `injected`, so
+     * "the memory system is working" and "no fact has ever been injected" were
+     * indistinguishable. The real data root emitted 7 such bundles and 0 facts.
+     */
+     | "context-only" | "no-match" | "skipped" | "error" | "deduped" | "no-session-provenance"
     /**
      * Issue #44: context was emitted but its durable `prepared` recall receipt
      * could not be marked emitted. The provenance contract
@@ -28,6 +37,8 @@ export interface InjectLogEntry {
     embedding_calls?: number;
     /** Memory Bundle sections emitted, in order. */
     sections?: string[];
+    /** Issue #32: 'unavailable' means the literal-match lane threw for this prompt. */
+    lexical_lane?: "ok" | "unavailable";
 }
 export declare function getInjectLogPath(): string;
 /**

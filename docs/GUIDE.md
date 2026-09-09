@@ -278,7 +278,15 @@ node scripts/lifecycle-e2e.mjs
 - `dependencies: fail` — **설치된 플러그인 루트**(`~/.codex/plugins/cache/.../<version>/`)에 `node_modules`가 없다는 뜻입니다. 이 상태에서는 모든 hook이 조용히 `npx github:BongSuCHOI/memex#main`으로 폴백해 고정한 버전이 아니라 `main` HEAD가 실행되고, foreground hook마다 npx 해석 비용이 붙습니다. 폴백이 실제로 일어나면 stderr에 `[memex] runtime deps missing at <ROOT>; falling back to npx … — run: memex install` 1줄이 남습니다. 복구는 `memex install`(idempotent, 네트워크 없이 이미 설치된 production 의존성만 Codex cache로 복사)입니다.
 - runtime 준비 실패 — Node/npm network, cache permission
 - MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
-- injection 없음 — `injected`, `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- injection 없음 — `injected`(fact ≥ 1), `context-only`(fact = 0, Capsule/assistant context만 발행), `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- `injection-yield: warn` — 최근 retrieval이 연속으로 fact를 0개 주입했다는 뜻입니다(후보는 있었음). 관련성 게이트를 확인하십시오. 탈락한 후보가 임계값에서 얼마나 떨어져 있었는지는 `continuity_telemetry`의 `baseline_margin_gap`(`dims.gaps`, `dims.margin`, `dims.baseline`)에 남고, 임계값은 `MEMEX_INJECT_BASELINE_MARGIN`(기본 `0.045`)으로 조정합니다 — **측정 후에 조정하십시오.** 리터럴 매칭 레인이 예외로 죽으면 `lexical_lane: unavailable`과 `lexical_lane_unavailable` 텔레메트리로 드러납니다(이전에는 빈 `catch`가 삼켰습니다).
+
+```sql
+-- sqlite3 "$(memex home)/conversation-index/db.sqlite"
+SELECT recorded_at, value AS closest_gap, dims_json
+FROM continuity_telemetry WHERE metric = 'baseline_margin_gap'
+ORDER BY recorded_at DESC LIMIT 20;
+```
 - `inject-output: fail` / `recall-provenance: fail` — 컨텍스트를 내보냈는데 durable recall 영수증이 남지 않았다는 뜻입니다(`logs/inject-context.jsonl`의 `status: "receipt-failed"`). 훅의 stderr는 Codex가 버리므로 이 로그와 doctor가 유일한 관측 지점입니다. `recall-provenance`는 최근 로그의 emit 건수와 `recall_events` 행 수를 비교하며, emit이 있는데 `recall_events`가 비어 있으면 실패로 보고합니다 — 이 상태에서는 "어떤 fact가 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다.
 - stale socket — Memex-owned orphan socket만 정리
 - repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행

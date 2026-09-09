@@ -22781,6 +22781,12 @@ var TELEMETRY_METRICS = [
   "embedding_cache_hits",
   "candidate_facts",
   "current_facts",
+  // Issue #32: make the injection relevance gate measurable instead of a
+  // constant nobody can check. One sample per retrieval carries the
+  // `similarity - baseline` distribution of the candidates it saw.
+  "baseline_margin_gap",
+  /** The literal-match lane threw instead of returning nothing. */
+  "lexical_lane_unavailable",
   "delta_facts",
   "injected_facts",
   "injected_chars",
@@ -24934,6 +24940,13 @@ function sampleTelemetry(db, input) {
 }
 var TOP_K = 5;
 var BASELINE_MARGIN = 0.045;
+function resolveBaselineMargin() {
+  const raw = process.env.MEMEX_INJECT_BASELINE_MARGIN;
+  if (raw === void 0) return BASELINE_MARGIN;
+  const parsed = Number.parseFloat(String(raw).trim());
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) return BASELINE_MARGIN;
+  return parsed;
+}
 var MAX_CONTEXT_FACTS = 8;
 var REPEAT_ELAPSED_BUDGET_MS = 700;
 var WATCH_TTL_PROMPTS = 5;
@@ -25181,10 +25194,19 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     };
     const semanticCandidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
     let lexicalCandidates = [];
+    let lexicalLane = "ok";
     if (canQuery(db)) {
       try {
         lexicalCandidates = searchFactsLexicallyInScope(db, userPrompt, scope, TOP_K);
-      } catch {
+      } catch (error2) {
+        lexicalLane = "unavailable";
+        sampleTelemetry(db, {
+          metric: "lexical_lane_unavailable",
+          value: 1,
+          projectId: sessionScope.projectId,
+          sessionId,
+          dims: { reason: error2 instanceof Error ? error2.message.slice(0, 200) : String(error2).slice(0, 200) }
+        });
       }
     }
     const candidates = [...[...semanticCandidates.map((result) => ({
@@ -25215,11 +25237,28 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const bSemantic = b2.semanticSimilarity ?? -Infinity;
       return bSemantic - aSemantic || a.fact.id.localeCompare(b2.fact.id);
     }).slice(0, TOP_K);
+    const margin = resolveBaselineMargin();
+    const gaps = [];
     const results = orderedCandidates.filter((r) => {
       if (r.lexicalScore !== null) return true;
       const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
-      return similarity - baseline >= BASELINE_MARGIN;
+      const gap = similarity - baseline;
+      gaps.push(Math.round(gap * 1e4) / 1e4);
+      return gap >= margin;
     });
+    if (gaps.length > 0) {
+      const passed = gaps.filter((gap) => gap >= margin).length;
+      sampleTelemetry(db, {
+        // The closest miss is the decision-relevant number; `dims.gaps` keeps
+        // the whole bounded distribution (at most TOP_K entries).
+        metric: "baseline_margin_gap",
+        value: Math.max(...gaps),
+        unit: "similarity",
+        projectId: sessionScope.projectId,
+        sessionId,
+        dims: { margin, gaps, passed, rejected: gaps.length - passed, baseline: Math.round(baseline * 1e4) / 1e4 }
+      });
+    }
     let rawEvidence = [];
     if (canQuery(db)) {
       try {
@@ -25455,6 +25494,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         deduped: dedupedCount,
         gate: gateLabel,
         embedding_calls: calls2,
+        lexical_lane: lexicalLane,
         duration_ms: Date.now() - t0,
         via
       });
@@ -25484,7 +25524,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
     }
     appendInjectLog({
-      status: "injected",
+      // Issue #32: a bundle with zero facts is not an injection of memory.
+      status: injectedIds.length > 0 ? "injected" : "context-only",
       project,
       prompt_len: userPrompt.length,
       candidates: candidates.length,
@@ -25494,6 +25535,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       gate: gateLabel,
       embedding_calls: calls,
       sections: sectionKinds,
+      lexical_lane: lexicalLane,
       duration_ms: Date.now() - t0,
       via
     });

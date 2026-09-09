@@ -469,6 +469,57 @@ function recallProvenanceCheck(recent) {
         detail: `${receipts} recall_events row(s) back ${emitted} emitted bundle(s) in the last ${recent.length} log lines`,
     };
 }
+/** A run that produced no facts, whatever else it emitted. */
+const ZERO_FACT_STATUSES = new Set(["context-only", "no-match", "deduped"]);
+/** Consecutive zero-fact runs before the pipeline is reported as not delivering. */
+const ZERO_FACT_STREAK_LIMIT = 8;
+/**
+ * Issue #32 — "the memory system is running" was indistinguishable from
+ * "no fact has ever been injected".
+ *
+ * The observed data root ran the pipeline 12 times over five days: candidates
+ * = 5 every time, injected facts = 0 every time, sum of `injected_facts`
+ * telemetry = 0. Seven of those runs emitted a bundle (Capsule or assistant
+ * context) and were logged as `injected`, so the number of injected facts was
+ * unreadable from the log. Doctor read only the LAST line, whose `no-match`
+ * status is a normal outcome, and reported `inject-output: ok`.
+ */
+function injectionYieldCheck(recent) {
+    const retrievals = recent.filter((entry) => entry.status === "injected" ||
+        ZERO_FACT_STATUSES.has(String(entry.status)));
+    if (retrievals.length === 0) {
+        return {
+            name: "injection-yield",
+            status: "ok",
+            detail: "no retrieval recorded yet in the injection log",
+        };
+    }
+    const facts = retrievals.reduce((sum, entry) => sum + Number(entry.injected ?? 0), 0);
+    let streak = 0;
+    for (let i = retrievals.length - 1; i >= 0; i--) {
+        if (Number(retrievals[i].injected ?? 0) > 0)
+            break;
+        streak++;
+    }
+    const contextOnly = retrievals.filter((entry) => entry.status === "context-only").length;
+    const lexicalDead = recent.filter((entry) => entry.lexical_lane === "unavailable").length;
+    const suffix = (contextOnly > 0 ? ` context-only=${contextOnly}` : "") +
+        (lexicalDead > 0 ? ` lexical_lane=unavailable×${lexicalDead}` : "");
+    if (streak >= ZERO_FACT_STREAK_LIMIT && facts === 0) {
+        return {
+            name: "injection-yield",
+            status: "warn",
+            detail: `${streak} consecutive retrievals injected 0 facts (candidates were found).` +
+                `${suffix} Inspect the relevance gate: telemetry metric baseline_margin_gap, ` +
+                "override MEMEX_INJECT_BASELINE_MARGIN.",
+        };
+    }
+    return {
+        name: "injection-yield",
+        status: lexicalDead > 0 ? "warn" : "ok",
+        detail: `${facts} fact(s) injected across the last ${retrievals.length} retrieval(s), current zero-fact streak ${streak}.${suffix}`,
+    };
+}
 /** Read-only diagnosis. Distinguishes configured vs observed. */
 export function doctor() {
     const checks = [];
@@ -614,6 +665,7 @@ export function doctor() {
         });
     }
     checks.push(recallProvenanceCheck(recent));
+    checks.push(injectionYieldCheck(recent));
     // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
     let trustedEntries = 0;
     const configToml = path.join(codexHome(), "config.toml");

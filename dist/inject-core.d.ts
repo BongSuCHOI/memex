@@ -1,4 +1,17 @@
 import { type RecallGateConfig } from "./recall-gate.js";
+/**
+ * Issue #32 — the margin is now tunable and measurable.
+ *
+ * The observed data root ran the pipeline 12 times over five days with
+ * `candidate_facts = 5` and `current_facts = 0` every single time: not one of
+ * 127 extracted facts ever entered a prompt. Nothing recorded where those
+ * candidates actually sat relative to the threshold, so the constant could not
+ * be judged from data. `baseline_margin_gap` telemetry now records that
+ * distribution, and this override lets it be moved once the data says where.
+ * The default is unchanged: retuning it without evidence would be guessing.
+ */
+export declare const INJECT_BASELINE_MARGIN_DEFAULT = 0.045;
+export declare function resolveBaselineMargin(): number;
 export interface InjectOptions {
     /** Disable the cheap gate (calibration baseline only). */
     gate?: boolean;
