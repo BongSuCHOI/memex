@@ -9,7 +9,7 @@ void main(){float cy=cos(u_rotate.x),sy=sin(u_rotate.x),cx=cos(u_rotate.y),sx=si
 const fs=`precision mediump float;varying vec4 v_color;uniform float u_points;void main(){float a=v_color.a;if(u_points>.5){float d=distance(gl_PointCoord,vec2(.5));if(d>.5)discard;a*=1.0-smoothstep(.32,.5,d);}gl_FragColor=vec4(v_color.rgb,a);}`;
 export class KnowledgeGraph{
   constructor(stage,data,options={}){
-    this.stage=stage;this.data=data;this.options=options;this.canvas=stage.querySelector('canvas.graph-canvas');this.labels=stage.querySelector('canvas.labels');this.ctx=this.labels.getContext('2d');this.tooltip=stage.querySelector('.graph-tooltip');this.abort=new AbortController();this.selected=null;this.hovered=null;this.mode=options.mode||'2d';this.yaw=this.mode==='3d'?.35:0;this.pitch=this.mode==='3d'?.2:0;this.zoom=.86;this.panX=0;this.panY=0;this.raf=0;this.destroyed=false;this.gl=null;
+    this.stage=stage;this.data=data;this.options=options;this.canvas=stage.querySelector('canvas.graph-canvas');this.labels=stage.querySelector('canvas.labels');this.ctx=this.labels.getContext('2d');this.tooltip=stage.querySelector('.graph-tooltip');this.abort=new AbortController();this.selected=null;this.hovered=null;this.mode=options.mode||'2d';this.yaw=this.mode==='3d'?.35:0;this.pitch=this.mode==='3d'?.2:0;this.zoom=.86;this.panX=0;this.panY=0;this.raf=0;this.frames=0;this.destroyed=false;this.gl=null;stage.__knowledgeGraph=this;
     this.layout();this.initGL();this.events();this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(stage);this.resize();
   }
   layout(){
@@ -40,10 +40,20 @@ export class KnowledgeGraph{
     this.pointCount=points.length/8;this.lineCount=lines.length/8;gl.bindBuffer(gl.ARRAY_BUFFER,this.pointBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(points),gl.STATIC_DRAW);gl.bindBuffer(gl.ARRAY_BUFFER,this.edgeBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(lines),gl.STATIC_DRAW);this.schedule();
   }
   bind(buffer){const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,buffer);for(const [key,size,offset]of [['pos',3,0],['color',4,12],['size',1,28]]){const loc=this.attributes[key];gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size,gl.FLOAT,false,32,offset);}}
-  resize(){if(this.destroyed)return;const r=this.stage.getBoundingClientRect();this.width=Math.max(1,r.width);this.height=Math.max(1,r.height);this.dpr=Math.min(window.devicePixelRatio||1,2);for(const c of [this.canvas,this.labels]){c.width=Math.round(this.width*this.dpr);c.height=Math.round(this.height*this.dpr);}this.schedule();}
+  // Assigning canvas.width/height always reallocates the drawing buffer, even
+  // when the value is unchanged, leaving it transparent black until the next
+  // frame. ResizeObserver fires an initial callback for every observe(), so an
+  // unguarded assignment blanked an already-drawn map. Only resize on a real
+  // size change, and keep drawing while no frame has been produced yet.
+  resize(){if(this.destroyed)return;const r=this.stage.getBoundingClientRect();this.width=Math.max(1,r.width);this.height=Math.max(1,r.height);this.dpr=Math.min(window.devicePixelRatio||1,2);const w=Math.round(this.width*this.dpr),h=Math.round(this.height*this.dpr);let resized=false;for(const c of [this.canvas,this.labels]){if(c.width===w&&c.height===h)continue;c.width=w;c.height=h;resized=true;}if(resized||!this.frames)this.schedule();}
   project(pos){const[x,y,z]=pos,cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),cx=Math.cos(this.pitch),sx=Math.sin(this.pitch);const xx=cy*x+sy*z,zz=-sy*x+cy*z;const yy=cx*y-sx*zz,depth=sx*y+cx*zz;const p=this.mode==='3d'?3.5/(3.5+depth):1;return[(xx*this.zoom*p/(this.width/this.height)+this.panX+1)*this.width/2,(1-(yy*this.zoom*p+this.panY))*this.height/2,depth];}
   schedule(){if(this.destroyed||this.raf)return;this.raf=requestAnimationFrame(()=>{this.raf=0;this.draw();});}
-  draw(){if(this.destroyed)return;if(this.fallback){this.drawFallback();this.drawLabels();return;}const gl=this.gl;if(!gl||gl.isContextLost())return;gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(.063,.114,.145,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(this.program);gl.uniform4f(this.uniforms.u_view,this.zoom,this.panX,this.panY,this.width/this.height);gl.uniform4f(this.uniforms.u_rotate,this.yaw,this.pitch,this.mode==='3d'?1:0,0);gl.uniform1f(this.uniforms.u_dpr,this.dpr);gl.uniform1f(this.uniforms.u_points,0);this.bind(this.edgeBuffer);gl.drawArrays(gl.LINES,0,this.lineCount);gl.uniform1f(this.uniforms.u_points,1);this.bind(this.pointBuffer);gl.drawArrays(gl.POINTS,0,this.pointCount);this.drawLabels();}
+  // Draw synchronously, consuming any frame already queued. A WebGL drawing
+  // buffer that has never been cleared reads back as transparent black, which
+  // is indistinguishable by colour from a painted map, so anything reading the
+  // canvas must be able to force a real frame first instead of racing rAF.
+  renderNow(){if(this.destroyed)return this.frames;if(this.raf){cancelAnimationFrame(this.raf);this.raf=0;}this.draw();return this.frames;}
+  draw(){if(this.destroyed)return;if(this.fallback){this.drawFallback();this.drawLabels();this.frames++;return;}const gl=this.gl;if(!gl||gl.isContextLost())return;gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clearColor(.063,.114,.145,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.useProgram(this.program);gl.uniform4f(this.uniforms.u_view,this.zoom,this.panX,this.panY,this.width/this.height);gl.uniform4f(this.uniforms.u_rotate,this.yaw,this.pitch,this.mode==='3d'?1:0,0);gl.uniform1f(this.uniforms.u_dpr,this.dpr);gl.uniform1f(this.uniforms.u_points,0);this.bind(this.edgeBuffer);gl.drawArrays(gl.LINES,0,this.lineCount);gl.uniform1f(this.uniforms.u_points,1);this.bind(this.pointBuffer);gl.drawArrays(gl.POINTS,0,this.pointCount);this.drawLabels();this.frames++;}
   drawFallback(){
     const c=this.fallback;c.setTransform(this.dpr,0,0,this.dpr,0,0);c.fillStyle='#101d25';c.fillRect(0,0,this.width,this.height);
     const selected=this.selected,near=this.neighbors.get(selected)||new Set(),positions=new Map(this.nodes.map(n=>[n.id,this.project(n.pos)]));

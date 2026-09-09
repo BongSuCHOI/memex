@@ -357,25 +357,37 @@ const DRIVER = `
   };
   // Pixels the map itself drew, read back from the live drawing buffer so the
   // check survives a headless compositor that screenshots the canvas blank.
-  const mapPixels=canvas=>{
-    if(!canvas||!canvas.width)return 0;
+  // Classify every pixel of the map canvas against the engine's own clear
+  // colour, clearColor(.063,.114,.145) -> rgb(16,29,37), which the Canvas2D
+  // fallback also paints as #101d25.
+  //
+  // The readback must never race the engine's requestAnimationFrame: a WebGL
+  // drawing buffer that has not been cleared yet reads back as transparent
+  // black, and transparent black is not the clear colour, so an undrawn canvas
+  // would otherwise be counted as fully painted. renderNow() produces a real
+  // frame in this same JS task, and the frame counter proves one actually
+  // happened, so "background only" and "never drawn" stay distinguishable.
+  const mapSurface=canvas=>{
+    const engine=canvas&&canvas.closest('#graph-stage')?.__knowledgeGraph;
+    const frames=engine?.renderNow?engine.renderNow():0;
+    if(!canvas||!canvas.width)return {painted:0,background:0,total:0,frames};
+    const total=canvas.width*canvas.height;
     const gl=canvas.getContext('webgl');
+    let data;
     if(gl){
-      const buffer=new Uint8Array(canvas.width*canvas.height*4);
-      gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,buffer);
-      let count=0;
-      // clearColor(.063,.114,.145) -> the untouched background
-      for(let i=0;i<buffer.length;i+=4)
-        if(Math.abs(buffer[i]-16)>8||Math.abs(buffer[i+1]-29)>8||Math.abs(buffer[i+2]-37)>8)count++;
-      return count;
+      data=new Uint8Array(total*4);
+      gl.readPixels(0,0,canvas.width,canvas.height,gl.RGBA,gl.UNSIGNED_BYTE,data);
+    }else{
+      data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
     }
-    const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
-    let count=0;
-    // Canvas2D fallback paints #101d25 before the nodes.
-    for(let i=0;i<data.length;i+=4)
-      if(Math.abs(data[i]-16)>8||Math.abs(data[i+1]-29)>8||Math.abs(data[i+2]-37)>8)count++;
-    return count;
+    let painted=0,background=0;
+    for(let i=0;i<data.length;i+=4){
+      if(Math.abs(data[i]-16)<=8&&Math.abs(data[i+1]-29)<=8&&Math.abs(data[i+2]-37)<=8)background++;
+      else painted++;
+    }
+    return {painted,background,total,frames};
   };
+  const mapPixels=canvas=>mapSurface(canvas).painted;
 `;
 
 const probe = (body) => `(async()=>{${DRIVER}${body}})()`;
@@ -1512,6 +1524,7 @@ try {
         return el&&el.textContent.includes('표시할 기억이 없습니다')?el:null;
       });
       const canvas=document.querySelector('#graph-stage .graph-canvas');
+      const surface=mapSurface(canvas);
       return {
         title:document.title,
         emptyTitle:text('#graph-stage .empty h3'),
@@ -1522,7 +1535,10 @@ try {
         renderer:text('#graph-renderer'),
         taxonomyLink:Boolean(document.querySelector('#main a[href*="/taxonomy"]')),
         labelPixels:painted(document.querySelector('#graph-stage canvas.labels')),
-        nodePixels:mapPixels(canvas),
+        nodePixels:surface.painted,
+        mapFrames:surface.frames,
+        mapBackground:surface.background,
+        mapTotal:surface.total,
       };
     `),
     "graph-empty.png",
@@ -1649,6 +1665,12 @@ try {
     !graphEmpty.meta.includes("0 NODES") ||
     graphEmpty.labelPixels !== 0 ||
     graphEmpty.nodePixels !== 0 ||
+    // A real frame must have been drawn, and every one of its pixels must be
+    // the engine's clear colour. Asserting only "nothing painted" would also
+    // accept a canvas that was never cleared.
+    !graphEmpty.mapFrames ||
+    !graphEmpty.mapTotal ||
+    graphEmpty.mapBackground !== graphEmpty.mapTotal ||
     !graphEmpty.taxonomyLink
   ) {
     throw new Error(
