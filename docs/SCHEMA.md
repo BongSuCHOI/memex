@@ -341,7 +341,7 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 | `chronicle_seq` | local append 순서 tie-breaker(clock 아님) |
 
 `PROMOTED`/`DEMOTED`는 projection event이므로 `projection_applied = 1`이고 `effective_at_source`는
-`recorded`입니다. `evidence_authority`는 actor `auto`면 `unknown`, 그 외에는 `human-decision`이며
+`recorded`입니다. `evidence_authority`는 actor `auto`와 `migration`이면 `unknown`, `user`/`user-directive`면 `human-decision`이며
 `user`/`user-directive`의 `--reason`만 `rationale`(사용자 진술)로 기록합니다. 사다리 API는
 `outcome.to_tier`에 tier 이름(`workstream|project|global`)을 쓰지만 `facts migrate-tiers`의 일회성
 back-fill만 `promotion_state` 이름인 `project-current`를 씁니다 — 두 문자열이 실제 데이터에 함께

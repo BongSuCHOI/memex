@@ -5,7 +5,7 @@ This file records as-built choices and runtime compatibility differences. It doe
 ## D-000 — Baseline document placement
 
 - RFC section/invariant: §22 Phase 0 / RFC lock
-- Actual choice: preserve the supplied source at `docs/Memex Continuity Architecture v1 - FINAL RFC.md` and keep the byte-identical locked repository copy at `docs/architecture/memex-continuity-v1.md`.
+- Actual choice (superseded by the 0.6.0 amendment below): preserve the supplied source at `docs/Memex Continuity Architecture v1 - FINAL RFC.md` and keep the byte-identical locked repository copy at `docs/architecture/memex-continuity-v1.md`.
 - Reason: the supplied source is already inside the repository; a conventional architecture path gives later owner documentation a stable target without deleting or renaming user input.
 - Alternatives considered: lock only the supplied path; move the supplied file.
 - Invariant evidence: both files hashed to `146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a` and `cmp` returned success on 2026-09-03.

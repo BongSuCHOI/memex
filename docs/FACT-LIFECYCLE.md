@@ -30,6 +30,8 @@ workspace provenance/legacy query key입니다.
 (`deterministicWorkstreamId`, `src/continuity-identity.ts`). 그래서 같은 저장소의 워크트리 두 개가
 같은 브랜치를 쓰면 한 tier를 공유합니다. 표의 세 계층은 각각 `facts.promotion_state = workstream`
 (브랜치 tier), `project-current`(프로젝트 공용), `facts.scope_type = global`(글로벌)로 저장됩니다.
+표의 승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다.** Web UI의 fact 변경
+allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다.
 표의 `PROJECT_MERGED`는 승인 단계의 이름이며 아직 존재하는 event kind가 아닙니다 — 0.6.0은 충돌을
 `workspace_location_events`의 `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`로,
 그리고 `project_identity_audit`의 `suggest` 행으로 남기고 병합은 기존 `approved_remote_mappings`
@@ -52,7 +54,7 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 
 | 이동 | 자동(근거 기반) 조건 | 사용자 명시 |
 |---|---|---|
-| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | UI 버튼 / `memex facts promote <id>` |
+| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
 | project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때 | 동일 |
 | 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
 
@@ -62,7 +64,7 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
-  (Web UI 버튼도 같은 함수를 호출합니다).
+  (0.6.1의 Web UI 버튼도 같은 함수를 호출할 예정입니다).
 - 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v4에 additive로 실려 갑니다.
   이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
 

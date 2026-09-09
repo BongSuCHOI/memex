@@ -233,8 +233,8 @@ Phase 5는 `UserPromptSubmit`에 cheap gate를 둡니다. ack/continuation과 to
 0.6.0은 그 위에 **기억 계층**을 올립니다. 세션 시작의 `inspectWorkspaceLocation`이 브랜치와 저장소 기본
 브랜치(`origin/HEAD` → `packed-refs` → `init.defaultBranch`)를 함께 캡처해 세션을 `no-branch-signal` /
 `default-branch` / `branch:<name>` 셋 중 하나로 분류하고, workstream id는 `(project_id, branch)`(신호가
-없으면 `project_id`만)로 결정론적으로 파생됩니다. 신호가 없는 세션의 새 fact는 바로 프로젝트 공용
-(`project-current`), 그 외 브랜치·워크트리 세션의 fact는 브랜치 tier(`workstream`)로 들어가며 근거는
+없으면 `project_id`만)로 결정론적으로 파생됩니다. `no-branch-signal`과 `default-branch` 세션의 새 fact는 바로 프로젝트 공용
+(`project-current`), `branch:<name>` 세션의 fact만 브랜치 tier(`workstream`)로 들어가며 근거는
 `facts.tier_reason`에 남습니다. 이후 이동은 `workstream ⇄ project ⇄ global` 사다리를 **한 칸씩만** 따르고,
 사용자 확언·근거 기반 자동(모델 호출 없이 SQL)·세션 내 명시 지시 세 채널 모두 Chronicle
 `PROMOTED`/`DEMOTED`를 남깁니다. 프로젝트를 지목할 수 없는 cwd는 project identity로 거절되고, 과거에
