@@ -18,6 +18,7 @@ MODES:
   (default)      Combined vector + text search
   --vector       Vector similarity only (semantic)
   --text         Exact string matching only (for git SHAs, error codes)
+  --both         Hybrid vector + text search (explicit default)
 
 OPTIONS:
   --after DATE   Only conversations after YYYY-MM-DD
@@ -48,6 +49,13 @@ EXAMPLES:
     }
     else if (arg === '--text') {
         mode = 'text';
+    }
+    else if (arg === '--both') {
+        mode = 'both';
+    }
+    else if (arg.startsWith('--')) {
+        console.error(`memex search: unknown option ${arg} (see --help)`);
+        process.exit(1);
     }
     else if (arg === '--after') {
         after = args[++i];
