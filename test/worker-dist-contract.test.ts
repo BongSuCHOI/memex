@@ -25,6 +25,9 @@ describe("워커 ↔ dist 계약", () => {
       "runFactExtraction",
       "classifyExtractionFailure",
       "FAILURE_REPORT",
+      // 이슈 #11: 워커가 claim 미획득 사유를 라벨링하는 표. 이름이 바뀌면
+      // ESM named import 가 링크 단계에서 터져 워커가 통째로 죽는다.
+      "CLAIM_REJECTION_REPORT",
     ]) {
       expect(
         dist[sym as keyof typeof dist],
@@ -70,6 +73,33 @@ describe("워커 ↔ dist 계약", () => {
       expect(typeof rep.consumesBudget, `${k}.consumesBudget`).toBe("boolean");
       expect(typeof rep.escalate, `${k}.escalate`).toBe("boolean");
     }
+  });
+
+  it("dist 의 claim 미획득 표가 4사유를 필드까지 갖춘다 (이슈 #11)", async () => {
+    const { CLAIM_REJECTION_REPORT } = await import("../dist/fact-extractor.js");
+    const reasons = Object.keys(CLAIM_REJECTION_REPORT);
+    expect(reasons.sort(), "claim 거절 사유 4종").toEqual(
+      ["attempts_exhausted", "backoff", "cas", "lease_held"],
+    );
+    for (const k of reasons) {
+      const rep = (
+        CLAIM_REJECTION_REPORT as Record<string, Record<string, unknown>>
+      )[k];
+      expect(typeof rep.label, `${k}.label`).toBe("string");
+      expect(typeof rep.reason, `${k}.reason`).toBe("string");
+      expect(typeof rep.note, `${k}.note`).toBe("string");
+      expect(["handoff", "backoff", "attempt_cap"], `${k}.bucket`).toContain(
+        rep.bucket,
+      );
+      expect(typeof rep.escalate, `${k}.escalate`).toBe("boolean");
+    }
+    // 라벨이 사유별로 구분되지 않으면 이슈 #11 이 그대로 돌아온다.
+    const labels = (
+      CLAIM_REJECTION_REPORT as Record<string, { label: string }>
+    );
+    expect(labels.lease_held.label).toBe("HANDOFF");
+    expect(labels.backoff.label).toBe("DEFERRED");
+    expect(labels.attempts_exhausted.label).toBe("SKIPPED");
   });
 
   it("구버전 표(필드 누락)여도 경보가 무음으로 사라지지 않는다", () => {

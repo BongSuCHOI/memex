@@ -1137,16 +1137,23 @@ export function createCheckpointWithJob(db, input) {
     return tx.immediate();
 }
 export function claimMemoryJobById(db, input) {
+    return claimMemoryJobByIdWithReason(db, input).job;
+}
+export function claimMemoryJobByIdWithReason(db, input) {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
     const leaseUntil = new Date(now.getTime() + (input.leaseMs ?? 30 * 60_000)).toISOString();
+    const refuse = (reason, availableAt) => ({
+        job: null,
+        rejection: availableAt ? { reason, availableAt } : { reason },
+    });
     const tx = db.transaction(() => {
         const row = db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?").get(input.jobId);
         if (!row ||
             row.state === "completed" ||
             row.state === "superseded" ||
             row.state === "dead")
-            return null;
+            return refuse("cas");
         const expiredRunning = row.state === "running" && (!row.lease_until || row.lease_until <= nowIso);
         if (row.attempts >= row.max_attempts && (expiredRunning || row.state !== "running")) {
             const error = expiredRunning
@@ -1199,7 +1206,7 @@ export function claimMemoryJobById(db, input) {
             last_error = ?, updated_at = ?
         WHERE job_id = ?
       `).run(error, nowIso, row.job_id);
-            return null;
+            return refuse("attempts_exhausted");
         }
         // A partition is drained by priority lane first (P0 capture > P1 Capsule >
         // P2 extraction). Capsule producers are different sessions, so their
@@ -1216,19 +1223,29 @@ export function claimMemoryJobById(db, input) {
       LIMIT 1
     `).get(row.partition_key);
         if (firstOutstanding?.job_id !== row.job_id)
-            return null;
+            return refuse("lease_held");
         const partitionBusy = db.prepare(`
       SELECT 1 FROM memory_jobs
       WHERE partition_key = ? AND job_id <> ? AND state = 'running'
         AND lease_until > ? LIMIT 1
     `).get(row.partition_key, row.job_id, nowIso);
         if (partitionBusy)
-            return null;
+            return refuse("lease_held");
+        const backoff = (row.state === "pending" || row.state === "retry") &&
+            row.available_at > nowIso;
         const reclaimable = (row.state === "pending" || row.state === "retry") &&
             row.available_at <= nowIso ||
             (row.state === "running" && (!row.lease_until || row.lease_until <= nowIso));
-        if (!reclaimable || row.attempts >= row.max_attempts)
-            return null;
+        if (!reclaimable || row.attempts >= row.max_attempts) {
+            // Order matters for the report, not for the predicate: a job that is
+            // both capped and in backoff is terminal, so the cap is the honest
+            // reason. Everything else that is not reclaimable is a live lease.
+            if (row.attempts >= row.max_attempts)
+                return refuse("attempts_exhausted");
+            return backoff
+                ? refuse("backoff", row.available_at)
+                : refuse("lease_held");
+        }
         const generation = row.lease_generation + 1;
         const changed = db.prepare(`
       UPDATE memory_jobs
@@ -1237,8 +1254,12 @@ export function claimMemoryJobById(db, input) {
       WHERE job_id = ? AND lease_generation = ? AND state = ?
     `).run(input.owner, leaseUntil, generation, nowIso, row.job_id, row.lease_generation, row.state).changes;
         if (changed !== 1)
-            return null;
-        return db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?").get(row.job_id);
+            return refuse("cas");
+        return {
+            job: db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?")
+                .get(row.job_id),
+            rejection: null,
+        };
     });
     return tx.immediate();
 }
@@ -1781,10 +1802,18 @@ export function commitExtractionPage(db, input) {
     }
 }
 export function claimExtractionTarget(db, target, owner = randomUUID(), now = new Date()) {
+    return claimExtractionTargetWithReason(db, target, owner, now).claim;
+}
+/**
+ * Same claim, with the refusal reason the caller needs in order to report
+ * handoff, retry backoff, and attempt-cap distinctly (issue #11).
+ */
+export function claimExtractionTargetWithReason(db, target, owner = randomUUID(), now = new Date()) {
     const claim = db.transaction(() => {
-        const job = claimMemoryJobById(db, { jobId: target.jobId, owner, now });
+        const outcome = claimMemoryJobByIdWithReason(db, { jobId: target.jobId, owner, now });
+        const job = outcome.job;
         if (!job)
-            return null;
+            return { claim: null, rejection: outcome.rejection ?? { reason: "cas" } };
         const changed = db.prepare(`
       UPDATE extraction_targets
       SET state = 'running', lease_owner = ?, lease_until = ?,
@@ -1804,14 +1833,18 @@ export function claimExtractionTarget(db, target, owner = randomUUID(), now = ne
       SELECT t.*, j.job_id FROM extraction_targets t
       JOIN memory_jobs j ON j.target_id = t.target_id WHERE t.target_id = ?
     `).get(target.targetId);
-        return { target: targetFromRow(row), owner, leaseGeneration: job.lease_generation };
+        return {
+            claim: { target: targetFromRow(row), owner, leaseGeneration: job.lease_generation },
+            rejection: null,
+        };
     });
     try {
         return claim.immediate();
     }
     catch (error) {
-        if (error instanceof ContinuityCasRejected)
-            return null;
+        if (error instanceof ContinuityCasRejected) {
+            return { claim: null, rejection: { reason: "cas" } };
+        }
         throw error;
     }
 }

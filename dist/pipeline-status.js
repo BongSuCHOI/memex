@@ -65,6 +65,8 @@ export function getPipelineStatus(opts = {}) {
                 excludedBelowMin: 0,
                 excludedProject: 0,
                 deferred: 0,
+                backoff: 0,
+                backoffEarliestAt: null,
                 gateMinExchanges: extractionGate.minExchanges,
                 claimed: 0,
                 failedPermanent: 0,
@@ -106,6 +108,8 @@ export function getPipelineStatus(opts = {}) {
             excludedBelowMin: 0,
             excludedProject: 0,
             deferred: 0,
+            backoff: 0,
+            backoffEarliestAt: null,
             gateMinExchanges: extractionGate.minExchanges,
             claimed: 0,
             failedPermanent: 0,
@@ -254,6 +258,32 @@ export function getPipelineStatus(opts = {}) {
                          WHERE x.session_id = e.session_id)
                         > COALESCE(l.last_exchange_rowid, -1)))
             )`, EXTRACTION_STATE.SEED, EXTRACTION_STATE.PERMANENT);
+            // 🚨 Issue #11. Backoff is not deferral: `deferred` above is terminal
+            // (dead targets / legacy markers) while these sessions hold a live,
+            // claimable queue job whose `available_at` has simply not arrived. They
+            // stay counted inside `pending` — this is a breakdown of pending, not a
+            // new bucket beside it — so backfill's exit-2 "deferred work" contract is
+            // untouched; what changes is that the operator can now see *when*.
+            const nowIso = new Date().toISOString();
+            const backoffRow = hasGenerationState && tableExists(db, "memory_jobs")
+                ? db.prepare(`
+              SELECT COUNT(*) AS c, MIN(available_at) AS earliest FROM (
+                SELECT j.partition_key, MIN(j.available_at) AS available_at
+                FROM memory_jobs j
+                WHERE j.kind = 'fact_extract'
+                  AND j.state IN ('pending','retry')
+                  AND j.available_at > ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM memory_jobs live
+                    WHERE live.partition_key = j.partition_key
+                      AND live.kind = 'fact_extract'
+                      AND ((live.state IN ('pending','retry') AND live.available_at <= ?)
+                        OR (live.state = 'running' AND live.lease_until > ?))
+                  )
+                GROUP BY j.partition_key
+              )
+            `).get(nowIso, nowIso, nowIso)
+                : { c: 0, earliest: null };
             const pendingCore = hasGenerationState
                 ? pendingExtractionCoreQuery(extractionGate, "continuity")
                 : null;
@@ -268,6 +298,8 @@ export function getPipelineStatus(opts = {}) {
                 excludedBelowMin: Number(gateRow.belowMin),
                 excludedProject: Number(gateRow.byProject),
                 deferred: deferredSessions,
+                backoff: Number(backoffRow.c),
+                backoffEarliestAt: backoffRow.earliest ?? null,
                 gateMinExchanges: extractionGate.minExchanges,
                 claimed: claimedFresh,
                 failedPermanent: permanent,
@@ -371,6 +403,8 @@ export function formatPipelineStatus(s) {
         `${ex.failedPermanent} permanent-failed`,
         `${ex.failedVisible} failed-visible`,
     ];
+    if (ex.backoff > 0)
+        parts.push(`${ex.backoff} backoff`);
     if (ex.retriable > 0)
         parts.push(`${ex.retriable} retriable`);
     lines.push(`Fact extraction: ${ex.total === 0 ? "EMPTY" : ex.pending === 0 && ex.claimed === 0 && ex.failedPermanent === 0 && ex.failedVisible === 0 ? "DONE" : "PARTIAL"} (${parts.join(", ")})`);
@@ -378,6 +412,9 @@ export function formatPipelineStatus(s) {
         lines.push(`  excluded: intentionally skipped by extraction policy — ${ex.excludedBelowMin} below min-exchanges (BACKFILL_MIN_EXCHANGES=${ex.gateMinExchanges}), ${ex.excludedProject} excluded projects`);
     if (ex.deferred > 0)
         lines.push(`  deferred: exact failed-visible targets (or legacy-only seed/permanent markers) — ${ex.deferred}`);
+    if (ex.backoff > 0)
+        lines.push(`  backoff: retry backoff not yet elapsed (counted inside pending, no runner holds them) — ${ex.backoff}` +
+            (ex.backoffEarliestAt ? `, earliest retry ${ex.backoffEarliestAt}` : ""));
     if (ex.lastSuccessAt)
         lines.push(`  last success: ${ex.lastSuccessAt}`);
     if (ex.lastErrorAt)

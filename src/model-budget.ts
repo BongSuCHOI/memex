@@ -1041,10 +1041,73 @@ export function startNewModelWorkRunForBudget(
 }
 
 /**
+ * Read-only pre-flight for a queue claim: would this job be handed a budget
+ * that is already spent?
+ *
+ * 🚨 Issue #12. The extractor claimed a job (which burns one `attempts`), then
+ * resolved its budget deep inside the model call, and only there discovered
+ * that the budget's `deadline_at` had passed hours ago. `reserveModelAttempt`
+ * throws *before* inserting a `model_work_attempts` row, so no provider call
+ * ever happened — yet the claim's attempt was spent and
+ * `deferMemoryJobForModelBudget` parked the job for a full hour. The fresh
+ * budget minted seconds later by the same maintenance wake then had nothing
+ * left to run. Resolving the budget *before* the claim keeps a dead budget
+ * from ever reaching the extractor.
+ *
+ * Resolution mirrors `withResolvedModelWorkContext`: a bound job's durable
+ * budget wins over any explicitly requested/environment budget. Nothing is
+ * created here — an unbound job with no explicit budget returns null and takes
+ * the normal lazy-creation path.
+ */
+export function findExhaustedModelBudgetForClaim(
+  db: Database.Database,
+  input: { jobId?: string | null; budgetId?: string | null; now?: Date },
+): {
+  budgetId: string;
+  parentWaveId: string;
+  reason: ModelBudgetExhaustionReason;
+} | null {
+  ensureModelBudgetSchema(db);
+  const now = input.now ?? new Date();
+  let budget: ModelWorkBudget | null = null;
+  const jobId = input.jobId?.trim();
+  if (jobId && tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("budget_id")) {
+    const row = db
+      .prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?")
+      .get(jobId) as { budget_id: string | null } | undefined;
+    if (row?.budget_id) budget = readBudgetById(db, row.budget_id);
+  }
+  const requested = input.budgetId?.trim();
+  if (!budget && requested) budget = readBudgetById(db, requested);
+  if (!budget) return null;
+  // Identical predicate to reserveModelAttempt — the pre-flight must not be
+  // able to disagree with the reservation it is standing in for.
+  const reason = budgetExhaustion(budget, now.getTime()) ??
+    (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+  if (!reason) return null;
+  return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
+}
+
+/** Did this claim actually spend a provider attempt before it gave up? */
+function hasModelAttemptSince(db: Database.Database, jobId: string, since: Date): boolean {
+  return db.prepare(`
+    SELECT 1 FROM model_work_attempts
+    WHERE job_id = ? AND started_at >= ? LIMIT 1
+  `).get(jobId, since.toISOString()) !== undefined;
+}
+
+/**
  * Release a claimed queue item because its parent model budget is exhausted.
  * This transition intentionally does not increment queue attempts, move a
  * cursor, or mark a target dead. The scheduler filters the exhausted budget
  * until bounded automatic maintenance or an explicit operator run rebinds it.
+ *
+ * `claimedAt` opts into the issue-#12 safety net: when the budget died of a
+ * `deadline`/`window` (i.e. wall-clock, not work) and this claim never
+ * reserved a single provider attempt, the claim itself was a no-op, so the
+ * attempt it consumed is refunded and the job returns to `pending` at `now`
+ * instead of an hour out. An `attempts` exhaustion keeps the old contract:
+ * that budget really was spent, and the backoff is the fence.
  */
 export function deferMemoryJobForModelBudget(
   db: Database.Database,
@@ -1057,12 +1120,20 @@ export function deferMemoryJobForModelBudget(
     reason: ModelBudgetExhaustionReason;
     now?: Date;
     availableAt?: Date;
+    /** Instant this claim was taken; enables the unspent-claim refund. */
+    claimedAt?: Date;
   },
 ): boolean {
   ensureModelBudgetSchema(db);
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
-  const availableAt = input.availableAt ?? new Date(now.getTime() + 60 * 60_000);
+  const unspentClaim =
+    (input.reason === "deadline" || input.reason === "window") &&
+    input.claimedAt !== undefined &&
+    !hasModelAttemptSince(db, input.jobId, input.claimedAt);
+  const availableAt = unspentClaim
+    ? now
+    : input.availableAt ?? new Date(now.getTime() + 60 * 60_000);
   const reason = `model work budget exhausted: ${input.reason}`;
   const defer = db.transaction(() => {
     const row = db.prepare(`
@@ -1089,17 +1160,20 @@ export function deferMemoryJobForModelBudget(
       UPDATE memory_jobs
       SET budget_id = COALESCE(budget_id, ?),
           maintenance_wave_id = COALESCE(maintenance_wave_id, ?),
-          state = 'retry', available_at = ?, lease_owner = NULL,
-          lease_until = NULL, last_error = ?, updated_at = ?
+          state = ?, available_at = ?, lease_owner = NULL,
+          lease_until = NULL, last_error = ?, updated_at = ?,
+          attempts = CASE WHEN ? THEN MAX(attempts - 1, 0) ELSE attempts END
       WHERE job_id = ? AND state = 'running' AND lease_owner = ?
         AND lease_generation = ? AND lease_until > ?
         AND (budget_id IS NULL OR budget_id = ?)
     `).run(
       input.budgetId ?? null,
       input.parentWaveId ?? budget?.parentWaveId ?? null,
+      unspentClaim ? "pending" : "retry",
       availableAt.toISOString(),
       reason,
       nowIso,
+      unspentClaim ? 1 : 0,
       input.jobId,
       input.owner,
       input.leaseGeneration,
@@ -1108,13 +1182,25 @@ export function deferMemoryJobForModelBudget(
     ).changes;
     if (changed !== 1) return false;
     if (row.target_id) {
+      // The target's own attempt counter is refunded with the job's, but only
+      // where the column exists — minimal fixtures model this table narrowly.
+      const refundTargetAttempt =
+        unspentClaim && columnNames(db, "extraction_targets").has("attempts");
       db.prepare(`
         UPDATE extraction_targets
-        SET state = 'retry', lease_owner = NULL, lease_until = NULL,
+        SET state = ?, lease_owner = NULL, lease_until = NULL,
             last_error = ?, updated_at = ?
+            ${refundTargetAttempt ? ", attempts = MAX(attempts - 1, 0)" : ""}
         WHERE target_id = ? AND state = 'running' AND lease_owner = ?
           AND lease_generation = ?
-      `).run(reason, nowIso, row.target_id, input.owner, input.leaseGeneration);
+      `).run(
+        unspentClaim ? "pending" : "retry",
+        reason,
+        nowIso,
+        row.target_id,
+        input.owner,
+        input.leaseGeneration,
+      );
     }
     if (row.checkpoint_id) {
       db.prepare("UPDATE checkpoints SET state = 'retry' WHERE checkpoint_id = ?")

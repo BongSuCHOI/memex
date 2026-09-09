@@ -7280,6 +7280,7 @@ __export(model_budget_exports, {
   deferMemoryJobForModelBudget: () => deferMemoryJobForModelBudget,
   ensureModelBudgetSchema: () => ensureModelBudgetSchema,
   exhaustModelBudget: () => exhaustModelBudget,
+  findExhaustedModelBudgetForClaim: () => findExhaustedModelBudgetForClaim,
   finishModelAttempt: () => finishModelAttempt,
   formatModelWorkDiagnostics: () => formatModelWorkDiagnostics,
   getModelWorkBudget: () => getModelWorkBudget,
@@ -7900,11 +7901,34 @@ function startNewModelWorkRunForBudget(db, input) {
   moveJoblessTargets.immediate();
   return { previousBudget, budget, reboundJobIds, skippedJobIds };
 }
+function findExhaustedModelBudgetForClaim(db, input) {
+  ensureModelBudgetSchema(db);
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  let budget = null;
+  const jobId = input.jobId?.trim();
+  if (jobId && tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("budget_id")) {
+    const row = db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?").get(jobId);
+    if (row?.budget_id) budget = readBudgetById(db, row.budget_id);
+  }
+  const requested = input.budgetId?.trim();
+  if (!budget && requested) budget = readBudgetById(db, requested);
+  if (!budget) return null;
+  const reason = budgetExhaustion(budget, now.getTime()) ?? (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+  if (!reason) return null;
+  return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
+}
+function hasModelAttemptSince(db, jobId, since) {
+  return db.prepare(`
+    SELECT 1 FROM model_work_attempts
+    WHERE job_id = ? AND started_at >= ? LIMIT 1
+  `).get(jobId, since.toISOString()) !== void 0;
+}
 function deferMemoryJobForModelBudget(db, input) {
   ensureModelBudgetSchema(db);
   const now = input.now ?? /* @__PURE__ */ new Date();
   const nowIso2 = now.toISOString();
-  const availableAt = input.availableAt ?? new Date(now.getTime() + 60 * 6e4);
+  const unspentClaim = (input.reason === "deadline" || input.reason === "window") && input.claimedAt !== void 0 && !hasModelAttemptSince(db, input.jobId, input.claimedAt);
+  const availableAt = unspentClaim ? now : input.availableAt ?? new Date(now.getTime() + 60 * 6e4);
   const reason = `model work budget exhausted: ${input.reason}`;
   const defer = db.transaction(() => {
     const row = db.prepare(`
@@ -7923,17 +7947,20 @@ function deferMemoryJobForModelBudget(db, input) {
       UPDATE memory_jobs
       SET budget_id = COALESCE(budget_id, ?),
           maintenance_wave_id = COALESCE(maintenance_wave_id, ?),
-          state = 'retry', available_at = ?, lease_owner = NULL,
-          lease_until = NULL, last_error = ?, updated_at = ?
+          state = ?, available_at = ?, lease_owner = NULL,
+          lease_until = NULL, last_error = ?, updated_at = ?,
+          attempts = CASE WHEN ? THEN MAX(attempts - 1, 0) ELSE attempts END
       WHERE job_id = ? AND state = 'running' AND lease_owner = ?
         AND lease_generation = ? AND lease_until > ?
         AND (budget_id IS NULL OR budget_id = ?)
     `).run(
       input.budgetId ?? null,
       input.parentWaveId ?? budget?.parentWaveId ?? null,
+      unspentClaim ? "pending" : "retry",
       availableAt.toISOString(),
       reason,
       nowIso2,
+      unspentClaim ? 1 : 0,
       input.jobId,
       input.owner,
       input.leaseGeneration,
@@ -7942,13 +7969,22 @@ function deferMemoryJobForModelBudget(db, input) {
     ).changes;
     if (changed !== 1) return false;
     if (row.target_id) {
+      const refundTargetAttempt = unspentClaim && columnNames2(db, "extraction_targets").has("attempts");
       db.prepare(`
         UPDATE extraction_targets
-        SET state = 'retry', lease_owner = NULL, lease_until = NULL,
+        SET state = ?, lease_owner = NULL, lease_until = NULL,
             last_error = ?, updated_at = ?
+            ${refundTargetAttempt ? ", attempts = MAX(attempts - 1, 0)" : ""}
         WHERE target_id = ? AND state = 'running' AND lease_owner = ?
           AND lease_generation = ?
-      `).run(reason, nowIso2, row.target_id, input.owner, input.leaseGeneration);
+      `).run(
+        unspentClaim ? "pending" : "retry",
+        reason,
+        nowIso2,
+        row.target_id,
+        input.owner,
+        input.leaseGeneration
+      );
     }
     if (row.checkpoint_id) {
       db.prepare("UPDATE checkpoints SET state = 'retry' WHERE checkpoint_id = ?").run(row.checkpoint_id);
@@ -27878,7 +27914,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.5.0"
+    version: "0.5.1"
   },
   {
     capabilities: {

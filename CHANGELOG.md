@@ -2,6 +2,20 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.5.1 - 2026-09-10
+
+- Resolve the model budget before claiming an extraction or capsule job. A
+  budget that is already past its deadline or outside its automatic window no
+  longer reaches the extractor, so a wake that renews the budget seconds later
+  can pick the job up immediately instead of finding it in a one-hour retry
+  backoff with a burned attempt. A claim that raced the renewal and made no
+  provider call is refunded rather than deferred. (#12)
+- Report why a claim was refused. The backfill worker prints `HANDOFF (lease
+  held by another runner)`, `DEFERRED (retry backoff until <time>)` or
+  `SKIPPED (attempt cap reached)` and counts them separately; `memex status`
+  shows the backoff count and the earliest retry time inside the pending
+  extraction figure. Exit codes `0` / `1` / `2` keep their meaning. (#11)
+
 ## 0.5.0 - 2026-09-09
 
 - Replace the Web UI with Memex Workspace: seven pages (overview, conversation

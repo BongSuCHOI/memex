@@ -44,7 +44,7 @@ import {
   getExtractionConfig,
 } from "./pending-extraction.js";
 import {
-  claimExtractionTarget,
+  claimExtractionTargetWithReason,
   commitExtractionPage,
   ensureExtractionTarget,
   FACT_EXTRACTION_POLICY_VERSION,
@@ -52,9 +52,11 @@ import {
   recordExtractionFailure,
   renewMemoryJobLease,
   supersedeStaleExtractionTarget,
+  type MemoryJobClaimReason,
 } from "./continuity-store.js";
 import {
   deferMemoryJobForModelBudget,
+  findExhaustedModelBudgetForClaim,
   isAutomaticOntologyEnabled,
   isModelBudgetExhausted,
   withResolvedModelWorkContext,
@@ -2792,6 +2794,57 @@ export const FAILURE_REPORT: Record<
 };
 
 /**
+ * `claim_not_acquired` 소비자 보고표 — 라벨·문구·버킷·경보 여부의 단일 소스.
+ *
+ * 🚨 이슈 #11: 선점 실패는 구조적으로 **다른 네 상황**인데 워커는 전부
+ * "HANDOFF — 다른 러너가 처리 중"으로 찍었다. 실제로는 lease_owner 가 NULL 이고
+ * 살아있는 프로세스도 없는데(= 러너 없음) 재시도 backoff(available_at 이 미래)로
+ * 막혀 있던 것이라, 운영자는 "곧 처리된다"고 읽고 한 시간을 기다렸다.
+ * FAILURE_REPORT 와 같은 이유로 표를 여기 두어, 워커가 자체 문구·자체 버킷을 들면
+ * 생기는 "라벨과 회계가 어긋나는" 모순을 구조적으로 막는다.
+ */
+export const CLAIM_REJECTION_REPORT: Record<
+  MemoryJobClaimReason,
+  {
+    label: string;
+    /** 괄호 안 사유. backoff 는 소비자가 ` until <ISO>` 를 덧붙인다. */
+    reason: string;
+    note: string;
+    bucket: "handoff" | "backoff" | "attempt_cap";
+    escalate: boolean;
+  }
+> = {
+  lease_held: {
+    label: "HANDOFF",
+    reason: "lease held by another runner",
+    note: "다른 러너가 처리 중",
+    bucket: "handoff",
+    escalate: false,
+  },
+  backoff: {
+    label: "DEFERRED",
+    reason: "retry backoff",
+    note: "재시도 backoff — 그 시각 이후 재선정",
+    bucket: "backoff",
+    escalate: false,
+  },
+  attempts_exhausted: {
+    label: "SKIPPED",
+    reason: "attempt cap reached",
+    note: "시도 상한 도달 — exact range 기록됨 · 점검 필요",
+    bucket: "attempt_cap",
+    escalate: true,
+  },
+  cas: {
+    label: "HANDOFF",
+    reason: "claim lost to a concurrent writer",
+    note: "동시 라이터에 선점 CAS 패배 — 다음 run 재시도",
+    bucket: "handoff",
+    escalate: false,
+  },
+};
+
+/**
  * 이 실패가 재시도 예산을 소모하는가. runFactExtraction 의 라우팅과 워커의 보고가
  * **같은 술어**를 보게 해서 "예산은 타는데 로그는 재시도된다고 말하는" 모순을 막는다.
  */
@@ -2826,6 +2879,12 @@ export async function runFactExtraction(
     | "excluded_project_unmarked"
     | "failed_visible"
     | "budget_exhausted";
+  /** Only for `claim_not_acquired`: why the claim was refused (issue #11). */
+  claimReason?: MemoryJobClaimReason;
+  /** Only for `claimReason === "backoff"`: when the job becomes claimable. */
+  availableAt?: string;
+  /** Only for `budget_exhausted`: which exhaustion fenced this session. */
+  budgetReason?: "attempts" | "deadline" | "cancelled" | "window";
 }> {
   if (isExcludedProject(project)) {
     try {
@@ -2878,9 +2937,41 @@ export async function runFactExtraction(
   if (target.state === "dead") {
     return { extracted: 0, saved: 0, skipped: "failed_visible" };
   }
-  const claimed = claimExtractionTarget(db, target);
+  // 🚨 이슈 #12 — 선점보다 **예산 확정이 먼저**다.
+  // 선점은 memory_jobs.attempts 를 1 태우는 되돌릴 수 없는 쓰기다. 예산 해석은
+  // 지금까지 모델 호출 직전(withResolvedModelWorkContext) 에야 일어났고, 그때
+  // deadline 이 이미 지난 예산이면 reserveModelAttempt 가 **attempt 행을 만들기
+  // 전에** 던져서 — 공급자 호출은 0회인데 — attempts=1 과 1시간 backoff 만 남았다.
+  // 같은 wake 가 26초 뒤 새 예산을 만들어도 유일한 작업은 backoff 안이라 창이 통째로
+  // 비었다. 죽은 예산이 추출기에 도달하지 못하게 선점 전에 막는다.
+  const claimedAt = new Date();
+  const spentBudget = findExhaustedModelBudgetForClaim(db, {
+    jobId: target.jobId,
+    budgetId:
+      _opts?.modelContext?.budgetId?.trim() ||
+      process.env.MEMEX_MODEL_BUDGET_ID?.trim() ||
+      null,
+    now: claimedAt,
+  });
+  if (spentBudget) {
+    return {
+      extracted: 0,
+      saved: 0,
+      skipped: "budget_exhausted",
+      budgetReason: spentBudget.reason,
+    };
+  }
+  const claimOutcome = claimExtractionTargetWithReason(db, target, undefined, claimedAt);
+  const claimed = claimOutcome.claim;
   if (!claimed) {
-    return { extracted: 0, saved: 0, skipped: "claim_not_acquired" };
+    const rejection = claimOutcome.rejection ?? { reason: "cas" as const };
+    return {
+      extracted: 0,
+      saved: 0,
+      skipped: "claim_not_acquired",
+      claimReason: rejection.reason,
+      ...(rejection.availableAt ? { availableAt: rejection.availableAt } : {}),
+    };
   }
 
   // Rows are a scheduling budget. Completion is based on the exact subset
@@ -2963,6 +3054,10 @@ export async function runFactExtraction(
     });
   } catch (error) {
     if (isModelBudgetExhausted(error)) {
+      // 🚨 이슈 #12 안전망. 위의 사전 확인과 예약 사이에서 deadline/window 가
+      // 넘어가는 경주가 남아 있다. `claimedAt` 을 넘기면 이 선점이 공급자 attempt
+      // 를 **한 번도** 쓰지 않은 경우에 한해 선점이 태운 attempt 를 환불하고
+      // 1시간 backoff 대신 즉시 pending 으로 돌려놓는다(attempts 소진은 종전대로).
       deferMemoryJobForModelBudget(db, {
         jobId: target.jobId,
         budgetId: error.budgetId,
@@ -2971,8 +3066,14 @@ export async function runFactExtraction(
         leaseGeneration: claimed.leaseGeneration,
         reason: error.reason,
         now: new Date(),
+        claimedAt,
       });
-      return { extracted: 0, saved: 0, skipped: "budget_exhausted" };
+      return {
+        extracted: 0,
+        saved: 0,
+        skipped: "budget_exhausted",
+        budgetReason: error.reason,
+      };
     }
     const kind = classifyLlmError(error);
     if (!(error instanceof ClaimLostError)) {

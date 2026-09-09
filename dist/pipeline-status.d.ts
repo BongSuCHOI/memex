@@ -11,6 +11,14 @@ export interface StageCounters {
     excludedProject: number;
     /** Sessions with terminal legacy or failed-visible extraction state. */
     deferred: number;
+    /**
+     * Sessions whose extraction queue job is real, claimable work that is simply
+     * not due yet (`available_at` in the future). A subset of `pending`, never of
+     * `deferred`: `deferred` is terminal, backoff is a clock (issue #11).
+     */
+    backoff: number;
+    /** Earliest `available_at` across `backoff` sessions, or null. */
+    backoffEarliestAt: string | null;
     /** The configured min-exchange gate value, shown for actionability. */
     gateMinExchanges: number;
     claimed: number;

@@ -30,6 +30,7 @@ import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import {
   deferMemoryJobForModelBudget,
   ensureModelBudgetSchema,
+  findExhaustedModelBudgetForClaim,
   isModelBudgetExhausted,
   withResolvedModelWorkContext,
 } from "./model-budget.js";
@@ -363,6 +364,23 @@ async function processCapsule(
   if (pending) {
     return { jobId, kind: "capsule_update", state: "deferred", detail: "capture index not complete" };
   }
+  // Issue #12: a claim burns one attempt, so an already-dead budget must be
+  // found before the claim, not inside the model call it can no longer make.
+  const spentBudget = budgeted
+    ? findExhaustedModelBudgetForClaim(db, {
+        jobId,
+        budgetId: process.env.MEMEX_MODEL_BUDGET_ID?.trim() || null,
+        now,
+      })
+    : null;
+  if (spentBudget) {
+    return {
+      jobId,
+      kind: "capsule_update",
+      state: "deferred",
+      detail: `model work budget exhausted: ${spentBudget.reason}`,
+    };
+  }
   const claim = claimMemoryJobById(db, { jobId, owner, now, leaseMs: 5 * 60_000 });
   if (!claim || !claim.checkpoint_id) {
     return { jobId, kind: "capsule_update", state: "deferred", detail: "claim unavailable" };
@@ -471,6 +489,9 @@ async function processCapsule(
         leaseGeneration: claim.lease_generation,
         reason: error.reason,
         now: new Date(),
+        // Issue #12 safety net: refund the claim's attempt when the wall-clock
+        // budget died without this claim ever reserving a provider call.
+        claimedAt: now,
       });
       return {
         jobId,

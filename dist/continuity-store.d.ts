@@ -76,12 +76,46 @@ export interface ClaimedMemoryJob {
     lease_generation: number;
     attempts: number;
 }
+/**
+ * Why a claim was refused. `claimMemoryJobById` returns null for four
+ * structurally different situations, and consumers used to report every one of
+ * them as "another runner is processing" (issue #11). The distinction is
+ * observable at the call site only if the claim reports it, so the reason is
+ * derived from the *same* row read the claim predicate already performs — no
+ * extra query, no extra write, and no change to what is or is not claimable.
+ *
+ *  - `lease_held`         another job in this partition owns the lane (a live
+ *                         lease, or an earlier queue item that must drain
+ *                         first) — a true handoff, not a failure.
+ *  - `backoff`            the job is claimable, but not yet: `available_at`
+ *                         is in the future. `availableAt` carries that instant.
+ *  - `attempts_exhausted` `attempts >= max_attempts` — the queue gave up; the
+ *                         claim path already recorded the terminal state.
+ *  - `cas`                the row vanished/settled, or a concurrent writer won
+ *                         the compare-and-swap.
+ */
+export type MemoryJobClaimReason = "lease_held" | "backoff" | "attempts_exhausted" | "cas";
+export interface MemoryJobClaimRejection {
+    reason: MemoryJobClaimReason;
+    /** Only for `backoff`: when the job becomes claimable again (ISO-8601). */
+    availableAt?: string;
+}
+export interface MemoryJobClaimOutcome {
+    job: ClaimedMemoryJob | null;
+    rejection: MemoryJobClaimRejection | null;
+}
 export declare function claimMemoryJobById(db: Database.Database, input: {
     jobId: string;
     owner: string;
     now?: Date;
     leaseMs?: number;
 }): ClaimedMemoryJob | null;
+export declare function claimMemoryJobByIdWithReason(db: Database.Database, input: {
+    jobId: string;
+    owner: string;
+    now?: Date;
+    leaseMs?: number;
+}): MemoryJobClaimOutcome;
 export declare function renewMemoryJobLease(db: Database.Database, input: {
     jobId: string;
     owner: string;
@@ -163,8 +197,18 @@ export declare function commitExtractionPage(db: Database.Database, input: {
     /** Test-only crash seam. Throwing rolls the complete page transaction back. */
     afterWrite?: (stage: ExtractionCommitStage) => void;
 }): boolean;
-export declare function claimExtractionTarget(db: Database.Database, target: ExtractionTarget, owner?: `${string}-${string}-${string}-${string}-${string}`, now?: Date): {
+export interface ExtractionTargetClaim {
     target: ExtractionTarget;
     owner: string;
     leaseGeneration: number;
-} | null;
+}
+export interface ExtractionTargetClaimOutcome {
+    claim: ExtractionTargetClaim | null;
+    rejection: MemoryJobClaimRejection | null;
+}
+export declare function claimExtractionTarget(db: Database.Database, target: ExtractionTarget, owner?: `${string}-${string}-${string}-${string}-${string}`, now?: Date): ExtractionTargetClaim | null;
+/**
+ * Same claim, with the refusal reason the caller needs in order to report
+ * handoff, retry backoff, and attempt-cap distinctly (issue #11).
+ */
+export declare function claimExtractionTargetWithReason(db: Database.Database, target: ExtractionTarget, owner?: `${string}-${string}-${string}-${string}-${string}`, now?: Date): ExtractionTargetClaimOutcome;

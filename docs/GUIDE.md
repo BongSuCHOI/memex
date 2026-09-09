@@ -83,6 +83,12 @@ memex status --json
 
 `2`일 때 CLI는 `completed with deferred work` 또는 outstanding work와 선택한 단계별 실행 후 건수를 출력합니다. 각 단계 수치는 extraction session, ontology fact/relation target, category/fact/Korean-fact/exchange vector를 worker selector로 센 실행 직후 스냅샷입니다. `--background`의 “started” 출력은 완료 증거가 아닙니다. 구조화된 pipeline 상태는 `memex status --json`으로 확인하십시오. 모든 단계는 idempotent하므로 다시 실행할 수 있습니다.
 
+extract 단계에서 세션 선점이 실패하면 워커는 사유를 구분해 출력합니다. exit code 의미는 동일하며(재시도 가능한 backlog가 남으므로 `2`), 구분되는 것은 보고입니다.
+
+- `HANDOFF (lease held by another runner)` — 다른 러너가 같은 partition의 lease를 쥐고 있음. 실패가 아니며 그 러너가 끝내면 진행됩니다.
+- `DEFERRED (retry backoff until <ISO>)` — 러너는 없고 재시도 backoff만 남은 상태. 표시된 시각 이후에 다시 선정됩니다. 요약줄의 `backoff-deferred N`과 `memex status`의 `N backoff` / `earliest retry <ISO>`가 같은 큐를 셉니다(모두 `pending`의 내역이며 terminal `deferred`와 다릅니다).
+- `SKIPPED (attempt cap reached)` — 시도 상한 도달. exact range가 failed-visible로 기록되며 운영 점검 대상입니다.
+
 ### KR translation은 별도 수동 단계
 
 `fact_kr`는 local derived state이며 `backfill all`에 포함되지 않습니다. SessionStart마다 번역 LLM을 자동 실행하지 않습니다.

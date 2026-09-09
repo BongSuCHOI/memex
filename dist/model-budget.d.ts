@@ -234,10 +234,45 @@ export declare function startNewModelWorkRunForBudget(db: Database.Database, inp
     automatic?: boolean;
 }): ModelWorkRunResumeResult;
 /**
+ * Read-only pre-flight for a queue claim: would this job be handed a budget
+ * that is already spent?
+ *
+ * 🚨 Issue #12. The extractor claimed a job (which burns one `attempts`), then
+ * resolved its budget deep inside the model call, and only there discovered
+ * that the budget's `deadline_at` had passed hours ago. `reserveModelAttempt`
+ * throws *before* inserting a `model_work_attempts` row, so no provider call
+ * ever happened — yet the claim's attempt was spent and
+ * `deferMemoryJobForModelBudget` parked the job for a full hour. The fresh
+ * budget minted seconds later by the same maintenance wake then had nothing
+ * left to run. Resolving the budget *before* the claim keeps a dead budget
+ * from ever reaching the extractor.
+ *
+ * Resolution mirrors `withResolvedModelWorkContext`: a bound job's durable
+ * budget wins over any explicitly requested/environment budget. Nothing is
+ * created here — an unbound job with no explicit budget returns null and takes
+ * the normal lazy-creation path.
+ */
+export declare function findExhaustedModelBudgetForClaim(db: Database.Database, input: {
+    jobId?: string | null;
+    budgetId?: string | null;
+    now?: Date;
+}): {
+    budgetId: string;
+    parentWaveId: string;
+    reason: ModelBudgetExhaustionReason;
+} | null;
+/**
  * Release a claimed queue item because its parent model budget is exhausted.
  * This transition intentionally does not increment queue attempts, move a
  * cursor, or mark a target dead. The scheduler filters the exhausted budget
  * until bounded automatic maintenance or an explicit operator run rebinds it.
+ *
+ * `claimedAt` opts into the issue-#12 safety net: when the budget died of a
+ * `deadline`/`window` (i.e. wall-clock, not work) and this claim never
+ * reserved a single provider attempt, the claim itself was a no-op, so the
+ * attempt it consumed is refunded and the job returns to `pending` at `now`
+ * instead of an hour out. An `attempts` exhaustion keeps the old contract:
+ * that budget really was spent, and the backoff is the fence.
  */
 export declare function deferMemoryJobForModelBudget(db: Database.Database, input: {
     jobId: string;
@@ -248,6 +283,8 @@ export declare function deferMemoryJobForModelBudget(db: Database.Database, inpu
     reason: ModelBudgetExhaustionReason;
     now?: Date;
     availableAt?: Date;
+    /** Instant this claim was taken; enables the unspent-claim refund. */
+    claimedAt?: Date;
 }): boolean;
 /**
  * Atomically reserve one provider attempt immediately before runCodex. A
