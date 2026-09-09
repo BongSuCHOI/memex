@@ -348,8 +348,9 @@ derived_lane_skips (
 ```
 
 P0/P1(capture_index, capsule_update) 백로그 때문에 파생 레인 4개(consolidation, re-embed, ontology,
-extraction)를 건너뛴 사실을 durable하게 남깁니다. 같은 사유로 3회 연속 skip되면 그 호출에서 파생
-레인을 한 번 통과시키고 `consecutive`를 0으로 되돌립니다 — 우선순위는 유지하되 기아를 막습니다.
+extraction)를 건너뛴 사실을 durable하게 남깁니다. `consecutive`가 3이 되는 호출에서 파생 레인을
+한 번 통과시키고 `consecutive`를 0으로 되돌립니다(`DERIVED_LANE_FORCE_AFTER = 3`) — 우선순위는
+유지하되 기아를 막습니다. 사유가 달라지면 `consecutive`와 `total_skips`가 함께 0에서 다시 셉니다.
 `memex status`가 `Derived lanes: skipped N times (reason: ...)` 줄로 읽고, 각 skip은
 `continuity_telemetry`의 `derived_lane_skipped` 샘플로도 남습니다(dims: reason/consecutive/forced).
 

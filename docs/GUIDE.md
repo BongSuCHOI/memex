@@ -87,13 +87,13 @@ memex status --json
   - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
     (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
     extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
-    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유로 3회 연속 건너뛰면 다음 호출에서
-    하위 레인을 한 번 강제로 통과시킵니다(우선순위는 유지, 기아는 방지). 백로그 자체는
+    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유의 **3번째 연속 호출에서** 하위 레인을
+    한 번 통과시키고 연속 카운터를 0으로 되돌립니다 — 앞의 두 번은 P0/P1이 이깁니다(우선순위는
+    유지, 기아는 방지). 백로그 자체는
     `memex jobs list --state retry` / `memex recover`로 해소합니다.
   - `Memory jobs: N (state=…, …)` 줄과 그 아래 kind별 줄은(0.6.1 #46) `memory_jobs`를 kind × state로
     집계한 것입니다. `Needs attention`의 dead/retry는 이 표의 부분집합입니다. `--json`에서는
-    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다. 큐가 비어 있으면 0으로 채운
-    표가 아니라 빈 객체입니다.
+    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다([§15](#작업이-실패했을-때-terminal-상태-복구)).
   - 0.6.1이 `memex status --json`에 더한 키: `evidence`(`factsWithoutLocalEvidence` ·
     `activeFactsWithSources`), `jobs`, `derivedLaneSkips`(`reason` · `consecutive` · `totalSkips` ·
     `lastSkippedAt` · `lastForcedAt`, 한 번도 건너뛴 적이 없으면 `null`), 그리고 `ontology`에 붙은
@@ -928,7 +928,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
 | ontology 분류 보류(parked) | `memex status`의 `Ontology: … (N classified, P parked, Q pending)`에서 `P > 0` | 분류 시도를 소진해 `General`/`Misc`에 보관된 fact. **classified가 아닙니다** | `memex backfill ontology`. 재시도는 분류 정책/embedding 세대당 정확히 1회이므로, 세대가 그대로면 다시 돌려도 같은 fact를 재시도하지 않습니다 |
 | ontology category index 수리 필요 | `memex status`의 `ontology category index: MANUAL REPAIR REQUIRED (…)`, `doctor`의 `ontology-index: fail` | category vector index가 self-heal로 고칠 수 없는 상태라 분류 자체가 멈춤 | `memex backfill embeddings`로 vector를 재생성한 뒤 `memex status`에서 줄이 사라졌는지 확인 |
-| 하위(derived) 레인이 계속 밀림 | `memex status`의 `Derived lanes: skipped N times (reason: continuity backlog)` | P0/P1(capture index / Work Capsule) 백로그 때문에 consolidation·re-embed·ontology·extraction이 그 세션에서 양보됨 | 고장이 아닙니다. 같은 사유로 3회 연속이면 다음 호출에서 하위 레인을 한 번 강제로 통과시킵니다. 백로그 자체는 `memex jobs list --state retry` → `memex recover`로 해소 |
+| 하위(derived) 레인이 계속 밀림 | `memex status`의 `Derived lanes: skipped N times (reason: continuity backlog)` | P0/P1(capture index / Work Capsule) 백로그 때문에 consolidation·re-embed·ontology·extraction이 그 세션에서 양보됨 | 고장이 아닙니다. 같은 사유의 3번째 연속 호출에서 하위 레인이 한 번 통과하고 카운터가 0으로 돌아갑니다. 백로그 자체는 `memex jobs list --state retry` → `memex recover`로 해소 |
 | 로컬 의미 검증 영수증 없음 | `memex status`의 `facts without local evidence: N / M` | `fact_evidence_receipts`가 없는 활성 fact. 자동 통합에서 빠짐("중복 fact가 계속 쌓인다"). peer의 semantic win이 영수증을 `peer-authority`로 강등해도 같은 상태가 됨 | `memex backfill receipts` — model 호출이 없는 재구성입니다. 원본 exchange가 이미 사라진 fact는 복구 대상이 아닙니다 |
 | sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남(대개 공유 폴더에 쓸 수 없음) | `memex sync status`로 공유 폴더·쓰기 가능 여부 확인 → 원인 수정 → `memex sync export`. 다음 SessionEnd/유지보수 wake에서도 재시도합니다 |
 | 동기화가 켜져 있는데 한 번도 나가지 않음 | `doctor`의 `sync-export: warn` | 스위치는 on인데 export 기록이 없음(또는 export 훅이 어느 hook에도 등록되지 않음) | `memex sync export`로 첫 세대를 만들고 `memex sync status`로 확인 |
