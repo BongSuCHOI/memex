@@ -17,6 +17,7 @@ import {
   assignFactSubject,
   bindSessionWorkstream,
   createWorkstream,
+  deterministicWorkstreamId,
   indexHotEvidenceForSession,
   linkWorkspaceToProject,
   markSessionProjectRevisionSeen,
@@ -380,8 +381,12 @@ describe("conservative workstream binding and scoped truth", () => {
     const explicit = bindSessionWorkstream(db, { sessionId: "session-a", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath, explicitWorkstreamId: wsA });
     expect(explicit.reason).toBe("explicit");
     expect(bindSessionWorkstream(db, { sessionId: "session-a", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath }).workstreamId).toBe(wsA);
+    // 0.6.0 (#16): `main` is a default branch, so the session carries no branch
+    // signal and lands on the project's single default stream — never on an
+    // unrelated stream that merely shares the branch hint.
     const ambiguous = bindSessionWorkstream(db, { sessionId: "session-new", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath, branch: "main" });
-    expect(ambiguous.reason).toBe("session-local");
+    expect(ambiguous.reason).toBe("project-default");
+    expect(ambiguous.workstreamId).toBe(deterministicWorkstreamId(identity.projectId, null));
     expect(ambiguous.workstreamId).not.toBe("stream-b");
   });
 

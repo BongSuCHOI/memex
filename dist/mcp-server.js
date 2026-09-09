@@ -20333,6 +20333,23 @@ function appendExchangeEvidence(db, exchangeId) {
 }
 
 // src/continuity-identity.ts
+var CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
+function isDefaultBranchName(branch, defaultBranch) {
+  if (!branch) return true;
+  if (defaultBranch) return branch === defaultBranch;
+  return CONVENTIONAL_DEFAULT_BRANCHES.includes(branch);
+}
+function branchSignalFor(input) {
+  const branch = input.branch?.trim() ? input.branch.trim() : null;
+  if (!branch) return { kind: "none", branch: null, tierReason: "no-branch-signal" };
+  if (isDefaultBranchName(branch, input.defaultBranch ?? null)) {
+    return { kind: "default", branch, tierReason: "default-branch" };
+  }
+  return { kind: "branch", branch, tierReason: `branch:${branch}` };
+}
+function deterministicWorkstreamId(projectId, branch) {
+  return branch ? `ws-${hash("workstream-branch-v1", projectId, branch).slice(0, 32)}` : `ws-${hash("workstream-project-default-v1", projectId).slice(0, 32)}`;
+}
 function hash(...parts) {
   const h = createHash2("sha256");
   for (const part of parts) h.update(String(part ?? "")).update("\0");
@@ -20375,6 +20392,16 @@ function readGitFile(file) {
     return null;
   }
 }
+function detectDefaultBranch(commonDir, config2) {
+  const originHead = readGitFile(path4.join(commonDir, "refs", "remotes", "origin", "HEAD"));
+  const symbolic = originHead?.match(/^ref:\s+refs\/remotes\/origin\/(.+)$/)?.[1]?.trim();
+  if (symbolic) return symbolic;
+  const packed = readGitFile(path4.join(commonDir, "packed-refs")) ?? "";
+  const packedHead = packed.match(/^\s*ref:\s+refs\/remotes\/origin\/(.+)$/m)?.[1]?.trim();
+  if (packedHead) return packedHead;
+  const init = config2.match(/\[init\][\s\S]*?\n\s*defaultBranch\s*=\s*([^\n]+)/i)?.[1]?.trim();
+  return init || null;
+}
 function inspectWorkspaceLocation(cwd) {
   const canonical = canonicalizeProjectPath(cwd);
   const dotGit = path4.join(canonical, ".git");
@@ -20394,7 +20421,7 @@ function inspectWorkspaceLocation(cwd) {
     }
   } catch {
   }
-  if (!gitDir) return { gitCommonDir: null, remoteFingerprint: null, locationKind, branch: null, gitCommonIdentity: null, gitDirIdentity: null };
+  if (!gitDir) return { gitCommonDir: null, remoteFingerprint: null, locationKind, branch: null, defaultBranch: null, gitCommonIdentity: null, gitDirIdentity: null };
   const commonPointer = readGitFile(path4.join(gitDir, "commondir"));
   let common = gitDir;
   if (commonPointer) {
@@ -20420,6 +20447,7 @@ function inspectWorkspaceLocation(cwd) {
     remoteFingerprint: origin ? hash("remote-v1", origin).slice(0, 40) : null,
     locationKind,
     branch: head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null,
+    defaultBranch: detectDefaultBranch(common, config2),
     gitCommonIdentity: inodeIdentity(common),
     gitDirIdentity: inodeIdentity(gitDir)
   };
@@ -20441,13 +20469,14 @@ function resolveProjectWorkspace(db, input) {
   if (!canonicalPath || canonicalPath === "unknown") throw new Error("canonical workspace path is required");
   const at = nowIso(input.now);
   const device = deviceId(db);
-  const inspected = input.gitCommonDir === void 0 && input.remoteFingerprint === void 0 ? inspectWorkspaceLocation(canonicalPath) : { gitCommonDir: input.gitCommonDir ?? null, remoteFingerprint: input.remoteFingerprint ?? null, locationKind: input.locationKind ?? "directory", branch: input.branch ?? null, gitCommonIdentity: null, gitDirIdentity: null };
+  const inspected = input.gitCommonDir === void 0 && input.remoteFingerprint === void 0 ? inspectWorkspaceLocation(canonicalPath) : { gitCommonDir: input.gitCommonDir ?? null, remoteFingerprint: input.remoteFingerprint ?? null, locationKind: input.locationKind ?? "directory", branch: input.branch ?? null, defaultBranch: null, gitCommonIdentity: null, gitDirIdentity: null };
   const gitCommonDir = input.gitCommonDir ?? inspected.gitCommonDir;
   const remoteFingerprint = input.remoteFingerprint ?? inspected.remoteFingerprint;
   const locationKind = input.locationKind ?? inspected.locationKind;
   const tx = db.transaction(() => {
     const byPath = db.prepare(`
-      SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+      SELECT w.workspace_id, w.project_id, w.location_kind, w.branch, w.default_branch,
+             w.git_common_dir, w.git_common_identity, w.git_dir_identity, w.remote_fingerprint,
              p.portable_project_key, p.memory_revision
       FROM workspaces w JOIN projects p ON p.project_id = w.project_id
       WHERE w.device_id = ? AND w.canonical_path = ?
@@ -20464,7 +20493,8 @@ function resolveProjectWorkspace(db, input) {
           git_common_identity = COALESCE(?, git_common_identity),
           git_dir_identity = COALESCE(?, git_dir_identity),
           remote_fingerprint = COALESCE(?, remote_fingerprint), location_kind = ?,
-          branch = COALESCE(?, branch), last_seen_at = ? WHERE workspace_id = ?
+          branch = COALESCE(?, branch), default_branch = COALESCE(?, default_branch),
+          last_seen_at = ? WHERE workspace_id = ?
       `).run(
         gitCommonDir,
         inspected.gitCommonIdentity,
@@ -20472,6 +20502,7 @@ function resolveProjectWorkspace(db, input) {
         remoteFingerprint,
         locationKind,
         input.branch ?? inspected.branch ?? null,
+        inspected.defaultBranch,
         at,
         byPath.workspace_id
       );
@@ -20483,12 +20514,13 @@ function resolveProjectWorkspace(db, input) {
         memoryRevision: Number(byPath.memory_revision),
         locationKind,
         branch: input.branch ?? inspected.branch ?? (byPath.branch ? String(byPath.branch) : null),
+        defaultBranch: inspected.defaultBranch ?? (byPath.default_branch ? String(byPath.default_branch) : null),
         reason: "existing-path"
       };
     }
     if (inspected.gitDirIdentity) {
       const moved = db.prepare(`
-        SELECT w.workspace_id, w.project_id, w.location_kind, w.branch,
+        SELECT w.workspace_id, w.project_id, w.location_kind, w.branch, w.default_branch,
                p.portable_project_key, p.memory_revision
         FROM workspaces w JOIN projects p ON p.project_id = w.project_id
         WHERE w.device_id = ? AND w.git_dir_identity = ?
@@ -20501,7 +20533,8 @@ function resolveProjectWorkspace(db, input) {
         db.prepare(`
           UPDATE workspaces SET canonical_path = ?, git_common_dir = ?,
             git_common_identity = ?, remote_fingerprint = COALESCE(?, remote_fingerprint),
-            location_kind = ?, branch = COALESCE(?, branch), last_seen_at = ?
+            location_kind = ?, branch = COALESCE(?, branch),
+            default_branch = COALESCE(?, default_branch), last_seen_at = ?
           WHERE workspace_id = ?
         `).run(
           canonicalPath,
@@ -20510,6 +20543,7 @@ function resolveProjectWorkspace(db, input) {
           remoteFingerprint,
           locationKind,
           input.branch ?? inspected.branch ?? null,
+          inspected.defaultBranch,
           at,
           row.workspace_id
         );
@@ -20522,6 +20556,7 @@ function resolveProjectWorkspace(db, input) {
           memoryRevision: Number(row.memory_revision),
           locationKind,
           branch: input.branch ?? inspected.branch ?? (row.branch ? String(row.branch) : null),
+          defaultBranch: inspected.defaultBranch ?? (row.default_branch ? String(row.default_branch) : null),
           reason: "existing-path"
         };
       }
@@ -20604,8 +20639,9 @@ function resolveProjectWorkspace(db, input) {
     db.prepare(`
       INSERT INTO workspaces
         (workspace_id, project_id, device_id, canonical_path, git_common_dir, remote_fingerprint,
-         git_common_identity, git_dir_identity, location_kind, branch, last_seen_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         git_common_identity, git_dir_identity, location_kind, branch, default_branch,
+         last_seen_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       workspaceId,
       selectedProject.project_id,
@@ -20617,6 +20653,7 @@ function resolveProjectWorkspace(db, input) {
       inspected.gitDirIdentity,
       locationKind,
       input.branch ?? inspected.branch ?? null,
+      inspected.defaultBranch,
       at,
       at
     );
@@ -20629,6 +20666,7 @@ function resolveProjectWorkspace(db, input) {
       memoryRevision: selectedProject.memory_revision,
       locationKind,
       branch: input.branch ?? inspected.branch ?? null,
+      defaultBranch: inspected.defaultBranch,
       reason
     };
   });
@@ -20642,6 +20680,10 @@ function jaccard(left, right) {
   let intersection2 = 0;
   for (const value of left) if (right.has(value)) intersection2++;
   return intersection2 / (left.size + right.size - intersection2);
+}
+function workspaceDefaultBranch(db, workspaceId) {
+  const row = db.prepare("SELECT default_branch FROM workspaces WHERE workspace_id = ?").get(workspaceId);
+  return row?.default_branch ?? null;
 }
 function bindSessionWorkstream(db, input) {
   if (!db.inTransaction) {
@@ -20683,6 +20725,22 @@ function bindSessionWorkstream(db, input) {
       confidence = 0.9;
     }
   }
+  const signal = branchSignalFor({
+    branch: input.branch,
+    defaultBranch: workspaceDefaultBranch(db, input.workspaceId)
+  });
+  const deterministicId = deterministicWorkstreamId(
+    input.projectId,
+    signal.kind === "branch" ? signal.branch : null
+  );
+  const deterministicReason = signal.kind === "branch" ? "workspace-branch" : "project-default";
+  if (!workstreamId) {
+    const known = db.prepare("SELECT workstream_id FROM minimal_workstreams WHERE workstream_id = ?").get(deterministicId);
+    if (known) {
+      workstreamId = known.workstream_id;
+      reason = deterministicReason;
+    }
+  }
   if (!workstreamId && input.prompt?.trim()) {
     const query = tokens(input.prompt);
     const rows = db.prepare(`
@@ -20698,13 +20756,24 @@ function bindSessionWorkstream(db, input) {
     }
   }
   if (!workstreamId) {
-    workstreamId = `ws-${hash("session-workstream-v2", input.projectId, input.sessionId).slice(0, 32)}`;
+    workstreamId = deterministicId;
+    reason = deterministicReason;
     db.prepare(`
       INSERT OR IGNORE INTO minimal_workstreams
         (workstream_id, project, session_id, branch_hint, binding_reason, project_id, workspace_id,
          status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'session-local', ?, ?, 'active', ?, ?)
-    `).run(workstreamId, input.projectPath, input.sessionId, input.branch ?? null, input.projectId, input.workspaceId, at, at);
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    `).run(
+      workstreamId,
+      input.projectPath,
+      input.sessionId,
+      signal.branch,
+      deterministicReason,
+      input.projectId,
+      input.workspaceId,
+      at,
+      at
+    );
   }
   db.prepare(`
     INSERT INTO workstream_sessions(session_id, workstream_id, workspace_id, binding_reason, binding_confidence, bound_at)
@@ -21143,6 +21212,7 @@ function ensureContinuitySchema(db, options = {}) {
         location_kind TEXT NOT NULL DEFAULT 'directory'
           CHECK(location_kind IN ('worktree','clone','directory')),
         branch TEXT,
+        default_branch TEXT,
         last_seen_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(device_id, canonical_path)
@@ -21221,7 +21291,10 @@ function ensureContinuitySchema(db, options = {}) {
       ["work_capsules", "source_workspace_id", "TEXT"],
       ["work_capsules", "source_session_id", "TEXT"],
       ["workspaces", "git_common_identity", "TEXT"],
-      ["workspaces", "git_dir_identity", "TEXT"]
+      ["workspaces", "git_dir_identity", "TEXT"],
+      // 0.6.0 scope model (#16/#18): the repository default branch decides
+      // whether a session carries a branch signal at all.
+      ["workspaces", "default_branch", "TEXT"]
     ];
     for (const [table, column, definition] of identityColumns) {
       if (!tableExists(db, table)) continue;
@@ -21273,8 +21346,8 @@ function ensureContinuitySchema(db, options = {}) {
         INSERT OR IGNORE INTO workspaces
           (workspace_id, project_id, device_id, canonical_path, git_common_dir,
            git_common_identity, git_dir_identity, remote_fingerprint,
-           location_kind, branch, last_seen_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           location_kind, branch, default_branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         workspaceId,
         projectId,
@@ -21286,6 +21359,7 @@ function ensureContinuitySchema(db, options = {}) {
         inspected.remoteFingerprint,
         inspected.locationKind,
         inspected.branch,
+        inspected.defaultBranch,
         nowIdentity,
         nowIdentity
       );
@@ -21293,7 +21367,8 @@ function ensureContinuitySchema(db, options = {}) {
         db.prepare(`
           UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
             git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
-            branch = COALESCE(?, branch), last_seen_at = ?
+            branch = COALESCE(?, branch), default_branch = COALESCE(?, default_branch),
+            last_seen_at = ?
           WHERE workspace_id = ?
         `).run(
           projectId,
@@ -21303,6 +21378,7 @@ function ensureContinuitySchema(db, options = {}) {
           inspected.gitDirIdentity,
           inspected.locationKind,
           inspected.branch,
+          inspected.defaultBranch,
           nowIdentity,
           existingWorkspace.workspace_id
         );
@@ -24370,7 +24446,9 @@ function ensureSessionMemoryState(db, input) {
     workspaceId: identity.workspaceId,
     projectPath: input.project,
     explicitWorkstreamId: input.explicitWorkstreamId,
-    branch: input.branch,
+    // #16 — hosts that report no branch still get the branch the workspace
+    // inspection captured, so the stream is keyed by the real checkout.
+    branch: input.branch ?? identity.branch,
     prompt: input.prompt,
     now
   });

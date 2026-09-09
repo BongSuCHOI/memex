@@ -40,6 +40,21 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 `projects`/`workspaces`/`minimal_workstreams`/`workstream_sessions`/`session_memory_state`. resolver 우선순위와 binding 규칙은 `verification/continuity-v1/phase-3-handoff.md`, 자세한 계약은 `ARCHITECTURE.md` §5, `CONVERSATION-LIFECYCLE.md`. 새 session은 생성 시점의 `projects.memory_revision`을 seen으로 시작합니다(D-026).
 
+**디렉터리 = 프로젝트, 브랜치 = workstream (0.6.0).** 세션 시작마다 `inspectWorkspaceLocation(cwd)`이
+`location_kind`/`git_common_dir`/`remote_fingerprint`/`branch`/`default_branch`(= `origin/HEAD`, 없으면
+`init.defaultBranch`, 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
+`git_branch`와 workstream `branch_hint`로 전파됩니다. 세션의 **브랜치 신호**는 셋 중 하나입니다.
+
+| 신호 | 조건 | workstream |
+|---|---|---|
+| `no-branch-signal` | 비-git 디렉터리이거나 브랜치를 못 읽음 | 프로젝트당 **기본 stream 하나**(`ws-hash(workstream-project-default-v1, project_id)`) |
+| `default-branch` | 브랜치 = 저장소 기본 브랜치 | 위와 동일한 기본 stream |
+| `branch:<name>` | 그 외 브랜치/워크트리 | `ws-hash(workstream-branch-v1, project_id, branch)` |
+
+브랜치 stream은 `(project_id, branch)`로 결정론적이므로 같은 저장소의 워크트리 두 개가 같은 브랜치를
+쓰면 하나의 workstream을 공유하고(워크트리는 git-common-dir 규칙으로 같은 project를 갖습니다), 브랜치가
+다르면 서로 희석되지 않습니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 없어졌습니다.
+
 ## 6. Current facts · subject · Chronicle (§4.3–4.4, §15–17)
 
 - `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact는 기본 `workstream` scope이며 `decision`/`project-current`는 explicit evidence를 가진 promotion(`assignFactSubject`)으로만 승격됩니다(BRANCH TRUTH).

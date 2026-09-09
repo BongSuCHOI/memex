@@ -253,8 +253,8 @@ describe("incident duplicate delivery, coalescing and out-of-order remediation",
   });
 
   it("the same signature in two workstreams is one project pattern with two source-linked episodes", () => {
-    const a = ensureSessionMemoryState(db, { sessionId: "ws-a", project: cwd });
-    const b = ensureSessionMemoryState(db, { sessionId: "ws-b", project: cwd });
+    const a = ensureSessionMemoryState(db, { sessionId: "ws-a", project: cwd, branch: "wt-a" });
+    const b = ensureSessionMemoryState(db, { sessionId: "ws-b", project: cwd, branch: "wt-b" });
     expect(a.workstreamId).not.toBe(b.workstreamId);
     human("ex-a", "ws-a", "2026-07-02T10:00:00.000Z", "run", { workstreamId: a.workstreamId }); toolCall("ex-a", "ta", base.signatureText, { isError: true });
     human("ex-b", "ws-b", "2026-07-03T10:00:00.000Z", "run", { workstreamId: b.workstreamId }); toolCall("ex-b", "tb", base.signatureText, { isError: true });
@@ -268,8 +268,8 @@ describe("incident duplicate delivery, coalescing and out-of-order remediation",
 
 describe("timeline and trace_fact scope isolation", () => {
   it("a sibling workstream's unmerged history never appears under another workstream or project scope", async () => {
-    const a = ensureSessionMemoryState(db, { sessionId: "sess-a", project: cwd });
-    const b = ensureSessionMemoryState(db, { sessionId: "sess-b", project: cwd });
+    const a = ensureSessionMemoryState(db, { sessionId: "sess-a", project: cwd, branch: "wt-a" });
+    const b = ensureSessionMemoryState(db, { sessionId: "sess-b", project: cwd, branch: "wt-b" });
     human("ex-p", "sess-p", "2026-08-01T10:00:00.000Z", "Main uses MySQL as the session store.");
     human("ex-a", "sess-a", "2026-08-10T10:00:00.000Z", "In this worktree the session store is Redis.", { workstreamId: a.workstreamId, workspaceId: a.workspaceId });
     human("ex-b", "sess-b", "2026-08-11T10:00:00.000Z", "In this worktree the session store is Postgres.", { workstreamId: b.workstreamId, workspaceId: b.workspaceId });

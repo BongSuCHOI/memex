@@ -368,6 +368,7 @@ export function ensureContinuitySchema(db, options = {}) {
         location_kind TEXT NOT NULL DEFAULT 'directory'
           CHECK(location_kind IN ('worktree','clone','directory')),
         branch TEXT,
+        default_branch TEXT,
         last_seen_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(device_id, canonical_path)
@@ -447,6 +448,9 @@ export function ensureContinuitySchema(db, options = {}) {
             ["work_capsules", "source_session_id", "TEXT"],
             ["workspaces", "git_common_identity", "TEXT"],
             ["workspaces", "git_dir_identity", "TEXT"],
+            // 0.6.0 scope model (#16/#18): the repository default branch decides
+            // whether a session carries a branch signal at all.
+            ["workspaces", "default_branch", "TEXT"],
         ];
         for (const [table, column, definition] of identityColumns) {
             if (!tableExists(db, table))
@@ -510,16 +514,17 @@ export function ensureContinuitySchema(db, options = {}) {
         INSERT OR IGNORE INTO workspaces
           (workspace_id, project_id, device_id, canonical_path, git_common_dir,
            git_common_identity, git_dir_identity, remote_fingerprint,
-           location_kind, branch, last_seen_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(workspaceId, projectId, device.value, canonical, inspected.gitCommonDir, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.remoteFingerprint, inspected.locationKind, inspected.branch, nowIdentity, nowIdentity);
+           location_kind, branch, default_branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(workspaceId, projectId, device.value, canonical, inspected.gitCommonDir, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.remoteFingerprint, inspected.locationKind, inspected.branch, inspected.defaultBranch, nowIdentity, nowIdentity);
             if (existingWorkspace && existingWorkspace.project_id !== projectId && inspected.gitCommonDir) {
                 db.prepare(`
           UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
             git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
-            branch = COALESCE(?, branch), last_seen_at = ?
+            branch = COALESCE(?, branch), default_branch = COALESCE(?, default_branch),
+            last_seen_at = ?
           WHERE workspace_id = ?
-        `).run(projectId, inspected.gitCommonDir, inspected.remoteFingerprint, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.locationKind, inspected.branch, nowIdentity, existingWorkspace.workspace_id);
+        `).run(projectId, inspected.gitCommonDir, inspected.remoteFingerprint, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.locationKind, inspected.branch, inspected.defaultBranch, nowIdentity, existingWorkspace.workspace_id);
             }
             if (inspected.gitCommonDir)
                 commonProjectByDir.set(inspected.gitCommonDir, projectId);

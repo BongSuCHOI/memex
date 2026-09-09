@@ -72,8 +72,11 @@ function transcriptFor(session: string): string {
   return path.join(sessions, `rollout-${session}.jsonl`);
 }
 
-function startTranscript(session: string): void {
-  fs.writeFileSync(transcriptFor(session), line({ type: "session_meta", payload: { id: session, cwd: PROJECT } }));
+function startTranscript(session: string, branch?: string): void {
+  fs.writeFileSync(transcriptFor(session), line({
+    type: "session_meta",
+    payload: { id: session, cwd: PROJECT, ...(branch ? { git_branch: branch } : {}) },
+  }));
 }
 
 function hook(session: string, event: string, extra: Record<string, unknown> = {}) {
@@ -217,7 +220,9 @@ describe("Final Integration: cross-phase end-to-end", () => {
     const A = "final-session-a";
     const B = "final-session-b";
     const C = "final-session-c";
-    startTranscript(A);
+    // 0.6.0 scope model (#16/#18): unmerged workstream truth only exists on a
+    // branch session; B below has no branch signal and gets the project lane.
+    startTranscript(A, "feature/final-a");
     extractionModel = extractorStandIn;
     const zero: Record<string, number> = {};
 
@@ -461,7 +466,7 @@ describe("Final Integration: cross-phase end-to-end", () => {
     zero.stale_fact_correction_failure = corrected.context.includes("Redis Cluster") ? 0 : 1;
 
     // Different workstream in the same project: unmerged workstream truth never leaks.
-    ensureSessionMemoryState(db, { sessionId: B, project: PROJECT, prompt: "Design the billing invoice PDF export layout" });
+    ensureSessionMemoryState(db, { sessionId: B, project: PROJECT, branch: "feature/final-b", prompt: "Design the billing invoice PDF export layout" });
     expect((db.prepare("SELECT workstream_id FROM session_memory_state WHERE session_id = ?").get(B) as { workstream_id: string }).workstream_id).not.toBe(stateA.workstreamId);
     const wrongWorkstream = await ask("Which runtime session store are we on?", B);
     expect(wrongWorkstream.context).not.toContain("Redis");
