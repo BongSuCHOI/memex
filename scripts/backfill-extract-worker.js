@@ -204,6 +204,9 @@ async function main() {
     // backoff 로 막힌 작업 중 **가장 이른** 재시도 시각 — 요약줄이 "언제 다시 되는지"를
     // 말하지 못하면 운영자는 결국 한 시간을 그냥 기다린다(이슈 #11 의 실제 피해).
     let earliestBackoffAt = null;
+    // 이슈 #14: 요약줄도 "explicit new run 필요"로 끝나면 안 된다. 실제로 칠 명령을
+    // 만들 수 있도록 막힌 예산 id 를 모은다.
+    const budgetsToResume = new Set();
     const { isolated } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
@@ -316,9 +319,17 @@ async function main() {
             buckets.budget_exhausted += 1;
             // 사유(deadline/attempts/window/cancelled)를 남긴다 — "왜 멈췄는지"가
             // 없으면 시계로 죽은 예산과 정말 다 쓴 예산을 구분할 수 없다(이슈 #12).
+            // 🚨 이슈 #14: 사유만으로는 부족하다. 관측된 실패는 운영자가 "새 model
+            // run"이 무엇인지 알아도 **예산 id 를 몰라** 진단 명령부터 다시 쳐야 했고,
+            // 게다가 그 resume 이 거절당했다. 이제 전이가 durable 하므로 여기서
+            // 그대로 복사해 붙일 수 있는 명령을 찍는다.
+            // 필드 단위 폴백(dist↔scripts 스큐 방어): 구버전 dist 는 budgetId 를
+            // 돌려주지 않으므로 자리표시자로 수렴한다.
+            if (result.budgetId) budgetsToResume.add(result.budgetId);
+            const resumeCommand = `memex model-work resume ${result.budgetId ?? "<budget-id>"} --new-run`;
             log(
               `session ${next.sid}: DEFERRED (budget_exhausted${result.budgetReason ? `: ${result.budgetReason}` : ""})` +
-                " — exact target/cursor 보존, 새 model run 전까지 pending",
+                ` — exact target/cursor 보존, 새 model run 전까지 pending · 재개: ${resumeCommand}`,
             );
           } else if (result.skipped === "failed_visible") {
             buckets.dead += 1;
@@ -413,7 +424,12 @@ async function main() {
           ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)`
           : "") +
         (buckets.budget_exhausted > 0
-          ? `, budget-exhausted ${buckets.budget_exhausted} — target/cursor pending, explicit new run 필요`
+          ? `, budget-exhausted ${buckets.budget_exhausted} — target/cursor pending, explicit new run 필요` +
+            (budgetsToResume.size > 0
+              ? `: ${[...budgetsToResume]
+                  .map((id) => `memex model-work resume ${id} --new-run`)
+                  .join(" · ")}`
+              : "")
           : "") +
         (buckets.dead > 0
           ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`

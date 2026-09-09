@@ -169,6 +169,77 @@ describe("memex backfill CLI 계약", () => {
     }
   });
 
+  it("DEFERRED (budget_exhausted) prints the exact resume command with the budget id", async () => {
+    // 이슈 #14 의 관측 상태를 그대로 만든다: automatic 예산의 deadline 은 지났는데
+    // durable state 는 여전히 active 이고, pending 작업이 거기 묶여 있다. 사유만
+    // 찍고 예산 id 를 빼면 운영자는 진단 명령부터 다시 쳐야 한다 — 그리고 0.5.1
+    // 에서는 그렇게 찾아낸 resume 이 "still active" 로 거절당했다.
+    await seedPendingExtraction();
+    const dbPath = path.join(tmpRoot, "home", "conversation-index", "db.sqlite");
+    const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
+    const { ensureExtractionTarget } = await import(
+      path.join(ROOT, "dist", "continuity-store.js")
+    );
+    const { bindMemoryJobToBudget, getOrCreateAutomaticMaintenanceModelBudget } =
+      await import(path.join(ROOT, "dist", "model-budget.js"));
+    const db = initDatabase({ dbPath });
+    const created = new Date(Date.now() - 3 * 60 * 60_000);
+    const budget = getOrCreateAutomaticMaintenanceModelBudget(db, {
+      parentWaveId: "maintenance",
+      limits: { deadlineAt: new Date(created.getTime() + 900_000).toISOString() },
+      now: created,
+    });
+    assert.equal(
+      db
+        .prepare("SELECT state FROM model_work_budgets WHERE budget_id = ?")
+        .get(budget.budgetId).state,
+      "active",
+      "the fixture must reproduce the issue's durable state, not its fix",
+    );
+    for (const sessionId of ["pending-a", "pending-b"]) {
+      const target = ensureExtractionTarget(db, {
+        sessionId,
+        project: "/tmp/project",
+      });
+      assert.ok(target, `expected an extraction target for ${sessionId}`);
+      bindMemoryJobToBudget(db, {
+        jobId: target.jobId,
+        budgetId: budget.budgetId,
+        parentWaveId: budget.parentWaveId,
+      });
+    }
+    db.close();
+
+    let stdout = "";
+    try {
+      runMemex(["backfill", "extract"]);
+      assert.fail("expected deferred-work exit code");
+    } catch (err) {
+      assert.equal(err.status, 2);
+      stdout = err.stdout;
+    }
+    const resume = `memex model-work resume ${budget.budgetId} --new-run`;
+    for (const sessionId of ["pending-a", "pending-b"]) {
+      assert.match(
+        stdout,
+        new RegExp(
+          `session ${sessionId}: DEFERRED \\(budget_exhausted: deadline\\)[^\\n]*${resume.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+        ),
+      );
+    }
+    assert.match(stdout, /budget-exhausted 2 —/);
+
+    // 그리고 그 명령이 실제로 통해야 한다 — 이것이 이슈 #14 그 자체다.
+    const resumed = runMemex([
+      "model-work",
+      "resume",
+      budget.budgetId,
+      "--new-run",
+    ]);
+    assert.match(resumed, new RegExp(`Previous budget: ${budget.budgetId} \\(exhausted\\)`));
+    assert.match(resumed, /Rebound lease-free jobs: 2/);
+  });
+
   it("returns failure when a worker reports a fatal error", () => {
     try {
       runMemex(["backfill", "ontology"], {

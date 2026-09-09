@@ -253,4 +253,10 @@ export declare function runFactExtraction(db: Database.Database, sessionId: stri
     availableAt?: string;
     /** Only for `budget_exhausted`: which exhaustion fenced this session. */
     budgetReason?: "attempts" | "deadline" | "cancelled" | "window";
+    /**
+     * Only for `budget_exhausted`: the spent budget. 🚨 이슈 #14 — 운영자가
+     * `memex model-work resume <id> --new-run` 을 **그대로** 칠 수 있어야 한다.
+     * 사유만 있고 id 가 없으면 결국 진단 명령으로 id 를 찾아내야 한다.
+     */
+    budgetId?: string;
 }>;

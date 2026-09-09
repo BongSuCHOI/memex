@@ -930,6 +930,13 @@ export function startNewModelWorkRunForJob(
  * jobs that are still safe to retry. Running jobs remain bound to the old
  * budget; a lease-free CAS is used for every rebind so a concurrent worker
  * cannot be reset underneath an active claim.
+ *
+ * 🚨 Issue #14, belt and braces. A budget whose deadline/window has passed is
+ * spent whatever its stored `state` says, so resume settles that first rather
+ * than refusing the operator's only exit. It is the same transition every
+ * other caller makes, so a budget that arrives here already `exhausted` — the
+ * normal case — is unaffected. `state` alone still fences a genuinely live
+ * budget: an `active` budget with time left is refused as before.
  */
 export function startNewModelWorkRunForBudget(
   db: Database.Database,
@@ -942,8 +949,16 @@ export function startNewModelWorkRunForBudget(
   },
 ): ModelWorkRunResumeResult {
   ensureModelBudgetSchema(db);
-  const previousBudget = readBudgetById(db, input.budgetId);
+  const now = input.now ?? new Date();
+  let previousBudget = readBudgetById(db, input.budgetId);
   if (!previousBudget) throw new ModelBudgetNotFoundError(input.budgetId);
+  if (previousBudget.state === "active") {
+    const spent = resolveBudgetExhaustion(db, previousBudget, now);
+    if (spent) {
+      markModelBudgetExhausted(db, previousBudget.budgetId, spent, now.toISOString());
+      previousBudget = readBudgetById(db, previousBudget.budgetId)!;
+    }
+  }
   if (!(["exhausted", "cancelled"] as ModelBudgetState[]).includes(previousBudget.state)) {
     throw new Error(
       `model work budget ${input.budgetId} is still active; resume requires an exhausted or cancelled budget`,
@@ -960,7 +975,6 @@ export function startNewModelWorkRunForBudget(
     limits: input.limits,
     now: input.now,
   });
-  const now = input.now ?? new Date();
   const rows = tableExists(db, "memory_jobs")
     ? (db.prepare(`
         SELECT job_id, state, lease_until
@@ -1041,8 +1055,18 @@ export function startNewModelWorkRunForBudget(
 }
 
 /**
- * Read-only pre-flight for a queue claim: would this job be handed a budget
- * that is already spent?
+ * Pre-flight for a queue claim: would this job be handed a budget that is
+ * already spent? Read-only whenever the budget is genuinely fine; when it is
+ * not, it performs — and only then — the durable exhausted transition.
+ *
+ * 🚨 Issue #14. This check stands in for `reserveModelAttempt`, and the
+ * reservation did not merely *report* exhaustion: it wrote the budget durably
+ * to `exhausted` before throwing. Reporting without writing left budget
+ * `15af9e61` `active` with a deadline hours in the past, so every foreground
+ * backfill deferred and `model-work resume --new-run` refused the budget as
+ * "still active" — no way out but an automatic wake. The transition goes
+ * through the same `markModelBudgetExhausted` the reservation uses, so the
+ * pre-flight cannot leave a state the reservation would not have left.
  *
  * 🚨 Issue #12. The extractor claimed a job (which burns one `attempts`), then
  * resolved its budget deep inside the model call, and only there discovered
@@ -1082,9 +1106,11 @@ export function findExhaustedModelBudgetForClaim(
   if (!budget) return null;
   // Identical predicate to reserveModelAttempt — the pre-flight must not be
   // able to disagree with the reservation it is standing in for.
-  const reason = budgetExhaustion(budget, now.getTime()) ??
-    (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+  const reason = resolveBudgetExhaustion(db, budget, now);
   if (!reason) return null;
+  // Identical *write*, too. Without it the refusal is invisible to everything
+  // that reads durable state, and `resume --new-run` has nothing to resume.
+  markModelBudgetExhausted(db, budget.budgetId, reason, now.toISOString());
   return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
 }
 
@@ -1237,6 +1263,53 @@ function budgetExhaustion(
 }
 
 /**
+ * The one exhaustion predicate in this module: the budget's own durable limits
+ * plus the rolling automatic-maintenance cap. Every caller that has to decide
+ * "is this budget spent?" — the pre-claim check, the reservation it stands in
+ * for, the automatic wake and `resume --new-run` — asks this, so none of them
+ * can disagree with the others about the same budget at the same instant.
+ */
+function resolveBudgetExhaustion(
+  db: Database.Database,
+  budget: ModelWorkBudget,
+  now: Date,
+): ModelBudgetExhaustionReason | null {
+  return (
+    budgetExhaustion(budget, now.getTime()) ??
+    (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0
+      ? "window"
+      : null)
+  );
+}
+
+/**
+ * The one durable "this budget is spent" write.
+ *
+ * 🚨 Issue #14. Until 0.5.1 this write lived only inside `reserveModelAttempt`,
+ * which is what made a deadline-expired budget reach durable `exhausted` and
+ * therefore made `model-work resume --new-run` possible. The issue-#12
+ * pre-claim check then short-circuited *before* the reservation, so the
+ * transition never happened: the budget stayed `active` forever, every claim
+ * deferred, and resume refused. Sharing the write keeps the pre-claim path,
+ * the reservation, the automatic wake and resume on one identical transition
+ * instead of three copies that can drift.
+ *
+ * The `state IN ('active','exhausted')` guard keeps a terminal `completed`/
+ * `cancelled` budget from being rewritten; `exhausted` is included so the write
+ * stays idempotent and refreshes `updated_at`.
+ */
+function markModelBudgetExhausted(
+  db: Database.Database,
+  budgetId: string,
+  reason: ModelBudgetExhaustionReason,
+  nowIso: string,
+): void {
+  db.prepare(
+    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')",
+  ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso, budgetId);
+}
+
+/**
  * Atomically reserve one provider attempt immediately before runCodex. A
  * reservation is never returned to the pool: a crash after this point still
  * represents a possible provider attempt and must remain counted.
@@ -1268,12 +1341,9 @@ export function reserveModelAttempt(
     if (input.inputChars > budget.maxInputChars) {
       throw new ModelBudgetInputLimitError(input.inputChars, budget.maxInputChars);
     }
-    const reason = budgetExhaustion(budget, now.getTime()) ??
-      (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+    const reason = resolveBudgetExhaustion(db, budget, now);
     if (reason) {
-      db.prepare(
-        "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ?",
-      ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso, input.budgetId);
+      markModelBudgetExhausted(db, input.budgetId, reason, nowIso);
       // Return the error after the transaction commits. Throwing here would
       // roll back the durable exhausted state and make a deadline/attempt cap
       // look active again on the next worker restart.
@@ -1400,9 +1470,7 @@ export function exhaustModelBudget(
   const row = readBudgetById(db, input.budgetId);
   if (!row) throw new ModelBudgetNotFoundError(input.budgetId);
   const now = input.now ?? new Date();
-  db.prepare(
-    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')",
-  ).run(input.reason === "cancelled" ? "cancelled" : "exhausted", now.toISOString(), input.budgetId);
+  markModelBudgetExhausted(db, input.budgetId, input.reason, now.toISOString());
   return new ModelBudgetExhaustedError(row.budgetId, row.parentWaveId, input.reason);
 }
 
@@ -1659,9 +1727,14 @@ export function getOrCreateAutomaticMaintenanceModelBudget(
       window.retryAt ? Date.parse(window.retryAt) : 0,
     ) : 0;
     if (latest?.state === "cancelled") return latest;
-    if (latest?.state === "active" && (budgetExhaustion(latest, now.getTime()) || window.remaining === 0)) {
-      db.prepare("UPDATE model_work_budgets SET state = 'exhausted', updated_at = ? WHERE budget_id = ?")
-        .run(nowIso, latest.budgetId);
+    // Same transition as the pre-claim check and `reserveModelAttempt` (#14):
+    // an automatic wake that meets a clock-dead `active` budget must leave it
+    // durably `exhausted`, which is what lets the rollover below adopt it.
+    const spent = latest?.state === "active"
+      ? resolveBudgetExhaustion(db, latest, now)
+      : null;
+    if (latest && spent) {
+      markModelBudgetExhausted(db, latest.budgetId, spent, nowIso);
       latest = readBudgetById(db, latest.budgetId)!;
     }
     if (latest) {
