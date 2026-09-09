@@ -70,7 +70,7 @@ Phase 2의 mandatory matrix는 `test/continuity-core.test.ts`와
 `test/continuity-adversarial.test.ts`가 담당합니다. 후자는 200 turns, 6 auto + 2 manual compact,
 same-turn double compact, repeated Stop/Interrupt, zero PostCompact, byte-total accounting, hash mismatch,
 Capsule stale CAS/failure fallback을 한 deterministic fixture에서 검증합니다. Installed lifecycle은 7 event,
-11 owned hook entry이며 `scripts/lifecycle-e2e.mjs --tier offline`이 setup/reinstall/remove와 final-fence process
+12 owned hook entry이며 `scripts/lifecycle-e2e.mjs --tier offline`이 setup/reinstall/remove와 final-fence process
 boundary를 검증합니다. Unix socket `listen EPERM`이 발생한 managed sandbox run은 정확한 isolated suite를
 socket 허용 환경에서 재실행해 product failure와 구분합니다.
 Authenticated tier는 격리된 `CODEX_HOME`과 복사된 사용자 auth에서 실제 `codex exec`를 실행해
