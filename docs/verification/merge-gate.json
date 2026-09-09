@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-09T19:04:15.168+00:00",
+  "recordedAt": "2026-09-09T22:25:00.048+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
@@ -10,35 +10,46 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "release/0.6.0",
-    "codeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
-    "packageVersion": "0.6.0",
+    "branch": "release/0.6.1",
+    "codeSha": "aa2d3381ae1584c0bd2b1070ec9d48fc74333866",
+    "packageVersion": "0.6.1",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
     "sameHead": true,
-    "note": "v0.6.0 release candidate: branch-aware memory tiers and a promotion ladder (#16/#18/#19/#21/#38), capsule size and convergence work with a terminal-state repair, new `memex jobs` / `recover` / `install` commands, doctor checks, honest injection logging, docs, and a `--both` search fix. All thirteen gates plus the full acceptance benchmark ran on this clean committed SHA; `git status --porcelain` was empty before them and HEAD was unchanged after, and `npm run build` reproduced the tracked dist/ byte-for-byte. Unlike v0.5.1 and v0.5.2, benchmark evidence was NOT carried forward: search, injection and identity paths changed, so the benchmark was re-measured on this SHA. The gates ran on the main checkout, not a git worktree, so the lifecycle-cleanup slice exercised its real cleanup surface. The packaged artifact holds 313 files, one more than v0.5.2, and that one file is docs/verification/merge-gate-pre-0.5.2.json, the archive the previous receipt commit wrote: docs/ is inside the package.json files list, so receipt commits change packaged files by construction. Only receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
+    "note": "v0.6.1 release candidate: an installed-root resolver and `memex deps materialize`, sync-import tier parity on protocol v5, a cross-device sync switch that ships OFF, ontology parking/merge/rename work, wave lineage, a derived-lane skip counter, evidence-receipt backfill, Web UI tier controls and a sync tab, docs, and the widened gate glob with a real-root isolation script. Gates followed the gate list documented in docs/VERIFICATION.md §2 as of this SHA, which replaces the per-slice lines with one `node --test test/*.test.mjs` run and brackets the whole run with the read-only real-root isolation check that §4 now requires. `git status --porcelain` was empty before the gates and HEAD was unchanged after, and `npm run build` reproduced the tracked dist/ byte-for-byte. The tarball holds 327 files and the count no longer grows per release: `files` now carries a `!docs/verification/merge-gate-pre-*.json` negation, and adding merge-gate-pre-0.6.1.json left the count at 327. Only receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
+    {
+      "name": "real-root-snapshot",
+      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before.json",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T22:18:48.965+00:00",
+      "durationSeconds": 0.091,
+      "logPath": "/private/tmp/memex-0.6.1-gates/real-root-snapshot.log",
+      "logSha256": "b2a2ef7400315c0948d51f67c6e02f36a55f65fcee558636b8fb3905ab016407",
+      "observed": "read-only baseline of the real data root: 94 files under ~/.config/memex, written to /tmp/memex-real-root-before.json, outside the root"
+    },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:57:51.199+00:00",
-      "durationSeconds": 3.309,
-      "logPath": "/private/tmp/memex-0.6.0-gates/typecheck.log",
-      "logSha256": "3e5a7de988f8c56fd358887aabd07fe34781ce8e3491ca9291491c9c93cd60a7"
+      "startedAt": "2026-09-09T22:18:54.443+00:00",
+      "durationSeconds": 3.205,
+      "logPath": "/private/tmp/memex-0.6.1-gates/typecheck.log",
+      "logSha256": "35eb36a388290dd6ab16dc8c2b1cb7a71a77a792222a4bc00a0b88598895fe51"
     },
     {
       "name": "build",
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:57:54.552+00:00",
-      "durationSeconds": 3.592,
-      "logPath": "/private/tmp/memex-0.6.0-gates/build.log",
-      "logSha256": "5a04c97c3f76e3a252e207e1ad66dd1f31c2975438c3af9928df43ecea5920c3",
+      "startedAt": "2026-09-09T22:18:57.690+00:00",
+      "durationSeconds": 3.647,
+      "logPath": "/private/tmp/memex-0.6.1-gates/build.log",
+      "logSha256": "6ca08c9f79ae5fa46b3ede18969bd0d26eee1d6ffbd90a38a32144977364fc53",
       "observed": "tsc + esbuild bundle reproduced the tracked dist/; `git status --porcelain` empty afterwards"
     },
     {
@@ -46,43 +57,32 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:02.640+00:00",
-      "durationSeconds": 21.812,
-      "logPath": "/private/tmp/memex-0.6.0-gates/tests.log",
-      "logSha256": "2010408a2b74f9b51c32b4fae6275f486589656bb19180253f0d76b2ebf659b2",
-      "observed": "109 files / 1102 Vitest tests passed"
+      "startedAt": "2026-09-09T22:19:01.417+00:00",
+      "durationSeconds": 20.969,
+      "logPath": "/private/tmp/memex-0.6.1-gates/tests.log",
+      "logSha256": "ff9df71ffd6e9f52aa52319e995c3618aec88d1c2ca9b044c512a6f088a3f7f3",
+      "observed": "117 files / 1136 Vitest tests passed"
     },
     {
-      "name": "codex-slice",
-      "command": "node --test test/codex-slice.test.mjs",
+      "name": "mjs-tests",
+      "command": "node --test test/*.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:24.500+00:00",
-      "durationSeconds": 3.728,
-      "logPath": "/private/tmp/memex-0.6.0-gates/codex-slice.log",
-      "logSha256": "25b1fcb3b570e60e8f9c58838664649739a37e343c6d5c196033bb6bbd518613",
-      "observed": "26 slices passed"
-    },
-    {
-      "name": "slice-tests",
-      "command": "node --test test/*slice.test.mjs",
-      "status": "PASS",
-      "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:28.282+00:00",
-      "durationSeconds": 7.803,
-      "logPath": "/private/tmp/memex-0.6.0-gates/slice-tests.log",
-      "logSha256": "b666829606664beaaf4c84e7c60ba4228cfc54b0fa8220bae0ea1816329215ea",
-      "observed": "124 slices / 1 suite passed, including test/lifecycle-cleanup-slice.test.mjs, which proves every cleanup surface from live state and only fails inside a git worktree with a symlinked node_modules; these gates ran on the main checkout"
+      "startedAt": "2026-09-09T22:19:25.407+00:00",
+      "durationSeconds": 8.878,
+      "logPath": "/private/tmp/memex-0.6.1-gates/mjs-tests.log",
+      "logSha256": "dfb00dda64cf35720949627894285bdba8e20cfb1b14a0ebfe7e748a28b11838",
+      "observed": "162 tests / 1 suite passed, 0 failed. This one line replaces the per-slice gate rows used through v0.6.0: the widened glob now also covers web-ui-db-factory, benchmark-contract, plugin-validation-contract, codex-host-compat, codex-memory-comparison and scope-isolation-probe, which the old test/*slice.test.mjs glob left outside the documented gate."
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:47.080+00:00",
-      "durationSeconds": 6.792,
-      "logPath": "/private/tmp/memex-0.6.0-gates/install-e2e.log",
-      "logSha256": "1deae782f9b4a0d27a9c3648f45ad7b3f115e653d6bfd046509354ca7b939fa6",
+      "startedAt": "2026-09-09T22:19:42.494+00:00",
+      "durationSeconds": 6.614,
+      "logPath": "/private/tmp/memex-0.6.1-gates/install-e2e.log",
+      "logSha256": "ea8f2fc39e69e44566f516649628b1c595f873613476a4207b8ceaccd5573e91",
       "observed": "dry-run, real install, idempotent re-run, removal and isolation checks all true in an isolated CODEX_HOME/MEMEX_HOME"
     },
     {
@@ -90,10 +90,10 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:53.914+00:00",
-      "durationSeconds": 0.358,
-      "logPath": "/private/tmp/memex-0.6.0-gates/marketplace-e2e.log",
-      "logSha256": "81e3fedf8beb6e770ac2152f7d08b7ca7516a821458d4f07e12e3f13f5f1bb7b",
+      "startedAt": "2026-09-09T22:19:49.150+00:00",
+      "durationSeconds": 0.373,
+      "logPath": "/private/tmp/memex-0.6.1-gates/marketplace-e2e.log",
+      "logSha256": "aafd1f4fd27325841b843adf9005c051ce262c76199ed97bfced5aa40c51caae",
       "observed": "7 lifecycle events registered; cleanup PASS"
     },
     {
@@ -101,54 +101,54 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T18:58:54.316+00:00",
-      "durationSeconds": 82.909,
-      "logPath": "/private/tmp/memex-0.6.0-gates/package-runtime-e2e.log",
-      "logSha256": "9b4340634269e42a71b35f7c102ff369bc5d56cb09e798a772bc44d1b5739097",
-      "observed": "memex-0.6.0.tgz, 313 files, 9 MCP tools; the one added file since v0.5.2 is docs/verification/merge-gate-pre-0.5.2.json, this receipt process's own archive, not product code. The nine new test suites are not packaged: only test/fixtures paths are in the files list, which is why test/fixtures/fact-scope-directive-cases.json is the only new test asset that ships."
+      "startedAt": "2026-09-09T22:19:49.604+00:00",
+      "durationSeconds": 80.877,
+      "logPath": "/private/tmp/memex-0.6.1-gates/package-runtime-e2e.log",
+      "logSha256": "88b2484cb4868791e41ff4c4167b470ef724fa09a3f6a3700c8aac5542f5c1e9",
+      "observed": "memex-0.6.1.tgz, 327 files, 9 MCP tools"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T19:00:17.338+00:00",
-      "durationSeconds": 6.474,
-      "logPath": "/private/tmp/memex-0.6.0-gates/lifecycle-e2e.log",
-      "logSha256": "270c924c970ca4d3ab53cc9700173281fd68baa3ae66fd90c3ad2f2a01acd0db",
-      "observed": "offline tier: 9/9 steps, 12 owned hook entries removed, 7-surface cleanup inventory all true"
-    },
-    {
-      "name": "web-ui-browser-e2e",
-      "command": "node scripts/web-ui-browser-e2e.mjs",
-      "status": "PASS",
-      "exitCode": 0,
-      "startedAt": "2026-09-09T19:00:30.830+00:00",
-      "durationSeconds": 11.344,
-      "logPath": "/private/tmp/memex-0.6.0-gates/web-ui-browser-e2e.log",
-      "logSha256": "39b24291e8cf0e4bc6f4ac05d0b73283077d2f1b135430631b0015ac15de8906",
-      "observed": "real headless Chrome via CDP at 1440x900 against Memex Workspace 1.0.0: 10 check groups PASS, runtimeErrors 0; the empty-scope map again reported mapFrames 2 with all 521550 pixels equal to the engine clear colour, so the v0.5.0 readback fix still holds on unchanged UI code"
+      "startedAt": "2026-09-09T22:21:10.560+00:00",
+      "durationSeconds": 5.991,
+      "logPath": "/private/tmp/memex-0.6.1-gates/lifecycle-e2e.log",
+      "logSha256": "1f7c968fd2f780af2b69a55d593c420000e779dda302ce35710cfb3cf7a107fa",
+      "observed": "offline tier: 9/9 steps, 13 owned hook entries removed across the 7 events, 7-surface cleanup inventory all true"
     },
     {
       "name": "ui-tests",
       "command": "node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T19:00:42.258+00:00",
-      "durationSeconds": 0.284,
-      "logPath": "/private/tmp/memex-0.6.0-gates/ui-tests.log",
-      "logSha256": "4a9d288ee87a31ef054c89f80ae4078f79fb8351a623af20c375d489f15306a1",
-      "observed": "82 Workspace unit tests passed"
+      "startedAt": "2026-09-09T22:21:23.647+00:00",
+      "durationSeconds": 0.301,
+      "logPath": "/private/tmp/memex-0.6.1-gates/ui-tests.log",
+      "logSha256": "5cfe38e2947575df95f126a9dd81c953f3f406215d3022d9d8bdd1a9c0d04187",
+      "observed": "131 Workspace unit tests passed"
+    },
+    {
+      "name": "web-ui-browser-e2e",
+      "command": "node scripts/web-ui-browser-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T22:21:23.999+00:00",
+      "durationSeconds": 12.21,
+      "logPath": "/private/tmp/memex-0.6.1-gates/web-ui-browser-e2e.log",
+      "logSha256": "53eef1f17440aa3cb104fa840e369bc37f8a46059226f9fb64cec33fab2cbc10",
+      "observed": "real headless Chrome via CDP at 1440x900: 19 probes PASS, runtimeErrors 0. Nine are new in 0.6.1 — scopeDefaults, factDeepLink, scopeSwitch, helpLayer, tierBanner, tierPromote, jobGuidance, attention and syncTab — and they exercise the tier panel and promotion, failure guidance, a real recover that reported \"Recovered: 1 unit(s)\", and the sync tab's default-off state plus an export followed by an import with counts."
     },
     {
       "name": "plugin-validation",
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T19:00:42.602+00:00",
-      "durationSeconds": 4.711,
-      "logPath": "/private/tmp/memex-0.6.0-gates/plugin-validation.log",
-      "logSha256": "5bc8da35a6263873be1be042d964ef15cf6323766aa1a2cb4b429add0b1afcd7",
+      "startedAt": "2026-09-09T22:21:36.293+00:00",
+      "durationSeconds": 4.403,
+      "logPath": "/private/tmp/memex-0.6.1-gates/plugin-validation.log",
+      "logSha256": "1f985af695cbdef038b3e16576e4539f60e088d2777f5aaccf31226a18e51c9e",
       "observed": "11 isolated substitute checks PASS; formal `codex plugin validate` unavailable in this CLI"
     },
     {
@@ -156,19 +156,41 @@
       "command": "node --test test/benchmark-contract.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T19:02:08.921+00:00",
-      "durationSeconds": 0.111,
-      "logPath": "/private/tmp/memex-0.6.0-gates/benchmark-contract.log",
-      "logSha256": "ef7aa1a982b99c5db6cb257818e9435ee62453f2cbee132bb4a97aaf3f98dd02",
-      "observed": "1 test passed on the pristine committed tree against the unchanged benchmark report"
+      "startedAt": "2026-09-09T22:21:40.740+00:00",
+      "durationSeconds": 0.102,
+      "logPath": "/private/tmp/memex-0.6.1-gates/benchmark-contract.log",
+      "logSha256": "b6a088a686c373dc8b8e5be791e7e8ad37460046e5e3d912c8ac4ca02bdb7d6e",
+      "observed": "1 test passed against the carried-forward report; also covered by the widened mjs glob, and run separately here for an explicit row"
+    },
+    {
+      "name": "pack-dry-run",
+      "command": "npm pack --dry-run",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T22:22:43.606+00:00",
+      "durationSeconds": 0.666,
+      "logPath": "/private/tmp/memex-0.6.1-gates/pack-dry-run.log",
+      "logSha256": "06e35c3331adf2c42c7752bc8c00fb49b2c100660d30da7f9aaeced53a81ea9e",
+      "observed": "total files 327. docs/verification ships the three current receipts — merge-gate.json, plugin-validation.json and benchmark.json — while merge-gate-pre-*.json and benchmark-pre-*.json are excluded: 0 of each in the tarball. Older archives named without the `pre-` convention, such as merge-gate-0.4.2.json and the merge-gate-2026-09-* set, are still packaged, so the negation covers the convention rather than every historical receipt."
+    },
+    {
+      "name": "real-root-compare",
+      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before.json",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T22:22:12.701+00:00",
+      "durationSeconds": 0.094,
+      "logPath": "/private/tmp/memex-0.6.1-gates/real-root-compare.log",
+      "logSha256": "aadf92c7a0e85f0e9e03f404d3a777963f735a2f7a43e187e4f786b558feb451",
+      "observed": "OK: 94 files compared, added 0, removed 0, modified 0. The real data root at ~/.config/memex was byte-identical after the whole gate run."
     }
   ],
   "packageRuntime": {
     "status": "PASS",
-    "artifact": "memex-0.6.0.tgz",
-    "packedBytes": 1284858,
-    "unpackedBytes": 5180750,
-    "files": 313,
+    "artifact": "memex-0.6.1.tgz",
+    "packedBytes": 1405148,
+    "unpackedBytes": 5509431,
+    "files": 327,
     "mcpTools": 9,
     "onboarding": [
       "setup --dry-run",
@@ -185,47 +207,49 @@
     "status": "PASS-WITH-NOTES (version-bound)",
     "formalValidatorAvailable": false,
     "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
-    "isolatedSubstitute": "PASS: 11 checks — plugin 0.6.0 in the Codex cache, MCP serverInfo 0.6.0, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
+    "isolatedSubstitute": "PASS: 11 checks — plugin 0.6.1 in the Codex cache, MCP serverInfo 0.6.1, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
     "receiptPath": "docs/verification/plugin-validation.json",
-    "receiptSha256": "5bc8da35a6263873be1be042d964ef15cf6323766aa1a2cb4b429add0b1afcd7"
+    "receiptSha256": "1f985af695cbdef038b3e16576e4539f60e088d2777f5aaccf31226a18e51c9e"
   },
   "webUi": {
-    "surface": "Memex Workspace 1.0.0 (replaces the previous Web UI)",
+    "surface": "Memex Workspace, extended in 0.6.1 with tier display, promote and demote controls, failure guidance, a help layer, a sync tab and changed defaults.",
     "browserE2e": {
       "status": "PASS",
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "transport": "Google Chrome headless via CDP",
       "viewport": "1440x900",
+      "probes": 19,
       "runtimeErrors": 0,
-      "checkGroups": [
-        "facts",
-        "factDetail",
-        "factsTaxonomy",
-        "taxonomyMap",
-        "factsEmptyScope",
-        "mutations",
-        "pipeline",
-        "diagnostics",
-        "graph",
-        "graphEmpty"
+      "newProbes": [
+        "scopeDefaults",
+        "factDeepLink",
+        "scopeSwitch",
+        "helpLayer",
+        "tierBanner",
+        "tierPromote",
+        "jobGuidance",
+        "attention",
+        "syncTab"
       ],
-      "observed": "Seven-page navigation, stored-XSS payload rendered inert (injectedFlag false), fact detail tabs with non-authoritative context labelling, taxonomy filter and graph deep link, empty-scope states, edit/deactivate/restore mutation round-trip, native LOCAL WEBGL knowledge map in 2D default and 3D, and skip-link keyboard focus.",
+      "observed": "tierPromote drives the real tier panel and promotion; attention runs a real recover and captured its output, \"Recovered: 1 unit(s)\"; syncTab confirms the switch is off with export and import disabled, then turns it on, assigns a device, exports with counts and imports with a summary, including a rejected case. The ten v0.6.0 probes still pass and the empty-scope map still reports one drawn frame with every pixel at the clear colour.",
       "evidence": "Screenshots were written to an isolated /tmp evidence directory and are not committed."
     },
     "unitTests": {
       "status": "PASS",
       "command": "node --test ui/test/*.test.cjs",
-      "tests": 82
+      "tests": 131,
+      "note": "Up from 82 in v0.6.0; ui/test/guidance.test.cjs and ui/test/help.test.cjs are new."
     },
+    "uiFollowUpClosed": "The tier promote and demote buttons the v0.6.0 receipt recorded as deferred to 0.6.1 (#22) are present and covered by the tierBanner and tierPromote probes.",
     "benchmark": {
       "status": "PASS",
-      "rerunForThisCandidate": true,
-      "reason": "v0.6.0 changes the search, injection and identity paths, which AC_PERF_01, AC_PERF_02 and AC_PERF_03 measure directly, so the evidence carried forward through v0.5.1 and v0.5.2 was not reusable. The full acceptance benchmark was re-run on this SHA with the defaults and docs/verification/benchmark.json was replaced in place.",
+      "rerunForThisCandidate": false,
+      "reason": "v0.6.1 changes maintenance, ontology, cross-device sync, CLI and Web UI code; the search and injection scoring paths that AC_PERF_01 through AC_PERF_03 measure are unchanged since the v0.6.0 candidate. The report below is therefore carried forward as prior evidence measured on 6ba3354b and is not a measurement of this SHA.",
       "command": "node scripts/benchmark.mjs",
       "measuredOnCodeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
       "recordedAt": "2026-09-09T19:01:47.268Z",
       "environment": "darwin arm64 (Apple M1 Pro); isolated home /tmp/mb-bench-cYCwcl",
-      "durationSeconds": 45.522,
+      "benchmarkOnThisSha": "NOT_PROVEN",
       "reportPath": "docs/verification/benchmark.json",
       "reportSha256": "3a4d12891d37466b30745ae8989db83a9154a4eb5903f888c01ed1d9b3ec0b46",
       "logPath": "/private/tmp/memex-0.6.0-gates/benchmark.log",
@@ -271,44 +295,68 @@
     "stabilityRuns": "inherited from the v0.5.0 candidate 5cd1134d (20/20)",
     "stabilityRunsNote": "The 20-run stability series was measured when the readback fix landed. It was not repeated for v0.5.1, which changes no UI or gate-script code; this candidate contributes one further clean run, with the same mapFrames 2 and mapBackground 521550 of 521550."
   },
-  "memoryTiers": {
-    "decidedModel": "Inside a Git checkout the directory remains the project and the branch becomes the tier: a session on the default branch, or in a non-Git directory, writes project-common memory, while any other branch or worktree writes its own branch tier keyed on (project, branch). Injection and lookup read global plus project-common plus the current branch, and two worktrees of one repository on the same branch share a tier. Movement between tiers is a one-rung ladder, workstream <-> project <-> global; a skipped rung is refused, and every move appends a Chronicle PROMOTED or DEMOTED carrying from-tier, to-tier, actor and reason.",
-    "behaviourChange": "This changes where new memory lands. Before 0.6.0 every extracted fact went to a per-session workstream and was never read again.",
-    "schemaAdditions": "Additive only, and CONTINUITY_SCHEMA_VERSION stays 7: facts.tier_reason records the branch signal that placed a fact (no-branch-signal, default-branch or branch:<name>), exchanges.git_branch carries the captured branch with an idx_git_branch index, and workstreams gain branch_hint. Workstream ids are now derived deterministically from (project, branch), or from the project alone when there is no branch signal.",
-    "branchCapture": "The branch and the repository default branch are resolved at session start from origin/HEAD, then packed-refs, then init.defaultBranch, and propagated to exchanges.git_branch and the workstream branch_hint.",
-    "automaticReconcile": "The evidence-based automatic reconcile runs in the SessionStart maintenance stage as SQL with no model call.",
-    "regressions": "test/scope-tier-identity.test.ts (20 cases across branch signal, deterministic workstream binding for #16, exchange branch propagation, workspace location transition for #21, the default tier rule at extraction insert for #18, the untrusted-cwd quarantine for #38, and facts migrate-tiers); test/fact-tier-ladder.test.ts (11 cases across user promotion and demotion for #19, in-session KR/EN scope directives with explicit negatives, and the evidence-based automatic ladder including demotion when cited evidence is deactivated).",
-    "workspaceTransition": "Covered inside scope-tier-identity: workspace_id and project_id survive a directory-to-clone transition and record exactly one event, a worktree joins as a second workspace of the same project, the same remote cloned elsewhere requires explicit approval before joining, and the row updates only when .git is removed, never demoting branch memory.",
-    "quarantine": "Covered inside scope-tier-identity: `/` and any empty-basename path are rejected exactly like unknown, a session with an untrusted cwd stays out of any project and reads global-only, and a legacy `/` project is quarantined on migration without deleting its facts.",
-    "uiFollowUp": "`memex facts tier|promote|demote` is the interface today; the Web UI buttons are deferred to 0.6.1 (#22), so no UI gate covers the ladder.",
+  "crossDeviceSync": {
+    "switchDefault": "Cross-device sync ships OFF. The Web UI sync tab opens with the switch unchecked and both export and import disabled, and the folder is resolved as MEMEX_SYNC_DIR > configured shared folder > the historical local default.",
+    "protocol": "SYNC_PROTOCOL_VERSION is 5 in src/sync-export.ts, and the importer accepts only the generation manifests that version declares, so a foreign or older manifest is refused rather than partially applied.",
+    "tierParity": "Import now preserves the tier a fact was exported from, so a round trip cannot silently relocate memory between the global, project-common and branch tiers introduced in 0.6.0.",
+    "sessionEndExport": "A SessionEnd export hook was added; the offline lifecycle gate observed 13 owned hook entries across the 7 events and removed exactly those.",
+    "regressions": "test/sync-tier-import.test.ts (5 cases), test/sync-control.test.ts (5 cases) and test/export-status.test.ts (5 cases) cover tier-preserving import, the control surface and export status.",
     "productionDataMutation": false,
-    "liveTierPlacement": "NOT_PROVEN: no real session was run against the user's data root to confirm that newly extracted facts land on the intended tier, nor was the migration of that root's pre-0.6.0 workstream facts executed."
+    "liveTwoDeviceRoundTrip": "NOT_PROVEN: no export was carried to a second machine and imported there. Every sync case ran in isolated fixtures on one host, which proves the protocol and control contracts, not a real two-device round trip."
   },
-  "schedulingRecovery": {
-    "scope": "Work Capsule size and convergence, a terminal-state repair, job recovery, new operator commands (`memex jobs`, `memex recover`, `memex install`), doctor checks and honest injection logging.",
-    "regressions": "test/capsule-size-truncation.test.ts (5 cases), test/capsule-retry-convergence.test.ts (4 cases) and test/capsule-terminal-state.test.ts (4 cases) cover capsule truncation, retry convergence and the terminal-state repair; test/job-recovery.test.ts (7 cases) covers job recovery; test/cli-help-guard-slice.test.mjs (5 cases) guards the CLI surface, which also caught the `--both` search regression fixed in f1e7509; test/injection-gate-observability.test.ts (5 cases) and test/recall-receipt-observability.test.ts (4 cases) cover injection-gate and recall-receipt observability.",
-    "injectionHonesty": "The injection log no longer reports a success when no memory was provided. The gates prove the reporting contract on fixtures; they do not prove that real sessions now yield memory.",
+  "ontologyMaintenance": {
+    "scope": "Ontology parking with a UNIQUE constraint plus a merge migration and rename path, wave lineage columns, a derived-lane skip counter, an evidence-receipts backfill, and an observe-hook-event bundle guard.",
+    "regressions": "test/ontology-parking.test.ts (4 cases), test/ontology-taxonomy-repair.test.ts (5 cases), test/maintenance-wave-lineage.test.ts (3 cases), test/derived-lane-skip.test.ts (5 cases) with test/derived-lane-skip-e2e.test.ts (1 end-to-end case), test/evidence-receipt-backfill.test.ts (5 cases) and test/ontology-cli-slice.test.mjs (5 cases).",
     "productionDataMutation": false,
-    "liveWakeReplay": "NOT_PROVEN: no maintenance wake or recovery path was replayed against the user's durable data root. The regressions reconstruct the states in isolated fixtures, which proves the contracts, not field recovery.",
-    "liveInjectionYield": "NOT_PROVEN: whether real sessions now inject at least one fact is verified after release against the user's own root, not by these gates. The benchmark's warm and cold injection ratios of 1 are measured over its synthetic corpus and are not evidence about the user's memory."
+    "liveMigrationRun": "NOT_PROVEN: the UNIQUE merge migration was exercised on fixtures only. It was not run against the user's real ontology, whose duplicate shape is unknown to this gate."
+  },
+  "realRootIsolation": {
+    "script": "scripts/check-real-root-untouched.mjs",
+    "mode": "read-only; snapshot before the gates, compare after, as docs/VERIFICATION.md §4 now requires",
+    "root": "~/.config/memex",
+    "filesCompared": 94,
+    "added": 0,
+    "removed": 0,
+    "modified": 0,
+    "result": "PASS",
+    "baselinePath": "/tmp/memex-real-root-before.json (outside the data root)",
+    "volatileExclusions": "run-locks/ and unix sockets are excluded by default because they exist only while something is running; --strict was not used.",
+    "motivation": "0.5.0 QA found test/web-ui-db-factory.test.mjs isolating only MEMEX_DB_PATH and appending 21 lines to the real logs/ui-audit.jsonl. That suite is now inside the widened mjs gate, and this run leaves the real root byte-identical.",
+    "caveat": "This proves the gate run did not write to the root, not that the root is healthy. Judgement is by content hash, so a read-only access that only moves atime is correctly not a failure."
   },
   "priorEvidence": [
     {
-      "receipt": "merge-gate-pre-0.6.0.json",
-      "sha256": "4bd64e3f20f8d6c51c170774bc8a5308cf698fcb76bdd9257b7f47831c64103f",
-      "codeSha": "874f95540114b48ddbc74c319cac9c9f981604c0",
-      "note": "The v0.5.2 gate receipt, archived byte-for-byte from the file this receipt replaces. Its values were not rewritten, including its benchmark section, whose carried-forward 236d7362 evidence this release supersedes with a fresh measurement."
+      "receipt": "merge-gate-pre-0.6.1.json",
+      "sha256": "b3938da128feb9099b1782ecb9794cfaa1ddcd1cfb257df81e3ea1b8e953adeb",
+      "codeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
+      "note": "The v0.6.0 gate receipt, archived byte-for-byte from the file this receipt replaces. Its values were not rewritten."
+    },
+    {
+      "receipt": "benchmark.json",
+      "sha256": "3a4d12891d37466b30745ae8989db83a9154a4eb5903f888c01ed1d9b3ec0b46",
+      "codeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
+      "note": "The full acceptance benchmark, measured on the v0.6.0 candidate and carried forward unchanged because 0.6.1 does not touch the search or injection scoring paths it measures."
     }
   ],
+  "priorLiveEvidence": {
+    "liveInjectionYield": {
+      "status": "PROVEN",
+      "observedOn": "the user's real data root running v0.6.0",
+      "observedAt": "2026-09-09T19:13Z",
+      "observation": "injected=3",
+      "note": "The v0.6.0 receipt recorded liveInjectionYield as NOT_PROVEN and said it would be checked after release. It was, and real sessions injected memory. This is cited as prior live evidence about v0.6.0, not as an observation of these gates: nothing in this gate run touched the real root, and the isolation check proves it did not."
+    }
+  },
   "notProven": {
     "liveUserData": "NOT_PROVEN: gates ran on isolated fixtures and temporary homes; no user data root was read or mutated.",
     "authenticatedCodexTier": "NOT_PROVEN: scripts/lifecycle-e2e.mjs ran its default offline tier; no real authenticated `codex exec` session was executed for this candidate.",
     "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` does not exist in codex-cli 0.153.4, so only the repository-owned isolated substitute was observed.",
-    "liveInjectionYield": "NOT_PROVEN: whether real sessions now inject at least one fact is verified after release on the user's own data root, not by these gates.",
     "liveTierMigration": "NOT_PROVEN: the pre-0.6.0 workstream facts on the user's real root were not migrated or inspected here; only the migrate-tiers contract was exercised on fixtures.",
+    "benchmarkOnThisSha": "NOT_PROVEN: the acceptance benchmark was measured on the v0.6.0 candidate 6ba3354b and not re-run here. The argument that 0.6.1 leaves the search and injection scoring paths untouched is a reading of the diff, not a measurement of this SHA, and dist/ was rebuilt again.",
+    "liveTwoDeviceRoundTrip": "NOT_PROVEN: cross-device sync was never exercised across two machines; see crossDeviceSync.",
     "realWorldPerformance": "NOT_PROVEN: the benchmark was re-measured on this SHA, but from a 200-rollout / 800-exchange synthetic corpus on one Apple-silicon host, not from production history or other hardware. Its fixture carries 50 facts, so it says nothing about tier reads at a real corpus size.",
     "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only.",
-    "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the accuracy of the CHANGELOG and the PR #51 documentation for this release rests on human review, not on these gates."
+    "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the accuracy of the CHANGELOG and the PR #57 documentation for this release rests on human review, not on these gates."
   },
-  "releaseConclusion": "All thirteen gates PASS on the clean v0.6.0 candidate 6ba3354b, each on its first attempt: typecheck, a build that reproduced the tracked dist/, 109 files / 1102 Vitest tests, 26 Codex slices, 124 total slices including the lifecycle-cleanup slice on the main checkout, installer, marketplace, packaged runtime (memex-0.6.0.tgz, 313 files, 9 MCP tools), offline lifecycle 9/9, the real-Chrome Memex Workspace E2E (10 check groups, 0 runtime errors), 82 Workspace unit tests and the benchmark contract. Isolated plugin validation passes all 11 substitute checks with matching 0.6.0 plugin and MCP server versions, and is PASS-WITH-NOTES only because the formal `codex plugin validate` subcommand does not exist in codex-cli 0.153.4. Because this release changes the search, injection and identity paths, the benchmark evidence carried forward through v0.5.1 and v0.5.2 was retired and the full acceptance benchmark was re-measured on this SHA: PASS, 6/6 AC_PERF groups true with no threshold tuned, the knowledge map served through `loopback HTTP /api/v2/graph` with 50 nodes and 49 edges on the native LOCAL WEBGL renderer. The release itself gives memory a branch-derived tier with a one-rung promotion ladder on an additive schema that keeps continuity version 7, and reworks capsule sizing, terminal-state repair, job recovery, operator commands and injection logging; 31 new isolated cases across the tier and ladder suites and 34 across the scheduling and observability suites cover them. The v0.5.2 receipt is archived byte-for-byte as merge-gate-pre-0.6.0.json. Whether real sessions now inject at least one fact, whether newly extracted facts land on the intended tier on the user's own root, and the migration of that root's pre-0.6.0 workstream facts are NOT_PROVEN and are verified after release; live user data, an authenticated Codex tier run, the formal plugin validator, real-world performance at production corpus sizes and model quality remain NOT_PROVEN."
+  "releaseConclusion": "Every gate in the list docs/VERIFICATION.md §2 documents at this SHA passes on the clean v0.6.1 candidate aa2d3381, each on its first attempt: the real-root snapshot, typecheck, a build that reproduced the tracked dist/, 117 files / 1136 Vitest tests, 162 tests through the widened `node --test test/*.test.mjs` glob, installer, marketplace, packaged runtime (memex-0.6.1.tgz, 327 files, 9 MCP tools), offline lifecycle 9/9 with 13 owned hook entries across 7 events, 131 Workspace unit tests, 19 real-Chrome Workspace probes with 0 runtime errors, isolated plugin validation, the benchmark contract, the pack dry-run and the closing real-root comparison. Two gate-process changes landed with this release and both are now evidenced rather than asserted: the widened glob pulls six .mjs suites that were previously outside the documented gate — including the web-ui-db-factory suite that leaked 21 audit lines into the real root during 0.5.0 QA — and the read-only isolation check reports 94 files compared with 0 added, 0 removed and 0 modified, so this gate run provably did not touch ~/.config/memex. The tarball no longer grows one file per release: the new `!docs/verification/merge-gate-pre-*.json` negation excludes the six previously packaged archives, and adding merge-gate-pre-0.6.1.json left the count at 327, though archives named outside that convention still ship. The release itself adds cross-device sync shipped OFF on protocol v5 with tier-preserving import, ontology parking and repair with wave lineage and receipt backfill, and Web UI tier controls that close the promote/demote work the v0.6.0 receipt deferred to 0.6.1. The benchmark was not re-run and is carried forward from the v0.6.0 candidate, so benchmarkOnThisSha is NOT_PROVEN. One earlier NOT_PROVEN did close: liveInjectionYield was confirmed on the user's real root under v0.6.0 with injected=3 at 2026-09-09T19:13Z, recorded here as prior live evidence, not as anything this gate observed. A live two-device sync round trip, the ontology UNIQUE merge migration against the real ontology, live tier placement and migration on the user's root, an authenticated Codex tier run, the formal plugin validator, real-world performance at production corpus sizes and model quality remain NOT_PROVEN."
 }
