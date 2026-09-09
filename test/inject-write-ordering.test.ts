@@ -26,10 +26,10 @@ vi.mock("../src/embeddings.js", () => ({
   embeddingCallStats: () => ({ modelCalls: 0, cacheHits: 0 }),
 }));
 vi.mock("../src/fact-db.js", () => ({
-  searchFactsByScope: () => factResults.value,
+  searchFactsInScope: () => factResults.value,
 }));
 vi.mock("../src/ontology-db.js", () => ({
-  getRelatedFacts: () => [],
+  getRelatedFactsInScope: () => [],
 }));
 vi.mock("../src/repeat-detector.js", () => ({
   detectRepeat: vi.fn().mockResolvedValue([]),
@@ -63,6 +63,11 @@ vi.mock("../src/continuity-identity.js", () => ({
 }));
 
 import { computeInjectContext } from "../src/inject-core.js";
+import {
+  MEMORY_CONTEXT_CLOSE,
+  MEMORY_CONTEXT_INSTRUCTION,
+  MEMORY_CONTEXT_OPEN,
+} from "../src/context-envelope.js";
 
 describe("injection write ordering", () => {
   let tmpDir: string;
@@ -140,7 +145,11 @@ describe("injection write ordering", () => {
 
     expect(context.indexOf("[MEMEX CORRECTION]")).toBe(0);
     expect(context).toContain("Main now uses PostgreSQL");
-    expect(context).toContain('earlier: "Main uses MySQL"');
+    expect(context).toContain(MEMORY_CONTEXT_INSTRUCTION);
+    const payloadStart = context.indexOf(`${MEMORY_CONTEXT_OPEN}\n`) + MEMORY_CONTEXT_OPEN.length + 1;
+    const payloadEnd = context.lastIndexOf(`\n${MEMORY_CONTEXT_CLOSE}`);
+    const memoryPayload = JSON.parse(context.slice(payloadStart, payloadEnd)) as string;
+    expect(memoryPayload).toContain('earlier: "Main uses MySQL"');
     expect(context.indexOf("[MEMEX CORRECTION]")).toBeLessThan(context.indexOf("[CURRENT TRUTH]"));
     expect(context).toContain("Prepared recall receipt");
     expect(recordRecallEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -159,6 +168,7 @@ describe("injection write ordering", () => {
   it("emits labeled Hot Evidence even when no distilled fact matches", async () => {
     factResults.value = [];
     hotEvidence.value = [{ evidence_text: "Sibling trusted test passed" }];
+    recordRecallEvent.mockReturnValue("recall-hot-only");
     const context = await computeInjectContext(
       "Continue the sibling validation work.",
       "/project",
@@ -167,6 +177,29 @@ describe("injection write ordering", () => {
     );
     expect(context).toContain("[RECENT EVIDENCE — NOT YET DISTILLED]");
     expect(context).toContain("Sibling trusted test passed");
-    expect(recordRecallEvent).not.toHaveBeenCalled();
+    expect(recordRecallEvent).toHaveBeenCalledOnce();
+    expect(recordRecallEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      factIds: [],
+      context: context,
+    }));
+  });
+
+  it("does not advance context-only state when its prepared receipt fails", async () => {
+    factResults.value = [];
+    hotEvidence.value = [{ evidence_text: "Sibling trusted test passed" }];
+    recordRecallEvent.mockImplementation(() => {
+      throw new Error("injected receipt failure");
+    });
+
+    const context = await computeInjectContext(
+      "Continue the sibling validation work.",
+      "/project",
+      "daemon",
+      "session-ordering-test",
+    );
+
+    expect(context).toBe("");
+    expect(recordRecallEvent).toHaveBeenCalledOnce();
+    expect(recordResidentFactRevisions).not.toHaveBeenCalled();
   });
 });

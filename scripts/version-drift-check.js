@@ -13,9 +13,9 @@
  *     Their work is idempotent and re-fired on every session start, so killing
  *     a stale one loses nothing. MCP servers are never touched — they belong
  *     to live sessions and only rotate on session restart.
- *  2. Emits a drift warning to stdout (= session context) when the plugin
- *     cache contains a newer version than the one this session is running,
- *     so "update installed but session not restarted" is loudly visible.
+ *  2. Emits a drift warning to stderr when the plugin cache contains a newer
+ *     version than the one this session is running, so "update installed but
+ *     session not restarted" is loudly visible without becoming model input.
  *
  * Progress/errors go to stderr; stdout is reserved for context injection.
  */
@@ -78,7 +78,7 @@ async function main() {
   }
   if (swept.length > 0) {
     const failed = swept.filter((s) => !s.dead);
-    console.log(
+    console.error(
       `[memex] swept ${swept.length - failed.length} stale-version worker(s) (running < v${version})` +
         (failed.length ? ` — FAILED to stop pid(s): ${failed.map((f) => f.pid).join(', ')}` : ''),
     );
@@ -104,7 +104,7 @@ async function main() {
     versions.sort(compareVersions);
     const newest = versions.at(-1);
     if (newest && compareVersions(version, newest) < 0) {
-      console.log(
+      console.error(
         `[memex] version drift: this session runs v${version} but v${newest} is installed. ` +
           `Restart the session (or reinstall the memex plugin) to apply.`,
       );

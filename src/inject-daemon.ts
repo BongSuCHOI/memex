@@ -52,13 +52,15 @@ export function startInjectDaemon(): net.Server {
       void (async () => {
         try {
           const req = JSON.parse(line) as { prompt?: string; cwd?: string; session_id?: string };
+          let receiptId: string | null = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ''),
             String(req.cwd ?? process.cwd()),
             'daemon',
             req.session_id ? String(req.session_id) : undefined,
+            { onPreparedReceipt: (id) => { receiptId = id; } },
           );
-          conn.end(JSON.stringify({ ok: true, context }) + '\n');
+          conn.end(JSON.stringify({ ok: true, context, receiptId }) + '\n');
         } catch {
           try { conn.end(JSON.stringify({ ok: false }) + '\n'); } catch { /* gone */ }
         }

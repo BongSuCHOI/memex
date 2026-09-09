@@ -3,8 +3,19 @@ import { l2DistanceToSimilarity } from './db.js';
 import type { Fact, RelationType, OntologyCategory } from './types.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
-import { searchFactsByScope } from './fact-db.js';
+import { searchFactsInScope } from './fact-db.js';
+import { readScopeForFact } from './read-scope.js';
+import { captureMutationPolicy } from './fact-policy.js';
 import { StaleFactMutationError } from './fact-management.js';
+import {
+  getModelWorkContext,
+  isModelBudgetExhausted,
+  registerModelWorkTargets,
+  settleModelWorkTargets,
+  withResolvedModelWorkContext,
+  withModelWorkContext,
+  type ModelWorkContext,
+} from './model-budget.js';
 import {
   listDomains,
   getDomainByName,
@@ -12,7 +23,7 @@ import {
   createDomain,
   createCategory,
   classifyFact,
-  createRelation,
+  createRelationInScope,
   searchSimilarCategories,
   upsertCategoryEmbedding,
   getTaxonomyEpoch,
@@ -633,8 +644,9 @@ export function persistFallbackClassification(
 export async function classifyFactToOntology(
   db: Database.Database,
   fact: Fact,
+  modelContext?: Partial<ModelWorkContext>,
 ): Promise<{ domainId: string; categoryId: string }> {
-  const result = await classifyFactsBatch(db, [fact]);
+  const result = await classifyFactsBatch(db, [fact], { modelContext });
   const assigned = result.assignments.get(fact.id);
   if (assigned) return assigned;
   if (result.stale.includes(fact.id)) {
@@ -676,9 +688,10 @@ interface BatchClassifyItem extends ClassifyResponse {
  * The ledger itself is the caller's job (backfillClassifyBatch) so attempt
  * accounting stays in one place.
  */
-export async function classifyFactsBatch(
+async function classifyFactsBatchInternal(
   db: Database.Database,
   facts: Fact[],
+  options: { modelContext?: Partial<ModelWorkContext> } = {},
 ): Promise<{
   classified: string[];
   deterministic: string[];
@@ -746,6 +759,14 @@ export async function classifyFactsBatch(
   }
 
   if (remaining.length === 0) {
+    const budgetId = getModelWorkContext()?.budgetId;
+    if (budgetId && deterministic.length > 0) {
+      settleModelWorkTargets(db, {
+        budgetId,
+        stage: 'ontology',
+        targetIds: deterministic,
+      });
+    }
     return { classified: [], deterministic, failed: preFailed, transient: preTransient, stale, assignments };
   }
 
@@ -776,8 +797,28 @@ export async function classifyFactsBatch(
 
   let response: string;
   try {
-    response = await callMemoryModel(BATCH_CLASSIFY_SYSTEM_PROMPT, JSON.stringify(payload), 256 * remaining.length + 512);
+    response = await callMemoryModel(
+      BATCH_CLASSIFY_SYSTEM_PROMPT,
+      JSON.stringify(payload),
+      256 * remaining.length + 512,
+      { modelContext: options.modelContext },
+    );
   } catch (error) {
+    const errorCode = (error as { code?: unknown } | null)?.code;
+    if (errorCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || errorCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
+      // The request reached the provider but produced unusable bounded output;
+      // count those facts as content failures so the existing parking ledger
+      // can cap them without classifying an outage as transient.
+      return {
+        classified: [],
+        deterministic,
+        failed: [...preFailed, ...remaining.map((fact) => fact.id)],
+        transient: preTransient,
+        stale,
+        assignments,
+      };
+    }
+    if (isModelBudgetExhausted(error)) throw error;
     console.error(`Batch classification call failed (transient, no attempt burned):`, error);
     return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], stale, assignments };
   }
@@ -847,7 +888,47 @@ export async function classifyFactsBatch(
     }
   }
 
+  const budgetId = getModelWorkContext()?.budgetId;
+  if (budgetId && (classified.length > 0 || deterministic.length > 0)) {
+    settleModelWorkTargets(db, {
+      budgetId,
+      stage: 'ontology',
+      targetIds: [...classified, ...deterministic],
+    });
+  }
   return { classified, deterministic, failed: [...preFailed, ...failed], transient: preTransient, stale, assignments };
+}
+
+/**
+ * Resolve one ontology budget and register the complete requested batch before
+ * candidate lookup's first await. The provider call may reserve one attempt
+ * for many facts, so the attempt ledger alone cannot represent the whole
+ * pending set during a crash or exhausted wave.
+ */
+export async function classifyFactsBatch(
+  db: Database.Database,
+  facts: Fact[],
+  options: { modelContext?: Partial<ModelWorkContext> } = {},
+): ReturnType<typeof classifyFactsBatchInternal> {
+  return withResolvedModelWorkContext(
+    {
+      ...options.modelContext,
+      db,
+      stage: 'ontology',
+    },
+    async () => {
+      const context = getModelWorkContext();
+      if (context?.budgetId) {
+        registerModelWorkTargets(db, {
+          budgetId: context.budgetId,
+          stage: 'ontology',
+          targetIds: facts.map((fact) => fact.id),
+          jobId: context.jobId,
+        });
+      }
+      return classifyFactsBatchInternal(db, facts, options);
+    },
+  );
 }
 
 // Hard per-call ceiling for direct backfillClassifyBatch callers: the worker
@@ -867,7 +948,7 @@ const BATCH_HARD_CAP = 50;
 export async function backfillClassifyBatch(
   db: Database.Database,
   factIds: string[],
-  opts: { detectRelationsToo?: boolean } = {},
+  opts: { detectRelationsToo?: boolean; modelContext?: Partial<ModelWorkContext> } = {},
 ): Promise<{ classified: number; deterministic: number; fallback: number; failed: number; transient: number }> {
   const rows = factIds
     .map((id) => db.prepare(`SELECT * FROM facts WHERE id = ? AND is_active = 1 AND ontology_category_id IS NULL`).get(id))
@@ -880,7 +961,9 @@ export async function backfillClassifyBatch(
 
   for (let start = 0; start < facts.length; start += BATCH_HARD_CAP) {
     const chunk = facts.slice(start, start + BATCH_HARD_CAP);
-    const result = await classifyFactsBatch(db, chunk);
+    const result = await classifyFactsBatch(db, chunk, {
+      modelContext: opts.modelContext,
+    });
 
     const generationById = new Map(chunk.map((f) => [f.id, f.semantic_generation]));
     for (const id of result.failed) {
@@ -890,6 +973,16 @@ export async function backfillClassifyBatch(
         // park CAS는 ledger와 같은 세대에 고정된다 — 대기 중 변이가 리셋한
         // 새 의미가 옛 실패로 General/Misc에 박히지 않는다(재감사 P1-8).
         persistFallbackClassification(db, id, generation ?? undefined, expectedTaxonomyEpoch);
+        const budgetId = getModelWorkContext()?.budgetId;
+        if (budgetId) {
+          settleModelWorkTargets(db, {
+            budgetId,
+            stage: 'ontology',
+            targetIds: [id],
+            state: 'completed',
+            reason: 'parked_after_bounded_failures',
+          });
+        }
         totals.fallback++;
       } else {
         totals.failed++;
@@ -904,8 +997,9 @@ export async function backfillClassifyBatch(
       for (const fact of chunk) {
         if (!succeeded.has(fact.id)) continue;
         try {
-          await detectRelations(db, fact);
+          await detectRelations(db, fact, 2, opts.modelContext);
         } catch (error) {
+          if (isModelBudgetExhausted(error)) throw error;
           console.error(`Relation detection failed for fact ${fact.id}:`, error);
         }
       }
@@ -937,27 +1031,72 @@ export function parkExhaustedFacts(db: Database.Database): number {
   return result.changes;
 }
 
-export async function detectRelations(
+// 2 (was 5): each candidate costs one LLM call, so per-fact ontology cost
+// was classify ×1 + relations ×0..5 = up to 6 calls. Capping candidates at 2
+// drops that to up to 3 while still linking the strongest neighbours (the
+// 0.89 similarity floor already rejects weak pairs, so candidates 3-5 were
+// almost always borderline).
+async function detectRelationsInternal(
   db: Database.Database,
   newFact: Fact,
-  // 2 (was 5): each candidate costs one LLM call, so per-fact ontology cost
-  // was classify ×1 + relations ×0..5 = up to 6 calls. Capping candidates at 2
-  // drops that to up to 3 while still linking the strongest neighbours (the
-  // 0.89 similarity floor already rejects weak pairs, so candidates 3-5 were
-  // almost always borderline).
   topK: number = 2,
+  modelContext?: Partial<ModelWorkContext>,
 ): Promise<void> {
-  if (!newFact.embedding) return;
+  const context = getModelWorkContext();
+  const budgetId = context?.budgetId;
+  const settlePending = (): void => {
+    if (!budgetId) return;
+    settleModelWorkTargets(db, {
+      budgetId,
+      stage: 'relation',
+      targetIds: [newFact.id],
+    });
+  };
+
+  if (!newFact.embedding) {
+    // A relation target can outlive its vector (for example after a repair or
+    // privacy purge). It is no longer actionable, so close an existing
+    // pending membership instead of leaving an unresumable phantom.
+    settlePending();
+    return;
+  }
 
   const embeddingArray = Array.from(newFact.embedding);
   // e5 scale: related-but-distinct ~0.91, unrelated <=0.86 → 0.89 selects relation candidates
-  const searchScope = newFact.scope_type === 'global'
-    ? ({ type: 'global' } as const)
-    : ({ type: 'project', project: newFact.scope_project as string } as const);
-  const similar = searchFactsByScope(db, embeddingArray, searchScope, topK, 0.89);
+  const searchScope = readScopeForFact(newFact);
+  if (!searchScope) {
+    settlePending();
+    return;
+  }
+  const similar = searchFactsInScope(db, embeddingArray, searchScope, topK, 0.89, { accept: fact => fact.id !== newFact.id });
   const candidates = similar.filter((s) => s.fact.id !== newFact.id);
+  const existingPending = budgetId
+    ? db.prepare(`
+        SELECT 1 FROM model_work_targets
+        WHERE budget_id = ? AND stage = 'relation' AND target_id = ? AND state = 'pending'
+      `).get(budgetId, newFact.id) !== undefined
+    : false;
+  if (budgetId && (candidates.length > 0 || existingPending)) {
+    // A relation sweep is one requested derived target (the new fact). Keep
+    // it pending until every selected comparison has settled, so a budget
+    // stop halfway through the optional lane remains visible and retryable.
+    registerModelWorkTargets(db, {
+      budgetId,
+      stage: 'relation',
+      targetIds: [newFact.id],
+      jobId: context.jobId,
+    });
+  }
+
+  if (candidates.length === 0) {
+    settlePending();
+    return;
+  }
+
+  let allSettled = true;
 
   for (const { fact: existingFact } of candidates) {
+    const policy = captureMutationPolicy(db, 'identity', [newFact.id, existingFact.id]);
     const prompt = [
       `New fact: "${newFact.fact}"`,
       `Existing fact: "${existingFact.fact}"`,
@@ -965,37 +1104,115 @@ export async function detectRelations(
       `Existing fact category: ${existingFact.category}`,
     ].join('\n');
 
-    // 재감사 P1-2: relation은 이전 의미의 문장을 근거로 만들어진다. LLM 왕복
-    // 동안 endpoint가 변이됐으면 원자적 CAS 검증에서 관계 생성이 거절된다.
-    const expectedSourceGeneration = newFact.semantic_generation;
-    const expectedTargetGeneration = existingFact.semantic_generation;
-
     try {
-      const response = await callMemoryModel(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256);
+      const response = await withModelWorkContext(
+        { stage: 'relation', targetId: newFact.id },
+        () => callMemoryModel(DETECT_RELATION_SYSTEM_PROMPT, prompt, 256, {
+          modelContext,
+        }),
+      );
       const result = parseJsonResponse<DetectRelationResponse>(response);
 
       if (result && result.has_relation && result.relation_type) {
-        const created = createRelation(db, newFact.id, result.relation_type, existingFact.id, result.reasoning, {
-          expectedSourceGeneration,
-          expectedTargetGeneration,
-        });
+        const created = createRelationInScope(db, newFact.id, result.relation_type, existingFact.id, searchScope, policy, result.reasoning);
         if (created === null) {
           console.error(
             `Relation detection stale for facts ${newFact.id} / ${existingFact.id}: an endpoint changed meaning during detection`,
           );
         }
+      } else if (!result) {
+        // Malformed optional output is observable pending work. Do not make a
+        // partial relation sweep look complete just because the call returned.
+        allSettled = false;
       }
     } catch (error) {
-      // Non-fatal: relation detection failure should not block fact saving
+      if (isModelBudgetExhausted(error)) throw error;
+      allSettled = false;
       console.error(`Relation detection failed for facts ${newFact.id} / ${existingFact.id}:`, error);
     }
   }
+
+  if (budgetId && allSettled) settlePending();
+}
+
+export async function detectRelations(
+  db: Database.Database,
+  newFact: Fact,
+  topK: number = 2,
+  modelContext?: Partial<ModelWorkContext>,
+): Promise<void> {
+  return withResolvedModelWorkContext(
+    {
+      ...modelContext,
+      db,
+      stage: 'relation',
+    },
+    () => detectRelationsInternal(db, newFact, topK, modelContext),
+  );
+}
+
+/** Resume relation-only memberships whose facts are already ontology-tagged. */
+export async function backfillRelationBatch(
+  db: Database.Database,
+  factIds: string[],
+  options: { modelContext?: Partial<ModelWorkContext> } = {},
+): Promise<{ completed: number; pending: number }> {
+  const ids = [...new Set(factIds.map((id) => id.trim()).filter(Boolean))];
+  return withResolvedModelWorkContext(
+    {
+      ...options.modelContext,
+      db,
+      stage: 'relation',
+    },
+    async () => {
+      const context = getModelWorkContext();
+      if (context?.budgetId && ids.length > 0) {
+        // Own the complete relation-only page before its first provider await.
+        registerModelWorkTargets(db, {
+          budgetId: context.budgetId,
+          stage: 'relation',
+          targetIds: ids,
+          jobId: context.jobId,
+        });
+      }
+      let completed = 0;
+      let pending = 0;
+      for (const id of ids) {
+        const row = db.prepare(
+          'SELECT * FROM facts WHERE id = ? AND is_active = 1',
+        ).get(id) as Record<string, unknown> | undefined;
+        if (!row) {
+          if (context?.budgetId) {
+            settleModelWorkTargets(db, {
+              budgetId: context.budgetId,
+              stage: 'relation',
+              targetIds: [id],
+              reason: 'fact_not_active',
+            });
+          }
+          continue;
+        }
+        const fact = rowToFact(row);
+        await detectRelations(db, fact, 2, options.modelContext);
+        const isPending = context?.budgetId
+          ? db.prepare(`
+              SELECT 1 FROM model_work_targets
+              WHERE budget_id = ? AND stage = 'relation' AND target_id = ? AND state = 'pending'
+            `).get(context.budgetId, id) !== undefined
+          : false;
+        if (isPending) pending++;
+        else completed++;
+      }
+      return { completed, pending };
+    },
+  );
 }
 
 export async function classifyAndLinkFact(
   db: Database.Database,
   factId: string,
   embedding?: number[],
+  modelContext?: Partial<ModelWorkContext>,
 ): Promise<void> {
   const row = db.prepare(`SELECT * FROM facts WHERE id = ? AND is_active = 1`).get(factId);
   if (!row) return;
@@ -1019,9 +1236,13 @@ export async function classifyAndLinkFact(
   let repairError: IndexRepairError | null = null;
 
   try {
-    await classifyFactToOntology(db, fact);
+    await classifyFactToOntology(db, fact, modelContext);
   } catch (error) {
     console.error(`Ontology classification failed for fact ${factId}:`, error);
+    // A parent model budget is scheduling state, not a content failure. Keep
+    // the ontology overlay pending without burning this fact's attempt ledger
+    // or parking it in General/Misc.
+    if (isModelBudgetExhausted(error)) throw error;
     // Non-fatal for the insert path, but CONTENT failures are LEDGERED so the
     // backfill can't re-burn LLM calls on a permanently failing fact; after
     // MAX attempts it is parked in General/Misc (still fully searchable).
@@ -1055,7 +1276,7 @@ export async function classifyAndLinkFact(
   }
 
   try {
-    await detectRelations(db, fact);
+    await detectRelations(db, fact, 2, modelContext);
   } catch (error) {
     console.error(`Relation detection failed for fact ${factId}:`, error);
   }

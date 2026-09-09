@@ -103,6 +103,28 @@ describe('MCP scope-aware fact search', () => {
     expect(text).not.toContain('decision crowd');
   });
 
+  it('labels lexical-only fact hits without reporting semantic similarity', async () => {
+    insertFact(db, {
+      fact: 'E_QUEUE_LEASE_EXPIRED is handled by acquireLease.',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: null,
+    });
+
+    const response = await handleToolCall('search_facts', {
+      query: 'E_QUEUE_LEASE_EXPIRED',
+      scope: 'global',
+      limit: 1,
+    });
+    const text = response.content[0].text;
+
+    expect(response.isError).not.toBe(true);
+    expect(text).toContain('exact text match');
+    expect(text).not.toContain('Similarity: 1.000');
+  });
+
   it('trace_fact separates authoritative source from interpretive context', async () => {
     const insertExchange = db.prepare(`
       INSERT INTO exchanges

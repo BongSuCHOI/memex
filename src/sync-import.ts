@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type Database from "better-sqlite3";
+import { assertMutationPolicy, captureMutationPolicy, StaleFactMutationError, type MutationPolicy } from './fact-policy.js';
 import {
   initDatabase,
   getVecTableDtype,
@@ -996,6 +997,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
     | { mode: "insert"; fact: SyncFact }
     | { mode: "replace"; fact: SyncFact; localGeneration: number };
   type FactPlan = {
+    policy?: MutationPolicy;
     semantic?: SemanticCandidate;
     lineage?: { sources: string; count: number };
     lifecycle?: { desiredActive: 0 | 1; eventAt: string };
@@ -1098,6 +1100,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
         },
       };
       plans.set(remote.id, plan);
+      plan.policy = captureMutationPolicy(db, 'replicated', [remote.id]);
       continue;
     }
     const local = localFactView(localRow);
@@ -1108,6 +1111,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
     const remoteKey = semanticConflictKey(remote);
     if (semanticTime > 0 || (semanticTime === 0 && remoteKey > localKey)) {
       plan.semantic = { mode: "replace", fact: remote, localGeneration: local.semantic_generation };
+      plan.policy = captureMutationPolicy(db, 'replicated', [remote.id]);
     }
     // Same clock AND same semantic content (tie-identical) is not a conflict —
     // the lineage/lifecycle axes below may still have something to converge.
@@ -1153,6 +1157,8 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
         const fact = semantic.fact;
         const embedding = await generateEmbedding(fact.fact);
         const commit = db.transaction((): boolean => {
+          try { assertMutationPolicy(db, plan.policy!, factId, fact.fact); }
+          catch (error) { if (error instanceof StaleFactMutationError) return false; throw error; }
           // 재감사 P1-2: embedding await 동안 tombstone이 생겼으면 이
           // reconcile은 폐기한다 — commit 직전 재검사다.
           const tombstone = db.prepare(
@@ -1204,6 +1210,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
               factId, semantic.localGeneration,
             );
             if (claimed.changes === 0) return false;
+            db.prepare('DELETE FROM fact_evidence_receipts WHERE fact_id = ?').run(factId);
             // Context dependencies are local interpretive lineage for the
             // previous local meaning and are intentionally absent from
             // protocol v4. A remote semantic winner cannot inherit them.

@@ -256,6 +256,8 @@ export interface ConsolidationResult {
   relation: FactRelation;
   merged_fact: string;
   reason: string;
+  same_subject?: boolean;
+  same_conditions?: boolean;
 }
 
 // === Ontology Types ===

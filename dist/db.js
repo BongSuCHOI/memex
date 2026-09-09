@@ -8,6 +8,7 @@ import { sessionsRoot } from "./codex-rollout.js";
 import os from "node:os";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { ensureContinuitySchema, exchangeContentHash, } from "./continuity-store.js";
+import { ensureModelBudgetSchema } from "./model-budget.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { appendExchangeEvidence } from "./continuity-evidence.js";
 export const VEC_INT8_SCALE = 127;
@@ -412,6 +413,16 @@ export function initDatabase(options = {}) {
     // conversation context helped resolve a fact, but they are never
     // authoritative evidence and never enter protocol v4 sync payloads.
     db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_evidence_receipts (
+      fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+      semantic_generation INTEGER NOT NULL,
+      fact_hash TEXT NOT NULL,
+      source_snapshot_json TEXT NOT NULL,
+      method TEXT NOT NULL CHECK (method IN ('extractor','user','consolidator')),
+      verified_at TEXT NOT NULL
+    )
+  `);
+    db.exec(`
     CREATE TABLE IF NOT EXISTS fact_context_dependencies (
       fact_id TEXT NOT NULL,
       exchange_id TEXT NOT NULL,
@@ -643,6 +654,10 @@ export function initDatabase(options = {}) {
     )
   `);
     ensureContinuitySchema(db);
+    // Model work budgets are additive operational state. Initialize them after
+    // Continuity creates memory_jobs because the budget migration adds only
+    // nullable correlation columns to that queue.
+    ensureModelBudgetSchema(db);
     return db;
 }
 export function insertExchange(db, exchange, embedding, _toolNames) {
@@ -1335,7 +1350,7 @@ export function hashRecallPrompt(prompt) {
     return createHash("sha256").update(prompt, "utf8").digest("hex");
 }
 export function recordRecallEvent(db, event) {
-    if (!event.sessionId || event.factIds.length === 0)
+    if (!event.sessionId || (event.factIds.length === 0 && !event.context?.trim()))
         return null;
     const id = randomUUID();
     db.prepare(`
@@ -1351,9 +1366,10 @@ export function markRecallEventEmitted(db, event) {
         .prepare(`
     SELECT id FROM recall_events
     WHERE session_id = ? AND prompt_hash = ? AND status = 'prepared'
+      AND (? IS NULL OR id = ?)
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `)
-        .get(event.sessionId, hashRecallPrompt(event.prompt));
+        .get(event.sessionId, hashRecallPrompt(event.prompt), event.id ?? null, event.id ?? null);
     if (!row)
         return false;
     return (db

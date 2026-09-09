@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type { Fact } from './types.js';
 import { generateEmbedding } from './embeddings.js';
+import { type ModelWorkContext } from './model-budget.js';
 export declare const MAX_CLASSIFY_ATTEMPTS = 3;
 /**
  * The LLM CALL itself failed (SDK/network/spawn/empty stream) — the fact is
@@ -69,7 +70,7 @@ export declare function persistFallbackClassification(db: Database.Database, fac
  * Throws TransientLlmError when the call itself failed (caller must not burn
  * an attempt) and a plain Error on content failures (caller ledgers it).
  */
-export declare function classifyFactToOntology(db: Database.Database, fact: Fact): Promise<{
+export declare function classifyFactToOntology(db: Database.Database, fact: Fact, modelContext?: Partial<ModelWorkContext>): Promise<{
     domainId: string;
     categoryId: string;
 }>;
@@ -91,7 +92,9 @@ export declare function classifyFactToOntology(db: Database.Database, fact: Fact
  * The ledger itself is the caller's job (backfillClassifyBatch) so attempt
  * accounting stays in one place.
  */
-export declare function classifyFactsBatch(db: Database.Database, facts: Fact[]): Promise<{
+declare function classifyFactsBatchInternal(db: Database.Database, facts: Fact[], options?: {
+    modelContext?: Partial<ModelWorkContext>;
+}): Promise<{
     classified: string[];
     deterministic: string[];
     failed: string[];
@@ -108,6 +111,15 @@ export declare function classifyFactsBatch(db: Database.Database, facts: Fact[])
     }>;
 }>;
 /**
+ * Resolve one ontology budget and register the complete requested batch before
+ * candidate lookup's first await. The provider call may reserve one attempt
+ * for many facts, so the attempt ledger alone cannot represent the whole
+ * pending set during a crash or exhausted wave.
+ */
+export declare function classifyFactsBatch(db: Database.Database, facts: Fact[], options?: {
+    modelContext?: Partial<ModelWorkContext>;
+}): ReturnType<typeof classifyFactsBatchInternal>;
+/**
  * Backfill-facing wrapper: load facts by id, classify them in sub-batches,
  * record attempts for CONTENT failures (transient call failures burn no
  * attempt — see classifyFactsBatch), and park facts that exhausted their
@@ -117,6 +129,7 @@ export declare function classifyFactsBatch(db: Database.Database, facts: Fact[])
  */
 export declare function backfillClassifyBatch(db: Database.Database, factIds: string[], opts?: {
     detectRelationsToo?: boolean;
+    modelContext?: Partial<ModelWorkContext>;
 }): Promise<{
     classified: number;
     deterministic: number;
@@ -132,6 +145,13 @@ export declare function backfillClassifyBatch(db: Database.Database, factIds: st
  * safe against races with a concurrent successful classification.
  */
 export declare function parkExhaustedFacts(db: Database.Database): number;
-export declare function detectRelations(db: Database.Database, newFact: Fact, topK?: number): Promise<void>;
-export declare function classifyAndLinkFact(db: Database.Database, factId: string, embedding?: number[]): Promise<void>;
+export declare function detectRelations(db: Database.Database, newFact: Fact, topK?: number, modelContext?: Partial<ModelWorkContext>): Promise<void>;
+/** Resume relation-only memberships whose facts are already ontology-tagged. */
+export declare function backfillRelationBatch(db: Database.Database, factIds: string[], options?: {
+    modelContext?: Partial<ModelWorkContext>;
+}): Promise<{
+    completed: number;
+    pending: number;
+}>;
+export declare function classifyAndLinkFact(db: Database.Database, factId: string, embedding?: number[], modelContext?: Partial<ModelWorkContext>): Promise<void>;
 export { generateEmbedding };

@@ -3,7 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { initDatabase } from "./db.js";
+import { factMatchesReadScope, rowToFact } from './fact-db.js';
+import { readScopeForSession } from './read-scope.js';
+import { initDatabase, recordRecallEvent } from "./db.js";
+import {
+  fitsContextBudget,
+  REHYDRATION_CONTEXT_LIMITS,
+  wrapMemoryContext,
+} from "./context-envelope.js";
 import { getMemexHome, getSessionsRoot } from "./paths.js";
 import { recordHookEvent } from "./observe-hook-event.js";
 import { isConversationExcludedSession } from "./conversation-policy.js";
@@ -134,6 +141,19 @@ export interface HandleHookResult {
   stdout: string;
   warning?: string;
   capture?: CaptureResult;
+  /** Durable recall provenance is prepared before residency and emitted by the hook after stdout. */
+  recallReceipt?: ContinuityRecallReceipt;
+}
+
+export interface ContinuityRecallReceipt {
+  id: string;
+  prompt: string;
+  status: "prepared";
+}
+
+interface CapsuleRenderOptions {
+  stale?: boolean;
+  recentCorrections?: string[];
 }
 
 function sha256(value: string | Buffer): string {
@@ -1026,13 +1046,16 @@ export function recordResidentFactRevisions(
   const current = readResidentFactRevisions(db, sessionId);
   if (current.contextEpoch !== contextEpoch) return false;
   const map = new Map(current.resident.map((entry) => [entry[0], entry]));
+  const scope = readScopeForSession(db, sessionId);
   for (const entry of revisions) {
     if (
       !Array.isArray(entry) || entry.length !== 3 ||
       typeof entry[0] !== "string" ||
       !Number.isInteger(entry[1]) || !Number.isInteger(entry[2])
     ) continue;
-    map.set(entry[0], entry);
+    const row = db.prepare('SELECT * FROM facts WHERE id = ?').get(entry[0]) as Record<string, unknown> | undefined;
+    if (scope && row && !factMatchesReadScope(db, rowToFact(row), scope)) map.delete(entry[0]);
+    else map.set(entry[0], entry);
   }
   const bounded = [...map.values()].slice(-400);
   return db.prepare(`
@@ -1043,6 +1066,7 @@ export function recordResidentFactRevisions(
 }
 
 export interface ResidentRevisionCorrection {
+  scope_revoked?: boolean;
   id: string;
   fact: string;
   category: string;
@@ -1066,8 +1090,10 @@ export function readResidentRevisionCorrections(
 ): ResidentRevisionCorrection[] {
   const { resident } = readResidentFactRevisions(db, sessionId);
   if (resident.length === 0) return [];
+  const scope = readScopeForSession(db, sessionId);
+  if (!scope) return [];
   const rows = db.prepare(`
-    SELECT id, fact, category, semantic_generation, lifecycle_generation, is_active
+    SELECT *
     FROM facts WHERE id IN (${resident.map(() => "?").join(",")})
   `).all(...resident.map(([id]) => id)) as Array<Omit<ResidentRevisionCorrection, "previous_fact">>;
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -1080,6 +1106,12 @@ export function readResidentRevisionCorrections(
   for (const [id, semantic, lifecycle] of resident) {
     const row = byId.get(id);
     if (!row) continue;
+    if (!factMatchesReadScope(db, rowToFact(row as unknown as Record<string, unknown>), scope)) {
+      corrections.push({ id, fact: 'Memory is no longer available in this scope', category: 'knowledge',
+        semantic_generation: Number(row.semantic_generation), lifecycle_generation: Number(row.lifecycle_generation),
+        is_active: 0, previous_fact: null, scope_revoked: true });
+      continue;
+    }
     if (Number(row.semantic_generation) === semantic && Number(row.lifecycle_generation) === lifecycle) continue;
     const prior = row.is_active === 1
       ? (previous.get(id) as { previous_fact: string } | undefined)?.previous_fact ?? null
@@ -1462,9 +1494,23 @@ function extractPlanLine(text: string): string | null {
   return lines.find((line) => /(?:next|다음|todo|계속|해야)/i.test(line)) ?? null;
 }
 
+/** Flatten memory data before placing it beside structural context headings. */
+function contextData(value: unknown, max = 500): string {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function compactField(values: string[], fallback: string): string {
+  const items = values.map((value) => contextData(value)).filter(Boolean);
+  return items.length > 0 ? items.join("; ") : fallback;
+}
+
 export function buildDeterministicTailBaton(
   db: Database.Database,
-  input: { sessionId: string; maxChars?: number },
+  input: { sessionId: string; maxChars?: number; pending?: string[] },
 ): string {
   const maxChars = Math.max(0, Math.min(1_500, input.maxChars ?? 1_200));
   const exchanges = db.prepare(`
@@ -1490,33 +1536,108 @@ export function buildDeterministicTailBaton(
   }>;
   const touched = [...new Set(tools.flatMap((tool) =>
     (tool.tool_result ?? "").match(/(?:^|\s)([A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+)/g) ?? []))]
-    .map((item) => item.trim()).slice(0, 5);
+    .map((item) => contextData(item.trim())).slice(0, 5);
   const trustedTest = tools.find((tool) => tool.source_type === "test_execution" && !tool.is_error);
   const unresolved = tools.find((tool) => tool.is_error);
   const lines = ["[WORK NOW — DETERMINISTIC TAIL BATON]"];
-  if (latestUser) lines.push(`Request: ${latestUser.replace(/\s+/g, " ").slice(0, 500)}`);
-  if (plan) lines.push(`Next: ${plan.replace(/\s+/g, " ").slice(0, 300)}`);
+  lines.push(input.pending?.length ? "Status: stale/context-only" : "Status: context-only");
+  for (const pending of input.pending ?? []) {
+    const text = contextData(pending, 300);
+    if (text) lines.push(`Pending: ${text}`);
+  }
+  if (latestUser) lines.push(`Request: ${contextData(latestUser)}`);
+  if (plan) lines.push(`Next: ${contextData(plan, 300)}`);
   if (touched.length) lines.push(`Touched: ${touched.join(", ")}`);
-  if (trustedTest?.tool_result) lines.push(`Trusted test: ${trustedTest.tool_result.replace(/\s+/g, " ").slice(0, 300)}`);
-  if (unresolved?.tool_result) lines.push(`Unresolved: ${unresolved.tool_result.replace(/\s+/g, " ").slice(0, 300)}`);
+  if (trustedTest?.tool_result) {
+    lines.push(`Observed test evidence (verify): ${contextData(trustedTest.tool_result, 300)}`);
+  }
+  if (unresolved?.tool_result) {
+    lines.push(`Observed error (verification pending): ${contextData(unresolved.tool_result, 300)}`);
+  }
   return lines.join("\n").slice(0, maxChars);
 }
 
-function renderCapsule(capsule: WorkCapsule, maxChars: number): string {
-  const fields = [
-    ["Objective", capsule.objective],
-    ["Next", capsule.nextActions[0]],
-    ["State", capsule.currentState],
-    ["Blocker", capsule.blockers[0]],
-  ].filter((entry): entry is [string, string] => !!entry[1]);
-  if (!fields.length) return "";
+function renderCapsule(
+  capsule: WorkCapsule,
+  maxChars: number,
+  options: CapsuleRenderOptions = {},
+): string {
+  const hasWorkContent = [
+    capsule.objective,
+    capsule.currentState,
+    ...capsule.verifiedProgress.map((item) => item.text),
+    ...capsule.hypotheses.map((item) => item.text),
+    ...capsule.blockers,
+    ...capsule.nextActions,
+    ...capsule.touchedAreas,
+    ...capsule.sourceExchangeIds,
+  ].some((value) => contextData(value).length > 0);
+  if (!hasWorkContent) return "";
+
+  const verified = capsule.verifiedProgress.map((item) => item.text);
+  const hypotheses = capsule.hypotheses.map((item) => item.text);
+  const corrections = options.recentCorrections ?? [];
+  const evidenceLocations = [
+    ...capsule.touchedAreas.map((area) => `area ${area}`),
+    ...capsule.sourceExchangeIds.map((id) => `exchange ${id}`),
+    ...capsule.verifiedProgress.flatMap((item) => item.sourceExchangeIds.map((id) => `exchange ${id}`)),
+    ...capsule.hypotheses.flatMap((item) => item.sourceExchangeIds.map((id) => `exchange ${id}`)),
+  ];
+  const fields: Array<[string, string]> = [
+    ["Current goal", compactField([
+      capsule.objective ? `Objective: ${capsule.objective}` : "",
+      capsule.currentState ? `State: ${capsule.currentState}` : "",
+    ], "unknown/unrecorded")],
+    ["Verified results", compactField(verified, "unknown/unverified")],
+    ["Unverified hypotheses", compactField(hypotheses, "none recorded (unverified/unknown)")],
+    ["Recent corrections", compactField(corrections, "none observed in bounded rehydration")],
+    ["Blockers", compactField(capsule.blockers.map((item) => `Blocker: ${item}`), "none recorded")],
+    ["Next actions", compactField(capsule.nextActions.map((item) => `Next: ${item}`), "unknown/unrecorded")],
+    ["Evidence locations", compactField(evidenceLocations, "unknown/unrecorded")],
+  ];
   let block = "[WORK NOW]";
+  block += options.stale ? "\nStatus: stale/context-only" : "\nStatus: context-only";
+
+  // A stale Capsule shares a small slot with the tail baton. Preserve the two
+  // highest-signal handoff fields under that tight budget before filling the
+  // richer seven-field view used at the normal budget.
+  if (options.stale && maxChars < 700) {
+    const compactFields: Array<[string, string]> = [
+      ["Current goal", capsule.objective ? `Objective: ${contextData(capsule.objective, 48)}` : ""],
+      ["Next", capsule.nextActions[0] ?? ""],
+      ["Current state", capsule.currentState ? `State: ${capsule.currentState}` : ""],
+    ].filter((entry): entry is [string, string] => !!entry[1]);
+    for (const [label, value] of compactFields) {
+      const prefix = `\n${label}: `;
+      const valueBudget = Math.max(0, maxChars - block.length - prefix.length);
+      if (valueBudget <= 0) break;
+      const text = contextData(value, valueBudget);
+      if (!text) break;
+      block += `${prefix}${text}`;
+    }
+    return block.slice(0, maxChars);
+  }
+  if (maxChars < 300) {
+    const compactFields: Array<[string, string]> = [
+      ["Current goal", capsule.objective
+        ? `Objective: ${capsule.objective}`
+        : capsule.currentState ? `State: ${capsule.currentState}` : ""],
+      ["Next actions", capsule.nextActions[0] ? `Next: ${capsule.nextActions[0]}` : ""],
+    ].filter((entry): entry is [string, string] => !!entry[1]);
+    const fixed = compactFields.reduce((sum, [label]) => sum + label.length + 2, 0) + compactFields.length;
+    const valueBudget = Math.floor(Math.max(0, maxChars - block.length - fixed) / Math.max(1, compactFields.length));
+    for (const [label, value] of compactFields) {
+      const text = contextData(value, valueBudget);
+      if (text) block += `\n${label}: ${text}`;
+    }
+    return block.slice(0, maxChars);
+  }
   for (const [index, [label, value]] of fields.entries()) {
     const allowance = Math.floor((maxChars - block.length) / (fields.length - index));
-    const text = value.replace(/\s+/g, " ").slice(0, Math.max(0, allowance - label.length - 3));
+    const text = contextData(value, Math.max(0, allowance - label.length - 2));
     if (text) block += `\n${label}: ${text}`;
   }
-  return block === "[WORK NOW]" ? "" : block;
+  return block === "[WORK NOW]" ? "" : block.slice(0, maxChars);
 }
 
 export function buildRehydrationContext(
@@ -1590,14 +1711,58 @@ export function buildRehydrationContext(
       });
     }
   }
-  const maxChars = Math.max(500, Math.min(2_000, input.maxChars ?? 2_000));
-  const capsuleIsStale = !!capsule && (!!db.prepare(`SELECT 1 FROM workstream_evidence
-      WHERE workstream_id = ? AND seq > ? LIMIT 1`).get(state.workstream_id, capsule.throughSeq)
-    || !!db.prepare(`SELECT 1 FROM memory_jobs WHERE checkpoint_id = ? AND kind = 'capture_index'
-      AND state <> 'completed' LIMIT 1`).get(state.latest_checkpoint_id ?? null)
+  const maxChars = Math.max(
+    500,
+    Math.min(REHYDRATION_CONTEXT_LIMITS.maxChars, input.maxChars ?? REHYDRATION_CONTEXT_LIMITS.maxChars),
+  );
+  const contextBudget = {
+    maxChars,
+    maxEstimatedTokens: REHYDRATION_CONTEXT_LIMITS.maxEstimatedTokens,
+  };
+  const joinBlocks = (blocks: string[]): string => blocks.filter(Boolean).join("\n\n");
+  const fitsRehydrationBudget = (blocks: string[] | string): boolean => {
+    const candidate = typeof blocks === "string" ? blocks : joinBlocks(blocks);
+    return !candidate || fitsContextBudget(candidate, contextBudget);
+  };
+  const capsuleStaleReasons: string[] = [];
+  if (capsule) {
+    if (db.prepare(`SELECT 1 FROM workstream_evidence
+        WHERE workstream_id = ? AND seq > ? LIMIT 1`).get(state.workstream_id, capsule.throughSeq)) {
+      capsuleStaleReasons.push("newer workstream evidence awaits Capsule distillation");
+    }
+    const captureJob = db.prepare(`SELECT state FROM memory_jobs
+      WHERE checkpoint_id = ? AND kind = 'capture_index' AND state <> 'completed' LIMIT 1`)
+      .get(state.latest_checkpoint_id ?? null) as { state: string } | undefined;
+    if (captureJob) capsuleStaleReasons.push(`capture/index job is ${captureJob.state}`);
+    const capsuleJob = db.prepare(`SELECT j.state
+      FROM memory_jobs j
+      LEFT JOIN checkpoints c ON c.checkpoint_id = j.checkpoint_id
+      WHERE j.partition_key = ? AND j.kind = 'capsule_update'
+        AND (
+          j.state IN ('pending','running','retry')
+          OR (
+            j.state = 'dead'
+            AND ? IS NOT NULL
+            AND c.rowid > COALESCE((
+              SELECT rowid FROM checkpoints WHERE checkpoint_id = ?
+            ), -1)
+          )
+        )
+        AND (c.checkpoint_id IS NULL OR c.workstream_id = ?)
+      ORDER BY j.updated_at DESC, j.rowid DESC LIMIT 1`).get(
+        `workstream:${state.workstream_id}`,
+        capsule.throughCheckpointId,
+        capsule.throughCheckpointId,
+        state.workstream_id,
+      ) as { state: string } | undefined;
+    if (capsuleJob) capsuleStaleReasons.push(`Capsule update job is ${capsuleJob.state}`);
     // Legacy/manual projections have no sequence coverage yet.
-    || (capsule.throughSeq === 0 && !!state.latest_checkpoint_id &&
-      capsule.throughCheckpointId !== String(state.latest_checkpoint_id)));
+    if (capsule.throughSeq === 0 && state.latest_checkpoint_id &&
+        capsule.throughCheckpointId !== String(state.latest_checkpoint_id)) {
+      capsuleStaleReasons.push("latest checkpoint is outside the Capsule coverage");
+    }
+  }
+  const capsuleIsStale = capsuleStaleReasons.length > 0;
   const projectId = state.project_id ? String(state.project_id) : null;
   const currentProjectRevision = projectId ? projectRevision(db, projectId) : 0;
   let freshCorrections: CorrectionFact[] = carryCorrections;
@@ -1638,18 +1803,43 @@ export function buildRehydrationContext(
   // Reserve actual rendered work context before corrections can consume the
   // bundle. A stale Capsule shares its slot with the session's latest baton.
   const workBudget = Math.floor(maxChars * 0.6);
-  const capsuleBlock = capsule
-    ? renderCapsule(capsule, capsuleIsStale ? Math.floor(workBudget / 2) : workBudget)
-    : "";
+  const capsuleRenderOptions: CapsuleRenderOptions = {
+    stale: capsuleIsStale,
+    recentCorrections: freshCorrections.map((fact) => fact.is_active === 1
+      ? `Updated (supersedes earlier context): ${fact.fact}`
+      : `No longer active: ${fact.fact}`),
+  };
+  let capsuleBlock = "";
+  if (capsule) {
+    const capsuleBudget = capsuleIsStale ? Math.floor(workBudget / 2) : workBudget;
+    // A character budget alone is insufficient for CJK/emoji-heavy Capsules.
+    // Re-render progressively smaller candidates so the complete host envelope
+    // fits before any residency or receipt metadata can acknowledge it.
+    for (let candidateChars = capsuleBudget; candidateChars >= 0; candidateChars--) {
+      const candidate = renderCapsule(capsule, candidateChars, capsuleRenderOptions);
+      if (candidate && fitsRehydrationBudget(candidate)) {
+        capsuleBlock = candidate;
+        break;
+      }
+    }
+  }
   const baton = (!capsuleBlock || capsuleIsStale)
     ? buildDeterministicTailBaton(db, {
         sessionId: input.sessionId,
         maxChars: workBudget - capsuleBlock.length - (capsuleBlock ? 2 : 0),
+        pending: capsuleIsStale ? capsuleStaleReasons : [],
       })
     : "";
-  const workBlock = [capsuleBlock, baton].filter(Boolean).join("\n\n");
+  // Prefer the complete work handoff, then retain the Capsule or baton alone
+  // if the combined candidate exceeds the final wrapped budget.
+  const workBlock = [
+    joinBlocks([capsuleBlock, baton]),
+    capsuleBlock,
+    baton,
+  ].find((candidate) => candidate && fitsRehydrationBudget(candidate)) ?? "";
   let sectionBudget = maxChars - workBlock.length - (workBlock ? 2 : 0);
   let used = 0;
+  let workAppended = false;
   const appendSection = (
     heading: string,
     items: Array<{ text: string; revision?: ResidentFactRevision }>,
@@ -1658,10 +1848,28 @@ export function buildRehydrationContext(
     const accepted: string[] = [];
     const acceptedRevisions: ResidentFactRevision[] = [];
     for (const item of items) {
-      const line = `- ${item.text.replace(/\s+/g, " ").slice(0, 260)}`;
-      const prospective = `${heading}\n${[...accepted, line].join("\n")}`;
-      const separator = sections.length > 0 ? 2 : 0;
-      if (used + separator + prospective.length > sectionBudget) break;
+      const reservedWork = !workAppended && workBlock ? [workBlock] : [];
+      const fitsLine = (limit: number): string | null => {
+        const line = `- ${contextData(item.text, limit)}`;
+        const prospective = `${heading}\n${[...accepted, line].join("\n")}`;
+        const separator = sections.length > 0 ? 2 : 0;
+        if (used + separator + prospective.length > sectionBudget) return null;
+        return fitsRehydrationBudget([...sections, prospective, ...reservedWork]) ? line : null;
+      };
+      let low = 1;
+      let high = 260;
+      let line: string | null = null;
+      while (low <= high) {
+        const midpoint = Math.floor((low + high) / 2);
+        const candidate = fitsLine(midpoint);
+        if (candidate) {
+          line = candidate;
+          low = midpoint + 1;
+        } else {
+          high = midpoint - 1;
+        }
+      }
+      if (!line) break;
       accepted.push(line);
       if (item.revision) acceptedRevisions.push(item.revision);
     }
@@ -1682,6 +1890,7 @@ export function buildRehydrationContext(
   if (workBlock) {
     used += (sections.length ? 2 : 0) + workBlock.length;
     sections.push(workBlock);
+    workAppended = true;
   }
   sectionBudget = maxChars;
   const hotEvidenceCursor = Number(state.hot_evidence_cursor ?? 0);
@@ -1699,8 +1908,12 @@ export function buildRehydrationContext(
     })));
     hotEvidenceSeqs = recent.slice(0, emitted).map((item) => Number(item.seq));
   }
+  const context = joinBlocks(sections);
+  if (!fitsRehydrationBudget(context)) {
+    throw new Error("rehydration context exceeded the host budget after candidate selection");
+  }
   return {
-    context: sections.join("\n\n"),
+    context,
     factRevisions: emittedRevisions,
     capsuleGeneration,
     projectRevisionComplete: emittedCorrectionCount === freshCorrections.length,
@@ -1716,7 +1929,7 @@ function emitAdditionalContext(event: "SessionStart" | "UserPromptSubmit", conte
     continue: true,
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: context,
+      additionalContext: wrapMemoryContext(context),
     },
   }) + "\n";
 }
@@ -1822,7 +2035,34 @@ export function handleContinuityHook(
       if (source === "resume" || source === "compact") {
         const rehydrated = buildRehydrationContext(db, { sessionId: payload.sessionId });
         const epoch = rehydrated.contextEpoch;
+        let recallReceipt: ContinuityRecallReceipt | undefined;
         const commitRehydration = db.transaction(() => {
+          if (rehydrated.context.trim()) {
+            // Keep continuity rehydration provenance in the same transaction
+            // as residency. The hook marks it emitted only after stdout is
+            // written to stdout; a failed write remains prepared, not emitted.
+            const prompt = JSON.stringify({
+              kind: "continuity_rehydration",
+              sessionId: payload.sessionId,
+              source,
+              contextEpoch: epoch,
+              turnId: payload.turnId,
+              workstreamId: rehydrated.workstreamId,
+            });
+            const id = recordRecallEvent(db, {
+              sessionId: payload.sessionId,
+              project: canonicalProject,
+              prompt,
+              factIds: rehydrated.factRevisions.map(([factId]) => factId),
+              context: rehydrated.context,
+              projectId: rehydrated.projectId,
+              workstreamId: rehydrated.workstreamId,
+              contextEpoch: epoch,
+              projectMemoryRevision: rehydrated.projectMemoryRevision,
+            });
+            if (!id) throw new Error("failed to prepare continuity recall receipt");
+            recallReceipt = { id, prompt, status: "prepared" };
+          }
           if (rehydrated.factRevisions.length &&
               !recordResidentFactRevisions(db, payload.sessionId, epoch, rehydrated.factRevisions)) {
             throw new Error("context epoch changed before rehydration residency commit");
@@ -1856,6 +2096,7 @@ export function handleContinuityHook(
         return {
           stdout: emitAdditionalContext("SessionStart", rehydrated.context),
           warning: recoveryWarning,
+          ...(recallReceipt ? { recallReceipt } : {}),
         };
       }
       return { stdout: "", warning: recoveryWarning };

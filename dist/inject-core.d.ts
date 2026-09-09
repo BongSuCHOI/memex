@@ -4,6 +4,8 @@ export interface InjectOptions {
     gate?: boolean;
     gateConfig?: Partial<RecallGateConfig>;
     now?: string;
+    /** Receives the exact prepared receipt only after its transaction commits. */
+    onPreparedReceipt?: (id: string) => void;
 }
 /**
  * Compute the UserPromptSubmit context block for a prompt.

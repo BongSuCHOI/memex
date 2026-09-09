@@ -9,6 +9,8 @@
  * counts (revisions/relations/vectors) before removing anything.
  */
 import type Database from 'better-sqlite3';
+import { type MutationPolicy } from './fact-policy.js';
+export { StaleFactMutationError } from './fact-policy.js';
 import { type ChronicleActor, type ChronicleEvent, type EffectiveAtSource, type EvidenceAuthority, type GroundedField } from './chronicle.js';
 export interface FactRow {
     id: string;
@@ -46,6 +48,10 @@ export interface FactMutationSource {
     exchangeIds?: string[];
 }
 export interface MutateFactMeaningOptions {
+    /** Required by the core. The legacy entry point only adapts explicit user edits. */
+    policy?: MutationPolicy;
+    /** Synchronous policy validation, run inside the final writer transaction. */
+    commitGuard?: () => void;
     factId: string;
     newText: string;
     reason?: string;
@@ -106,23 +112,15 @@ export interface SemanticMutationResult extends EditResult {
     deactivatedFactIds: string[];
 }
 /**
- * Thrown when a semantic mutation loses a race: the fact's text changed
- * between the caller's read and the mutation commit
- * (`expectedPreviousFact` mismatch), or an async derived writer's final
- * write found a newer semantic generation. The stale result must be
- * discarded — callers treat this as "someone else moved the fact", not as
- * an internal failure.
- */
-export declare class StaleFactMutationError extends Error {
-    constructor(message: string);
-}
-/**
  * Replace one fact's meaning while preserving its identity and revision chain.
  * Embedding generation happens before the write; every durable generation
  * transition, its Chronicle CHANGED event, and invalidation commit in one
  * transaction.
  */
 export declare function mutateFactMeaning(db: Database.Database, opts: MutateFactMeaningOptions): Promise<SemanticMutationResult>;
+export declare function mutateFactMeaningWithPolicy(db: Database.Database, opts: MutateFactMeaningOptions & {
+    policy: MutationPolicy;
+}): Promise<SemanticMutationResult>;
 /**
  * Synchronous core of the semantic mutation. Callers that already hold a
  * vector (the extractor's slot resolver) run it inside their own transaction;
@@ -131,6 +129,9 @@ export declare function mutateFactMeaning(db: Database.Database, opts: MutateFac
  * update leaves no event and a failed event leaves no projection change.
  */
 export declare function applyFactMeaningMutation(db: Database.Database, opts: MutateFactMeaningOptions, embedding: number[]): SemanticMutationResult;
+export declare function applyFactMeaningMutationWithPolicy(db: Database.Database, opts: MutateFactMeaningOptions & {
+    policy: MutationPolicy;
+}, embedding: number[]): SemanticMutationResult;
 /**
  * Edit a fact's text. One transaction covers:
  *   revision(old/new/reason) -> text update -> fresh embedding + vector swap ->

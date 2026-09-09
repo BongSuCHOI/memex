@@ -23,6 +23,10 @@ import {
   buildReembedPending,
 } from '../dist/reembed-selector.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
+import {
+  getOrCreateMaintenanceModelBudget,
+  isAutomaticOntologyEnabled,
+} from '../dist/model-budget.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +43,17 @@ async function main() {
     } catch { /* observation is best-effort */ }
 
     const db = initDatabase();
+    // One named maintenance wave is shared by detached sibling workers. The
+    // durable row survives hook/process restarts; changing env limits cannot
+    // silently reset its reserved-attempt count.
+    const maintenanceBudget = getOrCreateMaintenanceModelBudget(db, {
+      parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+    });
+    const childEnv = {
+      ...process.env,
+      MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.parentWaveId,
+      MEMEX_MODEL_BUDGET_ID: maintenanceBudget.budgetId,
+    };
 
     const spawnDetached = (script) => {
       try {
@@ -46,6 +61,7 @@ async function main() {
           detached: true,
           stdio: 'ignore',
           windowsHide: true,
+          env: childEnv,
         });
         child.unref();
       } catch {
@@ -79,7 +95,9 @@ async function main() {
     }
 
     // Derived work begins only when the Continuity queue is currently drained.
-    spawnDetached('fact-consolidate-worker.js');
+    if (maintenanceBudget.state === 'active') {
+      spawnDetached('fact-consolidate-worker.js');
+    }
 
     // 2. Auto-resume vector upgrades: stale/missing category, fact, Korean,
     // and exchange vectors (selectors are the shared generation contract).
@@ -108,7 +126,20 @@ async function main() {
       const pendingOnto = db.prepare(
         'SELECT 1 FROM facts WHERE is_active = 1 AND ontology_category_id IS NULL LIMIT 1'
       ).get();
-      if (pendingOnto) spawnDetached('backfill-ontology-worker.js');
+      // Existing relation memberships are durable pending work. The
+      // BACKFILL_RELATIONS switch controls creating new relation probes while
+      // classifying an ontology page; it must not hide already queued work.
+      const pendingRelation = db.prepare(`
+        SELECT 1
+        FROM model_work_targets t
+        JOIN facts f ON f.id = t.target_id
+        WHERE t.budget_id = ? AND t.stage = 'relation' AND t.state = 'pending'
+          AND f.is_active = 1
+        LIMIT 1
+      `).get(maintenanceBudget.budgetId);
+      if ((pendingOnto || pendingRelation) && isAutomaticOntologyEnabled() && maintenanceBudget.state === 'active') {
+        spawnDetached('backfill-ontology-worker.js');
+      }
     } catch { /* non-fatal */ }
 
     // 4. Auto-resume cross-project extraction backfill (worker's own pending
@@ -119,7 +150,7 @@ async function main() {
         'continuity',
       );
       const pendingExtract = db.prepare(`SELECT 1 FROM (${exSql}) LIMIT 1`).get(...exParams);
-      if (pendingExtract) spawnDetached('backfill-extract-worker.js');
+      if (pendingExtract && maintenanceBudget.state === 'active') spawnDetached('backfill-extract-worker.js');
     } catch { /* non-fatal */ }
 
     db.close();

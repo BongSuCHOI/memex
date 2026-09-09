@@ -1,3 +1,5 @@
+import { assertReadScope, type ReadScope } from './read-scope.js';
+import { adaptLegacyFactForRead, adaptLegacyReadScope, type LegacyReadScope } from './legacy-read-scope.js';
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type {
@@ -16,6 +18,12 @@ import {
 } from "./db.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
 import { readChronicleTimeline, recordChronicleEvent } from "./chronicle.js";
+import { isInternalContextMessage } from "./codex-rollout.js";
+import {
+  captureSourceSnapshot,
+  sourceSnapshotValid,
+  type SourceSnapshot,
+} from "./fact-policy.js";
 
 type FactVecTable = "vec_facts" | "vec_facts_kr" | "vec_categories";
 
@@ -275,20 +283,9 @@ export function getActiveFacts(db: Database.Database): Fact[] {
   ).map(rowToFact);
 }
 
-export function getFactsByProject(
-  db: Database.Database,
-  project: string,
-): Fact[] {
-  return (
-    db
-      .prepare(`
-    SELECT * FROM facts
-    WHERE is_active = 1
-      AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
-    ORDER BY consolidated_count DESC
-  `)
-      .all(project) as Record<string, unknown>[]
-  ).map(rowToFact);
+/** @deprecated Canonical path reader; new callers use listFactsInScope. */
+export function getFactsByProject(db: Database.Database, project: string): Fact[] {
+  return listFactsByScope(db, { type: 'project', project }).sort((a, b) => b.consolidated_count - a.consolidated_count);
 }
 
 export function updateFact(
@@ -356,20 +353,6 @@ export function deactivateFact(db: Database.Database, id: string): void {
   db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
 }
 
-export function deleteFact(db: Database.Database, id: string): void {
-  db.transaction(() => {
-    db.prepare(`
-      INSERT INTO fact_tombstones (fact_id, deleted_at, reason)
-      VALUES (?, ?, 'legacy_delete')
-      ON CONFLICT(fact_id) DO UPDATE SET deleted_at = excluded.deleted_at, reason = excluded.reason
-    `).run(id, new Date().toISOString());
-    db.prepare("DELETE FROM vec_facts WHERE id = ?").run(id);
-    db.prepare("DELETE FROM vec_facts_kr WHERE id = ?").run(id);
-    db.prepare("DELETE FROM fact_revisions WHERE fact_id = ?").run(id);
-    db.prepare("DELETE FROM facts WHERE id = ?").run(id);
-  })();
-}
-
 /**
  * Compatibility writer for callers that only know the released revision
  * shape. It appends a Chronicle CHANGED event; the free-text reason is a
@@ -417,51 +400,32 @@ export function getRevisions(
   }));
 }
 
-export type FactSearchScope =
-  | { type: "project"; project: string }
-  | { type: "global" }
-  | { type: "all" }
-  // Internal exact-scope modes keep consolidation and cross-project discovery
-  // on the same search implementation without changing the public semantics
-  // above: project means that project plus global facts.
-  | { type: "exact-project"; project: string }
-  | { type: "other-projects"; project: string }
-  | { type: "other-project-id"; projectId: string }
-  | { type: "project-id"; projectId: string; includeGlobal?: boolean }
-  | { type: "workspace-id"; projectId: string; workspaceId: string; includeGlobal?: boolean }
-  | { type: "workstream-id"; projectId: string; workspaceId?: string | null; workstreamId: string; includeGlobal?: boolean }
-  | { type: "session-id"; projectId: string; sessionId: string; includeGlobal?: boolean };
+/** @deprecated New core callers use ReadScope; paths are read-only adapters. */
+export type FactSearchScope = ReadScope | LegacyReadScope;
+export type { ReadScope } from './read-scope.js';
 
-interface FactSearchFilters {
+export interface FactSearchFilters {
   category?: FactCategory;
+  /** Mutation eligibility is evaluated before the search limit. */
+  accept?: (fact: Fact) => boolean;
 }
 
 function factMatchesSearch(
   fact: Fact,
-  scope: FactSearchScope,
+  scope: ReadScope,
   filters: FactSearchFilters,
   sessionExchangeIds?: Set<string>,
 ): boolean {
   if (filters.category && fact.category !== filters.category) return false;
+  if (filters.accept && !filters.accept(fact)) return false;
 
   switch (scope.type) {
     case "global":
       return fact.scope_type === "global";
     case "all":
       return true;
-    case "project":
-      return (
-        fact.scope_type === "global" ||
-        (fact.scope_type === "project" && fact.scope_project === scope.project)
-      );
-    case "exact-project":
-      return (
-        fact.scope_type === "project" && fact.scope_project === scope.project
-      );
-    case "other-projects":
-      return (
-        fact.scope_type === "project" && fact.scope_project !== scope.project
-      );
+    case "fact-ids":
+      return scope.factIds.includes(fact.id);
     case "other-project-id":
       return fact.scope_type === "project" && fact.project_id !== scope.projectId;
     case "project-id":
@@ -486,27 +450,29 @@ function factMatchesSearch(
   }
 }
 
-export function listFactsByScope(
+export function listFactsInScope(
   db: Database.Database,
-  scope: FactSearchScope,
+  scope: ReadScope,
 ): Fact[] {
+  assertReadScope(db, scope);
   const sessionExchangeIds = scope.type === "session-id"
     ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
     : undefined;
   return (db.prepare("SELECT * FROM facts WHERE is_active = 1").all() as Array<Record<string, unknown>>)
-    .map(rowToFact)
+    .map(row => adaptLegacyFactForRead(db, rowToFact(row)))
     .filter((fact) => factMatchesSearch(fact, scope, {}, sessionExchangeIds));
 }
 
-export function factMatchesScope(
+export function factMatchesReadScope(
   db: Database.Database,
   fact: Fact,
-  scope: FactSearchScope,
+  scope: ReadScope,
 ): boolean {
+  assertReadScope(db, scope);
   const sessionExchangeIds = scope.type === "session-id"
     ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
     : undefined;
-  return factMatchesSearch(fact, scope, {}, sessionExchangeIds);
+  return factMatchesSearch(adaptLegacyFactForRead(db, fact), scope, {}, sessionExchangeIds);
 }
 
 /**
@@ -518,14 +484,15 @@ export function factMatchesScope(
  * language indexes. This prevents a dense out-of-scope population from
  * starving a valid project/global result.
  */
-export function searchFactsByScope(
+export function searchFactsInScope(
   db: Database.Database,
   embedding: number[],
-  scope: FactSearchScope,
+  scope: ReadScope,
   limit: number = 5,
   threshold: number = 0.85,
   filters: FactSearchFilters = {},
 ): Array<{ fact: Fact; distance: number }> {
+  assertReadScope(db, scope);
   if (limit <= 0) return [];
   const sessionExchangeIds = scope.type === "session-id"
     ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
@@ -599,7 +566,8 @@ export function searchFactsByScope(
     for (const vr of merged) {
       const similarity = l2DistanceToSimilarity(vr.distance);
       if (similarity < threshold) break;
-      const fact = loadFact(vr.id);
+      const loaded = loadFact(vr.id);
+      const fact = loaded ? adaptLegacyFactForRead(db, loaded) : null;
       if (!fact || !factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
       results.push({ fact, distance: vr.distance });
       if (results.length >= limit) break;
@@ -614,6 +582,346 @@ export function searchFactsByScope(
   return results;
 }
 
+export type FactSearchLane = "lexical" | "semantic" | "both";
+
+export interface LexicalFactSearchResult {
+  fact: Fact;
+  /** Higher values indicate a stronger literal match. */
+  lexicalScore: number;
+  /** Kept compatible with semantic result consumers; exact matches have 0 distance. */
+  distance: number;
+}
+
+export interface CombinedFactSearchResult {
+  fact: Fact;
+  /** Semantic distance when available, or 0 for a lexical-only result. */
+  distance: number;
+  /** Semantic similarity is null when no semantic lane matched the fact. */
+  semanticSimilarity: number | null;
+  /** Null means the fact was not returned by the lexical lane. */
+  lexicalScore: number | null;
+  lane: FactSearchLane;
+}
+
+// Keep ordinary prose out of SQLite LIKE parameters. Identifier terms are
+// still extracted below for long prompts, while semantic retrieval remains
+// responsible for the broad meaning of the prompt.
+const MAX_LITERAL_QUERY_CHARS = 512;
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+function normalizeFactQuery(query: string): string {
+  return query
+    .trim()
+    .replace(/^[`'\"]+|[`'\"]+$/g, "")
+    .replace(/[?!,;:]+$/g, "")
+    .trim();
+}
+
+/**
+ * Pull only concrete code-like tokens from a natural-language query. A
+ * general word search would make every prompt a lexical retrieval request;
+ * these shapes are bounded to paths, symbols, function calls and snake-case
+ * identifiers commonly used for error/configuration names.
+ */
+function extractFactIdentifiers(query: string): string[] {
+  const value = normalizeFactQuery(query);
+  if (!value) return [];
+  const maxIdentifiers = 4;
+  const found = new Set<string>();
+  const add = (token: string) => {
+    const normalized = token
+      .replace(/\(\)$/u, "")
+      .replace(/^[`'\"]+|[`'\"]+$/g, "")
+      .replace(/[.!?,;:]+$/u, "");
+    if (normalized.length >= 2 && found.size < maxIdentifiers) found.add(normalized);
+  };
+  const patterns = [
+    /(?:\/?[A-Za-z0-9_$.-]+[\\/])+(?:[A-Za-z0-9_$.-]+)/gu,
+    /\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+\b/gu,
+    /\b[A-Za-z_$][A-Za-z0-9_$]*\(\)/gu,
+    /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/gu,
+    /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gu,
+    /\b[A-Za-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) add(match[0]);
+  }
+  return [...found];
+}
+
+/** True for a concrete identifier query, including one embedded in prose. */
+export function isExactFactIdentifierQuery(query: string): boolean {
+  const value = normalizeFactQuery(query);
+  if (!value) return false;
+  const identifiers = extractFactIdentifiers(value);
+  return identifiers.length > 0 || (!/\s/u.test(value) && /\.[A-Za-z0-9]+$/u.test(value));
+}
+
+function isIdentifierCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_$]/u.test(character);
+}
+
+function isPathCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_$.\\/\\-]/u.test(character);
+}
+
+function exactIdentifierOffset(text: string, query: string): number {
+  const haystack = text.toLocaleLowerCase();
+  const needle = query.toLocaleLowerCase();
+  let offset = 0;
+  while (offset <= haystack.length - needle.length) {
+    const start = haystack.indexOf(needle, offset);
+    if (start < 0) return -1;
+    const end = start + needle.length;
+    const pathLike = /[/\\.]/u.test(query);
+    const before = text[start - 1];
+    const after = text[end];
+    const beforeMatches = pathLike ? isPathCharacter(before) : isIdentifierCharacter(before);
+    let afterMatches = pathLike ? isPathCharacter(after) : isIdentifierCharacter(after);
+    // A sentence-ending period is a boundary, while `.bak` after a path is a
+    // longer path/filename and must not satisfy an exact path query.
+    if (pathLike && after === "." && !isIdentifierCharacter(text[end + 1])) {
+      afterMatches = false;
+    }
+    if (!beforeMatches && !afterMatches) return start;
+    offset = start + 1;
+  }
+  return -1;
+}
+
+function containsExactIdentifier(text: string, query: string): boolean {
+  return exactIdentifierOffset(text, query) >= 0;
+}
+
+/**
+ * Literal fact search with the same required ReadScope as the semantic lane.
+ * The SQL pattern is parameterized/escaped, while exact identifier boundaries
+ * are checked in memory so a symbol does not match a longer symbol or path.
+ * Active/category/scope predicates are evaluated before `limit` is applied.
+ */
+export function searchFactsLexicallyInScope(
+  db: Database.Database,
+  query: string,
+  scope: ReadScope,
+  limit: number = 5,
+  filters: FactSearchFilters = {},
+): LexicalFactSearchResult[] {
+  assertReadScope(db, scope);
+  if (limit <= 0) return [];
+  const normalizedQuery = normalizeFactQuery(query);
+  if (!normalizedQuery) return [];
+  const sessionExchangeIds = scope.type === "session-id"
+    ? new Set((db.prepare("SELECT id FROM exchanges WHERE session_id = ?").all(scope.sessionId) as Array<{ id: string }>).map((row) => row.id))
+    : undefined;
+  const categorySql = filters.category ? " AND category = ?" : "";
+  const identifiers = extractFactIdentifiers(normalizedQuery);
+  const lexicalTerms = [
+    ...(normalizedQuery.length <= MAX_LITERAL_QUERY_CHARS ? [normalizedQuery] : []),
+    ...identifiers.filter((identifier) => identifier !== normalizedQuery),
+  ];
+  if (lexicalTerms.length === 0) return [];
+  const lexicalSql = lexicalTerms
+    .map(() => "(LOWER(fact) LIKE LOWER(?) ESCAPE '\\' OR LOWER(COALESCE(fact_kr, '')) LIKE LOWER(?) ESCAPE '\\')")
+    .join(" OR ");
+  const patterns = lexicalTerms.flatMap((term) => {
+    const pattern = `%${escapeLikePattern(term)}%`;
+    return [pattern, pattern];
+  });
+  const rows = db.prepare(`
+    SELECT * FROM facts
+    WHERE is_active = 1
+      ${categorySql}
+      AND (${lexicalSql})
+  `).all(
+    ...(filters.category ? [filters.category] : []),
+    ...patterns,
+  ) as Array<Record<string, unknown>>;
+  const results: LexicalFactSearchResult[] = [];
+  for (const row of rows) {
+    const rawTexts = [String(row.fact ?? ""), String(row.fact_kr ?? "")];
+    const fact = adaptLegacyFactForRead(db, rowToFact(row));
+    if (!factMatchesSearch(fact, scope, filters, sessionExchangeIds)) continue;
+    const match = identifiers.length > 0
+      ? rawTexts.some((text) => identifiers.some((identifier) => containsExactIdentifier(text, identifier)))
+      : rawTexts.some((text) => text.toLocaleLowerCase().includes(normalizedQuery.toLocaleLowerCase()));
+    if (!match) continue;
+    results.push({ fact, lexicalScore: identifiers.length > 0 ? 2 : 1, distance: 0 });
+  }
+  results.sort((a, b) => b.lexicalScore - a.lexicalScore || a.fact.id.localeCompare(b.fact.id));
+  return results.slice(0, limit);
+}
+
+export interface HumanSourceIdentifierEvidence {
+  exchangeId: string;
+  identifier: string;
+  /** Already bounded, source-linked context; never a Fact or resident revision. */
+  text: string;
+  snapshot: SourceSnapshot;
+  coordinates: string;
+}
+
+// Shared workstreams can span workspaces. Both the source workspace and its
+// session must still belong to the same project/workstream at read and commit.
+function humanSourceRows(db: Database.Database, scope: ReadScope, identifier: string, exchangeId?: string): Array<Record<string, unknown>> {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id") return [];
+  return db.prepare(`
+    SELECT e.* FROM exchanges e
+    JOIN session_memory_state s ON s.session_id = e.session_id
+      AND s.project_id = e.project_id AND s.workspace_id = e.workspace_id
+      AND s.workstream_id = e.workstream_id
+    JOIN workspaces w ON w.workspace_id = e.workspace_id AND w.project_id = e.project_id
+    WHERE e.project_id = ? AND e.workstream_id = ? AND COALESCE(e.is_sidechain, 0) = 0
+      AND NOT EXISTS (SELECT 1 FROM conversation_exclusions x WHERE x.session_id = e.session_id)
+      AND LOWER(e.user_message) LIKE LOWER(?) ESCAPE '\\'
+      ${exchangeId ? "AND e.id = ?" : ""}
+    ORDER BY e.timestamp DESC, e.id LIMIT 128
+  `).all(scope.projectId, scope.workstreamId, `%${escapeLikePattern(identifier)}%`,
+    ...(exchangeId ? [exchangeId] : [])) as Array<Record<string, unknown>>;
+}
+
+function humanSourceText(row: Record<string, unknown>): string | null {
+  // The indexed user field is assembled from real user messages, not tool or
+  // replacement-history records. Recall in the assistant half of a turn does
+  // not invalidate an independent human assertion in this field.
+  try {
+    const provenance: unknown = JSON.parse(String(row.provenance));
+    if (!Array.isArray(provenance) || !provenance.includes("human_assertion")) return null;
+  } catch { return null; }
+  const text = String(row.user_message ?? "").trim();
+  if (!text || isInternalContextMessage(text) ||
+      /^(?:<local-command-stdout>|<local-command-caveat>|<command-name>|Caveat:|\/[\w:-]+$)/u.test(text)) return null;
+  return text.replace(/\s+/gu, " ");
+}
+
+function humanSourceCoordinates(row: Record<string, unknown>): string {
+  return JSON.stringify([row.session_id, row.archive_path, row.line_start, row.line_end,
+    row.content_hash, row.content_generation]);
+}
+
+/** Exact-query escape hatch for lossy fact summaries; no learning or vector work. */
+export function searchHumanSourceIdentifiersInScope(
+  db: Database.Database, query: string, scope: ReadScope, limit = 2,
+): HumanSourceIdentifierEvidence[] {
+  assertReadScope(db, scope);
+  if (scope.type !== "workstream-id" || limit <= 0) return [];
+  const results: HumanSourceIdentifierEvidence[] = [];
+  const parsed = extractFactIdentifiers(query).filter(term => term.length <= MAX_LITERAL_QUERY_CHARS);
+  const literal = normalizeFactQuery(query).replace(/\(\)$/u, "");
+  const identifiers = parsed.includes(literal) ? [literal] : parsed;
+  for (const identifier of identifiers) {
+    // The broader fact lane may also match a path's basename. Only a full
+    // identifier match covers this source lookup request.
+    if (searchFactsLexicallyInScope(db, identifier, scope, Number.MAX_SAFE_INTEGER)
+      .some(({ fact }) => containsExactIdentifier(fact.fact, identifier))) continue;
+    for (const row of humanSourceRows(db, scope, identifier)) {
+      if (results.some(item => item.exchangeId === row.id && containsExactIdentifier(item.text, identifier))) continue;
+      const source = humanSourceText(row);
+      const offset = source === null ? -1 : exactIdentifierOffset(source, identifier);
+      if (source === null || offset < 0) continue;
+      const prefix = `[exchange ${row.id}:${row.line_start}-${row.line_end}] `;
+      const available = 160 - prefix.length;
+      // A partial literal or an unresolvable truncated source ID is not useful.
+      if (identifier.length > available) continue;
+      const start = Math.max(0, offset - Math.min(24, available - identifier.length));
+      const snapshot = captureSourceSnapshot(db, [String(row.id)]);
+      if (!snapshot) continue;
+      results.push({ exchangeId: String(row.id), identifier,
+        text: prefix + source.slice(start, start + available), snapshot,
+        coordinates: humanSourceCoordinates(row) });
+      break;
+    }
+    if (results.length >= Math.min(2, limit)) break;
+  }
+  return results;
+}
+
+/** Called inside the receipt transaction after any intervening async work. */
+export function validateHumanSourceIdentifierEvidence(
+  db: Database.Database, evidence: HumanSourceIdentifierEvidence, scope: ReadScope,
+): boolean {
+  const row = humanSourceRows(db, scope, evidence.identifier, evidence.exchangeId)[0];
+  if (!row || humanSourceCoordinates(row) !== evidence.coordinates) return false;
+  const text = humanSourceText(row);
+  return text !== null && containsExactIdentifier(text, evidence.identifier) && sourceSnapshotValid(db, evidence.snapshot);
+}
+
+/** Merge literal and semantic lanes with exact lexical hits taking priority. */
+export function searchFactsCombinedInScope(
+  db: Database.Database,
+  query: string,
+  embedding: number[] | null,
+  scope: ReadScope,
+  limit: number = 5,
+  threshold: number = 0.85,
+  filters: FactSearchFilters = {},
+): CombinedFactSearchResult[] {
+  assertReadScope(db, scope);
+  if (limit <= 0) return [];
+  const lexical = searchFactsLexicallyInScope(db, query, scope, limit, filters);
+  const semantic = embedding
+    ? searchFactsInScope(db, embedding, scope, limit, threshold, filters)
+    : [];
+  const merged = new Map<string, CombinedFactSearchResult>();
+  for (const result of lexical) {
+    merged.set(result.fact.id, {
+      fact: result.fact,
+      distance: result.distance,
+      semanticSimilarity: null,
+      lexicalScore: result.lexicalScore,
+      lane: "lexical",
+    });
+  }
+  for (const result of semantic) {
+    const existing = merged.get(result.fact.id);
+    const semanticSimilarity = l2DistanceToSimilarity(result.distance);
+    if (existing) {
+      existing.distance = result.distance;
+      existing.semanticSimilarity = semanticSimilarity;
+      existing.lane = "both";
+    } else {
+      merged.set(result.fact.id, {
+        fact: result.fact,
+        distance: result.distance,
+        semanticSimilarity,
+        lexicalScore: null,
+        lane: "semantic",
+      });
+    }
+  }
+  return [...merged.values()]
+    .sort((a, b) => {
+      const aLexical = a.lexicalScore ?? 0;
+      const bLexical = b.lexicalScore ?? 0;
+      if ((aLexical > 0) !== (bLexical > 0)) return aLexical > 0 ? -1 : 1;
+      if (aLexical !== bLexical) return bLexical - aLexical;
+      const aSemantic = a.semanticSimilarity ?? -Infinity;
+      const bSemantic = b.semanticSimilarity ?? -Infinity;
+      if (aSemantic !== bSemantic) return bSemantic - aSemantic;
+      return a.fact.id.localeCompare(b.fact.id);
+    })
+    .slice(0, limit);
+}
+
+/** @deprecated Resolve legacy paths at the edge, then use listFactsInScope. */
+export function listFactsByScope(db: Database.Database, scope: FactSearchScope): Fact[] {
+  return listFactsInScope(db, adaptLegacyReadScope(db, scope));
+}
+
+/** @deprecated Use factMatchesReadScope with a required ReadScope. */
+export function factMatchesScope(db: Database.Database, fact: Fact, scope: FactSearchScope): boolean {
+  return factMatchesReadScope(db, fact, adaptLegacyReadScope(db, scope));
+}
+
+/** @deprecated Compatibility adapter; new core callers use searchFactsInScope. */
+export function searchFactsByScope(db: Database.Database, embedding: number[], scope: FactSearchScope,
+  limit = 5, threshold = 0.85, filters: FactSearchFilters = {}): Array<{ fact: Fact; distance: number }> {
+  return searchFactsInScope(db, embedding, adaptLegacyReadScope(db, scope), limit, threshold, filters);
+}
+
 /** @deprecated Use searchFactsByScope with an explicit project/global/all scope. */
 export function searchSimilarFacts(
   db: Database.Database,
@@ -624,7 +932,7 @@ export function searchSimilarFacts(
 ): Array<{ fact: Fact; distance: number }> {
   const scope: FactSearchScope = project
     ? { type: "project", project }
-    : { type: "all" };
+    : { type: "global" };
   return searchFactsByScope(db, embedding, scope, limit, threshold);
 }
 
@@ -662,70 +970,28 @@ export function getTopFacts(
   project: string,
   limit: number = 10,
 ): Fact[] {
-  const now = new Date();
-  const d7 = new Date(now.getTime() - 7 * 86400000).toISOString();
-  const d30 = new Date(now.getTime() - 30 * 86400000).toISOString();
-  const d90 = new Date(now.getTime() - 90 * 86400000).toISOString();
-
-  // 재감사 P1-3: recency는 의미 사건의 시각으로 잰다 — 분류 같은 비의미
-  // 메타데이터 쓰기가 오래된 fact를 최근 사실처럼 보이게 하지 않는다.
-  const clockExpr = "COALESCE(NULLIF(semantic_updated_at, ''), updated_at)";
-  const scoreExpr = `
-      (
-        CASE WHEN consolidated_count > 0 THEN (3.0 * (1.0 + LOG(consolidated_count + 1) / LOG(2))) ELSE 3.0 END
-        + CASE WHEN ${clockExpr} >= ? THEN 5 WHEN ${clockExpr} >= ? THEN 3 WHEN ${clockExpr} >= ? THEN 1 ELSE 0 END
-        + CASE WHEN scope_type = 'project' AND scope_project = ? THEN 2 ELSE 0 END
-      ) as relevance_score`;
-
-  type ScoredRow = Record<string, unknown> & { relevance_score: number };
-
-  const projectRows = db
-    .prepare(`
-    SELECT *, ${scoreExpr}
-    FROM facts
-    WHERE is_active = 1 AND scope_type = 'project' AND scope_project = ?
-    ORDER BY relevance_score DESC
-    LIMIT ?
-  `)
-    .all(d7, d30, d90, project, project, limit) as ScoredRow[];
-
-  const globalRows = db
-    .prepare(`
-    SELECT *, ${scoreExpr}
-    FROM facts
-    WHERE is_active = 1 AND scope_type = 'global'
-    ORDER BY relevance_score DESC
-    LIMIT ?
-  `)
-    .all(d7, d30, d90, project, limit) as ScoredRow[];
-
-  const reserved = Math.ceil(limit / 2);
-  const guaranteed = projectRows.slice(0, reserved);
-  const rest = [...projectRows.slice(reserved), ...globalRows]
-    .sort((a, b) => b.relevance_score - a.relevance_score)
-    .slice(0, Math.max(0, limit - guaranteed.length));
-
-  return [...guaranteed, ...rest]
-    .sort((a, b) => b.relevance_score - a.relevance_score)
-    .map(rowToFact);
+  const now = Date.now();
+  const d7 = new Date(now - 7 * 86400000).toISOString();
+  const d30 = new Date(now - 30 * 86400000).toISOString();
+  const d90 = new Date(now - 90 * 86400000).toISOString();
+  const ranked = getFactsByProject(db, project).map(fact => {
+    const clock = fact.semantic_updated_at || fact.updated_at;
+    const score = (fact.consolidated_count > 0 ? 3 * (1 + Math.log2(fact.consolidated_count + 1)) : 3)
+      + (clock >= d7 ? 5 : clock >= d30 ? 3 : clock >= d90 ? 1 : 0)
+      + (fact.scope_type === 'project' ? 2 : 0);
+    return { fact, score };
+  }).sort((a, b) => b.score - a.score);
+  const projectRows = ranked.filter(row => row.fact.scope_type === 'project');
+  const guaranteed = projectRows.slice(0, Math.ceil(limit / 2));
+  const reservedIds = new Set(guaranteed.map(row => row.fact.id));
+  const rest = ranked.filter(row => !reservedIds.has(row.fact.id)).slice(0, Math.max(0, limit - guaranteed.length));
+  return [...guaranteed, ...rest].sort((a, b) => b.score - a.score).map(row => row.fact);
 }
 
-export function getNewFactsSince(
-  db: Database.Database,
-  project: string,
-  since: string,
-): Fact[] {
-  return (
-    db
-      .prepare(`
-    SELECT * FROM facts
-    WHERE is_active = 1
-      AND created_at > ?
-      AND ((scope_type = 'project' AND scope_project = ?) OR scope_type = 'global')
-    ORDER BY created_at ASC
-  `)
-      .all(since, project) as Record<string, unknown>[]
-  ).map(rowToFact);
+/** @deprecated Canonical path reader; new callers use listFactsInScope. */
+export function getNewFactsSince(db: Database.Database, project: string, since: string): Fact[] {
+  return getFactsByProject(db, project).filter(fact => fact.created_at > since)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 /**

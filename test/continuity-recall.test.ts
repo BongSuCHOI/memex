@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 
 const embeddingCalls = vi.hoisted(() => ({ n: 0, fail: false }));
 const factSearch = vi.hoisted(() => ({ fail: false }));
+const repeatRace = vi.hoisted(() => ({ run: null as (() => void) | null }));
 
 function hashedEmbedding(text: string): number[] {
   const vector = new Array<number>(384).fill(0);
@@ -37,9 +38,9 @@ vi.mock("../src/fact-db.js", async (io) => {
   const actual = await io<typeof import("../src/fact-db.js")>();
   return {
     ...actual,
-    searchFactsByScope: (...args: Parameters<typeof actual.searchFactsByScope>) => {
+    searchFactsInScope: (...args: Parameters<typeof actual.searchFactsInScope>) => {
       if (factSearch.fail) throw new Error("vector index unavailable");
-      return actual.searchFactsByScope(...args);
+      return actual.searchFactsInScope(...args);
     },
   };
 });
@@ -47,6 +48,13 @@ vi.mock("../src/ontology-classifier.js", async (io) => ({
   ...(await io<typeof import("../src/ontology-classifier.js")>()),
   classifyAndLinkFact: async () => {},
 }));
+vi.mock("../src/repeat-detector.js", async (io) => {
+  const actual = await io<typeof import("../src/repeat-detector.js")>();
+  return { ...actual, detectRepeat: async (...args: Parameters<typeof actual.detectRepeat>) => {
+    if (repeatRace.run) { repeatRace.run(); return []; }
+    return actual.detectRepeat(...args);
+  } };
+});
 
 import { initDatabase, insertExchange } from "../src/db.js";
 import { getActiveFacts, insertFact } from "../src/fact-db.js";
@@ -111,6 +119,7 @@ beforeEach(() => {
   embeddingCalls.n = 0;
   embeddingCalls.fail = false;
   factSearch.fail = false;
+  repeatRace.run = null;
   db = initDatabase();
 });
 
@@ -455,5 +464,50 @@ describe("failure modes, MCP and metrics", () => {
     expect(scope.contextEpoch).toBe(0);
     expect(tokenizePrompt("The Redis session store!").sort()).toEqual(["redis", "session", "store"]);
     void handleContinuityHook;
+  });
+});
+
+
+describe("exact source context delivery", () => {
+  it("recovers an own-session identifier offline without creating fact authority or consuming Hot Evidence", async () => {
+    ensureSessionMemoryState(db, { sessionId: SESSION, project: cwd, prompt: "start" });
+    insertExchange(db, exchange("raw-own", SESSION, "2026-09-08T00:00:00.000Z",
+      "E_LOCAL_REPAIR means reacquire ownership before the next write."), hashedEmbedding("source"));
+    embeddingCalls.fail = true;
+    const result = await inject("E_LOCAL_REPAIR", SESSION, { gate: false });
+    expect(result.context).toContain("[RAW EVIDENCE — CONTEXT-ONLY, MAY BE STALE]");
+    expect(result.context).toContain("[exchange raw-own:1-2]");
+    expect(result.context).toContain("E_LOCAL_REPAIR");
+    expect(result.context).not.toContain("[CURRENT TRUTH]");
+    expect(result.embeddings).toBe(0);
+    expect(result.context.length).toBeLessThanOrEqual(1000);
+    expect(getActiveFacts(db)).toHaveLength(0);
+    expect(db.prepare("SELECT resident_fact_revisions_json AS resident, hot_evidence_cursor AS cursor FROM session_memory_state WHERE session_id = ?").get(SESSION))
+      .toEqual({ resident: "[]", cursor: 0 });
+    expect(db.prepare("SELECT fact_ids, learnable, status FROM recall_events").all())
+      .toEqual([{ fact_ids: "[]", learnable: 0, status: "prepared" }]);
+  });
+
+  it.each(["edit", "delete", "exclude", "rebind"])("rejects raw source %s between selection and receipt commit", async (mutation) => {
+    const scope = ensureSessionMemoryState(db, { sessionId: SESSION, project: cwd, prompt: "start" });
+    insertExchange(db, exchange("raw-race", SESSION, "2026-09-08T00:00:00.000Z",
+      "E_RACE_REPAIR requires checking the owner before committing."), hashedEmbedding("source"));
+    let ran = false;
+    repeatRace.run = () => {
+      if (mutation === "edit") db.prepare("UPDATE exchanges SET user_message = 'E_RACE_REPAIR is withdrawn' WHERE id = 'raw-race'").run();
+      if (mutation === "delete") db.prepare("DELETE FROM exchanges WHERE id = 'raw-race'").run();
+      if (mutation === "exclude") db.prepare("INSERT INTO conversation_exclusions (session_id, reason, excluded_at) VALUES (?, 'user_excluded', ?)").run(SESSION, "2026-09-08T00:01:00Z");
+      if (mutation === "rebind") {
+        const other = createWorkstream(db, { projectId: scope.projectId, workspaceId: scope.workspaceId,
+          projectPath: cwd, ownerSessionId: "other-owner", topic: "other" });
+        db.prepare("UPDATE session_memory_state SET workstream_id = ? WHERE session_id = ?").run(other, SESSION);
+      }
+      ran = true;
+    };
+    const result = await inject("What do you remember about E_RACE_REPAIR?", SESSION, { gate: false });
+    expect(ran).toBe(true);
+    expect(result.context).toBe("");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM recall_events").get()).toEqual({ n: 0 });
+    expect(getActiveFacts(db)).toHaveLength(0);
   });
 });

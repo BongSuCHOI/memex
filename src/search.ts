@@ -1,8 +1,9 @@
 import { initDatabase, getVecDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance, l2DistanceToSimilarity } from './db.js';
 import { getDbPath } from './paths.js';
 import { initEmbeddings, generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
-import { searchFactsByScope } from './fact-db.js';
-import { getRelatedFacts, listDomains, listCategories } from './ontology-db.js';
+import { legacyOptionalReadScope } from './legacy-read-scope.js';
+import { searchFactsCombinedInScope, type FactSearchLane } from './fact-db.js';
+import { getRelatedFactsInScope, listDomains, listCategories } from './ontology-db.js';
 import { SearchResult, ConversationExchange, MultiConceptResult } from './types.js';
 import type DatabaseType from 'better-sqlite3';
 import fs from 'fs';
@@ -135,7 +136,7 @@ export async function searchConversations(
       await initEmbeddings();
       const queryEmbedding = await generateEmbedding(query, 'query');
 
-      // Expanding KNN window (mirrors searchFactsByScope): sqlite-vec's `k`
+      // Expanding KNN window (mirrors searchFactsInScope): sqlite-vec's `k`
       // caps the candidate set BEFORE the project/date/embedding_version
       // filters run, so a fixed k = caller limit starves scoped or dated
       // searches whenever unrelated rows own the nearest positions — the valid
@@ -703,7 +704,12 @@ export interface KnowledgeContext {
     category: string;
     domain: string;
     categoryName: string;
-    similarity: number;
+    /** Semantic similarity, or null when the result is lexical-only. */
+    similarity: number | null;
+    /** Explicit lane metadata populated by getKnowledgeContext. */
+    lane: FactSearchLane;
+    semanticSimilarity: number | null;
+    lexicalScore: number | null;
     relatedFacts: Array<{
       fact: string;
       relationType: string;
@@ -720,15 +726,25 @@ export async function getKnowledgeContext(
   project?: string | null,
   limit: number = 5,
 ): Promise<KnowledgeContext> {
-  await initEmbeddings();
   const db = initDatabase();
 
   try {
-    const queryEmbedding = await generateEmbedding(query, 'query');
-    const factResults = searchFactsByScope(
+    const scope = legacyOptionalReadScope(db, project);
+    // A missing embedding model must not hide an exact fact/path lookup. The
+    // combined reader keeps the lexical lane available while preserving the
+    // semantic lane whenever the model can answer.
+    let queryEmbedding: number[] | null = null;
+    try {
+      await initEmbeddings();
+      queryEmbedding = await generateEmbedding(query, 'query');
+    } catch {
+      queryEmbedding = null;
+    }
+    const factResults = searchFactsCombinedInScope(
       db,
+      query,
       queryEmbedding,
-      project ? { type: 'project', project } : { type: 'all' },
+      scope,
       limit,
       0.6,
     );
@@ -745,8 +761,10 @@ export async function getKnowledgeContext(
 
     const enrichedFacts: KnowledgeContext['facts'] = [];
 
-    for (const { fact, distance } of factResults) {
-      const similarity = parseFloat(l2DistanceToSimilarity(distance).toFixed(3));
+    for (const { fact, distance, lane, semanticSimilarity, lexicalScore } of factResults) {
+      const similarity = semanticSimilarity === null
+        ? null
+        : parseFloat(l2DistanceToSimilarity(distance).toFixed(3));
       const catInfo = fact.ontology_category_id
         ? categoryMap.get(fact.ontology_category_id)
         : undefined;
@@ -754,7 +772,7 @@ export async function getKnowledgeContext(
       const catName = catInfo ? catInfo.name : 'Unclassified';
 
       // Expand via 1-hop graph traversal
-      const related = getRelatedFacts(db, fact.id, 1, 0.6, 0.2, project ?? null);
+      const related = getRelatedFactsInScope(db, fact.id, scope);
       const relatedFacts = related.map(({ fact: relFact, relation }) => ({
         fact: relFact.fact,
         relationType: relation.relation_type,
@@ -766,6 +784,9 @@ export async function getKnowledgeContext(
         domain: domainName,
         categoryName: catName,
         similarity,
+        lane,
+        semanticSimilarity,
+        lexicalScore,
         relatedFacts,
       });
     }
@@ -785,7 +806,17 @@ export function formatKnowledgeContext(context: KnowledgeContext): string {
   let output = '\n---\n**Related Knowledge (from past decisions):**\n\n';
 
   for (const fact of context.facts) {
-    output += `- **[${fact.domain}/${fact.categoryName}]** ${fact.fact} _(${fact.category}, ${Math.round(fact.similarity * 100)}% relevant)_\n`;
+    const semanticSimilarity = fact.semanticSimilarity === undefined
+      ? fact.similarity
+      : fact.semanticSimilarity;
+    const lane = fact.lane ?? (semanticSimilarity === null ? "lexical" : "semantic");
+    const lexicalLabel = (fact.lexicalScore ?? 0) >= 2 ? "exact text match" : "lexical match";
+    const relevance = semanticSimilarity === null
+      ? lexicalLabel
+      : lane === "both"
+        ? `${Math.round(semanticSimilarity * 100)}% semantic + ${lexicalLabel}`
+        : `${Math.round(semanticSimilarity * 100)}% relevant`;
+    output += `- **[${fact.domain}/${fact.categoryName}]** ${fact.fact} _(${fact.category}, ${relevance})_\n`;
     for (const rel of fact.relatedFacts) {
       output += `  - ${rel.relationType}: ${rel.fact}\n`;
     }

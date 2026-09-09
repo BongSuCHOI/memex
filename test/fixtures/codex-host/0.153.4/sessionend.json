@@ -1,0 +1,21 @@
+{
+  "host": "codex-cli",
+  "version": "0.153.4",
+  "transport": "codex-cli-pty",
+  "event": "SessionEnd",
+  "input": {
+    "cwd": "<project-cwd>",
+    "hook_event_name": "SessionEnd",
+    "reason": "other",
+    "session_id": "<session_id>",
+    "transcript_path": "<codex-session-rollout>"
+  },
+  "prepared": true,
+  "stdoutEmitted": false,
+  "outputShape": "empty",
+  "hostAcceptance": null,
+  "hookOnlyNonceReflected": null,
+  "untrustedMemoryOverrideObserved": false,
+  "replay": false,
+  "source": "sanitized actual host-delivered payload"
+}

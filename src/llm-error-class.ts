@@ -95,6 +95,10 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
 
   // Classify the underlying provider rejection, not the wrapper.
   const e = unwrapped as { message?: string } | undefined;
+  const localCode = (unwrapped as { code?: unknown } | undefined)?.code;
+  if (localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
+    return 'deterministic';
+  }
   const byCode = (code: number): LlmErrorClass => {
     if (code === 401 || code === 403 || code === 404) return 'transient'; // systemic/config — hold, resumes on fix
     if (code === 429 || code >= 500) return 'transient';                  // rate limit / server error

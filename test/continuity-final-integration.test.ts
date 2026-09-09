@@ -40,6 +40,7 @@ import { recordIncidentOccurrence, readChronicleTimeline } from "../src/chronicl
 import { assignFactSubject } from "../src/continuity-identity.js";
 import { mutateFactMeaning } from "../src/fact-management.js";
 import { computeInjectContext } from "../src/inject-core.js";
+import { MEMORY_CONTEXT_CLOSE, MEMORY_CONTEXT_OPEN } from "../src/context-envelope.js";
 import { embeddingCallStats, stubEmbedding } from "../src/embeddings.js";
 import { handleToolCall } from "../src/mcp-server.js";
 import { exportForSync, getSyncDir } from "../src/sync-export.js";
@@ -453,7 +454,10 @@ describe("Final Integration: cross-phase end-to-end", () => {
     expect(corrected.embeddings).toBe(0);
     expect(corrected.context).toContain("[MEMEX CORRECTION]");
     expect(corrected.context).toContain("Runtime session store is Redis Cluster");
-    expect(corrected.context).toContain('earlier: "Runtime session store is Redis"');
+    const payloadStart = corrected.context.indexOf(`${MEMORY_CONTEXT_OPEN}\n`) + MEMORY_CONTEXT_OPEN.length + 1;
+    const payloadEnd = corrected.context.lastIndexOf(`\n${MEMORY_CONTEXT_CLOSE}`);
+    expect(JSON.parse(corrected.context.slice(payloadStart, payloadEnd)))
+      .toContain('earlier: "Runtime session store is Redis"');
     zero.stale_fact_correction_failure = corrected.context.includes("Redis Cluster") ? 0 : 1;
 
     // Different workstream in the same project: unmerged workstream truth never leaks.

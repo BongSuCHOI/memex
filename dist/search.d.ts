@@ -1,3 +1,4 @@
+import { type FactSearchLane } from './fact-db.js';
 import { SearchResult, MultiConceptResult } from './types.js';
 import type DatabaseType from 'better-sqlite3';
 export declare function getSearchDb(): DatabaseType.Database;
@@ -32,7 +33,12 @@ export interface KnowledgeContext {
         category: string;
         domain: string;
         categoryName: string;
-        similarity: number;
+        /** Semantic similarity, or null when the result is lexical-only. */
+        similarity: number | null;
+        /** Explicit lane metadata populated by getKnowledgeContext. */
+        lane: FactSearchLane;
+        semanticSimilarity: number | null;
+        lexicalScore: number | null;
         relatedFacts: Array<{
             fact: string;
             relationType: string;

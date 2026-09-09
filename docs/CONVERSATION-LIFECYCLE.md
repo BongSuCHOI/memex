@@ -124,6 +124,11 @@ flowchart LR
 
 Startup/resume의 background 작업은 독립 async entry입니다. 다만 maintenance launcher는 Continuity P0/P1 backlog가 있으면 그것만 깨우고 lower fact/derived worker는 다음 lifecycle로 미룹니다. `clear`는 old residency/carry를 폐기합니다. `compact`는 `PostCompact` 없이 epoch을 idempotent하게 ensure하고 새 query/model call 없이 local Capsule 또는 deterministic tail baton과 latest active carry revision을 즉시 반환합니다. Workstream은 resume exact → explicit → same workspace/branch의 유일 active candidate → deterministic topic margin → session-local 순서로 bind하며, branch는 hint이고 latest session은 fallback이 아닙니다.
 
+Async SessionStart의 sync/import/version 상태 안내는 stderr로만 출력합니다. stdout은
+호스트가 모델 입력으로 전달할 수 있으므로 운영 로그를 쓰지 않습니다. 동기 Continuity와
+UserPromptSubmit의 JSON additionalContext는 계속 stdout으로 전달하며, 공통 launcher에서
+전체 stdout을 차단하지 않습니다.
+
 ### UserPromptSubmit
 
 prompt/session/project를 받아 stable project/workspace/workstream scope를 확정한 뒤 warm sidecar를 우선 사용하고 불가능하면 같은 retrieval core의 cold path로 fallback합니다. `project.memory_revision > session.memory_revision_seen`이면 semantic match보다 correction을 먼저 처리합니다. Bounded correction이 여러 boundary에 걸치면 실제 emitted revision만 residency에 누적하고 모든 관련 correction이 소진되기 전에는 revision을 seen 처리하지 않습니다. context를 반환하기 전에 `recall_events`에 durable `prepared` receipt를 기록하고, hook stdout emit 후 `emitted`로 전환합니다.
@@ -160,6 +165,7 @@ meta.json   # integrity manifest
 - ontology relations
 - `vec_*` tables
 - `fact_context_dependencies`
+- `fact_evidence_receipts`, `fact_integrity_repairs`
 
 ### Generation commit
 
@@ -200,6 +206,9 @@ partial generation이나 malformed row를 일부만 적용하지 않습니다.
 ### Semantic winner
 
 `semantic_updated_at`이 더 최신인 의미가 승리합니다. 정확한 timestamp tie는 canonical semantic key로 결정합니다.
+Import plan은 embedding 전에 `replicated` MutationPolicy를 캡처하고 최종 transaction에서 local
+semantic/placement 상태를 확인합니다. Lifecycle 축은 별도 LWW를 유지합니다. Peer authority는 보존하되
+local entailment receipt로 승격하지 않으며 semantic replacement는 이전 local receipt를 지웁니다.
 
 ### Lifecycle winner
 
@@ -262,4 +271,5 @@ archive/index는 재구축 가능해야 합니다. `verify --repair`와 일반 i
 sync durable state는 DB를 새로 만들더라도 peer generations에서 다시 import할 수 있습니다. 반면
 ontology, KR translation, relation, vectors와 `fact_context_dependencies`는 local state입니다.
 Context dependency는 peer generation에서 재구성하지 않으며 새 local extraction/consolidation이
-만드는 해석 lineage만 유지합니다.
+만드는 해석 lineage만 유지합니다. 기존 fact의 정합성 문제는 전체 삭제/재추출 대신
+[선별 복구](GUIDE.md#16-기억-정합성-감사와-선별-복구)로 preview와 exact finding 선택을 먼저 고정합니다.

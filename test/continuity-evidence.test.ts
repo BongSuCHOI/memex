@@ -105,7 +105,10 @@ it("the default Capsule worker passes its native object schema through the real 
 });
 
 it.each([
-  { change: { hypotheses: ["Unverified proposal"] }, error: "hypotheses contains invalid item" },
+  // The native provider schema rejects malformed array items before the
+  // worker's domain validator sees them; retain the fail-closed assertion at
+  // that boundary while the remaining cases exercise domain validation.
+  { change: { hypotheses: ["Unverified proposal"] }, error: "model output does not satisfy the requested schema" },
   { change: { objective: "x".repeat(501) }, error: "objective must be text" },
   { change: { carryFactRevisions: [["fact", 1, "2"]] }, error: "invalid revision identity" },
   { change: { hypotheses: [{ text: "Proposal", sourceExchangeIds: ["foreign"] }], sourceExchangeIds: ["foreign"] }, error: "missing or outside workstream" },

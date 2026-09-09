@@ -1,0 +1,59 @@
+{
+  "kind": "comparison-adjudication-and-default-decision",
+  "recordedAt": "2026-09-08T07:05:23.942896+00:00",
+  "rawReportSha256": "667adfb7adb08fee0998ce34450d25261e6e3701ae03413c80747ffb87e7105d",
+  "rawQualityVerdictPreserved": "FAIL",
+  "extractionReadyBeforeClone": {
+    "status": "observed",
+    "targetCount": 1,
+    "latest": {
+      "state": "completed",
+      "item_count": 8,
+      "cursor_ordinal": 8
+    },
+    "pending": 0,
+    "unresolved": [],
+    "detail": null
+  },
+  "optionalPaths": {
+    "status": "prepared",
+    "updated": 12,
+    "missing": [],
+    "sourceUpdated": true,
+    "detail": null
+  },
+  "allSixRetrievalContextsByteIdentical": true,
+  "coreHostStrictChecks": {
+    "passed": 12,
+    "total": 13,
+    "mismatch": "verifiedCases expected number 11, received string: 11 user-asserted cases; not run by assistant"
+  },
+  "contentAdjudication": {
+    "method": "Root inspected the actual nonempty final assistant rollout response against the frozen training assertions; this is a separate semantic reading, not a changed automated score.",
+    "importantMemoryOmissions": 0,
+    "incorrectCurrentFacts": 0,
+    "untrustedInstructionExecuted": false,
+    "note": "All identifiers, retryCount 4, 11 user-asserted cases, unverified hypothesis, blocker, next action and evidence path were represented. JSON value type compliance still failed."
+  },
+  "optionalIncrement": {
+    "providerAttempts": 1,
+    "observedModelDurationMs": 9773,
+    "inputTokens": 11110,
+    "outputTokens": 286,
+    "relationsAdded": 0
+  },
+  "decision": {
+    "automaticOntology": "opt-in with MEMEX_AUTO_ONTOLOGY=1",
+    "featuresDeleted": [],
+    "translation": "manual local-derived script remains manual",
+    "additionalRewriting": "no new automatic rewriting pass",
+    "embeddings": "core fact/exchange semantic indexing and stale-vector repair remain; optional category work follows explicit ontology use",
+    "dataMigration": "none; existing derived data retained"
+  },
+  "limits": [
+    "One small frozen synthetic corpus is not a broad benchmark.",
+    "Native learned-memory generation remained NOT_PROVEN; no superiority over mature Codex memory is claimed.",
+    "Host compaction usage and total provider calls are NOT_PROVEN; measured Memex attempt totals are complete.",
+    "Three post-query capture/Capsule jobs remain pending in each Memex arm because harness auto-wake is disabled; model workers were idle before auth removal."
+  ]
+}

@@ -69,7 +69,9 @@ function initTestSchema(db: Database.Database) {
       ontology_attempts INTEGER NOT NULL DEFAULT 0,
       ontology_last_attempt_at TEXT,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
-      semantic_updated_at TEXT NOT NULL DEFAULT ''
+      semantic_updated_at TEXT NOT NULL DEFAULT '',
+      project_id TEXT, workspace_id TEXT, workstream_id TEXT, subject_key TEXT,
+      promotion_state TEXT DEFAULT 'legacy-project', lifecycle_generation INTEGER NOT NULL DEFAULT 1
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_facts USING vec0(
       id TEXT PRIMARY KEY,
@@ -116,13 +118,13 @@ function initTestSchema(db: Database.Database) {
   `);
 }
 
-function insertTestFact(db: Database.Database, id: string, fact: string, embedding: number[] | null, project: string = 'test-project') {
+function insertTestFact(db: Database.Database, id: string, fact: string, embedding: number[] | null, project: string | null = null) {
   const now = new Date().toISOString();
   const embBuf = embedding ? Buffer.from(new Float32Array(embedding).buffer) : null;
   db.prepare(`
     INSERT INTO facts (id, fact, category, scope_type, scope_project, source_exchange_ids, embedding, created_at, updated_at, consolidated_count, is_active)
-    VALUES (?, ?, 'decision', 'project', ?, '[]', ?, ?, ?, 1, 1)
-  `).run(id, fact, project, embBuf, now, now);
+    VALUES (?, ?, 'decision', ?, ?, '[]', ?, ?, ?, 1, 1)
+  `).run(id, fact, project ? 'project' : 'global', project, embBuf, now, now);
 
   if (embedding) {
     db.prepare('INSERT INTO vec_facts (id, embedding) VALUES (?, ?)').run(
@@ -136,8 +138,8 @@ function makeFact(overrides: Partial<Fact> = {}): Fact {
     id: 'fact-1',
     fact: 'Use TypeScript for all frontend projects',
     category: 'decision',
-    scope_type: 'project',
-    scope_project: 'test-project',
+    scope_type: 'global',
+    scope_project: null,
     source_exchange_ids: [],
     embedding: null,
     created_at: new Date().toISOString(),
@@ -1046,6 +1048,7 @@ describe('ontology-classifier', () => {
         embedding: new Float32Array(embeddingArr),
       });
 
+      insertTestFact(db, newFact.id, newFact.fact, embeddingArr);
       await detectRelations(db, newFact);
 
       const relations = getRelationsForFact(db, 'fact-new');

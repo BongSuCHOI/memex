@@ -136,7 +136,7 @@ describe('avatar-responder', () => {
     });
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.confidence).toBe(1);
   });
 
@@ -151,7 +151,7 @@ describe('avatar-responder', () => {
     });
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.confidence).toBe(0);
   });
 
@@ -162,7 +162,7 @@ describe('avatar-responder', () => {
     (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue(null);
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('Raw text response');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.answer).toBe('Raw text response');
     expect(result.confidence).toBe(0);
     expect(result.sources).toEqual([]);
@@ -178,7 +178,7 @@ describe('avatar-responder', () => {
     });
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.confidence).toBe(0);
   });
 
@@ -194,7 +194,7 @@ describe('avatar-responder', () => {
     });
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.sources.length).toBe(2);
   });
 
@@ -209,7 +209,7 @@ describe('avatar-responder', () => {
     });
     (callMemoryModel as ReturnType<typeof vi.fn>).mockResolvedValue('{}');
 
-    const result = await askAvatar(db, 'question');
+    const result = await askAvatar(db, 'question', undefined, 'all');
     expect(result.sources.length).toBe(1);
     expect(result.sources[0].relevance).toBeGreaterThan(0);
     expect(result.sources[0].relevance).toBeLessThanOrEqual(1);

@@ -153,7 +153,11 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/continuity-worker.ts` | P0 hash-verified prefix ingest와 P1 typed Capsule update; partition ordering/retry/CAS |
 | `src/archive-ingestion.ts` | canonical desired-set ingest와 monotonic prefix ingest 분리 |
 | `src/consolidator.ts` | DUPLICATE/CONTRADICTION/EVOLUTION/INDEPENDENT 판단 |
-| `src/fact-management.ts` | semantic/lifecycle mutation과 CAS |
+| `src/read-scope.ts` | 필수 stable ReadScope와 membership 검증 |
+| `src/legacy-read-scope.ts` | canonical path reader compatibility, read-only overlay |
+| `src/fact-policy.ts` | MutationPolicy, 통합 적격성, local evidence receipt |
+| `src/fact-management.ts` | policy 기반 semantic/lifecycle transaction과 CAS |
+| `src/fact-integrity.ts` | read-only 감사, exact preview 선택, 멱등 선별 복구 |
 | `src/sync-export.ts` | durable generation export |
 | `src/sync-import.ts` | protocol v4 검증과 axis별 reconciliation |
 | `src/ontology-classifier.ts` | taxonomy classification, attempt/fallback 관리 |
@@ -253,11 +257,19 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
 - extraction의 fact/provenance/context dependency/saved count/watermark는 같은 transaction에 있습니다.
 - semantic mutation은 revision, context dependency 정리, vectors, KR/ontology invalidation, relation cleanup을 하나의 commit으로 처리합니다.
 - async derived writer는 계산 전에 generation/epoch을 캡처하고 commit 시 다시 검증합니다.
-- consolidation은 semantic + lifecycle generation을 함께 CAS합니다.
+- consolidation은 ReadScope와 별개로 mutation 적격성을 검사하고, 참가자의 의미·활성·placement와 원문 fingerprint를 최종 commit에서 검증합니다. 자동 의미 변경은 검증된 입력 문장만 채택합니다.
 - replicated lifecycle은 원격 event time을 보존하며 commit transaction 안에서 LWW를 다시 판단합니다.
 - privacy purge는 authoritative source뿐 아니라 excluded context에 의존한 fact도 제거하고,
   taxonomy 전체를 invalidate하며 taxonomy epoch를 증가시켜 in-flight classifier를 폐기합니다.
 - 실패한 background 작업은 완료로 가장하지 않으며 다음 lifecycle에서 재시도할 수 있어야 합니다.
+
+모델 호출은 기존 Codex usage 관측을 local `model_work_budgets` / `model_work_attempts`에 연결합니다.
+`model_work_targets`는 호출을 시작하기 전에 선택한 파생 작업을 기록하여, 한도 때문에 아직
+호출하지 못한 대상도 대기 상태와 재개 범위에 포함합니다.
+같은 maintenance wave의 추출·검증·재시도·Capsule·통합·요청된 분류는 durable budget ID를 공유합니다.
+프로세스 안의 context 전달은 ID 운반 수단이며 실제 상한은 SQLite reservation이 집행합니다.
+예산이 소진되면 미완료 작업과 이유를 보존하고, 새 한도는 명시적 `model-work resume --new-run`으로
+부여합니다. 완료된 wave 이후의 새 증거는 별도 run으로 처리합니다.
 
 ## 8. 보안과 신뢰 경계
 

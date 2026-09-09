@@ -379,7 +379,59 @@ npx vitest run \
   test/fact-extraction-eval.test.ts
 ```
 
-## 9. Release 원칙
+## 9. 기억 정합성 회귀와 복구 증거
+
+[Memory integrity run](verification/memory-integrity/README.md)은 runtime 수정 전 고정한 입력과
+환경, 수정 전 실패, 같은 입력의 수정 후 비교 및 복구 집계를 소유합니다. `baseline.json`은
+과거 관측으로 보존하며 결과를 덮어쓰지 않습니다.
+
+```bash
+npx vitest run test/memory-integrity.test.ts test/continuity-hot-cursor.test.ts test/continuity-final-integration.test.ts
+npx vitest run test/memory-integrity-policy.test.ts test/fact-integrity.test.ts
+node --test test/memory-integrity-tools-slice.test.mjs
+```
+
+첫 명령의 세 fixture hash를 before/after에서 비교합니다. 이는 deterministic model/embedding seam과
+실제 SQLite transaction을 사용한 구조적 회귀 증거입니다. 같은 구현자가 fixture와 변경을 만들었으므로
+독립 holdout이나 real-model accuracy/recall 평가로 해석하지 않습니다. 실패 verdict를 고정해도
+scope, unsupported rewrite, source/participant CAS와 tombstone 경계가 지켜지는지 검증합니다.
+독립 cold read의 우려와 채택/미채택 이유도 run 문서에 남깁니다.
+
+백업은 파일 개수만 세지 않고 독립 restore hash와 DB integrity/FK를 검사합니다. Live 감사/복구는
+preview fingerprint, exact selection, durable row hash 불변, 반복 적용 0건과 후속 audit를 증거로 남깁니다.
+원문·정확한 fact/source ID·전체 보고서는 ignored private 경로에 보존하고 public receipt는 집계만 싣습니다.
+
+## 10. Codex 실사용: lifecycle, 호출 예산, 검색
+
+[Codex usability run](verification/codex-usability/README.md)은 지원 host 버전의 실제 이벤트,
+고정 입력의 네 조건 비교, 작업별 호출 관측과 최종 주입 예산을 기록합니다.
+App-server compaction/interrupt 성공은 Memex hook 전달 성공을 대신하지 않습니다.
+Fixture replay, 실제 host 이벤트, context prepared, stdout emitted, host acceptance를 각각 구분합니다.
+Host 수락 증거가 없으면 `NOT_PROVEN`으로 남깁니다.
+네 조건 비교의 host 답변은 공통 type-only JSON Schema를 `--output-schema`로 전달합니다.
+스키마 준수와 정답 일치는 별도이며, null이나 설명 문자열을 정답 숫자로 변환하지 않습니다.
+Async 운영 안내는 `test/async-hook-output-slice.test.mjs`에서 실제 background CLI와
+분리된 import/version hook process로 stdout 비어 있음과 stderr 출력을 검증합니다.
+[출력 채널 통제 실험](verification/codex-usability/hook-output-control.json)은 stdout의
+developer 메시지 전달과 추가 답변을 관측했으며, 이전 all-null 응답 자체를 재현한 것은 아닙니다.
+`test/identifier-source-evidence.test.ts`와 `test/continuity-recall.test.ts`는 식별자 누락,
+basename/full-path 구분, 같은 원문의 여러 식별자, scope/provenance, offline 주입과
+receipt 직전 edit/delete/exclusion/rebind race를 검증합니다. 기존 parser fixture는 compaction
+replacement-history가 user evidence로 저장되지 않는 경계를 검증합니다.
+[동일 DB 재현](verification/codex-usability/identifier-replay-review.json)은 재추출 없이
+fresh epoch의 식별자 검색이 4/5에서 5/5로 개선됐음을 기록합니다.
+[수정 후 네 조건 비교](verification/codex-usability/comparison-rootfix-review.json)는
+모든 최종 답변 13/13과 Memex 두 조건의 식별자 검색 5/5를 별도로 기록합니다.
+Stale-Capsule content probe는 정답을 query에 넣지 않고, 새 DB의 capture-index를 먼저 완료한 뒤
+실제 답변의 `recentCorrections`와 stale/pending 상태를 검사합니다. 색인 준비 단계의 모델 호출은
+금지합니다. [승인 후 실제 관측](verification/codex-usability/stale-content.json)은 이전 차단 기록을
+덮어쓰지 않는 별도 receipt입니다.
+
+비교 입력과 학습 전 snapshot은 hash로 고정합니다. 각 조건은 분리된 Codex/Memex home을 쓰며
+기본 메모리의 background 생성 자격이 아직 충족되지 않은 결과를 성숙한 메모리 품질로 해석하지 않습니다.
+검색의 deterministic 정답 검사와 실제 모델의 답변 품질도 별도 결과입니다.
+
+## 11. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:
 

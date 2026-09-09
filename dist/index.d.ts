@@ -6,7 +6,7 @@ export * from './parser.js';
 export * from './search.js';
 export * from './summarizer.js';
 export * from './paths.js';
-export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, searchSimilarFacts, searchSimilarFactsSameScope, getTopFacts, getNewFactsSince, getPendingConsolidationFacts, searchAllFacts, } from './fact-db.js';
+export { getActiveFacts, getFactsByProject, getRevisions, searchFactsByScope, searchFactsInScope, listFactsInScope, factMatchesReadScope, searchSimilarFacts, searchSimilarFactsSameScope, getTopFacts, getNewFactsSince, getPendingConsolidationFacts, searchAllFacts, } from './fact-db.js';
 export type { FactSearchScope } from './fact-db.js';
 export * from './fact-extractor.js';
 export * from './fact-management.js';
@@ -15,3 +15,7 @@ export type { WorkspaceIdentity, WorkspaceLocationKind } from './continuity-iden
 export * from './chronicle.js';
 export * from './consolidator.js';
 export * from './llm.js';
+export * from './read-scope.js';
+export { captureMutationPolicy } from './fact-policy.js';
+export type { MutationPolicy } from './fact-policy.js';
+export { auditMemoryIntegrity, applyIntegrityRepairs } from './fact-integrity.js';

@@ -24,15 +24,17 @@ import {
   type SearchOptions,
 } from "./search.js";
 import { formatConversationAsMarkdown } from "./show.js";
+import { adaptLegacyReadScope } from "./legacy-read-scope.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { initDatabase } from "./db.js";
 import {
-  searchFactsByScope,
-  listFactsByScope,
+  searchFactsInScope,
+  searchFactsCombinedInScope,
+  listFactsInScope,
   getRevisions,
-  factMatchesScope,
+  factMatchesReadScope,
   rowToFact,
-  type FactSearchScope,
+  type ReadScope,
 } from "./fact-db.js";
 import {
   CHRONICLE_LANE_LABELS,
@@ -48,7 +50,7 @@ import {
   getOntologyTree,
   listDomains,
   listCategories,
-  getRelatedFacts,
+  getRelatedFactsInScope,
 } from "./ontology-db.js";
 import { askAvatar } from "./avatar-responder.js";
 import path from "path";
@@ -243,7 +245,7 @@ type AskAvatarInput = z.infer<typeof AskAvatarInputSchema>;
 // canonical absolute Codex thread cwd, or an explicit global/all scope.
 
 type StableResolvedScope = {
-  factScope: FactSearchScope;
+  factScope: ReadScope;
   scope: "project" | "workspace" | "workstream" | "session" | "global" | "all";
   projectId: string | null;
   workspaceId: string | null;
@@ -345,7 +347,7 @@ function resolveStableScope(
     `).get(legacyProject) as { project_id: string } | undefined;
     if (!known) {
       return {
-        factScope: { type: "project", project: legacyProject },
+        factScope: adaptLegacyReadScope(db, { type: "project", project: legacyProject }),
         scope,
         projectId: null,
         workspaceId: null,
@@ -385,7 +387,7 @@ function handleError(error: unknown): string {
 const server = new Server(
   {
     name: "memex",
-    version: "0.4.1",
+    version: "0.4.2",
   },
   {
     capabilities: {
@@ -1030,15 +1032,21 @@ export async function handleToolCall(
     if (name === "search_facts") {
       const params = SearchFactsInputSchema.parse(args);
 
-      await initEmbeddings();
       const db = initDatabase();
       try {
         // Stable identity is resolved from explicit IDs or a caller-supplied
         // compatibility path. MCP process cwd is never consulted.
         const scopeInfo = resolveStableScope(db, params, "search_facts");
-        const queryEmbedding = await generateEmbedding(params.query, "query");
-        const results = searchFactsByScope(
+        let queryEmbedding: number[] | null = null;
+        try {
+          await initEmbeddings();
+          queryEmbedding = await generateEmbedding(params.query, "query");
+        } catch {
+          queryEmbedding = null;
+        }
+        const results = searchFactsCombinedInScope(
           db,
+          params.query,
           queryEmbedding,
           scopeInfo.factScope,
           params.limit,
@@ -1063,8 +1071,13 @@ export async function handleToolCall(
           ]),
         );
 
-        for (const { fact, distance } of results) {
-          const similarity = (1 - (distance * distance) / 2).toFixed(3);
+        for (const { fact, distance, lane, semanticSimilarity, lexicalScore } of results) {
+          const lexicalLabel = (lexicalScore ?? 0) >= 2 ? "exact text match" : "lexical match";
+          const similarity = semanticSimilarity === null
+            ? lexicalLabel
+            : lane === "both"
+              ? `${semanticSimilarity.toFixed(3)} (semantic) + ${lexicalLabel}`
+              : (1 - (distance * distance) / 2).toFixed(3);
           const catInfo = fact.ontology_category_id
             ? catMap.get(fact.ontology_category_id)
             : undefined;
@@ -1090,15 +1103,7 @@ export async function handleToolCall(
           }
 
           // Show graph relations for this fact
-          const related = getRelatedFacts(
-            db,
-            fact.id,
-            1,
-            0.6,
-            0.2,
-            scopeInfo.legacyProject,
-            scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
-          );
+          const related = getRelatedFactsInScope(db, fact.id, scopeInfo.factScope, { hops: 1 });
           if (related.length > 0) {
             output += `- Related:\n`;
             for (const { fact: relFact, relation } of related) {
@@ -1202,16 +1207,7 @@ export async function handleToolCall(
               output += `  - ID: ${fact.id} | Confirmed: ${fact.consolidated_count}x | ${fact.created_at.slice(0, 10)}\n`;
 
               if (params.include_relations) {
-                const related = getRelatedFacts(
-                  db,
-                  fact.id,
-                  1,
-                  0.6,
-                  0.2,
-                  scopeInfo.legacyProject,
-                  scopeInfo.scope === "global" || scopeInfo.scope === "all" ? scopeInfo.scope : "project",
-                  scopeInfo.factScope,
-                );
+                const related = getRelatedFactsInScope(db, fact.id, scopeInfo.factScope, { hops: 1 });
                 if (related.length > 0) {
                   for (const { fact: relFact, relation } of related) {
                     output += `  - ↔ [${relation.relation_type}] "${relFact.fact}"\n`;
@@ -1329,7 +1325,7 @@ export async function handleToolCall(
             return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} not found` }] };
           }
           const fact = rowToFact(row);
-          if (!factMatchesScope(db, fact, traceScope.factScope)) {
+          if (!factMatchesReadScope(db, fact, traceScope.factScope)) {
             return { content: [{ type: "text", text: `trace_fact: fact ${params.fact_id} is outside ${traceScope.label}` }], isError: true };
           }
           results = [{ fact, distance: null }];
@@ -1338,13 +1334,13 @@ export async function handleToolCall(
             SELECT * FROM facts WHERE subject_key = ? ORDER BY is_active DESC, updated_at DESC LIMIT 50
           `).all(params.subject_key) as Array<Record<string, unknown>>;
           results = rows.map(rowToFact)
-            .filter((fact) => factMatchesScope(db, fact, traceScope.factScope))
+            .filter((fact) => factMatchesReadScope(db, fact, traceScope.factScope))
             .slice(0, params.limit)
             .map((fact) => ({ fact, distance: null }));
         } else {
           await initEmbeddings();
           const queryEmbedding = await generateEmbedding(params.query as string, "query");
-          results = searchFactsByScope(
+          results = searchFactsInScope(
             db,
             queryEmbedding,
             traceScope.factScope,
@@ -1493,15 +1489,7 @@ export async function handleToolCall(
           }
 
           // Show graph relations
-          const related = getRelatedFacts(
-            db,
-            fact.id,
-            1,
-            0.6,
-            0.2,
-            traceScope.legacyProject,
-            traceScope.scope === "global" || traceScope.scope === "all" ? traceScope.scope : "project",
-          );
+          const related = getRelatedFactsInScope(db, fact.id, traceScope.factScope, { hops: 1 });
           if (related.length > 0) {
             output += `### Related Facts (1-hop)\n\n`;
             for (const { fact: relFact, relation } of related) {
@@ -1555,7 +1543,7 @@ export async function handleToolCall(
       const db = initDatabase();
       try {
         const gsScope = resolveStableScope(db, gs, "graph_stats");
-        const facts = listFactsByScope(db, gsScope.factScope);
+        const facts = listFactsInScope(db, gsScope.factScope);
         const factIds = new Set(facts.map((fact) => fact.id));
         const categoryRows = listCategories(db);
         const categoryById = new Map(categoryRows.map((category) => [category.id, category]));
@@ -1653,12 +1641,12 @@ export async function handleToolCall(
           scope: "project",
         }, "cross_project_insights");
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const crossProjectResults = searchFactsByScope(
+        const crossProjectResults = searchFactsInScope(
           db,
           queryEmbedding,
           cxScope.projectId
             ? { type: "other-project-id", projectId: cxScope.projectId }
-            : { type: "other-projects", project: cxScope.legacyProject as string },
+            : adaptLegacyReadScope(db, { type: "other-projects", project: cxScope.legacyProject as string }),
           params.limit,
           0.5,
         );
@@ -1734,14 +1722,13 @@ export async function handleToolCall(
       try {
         const egScope = resolveStableScope(db, params, "explore_graph");
         const queryEmbedding = await generateEmbedding(params.query, "query");
-        const seedFacts = searchFactsByScope(
+        const seedFacts = searchFactsInScope(
           db,
           queryEmbedding,
           egScope.factScope,
           3,
           0.5,
         );
-        const seedIds = new Set(seedFacts.map((r) => r.fact.id));
 
         if (seedFacts.length === 0) {
           return {
@@ -1785,17 +1772,7 @@ export async function handleToolCall(
           allDiscovered.add(seedFact.id);
 
           // Multi-hop traversal, confined to the resolved scope:
-          const related = getRelatedFacts(
-            db,
-            seedFact.id,
-            params.hops,
-            0.6,
-            0.2,
-            egScope.legacyProject,
-            egScope.scope === "global" || egScope.scope === "all" ? egScope.scope : "project",
-            egScope.factScope,
-          ).slice(0, 20);
-          void seedIds;
+          const related = getRelatedFactsInScope(db, seedFact.id, egScope.factScope, { hops: params.hops }).slice(0, 20);
 
           if (related.length === 0) {
             output += `_No connected facts found._\n\n`;

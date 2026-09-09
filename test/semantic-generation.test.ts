@@ -123,7 +123,7 @@ describe("semantic generation lifecycle", () => {
     });
     expect(genOf(id)).toBe(1);
 
-    await mutateFactMeaning(db, { factId: id, newText: "The deploy pipeline runs on bare metal runners" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "The deploy pipeline runs on bare metal runners" });
     expect(genOf(id)).toBe(2);
     const row = db
       .prepare("SELECT semantic_updated_at, updated_at FROM facts WHERE id = ?")
@@ -231,7 +231,7 @@ describe("T03: ontology classification generation race", () => {
     const batch = classifyFactsBatch(db, getActiveFacts(db));
     await waitUntil(() => llmGate.release !== null, "LLM call to start");
     // LLM 대기 중 의미가 바뀐다 — 세대 2, 분류 pending 리셋.
-    await mutateFactMeaning(db, { factId: id, newText: "Metrics are exported once per second" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "Metrics are exported once per second" });
     llmGate.release!();
 
     const result = await batch;
@@ -290,7 +290,7 @@ describe("ontology attempt ledger generation guard (재감사 P1-8)", () => {
     recordOntologyAttempt(db, id, 1);
     recordOntologyAttempt(db, id, 1);
     // park 직전에 의미가 변이된다 — gen2, attempts 리셋.
-    await mutateFactMeaning(db, { factId: id, newText: "Deploys are canary rolling" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "Deploys are canary rolling" });
     // 옛 writer의 park 시도 — 새 의미가 박히면 안 된다.
     persistFallbackClassification(db, id, 1);
     const mutated = db
@@ -340,7 +340,7 @@ describe("relation writer generation race", () => {
     });
     const detection = detectRelations(db, source);
     await waitUntil(() => llmGate.release !== null, "relation LLM call to start");
-    await mutateFactMeaning(db, { factId: targetId, newText: "Rate limiting moved to a sliding window" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: targetId, newText: "Rate limiting moved to a sliding window" });
     llmGate.release!();
     await detection;
 
@@ -379,7 +379,7 @@ describe("relation writer generation race", () => {
     });
     const detection = detectRelations(db, source);
     await waitUntil(() => llmGate.release !== null, "relation LLM call to start");
-    await mutateFactMeaning(db, { factId: sourceId, newText: "Queues are drained with exactly-once delivery" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: sourceId, newText: "Queues are drained with exactly-once delivery" });
     llmGate.release!();
     await detection;
 
@@ -399,7 +399,7 @@ describe("relation writer generation race", () => {
       embedding: new Array(384).fill(0.05),
     });
     await expect(
-      mutateFactMeaning(db, {
+      mutateFactMeaning(db, { chronicle: { actor: "user" },
         factId: id,
         newText: "The API version is v3",
         expectedPreviousFact: "The API version is v1",
@@ -440,7 +440,7 @@ describe("sync import commit-time revalidation (T06 CAS half)", () => {
     const importing = importFromSync();
     await waitUntil(() => embedGate.release !== null, "import embedding to start");
     // 원격 승자 판정 이후 embedding 대기 중에 로컬 의미 편집이 일어난다.
-    await mutateFactMeaning(db, { factId: localId, newText: "The session store is SQLite" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: localId, newText: "The session store is SQLite" });
     embedGate.release!();
     const result = await importing;
 
@@ -550,7 +550,7 @@ describe("consolidation verdict generation race (재감사 P1-2)", () => {
       await waitUntil(() => llmGate.release !== null, "consolidation LLM call to start");
       // LLM 대기 중 비교 대상 중 하나(first)의 의미가 변이된다 — DUPLICATE와
       // 달리 이전 구현은 CONTRADICTION/EVOLUTION에서 이 변이를 보지 못했다.
-      await mutateFactMeaning(db, { factId: firstId, newText: "Metrics are exported on demand" });
+      await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: firstId, newText: "Metrics are exported on demand" });
       llmGate.release!();
       const result = await draining;
 
@@ -582,11 +582,11 @@ describe("consolidation verdict generation race (재감사 P1-2)", () => {
       source_exchange_ids: [],
       embedding: new Array(384).fill(0.05),
     });
-    await mutateFactMeaning(db, { factId: id, newText: "The API version is v3" });
-    await mutateFactMeaning(db, { factId: id, newText: "The API version is v2" }); // 텍스트 복귀, 세대는 3
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "The API version is v3" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "The API version is v2" }); // 텍스트 복귀, 세대는 3
 
     await expect(
-      mutateFactMeaning(db, {
+      mutateFactMeaning(db, { chronicle: { actor: "user" },
         factId: id,
         newText: "The API version is v4",
         expectedPreviousFact: "The API version is v2", // 텍스트는 우연히 일치
@@ -615,7 +615,7 @@ describe("restoreFact generation race (재감사 P1-2)", () => {
     await waitUntil(() => embedGate.release !== null, "restore embedding to start");
     // 재임베딩 대기 중 의미가 변이된다 — restore가 커밋하면 "B 문장 + A 벡터 +
     // embedding_version=current" 조합이 되어 자가 치유가 못 본다.
-    await mutateFactMeaning(db, { factId: id, newText: "The cache TTL is ten minutes" });
+    await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId: id, newText: "The cache TTL is ten minutes" });
     embedGate.release!();
 
     await expect(restoring).rejects.toBeInstanceOf(StaleFactMutationError);

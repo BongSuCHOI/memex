@@ -322,9 +322,21 @@ accumulator를 전달하지 않으며 이 통계는 DB, extraction log, sync pay
 | `EVOLUTION` | existing identity를 더 최신/구체 의미로 갱신 |
 | `INDEPENDENT` | 두 fact 유지 |
 
-consolidation은 active participant를 대상으로 LLM 판단을 수행하므로, **LLM await 중 participant의 semantic 또는 lifecycle generation이 움직이면 verdict 전체를 stale로 폐기**합니다.
+읽기 가능한 후보와 수정 가능한 참가자는 다릅니다. 후보 검색은 stable `ReadScope` 안에서 시작하고,
+limit 전에 `consolidationEligibility`로 동일 project/workspace/workstream/promotion 범위만 남깁니다.
+Legacy 또는 불완전한 identity는 경로 일치만으로 통합하지 않습니다. 명확한 subject가 다르면 보존하고,
+`CONTRADICTION`/`EVOLUTION`은 같은 canonical subject와 `same_subject=true`, `same_conditions=true`를 요구합니다.
 
-DUPLICATE commit과 CONTRADICTION/EVOLUTION mutation은 semantic + lifecycle CAS를 사용해 deactivate→restore 같은 lifecycle churn 뒤 stale verdict가 다시 fact를 비활성화하지 못하게 합니다.
+자동 의미 변경은 시간·권위 판정을 통과한 새 fact의 **검증된 원문 그대로**만 채택합니다. 모델의
+`merged_fact`는 사용하지 않으므로 추가 종합 문장을 생성하는 경로도 없습니다. 향후 자동 재서술을
+다시 도입하려면 전체 문장의 원문 entailment 검증을 별도로 추가해야 합니다. Sourced participant와
+채택할 새 의미에는 현재 local evidence receipt가 필요하며 peer origin의 authority만으로 대신하지 않습니다.
+
+`MutationPolicy`는 최종 transaction에서 참가자의 의미·활성 세대·placement와 모델 호출 전 확보한
+원문/tool fingerprint를 재검사합니다. 수정·삭제·scope 이동이 있으면 stale verdict를 폐기합니다.
+검증 실패나 불명확한 판정은 두 fact를 보존하고 새 fact의 non-authoritative Chronicle note에 이유를
+남깁니다. Sibling text를 이 note에 복제하지 않습니다. Absorption은 commit 시점의 **양쪽 live lineage**를
+union하므로 모델/embedding 대기 중 들어온 provenance도 잃지 않습니다.
 
 DUPLICATE/CONTRADICTION/EVOLUTION 판정은 survivor에 participant의 local context dependency를
 set-union합니다. 이는 해석 경로를 보존할 뿐 `source_exchange_ids` provenance union의 authority를
@@ -332,13 +344,26 @@ set-union합니다. 이는 해석 경로를 보존할 뿐 `source_exchange_ids` 
 
 ## 6. Semantic mutation
 
-manual edit와 consolidation의 의미 변경은 `mutateFactMeaning()` 경로를 공유합니다.
+의미 변경의 핵심 API는 `mutateFactMeaningWithPolicy()`와 동기
+`applyFactMeaningMutationWithPolicy()`입니다. `MutationPolicy`가 없으면 실패합니다. Legacy
+`mutateFactMeaning()`은 명시적 `actor=user` 정정만 exact-ID policy로 변환하며, 자동 caller는 policy를
+제출해야 합니다. User 정정은 그 행위와 rationale을 Chronicle에 기록하고 scope/CAS를 확인합니다.
+Extraction은 source snapshot을 embedding 전후 확인하고, 현재 slot의 시간·권위 판단과 policy 검사를
+동일 transaction에서 수행합니다. Import는 별도 `replicated` policy를 사용해 semantic/placement CAS와
+독립적인 lifecycle LWW를 유지합니다. 명시적 subject placement와 workspace link/split은 `identity`
+policy와 membership 검사를 통과합니다. Tag/KR/표시 overlay는 의미 재검증 경로와 분리합니다.
+
+Local `fact_evidence_receipts`는 exact text hash, semantic generation, 검증에 사용한 모든 source/tool
+fingerprint를 기록합니다. 자동 변경은 이 집합 전체를 보존하며 Chronicle의 primary source 한 개로
+축소하지 않습니다. 과거 row에 receipt를 추정 생성하거나 peer receipt를 import하지 않습니다.
+Remote semantic replacement는 local receipt를 제거합니다. 상세 persisted contract는
+[SCHEMA.md](SCHEMA.md#local-evidence-and-repair-receipts)에 있습니다.
 
 한 semantic commit에서 처리해야 하는 것:
 
 - 기존 fact ID 유지
 - revision 추가
-- fact text/category/scope 변경
+- fact text 변경 (placement 변경은 explicit identity service)
 - `semantic_generation + 1`
 - `semantic_updated_at` 갱신
 - primary embedding/vector 교체 또는 invalidation
@@ -363,6 +388,9 @@ Semantic mutation은 같은 transaction에서 Chronicle `CHANGED` event를 appen
 - searchable primary/KR vector 제거
 - `lifecycle_generation + 1`
 - `lifecycle_updated_at = local event time`
+
+Inactive fact의 interpretive context는 history/restore와 privacy 역참조를 위해 남깁니다. 정합성 감사는
+부모 fact 또는 exchange가 사라진 context만 고아로 봅니다. 검색용 vector/relation과 수명 규칙이 다릅니다.
 
 ### Restore
 
@@ -409,6 +437,16 @@ stale 결과가 domain/category/relation을 다시 만들지 않습니다.
 
 classification이 반복 실패하면 bounded attempt ledger를 사용하고 MAX 이후 General/Misc fallback으로 park할 수 있습니다. privacy purge는 surviving fact의 attempts를 0으로 리셋해 새 taxonomy에서 다시 분류할 수 있게 합니다.
 
+자동 ontology 분류는 기본 비활성화이며 `MEMEX_AUTO_ONTOLOGY=1`로 명시적으로 활성화합니다.
+수동 `memex backfill ontology`는 유지됩니다. 기존 분류·관계 데이터는 보존하며 core fact/exchange
+embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 추가 재작성 단계는 추가하지 않습니다.
+
+모델 비용과 대기 상태는 `memex model-work status [budget-id] --json`으로 확인합니다.
+추출의 완료 상태와 이후 local-derived 분류 상태는 별개입니다. Fact commit 뒤 분류 예산이
+소진되어도 유효한 fact를 rollback하거나 extraction watermark를 다시 소비하지 않습니다.
+분류 overlay는 pending으로 유지합니다. 호출별 usage가 빠진 경우 전체 합계를 완전 관측으로
+해석하지 않습니다. 실제 한도와 재개 방법은 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단)를 따릅니다.
+
 ## 10. KR translation
 
 `fact_kr`는 local derived state이며 sync하지 않습니다. 자동 SessionStart translation은 수행하지 않습니다. 번역 모델 호출 비용을 명시적으로 통제하기 위해 현재는 수동 스크립트를 사용합니다.
@@ -450,7 +488,7 @@ hard delete는 full UUID와 explicit confirmation을 요구합니다. fact를 �
 삭제되는 fact의 `fact_context_dependencies`는 FK cascade로 함께 제거되며 dry-run impact에 해당
 row 수를 표시합니다.
 
-특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못합니다.
+특히 `reason = source_conversation_excluded`는 terminal privacy state입니다. 더 오래된 peer snapshot이나 lifecycle event가 해당 fact를 다시 살리지 못하고, 후속 일반 hard delete도 이 사유를 덮어쓰지 못합니다. 기존 DB의 선별 복구는 [운영 가이드](GUIDE.md#16-기억-정합성-감사와-선별-복구)를 따릅니다.
 
 ## 13. Chronicle (Phase 4)
 

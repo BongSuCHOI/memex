@@ -1,21 +1,21 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-07T05:40:01.745166+00:00",
+  "recordedAt": "2026-09-09T04:49:57.509775+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.0.0",
     "platform": "darwin arm64",
-    "isolation": "Fresh temporary CODEX_HOME/MEMEX_HOME for installer, marketplace, package and lifecycle E2E; network and Unix sockets allowed for the final required gate"
+    "isolation": "Temporary homes for install, package and lifecycle gates; the authenticated four-arm synthetic comparison is recorded separately."
   },
   "candidate": {
     "repository": "memex",
-    "branch": "codex/continuity-sequence-v7",
-    "codeSha": "2c18f66838955e1cf9b65d3ce66f1b8203c7346f",
-    "productionEvidenceSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
-    "packageVersion": "0.4.1",
+    "branch": "codex/memory-integrity",
+    "codeSha": "e3be25fc63aec8e7250ba1c54c60ecd31a59a375",
+    "packageVersion": "0.4.2",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
-    "note": "All nine required gates ran on this committed clean SHA. Only this receipt is committed afterward. Final source-archive package verification is reported separately with the published release to avoid a self-referential artifact hash."
+    "sameHead": true,
+    "note": "All eleven automated gates ran on this clean committed SHA. Receipt-only commit follows. Final release archive is verified separately before publication."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -24,147 +24,134 @@
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:36:40.872425+00:00",
-      "durationSeconds": 3.05,
-      "logSha256": "6791526fda8dcd6e9e3d39446d2abc9b8dc83b8219bf383d79a2ddc92948d2e8",
-      "observed": "TypeScript noEmit exit 0"
+      "startedAt": "2026-09-09T04:46:59.324488+00:00",
+      "durationSeconds": 3.236,
+      "logPath": "/private/tmp/memex-042-gates/typecheck.log",
+      "logSha256": "c8f41ab8c74adbf15be0836f98afb2de28d3d835b38e747c6d5c8633a38591eb"
     },
     {
       "name": "build",
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:36:43.924326+00:00",
-      "durationSeconds": 3.23,
-      "logSha256": "f227a3b5c7c7a89c1dac1c496bebca2b34426f400c551ee11799cd619af4826b",
-      "observed": "tsc and MCP bundle exit 0; tracked artifacts unchanged"
+      "startedAt": "2026-09-09T04:47:02.560470+00:00",
+      "durationSeconds": 3.565,
+      "logPath": "/private/tmp/memex-042-gates/build.log",
+      "logSha256": "bc7b5b44f7b689661e7b5cc531fc22d5d3aa4966c83dc6905ec59a5cf5cc3c38"
     },
     {
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:36:47.150597+00:00",
-      "durationSeconds": 18.32,
-      "logSha256": "4483f33843db2b6024ad68e5ebf119f03157bf77f8f4280f17149f5b081a987c",
-      "observed": "84 files / 904 tests passed"
+      "startedAt": "2026-09-09T04:47:06.126328+00:00",
+      "durationSeconds": 21.086,
+      "logPath": "/private/tmp/memex-042-gates/tests.log",
+      "logSha256": "d1180d78dd82c985a772a6e7815f46400202bb1f37f867c2149b331edbbc4f8f"
     },
     {
       "name": "codex-slice",
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:37:05.472756+00:00",
-      "durationSeconds": 3.87,
-      "logSha256": "c00f6469f09b763b73da9e6c7af24395b6bc9029fe6426a03d8e4ae328cd0596",
-      "observed": "26 pass / 0 fail"
+      "startedAt": "2026-09-09T04:47:27.213858+00:00",
+      "durationSeconds": 3.925,
+      "logPath": "/private/tmp/memex-042-gates/codex-slice.log",
+      "logSha256": "5c18cf770f21e4d8694c8115fd6b40812bd39146fceb2c706d9a7c66c8c48138"
     },
     {
       "name": "slice-tests",
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:37:09.342169+00:00",
-      "durationSeconds": 8.79,
-      "logSha256": "6f27850771dad8289951f8bc0d6430f008e0c770b37db3118e61e48b7e34bdf2",
-      "observed": "96 pass / 0 fail"
+      "startedAt": "2026-09-09T04:47:31.138895+00:00",
+      "durationSeconds": 11.133,
+      "logPath": "/private/tmp/memex-042-gates/slice-tests.log",
+      "logSha256": "fc4f4ebfecd7dddcc40f7f2ca95c30b337890e35e0dacb03e30d1634ffe538ee"
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:37:18.128099+00:00",
-      "durationSeconds": 8.21,
-      "logSha256": "57cda175740c4e551611dcca85e1c08ced03aed1d1fe16b186d62a18f1ed332e",
-      "observed": "Isolated install, idempotence, 9 MCP tools, doctor, first sync, removal and user-environment isolation passed"
+      "startedAt": "2026-09-09T04:47:42.275853+00:00",
+      "durationSeconds": 9.253,
+      "logPath": "/private/tmp/memex-042-gates/install-e2e.log",
+      "logSha256": "46de8c58f6409d86831a13a4ab5ae55c10e2759f2af7d02e91d9f399758f5e57"
     },
     {
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:37:26.338035+00:00",
-      "durationSeconds": 0.41,
-      "logSha256": "feb636eb95aa09738e355cfeb7b4f59794457ccd616665210199c168515b0025",
-      "observed": "Plugin 0.4.1; 3 skills; 7 lifecycle events; cleanup passed"
+      "startedAt": "2026-09-09T04:47:51.529162+00:00",
+      "durationSeconds": 0.457,
+      "logPath": "/private/tmp/memex-042-gates/marketplace-e2e.log",
+      "logSha256": "326d302e7b3ccb639fb2805248a04b1081428377c0958bd01773c6b5890475be"
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:37:26.748667+00:00",
-      "durationSeconds": 84.44,
-      "logSha256": "70c0134566b23b55f1841821e25d32125e379f8ca60751b89534950ffbac8df2",
-      "observed": "memex-0.4.1.tgz; 231 files; 1108605 packed bytes / 4440095 unpacked bytes; 9 MCP tools; onboarding and prompt/final-fence hooks passed"
+      "startedAt": "2026-09-09T04:47:51.986297+00:00",
+      "durationSeconds": 86.988,
+      "logPath": "/private/tmp/memex-042-gates/package-runtime-e2e.log",
+      "logSha256": "717e4b0ecc2e0582d2499e4f64a7876d6d36838b4845bda7f22a50c328e46c74"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-07T05:38:51.191010+00:00",
-      "durationSeconds": 8.25,
-      "logSha256": "4cfd0735dbdbb06ba7ed96991483b74fdfcc05698d5020c980ff4ecf4463d260",
-      "observed": "Offline 9/9; owned workers/sockets/listeners zero and user environment isolated"
+      "startedAt": "2026-09-09T04:49:18.974780+00:00",
+      "durationSeconds": 10.0,
+      "logPath": "/private/tmp/memex-042-gates/lifecycle-e2e.log",
+      "logSha256": "57c8c035ccf9a3d6680af78b4bc9cf6ba0b3b7d5278e823a5079bbb6b579b1b7"
+    },
+    {
+      "name": "codex-host-fixtures",
+      "command": "node --test test/codex-host-compat.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:49:28.979350+00:00",
+      "durationSeconds": 1.702,
+      "logPath": "/private/tmp/memex-042-gates/codex-host-fixtures.log",
+      "logSha256": "7d8f125c4d44aea663e0b4bef5ffcb1b897a4dc7faa1d06463e9e49ce0fdb983"
+    },
+    {
+      "name": "comparison-harness",
+      "command": "node --test test/codex-memory-comparison.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:49:30.681669+00:00",
+      "durationSeconds": 0.461,
+      "logPath": "/private/tmp/memex-042-gates/comparison-harness.log",
+      "logSha256": "b9a3b7650a1a9923fc50daed0e0b4e664a86b7d296e72a64e273e790c76906ad"
     }
   ],
-  "regressionCoverage": {
-    "workContextBudget": "Fresh/stale/oversized/empty/missing Capsule under 500 and 2000 character pressure",
-    "capsuleSequence": "Twenty alternating A/C updates; immutable generations; oversized fragments; fixed target and late input; sixth sibling Stop; retry/lease/purge/rebind CAS; v6 atomic replay; immutable page authority",
-    "hotEvidence": "Rendered eligible prefix only; budget/query suffix retained; insert/purge during await; compact and rebind cursor behavior",
-    "capture": "64 MiB + 1 byte and 256 MiB source; allocations bounded to 4 MiB; hashes, partial/oversized lines, crash seams, source mutation and replacement-epoch ingestion",
-    "capsuleOutputSchema": "Native object arrays only for Capsule, unchanged opt-out behavior for other callers, schema retained across retries, per-call file isolation/cleanup, exact local revision/provenance/length guards and rolling state metadata"
-  },
-  "hardSafety": {
-    "evidence": "Required automated tests and isolated E2E at candidate.codeSha",
-    "sourceRollouts": "Synthetic isolated fixtures only; production source rollouts not modified",
-    "privacyAndScope": "Purge/rebind/lease/epoch regression tests passed",
-    "liveModelAuthorityQuality": "Prior bounded synthetic cases only, attributed under reusedModelEvidence; not rerun at candidate.codeSha."
-  },
-  "archiveShadow": {
-    "status": "NOT_RUN",
-    "note": "Production archive evaluation and backfill were not run for this patch."
-  },
-  "reusedModelEvidence": {
+  "packageRuntime": {
     "status": "PASS",
-    "evidenceMode": "REUSED_NOT_RERUN",
-    "codeSha": "50a4bb4192b4b297237e6e4d50d4bbc270549ef7",
-    "receipt": "docs/verification/merge-gate-2026-09-07-capsule-schema.json",
-    "evidence": "docs/verification/capsule-output-schema-evaluation.json",
-    "evidenceSha256": "80fa0d4812aefb2c559f5c09c6c34e25a1fe5f0db82a1e7b1f7102971d553727",
-    "unchangedSourceFiles": [
-      "src/continuity-core.ts",
-      "src/continuity-worker.ts",
-      "src/continuity-evidence.ts",
-      "src/codex-exec.ts",
-      "src/llm.ts"
+    "artifact": "memex-0.4.2.tgz",
+    "packedBytes": 1296728,
+    "unpackedBytes": 5331451,
+    "files": 282,
+    "mcpTools": 9,
+    "onboarding": [
+      "setup --dry-run",
+      "sync",
+      "backfill all",
+      "status"
     ],
-    "observed": "Prior clean-SHA real Luna default-worker long fixture: 31996 characters / 24 exchanges / 3 pages, plus one revision-carry page, completed without retries. Supplemental precommit first-call probe was 5/5. Intermediate failure and controls remain in the evidence. No live model rerun is claimed at this release code SHA."
+    "hooks": [
+      "UserPromptSubmit valid-or-empty",
+      "SessionEnd final fence + deferred worker"
+    ]
   },
-  "cleanup": {
-    "unusedImportsRemoved": 3,
-    "orphanGeneratedModules": 0,
-    "missingCurrentDocFileLinks": 0,
-    "compatibility": "Released positional parameters, optional reader filters and executable aliases retained; no breaking removal.",
-    "testResources": "Offline lifecycle cleanup verified owned workers, inject sockets and test listeners zero; temporary plugin/hooks/data removed.",
-    "historicalReceipts": "Previous Capsule schema receipt preserved byte for byte as a0d2c55122fad6b1393f182cc16bb55c0055d7d94410e984de1c35d387336f48."
+  "priorEvidence": {
+    "receipt": "merge-gate-pre-0.4.2.json",
+    "codeSha": "eff1c25538d72d9a22b5ec38310e43784b0084d4",
+    "note": "Earlier restore, integrity, authenticated model and comparison observations retain their original dates, SHAs and limits; they were not rerun as live production evaluations."
   },
-  "historicalEvidence": {
-    "receipt": "docs/verification/merge-gate-2026-09-03.json",
-    "sha256": "32a7f956a84fd31931ededdaecdbd9cf4e5d3b4696bde306536e278a060743c2",
-    "preservedByteForByte": true,
-    "lockedRfcSha256": "146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a",
-    "sequenceReceipt": "docs/verification/merge-gate-2026-09-07-sequence.json",
-    "sequenceReceiptSha256": "46eb8629690c4e35c5c5d894a9cbbc54c960b4d35520c2cd9d188d3fb1adc108"
-  },
-  "limitations": [
-    "The authenticated installed-lifecycle tier was not rerun; the fresh lifecycle gate is the offline tier.",
-    "Real Luna observations are bounded synthetic evidence at their original SHA; no corpus-wide completeness or production failure-rate claim.",
-    "Historical extraction quality limitations remain in docs/verification/merge-gate-2026-09-03.json and were not reevaluated.",
-    "Schema 7 replays surviving evidence but cannot reconstruct already overwritten generations; older writers must not share the migrated database.",
-    "Package byte counts describe candidate.codeSha before this receipt-only commit. The final release source archive is separately exercised before publication."
-  ],
-  "releaseConclusion": "PASS-WITH-NOTES: all nine required gates passed on the clean 0.4.1 code candidate; unchanged Capsule model implementation reuses explicitly attributed synthetic real-model evidence. Historical model quality limits are not erased. Publication requires the final source-archive package check."
+  "releaseConclusion": "All eleven automated gates PASS on the clean 0.4.2 candidate: 95 files / 997 Vitest tests, 26 Codex slices, 103 total slices, installer/marketplace/package runtime, offline lifecycle, host fixtures and comparison harness. Long-term production recall quality is not established by these gates. Final release archive verification is recorded as a release asset."
 }

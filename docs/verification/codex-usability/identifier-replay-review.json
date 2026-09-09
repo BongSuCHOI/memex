@@ -1,0 +1,23 @@
+{
+  "scope": "Fixed retained extraction replay; no fact extraction or provider calls; each query gets a fresh copy of the same retained database and existing advanceContextEpoch(clear) resets residency on that copy only.",
+  "baselineCodeSha": "8286376d740b13323f2f698f050414544a8d2f60",
+  "baselineRuntime": "git archive HEAD dist package.json, before production changes; shared installed dependencies",
+  "baselineExactPassed": 4,
+  "patchedExactPassed": 5,
+  "exactTotal": 5,
+  "sourceDatabaseUnchanged": true,
+  "reports": {
+    "identifier-fresh-before.json": "3947b01576caf95f83c70110f0aa1771e8ed50860edbcdbdd7bb71b7e279b0bc",
+    "identifier-fresh-after.json": "2fecf6d14290fedfde19bcd3e2c939f3492b030c5601d773bf56b3f0292c9c94"
+  },
+  "interpretation": "The unchanged source has the omitted error identifier. The patch returns it as labeled raw context without adding it to current facts. Fresh-epoch replay removes the confound of intentional fact residency suppression.",
+  "diagnosticPostHostReplay": {
+    "beforeExactPassed": 3,
+    "afterExactPassed": 4,
+    "remainingMiss": "src/storage/checkpoint.ts is in an already-resident fact and is intentionally suppressed on the same context epoch; this is not missing source data."
+  },
+  "limitations": [
+    "Synthetic fixture; not a broad recall-quality evaluation.",
+    "Shared history remains available to a host; this deterministic replay checks production context output rather than exclusive attribution of a model answer to Memex."
+  ]
+}

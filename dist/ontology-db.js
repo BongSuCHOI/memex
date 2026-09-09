@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto';
 import { getVecTableDtype, embeddingToVecBlob, vecParamSql, normalizeVecDistance } from './db.js';
 import { EMBEDDING_VERSION } from './embeddings.js';
-import { factMatchesScope } from './fact-db.js';
+import { factMatchesReadScope } from './fact-db.js';
+import { assertReadScope } from './read-scope.js';
+import { legacyOptionalReadScope } from './legacy-read-scope.js';
+import { assertMutationPolicy } from './fact-policy.js';
 // === Taxonomy epoch (재감사 Privacy-P1 v4) ===
 /** Global taxonomy epoch — bumped on every FULL taxonomy invalidation (the
  * privacy purge). In-flight classification captures this value before its
@@ -168,18 +171,13 @@ export function classifyFact(db, factId, categoryId, expectedSemanticGeneration,
      WHERE id = ? AND semantic_generation = ?`).run(categoryId, new Date().toISOString(), factId, expectedSemanticGeneration).changes;
 }
 export function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
-    let query = `SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1`;
-    const params = [categoryId];
-    if (!identityScope && scopeType === 'global') {
-        query += ` AND scope_type = 'global'`;
-    }
-    else if (!identityScope && scopeProject && scopeType !== 'all') {
-        query += ` AND (scope_type = 'global' OR (scope_type = 'project' AND scope_project = ?))`;
-        params.push(scopeProject);
-    }
-    query += ` ORDER BY consolidated_count DESC`;
-    const facts = db.prepare(query).all(...params).map(rowToFact);
-    return identityScope ? facts.filter((fact) => factMatchesScope(db, fact, identityScope)) : facts;
+    const scope = legacyOptionalReadScope(db, scopeProject, scopeType, identityScope);
+    return getFactsByCategoryInScope(db, categoryId, scope);
+}
+export function getFactsByCategoryInScope(db, categoryId, scope) {
+    assertReadScope(db, scope);
+    return db.prepare('SELECT * FROM facts WHERE ontology_category_id = ? AND is_active = 1 ORDER BY consolidated_count DESC')
+        .all(categoryId).map(rowToFact).filter(fact => factMatchesReadScope(db, fact, scope));
 }
 export function getFactsByDomain(db, domainId) {
     return db
@@ -190,8 +188,31 @@ export function getFactsByDomain(db, domainId) {
         .all(domainId)
         .map(rowToFact);
 }
+/** Automatic relation writers must supply both read scope and participant policy. */
+export function createRelationInScope(db, sourceFactId, relationType, targetFactId, scope, policy, reasoning) {
+    assertReadScope(db, scope);
+    if (!policy)
+        throw new Error('MutationPolicy is required');
+    return createRelation(db, sourceFactId, relationType, targetFactId, reasoning, { readScope: scope, policy });
+}
 export function createRelation(db, sourceFactId, relationType, targetFactId, reasoning, opts = {}) {
     const insertTx = db.transaction(() => {
+        if (opts.policy) {
+            try {
+                assertMutationPolicy(db, opts.policy, sourceFactId);
+                assertMutationPolicy(db, opts.policy, targetFactId);
+                if (!opts.readScope)
+                    throw new Error('relation writer requires ReadScope');
+                for (const id of [sourceFactId, targetFactId]) {
+                    const row = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1').get(id);
+                    if (!row || !factMatchesReadScope(db, rowToFact(row), opts.readScope))
+                        return null;
+                }
+            }
+            catch {
+                return null;
+            }
+        }
         if (opts.expectedSourceGeneration !== undefined ||
             opts.expectedTargetGeneration !== undefined) {
             const genStmt = db.prepare('SELECT semantic_generation FROM facts WHERE id = ?');
@@ -263,12 +284,16 @@ export function createRelation(db, sourceFactId, relationType, targetFactId, rea
  * Results are sorted by relevance descending.
  * Facts below minRelevance are pruned.
  */
-/**
- * @param scopeProject - If provided, only return facts from this project or global scope.
- *                       Prevents cross-project noise in graph traversal.
- *                       Pass null/undefined to allow cross-project traversal (e.g., explore_graph).
- */
+/** @deprecated Read-only positional adapter; missing scope defaults to global. */
 export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance = 0.2, scopeProject, scopeType, identityScope) {
+    return getRelatedFactsInScope(db, factId, legacyOptionalReadScope(db, scopeProject, scopeType, identityScope), { hops, decay, minRelevance });
+}
+/** Scope is mandatory for the seed and every node before it can enter the frontier. */
+export function getRelatedFactsInScope(db, factId, scope, { hops = 1, decay = 0.6, minRelevance = 0.2 } = {}) {
+    assertReadScope(db, scope);
+    const seed = db.prepare('SELECT * FROM facts WHERE id = ? AND is_active = 1').get(factId);
+    if (!seed || !factMatchesReadScope(db, rowToFact(seed), scope))
+        return [];
     const visited = new Set([factId]);
     const results = [];
     let frontier = [factId];
@@ -312,11 +337,7 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             for (const [targetId, rows] of outByNeighbour) {
                 const fact = rowToFact(rows[0]);
                 // Scope filter:
-                if (identityScope && !factMatchesScope(db, fact, identityScope))
-                    continue;
-                if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global')
-                    continue;
-                if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
+                if (!factMatchesReadScope(db, fact, scope))
                     continue;
                 // Select the surfaced edge FIRST: a neighbour with no qualifying
                 // edge is PRUNED — it must not enter the frontier, or traversal
@@ -366,11 +387,7 @@ export function getRelatedFacts(db, factId, hops = 1, decay = 0.6, minRelevance 
             for (const [sourceId, rows] of inByNeighbour) {
                 const fact = rowToFact(rows[0]);
                 // Scope filter:
-                if (identityScope && !factMatchesScope(db, fact, identityScope))
-                    continue;
-                if (!identityScope && scopeType === 'global' && fact.scope_type !== 'global')
-                    continue;
-                if (!identityScope && scopeProject && fact.scope_type === 'project' && fact.scope_project !== scopeProject)
+                if (!factMatchesReadScope(db, fact, scope))
                     continue;
                 // Same pruning contract as the outgoing side: no qualifying edge →
                 // no frontier entry, no path leak.
@@ -408,6 +425,7 @@ export function getRelationsForFact(db, factId) {
 }
 // === Ontology Tree ===
 export function getOntologyTree(db, scopeProject, scopeType, identityScope) {
+    const scope = legacyOptionalReadScope(db, scopeProject, scopeType, identityScope);
     const domains = listDomains(db);
     const tree = [];
     for (const domain of domains) {
@@ -417,12 +435,12 @@ export function getOntologyTree(db, scopeProject, scopeType, identityScope) {
             categories: [],
         };
         for (const category of categories) {
-            const facts = getFactsByCategory(db, category.id, scopeProject, scopeType, identityScope);
-            if (facts.length > 0 || (!scopeProject && !scopeType)) {
+            const facts = getFactsByCategoryInScope(db, category.id, scope);
+            if (facts.length > 0 || scope.type === 'all') {
                 domainEntry.categories.push({ category, facts });
             }
         }
-        if (domainEntry.categories.length > 0 || (!scopeProject && !scopeType)) {
+        if (domainEntry.categories.length > 0 || scope.type === 'all') {
             tree.push(domainEntry);
         }
     }

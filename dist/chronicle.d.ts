@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+export { SUBJECT_KEY_PATTERN, isSemanticSubjectKey } from './fact-policy.js';
 import { CHRONICLE_EVENT_KINDS } from "./continuity-store.js";
 export { CHRONICLE_EVENT_KINDS };
 /**
@@ -200,10 +201,8 @@ export declare function currentEffectiveTime(db: Database.Database, factId: stri
     source: EffectiveAtSource;
 } | null;
 export declare function currentEffectiveAt(db: Database.Database, factId: string): string | null;
-export declare const SUBJECT_KEY_PATTERN: RegExp;
 /** Validate a model-proposed subject key against the stable slot grammar and its category prefix. */
 export declare function normalizeSubjectKey(raw: unknown, category: string): string | null;
-export declare function isSemanticSubjectKey(key: string | null | undefined): boolean;
 export declare function normalizeSlotText(text: string): string;
 export declare const AUTHORITY_RANK: Record<EvidenceAuthority, number>;
 export declare function evidenceAuthorityFromKinds(evidence: Array<{

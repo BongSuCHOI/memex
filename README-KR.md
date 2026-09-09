@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.4.1-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.2-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -201,6 +201,7 @@ memex status
 | `memex analyze` | deterministic 전체 이력 보고서 생성 |
 | `memex facts` | durable fact 조회·관리 |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
+| `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | pipeline readiness 확인 |
 | `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
@@ -224,6 +225,8 @@ Memex는 Codex의 전체 continuity lifecycle과 연결됩니다.
 | **Interrupt** | delta append와 interrupted/open fence 보존 |
 | **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
 | **PostCompact** | optional telemetry 전용; correctness 비의존 |
+
+자동 ontology는 명시적 opt-in(`MEMEX_AUTO_ONTOLOGY=1`)입니다. 수동 `memex backfill ontology`와 core embedding은 유지합니다. [실측 결과와 한계](docs/verification/codex-usability/README.md#four-arm-result-and-default-decision)를 참고하세요.
 | **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음 |
 
 Capture hook은 bounded local I/O만 수행합니다. Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
@@ -248,7 +251,7 @@ graph_stats
 
 project-sensitive 도구는 다음 중 하나가 필요합니다.
 
-- canonical absolute project path
+- stable project/workspace/workstream/session ID 또는 legacy canonical absolute project path
 - `scope: global`
 - `scope: all`
 
@@ -293,15 +296,16 @@ http://localhost:3847
 
 ## Scope와 Provenance
 
-Memex는 canonical absolute `session_meta.cwd`를 project identity로 사용합니다.
+Memex는 canonical absolute `session_meta.cwd`에서 로컬 workspace를 식별하고, stable `project_id`로 논리적 프로젝트를 구분합니다.
 
 지원하는 scope:
 
-- **project** — 해당 project와 필요한 global fact
+- **project** — project-wide truth와 필요한 global fact
+- **workspace/workstream/session** — 명시한 작업 범위와 허용된 상위 truth
 - **global** — global fact만
 - **all** — 사용자가 명시적으로 요청한 cross-project 접근
 
-cross-project leakage는 query, sync import, graph traversal, relation write 경계에서 차단합니다.
+읽기 범위와 통합 권한은 분리됩니다. 통합기는 다른 workstream이나 승격 상태의 fact를 흡수하지 않고, 검증된 새 문장만 채택합니다. 불명확한 legacy identity는 검토 대상으로 보존합니다. 검색·관련 사실·추적·graph의 모든 hop은 같은 scope를 적용합니다. 기존 DB의 [감사·백업·선별 복구](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구)는 전체 fact 재추출 없이 수행할 수 있습니다.
 
 Fact provenance는 두 경로를 분리합니다. `source_exchange_ids`에는 정확한 authoritative human 또는 trusted local-tool exchange만 들어가고 sync에서 단조 union하며, `consolidated_count`는 max로 수렴합니다. Local `fact_context_dependencies`는 fact 해석에 사용된 persisted long-range non-authoritative context dependency만 기록하며 immediate local context 사용은 저장하지 않습니다. Persisted set은 semantic verifier 사용 결과에서 canonicalize하고, authority로 승격하거나 protocol v4로 sync하지 않습니다.
 

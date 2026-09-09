@@ -51,6 +51,7 @@ COMMANDS:
   migrate-projects  Re-derive project identity from cwd evidence (CX-02 migration)
   home        Print the resolved Memex data root (read-only)
   status      Show pipeline readiness per stage (read-only)
+  model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|delete
 
@@ -384,6 +385,195 @@ Options:
           console.log(JSON.stringify(st, null, 2));
         } else {
           console.log(formatPipelineStatus(st));
+        }
+        break;
+      }
+
+      case "model-work": {
+        const valueFlags = new Set([
+          "--wave-id", "--max-attempts", "--max-input-chars",
+          "--max-output-chars", "--deadline-at",
+        ]);
+        const positional = [];
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i];
+          if (valueFlags.has(arg)) {
+            i++;
+          } else if (!arg.startsWith("-")) {
+            positional.push(arg);
+          }
+        }
+        const subcommand = positional[0] || "status";
+        const json = args.includes("--json");
+        const valueFor = (name) => {
+          const index = args.indexOf(name);
+          if (index < 0) return undefined;
+          const value = args[index + 1];
+          if (!value || value.startsWith("-"))
+            throw new Error(`missing value for ${name}`);
+          return value;
+        };
+        const nonNegative = (name) => {
+          const value = valueFor(name);
+          if (value === undefined) return undefined;
+          if (!/^\d+$/.test(value))
+            throw new Error(`${name} must be a non-negative integer`);
+          const parsed = Number(value);
+          if (!Number.isSafeInteger(parsed))
+            throw new Error(`${name} is too large`);
+          return parsed;
+        };
+        const usage = () => {
+          console.log(`Usage:
+  memex model-work status [budget-id] [--json]
+  memex model-work resume <budget-id> --new-run [options]
+
+status is read-only and reports parent wave, stage/job/target attempts, and
+pending work. resume requires --new-run; it creates a fresh budget while
+preserving the exhausted run's attempt ledger and rebinds only lease-free
+pending jobs.
+
+resume options:
+  --wave-id <id>            Distinct parent wave for the new run
+  --max-attempts <n>        Attempt cap for the new run
+  --max-input-chars <n>     Input character cap for the new run
+  --max-output-chars <n>    Output character cap for the new run
+  --deadline-at <ISO>       Absolute deadline for the new run
+  --json                    Print machine-readable output`);
+        };
+        if (args.includes("--help") || args.includes("-h")) {
+          usage();
+          break;
+        }
+        if (!["status", "resume"].includes(subcommand)) {
+          usage();
+          process.exitCode = 1;
+          break;
+        }
+
+        const { getDbPath } = await import(join(distDir, "paths.js"));
+        const dbPath = getDbPath();
+        if (subcommand === "status") {
+          if (positional.length > 2 || args.some((arg) =>
+            arg.startsWith("--") && arg !== "--json")) {
+            console.error("Usage: memex model-work status [budget-id] [--json]");
+            process.exitCode = 1;
+            break;
+          }
+          const budgetId = positional[1];
+          let diagnostics = {
+            budgets: [],
+            attempts: [],
+            pending: [],
+            unassigned: [],
+            totals: {
+              reserved: 0,
+              completed: 0,
+              failed: 0,
+              unknown: 0,
+              pending: 0,
+              durationMs: null,
+              inputChars: null,
+              outputChars: null,
+              inputTokens: null,
+              outputTokens: null,
+              cachedInputTokens: null,
+              tokenUsageObserved: 0,
+              tokenUsagePartial: 0,
+              tokenUsageUnknown: 0,
+              unassigned: 0,
+            },
+            stages: [],
+          };
+          if (fsSync(dbPath)) {
+            const { openReadDb } = await import(join(distDir, "db.js"));
+            const { getModelWorkDiagnostics, formatModelWorkDiagnostics } =
+              await import(join(distDir, "model-budget.js"));
+            const db = openReadDb(dbPath);
+            try {
+              diagnostics = getModelWorkDiagnostics(db, { budgetId });
+              if (json) {
+                console.log(JSON.stringify({ dbPath, ...diagnostics }, null, 2));
+              } else {
+                console.log(`Database: ${dbPath}`);
+                console.log(formatModelWorkDiagnostics(diagnostics));
+              }
+            } finally {
+              db.close();
+            }
+          } else if (json) {
+            console.log(JSON.stringify({ dbPath, ...diagnostics }, null, 2));
+          } else {
+            console.log(`Database: ${dbPath}`);
+            console.log("No model-work budget rows (database does not exist).");
+          }
+          break;
+        }
+
+        const budgetId = positional[1];
+        if (!budgetId || positional.length > 2 || !args.includes("--new-run")) {
+          usage();
+          process.exitCode = 1;
+          break;
+        }
+        const allowed = new Set([
+          "--new-run", "--json", "--wave-id", "--max-attempts",
+          "--max-input-chars", "--max-output-chars", "--deadline-at",
+        ]);
+        if (args.some((arg) => arg.startsWith("--") && !allowed.has(arg))) {
+          usage();
+          process.exitCode = 1;
+          break;
+        }
+        const { initDatabase } = await import(join(distDir, "db.js"));
+        const { startNewModelWorkRunForBudget } = await import(
+          join(distDir, "model-budget.js"),
+        );
+        const db = initDatabase();
+        try {
+          const limits = {
+            maxAttempts: nonNegative("--max-attempts"),
+            maxInputChars: nonNegative("--max-input-chars"),
+            maxOutputChars: nonNegative("--max-output-chars"),
+            deadlineAt: valueFor("--deadline-at"),
+          };
+          const result = startNewModelWorkRunForBudget(db, {
+            budgetId,
+            parentWaveId: valueFor("--wave-id"),
+            limits,
+          });
+          const kinds = new Set(
+            result.reboundJobIds
+              .map((jobId) => db.prepare("SELECT kind FROM memory_jobs WHERE job_id = ?").get(jobId)?.kind)
+              .filter(Boolean),
+          );
+          const env = `MEMEX_MODEL_BUDGET_ID=${result.budget.budgetId} MEMEX_MAINTENANCE_WAVE_ID=${result.budget.parentWaveId}`;
+          const workerCommands = [];
+          if (kinds.has("fact_extract")) workerCommands.push(`${env} memex backfill extract`);
+          if (kinds.has("capsule_update")) workerCommands.push(`${env} memex-continuity-worker`);
+          if (workerCommands.length === 0) {
+            workerCommands.push(`${env} memex backfill all`);
+          }
+          const output = {
+            previousBudget: result.previousBudget,
+            budget: result.budget,
+            reboundJobIds: result.reboundJobIds,
+            skippedJobIds: result.skippedJobIds,
+            workerCommands,
+          };
+          if (json) {
+            console.log(JSON.stringify(output, null, 2));
+          } else {
+            console.log(`Previous budget: ${result.previousBudget.budgetId} (${result.previousBudget.state})`);
+            console.log(`New budget: ${result.budget.budgetId} (wave=${result.budget.parentWaveId})`);
+            console.log(`Rebound lease-free jobs: ${result.reboundJobIds.length}`);
+            if (result.skippedJobIds.length > 0)
+              console.log(`Skipped active/raced jobs: ${result.skippedJobIds.length}`);
+            console.log("Run one of:");
+            for (const command of workerCommands) console.log(`  ${command}`);
+          }
+        } finally {
+          db.close();
         }
         break;
       }

@@ -1,0 +1,23 @@
+{
+  "host": "codex-cli",
+  "version": "0.153.4",
+  "transport": "codex-cli-pty",
+  "event": "SessionStart",
+  "input": {
+    "cwd": "<project-cwd>",
+    "hook_event_name": "SessionStart",
+    "model": "gpt-5.6-luna",
+    "permission_mode": "bypassPermissions",
+    "session_id": "<session_id>",
+    "source": "compact",
+    "transcript_path": "<codex-session-rollout>"
+  },
+  "prepared": true,
+  "stdoutEmitted": true,
+  "outputShape": "captured",
+  "hostAcceptance": null,
+  "hookOnlyNonceReflected": null,
+  "untrustedMemoryOverrideObserved": false,
+  "replay": false,
+  "source": "sanitized actual host-delivered payload"
+}

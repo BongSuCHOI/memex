@@ -1,7 +1,8 @@
 import { callMemoryModel, parseJsonResponse } from "./llm.js";
 import { classifyLlmError, LlmCallError } from "./llm-error-class.js";
 import { insertFact, insertFactContextDependencies, resolveFactInsertIdentity, updateFact, } from "./fact-db.js";
-import { applyFactMeaningMutation } from "./fact-management.js";
+import { applyFactMeaningMutationWithPolicy } from "./fact-management.js";
+import { captureMutationPolicy, captureSourceSnapshot, sourceSnapshotValid, StaleFactMutationError } from "./fact-policy.js";
 import { currentEffectiveAt, currentEvidenceAuthority, evidenceAuthorityFromKinds, findCurrentSlotFact, isSemanticSubjectKey, judgeCompetingEvidence, normalizeSubjectKey, recordChronicleEvent, recordIncidentOccurrence, recordIncidentRemediation, } from "./chronicle.js";
 import { generateEmbedding, initEmbeddings } from "./embeddings.js";
 import { isLlmWorkdirPath } from "./paths.js";
@@ -9,6 +10,7 @@ import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
 import { claimExtractionTarget, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, supersedeStaleExtractionTarget, } from "./continuity-store.js";
+import { deferMemoryJobForModelBudget, isAutomaticOntologyEnabled, isModelBudgetExhausted, withResolvedModelWorkContext, } from "./model-budget.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
@@ -1673,7 +1675,9 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     if (options?.progress) {
         options.progress.budgetExhausted = windows.length > selectedWindows.length;
     }
-    const modelCall = options?.modelCall ?? callMemoryModel;
+    const modelCall = options?.modelCall ?? ((systemPrompt, userMessage) => callMemoryModel(systemPrompt, userMessage, 2_048, {
+        modelContext: options?.modelContext,
+    }));
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
@@ -1862,6 +1866,10 @@ export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, 
     return (await saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras)).savedIds;
 }
 export async function saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
+    const sources = captureSourceSnapshot(db, [...sourceExchangeIds, ...facts.flatMap(fact => fact.source_exchange_ids ?? []),
+        ...(extras.observations ?? []).flatMap(observation => observation.source_exchange_ids)]);
+    if (!sources)
+        throw new StaleFactMutationError('extraction source evidence is missing');
     await initEmbeddings();
     // 1단계(비동기): 임베딩만 먼저 계산한다 — 트랜잭션은 동기여야 하므로.
     const prepared = [];
@@ -1882,6 +1890,8 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
     };
     const observations = extras.observations ?? [];
     const commit = db.transaction(() => {
+        if (!sourceSnapshotValid(db, sources))
+            throw new StaleFactMutationError('extraction source evidence changed during embedding');
         const now = new Date().toISOString();
         for (const p of prepared) {
             const factSources = p.fact.source_exchange_ids ?? sourceExchangeIds;
@@ -1961,7 +1971,8 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                 incomingAuthority: authority,
             });
             if (judgement.verdict === "apply") {
-                applyFactMeaningMutation(db, {
+                applyFactMeaningMutationWithPolicy(db, {
+                    policy: captureMutationPolicy(db, 'verified-extraction', [existing.id], { sourceExchangeIds: factSources, verifiedText: p.fact.fact }),
                     factId: existing.id,
                     newText: p.fact.fact,
                     source: { exchangeIds: factSources },
@@ -2091,15 +2102,27 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
         throw e;
     }
     // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
-    for (const factId of savedIds) {
-        const vector = savedVectors.get(factId);
-        if (!vector)
-            continue;
-        try {
-            await classifyAndLinkFact(db, factId, vector);
-        }
-        catch (err) {
-            console.error(`Ontology pipeline failed for fact ${factId}:`, err);
+    // MEMEX_AUTO_ONTOLOGY=0 is an intentional experiment/operations switch:
+    // extraction remains durable while the explicit ontology backfill command
+    // can classify the resulting local-derived backlog later.
+    if (isAutomaticOntologyEnabled()) {
+        for (const factId of savedIds) {
+            const vector = savedVectors.get(factId);
+            if (!vector)
+                continue;
+            try {
+                await classifyAndLinkFact(db, factId, vector, extras.modelContext);
+            }
+            catch (err) {
+                if (isModelBudgetExhausted(err)) {
+                    // Fact persistence and ontology are separate phases. A budget stop
+                    // leaves the newly saved fact valid and its ontology overlay pending;
+                    // do not roll back or fail the extraction target after its commit.
+                    console.error(`Ontology deferred by exhausted model budget for fact ${factId}:`, err);
+                    continue;
+                }
+                console.error(`Ontology pipeline failed for fact ${factId}:`, err);
+            }
         }
     }
     return outcome;
@@ -2243,6 +2266,16 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             throw new ClaimLostError(`claim lost for extraction target ${target.targetId}`);
         }
     };
+    const modelContext = {
+        db,
+        parentWaveId: _opts?.modelContext?.parentWaveId ||
+            process.env.MEMEX_MAINTENANCE_WAVE_ID ||
+            `extraction:${sessionId}`,
+        stage: "fact_extract",
+        jobId: target.jobId,
+        targetId: target.targetId,
+        ..._opts?.modelContext,
+    };
     const progress = {
         processedThroughRowid: target.fromRowid,
         budgetExhausted: false,
@@ -2264,11 +2297,23 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
                 : undefined,
             targetExchangeIds: page.map((item) => item.exchange_id),
             throughRowid: page[page.length - 1].exchange_rowid,
-            modelCall: callMemoryModel,
+            modelContext,
             progress,
         });
     }
     catch (error) {
+        if (isModelBudgetExhausted(error)) {
+            deferMemoryJobForModelBudget(db, {
+                jobId: target.jobId,
+                budgetId: error.budgetId,
+                parentWaveId: error.parentWaveId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+                reason: error.reason,
+                now: new Date(),
+            });
+            return { extracted: 0, saved: 0, skipped: "budget_exhausted" };
+        }
         const kind = classifyLlmError(error);
         if (!(error instanceof ClaimLostError)) {
             recordExtractionFailure(db, {
@@ -2337,7 +2382,7 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
     try {
         renewLease();
         if (facts.length > 0 || observations.length > 0) {
-            saved = (await saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId })).length;
+            saved = (await withResolvedModelWorkContext(modelContext, () => saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId, modelContext }))).length;
         }
         else {
             const commitZero = db.transaction(() => {

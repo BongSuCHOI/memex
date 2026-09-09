@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { assertMutationPolicy, captureMutationPolicy } from './fact-policy.js';
 import { canonicalizeProjectPath } from "./project-identity.js";
 import { appendSessionEvidence } from "./continuity-evidence.js";
 function hash(...parts) {
@@ -300,6 +301,12 @@ export function linkWorkspaceToProject(db, input) {
             sourceProject.portable_project_key !== targetProject.portable_project_key) {
             throw new Error("linked projects have conflicting portable_project_key values");
         }
+        const affected = db.prepare('SELECT id FROM facts WHERE project_id = ? OR workspace_id = ?')
+            .all(sourceProjectId, input.workspaceId);
+        if (affected.length) {
+            const policy = captureMutationPolicy(db, 'identity', affected.map(row => row.id));
+            assertMutationPolicy(db, policy, affected[0].id);
+        }
         db.prepare("UPDATE workspaces SET project_id = ?, last_seen_at = ? WHERE workspace_id = ?")
             .run(input.targetProjectId, at, input.workspaceId);
         db.prepare("UPDATE minimal_workstreams SET project_id = ? WHERE workspace_id = ?")
@@ -368,6 +375,13 @@ export function splitWorkspace(db, input) {
                 throw new Error("split portable_project_key conflicts with the existing split project");
             }
             return existingAudit.project_id;
+        }
+        const affected = db.prepare(`SELECT id FROM facts WHERE workspace_id = ? OR
+      (project_id = ? AND workspace_id IS NULL AND promotion_state = 'legacy-project' AND scope_project = ?)`)
+            .all(input.workspaceId, workspace.project_id, workspace.canonical_path);
+        if (affected.length) {
+            const policy = captureMutationPolicy(db, 'identity', affected.map(row => row.id));
+            assertMutationPolicy(db, policy, affected[0].id);
         }
         const projectId = `project-${randomUUID()}`;
         db.prepare(`
@@ -711,13 +725,22 @@ export function assignFactSubject(db, input) {
   `).get(input.factId, input.projectId, input.subjectKey, input.promotionState, input.workspaceId ?? null, input.workstreamId ?? null);
     if (conflict)
         throw new Error("subject_key slot already has an active fact");
-    const changed = db.prepare(`
-    UPDATE facts SET project_id = ?, subject_key = ?, promotion_state = ?, workspace_id = ?, workstream_id = ?,
-      semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
-    WHERE id = ?
-  `).run(input.projectId, input.subjectKey, input.promotionState, input.workspaceId ?? null, input.workstreamId ?? null, new Date().toISOString(), new Date().toISOString(), input.factId);
-    if (changed.changes !== 1)
-        throw new Error("fact not found");
+    const policy = captureMutationPolicy(db, 'identity', [input.factId]);
+    const apply = db.transaction(() => {
+        assertMutationPolicy(db, policy, input.factId);
+        const changed = db.prepare(`
+      UPDATE facts SET project_id = ?, subject_key = ?, promotion_state = ?, workspace_id = ?, workstream_id = ?,
+        semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(input.projectId, input.subjectKey, input.promotionState, input.workspaceId ?? null, input.workstreamId ?? null, new Date().toISOString(), new Date().toISOString(), input.factId);
+        if (changed.changes !== 1)
+            throw new Error("fact not found");
+        audit(db, { action: 'rebind', projectId: input.projectId, workspaceId: input.workspaceId,
+            workstreamId: input.workstreamId, reason: 'explicit fact placement',
+            detail: { factId: input.factId, promotionState: input.promotionState, evidence: input.evidence,
+                subjectKey: input.subjectKey, previous: current } });
+    });
+    apply();
 }
 export function projectRevision(db, projectId) {
     return Number(db.prepare("SELECT memory_revision FROM projects WHERE project_id = ?").get(projectId)?.memory_revision ?? 0);

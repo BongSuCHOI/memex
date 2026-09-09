@@ -15,7 +15,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from '../dist/db.js';
-import { backfillClassifyBatch, parkExhaustedFacts, MAX_CLASSIFY_ATTEMPTS } from '../dist/ontology-classifier.js';
+import {
+  backfillClassifyBatch,
+  backfillRelationBatch,
+  parkExhaustedFacts,
+  MAX_CLASSIFY_ATTEMPTS,
+} from '../dist/ontology-classifier.js';
+import {
+  getModelWorkBudget,
+  getOrCreateMaintenanceModelBudget,
+  isModelBudgetExhausted,
+} from '../dist/model-budget.js';
 import { getIndexDir } from '../dist/paths.js';
 
 const maxArg = process.argv.indexOf('--max');
@@ -103,6 +113,19 @@ async function main() {
   let db;
   try {
     db = initDatabase();
+    const requestedBudgetId = process.env.MEMEX_MODEL_BUDGET_ID?.trim();
+    const maintenanceBudget = requestedBudgetId
+      ? getModelWorkBudget(db, requestedBudgetId)
+      : getOrCreateMaintenanceModelBudget(db, {
+          parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
+        });
+    if (!maintenanceBudget) {
+      throw new Error(`model budget ${requestedBudgetId} does not exist`);
+    }
+    const modelContext = {
+      parentWaveId: maintenanceBudget.parentWaveId,
+      budgetId: maintenanceBudget.budgetId,
+    };
     // Self-heal ledger orphans first: a crash between the MAXth attempt
     // increment and the fallback write leaves attempts>=MAX with a NULL
     // category — excluded from selection below yet never parked.
@@ -120,15 +143,36 @@ async function main() {
       ORDER BY consolidated_count DESC, created_at DESC
       LIMIT ?
     `).all(MAX_CLASSIFY_ATTEMPTS, MAX_FACTS);
-    log(`backfill-ontology: ${pending.length} facts this run (batch ${BATCH_SIZE}, concurrency ${CONCURRENCY}, relations ${DETECT_RELATIONS ? 'on' : 'off'})`);
+    const ontologyIds = pending.map((row) => row.id);
+    // Existing relation memberships are durable pending work. Drain them even
+    // when BACKFILL_RELATIONS is unset; that flag only opts new ontology pages
+    // into creating additional relation probes.
+    const relationPending = db.prepare(`
+      SELECT DISTINCT t.target_id AS id
+      FROM model_work_targets t
+      JOIN facts f ON f.id = t.target_id
+      WHERE t.budget_id = ? AND t.stage = 'relation' AND t.state = 'pending'
+        AND f.is_active = 1
+      ORDER BY f.updated_at, f.id
+      LIMIT ?
+    `).all(maintenanceBudget.budgetId, Math.max(0, MAX_FACTS - ontologyIds.length));
+    const relationIds = relationPending
+      .map((row) => row.id)
+      .filter((id) => !ontologyIds.includes(id));
+    log(`backfill-ontology: ${ontologyIds.length + relationIds.length} facts this run (batch ${BATCH_SIZE}, concurrency ${CONCURRENCY}, relations ${DETECT_RELATIONS ? 'on' : 'pending-only'})`);
 
-    // Chunk into batches — each batch is ONE LLM call (one headless spawn).
+    // Chunk into batches — each classification batch is ONE LLM call (one
+    // headless spawn). Relation-only memberships are queued after ontology
+    // batches so a categorized fact can still resume after a cap stop.
     const batches = [];
-    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
-      batches.push(pending.slice(i, i + BATCH_SIZE).map((row) => row.id));
+    for (let i = 0; i < ontologyIds.length; i += BATCH_SIZE) {
+      batches.push({ kind: 'ontology', ids: ontologyIds.slice(i, i + BATCH_SIZE) });
+    }
+    for (let i = 0; i < relationIds.length; i += BATCH_SIZE) {
+      batches.push({ kind: 'relation', ids: relationIds.slice(i, i + BATCH_SIZE) });
     }
 
-    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, processed: 0 };
+    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, budgetExhausted: 0, processed: 0 };
     const queue = [...batches];
     // Circuit breaker: transient failures burn no attempts (by design), so a
     // dead proxy/SDK would otherwise let every run re-spawn batch after batch
@@ -148,33 +192,53 @@ async function main() {
         const batch = queue.shift();
         if (!batch) break;
         try {
-          const stats = await backfillClassifyBatch(db, batch, { detectRelationsToo: DETECT_RELATIONS });
-          totals.classified += stats.classified;
-          totals.deterministic += stats.deterministic;
-          totals.fallback += stats.fallback;
-          totals.failed += stats.failed;
-          totals.transient += stats.transient;
-          const anyProgress = stats.classified + stats.deterministic + stats.fallback + stats.failed > 0;
-          consecutiveTransient = !anyProgress && stats.transient > 0 ? consecutiveTransient + 1 : 0;
+          const stats = batch.kind === 'relation'
+            ? await backfillRelationBatch(db, batch.ids, { modelContext })
+            : await backfillClassifyBatch(db, batch.ids, {
+                detectRelationsToo: DETECT_RELATIONS,
+                modelContext,
+              });
+          if (batch.kind === 'relation') {
+            totals.classified += stats.completed;
+            totals.transient += stats.pending;
+          } else {
+            totals.classified += stats.classified;
+            totals.deterministic += stats.deterministic;
+            totals.fallback += stats.fallback;
+            totals.failed += stats.failed;
+            totals.transient += stats.transient;
+          }
+          const anyProgress = batch.kind === 'relation'
+            ? stats.completed > 0
+            : stats.classified + stats.deterministic + stats.fallback + stats.failed > 0;
+          const transientCount = batch.kind === 'relation' ? stats.pending : stats.transient;
+          consecutiveTransient = !anyProgress && transientCount > 0 ? consecutiveTransient + 1 : 0;
         } catch (error) {
+          if (isModelBudgetExhausted(error)) {
+            totals.budgetExhausted += batch.ids.length;
+            circuitOpen = true;
+            queue.length = 0;
+            log(`model budget exhausted: ${error instanceof Error ? error.message : error} — ${batch.ids.length} facts remain pending for an explicit new run`);
+            break;
+          }
           // Unexpected (non-LLM) error: facts stay NULL with attempts
           // untouched → re-selected next run. Transient LLM failures are
           // already ledger-exempt inside classifyFactsBatch.
-          totals.transient += batch.length;
+          totals.transient += batch.ids.length;
           consecutiveTransient += 1;
-          log(`batch of ${batch.length}: ERROR ${error instanceof Error ? error.message : error}`);
+          log(`batch of ${batch.ids.length}: ERROR ${error instanceof Error ? error.message : error}`);
         }
-        totals.processed += batch.length;
+        totals.processed += batch.ids.length;
         if (consecutiveTransient >= TRANSIENT_TRIP && !circuitOpen) {
           circuitOpen = true;
           log(`circuit breaker OPEN: ${consecutiveTransient} consecutive all-transient batches — aborting run (${queue.length} batches unprocessed, resume next run)`);
           queue.length = 0;
         }
-        log(`progress: ${totals.processed}/${pending.length} (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient})`);
+        log(`progress: ${totals.processed}/${ontologyIds.length + relationIds.length} (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient})`);
       }
     });
     await Promise.all(workers);
-    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient})`);
+    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, budget-exhausted ${totals.budgetExhausted})`);
   } catch (error) {
     log(`backfill-ontology: FATAL ${error instanceof Error ? error.message : error}`);
   } finally {

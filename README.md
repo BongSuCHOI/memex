@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.4.1-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.2-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -201,6 +201,7 @@ Common commands:
 | `memex analyze` | Generate a deterministic history report |
 | `memex facts` | Inspect and manage durable facts |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
+| `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | Inspect pipeline readiness |
 | `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
 | `memex update` | Refresh the marketplace/plugin while preserving data |
@@ -224,6 +225,8 @@ Memex integrates with the full Codex continuity lifecycle:
 | **Interrupt** | append delta and preserve an interrupted/open fence |
 | **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
 | **PostCompact** | optional telemetry only; correctness never depends on it |
+
+Automatic ontology is opt-in (`MEMEX_AUTO_ONTOLOGY=1`); manual `memex backfill ontology` and core embeddings remain available. See [measured results and limits](docs/verification/codex-usability/README.md#four-arm-result-and-default-decision).
 | **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export |
 
 Capture hooks perform bounded local I/O only. The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.
@@ -248,7 +251,7 @@ graph_stats
 
 Project-sensitive tools require either:
 
-- a canonical absolute project path,
+- a stable project/workspace/workstream/session ID or a legacy canonical absolute project path,
 - `scope: global`, or
 - `scope: all`.
 
@@ -293,15 +296,16 @@ See [Visualization](docs/VISUALIZATION.md).
 
 ## Scope and provenance
 
-Memex treats the canonical absolute `session_meta.cwd` as project identity.
+Memex resolves the canonical absolute `session_meta.cwd` to a local workspace and uses stable `project_id` for logical project identity.
 
 Supported fact/query scopes are:
 
-- **project** — the selected project plus global facts where appropriate
+- **project** — project-wide truth plus global facts where appropriate
+- **workspace/workstream/session** — the selected work scope and permitted parent truth
 - **global** — global facts only
 - **all** — explicit cross-project access
 
-Cross-project leakage is prevented at query, import, traversal, and relation-write boundaries.
+Read scope and consolidation permission are separate. Consolidation preserves different workstreams and promotion states, adopts only verified input wording, and leaves ambiguous legacy identity for review. Search, related facts, tracing, and every graph hop share the same scope. Existing data can be [backed up, audited, and selectively repaired](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구) without re-extracting every fact.
 
 Fact provenance has two separate lanes. `source_exchange_ids` contains only exact authoritative human or trusted local-tool exchanges and is unioned monotonically across sync; `consolidated_count` converges by maximum. Local `fact_context_dependencies` records persisted long-range non-authoritative context dependencies used to interpret a fact; immediate local context usage is not stored. The persisted set is canonicalized from semantic-verifier usage, never promoted to authority, and is not part of protocol v4.
 

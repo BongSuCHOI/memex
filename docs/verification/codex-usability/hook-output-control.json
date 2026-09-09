@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-08T09:09:34.767761+00:00",
+  "scope": "Synthetic frozen conversation; one trial per channel; same precompacted snapshot and output schema; isolated Codex homes",
+  "method": {
+    "statusText": "Sync started in background...",
+    "asyncSessionStartMatcher": "resume|startup|compact",
+    "delayMs": 100,
+    "stopBarrierMs": 500,
+    "conditionOrder": [
+      "stdout",
+      "stderr",
+      "silent"
+    ],
+    "snapshot": "Earlier successful compaction of the frozen training conversation; copied identically before each condition",
+    "sourceScriptSha256": "f8349edf4d013e0f79cdcafadfbcd16849486af85ee95262b7e23ee067369722",
+    "command": "node tmp/codex-usability/run-hook-ab.mjs --run-host",
+    "expectedFixtureSha256": "fc84bf57a8cd1bf4e6f714053dc21c1c886c562ea58bac5fb5e4ccc794628a98"
+  },
+  "conditions": [
+    {
+      "condition": "stdout",
+      "exitCode": 0,
+      "durationMs": 17772,
+      "grade": {
+        "status": "observed",
+        "assistantMessages": 2,
+        "selectedMessageId": "item_3",
+        "responseChars": 668,
+        "responseSha256": "8a65c52ee74f54e94ef5f8d632e6d2d01b103a84aa5426f9c368ec84457487a9",
+        "forbiddenPresent": [],
+        "expectedChecks": [
+          {
+            "key": "retryFunction",
+            "pass": true
+          },
+          {
+            "key": "retryPath",
+            "pass": true
+          },
+          {
+            "key": "retryCount",
+            "pass": true
+          },
+          {
+            "key": "leaseError",
+            "pass": true
+          },
+          {
+            "key": "verifiedCases",
+            "pass": true
+          },
+          {
+            "key": "evidencePath",
+            "pass": true
+          },
+          {
+            "key": "checkpointFunction",
+            "pass": true
+          },
+          {
+            "key": "checkpointError",
+            "pass": true
+          },
+          {
+            "key": "leaseRepairContains",
+            "pass": true
+          },
+          {
+            "key": "hypothesisStatusContains",
+            "pass": true
+          },
+          {
+            "key": "blockerContains",
+            "pass": true
+          },
+          {
+            "key": "nextActionContains",
+            "pass": true
+          },
+          {
+            "key": "checkpointActionContains",
+            "pass": true
+          }
+        ],
+        "expectedPass": true,
+        "outputOnlyEvidence": true
+      },
+      "assistantMessages": [
+        "{\"retryFunction\":\"retryQueue\",\"retryPath\":\"src/queue/retry.ts\",\"retryCount\":4,\"leaseError\":\"E_QUEUE_LEASE_EXPIRED\",\"leaseRepair\":\"Reacquire the lease and validate its generation before committing.\",\"verifiedCases\":11,\"evidencePath\":\"docs/verification/queue-lease.json\",\"hypothesisStatus\":\"Unverified hypothesis: random delay may reduce worker contention; not a confirmed fix.\",\"blocker\":\"Production staging credentials are unavailable.\",\"nextAction\":\"Run the isolated restart regression before requesting credentials.\",\"checkpointFunction\":\"saveCheckpoint\",\"checkpointError\":\"E_CHECKPOINT_HASH_MISMATCH\",\"checkpointAction\":\"Reject the copied prefix and recapture it.\"}",
+        "{\"retryFunction\":\"retryQueue\",\"retryPath\":\"src/queue/retry.ts\",\"retryCount\":4,\"leaseError\":\"E_QUEUE_LEASE_EXPIRED\",\"leaseRepair\":\"Reacquire the lease and validate its generation before committing.\",\"verifiedCases\":11,\"evidencePath\":\"docs/verification/queue-lease.json\",\"hypothesisStatus\":\"Unverified hypothesis: random delay may reduce worker contention; not a confirmed fix.\",\"blocker\":\"Production staging credentials are unavailable.\",\"nextAction\":\"Run the isolated restart regression before requesting credentials.\",\"checkpointFunction\":\"saveCheckpoint\",\"checkpointError\":\"E_CHECKPOINT_HASH_MISMATCH\",\"checkpointAction\":\"Reject the copied prefix and recapture it.\"}"
+      ],
+      "developerNotices": [
+        {
+          "timestamp": "2026-09-08T09:06:41.695Z",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Sync started in background..."
+            }
+          ]
+        }
+      ],
+      "rolloutSha256": [
+        "98db6da7a33e85422214b9f303108208cd538a8565d22ef71cc2dec7299f3406"
+      ],
+      "temporaryAuthRemoved": true
+    },
+    {
+      "condition": "stderr",
+      "exitCode": 0,
+      "durationMs": 9578,
+      "grade": {
+        "status": "observed",
+        "assistantMessages": 1,
+        "selectedMessageId": "item_2",
+        "responseChars": 674,
+        "responseSha256": "16354a46bdf956adadc93df71d4fc13a0e89ef49234fff1f55b6f0f7596b3d35",
+        "forbiddenPresent": [],
+        "expectedChecks": [
+          {
+            "key": "retryFunction",
+            "pass": true
+          },
+          {
+            "key": "retryPath",
+            "pass": true
+          },
+          {
+            "key": "retryCount",
+            "pass": true
+          },
+          {
+            "key": "leaseError",
+            "pass": true
+          },
+          {
+            "key": "verifiedCases",
+            "pass": true
+          },
+          {
+            "key": "evidencePath",
+            "pass": true
+          },
+          {
+            "key": "checkpointFunction",
+            "pass": true
+          },
+          {
+            "key": "checkpointError",
+            "pass": true
+          },
+          {
+            "key": "leaseRepairContains",
+            "pass": true
+          },
+          {
+            "key": "hypothesisStatusContains",
+            "pass": true
+          },
+          {
+            "key": "blockerContains",
+            "pass": true
+          },
+          {
+            "key": "nextActionContains",
+            "pass": true
+          },
+          {
+            "key": "checkpointActionContains",
+            "pass": true
+          }
+        ],
+        "expectedPass": true,
+        "outputOnlyEvidence": true
+      },
+      "assistantMessages": [
+        "{\"retryFunction\":\"retryQueue\",\"retryPath\":\"src/queue/retry.ts\",\"retryCount\":4,\"leaseError\":\"E_QUEUE_LEASE_EXPIRED\",\"leaseRepair\":\"Reacquire the lease and validate its generation before committing.\",\"verifiedCases\":11,\"evidencePath\":\"docs/verification/queue-lease.json\",\"hypothesisStatus\":\"Unverified hypothesis: random delay may reduce worker contention; not a confirmed fix.\",\"blocker\":\"Production staging credentials are unavailable.\",\"nextAction\":\"Run the isolated restart regression before requesting those credentials.\",\"checkpointFunction\":\"saveCheckpoint\",\"checkpointError\":\"E_CHECKPOINT_HASH_MISMATCH\",\"checkpointAction\":\"Reject the copied prefix and recapture it.\"}"
+      ],
+      "developerNotices": [],
+      "rolloutSha256": [
+        "ac38bb2563f082e1d39a59b0aaec36dffb9d11c7607425515a35946af8c742b6"
+      ],
+      "temporaryAuthRemoved": true
+    },
+    {
+      "condition": "silent",
+      "exitCode": 0,
+      "durationMs": 11284,
+      "grade": {
+        "status": "observed",
+        "assistantMessages": 1,
+        "selectedMessageId": "item_2",
+        "responseChars": 643,
+        "responseSha256": "b4e5e5aceffb486d1664135598a70d75d053c99c615edd6173610c0326acb177",
+        "forbiddenPresent": [],
+        "expectedChecks": [
+          {
+            "key": "retryFunction",
+            "pass": true
+          },
+          {
+            "key": "retryPath",
+            "pass": true
+          },
+          {
+            "key": "retryCount",
+            "pass": true
+          },
+          {
+            "key": "leaseError",
+            "pass": true
+          },
+          {
+            "key": "verifiedCases",
+            "pass": true
+          },
+          {
+            "key": "evidencePath",
+            "pass": true
+          },
+          {
+            "key": "checkpointFunction",
+            "pass": true
+          },
+          {
+            "key": "checkpointError",
+            "pass": true
+          },
+          {
+            "key": "leaseRepairContains",
+            "pass": true
+          },
+          {
+            "key": "hypothesisStatusContains",
+            "pass": true
+          },
+          {
+            "key": "blockerContains",
+            "pass": true
+          },
+          {
+            "key": "nextActionContains",
+            "pass": true
+          },
+          {
+            "key": "checkpointActionContains",
+            "pass": true
+          }
+        ],
+        "expectedPass": true,
+        "outputOnlyEvidence": true
+      },
+      "assistantMessages": [
+        "{\"retryFunction\":\"retryQueue\",\"retryPath\":\"src/queue/retry.ts\",\"retryCount\":4,\"leaseError\":\"E_QUEUE_LEASE_EXPIRED\",\"leaseRepair\":\"Reacquire the lease and validate its generation before committing.\",\"verifiedCases\":11,\"evidencePath\":\"docs/verification/queue-lease.json\",\"hypothesisStatus\":\"Adding random delay may reduce worker contention; unverified.\",\"blocker\":\"Production staging credentials are unavailable.\",\"nextAction\":\"Run the isolated restart regression before requesting credentials.\",\"checkpointFunction\":\"saveCheckpoint\",\"checkpointError\":\"E_CHECKPOINT_HASH_MISMATCH\",\"checkpointAction\":\"Reject the copied prefix and recapture it.\"}"
+      ],
+      "developerNotices": [],
+      "rolloutSha256": [
+        "653425c765571b275e83986f0cd6652dcd4d27cca23c9a0db0baa59a926cd3dc"
+      ],
+      "temporaryAuthRemoved": true
+    }
+  ],
+  "conclusions": {
+    "stdoutInjectedAsDeveloperMessage": "OBSERVED",
+    "stdoutCausedAdditionalAssistantGeneration": "OBSERVED_IN_SINGLE_CONTROLLED_TRIAL",
+    "allNullResponseReproduced": false,
+    "fixBoundary": "Operational async hook notices must use stderr; synchronous context JSON retains stdout."
+  },
+  "limitations": [
+    "Single synthetic trial per channel is not a frequency or broad quality estimate.",
+    "The previous optional-arm all-null response is preserved as a separate observation; this control did not reproduce all-null output.",
+    "Earlier controls delayed output until after Stop or did not complete the hook; those do not prove the host delivery mechanism."
+  ],
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "model": "gpt-5.6-luna",
+    "transport": "codex exec resume --json --output-schema; isolated enabled hooks"
+  }
+}

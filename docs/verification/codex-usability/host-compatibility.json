@@ -1,0 +1,994 @@
+{
+  "kind": "codex-host-compatibility",
+  "stage": 6,
+  "recordedAt": "2026-09-08T07:20:13.876Z",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "transport": "codex app-server stdio plus codex-cli interactive TUI via PTY",
+    "model": "gpt-5.6-luna",
+    "ptyTransport": "codex-cli-pty with pty.fork and TIOCSWINSZ 40x120"
+  },
+  "isolation": {
+    "codexHome": "temporary",
+    "memexHome": "temporary",
+    "project": "temporary",
+    "authCopied": true,
+    "authMode": "0600",
+    "userStableSurfacesUnchanged": true,
+    "rawArtifacts": "temporary evidence root removed after sanitization; report and fixtures retained",
+    "authCleanup": "PASS: isolated auth copy removed after evidence collection",
+    "ptyProcessCleanup": "PASS: no matching Codex PTY or driver process remained in the final process scan"
+  },
+  "protocol": {
+    "initialized": true,
+    "callsUsed": 12,
+    "maxCalls": 24,
+    "messagesObserved": 88,
+    "methods": [
+      "account/rateLimits/updated",
+      "deprecationNotice",
+      "item/agentMessage/delta",
+      "item/completed",
+      "item/started",
+      "mcpServer/startupStatus/updated",
+      "remoteControl/status/changed",
+      "thread/goal/cleared",
+      "thread/started",
+      "thread/status/changed",
+      "thread/tokenUsage/updated",
+      "turn/completed",
+      "turn/started"
+    ],
+    "stderrBytes": 0,
+    "stderrTail": "",
+    "serverRequests": [],
+    "hostAcceptanceTerms": {
+      "prepared": "hook wrapper generated candidate output",
+      "stdoutEmitted": "wrapper output was emitted on hook stdout",
+      "hostConsumed": "assistant response reflected a hook-only nonce"
+    },
+    "transportScope": {
+      "appServer": "codex app-server --listen stdio://; protocol lifecycle observations are recorded separately",
+      "pty": "codex-cli interactive TUI under a real controlling PTY; hook JSONL is the host-delivery evidence"
+    }
+  },
+  "pty": {
+    "driver": "scripts/codex-host-pty-driver.py",
+    "transport": "codex-cli interactive TUI via codex-cli-pty",
+    "controllingTerminal": "pty.fork + TIOCSWINSZ 40x120",
+    "watcher": "isolated MEMEX_HOST_HOOK_LOG JSONL",
+    "phaseTimeoutMs": 180000,
+    "totalTimeoutMs": 600000,
+    "sessionId": "<session_id>",
+    "evidenceRuns": [
+      {
+        "name": "primary",
+        "status": "observed",
+        "source": "one isolated PTY run; phases 01-04 reused without rerun",
+        "sessionId": "<session_id>",
+        "phases": [
+          {
+            "phase": "normal",
+            "status": "PASS",
+            "durationMs": 11542,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionEnd"
+            ],
+            "hookRecords": 4,
+            "commandsSent": 1,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": true,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty/01-normal",
+              "records": [
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop"
+              ],
+              "compactions": null,
+              "staleSeed": null,
+              "staleNonceReflected": null
+            }
+          },
+          {
+            "phase": "interrupt",
+            "status": "PASS",
+            "durationMs": 5300,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Interrupt",
+              "SessionEnd"
+            ],
+            "hookRecords": 4,
+            "commandsSent": 2,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": true,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty/02-interrupt",
+              "records": [
+                "UserPromptSubmit",
+                "Interrupt"
+              ],
+              "compactions": null,
+              "staleSeed": null,
+              "staleNonceReflected": null
+            }
+          },
+          {
+            "phase": "kill",
+            "status": "PASS",
+            "durationMs": 4319,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit"
+            ],
+            "hookRecords": 2,
+            "commandsSent": 0,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": true,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty/03-kill",
+              "records": [
+                "UserPromptSubmit"
+              ],
+              "compactions": null,
+              "staleSeed": null,
+              "staleNonceReflected": null
+            }
+          },
+          {
+            "phase": "resume",
+            "status": "PASS",
+            "durationMs": 15215,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionEnd"
+            ],
+            "hookRecords": 4,
+            "commandsSent": 1,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": true,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty/04-resume",
+              "records": [
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop"
+              ],
+              "compactions": null,
+              "staleSeed": null,
+              "staleNonceReflected": null
+            }
+          }
+        ]
+      },
+      {
+        "name": "targeted",
+        "status": "observed",
+        "source": "targeted PTY runs using the same isolated session; phases 05-07",
+        "sessionId": "<session_id>",
+        "phases": [
+          {
+            "phase": "compact",
+            "status": "PASS",
+            "durationMs": 24322,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "PreCompact",
+              "PostCompact",
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionEnd"
+            ],
+            "hookRecords": 9,
+            "commandsSent": 5,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": false,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty-targeted/05-compact",
+              "records": [
+                "PreCompact",
+                "PostCompact",
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop"
+              ],
+              "compactions": 1,
+              "staleSeed": null,
+              "staleNonceReflected": false
+            }
+          },
+          {
+            "phase": "repeated-compact",
+            "status": "PASS",
+            "durationMs": 38612,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "PreCompact",
+              "PostCompact",
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "PreCompact",
+              "PostCompact",
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionEnd"
+            ],
+            "hookRecords": 14,
+            "commandsSent": 9,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": false,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty-targeted/06-repeated-compact",
+              "records": [
+                "PreCompact",
+                "PostCompact",
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop",
+                "PreCompact",
+                "PostCompact",
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop"
+              ],
+              "compactions": 2,
+              "staleSeed": null,
+              "staleNonceReflected": false
+            }
+          },
+          {
+            "phase": "stale",
+            "status": "PASS",
+            "durationMs": 27872,
+            "sessionId": "<session_id>",
+            "hookEvents": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "PreCompact",
+              "PostCompact",
+              "SessionStart",
+              "UserPromptSubmit",
+              "Stop",
+              "SessionEnd"
+            ],
+            "hookRecords": 9,
+            "commandsSent": 5,
+            "terminalQueriesAnswered": 2,
+            "pidGone": true,
+            "outputMarkers": {
+              "injection_nonce": false,
+              "stale_nonce": false,
+              "orange_override": false,
+              "ready_text": true
+            },
+            "detail": {
+              "source": "pty-targeted/07-stale",
+              "records": [
+                "PreCompact",
+                "PostCompact",
+                "SessionStart",
+                "UserPromptSubmit",
+                "Stop"
+              ],
+              "compactions": 1,
+              "staleSeed": {
+                "db": "present",
+                "sessionId": "<session_id>",
+                "seeded": true
+              },
+              "staleNonceReflected": false
+            },
+            "contentStatus": "NOT_PROVEN",
+            "contentDetail": "Lifecycle hooks and stale/context-only hook output were observed, but the host response did not reflect the stale nonce; no final continuity JSON was captured."
+          }
+        ]
+      }
+    ],
+    "phases": [
+      {
+        "phase": "normal",
+        "status": "PASS",
+        "durationMs": 11542,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "SessionEnd"
+        ],
+        "hookRecords": 4,
+        "commandsSent": 1,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": true,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty/01-normal",
+          "records": [
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop"
+          ],
+          "compactions": null,
+          "staleSeed": null,
+          "staleNonceReflected": null
+        }
+      },
+      {
+        "phase": "interrupt",
+        "status": "PASS",
+        "durationMs": 5300,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Interrupt",
+          "SessionEnd"
+        ],
+        "hookRecords": 4,
+        "commandsSent": 2,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": true,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty/02-interrupt",
+          "records": [
+            "UserPromptSubmit",
+            "Interrupt"
+          ],
+          "compactions": null,
+          "staleSeed": null,
+          "staleNonceReflected": null
+        }
+      },
+      {
+        "phase": "kill",
+        "status": "PASS",
+        "durationMs": 4319,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit"
+        ],
+        "hookRecords": 2,
+        "commandsSent": 0,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": true,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty/03-kill",
+          "records": [
+            "UserPromptSubmit"
+          ],
+          "compactions": null,
+          "staleSeed": null,
+          "staleNonceReflected": null
+        }
+      },
+      {
+        "phase": "resume",
+        "status": "PASS",
+        "durationMs": 15215,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "SessionEnd"
+        ],
+        "hookRecords": 4,
+        "commandsSent": 1,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": true,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty/04-resume",
+          "records": [
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop"
+          ],
+          "compactions": null,
+          "staleSeed": null,
+          "staleNonceReflected": null
+        }
+      },
+      {
+        "phase": "compact",
+        "status": "PASS",
+        "durationMs": 24322,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "PreCompact",
+          "PostCompact",
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "SessionEnd"
+        ],
+        "hookRecords": 9,
+        "commandsSent": 5,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": false,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty-targeted/05-compact",
+          "records": [
+            "PreCompact",
+            "PostCompact",
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop"
+          ],
+          "compactions": 1,
+          "staleSeed": null,
+          "staleNonceReflected": false
+        }
+      },
+      {
+        "phase": "repeated-compact",
+        "status": "PASS",
+        "durationMs": 38612,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "PreCompact",
+          "PostCompact",
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "PreCompact",
+          "PostCompact",
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "SessionEnd"
+        ],
+        "hookRecords": 14,
+        "commandsSent": 9,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": false,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty-targeted/06-repeated-compact",
+          "records": [
+            "PreCompact",
+            "PostCompact",
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop",
+            "PreCompact",
+            "PostCompact",
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop"
+          ],
+          "compactions": 2,
+          "staleSeed": null,
+          "staleNonceReflected": false
+        }
+      },
+      {
+        "phase": "stale",
+        "status": "PASS",
+        "durationMs": 27872,
+        "sessionId": "<session_id>",
+        "hookEvents": [
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "PreCompact",
+          "PostCompact",
+          "SessionStart",
+          "UserPromptSubmit",
+          "Stop",
+          "SessionEnd"
+        ],
+        "hookRecords": 9,
+        "commandsSent": 5,
+        "terminalQueriesAnswered": 2,
+        "pidGone": true,
+        "outputMarkers": {
+          "injection_nonce": false,
+          "stale_nonce": false,
+          "orange_override": false,
+          "ready_text": true
+        },
+        "detail": {
+          "source": "pty-targeted/07-stale",
+          "records": [
+            "PreCompact",
+            "PostCompact",
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop"
+          ],
+          "compactions": 1,
+          "staleSeed": {
+            "db": "present",
+            "sessionId": "<session_id>",
+            "seeded": true
+          },
+          "staleNonceReflected": false
+        },
+        "contentStatus": "NOT_PROVEN",
+        "contentDetail": "Lifecycle hooks and stale/context-only hook output were observed, but the host response did not reflect the stale nonce; no final continuity JSON was captured."
+      }
+    ],
+    "lifecycleContract": "PreCompact/PostCompact are observed before SessionStart(source=compact) on the next prompt"
+  },
+  "scenarios": [
+    {
+      "name": "isolated auth and staged plugin",
+      "status": "PASS",
+      "durationMs": 3136,
+      "detail": "installed staged plugin at /private<isolated-temp>/codex-home/plugins/cache/memex-host-5bddd99de720/memex/0.4.1"
+    },
+    {
+      "name": "app-server initialize and thread/start",
+      "status": "PASS",
+      "durationMs": 765,
+      "detail": "thread=01a07f94-8428-7d51-bcc9-377923b9f070 source=cli"
+    },
+    {
+      "name": "app-server normal completion",
+      "status": "PASS",
+      "durationMs": 719,
+      "detail": "turn=01a07f94-849e-76c3-b76a-3883cd84f9a2; status=completed; hook_delivery=separate_evidence"
+    },
+    {
+      "name": "app-server UserPromptSubmit and Stop hook delivery",
+      "status": "NOT_PROVEN",
+      "durationMs": 1,
+      "detail": "app-server completed the turn but delivered no plugin-managed UserPromptSubmit/Stop hook records"
+    },
+    {
+      "name": "app-server interrupted turn",
+      "status": "PASS",
+      "durationMs": 215,
+      "detail": "turn=01a07f94-876c-7453-834c-68a4cd167a7a; interrupt_request=accepted; status=interrupted; hook_delivery=separate_evidence"
+    },
+    {
+      "name": "app-server Interrupt hook delivery",
+      "status": "NOT_PROVEN",
+      "durationMs": 0,
+      "detail": "app-server interrupted the turn but delivered no plugin-managed Interrupt hook record"
+    },
+    {
+      "name": "killed-process restart resumes same session without duplicate turn ids",
+      "status": "PASS",
+      "durationMs": 5839,
+      "detail": "killed_turn=01a07f94-8843-7ab1-b1a2-4e1ef88084ae; resumed_thread=01a07f94-8428-7d51-bcc9-377923b9f070; unique_turn_ids=4; hook_delivery=separate_evidence"
+    },
+    {
+      "name": "app-server resume SessionStart hook delivery",
+      "status": "NOT_PROVEN",
+      "durationMs": 0,
+      "detail": "app-server resumed the same thread but delivered no plugin-managed SessionStart hook record"
+    },
+    {
+      "name": "app-server pre/post compact lifecycle",
+      "status": "PASS",
+      "durationMs": 5456,
+      "detail": "request=accepted; evidence=context-compaction-item; hook_delivery=separate_evidence"
+    },
+    {
+      "name": "app-server PreCompact/PostCompact and compact SessionStart hooks",
+      "status": "NOT_PROVEN",
+      "durationMs": 0,
+      "detail": "app-server compacted context but delivered no complete PreCompact/PostCompact/SessionStart hook set"
+    },
+    {
+      "name": "repeated compact remains bounded and idempotent",
+      "status": "PASS",
+      "durationMs": 5053,
+      "detail": "request=accepted; evidence=context-compaction-item; compaction_turns=2"
+    },
+    {
+      "name": "stale Capsule restore keeps stale status visible",
+      "status": "NOT_PROVEN",
+      "durationMs": 1,
+      "detail": "host did not create a Memex database to seed stale Capsule"
+    },
+    {
+      "name": "SessionEnd delivery on app-server host shutdown",
+      "status": "NOT_PROVEN",
+      "durationMs": 25,
+      "detail": "app-server shutdown produced no plugin-managed SessionEnd hook record"
+    },
+    {
+      "name": "installed plugin hooks through codex exec host",
+      "status": "PASS",
+      "durationMs": 7718,
+      "detail": "events=SessionStart,UserPromptSubmit,Stop,SessionEnd; prepared=1; stdout_emitted=1; host_consumed=1; untrusted_override=0; nonce=me9e9afb14561996b"
+    },
+    {
+      "name": "codex-cli TUI normal completion",
+      "status": "PASS",
+      "durationMs": 11542,
+      "detail": "{\"phase\":\"normal\",\"status\":\"PASS\",\"durationMs\":11542,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"SessionEnd\"],\"hookRecords\":4,\"commandsSent\":1,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":true,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty/01-normal\",\"records\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\"],\"compactions\":null,\"staleSeed\":null,\"staleNonceReflected\":null}}; nonce_reflected=1; untrusted_override=0",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI interrupted turn",
+      "status": "PASS",
+      "durationMs": 5300,
+      "detail": "{\"phase\":\"interrupt\",\"status\":\"PASS\",\"durationMs\":5300,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\",\"Interrupt\",\"SessionEnd\"],\"hookRecords\":4,\"commandsSent\":2,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":true,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty/02-interrupt\",\"records\":[\"UserPromptSubmit\",\"Interrupt\"],\"compactions\":null,\"staleSeed\":null,\"staleNonceReflected\":null}}",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI killed process",
+      "status": "PASS",
+      "durationMs": 4319,
+      "detail": "{\"phase\":\"kill\",\"status\":\"PASS\",\"durationMs\":4319,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\"],\"hookRecords\":2,\"commandsSent\":0,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":true,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty/03-kill\",\"records\":[\"UserPromptSubmit\"],\"compactions\":null,\"staleSeed\":null,\"staleNonceReflected\":null}}",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI same-session resume",
+      "status": "PASS",
+      "durationMs": 15215,
+      "detail": "{\"phase\":\"resume\",\"status\":\"PASS\",\"durationMs\":15215,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"SessionEnd\"],\"hookRecords\":4,\"commandsSent\":1,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":true,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty/04-resume\",\"records\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\"],\"compactions\":null,\"staleSeed\":null,\"staleNonceReflected\":null}}",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI manual compact",
+      "status": "PASS",
+      "durationMs": 24322,
+      "detail": "{\"phase\":\"compact\",\"status\":\"PASS\",\"durationMs\":24322,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"SessionEnd\"],\"hookRecords\":9,\"commandsSent\":5,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":false,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty-targeted/05-compact\",\"records\":[\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\"],\"compactions\":1,\"staleSeed\":null,\"staleNonceReflected\":false}}; transport=codex-cli-pty",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI repeated compact",
+      "status": "PASS",
+      "durationMs": 38612,
+      "detail": "{\"phase\":\"repeated-compact\",\"status\":\"PASS\",\"durationMs\":38612,\"sessionId\":\"<session_id>\",\"hookEvents\":[\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"SessionEnd\"],\"hookRecords\":14,\"commandsSent\":9,\"terminalQueriesAnswered\":2,\"pidGone\":true,\"outputMarkers\":{\"injection_nonce\":false,\"stale_nonce\":false,\"orange_override\":false,\"ready_text\":true},\"detail\":{\"source\":\"pty-targeted/06-repeated-compact\",\"records\":[\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\",\"PreCompact\",\"PostCompact\",\"SessionStart\",\"UserPromptSubmit\",\"Stop\"],\"compactions\":2,\"staleSeed\":null,\"staleNonceReflected\":false}}; transport=codex-cli-pty",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI stale Capsule restore",
+      "status": "NOT_PROVEN",
+      "durationMs": 27872,
+      "detail": "Lifecycle PASS with PreCompact/PostCompact and compact SessionStart; stale Capsule content consumption NOT_PROVEN because the host response did not reflect the stale nonce and no final model JSON was captured.",
+      "evidence": "codex-cli-pty"
+    },
+    {
+      "name": "codex-cli TUI stale content response",
+      "status": "NOT_PROVEN",
+      "durationMs": 0,
+      "detail": "The final bounded attempt reached DNS errors and Reconnecting before a final model JSON. The authenticated synthetic stale-content retry was blocked by automatic approval review; no execution occurred.",
+      "evidence": "codex-cli-pty"
+    }
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "SessionStart",
+          "model": "gpt-5.6-luna",
+          "permission_mode": "bypassPermissions",
+          "session_id": "<session_id>",
+          "source": "resume",
+          "transcript_path": "<codex-session-rollout>"
+        },
+        "output_emitted": true,
+        "delegate_status": 0
+      },
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "SessionStart",
+          "model": "gpt-5.6-luna",
+          "permission_mode": "bypassPermissions",
+          "session_id": "<session_id>",
+          "source": "compact",
+          "transcript_path": "<codex-session-rollout>"
+        },
+        "output_emitted": true,
+        "delegate_status": 0
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "UserPromptSubmit",
+          "model": "gpt-5.6-luna",
+          "permission_mode": "bypassPermissions",
+          "prompt": "<user-prompt>",
+          "session_id": "<session_id>",
+          "transcript_path": "<codex-session-rollout>",
+          "turn_id": "<turn_id>"
+        },
+        "output_emitted": true,
+        "delegate_status": "canary-only"
+      }
+    ],
+    "Stop": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "Stop",
+          "last_assistant_message": "<assistant-message>",
+          "model": "gpt-5.6-luna",
+          "permission_mode": "bypassPermissions",
+          "session_id": "<session_id>",
+          "stop_hook_active": false,
+          "transcript_path": "<codex-session-rollout>",
+          "turn_id": "<turn_id>"
+        },
+        "output_emitted": false,
+        "delegate_status": 0
+      }
+    ],
+    "Interrupt": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "Interrupt",
+          "model": "gpt-5.6-luna",
+          "permission_mode": "bypassPermissions",
+          "session_id": "<session_id>",
+          "transcript_path": "<codex-session-rollout>",
+          "turn_id": "<turn_id>"
+        },
+        "output_emitted": false,
+        "delegate_status": 0
+      }
+    ],
+    "PreCompact": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "PreCompact",
+          "model": "gpt-5.6-luna",
+          "session_id": "<session_id>",
+          "transcript_path": "<codex-session-rollout>",
+          "trigger": "manual",
+          "turn_id": "<turn_id>"
+        },
+        "output_emitted": false,
+        "delegate_status": 0
+      }
+    ],
+    "PostCompact": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "PostCompact",
+          "model": "gpt-5.6-luna",
+          "session_id": "<session_id>",
+          "transcript_path": "<codex-session-rollout>",
+          "trigger": "manual",
+          "turn_id": "<turn_id>"
+        },
+        "output_emitted": false,
+        "delegate_status": 0
+      }
+    ],
+    "SessionEnd": [
+      {
+        "transport": "codex-cli-pty",
+        "input": {
+          "cwd": "<project-cwd>",
+          "hook_event_name": "SessionEnd",
+          "reason": "other",
+          "session_id": "<session_id>",
+          "transcript_path": "<codex-session-rollout>"
+        },
+        "output_emitted": false,
+        "delegate_status": 0
+      }
+    ]
+  },
+  "fixtures": {
+    "directory": "test/fixtures/codex-host/0.153.4",
+    "filesWritten": [
+      "test/fixtures/codex-host/0.153.4/interrupt.json",
+      "test/fixtures/codex-host/0.153.4/postcompact.json",
+      "test/fixtures/codex-host/0.153.4/precompact.json",
+      "test/fixtures/codex-host/0.153.4/sessionend.json",
+      "test/fixtures/codex-host/0.153.4/sessionstart-compact.json",
+      "test/fixtures/codex-host/0.153.4/sessionstart.json",
+      "test/fixtures/codex-host/0.153.4/stop.json",
+      "test/fixtures/codex-host/0.153.4/userpromptsubmit.json"
+    ],
+    "replayable": "fixtures are sanitized shape records; replay is never actual host evidence",
+    "observedEvents": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "Stop",
+      "Interrupt",
+      "PreCompact",
+      "PostCompact",
+      "SessionEnd"
+    ]
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "limitations": [
+    "The app-server transport and the codex-cli-pty transport are separate observations; hook output emitted by a wrapper is host acceptance evidence only when the host response reflects it.",
+    "The primary PTY phases 01-04 and targeted lifecycle phases 05-07 are actual host observations. The stale Capsule lifecycle passed, while stale content consumption remains NOT_PROVEN.",
+    "The final bounded authenticated synthetic stale-content retry was blocked by automatic approval review; no execution occurred. It remains NOT_PROVEN.",
+    "The final stale-content attempt encountered DNS errors and Reconnecting before a final model JSON; no additional provider run was made.",
+    "Optional model workers were omitted from the installed host manifest; this receipt covers host hook delivery and lifecycle transport.",
+    "Nonce reflection proves host consumption through the model response, not product retrieval quality."
+  ],
+  "hookEvidence": {
+    "transport": "codex-cli-pty",
+    "selectedRecords": "sanitized representatives from the primary and targeted PTY evidence runs",
+    "observedEventTypes": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "Stop",
+      "Interrupt",
+      "PreCompact",
+      "PostCompact",
+      "SessionEnd"
+    ],
+    "compactOrder": [
+      "PreCompact",
+      "PostCompact",
+      "SessionStart(source=compact)",
+      "UserPromptSubmit",
+      "Stop"
+    ],
+    "staleContextStatus": "stale/context-only"
+  },
+  "staleContent": {
+    "status": "NOT_PROVEN",
+    "transport": "codex-cli-pty",
+    "lifecycle": {
+      "status": "PASS",
+      "source": "pty-targeted/07-stale",
+      "sessionId": "<session_id>",
+      "compactions": 1,
+      "hookEvents": [
+        "PreCompact",
+        "PostCompact",
+        "SessionStart(source=compact)",
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "capsuleSeed": {
+        "db": "present",
+        "sessionId": "<session_id>",
+        "seeded": true
+      }
+    },
+    "hookContextObserved": {
+      "status": "stale/context-only",
+      "currentGoal": "Objective: stale fixture objective",
+      "currentState": "State: stale fixture state",
+      "pending": [
+        "newer workstream evidence awaits Capsule distillation",
+        "capture/index job is pending",
+        "Capsule update job is pending",
+        "latest checkpoint is outside the Capsule coverage"
+      ],
+      "staleNonceInHookOutput": true,
+      "staleNonce": "<stale-nonce>"
+    },
+    "hostResponseObserved": {
+      "status": "observed",
+      "text": "COMPACT_OK",
+      "staleNonceReflected": false
+    },
+    "finalModelJson": {
+      "status": "NOT_PROVEN",
+      "captured": false
+    },
+    "finalAttempt": {
+      "status": "NOT_PROVEN",
+      "source": "07-stale-content-fresh",
+      "observed": "DNS errors followed by Reconnecting; terminal was stopped before a summary or final model JSON.",
+      "automaticApprovalReview": "BLOCKED: authenticated synthetic stale-content retry blocked by automatic approval review; no execution.",
+      "additionalProviderRuns": 0
+    }
+  },
+  "cleanup": {
+    "isolatedAuth": "removed after evidence collection",
+    "ptyAndDriverProcesses": "none observed in final process scan",
+    "temporaryEvidenceRoot": "removed after sanitization",
+    "userStableSurfacesUnchanged": true
+  }
+}

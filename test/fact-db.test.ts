@@ -11,7 +11,10 @@ import {
   getTopFacts,
   getNewFactsSince,
   searchFactsByScope,
+  searchFactsLexicallyInScope,
+  searchFactsCombinedInScope,
 } from '../src/fact-db.js';
+import { resolveProjectWorkspace } from '../src/continuity-identity.js';
 import { suppressConsole } from './test-utils.js';
 import fs from 'fs';
 import path from 'path';
@@ -426,5 +429,78 @@ describe('Scope-aware fact search', () => {
 
     expect(projectResults.map(({ fact }) => fact.fact).sort()).toEqual(['global', 'project A']);
     expect(allResults.map(({ fact }) => fact.fact).sort()).toEqual(['global', 'project A', 'project B']);
+  });
+
+  it('keeps bounded identifier retrieval available for Korean prose when embeddings are unavailable', () => {
+    insertFact(db, {
+      fact: 'The queue lease error was fixed by acquireLease with retry_budget.',
+      fact_kr: 'E_QUEUE_LEASE_EXPIRED 오류는 acquireLease 함수와 retry_budget 설정으로 해결했다.',
+      category: 'decision',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding: null,
+    });
+
+    const results = searchFactsCombinedInScope(
+      db,
+      'E_QUEUE_LEASE_EXPIRED 해결했던 방법',
+      null,
+      { type: 'global' },
+      5,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.lane).toBe('lexical');
+    expect(results[0]?.fact.fact).toContain('acquireLease');
+    expect(searchFactsLexicallyInScope(db, 'acquireLease() 함수', { type: 'global' }, 5)).toHaveLength(1);
+    expect(searchFactsLexicallyInScope(db, 'retry_budget 설정', { type: 'global' }, 5)).toHaveLength(1);
+  });
+
+  it('skips oversized prose LIKE terms while preserving semantic fallback', () => {
+    insertFact(db, {
+      fact: 'Semantic fallback remains available for a long prompt.',
+      category: 'knowledge',
+      scope_type: 'global',
+      scope_project: null,
+      source_exchange_ids: [],
+      embedding,
+    });
+    const longPrompt = 'Explain the semantic fallback behavior ' + 'with additional context '.repeat(200);
+
+    expect(searchFactsLexicallyInScope(db, longPrompt, { type: 'global' }, 5)).toEqual([]);
+    const results = searchFactsCombinedInScope(db, longPrompt, embedding, { type: 'global' }, 5, 0.85);
+    expect(results.map(({ fact }) => fact.fact)).toEqual(['Semantic fallback remains available for a long prompt.']);
+    expect(results[0]?.lane).toBe('semantic');
+  });
+
+  it('applies legacy project identity overlays before the lexical result limit', () => {
+    const legacyPath = path.join(testDir, 'legacy-project');
+    const identity = resolveProjectWorkspace(db, {
+      cwd: legacyPath,
+      now: '2026-09-08T00:00:00.000Z',
+      gitCommonDir: null,
+      remoteFingerprint: null,
+      locationKind: 'directory',
+    });
+    const factId = insertFact(db, {
+      fact: 'Legacy E_QUEUE_LEASE_EXPIRED remediation',
+      category: 'decision',
+      scope_type: 'project',
+      scope_project: legacyPath,
+      source_exchange_ids: [],
+      embedding: null,
+    });
+    db.prepare('UPDATE facts SET project_id = NULL WHERE id = ?').run(factId);
+
+    const results = searchFactsLexicallyInScope(
+      db,
+      'E_QUEUE_LEASE_EXPIRED',
+      { type: 'project-id', projectId: identity.projectId, includeGlobal: false },
+      1,
+    );
+
+    expect(results.map(({ fact }) => fact.id)).toEqual([factId]);
+    expect(results[0]?.fact.project_id).toBe(identity.projectId);
   });
 });

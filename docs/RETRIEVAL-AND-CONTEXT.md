@@ -22,6 +22,12 @@ flowchart LR
 
 scope/date/category filter는 caller limit보다 먼저 적용합니다.
 
+Fact 검색은 `searchFactsCombinedInScope`가 lexical과 semantic 결과를 ID로 합칩니다.
+경로, 함수 호출, camelCase/snake_case, 오류 코드는 자연어 안에서도 최대 4개 식별자로
+추출하며 긴 일반 문장은 lexical `LIKE` 대상에서 제외합니다. SQL pattern은 escape하고,
+기존 legacy identity adapter와 `ReadScope` 검증을 통과한 뒤 caller limit을 적용합니다.
+Lexical-only 결과를 관측된 semantic similarity 100%로 표시하지 않습니다.
+
 ## 2. Expanding KNN
 
 sqlite-vec의 KNN limit은 metadata filter보다 먼저 후보를 자를 수 있습니다. out-of-scope row가 상위 후보를 채우면 유효한 project fact가 보이지 않는 문제가 생기므로 Memex는 작은 window에서 시작해 필요한 수가 채워지거나 index를 소진할 때까지 window를 단계적으로 확장합니다.
@@ -30,14 +36,27 @@ conversation과 fact 검색은 같은 원칙을 사용합니다.
 
 ## 3. Scope
 
-project-sensitive retrieval은 다음 중 하나를 명시합니다.
+새 fact core는 `src/read-scope.ts`의 `ReadScope`를 필수로 받습니다.
+`searchFactsInScope`, `listFactsInScope`, `factMatchesReadScope`, `getRelatedFactsInScope`,
+`getFactsByCategoryInScope`는 누락/잘못된 scope를 런타임에서도 거부합니다.
 
-- stable `project_id`, `workspace_id`, `workstream_id`, 또는 `session_id`
-- 지원 기간의 canonical absolute project path compatibility key
-- `scope=global`
-- `scope=all`
+- `project-id`: project-wide/legacy fact; `includeGlobal` 기본 true, false일 때만 global 제외
+- `workspace-id`: 해당 workspace truth와 project-wide truth
+- `workstream-id`: 해당 workstream truth와 허용 workspace/project-wide truth
+- `session-id`: 같은 project에서 해당 session의 source exchange를 인용한 fact
+- `global`: global만
+- `all`/`other-project-id`: 명시적 관리/교차 프로젝트 조회
+- `fact-ids`: legacy adapter가 확정한 유한 ID 집합
 
-`process.cwd()`나 MCP server의 설치 경로를 project로 추측하지 않습니다. graph relation을 확장할 때도 각 hop에서 같은 scope gate를 다시 적용합니다.
+`legacy-read-scope.ts`만 canonical path compatibility를 해석합니다. 기존 positional reader는 이
+adapter를 거치며 scope 생략 시 global만 읽습니다. Legacy row의 read-time identity overlay는 DB를
+수정하지 않습니다. 새 core에 path 비교를 추가하거나 생략된 scope를 all로 확장하지 않습니다.
+Workspace/workstream/session은 project membership을 검증합니다. 명시적으로 공유한 workstream은
+여러 workspace의 session에서 사용할 수 있으므로 workstream의 최초 workspace를 독점 owner로 보지 않습니다.
+
+`process.cwd()`나 MCP 설치 경로는 project 추론 근거가 아닙니다. Graph는 seed와 모든 hop에 같은
+scope를 적용하고 범위 밖 node를 다음 hop의 bridge로 쓰지 않습니다. 읽기 범위는
+[MutationPolicy](FACT-LIFECYCLE.md#6-semantic-mutation)의 수정 권한을 부여하지 않습니다.
 
 ## 4. UserPromptSubmit injection
 
@@ -60,6 +79,17 @@ sequenceDiagram
 ```
 
 warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
+
+정확한 경로·심볼·오류 코드가 active scoped fact에서 누락됐을 때는 검증된 사용자 원문을
+제한적으로 조회합니다. Fact 요약은 원문의 모든 식별자를 보존하는 색인이 아니므로, 누락을
+고치기 위해 검증된 fact 본문에 문자열을 덧붙이거나 extraction을 다시 실행하지 않습니다.
+이 원문은 현재 사실이 아닌 잠재적으로 오래된 context-only 참고 근거입니다. Assistant,
+tool output, recall과 compaction 전달문은 이 사용자 원문 경로에 포함하지 않습니다.
+현재 source session과 exchange의 project/workspace/workstream이 일치해야 하며, workspace도
+같은 project 소속이어야 합니다. 명시적으로 공유한 workstream의 다른 workspace는 허용합니다.
+같은 turn에 Memex 도구를 호출했어도 독립된 사용자 발언은 그대로 조회할 수 있습니다.
+질의당 최대 4개 식별자, 식별자당 최근 후보 최대 128개, 최종 원문 최대 2개로 제한하며,
+정확한 식별자와 exchange ID/line pointer가 함께 들어가지 않는 긴 항목은 생략합니다.
 
 ## 4a. Pre-retrieval cheap gate (Phase 5)
 
@@ -85,8 +115,10 @@ Capsule(`[WORK NOW]`)과 pending correction은 전달됩니다. 다만 ack/conti
 fingerprint tokenizer는 소문자·stopword 제거 뒤 한국어 token의 꼬리 조사/어미(을/를/도/에서/해줘/해주세요 …)를
 한 개 벗겨 "클라이언트를"과 "클라이언트"를 같은 token으로 만듭니다(retrieval embedding에는 영향 없음).
 기본값은 `DEFAULT_RECALL_GATE_CONFIG`에 있으며 threshold는 deterministic이고 소수입니다. embedding이
-불가능하면(model 없음/offline) skip은 그대로 무료이고 retrieve path는 vector가 필요 없는 section(CORRECTION,
-WORK NOW, WATCH, RECENT EVIDENCE)만 렌더링하며 실패는 log로 남기고 절대 throw하지 않습니다.
+불가능하면(model 없음/offline) scoped lexical fact 조회와 vector가 필요 없는 section(CORRECTION,
+WORK NOW, WATCH, RECENT EVIDENCE)을 유지합니다. 구체적인 식별자 질의는 짧거나 자연어 안에 있어도
+lexical 조회를 시도하며, 단순 acknowledgement의 무료 skip은 유지합니다. 임베딩 실패를 의미 검색의
+성공으로 표시하지 않습니다.
 
 session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embedding`,
 `informative_prompts_since_retrieval`, `last_retrieval_epoch`, `last_retrieval_at`(retrieval 시각), `hot_evidence_cursor`,
@@ -102,13 +134,18 @@ session state(`session_memory_state`): `topic_fingerprint_json`, `topic_embeddin
 | `[MEMEX CORRECTION]` | residency에서 도출: resident revision의 fact가 새 generation이면 `Updated (supersedes earlier context): … — earlier: "…"`, 비활성화됐으면 `No longer active`. prompt와 무관하게 모든 resident fact를 검사하며, stale project revision(sibling 변경)은 이 검사를 강제할 뿐 never-resident fact를 밀어넣지 않습니다. budget 때문에 남은 correction이 있으면 `memory_revision_seen`을 올리지 않고 다음 prompt에서 이어서 내보냅니다 |
 | `[WORK NOW]` | 현재 Capsule generation이 이 epoch에 resident가 아닐 때(새 session, compact/clear, 새 generation). SessionStart(compact/resume) rehydration이 이미 넣은 generation은 반복하지 않으며, 빈 Capsule도 resident로 표시해 retrieval loop를 막습니다 (Capsule은 context-only) |
 | `[CURRENT TRUTH]` | relevance gate를 통과한 resident가 아닌 current fact 2~4개 |
+| `[RAW EVIDENCE — CONTEXT-ONLY, MAY BE STALE]` | exact identifier를 active scoped fact에서 찾지 못했을 때만 같은 workstream의 사용자 원문을 source pointer와 함께 반환합니다. Own session도 명시적인 질의에 응답할 수 있지만 fact residency와 Hot Evidence cursor는 변경하지 않습니다 |
 | `[WATCH — VERIFIED INCIDENT PATTERN]` | Phase 4 `matchIncidentPatterns`의 verified pattern(independent episode ≥ 2 또는 user repeat)만; candidate/remediated 제외; 같은 signature는 새 verified episode가 없으면 substantive prompt 5회 동안 반복하지 않음 |
 | `[TRACE — HISTORY AVAILABLE]` | why/history/source intent일 때 `trace_fact subject_key=… — N Chronicle event(s), latest …` pointer(전체 history 주입 금지). 같은 subject는 Chronicle이 바뀌지 않는 한 epoch 동안 반복하지 않음 |
 | `[RECENT EVIDENCE — NOT YET DISTILLED]` | sibling session의 미소비 Hot Evidence를 sequence 오름차순으로 조회합니다. 실제 출력한 prefix만 session/epoch cursor로 기록하며, query limit·budget에 남은 suffix는 다음 prompt에서 재시도합니다. epoch 변경·명시 rebind는 cursor를 0으로 초기화합니다 |
 | `[ASSISTANT CONTEXT-ONLY — NOT AUTHORITATIVE]` | current truth/correction이 없고 explicit memory intent일 때만 source-linked 과거 답변 1건 |
 
-예산: normal prompt target 700 / hard 1,000자(line 160자), resume/compact target 1,500 / hard 2,000자.
-ranking은 section 우선순위 → caller 순서(score desc, id asc)이며 truncation은 deterministic입니다.
+예산은 고정 안내와 JSON escaping을 포함한 **최종 additionalContext 문자열** 기준입니다.
+normal prompt는 최대 1,000자 / 추정 320 tokens, resume/compact는 최대 2,000자 / 추정 640 tokens입니다.
+`context-envelope.ts`는 문자당 ASCII 0.25, 비ASCII BMP 1, astral 문자 2 tokens로 추정한 뒤
+25% 여유를 더합니다. 실제 tokenizer나 provider 한도가 아니며 billed usage로 쓰지 않습니다.
+후보를 추가할 때마다 최종 포맷의 크기를 확인하므로 예산에 들어가지 않은 항목은 residency/cursor에
+소비한 것으로 기록하지 않습니다. Section 우선순위와 truncation은 deterministic입니다.
 relation 1-hop expansion은 why/related/dependency/contradiction/trace intent에서만 실행됩니다.
 
 ## 5. Selection 규칙
@@ -121,14 +158,27 @@ relation 1-hop expansion은 why/related/dependency/contradiction/trace intent에
 6. 결과가 없으면 context block을 만들지 않습니다.
 
 Project `memory_revision`이 stale이면 normal semantic match보다 `[MEMEX CORRECTION]`을 먼저 냅니다.
-비활성화된 resident fact는 `No longer active`로 철회합니다. 예산 때문에 correction 일부만 들어가면
+비활성화된 resident fact는 `No longer active`로 철회합니다. 다른 scope로 이동한 resident fact는 새
+본문을 노출하지 않는 unavailable notice로 철회하고 실제 출력 후 residency에서 제거합니다. 최종
+주입 receipt transaction에서도 emitted fact의 현재 scope와 generation을 검사합니다. 예산 때문에 correction 일부만 들어가면
 실제 emitted revision만 resident로 기록하고 다음 natural boundary에서 나머지를 이어서 처리합니다.
 관련 correction을 모두 소진했거나 현재 workspace/workstream에 해당하는 변경이 없음을 확인한 뒤에만
 scalar revision을 seen 처리합니다.
 
+실제 출력할 RAW EVIDENCE도 receipt transaction에서 원문의 내용·provenance snapshot,
+source 좌표, session/scope membership과 exclusion 상태를 다시 확인합니다. 비공개 삭제나
+수정·rebind가 감지되면 해당 bundle을 전달하지 않고 다음 질의에서 재시도할 수 있게 남깁니다.
+Source ID는 참고 위치이며, `source_exchange_ids`나 current fact로 승격하지 않습니다.
+
 Residency는 SQLite `session_memory_state`에 epoch별로 기록됩니다. 같은 fact ID라도 semantic/lifecycle generation이 바뀌면 같은 epoch에서 correction으로 다시 주입할 수 있고, compact 뒤 새 epoch에서는 old residency가 필요한 revision을 suppress하지 않습니다. Inactive revision은 carry에서 제외됩니다. Recall provenance receipt는 학습 경계이므로 `prepared` write가 실패하면 residency를 기록하거나 context를 주입하지 않습니다.
 
-`SessionStart(compact)`는 semantic query를 실행하지 않습니다. 전체 500~2,000자 budget의 최대 60% 안에서 Capsule 작업 맥락을 먼저 렌더링·예약하고, 나머지 공간에 correction/current truth를 넣습니다. 출력 순서는 correction 우선이지만 작업 맥락을 굶기지 않습니다. Capsule은 objective·next action·state·blocker 순서로 공간을 나눠 요약합니다. Capsule을 출력하지 못했거나 미소비 evidence/미완료 capture가 있으면 deterministic tail baton을 병합하며, stale Capsule은 작업 슬롯 절반을 baton에 남깁니다. Baton은 최근 user request·plan item·touched files·trusted test·unresolved error를 사용하고, 아직 indexed 정보가 없으면 label만 남깁니다. 실제 포함한 revision과 Hot Evidence prefix만 residency에 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
+`SessionStart(compact)`는 semantic query를 실행하지 않습니다. Capsule 작업 맥락을 먼저 예약하고,
+남은 공간에 correction/current truth를 넣으며 최종 wrapper와 token 추정 예산도 적용합니다.
+작업 맥락은 현재 목표, 확인된 결과, 미검증 가설, 최근 정정, 막힌 지점, 다음 행동, 근거 위치를
+구분합니다. 기록이 없으면 추측하지 않습니다. 미소비 evidence나 미완료 capture/Capsule 작업이 있으면
+Capsule을 `stale/context-only`로 표시하고 최근 source와 pending 상태를 tail baton에 별도로 냅니다.
+과거 superseded job만 남은 경우에는 최신 Capsule을 stale로 만들지 않습니다. 실제 포함한 revision과
+Hot Evidence prefix만 residency에 기록합니다. Capsule과 tail baton은 모두 context-only입니다.
 
 미소비 sibling Hot Evidence 자체가 cheap gate trigger입니다. 짧은 acknowledgement/continuation도 vector 호출 없이 남은 항목을 전달합니다. Prompt의 receipt·fact residency·Hot Evidence cursor·gate 상태는 한 transaction에서 commit합니다. Cursor commit은 scope/epoch/기존 cursor와 출력 prefix의 생존을 검증하므로 purge·rebind race는 전체 bundle을 재시도 가능하게 남깁니다. Compact/resume도 timestamp 대신 실제 출력 sequence만 commit합니다. DB commit 이후 stdout 전송까지 exactly-once인 것은 아닙니다.
 
@@ -189,7 +239,17 @@ KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.
 
 성공한 UserPromptSubmit hook은 Codex가 요구하는 `hookSpecificOutput.additionalContext` shape를 사용합니다. host version이 바뀌면 output shape와 실제 model turn consumption을 함께 재검증해야 합니다.
 
-Memex는 `prepared`/`emitted`까지만 durable하게 관측합니다. host가 실제로 context를 소비했다는 별도 receipt가 없다면 `consumed`를 주장하지 않습니다.
+고정된 코드 소유 안내와 JSON 문자열로 직렬화한 비신뢰 기억 데이터를 분리합니다. 기억 내부의
+명령·줄바꿈·가짜 closing tag가 고정 안내가 되지 않도록 escape합니다. 이는 포맷 경계이며,
+prompt injection을 모든 모델에서 완전히 차단한다는 보장은 아닙니다.
+
+Fact가 없는 Capsule/Hot Evidence 출력도 `prepared` receipt를 residency/cursor와 같은 transaction에
+기록합니다. Warm daemon과 cold hook은 정확한 receipt ID를 전달하며 stdout callback 성공 뒤 그 ID만
+`emitted`로 바꿉니다. 같은 prompt의 다른 receipt를 대신 완료하지 않습니다. stdout 실패나 marking
+실패는 prepared 상태로 남습니다. DB commit과 stdout 사이에 exactly-once 전달을 보장하지 않습니다.
+
+Memex가 durable하게 관측하는 상태는 `prepared`/`emitted`입니다. 실제 host response에서 확인한 수락은
+별도 검증 증거로만 기록하며, 일반 실행에서 확인 수단이 없으면 host acceptance는 `NOT_PROVEN`입니다.
 
 ## 8a. Metrics와 calibration
 

@@ -1,3 +1,4 @@
+import { prepareVerifiedGlobalPair } from './consolidation-fixture.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initDatabase } from '../src/db.js';
 import { insertFact, getFactsByProject, getActiveFacts, getTopFacts } from '../src/fact-db.js';
@@ -66,29 +67,31 @@ describe('Fact System Integration', () => {
     const id1 = insertFact(db, { fact: 'Zustand 사용', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
     const id2 = insertFact(db, { fact: 'React Context 사용으로 변경', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
 
+    prepareVerifiedGlobalPair(db, id1, id2);
     const facts = getActiveFacts(db);
     await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-      relation: 'CONTRADICTION', merged_fact: 'React Context로 상태 관리 변경', reason: 'tech stack change',
+      relation: 'CONTRADICTION', same_subject: true, same_conditions: true, merged_fact: 'React Context로 상태 관리 변경', reason: 'tech stack change',
     });
 
     const active = getFactsByProject(db, '/proj');
     expect(active).toHaveLength(1);
     expect(active[0].id).toBe(id1);
-    expect(active[0].fact).toBe('React Context로 상태 관리 변경');
+    expect(active[0].fact).toBe('React Context 사용으로 변경');
   });
 
   it('should handle full EVOLUTION consolidation flow', async () => {
     const id1 = insertFact(db, { fact: 'API v1 사용', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
     const id2 = insertFact(db, { fact: 'API v2로 마이그레이션 완료', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
 
+    prepareVerifiedGlobalPair(db, id1, id2);
     const facts = getActiveFacts(db);
     await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-      relation: 'EVOLUTION', merged_fact: 'API v2 사용 중 (v1에서 마이그레이션)', reason: 'version upgrade',
+      relation: 'EVOLUTION', same_subject: true, same_conditions: true, merged_fact: 'API v2 사용 중 (v1에서 마이그레이션)', reason: 'version upgrade',
     });
 
     const active = getActiveFacts(db);
     expect(active).toHaveLength(1);
-    expect(active[0].fact).toBe('API v2 사용 중 (v1에서 마이그레이션)');
+    expect(active[0].fact).toBe('API v2로 마이그레이션 완료');
     expect(active[0].consolidated_count).toBe(2);
   });
 

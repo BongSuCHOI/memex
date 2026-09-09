@@ -147,7 +147,13 @@ async function main() {
       }
     }
 
-    const result = await runFactExtraction(db, sessionId, project);
+    const result = await runFactExtraction(db, sessionId, project, {
+      claimVariant: "hook",
+      modelContext: {
+        parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || "maintenance",
+        budgetId: process.env.MEMEX_MODEL_BUDGET_ID || undefined,
+      },
+    });
     // skipped 를 무시하면 claim 미획득·보류가 'extracted=0 saved=0' 정상 처리와
     // 구분되지 않아 DB 장애가 무경보로 남는다(R19 — backfill 에서 닫은 결함이
     // 이쪽에 그대로 있었다).

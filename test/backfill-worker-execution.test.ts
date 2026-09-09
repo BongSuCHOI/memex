@@ -307,7 +307,10 @@ export const FAILURE_REPORT = {
         expect.anything(),
         `s${i + 1}`,
         'unknown',
-        { claimVariant: 'worker' },
+        {
+          claimVariant: 'worker',
+          modelContext: { parentWaveId: 'maintenance' },
+        },
       ]);
     }
   });

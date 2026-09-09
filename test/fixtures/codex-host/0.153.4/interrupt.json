@@ -1,0 +1,23 @@
+{
+  "host": "codex-cli",
+  "version": "0.153.4",
+  "transport": "codex-cli-pty",
+  "event": "Interrupt",
+  "input": {
+    "cwd": "<project-cwd>",
+    "hook_event_name": "Interrupt",
+    "model": "gpt-5.6-luna",
+    "permission_mode": "bypassPermissions",
+    "session_id": "<session_id>",
+    "transcript_path": "<codex-session-rollout>",
+    "turn_id": "<turn_id>"
+  },
+  "prepared": true,
+  "stdoutEmitted": false,
+  "outputShape": "empty",
+  "hostAcceptance": null,
+  "hookOnlyNonceReflected": null,
+  "untrustedMemoryOverrideObserved": false,
+  "replay": false,
+  "source": "sanitized actual host-delivered payload"
+}

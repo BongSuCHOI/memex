@@ -137,7 +137,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     // 임베딩 대기 중 동시 의미 변이: A → B (세대 2, 새 벡터 스왑 포함).
     db = initDatabase({ dbPath });
     try {
-      await mutateFactMeaning(db, { factId, newText: "Fact B written during the re-embed await" });
+      await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId, newText: "Fact B written during the re-embed await" });
     } finally {
       const gen = db.prepare("SELECT semantic_generation AS g FROM facts WHERE id = ?").get(factId) as { g: number };
       expect(gen.g).toBe(2);
@@ -197,7 +197,7 @@ describe("reembed worker semantic generation CAS (P1-2 / T04·T05)", () => {
     db = initDatabase({ dbPath });
     try {
       // 변이는 fact_kr을 NULL로 무효화하고 세대를 올린다.
-      await mutateFactMeaning(db, { factId, newText: "Primary meaning replaced mid-await" });
+      await mutateFactMeaning(db, { chronicle: { actor: "user" }, factId, newText: "Primary meaning replaced mid-await" });
     } finally {
       db.close();
     }

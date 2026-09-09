@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { SUBJECT_KEY_PATTERN, recordLocalMeaningEvidence } from './fact-policy.js';
+export { SUBJECT_KEY_PATTERN, isSemanticSubjectKey } from './fact-policy.js';
 import { CHRONICLE_EVENT_KINDS } from "./continuity-store.js";
 export { CHRONICLE_EVENT_KINDS };
 
@@ -437,6 +439,11 @@ export function recordChronicleEvent(
   );
   const event = getChronicleEvent(db, id);
   if (!event) throw new Error("chronicle insert did not persist");
+  if (input.factId && input.newValue && input.projectionApplied && effectiveAtSource !== 'peer' &&
+      input.evidenceAuthority && input.evidenceAuthority !== 'unknown' &&
+      (input.actor === 'extractor' || input.actor === 'user' || input.actor === 'consolidator')) {
+    recordLocalMeaningEvidence(db, input.factId, input.newValue, input.actor, sourceExchangeIds);
+  }
   return { event, inserted: true };
 }
 
@@ -717,7 +724,6 @@ export function currentEffectiveAt(db: Database.Database, factId: string): strin
 // Subject keys
 // ---------------------------------------------------------------------------
 
-export const SUBJECT_KEY_PATTERN = /^(state|decision|constraint|preference|pattern)(\.[a-z0-9_]{1,40}){1,4}$/;
 
 const CATEGORY_SUBJECT_PREFIX: Record<string, string> = {
   decision: "decision",
@@ -737,9 +743,6 @@ export function normalizeSubjectKey(raw: unknown, category: string): string | nu
   return key;
 }
 
-export function isSemanticSubjectKey(key: string | null | undefined): boolean {
-  return !!key && SUBJECT_KEY_PATTERN.test(key) && !/\.fact\.[0-9a-f-]{36}$/.test(key);
-}
 
 export function normalizeSlotText(text: string): string {
   return text.toLowerCase().replace(/[\s\p{P}]+/gu, " ").trim();

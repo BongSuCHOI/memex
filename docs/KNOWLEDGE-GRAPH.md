@@ -66,18 +66,20 @@ semantic mutation은 attempt ledger를 reset합니다. privacy purge도 survivin
 | `SUPERSEDES` | source가 target을 대체하는 더 최신 사실 |
 | `CONTRADICTS` | 두 사실을 동시에 현재 상태로 보기 어려움 |
 
-단순 vector similarity는 relation이 아닙니다. relation writer는 양 endpoint의 semantic generation을 캡처해 LLM await 중 한쪽 의미가 바뀌면 stale edge를 생성하지 않습니다.
+단순 vector similarity는 relation이 아닙니다. 자동 classifier는 필수 `ReadScope`와 참가자 `MutationPolicy`를 `createRelationInScope`에 전달합니다. 최종 transaction은 양 endpoint의 의미·활성 상태·placement와 read scope를 검사하고, LLM 대기 중 바뀐 edge를 폐기합니다.
 
 `(source_fact_id, relation_type, target_fact_id)`는 unique입니다.
 
 ## 6. Scope isolation
 
-- `project=/a` — `/a` facts + global facts
-- `scope=global` — global facts만
-- `scope=all` — explicit 요청일 때만 모든 project
-- `cross_project_insights` — current project를 제외한 다른 project 탐색
+Stable project/workspace/workstream/session과 global/all의 정확한 가시성은
+[ReadScope 계약](RETRIEVAL-AND-CONTEXT.md#3-scope)을 따릅니다. `cross_project_insights`는 명시적으로
+current project를 제외한 범위를 선택합니다. Legacy path 해석은 별도 adapter에만 있습니다.
 
-서로 다른 두 project fact 사이의 direct edge는 금지합니다. global↔project edge는 허용합니다. traversal의 모든 hop에서 active와 scope를 다시 검사합니다.
+서로 다른 두 project fact 사이의 direct edge는 금지합니다. global↔project edge는 허용합니다.
+`getRelatedFactsInScope`는 scope를 필수로 받아 seed와 모든 hop에서 active/scope를 검사합니다.
+범위 밖 seed나 중간 node를 통해 범위 안 node로 우회할 수 없습니다. Legacy positional
+`getRelatedFacts()`에서 scope를 생략하면 global만 읽습니다.
 
 ## 7. Traversal
 

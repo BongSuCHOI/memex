@@ -1,0 +1,181 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-08T03:59:34.341137+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Temporary CODEX_HOME/MEMEX_HOME for installer, marketplace, package and lifecycle E2E; sockets and package network access allowed for final gates; user runtime settings unchanged"
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/memory-integrity",
+    "codeSha": "73e6f2d37dbe495d624952e73f6cab81bc3e8ca0",
+    "packageVersion": "0.4.1",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "note": "All nine gates ran on this committed SHA. Only this receipt is changed afterward. No tag, push, publication or installed-plugin upgrade."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:06.465429+00:00",
+      "durationSeconds": 2.836,
+      "logSha256": "6791526fda8dcd6e9e3d39446d2abc9b8dc83b8219bf383d79a2ddc92948d2e8",
+      "observed": "TypeScript noEmit exit 0"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:09.302865+00:00",
+      "durationSeconds": 3.262,
+      "logSha256": "d37516bfe5254acba8845a28b481e4445647274c398bab18f658e3f5c73f821d",
+      "observed": "TypeScript and MCP bundle exit 0; tracked generated artifacts unchanged"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:12.565749+00:00",
+      "durationSeconds": 15.703,
+      "logSha256": "f8eb6c1e2dd0358d553f09931c32e7da9c7f5dfc49432d4a75e480d15847e767",
+      "observed": "87 files / 937 tests passed"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:28.270528+00:00",
+      "durationSeconds": 3.87,
+      "logSha256": "3e3c0c4473da4bdffeccf9872822bd3ac9536599b1f8308386f48245a5490f59",
+      "observed": "26 pass / 0 fail"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:32.140817+00:00",
+      "durationSeconds": 8.572,
+      "logSha256": "3d7351501562301056401b6bede322798dde3754257d6f79c27050b47bd155ba",
+      "observed": "100 pass / 0 fail, including four recovery/audit CLI tests"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:40.713491+00:00",
+      "durationSeconds": 6.995,
+      "logSha256": "282cae51a68980d999d866acef29feded23d6c57b830eb7e3d97605caaaf30b1",
+      "observed": "Isolated install, idempotence, 9 MCP tools, first sync, removal and stable user environment checks passed"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:47.709456+00:00",
+      "durationSeconds": 0.413,
+      "logSha256": "0cad02ee63d8899412c08d2e5db34273be23afdb0b21175c65cea3ce54ae6a2f",
+      "observed": "Plugin 0.4.1; 3 skills; 7 lifecycle events; cleanup passed"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:56:48.122749+00:00",
+      "durationSeconds": 82.045,
+      "logSha256": "e361c707653c1e2f648ad6b72ab4950a2afeae10c7e8c407b76d6264d728eb9d",
+      "observed": "memex-0.4.1.tgz; 246 files; 1138453 packed bytes / 4538758 unpacked bytes; 9 MCP tools; isolated onboarding and hook checks passed"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-08T03:58:10.169806+00:00",
+      "durationSeconds": 7.573,
+      "logSha256": "984859c1882d41a7715d8f580e2ab2927db9440461613a2513a8cb555a8f7720",
+      "observed": "Offline lifecycle gate passed; exact checks and cleanup in hashed raw log"
+    }
+  ],
+  "memoryIntegrity": {
+    "baseline": "docs/verification/memory-integrity/baseline.json",
+    "comparison": "docs/verification/memory-integrity/comparison.json",
+    "recovery": "docs/verification/memory-integrity/recovery.json",
+    "frozenRegression": {
+      "before": {
+        "passed": 12,
+        "failed": 6
+      },
+      "after": {
+        "passed": 18,
+        "failed": 0
+      },
+      "fixtureHashesUnchanged": true,
+      "finalEvidence": "The same frozen cases are included in the clean-SHA npm test gate."
+    },
+    "recoveryApplied": 36,
+    "repeatedApplied": 0,
+    "repairableRemaining": 0,
+    "legacyReviewPending": 519,
+    "historicalRewriteCandidates": 3,
+    "note": "The 3 historical rewrite candidates overlap the legacy set; original/revision review preserved all three. Facts/revisions/tombstones/exchanges/tool hashes unchanged during the selected live repair."
+  },
+  "hardSafety": {
+    "evidence": "Required automated gates at candidate.codeSha plus explicitly attributed private backup/live-repair records",
+    "scope": "Candidate and final mutation scope checks, sibling graph seed/bridge pruning, MCP search/trace scope propagation and resident redaction passed",
+    "meaning": "Automatic synthesis removed; same-subject/conditions/time/authority checks adopt verified input text only; source and participant await races rejected",
+    "lineage": "Live union from both participants and full verification-source receipt retained across semantic adoption",
+    "privacy": "Purge/replay/import and terminal tombstone retention tests passed; original rollouts not modified",
+    "liveMutation": "Only 36 previewed orphan relations and their local audit ledger; no meaning/identity normalization or full backfill"
+  },
+  "modelQuality": {
+    "status": "NOT_PROVEN",
+    "evidenceMode": "DETERMINISTIC_REGRESSION_ONLY",
+    "note": "No real consolidation/extraction model quality evaluation or production archive shadow/backfill was run. The fixture and implementation share an author; no independent holdout is claimed."
+  },
+  "independentReview": {
+    "mode": "bounded cold read of supplied artifact copy",
+    "status": "FINDINGS_RESOLVED_OR_SCOPED",
+    "details": "docs/verification/memory-integrity/README.md",
+    "note": "Fresh reviewer identified capture status and live-lineage issues; regressions added. Inactive context lifetime and cross-workspace explicit workstream sharing retained by owner contract. This was not a full integration audit."
+  },
+  "cleanup": {
+    "orphanGeneratedModules": 0,
+    "missingGeneratedModules": 0,
+    "missingCurrentDocFileLinks": 0,
+    "unusedLocalsCheck": "Precommit npx tsc --noEmit --noUnusedLocals exit 0; no claim that this extra check was rerun as a clean-SHA gate.",
+    "compatibility": "Legacy path readers retained through read-only adapters; unused raw delete writer and duplicate CAS blocks removed; new automatic graph and meaning APIs require explicit contracts.",
+    "testResources": "See lifecycle/install hashed logs for exact isolated resource cleanup checks. Private recovery artifacts intentionally retained under ignored tmp/memory-integrity-20260908."
+  },
+  "historicalEvidence": {
+    "receipt": "docs/verification/merge-gate-2026-09-07-v0.4.1.json",
+    "sha256": "c85082c9446552051e1031f0aa490fedb5b652a220c3a20c2ad370c2552941ba",
+    "preservedByteForByte": true
+  },
+  "artifactHashes": {
+    "baseline.json": "2b19c4e88eb24c3da8162e74ff023c6242e6cac934ac60d70b91dc683200d8ee",
+    "comparison.json": "f88d9901072597b93a7b45990ab8ffba53b10132b92095adaf9525491c97110b",
+    "recovery.json": "37976b642130f92a78965c83d25d8dc13dbbba0683cc48d607cfdf0eee744699",
+    "README.md": "05a2596221823b7c7ab2bb39081078d0ecaf9885dd1d1e146a46ca83ed2ff637"
+  },
+  "limitations": [
+    "Backup restored 796 files with DB integrity/FK checks, but cross-root point-in-time atomic recovery remains NOT_PROVEN because writers were not jointly paused.",
+    "519 legacy identity findings and 3 overlapping historical rewrite review candidates remain preserved; semantic correctness of the entire live corpus is NOT_PROVEN.",
+    "The fresh lifecycle gate is offline; authenticated model lifecycle and rendered UI were not rerun for this data/core change.",
+    "Package counts describe candidate.codeSha before this receipt-only commit; no release artifact is published or claimed fully verified after the receipt changes.",
+    "Schema remains 7 and sync protocol 4. Local verification receipts are additive and are neither peer truth nor retrospectively generated for legacy facts."
+  ],
+  "releaseConclusion": "PASS-WITH-NOTES: all nine required gates passed on the clean local implementation commit. Deterministic integrity, restored bytes and selected live repair are observed; retained semantic/recovery limits remain explicit. No release requested or performed."
+}

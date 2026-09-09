@@ -1,0 +1,116 @@
+{
+  "kind": "memory-integrity-recovery",
+  "recordedAt": "2026-09-08T03:41:29.068Z",
+  "backup": {
+    "manifestSha256": "52d679ca7ded392812b0dd7ad342ee28f0bc4e6c1d316d77fbb4dfe6bb500a0f",
+    "files": 796,
+    "bytes": 2937136801,
+    "unstableFiles": 0,
+    "restore": {
+      "integrity": [
+        {
+          "integrity_check": "ok"
+        }
+      ],
+      "foreignKeys": [],
+      "hashesVerified": 796,
+      "status": "PASS"
+    },
+    "scope": "Memex DB via SQLite online backup; archive, journals, index and sync state; all current Codex sessions. Ephemeral locks/sockets/WAL/SHM and .log files excluded. Private snapshot and restored clone retained under ignored tmp/memory-integrity-20260908/recovery.",
+    "consistency": "SQLite online backup is transaction-consistent. Cross-file/source capture is NOT_PROVEN atomic while writers run. Offline drill verifies bytes and DB integrity; original absolute path mappings must be retained for an actual restore. Never replace live tombstones with an older snapshot."
+  },
+  "before": {
+    "factsExamined": 553,
+    "counts": {
+      "legacy-identity": 519,
+      "orphan-relation": 36,
+      "semantic-revalidation-needed": 3
+    },
+    "planId": "bfbbbcd19dc1f5641d791b40940e709454f886de40b8f35d79d2c68d596783a0"
+  },
+  "selectedRepair": "36 orphan-relation findings only; no fact meaning or scope normalization",
+  "clone": {
+    "applied": 36,
+    "repeatedApplied": 0,
+    "alreadyApplied": 36,
+    "before": {
+      "facts": "2a7a6d9cccc48947b676a1721312f56493fb6b6a14a17e1fc0d5daec8daef5c1",
+      "fact_revisions": "136d3835b0f6360d0d622866c5d692fc8cf2ba8c82f2d7214e5b94ab053e1440",
+      "fact_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "chronicle_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "exchanges": "7f6a104f7fb5a814726b9422ee67410efd810590d26b34286dbbac8f2e9537aa",
+      "tool_calls": "ac15832e1fa361ade3ab05cfef6b2aac4d7ea05fd20427dc4eabd2736e606834"
+    },
+    "after": {
+      "facts": "2a7a6d9cccc48947b676a1721312f56493fb6b6a14a17e1fc0d5daec8daef5c1",
+      "fact_revisions": "136d3835b0f6360d0d622866c5d692fc8cf2ba8c82f2d7214e5b94ab053e1440",
+      "fact_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "chronicle_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "exchanges": "7f6a104f7fb5a814726b9422ee67410efd810590d26b34286dbbac8f2e9537aa",
+      "tool_calls": "ac15832e1fa361ade3ab05cfef6b2aac4d7ea05fd20427dc4eabd2736e606834"
+    },
+    "integrity": [
+      {
+        "integrity_check": "ok"
+      }
+    ],
+    "foreignKeys": [],
+    "repairableRemaining": 0
+  },
+  "live": {
+    "applied": 36,
+    "repeatedApplied": 0,
+    "alreadyApplied": 36,
+    "before": {
+      "facts": "2a7a6d9cccc48947b676a1721312f56493fb6b6a14a17e1fc0d5daec8daef5c1",
+      "fact_revisions": "136d3835b0f6360d0d622866c5d692fc8cf2ba8c82f2d7214e5b94ab053e1440",
+      "fact_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "chronicle_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "exchanges": "d3d19c0655c70f43da2cd15f1141410209a4387b43a28f5b9b0930d4289a2ae9",
+      "tool_calls": "a73b4a5cf4c0d54c85c901017f3b59a3a30abe5af5efcc2649cc96cb82901dde"
+    },
+    "after": {
+      "facts": "2a7a6d9cccc48947b676a1721312f56493fb6b6a14a17e1fc0d5daec8daef5c1",
+      "fact_revisions": "136d3835b0f6360d0d622866c5d692fc8cf2ba8c82f2d7214e5b94ab053e1440",
+      "fact_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "chronicle_tombstones": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "exchanges": "d3d19c0655c70f43da2cd15f1141410209a4387b43a28f5b9b0930d4289a2ae9",
+      "tool_calls": "a73b4a5cf4c0d54c85c901017f3b59a3a30abe5af5efcc2649cc96cb82901dde"
+    },
+    "integrity": [
+      {
+        "integrity_check": "ok"
+      }
+    ],
+    "foreignKeys": []
+  },
+  "after": {
+    "factsExamined": 553,
+    "counts": {
+      "legacy-identity": 519,
+      "semantic-revalidation-needed": 3
+    },
+    "repairableRemaining": 0
+  },
+  "historicalMeaningReview": {
+    "reviewed": 3,
+    "mutated": 0,
+    "observations": {
+      "exact_label_not_explicit_in_human_source": 1,
+      "task_bounded_restrictions_generalized_to_project_candidate": 1,
+      "paraphrase_supported_by_human_source_but_identity_unresolved": 1
+    },
+    "decision": "Preserve originals and revisions; no automatic meaning rewrite or scope remapping. Source sufficiency/identity ambiguity stays visible in private review."
+  },
+  "privateArtifacts": {
+    "liveReceiptSha256": "6acd9ac9174c943d49c3d76e683ec89812149e10ead7d45af9e8e341fa880cd9",
+    "reviewSha256": "92caf459a0e8d49aa66c83b7e96e0bdf9d9a937ed9fb8b8d22d6134a09c3a609",
+    "reviewDispositionSha256": "6a053c576029ec6a485c089c83ec0eb93bc84d977b59c0acb9638f1a9daf7436"
+  },
+  "limitations": [
+    "519 legacy findings remain pending identity review; 3 historical rewrite findings overlap the legacy set.",
+    "Audit is structural and review-targeted; semantic completeness of all 553 facts is NOT_PROVEN.",
+    "No full archive reprocessing; no user fact correction, deletion history or source rollout was changed.",
+    "Backup restore byte/DB checks passed; cross-root point-in-time atomic recovery remains NOT_PROVEN."
+  ]
+}

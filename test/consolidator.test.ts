@@ -1,3 +1,4 @@
+import { prepareVerifiedGlobalPair } from './consolidation-fixture.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initDatabase } from '../src/db.js';
 import { insertFact, getActiveFacts } from '../src/fact-db.js';
@@ -125,9 +126,10 @@ describe('Consolidator', () => {
       insertDependency.run(id1, 'ctx-v1', new Date().toISOString());
       insertDependency.run(id2, 'ctx-v2', new Date().toISOString());
 
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'EVOLUTION', merged_fact: 'Uses API v2', reason: 'version upgrade',
+        relation: 'EVOLUTION', same_subject: true, same_conditions: true, merged_fact: 'Uses API v2', reason: 'version upgrade',
       });
 
       expect(db.prepare(`
@@ -177,18 +179,19 @@ describe('Consolidator', () => {
       const id1 = insertFact(db, { fact: 'Uses Zustand', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
       const id2 = insertFact(db, { fact: 'Switched to React Context', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
 
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'CONTRADICTION', merged_fact: 'Changed state management to React Context', reason: 'tech stack change',
+        relation: 'CONTRADICTION', same_subject: true, same_conditions: true, merged_fact: 'Changed state management to React Context', reason: 'tech stack change',
       });
 
       const active = getActiveFacts(db);
       expect(active).toHaveLength(1);
       expect(active[0].id).toBe(id1);
-      expect(active[0].fact).toBe('Changed state management to React Context');
+      expect(active[0].fact).toBe('Switched to React Context');
       expect(db.prepare('SELECT previous_fact, new_fact FROM fact_revisions WHERE fact_id = ?').get(id1)).toEqual({
         previous_fact: 'Uses Zustand',
-        new_fact: 'Changed state management to React Context',
+        new_fact: 'Switched to React Context',
       });
     });
 
@@ -200,14 +203,15 @@ describe('Consolidator', () => {
       createRelation(db, id1, 'SUPPORTS', id2, 'old meaning relation');
       const oldVector = db.prepare('SELECT embedding FROM vec_facts WHERE id = ?').get(id1) as { embedding: Buffer };
 
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'EVOLUTION', merged_fact: 'Now using API v2', reason: 'version upgrade',
+        relation: 'EVOLUTION', same_subject: true, same_conditions: true, merged_fact: 'Now using API v2', reason: 'version upgrade',
       });
 
       const active = getActiveFacts(db);
       expect(active).toHaveLength(1);
-      expect(active[0].fact).toBe('Now using API v2');
+      expect(active[0].fact).toBe('Migrating to API v2');
       expect(active[0].consolidated_count).toBe(2);
       const row = db.prepare('SELECT embedding, embedding_version, fact_kr, ontology_category_id, ontology_attempts FROM facts WHERE id = ?').get(id1) as Record<string, unknown>;
       expect(row.embedding_version).toBe(EMBEDDING_VERSION);
@@ -226,10 +230,11 @@ describe('Consolidator', () => {
       createRelation(db, id1, 'SUPPORTS', id2, 'must roll back');
       db.exec(`CREATE TRIGGER block_relation_delete BEFORE DELETE ON ontology_relations BEGIN SELECT RAISE(ABORT, 'blocked relation delete'); END`);
       const before = db.prepare('SELECT fact, embedding, is_active FROM facts WHERE id IN (?, ?) ORDER BY id').all(id1, id2);
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
 
       await expect(applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'EVOLUTION', merged_fact: 'Now using API v2', reason: 'version upgrade',
+        relation: 'EVOLUTION', same_subject: true, same_conditions: true, merged_fact: 'Now using API v2', reason: 'version upgrade',
       })).rejects.toThrow(/blocked relation delete/);
 
       expect(db.prepare('SELECT fact, embedding, is_active FROM facts WHERE id IN (?, ?) ORDER BY id').all(id1, id2)).toEqual(before);
@@ -241,6 +246,7 @@ describe('Consolidator', () => {
       const id2 = insertFact(db, { fact: 'Same decision B', category: 'decision', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: new Array(384).fill(0.2) });
       db.exec(`CREATE TRIGGER block_dup_deactivate BEFORE UPDATE ON facts WHEN NEW.is_active = 0 BEGIN SELECT RAISE(ABORT, 'blocked dup deactivate'); END`);
       const before = db.prepare('SELECT fact, is_active FROM facts WHERE id IN (?, ?) ORDER BY id').all(id1, id2);
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
 
       await expect(applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
@@ -262,9 +268,10 @@ describe('Consolidator', () => {
       // evidence is provably later; give the old fact an earlier effective clock.
       db.prepare("UPDATE facts SET semantic_updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(id1);
 
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'CONTRADICTION', merged_fact: '', reason: 'LLM returned empty',
+        relation: 'CONTRADICTION', same_subject: true, same_conditions: true, merged_fact: '', reason: 'LLM returned empty',
       });
 
       const active = getActiveFacts(db);
@@ -277,9 +284,10 @@ describe('Consolidator', () => {
       const id2 = insertFact(db, { fact: 'v2 config', category: 'knowledge', scope_type: 'project', scope_project: '/proj', source_exchange_ids: [], embedding: null });
       db.prepare("UPDATE facts SET semantic_updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?").run(id1);
 
+      prepareVerifiedGlobalPair(db, id1, id2);
       const facts = getActiveFacts(db);
       await applyConsolidationResult(db, facts.find(f => f.id === id1)!, facts.find(f => f.id === id2)!, {
-        relation: 'EVOLUTION', merged_fact: '   ', reason: 'whitespace only',
+        relation: 'EVOLUTION', same_subject: true, same_conditions: true, merged_fact: '   ', reason: 'whitespace only',
       });
 
       const active = getActiveFacts(db);

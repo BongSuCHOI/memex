@@ -27,6 +27,12 @@ import {
 } from "./conversation-policy.js";
 import { appendSessionEvidence, readCapsulePage } from "./continuity-evidence.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
+import {
+  deferMemoryJobForModelBudget,
+  ensureModelBudgetSchema,
+  isModelBudgetExhausted,
+  withResolvedModelWorkContext,
+} from "./model-budget.js";
 
 const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one ordered workstream evidence page.
 contiguousSegment can include multiple sessions and immutable content generations.
@@ -64,6 +70,10 @@ function nextJob(
     FROM memory_jobs j
     LEFT JOIN checkpoints c ON c.checkpoint_id = j.checkpoint_id
     WHERE j.kind = ? AND j.state IN ('pending','retry') AND j.available_at <= ?
+      AND NOT EXISTS (
+        SELECT 1 FROM model_work_budgets mb
+        WHERE mb.budget_id = j.budget_id AND mb.state IN ('exhausted','cancelled')
+      )
       AND NOT EXISTS (
         SELECT 1 FROM memory_jobs earlier
         LEFT JOIN checkpoints ec ON ec.checkpoint_id = earlier.checkpoint_id
@@ -340,6 +350,7 @@ async function processCapsule(
   owner: string,
   now: Date,
   model: ModelCall,
+  budgeted: boolean,
 ): Promise<ContinuityWorkerResult> {
   const pending = db.prepare(`
     SELECT j.checkpoint_id FROM memory_jobs j
@@ -386,13 +397,25 @@ async function processCapsule(
       }
       return { jobId, kind: "capsule_update", state: "completed", detail: "empty segment" };
     }
-    const response = await model(
-      CAPSULE_SYSTEM_PROMPT,
-      JSON.stringify({
-        previousCapsule: previous,
-        contiguousSegment: evidence,
-      }),
-    );
+    const modelInput = JSON.stringify({
+      previousCapsule: previous,
+      contiguousSegment: evidence,
+    });
+    const invoke = () => model(CAPSULE_SYSTEM_PROMPT, modelInput);
+    const response = budgeted
+      ? await withResolvedModelWorkContext(
+          {
+            db,
+            parentWaveId:
+              process.env.MEMEX_MAINTENANCE_WAVE_ID ||
+              `continuity:${checkpoint.workstream_id}`,
+            stage: "capsule",
+            jobId,
+            targetId: checkpoint.checkpoint_id,
+          },
+          invoke,
+        )
+      : await invoke();
     let parsed: Record<string, unknown> | null = null;
     try {
       const exact = JSON.parse(response);
@@ -439,6 +462,23 @@ async function processCapsule(
       detail: `generation=${applied.generation} through_seq=${page.throughSeq} target_seq=${page.targetSeq}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isModelBudgetExhausted(error)) {
+      deferMemoryJobForModelBudget(db, {
+        jobId,
+        budgetId: error.budgetId,
+        parentWaveId: error.parentWaveId,
+        owner,
+        leaseGeneration: claim.lease_generation,
+        reason: error.reason,
+        now: new Date(),
+      });
+      return {
+        jobId,
+        kind: "capsule_update",
+        state: "deferred",
+        detail: message,
+      };
+    }
     const deferred = failMemoryJob(db, {
       jobId,
       owner,
@@ -474,8 +514,10 @@ export async function runContinuityWorker(
     beforePrefixIngest?: () => void;
   } = {},
 ): Promise<ContinuityWorkerResult[]> {
+  ensureModelBudgetSchema(db);
   const maxJobs = Math.max(1, Math.min(32, options.maxJobs ?? 8));
   const owner = options.owner ?? randomUUID();
+  const budgeted = options.model === undefined;
   const model = options.model ?? ((system, user) => callMemoryModel(system, user, 2_048, {
     outputSchema: WORK_CAPSULE_OUTPUT_SCHEMA,
   }));
@@ -496,7 +538,7 @@ export async function runContinuityWorker(
     }
     const capsule = nextJob(db, "capsule_update", now.toISOString());
     if (capsule) {
-      const result = await processCapsule(db, capsule.job_id, owner, now, model);
+      const result = await processCapsule(db, capsule.job_id, owner, now, model, budgeted);
       results.push(result);
       if (result.state === "deferred") break;
       continue;

@@ -87,6 +87,10 @@ export function classifyLlmError(err) {
         return 'transient';
     // Classify the underlying provider rejection, not the wrapper.
     const e = unwrapped;
+    const localCode = unwrapped?.code;
+    if (localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
+        return 'deterministic';
+    }
     const byCode = (code) => {
         if (code === 401 || code === 403 || code === 404)
             return 'transient'; // systemic/config — hold, resumes on fix

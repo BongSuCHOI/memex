@@ -1,0 +1,122 @@
+{
+  "kind": "structured-output-comparison-review",
+  "recordedAt": "2026-09-08T08:46:08.690776+00:00",
+  "rawReportSha256": "0b1753db5ba4907fbd449aae8c15a6ece59786faf3d76d1762e1e15a0645ca1c",
+  "originalReportSha256": "667adfb7adb08fee0998ce34450d25261e6e3701ae03413c80747ffb87e7105d",
+  "schemaSha256": "134bf4a5fd07032c120b3099224e312b2174fe376d458de53072b514569d164a",
+  "schemaContainsExpectedValues": false,
+  "allArmsShareSchema": true,
+  "typeFixStatus": "PASS",
+  "originalCoreVerifiedCasesTypeFailure": "Resolved in this actual run: numeric 11, all 13 strict core host checks pass. The previous FAIL is preserved in its original receipt.",
+  "arms": {
+    "compaction_only": {
+      "schemaTypeStatus": "PASS",
+      "strictChecksPassed": 13,
+      "strictChecksTotal": 13,
+      "finalJson": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Unverified hypothesis: random delay may reduce worker contention.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject the copied prefix and recapture it."
+      }
+    },
+    "memex_core": {
+      "schemaTypeStatus": "PASS",
+      "strictChecksPassed": 13,
+      "strictChecksTotal": 13,
+      "finalJson": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Random delay may reduce worker contention; unverified",
+        "blocker": "Production staging credentials are unavailable",
+        "nextAction": "Run the isolated restart regression before requesting staging credentials",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject and recapture the copied prefix"
+      }
+    },
+    "memex_core_plus_optional": {
+      "schemaTypeStatus": "PASS",
+      "strictChecksPassed": 0,
+      "strictChecksTotal": 13,
+      "finalJson": {
+        "retryFunction": null,
+        "retryPath": null,
+        "retryCount": null,
+        "leaseError": null,
+        "leaseRepair": null,
+        "verifiedCases": null,
+        "evidencePath": null,
+        "hypothesisStatus": null,
+        "blocker": null,
+        "nextAction": null,
+        "checkpointFunction": null,
+        "checkpointError": null,
+        "checkpointAction": null
+      }
+    },
+    "codex_builtin_memory": {
+      "schemaTypeStatus": "PASS",
+      "strictChecksPassed": 13,
+      "strictChecksTotal": 13,
+      "finalJson": {
+        "retryFunction": "retryQueue",
+        "retryPath": "src/queue/retry.ts",
+        "retryCount": 4,
+        "leaseError": "E_QUEUE_LEASE_EXPIRED",
+        "leaseRepair": "Reacquire the lease and validate its generation before committing.",
+        "verifiedCases": 11,
+        "evidencePath": "docs/verification/queue-lease.json",
+        "hypothesisStatus": "Unverified: random delay may reduce worker contention.",
+        "blocker": "Production staging credentials are unavailable.",
+        "nextAction": "Run the isolated restart regression before requesting credentials.",
+        "checkpointFunction": "saveCheckpoint",
+        "checkpointError": "E_CHECKPOINT_HASH_MISMATCH",
+        "checkpointAction": "Reject and recapture the copied prefix."
+      }
+    }
+  },
+  "overallQuality": "FAIL",
+  "newFindings": [
+    {
+      "kind": "exact-identifier-recall",
+      "status": "FAIL",
+      "arms": [
+        "memex_core",
+        "memex_core_plus_optional"
+      ],
+      "passed": 4,
+      "total": 5,
+      "missing": "E_QUEUE_LEASE_EXPIRED",
+      "evidence": "Fresh extraction completed with four facts. The lease repair fact retained the action but omitted the exact error code. Both arms share that extracted state.",
+      "attribution": "Observed extraction omission before schema-constrained host query; not evidence that the output schema caused a search regression."
+    },
+    {
+      "kind": "optional-final-answer",
+      "status": "FAIL",
+      "evidence": "The actual rollout first contains a correct 13-field answer, then a developer message Sync started in background..., then the final all-null JSON. The grader correctly grades the last answer.",
+      "sourcePointer": "src/sync-cli.ts logs the background startup message on stdout; hooks.json runs this command as an asynchronous SessionStart hook.",
+      "attribution": "Temporal sequence observed; causal attribution requires a separate controlled hook-output test. No rerun or grader relaxation to conceal this result."
+    }
+  ],
+  "limits": [
+    "Native learned-memory generation remains NOT_PROVEN.",
+    "Schema compliance does not imply correct recall; null is a valid schema value and still fails a known-answer check.",
+    "One synthetic stochastic rerun is not a broad benchmark.",
+    "Existing optional-feature default decision remains based on the earlier recorded comparison."
+  ]
+}
