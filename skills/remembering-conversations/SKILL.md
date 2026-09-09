@@ -37,9 +37,9 @@ project-common plus the current branch tier, so a memory recorded on a different
 branch will not appear until it is promoted. When a search comes back empty and
 the user believes the memory exists, say that it may still be in another branch's
 tier rather than asserting it was never recorded; `trace_fact` shows the tier and
-any `PROMOTED`/`DEMOTED` event. Moving a memory between tiers is a CLI action
-(`memex facts promote|demote`), never something to do on the user's behalf
-without being asked.
+any `PROMOTED`/`DEMOTED` event. Moving a memory between tiers is a user action —
+`memex facts promote|demote`, or the promote/demote buttons in the Web UI memory
+detail panel — never something to do on the user's behalf without being asked.
 
 ## Handoff
 

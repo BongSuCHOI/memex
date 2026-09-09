@@ -27,8 +27,12 @@ backfill:
 ```bash
 node "$PLUGIN_ROOT/cli/runtime-exec.js" memex backfill extract --background
 node "$PLUGIN_ROOT/cli/runtime-exec.js" memex backfill ontology --background
+node "$PLUGIN_ROOT/cli/runtime-exec.js" memex backfill receipts
 node "$PLUGIN_ROOT/cli/runtime-exec.js" memex sync
 ```
+
+`backfill receipts` calls no model: it rebuilds the missing local meaning-evidence
+receipts that `memex status` counts as `facts without local evidence: N / M`.
 
 A started background worker is `진행 중`, not complete. Re-run `status --json`
 only when the user needs a settled coverage result; otherwise report the exact
