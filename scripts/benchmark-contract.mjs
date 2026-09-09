@@ -1,10 +1,6 @@
-// Loopback graph-API surfaces that count as direct HTTP evidence. The Memex
-// Workspace UI serves /api/v2/graph; receipts recorded before it measured the
-// same loopback surface at /api/graph-data.
-const GRAPH_API_TRANSPORTS = new Set([
-  'loopback HTTP /api/v2/graph',
-  'loopback HTTP /api/graph-data',
-]);
+// Loopback graph-API surface that counts as direct HTTP evidence. The Memex
+// Workspace UI serves /api/v2/graph.
+const GRAPH_API_TRANSPORTS = new Set(['loopback HTTP /api/v2/graph']);
 
 const REQUIRED_CHECKS = [
   'AC_PERF_01_conversation_search',

@@ -27,9 +27,10 @@ node scripts/lifecycle-e2e.mjs
 ```
 
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
-Persistent context dependency의 UI surface를 변경한 release는 다음 gate도 포함합니다.
+Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니다.
 
 ```bash
+node --test ui/test/*.test.cjs
 node scripts/web-ui-browser-e2e.mjs
 ```
 
