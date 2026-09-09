@@ -2,6 +2,146 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.0 - 2026-09-10
+
+### Memory scope and tiers
+
+- Give memory a tier. Inside a Git checkout the directory is still the project,
+  but the branch is now the tier: a session on the default branch — or in a
+  non-Git directory — writes project-common memory, while any other branch or
+  worktree writes its own branch tier, keyed on `(project, branch)`. Injection
+  and lookup read global plus project-common plus the current branch, and two
+  worktrees of one repository checked out on the same branch share a tier.
+  **This changes where new memory lands**: before 0.6.0 every extracted fact
+  went to a per-session workstream and was never read again. `facts.tier_reason`
+  records the branch signal — `no-branch-signal`, `default-branch` or
+  `branch:<name>` — that placed it. (#18)
+- Move memory between tiers on a one-rung ladder, `workstream ⇄ project ⇄
+  global`. A skipped rung is refused, and every move — a user action, the
+  evidence-based automatic reconcile that runs in the SessionStart maintenance
+  stage as SQL with no model call, or an in-session scope directive — appends a
+  Chronicle `PROMOTED` / `DEMOTED` carrying from-tier, to-tier, actor and reason.
+  `memex facts tier|promote|demote` is the interface today; Web UI buttons
+  follow in 0.6.1 (#22). (#19)
+- Capture the branch and the repository default branch — `origin/HEAD`, then
+  `packed-refs`, then `init.defaultBranch` — at session start and propagate them
+  to `exchanges.git_branch` and the workstream `branch_hint`. Workstream ids are
+  now derived deterministically from `(project, branch)`, or from the project
+  alone when there is no branch signal, replacing the
+  `ws-<hash(project, session)>` fallback that split one project into a
+  workstream per session. (#16)
+- Update a workspace row in place when a plain directory later becomes a Git
+  checkout. `workspace_id` and `project_id` never change, so existing
+  project-common memory, Capsules and history survive untouched, and
+  `workspace_location_events` records one `WORKSPACE_LOCATION_CHANGED`. A common
+  dir or remote that already belongs to another project is never merged
+  automatically: the conflict is marked `requires_approval` with a `suggest`
+  entry in `project_identity_audit` and waits for an explicit
+  `approved_remote_mappings` approval. (#21)
+- Refuse `/`, `unknown` and any path with an empty basename as a project
+  identity. A session with such a cwd degrades to global-only reading instead of
+  joining a catch-all bucket and reading other projects' facts as its own. The
+  existing `/` project is quarantined — no facts deleted — and listed by
+  `memex status`. (#38)
+
+### Work Capsule convergence
+
+- Raise the Work Capsule bound to 12,000 characters (`MEMEX_CAPSULE_MAX_CHARS`,
+  floor 2,000) and store an oversized patch truncated in priority order instead
+  of throwing. `work_capsules.truncated`, `truncated_fields_json` and
+  `original_chars` record exactly what was cut, with one WARN line. (#17)
+- Halve the next evidence page after a failed capsule attempt and, at the
+  minimum page, skip the still-failing head fragment and advance the frontier,
+  so a workstream can no longer stall forever. A dead job is no longer
+  re-created on every checkpoint. (#33)
+- Stop overwriting a terminal `failed-visible` state with `retry`:
+  `failMemoryJob` returns the real transition and the worker's update is
+  guarded. A one-shot idempotent repair fixes rows already stuck that way. (#34)
+
+### Recovery of terminal work
+
+- Add `memex jobs list|show|retry|dismiss` and `memex recover
+  <job-id|target-id|--all-dead> [--dry-run]`, which reset the whole terminal
+  unit — job, checkpoint, capsule state, extraction target, items, exchange
+  state and failed ranges — in one transaction. Nothing is deleted: a cleared
+  `last_error` is preserved in `memory_jobs.retry_history`, and `dismiss`
+  retires a job as `superseded` with its reason and an audit line. Re-running
+  the worker never recovered dead work, and the guide no longer claims it does.
+  (#20, #39)
+- Report all eight terminal states in `memex status` behind a single `Needs
+  attention` count, alongside the quarantined-project list. Seven of the eight
+  had no operator surface at all before this, so a stalled pipeline was
+  indistinguishable from an idle one. (#39, #38)
+
+### Honest observability
+
+- Distinguish `injected` (one or more facts) from `context-only` (zero facts) in
+  the injection log, record a `baseline_margin_gap` telemetry row per retrieval,
+  surface a dead lexical lane as `lexical_lane_unavailable` instead of an empty
+  `catch`, let `MEMEX_INJECT_BASELINE_MARGIN` override the 0.045 default, and
+  warn (`injection-yield`) after eight consecutive zero-fact injections. The
+  margin itself is unchanged: the observed zero-fact runs are now measurable
+  rather than hidden. (#32)
+- Log a recall receipt that could not be marked emitted as `status:
+  "receipt-failed"` in `inject-context.jsonl` instead of discarding it on
+  stderr. `memex doctor` fails `inject-output` on it, and a new
+  `recall-provenance` check compares emitted contexts against `recall_events`
+  rows. (#44)
+- Print one stderr line when an installed plugin has no runtime dependencies and
+  the launcher falls back to `npx github:BongSuCHOI/memex#main`. `memex doctor`
+  reports `dependencies: fail` against the installed plugin root, and `memex
+  install` is exposed as a CLI command that materializes them without a network
+  install. (#40)
+
+### CLI
+
+- Print usage and exit `0` for `--help` on every subcommand. `update`,
+  `setup-hooks`, `remove-hooks` and `migrate-projects` used to execute the real
+  work when asked for help. (#36)
+- Accept `memex search --both` as the explicit hybrid mode and reject any other
+  unknown `--` option with exit `1` instead of silently treating it as a query
+  term. (#46)
+
+### Documentation
+
+- Document the 0.6.0 model across README, README-KR and the owner docs: one
+  scope-and-tier table as the single source, complete CLI and
+  environment-variable references, the full data-root layout, `memex doctor`'s
+  eleven checks, a failure-class recovery table in `docs/GUIDE.md`, and
+  per-skill triggers, walk-throughs and effects in `docs/MCP-AND-SKILLS.md`.
+  Every command, flag, environment variable, path, link and status string was
+  checked against the code rather than against another document. Remove the
+  duplicated Final RFC copy and the superseded worker prompt pack; the locked
+  copy at `docs/architecture/memex-continuity-v1.md` still matches
+  `rfc-lock.json`. (#25)
+
+### Upgrade
+
+Continuity schema stays at version `7` and the sync protocol stays at `4`. Every
+0.6.0 column and table is additive and migrates on the first hook, CLI or MCP
+run — there is no separate migration step and no downtime.
+
+```bash
+memex update          # then restart Codex so hooks, skills and MCP reload
+memex status          # read "Needs attention" and "Quarantined projects"
+memex recover --all-dead --dry-run
+memex recover --all-dead
+memex facts migrate-tiers --dry-run
+memex facts migrate-tiers --apply
+```
+
+`memex recover --all-dead` returns work that earlier versions left terminal with
+no path back; run the worker afterwards (`memex-continuity-worker` or `memex
+backfill extract`) for it to be processed. `memex facts migrate-tiers` moves the
+pre-0.6.0 facts that the new branch-signal rule makes project-common, one
+Chronicle `PROMOTED` per fact; it never runs automatically and requires
+`--dry-run` or `--apply` explicitly. Review the dry-run list before applying.
+
+Moving a memory between tiers is a CLI action in 0.6.0; the Web UI gains
+promote/demote buttons in 0.6.1 (#22). Rollback still requires the pre-upgrade
+DB backup and the matching plugin version, and older writers must not share the
+migrated DB — see [GUIDE.md](docs/GUIDE.md#15-continuity-운영).
+
 ## 0.5.2 - 2026-09-10
 
 - Mark a deadline- or window-expired model budget `exhausted` in durable state
