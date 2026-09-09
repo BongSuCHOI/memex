@@ -22542,6 +22542,16 @@ function initDatabase(options = {}) {
       WHERE ontology_state IS NOT NULL
   `);
   db.exec(`
+    CREATE TABLE IF NOT EXISTS derived_lane_skips (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reason TEXT NOT NULL,
+      consecutive INTEGER NOT NULL DEFAULT 0,
+      total_skips INTEGER NOT NULL DEFAULT 0,
+      last_skipped_at TEXT,
+      last_forced_at TEXT
+    )
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_index_repair_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       state TEXT NOT NULL CHECK (state IN ('blocked','clear')),
@@ -23233,7 +23243,10 @@ var TELEMETRY_METRICS = [
   "worker_extraction_tokens",
   "worker_extraction_latency_ms",
   "worker_extraction_retries",
-  "worker_extraction_dead"
+  "worker_extraction_dead",
+  // 이슈 #43: P0/P1 백로그 때문에 파생 레인을 건너뛴 사건. dims에 사유와
+  // 연속 횟수, 강제 통과 여부가 들어간다.
+  "derived_lane_skipped"
 ];
 var TELEMETRY_SET = new Set(TELEMETRY_METRICS);
 function recordTelemetrySample(db, input) {

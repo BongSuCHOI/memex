@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openReadDb } from "./db.js";
+import { describeDerivedLaneSkipReason, readDerivedLaneSkips, } from "./derived-lane-skip.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { buildOntologyParkedClause, buildOntologyParkedRetryClause, } from "./ontology-selector.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
@@ -82,6 +83,7 @@ export function getPipelineStatus(opts = {}) {
             relations: 0,
             attention: emptyAttention(),
             jobs: emptyJobCounters(),
+            derivedLaneSkips: null,
             quarantinedProjects: [],
             lifecycleLastEventAt,
             readiness: {
@@ -380,6 +382,7 @@ export function getPipelineStatus(opts = {}) {
             relations,
             attention,
             jobs,
+            derivedLaneSkips: readDerivedLaneSkips(db),
             quarantinedProjects: readQuarantinedProjects(db),
             lifecycleLastEventAt,
             readiness: { conversationReady, factReady, graphReady },
@@ -626,6 +629,14 @@ export function formatPipelineStatus(s) {
         if (a.terminal.modelWorkBudgetsExhausted > 0) {
             lines.push("  exhausted model-work budgets: memex model-work status");
         }
+    }
+    // Issue #43: name the pipeline that is holding the derived lanes back.
+    if (s.derivedLaneSkips && s.derivedLaneSkips.totalSkips > 0) {
+        const skips = s.derivedLaneSkips;
+        lines.push(`Derived lanes: skipped ${skips.totalSkips} time${skips.totalSkips === 1 ? "" : "s"} (reason: ${describeDerivedLaneSkipReason(skips.reason)})`);
+        lines.push("  derived lanes are consolidation, re-embed, ontology and extraction backfill; P0/P1 (capture index, capsule) outranks them" +
+            (skips.lastForcedAt ? `, last forced through ${skips.lastForcedAt}` : "") +
+            ". Drain the backlog: memex jobs list --state retry");
     }
     if (s.quarantinedProjects.length > 0) {
         lines.push(`Quarantined projects: ${s.quarantinedProjects.length} (identity came from an untrusted cwd such as '/'; excluded from injection and read scope, facts kept)`);

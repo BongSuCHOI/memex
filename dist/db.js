@@ -431,6 +431,20 @@ export function initDatabase(options = {}) {
     // 이슈 #41: "manual repair required"가 아무도 읽지 않는 로그 파일에만 남던
     // 문제. IndexRepairError는 이 한 행짜리 테이블에 기록되고 status/doctor가
     // 읽는다. 카테고리 인덱스가 다시 정합해지면 같은 행이 cleared로 바뀐다.
+    // 이슈 #43: 하위 레인 4개(consolidation / re-embed / ontology / extraction)를
+    // P0/P1 백로그 때문에 건너뛴 사실을 durable하게 센다. 예전에는 조기 return이
+    // 아무 기록도 남기지 않아, 운영자는 pending이 안 줄어드는 것만 보고 원인이
+    // 완전히 다른 파이프라인(Capsule)에 있다는 것을 알 방법이 없었다.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS derived_lane_skips (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reason TEXT NOT NULL,
+      consecutive INTEGER NOT NULL DEFAULT 0,
+      total_skips INTEGER NOT NULL DEFAULT 0,
+      last_skipped_at TEXT,
+      last_forced_at TEXT
+    )
+  `);
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_index_repair_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),

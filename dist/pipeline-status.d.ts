@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { type DerivedLaneSkipState } from "./derived-lane-skip.js";
 export interface StageCounters {
     total: number;
     done: number;
@@ -117,6 +118,13 @@ export interface PipelineStatus {
      * command could not answer the runbook's question.
      */
     jobs: JobCounters;
+    /**
+     * Issue #43 — how often the derived lanes (consolidation, re-embed, ontology,
+     * extraction) were skipped for a higher-priority backlog. Without this the
+     * operator sees only "pending is not going down" while the cause lives in a
+     * different pipeline entirely. `null` when nothing has ever been skipped.
+     */
+    derivedLaneSkips: DerivedLaneSkipState | null;
     /** #38 — projects isolated because their identity came from an untrusted cwd. */
     quarantinedProjects: Array<{
         projectId: string;

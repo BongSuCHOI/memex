@@ -78,6 +78,12 @@ memex status --json
     `parked`는 분류 시도를 소진해 General/Misc에 보관 중인 fact이며 **classified가 아닙니다**.
     이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
     정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
+  - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
+    (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
+    extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
+    파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유로 3회 연속 건너뛰면 다음 호출에서
+    하위 레인을 한 번 강제로 통과시킵니다(우선순위는 유지, 기아는 방지). 백로그 자체는
+    `memex jobs list --state retry` / `memex recover`로 해소합니다.
   - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
     self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
     재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.

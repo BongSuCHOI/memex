@@ -1016,6 +1016,9 @@ export const TELEMETRY_METRICS = [
     "worker_extraction_latency_ms",
     "worker_extraction_retries",
     "worker_extraction_dead",
+    // 이슈 #43: P0/P1 백로그 때문에 파생 레인을 건너뛴 사건. dims에 사유와
+    // 연속 횟수, 강제 통과 여부가 들어간다.
+    "derived_lane_skipped",
 ];
 const TELEMETRY_SET = new Set(TELEMETRY_METRICS);
 export function recordTelemetrySample(db, input) {

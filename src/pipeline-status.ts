@@ -9,6 +9,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { openReadDb } from "./db.js";
+import {
+  describeDerivedLaneSkipReason,
+  readDerivedLaneSkips,
+  type DerivedLaneSkipState,
+} from "./derived-lane-skip.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import {
   buildOntologyParkedClause,
@@ -144,6 +149,13 @@ export interface PipelineStatus {
    * command could not answer the runbook's question.
    */
   jobs: JobCounters;
+  /**
+   * Issue #43 — how often the derived lanes (consolidation, re-embed, ontology,
+   * extraction) were skipped for a higher-priority backlog. Without this the
+   * operator sees only "pending is not going down" while the cause lives in a
+   * different pipeline entirely. `null` when nothing has ever been skipped.
+   */
+  derivedLaneSkips: DerivedLaneSkipState | null;
   /** #38 — projects isolated because their identity came from an untrusted cwd. */
   quarantinedProjects: Array<{ projectId: string; displayName: string; facts: number }>;
   lifecycleLastEventAt: Partial<Record<string, string>>;
@@ -235,6 +247,7 @@ export function getPipelineStatus(
       relations: 0,
       attention: emptyAttention(),
       jobs: emptyJobCounters(),
+      derivedLaneSkips: null,
       quarantinedProjects: [],
       lifecycleLastEventAt,
       readiness: {
@@ -620,6 +633,7 @@ export function getPipelineStatus(
       relations,
       attention,
       jobs,
+      derivedLaneSkips: readDerivedLaneSkips(db),
       quarantinedProjects: readQuarantinedProjects(db),
       lifecycleLastEventAt,
       readiness: { conversationReady, factReady, graphReady },
@@ -904,6 +918,19 @@ export function formatPipelineStatus(s: PipelineStatus): string {
     if (a.terminal.modelWorkBudgetsExhausted > 0) {
       lines.push("  exhausted model-work budgets: memex model-work status");
     }
+  }
+
+  // Issue #43: name the pipeline that is holding the derived lanes back.
+  if (s.derivedLaneSkips && s.derivedLaneSkips.totalSkips > 0) {
+    const skips = s.derivedLaneSkips;
+    lines.push(
+      `Derived lanes: skipped ${skips.totalSkips} time${skips.totalSkips === 1 ? "" : "s"} (reason: ${describeDerivedLaneSkipReason(skips.reason)})`,
+    );
+    lines.push(
+      "  derived lanes are consolidation, re-embed, ontology and extraction backfill; P0/P1 (capture index, capsule) outranks them" +
+        (skips.lastForcedAt ? `, last forced through ${skips.lastForcedAt}` : "") +
+        ". Drain the backlog: memex jobs list --state retry",
+    );
   }
 
   if (s.quarantinedProjects.length > 0) {

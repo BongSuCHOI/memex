@@ -317,6 +317,24 @@ category/fact를 재지정한 뒤 나머지 행과 그 vector를 지웁니다. C
 접으므로 `Café`/`café`는 여전히 별개입니다. Index 생성이 실패해도 초기화는 계속되며, 이때
 `createDomain`/`createCategory`의 "가장 오래된 행 재조회"가 수렴을 보장합니다(느릴 뿐).
 
+### Derived lane skips (0.6.1 additive)
+
+```text
+derived_lane_skips (
+  id (PK, always 1),
+  reason,                  -- 'continuity_backlog'
+  consecutive,             -- 강제 통과로 아직 해소되지 않은 연속 skip 수
+  total_skips,             -- 이 사유 run에서 관측된 전체 skip 수(status가 읽는 값)
+  last_skipped_at, last_forced_at
+)
+```
+
+P0/P1(capture_index, capsule_update) 백로그 때문에 파생 레인 4개(consolidation, re-embed, ontology,
+extraction)를 건너뛴 사실을 durable하게 남깁니다. 같은 사유로 3회 연속 skip되면 그 호출에서 파생
+레인을 한 번 통과시키고 `consecutive`를 0으로 되돌립니다 — 우선순위는 유지하되 기아를 막습니다.
+`memex status`가 `Derived lanes: skipped N times (reason: ...)` 줄로 읽고, 각 skip은
+`continuity_telemetry`의 `derived_lane_skipped` 샘플로도 남습니다(dims: reason/consecutive/forced).
+
 ### Ontology index repair state (0.6.1 additive)
 
 ```text

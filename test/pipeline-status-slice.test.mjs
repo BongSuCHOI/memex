@@ -393,3 +393,38 @@ test("IndexRepairError reaches status instead of dying in backfill-ontology.log"
   assert.ok(text.includes("MANUAL REPAIR REQUIRED (write"), text);
   db.close();
 });
+
+// ── Issue #43 — derived lanes skipped for a Continuity backlog ─────────────
+test("status names the pipeline that is holding the derived lanes back", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.exec(`CREATE TABLE derived_lane_skips (
+    id INTEGER PRIMARY KEY CHECK (id = 1), reason TEXT NOT NULL,
+    consecutive INTEGER NOT NULL DEFAULT 0, total_skips INTEGER NOT NULL DEFAULT 0,
+    last_skipped_at TEXT, last_forced_at TEXT);`);
+  db.prepare(`INSERT INTO derived_lane_skips
+    (id, reason, consecutive, total_skips, last_skipped_at, last_forced_at)
+    VALUES (1, 'continuity_backlog', 2, 5, '2026-08-26T01:00:00Z', '2026-08-26T00:30:00Z')`).run();
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.derivedLaneSkips.totalSkips, 5);
+  assert.equal(st.derivedLaneSkips.reason, "continuity_backlog");
+  const text = formatPipelineStatus(st);
+  assert.ok(
+    text.includes("Derived lanes: skipped 5 times (reason: continuity backlog)"),
+    text,
+  );
+  db.close();
+});
+
+test("status stays silent about derived lanes when nothing was skipped", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.derivedLaneSkips, null);
+  assert.ok(!formatPipelineStatus(st).includes("Derived lanes:"));
+  db.close();
+});

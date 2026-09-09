@@ -147,11 +147,50 @@ async function main() {
       }
     } catch { /* non-fatal */ }
 
-    // Keep process-level priority strict: lower lanes resume on the next
-    // SessionStart after P0/P1 has drained instead of competing for SQLite or
-    // local model capacity in the same maintenance invocation.
+    // Issue #43: keep process-level priority strict, but BOUNDED and visible.
+    //
+    // The old code returned here, so a Capsule job that fails deterministically
+    // — and is re-created at every new checkpoint — could skip all four derived
+    // lanes indefinitely, with no log, no telemetry sample and nothing in
+    // `memex status` connecting "fact extraction is not progressing" to the
+    // Continuity backlog that actually caused it.
+    //
+    // Now every skip is counted durably; after DERIVED_LANE_FORCE_AFTER
+    // consecutive skips for the SAME reason the lanes are let through once and
+    // the counter resets. P0/P1 still wins the other N-1 invocations.
     if (continuityPending) {
-      return;
+      let forced = false;
+      try {
+        const { recordDerivedLaneSkip } = await import('../dist/derived-lane-skip.js');
+        const skip = recordDerivedLaneSkip(db, 'continuity_backlog');
+        forced = skip.forced;
+        try {
+          const { recordTelemetrySample } = await import('../dist/chronicle.js');
+          recordTelemetrySample(db, {
+            metric: 'derived_lane_skipped',
+            value: 1,
+            dims: {
+              reason: 'continuity_backlog',
+              consecutive: skip.consecutive,
+              forced: skip.forced,
+            },
+          });
+        } catch { /* telemetry is best-effort; never blocks maintenance */ }
+      } catch {
+        // The counter itself is unavailable (pre-0.6.1 database, read-only
+        // filesystem): fall back to the historical strict-priority behaviour.
+        return;
+      }
+      if (!forced) return;
+      console.error(
+        'session-start-maintenance: derived lanes forced through after ' +
+          'consecutive skips (reason: continuity backlog)',
+      );
+    } else {
+      try {
+        const { clearDerivedLaneSkips } = await import('../dist/derived-lane-skip.js');
+        clearDerivedLaneSkips(db);
+      } catch { /* non-fatal */ }
     }
 
     // Derived work begins only when the Continuity queue is currently drained.
