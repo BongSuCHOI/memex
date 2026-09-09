@@ -2,6 +2,15 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## Unreleased
+
+- Resume unfinished automatic maintenance on a later SessionStart after a one-hour
+  cooldown and within a shared rolling 24-hour cap of 256 model attempts.
+- Preserve completed work, retry history and active claims across atomic budget
+  renewal. Prioritize pending ontology/relation work and retain failed-call accounting.
+- Enable automatic ontology by default; `MEMEX_AUTO_ONTOLOGY=0` remains available.
+  Explicit manual model-work renewal retains its separate operator-controlled behavior.
+
 ## 0.4.2 - 2026-09-09
 
 - Send asynchronous startup status notices to stderr so they cannot become

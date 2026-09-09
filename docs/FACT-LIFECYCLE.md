@@ -437,7 +437,8 @@ stale 결과가 domain/category/relation을 다시 만들지 않습니다.
 
 classification이 반복 실패하면 bounded attempt ledger를 사용하고 MAX 이후 General/Misc fallback으로 park할 수 있습니다. privacy purge는 surviving fact의 attempts를 0으로 리셋해 새 taxonomy에서 다시 분류할 수 있게 합니다.
 
-자동 ontology 분류는 기본 비활성화이며 `MEMEX_AUTO_ONTOLOGY=1`로 명시적으로 활성화합니다.
+자동 ontology 분류는 기본 활성화이며 `MEMEX_AUTO_ONTOLOGY=0`으로 비활성화합니다.
+SessionStart 자동 재개는 [공통 호출 한도와 대기 시간](GUIDE.md#17-모델-작업-예산과-대기-진단)을 지킵니다.
 수동 `memex backfill ontology`는 유지됩니다. 기존 분류·관계 데이터는 보존하며 core fact/exchange
 embedding과 stale-vector 복구는 계속 수행합니다. 자동 번역이나 추가 재작성 단계는 추가하지 않습니다.
 

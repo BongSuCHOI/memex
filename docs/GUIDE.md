@@ -431,22 +431,46 @@ Process가 끝났다는 사실만으로 증거 처리 작업이 완료되었다�
 사용량 미관측은 `null` / `NOT_PROVEN`, 일부 시도만 관측되면 `partial`로 읽어야 합니다.
 달러 비용이나 누락 usage를 0으로 추정하지 않습니다.
 
-한도가 소진된 작업은 pending 사유를 보존합니다. 원인을 검토하고 새 run을 허용할 때만:
+자동 유지보수의 한도 소진은 pending 상태를 보존합니다. 이후 SessionStart에서 다음 조건을
+만족하면 새 run(예산 묶음)을 만들고 미완료 작업을 옮깁니다. 예산이 남은 기존 run은 재사용합니다.
+각 SessionStart에서 조건을 재검사하며, 조건이 아직 맞지 않으면 그 다음 시작 이벤트까지 쉽니다.
+별도 타이머나 상시 프로세스는 만들지 않습니다.
+
+- 같은 run의 마지막 호출(호출이 없으면 생성 시각)부터 최소 1시간 대기
+- 같은 데이터 루트의 자동 유지보수 전체가 최근 24시간 호출 한도 미만
+- 활성 job lease 없음 AND (provider 호출 종료 OR 해당 run의 deadline 경과 후 1분)
+- deadline이 없는 run의 미확인 예약은 자동으로 종료됐다고 추정하지 않음
+
+공통 호출 한도는 `MEMEX_AUTO_MODEL_MAX_ATTEMPTS=256`이 기본값이며 실패·재시도·결과 미확인
+예약도 계산합니다. 예약 1건이 1회이며 재시도는 새 예약 1회를 소비합니다. 성공 여부와 무관하게
+예약 시각부터 24시간 동안 셉니다. `0`은 자동 유지보수 모델 호출을 막습니다. 각 호출 예약과 새 run 생성은
+SQLite write transaction에서 검사하므로 여러 세션·wave 이름·프로세스 재시작으로 상한을
+우회하지 못합니다. 이 한도는 해당 데이터 루트의 자동 유지보수용이며 계정 전체나 명시적 수동
+run의 한도가 아닙니다. `model-work status`의 `automaticMaintenance`와 `automatic`으로 구분합니다.
+
+미완료 membership과 만료된 queue claim만 옮기며 완료 기록·provider 시도 이력·job 실패 횟수와
+향후 retry backoff를 유지합니다. 영구 실패·사용자 취소는 자동으로 되살리지 않습니다.
+Ontology 일괄 작업은 기존 pending 관계 → 기존 pending 분류 → 새 분류 순으로 선택합니다.
+관계는 fact 갱신 순, 분류는 각 그룹의 생성 순으로 처리합니다. 반복 분류 실패의 기존
+3회 한도와 fallback, 일괄 작업량·동시 실행 제한은 유지합니다.
+
+자동 유지보수에 속하지 않는 작업을 재개하거나 수동으로 새 예산을 허용하려면:
 
 ```bash
 memex model-work resume <budget-id> --new-run --max-attempts 32
 ```
 
 이 명령은 기존 attempt ledger를 보존하고 active lease가 없는 미완료 작업만 새 budget에 연결합니다.
-출력된 worker 명령으로 처리를 재개한 뒤 status를 다시 확인합니다. 단순 프로세스 재시작이나
-환경 변수 변경은 이미 귀속된 작업의 한도를 초기화하지 않습니다.
+출력된 worker 명령으로 처리를 재개한 뒤 status를 다시 확인합니다. 수동 갱신은 기존처럼
+queue 재시도 횟수를 초기화하므로 자동 재개와 구별합니다.
 
 Ledger는 local-derived operational state이고 sync하지 않습니다. 업데이트 전에 이전 Memex worker를
 종료해야 합니다. 같은 DB를 읽는 이전 코드가 새 예산을 준수한다고 가정하지 않습니다.
 
-자동 ontology는 기본 비활성화입니다. `MEMEX_AUTO_ONTOLOGY=1`을 지정한 경우에만 자동
-분류와 관련 후속 작업을 수행합니다. 필요할 때 `memex backfill ontology`로 수동 실행할 수
-있으며 기존 derived 데이터는 유지됩니다. Core fact/exchange embedding과 stale-vector
-복구는 유지하고, 번역은 수동 스크립트로 실행합니다. 이번 작은 비교에서는 optional 경로가
-호출 1회와 관측 모델 시간 9.773초를 추가했지만 검색 context는 같았습니다.
-[실측 결과와 한계](verification/codex-usability/README.md#four-arm-result-and-default-decision)를 참고하세요.
+자동 ontology는 기본 활성화입니다. `MEMEX_AUTO_ONTOLOGY=0`이면 자동 분류와 그 후속 관계
+작업을 끕니다. `1` 또는 미설정이면 활성화하며, 그 밖의 유효하지 않은 값은 비활성화합니다.
+환경 변수는 Codex/Memex 프로세스가 상속해야 하며 변경 후 재시작합니다. 필요할 때
+`memex backfill ontology`로 수동 분류할 수 있고, `BACKFILL_RELATIONS=1`을 함께 주면 새 관계
+검사도 요청합니다. 기존 파생 데이터·core embedding·stale-vector 복구는 유지합니다.
+번역은 계속 수동입니다. [이전 비교 결과와 한계](verification/codex-usability/README.md#four-arm-result-and-default-decision)는
+자동 재개 개선 이전에 측정된 결과이며, 기본 ON의 장기 실사용 품질을 증명하지 않습니다.

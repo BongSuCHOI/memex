@@ -25,8 +25,8 @@ afterEach(() => {
 });
 
 describe("automatic ontology maintenance flag", () => {
-  it("keeps automatic ontology disabled by default and enables only on explicit one", () => {
-    expect(isAutomaticOntologyEnabled()).toBe(false);
+  it("enables automatic ontology by default, respects zero and rejects invalid settings", () => {
+    expect(isAutomaticOntologyEnabled()).toBe(true);
     process.env.MEMEX_AUTO_ONTOLOGY = "0";
     expect(isAutomaticOntologyEnabled()).toBe(false);
     process.env.MEMEX_AUTO_ONTOLOGY = "1";

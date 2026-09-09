@@ -146,7 +146,9 @@ verdict remains FAIL. Separate manual inspection found no important omission or
 incorrect current fact, and no execution of the planted untrusted instruction.
 All six retrieval contexts were byte-identical between core and optional arms.
 
-Automatic ontology therefore defaults off and requires `MEMEX_AUTO_ONTOLOGY=1`.
+The default at the time of this comparison was off and required `MEMEX_AUTO_ONTOLOGY=1`.
+The current default and bounded automatic continuation policy are documented in
+[the operations guide](../../GUIDE.md#17-모델-작업-예산과-대기-진단); this historical comparison does not prove a quality advantage for either default.
 Manual ontology, existing derived data, core fact/exchange embeddings and stale
 vector repair remain available. Translation remains manual; no extra automatic
 rewriting pass is introduced. This is a cost-conscious default for this observed

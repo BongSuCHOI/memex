@@ -14,9 +14,11 @@ export declare const MODEL_ATTEMPT_TABLE = "model_work_attempts";
  * attempts because a whole batch can be pending before its first await or
  * reservation. */
 export declare const MODEL_TARGET_TABLE = "model_work_targets";
+export declare const AUTOMATIC_MAINTENANCE_WINDOW_MS: number;
+export declare const AUTOMATIC_MAINTENANCE_COOLDOWN_MS: number;
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
-export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled";
+export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled" | "window";
 export type ModelWorkTargetState = "pending" | "completed" | "failed" | "cancelled";
 export interface ModelBudgetLimits {
     maxAttempts: number;
@@ -35,6 +37,7 @@ export interface ModelWorkBudget {
     deadlineAt: string | null;
     createdAt: string;
     updatedAt: string;
+    automatic: boolean;
 }
 export interface ModelWorkContext {
     /** Reuse the caller's already initialized connection when available. */
@@ -140,8 +143,7 @@ export declare function ensureModelBudgetSchema(db: Database.Database): void;
 export declare function modelBudgetLimitsFromEnv(now?: number): ModelBudgetLimits;
 /**
  * Automatic ontology classification is an optional local-derived maintenance
- * lane. It is opt-in so an installation does not incur model work until
- * MEMEX_AUTO_ONTOLOGY=1 is explicitly configured. The manual ontology
+ * lane. It is enabled by default; MEMEX_AUTO_ONTOLOGY=0 disables it. The manual ontology
  * backfill command remains available regardless of this switch.
  */
 export declare function isAutomaticOntologyEnabled(): boolean;
@@ -207,6 +209,8 @@ export declare function rebindMemoryJobToBudget(db: Database.Database, input: {
     budgetId: string;
     expectedBudgetId?: string | null;
     now?: Date;
+    /** Automatic continuation must preserve retry history and backoff. */
+    automatic?: boolean;
 }): boolean;
 /** Start a fresh, explicitly named run for one pending job and rebind it. */
 export declare function startNewModelWorkRunForJob(db: Database.Database, input: {
@@ -226,12 +230,13 @@ export declare function startNewModelWorkRunForBudget(db: Database.Database, inp
     parentWaveId?: string;
     limits?: Partial<ModelBudgetLimits>;
     now?: Date;
+    automatic?: boolean;
 }): ModelWorkRunResumeResult;
 /**
  * Release a claimed queue item because its parent model budget is exhausted.
  * This transition intentionally does not increment queue attempts, move a
  * cursor, or mark a target dead. The scheduler filters the exhausted budget
- * until an operator explicitly starts a new run and rebinds the item.
+ * until bounded automatic maintenance or an explicit operator run rebinds it.
  */
 export declare function deferMemoryJobForModelBudget(db: Database.Database, input: {
     jobId: string;
@@ -265,6 +270,23 @@ export declare function exhaustModelBudget(db: Database.Database, input: {
 }): ModelBudgetExhaustedError;
 export declare function isModelBudgetExhausted(error: unknown): error is ModelBudgetError;
 export declare function modelBudgetErrorFromUnknown(error: unknown): ModelBudgetError | null;
+/** One rolling cap across all automatic maintenance waves in this data root. */
+export declare function automaticMaintenanceWindow(db: Database.Database, now?: Date): {
+    maxAttempts: number;
+    used: number;
+    remaining: number;
+    retryAt: string | null;
+};
+/**
+ * SessionStart continuation. Selection, rollover and target moves are one
+ * write transaction; simultaneous sessions cannot mint independent budgets.
+ * Explicit worker/operator budgets retain their existing resume contract.
+ */
+export declare function getOrCreateAutomaticMaintenanceModelBudget(db: Database.Database, input?: {
+    parentWaveId?: string;
+    limits?: Partial<ModelBudgetLimits>;
+    now?: Date;
+}): ModelWorkBudget;
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 export declare function getOrCreateMaintenanceModelBudget(db: Database.Database, input?: {
     parentWaveId?: string;
@@ -315,6 +337,7 @@ export interface ModelWorkStageDiagnostics {
     tokenUsageUnknown: number;
 }
 export interface ModelWorkDiagnostics {
+    automaticMaintenance?: ReturnType<typeof automaticMaintenanceWindow>;
     budgets: ModelWorkBudget[];
     attempts: ModelAttemptDiagnostic[];
     pending: Array<{

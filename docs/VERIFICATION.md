@@ -431,6 +431,12 @@ Stale-Capsule content probe는 정답을 query에 넣지 않고, 새 DB의 captu
 기본 메모리의 background 생성 자격이 아직 충족되지 않은 결과를 성숙한 메모리 품질로 해석하지 않습니다.
 검색의 deterministic 정답 검사와 실제 모델의 답변 품질도 별도 결과입니다.
 
+자동 유지보수 재개 회귀는 `test/automatic-maintenance-resume.test.ts`에서 검사합니다.
+Cooldown/window 제한, 완료 대상 제외, retry backoff·실패 횟수 보존, 활성/만료 lease,
+사용자 취소, DB 오류 rollback, 실제 두 프로세스 경쟁, 기존 ledger migration과 backup restore를
+격리 DB에서 검증합니다. `test/backfill-ontology-relation-worker.test.ts`는 실제 SQL의 이전
+미완료 작업 우선 선택을 확인합니다. 이 결과는 장기 실사용의 ontology 품질 비교가 아닙니다.
+
 ## 11. Release 원칙
 
 `main`은 runtime source channel입니다. 따라서 merge 직전에는:

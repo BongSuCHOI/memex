@@ -24,7 +24,7 @@ import {
 } from '../dist/reembed-selector.js';
 import { getExtractionConfig, pendingExtractionCoreQuery } from '../dist/pending-extraction.js';
 import {
-  getOrCreateMaintenanceModelBudget,
+  getOrCreateAutomaticMaintenanceModelBudget,
   isAutomaticOntologyEnabled,
 } from '../dist/model-budget.js';
 
@@ -44,9 +44,9 @@ async function main() {
 
     const db = initDatabase();
     // One named maintenance wave is shared by detached sibling workers. The
-    // durable row survives hook/process restarts; changing env limits cannot
-    // silently reset its reserved-attempt count.
-    const maintenanceBudget = getOrCreateMaintenanceModelBudget(db, {
+    // durable row survives restarts. Conditional rollover preserves its ledger
+    // and is limited by a cooldown plus the shared rolling attempt cap.
+    const maintenanceBudget = getOrCreateAutomaticMaintenanceModelBudget(db, {
       parentWaveId: process.env.MEMEX_MAINTENANCE_WAVE_ID || 'maintenance',
     });
     const childEnv = {

@@ -136,14 +136,6 @@ async function main() {
     // are parked in General/Misc by the classifier and never re-selected —
     // without this, one permanently-failing fact wastes an LLM call in every
     // run forever (COALESCE guards rows predating the migration).
-    const pending = db.prepare(`
-      SELECT id FROM facts
-      WHERE is_active = 1 AND ontology_category_id IS NULL
-        AND COALESCE(ontology_attempts, 0) < ?
-      ORDER BY consolidated_count DESC, created_at DESC
-      LIMIT ?
-    `).all(MAX_CLASSIFY_ATTEMPTS, MAX_FACTS);
-    const ontologyIds = pending.map((row) => row.id);
     // Existing relation memberships are durable pending work. Drain them even
     // when BACKFILL_RELATIONS is unset; that flag only opts new ontology pages
     // into creating additional relation probes.
@@ -155,21 +147,30 @@ async function main() {
         AND f.is_active = 1
       ORDER BY f.updated_at, f.id
       LIMIT ?
-    `).all(maintenanceBudget.budgetId, Math.max(0, MAX_FACTS - ontologyIds.length));
-    const relationIds = relationPending
-      .map((row) => row.id)
-      .filter((id) => !ontologyIds.includes(id));
+    `).all(maintenanceBudget.budgetId, MAX_FACTS);
+    const relationIds = relationPending.map((row) => row.id);
+    const pending = db.prepare(`
+      SELECT f.id FROM facts f
+      WHERE f.is_active = 1 AND f.ontology_category_id IS NULL
+        AND COALESCE(f.ontology_attempts, 0) < ?
+      ORDER BY EXISTS (
+        SELECT 1 FROM model_work_targets t WHERE t.budget_id = ?
+          AND t.target_id = f.id AND t.stage = 'ontology' AND t.state = 'pending'
+      ) DESC, f.created_at, f.id
+      LIMIT ?
+    `).all(MAX_CLASSIFY_ATTEMPTS, maintenanceBudget.budgetId, Math.max(0, MAX_FACTS - relationIds.length));
+    const ontologyIds = pending.map((row) => row.id);
     log(`backfill-ontology: ${ontologyIds.length + relationIds.length} facts this run (batch ${BATCH_SIZE}, concurrency ${CONCURRENCY}, relations ${DETECT_RELATIONS ? 'on' : 'pending-only'})`);
 
     // Chunk into batches — each classification batch is ONE LLM call (one
-    // headless spawn). Relation-only memberships are queued after ontology
-    // batches so a categorized fact can still resume after a cap stop.
+    // headless spawn). Previously queued relations and ontology targets take
+    // precedence over fresh classification backlog after a cap stop.
     const batches = [];
-    for (let i = 0; i < ontologyIds.length; i += BATCH_SIZE) {
-      batches.push({ kind: 'ontology', ids: ontologyIds.slice(i, i + BATCH_SIZE) });
-    }
     for (let i = 0; i < relationIds.length; i += BATCH_SIZE) {
       batches.push({ kind: 'relation', ids: relationIds.slice(i, i + BATCH_SIZE) });
+    }
+    for (let i = 0; i < ontologyIds.length; i += BATCH_SIZE) {
+      batches.push({ kind: 'ontology', ids: ontologyIds.slice(i, i + BATCH_SIZE) });
     }
 
     const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, budgetExhausted: 0, processed: 0 };
@@ -218,7 +219,7 @@ async function main() {
             totals.budgetExhausted += batch.ids.length;
             circuitOpen = true;
             queue.length = 0;
-            log(`model budget exhausted: ${error instanceof Error ? error.message : error} — ${batch.ids.length} facts remain pending for an explicit new run`);
+            log(`model budget exhausted: ${error instanceof Error ? error.message : error} — ${batch.ids.length} facts remain pending; automatic maintenance resumes after its cooldown/window permits`);
             break;
           }
           // Unexpected (non-LLM) error: facts stay NULL with attempts

@@ -75,7 +75,7 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_CODEX_BIN`, `MEMEX_CODEX_MODEL`, `MEMEX_CODEX_EXEC_TIMEOUT_MS`, `MEMEX_LLM_RETRIES`, `MEMEX_LLM_RETRY_BASE_MS` | 설치 기본 | worker model 호출 |
 | `MEMEX_EMBEDDING_MODEL` | e5 | embedding model |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
-| `MEMEX_AUTO_ONTOLOGY` | unset (off) | `1`일 때만 fact 저장 후와 SessionStart의 자동 ontology 분류 활성화; `memex backfill ontology` 명시 실행은 유지 |
+| `MEMEX_AUTO_ONTOLOGY` | unset (on) | `0`으로 fact 저장 후와 SessionStart의 자동 ontology 분류 비활성화; 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |
 | `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용 |
 
 PostCompact 등록은 optional telemetry입니다.
