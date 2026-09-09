@@ -1,0 +1,321 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-09T15:01:30.845+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.7.0",
+    "platform": "darwin arm64",
+    "chrome": "Google Chrome 152.0.7977.83",
+    "isolation": "Temporary homes for install, marketplace, package, lifecycle, plugin and Workspace browser gates; no user data root was read or mutated."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "fix/backfill-backoff-claim",
+    "codeSha": "3dbf6ed0a36e26bf2acbe1137fc6647ea51ad9ab",
+    "packageVersion": "0.5.1",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "v0.5.1 release candidate: two maintenance/backfill scheduling fixes (#12 resolve the model budget before claiming a job, #11 report why a claim was refused), a rebuilt dist/, the version bump and the changelog. No UI code changed. All thirteen gates ran on this clean committed SHA; `git status --porcelain` was empty before them and HEAD was unchanged after, and `npm run build` reproduced the tracked dist/ byte-for-byte. Only receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:56:18.018+00:00",
+      "durationSeconds": 3.263,
+      "logPath": "/private/tmp/memex-0.5.1-gates/typecheck.log",
+      "logSha256": "0de44bbbf10d3a0ad0917bf7be80774069109d02dbf6195ae58dabc85faeefd7"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:56:21.324+00:00",
+      "durationSeconds": 3.568,
+      "logPath": "/private/tmp/memex-0.5.1-gates/build.log",
+      "logSha256": "ade61e5194af1d782afd10ea06fd745edd70ecdf37fac0d7f567fcee65b0d8d4",
+      "observed": "tsc + esbuild bundle reproduced the tracked dist/; `git status --porcelain` empty afterwards"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:56:31.164+00:00",
+      "durationSeconds": 18.43,
+      "logPath": "/private/tmp/memex-0.5.1-gates/tests.log",
+      "logSha256": "a2946991c6c514738c0c1cd27df1cfd47bda1dd794d26cebc1be381f9bb92d71",
+      "observed": "100 files / 1026 Vitest tests passed"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:56:49.649+00:00",
+      "durationSeconds": 3.396,
+      "logPath": "/private/tmp/memex-0.5.1-gates/codex-slice.log",
+      "logSha256": "6731c2f421d3f3800fe1d2d669b60feb91e961acad4a1202b874923d82bb128b",
+      "observed": "26 slices passed"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:56:53.112+00:00",
+      "durationSeconds": 8.046,
+      "logPath": "/private/tmp/memex-0.5.1-gates/slice-tests.log",
+      "logSha256": "ad070bbce4c6e0a979d46de58b9a098069ab46f64c7fc7cdfb599a3a3fd8c7e8",
+      "observed": "106 slices / 1 suite passed"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:57:12.896+00:00",
+      "durationSeconds": 6.729,
+      "logPath": "/private/tmp/memex-0.5.1-gates/install-e2e.log",
+      "logSha256": "cb99a1af7644db5c9ab422583bf8c380a48b4905925c4ffee432fa4f84b93cdc",
+      "observed": "dry-run, real install, idempotent re-run, removal and isolation checks all true in an isolated CODEX_HOME/MEMEX_HOME"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:57:19.667+00:00",
+      "durationSeconds": 0.334,
+      "logPath": "/private/tmp/memex-0.5.1-gates/marketplace-e2e.log",
+      "logSha256": "f0c95e3a87ad295435404762dd6b3c17856b5f2e1e5f20cf185cf264bbe9a506",
+      "observed": "7 lifecycle events registered; cleanup PASS"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:57:20.044+00:00",
+      "durationSeconds": 82.51,
+      "logPath": "/private/tmp/memex-0.5.1-gates/package-runtime-e2e.log",
+      "logSha256": "c0ec4e43e72da559c3dfcbb90af91a421fe8790efa224a10b7ac31e54bb36531",
+      "observed": "memex-0.5.1.tgz, 311 files, 9 MCP tools; unchanged file count, with 8,393 more packed bytes than the v0.5.0 artifact for the two fixes and the rebuilt dist/"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:58:42.640+00:00",
+      "durationSeconds": 6.232,
+      "logPath": "/private/tmp/memex-0.5.1-gates/lifecycle-e2e.log",
+      "logSha256": "e1ee792a5030c45fe0377b9972a29826dcc04c21f25b541061c4743688221186",
+      "observed": "offline tier: 9/9 steps, 12 owned hook entries removed, 7-surface cleanup inventory all true"
+    },
+    {
+      "name": "web-ui-browser-e2e",
+      "command": "node scripts/web-ui-browser-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:58:57.396+00:00",
+      "durationSeconds": 6.643,
+      "logPath": "/private/tmp/memex-0.5.1-gates/web-ui-browser-e2e.log",
+      "logSha256": "f2f12f2f0035bd19967f9100898e30883b816bb7cf10c9362967381969d6578b",
+      "observed": "real headless Chrome via CDP at 1440x900 against Memex Workspace 1.0.0: 10 check groups PASS, runtimeErrors 0; the empty-scope map again reported mapFrames 2 with all 521550 pixels equal to the engine clear colour, so the v0.5.0 readback fix still holds on unchanged UI code"
+    },
+    {
+      "name": "ui-tests",
+      "command": "node --test ui/test/*.test.cjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:59:04.128+00:00",
+      "durationSeconds": 0.307,
+      "logPath": "/private/tmp/memex-0.5.1-gates/ui-tests.log",
+      "logSha256": "fcb37c2226a4f9c7ac6fb8e8a64a259fffcb79208261eb78c2554716d995b223",
+      "observed": "82 Workspace unit tests passed"
+    },
+    {
+      "name": "plugin-validation",
+      "command": "node scripts/validate-plugin.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:59:04.490+00:00",
+      "durationSeconds": 4.649,
+      "logPath": "/private/tmp/memex-0.5.1-gates/plugin-validation.log",
+      "logSha256": "e9728646ab593a78182ee918e6f8baf781280ee043e8a04199fc50c5b5fb5766",
+      "observed": "11 isolated substitute checks PASS; formal `codex plugin validate` unavailable in this CLI"
+    },
+    {
+      "name": "benchmark-contract",
+      "command": "node --test test/benchmark-contract.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T14:59:09.187+00:00",
+      "durationSeconds": 0.111,
+      "logPath": "/private/tmp/memex-0.5.1-gates/benchmark-contract.log",
+      "logSha256": "dc380c1cf0bac0586dbdb68b90181f26f18f113933f44ca608f5320a98f24de1",
+      "observed": "1 test passed on the pristine committed tree against the unchanged benchmark report"
+    }
+  ],
+  "packageRuntime": {
+    "status": "PASS",
+    "artifact": "memex-0.5.1.tgz",
+    "packedBytes": 1250543,
+    "unpackedBytes": 5041766,
+    "files": 311,
+    "mcpTools": 9,
+    "onboarding": [
+      "setup --dry-run",
+      "sync",
+      "backfill all",
+      "status"
+    ],
+    "hooks": [
+      "UserPromptSubmit valid-or-empty",
+      "SessionEnd final fence + deferred worker"
+    ]
+  },
+  "pluginValidation": {
+    "status": "PASS-WITH-NOTES (version-bound)",
+    "formalValidatorAvailable": false,
+    "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
+    "isolatedSubstitute": "PASS: 11 checks — plugin 0.5.1 in the Codex cache, MCP serverInfo 0.5.1, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
+    "receiptPath": "docs/verification/plugin-validation.json",
+    "receiptSha256": "e9728646ab593a78182ee918e6f8baf781280ee043e8a04199fc50c5b5fb5766"
+  },
+  "webUi": {
+    "surface": "Memex Workspace 1.0.0 (replaces the previous Web UI)",
+    "browserE2e": {
+      "status": "PASS",
+      "command": "node scripts/web-ui-browser-e2e.mjs",
+      "transport": "Google Chrome headless via CDP",
+      "viewport": "1440x900",
+      "runtimeErrors": 0,
+      "checkGroups": [
+        "facts",
+        "factDetail",
+        "factsTaxonomy",
+        "taxonomyMap",
+        "factsEmptyScope",
+        "mutations",
+        "pipeline",
+        "diagnostics",
+        "graph",
+        "graphEmpty"
+      ],
+      "observed": "Seven-page navigation, stored-XSS payload rendered inert (injectedFlag false), fact detail tabs with non-authoritative context labelling, taxonomy filter and graph deep link, empty-scope states, edit/deactivate/restore mutation round-trip, native LOCAL WEBGL knowledge map in 2D default and 3D, and skip-link keyboard focus.",
+      "evidence": "Screenshots were written to an isolated /tmp evidence directory and are not committed."
+    },
+    "unitTests": {
+      "status": "PASS",
+      "command": "node --test ui/test/*.test.cjs",
+      "tests": 82
+    },
+    "benchmark": {
+      "status": "PASS",
+      "rerunForThisCandidate": false,
+      "reason": "v0.5.1 changes maintenance/backfill scheduling and CLI claim reporting only. The benchmark measures conversation and fact search, context injection, incremental sync, the knowledge-map API and browser paint, and full-history analyze; none of them exercise job claiming, model-budget resolution or backfill CLI output, and no UI code changed. scripts/benchmark.mjs is untouched, so the full acceptance benchmark was not re-run. The report below is prior evidence from the 236d7362 run and is not a measurement of this SHA.",
+      "command": "node scripts/benchmark.mjs",
+      "measuredOnCodeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+      "recordedAt": "2026-09-09T10:53:25.807Z",
+      "reportPath": "docs/verification/benchmark.json",
+      "reportSha256": "1f6fcb58fac8c85074b0549361de780846251e2a24bcaf1751ee16ee3b4ecd26",
+      "logPath": "/private/tmp/memex-0.5.0-gates/benchmark.log",
+      "logSha256": "199ef2bfdb00ec6ef3be1bdc3f761a4bde18b56bea561eba6f9f43cfd87b6ea4",
+      "corpus": {
+        "rollouts": 200,
+        "exchanges": 800,
+        "projects": 7,
+        "facts": 50,
+        "relations": 49,
+        "repeated_runs": 3
+      },
+      "queriesPerCheck": 30,
+      "graphTransport": "loopback HTTP /api/v2/graph",
+      "graphBrowserTransport": "Google Chrome headless via CDP",
+      "graphRendered": {
+        "nodes": 50,
+        "edges": 49,
+        "renderer": "LOCAL WEBGL"
+      },
+      "headlineP95Ms": {
+        "conversation_vector": 5.484917000001587,
+        "fact_search": 1.1688750000030268,
+        "context_injection_warm": 152.30312499999854,
+        "context_injection_cold": 747.3001670000012,
+        "incremental_sync": 10804.244333999999,
+        "graph_api": 89.54087499999878,
+        "graph_first_interactive": 76.70000004768372,
+        "full_history_analyze": 80.717542
+      },
+      "thresholdChecks": "6/6 AC_PERF gates true; thresholds were predeclared in the report",
+      "contractGate": "test/benchmark-contract.test.mjs re-ran on this SHA and still validates this report against the /api/v2/graph-only transport set.",
+      "archiveConvention": "docs/verification/benchmark.json is a single-run receipt with no archive convention in docs/VERIFICATION.md, so it is replaced in place rather than versioned."
+    },
+    "productionDataMutation": false,
+    "liveUserData": "NOT_PROVEN: every Workspace gate and the referenced benchmark ran against synthetic fixtures in isolated MEMEX_HOME/XDG_CONFIG_HOME temp roots; the user's data root was never opened.",
+    "realUserPerception": "NOT_PROVEN: no human usability session, screen reader run or multi-browser matrix was performed; evidence is one headless Chrome build at a single viewport."
+  },
+  "gateStability": {
+    "gate": "web-ui-browser-e2e",
+    "assertion": "graphEmpty: at least one drawn frame, zero painted pixels, and every pixel equal to the engine clear colour",
+    "stabilityRuns": "inherited from the v0.5.0 candidate 5cd1134d (20/20)",
+    "stabilityRunsNote": "The 20-run stability series was measured when the readback fix landed. It was not repeated for v0.5.1, which changes no UI or gate-script code; this candidate contributes one further clean run, with the same mapFrames 2 and mapBackground 521550 of 521550."
+  },
+  "backfillScheduling": {
+    "observedFailure": {
+      "source": "Field reports #11 and #12 against the user's own data root on 2026-09-09, not an observation of these gates.",
+      "sequence": [
+        "14:03:52Z — a SessionStart maintenance wake handed the extractor model budget fe4a61c1, whose deadline_at had already passed. claimExtractionTarget claimed both pending targets first, incrementing attempts to 1, and the budget was only resolved later inside the model call.",
+        "reserveModelAttempt raised deadline exhaustion before inserting any model_work_attempts row, so no provider call was ever made, yet deferMemoryJobForModelBudget parked both jobs with available_at = now + 60min, observed in the database as available_at 15:03:52Z.",
+        "14:04:18Z — the same wake minted a fresh budget 26 seconds later, but every job it could have run was already in backoff, so its window expired unused.",
+        "14:23Z — a foreground `memex backfill extract` could not claim either job and reported HANDOFF (다른 러너가 처리 중), although lease_owner was NULL and no worker process existed. The operator was shown a phantom runner instead of a retry backoff."
+      ]
+    },
+    "fix": {
+      "#12": "findExhaustedModelBudgetForClaim resolves the job's durable budget before the claim and applies the same exhaustion predicate reserveModelAttempt uses, so a dead budget never costs an attempt; the pre-flight creates nothing, so an unbound job keeps its lazy-creation path. Because the pre-flight and the reservation are still separated by wall clock, deferMemoryJobForModelBudget takes an opt-in claimedAt: a deadline or window stop that follows a claim which reserved no provider attempt refunds that attempt and returns the job to pending at now. An attempts exhaustion keeps the old one-hour fence, because that budget really was spent.",
+      "#11": "claimMemoryJobById now reports which of its four refusal reasons applied — lease_held, backoff with the instant it becomes due, attempts_exhausted, cas — from the row the predicate already reads, with no extra query, no extra write and no change to what is claimable. CLAIM_REJECTION_REPORT is the single source for label, note, bucket and escalation, so the worker cannot print a label that disagrees with its own counters. The worker prints HANDOFF (lease held by another runner), DEFERRED (retry backoff until <ISO>) or SKIPPED (attempt cap reached), counts them as handoff / backoff-deferred / attempt-cap, and escalates only the attempt cap. `memex status` gains a matching backoff breakdown of pending plus the earliest retry time."
+    },
+    "exitCodeContract": "Unchanged. Backoff work stays inside the extract stage's pending count, so `memex backfill extract` still exits 2 for \"completed with deferred work\"; 0 and 1 keep their meanings and terminal `deferred` keeps its own.",
+    "regressions": "test/model-budget-stale-claim.test.ts (3 cases: a stale budget refuses the claim instead of spending an attempt and an hour of backoff, the fresh budget from the same wake claims the work immediately, and an unspent claim is refunded on a deadline stop while the attempts fence holds); test/claim-rejection-reason.test.ts (5 cases: backoff reported with its due time rather than a phantom runner, a live lease still reported as a handoff, an exhausted attempt cap reported as its own reason, the reason surfaced through runFactExtraction for the worker, and status counting backoff sessions with the earliest retry); test/backfill-cli-slice.test.mjs (1 added case reproducing the exact observed state — lease_owner NULL, no runner, future available_at — and pinning exit 2 with a deferred, not handoff, message). test/backfill-worker-execution.test.ts (10 cases) and test/worker-dist-contract.test.ts (9 cases) cover worker execution and the dist contract, including a dist predating claimReason falling back to the previous HANDOFF behaviour.",
+    "productionDataMutation": false,
+    "liveWakeReplay": "NOT_PROVEN: the failing wake sequence was not replayed against the user's durable data root. The regressions reconstruct the observed state in isolated fixtures, which proves the contract, not the field recovery.",
+    "liveBacklogDrain": "NOT_PROVEN: no backfill was run against the user's real backlog to confirm the previously stranded jobs now drain."
+  },
+  "priorEvidence": [
+    {
+      "receipt": "merge-gate-pre-0.5.1.json",
+      "sha256": "d383c133ad7e4d6f28f3a133b8f30b4bb105b80925b5219d36c4f4edd795c546",
+      "codeSha": "5cd1134d79631390a3fccda92dc11bb631f952cf",
+      "note": "The v0.5.0 gate receipt, archived byte-for-byte from the file this receipt replaces. Its values, including its 20/20 gate-stability series, were not rewritten."
+    },
+    {
+      "receipt": "merge-gate-pre-0.5.0.json",
+      "sha256": "1f13609d603e8299596f66c4087b314c2579265a2176aca5cd416aa5a43c9d70",
+      "codeSha": "5618515b709a9c7add8c6dba4eda52668209da59",
+      "note": "The v0.4.4 gate receipt, still preserved byte-for-byte and untouched by this release."
+    },
+    {
+      "receipt": "benchmark.json",
+      "sha256": "1f6fcb58fac8c85074b0549361de780846251e2a24bcaf1751ee16ee3b4ecd26",
+      "codeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+      "note": "The full acceptance benchmark run, measured on 236d7362 and deliberately not re-run for v0.5.1. This release changes maintenance/backfill scheduling and CLI reporting only, which no AC_PERF check measures; treat its numbers as evidence for that SHA."
+    }
+  ],
+  "notProven": {
+    "liveUserData": "NOT_PROVEN: gates ran on isolated fixtures and temporary homes; no user data root was read or mutated.",
+    "authenticatedCodexTier": "NOT_PROVEN: scripts/lifecycle-e2e.mjs ran its default offline tier; no real authenticated `codex exec` session was executed for this candidate.",
+    "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` does not exist in codex-cli 0.153.4, so only the repository-owned isolated substitute was observed.",
+    "benchmarkOnThisSha": "NOT_PROVEN: the acceptance benchmark was measured on 236d7362 and not re-run here. The argument that backfill scheduling and CLI reporting fall outside every AC_PERF check is a reading of what the benchmark measures, not a measurement of this SHA. dist/ did change in this release, so search and sync code paths the benchmark does exercise were rebuilt, even though their behaviour is unchanged.",
+    "realWorldPerformance": "NOT_PROVEN: benchmark numbers come from a 200-rollout / 800-exchange synthetic corpus on one Apple-silicon host, not from production history or other hardware.",
+    "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only.",
+    "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the accuracy of the CHANGELOG and GUIDE wording for this release rests on human review, not on these gates."
+  },
+  "releaseConclusion": "All thirteen gates PASS on the clean v0.5.1 candidate 3dbf6ed0, each on its first attempt: typecheck, a build that reproduced the tracked dist/, 100 files / 1026 Vitest tests, 26 Codex slices, 106 total slices, installer, marketplace, packaged runtime (memex-0.5.1.tgz, 311 files, 9 MCP tools), offline lifecycle 9/9, the real-Chrome Memex Workspace E2E (10 check groups, 0 runtime errors), 82 Workspace unit tests and the benchmark contract. Isolated plugin validation passes all 11 substitute checks with matching 0.5.1 plugin and MCP server versions, and is PASS-WITH-NOTES only because the formal `codex plugin validate` subcommand does not exist in codex-cli 0.153.4. The release itself is two scheduling fixes: a model budget is now resolved before a job is claimed, so a dead budget no longer burns an attempt and an hour of backoff, and a refused claim now reports whether it was a lease handoff, a retry backoff with its due time, or an exhausted attempt cap, instead of always printing HANDOFF. Nineteen isolated regression cases across model-budget-stale-claim, claim-rejection-reason and the backfill CLI slice reconstruct the observed #11/#12 state and pin the unchanged exit-code contract. No UI code changed, and the Workspace readback assertion held again. The full acceptance benchmark was NOT re-run: it is referenced as prior evidence measured on 236d7362, and no AC_PERF check exercises job claiming, budget resolution or backfill CLI output. The v0.5.0 receipt is archived byte-for-byte as merge-gate-pre-0.5.1.json. Replaying the failing wake against the user's real data root, draining the live backlog, live user data, an authenticated Codex tier run, the formal plugin validator, benchmark numbers for this exact SHA, real-world performance and model quality are NOT_PROVEN."
+}
