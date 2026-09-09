@@ -262,22 +262,22 @@ memex status
 | `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | Archive and index new Codex rollouts; `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | Cross-device sync switch (OFF by default), shared folder (`--dir`), status, manual export (`--force`) / import; `--json` |
-| `memex index` | Index, verify, repair, or rebuild the conversation index |
+| `memex index` | Index, verify, repair, or rebuild the conversation index: `--cleanup`, `--session <id>`, `--verify`, `--repair`, `--rebuild`, `--concurrency N`, `--no-summaries` |
 | `memex search` | Semantic, text, or hybrid conversation search |
 | `memex show` | Read one archived conversation |
 | `memex stats` | Inspect corpus/index statistics |
 | `memex analyze` | Generate a deterministic history report |
-| `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` |
+| `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`; `list --all` includes inactive facts (`--limit`, `--offset`), `edit --source-exchange <id>` names the evidence |
 | `memex facts tier\|promote\|demote` | Inspect or move a memory on the `workstream ⇄ project ⇄ global` ladder, one rung at a time |
 | `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
-| `memex status` | Inspect pipeline readiness, `Needs attention`, and quarantined projects |
+| `memex status` | Inspect pipeline readiness, `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex doctor` | Diagnose dependencies, build, hooks, injection output, and recall provenance |
 | `memex home` | Print the resolved Memex data root |
-| `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02) |
+| `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02); `--dry-run` prints the plan and writes nothing |
 
 Every subcommand accepts `--help` / `-h`, prints usage only, and exits `0`; the commands with side effects (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`) write nothing when asked for help.
 

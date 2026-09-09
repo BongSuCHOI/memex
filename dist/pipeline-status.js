@@ -79,6 +79,7 @@ export function getPipelineStatus(opts = {}) {
             ontology: { classifiedFacts: 0, pendingFacts: 0 },
             relations: 0,
             attention: emptyAttention(),
+            jobs: emptyJobCounters(),
             quarantinedProjects: [],
             lifecycleLastEventAt,
             readiness: {
@@ -333,6 +334,7 @@ export function getPipelineStatus(opts = {}) {
         if (hasRelations)
             relations = count(db, "SELECT COUNT(*) AS c FROM ontology_relations");
         const attention = readAttention(db);
+        const jobs = readJobCounters(db);
         const archiveFiles = countArchiveFiles(getArchiveDir());
         const conversationReady = exchanges > 0;
         const factReady = conversationReady &&
@@ -355,6 +357,7 @@ export function getPipelineStatus(opts = {}) {
             ontology,
             relations,
             attention,
+            jobs,
             quarantinedProjects: readQuarantinedProjects(db),
             lifecycleLastEventAt,
             readiness: { conversationReady, factReady, graphReady },
@@ -364,6 +367,38 @@ export function getPipelineStatus(opts = {}) {
         if (ownsDb)
             db.close();
     }
+}
+/** Zero counters for a data root with no queue table yet. */
+export function emptyJobCounters() {
+    return { total: 0, byKind: {}, byState: {} };
+}
+/**
+ * Issue #46 (15.2) — the kind × state cross-tab GUIDE §15 documented but no
+ * command produced. Read-only single GROUP BY; unknown future kinds and states
+ * appear on their own without a code change.
+ */
+function readJobCounters(db) {
+    const counters = emptyJobCounters();
+    if (!tableExists(db, "memory_jobs"))
+        return counters;
+    let rows;
+    try {
+        rows = db
+            .prepare("SELECT kind, state, COUNT(*) AS c FROM memory_jobs GROUP BY kind, state")
+            .all();
+    }
+    catch {
+        return counters;
+    }
+    for (const row of rows) {
+        const kind = String(row.kind ?? "unknown");
+        const state = String(row.state ?? "unknown");
+        const count = Number(row.c ?? 0);
+        counters.total += count;
+        (counters.byKind[kind] ??= {})[state] = (counters.byKind[kind][state] ?? 0) + count;
+        counters.byState[state] = (counters.byState[state] ?? 0) + count;
+    }
+    return counters;
 }
 /** Zero counters for a data root with no database yet. */
 export function emptyAttention() {
@@ -492,6 +527,22 @@ export function formatPipelineStatus(s) {
     lines.push(`Embeddings: ${s.embeddings.factVectorsPending === 0 ? "READY" : "PENDING"} (${s.embeddings.activeFacts - s.embeddings.factVectorsPending}/${s.embeddings.activeFacts} active facts vectorized)`);
     lines.push(`Ontology: ${s.ontology.pendingFacts === 0 ? "READY" : "PENDING"} (${s.ontology.classifiedFacts} classified, ${s.ontology.pendingFacts} pending)`);
     lines.push(`Relations: ${s.relations}`);
+    // Issue #46 (15.2): the per-kind queue breakdown GUIDE §15 asks for. Printed
+    // above `Needs attention` because it is the wider view the two dead/retry
+    // numbers are a subset of.
+    if (s.jobs.total > 0) {
+        lines.push(`Memory jobs: ${s.jobs.total}` +
+            ` (${Object.entries(s.jobs.byState)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([state, count]) => `${state}=${count}`)
+                .join(", ")})`);
+        for (const [kind, states] of Object.entries(s.jobs.byKind).sort(([a], [b]) => a.localeCompare(b))) {
+            lines.push(`  ${kind}: ${Object.entries(states)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([state, count]) => `${state}=${count}`)
+                .join(", ")}`);
+        }
+    }
     // Issues #20/#39: the actionable count, then the terminal states behind it.
     const a = s.attention;
     lines.push(`Needs attention: ${a.total}` +

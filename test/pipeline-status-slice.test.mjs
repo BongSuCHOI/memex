@@ -257,3 +257,84 @@ test("gate-excluded sessions report as excluded, not pending (CX-04 status/worke
   assert.ok(text.includes("2 excluded projects"), text);
   db.close();
 });
+
+/**
+ * Issue #46 (15.2) — docs/GUIDE.md §15 documented
+ *   memex status --json    # 단계별 pending/processing/retry/dead
+ * but the JSON carried only extraction StageCounters plus `attention`, which
+ * counts the two states that need a decision. There was no per-kind view of
+ * `memory_jobs` anywhere: the runbook's command could not answer its question.
+ */
+test("status --json aggregates memory_jobs by kind x state", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }, { session: "s1" }]);
+  db.exec(`CREATE TABLE memory_jobs (
+    job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
+    available_at TEXT, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0)`);
+  const insert = db.prepare(
+    "INSERT INTO memory_jobs (job_id, kind, state, available_at) VALUES (?, ?, ?, '2026-08-26T00:00:00Z')",
+  );
+  let id = 0;
+  for (const [kind, state, count] of [
+    ["capture_index", "pending", 3],
+    ["capture_index", "dead", 1],
+    ["capsule_update", "retry", 2],
+    ["capsule_update", "running", 1],
+  ]) {
+    for (let i = 0; i < count; i++) insert.run(`job-${++id}`, kind, state);
+  }
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.jobs.total, 7);
+  assert.deepEqual(st.jobs.byKind, {
+    capture_index: { pending: 3, dead: 1 },
+    capsule_update: { retry: 2, running: 1 },
+  });
+  assert.deepEqual(st.jobs.byState, { pending: 3, dead: 1, retry: 2, running: 1 });
+  // `attention` stays the "needs a decision" subset, not a replacement.
+  assert.equal(st.attention.total, 3); // 1 dead + 2 retry
+
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("Memory jobs: 7"), text);
+  assert.ok(text.includes("capture_index: dead=1, pending=3"), text);
+  assert.ok(text.includes("capsule_update: retry=2, running=1"), text);
+
+  const json = JSON.parse(
+    spawnSync(process.execPath, [CLI, "status", "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, TEST_DB_PATH: process.env.TEST_DB_PATH },
+    }).stdout,
+  );
+  assert.deepEqual(json.jobs, st.jobs);
+  db.close();
+});
+
+test("a data root with no queue table reports an empty jobs object", async (t) => {
+  await seed(t, [{ session: "s1" }, { session: "s1" }]);
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.deepEqual(st.jobs, { total: 0, byKind: {}, byState: {} });
+  // Nothing to say is said with nothing, not with a grid of zeros.
+  assert.ok(!formatPipelineStatus(st).includes("Memory jobs:"));
+});
+
+/**
+ * Issue #46 (15.4) — `memex index --help` pointed at INDEXING.md and
+ * DEPLOYMENT.md, neither of which exists in the repository.
+ */
+test("index --help points only at documents that exist", () => {
+  const help = spawnSync(process.execPath, [CLI, "index", "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.doesNotMatch(help.stdout, /INDEXING\.md|DEPLOYMENT\.md/);
+  for (const referenced of help.stdout
+    .split("SEE ALSO:")[1]
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter((token) => token.endsWith(".md"))) {
+    assert.ok(fs.existsSync(path.join(REPO, referenced)), `${referenced} must exist`);
+  }
+});

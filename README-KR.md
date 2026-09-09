@@ -262,22 +262,22 @@ memex status
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | 새 Codex rollout archive/index. `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` |
-| `memex index` | conversation index 생성·검증·복구·재구축 |
+| `memex index` | conversation index 생성·검증·복구·재구축: `--cleanup`, `--session <id>`, `--verify`, `--repair`, `--rebuild`, `--concurrency N`, `--no-summaries` |
 | `memex search` | semantic / text / hybrid conversation search |
 | `memex show` | archive conversation 읽기 |
 | `memex stats` | corpus/index 통계 |
 | `memex analyze` | deterministic 전체 이력 보고서 생성 |
-| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` |
+| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`. `list --all`은 비활성 fact까지(`--limit`·`--offset`), `edit --source-exchange <id>`는 근거 지정 |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
-| `memex status` | pipeline readiness와 `Needs attention`·격리된 프로젝트 확인 |
+| `memex status` | pipeline readiness와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex model-work` | 모델 작업 예산 확인과 명시적 재개; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex doctor` | 의존성·빌드·hook·주입 출력·recall provenance 진단 |
 | `memex home` | 해석된 Memex data root 출력 |
-| `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02) |
+| `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02). `--dry-run`은 계획만 출력하고 아무것도 쓰지 않음 |
 
 모든 서브커맨드는 `--help` / `-h`를 인식해 사용법만 출력하고 exit `0`으로 끝납니다. 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
 

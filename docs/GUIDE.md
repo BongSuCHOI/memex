@@ -159,6 +159,8 @@ project-sensitive 명령과 MCP tool은 canonical absolute project 또는 explic
 memex facts list
 memex facts list --project /absolute/project/path
 memex facts list --scope all
+memex facts list --all                    # 비활성 fact까지 포함
+memex facts list --limit 50 --offset 100  # 페이지 단위 조회
 memex facts show --id <uuid>
 memex facts edit --id <uuid> --text "updated fact"
 memex facts deactivate --id <uuid>
@@ -189,6 +191,10 @@ memex facts delete --id <full-uuid> --hard --yes
   `tier:user-directive`로 덮어써집니다 — "지금 이 계층에 있는 이유"를 담는 컬럼입니다.
 - 근거 기반 자동 승격·강등은 세션 시작 유지보수 단계에서 모델 호출 없이 SQL로만 판정합니다.
 
+- `memex facts list`는 기본적으로 **활성 fact만** 보여줍니다. `restore`할 대상을 찾으려면
+  `--all`이 필요합니다 — 비활성 fact는 이 플래그 없이는 목록에 뜨지 않습니다. `--limit`/`--offset`으로
+  페이지를 넘깁니다.
+- `memex facts edit --source-exchange <id>`는 수정의 근거가 되는 exchange를 명시합니다.
 - edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
 - deactivate/restore는 의미 편집과 독립적인 lifecycle event입니다.
 - hard delete는 full UUID, `--hard`, `--yes`가 모두 필요합니다.
@@ -483,6 +489,7 @@ worker 재실행이 회수하는 것은 **만료된 lease를 가진 비-terminal
 
 ```bash
 memex status                        # "Needs attention: N" + 종료 상태 내역
+memex status --json                 # 위와 같은 값 + memory_jobs를 kind × state로 집계한 jobs 객체
 memex jobs list --state dead        # 무엇이 왜 죽었는지 (last_error 포함)
 memex jobs show <job-id>            # checkpoint / target / 실패 range / retry_history
 memex recover <job-id> --dry-run    # 무엇을 되돌릴지 먼저 확인
@@ -507,6 +514,46 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 여덟 가지 terminal 상태 전체와 각각의 복구 명령은 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)의 표에 정리되어 있습니다.
 
 `capture_gaps.state = 'open'`과 `model_work_budgets.state = 'exhausted'`는 `recover` 대상이 아닙니다. 전자는 다음 성공 캡처에서 자동 해소되고(둘 다 `memex status`에 카운트로 표시), 후자는 `memex model-work resume <budget-id> --new-run`으로 복구합니다.
+
+`memex status --json`의 `jobs`는 `memory_jobs`를 **kind × state**로 집계합니다.
+
+```jsonc
+"jobs": {
+  "total": 7,
+  "byKind": { "capture_index": { "pending": 3, "dead": 1 }, "capsule_update": { "retry": 3 } },
+  "byState": { "pending": 3, "retry": 3, "dead": 1 }
+}
+```
+
+`attention.total`은 이 중 "사람의 판단이 필요한" `dead` + `retry`만 센 값이고, `jobs`는 큐 전체를
+보여줍니다. 존재하지 않는 조합은 `0`으로 채우지 않고 아예 나오지 않습니다. 텍스트 출력에도
+`Memory jobs: …`와 kind별 줄로 같은 값이 나옵니다.
+
+### 대화 인덱스 무결성 (`memex index --verify` / `--repair`)
+
+fact 파이프라인과 별개로, **대화 인덱스** 자체가 깨질 수 있습니다(FK 위반, orphan 행, 요약 누락,
+손상된 아카이브 파일). 진단과 복구는 `memex index`가 담당합니다.
+
+```bash
+memex index --verify        # 인덱스 무결성 점검 (읽기 전용)
+memex index --repair        # 감지된 문제 수정. 실패한 파일을 보고하고 non-zero로 종료
+memex index --cleanup       # 아직 인덱싱되지 않은 대화만 처리 (빠름)
+memex index --session <id>  # 특정 세션만 인덱싱 (훅이 쓰는 경로)
+memex index --rebuild       # DB를 지우고 전부 다시 인덱싱 (확인 게이트 있음)
+```
+
+| 플래그 | 하는 일 |
+| --- | --- |
+| `--verify` | FK 위반·orphan·요약 누락·손상 파일을 보고만 합니다. 아무것도 쓰지 않습니다 |
+| `--repair` | 위 문제를 고칩니다. 고치지 못한 file을 이름으로 보고하고 non-zero로 종료합니다 |
+| `--cleanup` | 미인덱싱 대화만 처리합니다. backfill의 기본 진입점입니다 |
+| `--session <id>` | 한 세션만 인덱싱합니다 |
+| `--rebuild` | **DB를 삭제하고** 전부 다시 만듭니다. `yes` 확인을 요구합니다 |
+| `--concurrency N` / `-c N` | 요약 병렬도(1–16, 기본 1) |
+| `--no-summaries` | AI 요약 생성을 건너뜁니다(무료·빠름, 결과에 요약 없음) |
+
+`--repair`가 non-zero로 끝나면 보고된 file의 원인을 고친 뒤 다시 실행하십시오. 그래도 남으면
+`--rebuild`가 마지막 수단입니다(아카이브 원본은 read-only이므로 인덱스는 항상 다시 만들 수 있습니다).
 
 ### Journal/checkpoint 무결성과 capture gap
 
@@ -703,16 +750,16 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
-| `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session` | [§4](#4-최초-onboarding) |
+| `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session`·`--concurrency`·`--no-summaries` | [§4](#4-최초-onboarding), [§15](#대화-인덱스-무결성-memex-index---verify--repair) |
 | `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
 | `memex show` | archive conversation 읽기 (`--format markdown\|html`) | [§6](#6-검색과-분석) |
 | `memex stats` | corpus/index 통계 | [§6](#6-검색과-분석) |
 | `memex analyze` | deterministic 전체 이력 보고서 (`--json`, `--out`, `--top`, `--months`) | [§6](#6-검색과-분석) |
-| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` | [§7](#7-fact-관리) |
+| `memex facts` | durable fact 조회·관리: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`. `list`는 `--all`(비활성 포함)·`--limit`·`--offset`, `edit`는 `--source-exchange` | [§7](#7-fact-관리) |
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) | [§7](#7-fact-관리) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) | [§7](#7-fact-관리) |
 | `memex backfill` | `all\|extract\|ontology\|embeddings` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
-| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트 (`--json`) | [§4](#4-최초-onboarding), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
+| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계 (`--json`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
