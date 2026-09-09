@@ -732,6 +732,12 @@ Process가 끝났다는 사실만으로 증거 처리 작업이 완료되었다�
 - 활성 job lease 없음 AND (provider 호출 종료 OR 해당 run의 deadline 경과 후 1분)
 - deadline이 없는 run의 미확인 예약은 자동으로 종료됐다고 추정하지 않음
 
+Rollover는 wave 이름에 접미사를 누적하지 않습니다(0.6.1 #42). `parent_wave_id`는 root(`maintenance`)와
+그 다음 run(`maintenance#2`, `maintenance#3`)만 갖고, 계보는 `root_wave_id` / `run_seq` 컬럼이 들고
+있습니다. 0.6.1 이전에는 rollover 1회마다 `:run:<uuid>` 41자가 붙어 무한히 자랐고, 확장된 id가
+환경변수로 자식 워커에 전파되면 그 워커의 계보 조회 범위가 좁아져 공통 rolling 한도에서 이탈했습니다.
+DB를 열 때 기존 중첩 id는 자동으로 정규화됩니다. 자식 워커에는 항상 root wave id를 전달합니다.
+
 공통 호출 한도는 `MEMEX_AUTO_MODEL_MAX_ATTEMPTS=256`이 기본값이며 실패·재시도·결과 미확인
 예약도 계산합니다. 예약 1건이 1회이며 재시도는 새 예약 1회를 소비합니다. 성공 여부와 무관하게
 예약 시각부터 24시간 동안 셉니다. `0`은 자동 유지보수 모델 호출을 막습니다. 각 호출 예약과 새 run 생성은

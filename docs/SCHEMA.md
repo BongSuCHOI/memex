@@ -125,6 +125,16 @@ archive 경로의 `ingestArchiveExchanges()`만 `reconcileArchiveExchanges()`를
 wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 데이터 루트 공통 rolling
 호출 수를 계산합니다. 새 run 생성·미완료 membership 이동은 같은 `BEGIN IMMEDIATE`에 묶고,
 자동 재개는 완료 기록·실패 횟수·미확인 호출 비용을 보존합니다.
+`model_work_budgets.root_wave_id` / `run_seq`(0.6.1 additive, nullable + backfill)는 rollover 계보를
+문자열이 아니라 컬럼으로 표현합니다. 0.6.1 이전에는 rollover마다 `parent_wave_id`에
+`:run:<uuid>`(41자)를 이어붙였고 상한도 삭제 경로도 없어 단조 증가했습니다(실측 데이터에 이미 3단계
+중첩). 이제 rollover는 같은 root의 다음 `run_seq`이고 이름은 `<root>` / `<root>#2` / `<root>#3` 형태로
+유한합니다. 계보 조회(shared rolling attempt cap의 근거)는 LIKE 접두 매칭이 아니라 `root_wave_id`
+컬럼으로 하며, 옛 `:run:` 사슬을 환경변수로 물려받은 워커도 같은 root로 정규화됩니다.
+`UNIQUE(parent_wave_id)` 테이블 제약은 그대로 두고 계보 유일성은
+`CREATE UNIQUE INDEX idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
+표현합니다(테이블 재작성 없이 additive). 마이그레이션은 기존 중첩 id를 `<root>#<n>`으로 정규화하고
+`memory_jobs.maintenance_wave_id`의 같은 문자열도 함께 갱신합니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
 원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
 이 상태와 ledger는 protocol v5에 export하지 않습니다.

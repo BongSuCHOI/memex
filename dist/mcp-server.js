@@ -7452,6 +7452,7 @@ __export(model_budget_exports, {
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
   registerModelWorkTargets: () => registerModelWorkTargets,
   reserveModelAttempt: () => reserveModelAttempt,
+  rootWaveIdOf: () => rootWaveIdOf,
   settleModelWorkTargets: () => settleModelWorkTargets,
   startNewModelWorkRun: () => startNewModelWorkRun,
   startNewModelWorkRunForBudget: () => startNewModelWorkRunForBudget,
@@ -7486,6 +7487,23 @@ function hasDerivedFactQueue(db) {
   if (!tableExists2(db, "facts")) return false;
   const columns = columnNames2(db, "facts");
   return columns.has("id") && columns.has("is_active") && columns.has("ontology_category_id") && columns.has("needs_consolidation");
+}
+function rootWaveIdOf(parentWaveId) {
+  const withoutRun = parentWaveId.split(":run:")[0];
+  const compact = /^(.*)#\d+$/.exec(withoutRun);
+  return compact ? compact[1] : withoutRun;
+}
+function parseWaveId(parentWaveId) {
+  const root = rootWaveIdOf(parentWaveId);
+  const compact = /^(.*)#(\d+)$/.exec(parentWaveId.split(":run:")[0]);
+  return { root, seq: compact ? Number(compact[2]) : null };
+}
+function runWaveId(root, seq) {
+  return seq <= 1 ? root : `${root}#${seq}`;
+}
+function nextRunSeq(db, rootWaveId) {
+  const row = db.prepare("SELECT COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id = ?").get(rootWaveId);
+  return Number(row?.n ?? 0) + 1;
 }
 function ensureModelBudgetSchema(db) {
   const migrate = db.transaction(() => {
@@ -7564,6 +7582,47 @@ function ensureModelBudgetSchema(db) {
     if (!columnNames2(db, MODEL_BUDGET_TABLE).has("automatic")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
     }
+    const budgetColumns = columnNames2(db, MODEL_BUDGET_TABLE);
+    if (!budgetColumns.has("root_wave_id")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN root_wave_id TEXT");
+    }
+    if (!budgetColumns.has("run_seq")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN run_seq INTEGER");
+    }
+    const legacyRows = db.prepare(
+      `SELECT budget_id, parent_wave_id, root_wave_id, run_seq FROM model_work_budgets
+         WHERE root_wave_id IS NULL OR run_seq IS NULL OR parent_wave_id LIKE '%:run:%'
+         ORDER BY created_at, budget_id`
+    ).all();
+    if (legacyRows.length > 0) {
+      const seqByRoot = /* @__PURE__ */ new Map();
+      const seeded = db.prepare("SELECT root_wave_id, COALESCE(MAX(run_seq), 0) AS n FROM model_work_budgets WHERE root_wave_id IS NOT NULL GROUP BY root_wave_id").all();
+      for (const row of seeded) seqByRoot.set(row.root_wave_id, Number(row.n));
+      const takenNames = new Set(
+        db.prepare("SELECT parent_wave_id FROM model_work_budgets").all().map((row) => row.parent_wave_id)
+      );
+      for (const row of legacyRows) {
+        const parsed = parseWaveId(row.parent_wave_id);
+        const root = parsed.root;
+        const seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        seqByRoot.set(root, Math.max(seqByRoot.get(root) ?? 0, seq));
+        let name = runWaveId(root, seq);
+        if (name !== row.parent_wave_id && takenNames.has(name)) name = row.parent_wave_id;
+        if (name !== row.parent_wave_id) {
+          takenNames.delete(row.parent_wave_id);
+          takenNames.add(name);
+          db.prepare("UPDATE model_work_budgets SET parent_wave_id = ? WHERE budget_id = ?").run(name, row.budget_id);
+          if (tableExists2(db, "memory_jobs") && columnNames2(db, "memory_jobs").has("maintenance_wave_id")) {
+            db.prepare("UPDATE memory_jobs SET maintenance_wave_id = ? WHERE maintenance_wave_id = ?").run(name, row.parent_wave_id);
+          }
+        }
+        db.prepare("UPDATE model_work_budgets SET root_wave_id = ?, run_seq = ? WHERE budget_id = ?").run(root, seq, row.budget_id);
+      }
+    }
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
+         ON model_work_budgets(root_wave_id, run_seq)`
+    );
     if (tableExists2(db, "memory_jobs")) {
       const columns = columnNames2(db, "memory_jobs");
       if (!columns.has("budget_id")) {
@@ -7640,9 +7699,12 @@ function normalizeLimits(input = {}) {
   };
 }
 function budgetFromRow(row) {
+  const parentWaveId = String(row.parent_wave_id);
   return {
     budgetId: String(row.budget_id),
-    parentWaveId: String(row.parent_wave_id),
+    parentWaveId,
+    rootWaveId: row.root_wave_id == null ? rootWaveIdOf(parentWaveId) : String(row.root_wave_id),
+    runSeq: row.run_seq == null ? 1 : Number(row.run_seq),
     state: String(row.state),
     maxAttempts: Number(row.max_attempts),
     reservedAttempts: Number(row.reserved_attempts),
@@ -7802,14 +7864,18 @@ function insertModelWorkBudget(db, input) {
   const budgetId = input.budgetId?.trim() || randomUUID3();
   const limits = normalizeLimits(input.limits);
   const now = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  const parsed = parseWaveId(input.parentWaveId);
+  const runSeq = parsed.seq ?? nextRunSeq(db, parsed.root);
   db.prepare(`
     INSERT INTO model_work_budgets
-      (budget_id, parent_wave_id, state, max_attempts, reserved_attempts,
+      (budget_id, parent_wave_id, root_wave_id, run_seq, state, max_attempts, reserved_attempts,
        max_input_chars, max_output_chars, deadline_at, created_at, updated_at)
-    VALUES (?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'active', ?, 0, ?, ?, ?, ?, ?)
   `).run(
     budgetId,
     input.parentWaveId,
+    parsed.root,
+    runSeq,
     limits.maxAttempts,
     limits.maxInputChars,
     limits.maxOutputChars,
@@ -7971,7 +8037,8 @@ function startNewModelWorkRunForJob(db, input) {
   if (requestedWave && requestedWave === oldBudget?.parentWaveId) {
     throw new Error("new model work run requires a distinct parentWaveId");
   }
-  const parentWaveId = requestedWave || `${oldBudget?.parentWaveId ?? "job"}:run:${randomUUID3()}`;
+  const jobRoot = rootWaveIdOf(oldBudget?.parentWaveId ?? "job");
+  const parentWaveId = requestedWave || runWaveId(jobRoot, nextRunSeq(db, jobRoot));
   const next = startNewModelWorkRun(db, { parentWaveId, limits: input.limits });
   rebindMemoryJobToBudget(db, {
     jobId: input.jobId,
@@ -8003,8 +8070,9 @@ function startNewModelWorkRunForBudget(db, input) {
     throw new Error("new model work run requires a distinct parentWaveId");
   }
   const createBudget = input.automatic ? insertModelWorkBudget : startNewModelWorkRun;
+  const previousRoot = previousBudget.rootWaveId || rootWaveIdOf(previousBudget.parentWaveId);
   const budget = createBudget(db, {
-    parentWaveId: requestedWave || `${previousBudget.parentWaveId}:run:${randomUUID3()}`,
+    parentWaveId: requestedWave || runWaveId(previousRoot, nextRunSeq(db, previousRoot)),
     limits: input.limits,
     now: input.now
   });
@@ -8440,16 +8508,14 @@ function countPendingModelWork(db, budgetId) {
   }
   return counts;
 }
-function maintenanceWavePattern(parentWaveId) {
-  return `${parentWaveId.replace(/[\\%_]/g, "\\$&")}:run:%`;
-}
 function latestMaintenanceBudget(db, parentWaveId) {
+  const root = rootWaveIdOf(parentWaveId);
   const row = db.prepare(`
     SELECT * FROM model_work_budgets
-    WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    ORDER BY created_at DESC, budget_id DESC
+    WHERE root_wave_id = ?
+    ORDER BY run_seq DESC, created_at DESC, budget_id DESC
     LIMIT 1
-  `).get(parentWaveId, maintenanceWavePattern(parentWaveId));
+  `).get(root);
   return row ? budgetFromRow(row) : null;
 }
 function automaticMaintenanceWindow(db, now = /* @__PURE__ */ new Date()) {
@@ -8487,9 +8553,8 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
   const nowIso2 = now.toISOString();
   const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
   const maintain = db.transaction(() => {
-    db.prepare(`UPDATE model_work_budgets SET automatic = 1
-      WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
-    `).run(parentWaveId, maintenanceWavePattern(parentWaveId));
+    const rootWaveId = rootWaveIdOf(parentWaveId);
+    db.prepare("UPDATE model_work_budgets SET automatic = 1 WHERE root_wave_id = ?").run(rootWaveId);
     let latest = latestMaintenanceBudget(db, parentWaveId);
     const window = automaticMaintenanceWindow(db, now);
     const lastAttempt = latest ? db.prepare(`
@@ -8522,14 +8587,15 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       if (latest.state === "active") return latest;
       if (window.remaining === 0 || now.getTime() < retryAt) return latest;
     }
+    const nextWaveId = runWaveId(rootWaveId, nextRunSeq(db, rootWaveId));
     const next = latest?.state === "exhausted" ? startNewModelWorkRunForBudget(db, {
       budgetId: latest.budgetId,
-      parentWaveId: `${parentWaveId}:run:${randomUUID3()}`,
+      parentWaveId: nextWaveId,
       limits,
       now,
       automatic: true
     }).budget : insertModelWorkBudget(db, {
-      parentWaveId: latest ? `${parentWaveId}:run:${randomUUID3()}` : parentWaveId,
+      parentWaveId: latest ? nextWaveId : parentWaveId,
       limits,
       now
     });
@@ -8570,7 +8636,8 @@ function getOrCreateWaveModelBudget(db, input) {
     if (latest && (latest.state === "completed" || latest.state === "cancelled") && (input.reuseCompletedIfIdle ?? true) && allPending.unbound === 0) {
       return latest;
     }
-    const nextWave = latest ? `${parentWaveId}:run:${randomUUID3()}` : parentWaveId;
+    const root = rootWaveIdOf(parentWaveId);
+    const nextWave = latest ? runWaveId(root, nextRunSeq(db, root)) : parentWaveId;
     return insertModelWorkBudget(db, {
       parentWaveId: nextWave,
       limits: input.limits

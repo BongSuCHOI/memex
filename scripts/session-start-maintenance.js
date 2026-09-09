@@ -89,7 +89,13 @@ async function main() {
     });
     const childEnv = {
       ...process.env,
-      MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.parentWaveId,
+      // Issue #42: children receive the ROOT wave id, never the rolled-over
+      // one. Passing the expanded id made each detached worker append another
+      // `:run:<uuid>` to it AND narrowed its lineage lookup to that prefix,
+      // which silently detached the worker from the shared rolling attempt cap
+      // (the deepest row in the audited data root was created by exactly this
+      // path — it carried automatic = 0).
+      MEMEX_MAINTENANCE_WAVE_ID: maintenanceBudget.rootWaveId ?? maintenanceBudget.parentWaveId,
       MEMEX_MODEL_BUDGET_ID: maintenanceBudget.budgetId,
     };
 
