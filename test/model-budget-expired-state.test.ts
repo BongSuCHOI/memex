@@ -52,13 +52,18 @@ import type { ConversationExchange } from "../src/types.js";
 let root: string;
 let db: Database.Database;
 
-/** 14:04:18Z — the wake that minted the budget. */
-const CREATED = new Date("2026-09-09T14:04:18.000Z");
-/** 14:19:18Z — its 15-minute deadline. */
-const DEADLINE = new Date("2026-09-09T14:19:18.000Z");
-/** 15:11Z — the observation in the issue, 52 minutes past the deadline. */
-const T0 = new Date("2026-09-09T15:11:00.000Z");
+/**
+ * 🚨 벽시계 독립. 이슈의 관측 시각(14:04:18Z 생성 / 14:19:18Z deadline / 15:11Z
+ * 관측)은 **상대 간격**으로만 재현한다. `runFactExtraction` 은 `now` 를 받지 않고
+ * 내부에서 `new Date()` 를 읽으므로, 절대 시각을 박아두면 픽스처 시계와 코드
+ * 시계가 갈라진 채로만 통과하는 테스트가 된다(이슈 #11 픽스처가 그렇게 썩었다).
+ */
+const T0 = new Date();
 const at = (offsetMs: number) => new Date(T0.getTime() + offsetMs);
+/** The wake that minted the budget, 67 minutes before the observation. */
+const CREATED = at(-67 * 60_000);
+/** Its 15-minute deadline — 52 minutes in the past by the observation. */
+const DEADLINE = new Date(CREATED.getTime() + 15 * 60_000);
 const HOUR = AUTOMATIC_MAINTENANCE_COOLDOWN_MS;
 const DAY = AUTOMATIC_MAINTENANCE_WINDOW_MS;
 const SESSIONS = ["session-9588a335", "session-43ec49c8"] as const;
@@ -67,7 +72,7 @@ function exchange(sessionId: string, id: string, lineEnd: number): ConversationE
   return {
     id,
     project: "/project",
-    timestamp: `2026-09-09T13:00:${lineEnd.toString().padStart(2, "0")}Z`,
+    timestamp: new Date(CREATED.getTime() - HOUR + lineEnd * 1_000).toISOString(),
     userMessage: `we decided to use postgres for ${id}`,
     assistantMessage: `ack ${id}`,
     archivePath: "/archive/session.jsonl",

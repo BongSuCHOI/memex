@@ -41,7 +41,16 @@ import type { ConversationExchange } from "../src/types.js";
 let root: string;
 let db: Database.Database;
 
-const T0 = new Date("2026-09-09T14:03:52.000Z");
+/**
+ * 🚨 벽시계 독립. 이 픽스처의 핵심은 `available_at` 이 **미래**라는 것인데,
+ * 관측 시각(2026-09-09T14:03:52Z)을 그대로 박아두면 벽시계가 그 시각 +1h 를
+ * 지나는 순간 "미래 backoff" 가 과거가 되어 테스트가 스스로 무너진다 — 실제로
+ * 그렇게 무너졌다. `runFactExtraction` 과 `getPipelineStatus` 는 `now` 를 받지
+ * 않고 내부에서 `new Date()` 를 읽으므로, 결정성을 되찾는 방법은 픽스처를 실행
+ * 시각 기준으로 잡는 것뿐이다. 관측된 **상대 구조**(-63분 대화, +1h backoff,
+ * 30분 리스) 는 그대로 재현된다.
+ */
+const T0 = new Date();
 const at = (offsetMs: number) => new Date(T0.getTime() + offsetMs);
 const HOUR = 60 * 60_000;
 
@@ -49,7 +58,7 @@ function exchange(id: string, lineEnd: number): ConversationExchange {
   return {
     id,
     project: "/project",
-    timestamp: `2026-09-09T13:00:${lineEnd.toString().padStart(2, "0")}Z`,
+    timestamp: at(-HOUR + lineEnd * 1_000).toISOString(),
     userMessage: `we decided to use postgres for ${id}`,
     assistantMessage: `ack ${id}`,
     archivePath: "/archive/session.jsonl",

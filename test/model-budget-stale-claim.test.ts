@@ -45,7 +45,13 @@ import type { ConversationExchange } from "../src/types.js";
 let root: string;
 let db: Database.Database;
 
-const T0 = new Date("2026-09-09T14:03:52.000Z");
+/**
+ * 🚨 벽시계 독립. `runFactExtraction` 은 `now` 를 받지 않고 내부에서 `new Date()`
+ * 로 선점 시각을 잡는다. 관측 시각을 박아두면 픽스처 시계와 코드 시계가 갈라져
+ * "backoff 없음"(available_at <= T0) 같은 단언이 벽시계에 따라 흔들린다. 기준점만
+ * 실행 시각으로 옮기고 관측된 상대 구조(-8h 예산, +26s 새 예산)는 그대로 둔다.
+ */
+const T0 = new Date();
 const at = (offsetMs: number) => new Date(T0.getTime() + offsetMs);
 const HOUR = 60 * 60_000;
 
@@ -53,7 +59,7 @@ function exchange(id: string, lineEnd: number): ConversationExchange {
   return {
     id,
     project: "/project",
-    timestamp: `2026-09-09T13:00:${lineEnd.toString().padStart(2, "0")}Z`,
+    timestamp: at(-HOUR + lineEnd * 1_000).toISOString(),
     userMessage: `we decided to use postgres for ${id}`,
     assistantMessage: `ack ${id}`,
     archivePath: "/archive/session.jsonl",
