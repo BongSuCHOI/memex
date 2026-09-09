@@ -47,6 +47,12 @@ let n = 0;
 export async function runFactExtraction() { throw new Error('KIND:' + KINDS[n++ % KINDS.length]); }
 export function classifyExtractionFailure(err) { return String(err.message).replace('KIND:', ''); }
 export const FAILURE_REPORT = ${table};
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
   fs.writeFileSync(path.join(dist, 'db.js'), `
 export function initDatabase() {
@@ -138,6 +144,12 @@ export const FAILURE_REPORT = {
   provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
   internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
 };
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
     // 2번째 세션의 sessionProject 조회에서 SQLITE_BUSY 를 던지게 만든다.
     const dbStub = path.join(sandbox, 'dist', 'db.js');
@@ -204,6 +216,12 @@ export const FAILURE_REPORT = {
   provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
   internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
 };
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
     const { out, code } = runWorker();
     expect(code).toBe(0);
@@ -228,6 +246,12 @@ export const FAILURE_REPORT = {
   provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
   internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
 };
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
     const { out, code } = runWorker();
     expect(code).toBe(0);
@@ -249,12 +273,80 @@ export const FAILURE_REPORT = {
   provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
   internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
 };
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
     const { out, code } = runWorker();
     expect(code).toBe(0);
     // 구분하지 않으면 done++ 만 되고 요약에 아무 신호가 없다(detached 는 stdout 도 버린다).
     expect(out, 'claim 미획득이 요약에 보여야 한다').toMatch(/handoff 4/);
     expect(out, '세션별로도 남아야 한다').toMatch(/claim_not_acquired/);
+  });
+
+  it('이슈 #11: claim 미획득 3사유가 서로 다른 줄과 버킷으로 갈린다', () => {
+    writeStubs({ staleTable: false });
+    // 실제로 관측된 상태: lease_owner=NULL, 러너 없음, available_at 이 한 시간 뒤.
+    // 수정 전에는 아래 셋이 전부 'HANDOFF — 다른 러너가 처리 중' 한 줄이었다.
+    fs.writeFileSync(path.join(sandbox, 'dist', 'fact-extractor.js'), `
+const REASONS = [
+  { claimReason: 'lease_held' },
+  { claimReason: 'backoff', availableAt: '2026-09-09T15:03:52.000Z' },
+  { claimReason: 'backoff', availableAt: '2026-09-09T15:33:52.000Z' },
+  { claimReason: 'attempts_exhausted' },
+];
+let n = 0;
+export async function runFactExtraction() {
+  return { extracted: 0, saved: 0, skipped: 'claim_not_acquired', ...REASONS[n++ % REASONS.length] };
+}
+export function classifyExtractionFailure() { return 'internal'; }
+export const FAILURE_REPORT = {
+  handoff: { label: 'HANDOFF', note: 'h', bucket: 'handoff', consumesBudget: false, escalate: false },
+  provider_transient: { label: 'ERROR', note: 't', bucket: 'transient', consumesBudget: false, escalate: false },
+  provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
+  internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
+};
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
+`);
+    const { out, code } = runWorker();
+    expect(code).toBe(0);
+    expect(out, '진짜 handoff').toMatch(/HANDOFF \(lease held by another runner\)/);
+    expect(out, 'backoff 는 언제 풀리는지까지 말해야 한다')
+      .toMatch(/DEFERRED \(retry backoff until 2026-09-09T15:03:52\.000Z\)/);
+    expect(out, '시도 상한').toMatch(/SKIPPED \(attempt cap reached\)/);
+    // 요약도 셋을 합치면 안 된다 — 조치가 다르다.
+    expect(out, 'handoff 만 handoff 로').toMatch(/handoff 1 —/);
+    expect(out, 'backoff 는 별도 집계 + 최이른 재시도')
+      .toMatch(/backoff-deferred 2 — 재시도 대기, 최이른 재시도 2026-09-09T15:03:52\.000Z/);
+    expect(out, '상한 도달은 점검 대상').toMatch(/attempt-cap 1 —/);
+    expect(out, '상한 도달은 운영 경보다').toMatch(/INTERNAL failures 1/);
+  });
+
+  it('이슈 #11: claimReason 이 없는 구버전 dist 는 종전 HANDOFF 로 수렴한다', () => {
+    writeStubs({ staleTable: false });
+    fs.writeFileSync(path.join(sandbox, 'dist', 'fact-extractor.js'), `
+export async function runFactExtraction() { return { extracted: 0, saved: 0, skipped: 'claim_not_acquired' }; }
+export function classifyExtractionFailure() { return 'internal'; }
+export const FAILURE_REPORT = {};
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
+`);
+    const { out, code } = runWorker();
+    expect(code).toBe(0);
+    expect(out, '사유 미상은 종전 동작(handoff)으로').toMatch(/handoff 4 —/);
+    expect(out, '사유 미상을 backoff 로 세면 안 된다').not.toMatch(/backoff-deferred/);
   });
 
   it('R17: 격리된 예외가 요약에서 사라지지 않는다 (과소계상 방지)', () => {
@@ -265,6 +357,12 @@ export const FAILURE_REPORT = {
 export async function runFactExtraction() { throw new Error('boom'); }
 export function classifyExtractionFailure() { throw new Error('classifier exploded'); }
 export const FAILURE_REPORT = {};
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
+};
 `);
     const { out, code } = runWorker();
     expect(code, '격리 경로에서도 정상 종료').toBe(0);
@@ -290,6 +388,12 @@ export const FAILURE_REPORT = {
   provider_transient: { label: 'ERROR', note: 't', bucket: 'transient', consumesBudget: false, escalate: false },
   provider_deterministic: { label: 'ERROR', note: 'd', bucket: 'budget', consumesBudget: true, escalate: false },
   internal: { label: 'ERROR', note: 'i', bucket: 'budget', consumesBudget: true, escalate: true },
+};
+export const CLAIM_REJECTION_REPORT = {
+  lease_held: { label: 'HANDOFF', reason: 'lease held by another runner', note: '다른 러너가 처리 중', bucket: 'handoff', escalate: false },
+  backoff: { label: 'DEFERRED', reason: 'retry backoff', note: '재시도 backoff', bucket: 'backoff', escalate: false },
+  attempts_exhausted: { label: 'SKIPPED', reason: 'attempt cap reached', note: '시도 상한 도달', bucket: 'attempt_cap', escalate: true },
+  cas: { label: 'HANDOFF', reason: 'claim lost to a concurrent writer', note: '선점 CAS 패배', bucket: 'handoff', escalate: false },
 };
 `);
     const { code } = runWorker();

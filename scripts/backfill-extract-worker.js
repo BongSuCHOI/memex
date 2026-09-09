@@ -22,6 +22,7 @@ import {
 import {
   runFactExtraction,
   classifyExtractionFailure,
+  CLAIM_REJECTION_REPORT,
   FAILURE_REPORT,
 } from "../dist/fact-extractor.js";
 import { getIndexDir } from "../dist/paths.js";
@@ -189,7 +190,20 @@ async function main() {
     let done = 0,
       totalSaved = 0,
       escalateFailures = 0;
-    const buckets = { handoff: 0, transient: 0, budget: 0, budget_exhausted: 0, dead: 0 };
+    // 🚨 이슈 #11: claim 미획득은 한 버킷이 아니다. handoff(다른 러너)·backoff(재시도
+    // 대기)·attempt_cap(시도 상한)은 운영자가 취할 행동이 서로 다르므로 따로 센다.
+    const buckets = {
+      handoff: 0,
+      backoff: 0,
+      attempt_cap: 0,
+      transient: 0,
+      budget: 0,
+      budget_exhausted: 0,
+      dead: 0,
+    };
+    // backoff 로 막힌 작업 중 **가장 이른** 재시도 시각 — 요약줄이 "언제 다시 되는지"를
+    // 말하지 못하면 운영자는 결국 한 시간을 그냥 기다린다(이슈 #11 의 실제 피해).
+    let earliestBackoffAt = null;
     const { isolated } = await runPool(sessions, CONCURRENCY, async (next) => {
       // 🚨 sessionProject 도 try 안에서 부른다. 밖에 두면 SQLITE_BUSY 같은 **세션 단위**
       // DB 오류가 콜백을 reject 시켜 배치 전체가 중단되고, 요약줄·INTERNAL 경보까지
@@ -266,9 +280,37 @@ async function main() {
               `session ${next.sid}: skip (excluded_project) — 자기참조 repo, 정상 제외`,
             );
           } else if (result.skipped === "claim_not_acquired") {
-            buckets.handoff += 1;
+            // 🚨 표에서 라벨·버킷·경보를 그대로 읽는다. 워커가 자체 분기를 들면
+            // "라벨은 HANDOFF 인데 회계는 backoff" 같은 모순을 문자열 테스트가 못 잡는다.
+            // 필드 단위 폴백은 FAILURE_REPORT 와 같은 이유다(dist↔scripts 스큐 방어):
+            // 구버전 dist 는 claimReason 자체를 안 돌려주므로 종전 동작(HANDOFF)으로 수렴한다.
+            const rawClaim = CLAIM_REJECTION_REPORT?.[result.claimReason ?? "lease_held"];
+            const claimBucket =
+              rawClaim?.bucket === "backoff" || rawClaim?.bucket === "attempt_cap"
+                ? rawClaim.bucket
+                : "handoff";
+            const claimRep = {
+              label: rawClaim?.label ?? "HANDOFF",
+              reason: rawClaim?.reason ?? "lease held by another runner",
+              note: rawClaim?.note ?? "다른 러너가 처리 중",
+              bucket: claimBucket,
+              escalate:
+                typeof rawClaim?.escalate === "boolean" ? rawClaim.escalate : false,
+            };
+            buckets[claimRep.bucket] += 1;
+            if (claimRep.escalate) escalateFailures += 1;
+            if (claimRep.bucket === "backoff" && result.availableAt) {
+              if (!earliestBackoffAt || result.availableAt < earliestBackoffAt) {
+                earliestBackoffAt = result.availableAt;
+              }
+            }
+            const until =
+              claimRep.bucket === "backoff" && result.availableAt
+                ? ` until ${result.availableAt}`
+                : "";
             log(
-              `session ${next.sid}: HANDOFF (claim_not_acquired) — 다른 러너가 처리 중`,
+              `session ${next.sid}: ${claimRep.label} (${claimRep.reason}${until})` +
+                ` — claim_not_acquired · ${claimRep.note}`,
             );
           } else if (result.skipped === "budget_exhausted") {
             buckets.budget_exhausted += 1;
@@ -357,6 +399,15 @@ async function main() {
           : "") +
         (buckets.handoff > 0
           ? `, handoff ${buckets.handoff} — 다른 러너가 처리 중`
+          : "") +
+        // 🚨 backoff 와 attempt_cap 을 handoff 에 합치면 "다른 러너가 처리 중"이라는
+        // 거짓 보고가 된다(이슈 #11). 둘 다 러너가 없는 상태이고, 조치도 다르다.
+        (buckets.backoff > 0
+          ? `, backoff-deferred ${buckets.backoff} — 재시도 대기` +
+            (earliestBackoffAt ? `, 최이른 재시도 ${earliestBackoffAt}` : "")
+          : "") +
+        (buckets.attempt_cap > 0
+          ? `, attempt-cap ${buckets.attempt_cap} — 시도 상한 도달, exact range 점검 필요`
           : "") +
         (buckets.budget > 0
           ? `, budget-burned ${buckets.budget} — 재시도 예산 소모(반복 시 영구 제외)`

@@ -1353,14 +1353,63 @@ export interface ClaimedMemoryJob {
   attempts: number;
 }
 
+/**
+ * Why a claim was refused. `claimMemoryJobById` returns null for four
+ * structurally different situations, and consumers used to report every one of
+ * them as "another runner is processing" (issue #11). The distinction is
+ * observable at the call site only if the claim reports it, so the reason is
+ * derived from the *same* row read the claim predicate already performs — no
+ * extra query, no extra write, and no change to what is or is not claimable.
+ *
+ *  - `lease_held`         another job in this partition owns the lane (a live
+ *                         lease, or an earlier queue item that must drain
+ *                         first) — a true handoff, not a failure.
+ *  - `backoff`            the job is claimable, but not yet: `available_at`
+ *                         is in the future. `availableAt` carries that instant.
+ *  - `attempts_exhausted` `attempts >= max_attempts` — the queue gave up; the
+ *                         claim path already recorded the terminal state.
+ *  - `cas`                the row vanished/settled, or a concurrent writer won
+ *                         the compare-and-swap.
+ */
+export type MemoryJobClaimReason =
+  | "lease_held"
+  | "backoff"
+  | "attempts_exhausted"
+  | "cas";
+
+export interface MemoryJobClaimRejection {
+  reason: MemoryJobClaimReason;
+  /** Only for `backoff`: when the job becomes claimable again (ISO-8601). */
+  availableAt?: string;
+}
+
+export interface MemoryJobClaimOutcome {
+  job: ClaimedMemoryJob | null;
+  rejection: MemoryJobClaimRejection | null;
+}
+
 export function claimMemoryJobById(
   db: Database.Database,
   input: { jobId: string; owner: string; now?: Date; leaseMs?: number },
 ): ClaimedMemoryJob | null {
+  return claimMemoryJobByIdWithReason(db, input).job;
+}
+
+export function claimMemoryJobByIdWithReason(
+  db: Database.Database,
+  input: { jobId: string; owner: string; now?: Date; leaseMs?: number },
+): MemoryJobClaimOutcome {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const leaseUntil = new Date(now.getTime() + (input.leaseMs ?? 30 * 60_000)).toISOString();
-  const tx = db.transaction(() => {
+  const refuse = (
+    reason: MemoryJobClaimReason,
+    availableAt?: string,
+  ): MemoryJobClaimOutcome => ({
+    job: null,
+    rejection: availableAt ? { reason, availableAt } : { reason },
+  });
+  const tx = db.transaction((): MemoryJobClaimOutcome => {
     const row = db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?").get(input.jobId) as
       | (ClaimedMemoryJob & { state: MemoryJobState; available_at: string; max_attempts: number })
       | undefined;
@@ -1369,7 +1418,7 @@ export function claimMemoryJobById(
       row.state === "completed" ||
       row.state === "superseded" ||
       row.state === "dead"
-    ) return null;
+    ) return refuse("cas");
 
     const expiredRunning =
       row.state === "running" && (!row.lease_until || row.lease_until <= nowIso);
@@ -1442,7 +1491,7 @@ export function claimMemoryJobById(
             last_error = ?, updated_at = ?
         WHERE job_id = ?
       `).run(error, nowIso, row.job_id);
-      return null;
+      return refuse("attempts_exhausted");
     }
 
     // A partition is drained by priority lane first (P0 capture > P1 Capsule >
@@ -1459,18 +1508,29 @@ export function claimMemoryJobById(
                j.created_at, j.job_id
       LIMIT 1
     `).get(row.partition_key) as { job_id: string } | undefined;
-    if (firstOutstanding?.job_id !== row.job_id) return null;
+    if (firstOutstanding?.job_id !== row.job_id) return refuse("lease_held");
     const partitionBusy = db.prepare(`
       SELECT 1 FROM memory_jobs
       WHERE partition_key = ? AND job_id <> ? AND state = 'running'
         AND lease_until > ? LIMIT 1
     `).get(row.partition_key, row.job_id, nowIso);
-    if (partitionBusy) return null;
+    if (partitionBusy) return refuse("lease_held");
+    const backoff =
+      (row.state === "pending" || row.state === "retry") &&
+      row.available_at > nowIso;
     const reclaimable =
       (row.state === "pending" || row.state === "retry") &&
         row.available_at <= nowIso ||
       (row.state === "running" && (!row.lease_until || row.lease_until <= nowIso));
-    if (!reclaimable || row.attempts >= row.max_attempts) return null;
+    if (!reclaimable || row.attempts >= row.max_attempts) {
+      // Order matters for the report, not for the predicate: a job that is
+      // both capped and in backoff is terminal, so the cap is the honest
+      // reason. Everything else that is not reclaimable is a live lease.
+      if (row.attempts >= row.max_attempts) return refuse("attempts_exhausted");
+      return backoff
+        ? refuse("backoff", row.available_at)
+        : refuse("lease_held");
+    }
     const generation = row.lease_generation + 1;
     const changed = db.prepare(`
       UPDATE memory_jobs
@@ -1486,8 +1546,12 @@ export function claimMemoryJobById(
       row.lease_generation,
       row.state,
     ).changes;
-    if (changed !== 1) return null;
-    return db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?").get(row.job_id) as ClaimedMemoryJob;
+    if (changed !== 1) return refuse("cas");
+    return {
+      job: db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?")
+        .get(row.job_id) as ClaimedMemoryJob,
+      rejection: null,
+    };
   });
   return tx.immediate();
 }
@@ -2258,15 +2322,40 @@ export function commitExtractionPage(
   }
 }
 
+export interface ExtractionTargetClaim {
+  target: ExtractionTarget;
+  owner: string;
+  leaseGeneration: number;
+}
+
+export interface ExtractionTargetClaimOutcome {
+  claim: ExtractionTargetClaim | null;
+  rejection: MemoryJobClaimRejection | null;
+}
+
 export function claimExtractionTarget(
   db: Database.Database,
   target: ExtractionTarget,
   owner = randomUUID(),
   now = new Date(),
-): { target: ExtractionTarget; owner: string; leaseGeneration: number } | null {
-  const claim = db.transaction(() => {
-    const job = claimMemoryJobById(db, { jobId: target.jobId, owner, now });
-    if (!job) return null;
+): ExtractionTargetClaim | null {
+  return claimExtractionTargetWithReason(db, target, owner, now).claim;
+}
+
+/**
+ * Same claim, with the refusal reason the caller needs in order to report
+ * handoff, retry backoff, and attempt-cap distinctly (issue #11).
+ */
+export function claimExtractionTargetWithReason(
+  db: Database.Database,
+  target: ExtractionTarget,
+  owner = randomUUID(),
+  now = new Date(),
+): ExtractionTargetClaimOutcome {
+  const claim = db.transaction((): ExtractionTargetClaimOutcome => {
+    const outcome = claimMemoryJobByIdWithReason(db, { jobId: target.jobId, owner, now });
+    const job = outcome.job;
+    if (!job) return { claim: null, rejection: outcome.rejection ?? { reason: "cas" } };
     const changed = db.prepare(`
       UPDATE extraction_targets
       SET state = 'running', lease_owner = ?, lease_until = ?,
@@ -2292,12 +2381,17 @@ export function claimExtractionTarget(
       SELECT t.*, j.job_id FROM extraction_targets t
       JOIN memory_jobs j ON j.target_id = t.target_id WHERE t.target_id = ?
     `).get(target.targetId) as Record<string, unknown>;
-    return { target: targetFromRow(row), owner, leaseGeneration: job.lease_generation };
+    return {
+      claim: { target: targetFromRow(row), owner, leaseGeneration: job.lease_generation },
+      rejection: null,
+    };
   });
   try {
     return claim.immediate();
   } catch (error) {
-    if (error instanceof ContinuityCasRejected) return null;
+    if (error instanceof ContinuityCasRejected) {
+      return { claim: null, rejection: { reason: "cas" } };
+    }
     throw error;
   }
 }

@@ -132,6 +132,43 @@ describe("memex backfill CLI 계약", () => {
     }
   });
 
+  it("retry backoff still exits 2 and is reported as deferred, not as a handoff", async () => {
+    // 이슈 #11 + #12 의 관측 상태를 그대로 재현한다: lease_owner 는 NULL 이고
+    // 러너도 없는데 available_at 이 미래라 선점이 거절된다. exit 2 계약("완료했지만
+    // 이연된 작업이 남음")은 그대로여야 하고, 문구는 "다른 러너가 처리 중"이면 안 된다.
+    await seedPendingExtraction();
+    const dbPath = path.join(tmpRoot, "home", "conversation-index", "db.sqlite");
+    const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
+    const { ensureExtractionTarget } = await import(
+      path.join(ROOT, "dist", "continuity-store.js")
+    );
+    const db = initDatabase({ dbPath });
+    const due = new Date(Date.now() + 3_600_000).toISOString();
+    for (const sessionId of ["pending-a", "pending-b"]) {
+      const target = ensureExtractionTarget(db, {
+        sessionId,
+        project: "/tmp/project",
+      });
+      assert.ok(target, `expected an extraction target for ${sessionId}`);
+      db.prepare(
+        "UPDATE memory_jobs SET state = 'retry', attempts = 1, available_at = ? WHERE job_id = ?",
+      ).run(due, target.jobId);
+    }
+    db.close();
+
+    try {
+      runMemex(["backfill", "extract"]);
+      assert.fail("expected deferred-work exit code");
+    } catch (err) {
+      assert.equal(err.status, 2);
+      assert.match(err.stdout, /DEFERRED \(retry backoff until /);
+      assert.match(err.stdout, /backoff-deferred 2 — 재시도 대기, 최이른 재시도 /);
+      assert.doesNotMatch(err.stdout, /HANDOFF/);
+      assert.doesNotMatch(err.stdout, /다른 러너가 처리 중/);
+      assert.match(err.stdout, /Backfill completed with deferred work/);
+    }
+  });
+
   it("returns failure when a worker reports a fatal error", () => {
     try {
       runMemex(["backfill", "ontology"], {
