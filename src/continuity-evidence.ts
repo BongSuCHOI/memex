@@ -6,7 +6,14 @@ import type Database from "better-sqlite3";
 // Even JSON's six-character escape expansion stays below one page.
 const TEXT_PART_CHARS = 3_000;
 export const CAPSULE_PAGE_CHARS = 24_000;
-const CAPSULE_PAGE_ITEMS = 8;
+export const CAPSULE_PAGE_ITEMS = 8;
+/**
+ * Smallest page a shrinking retry may reach (issue #33). One evidence fragment
+ * is the indivisible unit: below this the only remaining move is to record the
+ * failure and step over that fragment.
+ */
+export const CAPSULE_MIN_PAGE_ITEMS = 1;
+const CAPSULE_MIN_PAGE_CHARS = TEXT_PART_CHARS;
 export const CAPSULE_POLICY_VERSION = "continuity-capsule-v2";
 
 export interface CapsulePage {
@@ -91,14 +98,24 @@ export function appendSessionEvidence(db: Database.Database, sessionId: string):
 export function readCapsulePage(db: Database.Database, checkpointId: string): CapsulePage {
   if (!db.inTransaction) throw new Error("Capsule page requires a transaction");
   const state = db.prepare(`
-    SELECT s.workstream_id, s.target_seq, s.target_revision, f.through_seq, f.revision
+    SELECT s.workstream_id, s.target_seq, s.target_revision,
+           s.page_items_hint, s.page_chars_hint, f.through_seq, f.revision
     FROM capsule_checkpoint_state s JOIN capsule_frontiers f USING(workstream_id)
     WHERE s.checkpoint_id = ?
   `).get(checkpointId) as {
     workstream_id: string; target_seq: number | null; target_revision: number | null;
+    page_items_hint: number | null; page_chars_hint: number | null;
     through_seq: number; revision: number;
   } | undefined;
   if (!state) throw new Error("Capsule frontier is missing");
+  // Issue #33: a previous failed attempt narrows this page so the retry is not
+  // byte-for-byte identical to the attempt that already failed.
+  const pageItems = state.page_items_hint === null
+    ? CAPSULE_PAGE_ITEMS
+    : Math.max(CAPSULE_MIN_PAGE_ITEMS, Math.min(CAPSULE_PAGE_ITEMS, state.page_items_hint));
+  const pageChars = state.page_chars_hint === null
+    ? CAPSULE_PAGE_CHARS
+    : Math.max(CAPSULE_MIN_PAGE_CHARS, Math.min(CAPSULE_PAGE_CHARS, state.page_chars_hint));
   let targetSeq = state.target_seq;
   if (targetSeq === null || state.target_revision !== state.revision) {
     targetSeq = Math.max(state.through_seq, (db.prepare(`
@@ -110,13 +127,15 @@ export function readCapsulePage(db: Database.Database, checkpointId: string): Ca
   const rows = db.prepare(`
     SELECT seq, payload_json FROM workstream_evidence
     WHERE workstream_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?
-  `).all(state.workstream_id, state.through_seq, targetSeq, CAPSULE_PAGE_ITEMS) as Array<{ seq: number; payload_json: string }>;
+  `).all(state.workstream_id, state.through_seq, targetSeq, pageItems) as Array<{ seq: number; payload_json: string }>;
   const evidence: Array<Record<string, unknown>> = [];
   let chars = 0;
   let throughSeq = state.through_seq;
   for (const row of rows) {
     if (row.payload_json.length > CAPSULE_PAGE_CHARS) throw new Error("Capsule evidence fragment exceeds page budget");
-    if (chars + row.payload_json.length > CAPSULE_PAGE_CHARS) break;
+    // A shrunken budget must never produce an empty page: the first fragment
+    // always fits, and the char cap only limits how many follow it.
+    if (evidence.length > 0 && chars + row.payload_json.length > pageChars) break;
     evidence.push({ ...JSON.parse(row.payload_json), evidenceSeq: row.seq });
     chars += row.payload_json.length;
     throughSeq = row.seq;
@@ -131,6 +150,71 @@ export function commitCapsulePage(db: Database.Database, workstreamId: string, p
   return db.prepare(`UPDATE capsule_frontiers SET through_seq = ?
     WHERE workstream_id = ? AND through_seq = ? AND revision = ?`)
     .run(page.throughSeq, workstreamId, page.fromSeq, page.revision).changes === 1;
+}
+
+/**
+ * Halve the next page for this checkpoint (issue #33).
+ *
+ * `commitCapsulePage` is the only writer of `through_seq`, and it runs inside
+ * the successful patch application. A failed attempt therefore left the
+ * frontier exactly where it was, and the next `readCapsulePage` re-read the
+ * identical rows: `max_attempts` retries of a deterministic failure. Feeding
+ * the failure back as a smaller page makes the retry meaningfully different.
+ *
+ * Returns the page budget the next attempt will use, and whether that budget
+ * is already at the floor (nothing left to shrink).
+ */
+export function shrinkCapsulePageHint(
+  db: Database.Database,
+  checkpointId: string,
+): { items: number; chars: number; atFloor: boolean } | null {
+  const row = db.prepare(
+    "SELECT page_items_hint, page_chars_hint FROM capsule_checkpoint_state WHERE checkpoint_id = ?",
+  ).get(checkpointId) as { page_items_hint: number | null; page_chars_hint: number | null } | undefined;
+  if (!row) return null;
+  const currentItems = row.page_items_hint ?? CAPSULE_PAGE_ITEMS;
+  const currentChars = row.page_chars_hint ?? CAPSULE_PAGE_CHARS;
+  const items = Math.max(CAPSULE_MIN_PAGE_ITEMS, Math.floor(currentItems / 2));
+  const chars = Math.max(CAPSULE_MIN_PAGE_CHARS, Math.floor(currentChars / 2));
+  db.prepare(
+    "UPDATE capsule_checkpoint_state SET page_items_hint = ?, page_chars_hint = ? WHERE checkpoint_id = ?",
+  ).run(items, chars, checkpointId);
+  return {
+    items,
+    chars,
+    atFloor: items === CAPSULE_MIN_PAGE_ITEMS && chars === CAPSULE_MIN_PAGE_CHARS,
+  };
+}
+
+/** A drained or successfully committed page restores the full page budget. */
+export function clearCapsulePageHint(db: Database.Database, checkpointId: string): void {
+  db.prepare(
+    "UPDATE capsule_checkpoint_state SET page_items_hint = NULL, page_chars_hint = NULL WHERE checkpoint_id = ?",
+  ).run(checkpointId);
+}
+
+/**
+ * Record partial progress past a fragment that cannot be distilled (issue #33).
+ *
+ * When shrinking has reached one fragment and that fragment still fails
+ * terminally, leaving the frontier at `fromSeq` freezes the whole workstream:
+ * every later Capsule read starts on the same unusable row and every capsule
+ * is reported permanently stale. Stepping the frontier over exactly that one
+ * fragment keeps the stream moving. The skipped `seq` is returned so the caller
+ * records what was not distilled — it is never silently dropped.
+ */
+export function skipCapsuleEvidenceHead(
+  db: Database.Database,
+  workstreamId: string,
+  page: CapsulePage,
+): number | null {
+  const head = page.evidence[0] as { evidenceSeq?: unknown } | undefined;
+  const seq = typeof head?.evidenceSeq === "number" ? head.evidenceSeq : null;
+  if (seq === null || seq <= page.fromSeq) return null;
+  const changed = db.prepare(`UPDATE capsule_frontiers SET through_seq = ?
+    WHERE workstream_id = ? AND through_seq = ? AND revision = ?`)
+    .run(seq, workstreamId, page.fromSeq, page.revision).changes;
+  return changed === 1 ? seq : null;
 }
 
 export function capsulePageIsCurrent(db: Database.Database, workstreamId: string, page: CapsulePage): boolean {

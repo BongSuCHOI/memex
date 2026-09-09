@@ -21094,7 +21094,11 @@ function ensureContinuitySchema(db, options = {}) {
           CHECK(state IN ('pending','processing','processed','retry','failed-visible')),
         expected_generation INTEGER NOT NULL,
         last_error TEXT,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #33: retry feedback. A failed attempt halves the next page so
+        -- the retry reads strictly less than the attempt that failed.
+        page_items_hint INTEGER,
+        page_chars_hint INTEGER
       );
 
     `);
@@ -21506,7 +21510,7 @@ function ensureContinuitySchema(db, options = {}) {
       INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
     `);
     const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
-    for (const name of ["target_seq", "target_revision"]) {
+    for (const name of ["target_seq", "target_revision", "page_items_hint", "page_chars_hint"]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
     }
     const capsuleColumns = columnNames(db, "work_capsules");

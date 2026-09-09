@@ -6,7 +6,7 @@ import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
 import { callMemoryModel } from "./llm.js";
 import { isUserExcludedConversation, isConversationExcludedSession, purgeConversationFromIndex, } from "./conversation-policy.js";
-import { appendSessionEvidence, readCapsulePage } from "./continuity-evidence.js";
+import { appendSessionEvidence, readCapsulePage, shrinkCapsulePageHint, skipCapsuleEvidenceHead, } from "./continuity-evidence.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import { deferMemoryJobForModelBudget, ensureModelBudgetSchema, findExhaustedModelBudgetForClaim, isModelBudgetExhausted, withResolvedModelWorkContext, } from "./model-budget.js";
 const CAPSULE_SYSTEM_PROMPT = `You update a bounded Work Capsule from one ordered workstream evidence page.
@@ -293,8 +293,13 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
     if (!claim || !claim.checkpoint_id) {
         return { jobId, kind: "capsule_update", state: "deferred", detail: "claim unavailable" };
     }
+    // Issue #33: the failure path needs the exact page this attempt read, so the
+    // frontier can record partial progress instead of freezing the workstream.
+    let attemptPage = null;
+    let attemptWorkstreamId = null;
     try {
         const checkpoint = checkpointRow(db, claim.checkpoint_id);
+        attemptWorkstreamId = checkpoint.workstream_id;
         const state = db.prepare(`
       SELECT expected_generation FROM capsule_checkpoint_state WHERE checkpoint_id = ?
     `).get(checkpoint.checkpoint_id);
@@ -311,6 +316,7 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
         // session's missing immutable generations before freezing this job target.
         appendSessionEvidence(db, checkpoint.session_id);
         const page = db.transaction(() => readCapsulePage(db, checkpoint.checkpoint_id)).immediate();
+        attemptPage = page;
         const evidence = page.evidence;
         if (evidence.length === 0) {
             if (!completeEmptyCapsuleCheckpoint(db, {
@@ -419,19 +425,38 @@ async function processCapsule(db, jobId, owner, now, model, budgeted) {
             retry: true,
             now: new Date(),
         });
-        if (deferred) {
+        const state = db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
+            .get(jobId)?.state;
+        let detail = message;
+        if (deferred && state !== "dead") {
+            // Issue #33: make the retry different from the attempt that just failed.
+            // Halving the page is the only lever the worker holds over its own input.
+            const shrunk = shrinkCapsulePageHint(db, claim.checkpoint_id);
+            if (shrunk)
+                detail = `${message} (next page items=${shrunk.items} chars=${shrunk.chars})`;
             db.prepare(`
         UPDATE capsule_checkpoint_state SET state = 'retry', last_error = ?, updated_at = ?
         WHERE checkpoint_id = ?
-      `).run(message.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
+      `).run(detail.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
         }
-        const state = db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
-            .get(jobId)?.state;
+        else if (deferred && state === "dead" && attemptPage && attemptWorkstreamId) {
+            // Terminal after shrinking: step the frontier over exactly the fragment
+            // that could not be distilled so the workstream is not frozen at seq 0
+            // forever (and its Capsule is not reported permanently stale).
+            const skipped = skipCapsuleEvidenceHead(db, attemptWorkstreamId, attemptPage);
+            if (skipped !== null) {
+                detail = `${message} (skipped evidence seq ${skipped}; frontier advanced)`;
+                db.prepare(`
+          UPDATE capsule_checkpoint_state SET last_error = ?, updated_at = ?
+          WHERE checkpoint_id = ?
+        `).run(detail.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
+            }
+        }
         return {
             jobId,
             kind: "capsule_update",
             state: state === "dead" ? "dead" : "retry",
-            detail: message,
+            detail,
         };
     }
 }

@@ -345,10 +345,16 @@ export function scheduleCapsuleForCheckpoint(db, checkpointId, now = new Date().
       WHERE s.workstream_id = ?
       ORDER BY c.rowid DESC LIMIT 1
     `).get(checkpoint.workstream_id);
+        // Issue #33: `dead` belongs in this check. Without it every new checkpoint
+        // created another job for a partition whose cause was unresolved, and the
+        // same deterministic failure was replayed `max_attempts` times per session
+        // (three workstreams on the real data root held two dead jobs each).
+        // Recovery from `dead` is the explicit `memex recover` path, not a silent
+        // re-create.
         const pendingCapsule = db.prepare(`
       SELECT 1 FROM memory_jobs
       WHERE kind = 'capsule_update' AND partition_key = ?
-        AND state IN ('pending','running','retry')
+        AND state IN ('pending','running','retry','dead')
       LIMIT 1
     `).get(`workstream:${checkpoint.workstream_id}`);
         const accumulated = db.prepare(`
@@ -409,7 +415,7 @@ export function scheduleCapsuleBacklog(db) {
     WHERE EXISTS (SELECT 1 FROM workstream_evidence e
       WHERE e.workstream_id = f.workstream_id AND e.seq > f.through_seq)
       AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.partition_key = 'workstream:' || f.workstream_id
-        AND j.kind = 'capsule_update' AND j.state IN ('pending','running','retry'))
+        AND j.kind = 'capsule_update' AND j.state IN ('pending','running','retry','dead'))
     ORDER BY f.workstream_id LIMIT 32
   `).all();
     for (const stream of streams) {
@@ -1156,9 +1162,12 @@ export function applyWorkCapsulePatch(db, input) {
             throw new Error("Capsule frontier changed during atomic completion");
         }
         const drained = !input.evidencePage || input.evidencePage.throughSeq >= input.evidencePage.targetSeq;
+        // Issue #33: a committed page restores the full page budget — the shrink
+        // hint exists only to make a failing retry different, not to stay forever.
         db.prepare(`
       UPDATE capsule_checkpoint_state
-      SET state = ?, updated_at = ? WHERE checkpoint_id = ?
+      SET state = ?, updated_at = ?, page_items_hint = NULL, page_chars_hint = NULL
+      WHERE checkpoint_id = ?
     `).run(drained ? "processed" : "pending", now, input.throughCheckpointId);
         if (input.jobLease) {
             const completed = db.prepare(`
@@ -1199,7 +1208,8 @@ export function completeEmptyCapsuleCheckpoint(db, input) {
             throw new Error("empty Capsule frontier changed during atomic completion");
         }
         db.prepare(`
-      UPDATE capsule_checkpoint_state SET state = 'processed', updated_at = ?
+      UPDATE capsule_checkpoint_state
+      SET state = 'processed', updated_at = ?, page_items_hint = NULL, page_chars_hint = NULL
       WHERE checkpoint_id = ?
     `).run(now, input.checkpointId);
         db.prepare("UPDATE checkpoints SET state = 'processed' WHERE checkpoint_id = ?")
