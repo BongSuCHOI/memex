@@ -10,6 +10,14 @@ This file records as-built choices and runtime compatibility differences. It doe
 - Alternatives considered: lock only the supplied path; move the supplied file.
 - Invariant evidence: both files hashed to `146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a` and `cmp` returned success on 2026-09-03.
 - Reversal condition/trade-off: consolidate paths only through an explicit RFC amendment; duplication requires hash checking at every phase.
+- **Amendment (0.6.0, user-approved):** the duplicate at `docs/Memex Continuity Architecture v1 - FINAL RFC.md`
+  was removed together with the superseded `docs/memex_continuity_worker_prompt_pack_FINAL_ko.md`. The RFC
+  itself was **not** edited: the retained locked copy at `docs/architecture/memex-continuity-v1.md` still
+  hashes to `146d9a587604590ae261fa0477def934921c8dbf30b82aac1eea798cfc61163a`, which is the `sha256`
+  recorded in `rfc-lock.json`, so every phase's re-hash check is satisfied against
+  `rfc_lock.repository_copy_path`. `rfc_lock.source_filename` is preserved as the historical receipt of
+  where the source arrived and is no longer a path that must exist. The duplication trade-off recorded
+  above is therefore resolved: there is exactly one RFC artifact to hash.
 
 ## D-001 — Installed hook contract is newer than repository comments
 
