@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { canonicalizeProjectPath } from "./project-identity.js";
+import { canonicalizeProjectPath, isUntrustedProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
 import { CAPSULE_POLICY_VERSION, appendExchangeEvidence } from "./continuity-evidence.js";
 
@@ -29,6 +29,7 @@ export type ContinuityMigrationStage =
   | "journal-source-guard-columns"
   | "identity-tables"
   | "identity-columns"
+  | "quarantine-untrusted-projects"
   | "identity-backfill"
   | "identity-triggers"
   | "continuity-indexes"
@@ -437,6 +438,7 @@ export function ensureContinuitySchema(
         portable_project_key TEXT UNIQUE,
         display_name TEXT NOT NULL,
         memory_revision INTEGER NOT NULL DEFAULT 0,
+        quarantined INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -557,6 +559,9 @@ export function ensureContinuitySchema(
       // 0.6.0 scope model (#16/#18): the repository default branch decides
       // whether a session carries a branch signal at all.
       ["workspaces", "default_branch", "TEXT"],
+      // 0.6.0 (#38): a project whose identity came from an untrusted cwd is
+      // isolated rather than deleted — its facts stay, its scope does not.
+      ["projects", "quarantined", "INTEGER NOT NULL DEFAULT 0"],
     ];
     for (const [table, column, definition] of identityColumns) {
       if (!tableExists(db, table)) continue;
@@ -591,7 +596,9 @@ export function ensureContinuitySchema(
     for (const row of pathRows) {
       const raw = row.value ?? "";
       const canonical = canonicalizeProjectPath(raw);
-      if (!canonical || canonical === "unknown") continue;
+      // #38 — the migration accepts exactly what ensureWorkspaceScope accepts.
+      // `/` used to pass here and mint the `unknown` catch-all project.
+      if (isUntrustedProjectPath(raw)) continue;
       const existingWorkspace = db.prepare(`
         SELECT workspace_id, project_id FROM workspaces
         WHERE device_id = ? AND canonical_path = ?
@@ -643,6 +650,20 @@ export function ensureContinuitySchema(
       if (inspected.gitCommonDir) commonProjectByDir.set(inspected.gitCommonDir, projectId);
       identityByPath.set(raw, { canonical, projectId, workspaceId });
     }
+    // #38 — isolate a project that was built from an untrusted cwd (`/`, or
+    // any path with an empty basename). Facts are never deleted: the project
+    // is marked quarantined so injection and read scope skip it and
+    // `memex status` can list it for the user to reassign or purge.
+    if (columnNames(db, "projects").has("quarantined")) {
+      const suspect = db.prepare("SELECT workspace_id, project_id, canonical_path FROM workspaces")
+        .all() as Array<{ workspace_id: string; project_id: string; canonical_path: string }>;
+      const quarantine = db.prepare("UPDATE projects SET quarantined = 1 WHERE project_id = ?");
+      for (const row of suspect) {
+        if (isUntrustedProjectPath(row.canonical_path)) quarantine.run(row.project_id);
+      }
+    }
+    options.afterMigrationStage?.("quarantine-untrusted-projects");
+
     const updateIdentity = (table: string, pathColumn: string): void => {
       const columns = columnNames(db, table);
       if (!columns.has(pathColumn) || !columns.has("project_id") || !columns.has("workspace_id")) return;

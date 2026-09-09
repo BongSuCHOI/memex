@@ -74,6 +74,12 @@ export interface PipelineStatus {
             modelWorkBudgetsExhausted: number;
         };
     };
+    /** #38 — projects isolated because their identity came from an untrusted cwd. */
+    quarantinedProjects: Array<{
+        projectId: string;
+        displayName: string;
+        facts: number;
+    }>;
     lifecycleLastEventAt: Partial<Record<string, string>>;
     readiness: {
         conversationReady: boolean;

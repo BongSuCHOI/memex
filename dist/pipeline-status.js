@@ -79,6 +79,7 @@ export function getPipelineStatus(opts = {}) {
             ontology: { classifiedFacts: 0, pendingFacts: 0 },
             relations: 0,
             attention: emptyAttention(),
+            quarantinedProjects: [],
             lifecycleLastEventAt,
             readiness: {
                 conversationReady: false,
@@ -354,6 +355,7 @@ export function getPipelineStatus(opts = {}) {
             ontology,
             relations,
             attention,
+            quarantinedProjects: readQuarantinedProjects(db),
             lifecycleLastEventAt,
             readiness: { conversationReady, factReady, graphReady },
         };
@@ -406,6 +408,27 @@ function readAttention(db) {
         modelWorkBudgetsExhausted: stateCount("model_work_budgets", "state = 'exhausted'"),
     };
     return attention;
+}
+/**
+ * #38 — quarantined projects stay listed, never silently dropped: their facts
+ * are intact but excluded from injection and read scope until the user acts.
+ */
+function readQuarantinedProjects(db) {
+    if (!tableExists(db, "projects"))
+        return [];
+    const columns = new Set(db.prepare("PRAGMA table_info(projects)").all().map((r) => r.name));
+    if (!columns.has("quarantined"))
+        return [];
+    return db.prepare(`
+    SELECT p.project_id, p.display_name,
+           (SELECT COUNT(*) FROM facts f WHERE f.project_id = p.project_id) AS facts
+    FROM projects p WHERE p.quarantined = 1 ORDER BY p.project_id
+  `).all()
+        .map((row) => ({
+        projectId: row.project_id,
+        displayName: row.display_name,
+        facts: Number(row.facts),
+    }));
 }
 /** Privacy-safe: reads only ts/event fields from logs/hook-events.jsonl. */
 function readHookEvents() {
@@ -486,6 +509,12 @@ export function formatPipelineStatus(s) {
         }
         if (a.terminal.modelWorkBudgetsExhausted > 0) {
             lines.push("  exhausted model-work budgets: memex model-work status");
+        }
+    }
+    if (s.quarantinedProjects.length > 0) {
+        lines.push(`Quarantined projects: ${s.quarantinedProjects.length} (identity came from an untrusted cwd such as '/'; excluded from injection and read scope, facts kept)`);
+        for (const p of s.quarantinedProjects) {
+            lines.push(`  ${p.projectId} — ${p.displayName} (${p.facts} facts)`);
         }
     }
     for (const [ev, ts] of Object.entries(s.lifecycleLastEventAt)) {

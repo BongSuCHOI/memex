@@ -69,6 +69,9 @@ memex status
 memex status --json
 ```
 
+- `memex status` — 단계별 준비 상태. 격리된 프로젝트가 있으면 `Quarantined projects: N` 줄과
+  프로젝트 ID·표시 이름·fact 수를 함께 출력합니다(0.6.0 #38: `/`처럼 신뢰할 수 없는 cwd에서 생긴
+  프로젝트. fact는 보존하고 주입·조회 범위에서만 제외합니다).
 - `memex sync` — `$CODEX_HOME/sessions` rollout을 archive/index/search corpus로 반영
 - `memex backfill extract` — durable fact 추출
 - `memex backfill ontology` — local ontology/relation 생성

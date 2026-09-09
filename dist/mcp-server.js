@@ -20231,6 +20231,21 @@ function canonicalizeProjectPath(cwd) {
   const resolved = path3.normalize(p);
   return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
 }
+var UNKNOWN_PROJECT = "unknown";
+function isUntrustedProjectPath(cwd) {
+  if (typeof cwd !== "string") return true;
+  const raw = cwd.trim();
+  if (!raw || raw === UNKNOWN_PROJECT) return true;
+  const canonical = canonicalizeProjectPath(raw);
+  if (!canonical || canonical === UNKNOWN_PROJECT) return true;
+  return path3.basename(canonical) === "";
+}
+var UntrustedProjectPathError = class extends Error {
+  constructor(cwd) {
+    super(`cwd cannot identify a project: ${JSON.stringify(cwd)}`);
+    this.name = "UntrustedProjectPathError";
+  }
+};
 
 // src/continuity-identity.ts
 import { createHash as createHash2, randomUUID } from "node:crypto";
@@ -20541,7 +20556,7 @@ function resolveProjectWorkspace(db, input) {
   }
   if (input.branch && input.branch.length > 512) throw new Error("branch hint is too long");
   const canonicalPath = canonicalizeProjectPath(input.cwd);
-  if (!canonicalPath || canonicalPath === "unknown") throw new Error("canonical workspace path is required");
+  if (isUntrustedProjectPath(input.cwd)) throw new UntrustedProjectPathError(String(input.cwd ?? ""));
   const at = nowIso(input.now);
   const device = deviceId(db);
   const inspected = input.gitCommonDir === void 0 && input.remoteFingerprint === void 0 ? inspectWorkspaceLocation(canonicalPath) : { gitCommonDir: input.gitCommonDir ?? null, remoteFingerprint: input.remoteFingerprint ?? null, locationKind: input.locationKind ?? "directory", branch: input.branch ?? null, defaultBranch: null, gitCommonIdentity: null, gitDirIdentity: null };
@@ -21310,6 +21325,7 @@ function ensureContinuitySchema(db, options = {}) {
         portable_project_key TEXT UNIQUE,
         display_name TEXT NOT NULL,
         memory_revision INTEGER NOT NULL DEFAULT 0,
+        quarantined INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -21428,7 +21444,10 @@ function ensureContinuitySchema(db, options = {}) {
       ["workspaces", "git_dir_identity", "TEXT"],
       // 0.6.0 scope model (#16/#18): the repository default branch decides
       // whether a session carries a branch signal at all.
-      ["workspaces", "default_branch", "TEXT"]
+      ["workspaces", "default_branch", "TEXT"],
+      // 0.6.0 (#38): a project whose identity came from an untrusted cwd is
+      // isolated rather than deleted — its facts stay, its scope does not.
+      ["projects", "quarantined", "INTEGER NOT NULL DEFAULT 0"]
     ];
     for (const [table, column, definition] of identityColumns) {
       if (!tableExists(db, table)) continue;
@@ -21458,7 +21477,7 @@ function ensureContinuitySchema(db, options = {}) {
     for (const row of pathRows) {
       const raw = row.value ?? "";
       const canonical = canonicalizeProjectPath(raw);
-      if (!canonical || canonical === "unknown") continue;
+      if (isUntrustedProjectPath(raw)) continue;
       const existingWorkspace = db.prepare(`
         SELECT workspace_id, project_id FROM workspaces
         WHERE device_id = ? AND canonical_path = ?
@@ -21520,6 +21539,14 @@ function ensureContinuitySchema(db, options = {}) {
       if (inspected.gitCommonDir) commonProjectByDir.set(inspected.gitCommonDir, projectId);
       identityByPath.set(raw, { canonical, projectId, workspaceId });
     }
+    if (columnNames(db, "projects").has("quarantined")) {
+      const suspect = db.prepare("SELECT workspace_id, project_id, canonical_path FROM workspaces").all();
+      const quarantine = db.prepare("UPDATE projects SET quarantined = 1 WHERE project_id = ?");
+      for (const row of suspect) {
+        if (isUntrustedProjectPath(row.canonical_path)) quarantine.run(row.project_id);
+      }
+    }
+    options.afterMigrationStage?.("quarantine-untrusted-projects");
     const updateIdentity = (table, pathColumn) => {
       const columns2 = columnNames(db, table);
       if (!columns2.has(pathColumn) || !columns2.has("project_id") || !columns2.has("workspace_id")) return;
@@ -22685,13 +22712,15 @@ function legacyOptionalReadScope(db, project, type, identity) {
 
 // src/read-scope.ts
 function readScopeForSession(db, sessionId) {
-  const row = db.prepare("SELECT project_id, workspace_id, workstream_id FROM session_memory_state WHERE session_id = ?").get(sessionId);
-  return row?.project_id && row.workstream_id ? {
-    type: "workstream-id",
-    projectId: row.project_id,
-    workspaceId: row.workspace_id,
-    workstreamId: row.workstream_id
-  } : null;
+  const row = db.prepare(`
+    SELECT s.project_id, s.workspace_id, s.workstream_id,
+           COALESCE(p.quarantined, 0) AS quarantined
+    FROM session_memory_state s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.session_id = ?
+  `).get(sessionId);
+  if (!row) return null;
+  if (Number(row.quarantined) === 1) return { type: "global" };
+  return row.project_id && row.workstream_id ? { type: "workstream-id", projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: row.workstream_id } : { type: "global" };
 }
 function assertReadScope(db, scope) {
   if (!scope || typeof scope !== "object") throw new Error("ReadScope is required");

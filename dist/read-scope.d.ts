@@ -33,5 +33,11 @@ export type ReadScope = {
     includeGlobal?: boolean;
 };
 export declare function readScopeForFact(fact: Fact): ReadScope | null;
+/**
+ * #38 — a session that never attached to a project, or whose project was
+ * quarantined because its identity came from an untrusted cwd (`/`), degrades
+ * to global-only reading. Reading nothing but global facts is safe; reading
+ * another project's facts as your own is the leak this replaces.
+ */
 export declare function readScopeForSession(db: Database.Database, sessionId: string): ReadScope | null;
 export declare function assertReadScope(db: Database.Database, scope: ReadScope): void;

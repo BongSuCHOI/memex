@@ -22,11 +22,27 @@ export function readScopeForFact(fact: Fact): ReadScope | null {
   return { type: 'project-id', projectId: fact.project_id };
 }
 
+/**
+ * #38 — a session that never attached to a project, or whose project was
+ * quarantined because its identity came from an untrusted cwd (`/`), degrades
+ * to global-only reading. Reading nothing but global facts is safe; reading
+ * another project's facts as your own is the leak this replaces.
+ */
 export function readScopeForSession(db: Database.Database, sessionId: string): ReadScope | null {
-  const row = db.prepare('SELECT project_id, workspace_id, workstream_id FROM session_memory_state WHERE session_id = ?')
-    .get(sessionId) as { project_id: string | null; workspace_id: string | null; workstream_id: string | null } | undefined;
-  return row?.project_id && row.workstream_id ? { type: 'workstream-id', projectId: row.project_id,
-    workspaceId: row.workspace_id, workstreamId: row.workstream_id } : null;
+  const row = db.prepare(`
+    SELECT s.project_id, s.workspace_id, s.workstream_id,
+           COALESCE(p.quarantined, 0) AS quarantined
+    FROM session_memory_state s LEFT JOIN projects p ON p.project_id = s.project_id
+    WHERE s.session_id = ?
+  `).get(sessionId) as {
+    project_id: string | null; workspace_id: string | null; workstream_id: string | null;
+    quarantined: number;
+  } | undefined;
+  if (!row) return null;
+  if (Number(row.quarantined) === 1) return { type: 'global' };
+  return row.project_id && row.workstream_id
+    ? { type: 'workstream-id', projectId: row.project_id, workspaceId: row.workspace_id, workstreamId: row.workstream_id }
+    : { type: 'global' };
 }
 
 export function assertReadScope(db: Database.Database, scope: ReadScope): void {

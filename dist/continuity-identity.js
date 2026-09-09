@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { assertMutationPolicy, captureMutationPolicy } from './fact-policy.js';
-import { canonicalizeProjectPath } from "./project-identity.js";
+import { canonicalizeProjectPath, isUntrustedProjectPath, UntrustedProjectPathError, } from "./project-identity.js";
 import { appendSessionEvidence } from "./continuity-evidence.js";
 /** Fallback default-branch names when the repository states none. */
 export const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
@@ -207,8 +207,10 @@ export function resolveProjectWorkspace(db, input) {
     if (input.branch && input.branch.length > 512)
         throw new Error("branch hint is too long");
     const canonicalPath = canonicalizeProjectPath(input.cwd);
-    if (!canonicalPath || canonicalPath === "unknown")
-        throw new Error("canonical workspace path is required");
+    // #38 — `/` and any path with an empty basename are rejected exactly like
+    // `unknown`: attaching to the wrong project is worse than attaching to none.
+    if (isUntrustedProjectPath(input.cwd))
+        throw new UntrustedProjectPathError(String(input.cwd ?? ""));
     const at = nowIso(input.now);
     const device = deviceId(db);
     const inspected = input.gitCommonDir === undefined && input.remoteFingerprint === undefined

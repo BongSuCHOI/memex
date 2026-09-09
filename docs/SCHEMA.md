@@ -135,6 +135,13 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 
 `conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.
 
+`projects.quarantined`(0.6.0 additive, 기본 0)는 신뢰할 수 없는 cwd에서 만들어진 프로젝트를 격리합니다.
+`/`(파일시스템 루트)와 basename이 빈 모든 경로는 `unknown`과 동일하게 거부되므로(`ensureWorkspaceScope`와
+마이그레이션 양쪽) 새로 만들어지지 않고, 이미 존재하던 행은 마이그레이션 단계에서
+`quarantined = 1`로 표시됩니다. **fact는 삭제하지 않습니다** — 주입·read scope에서만 제외하고
+`memex status`가 프로젝트 ID·표시 이름·fact 수를 나열합니다. cwd를 신뢰할 수 없는 세션은 프로젝트에
+붙지 않고 글로벌 전용 읽기로 degrade합니다(`readScopeForSession` → `{ type: 'global' }`).
+
 `projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
 
 `workspace_location_events`(0.6.0 additive, device-local, sync 미대상)는 workspace 전이를 기록합니다.

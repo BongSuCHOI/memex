@@ -30,6 +30,10 @@ import { ensureSessionMemoryState } from "../src/continuity-core.js";
 import { insertFact } from "../src/fact-db.js";
 import { saveExtractedFacts } from "../src/fact-extractor.js";
 import { applyTierMigration, listTierMigrationCandidates } from "../src/fact-management.js";
+import { isUntrustedProjectPath, UntrustedProjectPathError } from "../src/project-identity.js";
+import { readScopeForSession } from "../src/read-scope.js";
+import { ensureContinuitySchema } from "../src/continuity-store.js";
+import { formatPipelineStatus, getPipelineStatus } from "../src/pipeline-status.js";
 import type { ConversationExchange } from "../src/types.js";
 
 let root: string;
@@ -359,6 +363,69 @@ describe("default tier rule at extraction insert (#18)", () => {
     expect(JSON.parse(event!.outcome_json ?? "{}")).toMatchObject({
       tier: "project-current", tier_reason: "no-branch-signal",
     });
+  });
+});
+
+/**
+ * #38 — the observed state was a real workspace at canonical_path `/` bound to
+ * a project whose display_name was `unknown`, holding 13 facts that every
+ * cwd-less session then read as its own project memory.
+ */
+describe("untrusted cwd is never a project (#38)", () => {
+  it("rejects '/' and any empty-basename path exactly like unknown", () => {
+    expect(isUntrustedProjectPath("/")).toBe(true);
+    expect(isUntrustedProjectPath("//")).toBe(true);
+    expect(isUntrustedProjectPath("unknown")).toBe(true);
+    expect(isUntrustedProjectPath("")).toBe(true);
+    expect(isUntrustedProjectPath("/Users/x/project")).toBe(false);
+
+    expect(() => resolveProjectWorkspace(db, { cwd: "/" })).toThrow(UntrustedProjectPathError);
+    expect(() => resolveProjectWorkspace(db, { cwd: "//" })).toThrow(UntrustedProjectPathError);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM projects").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM workspaces").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps a session with an untrusted cwd out of any project and on global-only reading", () => {
+    expect(() => ensureSessionMemoryState(db, { sessionId: "root-session", project: "/" }))
+      .toThrow(UntrustedProjectPathError);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM session_memory_state").get()).toEqual({ n: 0 });
+    // A session that never attached reads global facts only, never a project's.
+    expect(readScopeForSession(db, "root-session")).toBeNull();
+  });
+
+  it("quarantines a legacy '/' project on migration without deleting its facts", async () => {
+    // Reproduce the released state: a workspace/project built from '/'.
+    const legacy = path.join(root, "legacy-root");
+    fs.mkdirSync(legacy, { recursive: true });
+    const state = ensureSessionMemoryState(db, { sessionId: "legacy-1", project: legacy });
+    await insertExchange(db, exchange("ex-legacy-1", "legacy-1", legacy), new Array(384).fill(0.1));
+    const factId = insertFact(db, {
+      fact: "Leaked catch-all fact", category: "knowledge", scope_type: "project",
+      scope_project: legacy, source_exchange_ids: ["ex-legacy-1"], embedding: new Array(384).fill(0.1),
+      subject_key: "state.legacy.leak",
+    });
+    // The released rows the audit found: canonical_path '/', display_name
+    // 'unknown', and every scope column carrying '/' as the project path.
+    db.prepare("UPDATE workspaces SET canonical_path = '/' WHERE workspace_id = ?").run(state.workspaceId);
+    db.prepare("UPDATE projects SET display_name = 'unknown' WHERE project_id = ?").run(state.projectId);
+    db.prepare("UPDATE session_memory_state SET project = '/' WHERE session_id = 'legacy-1'").run();
+    db.prepare("UPDATE minimal_workstreams SET project = '/' WHERE workstream_id = ?").run(state.workstreamId);
+    db.prepare("UPDATE exchanges SET project = '/', cwd = '/' WHERE id = 'ex-legacy-1'").run();
+    db.prepare("UPDATE facts SET scope_project = '/' WHERE id = ?").run(factId);
+
+    ensureContinuitySchema(db);
+
+    expect(db.prepare("SELECT quarantined FROM projects WHERE project_id = ?").get(state.projectId))
+      .toEqual({ quarantined: 1 });
+    // Facts are kept, not deleted.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM facts WHERE id = ?").get(factId)).toEqual({ n: 1 });
+    // The session degrades to global-only reading instead of the wrong project.
+    expect(readScopeForSession(db, "legacy-1")).toEqual({ type: "global" });
+    const status = getPipelineStatus({ db });
+    expect(status.quarantinedProjects).toEqual([
+      { projectId: state.projectId, displayName: "unknown", facts: 1 },
+    ]);
+    expect(formatPipelineStatus(status)).toContain("Quarantined projects: 1");
   });
 });
 
