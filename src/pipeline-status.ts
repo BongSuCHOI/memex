@@ -120,7 +120,7 @@ export interface PipelineStatus {
   /**
    * Issue #45 — active facts carrying source evidence that have no CURRENT
    * local verification receipt. `hasLocalMeaningEvidence` gates automatic
-   * consolidation in three places and every sync tie-break, so this number is
+   * consolidation in three places (sync conflicts are decided by event timestamps, not by receipts), so this number is
    * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
    * with no surface reporting it anywhere.
    */
@@ -903,7 +903,7 @@ export function formatPipelineStatus(s: PipelineStatus): string {
       `facts without local evidence: ${s.evidence.factsWithoutLocalEvidence} / ${s.evidence.activeFactsWithSources}`,
     );
     lines.push(
-      "  no current local verification receipt — these facts are held back from automatic consolidation and lose sync tie-breaks; rebuild: memex backfill receipts",
+      "  no current local verification receipt — these facts are held back from automatic consolidation; rebuild: memex backfill receipts",
     );
   }
 

@@ -233,7 +233,7 @@ the run completed with outstanding work.
 receipts rebuilds missing local meaning-evidence receipts
 (fact_evidence_receipts) for facts whose source exchanges all still resolve.
 It is model-free. Facts without a receipt are excluded from automatic
-consolidation and lose sync tie-breaks; 'memex status' counts them.`,
+consolidation; 'memex status' counts them.`,
   ontology: `Usage:
   memex ontology list [--json]
   memex ontology merge <from-category-id> <to-category-id> [--dry-run] [--json]

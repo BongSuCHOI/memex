@@ -85,7 +85,7 @@ export interface PipelineStatus {
     /**
      * Issue #45 — active facts carrying source evidence that have no CURRENT
      * local verification receipt. `hasLocalMeaningEvidence` gates automatic
-     * consolidation in three places and every sync tie-break, so this number is
+     * consolidation in three places (sync conflicts are decided by event timestamps, not by receipts), so this number is
      * why "duplicate facts keep piling up" — 118 of 127 in the audited data root,
      * with no surface reporting it anywhere.
      */

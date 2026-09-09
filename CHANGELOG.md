@@ -2,6 +2,225 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.1 - 2026-09-10
+
+### Cross-device sync
+
+- Give cross-device sync a switch, and leave it **off**. Nothing leaves the
+  machine until `memex sync enable --dir <shared folder>` writes
+  `<data root>/sync/config.json`; enabling creates the folder and proves it is
+  writable before storing anything. `MEMEX_SYNC_DIR` overrides the stored
+  folder, `memex sync disable` turns every path back into a one-line no-op, and
+  the switch itself is device-local state that never travels. A generation is
+  published atomically — payloads first, `meta.json` last, then a directory
+  rename, then `CURRENT` — so a cloud folder mid-upload is never mistaken for a
+  committed snapshot. (#35, #48)
+- Trigger the export from the lifecycle instead of nowhere. Until now no hook
+  ever invoked the exporter. SessionEnd gains a second, asynchronous entry and
+  the automatic maintenance wake gains the same call, both gated on "the durable
+  state changed since the last successful export" so an unchanged database never
+  publishes an empty generation; `memex sync export --force` overrides the gate.
+  SessionStart imports the peers' generations. `memex doctor`'s `sync-export`
+  check reports `skipped(off)` as ok, warns when the switch is on but nothing is
+  wired or nothing has been exported, and fails on a recorded export failure.
+  (#35, #48)
+- Replicate the whole tier placement instead of half of it. The exporter now
+  carries all five promotion states with `workspace_id`, `workstream_id`,
+  `tier_reason` and a readable branch name, so fact tombstones — which have no
+  tier of their own — finally describe the same population as the exported
+  facts. The importer enforces the local writer's invariant: a project-wide
+  promotion arrives with its workspace and branch keys cleared, and a
+  `promotion_state` this version does not know is reported as a malformed row
+  that rejects its generation instead of being flattened to project scope.
+  Because `workstream_id` is `hash(project_id, branch)`, branch memory comes
+  back as branch memory on the other machine. (#37)
+- **Sync protocol 4 → 5**, fail-closed. A v4 importer rewrites an unknown
+  promotion state to `legacy-project`, which would silently widen branch memory
+  to project scope on an older device. v5 importers still read v4 generations; a
+  v4 peer rejects a v5 generation whole rather than mis-reading it. (#37, #48)
+
+### Ontology
+
+- Make a parked fact a state rather than a silent `General/Misc` assignment.
+  `facts.ontology_state` / `ontology_parked_at` / `ontology_parked_version`
+  distinguish a fact the classifier gave up on from one the model actually filed
+  under Misc, so `memex status` reports `Ontology: READY|PENDING (N classified,
+  P parked, Q pending)` instead of counting failures as classified and calling
+  the pipeline ready. A parked fact is retried exactly once per
+  (classifier policy, embedding generation) pair. (#41)
+- Stop charging a whole batch's facts for a system-side failure: an output-budget
+  overflow is a function of batch size, so the batch is split and retried
+  without consuming an attempt. Only a single-fact call that still overflows is
+  billed as a content failure. (#41)
+- Surface an unrepairable category vector index instead of logging it. An
+  `IndexRepairError` is recorded in `ontology_index_repair_state`, printed by
+  `memex status` as `ontology category index: MANUAL REPAIR REQUIRED (…)`, and
+  failed by a new `memex doctor` check, `ontology-index`. Classification is
+  blocked in that state; `memex backfill embeddings` rebuilds the vectors. (#41)
+- Make the taxonomy unique by schema and repairable by command. Case-insensitive
+  UNIQUE indexes on domain names and on category names within a domain, with an
+  idempotent migration that merges pre-existing duplicates (oldest row wins, no
+  Chronicle event, no generation bump), plus `ON CONFLICT DO NOTHING` and a
+  re-select so two concurrent classifications converge. `memex ontology
+  list|merge|rename` repairs the near-duplicates that used to require wiping the
+  whole ontology — this classifier once grew to 1,612 categories. Neither
+  command touches fact meaning; each writes one metadata line to
+  `logs/ui-audit.jsonl`. (#47)
+- Record the classification similarity on the fact (`facts.ontology_similarity`)
+  so a 0.42 assignment and a 0.98 assignment are distinguishable afterwards,
+  count `result.stale` as progress so the circuit breaker stops treating an
+  all-stale batch as no progress, run `applyClassification` in an immediate
+  transaction, and drop `is_new_domain`/`is_new_category` from the prompt.
+  (#47)
+
+### Maintenance
+
+- Express maintenance wave lineage as columns. `model_work_budgets.root_wave_id`
+  and `run_seq` replace the `:run:<uuid>` suffix that grew 41 characters per
+  rollover; children inherit the root wave id, and existing nested ids are
+  normalized without losing the rolling-cap linkage. (#42)
+- Bound the derived-lane yield. The P0/P1 early return in the maintenance hook
+  becomes a persisted consecutive-skip counter (`derived_lane_skips`): after
+  three skips for the same reason the derived lanes — consolidation, re-embed,
+  ontology, extraction — run once anyway. `memex status` shows
+  `Derived lanes: skipped N times (reason: …)`, so "why is pending not going
+  down" has an answer that points at the other pipeline. A deterministically
+  failing Capsule job could previously starve them indefinitely and silently.
+  (#43)
+
+### Recovery and observability
+
+- Add `memex backfill receipts`: a model-free rebuild of the missing local
+  meaning-evidence receipts for facts whose source exchanges all still resolve.
+  `memex status` reports the gap as `facts without local evidence: N / M`.
+  Without a receipt a fact is held back from automatic consolidation, which
+  reads from the outside as "duplicate memories keep piling up".
+  `recordLocalMeaningEvidence` now reports its failures instead of returning
+  quietly. (#45)
+- Stop deleting a local receipt on every remote semantic win. Receipts are never
+  exported, so deleting one destroyed that device's evidence binding with no way
+  back; sync-import now demotes it to `fact_evidence_receipts.authority =
+  'peer-authority'`, which `memex backfill receipts` can promote back. (#45)
+- Report `memory_jobs` by kind × state in `memex status --json` under a new
+  `jobs` key. (#46)
+
+### CLI
+
+- Resolve the installed plugin root in exactly one place (`src/plugin-root.ts`):
+  `MEMEX_PLUGIN_ROOT`, then the `$CODEX_HOME` plugin cache entry matching the
+  manifest version, then `codex plugin list --json`, then the running launcher.
+  `memex doctor`, `runtime-exec`'s fallback message and the new `memex deps
+  materialize [--root]` all judge the same directory — the `~/.local/bin/memex`
+  npx cache used to be mistaken for the installed plugin. (#53)
+- `memex deps materialize` runs `npm install --omit=dev --no-audit --no-fund` in
+  that root and touches nothing else: no marketplace, plugin registry, hook file
+  or data root. `memex update` materializes automatically after a reinstall
+  (`--no-materialize` prints the command instead), and `memex install` falls
+  back to an npm install in the installed root instead of failing preflight when
+  the source checkout has no production dependency closure. (#53)
+- Document and fix the CLI surface `memex index --help` was pointing at:
+  `--verify`, `--repair`, `--rebuild`, `--cleanup`, `--session`,
+  `migrate-projects` and `facts --all` are all covered, and the help no longer
+  references a document that does not exist. (#46)
+
+### Web UI
+
+- Rename 기억 to 기억·사실, default the workspace to 전체 프로젝트 (조회), and say
+  permanently what that means: browsing is broad, injection is still the current
+  project plus common memory. The scope dropdown is ordered and carries a fact
+  count per scope, conversations and activity on the common scope offer a
+  one-click switch, and `/facts?fact=<id>` opens the same drawer as
+  `/facts/<id>`. (#24, #26)
+- Surface the memory tier and let the screen move it. `/api/v2/facts` reports
+  `hiddenByTier`, the project view banners the branch/workstream memory its
+  scope hides with a `tiers=all` toggle shared with the scope modal, rows and the
+  summary tab carry a tier badge with the injection condition in its tooltip,
+  and the detail panel promotes or demotes one rung through
+  `POST /api/v2/facts/promote|demote` (CSRF, audit line, the one-step rule
+  explained in the modal). A card in 관리 runs `migrate-tiers --dry-run` and
+  opens the apply button only after a preview. (#22)
+- Say what a failure means and what to do about it. `ui/public/guidance.mjs`
+  carries 33 failure classes derived from GUIDE §20 — cause, impact, next
+  action, action, whether it is ignorable — with unmapped errors shown verbatim
+  and no invented cause. Overview attention cards group by class with real
+  actions, and 활동·추적 gains a 다음 행동 column. A coverage test extracts every
+  `throw new Error` string and skip-reason enum from `src/` and fails when one
+  is neither mapped nor explicitly listed. (#23)
+- Explain the workspace from inside the workspace: a page ⓘ, one-line tooltips
+  on controls, badges, table headers and management commands, a `?` glossary of
+  17 terms, and a 도움말 표시 setting. Every entry cites a doc anchor and the
+  coverage test verifies those anchors exist. (#28)
+- Add 관리 › 동기화: a default-off switch whose enable modal validates the shared
+  folder, a status block (folder, path source, writability, device id, last
+  export, other devices seen), and 지금 내보내기 / 가져오기 through in-process
+  `sync-control` calls with a single-run lock and a pinned data root. Manual file
+  transfer, device aliases and the conflict history are deferred to 0.6.2.
+  (#48)
+- Raise helper text to at least 11px. (#26)
+
+### Gates and packaging
+
+- Widen the release gate to `node --test test/*.test.mjs`. The old
+  `test/*slice.test.mjs` glob left six non-slice `.mjs` tests outside the
+  documented gate. (#26)
+- Stop packaging the retained gate archives: `merge-gate-pre-*.json` and
+  `benchmark-pre-*.json` are excluded through a `files` negation, so the tarball
+  stops growing by one file per release while the current receipts still ship.
+  (#26)
+- Add `scripts/check-real-root-untouched.mjs`, a read-only snapshot/compare that
+  proves a gate run left the real Memex data root untouched — content hashes, so
+  a read that only moves mtime is not a failure. (#26)
+- Stop logging an unlabeled hook invocation as `event: "Unknown"`, and keep the
+  `observe-hook-event` CLI guard from firing inside the esbuild MCP bundle,
+  where it would have exited the MCP server with a usage error. (#26)
+- The installed lifecycle inventory is now 7 events and 13 owned hook entries;
+  SessionEnd owns two. (#35)
+
+### Documentation
+
+- Re-check every command, flag, environment variable, path, status string, route
+  and link in README, README-KR, the owner docs and the bundled skills against
+  the code rather than against another document, the way 0.6.0 was audited. The
+  statements 0.6.1 made false are gone: the export hook wired to no event, the
+  Web UI unable to move a memory between tiers, protocol v4 as the current
+  version, twelve owned hook entries. GUIDE §20 — the single source the Web UI
+  derives its failure guidance from — gains the four classes 0.6.1 added, and
+  #29/#30 plus the deferred half of #48 are labelled 0.6.2. (#25)
+
+### Upgrade
+
+Continuity schema stays at version `7`. Every 0.6.1 column, table and index is
+additive and migrates on the first hook, CLI or MCP run — including the ontology
+duplicate merge and the wave-id normalization — so there is no separate
+migration step and no downtime.
+
+```bash
+memex update          # then restart Codex so hooks, skills and MCP reload
+memex status
+memex backfill receipts      # if "facts without local evidence" is not 0
+memex ontology list          # review near-duplicate categories
+```
+
+`memex update` now materializes the runtime dependencies into the new plugin
+root by itself; pass `--no-materialize` to get the command printed instead of
+run. If `memex doctor` reports `dependencies: fail`, run `memex deps
+materialize`.
+
+Cross-device sync stays **off** unless you enable it, and nothing leaves the
+machine until you do:
+
+```bash
+memex sync enable --dir <a shared folder you own>
+memex sync export
+memex sync status
+```
+
+The sync protocol is now **v5**. A v5 device still imports v4 generations, but a
+v4 peer rejects a v5 generation rather than mis-reading it — upgrade both
+machines before expecting sync to resume. Memories in the shared folder are
+plaintext JSONL; encryption is out of scope, so use a cloud folder that is
+yours.
+
 ## 0.6.0 - 2026-09-10
 
 ### Memory scope and tiers

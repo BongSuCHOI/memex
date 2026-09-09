@@ -11,7 +11,7 @@
  * The consequence is not cosmetic: `hasLocalMeaningEvidence` gates automatic
  * consolidation in three places, so 93% of that corpus was silently excluded
  * from consolidation (visible to the user only as "duplicate facts keep
- * piling up") and loses every sync tie-break.
+ * piling up").
  *
  * The same audit confirmed the repair is free: 0 facts had empty
  * `source_exchange_ids` and all 135 referenced exchange ids resolved, so every
