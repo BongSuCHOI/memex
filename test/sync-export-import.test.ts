@@ -101,7 +101,9 @@ describe('sync-export/import', () => {
     // Verify meta.json contents (inside the committed generation)
     const meta = JSON.parse(fs.readFileSync(path.join(exportedGenDir, 'meta.json'), 'utf-8'));
     expect(meta.facts_count).toBe(1);
-    expect(meta.protocol_version).toBe(4);
+    // 0.6.1 (#37): protocol 5 carries the tier scope keys; a protocol-4 peer
+    // must reject the generation rather than flatten unknown promotion states.
+    expect(meta.protocol_version).toBe(5);
     expect(meta.hostname).toBeTruthy();
     expect(meta.exported_at).toBeTruthy();
   });

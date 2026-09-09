@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 // Explicit, idempotent Memex installer.
-// Dependencies and builds are preconditions; this script never installs them.
+//
+// Builds are a precondition; this script never runs `npm run build`.
+// Dependencies USED to be a precondition too, which made `memex doctor`'s
+// "run: memex install" advice unexecutable whenever the CLI ran through the
+// `~/.local/bin/memex` npx shim: npm hoists, so the npx copy of Memex has no
+// node_modules of its own to package into the Codex cache (issue #53). When the
+// preinstalled closure is available it is still COPIED (no network, no version
+// resolution); otherwise the installer falls back to a production
+// `npm install --omit=dev --no-audit --no-fund` inside the installed root.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,12 +23,10 @@ const opt = (name, fallback = null) => {
   return index >= 0 ? args[index + 1] : fallback;
 };
 const MARKET_ARG = opt("--marketplace");
-const REPO = path.resolve(
-  opt(
-    "--plugin-root",
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-  ),
-);
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(opt("--plugin-root", path.resolve(HERE, "..")));
+/** Explicit installed plugin root; skips Codex cache resolution entirely. */
+const ROOT_ARG = opt("--root");
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const DATA_ROOT =
   process.env.MEMEX_HOME ||
@@ -152,6 +158,7 @@ function installedPlugin(marketName) {
 }
 
 function authoritativeRoot(marketName, addResult = null) {
+  if (ROOT_ARG) return verifiedRoot(path.resolve(ROOT_ARG));
   const listed = installedPlugin(marketName);
   const added =
     typeof addResult?.installedPath === "string"
@@ -181,6 +188,14 @@ function authoritativeRoot(marketName, addResult = null) {
   const root = added || cached;
   if (!root || !path.isAbsolute(root) || !fs.existsSync(root)) {
     throw new Error("Codex did not provide a valid installed plugin root");
+  }
+  return verifiedRoot(root);
+}
+
+/** The installed root must be a complete, runnable Memex installation. */
+function verifiedRoot(root) {
+  if (!fs.existsSync(root)) {
+    throw new Error(`installed plugin root does not exist: ${root}`);
   }
   for (const required of [
     ".codex-plugin/plugin.json",
@@ -262,6 +277,51 @@ function verifyMcpHandshake(root) {
 }
 
 const market = marketplaceFromArgument();
+const NPM_INSTALL_ARGS = ["install", "--omit=dev", "--no-audit", "--no-fund"];
+const DEPENDENCY_MODE = fs.existsSync(path.join(REPO, "node_modules"))
+  ? "copy"
+  : "npm";
+
+/**
+ * Put the production runtime closure inside `installedRoot`.
+ * copy mode: package the already-installed tree (no registry, no network).
+ * npm  mode: `npm install --omit=dev --no-audit --no-fund` in that root.
+ */
+function materializeRuntime(installedRoot) {
+  if (DEPENDENCY_MODE === "copy") {
+    const packaged = materializePluginDependencies(REPO, installedRoot);
+    return {
+      changed: packaged.changed,
+      detail: packaged.changed
+        ? `${packaged.packages} preinstalled production packages copied into Codex cache (no npm install/network)`
+        : "installed cache dependency tree already complete",
+    };
+  }
+  const result = spawnSync(
+    process.execPath,
+    [path.join(HERE, "materialize-deps.mjs"), "--root", installedRoot, "--json"],
+    { encoding: "utf8" },
+  );
+  let parsed = null;
+  try {
+    parsed = JSON.parse(result.stdout || "{}");
+  } catch {
+    parsed = null;
+  }
+  if (result.error || result.status !== 0 || !parsed?.ok) {
+    throw new Error(
+      `npm ${NPM_INSTALL_ARGS.join(" ")} in ${installedRoot} failed: ${
+        parsed?.error || (result.stderr || result.error?.message || "").trim().slice(-300)
+      }`,
+    );
+  }
+  return {
+    changed: Boolean(parsed.changed),
+    detail: parsed.changed
+      ? `npm ${NPM_INSTALL_ARGS.join(" ")} completed in ${installedRoot}`
+      : "installed cache dependency tree already complete",
+  };
+}
 
 try {
   check("runtime precheck: node >= 22.15", () => {
@@ -273,12 +333,12 @@ try {
   check("codex CLI present", () =>
     command("codex", ["--version"]).stdout.trim(),
   );
-  check("dependencies installed", () => {
-    if (!fs.existsSync(path.join(REPO, "node_modules")))
-      throw new Error(
-        `node_modules missing — run manually: cd "${REPO}" && npm install`,
-      );
-    return "node_modules present";
+  check("dependency source", () => {
+    // Issue #53: a missing local closure is no longer fatal — it only selects
+    // the other materialization mode. The npx shim always lands here.
+    return DEPENDENCY_MODE === "copy"
+      ? `${path.join(REPO, "node_modules")} will be copied into the installed root (no network)`
+      : `no node_modules at ${REPO} — the installed root will run: npm ${NPM_INSTALL_ARGS.join(" ")}`;
   });
   check("build artifacts present", () => {
     for (const required of [
@@ -333,9 +393,12 @@ if (DRY) {
     : null;
   ok(
     "runtime dependency packaging",
-    existingRoot
+    (existingRoot
       ? `would verify/materialize ${existingRoot}/node_modules`
-      : "would package preinstalled production dependencies into installedPath",
+      : "would materialize production dependencies into installedPath") +
+      (DEPENDENCY_MODE === "copy"
+        ? ` by copying ${path.join(REPO, "node_modules")}`
+        : ` by running npm ${NPM_INSTALL_ARGS.join(" ")} there`),
   );
   ok(
     "installed-root MCP handshake",
@@ -441,14 +504,9 @@ try {
     `${pluginWasInstalled ? "already installed" : "installed"} at ${installedRoot}`,
   );
 
-  const packaged = materializePluginDependencies(REPO, installedRoot);
+  const packaged = materializeRuntime(installedRoot);
   dependenciesMaterializedThisRun = packaged.changed;
-  ok(
-    "runtime dependency packaging",
-    packaged.changed
-      ? `${packaged.packages} preinstalled production packages copied into Codex cache (no npm install/network)`
-      : "installed cache dependency tree already complete",
-  );
+  ok("runtime dependency packaging", packaged.detail);
 
   const toolCount = verifyMcpHandshake(installedRoot);
   ok(

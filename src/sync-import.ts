@@ -17,6 +17,7 @@ import {
 import {
   getSyncDir,
   SYNC_PAYLOAD_FILE_NAMES,
+  SYNC_PROTOCOL_VERSION,
   countPayloadRows,
   payloadSha256,
 } from "./sync-export.js";
@@ -34,6 +35,30 @@ import {
   type EvidenceAuthority,
 } from "./chronicle.js";
 
+/**
+ * Every promotion state the local writer accepts. Issue #37 problem 4: the
+ * importer used to coerce anything that was not `decision`/`project-current`
+ * into `legacy-project`, so `workstream`, `workspace`, a typo and a future
+ * peer's new state all became project-wide truth silently. Unknown values are
+ * now payload corruption and reject their generation with a reported reason.
+ */
+const PROMOTION_STATES = new Set([
+  "legacy-project",
+  "decision",
+  "project-current",
+  "workspace",
+  "workstream",
+] as const);
+type PromotionState =
+  | "legacy-project"
+  | "decision"
+  | "project-current"
+  | "workspace"
+  | "workstream";
+
+/** Local scope ids (`workspace-<uuid>`, `ws-<hash>`) as they appear on the wire. */
+const SCOPE_ID_PATTERN = /^[A-Za-z0-9_.:-]{3,128}$/;
+
 interface SyncFact {
   id: string;
   fact: string;
@@ -43,9 +68,14 @@ interface SyncFact {
   project_id: string | null;
   portable_project_key: string | null;
   subject_key: string | null;
-  promotion_state: "legacy-project" | "decision" | "project-current";
+  promotion_state: PromotionState;
   /** 0.6.0 (#18/#19) additive: why the fact sits in its tier. Absent on pre-0.6.0 payloads. */
   tier_reason: string | null;
+  /** 0.6.1 (#37): the tier's scope keys. Absent on protocol-4 payloads. */
+  workspace_id: string | null;
+  workstream_id: string | null;
+  /** Human-readable branch behind workstream_id; metadata only, not stored. */
+  workstream_branch: string | null;
   source_exchange_ids: string;
   created_at: string;
   updated_at: string;
@@ -153,6 +183,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // the exporter's atomic rename, with CURRENT naming the committed generation.
 const GENERATIONS_DIR_NAME = "generations";
 const CURRENT_MANIFEST = "CURRENT";
+/** Generation manifests this importer accepts (see SYNC_PROTOCOL_VERSION). */
+const SUPPORTED_PROTOCOL_VERSIONS = new Set<number>([4, SYNC_PROTOCOL_VERSION]);
 
 /**
  * The complete payload a committed generation must carry, INCLUDING the
@@ -193,8 +225,14 @@ function validateGenerationIntegrity(
   } catch (error) {
     return `unreadable meta.json: ${error instanceof Error ? error.message : String(error)}`;
   }
-  if (manifest.protocol_version !== 4) {
-    return `unsupported protocol_version ${JSON.stringify(manifest.protocol_version ?? null)}`;
+  // Protocol 4 is still readable: it is protocol 5 without the tier scope keys,
+  // and a 4 payload's project facts were all project-wide by construction. A
+  // 4 exporter cannot read a 5 generation (it would rewrite the unknown
+  // promotion states), which is why the version was bumped rather than carried
+  // additively — the older peer fails closed and says so.
+  if (!SUPPORTED_PROTOCOL_VERSIONS.has(manifest.protocol_version as number)) {
+    return `unsupported protocol_version ${JSON.stringify(manifest.protocol_version ?? null)}` +
+      ` (this device reads ${[...SUPPORTED_PROTOCOL_VERSIONS].join(", ")})`;
   }
   if (manifest.generation !== generationId) {
     return `manifest generation ${JSON.stringify(manifest.generation ?? null)} does not match the CURRENT-named generation`;
@@ -418,9 +456,49 @@ function parseSyncFact(value: unknown): SyncFact | null {
     ? (value.scope_project === null || value.scope_project === undefined ? null : undefined)
     : canonicalScopeProject(value.scope_type, value.scope_project);
   if (scopeProject === undefined || (value.scope_type === "project" && !stableProjectId && scopeProject === null)) return null;
-  const promotionState = value.promotion_state === "decision" || value.promotion_state === "project-current"
-    ? value.promotion_state
-    : "legacy-project";
+  // Issue #37 problem 4: an absent state is a protocol-4 peer that predates the
+  // tier model (its project facts were all project-wide); an UNKNOWN state is
+  // corruption or a newer peer and must not be rewritten into project scope.
+  const rawState = value.promotion_state;
+  if (rawState !== undefined && rawState !== null && rawState !== "" &&
+      !(typeof rawState === "string" && PROMOTION_STATES.has(rawState as PromotionState))) {
+    return null;
+  }
+  const promotionState: PromotionState =
+    typeof rawState === "string" && PROMOTION_STATES.has(rawState as PromotionState)
+      ? (rawState as PromotionState)
+      : "legacy-project";
+  const scopeId = (raw: unknown): string | null | undefined => {
+    if (raw === undefined || raw === null || raw === "") return null;
+    return typeof raw === "string" && SCOPE_ID_PATTERN.test(raw) ? raw : undefined;
+  };
+  let workspaceId = scopeId(value.workspace_id);
+  let workstreamId = scopeId(value.workstream_id);
+  if (workspaceId === undefined || workstreamId === undefined) return null;
+  // Issue #37 problem 1 — the invariant the local writer enforces
+  // (src/fact-db.ts `resolveFactInsertIdentity`, src/continuity-identity.ts
+  // `assertTierPlacement`) applied to replicated rows, so an import can never
+  // create a combination the local writer would refuse:
+  //  - project-wide truth (decision / project-current) keeps NO workspace or
+  //    workstream scope. A peer that promoted a branch fact must not leave the
+  //    old branch key behind, so force both NULL rather than trusting the row.
+  //  - a global fact carries no project identity at all.
+  //  - workspace truth needs its workspace and keeps no workstream.
+  //  - workstream truth needs its workstream.
+  if (value.scope_type === "global" || promotionState === "decision" ||
+      promotionState === "project-current") {
+    workspaceId = null;
+    workstreamId = null;
+  }
+  if (promotionState === "workspace" && (!workspaceId || workstreamId)) return null;
+  if (promotionState === "workstream" && !workstreamId) return null;
+  const workstreamBranch =
+    value.workstream_branch === undefined || value.workstream_branch === null
+      ? null
+      : typeof value.workstream_branch === "string" && value.workstream_branch.length <= 200
+        ? value.workstream_branch
+        : undefined;
+  if (workstreamBranch === undefined) return null;
   const subjectKey = typeof value.subject_key === "string" && /^[a-z][a-z0-9_.-]{2,160}$/.test(value.subject_key)
     ? value.subject_key
     : null;
@@ -437,6 +515,9 @@ function parseSyncFact(value: unknown): SyncFact | null {
     tier_reason: typeof value.tier_reason === "string" && value.tier_reason.length <= 200
       ? value.tier_reason
       : null,
+    workspace_id: workspaceId,
+    workstream_id: workstreamId,
+    workstream_branch: workstreamBranch,
     source_exchange_ids: value.source_exchange_ids,
     created_at: value.created_at,
     updated_at: value.updated_at,
@@ -702,6 +783,9 @@ function localFactView(row: Record<string, unknown>): SyncFact & {
     subject_key: (row.subject_key as string | null) ?? null,
     promotion_state: (row.promotion_state as SyncFact["promotion_state"]) ?? "legacy-project",
     tier_reason: (row.tier_reason as string | null) ?? null,
+    workspace_id: (row.workspace_id as string | null) ?? null,
+    workstream_id: (row.workstream_id as string | null) ?? null,
+    workstream_branch: null,
     source_exchange_ids: (row.source_exchange_ids as string | null) ?? "[]",
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -844,7 +928,16 @@ function importTombstones(db: Database.Database, generations: PinnedGeneration[]
 
 function resolveSyncedFactScope(db: Database.Database, fact: SyncFact): SyncFact {
   const subjectKey = fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`;
-  if (fact.scope_type === "global") return { ...fact, project_id: null, scope_project: null, subject_key: subjectKey };
+  if (fact.scope_type === "global") {
+    return {
+      ...fact,
+      project_id: null,
+      scope_project: null,
+      subject_key: subjectKey,
+      workspace_id: null,
+      workstream_id: null,
+    };
+  }
   if (!fact.project_id) {
     const identity = resolveProjectWorkspace(db, { cwd: fact.scope_project as string });
     return { ...fact, project_id: identity.projectId, scope_project: identity.canonicalPath, subject_key: subjectKey };
@@ -933,12 +1026,28 @@ function rejectStableIdentityConflicts(
       }
       const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
       const subjectKey = fact.subject_key ?? `legacy.fact.${fact.id}`;
-      const slotKey = `${localProjectId}\0${fact.promotion_state}\0${subjectKey}`;
+      // The subject slot is the one the local UNIQUE index enforces
+      // (idx_facts_active_subject_slot). Once branch-tier facts travel (#48
+      // decision 3), two branches legitimately hold the same subject_key with
+      // the same promotion_state — keying the slot on three columns instead of
+      // five would reject those generations as a fabricated conflict.
+      const slotKey = [
+        localProjectId,
+        fact.promotion_state,
+        subjectKey,
+        fact.workspace_id ?? "",
+        fact.workstream_id ?? "",
+      ].join("\0");
       const localConflict = db.prepare(`
         SELECT id FROM facts
-        WHERE is_active = 1 AND project_id = ? AND promotion_state = ? AND subject_key = ? AND id <> ?
+        WHERE is_active = 1 AND project_id = ? AND promotion_state = ? AND subject_key = ?
+          AND COALESCE(workspace_id, '') = ? AND COALESCE(workstream_id, '') = ?
+          AND id <> ?
         LIMIT 1
-      `).get(localProjectId, fact.promotion_state, subjectKey, fact.id) as { id: string } | undefined;
+      `).get(
+        localProjectId, fact.promotion_state, subjectKey,
+        fact.workspace_id ?? "", fact.workstream_id ?? "", fact.id,
+      ) as { id: string } | undefined;
       if (localConflict) {
         reject(generation, `stable subject slot conflicts with local fact ${localConflict.id}`);
         continue;
@@ -1085,7 +1194,8 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
       SELECT id, fact, category, scope_type, scope_project, source_exchange_ids,
              created_at, updated_at, consolidated_count, is_active,
              semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at,
-             project_id, subject_key, promotion_state, tier_reason
+             project_id, subject_key, promotion_state, tier_reason,
+             workspace_id, workstream_id
       FROM facts WHERE id = ?
     `).get(remote.id) as Record<string, unknown> | undefined;
 
@@ -1196,10 +1306,17 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
             // visibility and the consolidation flag — semantic import never
             // rewrites is_active (that is the lifecycle axis's job).
             const isActive = Number(current.is_active) === 0 ? 0 : 1;
+            // Issue #37 problem 1: workspace_id/workstream_id are part of the
+            // placement the semantic axis replicates. Leaving them out kept the
+            // OLD tier keys beside a NEW promotion_state — e.g. a peer's
+            // promotion to `project-current` landed on a row that still carried
+            // `workstream_id`, a combination the local writer refuses and
+            // consolidation then rejects forever.
             const claimed = db.prepare(`
               UPDATE facts SET
                 fact = ?, category = ?, scope_type = ?, scope_project = ?,
                 project_id = ?, subject_key = ?, promotion_state = ?, tier_reason = ?,
+                workspace_id = ?, workstream_id = ?,
                 source_exchange_ids = ?, embedding = ?, created_at = ?, updated_at = ?,
                 consolidated_count = ?, embedding_version = ?,
                 ontology_category_id = NULL, fact_kr = NULL,
@@ -1210,6 +1327,7 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
             `).run(
               fact.fact, fact.category, fact.scope_type, fact.scope_project,
               fact.project_id, fact.subject_key ?? `legacy.fact.${fact.id}`, fact.promotion_state, fact.tier_reason,
+              fact.workspace_id, fact.workstream_id,
               liveSources, Buffer.from(new Float32Array(embedding).buffer),
               fact.created_at, fact.updated_at, liveCount, EMBEDDING_VERSION,
               isActive, fact.semantic_updated_at,
@@ -1240,6 +1358,10 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
             }
           } else {
             if (db.prepare("SELECT 1 FROM facts WHERE id = ?").get(factId)) return false;
+            // The tier keys are part of the identity slot
+            // (idx_facts_active_subject_slot is keyed on project_id,
+            // subject_key, promotion_state, workspace_id, workstream_id), so
+            // omitting them also made two branch memories collide on one slot.
             db.prepare(`
               INSERT INTO facts
                 (id, fact, category, scope_type, scope_project, source_exchange_ids,
@@ -1247,8 +1369,9 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
                  embedding_version, needs_consolidation,
                  semantic_generation, semantic_updated_at,
                  lifecycle_generation, lifecycle_updated_at,
-                 project_id, subject_key, promotion_state, tier_reason)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?)
+                 project_id, subject_key, promotion_state, tier_reason,
+                 workspace_id, workstream_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)
             `).run(
               fact.id, fact.fact, fact.category, fact.scope_type, fact.scope_project,
               fact.source_exchange_ids, Buffer.from(new Float32Array(embedding).buffer),
@@ -1260,6 +1383,8 @@ async function importFacts(db: Database.Database, generations: PinnedGeneration[
               fact.subject_key ?? `${fact.scope_type === "global" ? "global" : "legacy"}.fact.${fact.id}`,
               fact.promotion_state,
               fact.tier_reason,
+              fact.workspace_id,
+              fact.workstream_id,
             );
             // A strictly newer semantic event resurrected over a stale
             // non-privacy tombstone — clear the inert deletion marker.

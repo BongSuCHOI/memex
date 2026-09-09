@@ -14,6 +14,8 @@ try {
 } catch (e) {
   throw new Error(`Cannot read memex package.json: ${e.message}`);
 }
+/** Hook commands the installed plugin manifest declares across the 7 events. */
+const INSTALLED_HOOK_COMMANDS = 13;
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), "memex-marketplace-e2e-"));
 const CODEX_HOME = path.join(TEMP, "codex-home");
 const DATA_ROOT = path.join(TEMP, "data");
@@ -122,13 +124,17 @@ try {
   const hookCommands = Object.values(hooks).flatMap((blocks) =>
     blocks.flatMap((block) => block.hooks.map((hook) => hook.command)),
   );
+  // 7 events / 13 entries. SessionEnd carries two: the bounded synchronous
+  // capture fence and the async cross-device sync export (issue #35).
   if (
-    hookCommands.length !== 12 ||
+    hookCommands.length !== INSTALLED_HOOK_COMMANDS ||
     hookCommands.some(
       (command) => !command.includes("${PLUGIN_ROOT}/cli/runtime-exec.js"),
     )
   ) {
-    throw new Error("installed hooks do not use the shared runtime launcher");
+    throw new Error(
+      `installed hooks do not match the owned inventory (${hookCommands.length} of ${INSTALLED_HOOK_COMMANDS}) or do not use the shared runtime launcher`,
+    );
   }
   const launcher = fs.readFileSync(
     path.join(installedRoot, "cli", "runtime-exec.js"),

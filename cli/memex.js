@@ -64,6 +64,7 @@ USAGE:
 COMMANDS:
   setup       Detect conflicting Codex built-in Memory and disable it only with approval
   install     Register the plugin and materialize its runtime dependencies (idempotent)
+  deps        Materialize runtime dependencies into the installed plugin root: materialize
   sync        Sync conversations from Codex session rollouts and index them
   update      Refresh the marketplace and reinstall the latest Memex plugin
   index       Index conversations for search
@@ -143,15 +144,32 @@ const HELP_DELEGATES = {
 };
 
 const COMMAND_USAGE = {
-  install: `Usage: memex install [--dry-run] [--marketplace <source>] [--plugin-root <path>]
+  install: `Usage: memex install [--dry-run] [--marketplace <source>] [--plugin-root <path>] [--root <path>]
 
 Register the Memex plugin with Codex and materialize its runtime dependencies
-into the installed plugin cache. Idempotent; no network install or version
-resolution occurs (already-installed production packages are copied).`,
-  update: `Usage: memex update [--dry-run]
+into the installed plugin cache. Idempotent.
+--plugin-root is the SOURCE checkout; --root is the installed plugin root to
+materialize into (default: the Codex cache identity, same as 'memex doctor').
+When the source checkout has a production dependency closure it is copied (no
+network, no version resolution); otherwise the installed root runs
+'npm install --omit=dev --no-audit --no-fund' (issue #53).`,
+  deps: `Usage: memex deps materialize [--root <path>] [--dry-run] [--force] [--json]
+
+Install the production runtime dependencies into the INSTALLED plugin root
+(resolved exactly as 'memex doctor' resolves it: MEMEX_PLUGIN_ROOT, then the
+$CODEX_HOME plugin cache, then 'codex plugin list --json', then this launcher).
+Without them every Codex hook silently falls back to
+'npx github:BongSuCHOI/memex#main' — an unpinned revision.
+
+Runs: npm install --omit=dev --no-audit --no-fund
+Touches nothing else: no marketplace, plugin registry, hook file, or data root.`,
+  update: `Usage: memex update [--dry-run] [--marketplace <name>] [--no-materialize]
 
 Refresh the Memex marketplace entry and reinstall the plugin, preserving the
-Memex data root. --dry-run performs read-only discovery only.`,
+Memex data root. --dry-run performs read-only discovery only.
+--marketplace selects one install when Memex is registered more than once.
+After a successful reinstall the runtime dependencies are materialized into the
+new plugin root (issue #53); --no-materialize prints that command instead.`,
   "setup-hooks": `Usage: memex setup-hooks [--dry-run]
 
 Register Memex lifecycle hooks in $CODEX_HOME/hooks.json. Foreign entries are
@@ -279,6 +297,22 @@ async function main() {
           args,
         );
         break;
+
+      // Issue #53: the executable form of doctor's advice. `memex install`
+      // needs a registered marketplace; this only needs the installed root.
+      case "deps": {
+        const sub = args.find((a) => !a.startsWith("-"));
+        if (sub !== undefined && sub !== "materialize") {
+          console.error("Usage: memex deps materialize [--root <path>] [--dry-run] [--force] [--json]");
+          process.exitCode = 1;
+          break;
+        }
+        await runScript(
+          join(__dirname, "..", "scripts", "materialize-deps.mjs"),
+          args.filter((a) => a !== "materialize"),
+        );
+        break;
+      }
 
       case "index":
         await runScript(join(__dirname, "index-conversations.js"), args);

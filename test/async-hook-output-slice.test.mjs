@@ -14,6 +14,7 @@ const VERSION_DRIFT_HOOK = path.join(
   "version-drift-check.js",
 );
 const SYNC_IMPORT_HOOK = path.join(ROOT, "scripts", "sync-import-hook.js");
+const SYNC_EXPORT_HOOK = path.join(ROOT, "scripts", "sync-export-hook.js");
 
 function runNode(script, args = [], options = {}) {
   return spawnSync(process.execPath, [script, ...args], {
@@ -23,6 +24,12 @@ function runNode(script, args = [], options = {}) {
   });
 }
 
+/**
+ * Both sync hooks now go through dist/sync-control.js, which owns the two gates
+ * (#35/#48): cross-device sync must be ON, and an export additionally needs a
+ * durable change since the last one. The sandbox stubs that module so the hook
+ * scripts' own reporting is what is under test.
+ */
 function makeSyncImportSandbox() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "memex-async-hook-"));
   const scripts = path.join(sandbox, "scripts");
@@ -31,6 +38,7 @@ function makeSyncImportSandbox() {
   fs.mkdirSync(dist, { recursive: true });
   fs.writeFileSync(path.join(sandbox, "package.json"), '{"type":"module"}\n');
   fs.copyFileSync(SYNC_IMPORT_HOOK, path.join(scripts, "sync-import-hook.js"));
+  fs.copyFileSync(SYNC_EXPORT_HOOK, path.join(scripts, "sync-export-hook.js"));
 
   const positive = {
     newFacts: 1,
@@ -56,15 +64,31 @@ function makeSyncImportSandbox() {
     ],
   };
   fs.writeFileSync(
-    path.join(dist, "sync-import.js"),
+    path.join(dist, "sync-control.js"),
     `const positive = ${JSON.stringify(positive)};
 const malformed = ${JSON.stringify(malformed)};
-export async function importFromSync() {
-  return process.env.FAKE_SYNC_IMPORT_MODE === "malformed" ? malformed : positive;
+export async function runSyncImport() {
+  const mode = process.env.FAKE_SYNC_IMPORT_MODE;
+  if (mode === "disabled") return { skipped: "disabled", result: null, error: null };
+  return { skipped: null, result: mode === "malformed" ? malformed : positive, error: null };
+}
+export function runSyncExport() {
+  const mode = process.env.FAKE_SYNC_EXPORT_MODE;
+  if (mode === "disabled") return { skipped: "disabled", result: null, error: null };
+  if (mode === "unchanged") return { skipped: "unchanged", result: null, error: null };
+  return {
+    skipped: null,
+    result: { facts: 11, revisions: 12, tombstones: 13, recallEvents: 14 },
+    error: null,
+  };
 }
 `,
   );
-  return { sandbox, script: path.join(scripts, "sync-import-hook.js") };
+  return {
+    sandbox,
+    script: path.join(scripts, "sync-import-hook.js"),
+    exportScript: path.join(scripts, "sync-export-hook.js"),
+  };
 }
 
 async function waitForPathToDisappear(target, timeoutMs = 2000) {
@@ -166,6 +190,64 @@ test("sync-import hook writes positive and malformed summaries to stderr", () =>
     assert.match(
       malformed.stderr,
       /sync-import: 1 payload issue\(s\) reported \(see stderr\)\n/,
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Issue #35 / #48 decision 5 — with cross-device sync off (the default) both
+ * hooks must be a one-line no-op on stderr and must never touch stdout, which
+ * Codex parses as hook output.
+ */
+test("sync hooks no-op with one stderr line when cross-device sync is off", () => {
+  const { sandbox, script, exportScript } = makeSyncImportSandbox();
+  try {
+    const importRun = runNode(script, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_IMPORT_MODE: "disabled" },
+    });
+    assert.equal(importRun.status, 0, importRun.stderr);
+    assert.equal(importRun.stdout, "");
+    assert.match(importRun.stderr, /sync-import: skipped \(cross-device sync is off\)\n/);
+    assert.doesNotMatch(importRun.stderr, /facts \+/);
+
+    const exportRun = runNode(exportScript, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_EXPORT_MODE: "disabled" },
+    });
+    assert.equal(exportRun.status, 0, exportRun.stderr);
+    assert.equal(exportRun.stdout, "");
+    assert.match(exportRun.stderr, /sync-export: skipped \(cross-device sync is off\)\n/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("the sync export hook reports unchanged state and a published generation", () => {
+  const { sandbox, exportScript } = makeSyncImportSandbox();
+  try {
+    const unchanged = runNode(exportScript, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_EXPORT_MODE: "unchanged" },
+    });
+    assert.equal(unchanged.status, 0, unchanged.stderr);
+    assert.equal(unchanged.stdout, "");
+    assert.match(
+      unchanged.stderr,
+      /sync-export: skipped \(no durable change since the last export\)\n/,
+    );
+
+    const published = runNode(exportScript, [], {
+      cwd: sandbox,
+      env: { ...process.env, FAKE_SYNC_EXPORT_MODE: "published" },
+    });
+    assert.equal(published.status, 0, published.stderr);
+    assert.equal(published.stdout, "");
+    assert.match(
+      published.stderr,
+      /sync-export: 11 facts, 12 revisions, 13 tombstones, 14 recall events\n/,
     );
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });

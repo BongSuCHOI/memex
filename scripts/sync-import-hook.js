@@ -3,13 +3,25 @@
 /**
  * SessionStart Hook: Reconcile knowledge/safety state from other devices.
  * Part of the SessionStart maintenance chain (scripts/session-start-maintenance.js).
+ *
+ * Gated on the cross-device sync switch (#48 decision 5): with sync off this is
+ * a one-line no-op and no peer folder is read.
  */
 
-import { importFromSync } from '../dist/sync-import.js';
+import { runSyncImport } from '../dist/sync-control.js';
 
 async function main() {
   try {
-    const result = await importFromSync();
+    const outcome = await runSyncImport();
+    if (outcome.skipped === 'disabled') {
+      console.error('sync-import: skipped (cross-device sync is off)');
+      return;
+    }
+    if (outcome.error) {
+      console.error('sync-import: Error:', outcome.error);
+      return;
+    }
+    const result = outcome.result;
     const factChanges = result.newFacts + result.updatedFacts + result.deletedFacts;
     if (
       factChanges > 0 || result.newRevisions > 0 || result.newTombstones > 0 ||

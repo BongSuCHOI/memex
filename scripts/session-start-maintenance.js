@@ -31,16 +31,49 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Issue #26 (item 6) — this hook logged `SessionStart` rows with an empty
+ * session_id and cwd because it read `process.env.SESSION_ID`/`CWD`, which
+ * Codex does not set. The identity is on stdin, in the hook payload, like every
+ * other hook. Bounded and non-blocking: a manual run without stdin waits at
+ * most this long and then proceeds with what it has.
+ */
+async function readHookPayload() {
+  if (process.stdin.isTTY) return {};
+  const chunks = [];
+  try {
+    const read = (async () => {
+      for await (const chunk of process.stdin) chunks.push(chunk);
+    })();
+    await Promise.race([read, new Promise((resolve) => setTimeout(resolve, 250))]);
+    const raw = Buffer.concat(chunks).toString('utf8').trim();
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  } finally {
+    // The pipe stays open after the race; leaving it referenced would keep this
+    // async hook alive well past its work.
+    try { process.stdin.pause(); process.stdin.destroy(); } catch { /* already closed */ }
+  }
+}
+
 async function main() {
   let db;
   try {
     // 1. Offload LLM-based consolidation to a detached worker (non-blocking)
     // CX-01: privacy-safe event observation (event/ts/session/cwd only).
     try {
+      const payload = await readHookPayload();
       const { recordHookEvent } = await import('../dist/observe-hook-event.js');
-      recordHookEvent(process.argv.includes('--prompt') ? 'UserPromptSubmit' : 'SessionStart', {
-        sessionId: process.env.SESSION_ID || '',
-        cwd: process.env.CWD || '',
+      // The payload's own event name is authoritative; the --prompt flag is the
+      // fallback for a host that sends no payload.
+      const event = typeof payload.hook_event_name === 'string' && payload.hook_event_name.trim()
+        ? payload.hook_event_name.trim()
+        : process.argv.includes('--prompt') ? 'UserPromptSubmit' : 'SessionStart';
+      recordHookEvent(event, {
+        sessionId: typeof payload.session_id === 'string' ? payload.session_id : process.env.SESSION_ID || '',
+        cwd: typeof payload.cwd === 'string' ? payload.cwd : process.env.CWD || '',
       });
     } catch { /* observation is best-effort */ }
 
@@ -73,6 +106,15 @@ async function main() {
         // Non-fatal: background work resumes on a later session
       }
     };
+
+    // 0.6.1 cross-device sync (#35/#48 decision 2): the maintenance wake is the
+    // second automatic export trigger beside SessionEnd. Detached and gated —
+    // the child exits immediately unless sync is enabled AND durable state
+    // changed since the last export, so an idle machine publishes nothing.
+    try {
+      const { readSyncConfig } = await import('../dist/sync-paths.js');
+      if (readSyncConfig().enabled) spawnDetached('sync-export-hook.js');
+    } catch { /* non-fatal: SessionEnd is the other trigger */ }
 
     // 0.6.0 tier ladder (#19): evidence-based automatic promotion/demotion.
     // Model-free and bounded — a few indexed SQL passes over the projection —

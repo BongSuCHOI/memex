@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const { setupHooks, removeHooks, doctor, desiredEntries, registrationPath } =
@@ -23,6 +24,7 @@ function isolatedEnv(t) {
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'version-drift-check.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'cli', 'memex.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'sync-import-hook.js'), '#!/usr/bin/env node\n');
+  fs.writeFileSync(path.join(pluginRoot, 'scripts', 'sync-export-hook.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-start-maintenance.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-end-hook.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'continuity-hook.js'), '#!/usr/bin/env node\n');
@@ -70,7 +72,7 @@ test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign 
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r1 = setupHooks();
-  assert.equal(r1.diff.add.length, 12);
+  assert.equal(r1.diff.add.length, 13); // +1: SessionEnd async sync-export (#35)
   assert.equal(r1.changed, true);
   const afterFirst = fs.readFileSync(file, 'utf8');
 
@@ -86,7 +88,7 @@ test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign 
 
   // Ownership record exists with fingerprints.
   const reg = JSON.parse(fs.readFileSync(registrationPath(), 'utf8'));
-  assert.equal(reg.entries.length, 12);
+  assert.equal(reg.entries.length, 13);
   assert.ok(reg.entries.every((e) => e.fingerprint && /"(.+)"/.test(e.command)));
 
   // Desired commands use absolute paths under the plugin root.
@@ -101,7 +103,7 @@ test('dry-run mutates nothing', (t) => {
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r = setupHooks({ dryRun: true });
-  assert.equal(r.diff.add.length, 12);
+  assert.equal(r.diff.add.length, 13);
   assert.equal(fs.readFileSync(file, 'utf8'), FOREIGN_HOOKS);
   assert.ok(!fs.existsSync(registrationPath()));
 });
@@ -113,12 +115,12 @@ test('remove-hooks removes only owned entries and keeps foreign bytes intact', (
   setupHooks();
 
   const dry = removeHooks({ dryRun: true });
-  assert.equal(dry.removed, 12);
+  assert.equal(dry.removed, 13);
   const configured = JSON.parse(fs.readFileSync(file, 'utf8')).hooks.SessionStart;
   assert.equal(configured.flatMap((block) => block.hooks).length, 6); // foreign + 5 ours
 
   const r = removeHooks();
-  assert.equal(r.removed, 12);
+  assert.equal(r.removed, 13);
   assert.equal(r.preservedForeignEntries, 2); // atuin + foreign-canary
   const after = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual(after.hooks.PreToolUse[0].hooks[0].command, 'atuin hook codex');
@@ -216,6 +218,50 @@ test('hook handlers record privacy-safe observation events', async (t) => {
   assert.deepEqual(Object.keys(rec).sort(), ['cwd', 'event', 'session_id', 'ts']);
   assert.notEqual(lastObserved('SessionStart'), null);
   assert.equal(lastObserved('SessionEnd'), null);
+});
+
+/**
+ * Issue #26 (item 6) — hook-events.jsonl collected `event: "Unknown"` rows with
+ * an empty session_id and cwd (observed at 19:19:51Z / 19:19:56Z / 19:30:41Z on
+ * a codex exec start), because the module's CLI entry defaulted a missing
+ * argv[2] to the literal "Unknown". `memex doctor` then printed
+ * `Lifecycle Unknown: observed …` beside the seven real events.
+ */
+test('an unlabeled hook invocation is refused instead of logged as "Unknown"', async (t) => {
+  const { env } = isolatedEnv(t);
+  const { recordHookEvent, observationLogPath } =
+    await import(path.join(REPO, 'dist/observe-hook-event.js'));
+
+  assert.equal(recordHookEvent('', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(recordHookEvent('   ', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(recordHookEvent('Unknown', { sessionId: 's', cwd: '/p' }), false);
+  assert.equal(fs.existsSync(observationLogPath()), false, 'nothing may be written');
+
+  assert.equal(recordHookEvent('SessionEnd', { sessionId: 's', cwd: '/p' }), true);
+  assert.equal(fs.readFileSync(observationLogPath(), 'utf8').trim().split('\n').length, 1);
+
+  // The CLI entry that produced those rows now requires the event name and
+  // accepts the session/cwd the hook payload carries.
+  const missing = spawnSync(process.execPath, [path.join(REPO, 'dist/observe-hook-event.js')], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  });
+  assert.equal(missing.status, 2, missing.stderr);
+  assert.match(missing.stderr, /refusing to log an unlabeled hook invocation/);
+
+  const labeled = spawnSync(
+    process.execPath,
+    [path.join(REPO, 'dist/observe-hook-event.js'), 'Stop', 'sess-42', '/work/project'],
+    { env: { ...process.env, ...env }, encoding: 'utf8' },
+  );
+  assert.equal(labeled.status, 0, labeled.stderr);
+  const rows = fs.readFileSync(observationLogPath(), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    { event: rows[1].event, session_id: rows[1].session_id, cwd: rows[1].cwd },
+    { event: 'Stop', session_id: 'sess-42', cwd: '/work/project' },
+  );
+  assert.equal(rows.some((row) => row.event === 'Unknown'), false);
 });
 
 test('commandFor separates script and args without path.join corruption and handles spaced roots', async () => {

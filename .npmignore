@@ -6,6 +6,21 @@ vitest.config.ts
 docs/*.gif
 docs/*.svg
 
+# Verification ARCHIVES (issue #26 item 2).
+# `package.json files` lists docs/, so every release added one more frozen
+# pre-release receipt to the tarball (311 -> 312 -> 313 files). The CURRENT
+# receipts — docs/verification/merge-gate.json, plugin-validation.json,
+# benchmark.json — stay in the package: they are what a consumer checks the
+# shipped tree against. The historical snapshots live in the repository only.
+#
+# NOTE: a path pulled in by a `files` entry is NOT excluded by .npmignore, so
+# the `!docs/verification/...` negations in package.json `files` are what
+# actually enforce this. These patterns keep the intent here too, and take
+# effect if `files` is ever removed. Verify with:
+#   npm pack --dry-run | grep docs/verification/
+docs/verification/merge-gate-pre-*.json
+docs/verification/benchmark-pre-*.json
+
 # Source (dist is enough)
 src/
 

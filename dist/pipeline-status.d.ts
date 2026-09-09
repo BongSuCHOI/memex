@@ -27,6 +27,18 @@ export interface StageCounters {
     failedVisible: number;
     retriable: number;
 }
+/**
+ * `memory_jobs` counted by kind × state (issue #46, 15.2).
+ *
+ * `byKind` is the full cross-tab keyed kind → state → count; `byState` is the
+ * same rows folded across kinds. Both list only the pairs that exist, so an
+ * empty queue reports `{}` instead of a grid of zeros.
+ */
+export interface JobCounters {
+    total: number;
+    byKind: Record<string, Record<string, number>>;
+    byState: Record<string, number>;
+}
 export interface PipelineStatus {
     dataRootEmpty: boolean;
     conversations: {
@@ -74,6 +86,16 @@ export interface PipelineStatus {
             modelWorkBudgetsExhausted: number;
         };
     };
+    /**
+     * Issue #46 (15.2) — `memory_jobs` aggregated by kind × state.
+     *
+     * docs/GUIDE.md §15 promised `memex status --json` reported "단계별
+     * pending/processing/retry/dead", but the JSON carried only the extraction
+     * StageCounters: there was no per-job-kind breakdown anywhere, and
+     * `attention` counts only the two states that need a decision. The runbook's
+     * command could not answer the runbook's question.
+     */
+    jobs: JobCounters;
     /** #38 — projects isolated because their identity came from an untrusted cwd. */
     quarantinedProjects: Array<{
         projectId: string;
@@ -91,6 +113,8 @@ export declare function getPipelineStatus(opts?: {
     dbPath?: string;
     db?: Database.Database;
 }): PipelineStatus;
+/** Zero counters for a data root with no queue table yet. */
+export declare function emptyJobCounters(): JobCounters;
 /** Zero counters for a data root with no database yet. */
 export declare function emptyAttention(): PipelineStatus["attention"];
 export declare function formatPipelineStatus(s: PipelineStatus): string;

@@ -123,7 +123,7 @@ source delta -> journal fsync -> checkpoint + capture_index job
 | `Stop` | `closed`; delta/fence/outbox only |
 | `Interrupt` | `interrupted`; partial evidence, never completed |
 | `PreCompact(manual\|auto)` | `interrupted` prefix, fsync, carry freeze |
-| `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait |
+| `SessionEnd` | `final`; no stabilize/model/embedding/extraction/export wait. 0.6.1부터 같은 이벤트에 **별도 async 항목**으로 크로스디바이스 export(`scripts/sync-export-hook.js`)가 등록되지만 fence는 그것을 기다리지 않습니다 |
 | `PostCompact(manual\|auto)` | telemetry only; no correctness transition |
 
 Capture commit 뒤 worker wake는 detached best-effort입니다. Wake가 사라져도 durable job은 남으며 다음 lifecycle에서 재개됩니다.
@@ -168,9 +168,9 @@ P1 `capsule_update`는 workstream의 immutable evidence sequence를 고정 targe
 
 User-role exclusion marker가 journal에 있으면 P0 worker는 indexing/model 전에 conversation purge를 실행합니다. Purge transaction은 terminal `conversation_exclusions` session guard를 먼저 남깁니다. Hook은 이후 recapture를 거부하고 P0 worker는 ingest 직전과 직후에도 guard를 재확인하므로 in-flight purge race가 private exchange를 부활시키지 못합니다. Journal/checkpoint/pending job/session state/Capsule은 같은 privacy 경계에서 제거되며 journal directory는 DB transaction 뒤 삭제됩니다. Purge된 session이 만든 Capsule이나 purge된 exchange를 인용하는 Capsule은 sibling session이 같은 workstream을 공유하더라도 삭제되고, 그 workstream에 묶인 session의 `capsule_generation_seen`은 0으로 되돌아가 다음 Capsule이 다시 `[WORK NOW]`로 전달됩니다(D-035). Capsule과 tail baton은 `context-only`이고 Fact evidence로 승격하지 않습니다.
 
-## 6. Sync protocol v4
+## 6. Sync protocol v5
 
-protocol v4는 semantic, lifecycle, lineage를 분리합니다.
+protocol v5는 semantic, lifecycle, lineage를 분리합니다.
 
 ### Durable payload
 

@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
 import { resolveProjectWorkspace } from './continuity-identity.js';
 import { getMemexHome } from './paths.js';
+import { getSyncDir } from './sync-paths.js';
 const SYNC_DIR_NAME = 'sync';
 const GENERATIONS_DIR_NAME = 'generations';
 const CURRENT_MANIFEST = 'CURRENT';
@@ -56,8 +57,33 @@ export function withExportTransaction(db, operation) {
         db.pragma('busy_timeout = 5000');
     }
 }
+/**
+ * Every promotion state a project fact can hold. Before 0.6.1 the export
+ * carried only the project-wide three, so branch/workspace-tier memories never
+ * reached a second device while their tombstones did (#37 problems 2 and 3).
+ * #48 decision 3: branch-tier memories ARE exported with their tier, workspace
+ * and branch metadata; the receiving device simply does not inject them unless
+ * it is on that branch.
+ */
+export const EXPORTED_PROMOTION_STATES = [
+    "legacy-project",
+    "decision",
+    "project-current",
+    "workspace",
+    "workstream",
+];
+/**
+ * Protocol 5 = protocol 4 plus the tier scope keys on each fact row
+ * (`workspace_id`, `workstream_id`, `workstream_branch`) and the two extra
+ * `promotion_state` values that now travel. The version is bumped rather than
+ * carried additively on purpose: a 0.6.0 importer rewrites any unknown
+ * promotion_state to `legacy-project`, which would silently widen a branch
+ * memory into project-wide scope on the older device. Fail closed instead —
+ * an older peer rejects the whole generation and says why.
+ */
+export const SYNC_PROTOCOL_VERSION = 5;
 /** The payload files a committed generation must carry (meta.json excluded —
- * it is the integrity manifest OF these files). Protocol v4: ontology
+ * it is the integrity manifest OF these files). Protocol v5: ontology
  * domains/categories/relations and the KR translation are LOCAL DERIVED state
  * — every device rebuilds them from its own facts, so they no longer travel,
  * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
@@ -78,15 +104,51 @@ export function countPayloadRows(content) {
 export function payloadSha256(content) {
     return createHash('sha256').update(content, 'utf8').digest('hex');
 }
-export function getSyncDir() {
-    const dir = path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    return dir;
-}
+/**
+ * The shared generation folder. Resolution (MEMEX_SYNC_DIR > configured shared
+ * folder > the historical local default) lives in sync-paths.ts so the
+ * exporter, the importer and `memex sync status` cannot disagree (#35/#48).
+ */
+export { getSyncDir };
+/**
+ * The last-attempt record is LOCAL state about this device, so it stays in the
+ * data root even when the generations live in a shared cloud folder — two
+ * devices writing one status file would each erase the other's diagnosis.
+ */
 function getExportStatusPath() {
     return path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME, EXPORT_STATUS_FILE);
+}
+/**
+ * Cheap fingerprint of everything the payload carries. Counts alone would miss
+ * an in-place semantic edit, so each table contributes its row count and its
+ * newest clock.
+ */
+export function durableStateFingerprint(db) {
+    const scalar = (sql) => {
+        try {
+            const row = db.prepare(sql).get();
+            return String(Object.values(row ?? {})[0] ?? '');
+        }
+        catch {
+            // A table that does not exist yet contributes nothing rather than
+            // failing the export gate.
+            return '';
+        }
+    };
+    const parts = [
+        scalar('SELECT COUNT(*) AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(updated_at), "") AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(semantic_updated_at), "") AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(lifecycle_updated_at), "") AS v FROM facts'),
+        scalar('SELECT COUNT(*) AS v FROM fact_revisions'),
+        scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM fact_revisions'),
+        scalar('SELECT COUNT(*) AS v FROM fact_tombstones'),
+        scalar('SELECT COALESCE(MAX(deleted_at), "") AS v FROM fact_tombstones'),
+        scalar('SELECT COUNT(*) AS v FROM chronicle_tombstones'),
+        scalar('SELECT COUNT(*) AS v FROM recall_events'),
+        scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM recall_events'),
+    ];
+    return createHash('sha256').update(parts.join('\0'), 'utf8').digest('hex');
 }
 export function readExportStatus() {
     try {
@@ -241,13 +303,25 @@ export function exportForSync() {
                f.semantic_updated_at, f.lifecycle_updated_at, f.project_id,
                p.portable_project_key, f.subject_key, f.promotion_state,
                -- 0.6.0 (#18/#19): the tier placement travels with the fact.
-               -- Additive: a pre-0.6.0 peer simply ignores the extra column.
-               f.tier_reason
-        FROM facts f LEFT JOIN projects p ON p.project_id = f.project_id
+               f.tier_reason,
+               -- 0.6.1 (#37/#48 decision 3): the tier's scope keys travel too.
+               -- workstream_id is deterministic — ws-hash(project_id, branch) —
+               -- so the same branch of the same logical project resolves to the
+               -- SAME id on the receiving device and the memory lands back in
+               -- its branch tier. workspace_id is a device-local UUID: it is
+               -- carried verbatim so a workspace-tier row stays legal, and it
+               -- simply never matches a local workspace, which is the intended
+               -- "not my branch, not injected" outcome.
+               f.workspace_id, f.workstream_id,
+               -- Human-readable branch behind workstream_id (hash preimage).
+               w.branch_hint AS workstream_branch
+        FROM facts f
+        LEFT JOIN projects p ON p.project_id = f.project_id
+        LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
         WHERE f.scope_type = 'global'
-           OR f.promotion_state IN ('legacy-project','decision','project-current')
+           OR f.promotion_state IN (${EXPORTED_PROMOTION_STATES.map(() => "?").join(",")})
         ORDER BY f.id
-      `).all();
+      `).all(...EXPORTED_PROMOTION_STATES);
             const facts = factRows.map((row) => ({
                 ...row,
                 // Device paths never leave the device. Stable logical identity is the
@@ -278,14 +352,20 @@ export function exportForSync() {
         LEFT JOIN facts f ON f.id = r.fact_id
         LEFT JOIN projects p ON p.project_id = COALESCE(r.project_id, f.project_id)
         WHERE (f.id IS NOT NULL AND (f.scope_type = 'global'
-                 OR f.promotion_state IN ('legacy-project','decision','project-current')))
+                 OR f.promotion_state IN (${EXPORTED_PROMOTION_STATES.map(() => "?").join(",")})))
            OR (r.fact_id IS NULL AND r.project_id IS NOT NULL)
         ORDER BY r.id
-      `).all().map(({ source_exchange_ids_normalized, ...row }) => ({
+      `).all(...EXPORTED_PROMOTION_STATES).map(({ source_exchange_ids_normalized, ...row }) => ({
                 ...row,
                 source_exchange_ids: source_exchange_ids_normalized,
                 projection_applied: Number(row.projection_applied ?? 1) === 1 ? 1 : 0,
             }));
+            // Issue #37 problem 3 — the export/tombstone asymmetry. Tombstones carry
+            // no promotion_state (the fact row they describe is gone), so they cannot
+            // be filtered by tier. The asymmetry is closed on the OTHER side: every
+            // promotion state now travels (#48 decision 3), so the tombstone set and
+            // the fact set describe the same population by construction. Narrowing
+            // tombstones instead would have hidden real deletions from peers.
             const tombstones = [
                 ...db.prepare(`
           SELECT fact_id, NULL AS event_id, deleted_at, reason FROM fact_tombstones ORDER BY fact_id
@@ -319,7 +399,7 @@ export function exportForSync() {
         // row count and SHA-256, so an importer can fail closed on a partially
         // synced or corrupted generation instead of silently reading a prefix.
         const meta = {
-            protocol_version: 4,
+            protocol_version: SYNC_PROTOCOL_VERSION,
             identity_contract: 'stable-project-v1',
             generation: generationId,
             device_id: device.value,
@@ -334,19 +414,22 @@ export function exportForSync() {
                 { rows: countPayloadRows(payloadFiles[name]), sha256: payloadSha256(payloadFiles[name]) },
             ])),
         };
-        const files = {
-            ...payloadFiles,
-            'meta.json': JSON.stringify(meta, null, 2),
-        };
         const generationsDir = path.join(deviceDir, GENERATIONS_DIR_NAME);
         fs.mkdirSync(generationsDir, { recursive: true });
         const genPath = path.join(generationsDir, generationId);
         const tmpPath = `${genPath}.tmp`;
         fs.rmSync(tmpPath, { recursive: true, force: true }); // leftover from a crash
         fs.mkdirSync(tmpPath, { recursive: true });
-        for (const [name, body] of Object.entries(files)) {
-            fs.writeFileSync(path.join(tmpPath, name), body);
+        // #48 A — publish order matters when the folder is a cloud drive that
+        // uploads file by file: every payload file is written first and the
+        // integrity manifest LAST, so a generation directory observed mid-upload
+        // either has no meta.json (importers ignore it) or has one that already
+        // pins complete payload files. The directory rename is the local commit;
+        // the manifest-last order is what protects a REMOTE observer.
+        for (const name of SYNC_PAYLOAD_FILE_NAMES) {
+            fs.writeFileSync(path.join(tmpPath, name), payloadFiles[name]);
         }
+        fs.writeFileSync(path.join(tmpPath, 'meta.json'), JSON.stringify(meta, null, 2));
         fs.renameSync(tmpPath, genPath);
         // The manifest flip is the commit point: before it, readers resolve the
         // previous generation; after it, this complete one.

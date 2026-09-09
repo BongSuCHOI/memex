@@ -65,8 +65,13 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
   (0.6.1의 Web UI 버튼도 같은 함수를 호출할 예정입니다).
-- 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v4에 additive로 실려 갑니다.
+- 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v5에 실려 갑니다.
   이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
+- 0.6.1(#37/#48 결정 3)부터 **모든 tier가 전송**됩니다. `workstream`(브랜치)·`workspace` fact가
+  `workspace_id`·`workstream_id`·`workstream_branch`와 함께 실려 가고, 받는 기기는 자기 브랜치가
+  아니면 주입하지 않습니다. `workstream_id`가 `hash(project_id, branch)`라 같은 브랜치에서는 그대로
+  일치합니다. import는 `decision`/`project-current`의 workspace/workstream 키를 NULL로 강제하고,
+  모르는 `promotion_state`는 `legacy-project`로 뭉개지 않고 malformed row로 보고합니다.
 
 0.6.0 이전에 추출된 fact는 모두 `workstream`(브랜치 tier)에 있습니다. `memex facts migrate-tiers --dry-run`이
 새 기본 tier 규칙상 프로젝트 공용이어야 하는 항목만 나열하고, `--apply`가 실제로 옮기며 fact마다 Chronicle
@@ -472,13 +477,13 @@ remote 여러 기기를 fold할 때도 이 규칙을 적용하고, local commit 
 
 이 provenance는 conversation exclusion purge가 어떤 fact를 제거해야 하는지 판단하는 privacy evidence이기도 하므로 유실해서는 안 됩니다.
 
-`fact_context_dependencies`는 이 cross-device lineage 축에 속하지 않습니다. protocol v4로
+`fact_context_dependencies`는 이 cross-device lineage 축에 속하지 않습니다. protocol v5로
 동기화하지 않으며 remote semantic replacement가 local fact 의미를 바꾸면 이전 local context를
 제거합니다.
 
 ## 9. Ontology와 relation
 
-ontology와 relation은 protocol v4에서 **local derived state**입니다. 기기 간 UUID를 맞추려고 sync하지 않습니다.
+ontology와 relation은 protocol v5에서 **local derived state**입니다. 기기 간 UUID를 맞추려고 sync하지 않습니다.
 
 classifier는 fact의 semantic generation과 global taxonomy epoch을 캡처합니다. LLM/embedding await 중:
 

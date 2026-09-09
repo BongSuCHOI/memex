@@ -217,7 +217,26 @@ A user-role `DO NOT INDEX` marker excludes the whole conversation from the Memex
 
 ### Multi-device sync
 
-Protocol v4 exports one committed generation per local device, containing `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`, and a `meta.json` recording the protocol version, device/generation identity, row counts, and SHA-256 integrity for each payload file. Imports pin and validate an entire generation before mutating SQLite: missing files, hash mismatches, invalid JSON, or schema-invalid rows reject that device generation as a whole. Local exporters are serialized with SQLite's process-owned `BEGIN IMMEDIATE` transaction, so a slower export cannot move `CURRENT` back to an older snapshot and no cloud-synced lockfile is required. KR translations, ontology categories, relations, and vector indexes are rebuilt locally instead.
+Cross-device sync is **off by default** and nothing leaves the machine until it is turned on. Point both machines at one shared folder you own — an iCloud Drive, Dropbox, or Syncthing path — and the durable memory state reconciles between them:
+
+```bash
+memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
+memex sync export      # publish this device's first generation
+memex sync status      # shared folder, this device, last export, devices seen
+```
+
+Afterwards the export runs by itself: an async SessionEnd hook and the automatic maintenance wake publish a generation whenever the durable state changed since the last one, and SessionStart imports the peers'. `MEMEX_SYNC_DIR` overrides the configured folder; the on/off switch is local state in `<data root>/sync/config.json` and never travels. `memex sync disable` turns every one of those paths back into a one-line no-op. Memories in the shared folder are plaintext JSONL — encryption is out of scope, so use a cloud folder that is yours.
+
+Protocol v5 exports one committed generation per local device, containing `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`, and a `meta.json` recording the protocol version, device/generation identity, row counts, and SHA-256 integrity for each payload file. Imports pin and validate an entire generation before mutating SQLite: missing files, hash mismatches, invalid JSON, or schema-invalid rows reject that device generation as a whole. Local exporters are serialized with SQLite's process-owned `BEGIN IMMEDIATE` transaction, so a slower export cannot move `CURRENT` back to an older snapshot and no cloud-synced lockfile is required. KR translations, ontology categories, relations, and vector indexes are rebuilt locally instead.
+
+| Memory tier | Travels | On the receiving device |
+| --- | --- | --- |
+| Global | yes | injected everywhere |
+| Project-common (`legacy-project`, `project-current`, `decision`) | yes | injected in that project |
+| Workspace | yes, with its `workspace_id` | not injected — a workspace id is device-local |
+| Branch / workstream | yes, with `workstream_id`, `tier_reason` and the branch name | injected only while that device is on the same branch of the same project (`workstream_id` is `hash(project_id, branch)`, so it matches) |
+
+Every promotion state travels, so fact tombstones — which carry no tier of their own — describe exactly the same population as the exported facts. A project-wide promotion (`project-current` / `decision`) always arrives with its workspace and branch keys cleared, the same invariant the local writer enforces; a `promotion_state` this version does not know is reported as a malformed row and rejects its generation instead of being flattened into project scope. Protocol v4 generations still import; a v4 peer rejects a v5 generation rather than mis-reading it.
 
 Deep dives: [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CONVERSATION-LIFECYCLE.md](docs/CONVERSATION-LIFECYCLE.md) · [FACT-LIFECYCLE.md](docs/FACT-LIFECYCLE.md) · [RETRIEVAL-AND-CONTEXT.md](docs/RETRIEVAL-AND-CONTEXT.md) · [SCHEMA.md](docs/SCHEMA.md)
 
@@ -237,26 +256,28 @@ memex status
 | Command | Purpose |
 | --- | --- |
 | `memex setup` | Check for a conflict with Codex built-in Memory; `--install-cli` / `--uninstall-cli` manage the `~/.local/bin/memex` shim |
-| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
+| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent); `--root` targets an explicit installed plugin root |
+| `memex deps materialize` | Install the runtime dependencies into the resolved installed plugin root (`npm install --omit=dev --no-audit --no-fund`); `--root`, `--dry-run`, `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Register or remove Memex-owned lifecycle hooks (explicit fallback hosts only) |
-| `memex update` | Refresh the marketplace/plugin while preserving data |
-| `memex sync` | Archive and index new Codex rollouts |
-| `memex index` | Index, verify, repair, or rebuild the conversation index |
+| `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
+| `memex sync` | Archive and index new Codex rollouts; `--background` |
+| `memex sync enable\|disable\|status\|export\|import` | Cross-device sync switch (OFF by default), shared folder (`--dir`), status, manual export (`--force`) / import; `--json` |
+| `memex index` | Index, verify, repair, or rebuild the conversation index: `--cleanup`, `--session <id>`, `--verify`, `--repair`, `--rebuild`, `--concurrency N`, `--no-summaries` |
 | `memex search` | Semantic, text, or hybrid conversation search |
 | `memex show` | Read one archived conversation |
 | `memex stats` | Inspect corpus/index statistics |
 | `memex analyze` | Generate a deterministic history report |
-| `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` |
+| `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete`; `list --all` includes inactive facts (`--limit`, `--offset`), `edit --source-exchange <id>` names the evidence |
 | `memex facts tier\|promote\|demote` | Inspect or move a memory on the `workstream ⇄ project ⇄ global` ladder, one rung at a time |
 | `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
-| `memex status` | Inspect pipeline readiness, `Needs attention`, and quarantined projects |
+| `memex status` | Inspect pipeline readiness, `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex doctor` | Diagnose dependencies, build, hooks, injection output, and recall provenance |
 | `memex home` | Print the resolved Memex data root |
-| `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02) |
+| `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02); `--dry-run` prints the plan and writes nothing |
 
 Every subcommand accepts `--help` / `-h`, prints usage only, and exits `0`; the commands with side effects (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`) write nothing when asked for help.
 

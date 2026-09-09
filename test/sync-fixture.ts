@@ -1,6 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, countPayloadRows, payloadSha256 } from '../src/sync-export.js';
+import {
+  getSyncDir,
+  SYNC_PAYLOAD_FILE_NAMES,
+  SYNC_PROTOCOL_VERSION,
+  countPayloadRows,
+  payloadSha256,
+} from '../src/sync-export.js';
 
 export const SYNC_PAYLOAD_FILES = [
   'facts.jsonl',
@@ -44,7 +50,7 @@ export function factRow(
 export function craftCommittedGeneration(
   deviceId: string,
   payload: SyncPayload = {},
-  opts: { generationId?: string } = {},
+  opts: { generationId?: string; protocolVersion?: number } = {},
 ): { syncDir: string; deviceDir: string; genDir: string; generationId: string } {
   const syncDir = getSyncDir();
   const generationId =
@@ -60,7 +66,7 @@ export function craftCommittedGeneration(
     path.join(genDir, 'meta.json'),
     JSON.stringify(
       {
-        protocol_version: 4,
+        protocol_version: opts.protocolVersion ?? SYNC_PROTOCOL_VERSION,
         generation: generationId,
         device_id: deviceId,
         exported_at: '2026-08-30T00:00:00.000Z',

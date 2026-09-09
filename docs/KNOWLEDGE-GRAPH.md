@@ -18,7 +18,7 @@ graph TD
 
 ## 2. Local-derived 계약
 
-protocol v4에서 다음은 sync payload에 포함하지 않습니다.
+protocol v5에서 다음은 sync payload에 포함하지 않습니다.
 
 - ontology domains/categories
 - `ontology_category_id`

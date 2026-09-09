@@ -88,8 +88,8 @@ WORKFLOW:
   4. Recovery: index-conversations --repair (if issues found)
 
 SEE ALSO:
-  INDEXING.md - Setup and maintenance guide
-  DEPLOYMENT.md - Production runbook`);
+  docs/GUIDE.md - §4 onboarding, §15 index integrity and recovery
+  docs/CONVERSATION-LIFECYCLE.md - archive, index and exclusion contract`);
 }
 
 async function main() {
