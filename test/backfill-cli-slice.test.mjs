@@ -32,6 +32,35 @@ function runMemex(args, extraEnv = {}) {
   });
 }
 
+async function seedPendingExtraction() {
+  const home = path.join(tmpRoot, "home");
+  const dbPath = path.join(home, "conversation-index", "db.sqlite");
+  const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
+  const db = initDatabase({ dbPath });
+  const insert = db.prepare(`
+    INSERT INTO exchanges (
+      id, project, timestamp, user_message, assistant_message,
+      archive_path, line_start, line_end, session_id, cwd
+    ) VALUES (?, '/tmp/project', ?, 'question', 'answer', '/tmp/source.jsonl', 1, 2, ?, '/tmp/project')
+  `);
+  for (const sessionId of ["pending-a", "pending-b"]) {
+    insert.run(`${sessionId}-1`, "2026-09-09T00:00:00.000Z", sessionId);
+    insert.run(`${sessionId}-2`, "2026-09-09T00:01:00.000Z", sessionId);
+  }
+  // Below the min-exchanges policy gate: visible in status as excluded, never
+  // counted as deferred work the backfill can process.
+  insert.run("excluded-1", "2026-09-09T00:02:00.000Z", "excluded");
+  db.close();
+
+  // Keep the embedding stage deterministic and model-free. A live owner makes
+  // the worker defer to the existing process, after which the CLI reads the
+  // durable backlog instead of trusting the worker's zero exit code.
+  fs.writeFileSync(
+    path.join(home, "conversation-index", "reembed.lock"),
+    String(process.pid),
+  );
+}
+
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mb-backfill-cli-"));
   fs.mkdirSync(path.join(tmpRoot, "sessions"), { recursive: true });
@@ -69,14 +98,52 @@ describe("memex backfill CLI 계약", () => {
   });
 
   it("default (no flag) runs every stage to completion in-process", () => {
-    const out = runMemex(["backfill", "all"]);
+    const out = runMemex(["backfill", "all"], {
+      MEMEX_EMBEDDING_STUB: "1",
+    });
     for (const stage of ["extract", "ontology", "embeddings"]) {
       assert.match(
         out,
         new RegExp(`Running ${stage} backfill in foreground\\.\\.\\.`),
       );
     }
-    assert.match(out, /All backfill stages completed\./);
+    assert.match(out, /All backfill stages completed; no outstanding work remains\./);
+    assert.doesNotMatch(out, /another worker is running/);
+    assert.ok(
+      fs.existsSync(
+        path.join(tmpRoot, "home", "conversation-index", "db.sqlite"),
+      ),
+    );
+  });
+
+  it("returns partial status and exact processable deferred count", async () => {
+    await seedPendingExtraction();
+    try {
+      runMemex(["backfill", "all"], { BACKFILL_EXTRACT_MAX: "0" });
+      assert.fail("expected partial-completion exit code");
+    } catch (err) {
+      assert.equal(err.status, 2);
+      assert.match(
+        err.stdout,
+        /Backfill completed with deferred work: 8 item\(s\) remain \(extract=2, ontology=0, embeddings=6\)\./,
+      );
+      assert.match(err.stdout, /Check progress: memex status/);
+      assert.doesNotMatch(err.stdout, /All backfill stages completed/);
+    }
+  });
+
+  it("returns failure when a worker reports a fatal error", () => {
+    try {
+      runMemex(["backfill", "ontology"], {
+        MEMEX_MODEL_BUDGET_ID: "missing-budget",
+      });
+      assert.fail("expected worker failure exit code");
+    } catch (err) {
+      assert.equal(err.status, 1);
+      assert.match(err.stdout, /model budget missing-budget does not exist/);
+      assert.match(err.stderr, /ontology backfill failed\./);
+      assert.doesNotMatch(err.stdout, /completed/);
+    }
   });
 
   it("--foreground remains accepted as deprecated no-op", () => {

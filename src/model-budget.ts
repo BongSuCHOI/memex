@@ -27,7 +27,7 @@ const MAX_DEADLINE_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
-export const MAINTENANCE_WAKE_INTERVAL_MS = 60_000;
+export const MAINTENANCE_WAKE_INTERVAL_MS = 3 * 60_000;
 
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";

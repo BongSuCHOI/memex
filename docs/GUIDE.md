@@ -75,7 +75,13 @@ memex status --json
 - `memex backfill embeddings` — 누락된 semantic vector 생성
 - `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
-`backfill`은 기본 foreground 실행입니다. 실패하면 첫 실패 단계에서 멈추며 idempotent하므로 다시 실행할 수 있습니다. `--background`의 “started” 출력은 완료 증거가 아닙니다. `memex status`의 pending/readiness를 확인하십시오.
+`backfill`은 기본 foreground 실행이며 다음 exit code를 반환합니다.
+
+- `0` — 처리 가능·실행 중·미해결 작업이 모두 없음
+- `2` — worker는 정상 종료했지만 재시도 가능한 backlog, active extraction claim 또는 terminal extraction failure가 남음
+- `1` — worker 실패. 첫 실패 단계에서 이후 실행을 중단
+
+`2`일 때 CLI는 `completed with deferred work` 또는 outstanding work와 선택한 단계별 실행 후 건수를 출력합니다. 각 단계 수치는 extraction session, ontology fact/relation target, category/fact/Korean-fact/exchange vector를 worker selector로 센 실행 직후 스냅샷입니다. `--background`의 “started” 출력은 완료 증거가 아닙니다. 구조화된 pipeline 상태는 `memex status --json`으로 확인하십시오. 모든 단계는 idempotent하므로 다시 실행할 수 있습니다.
 
 ### KR translation은 별도 수동 단계
 
@@ -436,7 +442,7 @@ Process가 끝났다는 사실만으로 증거 처리 작업이 완료되었다�
 각 시작·메시지 제출 이벤트에서 조건을 재검사하며, 조건이 아직 맞지 않으면 그 다음 시작 이벤트까지 쉽니다.
 별도 타이머나 상시 프로세스는 만들지 않습니다.
 메시지 훅의 유지보수는 `async`로 등록되어 context injection과 별도로 실행합니다.
-같은 데이터 루트의 시작·메시지 이벤트를 1분 단위로 묶어 queue 검사·worker 기동을 제한합니다.
+같은 데이터 루트의 시작·메시지 이벤트를 3분 단위로 묶어 queue 검사·worker 기동을 제한합니다.
 이 wake 제한은 모델 예산을 초기화하지 않으며 기존 worker lock과 job lease가 실제 중복 작업을 막습니다.
 
 - 같은 run의 마지막 호출(호출이 없으면 생성 시각)부터 최소 1시간 대기

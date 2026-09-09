@@ -16,7 +16,7 @@ export declare const MODEL_ATTEMPT_TABLE = "model_work_attempts";
 export declare const MODEL_TARGET_TABLE = "model_work_targets";
 export declare const AUTOMATIC_MAINTENANCE_WINDOW_MS: number;
 export declare const AUTOMATIC_MAINTENANCE_COOLDOWN_MS: number;
-export declare const MAINTENANCE_WAKE_INTERVAL_MS = 60000;
+export declare const MAINTENANCE_WAKE_INTERVAL_MS: number;
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
 export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled" | "window";

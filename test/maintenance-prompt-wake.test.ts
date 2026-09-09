@@ -10,6 +10,10 @@ import { claimMaintenanceWake, ensureModelBudgetSchema, MAINTENANCE_WAKE_INTERVA
 import { LIFECYCLE_COMMANDS } from "../src/lifecycle.js";
 
 describe("prompt-triggered maintenance", () => {
+  it("coalesces wakeups for three minutes", () => {
+    expect(MAINTENANCE_WAKE_INTERVAL_MS).toBe(3 * 60 * 1_000);
+  });
+
   it("registers a separate async maintenance hook in both plugin and explicit fallback", () => {
     const manifest = JSON.parse(fs.readFileSync("hooks.json", "utf8"));
     const commands = manifest.hooks.UserPromptSubmit.flatMap((block: { hooks: object[] }) => block.hooks);

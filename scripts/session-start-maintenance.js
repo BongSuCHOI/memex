@@ -46,7 +46,7 @@ async function main() {
 
     db = initDatabase();
     // Shared across sessions and both entry points. A failed/crashed launch
-    // becomes eligible again after one minute; it never refunds model budget.
+    // becomes eligible again after three minutes; it never refunds model budget.
     if (!claimMaintenanceWake(db)) return;
     // One named maintenance wave is shared by detached sibling workers. The
     // durable row survives restarts. Conditional rollover preserves its ledger

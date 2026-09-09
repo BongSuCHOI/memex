@@ -76,6 +76,7 @@ function log(line) {
 }
 
 function acquireLock() {
+  fs.mkdirSync(path.dirname(LOCK), { recursive: true });
   // Atomic exclusive create ('wx') — a read-then-write check is racy when two
   // SessionStart hooks spawn workers simultaneously.
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -377,6 +378,7 @@ async function main() {
     log(
       `backfill-extract: FATAL ${error instanceof Error ? error.message : error}`,
     );
+    process.exitCode = 1;
   } finally {
     try {
       db?.close();
