@@ -2,7 +2,7 @@ import{esc,icon,header,btn,linkBtn,banner,badge,number,date,relative,basename,sh
 export async function render(ctx){
   const id=ctx.p.get('session');if(id)return session(ctx,id);
   const page=await ctx.api('sessions',{...Object.fromEntries(ctx.p),limit:30});
-  return{html:`${header('대화 원장','수집된 대화에서 기억의 출처와 처리 상태를 따라가세요.',linkBtn('동기화 관리','refresh',ctx.href('/settings',{tab:'actions'})),'ARCHIVE / CONVERSATIONS')}
+  return{html:`${header('대화 원장','수집된 대화에서 기억의 출처와 처리 상태를 따라가세요.',linkBtn('동기화 관리','refresh',ctx.href('/settings',{tab:'actions'})),'ARCHIVE / CONVERSATIONS','/conversations')}
   ${ctx.scope.scope==='global'?banner(`<div class="spread"><div><strong>공통 기억 범위에는 대화가 없습니다</strong><p>대화는 프로젝트에 종속되므로 이 범위의 결과는 항상 0건입니다.</p></div>${btn('전체 프로젝트로 보기','layers','data-action="scope-all"','small')}</div>`,'neutral','folder'):''}
   <form class="toolbar" data-filter>${searchField(ctx.p.get('q'),'대화 내용 검색')}
   <select name="searchMode" aria-label="검색 방식">${options([['fts','단어 검색 (FTS 우선)'],['contains','문자열 포함 검색']],ctx.p.get('searchMode')||'fts')}</select>

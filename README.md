@@ -95,6 +95,8 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
 | `/settings` administration | runtime, admin commands, display preferences, diagnostics |
 
+Every page carries its own help: an ⓘ next to the title linking the matching section of the docs at this release tag, one-line tooltips on controls, badges and table headers, and a searchable glossary on `?`. Turn it down or off in 관리 › 화면 설정.
+
 Every page takes an explicit scope: one project, common (global) memory, or all projects. All projects is the default view and is read-only breadth — injection always uses the current project plus common memory, and the scope selector says so permanently. Opening a page never starts model work.
 
 ![Fact detail drawer on the evidence tab, showing direct evidence and interpretive context as separate sections](assets/readme/facts-detail.png)

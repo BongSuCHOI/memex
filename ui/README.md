@@ -10,6 +10,7 @@
 - `lib/logs.cjs`: 제한된 로그 tail, UI 감사 메타데이터
 - `lib/operations.cjs`: 기존 CLI allowlist 실행, 취소, 출력 제한 (`doctor` · `status` · `sync` · `backfill *` · `recover --all-dead` · `facts migrate-tiers --dry-run|--apply`)
 - `public/pages/`: 개요, 대화 원장, 기억·사실, 분류, 지도, 활동, 관리
+- `public/help.mjs`: 도움말·툴팁·용어집 카탈로그 — 아무것도 import하지 않습니다(배지 툴팁 때문에 `ui.mjs`가 이 파일을 읽습니다)
 - `public/guidance.mjs`: 실패 클래스 카탈로그 — 원인·영향·다음 행동·액션·무시 가능 여부 (단일 출처는 `docs/GUIDE.md` §20)
 - `public/details.mjs`: 기억·대화·작업·모델 시도·Chronicle·관리 실행 상세
 - `public/graph-engine.mjs`: 네이티브 WebGL, Canvas2D fallback

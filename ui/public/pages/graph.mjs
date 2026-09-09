@@ -3,7 +3,7 @@ import{KnowledgeGraph,palette}from'../graph-engine.mjs';
 const rels={SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충'};
 export async function render(ctx){
   const data=await ctx.api('graph',{...Object.fromEntries(ctx.p),limit:ctx.p.get('limit')||1200});const mode=ctx.p.get('mode')||'2d';const types=ctx.p.get('types')?.split(',')||data.types;
-  const html=`${header('지식 지도','기억 사이의 관계를 탐색하고, 노드를 선택해 원문 근거까지 연결하세요.',`${linkBtn('분류 탐색','folder',ctx.href('/taxonomy'))}${btn('지도 내보내기','download','data-action="graph-export"')}`,'KNOWLEDGE / WEBGL')}
+  const html=`${header('지식 지도','기억 사이의 관계를 탐색하고, 노드를 선택해 원문 근거까지 연결하세요.',`${linkBtn('분류 탐색','folder',ctx.href('/taxonomy'))}${btn('지도 내보내기','download','data-action="graph-export"')}`,'KNOWLEDGE / WEBGL','/graph')}
   ${data.truncated?banner(`선택 범위의 ${number(data.total)}개 중 최근 ${number(data.nodes.length)}개 기억을 표시합니다. 표시되지 않은 노드로 향하는 관계는 생략됩니다.`):''}
   ${data.focus?banner(`선택 기억의 1단계 이웃을 보고 있습니다. <a class="text-link" data-nav href="${esc(ctx.href('/graph'))}">전체 범위로 돌아가기</a>`):''}
   <div class="graph-layout"><aside class="card graph-filters"><div><h3>주제 도메인</h3><select id="graph-domain" style="width:100%" aria-label="그래프 도메인">${options([['','모든 도메인'],...data.domains.map(d=>[d.id,d.name])],ctx.p.get('domain'))}</select><div class="mt stack-sm">${data.domains.slice(0,8).map((d,i)=>`<div class="row" style="font-size:10px"><span class="color-dot" style="--swatch:${palette[i%palette.length]}"></span><span class="grow truncate">${esc(d.name)}</span><span class="subtle">${number(d.facts)}</span></div>`).join('')}</div></div>

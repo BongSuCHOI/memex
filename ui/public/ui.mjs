@@ -1,3 +1,4 @@
+import {badgeHelp,helpFor} from './help.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -42,7 +43,8 @@ export function tierExplain(f,project){const tier=tierOf(f),branch=tierBranch(f)
  return `프로젝트 ${project||'전체'}의 모든 세션에 주입됩니다.`;}
 export const tierBadge=(f,project)=>`<span class="tag outline" data-tier="${esc(tierOf(f))}" title="${esc(tierExplain(f,project))}">${esc(tierLabel(f))}</span>`;
 export const tierHiddenTotal=hidden=>hidden?Number(hidden.workstream||0)+Number(hidden.workspace||0):0;
-export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');return `<span class="tag ${esc(color)}">${esc(name(v))}</span>`;}
+export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
+const tip=badgeHelp(v);return `<span class="tag ${esc(color)}"${tip?` title="${esc(tip)}"`:''}>${esc(name(v))}</span>`;}
 export const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('ko-KR');
 export const short=id=>id?String(id).slice(0,8):'—';
 export const basename=p=>p?p.split('/').filter(Boolean).pop()||'/':'공통 기억';
@@ -51,7 +53,12 @@ export function date(value,mode='full'){const d=parseDate(value);if(!d)return '�
 export function relative(value){const d=parseDate(value);if(!d)return '미수집';const delta=(Date.now()-d)/1000;if(delta<0)return date(value);if(delta<60)return '방금 전';if(delta<3600)return `${Math.floor(delta/60)}분 전`;if(delta<86400)return `${Math.floor(delta/3600)}시간 전`;if(delta<86400*7)return `${Math.floor(delta/86400)}일 전`;return date(value,'day');}
 export const duration=ms=>ms===null||ms===undefined?'미수집':ms<1000?`${number(ms)} ms`:ms<60000?`${(ms/1000).toFixed(1)} s`:`${Math.floor(ms/60000)}분 ${Math.round(ms%60000/1000)}초`;
 export const bytes=b=>b===null||b===undefined?'미수집':b<1024?`${b} B`:b<1024**2?`${(b/1024).toFixed(1)} KB`:`${(b/1024**2).toFixed(1)} MB`;
-export function header(title,subtitle,actions='',eyebrow='WORKSPACE'){return `<div class="page-header"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div><div class="page-actions">${actions}</div></div>`;}
+/** 표 머리글의 한 줄 툴팁(#28). 설명이 없는 열은 그대로 둔다. */
+export function th(label,key){const entry=helpFor('header:'+key);return entry?`<span title="${esc(entry.body)}">${esc(label)}</span>`:esc(label);}
+export function header(title,subtitle,actions='',eyebrow='WORKSPACE',help=null){
+ const entry=help?helpFor('page:'+help):null;
+ const button=entry?`<button class="icon-btn help-toggle" data-help="page:${esc(help)}" aria-label="${esc(entry.title)} 도움말" title="${esc(entry.title)} 도움말">${icon('info')}</button>`:'';
+ return `<div class="page-header"><div><div class="eyebrow">${esc(eyebrow)}</div><div class="row"><h1>${esc(title)}</h1>${button}</div><p>${esc(subtitle)}</p></div><div class="page-actions">${actions}</div></div>`;}
 export const btn=(title,ico,attrs='',cls='')=>`<button class="btn ${esc(cls)}" ${attrs}>${ico?icon(ico):''}${esc(title)}</button>`;
 export const linkBtn=(title,ico,href,cls='')=>`<a class="btn ${esc(cls)}" href="${esc(href)}" data-nav>${ico?icon(ico):''}${esc(title)}</a>`;
 export const empty=(title,description,action='',ico='memory')=>`<div class="empty"><div class="empty-icon">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;

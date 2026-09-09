@@ -15,7 +15,7 @@ export async function render(ctx){
   const hiddenTiers=tierHiddenTotal(data.hiddenByTier);
   // 실패 클래스별로 묶은 경고. 파이프라인 상태를 읽지 못하면 조회 범위의 큐 수만 정직하게 알린다.
   const attention=attentionFromPipeline(p);
-  return {html:`${header('기억의 흐름을 한눈에','대화가 기억이 되고, 다시 맥락으로 돌아오는 과정을 살펴보세요.',`<span class="date-caption">${esc(today)} · 로컬 워크스페이스</span>${linkBtn('활동 보기','activity',ctx.href('/activity'))}`,'MEMEX / OVERVIEW')}
+  return {html:`${header('기억의 흐름을 한눈에','대화가 기억이 되고, 다시 맥락으로 돌아오는 과정을 살펴보세요.',`<span class="date-caption">${esc(today)} · 로컬 워크스페이스</span>${linkBtn('활동 보기','activity',ctx.href('/activity'))}`,'MEMEX / OVERVIEW','/')}
     ${ctx.scope.scope==='global'?banner(`<div class="spread"><div><strong>현재 공통 기억 범위입니다</strong><p>대화와 처리 작업은 프로젝트에 종속되므로 이 범위에서는 보이지 않습니다.</p></div>${btn('전체 프로젝트로 보기','layers','data-action="scope-all"','small')}</div>`):''}
     ${hiddenTiers?banner(`<div class="spread"><div><strong>브랜치/작업 흐름 범위 기억 ${number(hiddenTiers)}건이 이 화면 밖에 있습니다</strong><p>프로젝트 공용이 아니라서 기본 범위의 요약에 포함되지 않습니다.</p></div>${linkBtn('포함해서 보기','layers',ctx.href('/facts',{tiers:'all'}),'small')}</div>`,'warning','layers'):''}
     ${!attention.length&&errors?banner(`<div class="spread"><div><strong>확인이 필요한 작업 ${number(errors)}개</strong><p>실패 종료와 재시도 대기 작업이 있습니다. 상태와 저장된 오류를 확인하세요.</p></div>${linkBtn('작업 확인','arrow',ctx.href('/activity',{tab:'jobs'}),'small')}</div>`,'warning','warning'):''}

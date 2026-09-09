@@ -1305,7 +1305,7 @@ try {
         selected:select.value,
         options:[...select.options].map(o=>o.textContent.trim()),
         groups:[...select.querySelectorAll('optgroup')].map(g=>g.label),
-        navLabels:[...document.querySelectorAll('#sidebar .nav-item .nav-label')].map(x=>x.textContent),
+        navLabels:[...document.querySelectorAll('#sidebar nav .nav-item .nav-label')].map(x=>x.textContent),
         heading:text('#main .page-header h1'),
         title:document.title,
         hint:hint?.textContent?.trim()||'',
@@ -1358,6 +1358,36 @@ try {
     false,
   );
 
+  // #28: the help layer must be reachable without documentation — page ⓘ, the doc link
+  // pinned to the release tag, native tooltips, and the ? glossary.
+  const helpLayer = await pageProbe(
+    cdp,
+    base + "/facts" + allScope,
+    probe(`
+      const toggle=await until('page help',()=>document.querySelector('#main [data-help="page:/facts"]'));
+      const badgeTitle=document.querySelector('#main .data-table .tag')?.getAttribute('title')||'';
+      const headerTitle=document.querySelector('#main .data-table th span[title]')?.getAttribute('title')||'';
+      const scopeTitle=document.querySelector('#scope-select')?.getAttribute('title')||'';
+      toggle.click();
+      const panel=await until('help modal',()=>document.querySelector('#modal[open] .modal-body'));
+      const helpText=panel.textContent;
+      const docHref=panel.querySelector('a[href^="https://github.com/"]')?.getAttribute('href')||'';
+      document.querySelector('#modal [data-action="close-modal"]').click();
+      await until('help closed',()=>!document.querySelector('#modal').open);
+      document.dispatchEvent(new KeyboardEvent('keydown',{key:'?',bubbles:true}));
+      const list=await until('glossary',()=>document.querySelector('#modal[open] #glossary-list'));
+      const terms=[...list.querySelectorAll('[data-term]')].length;
+      const input=document.querySelector('#glossary-input');
+      input.value='capsule';
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      await sleep(150);
+      const visible=[...list.querySelectorAll('[data-term]')].filter(x=>!x.hidden).map(x=>x.querySelector('strong').textContent);
+      return {helpText:helpText.slice(0,260),docHref,terms,visible,badgeTitle,headerTitle,scopeTitle,sidebarGlossary:Boolean(document.querySelector('#sidebar [data-action="glossary"]'))};
+    `),
+    "facts-help.png",
+    false,
+  );
+
   const facts = await pageProbe(
     cdp,
     base + "/facts" + allScope,
@@ -1375,7 +1405,7 @@ try {
         rowCount:document.querySelectorAll('#main .data-table tbody tr').length,
         wordBreak:getComputedStyle(cell).overflowWrap,
         pageOverflowX:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
-        navItems:[...document.querySelectorAll('#sidebar .nav-item .nav-label')].map(x=>x.textContent),
+        navItems:[...document.querySelectorAll('#sidebar nav .nav-item .nav-label')].map(x=>x.textContent),
         scopeSelected:document.querySelector('#scope-select')?.value,
       };
     `),
@@ -1855,6 +1885,21 @@ try {
     );
   }
   if (
+    !helpLayer.helpText.includes("Memex가 기억하는 문장과 그 근거") ||
+    !helpLayer.docHref.startsWith("https://github.com/BongSuCHOI/memex/blob/") ||
+    !helpLayer.docHref.includes("/docs/GUIDE.md#") ||
+    /blob\/main\//.test(helpLayer.docHref) ||
+    !helpLayer.badgeTitle ||
+    !helpLayer.headerTitle ||
+    !helpLayer.scopeTitle.includes("주입 범위와 다릅니다") ||
+    !helpLayer.sidebarGlossary ||
+    helpLayer.terms < 10 ||
+    !helpLayer.visible.includes("Capsule") ||
+    helpLayer.visible.length !== 1
+  ) {
+    throw new Error("Help layer assertion failed: " + JSON.stringify(helpLayer));
+  }
+  if (
     facts.hasInjectedImage ||
     facts.injectedFlag ||
     facts.rowCount !== 2 ||
@@ -2068,6 +2113,7 @@ try {
           scopeDefaults,
           factDeepLink,
           scopeSwitch,
+          helpLayer,
           tierBanner,
           tierPromote,
           jobGuidance,

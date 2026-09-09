@@ -84,7 +84,7 @@ test('분류 카드는 기억 목록과 지식 지도로 각각 연결된다',as
 test('기억 0개를 제공한 inject-context 행은 성공 색을 쓰지 않는다',()=>{
  const zero={status:'injected',data:{injected:0,candidates:0}};
  assert.equal(logStatus(zero),'no-inject');
- assert.equal(badge(logStatus(zero)),'<span class="tag ">제공 없음</span>');
+ assert.match(badge(logStatus(zero)),/^<span class="tag " title="[^"]+">제공 없음<\/span>$/,'성공 색이 붙었거나 설명 툴팁이 빠짐');
  const provided={status:'injected',data:{injected:3}};
  assert.equal(logStatus(provided),'injected');
  assert.match(badge(logStatus(provided)),/class="tag green"/);
