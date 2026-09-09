@@ -279,7 +279,7 @@ export function applyFactMeaningMutationWithPolicy(db, opts, embedding) {
         // verification receipt must retain the entire evidence set used by the policy.
         if (opts.policy.sources && ['verified-extraction', 'consolidation'].includes(opts.policy.kind)) {
             // 이슈 #45: 예전에는 void였고 실패가 조용했다 — 영수증 없는 fact는
-            // 자동 통합에서 제외되고 sync tie-break에서 지는데 아무도 몰랐다.
+            // 자동 통합에서 제외되는데 아무도 몰랐다(sync 충돌은 영수증이 아니라 이벤트 시각으로 판정).
             const recorded = recordLocalMeaningEvidence(db, opts.factId, newText, opts.policy.kind === 'consolidation' ? 'consolidator' : 'extractor', opts.policy.sources.map(source => source.id));
             if (!recorded) {
                 console.error(`local meaning evidence NOT recorded for fact ${opts.factId} (${opts.policy.kind}): ` +

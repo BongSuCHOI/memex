@@ -608,7 +608,7 @@ export function formatPipelineStatus(s) {
     lines.push(`Relations: ${s.relations}`);
     if (s.evidence.factsWithoutLocalEvidence > 0) {
         lines.push(`facts without local evidence: ${s.evidence.factsWithoutLocalEvidence} / ${s.evidence.activeFactsWithSources}`);
-        lines.push("  no current local verification receipt — these facts are held back from automatic consolidation and lose sync tie-breaks; rebuild: memex backfill receipts");
+        lines.push("  no current local verification receipt — these facts are held back from automatic consolidation; rebuild: memex backfill receipts");
     }
     // Issue #46 (15.2): the per-kind queue breakdown GUIDE §15 asks for. Printed
     // above `Needs attention` because it is the wider view the two dead/retry
