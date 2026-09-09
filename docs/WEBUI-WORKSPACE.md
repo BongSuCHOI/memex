@@ -18,9 +18,36 @@
 기본 브랜치나 비-git 디렉터리에서 만들어진 기억은 프로젝트 범위 화면에 바로 나타난다.
 `facts.tier_reason`이 그 근거를 담는다.
 
-**0.6.0에서 UI 코드는 바뀌지 않았다.** 계층 배지·숨김 배너·승격/강등 버튼·마이그레이션 카드·실패
-클래스별 안내는 0.6.1(#22 #23 #24)에서 들어온다. 그때까지 계층 이동은 CLI가 유일한 경로다 —
-`memex facts tier|promote|demote`, `memex facts migrate-tiers`([GUIDE §7](GUIDE.md#7-fact-관리)).
+### 계층 배지와 숨겨진 계층 (0.6.1 #22)
+
+기억 행과 상세 패널 요약 탭에 **주입 계층** 배지를 단다. 라벨은 `글로벌 공용` / `프로젝트 공용` /
+`브랜치: <name>` / `워크스페이스` 네 가지이고, 툴팁 한 문장이 그 계층의 주입 조건을 말한다. 브랜치
+이름은 `facts.tier_reason`의 `branch:<name>`이 우선이고 없으면 작업 흐름의 `branch_hint`를 쓴다.
+둘 다 없으면 이름을 지어내지 않고 `브랜치`로만 표시한다.
+
+`/api/v2/facts`는 같은 프로젝트에 있지만 현재 술어 밖인 기억 수를
+`hiddenByTier: {workstream, workspace}`로 함께 돌려준다. 0이 아니면 기억·사실 화면과 개요에
+"브랜치/작업 흐름 범위 기억 N건이 더 있습니다 → 포함해서 보기" 배너가 뜨고, 토글은 쿼리 파라미터
+`tiers=all`을 켠다. 이 상태는 상단 **상세 조회 범위** 모달의 체크박스와 같은 값을 공유한다.
+`tiers=all`은 계층 술어만 풀 뿐 프로젝트 경계는 넓히지 않는다. `hiddenByTier`는 `tiers=all` 상태에서도
+기본 술어 기준으로 계속 보고하므로 토글을 되돌릴 수 있다.
+
+상세 패널 › 처리·재사용의 **"이 기억이 주입되는 조건"** 절이 계층·프로젝트·브랜치·활성 여부와
+마지막으로 실제 제공된 recall 기록을 함께 보여준다. 조건을 만족해도 관련성 게이트에서 탈락할 수
+있다는 사실을 같이 적는다.
+
+### 승격/강등과 계층 이관 (0.6.1 #22)
+
+상세 패널의 **계층 승격 / 계층 강등** 버튼이 `/api/v2/facts/promote|demote`(POST, CSRF, 감사 1줄)를
+통해 `dist/fact-management.js`의 `promoteFact`/`demoteFact`를 `actor: 'user'`로 호출한다. 사다리는
+`브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`이고 **한 번에 한 칸만** 움직인다 — 글로벌로 보내려면 먼저
+프로젝트 공용으로 승격해야 하며, 사다리 끝 방향의 버튼은 미리 비활성화한다. 결과는 Chronicle
+`PROMOTED`/`DEMOTED` 이벤트로 남아 변경 이력 탭에 즉시 나타난다. UI는 `user-directive`를 쓰지 않는다.
+
+관리 › 관리 작업의 **기억 계층 이관** 카드는 `memex facts migrate-tiers --dry-run` 출력을 그대로
+보여주고, 미리보기를 실행한 뒤에만 `--apply` 버튼이 열린다. 두 실행 모두 기존 관리 명령 경로
+(`lib/operations.cjs` allowlist · 확인 모달 · 감사 로그)를 그대로 쓴다.
+
 실패 상태의 원인·복구 안내는 [GUIDE §20](GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 표를
 단일 출처로 삼는다.
 
@@ -37,11 +64,11 @@ MEMEX_PLUGIN_ROOT="$PWD" node ui/server.cjs
 
 ## 계약
 
-조회: `dist/db.js`의 `openReadDb`만 사용. 의미 수정·비활성화·복원·영구 삭제는 `dist/fact-management.js`를 호출. 모델/임베딩 런타임 미준비 오류를 숨기지 않는다. 기존 core API를 우회하는 raw SQL 수정은 하지 않는다.
+조회: `dist/db.js`의 `openReadDb`만 사용. 의미 수정·비활성화·복원·영구 삭제와 계층 승격·강등은 `dist/fact-management.js`를 호출. 모델/임베딩 런타임 미준비 오류를 숨기지 않는다. 기존 core API를 우회하는 raw SQL 수정은 하지 않는다.
 
 Chronicle의 사건 발생/기록 시각을 구분하고 직접 근거와 해석 맥락을 분리한다. 연결 ID가 없는 기록을 추정 연결하지 않으며 후보 탈락 사유·토큰 미수집을 만들어내지 않는다. 그래프 위치는 임베딩 거리 수치가 아니다. 컨텍스트 제공은 답변에서 실제 사용됐다는 증거가 아니다.
 
-관리 명령은 `doctor`, `status`, `sync`, `backfill extract|ontology|embeddings|all`만 실행한다. 모두 전체 저장소 범위로 확인을 요구한다. 상단 필터가 CLI 실행 범위를 제한하지 않는다. 취소는 완료된 데이터 변경을 롤백하지 않는다.
+관리 명령은 `doctor`, `status`, `sync`, `backfill extract|ontology|embeddings|all`, `facts migrate-tiers --dry-run|--apply`만 실행한다. 모두 전체 저장소 범위로 확인을 요구한다. 상단 필터가 CLI 실행 범위를 제한하지 않는다. 취소는 완료된 데이터 변경을 롤백하지 않는다.
 
 SSE는 조회 갱신 알림이다. 로그/추적 원장 전체 재생 프로토콜이 아니다. UI 연결 상태는 플러그인 전체 건강 상태와 다르다. 실행 출력은 메모리 제한 보관, 실행 메타데이터만 로컬 JSON에 보존한다.
 

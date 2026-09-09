@@ -9,6 +9,24 @@ test('all seven pages and static modules have proper MIME and CSP',async()=>{for
 test('foreign Host and Origin are rejected',async()=>{const raw=headers=>new Promise((resolve,reject)=>{http.get(base+'/api/v2/bootstrap',{headers},r=>{r.resume();resolve(r.statusCode);}).on('error',reject);});assert.equal(await raw({Host:'attacker.invalid'}),403);assert.equal(await raw({Origin:'https://evil.invalid'}),403);assert.equal(await raw({'Sec-Fetch-Site':'cross-site'}),403);});
 test('writes require a real token and JSON',async()=>{const url=base+'/api/v2/facts/mutate?'+scope;const body=JSON.stringify({id:uid(1),action:'deactivate'});assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body})).status,403);assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Memex-CSRF':app.token},body})).status,403);assert.equal((await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain','X-Memex-CSRF':app.token},body})).status,415);});
 test('malformed and oversized JSON have distinct errors',async()=>{const url=base+'/api/v2/facts/mutate?'+scope,headers={'Content-Type':'application/json','X-Memex-CSRF':app.token};assert.equal((await fetch(url,{method:'POST',headers,body:'{' })).status,400);assert.equal((await fetch(url,{method:'POST',headers,body:JSON.stringify({text:'x'.repeat(70000)})})).status,413);});
+test('계층 이동 API는 CSRF 토큰과 POST를 요구한다',async()=>{
+ for(const action of ['promote','demote']){
+  const url=base+'/api/v2/facts/'+action+'?'+scope;const body=JSON.stringify({id:uid(1),reason:'테스트'});
+  const noToken=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body});
+  assert.equal(noToken.status,403);assert.equal((await noToken.json()).error.code,'CSRF_REJECTED');
+  const withToken=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','X-Memex-CSRF':app.token},body});
+  assert.equal(withToken.status,403);assert.equal((await withToken.json()).error.code,'FIXTURE_READ_ONLY');
+  assert.equal((await get('/api/v2/facts/'+action+'?'+scope)).status,405);
+ }
+});
+test('계층 이관 명령은 관리 명령 allowlist에 등록되어 있다',async()=>{
+ const boot=(await get('/api/v2/bootstrap')).data;
+ assert.deepEqual(boot.commands['tiers-preview'].args,['facts','migrate-tiers','--dry-run']);
+ assert.deepEqual(boot.commands['tiers-apply'].args,['facts','migrate-tiers','--apply']);
+ assert.equal(boot.commands['tiers-preview'].mutates,false);
+ assert.equal(boot.commands['tiers-apply'].mutates,true);
+ assert.equal(boot.commands['tiers-apply'].group,'tiers');
+});
 test('read APIs reject POST rather than silently mutate',async()=>assert.equal((await fetch(base+'/api/v2/facts?'+scope,{method:'POST',headers:{'X-Memex-CSRF':app.token}})).status,405));
 test('unsupported management commands and missing confirmation fail',async()=>{for(const body of [{command:'shell',confirm:true,scope:'all'},{command:'constructor',confirm:true,scope:'all'},{command:'doctor',confirm:false,scope:'all'}])assert.equal((await fetch(base+'/api/v2/operations',{method:'POST',headers:{'Content-Type':'application/json','X-Memex-CSRF':app.token},body:JSON.stringify(body)})).status,400);});
 test('private rows remain out of scope over HTTP',async()=>assert.equal((await get('/api/v2/fact?'+scope+'&id='+uid(73))).status,404));

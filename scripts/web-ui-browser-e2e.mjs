@@ -32,6 +32,14 @@ const MALICIOUS =
   "<img src=x onerror=globalThis.__memexInjected=true> 한글 사실은 안전하게 표시됩니다";
 const EDITED =
   "The Memex Workspace mutation path uses an initialized vec0 connection.";
+// #22 branch-tier seed: a project memory the default project predicate hides.
+const TIER_PROJECT_ID = "project-web-ui";
+const TIER_WORKSPACE_ID = "workspace-web-ui";
+const TIER_WORKSTREAM_ID = "stream-web-ui";
+const TIER_BRANCH = "feature/tier-ladder";
+const TIER_AT = "2026-08-01T00:00:00.000Z";
+const BRANCH_FACT =
+  "브랜치 계층 기억은 그 브랜치 세션에만 주입된다.";
 
 class Cdp {
   constructor(url) {
@@ -1224,6 +1232,36 @@ try {
     CATEGORY_ID,
     factId,
   );
+  // #22: one project memory parked on the branch tier. It is invisible to the project
+  // screen's default predicate, which is exactly what the hiddenByTier banner, the
+  // tiers=all toggle and a real promoteFact() call have to prove.
+  db.prepare(
+    "INSERT INTO projects (project_id, portable_project_key, display_name, memory_revision, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+  ).run(TIER_PROJECT_ID, "e2e:web-ui", "Memex Web UI", 0, TIER_AT, TIER_AT);
+  db.prepare(
+    "INSERT INTO workspaces (workspace_id, project_id, device_id, canonical_path, location_kind, branch, last_seen_at, created_at) VALUES (?,?,?,?,?,?,?,?)",
+  ).run(TIER_WORKSPACE_ID, TIER_PROJECT_ID, "device-e2e", CONTEXT_PROJECT, "directory", TIER_BRANCH, TIER_AT, TIER_AT);
+  db.prepare(
+    "INSERT INTO minimal_workstreams (workstream_id, project, session_id, branch_hint, binding_reason, created_at, updated_at, project_id, workspace_id, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+  ).run(TIER_WORKSTREAM_ID, CONTEXT_PROJECT, "web-ui-tier-session", TIER_BRANCH, "session-local", TIER_AT, TIER_AT, TIER_PROJECT_ID, TIER_WORKSPACE_ID, "active");
+  const branchFactId = insertFact(db, {
+    fact: BRANCH_FACT,
+    category: "decision",
+    scope_type: "project",
+    scope_project: CONTEXT_PROJECT,
+    source_exchange_ids: [],
+    embedding: new Array(384).fill(0.2),
+    embedding_version: 1,
+    project_id: TIER_PROJECT_ID,
+    workspace_id: TIER_WORKSPACE_ID,
+    workstream_id: TIER_WORKSTREAM_ID,
+    promotion_state: "workstream",
+    promotion_evidence: "experimental",
+    tier_reason: "branch:" + TIER_BRANCH,
+  });
+  // Kept older than the hostile fact so every existing "first row" assertion still
+  // reads the row it was written for.
+  db.prepare("UPDATE facts SET created_at = ?, updated_at = ? WHERE id = ?").run(TIER_AT, TIER_AT, branchFactId);
   db.close();
 
   const port = await freePort();
@@ -1477,7 +1515,7 @@ try {
         const badges=[...document.querySelectorAll('#detail .drawer-body .tag')].map(x=>x.textContent);
         return badges.includes('비활성')?badges:null;
       },30000);
-      const listEmpty=document.querySelector('#main .empty h3')?.textContent||'';
+      const listWhileInactive=[...document.querySelectorAll('#main .data-table .fact-text')].map(x=>x.textContent);
       (await drawerButton('restore')).click();
       await submit('restore');
       const active=await until('active fact',()=>{
@@ -1491,7 +1529,7 @@ try {
         rowText:row.textContent,
         inactiveBadges:inactive,
         activeBadges:active,
-        listEmptyWhileInactive:listEmpty,
+        listWhileInactive,
         toast:text('#toast'),
       };
     `),
@@ -1613,6 +1651,91 @@ try {
     true,
   );
 
+  // #22: the project screen must admit the branch-tier memory exists and be able to include it.
+  const tierBanner = await pageProbe(
+    cdp,
+    base + "/facts" + projectScope,
+    probe(`
+      const node=await until('tier banner',()=>[...document.querySelectorAll('#main .banner')].find(b=>b.textContent.includes('브랜치/작업 흐름 범위 기억')));
+      const bannerText=node.textContent;
+      const before=document.querySelectorAll('#main .data-table tbody tr').length;
+      node.querySelector('[data-param-key="tiers"]').click();
+      await until('tiers applied',()=>new URL(location.href).searchParams.get('tiers')==='all');
+      await until('branch row',()=>[...document.querySelectorAll('#main .data-table tbody tr')].some(r=>r.textContent.includes(${JSON.stringify(BRANCH_FACT)})));
+      return {
+        bannerText,
+        before,
+        after:document.querySelectorAll('#main .data-table tbody tr').length,
+        badges:[...document.querySelectorAll('#main .data-table [data-tier]')].map(x=>({tier:x.dataset.tier,label:x.textContent.trim(),title:x.getAttribute('title')})),
+        hasRevert:Boolean(document.querySelector('#main [data-param-key="tiers"][data-param-value=""]')),
+      };
+    `),
+    "facts-tier-banner.png",
+    false,
+  );
+
+  // #22: promote through the real dist/fact-management.js ladder and read the Chronicle event back.
+  const tierPromote = await pageProbe(
+    cdp,
+    base +
+      "/facts" +
+      projectScope +
+      "&tiers=all&panel=fact&item=" +
+      encodeURIComponent(branchFactId) +
+      "&panelTab=reuse",
+    probe(`
+      const drawer=await until('injection section',()=>{
+        const el=document.querySelector('#detail[open] .drawer-body');
+        return el&&el.textContent.includes('이 기억이 주입되는 조건')?el:null;
+      });
+      const condition=drawer.textContent.slice(0,600);
+      const conditionBadge=drawer.querySelector('[data-tier]');
+      document.querySelector('#detail [data-panel-tab="summary"]').click();
+      const promote=await until('promote button',()=>{
+        const el=document.querySelector('#detail[open] [data-tier-move="promote"]');
+        return el&&!el.disabled?el:null;
+      });
+      const demoteDisabled=document.querySelector('#detail [data-tier-move="demote"]').disabled;
+      const summaryBadge=document.querySelector('#detail [data-tier]')?.textContent.trim();
+      promote.click();
+      const form=await until('promote modal',()=>document.querySelector('#modal[open] #modal-form'));
+      const rule=form.textContent;
+      form.querySelector('input[name="reason"]').value='browser E2E';
+      form.requestSubmit();
+      await until('promote committed',()=>{
+        const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+        if(error)throw new Error('promote rejected: '+error);
+        return !document.querySelector('#modal[open]');
+      },60000);
+      const history=await until('promotion event',()=>{
+        const el=document.querySelector('#detail[open] .drawer-body');
+        return el&&el.textContent.includes('계층 승격')?el:null;
+      },60000);
+      const historyTab=text('#detail .tab.active');
+      const promotedBadge=await until('promoted badge',()=>{
+        document.querySelector('#detail [data-panel-tab="summary"]')?.click();
+        const el=document.querySelector('#detail [data-tier]');
+        return el&&el.dataset.tier==='project'?el.textContent.trim():null;
+      },30000);
+      const bannerGone=await until('banner cleared',()=>
+        [...document.querySelectorAll('#main .banner')].every(b=>!b.textContent.includes('브랜치/작업 흐름 범위 기억'))?'cleared':null,30000);
+      return {
+        condition,
+        conditionTier:conditionBadge?.dataset.tier,
+        conditionLabel:conditionBadge?.textContent.trim(),
+        summaryBadge,
+        demoteDisabled,
+        rule,
+        historyTab,
+        historyHasPromotion:history.textContent.includes('계층 승격'),
+        promotedBadge,
+        bannerGone,
+      };
+    `),
+    "facts-tier-promote.png",
+    false,
+  );
+
   if (
     scopeDefaults.urlScope !== "all" ||
     scopeDefaults.selected !== "all" ||
@@ -1654,7 +1777,7 @@ try {
   if (
     facts.hasInjectedImage ||
     facts.injectedFlag ||
-    facts.rowCount !== 1 ||
+    facts.rowCount !== 2 ||
     facts.pageOverflowX ||
     !facts.factText.includes("한글 사실") ||
     facts.navItems.length !== 7 ||
@@ -1723,10 +1846,44 @@ try {
     !mutations.inactiveBadges.includes("비활성") ||
     !mutations.factText.includes("initialized vec0 connection") ||
     !mutations.rowText.includes("initialized vec0 connection") ||
-    mutations.listEmptyWhileInactive !== "조건에 맞는 기억이 없습니다"
+    // Deactivating drops the row from the default active list, and only that row.
+    mutations.listWhileInactive.some((t) => t.includes("initialized vec0 connection")) ||
+    !mutations.listWhileInactive.some((t) => t.includes(BRANCH_FACT))
   ) {
     throw new Error(
       "Facts mutation assertion failed: " + JSON.stringify(mutations),
+    );
+  }
+  if (
+    !tierBanner.bannerText.includes("브랜치/작업 흐름 범위 기억 1건이 더 있습니다") ||
+    tierBanner.before !== 1 ||
+    tierBanner.after !== 2 ||
+    !tierBanner.hasRevert ||
+    !tierBanner.badges.some(
+      (b) => b.tier === "workstream" && b.label === "브랜치: " + TIER_BRANCH &&
+        b.title === "브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.",
+    ) ||
+    !tierBanner.badges.some((b) => b.tier === "global" && b.label === "글로벌 공용")
+  ) {
+    throw new Error(
+      "Hidden tier banner assertion failed: " + JSON.stringify(tierBanner),
+    );
+  }
+  if (
+    tierPromote.conditionTier !== "workstream" ||
+    tierPromote.conditionLabel !== "브랜치: " + TIER_BRANCH ||
+    !tierPromote.condition.includes("브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.") ||
+    !tierPromote.condition.includes("활성 — 주입 후보") ||
+    tierPromote.summaryBadge !== "브랜치: " + TIER_BRANCH ||
+    !tierPromote.demoteDisabled ||
+    !tierPromote.rule.includes("글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요") ||
+    tierPromote.historyTab !== "변경 이력" ||
+    !tierPromote.historyHasPromotion ||
+    tierPromote.promotedBadge !== "프로젝트 공용" ||
+    tierPromote.bannerGone !== "cleared"
+  ) {
+    throw new Error(
+      "Tier promotion assertion failed: " + JSON.stringify(tierPromote),
     );
   }
   if (
@@ -1758,8 +1915,8 @@ try {
     !graph.labelPixels3d ||
     !graph.nodePixels ||
     !graph.nodePixels3d ||
-    graph.nodeButtons !== 1 ||
-    !graph.meta.includes("1 NODES") ||
+    graph.nodeButtons !== 2 ||
+    !graph.meta.includes("2 NODES") ||
     graph.relationFilters.length !== 4 ||
     !["LOCAL WEBGL", "CANVAS 2D · WEBGL 사용 불가"].includes(graph.renderer)
   ) {
@@ -1809,6 +1966,8 @@ try {
           scopeDefaults,
           factDeepLink,
           scopeSwitch,
+          tierBanner,
+          tierPromote,
           facts,
           factDetail,
           factsTaxonomy,

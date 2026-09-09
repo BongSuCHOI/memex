@@ -193,7 +193,7 @@ sync protocol v4는 fact 상태를 서로 독립적인 축으로 나눕니다.
 | **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 자동으로 병합하지 않고, `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남긴 뒤 `approved_remote_mappings` 명시 승인을 기다립니다. |
 | **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청("이건 프로젝트 공용으로 기억하자" → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
 
-승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다** — Web UI의 기억 변경 allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다. 저장되는 값은 `facts.promotion_state`(`workstream` = 브랜치 tier, `project-current` = 프로젝트 공용, `scope_type = global` = 글로벌)이고, 그 자리에 놓인 근거는 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)에 남습니다.
+승격/강등 채널 ①은 0.6.1부터 CLI와 Web UI **둘 다** 있습니다 — 기억 상세 패널의 승격/강등 버튼이 `POST /api/v2/facts/promote|demote`를 통해 같은 `promoteFact`/`demoteFact` 서비스를 `actor=user`로 호출합니다. Web UI의 기억 변경 allowlist는 `edit|deactivate|restore|delete`에 이 두 계층 이동이 더해집니다. 저장되는 값은 `facts.promotion_state`(`workstream` = 브랜치 tier, `project-current` = 프로젝트 공용, `scope_type = global` = 글로벌)이고, 그 자리에 놓인 근거는 `facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)에 남습니다.
 
 지원하는 scope는 **project**(project-wide truth와 필요한 global fact), **workspace/workstream/session**(명시한 작업 범위와 허용된 상위 truth), **global**(global fact만), **all**(사용자가 명시적으로 요청한 cross-project 접근)입니다.
 

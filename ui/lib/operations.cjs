@@ -9,6 +9,9 @@ const COMMANDS={
   ontology:{label:'온톨로지 분류 백필',args:['backfill','ontology'],model:true,mutates:true},
   embeddings:{label:'임베딩 백필',args:['backfill','embeddings'],model:false,mutates:true},
   all:{label:'전체 백필',args:['backfill','all'],model:true,mutates:true},
+  // group: rendered by a dedicated card instead of the generic 관리 작업 grid.
+  'tiers-preview':{label:'기억 계층 이관 미리보기',args:['facts','migrate-tiers','--dry-run'],model:false,mutates:false,group:'tiers',note:'브랜치 신호 없이 브랜치 계층에 남아 있는 기억을 나열만 합니다. 아무것도 바꾸지 않습니다.'},
+  'tiers-apply':{label:'기억 계층 이관 적용',args:['facts','migrate-tiers','--apply'],model:false,mutates:true,group:'tiers',note:'미리보기에 나온 기억을 프로젝트 공용으로 올리고 Chronicle에 계층 승격 이벤트를 남깁니다. 실제 브랜치에서 만들어진 기억은 옮기지 않습니다.'},
 };
 class Operations {
   constructor(core,logs,options={}){

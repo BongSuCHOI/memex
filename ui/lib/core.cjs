@@ -58,6 +58,34 @@ class Core {
     const store=await this.connect();store.visibleFact(id,scope);
     const fm=await this.module('fact-management');return fm.hardDeleteImpact(this.db,id);
   }
+  /**
+   * Tier ladder move through dist/fact-management.js promoteFact/demoteFact.
+   * The ladder is branch ⇄ project-common ⇄ global, one rung per call: the core refuses a
+   * two-rung jump for actor 'user', and this UI never sends 'user-directive'.
+   */
+  async tier(body,scope){
+    const id=identifier(body.id);const action=body.action;
+    if(!['promote','demote'].includes(action))throw new HttpError(400,'지원하지 않는 계층 이동입니다.');
+    if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    const store=await this.connect();const current=store.visibleFact(id,scope);
+    if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
+    this.busy.add(id);let writer;
+    try{
+      const fm=await this.module('fact-management');
+      if(typeof fm.promoteFact!=='function'||typeof fm.demoteFact!=='function')throw new HttpError(503,'설치된 코어에 계층 이동 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+      const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);
+      const options={actor:'user',reason:text(body.reason,500)||null,projectId:scope.projectId||null,workstreamId:scope.workstreamId||null};
+      return action==='promote'?fm.promoteFact(writer,id,options):fm.demoteFact(writer,id,options);
+    }catch(e){
+      if(e.status)throw e;
+      if(e.name==='TierStepError')throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
+      if(/requires a target project/.test(e.message))throw new HttpError(400,'글로벌 기억을 강등하려면 상단에서 대상 프로젝트 범위를 먼저 선택하세요.','TIER_TARGET_REQUIRED');
+      if(/requires a workstream/.test(e.message))throw new HttpError(400,'브랜치 계층으로 강등하려면 상세 조회 범위에서 작업 흐름을 먼저 선택하세요.','TIER_TARGET_REQUIRED');
+      if(/requires project identity/.test(e.message))throw new HttpError(400,'이 기억에는 프로젝트 식별자가 없어 계층을 옮길 수 없습니다. CLI에서 확인하세요.','TIER_TARGET_REQUIRED');
+      throw e;
+    }
+    finally{this.busy.delete(id);if(writer&&writer!==this.db){try{writer.close();}catch{}}}
+  }
   async mutate(body,scope){
     const id=identifier(body.id);const action=body.action;
     if(!['edit','deactivate','restore','delete'].includes(action))throw new HttpError(400,'지원하지 않는 기억 변경 작업입니다.');

@@ -6,9 +6,9 @@
 
 - `lib/server.cjs`: loopback HTTP, API v2, CSRF, SSE, 정적 파일
 - `lib/store.cjs`: 읽기 전용 조회와 프로젝트/워크스페이스/작업 흐름 범위
-- `lib/core.cjs`: 기존 `dist/db.js`, `fact-management.js`, `pipeline-status.js` 연결
+- `lib/core.cjs`: 기존 `dist/db.js`, `fact-management.js`, `pipeline-status.js` 연결 — 의미 수정과 계층 승격/강등(`promoteFact`/`demoteFact`, `actor: 'user'`) 모두 코어 서비스를 통과합니다
 - `lib/logs.cjs`: 제한된 로그 tail, UI 감사 메타데이터
-- `lib/operations.cjs`: 기존 CLI allowlist 실행, 취소, 출력 제한
+- `lib/operations.cjs`: 기존 CLI allowlist 실행, 취소, 출력 제한 (`doctor` · `status` · `sync` · `backfill *` · `facts migrate-tiers --dry-run|--apply`)
 - `public/pages/`: 개요, 대화 원장, 기억·사실, 분류, 지도, 활동, 관리
 - `public/details.mjs`: 기억·대화·작업·모델 시도·Chronicle·관리 실행 상세
 - `public/graph-engine.mjs`: 네이티브 WebGL, Canvas2D fallback

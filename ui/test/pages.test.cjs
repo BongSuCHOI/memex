@@ -3,7 +3,7 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 const {name,badge}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
-const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');
+const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
 const ROOT=path.resolve(__dirname,'../..');
 // app.mjs boots against a real document on import, so its shell decisions are asserted on the source.
 const APP=fs.readFileSync(path.join(__dirname,'../public/app.mjs'),'utf8');
@@ -45,12 +45,21 @@ test('분류 테이블이 없어도 분류 선택은 안전하게 축소된다',
  assert(html.includes('<select name="taxonomy"'));
  assert(!html.includes('value="unclassified"'));
 });
-test('승격 상태는 한국어로만 표시하고 기본값은 반복하지 않는다',async()=>{
- const base=await renderFacts('',{facts:factsPage([row()])});
- assert(!base.html.includes('legacy-project'),'기본 승격 상태의 원문 값이 노출됨');
- const promoted=await renderFacts('',{facts:factsPage([row({promotion_state:'workspace'})])});
- assert(promoted.html.includes('· 워크스페이스'));
- assert(!promoted.html.includes('>workspace<')&&!promoted.html.includes('· workspace'));
+test('계층 배지는 한국어 라벨 5종을 쓰고 코어 원문 값을 노출하지 않는다',async()=>{
+ const label=async extra=>{const {html}=await renderFacts('',{facts:factsPage([row(extra)])});assert(!/legacy-project|>workspace<|>workstream</.test(html),'코어 원문 값이 노출됨: '+html.match(/legacy-project|>workspace<|>workstream</));return html;};
+ assert((await label()).includes('>프로젝트 공용<'));
+ assert((await label({promotion_state:'project-current'})).includes('>프로젝트 공용<'));
+ assert((await label({promotion_state:'workspace'})).includes('>워크스페이스<'));
+ assert((await label({promotion_state:'workstream',tier_reason:'branch:feature/x'})).includes('>브랜치: feature/x<'));
+ assert((await label({promotion_state:'workstream',tier_reason:'tier:user',workstream_branch:'ui/redesign'})).includes('>브랜치: ui/redesign<'),'tier_reason에 브랜치가 없으면 workstream branch_hint로 대체해야 함');
+ assert((await label({promotion_state:'workstream'})).includes('>브랜치<'),'브랜치 이름을 모르면 이름을 지어내지 않아야 함');
+ assert((await label({scope_type:'global',scope_project:null})).includes('>글로벌 공용<'));
+});
+test('계층 배지 툴팁은 주입 조건을 한 문장으로 설명한다',async()=>{
+ const {html}=await renderFacts('',{facts:factsPage([row({promotion_state:'workstream',tier_reason:'branch:feature/x'})])});
+ assert(html.includes('title="브랜치 feature/x 세션에만 주입됩니다."'),'브랜치 계층 툴팁 없음');
+ const project=await renderFacts('',{facts:factsPage([row()])});
+ assert(project.html.includes('title="프로젝트 memex의 모든 세션에 주입됩니다."'),'프로젝트 계층 툴팁 없음');
 });
 test('범위 자체가 비었을 때와 필터가 걸러낸 경우를 구분한다',async()=>{
  const emptyScope=await renderFacts('',{facts:factsPage([],{scopeTotal:0})});
@@ -89,6 +98,42 @@ test('코어가 기록하는 promotion_state 값에는 모두 한국어 라벨�
  declared.add('workstream'); // src/fact-db.ts: workstream 범위 팩트의 기본 승격 상태
  assert(declared.size>=5,'src에서 promotion_state 값을 찾지 못했습니다: '+[...declared]);
  for(const value of declared)assert.notEqual(name(value),value,'한국어 라벨 없음: '+value);
+});
+
+// --- #22 계층으로 가려진 기억 배너 · tiers=all 토글 · 이관 카드 ---
+test('가려진 계층 기억이 있으면 포함해서 보기 배너를 띄운다',async()=>{
+ const {html}=await renderFacts('',{facts:factsPage([row()],{hiddenByTier:{workstream:9,workspace:2},tiers:'default'})});
+ assert(html.includes('브랜치/작업 흐름 범위 기억 11건이 더 있습니다'),'가려진 총합이 표시되지 않음');
+ assert(html.includes('브랜치 범위 9건 · 워크스페이스 범위 2건'),'계층별 내역이 없음');
+ assert(html.includes('data-param-key="tiers" data-param-value="all"'),'포함해서 보기 토글이 없음');
+});
+test('tiers=all일 때는 되돌리는 쪽을 제안한다',async()=>{
+ const {html}=await renderFacts('tiers=all',{facts:factsPage([row()],{hiddenByTier:{workstream:9,workspace:0},tiers:'all'})});
+ assert(html.includes('포함해서 보고 있습니다'));
+ assert(html.includes('data-param-key="tiers" data-param-value=""'),'기본 범위로 되돌리는 토글이 없음');
+ assert(!html.includes('워크스페이스 범위 0건'),'0건 계층을 문장에 넣지 않아야 함');
+});
+test('가려진 기억이 없거나 프로젝트 범위가 아니면 배너를 만들지 않는다',async()=>{
+ for(const extra of [{hiddenByTier:null},{hiddenByTier:{workstream:0,workspace:0}}]){
+  const {html}=await renderFacts('',{facts:factsPage([row()],extra)});
+  assert(!html.includes('data-param-key="tiers"'),'불필요한 계층 배너가 표시됨: '+JSON.stringify(extra));
+ }
+});
+test('계층 이관 카드는 dry-run 출력을 그대로 보여주고 적용은 미리보기 뒤에 열린다',()=>{
+ const env={commands:true};
+ const cold=settingsPage.migrationCard(ctx('',{}),env,{});
+ assert(cold.includes('data-command="tiers-preview"'));
+ assert(/data-command="tiers-apply" disabled/.test(cold),'미리보기 전에는 적용이 잠겨 있어야 함');
+ assert(cold.includes('아직 미리보기를 실행하지 않았습니다'));
+ const warm=settingsPage.migrationCard(ctx('',{}),env,{preview:{id:'op-1',command:'tiers-preview',status:'completed',started_at:'2026-09-10T00:00:00.000Z',exit_code:0},previewOutput:'2 fact(s) would move workstream → project-current. Re-run with --apply.'});
+ assert(warm.includes('2 fact(s) would move workstream'),'dry-run 출력이 카드에 없음');
+ assert(!/data-command="tiers-apply" disabled/.test(warm),'미리보기 뒤에는 적용이 열려야 함');
+ const noCli=settingsPage.migrationCard(ctx('',{}),{commands:false},{preview:{id:'op-1',status:'completed',started_at:null,exit_code:0}});
+ assert(/data-command="tiers-preview" disabled/.test(noCli),'CLI가 없으면 실행할 수 없어야 함');
+});
+test('계층 승격·강등 이벤트에는 한국어 라벨이 있다',()=>{
+ assert.equal(name('PROMOTED'),'계층 승격');
+ assert.equal(name('DEMOTED'),'계층 강등');
 });
 
 // --- #24 메뉴 이름 · 기본 범위 · 주입 범위 안내 · 공통 범위 원클릭 전환 ---

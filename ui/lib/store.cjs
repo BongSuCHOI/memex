@@ -1,7 +1,9 @@
 'use strict';
 /** Read-only projection over the Memex 0.4.2 schema. All writes live in core.cjs. */
 const { HttpError, integer, text, identifier, sqlName, parseJSON, array, cleanRow, canonicalProject } = require('./util.cjs');
-const FACT_FIELDS = ['id','fact','fact_kr','category','scope_type','scope_project','project_id','workspace_id','workstream_id','promotion_state','subject_key','is_active','ontology_category_id','source_exchange_ids','consolidated_count','created_at','updated_at','semantic_generation','lifecycle_generation','embedding_version','needs_consolidation'];
+const FACT_FIELDS = ['id','fact','fact_kr','category','scope_type','scope_project','project_id','workspace_id','workstream_id','promotion_state','tier_reason','subject_key','is_active','ontology_category_id','source_exchange_ids','consolidated_count','created_at','updated_at','semantic_generation','lifecycle_generation','embedding_version','needs_consolidation'];
+// facts.promotion_state values that src/fact-management.ts factTierOf() reads back as the project rung.
+const PROJECT_TIER_STATES = ['legacy-project','decision','project-current'];
 const EXCHANGE_FIELDS = ['id','project','project_id','workspace_id','workstream_id','session_id','timestamp','user_message','assistant_message','cwd','git_branch','archive_path','line_start','line_end','exchange_seq','content_generation','content_hash','closure_state','provenance'];
 const TYPES = ['SUPPORTS','INFLUENCES','SUPERSEDES','CONTRADICTS'];
 class Store {
@@ -32,7 +34,11 @@ class Store {
     const type = q.get('scope') || (q.get('project') ? 'project' : 'global');
     if (!['project','global','all'].includes(type)) throw new HttpError(400, 'scope: project | global | all', 'INVALID_SCOPE');
     if (type !== 'project' && q.get('project')) throw new HttpError(400, 'project는 project 범위에서만 허용됩니다.', 'INVALID_SCOPE');
-    const s = { type, includeGlobal: q.get('includeGlobal') !== '0', project: null, projectId: null, workspaceId: q.get('workspace') || null, workstreamId: q.get('workstream') || null };
+    // tiers=all drops the promotion-state predicate so a project screen can show its branch and
+    // workspace tier memories too. It never widens the project identity itself.
+    const tiers = q.get('tiers') || 'default';
+    if (!['default','all'].includes(tiers)) throw new HttpError(400, 'tiers: default | all', 'INVALID_SCOPE');
+    const s = { type, tiers, includeGlobal: q.get('includeGlobal') !== '0', project: null, projectId: null, workspaceId: q.get('workspace') || null, workstreamId: q.get('workstream') || null };
     if (type !== 'project' && (s.workspaceId || s.workstreamId)) throw new HttpError(400, '작업 범위에는 프로젝트가 필요합니다.', 'INVALID_SCOPE');
     if (type === 'project') {
       s.project = canonicalProject(q.get('project'));
@@ -61,16 +67,43 @@ class Store {
     let identity = `${a}.scope_project=?`;
     if (s.projectId && this.has('facts','project_id')) { identity = `((${identity} AND ${a}.project_id IS NULL) OR ${a}.project_id=?)`; args.push(s.projectId); }
     let local = `(${a}.scope_type='project' AND ${identity})`;
-    if (this.has('facts','promotion_state')) {
+    if (this.has('facts','promotion_state') && s.tiers !== 'all') {
       // Project-wide truth, mirroring src/chronicle.ts PROJECT_TRUTH and the
       // facts.promotion_state default ('legacy-project'). 'project' is not a
       // value the core ever writes.
-      let level = `COALESCE(${a}.promotion_state,'legacy-project') IN ('legacy-project','decision','project-current')`;
+      let level = `COALESCE(${a}.promotion_state,'legacy-project') IN (${PROJECT_TIER_STATES.map(x => `'${x}'`).join(',')})`;
       if (s.workspaceId && this.has('facts','workspace_id')) { level += ` OR (${a}.promotion_state='workspace' AND ${a}.workspace_id=?)`; args.push(s.workspaceId); }
       if (s.workstreamId && this.has('facts','workstream_id')) { level += ` OR (${a}.promotion_state='workstream' AND ${a}.workstream_id=?)`; args.push(s.workstreamId); }
       local += ` AND (${level})`;
     }
     return [s.includeGlobal ? `((${local}) OR ${a}.scope_type='global')` : `(${local})`, args];
+  }
+  /**
+   * Same-project memories the current predicate leaves out, grouped by promotion_state.
+   * Always measured against the default predicate, so the count stays visible (and the toggle
+   * stays reversible) while tiers=all is on. null when the question does not apply.
+   */
+  hiddenByTier(s) {
+    if (s.type !== 'project' || !this.has('facts') || !this.has('facts','promotion_state')) return null;
+    const [everyTier, ep] = this.factWhere({ ...s, tiers: 'all', includeGlobal: false });
+    const [visible, vp] = this.factWhere({ ...s, tiers: 'default', includeGlobal: false });
+    const counts = { workstream: 0, workspace: 0 };
+    for (const r of this.all(`SELECT f.promotion_state AS tier, COUNT(*) AS n FROM facts f WHERE f.is_active=1 AND (${everyTier}) AND NOT (${visible}) GROUP BY f.promotion_state`, [...ep, ...vp])) {
+      if (Object.hasOwn(counts, r.tier)) counts[r.tier] = Number(r.n || 0);
+    }
+    return counts;
+  }
+  /** Branch name behind a workstream-tier memory. Never guessed: absent rows stay null. */
+  workstreamBranches(ids) {
+    const unique = [...new Set(ids.filter(x => typeof x === 'string' && x))];
+    if (!unique.length || !this.has('minimal_workstreams','branch_hint')) return new Map();
+    const rows = this.all('SELECT workstream_id, branch_hint FROM minimal_workstreams WHERE workstream_id IN (SELECT value FROM json_each(?))', [JSON.stringify(unique)]);
+    return new Map(rows.map(r => [r.workstream_id, r.branch_hint || null]));
+  }
+  withBranches(items) {
+    const branches = this.workstreamBranches(items.map(x => x.workstream_id));
+    for (const item of items) item.workstream_branch = branches.get(item.workstream_id) ?? null;
+    return items;
   }
   exchangeWhere(s, a = 'e') {
     if (s.type === 'all') return ['1=1', []];
@@ -154,16 +187,19 @@ class Store {
     this.require('facts'); const [w,p] = this.factFilters(q,s);
     const order = q.get('sort') === 'created' ? 'f.created_at DESC,f.id DESC' : q.get('sort') === 'sources' ? 'f.consolidated_count DESC,f.id DESC' : 'f.updated_at DESC,f.id DESC';
     const page = this.page('facts f',w,p,order,q,this.select('facts',FACT_FIELDS,'f'));
-    page.items = page.items.map(r => ({...r, source_count:array(r.source_exchange_ids).length}));
+    page.items = this.withBranches(page.items.map(r => ({...r, source_count:array(r.source_exchange_ids).length})));
     // Lets the client tell "this scope stores nothing" from "the filters exclude everything".
     const [sw,sp] = this.factWhere(s);
     page.scopeTotal = this.count(`SELECT COUNT(*) AS n FROM facts f WHERE ${sw}`,sp);
+    page.hiddenByTier = this.hiddenByTier(s);
+    page.tiers = s.tiers;
     return page;
   }
   visibleFact(id,s) {
     this.require('facts'); const [w,p] = this.factWhere(s);
     const f = this.one(`SELECT ${this.select('facts',FACT_FIELDS,'f')} FROM facts f WHERE f.id=? AND ${w}`,[identifier(id),...p]);
-    if (!f) throw new HttpError(404,'현재 범위에서 기억을 찾을 수 없습니다.','NOT_FOUND'); return f;
+    if (!f) throw new HttpError(404,'현재 범위에서 기억을 찾을 수 없습니다.','NOT_FOUND');
+    return this.withBranches([f])[0];
   }
   fact(id,s) {
     const f = this.visibleFact(id,s);
@@ -354,7 +390,7 @@ class Store {
     const running=this.jobs(new URLSearchParams({state:'running',limit:'4'}),s);
     const failed=this.jobs(new URLSearchParams({state:'dead',limit:'4'}),s);
     const retry=this.jobs(new URLSearchParams({state:'retry',limit:'4'}),s);
-    return {exchanges,sessions,facts,activity,recent:recent.items,sessionsRecent:latest.items,jobsRunning:running.items,jobsFailed:failed.items,running:running.total,failed:failed.total,retry:retry.total,generated_at:new Date().toISOString()};
+    return {exchanges,sessions,facts,hiddenByTier:this.hiddenByTier(s),activity,recent:recent.items,sessionsRecent:latest.items,jobsRunning:running.items,jobsFailed:failed.items,running:running.total,failed:failed.total,retry:retry.total,generated_at:new Date().toISOString()};
   }
   capabilities() { return Object.fromEntries(['facts','exchanges','ontology_domains','ontology_categories','ontology_relations','fact_revisions','memory_jobs','extraction_targets','extraction_target_items','model_work_attempts','recall_events','fact_context_dependencies','fact_evidence_receipts','work_capsules'].map(t=>[t,this.has(t)])); }
 }
