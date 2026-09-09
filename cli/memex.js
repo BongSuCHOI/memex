@@ -63,6 +63,7 @@ USAGE:
 
 COMMANDS:
   setup       Detect conflicting Codex built-in Memory and disable it only with approval
+  install     Register the plugin and materialize its runtime dependencies (idempotent)
   sync        Sync conversations from Codex session rollouts and index them
   update      Refresh the marketplace and reinstall the latest Memex plugin
   index       Index conversations for search
@@ -106,6 +107,16 @@ async function main() {
       case "setup":
         await runScript(
           join(__dirname, "..", "scripts", "setup-memex.js"),
+          args,
+        );
+        break;
+
+      // Issue #40: `memex doctor` and the runtime launcher both point here when
+      // an installed plugin has no materialized dependencies. The command has
+      // to exist for that instruction to be true.
+      case "install":
+        await runScript(
+          join(__dirname, "..", "scripts", "install-memex.mjs"),
           args,
         );
         break;

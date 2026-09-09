@@ -236,6 +236,7 @@ memex status
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
 | `memex update` | Refresh the marketplace/plugin while preserving data |
+| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
 
 Fact management includes edit, deactivate, restore, history, and guarded hard-delete operations. Semantic edits keep fact identity and revision history while invalidating stale derived state.
 

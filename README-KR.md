@@ -236,6 +236,7 @@ memex status
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent) |
 
 Fact 관리에는 edit, deactivate, restore, history, guarded hard delete가 포함됩니다. semantic edit는 fact ID와 revision history를 유지하면서 이전 의미에서 파생된 상태를 무효화합니다.
 

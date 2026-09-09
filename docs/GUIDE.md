@@ -275,6 +275,7 @@ node scripts/lifecycle-e2e.mjs
 
 자주 확인할 항목:
 
+- `dependencies: fail` — **설치된 플러그인 루트**(`~/.codex/plugins/cache/.../<version>/`)에 `node_modules`가 없다는 뜻입니다. 이 상태에서는 모든 hook이 조용히 `npx github:BongSuCHOI/memex#main`으로 폴백해 고정한 버전이 아니라 `main` HEAD가 실행되고, foreground hook마다 npx 해석 비용이 붙습니다. 폴백이 실제로 일어나면 stderr에 `[memex] runtime deps missing at <ROOT>; falling back to npx … — run: memex install` 1줄이 남습니다. 복구는 `memex install`(idempotent, 네트워크 없이 이미 설치된 production 의존성만 Codex cache로 복사)입니다.
 - runtime 준비 실패 — Node/npm network, cache permission
 - MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
 - injection 없음 — `injected`, `no-match`, `deduped`, `skipped`, `error` 로그 상태

@@ -30,6 +30,13 @@ function isolatedEnv(t) {
     path.join(REPO, 'scripts', 'inject-context-hook.sh'),
     path.join(pluginRoot, 'scripts', 'inject-context-hook.sh'),
   );
+  // Issue #40: doctor's `dependencies` check now inspects the installed plugin
+  // root, so the fixture must materialize the runtime closure it claims to have.
+  for (const dep of ['better-sqlite3', '@xenova/transformers', 'sqlite-vec']) {
+    const dir = path.join(pluginRoot, 'node_modules', dep);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: dep }));
+  }
   const env = {
     CODEX_HOME: codexHome,
     MEMEX_HOME: mbHome,
@@ -141,6 +148,41 @@ test('doctor distinguishes missing build vs configured lifecycle', (t) => {
   assert.equal(byName['build'], 'ok');
   assert.equal(byName['lifecycle-observed'], 'warn'); // never observed in this home
   assert.equal(after.overall, 'PARTIAL');
+});
+
+/**
+ * Issue #40 — an installed plugin with no materialized dependencies.
+ *
+ * Observed at ~/.codex/plugins/cache/memex/memex/0.5.2/: dist/ present,
+ * node_modules absent, so every hook fell back to the unpinned npx package.
+ * The old check resolved from the RUNNING process, which passes inside that
+ * very fallback copy, so doctor reported `dependencies: ok`.
+ */
+test('doctor fails the dependencies check when the installed plugin root has no node_modules', (t) => {
+  const { env } = isolatedEnv(t);
+  fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist', 'db.js'), '');
+  // The exact observed state: everything but the runtime dependency closure.
+  fs.rmSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true, force: true });
+
+  const report = doctor();
+  const dependencies = report.json.find((check) => check.name === 'dependencies');
+  assert.equal(dependencies.status, 'fail');
+  assert.match(dependencies.detail, /better-sqlite3/);
+  assert.ok(dependencies.detail.includes(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules')), dependencies.detail);
+  assert.match(dependencies.detail, /run: memex install/);
+  assert.equal(report.overall, 'FAIL');
+
+  // Materializing the closure clears it.
+  for (const dep of ['better-sqlite3', '@xenova/transformers', 'sqlite-vec']) {
+    const dir = path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules', dep);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: dep }));
+  }
+  assert.equal(
+    doctor().json.find((check) => check.name === 'dependencies').status,
+    'ok',
+  );
 });
 
 test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.json', (t) => {

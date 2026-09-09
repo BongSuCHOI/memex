@@ -377,7 +377,15 @@ export function doctor() {
         "@xenova/transformers",
         "sqlite-vec",
     ];
-    const nodeModules = runtimeDependencies.every((dependency) => {
+    // Issue #40: check the INSTALLED plugin root, not the running process. A
+    // marketplace install whose dependencies were never materialized has no
+    // node_modules beside the launcher, so every hook falls back to
+    // `npx github:BongSuCHOI/memex#main` — an unpinned revision. Resolving from
+    // the running process passes inside that very npx copy, which is exactly the
+    // state this check has to report.
+    const dependencyRoot = pluginRoot();
+    const missingAtPluginRoot = runtimeDependencies.filter((dependency) => !fs.existsSync(path.join(dependencyRoot, "node_modules", dependency, "package.json")));
+    const resolvableHere = runtimeDependencies.every((dependency) => {
         try {
             runtimeRequire.resolve(dependency);
             return true;
@@ -388,10 +396,14 @@ export function doctor() {
     });
     checks.push({
         name: "dependencies",
-        status: nodeModules ? "ok" : "fail",
-        detail: nodeModules
-            ? "runtime dependencies resolvable"
-            : "runtime package dependencies unavailable — verify Node/npm network and cache",
+        status: missingAtPluginRoot.length === 0 ? "ok" : "fail",
+        detail: missingAtPluginRoot.length === 0
+            ? `runtime dependencies materialized at ${path.join(dependencyRoot, "node_modules")}`
+            : `missing at ${path.join(dependencyRoot, "node_modules")}: ${missingAtPluginRoot.join(", ")} — ` +
+                "every hook silently falls back to npx github:BongSuCHOI/memex#main (an unpinned revision) — run: memex install" +
+                (resolvableHere
+                    ? " (this process resolved them elsewhere, i.e. from the npx copy rather than the pinned plugin)"
+                    : ""),
     });
     const distEntry = fs.existsSync(path.join(pluginRoot(), "dist", "db.js"));
     checks.push({
