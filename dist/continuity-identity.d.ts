@@ -8,16 +8,66 @@ export interface WorkspaceIdentity {
     memoryRevision: number;
     locationKind: WorkspaceLocationKind;
     branch: string | null;
+    /** Repository default branch (origin/HEAD, then init.defaultBranch). */
+    defaultBranch: string | null;
     reason: "existing-path" | "explicit" | "git-common-dir" | "approved-remote" | "new-isolated";
 }
+/**
+ * 0.6.0 scope model (#16/#18). A session carries a *branch signal* only when it
+ * runs on a non-default branch (or a worktree checked out on one). Default
+ * branch and non-git sessions carry none, and their memory belongs to the
+ * project-common tier instead of a per-session stream.
+ */
+export type BranchSignalKind = "none" | "default" | "branch";
+export interface BranchSignal {
+    kind: BranchSignalKind;
+    /** The captured branch name, kept for display even when it is the default. */
+    branch: string | null;
+    /** Recorded on the fact and in the Chronicle event that places it. */
+    tierReason: "no-branch-signal" | "default-branch" | string;
+}
+/** Fallback default-branch names when the repository states none. */
+export declare const CONVENTIONAL_DEFAULT_BRANCHES: readonly ["main", "master"];
+export declare function isDefaultBranchName(branch: string | null | undefined, defaultBranch: string | null | undefined): boolean;
+export declare function branchSignalFor(input: {
+    branch?: string | null;
+    defaultBranch?: string | null;
+}): BranchSignal;
+/**
+ * Deterministic workstream identity. A branch signal keys on (project, branch)
+ * so two worktrees of the same repository on the same branch share one stream
+ * (they share the project via the git-common-dir rule but not the workspace
+ * row); no branch signal keys on the project alone so every default-branch and
+ * non-git session of a project reuses ONE default stream instead of minting a
+ * per-session `ws-<hash(project, session)>`.
+ */
+export declare function deterministicWorkstreamId(projectId: string, branch: string | null): string;
 export declare function inspectWorkspaceLocation(cwd: string): {
     gitCommonDir: string | null;
     remoteFingerprint: string | null;
     locationKind: WorkspaceLocationKind;
     branch: string | null;
+    defaultBranch: string | null;
     gitCommonIdentity: string | null;
     gitDirIdentity: string | null;
 };
+/**
+ * #21 — `WORKSPACE_LOCATION_CHANGED`. Its id is derived from the transition's
+ * shape, not from the clock, so re-running the same session start records the
+ * same single event instead of one per session.
+ */
+export declare function recordWorkspaceLocationChange(db: Database.Database, input: {
+    workspaceId: string;
+    projectId: string;
+    from: string;
+    to: string;
+    gitCommonDir: string | null;
+    remoteFingerprint: string | null;
+    branch: string | null;
+    changedFields: string[];
+    conflictProjectIds: string[];
+    now?: string;
+}): string;
 export declare function resolveProjectWorkspace(db: Database.Database, input: {
     cwd: string;
     projectId?: string | null;
@@ -41,6 +91,11 @@ export declare function splitWorkspace(db: Database.Database, input: {
     displayName?: string;
     now?: string;
 }): string;
+/** The branch signal a session carries, read from its bound workspace row. */
+export declare function sessionBranchSignal(db: Database.Database, input: {
+    workspaceId?: string | null;
+    branch?: string | null;
+}): BranchSignal;
 export declare function bindSessionWorkstream(db: Database.Database, input: {
     sessionId: string;
     projectId: string;
@@ -104,7 +159,14 @@ export declare function assignFactSubject(db: Database.Database, input: {
     projectId: string;
     subjectKey: string;
     promotionState: "decision" | "project-current" | "workspace" | "workstream";
-    evidence: "explicit-decision" | "merged" | "validated" | "experimental";
+    /**
+     * #18 — `no-branch-signal` is admissible evidence for project-current: a
+     * non-git or default-branch session has no branch for the fact to belong
+     * to, so project-common IS its grounded placement, not a promotion.
+     */
+    evidence: "explicit-decision" | "merged" | "validated" | "experimental" | "no-branch-signal";
+    /** Recorded on the fact: `no-branch-signal` | `default-branch` | `branch:<name>`. */
+    tierReason?: string | null;
     workspaceId?: string | null;
     workstreamId?: string | null;
 }): void;

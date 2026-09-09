@@ -24,7 +24,9 @@ interface InsertFactParams {
     workstream_id?: string | null;
     subject_key?: string | null;
     promotion_state?: Fact['promotion_state'];
-    promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental';
+    promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental' | 'no-branch-signal';
+    /** 0.6.0 (#18): why the fact landed in its tier — `no-branch-signal`, `default-branch`, `branch:<name>`. */
+    tier_reason?: string | null;
 }
 interface UpdateFactParams {
     embedding?: number[] | null;
@@ -47,13 +49,15 @@ export interface ResolvedFactInsertIdentity {
     workspaceId: string | null;
     workstreamId: string | null;
     promotionState: NonNullable<Fact['promotion_state']>;
+    /** #18 — the branch signal that decided the tier, or null when not derived. */
+    tierReason: string | null;
 }
 /**
  * Stable identity and promotion placement for a fact about to be inserted.
  * Shared by insertFact and the extractor's subject-slot resolver so both see
  * the same slot before deciding whether to insert, merge, change or contradict.
  */
-export declare function resolveFactInsertIdentity(db: Database.Database, params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence'>): ResolvedFactInsertIdentity;
+export declare function resolveFactInsertIdentity(db: Database.Database, params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence' | 'tier_reason'>): ResolvedFactInsertIdentity;
 export declare function insertFact(db: Database.Database, params: InsertFactParams): string;
 export declare function getActiveFacts(db: Database.Database): Fact[];
 /** @deprecated Canonical path reader; new callers use listFactsInScope. */

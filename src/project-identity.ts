@@ -76,3 +76,28 @@ export const UNKNOWN_PROJECT = 'unknown';
 export function isUnknownProject(project: string | null | undefined): boolean {
   return !project || project === UNKNOWN_PROJECT;
 }
+
+/**
+ * #38 — a path that cannot name a project. The filesystem root canonicalizes
+ * to `/` and `path.basename('/')` is the empty string, so it used to pass the
+ * `!canonical || canonical === 'unknown'` guard and create a catch-all project
+ * named `unknown`. Every session whose host failed to report an absolute cwd
+ * then landed in that one bucket and read its facts as its own project memory.
+ * Any path with an empty basename is rejected for the same reason.
+ */
+export function isUntrustedProjectPath(cwd: string | null | undefined): boolean {
+  if (typeof cwd !== 'string') return true;
+  const raw = cwd.trim();
+  if (!raw || raw === UNKNOWN_PROJECT) return true;
+  const canonical = canonicalizeProjectPath(raw);
+  if (!canonical || canonical === UNKNOWN_PROJECT) return true;
+  return path.basename(canonical) === '';
+}
+
+/** Thrown instead of attaching a session to a project it cannot name. */
+export class UntrustedProjectPathError extends Error {
+  constructor(cwd: string) {
+    super(`cwd cannot identify a project: ${JSON.stringify(cwd)}`);
+    this.name = 'UntrustedProjectPathError';
+  }
+}

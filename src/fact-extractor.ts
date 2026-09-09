@@ -20,7 +20,7 @@ import {
   resolveFactInsertIdentity,
   updateFact,
 } from "./fact-db.js";
-import { applyFactMeaningMutationWithPolicy } from "./fact-management.js";
+import { applyFactMeaningMutationWithPolicy, applyScopeDirective } from "./fact-management.js";
 import { captureMutationPolicy, captureSourceSnapshot, sourceSnapshotValid, StaleFactMutationError } from "./fact-policy.js";
 import {
   currentEffectiveAt,
@@ -360,6 +360,18 @@ A fact candidate MAY add:
   preference→preference, pattern→pattern. Examples: "state.runtime.session_store",
   "decision.runtime.session_store.target", "constraint.session.ttl". Two statements about different
   things must never share a slot. Omit subject_key when the slot is ambiguous.
+- scope_directive: "workstream" | "project" | "global". Emit ONLY when the human explicitly states
+  where the memory should live, not when you infer it. The directive sentence itself must be the
+  human evidence you cite. "workstream" = only this branch/worktree, "project" = shared by the whole
+  project, "global" = every project. Directives, one per line:
+    "let's remember this for the whole project"
+    "make this a global memory"
+    "keep this decision to this branch only"
+    "이건 프로젝트 공용으로 기억하자"
+    "이건 글로벌 기억으로"
+    "이 결정은 이 브랜치에서만"
+  Examples that do NOT: "this project uses SQLite" (a project-scoped fact, not an instruction about
+  where to store it), "remember this" with no scope named. Omit the field when no scope was stated.
 - change_context: {"problem"?: R, "cause"?: R, "rationale"?: R} where
   R = {"exchange_index": n, "supporting_span": "<exact substring>", "text"?: "<normalized statement>",
   "tool_call_id"?: "<id when the span is inside a trusted tool result>"}. Each span must be an exact
@@ -1582,6 +1594,18 @@ function validateExtractedFactCandidateDetailed(
     classifierNotes.push(`unresolved subject_key proposal: ${String(candidate.subject_key).slice(0, 80)}`);
   }
   const changeContext = resolveChangeContext(candidate.change_context, exchanges, evidence, classifierNotes);
+  // #19 — an explicit scope directive is a placement instruction, never a
+  // reason to accept or reject the fact itself. An unrecognised value is
+  // dropped to a classifier note so a bad directive can never move a tier.
+  const rawDirective = candidate.scope_directive;
+  let scopeDirective: ExtractedFact["scope_directive"];
+  if (rawDirective !== undefined && rawDirective !== null) {
+    if (rawDirective === "workstream" || rawDirective === "project" || rawDirective === "global") {
+      scopeDirective = rawDirective;
+    } else {
+      classifierNotes.push(`unrecognized scope_directive: ${String(rawDirective).slice(0, 40)}`);
+    }
+  }
 
   return {
     accepted: true,
@@ -1599,6 +1623,7 @@ function validateExtractedFactCandidateDetailed(
       source_exchange_ids: [...authoritativeIds],
       ...(subjectKey ? { subject_key: subjectKey } : {}),
       ...(changeContext ? { change_context: changeContext } : {}),
+      ...(scopeDirective ? { scope_directive: scopeDirective } : {}),
       ...(classifierNotes.length > 0 ? { classifier_notes: classifierNotes } : {}),
     },
   };
@@ -2473,6 +2498,10 @@ export async function saveExtractedFactsDetailed(
     savedIds, asserted: 0, changed: 0, merged: 0, historical: 0, contradicted: 0, incidents: 0, validations: 0,
   };
   const observations = extras.observations ?? [];
+  // #19 — in-session scope directives are applied after the slot resolution
+  // above, inside the same transaction, so the placement and its PROMOTED /
+  // DEMOTED events commit with the fact they describe.
+  const directiveMoves: Array<{ factId: string; directive: NonNullable<ExtractedFact["scope_directive"]>; sources: string[] }> = [];
   const commit = db.transaction(() => {
     if (!sourceSnapshotValid(db, sources)) throw new StaleFactMutationError('extraction source evidence changed during embedding');
     const now = new Date().toISOString();
@@ -2510,12 +2539,14 @@ export async function saveExtractedFactsDetailed(
 
       if (!existing) {
         const factId = insertFact(db, insertParams);
-        const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(factId) as { project_id: string | null; subject_key: string | null };
+        const row = db.prepare("SELECT project_id, subject_key, promotion_state, tier_reason FROM facts WHERE id = ?").get(factId) as { project_id: string | null; subject_key: string | null; promotion_state: string; tier_reason: string | null };
         recordChronicleEvent(db, {
           kind: "ASSERTED",
           projectId: row.project_id,
           subjectKey: row.subject_key,
           factId,
+          // #18 — the tier the fact was born into and the branch signal behind it.
+          outcome: row.tier_reason ? { tier: row.promotion_state, tier_reason: row.tier_reason } : null,
           fromSemanticGeneration: null,
           toSemanticGeneration: 1,
           previousValue: null,
@@ -2531,6 +2562,9 @@ export async function saveExtractedFactsDetailed(
           projectionApplied: true,
         });
         insertFactContextDependencies(db, factId, p.fact.context_dependencies ?? []);
+        if (p.fact.scope_directive) {
+          directiveMoves.push({ factId, directive: p.fact.scope_directive, sources: factSources });
+        }
         savedIds.push(factId);
         savedVectors.set(factId, p.embedding);
         outcome.asserted++;
@@ -2575,6 +2609,9 @@ export async function saveExtractedFactsDetailed(
           },
         }, p.embedding);
         insertFactContextDependencies(db, existing.id, p.fact.context_dependencies ?? []);
+        if (p.fact.scope_directive) {
+          directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+        }
         savedIds.push(existing.id);
         savedVectors.set(existing.id, p.embedding);
         outcome.changed++;
@@ -2606,6 +2643,18 @@ export async function saveExtractedFactsDetailed(
       });
       if (judgement.verdict === "historical") outcome.historical++;
       else outcome.contradicted++;
+    }
+
+    for (const move of directiveMoves) {
+      // A directive is a human assertion about placement. It never rejects the
+      // fact: an impossible move (missing workstream, occupied slot) is
+      // recorded as a classifier-visible failure and the fact keeps its tier.
+      try {
+        applyScopeDirective(db, move.factId, move.directive, {
+          evidence: move.sources,
+          now,
+        });
+      } catch { /* placement stays as extracted */ }
     }
 
     for (const observation of observations) {

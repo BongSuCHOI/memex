@@ -264,7 +264,10 @@ export function exportForSync(): SyncExportResult {
         SELECT f.id, f.fact, f.category, f.scope_type, f.source_exchange_ids,
                f.created_at, f.updated_at, f.consolidated_count, f.is_active,
                f.semantic_updated_at, f.lifecycle_updated_at, f.project_id,
-               p.portable_project_key, f.subject_key, f.promotion_state
+               p.portable_project_key, f.subject_key, f.promotion_state,
+               -- 0.6.0 (#18/#19): the tier placement travels with the fact.
+               -- Additive: a pre-0.6.0 peer simply ignores the extra column.
+               f.tier_reason
         FROM facts f LEFT JOIN projects p ON p.project_id = f.project_id
         WHERE f.scope_type = 'global'
            OR f.promotion_state IN ('legacy-project','decision','project-current')

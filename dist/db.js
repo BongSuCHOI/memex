@@ -704,8 +704,10 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         }
         const sessionScope = exchange.sessionId
             ? db.prepare(`
-          SELECT project_id, workspace_id, workstream_id
-          FROM session_memory_state WHERE session_id = ?
+          SELECT s.project_id, s.workspace_id, s.workstream_id, w.branch_hint
+          FROM session_memory_state s
+          LEFT JOIN minimal_workstreams w ON w.workstream_id = s.workstream_id
+          WHERE s.session_id = ?
         `).get(exchange.sessionId)
             : undefined;
         if (sessionScope?.project_id && identity && sessionScope.project_id !== identity.projectId) {
@@ -714,6 +716,9 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         const projectId = identity?.projectId ?? exchange.projectId ?? null;
         const workspaceId = identity?.workspaceId ?? exchange.workspaceId ?? null;
         const workstreamId = exchange.workstreamId ?? sessionScope?.workstream_id ?? null;
+        // #16 — the host rarely reports git_branch, so fall back to the branch the
+        // session's stream was bound with and then to the live workspace capture.
+        const gitBranch = exchange.gitBranch || sessionScope?.branch_hint || identity?.branch || null;
         const existing = db.prepare(`
       SELECT line_end, exchange_seq, content_hash, content_generation, closure_state,
              project_id, workspace_id, workstream_id
@@ -791,7 +796,7 @@ export function insertExchange(db, exchange, embedding, _toolNames) {
         project_id = excluded.project_id,
         workspace_id = excluded.workspace_id,
         workstream_id = excluded.workstream_id
-    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0, exchangeSeq, contentHash, contentGeneration, closureState, exchange.parserVersion ?? 1, projectId, workspaceId, workstreamId);
+    `).run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.sessionId || null, exchange.cwd || null, gitBranch, exchange.codexVersion || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION, JSON.stringify(provenance), assistantLearnable ? 1 : 0, hasMemexRecall ? 1 : 0, exchangeSeq, contentHash, contentGeneration, closureState, exchange.parserVersion ?? 1, projectId, workspaceId, workstreamId);
         // Vector upsert: DELETE+INSERT since virtual tables don't support REPLACE.
         const vecDtype = getVecDtype(db);
         db.prepare("DELETE FROM vec_exchanges WHERE id = ?").run(exchange.id);

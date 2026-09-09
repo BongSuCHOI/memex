@@ -40,10 +40,33 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 `projects`/`workspaces`/`minimal_workstreams`/`workstream_sessions`/`session_memory_state`. resolver 우선순위와 binding 규칙은 `verification/continuity-v1/phase-3-handoff.md`, 자세한 계약은 `ARCHITECTURE.md` §5, `CONVERSATION-LIFECYCLE.md`. 새 session은 생성 시점의 `projects.memory_revision`을 seen으로 시작합니다(D-026).
 
+**디렉터리 = 프로젝트, 브랜치 = workstream (0.6.0).** 세션 시작마다 `inspectWorkspaceLocation(cwd)`이
+`location_kind`/`git_common_dir`/`remote_fingerprint`/`branch`/`default_branch`(= `origin/HEAD`, 없으면
+`init.defaultBranch`, 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
+`git_branch`와 workstream `branch_hint`로 전파됩니다. 세션의 **브랜치 신호**는 셋 중 하나입니다.
+
+| 신호 | 조건 | workstream |
+|---|---|---|
+| `no-branch-signal` | 비-git 디렉터리이거나 브랜치를 못 읽음 | 프로젝트당 **기본 stream 하나**(`ws-hash(workstream-project-default-v1, project_id)`) |
+| `default-branch` | 브랜치 = 저장소 기본 브랜치 | 위와 동일한 기본 stream |
+| `branch:<name>` | 그 외 브랜치/워크트리 | `ws-hash(workstream-branch-v1, project_id, branch)` |
+
+브랜치 stream은 `(project_id, branch)`로 결정론적이므로 같은 저장소의 워크트리 두 개가 같은 브랜치를
+쓰면 하나의 workstream을 공유하고(워크트리는 git-common-dir 규칙으로 같은 project를 갖습니다), 브랜치가
+다르면 서로 희석되지 않습니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 없어졌습니다.
+
+**전이(일반 → 깃, 또는 그 반대).** 경로가 실제로 존재하면 세션 시작의 재검사가 권위이며 workspace 행의
+`location_kind`/`git_common_dir`/`git_common_identity`/`git_dir_identity`/`remote_fingerprint`/`branch`를
+그 자리에서 갱신합니다. `workspace_id`·`project_id`는 불변이므로 전이 이전 기억은 데이터 변경 없이
+그대로 남고, 전이 이후 세션부터 브랜치 규칙이 적용됩니다. 변경이 있으면 `workspace_location_events`에
+`WORKSPACE_LOCATION_CHANGED` 한 건이 남습니다. 새 common dir/remote가 이미 다른 프로젝트에 묶여 있으면
+자동 병합하지 않고 `approved_remote_mappings` 명시 승인을 요구합니다(`requires_approval = 1`).
+`.git`이 제거되면 행만 `directory`로 되돌리고 브랜치 tier 기억은 삭제도 자동 강등도 하지 않습니다.
+
 ## 6. Current facts · subject · Chronicle (§4.3–4.4, §15–17)
 
-- `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact는 기본 `workstream` scope이며 `decision`/`project-current`는 explicit evidence를 가진 promotion(`assignFactSubject`)으로만 승격됩니다(BRANCH TRUTH).
-- `fact_revisions` = Chronicle(단일 append-only history table, D-018): 7 event kind, content-hash event id, `effective_at`(source) vs `recorded_at`, grounded cause vs classifier note, `reverts_event_id`, `projection_applied`. 정책은 `FACT-LIFECYCLE.md` §13.
+- `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다(§5): 신호가 없으면(비-git 또는 기본 브랜치) 바로 프로젝트 공용 `project-current`, 그 외 브랜치/워크트리 세션이면 `workstream`. 근거는 `facts.tier_reason`에 남습니다(BRANCH TRUTH). 이후 이동은 사다리 `workstream ⇄ project ⇄ global`을 한 칸씩만 따르며, ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(모델 호출 없이 SQL) ③ 세션 내 명시 범위 지시 세 채널 모두 Chronicle `PROMOTED`/`DEMOTED`를 남깁니다. 전체 표는 `FACT-LIFECYCLE.md` §1.
+- `fact_revisions` = Chronicle(단일 append-only history table, D-018): 9 event kind(0.6.0에서 `PROMOTED`/`DEMOTED` 추가), content-hash event id, `effective_at`(source) vs `recorded_at`, grounded cause vs classifier note, `reverts_event_id`, `projection_applied`. 정책은 `FACT-LIFECYCLE.md` §13.
 - `incident_occurrences`/`incident_signatures`: coalescing, independent episode, remediation, `matchIncidentPatterns`(WATCH 원천).
 
 ## 7. Context epoch · residency · Memory Broker (§11–12)

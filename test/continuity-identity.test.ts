@@ -17,6 +17,7 @@ import {
   assignFactSubject,
   bindSessionWorkstream,
   createWorkstream,
+  deterministicWorkstreamId,
   indexHotEvidenceForSession,
   linkWorkspaceToProject,
   markSessionProjectRevisionSeen,
@@ -380,8 +381,12 @@ describe("conservative workstream binding and scoped truth", () => {
     const explicit = bindSessionWorkstream(db, { sessionId: "session-a", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath, explicitWorkstreamId: wsA });
     expect(explicit.reason).toBe("explicit");
     expect(bindSessionWorkstream(db, { sessionId: "session-a", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath }).workstreamId).toBe(wsA);
+    // 0.6.0 (#16): `main` is a default branch, so the session carries no branch
+    // signal and lands on the project's single default stream — never on an
+    // unrelated stream that merely shares the branch hint.
     const ambiguous = bindSessionWorkstream(db, { sessionId: "session-new", projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath, branch: "main" });
-    expect(ambiguous.reason).toBe("session-local");
+    expect(ambiguous.reason).toBe("project-default");
+    expect(ambiguous.workstreamId).toBe(deterministicWorkstreamId(identity.projectId, null));
     expect(ambiguous.workstreamId).not.toBe("stream-b");
   });
 
@@ -423,7 +428,8 @@ describe("conservative workstream binding and scoped truth", () => {
 
   it("keeps experimental workstream facts out of project-current retrieval", () => {
     const identity = resolveProjectWorkspace(db, { cwd: path.join(root, "repo") });
-    ensureSessionMemoryState(db, { sessionId: "feature-session", project: identity.canonicalPath });
+    // #18: only a real branch signal keeps a new fact on the workstream tier.
+    ensureSessionMemoryState(db, { sessionId: "feature-session", project: identity.canonicalPath, branch: "feature/redis" });
     insertExchange(db, exchange("feature-ex", "feature-session", identity.canonicalPath, "Redis experiment passed locally"), emb);
     const experimental = insertFact(db, { fact: "Redis is running in the feature worktree", category: "knowledge", scope_type: "project", scope_project: identity.canonicalPath, source_exchange_ids: ["feature-ex"], embedding: emb });
     const current = insertFact(db, { fact: "Main uses MySQL", category: "knowledge", scope_type: "project", scope_project: identity.canonicalPath, source_exchange_ids: [], embedding: emb, project_id: identity.projectId, promotion_state: "project-current", promotion_evidence: "validated", subject_key: "state.main.runtime.session_store" });
@@ -431,14 +437,14 @@ describe("conservative workstream binding and scoped truth", () => {
     expect(searchFactsByScope(db, emb, { type: "workstream-id", projectId: identity.projectId, workstreamId: (db.prepare("SELECT workstream_id FROM session_memory_state WHERE session_id = 'feature-session'").get() as { workstream_id: string }).workstream_id }, 10, 0).map((r) => r.fact.id)).toContain(experimental);
   });
 
-  it("rejects low-level project-current promotion without merged or validated evidence", () => {
+  it("rejects an explicit project-current placement without admissible evidence", () => {
     const identity = resolveProjectWorkspace(db, { cwd: path.join(root, "repo") });
     expect(() => insertFact(db, {
       fact: "Unmerged feature says Redis", category: "knowledge", scope_type: "project",
       scope_project: identity.canonicalPath, source_exchange_ids: [], embedding: null,
       project_id: identity.projectId, promotion_state: "project-current",
       subject_key: "state.main.cache",
-    })).toThrow("merged or validated evidence");
+    })).toThrow("merged, validated or no-branch-signal evidence");
     expect(db.prepare("SELECT COUNT(*) AS n FROM facts").get()).toEqual({ n: 0 });
   });
 

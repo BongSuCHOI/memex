@@ -1,13 +1,3 @@
-/**
- * CX-07 — transactional fact management service.
- *
- * Single mutation SSOT for CLI, Web UI and any other surface. Every mutation
- * is one better-sqlite3 transaction: partial commits are impossible.
- *
- * Delete policy: deactivate is the default; hard delete requires the exact
- * full UUID plus an explicit confirmation flag, and reports the affected
- * counts (revisions/relations/vectors) before removing anything.
- */
 import type Database from 'better-sqlite3';
 import { type MutationPolicy } from './fact-policy.js';
 export { StaleFactMutationError } from './fact-policy.js';
@@ -205,3 +195,113 @@ export declare function hardDeleteFact(db: Database.Database, id: string, opts: 
     deleted: true;
     impact: HardDeleteImpact;
 };
+export type FactTier = 'workstream' | 'project' | 'global';
+export type TierActor = 'user' | 'auto' | 'user-directive';
+/** A one-rung rule violation. Never thrown for a legal `user-directive` skip. */
+export declare class TierStepError extends Error {
+    readonly from: FactTier;
+    readonly to: FactTier;
+    constructor(from: FactTier, to: FactTier);
+}
+export interface FactTierState {
+    id: string;
+    tier: FactTier;
+    scopeType: string;
+    promotionState: string;
+    projectId: string | null;
+    workspaceId: string | null;
+    workstreamId: string | null;
+    subjectKey: string | null;
+    tierReason: string | null;
+    isActive: boolean;
+}
+export declare function factTierOf(row: {
+    scope_type: string;
+    promotion_state: string | null;
+}): FactTier;
+export declare function readFactTier(db: Database.Database, id: string): FactTierState;
+export interface TierMoveOptions {
+    actor: TierActor;
+    reason?: string | null;
+    /** Exchange ids that ground the move. */
+    evidence?: string[];
+    /** Facts whose existence grounds an automatic move; a later pass demotes when they die. */
+    evidenceFactIds?: string[];
+    /** Target rung. Defaults to one step; only `user-directive` may span two. */
+    to?: FactTier;
+    /** Required to bring a global fact back into a project when it cannot be derived. */
+    projectId?: string | null;
+    /** Required to push a project fact onto a branch when it cannot be derived. */
+    workstreamId?: string | null;
+    now?: string;
+}
+export interface TierMoveResult {
+    id: string;
+    from: FactTier;
+    to: FactTier;
+    steps: Array<{
+        from: FactTier;
+        to: FactTier;
+        eventId: string;
+    }>;
+}
+export declare function promoteFact(db: Database.Database, id: string, options: TierMoveOptions): TierMoveResult;
+export declare function demoteFact(db: Database.Database, id: string, options: TierMoveOptions): TierMoveResult;
+/** Move a fact to the tier an in-session scope directive named. No-op when already there. */
+export declare function applyScopeDirective(db: Database.Database, id: string, directive: FactTier, options?: {
+    reason?: string | null;
+    evidence?: string[];
+    now?: string;
+}): TierMoveResult | null;
+export interface TierReconcileResult {
+    promoted: Array<{
+        id: string;
+        from: FactTier;
+        to: FactTier;
+        reason: string;
+    }>;
+    demoted: Array<{
+        id: string;
+        from: FactTier;
+        to: FactTier;
+        reason: string;
+    }>;
+    skipped: Array<{
+        id: string;
+        reason: string;
+    }>;
+}
+/**
+ * Evidence-based automatic ladder pass. Model-free: every decision below is a
+ * SQL fact about the projection, never a judgement about meaning.
+ *
+ *   workstream → project : the same subject_key is confirmed outside this
+ *                          workstream (another branch, or a project-common
+ *                          session with no branch signal).
+ *   project → global     : the same fact text is confirmed in ≥2 projects.
+ *   demotion             : the upper evidence an automatic promotion cited is
+ *                          gone — every cited fact is inactive or deleted.
+ */
+export declare function reconcileFactTiers(db: Database.Database, options?: {
+    now?: string;
+}): TierReconcileResult;
+export interface TierMigrationCandidate {
+    id: string;
+    fact: string;
+    projectId: string;
+    subjectKey: string;
+    workstreamId: string | null;
+    branchHint: string | null;
+    tierReason: string;
+}
+export declare function listTierMigrationCandidates(db: Database.Database): TierMigrationCandidate[];
+export interface TierMigrationResult {
+    promoted: string[];
+    skipped: Array<{
+        id: string;
+        reason: string;
+    }>;
+}
+export declare function applyTierMigration(db: Database.Database, options?: {
+    now?: string;
+}): TierMigrationResult;

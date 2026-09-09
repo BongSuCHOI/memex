@@ -15,11 +15,47 @@ Fact는 대화 전체 요약이 아니라 다음 작업에서 재사용할 가�
 fact는 scope와 source exchange provenance를 가지며 검색, revision, consolidation, ontology의 기준이 됩니다. extraction-time `confidence`는 저장 후보 필터에만 사용하고 fact row에는 보존하지 않습니다.
 
 Phase 3부터 project fact는 stable `project_id`와 `subject_key`를 가집니다. Absolute path는
-workspace provenance/legacy query key입니다. Source exchange가 workstream에 묶인 새 extraction은 기본적으로
-`promotion_state=workstream`이며 자동으로 project current가 되지 않습니다. Project-level decision은
-explicit-decision evidence, project current state는 merged 또는 validated evidence를 요구합니다.
-이 검사는 high-level promotion API뿐 아니라 low-level `insertFact()` boundary에도 적용되므로
-internal caller가 evidence나 membership 검증을 우회해 project-current slot을 만들 수 없습니다.
+workspace provenance/legacy query key입니다.
+
+### 범위 모델 (0.6.0 단일 출처)
+
+| 상황 | 동작 |
+|---|---|
+| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → **브랜치 tier** `(workspace, branch)`로 독립(서로 희석 안 됨; 같은 저장소의 워크트리 두 개가 같은 브랜치면 공유). 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
+| **일반(비-git) 프로젝트** | 디렉터리 = 프로젝트, 브랜치 계층 없음. 모든 기억 = 프로젝트 공용 (+ 글로벌). |
+| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 명시 승인 후 병합(`PROJECT_MERGED`). |
+| **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청(“이건 프로젝트 공용으로 기억하자” → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
+
+새 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다. 신호가 없으면(비-git 디렉터리, 또는 기본
+브랜치 세션) `project-current`, 그 외 브랜치·워크트리 세션이면 `workstream`이며 판단 근거는
+`facts.tier_reason`(`no-branch-signal` | `default-branch` | `branch:<name>`)과 Chronicle `ASSERTED`
+이벤트의 `outcome.tier_reason`에 남습니다. Project-level decision은 explicit-decision evidence,
+project current state는 `merged`/`validated`/`no-branch-signal` evidence를 요구합니다("브랜치 신호 없음"은
+근거의 부재가 아니라 그 자체가 근거입니다). 이 검사는 high-level promotion API뿐 아니라 low-level
+`insertFact()` boundary에도 적용되므로 internal caller가 evidence나 membership 검증을 우회해
+project-current slot을 만들 수 없습니다.
+
+### 승격 사다리
+
+```
+workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글로벌
+```
+
+| 이동 | 자동(근거 기반) 조건 | 사용자 명시 |
+|---|---|---|
+| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | UI 버튼 / `memex facts promote <id>` |
+| project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때 | 동일 |
+| 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
+
+- `workstream → global` 직행은 불가합니다. 한 칸씩만 움직이며 위반은 `TierStepError`입니다. 예외는
+  세션 내 명시 지시뿐이고, 그것도 **한 트랜잭션 안에서 두 단계로 실행되어 이벤트 두 개**를 남깁니다.
+- 구현: `promoteFact` / `demoteFact`(`src/fact-management.ts`), actor `user` | `auto` | `user-directive`.
+  자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
+- Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
+  `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
+  (Web UI 버튼도 같은 함수를 호출합니다).
+- 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v4에 additive로 실려 갑니다.
+  이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
 
 ## 2. 네 종류의 상태
 

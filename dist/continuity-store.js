@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { canonicalizeProjectPath } from "./project-identity.js";
+import { canonicalizeProjectPath, isUntrustedProjectPath } from "./project-identity.js";
 import { inspectWorkspaceLocation } from "./continuity-identity.js";
 import { CAPSULE_POLICY_VERSION, appendExchangeEvidence } from "./continuity-evidence.js";
 export const CONTINUITY_SCHEMA_VERSION = 7;
@@ -352,6 +352,7 @@ export function ensureContinuitySchema(db, options = {}) {
         portable_project_key TEXT UNIQUE,
         display_name TEXT NOT NULL,
         memory_revision INTEGER NOT NULL DEFAULT 0,
+        quarantined INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -368,9 +369,28 @@ export function ensureContinuitySchema(db, options = {}) {
         location_kind TEXT NOT NULL DEFAULT 'directory'
           CHECK(location_kind IN ('worktree','clone','directory')),
         branch TEXT,
+        default_branch TEXT,
         last_seen_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(device_id, canonical_path)
+      );
+
+      -- 0.6.0 (#21): a workspace that becomes a clone/worktree, or loses its
+      -- .git, keeps its workspace_id and project_id and records the transition
+      -- here. Additive and device-local; never exported by sync.
+      CREATE TABLE IF NOT EXISTS workspace_location_events (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        event_kind TEXT NOT NULL DEFAULT 'WORKSPACE_LOCATION_CHANGED',
+        from_location_kind TEXT,
+        to_location_kind TEXT,
+        git_common_dir TEXT,
+        remote_fingerprint TEXT,
+        branch TEXT,
+        requires_approval INTEGER NOT NULL DEFAULT 0,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS approved_remote_mappings (
@@ -430,6 +450,8 @@ export function ensureContinuitySchema(db, options = {}) {
             ["facts", "workstream_id", "TEXT"],
             ["facts", "subject_key", "TEXT"],
             ["facts", "promotion_state", "TEXT NOT NULL DEFAULT 'legacy-project'"],
+            // 0.6.0 (#18): the branch signal that placed the fact in its tier.
+            ["facts", "tier_reason", "TEXT"],
             ["recall_events", "project_id", "TEXT"],
             ["recall_events", "workspace_id", "TEXT"],
             ["recall_events", "workstream_id", "TEXT"],
@@ -447,6 +469,12 @@ export function ensureContinuitySchema(db, options = {}) {
             ["work_capsules", "source_session_id", "TEXT"],
             ["workspaces", "git_common_identity", "TEXT"],
             ["workspaces", "git_dir_identity", "TEXT"],
+            // 0.6.0 scope model (#16/#18): the repository default branch decides
+            // whether a session carries a branch signal at all.
+            ["workspaces", "default_branch", "TEXT"],
+            // 0.6.0 (#38): a project whose identity came from an untrusted cwd is
+            // isolated rather than deleted — its facts stay, its scope does not.
+            ["projects", "quarantined", "INTEGER NOT NULL DEFAULT 0"],
         ];
         for (const [table, column, definition] of identityColumns) {
             if (!tableExists(db, table))
@@ -483,7 +511,9 @@ export function ensureContinuitySchema(db, options = {}) {
         for (const row of pathRows) {
             const raw = row.value ?? "";
             const canonical = canonicalizeProjectPath(raw);
-            if (!canonical || canonical === "unknown")
+            // #38 — the migration accepts exactly what ensureWorkspaceScope accepts.
+            // `/` used to pass here and mint the `unknown` catch-all project.
+            if (isUntrustedProjectPath(raw))
                 continue;
             const existingWorkspace = db.prepare(`
         SELECT workspace_id, project_id FROM workspaces
@@ -510,21 +540,36 @@ export function ensureContinuitySchema(db, options = {}) {
         INSERT OR IGNORE INTO workspaces
           (workspace_id, project_id, device_id, canonical_path, git_common_dir,
            git_common_identity, git_dir_identity, remote_fingerprint,
-           location_kind, branch, last_seen_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(workspaceId, projectId, device.value, canonical, inspected.gitCommonDir, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.remoteFingerprint, inspected.locationKind, inspected.branch, nowIdentity, nowIdentity);
+           location_kind, branch, default_branch, last_seen_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(workspaceId, projectId, device.value, canonical, inspected.gitCommonDir, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.remoteFingerprint, inspected.locationKind, inspected.branch, inspected.defaultBranch, nowIdentity, nowIdentity);
             if (existingWorkspace && existingWorkspace.project_id !== projectId && inspected.gitCommonDir) {
                 db.prepare(`
           UPDATE workspaces SET project_id = ?, git_common_dir = ?, remote_fingerprint = ?,
             git_common_identity = ?, git_dir_identity = ?, location_kind = ?,
-            branch = COALESCE(?, branch), last_seen_at = ?
+            branch = COALESCE(?, branch), default_branch = COALESCE(?, default_branch),
+            last_seen_at = ?
           WHERE workspace_id = ?
-        `).run(projectId, inspected.gitCommonDir, inspected.remoteFingerprint, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.locationKind, inspected.branch, nowIdentity, existingWorkspace.workspace_id);
+        `).run(projectId, inspected.gitCommonDir, inspected.remoteFingerprint, inspected.gitCommonIdentity, inspected.gitDirIdentity, inspected.locationKind, inspected.branch, inspected.defaultBranch, nowIdentity, existingWorkspace.workspace_id);
             }
             if (inspected.gitCommonDir)
                 commonProjectByDir.set(inspected.gitCommonDir, projectId);
             identityByPath.set(raw, { canonical, projectId, workspaceId });
         }
+        // #38 — isolate a project that was built from an untrusted cwd (`/`, or
+        // any path with an empty basename). Facts are never deleted: the project
+        // is marked quarantined so injection and read scope skip it and
+        // `memex status` can list it for the user to reassign or purge.
+        if (columnNames(db, "projects").has("quarantined")) {
+            const suspect = db.prepare("SELECT workspace_id, project_id, canonical_path FROM workspaces")
+                .all();
+            const quarantine = db.prepare("UPDATE projects SET quarantined = 1 WHERE project_id = ?");
+            for (const row of suspect) {
+                if (isUntrustedProjectPath(row.canonical_path))
+                    quarantine.run(row.project_id);
+            }
+        }
+        options.afterMigrationStage?.("quarantine-untrusted-projects");
         const updateIdentity = (table, pathColumn) => {
             const columns = columnNames(db, table);
             if (!columns.has(pathColumn) || !columns.has("project_id") || !columns.has("workspace_id"))
@@ -799,6 +844,8 @@ export function ensureContinuitySchema(db, options = {}) {
         ON workspaces(device_id, git_common_dir) WHERE git_common_dir IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_workspaces_git_identity
         ON workspaces(device_id, git_common_identity, git_dir_identity);
+      CREATE INDEX IF NOT EXISTS idx_workspace_location_events_scope
+        ON workspace_location_events(project_id, workspace_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_workstreams_scope
         ON minimal_workstreams(project_id, workspace_id, status, branch_hint);
       CREATE INDEX IF NOT EXISTS idx_hot_evidence_scope
@@ -865,6 +912,10 @@ export const CHRONICLE_EVENT_KINDS = [
     "VALIDATED",
     "INCIDENT",
     "CONTRADICTED",
+    // 0.6.0 tier ladder (#18/#19). Additive: a pre-0.6.0 peer rejects a sync row
+    // carrying these kinds visibly, exactly as it does any unknown kind today.
+    "PROMOTED",
+    "DEMOTED",
 ];
 const CHRONICLE_COLUMNS = [
     ["project_id", "TEXT"],

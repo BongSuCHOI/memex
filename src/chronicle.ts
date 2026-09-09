@@ -23,7 +23,17 @@ export { CHRONICLE_EVENT_KINDS };
  */
 
 export type ChronicleEventKind = (typeof CHRONICLE_EVENT_KINDS)[number];
-export type ChronicleActor = "extractor" | "consolidator" | "user" | "sync" | "legacy";
+export type ChronicleActor =
+  | "extractor"
+  | "consolidator"
+  | "user"
+  | "sync"
+  | "legacy"
+  // 0.6.0 tier ladder (#18/#19): evidence-based automatic promotion, an
+  // in-session user scope directive, and the one-off tier back-fill.
+  | "auto"
+  | "user-directive"
+  | "migration";
 export type EvidenceAuthority = "human-decision" | "human" | "trusted-tool" | "unknown";
 export type EffectiveAtSource = "source" | "recorded" | "peer";
 
@@ -41,7 +51,9 @@ export const CHRONICLE_LANE_LABELS = {
 
 const TRUSTED_TOOL_SOURCE_TYPES = new Set(["repo_file", "git_history", "test_execution"]);
 const KIND_SET = new Set<string>(CHRONICLE_EVENT_KINDS);
-const PROJECTION_KINDS = new Set<ChronicleEventKind>(["ASSERTED", "CHANGED", "RETIRED", "RESTORED"]);
+const PROJECTION_KINDS = new Set<ChronicleEventKind>(["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "PROMOTED", "DEMOTED"]);
+/** Tier moves change placement, never meaning: they never touch the fact text. */
+export const TIER_EVENT_KINDS = new Set<ChronicleEventKind>(["PROMOTED", "DEMOTED"]);
 const EVENT_ONLY_KINDS = new Set<ChronicleEventKind>(["VALIDATED", "INCIDENT", "CONTRADICTED"]);
 
 export class ChronicleGroundingError extends Error {
@@ -318,7 +330,7 @@ export function recordChronicleEvent(
       .get(input.revertsEventId) as { event_kind: string } | undefined;
     if (!reverted) throw new Error(`reverts_event_id does not exist: ${input.revertsEventId}`);
   }
-  if (input.userStatedRationale && input.actor !== "user") {
+  if (input.userStatedRationale && input.actor !== "user" && input.actor !== "user-directive") {
     throw new ChronicleGroundingError("only actor 'user' can state a rationale without source evidence");
   }
 

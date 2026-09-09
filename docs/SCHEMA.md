@@ -135,7 +135,25 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 
 `conversation_exclusions`는 user-role conversation exclusion의 terminal session guard입니다. Privacy purge transaction에서 먼저 기록되며 journal/checkpoint/job/workstream projection이 삭제된 뒤에도 남습니다. Hook과 capture-index worker는 이 guard를 재검사하므로 purge와 이미 실행 중인 worker가 경쟁해도 private exchange나 Continuity state를 재생성하지 못합니다.
 
-`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch를 local provenance로 가집니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+`projects.quarantined`(0.6.0 additive, 기본 0)는 신뢰할 수 없는 cwd에서 만들어진 프로젝트를 격리합니다.
+`/`(파일시스템 루트)와 basename이 빈 모든 경로는 `unknown`과 동일하게 거부되므로(`ensureWorkspaceScope`와
+마이그레이션 양쪽) 새로 만들어지지 않고, 이미 존재하던 행은 마이그레이션 단계에서
+`quarantined = 1`로 표시됩니다. **fact는 삭제하지 않습니다** — 주입·read scope에서만 제외하고
+`memex status`가 프로젝트 ID·표시 이름·fact 수를 나열합니다. cwd를 신뢰할 수 없는 세션은 프로젝트에
+붙지 않고 글로벌 전용 읽기로 degrade합니다(`readScopeForSession` → `{ type: 'global' }`).
+
+`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+
+`workspace_location_events`(0.6.0 additive, device-local, sync 미대상)는 workspace 전이를 기록합니다.
+세션 시작마다 경로가 실제로 존재하면 fresh inspection이 권위이며 workspace 행의 git 메타데이터를
+그 자리에서 갱신합니다 — `workspace_id`·`project_id`는 불변이라 프로젝트 공용 기억·Capsule·이력은
+그대로 유지됩니다. 존재하지 않는 historical 경로는 기존 값을 보존합니다. `location_kind`/common
+dir/inode identity/remote fingerprint 중 하나라도 바뀌면 `WORKSPACE_LOCATION_CHANGED` 한 건을 남기며,
+event_id는 시계가 아니라 전이의 모양에서 파생되므로 같은 전이가 세션마다 중복 기록되지 않습니다.
+새로 감지한 common dir/remote가 **다른 프로젝트**에 이미 묶여 있으면 자동 병합하지 않고
+`requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남겨 기존
+`approved_remote_mappings` 승인 경로를 그대로 요구합니다. `.git`이 사라지는 역방향 전이는 행만
+`directory`로 갱신하며 브랜치 tier 기억을 삭제하거나 자동 강등하지 않습니다.
 
 `session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
 
@@ -228,14 +246,22 @@ facts (
   workspace_id,
   workstream_id,
   subject_key,
-  promotion_state
+  promotion_state,
+  tier_reason
 )
 ```
 
 `promotion_state`는 `legacy-project|decision|project-current|workspace|workstream`입니다. Active subject
 slot은 project와 optional workspace/workstream 범위에서 unique입니다. `decision`은 explicit decision,
-`project-current`는 merged/validated evidence만 허용하고 experimental state는 `workstream` 또는 Capsule에
-남습니다. Branch 전체 fact graph는 만들지 않습니다.
+`project-current`는 `merged`/`validated`/`no-branch-signal` evidence만 허용하고 experimental state는
+`workstream` 또는 Capsule에 남습니다. Branch 전체 fact graph는 만들지 않습니다.
+
+`tier_reason`(0.6.0 additive, nullable)은 fact가 그 tier에 놓인 근거입니다: `no-branch-signal`(비-git
+프로젝트 또는 브랜치를 못 읽음), `default-branch`(저장소 기본 브랜치 세션), `branch:<name>`(그 외
+브랜치·워크트리 세션). 앞의 둘은 프로젝트 공용(`project-current`), 마지막은 브랜치 tier(`workstream`)로
+들어갑니다. "브랜치 신호 없음"은 추측이 아니라 그 자체가 근거이므로 `project-current`의 정당한 evidence
+값(`no-branch-signal`)입니다. 같은 값이 추출 시 Chronicle `ASSERTED` 이벤트 `outcome.tier_reason`에도
+남습니다.
 
 ### Semantic fields
 
@@ -286,14 +312,14 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 | `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
 | `previous_fact` / `new_fact` | previous/new value |
 | `project_id`, `subject_key` | stable slot |
-| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED` |
+| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED|PROMOTED|DEMOTED`(뒤 둘은 0.6.0 additive) |
 | `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
 | `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
 | `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
 | `outcome_json` | validation/incident/temporal 판정 결과 |
 | `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
 | `reverts_event_id`, `related_event_ids` | rollback/관계 |
-| `actor` | `extractor|consolidator|user|sync|legacy` |
+| `actor` | `extractor|consolidator|user|sync|legacy|auto|user-directive|migration`(뒤 셋은 0.6.0 additive) |
 | `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision|human|trusted-tool|unknown` |
 | `effective_at` / `effective_at_source` | 실제 사건 시점(`source`) 또는 처리 시점 fallback(`recorded`), peer 수신(`peer`) |
 | `recorded_at` | worker 처리 시점 |

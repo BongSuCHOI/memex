@@ -488,7 +488,9 @@ export function ensureSessionMemoryState(
     workspaceId: identity.workspaceId,
     projectPath: input.project,
     explicitWorkstreamId: input.explicitWorkstreamId,
-    branch: input.branch,
+    // #16 — hosts that report no branch still get the branch the workspace
+    // inspection captured, so the stream is keyed by the real checkout.
+    branch: input.branch ?? identity.branch,
     prompt: input.prompt,
     now,
   });

@@ -8,7 +8,10 @@
  * full UUID plus an explicit confirmation flag, and reports the affected
  * counts (revisions/relations/vectors) before removing anything.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { getMemexHome } from './paths.js';
 import { assertMutationPolicy, captureMutationPolicy, recordLocalMeaningEvidence, StaleFactMutationError, type MutationPolicy } from './fact-policy.js';
 export { StaleFactMutationError } from './fact-policy.js';
 import {
@@ -18,6 +21,7 @@ import {
   vecParamFor,
 } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
+import { assignFactSubject, branchSignalFor } from './continuity-identity.js';
 import {
   normalizeSlotText,
   purgeChronicleForSources,
@@ -884,4 +888,517 @@ export function hardDeleteFact(db: Database.Database, id: string, opts: { confir
 
 function isFullUuid(id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+
+// ---------------------------------------------------------------------------
+// 0.6.0 promotion ladder (#19)
+//
+//   workstream (branch/worktree)  ⇄  project (project-common)  ⇄  global
+//
+// One rung at a time, through three channels: an explicit user action from the
+// Web UI or CLI (`user`), an evidence-based automatic pass that runs model-free
+// in the maintenance stage (`auto`), and an in-session scope directive the
+// extractor recognises (`user-directive`). Every move appends one Chronicle
+// PROMOTED/DEMOTED event carrying from/to tier, actor, reason and evidence.
+// A directive that names a tier two rungs away is executed as two steps in ONE
+// transaction so the ledger still shows both rungs.
+// ---------------------------------------------------------------------------
+
+export type FactTier = 'workstream' | 'project' | 'global';
+export type TierActor = 'user' | 'auto' | 'user-directive';
+
+const TIER_ORDER: FactTier[] = ['workstream', 'project', 'global'];
+
+/** A one-rung rule violation. Never thrown for a legal `user-directive` skip. */
+export class TierStepError extends Error {
+  readonly from: FactTier;
+  readonly to: FactTier;
+  constructor(from: FactTier, to: FactTier) {
+    super(`tier ladder moves one step at a time: ${from} → ${to} is not adjacent`);
+    this.name = 'TierStepError';
+    this.from = from;
+    this.to = to;
+  }
+}
+
+export interface FactTierState {
+  id: string;
+  tier: FactTier;
+  scopeType: string;
+  promotionState: string;
+  projectId: string | null;
+  workspaceId: string | null;
+  workstreamId: string | null;
+  subjectKey: string | null;
+  tierReason: string | null;
+  isActive: boolean;
+}
+
+export function factTierOf(row: { scope_type: string; promotion_state: string | null }): FactTier {
+  if (row.scope_type === 'global') return 'global';
+  const state = row.promotion_state ?? 'legacy-project';
+  return state === 'workstream' || state === 'workspace' ? 'workstream' : 'project';
+}
+
+export function readFactTier(db: Database.Database, id: string): FactTierState {
+  const row = db.prepare(`
+    SELECT id, scope_type, promotion_state, project_id, workspace_id, workstream_id,
+           subject_key, tier_reason, is_active
+    FROM facts WHERE id = ?
+  `).get(id) as Record<string, unknown> | undefined;
+  if (!row) throw new Error(`fact not found: ${id}`);
+  return {
+    id: String(row.id),
+    tier: factTierOf({ scope_type: String(row.scope_type), promotion_state: row.promotion_state as string | null }),
+    scopeType: String(row.scope_type),
+    promotionState: String(row.promotion_state ?? 'legacy-project'),
+    projectId: (row.project_id as string | null) ?? null,
+    workspaceId: (row.workspace_id as string | null) ?? null,
+    workstreamId: (row.workstream_id as string | null) ?? null,
+    subjectKey: (row.subject_key as string | null) ?? null,
+    tierReason: (row.tier_reason as string | null) ?? null,
+    isActive: Number(row.is_active) === 1,
+  };
+}
+
+export interface TierMoveOptions {
+  actor: TierActor;
+  reason?: string | null;
+  /** Exchange ids that ground the move. */
+  evidence?: string[];
+  /** Facts whose existence grounds an automatic move; a later pass demotes when they die. */
+  evidenceFactIds?: string[];
+  /** Target rung. Defaults to one step; only `user-directive` may span two. */
+  to?: FactTier;
+  /** Required to bring a global fact back into a project when it cannot be derived. */
+  projectId?: string | null;
+  /** Required to push a project fact onto a branch when it cannot be derived. */
+  workstreamId?: string | null;
+  now?: string;
+}
+
+export interface TierMoveResult {
+  id: string;
+  from: FactTier;
+  to: FactTier;
+  steps: Array<{ from: FactTier; to: FactTier; eventId: string }>;
+}
+
+function globalSubjectKey(current: string | null, factId: string): string {
+  if (current && current.startsWith('global.')) return current.slice(0, 160);
+  const base = current && /^[a-z][a-z0-9_.-]*$/.test(current)
+    ? current.replace(/^(workstream|workspace|project-current|decision|legacy-project)\./, '')
+    : `fact.${factId}`;
+  return `global.${base}`.slice(0, 160);
+}
+
+function projectSubjectKey(current: string | null, factId: string): string {
+  const stripped = current?.startsWith('global.') ? current.slice('global.'.length) : current;
+  return stripped && /^[a-z][a-z0-9_.-]{2,160}$/.test(stripped) ? stripped : `project-current.fact.${factId}`;
+}
+
+function projectScopePath(db: Database.Database, projectId: string): string | null {
+  const row = db.prepare(`
+    SELECT canonical_path FROM workspaces WHERE project_id = ? ORDER BY created_at, workspace_id LIMIT 1
+  `).get(projectId) as { canonical_path: string } | undefined;
+  return row?.canonical_path ?? null;
+}
+
+/** Project/workstream a fact came from, read back from its own source exchanges. */
+function originScope(
+  db: Database.Database,
+  factId: string,
+): { projectId: string | null; workspaceId: string | null; workstreamId: string | null } {
+  const raw = (db.prepare('SELECT source_exchange_ids FROM facts WHERE id = ?').get(factId) as
+    { source_exchange_ids: string | null } | undefined)?.source_exchange_ids;
+  const ids = parseSourceExchangeIds(raw ?? null);
+  if (ids.length === 0) return { projectId: null, workspaceId: null, workstreamId: null };
+  const row = db.prepare(`
+    SELECT project_id, workspace_id, workstream_id FROM exchanges
+    WHERE id IN (${ids.map(() => '?').join(',')}) AND project_id IS NOT NULL
+    ORDER BY timestamp DESC, rowid DESC LIMIT 1
+  `).get(...ids) as { project_id: string | null; workspace_id: string | null; workstream_id: string | null } | undefined;
+  return {
+    projectId: row?.project_id ?? null,
+    workspaceId: row?.workspace_id ?? null,
+    workstreamId: row?.workstream_id ?? null,
+  };
+}
+
+function appendUiAudit(action: string, detail: { id: string; project: string | null; status: string }): void {
+  try {
+    const dir = path.join(getMemexHome(), 'logs');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, 'ui-audit.jsonl');
+    const stat = fs.existsSync(file) ? fs.lstatSync(file) : null;
+    if (stat?.isSymbolicLink()) return;
+    // Metadata only, matching ui/lib/logs.cjs: never fact text or prompts.
+    fs.appendFileSync(file, `${JSON.stringify({
+      ts: new Date().toISOString(), source: 'memex-core', action,
+      status: detail.status, id: detail.id, project: detail.project,
+      operation: null, error_code: null,
+    })}\n`, { mode: 0o600 });
+  } catch { /* auditing is best-effort and never blocks the mutation */ }
+}
+
+/** One rung. Must run inside the caller's transaction. */
+function applyTierStep(
+  db: Database.Database,
+  state: FactTierState,
+  to: FactTier,
+  options: TierMoveOptions,
+  recordedAt: string,
+): { eventId: string; next: FactTierState } {
+  const from = state.tier;
+  const evidence = options.evidence ?? [];
+  const reason = options.reason?.trim() || null;
+  let projectId = state.projectId;
+  let subjectKey = state.subjectKey;
+
+  if (to === 'global') {
+    subjectKey = globalSubjectKey(state.subjectKey, state.id);
+    db.prepare(`
+      UPDATE facts SET scope_type = 'global', scope_project = NULL, project_id = NULL,
+        workspace_id = NULL, workstream_id = NULL, promotion_state = 'legacy-project',
+        subject_key = ?, tier_reason = ?,
+        semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(subjectKey, `tier:${options.actor}`, recordedAt, recordedAt, state.id);
+  } else if (from === 'global') {
+    const target = options.projectId ?? originScope(db, state.id).projectId;
+    if (!target) throw new Error('demoting a global fact requires a target project');
+    projectId = target;
+    subjectKey = projectSubjectKey(state.subjectKey, state.id);
+    db.prepare(`
+      UPDATE facts SET scope_type = 'project', scope_project = ?, project_id = ?,
+        workspace_id = NULL, workstream_id = NULL, promotion_state = 'project-current',
+        subject_key = ?, tier_reason = ?,
+        semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(projectScopePath(db, target), target, subjectKey, `tier:${options.actor}`,
+      recordedAt, recordedAt, state.id);
+  } else if (to === 'project') {
+    if (!projectId || !subjectKey) throw new Error('promoting to project requires project identity');
+    assignFactSubject(db, {
+      factId: state.id, projectId, subjectKey,
+      promotionState: 'project-current', evidence: 'validated',
+      tierReason: `tier:${options.actor}`,
+    });
+  } else {
+    const workstreamId = options.workstreamId ?? originScope(db, state.id).workstreamId;
+    if (!projectId || !subjectKey) throw new Error('demoting to workstream requires project identity');
+    if (!workstreamId) throw new Error('demoting to the branch tier requires a workstream');
+    assignFactSubject(db, {
+      factId: state.id, projectId, subjectKey,
+      promotionState: 'workstream', evidence: 'experimental',
+      workstreamId, tierReason: `tier:${options.actor}`,
+    });
+  }
+
+  const { event } = recordChronicleEvent(db, {
+    kind: TIER_ORDER.indexOf(to) > TIER_ORDER.indexOf(from) ? 'PROMOTED' : 'DEMOTED',
+    projectId,
+    subjectKey,
+    factId: state.id,
+    outcome: {
+      from_tier: from,
+      to_tier: to,
+      actor: options.actor,
+      reason,
+      evidence_ids: [...evidence].sort(),
+      ...(options.evidenceFactIds?.length ? { evidence_fact_ids: [...options.evidenceFactIds].sort() } : {}),
+    },
+    sourceExchangeIds: evidence,
+    userStatedRationale: (options.actor === 'user' || options.actor === 'user-directive') ? reason : null,
+    actor: options.actor === 'user-directive' ? 'user-directive' : options.actor === 'auto' ? 'auto' : 'user',
+    evidenceAuthority: options.actor === 'auto' ? 'unknown' : 'human-decision',
+    effectiveAt: recordedAt,
+    effectiveAtSource: 'recorded',
+    recordedAt,
+    projectionApplied: true,
+  });
+  return { eventId: event.id, next: readFactTier(db, state.id) };
+}
+
+function moveFactTier(
+  db: Database.Database,
+  id: string,
+  direction: 1 | -1,
+  options: TierMoveOptions,
+): TierMoveResult {
+  const recordedAt = options.now ?? new Date().toISOString();
+  const start = readFactTier(db, id);
+  const fromIndex = TIER_ORDER.indexOf(start.tier);
+  const target = options.to ?? TIER_ORDER[fromIndex + direction];
+  if (!target) throw new TierStepError(start.tier, direction > 0 ? 'global' : 'workstream');
+  if (!TIER_ORDER.includes(target)) {
+    throw new Error(`unknown tier: ${String(target)} (expected ${TIER_ORDER.join(' | ')})`);
+  }
+  const toIndex = TIER_ORDER.indexOf(target);
+  if (toIndex === fromIndex) throw new TierStepError(start.tier, target);
+  if (Math.sign(toIndex - fromIndex) !== direction) throw new TierStepError(start.tier, target);
+  const distance = Math.abs(toIndex - fromIndex);
+  // Only an explicit in-session scope directive may name a rung two steps
+  // away; it is still executed one rung at a time and leaves two events.
+  if (distance > 1 && options.actor !== 'user-directive') throw new TierStepError(start.tier, target);
+
+  const steps: TierMoveResult['steps'] = [];
+  const tx = db.transaction(() => {
+    let state = start;
+    for (let i = fromIndex; i !== toIndex; i += direction) {
+      const next = TIER_ORDER[i + direction];
+      const applied = applyTierStep(db, state, next, options, recordedAt);
+      steps.push({ from: state.tier, to: next, eventId: applied.eventId });
+      state = applied.next;
+    }
+  });
+  db.inTransaction ? tx() : tx.immediate();
+  if (options.actor === 'user') {
+    appendUiAudit(direction > 0 ? 'fact.promote' : 'fact.demote', {
+      id, project: start.projectId, status: 'ok',
+    });
+  }
+  return { id, from: start.tier, to: target, steps };
+}
+
+export function promoteFact(db: Database.Database, id: string, options: TierMoveOptions): TierMoveResult {
+  return moveFactTier(db, id, 1, options);
+}
+
+export function demoteFact(db: Database.Database, id: string, options: TierMoveOptions): TierMoveResult {
+  return moveFactTier(db, id, -1, options);
+}
+
+/** Move a fact to the tier an in-session scope directive named. No-op when already there. */
+export function applyScopeDirective(
+  db: Database.Database,
+  id: string,
+  directive: FactTier,
+  options: { reason?: string | null; evidence?: string[]; now?: string } = {},
+): TierMoveResult | null {
+  const state = readFactTier(db, id);
+  if (state.tier === directive) return null;
+  const move: TierMoveOptions = {
+    actor: 'user-directive',
+    reason: options.reason ?? `in-session scope directive: ${directive}`,
+    evidence: options.evidence,
+    to: directive,
+    now: options.now,
+  };
+  return TIER_ORDER.indexOf(directive) > TIER_ORDER.indexOf(state.tier)
+    ? promoteFact(db, id, move)
+    : demoteFact(db, id, move);
+}
+
+export interface TierReconcileResult {
+  promoted: Array<{ id: string; from: FactTier; to: FactTier; reason: string }>;
+  demoted: Array<{ id: string; from: FactTier; to: FactTier; reason: string }>;
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+/**
+ * Evidence-based automatic ladder pass. Model-free: every decision below is a
+ * SQL fact about the projection, never a judgement about meaning.
+ *
+ *   workstream → project : the same subject_key is confirmed outside this
+ *                          workstream (another branch, or a project-common
+ *                          session with no branch signal).
+ *   project → global     : the same fact text is confirmed in ≥2 projects.
+ *   demotion             : the upper evidence an automatic promotion cited is
+ *                          gone — every cited fact is inactive or deleted.
+ */
+export function reconcileFactTiers(
+  db: Database.Database,
+  options: { now?: string } = {},
+): TierReconcileResult {
+  const result: TierReconcileResult = { promoted: [], demoted: [], skipped: [] };
+  const now = options.now ?? new Date().toISOString();
+  if (!tableExists(db, 'facts') || !tableExists(db, 'fact_revisions')) return result;
+
+  const step = (
+    id: string,
+    direction: 1 | -1,
+    reason: string,
+    evidenceFactIds: string[],
+  ): void => {
+    try {
+      const move = direction > 0
+        ? promoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now })
+        : demoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now });
+      (direction > 0 ? result.promoted : result.demoted).push({
+        id, from: move.from, to: move.to, reason,
+      });
+    } catch (error) {
+      result.skipped.push({ id, reason: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  // 1. Branch truth re-confirmed outside its own branch becomes project truth.
+  //    Only the slot's earliest branch fact moves, so a slot confirmed from two
+  //    branches promotes one deterministic row instead of racing for the slot.
+  const confirmedOutsideBranch = db.prepare(`
+    SELECT f.id AS id, MIN(g.id) AS witness
+    FROM facts f
+    JOIN facts g ON g.project_id = f.project_id AND g.subject_key = f.subject_key
+      AND g.id <> f.id AND g.is_active = 1
+      AND COALESCE(g.workstream_id, '') <> COALESCE(f.workstream_id, '')
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
+      AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM facts h
+        WHERE h.is_active = 1 AND h.promotion_state = 'workstream'
+          AND h.project_id = f.project_id AND h.subject_key = f.subject_key
+          AND (h.created_at, h.id) < (f.created_at, f.id)
+      )
+    GROUP BY f.id
+    ORDER BY f.id
+  `).all() as Array<{ id: string; witness: string }>;
+  for (const row of confirmedOutsideBranch) {
+    step(row.id, 1, 'subject re-confirmed outside this workstream', [row.witness]);
+  }
+
+  // 2. The same project truth confirmed in two or more projects becomes global.
+  const crossProject = db.prepare(`
+    SELECT MIN(f.id) AS id, COUNT(DISTINCT f.project_id) AS projects,
+           GROUP_CONCAT(f.id) AS witnesses
+    FROM facts f
+    WHERE f.is_active = 1 AND f.scope_type = 'project' AND f.project_id IS NOT NULL
+      AND f.promotion_state IN ('project-current','decision','legacy-project')
+    GROUP BY LOWER(TRIM(f.fact))
+    HAVING projects >= 2
+    ORDER BY id
+  `).all() as Array<{ id: string; projects: number; witnesses: string }>;
+  for (const row of crossProject) {
+    const witnesses = String(row.witnesses ?? '').split(',').filter((v) => v && v !== row.id);
+    step(row.id, 1, `confirmed in ${row.projects} projects`, witnesses);
+  }
+
+  // 3. An automatic promotion whose cited evidence is gone comes back down.
+  const promotions = db.prepare(`
+    SELECT r.fact_id AS id, r.outcome_json
+    FROM fact_revisions r
+    JOIN facts f ON f.id = r.fact_id AND f.is_active = 1
+    WHERE r.event_kind = 'PROMOTED' AND r.actor = 'auto' AND r.fact_id IS NOT NULL
+    ORDER BY r.chronicle_seq DESC
+  `).all() as Array<{ id: string; outcome_json: string | null }>;
+  const seen = new Set<string>();
+  for (const row of promotions) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    let cited: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(row.outcome_json ?? '{}');
+      const ids = (parsed as { evidence_fact_ids?: unknown }).evidence_fact_ids;
+      cited = Array.isArray(ids) ? ids.filter((v): v is string => typeof v === 'string') : [];
+    } catch { cited = []; }
+    if (cited.length === 0) continue;
+    const alive = (db.prepare(
+      `SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND id IN (${cited.map(() => '?').join(',')})`,
+    ).get(...cited) as { n: number }).n;
+    if (alive === 0) step(row.id, -1, 'upper evidence is no longer active', cited);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// 0.6.0 tier migration (#18)
+//
+// Facts extracted before the default-tier rule all landed on `workstream`,
+// including those from non-git projects and default-branch sessions that have
+// no branch for their memory to belong to. The new rule would have written
+// them as project-common. Nothing is rewritten automatically: the caller lists
+// candidates first and only an explicit apply moves them, one Chronicle
+// PROMOTED event per fact with actor `migration`, reason `no-branch-signal`.
+// ---------------------------------------------------------------------------
+
+export interface TierMigrationCandidate {
+  id: string;
+  fact: string;
+  projectId: string;
+  subjectKey: string;
+  workstreamId: string | null;
+  branchHint: string | null;
+  tierReason: string;
+}
+
+export function listTierMigrationCandidates(db: Database.Database): TierMigrationCandidate[] {
+  if (!tableExists(db, 'minimal_workstreams') || !tableExists(db, 'workspaces')) return [];
+  const rows = db.prepare(`
+    SELECT f.id, f.fact, f.project_id, f.subject_key, f.workstream_id,
+           w.branch_hint, ws.default_branch
+    FROM facts f
+    LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
+    LEFT JOIN workspaces ws ON ws.workspace_id = COALESCE(f.workspace_id, w.workspace_id)
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream' AND f.project_id IS NOT NULL
+    ORDER BY f.created_at, f.id
+  `).all() as Array<{
+    id: string; fact: string; project_id: string; subject_key: string | null;
+    workstream_id: string | null; branch_hint: string | null; default_branch: string | null;
+  }>;
+  const candidates: TierMigrationCandidate[] = [];
+  for (const row of rows) {
+    const signal = branchSignalFor({ branch: row.branch_hint, defaultBranch: row.default_branch });
+    if (signal.kind === 'branch') continue;
+    candidates.push({
+      id: row.id,
+      fact: row.fact,
+      projectId: row.project_id,
+      subjectKey: row.subject_key ?? `workstream.fact.${row.id}`,
+      workstreamId: row.workstream_id,
+      branchHint: row.branch_hint,
+      tierReason: signal.tierReason,
+    });
+  }
+  return candidates;
+}
+
+export interface TierMigrationResult {
+  promoted: string[];
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+export function applyTierMigration(
+  db: Database.Database,
+  options: { now?: string } = {},
+): TierMigrationResult {
+  const result: TierMigrationResult = { promoted: [], skipped: [] };
+  const recordedAt = options.now ?? new Date().toISOString();
+  for (const candidate of listTierMigrationCandidates(db)) {
+    const tx = db.transaction(() => {
+      assignFactSubject(db, {
+        factId: candidate.id,
+        projectId: candidate.projectId,
+        subjectKey: candidate.subjectKey,
+        promotionState: 'project-current',
+        evidence: 'no-branch-signal',
+        tierReason: 'no-branch-signal',
+      });
+      recordChronicleEvent(db, {
+        kind: 'PROMOTED',
+        projectId: candidate.projectId,
+        subjectKey: candidate.subjectKey,
+        factId: candidate.id,
+        outcome: {
+          from_tier: 'workstream',
+          to_tier: 'project-current',
+          actor: 'migration',
+          reason: 'no-branch-signal',
+          evidence_ids: [],
+        },
+        actor: 'migration',
+        evidenceAuthority: 'unknown',
+        recordedAt,
+        effectiveAt: recordedAt,
+        effectiveAtSource: 'recorded',
+        projectionApplied: true,
+      });
+    });
+    try {
+      tx();
+      result.promoted.push(candidate.id);
+    } catch (error) {
+      result.skipped.push({ id: candidate.id, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
 }

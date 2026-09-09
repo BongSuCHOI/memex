@@ -180,7 +180,7 @@ export interface FactRevision {
   source_exchange_id: string | null;
   created_at: string;
   /** Chronicle (Phase 4) view fields; absent on rows read by legacy tooling. */
-  event_kind?: 'ASSERTED' | 'CHANGED' | 'RETIRED' | 'RESTORED' | 'VALIDATED' | 'INCIDENT' | 'CONTRADICTED';
+  event_kind?: 'ASSERTED' | 'CHANGED' | 'RETIRED' | 'RESTORED' | 'VALIDATED' | 'INCIDENT' | 'CONTRADICTED' | 'PROMOTED' | 'DEMOTED';
   effective_at?: string;
   projection_applied?: boolean;
 }
@@ -250,6 +250,13 @@ export interface ExtractedFact {
   context_dependencies?: FactContextDependency[];
   /** Server-resolved UUIDs; present on candidates accepted by the extractor. */
   source_exchange_ids?: string[];
+  /**
+   * #19 — an explicit in-session scope directive ("let's remember this for the
+   * whole project", "이건 글로벌 기억으로"). The directive sentence itself is the
+   * human assertion, and the server moves the fact's tier accordingly with
+   * Chronicle actor `user-directive`. Absent unless the human stated a scope.
+   */
+  scope_directive?: 'workstream' | 'project' | 'global';
 }
 
 export interface ConsolidationResult {

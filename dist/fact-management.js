@@ -1,7 +1,21 @@
+/**
+ * CX-07 — transactional fact management service.
+ *
+ * Single mutation SSOT for CLI, Web UI and any other surface. Every mutation
+ * is one better-sqlite3 transaction: partial commits are impossible.
+ *
+ * Delete policy: deactivate is the default; hard delete requires the exact
+ * full UUID plus an explicit confirmation flag, and reports the affected
+ * counts (revisions/relations/vectors) before removing anything.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { getMemexHome } from './paths.js';
 import { assertMutationPolicy, captureMutationPolicy, recordLocalMeaningEvidence, StaleFactMutationError } from './fact-policy.js';
 export { StaleFactMutationError } from './fact-policy.js';
 import { clearFactContextDependencies, getRevisions, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
+import { assignFactSubject, branchSignalFor } from './continuity-identity.js';
 import { normalizeSlotText, purgeChronicleForSources, readChronicleTimeline, recordChronicleEvent, } from './chronicle.js';
 function tableExists(db, name) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined;
@@ -625,4 +639,400 @@ export function hardDeleteFact(db, id, opts) {
 }
 function isFullUuid(id) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+const TIER_ORDER = ['workstream', 'project', 'global'];
+/** A one-rung rule violation. Never thrown for a legal `user-directive` skip. */
+export class TierStepError extends Error {
+    from;
+    to;
+    constructor(from, to) {
+        super(`tier ladder moves one step at a time: ${from} → ${to} is not adjacent`);
+        this.name = 'TierStepError';
+        this.from = from;
+        this.to = to;
+    }
+}
+export function factTierOf(row) {
+    if (row.scope_type === 'global')
+        return 'global';
+    const state = row.promotion_state ?? 'legacy-project';
+    return state === 'workstream' || state === 'workspace' ? 'workstream' : 'project';
+}
+export function readFactTier(db, id) {
+    const row = db.prepare(`
+    SELECT id, scope_type, promotion_state, project_id, workspace_id, workstream_id,
+           subject_key, tier_reason, is_active
+    FROM facts WHERE id = ?
+  `).get(id);
+    if (!row)
+        throw new Error(`fact not found: ${id}`);
+    return {
+        id: String(row.id),
+        tier: factTierOf({ scope_type: String(row.scope_type), promotion_state: row.promotion_state }),
+        scopeType: String(row.scope_type),
+        promotionState: String(row.promotion_state ?? 'legacy-project'),
+        projectId: row.project_id ?? null,
+        workspaceId: row.workspace_id ?? null,
+        workstreamId: row.workstream_id ?? null,
+        subjectKey: row.subject_key ?? null,
+        tierReason: row.tier_reason ?? null,
+        isActive: Number(row.is_active) === 1,
+    };
+}
+function globalSubjectKey(current, factId) {
+    if (current && current.startsWith('global.'))
+        return current.slice(0, 160);
+    const base = current && /^[a-z][a-z0-9_.-]*$/.test(current)
+        ? current.replace(/^(workstream|workspace|project-current|decision|legacy-project)\./, '')
+        : `fact.${factId}`;
+    return `global.${base}`.slice(0, 160);
+}
+function projectSubjectKey(current, factId) {
+    const stripped = current?.startsWith('global.') ? current.slice('global.'.length) : current;
+    return stripped && /^[a-z][a-z0-9_.-]{2,160}$/.test(stripped) ? stripped : `project-current.fact.${factId}`;
+}
+function projectScopePath(db, projectId) {
+    const row = db.prepare(`
+    SELECT canonical_path FROM workspaces WHERE project_id = ? ORDER BY created_at, workspace_id LIMIT 1
+  `).get(projectId);
+    return row?.canonical_path ?? null;
+}
+/** Project/workstream a fact came from, read back from its own source exchanges. */
+function originScope(db, factId) {
+    const raw = db.prepare('SELECT source_exchange_ids FROM facts WHERE id = ?').get(factId)?.source_exchange_ids;
+    const ids = parseSourceExchangeIds(raw ?? null);
+    if (ids.length === 0)
+        return { projectId: null, workspaceId: null, workstreamId: null };
+    const row = db.prepare(`
+    SELECT project_id, workspace_id, workstream_id FROM exchanges
+    WHERE id IN (${ids.map(() => '?').join(',')}) AND project_id IS NOT NULL
+    ORDER BY timestamp DESC, rowid DESC LIMIT 1
+  `).get(...ids);
+    return {
+        projectId: row?.project_id ?? null,
+        workspaceId: row?.workspace_id ?? null,
+        workstreamId: row?.workstream_id ?? null,
+    };
+}
+function appendUiAudit(action, detail) {
+    try {
+        const dir = path.join(getMemexHome(), 'logs');
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const file = path.join(dir, 'ui-audit.jsonl');
+        const stat = fs.existsSync(file) ? fs.lstatSync(file) : null;
+        if (stat?.isSymbolicLink())
+            return;
+        // Metadata only, matching ui/lib/logs.cjs: never fact text or prompts.
+        fs.appendFileSync(file, `${JSON.stringify({
+            ts: new Date().toISOString(), source: 'memex-core', action,
+            status: detail.status, id: detail.id, project: detail.project,
+            operation: null, error_code: null,
+        })}\n`, { mode: 0o600 });
+    }
+    catch { /* auditing is best-effort and never blocks the mutation */ }
+}
+/** One rung. Must run inside the caller's transaction. */
+function applyTierStep(db, state, to, options, recordedAt) {
+    const from = state.tier;
+    const evidence = options.evidence ?? [];
+    const reason = options.reason?.trim() || null;
+    let projectId = state.projectId;
+    let subjectKey = state.subjectKey;
+    if (to === 'global') {
+        subjectKey = globalSubjectKey(state.subjectKey, state.id);
+        db.prepare(`
+      UPDATE facts SET scope_type = 'global', scope_project = NULL, project_id = NULL,
+        workspace_id = NULL, workstream_id = NULL, promotion_state = 'legacy-project',
+        subject_key = ?, tier_reason = ?,
+        semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(subjectKey, `tier:${options.actor}`, recordedAt, recordedAt, state.id);
+    }
+    else if (from === 'global') {
+        const target = options.projectId ?? originScope(db, state.id).projectId;
+        if (!target)
+            throw new Error('demoting a global fact requires a target project');
+        projectId = target;
+        subjectKey = projectSubjectKey(state.subjectKey, state.id);
+        db.prepare(`
+      UPDATE facts SET scope_type = 'project', scope_project = ?, project_id = ?,
+        workspace_id = NULL, workstream_id = NULL, promotion_state = 'project-current',
+        subject_key = ?, tier_reason = ?,
+        semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(projectScopePath(db, target), target, subjectKey, `tier:${options.actor}`, recordedAt, recordedAt, state.id);
+    }
+    else if (to === 'project') {
+        if (!projectId || !subjectKey)
+            throw new Error('promoting to project requires project identity');
+        assignFactSubject(db, {
+            factId: state.id, projectId, subjectKey,
+            promotionState: 'project-current', evidence: 'validated',
+            tierReason: `tier:${options.actor}`,
+        });
+    }
+    else {
+        const workstreamId = options.workstreamId ?? originScope(db, state.id).workstreamId;
+        if (!projectId || !subjectKey)
+            throw new Error('demoting to workstream requires project identity');
+        if (!workstreamId)
+            throw new Error('demoting to the branch tier requires a workstream');
+        assignFactSubject(db, {
+            factId: state.id, projectId, subjectKey,
+            promotionState: 'workstream', evidence: 'experimental',
+            workstreamId, tierReason: `tier:${options.actor}`,
+        });
+    }
+    const { event } = recordChronicleEvent(db, {
+        kind: TIER_ORDER.indexOf(to) > TIER_ORDER.indexOf(from) ? 'PROMOTED' : 'DEMOTED',
+        projectId,
+        subjectKey,
+        factId: state.id,
+        outcome: {
+            from_tier: from,
+            to_tier: to,
+            actor: options.actor,
+            reason,
+            evidence_ids: [...evidence].sort(),
+            ...(options.evidenceFactIds?.length ? { evidence_fact_ids: [...options.evidenceFactIds].sort() } : {}),
+        },
+        sourceExchangeIds: evidence,
+        userStatedRationale: (options.actor === 'user' || options.actor === 'user-directive') ? reason : null,
+        actor: options.actor === 'user-directive' ? 'user-directive' : options.actor === 'auto' ? 'auto' : 'user',
+        evidenceAuthority: options.actor === 'auto' ? 'unknown' : 'human-decision',
+        effectiveAt: recordedAt,
+        effectiveAtSource: 'recorded',
+        recordedAt,
+        projectionApplied: true,
+    });
+    return { eventId: event.id, next: readFactTier(db, state.id) };
+}
+function moveFactTier(db, id, direction, options) {
+    const recordedAt = options.now ?? new Date().toISOString();
+    const start = readFactTier(db, id);
+    const fromIndex = TIER_ORDER.indexOf(start.tier);
+    const target = options.to ?? TIER_ORDER[fromIndex + direction];
+    if (!target)
+        throw new TierStepError(start.tier, direction > 0 ? 'global' : 'workstream');
+    if (!TIER_ORDER.includes(target)) {
+        throw new Error(`unknown tier: ${String(target)} (expected ${TIER_ORDER.join(' | ')})`);
+    }
+    const toIndex = TIER_ORDER.indexOf(target);
+    if (toIndex === fromIndex)
+        throw new TierStepError(start.tier, target);
+    if (Math.sign(toIndex - fromIndex) !== direction)
+        throw new TierStepError(start.tier, target);
+    const distance = Math.abs(toIndex - fromIndex);
+    // Only an explicit in-session scope directive may name a rung two steps
+    // away; it is still executed one rung at a time and leaves two events.
+    if (distance > 1 && options.actor !== 'user-directive')
+        throw new TierStepError(start.tier, target);
+    const steps = [];
+    const tx = db.transaction(() => {
+        let state = start;
+        for (let i = fromIndex; i !== toIndex; i += direction) {
+            const next = TIER_ORDER[i + direction];
+            const applied = applyTierStep(db, state, next, options, recordedAt);
+            steps.push({ from: state.tier, to: next, eventId: applied.eventId });
+            state = applied.next;
+        }
+    });
+    db.inTransaction ? tx() : tx.immediate();
+    if (options.actor === 'user') {
+        appendUiAudit(direction > 0 ? 'fact.promote' : 'fact.demote', {
+            id, project: start.projectId, status: 'ok',
+        });
+    }
+    return { id, from: start.tier, to: target, steps };
+}
+export function promoteFact(db, id, options) {
+    return moveFactTier(db, id, 1, options);
+}
+export function demoteFact(db, id, options) {
+    return moveFactTier(db, id, -1, options);
+}
+/** Move a fact to the tier an in-session scope directive named. No-op when already there. */
+export function applyScopeDirective(db, id, directive, options = {}) {
+    const state = readFactTier(db, id);
+    if (state.tier === directive)
+        return null;
+    const move = {
+        actor: 'user-directive',
+        reason: options.reason ?? `in-session scope directive: ${directive}`,
+        evidence: options.evidence,
+        to: directive,
+        now: options.now,
+    };
+    return TIER_ORDER.indexOf(directive) > TIER_ORDER.indexOf(state.tier)
+        ? promoteFact(db, id, move)
+        : demoteFact(db, id, move);
+}
+/**
+ * Evidence-based automatic ladder pass. Model-free: every decision below is a
+ * SQL fact about the projection, never a judgement about meaning.
+ *
+ *   workstream → project : the same subject_key is confirmed outside this
+ *                          workstream (another branch, or a project-common
+ *                          session with no branch signal).
+ *   project → global     : the same fact text is confirmed in ≥2 projects.
+ *   demotion             : the upper evidence an automatic promotion cited is
+ *                          gone — every cited fact is inactive or deleted.
+ */
+export function reconcileFactTiers(db, options = {}) {
+    const result = { promoted: [], demoted: [], skipped: [] };
+    const now = options.now ?? new Date().toISOString();
+    if (!tableExists(db, 'facts') || !tableExists(db, 'fact_revisions'))
+        return result;
+    const step = (id, direction, reason, evidenceFactIds) => {
+        try {
+            const move = direction > 0
+                ? promoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now })
+                : demoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now });
+            (direction > 0 ? result.promoted : result.demoted).push({
+                id, from: move.from, to: move.to, reason,
+            });
+        }
+        catch (error) {
+            result.skipped.push({ id, reason: error instanceof Error ? error.message : String(error) });
+        }
+    };
+    // 1. Branch truth re-confirmed outside its own branch becomes project truth.
+    //    Only the slot's earliest branch fact moves, so a slot confirmed from two
+    //    branches promotes one deterministic row instead of racing for the slot.
+    const confirmedOutsideBranch = db.prepare(`
+    SELECT f.id AS id, MIN(g.id) AS witness
+    FROM facts f
+    JOIN facts g ON g.project_id = f.project_id AND g.subject_key = f.subject_key
+      AND g.id <> f.id AND g.is_active = 1
+      AND COALESCE(g.workstream_id, '') <> COALESCE(f.workstream_id, '')
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
+      AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM facts h
+        WHERE h.is_active = 1 AND h.promotion_state = 'workstream'
+          AND h.project_id = f.project_id AND h.subject_key = f.subject_key
+          AND (h.created_at, h.id) < (f.created_at, f.id)
+      )
+    GROUP BY f.id
+    ORDER BY f.id
+  `).all();
+    for (const row of confirmedOutsideBranch) {
+        step(row.id, 1, 'subject re-confirmed outside this workstream', [row.witness]);
+    }
+    // 2. The same project truth confirmed in two or more projects becomes global.
+    const crossProject = db.prepare(`
+    SELECT MIN(f.id) AS id, COUNT(DISTINCT f.project_id) AS projects,
+           GROUP_CONCAT(f.id) AS witnesses
+    FROM facts f
+    WHERE f.is_active = 1 AND f.scope_type = 'project' AND f.project_id IS NOT NULL
+      AND f.promotion_state IN ('project-current','decision','legacy-project')
+    GROUP BY LOWER(TRIM(f.fact))
+    HAVING projects >= 2
+    ORDER BY id
+  `).all();
+    for (const row of crossProject) {
+        const witnesses = String(row.witnesses ?? '').split(',').filter((v) => v && v !== row.id);
+        step(row.id, 1, `confirmed in ${row.projects} projects`, witnesses);
+    }
+    // 3. An automatic promotion whose cited evidence is gone comes back down.
+    const promotions = db.prepare(`
+    SELECT r.fact_id AS id, r.outcome_json
+    FROM fact_revisions r
+    JOIN facts f ON f.id = r.fact_id AND f.is_active = 1
+    WHERE r.event_kind = 'PROMOTED' AND r.actor = 'auto' AND r.fact_id IS NOT NULL
+    ORDER BY r.chronicle_seq DESC
+  `).all();
+    const seen = new Set();
+    for (const row of promotions) {
+        if (seen.has(row.id))
+            continue;
+        seen.add(row.id);
+        let cited = [];
+        try {
+            const parsed = JSON.parse(row.outcome_json ?? '{}');
+            const ids = parsed.evidence_fact_ids;
+            cited = Array.isArray(ids) ? ids.filter((v) => typeof v === 'string') : [];
+        }
+        catch {
+            cited = [];
+        }
+        if (cited.length === 0)
+            continue;
+        const alive = db.prepare(`SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND id IN (${cited.map(() => '?').join(',')})`).get(...cited).n;
+        if (alive === 0)
+            step(row.id, -1, 'upper evidence is no longer active', cited);
+    }
+    return result;
+}
+export function listTierMigrationCandidates(db) {
+    if (!tableExists(db, 'minimal_workstreams') || !tableExists(db, 'workspaces'))
+        return [];
+    const rows = db.prepare(`
+    SELECT f.id, f.fact, f.project_id, f.subject_key, f.workstream_id,
+           w.branch_hint, ws.default_branch
+    FROM facts f
+    LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
+    LEFT JOIN workspaces ws ON ws.workspace_id = COALESCE(f.workspace_id, w.workspace_id)
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream' AND f.project_id IS NOT NULL
+    ORDER BY f.created_at, f.id
+  `).all();
+    const candidates = [];
+    for (const row of rows) {
+        const signal = branchSignalFor({ branch: row.branch_hint, defaultBranch: row.default_branch });
+        if (signal.kind === 'branch')
+            continue;
+        candidates.push({
+            id: row.id,
+            fact: row.fact,
+            projectId: row.project_id,
+            subjectKey: row.subject_key ?? `workstream.fact.${row.id}`,
+            workstreamId: row.workstream_id,
+            branchHint: row.branch_hint,
+            tierReason: signal.tierReason,
+        });
+    }
+    return candidates;
+}
+export function applyTierMigration(db, options = {}) {
+    const result = { promoted: [], skipped: [] };
+    const recordedAt = options.now ?? new Date().toISOString();
+    for (const candidate of listTierMigrationCandidates(db)) {
+        const tx = db.transaction(() => {
+            assignFactSubject(db, {
+                factId: candidate.id,
+                projectId: candidate.projectId,
+                subjectKey: candidate.subjectKey,
+                promotionState: 'project-current',
+                evidence: 'no-branch-signal',
+                tierReason: 'no-branch-signal',
+            });
+            recordChronicleEvent(db, {
+                kind: 'PROMOTED',
+                projectId: candidate.projectId,
+                subjectKey: candidate.subjectKey,
+                factId: candidate.id,
+                outcome: {
+                    from_tier: 'workstream',
+                    to_tier: 'project-current',
+                    actor: 'migration',
+                    reason: 'no-branch-signal',
+                    evidence_ids: [],
+                },
+                actor: 'migration',
+                evidenceAuthority: 'unknown',
+                recordedAt,
+                effectiveAt: recordedAt,
+                effectiveAtSource: 'recorded',
+                projectionApplied: true,
+            });
+        });
+        try {
+            tx();
+            result.promoted.push(candidate.id);
+        }
+        catch (error) {
+            result.skipped.push({ id: candidate.id, reason: error instanceof Error ? error.message : String(error) });
+        }
+    }
+    return result;
 }
