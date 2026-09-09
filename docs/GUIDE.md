@@ -207,12 +207,17 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 ~/.config/memex/
 ├── lifecycle-registration.json
 ├── logs/
+│   └── ui-audit.jsonl
+├── ui/
+│   └── operations.json
 ├── conversation-archive/
 └── conversation-index/
     ├── db.sqlite
     ├── sync/
     └── logs/
 ```
+
+`logs/ui-audit.jsonl`은 Web UI의 변경·관리 실행 감사 메타데이터이고, `ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터입니다. 둘 다 원문·출력이 아니라 메타데이터만 남깁니다.
 
 우선순위:
 

@@ -59,6 +59,9 @@ node scripts/web-ui-browser-e2e.mjs
 | continuity sequence v7 | `continuity-evidence.test.ts`: A/C 20회, immutable generation, fixed target/partial page, 6 Stop sibling scheduler, retry/lease/purge/rebind CAS, v6 replay migration; `continuity-hot-cursor.test.ts`: query/budget suffix, concurrent insert/purge, compact prefix, scope reset; `continuity-rehydration-budget.test.ts`: fresh/stale/oversized/empty/missing × 500/2000 budget; `continuity-capture-streaming.test.ts`: 64MiB+1/256MiB, 4MiB allocation cap, hash, partial/oversized line, crash/replacement/epoch ingestion |
 | MCP | initialize, 9 tools, schema/handler parity |
 | installer/package | isolated install, idempotence, removal, packaged runtime |
+| lifecycle | SessionStart/UserPromptSubmit/Stop/Interrupt/PreCompact/PostCompact/SessionEnd + cleanup |
+| UI | empty/populated/mutation/security/accessibility |
+| data integrity | FK check, vector/parent consistency, repair behavior |
 
 Phase 1 gate의 mandatory matrix는 `test/continuity-correctness-spine.test.ts`의 deterministic seeded
 pagination, migration/page-commit crash stages, ten duplicate deliveries, checkpoint ordinal ordering,
@@ -79,10 +82,6 @@ installed plugin의 SessionStart/UserPromptSubmit/Stop/SessionEnd stdin, JSON ad
 SessionEnd foreground final fence, 별도 Luna Capsule worker, compact 즉시 복원을 검증합니다.
 Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 process 회귀는
 `test/runtime-exec-slice.test.mjs`가 담당합니다.
-
-| lifecycle | SessionStart/UserPromptSubmit/Stop/Interrupt/PreCompact/PostCompact/SessionEnd + cleanup |
-| UI | empty/populated/mutation/security/accessibility |
-| data integrity | FK check, vector/parent consistency, repair behavior |
 
 ## 4. Merge-gate receipt 절차
 

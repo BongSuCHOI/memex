@@ -118,7 +118,7 @@ KR 번역, ontology category, relation, vector index는 각 기기에서 로컬�
 - 인증이 완료된 **Codex CLI**
 - 현재 hook / Unix socket runtime 기준 **macOS 또는 Linux**
 
-Memex는 native SQLite, vector, embedding 의존성을 사용합니다. 설치된 plugin은 isolated npm cache를 통해 runtime을 실행하며, 일반 사용 시 사용자 프로젝트에 dependency를 설치하거나 source checkout을 요구하지 않습니다.
+Memex는 native SQLite, vector, embedding 의존성을 사용합니다. 설치 절차가 이를 plugin 옆에 materialize하고 launcher는 그 설치 artifact를 우선 실행합니다. isolated npm cache는 MCP server와, 아직 materialize되지 않은 plugin registration이 쓰는 `npx` fallback에만 적용됩니다. 어느 경로도 일반 사용 시 사용자 프로젝트에 dependency를 설치하거나 source checkout을 요구하지 않습니다.
 
 ---
 
@@ -395,8 +395,13 @@ taxonomy는 local derived state입니다. privacy purge 후 전면 invalidate되
 │   ├── db.sqlite
 │   ├── sync/
 │   └── logs/
+├── ui/
+│   └── operations.json
 └── logs/
+    └── ui-audit.jsonl
 ```
+
+`ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터, `logs/ui-audit.jsonl`은 Web UI 감사 기록입니다. 둘 다 대화 원문·기억 원문·실행 출력이 아니라 메타데이터만 남깁니다.
 
 원본 `$CODEX_HOME/sessions` rollout은 항상 read-only input으로 취급합니다.
 

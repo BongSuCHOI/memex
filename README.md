@@ -118,7 +118,7 @@ See [Architecture](docs/ARCHITECTURE.md), [Fact lifecycle](docs/FACT-LIFECYCLE.m
 - An authenticated **Codex CLI**
 - **macOS or Linux** for the current hook / Unix-socket runtime
 
-Memex uses native SQLite, vector, and embedding dependencies. The installed plugin launches the runtime through an isolated npm cache; it does not install dependencies into your project or require a source checkout for normal use.
+Memex uses native SQLite, vector, and embedding dependencies. Installation materializes them beside the plugin and the launcher runs that same installed artifact first; an isolated npm cache is used only for the MCP server and for the `npx` fallback that a not-yet-materialized plugin registration takes. Neither path installs dependencies into your project or requires a source checkout for normal use.
 
 ---
 
@@ -398,8 +398,15 @@ Typical layout:
 │   ├── db.sqlite
 │   ├── sync/
 │   └── logs/
+├── ui/
+│   └── operations.json
 └── logs/
+    └── ui-audit.jsonl
 ```
+
+`ui/operations.json` keeps metadata for admin commands the Web UI ran, and
+`logs/ui-audit.jsonl` is its audit trail; both record metadata only, never
+conversation text, fact text, or command output.
 
 The original `$CODEX_HOME/sessions` rollouts are always treated as read-only input.
 

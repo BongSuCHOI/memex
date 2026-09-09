@@ -1,6 +1,6 @@
 # Memex Workspace: integrated local Web UI
 
-이 UI는 0.4.2 / `f2dfc02967c35c5c9b64090e904779dcfe5cafb9`의 읽기 스키마·팩트 관리 서비스·CLI를 기준으로 구성됐다. 기존 `ui/server.cjs` bin과 `ui/` 패키징을 유지한다.
+이 UI는 0.4.2 / `f2dfc02967c35c5c9b64090e904779dcfe5cafb9`의 읽기 스키마·팩트 관리 서비스·CLI를 설계 기준선으로 삼아 구성됐고, 0.5.0과 함께 배포되며 0.5.0 릴리스 게이트에서 현재 스키마로 검증됐다. 기존 `ui/server.cjs` bin과 `ui/` 패키징을 유지한다.
 
 ## 화면
 
@@ -16,6 +16,8 @@ MEMEX_PLUGIN_ROOT="$PWD" node ui/server.cjs
 ```
 
 `http://127.0.0.1:3847`. `PORT`로 포트 변경. 별도 프런트엔드 빌드는 없다. 사용자 홈/DB 환경 변수는 기존 값을 상속한다.
+
+`MEMEX_HOME`이 없고 `MEMEX_DB_PATH`만 있으면 home을 그 DB 경로에서 유도하고, 감사 로그(`logs/ui-audit.jsonl`)와 관리 실행 메타데이터(`ui/operations.json`)를 그 home 아래에 쓴다. 정확한 우선순위는 [`ui/README.md`](../ui/README.md)에 있다.
 
 ## 계약
 
