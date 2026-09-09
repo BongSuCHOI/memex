@@ -285,6 +285,8 @@ node scripts/lifecycle-e2e.mjs
 
 검증 절차와 최신 merge-gate baseline은 [VERIFICATION.md](VERIFICATION.md)를 참조하십시오.
 
+모든 서브커맨드는 `--help`/`-h`를 인식하며, 사용법만 출력하고 exit 0으로 끝납니다. 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
+
 ## 14. 제거와 데이터 보존
 
 ```bash
