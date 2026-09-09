@@ -80,8 +80,10 @@ memex status --json
     이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
     정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
   - `facts without local evidence: N / M` 줄은(0.6.1 #45) 로컬 의미 검증 영수증이 없는 활성 fact
-    수입니다. 그 fact들은 자동 통합 대상에서 사실상 제외되고(사용자에게는 "중복 fact가 계속 쌓인다"로
-    보입니다) 동기화 시 피어에게 집니다. `memex backfill receipts`로 재구성합니다.
+    수입니다. 그 fact들은 자동 통합 대상에서 제외되며(사용자에게는 "중복 fact가 계속 쌓인다"로
+    보입니다) `memex backfill receipts`로 재구성합니다. 동기화와의 관계는 **한 방향**입니다:
+    영수증은 sync 충돌 판정에 들어가지 않고, 반대로 peer의 semantic win이 로컬 영수증을
+    `peer-authority`로 강등시켜 그 fact의 통합을 막습니다(아래 `backfill receipts` 항목 참고).
   - `Derived lanes: skipped N times (reason: continuity backlog)` 줄이 보이면(0.6.1 #43) P0/P1
     (capture index / Work Capsule) 백로그 때문에 하위 레인 4개(consolidation, re-embed, ontology,
     extraction)가 그 세션에서 건너뛰어진 것입니다. "왜 pending이 안 줄지"의 답이 완전히 다른
@@ -96,8 +98,11 @@ memex status --json
 - `memex backfill ontology` — local ontology/relation 생성
 - `memex backfill embeddings` — 누락된 semantic vector 생성
 - `memex backfill receipts` — 누락된 로컬 의미 검증 영수증(`fact_evidence_receipts`) 재구성.
-  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되고 sync tie-break에서
-  지므로, `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
+  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되므로,
+  `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
+  (`memex status`와 `memex backfill --help`는 이 상태를 "lose sync tie-breaks"라고도 표현하지만,
+  실제 sync 충돌 판정은 `semantic_updated_at`과 내용 키만 봅니다 — 영수증을 읽는 코드 경로는
+  없습니다. 영향을 주는 방향은 sync → 영수증 강등 → 통합 차단입니다.)
 - `memex backfill all` — 위 backlog 단계를 순서대로 실행
 
 `backfill`은 기본 foreground 실행이며 다음 exit code를 반환합니다.
@@ -911,7 +916,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | ontology 분류 보류(parked) | `memex status`의 `Ontology: … (N classified, P parked, Q pending)`에서 `P > 0` | 분류 시도를 소진해 `General`/`Misc`에 보관된 fact. **classified가 아닙니다** | `memex backfill ontology`. 재시도는 분류 정책/embedding 세대당 정확히 1회이므로, 세대가 그대로면 다시 돌려도 같은 fact를 재시도하지 않습니다 |
 | ontology category index 수리 필요 | `memex status`의 `ontology category index: MANUAL REPAIR REQUIRED (…)`, `doctor`의 `ontology-index: fail` | category vector index가 self-heal로 고칠 수 없는 상태라 분류 자체가 멈춤 | `memex backfill embeddings`로 vector를 재생성한 뒤 `memex status`에서 줄이 사라졌는지 확인 |
 | 하위(derived) 레인이 계속 밀림 | `memex status`의 `Derived lanes: skipped N times (reason: continuity backlog)` | P0/P1(capture index / Work Capsule) 백로그 때문에 consolidation·re-embed·ontology·extraction이 그 세션에서 양보됨 | 고장이 아닙니다. 같은 사유로 3회 연속이면 다음 호출에서 하위 레인을 한 번 강제로 통과시킵니다. 백로그 자체는 `memex jobs list --state retry` → `memex recover`로 해소 |
-| 로컬 의미 검증 영수증 없음 | `memex status`의 `facts without local evidence: N / M` | `fact_evidence_receipts`가 없는 활성 fact. 자동 통합에서 빠지고("중복 fact가 계속 쌓인다") sync tie-break에서 짐 | `memex backfill receipts` — model 호출이 없는 재구성입니다. 원본 exchange가 이미 사라진 fact는 복구 대상이 아닙니다 |
+| 로컬 의미 검증 영수증 없음 | `memex status`의 `facts without local evidence: N / M` | `fact_evidence_receipts`가 없는 활성 fact. 자동 통합에서 빠짐("중복 fact가 계속 쌓인다"). peer의 semantic win이 영수증을 `peer-authority`로 강등해도 같은 상태가 됨 | `memex backfill receipts` — model 호출이 없는 재구성입니다. 원본 exchange가 이미 사라진 fact는 복구 대상이 아닙니다 |
 | sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남(대개 공유 폴더에 쓸 수 없음) | `memex sync status`로 공유 폴더·쓰기 가능 여부 확인 → 원인 수정 → `memex sync export`. 다음 SessionEnd/유지보수 wake에서도 재시도합니다 |
 | 동기화가 켜져 있는데 한 번도 나가지 않음 | `doctor`의 `sync-export: warn` | 스위치는 on인데 export 기록이 없음(또는 export 훅이 어느 hook에도 등록되지 않음) | `memex sync export`로 첫 세대를 만들고 `memex sync status`로 확인 |
 | 동기화가 꺼져 있음 | `doctor`의 `sync-export: ok` + `skipped(off)` | 기본값. 고장이 아님 | 쓰려면 `memex sync enable --dir <공유 폴더>` |

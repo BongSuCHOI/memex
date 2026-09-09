@@ -387,7 +387,13 @@ false를 반환하지만, 무엇이 결속을 끊었는지가 남고 `memex back
 `memex backfill receipts`(model-free)는 `source_exchange_ids`가 전부 해석되는 활성 fact에 대해
 영수증을 재구성합니다. 영수증 행 자체가 resume 마커라 중단해도 다음 실행이 나머지를 이어서 처리합니다.
 `memex status`는 `facts without local evidence: N / M` 줄로 남은 수를 보고합니다 — 영수증이 없는 fact는
-자동 통합에서 제외되고 sync tie-break에서 집니다.
+자동 통합에서 제외됩니다(`hasLocalMeaningEvidence`를 읽는 곳은 `src/consolidator.ts` 세 군데뿐입니다).
+
+`memex status`와 `memex backfill --help`의 문구는 여기에 "lose sync tie-breaks"를 덧붙이지만, 그 경로는
+아직 구현되어 있지 않습니다: `src/sync-import.ts`는 `hasLocalMeaningEvidence`를 호출하지 않고 semantic
+승자를 `semantic_updated_at`과 `semanticConflictKey`(fact 문장·category·scope·project·subject·promotion
+state·created_at)로만 정합니다. 실제 인과는 반대 방향입니다 — sync가 영수증을 강등시켜 그 다음
+consolidation을 막습니다.
 
 Local verified projection의 exact meaning과 source/tool snapshot만 기록합니다. Source content/identity가
 바뀌거나 누락되면 receipt는 사용할 수 없고, remote semantic replacement는 receipt를 제거합니다.

@@ -248,7 +248,9 @@ KR translation은 자동이 아닙니다. 사용자가 `scripts/translate-facts.
 같은 세대에서 `memex backfill ontology`를 반복해도 같은 fact를 다시 부르지 않습니다.
 
 로컬 의미 검증 영수증(`fact_evidence_receipts`)이 없는 fact도 검색·주입에서는 정상 후보입니다.
-영향은 통합과 sync 쪽입니다: 자동 통합에서 제외되고 sync tie-break에서 집니다(#45).
+영향은 통합 쪽입니다: `hasLocalMeaningEvidence`가 `src/consolidator.ts`의 세 게이트를 막아 자동
+통합에서 제외됩니다(#45). sync는 반대 방향으로만 얽힙니다 — 충돌 판정 자체는 영수증을 읽지 않고,
+peer의 semantic win이 로컬 영수증을 `peer-authority`로 강등시켜 통합을 막습니다.
 `memex status`의 `facts without local evidence: N / M`이 그 수이고 `memex backfill receipts`가
 model 호출 없이 재구성합니다.
 
