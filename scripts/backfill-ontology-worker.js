@@ -21,6 +21,8 @@ import {
   parkExhaustedFacts,
   MAX_CLASSIFY_ATTEMPTS,
 } from '../dist/ontology-classifier.js';
+import { buildOntologyPendingClause } from '../dist/ontology-selector.js';
+import { EMBEDDING_VERSION } from '../dist/embeddings.js';
 import {
   getModelWorkBudget,
   getOrCreateMaintenanceModelBudget,
@@ -150,16 +152,25 @@ async function main() {
       LIMIT ?
     `).all(maintenanceBudget.budgetId, MAX_FACTS);
     const relationIds = relationPending.map((row) => row.id);
+    // Issue #41: the selector no longer means "category id is NULL". A fact
+    // PARKED in General/Misc after bounded failures kept its category id and
+    // was therefore invisible to every retry path forever. It re-enters here
+    // exactly once per (classifier policy, embedding generation) token;
+    // backfillClassifyBatch releases it atomically before classifying.
+    const pendingSelector = buildOntologyPendingClause({
+      embeddingVersion: EMBEDDING_VERSION,
+      maxAttempts: MAX_CLASSIFY_ATTEMPTS,
+      alias: 'f',
+    });
     const pending = db.prepare(`
       SELECT f.id FROM facts f
-      WHERE f.is_active = 1 AND f.ontology_category_id IS NULL
-        AND COALESCE(f.ontology_attempts, 0) < ?
+      WHERE ${pendingSelector.clause}
       ORDER BY EXISTS (
         SELECT 1 FROM model_work_targets t WHERE t.budget_id = ?
           AND t.target_id = f.id AND t.stage = 'ontology' AND t.state = 'pending'
       ) DESC, f.created_at, f.id
       LIMIT ?
-    `).all(MAX_CLASSIFY_ATTEMPTS, maintenanceBudget.budgetId, Math.max(0, MAX_FACTS - relationIds.length));
+    `).all(...pendingSelector.params, maintenanceBudget.budgetId, Math.max(0, MAX_FACTS - relationIds.length));
     const ontologyIds = pending.map((row) => row.id);
     log(`backfill-ontology: ${ontologyIds.length + relationIds.length} facts this run (batch ${BATCH_SIZE}, concurrency ${CONCURRENCY}, relations ${DETECT_RELATIONS ? 'on' : 'pending-only'})`);
 
@@ -174,7 +185,7 @@ async function main() {
       batches.push({ kind: 'ontology', ids: ontologyIds.slice(i, i + BATCH_SIZE) });
     }
 
-    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, budgetExhausted: 0, processed: 0 };
+    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, released: 0, budgetExhausted: 0, processed: 0 };
     const queue = [...batches];
     // Circuit breaker: transient failures burn no attempts (by design), so a
     // dead proxy/SDK would otherwise let every run re-spawn batch after batch
@@ -209,6 +220,7 @@ async function main() {
             totals.fallback += stats.fallback;
             totals.failed += stats.failed;
             totals.transient += stats.transient;
+            totals.released += stats.released;
           }
           const anyProgress = batch.kind === 'relation'
             ? stats.completed > 0
@@ -240,7 +252,7 @@ async function main() {
       }
     });
     await Promise.all(workers);
-    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, budget-exhausted ${totals.budgetExhausted})`);
+    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, released-from-park ${totals.released}, budget-exhausted ${totals.budgetExhausted})`);
   } catch (error) {
     log(`backfill-ontology: FATAL ${error instanceof Error ? error.message : error}`);
     process.exitCode = 1;

@@ -564,6 +564,44 @@ function countRows(table: string): number | null {
 }
 
 /**
+ * Issue #41 — `IndexRepairError` says "manual repair required", and that
+ * sentence used to live only in logs/backfill-ontology.log, a file no
+ * diagnostic reads. Read its durable marker with the same lightweight
+ * connection countRows uses (never the heavy db.js chain).
+ */
+function readOntologyIndexRepairMarker(): {
+  blocked: boolean;
+  reason: string | null;
+  detectedAt: string | null;
+} | null {
+  try {
+    const dbPath = getDbPath();
+    if (!fs.existsSync(dbPath)) return null;
+    const Database = runtimeRequire("better-sqlite3");
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const exists = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'ontology_index_repair_state'")
+        .get();
+      if (!exists) return null;
+      const row = db
+        .prepare("SELECT state, blocked_reason, detected_at FROM ontology_index_repair_state WHERE id = 1")
+        .get() as { state: string; blocked_reason: string | null; detected_at: string | null } | undefined;
+      if (!row) return { blocked: false, reason: null, detectedAt: null };
+      return {
+        blocked: row.state === "blocked",
+        reason: row.blocked_reason ?? null,
+        detectedAt: row.detected_at ?? null,
+      };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Issue #44 — the injection log and `recall_events` can diverge completely.
  *
  * The observed data root emitted 7 bundles (`status: "injected"`) and held 0
@@ -878,6 +916,22 @@ export function doctor(): DoctorReport {
       : "fail",
     detail: ".codex-plugin/plugin.json present (MCP servers declared there)",
   });
+
+  // Issue #41: the ontology category vec index can be broken in a way
+  // self-heal cannot fix. Classification then stops entirely while status
+  // used to keep printing `Ontology: READY`.
+  const ontologyRepair = readOntologyIndexRepairMarker();
+  if (ontologyRepair) {
+    checks.push({
+      name: "ontology-index",
+      status: ontologyRepair.blocked ? "fail" : "ok",
+      detail: ontologyRepair.blocked
+        ? `ontology category index repair FAILED (${ontologyRepair.reason ?? "unknown"}${
+            ontologyRepair.detectedAt ? `, detected ${ontologyRepair.detectedAt}` : ""
+          }) — classification is blocked; rebuild vectors: memex backfill embeddings`
+        : "ontology category index reconciled",
+    });
+  }
 
   // P2-6: the last sync export attempt is recorded durably by the
   // SessionEnd chain — a failed export must surface here instead of

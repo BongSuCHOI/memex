@@ -143,7 +143,12 @@ export function getBackfillWorkStatus(
           ...(pendingExtraction?.params ?? []),
         )
       : 0;
-    const ontologyFacts = pipeline.ontology.pendingFacts;
+    // 이슈 #41: 파킹된 fact 중 현재 정책/임베딩 세대에서 아직 재시도를 쓰지
+    // 않은 것은 `memex backfill ontology`가 실제로 처리할 일감이다 — 여기에
+    // 세지 않으면 backfill이 "남은 일 없음"이라 보고한 직후 워커가 그것들을
+    // 집는 모순이 생긴다.
+    const ontologyFacts =
+      pipeline.ontology.pendingFacts + pipeline.ontology.parkedRetryable;
     const relationTargets = tableExists(db, "model_work_targets")
       ? count(
           db,

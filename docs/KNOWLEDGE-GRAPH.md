@@ -49,11 +49,33 @@ old result returns    → epoch mismatch, discard
 
 새 domain/category 생성과 fact assignment는 stale 결과가 taxonomy residue를 남기지 않도록 같은 commit 경계에서 처리합니다.
 
-## 4. Attempt ledger와 fallback
+## 4. Attempt ledger와 parking
 
 반복적으로 분류할 수 없는 fact가 매 maintenance마다 LLM 호출을 소비하지 않도록 bounded attempt ledger를 둡니다. MAX에 도달한 같은 semantic generation만 General/Misc fallback으로 park할 수 있습니다.
 
 semantic mutation은 attempt ledger를 reset합니다. privacy purge도 surviving facts의 attempts/last-attempt를 reset하여 새 taxonomy에서 다시 분류할 수 있게 합니다.
+
+### Parking은 별도 state이고 영구가 아닙니다 (issue #41)
+
+Parking은 `ontology_category_id`만 쓰지 않습니다. 그렇게 하면 **LLM이 실제로 Misc를 고른 assignment**와 **실패해서 park된 assignment**가 schema 상 구분되지 않고, status가 park된 fact를 classified로 세어 `Ontology: READY`라고 보고합니다.
+
+| Column | 의미 |
+| --- | --- |
+| `facts.ontology_state` | `'parked'` 이면 bounded 실패 후 보관 중. LLM이 고른 Misc는 `NULL` |
+| `facts.ontology_parked_at` | park된 시각 |
+| `facts.ontology_parked_version` | park 당시의 `(classifier policy, embedding generation)` 토큰 (`p<policy>:e<embedding>`) |
+
+재시도는 **정책/embedding 세대당 정확히 한 번**입니다. 저장된 토큰이 현재 토큰과 다를 때만 selector가 park를 pending으로 되돌리고, release 시점에 현재 토큰을 다시 stamp하므로 재시도 도중 크래시가 나도 같은 세대에서 두 번째 재시도는 발생하지 않습니다. 다시 실패하면 현재 토큰으로 re-park됩니다.
+
+selector는 `src/ontology-selector.ts` 한 곳에 있고 worker / SessionStart hook / maintenance budget / status가 모두 이것을 씁니다.
+
+### Batch 출력 예산 초과는 개별 fact의 실패가 아닙니다
+
+출력 토큰 예산은 batch 크기의 함수이므로(`256 * n + 512`), 초과는 시스템 원인입니다. 초과 시 batch를 절반으로 나눠 다시 호출하며 attempt를 소모하지 않습니다. fact 하나만 남았는데도 초과하면 그때만 content 실패로 ledger에 청구합니다.
+
+### Index repair는 log가 아니라 status/doctor로 올라갑니다
+
+`vec_categories`가 self-heal로 고칠 수 없는 상태면 `IndexRepairError`가 발생하고 `ontology_index_repair_state`(단일 행)에 기록됩니다. `memex status`는 `ontology category index: MANUAL REPAIR REQUIRED (...)`를, `memex doctor`는 `ontology-index` check를 FAIL로 보고합니다. 인덱스가 다시 정합해지면 같은 행이 `clear`로 바뀝니다.
 
 ## 5. Relation
 
@@ -116,6 +138,7 @@ ontology_last_attempt_at = NULL
 정상 graph의 기본 조건:
 
 - dangling category/fact/relation endpoint 0
+- `ontology_index_repair_state.state = 'blocked'` 없음
 - invalid relation enum 0
 - forbidden cross-project direct edge 0
 - inactive fact node 0

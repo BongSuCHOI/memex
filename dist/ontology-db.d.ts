@@ -46,7 +46,14 @@ export declare function searchSimilarCategories(db: Database.Database, embedding
  * changes and the caller must discard the stale result instead of stamping
  * it onto the newer meaning.
  */
-export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number): number;
+export declare function classifyFact(db: Database.Database, factId: string, categoryId: string, expectedSemanticGeneration?: number, expectedTaxonomyEpoch?: number, 
+/**
+ * 이슈 #47: 할당 시점의 코사인 유사도. 저장해 두지 않으면 0.42로 붙은
+ * 할당과 0.98로 붙은 할당이 사후 구분 불가다(재분류 대상 선별의 입력).
+ * undefined면 기존 값을 유지하지 않고 NULL로 지운다 — 새 할당의 신뢰도를
+ * 옛 할당의 값으로 설명하면 안 되기 때문이다.
+ */
+similarity?: number | null): number;
 export declare function getFactsByCategory(db: Database.Database, categoryId: string, scopeProject?: string | null, scopeType?: 'project' | 'global' | 'all', identityScope?: FactSearchScope): Fact[];
 export declare function getFactsByCategoryInScope(db: Database.Database, categoryId: string, scope: ReadScope): Fact[];
 export declare function getFactsByDomain(db: Database.Database, domainId: string): Fact[];

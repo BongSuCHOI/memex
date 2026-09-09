@@ -359,6 +359,10 @@ export function initDatabase(options = {}) {
       consolidation_attempts INTEGER NOT NULL DEFAULT 0,
       needs_consolidation INTEGER NOT NULL DEFAULT 1,
       ontology_last_attempt_at TEXT,
+      ontology_state TEXT,
+      ontology_parked_at TEXT,
+      ontology_parked_version TEXT,
+      ontology_similarity REAL,
       semantic_generation INTEGER NOT NULL DEFAULT 1,
       semantic_updated_at TEXT NOT NULL DEFAULT '',
       lifecycle_generation INTEGER NOT NULL DEFAULT 1,
@@ -400,6 +404,43 @@ export function initDatabase(options = {}) {
         db.exec("ALTER TABLE facts ADD COLUMN lifecycle_updated_at TEXT NOT NULL DEFAULT ''");
     }
     db.prepare("UPDATE facts SET lifecycle_updated_at = updated_at WHERE lifecycle_updated_at = ''").run();
+    // 이슈 #41: "LLM이 Misc를 골랐다"와 "실패해서 파킹됐다"를 스키마로 구분한다.
+    // ontology_state = 'parked' 인 행만 실패 파킹이고, ontology_parked_version은
+    // 그 파킹이 어떤 (분류 정책, 임베딩 세대)에서 일어났는지를 기록한다 —
+    // 재시도 셀렉터는 이 토큰이 현재 토큰과 다를 때만 파킹을 pending으로 되돌리므로
+    // 파킹된 fact는 정책/임베딩 세대당 정확히 한 번만 재시도된다.
+    // ontology_similarity(이슈 #47)는 할당 시점의 코사인 유사도로, 0.42로 붙은
+    // 할당과 0.98로 붙은 할당을 나중에 구분할 수 있게 한다. 전부 additive.
+    if (!factColumns.has("ontology_state")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_state TEXT");
+    }
+    if (!factColumns.has("ontology_parked_at")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_at TEXT");
+    }
+    if (!factColumns.has("ontology_parked_version")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_parked_version TEXT");
+    }
+    if (!factColumns.has("ontology_similarity")) {
+        db.exec("ALTER TABLE facts ADD COLUMN ontology_similarity REAL");
+    }
+    db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_facts_ontology_state
+      ON facts(ontology_state, ontology_parked_version)
+      WHERE ontology_state IS NOT NULL
+  `);
+    // 이슈 #41: "manual repair required"가 아무도 읽지 않는 로그 파일에만 남던
+    // 문제. IndexRepairError는 이 한 행짜리 테이블에 기록되고 status/doctor가
+    // 읽는다. 카테고리 인덱스가 다시 정합해지면 같은 행이 cleared로 바뀐다.
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS ontology_index_repair_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      state TEXT NOT NULL CHECK (state IN ('blocked','clear')),
+      blocked_reason TEXT,
+      detail TEXT,
+      detected_at TEXT,
+      cleared_at TEXT
+    )
+  `);
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope_type, scope_project)
   `);

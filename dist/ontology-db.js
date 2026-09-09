@@ -157,18 +157,33 @@ export function searchSimilarCategories(db, embedding, k = 20) {
  * changes and the caller must discard the stale result instead of stamping
  * it onto the newer meaning.
  */
-export function classifyFact(db, factId, categoryId, expectedSemanticGeneration, expectedTaxonomyEpoch) {
+export function classifyFact(db, factId, categoryId, expectedSemanticGeneration, expectedTaxonomyEpoch, 
+/**
+ * 이슈 #47: 할당 시점의 코사인 유사도. 저장해 두지 않으면 0.42로 붙은
+ * 할당과 0.98로 붙은 할당이 사후 구분 불가다(재분류 대상 선별의 입력).
+ * undefined면 기존 값을 유지하지 않고 NULL로 지운다 — 새 할당의 신뢰도를
+ * 옛 할당의 값으로 설명하면 안 되기 때문이다.
+ */
+similarity) {
     // 재감사 Privacy-P1(v4): epoch 캡처 이후 purge로 taxonomy가 invalidate됐으면
     // 0행으로 폐기한다. 이 검사와 아래 UPDATE는 동기 실행이라 원자적이다 —
     // 경계는 LLM/embedding await이고 캡처가 그 앞에 있다.
     if (expectedTaxonomyEpoch !== undefined && getTaxonomyEpoch(db) !== expectedTaxonomyEpoch) {
         return 0;
     }
+    // 이슈 #41: 성공적인 할당은 파킹 표시를 반드시 지운다 — 재시도로 분류된
+    // fact가 parked로 계속 집계되면 status가 다시 거짓말을 한다.
+    const similarityValue = similarity === undefined || similarity === null || !Number.isFinite(similarity)
+        ? null
+        : similarity;
     if (expectedSemanticGeneration === undefined) {
-        return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ? WHERE id = ?`).run(categoryId, new Date().toISOString(), factId).changes;
+        return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+         ontology_state = NULL, ontology_parked_at = NULL, ontology_similarity = ?
+       WHERE id = ?`).run(categoryId, new Date().toISOString(), similarityValue, factId).changes;
     }
-    return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
-     WHERE id = ? AND semantic_generation = ?`).run(categoryId, new Date().toISOString(), factId, expectedSemanticGeneration).changes;
+    return db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+       ontology_state = NULL, ontology_parked_at = NULL, ontology_similarity = ?
+     WHERE id = ? AND semantic_generation = ?`).run(categoryId, new Date().toISOString(), similarityValue, factId, expectedSemanticGeneration).changes;
 }
 export function getFactsByCategory(db, categoryId, scopeProject, scopeType, identityScope) {
     const scope = legacyOptionalReadScope(db, scopeProject, scopeType, identityScope);

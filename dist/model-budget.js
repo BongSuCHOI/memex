@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { getDbPath } from "./paths.js";
+import { EMBEDDING_VERSION } from "./embeddings.js";
+import { ontologyPendingSqlInline } from "./ontology-selector.js";
 /**
  * Durable accounting for model work.
  *
@@ -1109,6 +1111,22 @@ function envContext() {
         targetId: process.env.MEMEX_MODEL_TARGET_ID || undefined,
     };
 }
+/**
+ * 이슈 #41: 유지보수 wave가 "남은 파생 일감"을 판정하는 술어.
+ *
+ * 예전에는 `ontology_category_id IS NULL`만 봤다. 실패로 파킹된 fact는
+ * category id가 채워져 있으므로 여기에 걸리지 않았고, 그래서 wave가
+ * completed로 닫혔으며 SessionStart는 ontology 워커를 아예 띄우지 않았다 —
+ * 파킹이 영구가 된 마지막 고리다. 현재 (정책, 임베딩) 세대에서 아직 재시도를
+ * 쓰지 않은 파킹 행은 진짜 일감이므로 pending으로 센다. 손으로 만든 옛 스키마
+ * (컬럼 없음)에서는 예전 술어로 정확히 되돌아간다.
+ */
+function ontologyPendingPredicate(db, alias = "f") {
+    if (!columnNames(db, "facts").has("ontology_state")) {
+        return `${alias}.ontology_category_id IS NULL`;
+    }
+    return ontologyPendingSqlInline(alias, EMBEDDING_VERSION);
+}
 function countPendingModelWork(db, budgetId) {
     const counts = { pending: 0, reserved: 0, unbound: 0 };
     const derivedFactQueue = hasDerivedFactQueue(db);
@@ -1138,7 +1156,7 @@ function countPendingModelWork(db, budgetId) {
       FROM model_work_targets t
       JOIN facts f ON f.id = t.target_id
       WHERE t.state = 'pending' AND f.is_active = 1
-        AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+        AND ((t.stage = 'ontology' AND ${ontologyPendingPredicate(db)})
           OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
           OR (t.stage = 'relation' AND f.is_active = 1))
         ${scope}
@@ -1160,8 +1178,9 @@ function countPendingModelWork(db, budgetId) {
         // their provider attempts to a budget and therefore use the full pending
         // predicate below when a budgetId is supplied.
         const includeUnboundOntology = budgetId !== undefined || isAutomaticOntologyEnabled();
+        const ontologyPending = ontologyPendingPredicate(db);
         const pendingFactCondition = includeUnboundOntology
-            ? "(f.ontology_category_id IS NULL OR f.needs_consolidation = 1)"
+            ? `(${ontologyPending} OR f.needs_consolidation = 1)`
             : "f.needs_consolidation = 1";
         const pendingFactsSql = budgetId
             ? `
@@ -1174,7 +1193,7 @@ function countPendingModelWork(db, budgetId) {
               SELECT 1 FROM model_work_targets t
               WHERE t.budget_id = ? AND t.state = 'pending'
                 AND t.target_id = f.id
-                AND ((t.stage = 'ontology' AND f.ontology_category_id IS NULL)
+                AND ((t.stage = 'ontology' AND ${ontologyPending})
                   OR (t.stage = 'consolidation' AND f.needs_consolidation = 1)
                   OR (t.stage = 'relation' AND f.is_active = 1))
             )
@@ -1199,7 +1218,7 @@ function countPendingModelWork(db, budgetId) {
         WHERE f.is_active = 1
           AND ${pendingFactCondition}
           AND (
-            (f.ontology_category_id IS NULL AND NOT EXISTS (
+            (${ontologyPending} AND NOT EXISTS (
               SELECT 1 FROM model_work_targets t
               WHERE t.target_id = f.id AND t.stage = 'ontology' AND t.state = 'pending'
             ) AND NOT EXISTS (
@@ -1641,7 +1660,7 @@ export function getModelWorkDiagnostics(db, filter = {}) {
         const ontologyRows = db.prepare(`
       SELECT f.id
       FROM facts f
-      WHERE f.is_active = 1 AND f.ontology_category_id IS NULL
+      WHERE f.is_active = 1 AND ${ontologyPendingPredicate(db)}
         AND NOT (${targetLink("ontology")} OR ${attemptLink("'ontology'")})
       ORDER BY f.id
     `).all();

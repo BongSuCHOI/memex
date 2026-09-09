@@ -248,6 +248,10 @@ facts (
   embedding_version,
   ontology_attempts,
   ontology_last_attempt_at,
+  ontology_state,
+  ontology_parked_at,
+  ontology_parked_version,
+  ontology_similarity,
   consolidation_attempts,
   needs_consolidation,
   semantic_generation,
@@ -276,6 +280,34 @@ slot은 project와 optional workspace/workstream 범위에서 unique입니다. `
 남습니다. 이후 사다리를 타고 이동하면 `tier_reason`은 `tier:user` / `tier:auto` / `tier:user-directive`로
 덮어써집니다(누가 옮겼는지가 그 시점의 근거이므로). 즉 `tier_reason`은 "지금 이 tier에 있는 이유"이지
 추출 시점 브랜치 신호의 영구 기록이 아닙니다. Sync import는 peer가 보낸 200자 이하의 값을 그대로 받습니다.
+
+### Ontology parking fields (0.6.1 additive)
+
+`ontology_state` / `ontology_parked_at` / `ontology_parked_version` / `ontology_similarity`는 전부 additive
+nullable column이며 Continuity schema version(=7)을 올리지 않습니다. Ontology overlay는 local-derived
+state이고 protocol v4 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
+
+- `ontology_state`: `'parked'` 이면 bounded 분류 실패 후 General/Misc에 보관 중이라는 뜻입니다. LLM이
+  실제로 Misc를 고른 assignment는 `NULL`입니다. 이 구분이 없으면 status가 park를 classified로 셉니다.
+- `ontology_parked_at`: park된 시각.
+- `ontology_parked_version`: park 당시의 `(classifier policy, embedding generation)` 토큰(`p<n>:e<n>`).
+  재시도 selector는 이 값이 현재 토큰과 다를 때만 park를 pending으로 되돌립니다 — 세대당 정확히 한 번.
+- `ontology_similarity`: assignment 시점의 코사인 유사도(nullable). 낮은 신뢰도 할당의 사후 선별 입력.
+
+### Ontology index repair state (0.6.1 additive)
+
+```text
+ontology_index_repair_state (
+  id (PK, always 1),
+  state (blocked | clear),
+  blocked_reason (embed | write | purge | scan),
+  detail, detected_at, cleared_at
+)
+```
+
+`vec_categories`를 self-heal로 고칠 수 없을 때 기록되는 단일 행입니다. `memex status`의
+`ontology category index: MANUAL REPAIR REQUIRED (...)` 줄과 `memex doctor`의 `ontology-index` check가
+이 행을 읽습니다. 이전에는 같은 문장이 `logs/backfill-ontology.log`에만 존재했습니다.
 
 ### Semantic fields
 

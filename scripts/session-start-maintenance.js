@@ -177,9 +177,20 @@ async function main() {
 
     // 3. Auto-resume ontology classification backfill.
     try {
+      // Issue #41: a fact parked in General/Misc after bounded failures keeps
+      // a category id, so the old `IS NULL` probe could never re-spawn the
+      // worker for it. The shared selector reopens each parked fact exactly
+      // once per (classifier policy, embedding generation) token.
+      const { buildOntologyPendingClause, MAX_CLASSIFY_ATTEMPTS } = await import('../dist/ontology-selector.js');
+      const { EMBEDDING_VERSION: ontologyEmbeddingVersion } = await import('../dist/embeddings.js');
+      const ontoSelector = buildOntologyPendingClause({
+        embeddingVersion: ontologyEmbeddingVersion,
+        maxAttempts: MAX_CLASSIFY_ATTEMPTS,
+        alias: 'f',
+      });
       const pendingOnto = db.prepare(
-        'SELECT 1 FROM facts WHERE is_active = 1 AND ontology_category_id IS NULL LIMIT 1'
-      ).get();
+        `SELECT 1 FROM facts f WHERE ${ontoSelector.clause} LIMIT 1`
+      ).get(...ontoSelector.params);
       // Existing relation memberships are durable pending work. The
       // BACKFILL_RELATIONS switch controls creating new relation probes while
       // classifying an ontology page; it must not hide already queued work.

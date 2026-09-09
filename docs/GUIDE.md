@@ -74,6 +74,13 @@ memex status --json
 - `memex status` — 단계별 준비 상태. 격리된 프로젝트가 있으면 `Quarantined projects: N` 줄과
   프로젝트 ID·표시 이름·fact 수를 함께 출력합니다(0.6.0 #38: `/`처럼 신뢰할 수 없는 cwd에서 생긴
   프로젝트. fact는 보존하고 주입·조회 범위에서만 제외합니다).
+  - Ontology 줄은 `Ontology: READY (N classified, P parked, Q pending)` 형태입니다(0.6.1 #41).
+    `parked`는 분류 시도를 소진해 General/Misc에 보관 중인 fact이며 **classified가 아닙니다**.
+    이전에는 이것이 classified로 집계되어 pending을 0으로 만들었습니다. parked fact는 분류
+    정책/embedding 세대당 정확히 한 번 다시 시도됩니다(`memex backfill ontology`).
+  - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
+    self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
+    재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.
 - `memex sync` — `$CODEX_HOME/sessions` rollout을 archive/index/search corpus로 반영
 - `memex backfill extract` — durable fact 추출
 - `memex backfill ontology` — local ontology/relation 생성

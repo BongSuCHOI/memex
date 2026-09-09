@@ -7,17 +7,23 @@ import { captureMutationPolicy } from './fact-policy.js';
 import { StaleFactMutationError } from './fact-management.js';
 import { getModelWorkContext, isModelBudgetExhausted, registerModelWorkTargets, settleModelWorkTargets, withResolvedModelWorkContext, withModelWorkContext, } from './model-budget.js';
 import { listDomains, getDomainByName, getCategoryByName, createDomain, createCategory, classifyFact, createRelationInScope, searchSimilarCategories, upsertCategoryEmbedding, getTaxonomyEpoch, } from './ontology-db.js';
+import { MAX_CLASSIFY_ATTEMPTS, ONTOLOGY_STATE_PARKED, buildOntologyParkedRetryClause, ontologyParkToken, } from './ontology-selector.js';
 // Nearest existing categories presented per fact as reuse candidates —
 // embedding top-K instead of dumping ALL categories (measured 1,612 ≈ 95K
 // tokens); kept small so a 20-fact batch stays a few KB. The full domain
 // list (small) is always included so the LLM can still place a genuinely
 // new topic under the right domain.
 const BATCH_CATEGORY_CANDIDATES = 8;
-// Max classification attempts before a fact is permanently parked in the
-// General/Misc fallback. Without this cap, a fact that deterministically
-// fails (unparseable output, degenerate content) is re-selected by every
-// backfill run forever — one wasted LLM call per run per stuck fact.
-export const MAX_CLASSIFY_ATTEMPTS = 3;
+// Max classification attempts before a fact is parked in the General/Misc
+// fallback. Without this cap, a fact that deterministically fails
+// (unparseable output, degenerate content) is re-selected by every backfill
+// run forever — one wasted LLM call per run per stuck fact.
+//
+// 이슈 #41: parking은 더 이상 영구가 아니다 — 파킹된 fact는 (분류 정책,
+// 임베딩 세대)당 정확히 한 번 재시도된다(releaseParkedFact 참조).
+// 상수 자체는 ontology-selector에 산다: hook/status가 LLM 런타임을 로드하지
+// 않고 같은 셀렉터를 만들 수 있어야 하기 때문이다.
+export { MAX_CLASSIFY_ATTEMPTS };
 // Deterministic reuse gate: when the nearest existing category is at least
 // this cosine-similar to the fact embedding, assign it WITHOUT an LLM call.
 //
@@ -69,6 +75,40 @@ export class IndexRepairError extends Error {
         super(message);
         this.name = 'IndexRepairError';
     }
+}
+/**
+ * 이슈 #41(문제 4): "manual repair required"는 다음 행동이 명시된 문장인데
+ * `backfill-ontology.log`에만 존재했고 어떤 status 명령도 그 파일을 읽지
+ * 않았다 — 운영자는 `Ontology: READY`를 보면서 온톨로지가 멈춘 것을 몰랐다.
+ * 이 한 행짜리 테이블이 그 문자열의 durable 채널이다: 여기 기록된 blocked는
+ * `memex status` / `memex doctor`가 읽고, 인덱스가 다시 정합해지는 순간
+ * 같은 행이 clear로 바뀐다. 기록 실패는 절대 분류를 막지 않는다(best-effort).
+ */
+export function recordOntologyIndexRepairBlocked(db, blocked, detail) {
+    try {
+        db.prepare(`
+      INSERT INTO ontology_index_repair_state (id, state, blocked_reason, detail, detected_at, cleared_at)
+      VALUES (1, 'blocked', ?, ?, ?, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        state = 'blocked',
+        blocked_reason = excluded.blocked_reason,
+        detail = excluded.detail,
+        detected_at = COALESCE(ontology_index_repair_state.detected_at, excluded.detected_at),
+        cleared_at = NULL
+    `).run(blocked, detail.slice(0, 500), new Date().toISOString());
+    }
+    catch { /* observability must never break classification */ }
+}
+/** The index reconciled — the operator's manual-repair banner may come down. */
+export function clearOntologyIndexRepairBlocked(db) {
+    try {
+        db.prepare(`
+      UPDATE ontology_index_repair_state
+      SET state = 'clear', cleared_at = ?, blocked_reason = NULL
+      WHERE id = 1 AND state = 'blocked'
+    `).run(new Date().toISOString());
+    }
+    catch { /* best-effort */ }
 }
 // Prompt-surface sanitizer for DB-sourced strings (category/domain names and
 // descriptions are PAST LLM OUTPUT — a poisoned description would otherwise
@@ -192,6 +232,10 @@ async function healCategoryIndex(db, limit = 100) {
     const missingAll = liveRows.filter((category) => !indexed.has(category.id) || category.embedding_version !== EMBEDDING_VERSION);
     const missing = missingAll.slice(0, limit);
     let added = 0;
+    // Categories that vanished between the snapshot above and the write below
+    // (merge/rename/purge). They are neither missing nor repairable — counting
+    // them as missing would keep the caller refusing forever.
+    let raced = 0;
     for (const c of missing) {
         let emb;
         try {
@@ -206,7 +250,16 @@ async function healCategoryIndex(db, limit = 100) {
             upsertCategoryEmbedding(db, c.id, emb);
             added++;
         }
-        catch {
+        catch (error) {
+            // 이슈 #41(부수 문제): upsertCategoryEmbedding은 카테고리가 동시에
+            // 삭제/병합됐을 때 'ontology category not found'를 던진다. 그건 양성
+            // 레이스이지 인덱스 손상이 아니다 — 이걸 blocked='write'로 매핑하면
+            // 정상적인 merge 한 번이 "수리 불가능한 인덱스 손상, 수동 개입 필요"로
+            // 보고된다. 사라진 행은 건너뛰고 나머지를 계속 치유한다.
+            if (error instanceof Error && /ontology category not found/.test(error.message)) {
+                raced++;
+                continue;
+            }
             // vec INSERT rejected while the table scans: index corruption, NOT an
             // embedding-runtime problem — must escalate hard, not loop transient.
             blocked = 'write';
@@ -217,7 +270,13 @@ async function healCategoryIndex(db, limit = 100) {
     // (embed failures AND beyond-limit backlog): purge success must never be
     // mistaken for repair success — an incomplete candidate index means
     // classification would run with some live categories invisible.
-    return { added, purged, missingRemaining: missingAll.length - added, staleRemaining: staleAll.length - purged, blocked };
+    return {
+        added,
+        purged,
+        missingRemaining: Math.max(0, missingAll.length - added - raced),
+        staleRemaining: staleAll.length - purged,
+        blocked,
+    };
 }
 /**
  * Top-K category hits for a fact (empty only when the index is empty).
@@ -324,10 +383,15 @@ async function categoryHits(db, fact, k) {
                 //   ledgers it) instead of silently re-selecting forever.
                 const progress = heal.added + heal.purged;
                 if (progress === 0 && (heal.blocked === 'purge' || heal.blocked === 'scan' || heal.blocked === 'write')) {
-                    throw new IndexRepairError(`ontology category index repair FAILED (${heal.blocked}: vec_categories unwritable/unscannable; missing ${heal.missingRemaining}, stale ${heal.staleRemaining}) — manual repair required (fact ${fact.id})`);
+                    const message = `ontology category index repair FAILED (${heal.blocked}: vec_categories unwritable/unscannable; missing ${heal.missingRemaining}, stale ${heal.staleRemaining}) — manual repair required (fact ${fact.id})`;
+                    // 이슈 #41: 로그 파일이 아니라 status/doctor가 읽는 durable 채널에도 남긴다.
+                    recordOntologyIndexRepairBlocked(db, heal.blocked, message);
+                    throw new IndexRepairError(message);
                 }
                 throw new TransientLlmError(`category index incomplete after heal (missing ${heal.missingRemaining}, stale ${heal.staleRemaining}) — refusing candidate-starved classification (fact ${fact.id})`);
             }
+            // 정합해졌다 — 운영자 배너를 내린다(이슈 #41).
+            clearOntologyIndexRepairBlocked(db);
             if (heal.added + heal.purged > 0) {
                 hits = searchSimilarCategories(db, embedding, k); // re-rank with reconciled index
             }
@@ -497,13 +561,21 @@ export function persistFallbackClassification(db, factId, expectedSemanticGenera
         return { domainId: '', categoryId: '' };
     }
     const fallback = ensureFallbackCategory(db);
+    const now = new Date().toISOString();
+    // 이슈 #41: 파킹은 이제 별도 STATE다. ontology_category_id만 쓰면 "LLM이
+    // Misc를 골랐다"와 구분이 안 되고, 그래서 status가 이를 classified로 세어
+    // Ontology: READY라고 보고했다. parked_version은 이 파킹이 일어난
+    // (정책, 임베딩) 토큰이라 재시도 셀렉터가 세대당 한 번만 재개할 수 있다.
+    const parkToken = ontologyParkToken(EMBEDDING_VERSION);
     const result = expectedSemanticGeneration === undefined
-        ? db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
+        ? db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+             ontology_state = '${ONTOLOGY_STATE_PARKED}', ontology_parked_at = ?, ontology_parked_version = ?
            WHERE id = ? AND ontology_category_id IS NULL
-             AND COALESCE(ontology_attempts, 0) >= ?`).run(fallback.categoryId, new Date().toISOString(), factId, MAX_CLASSIFY_ATTEMPTS)
-        : db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
+             AND COALESCE(ontology_attempts, 0) >= ?`).run(fallback.categoryId, now, now, parkToken, factId, MAX_CLASSIFY_ATTEMPTS)
+        : db.prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+             ontology_state = '${ONTOLOGY_STATE_PARKED}', ontology_parked_at = ?, ontology_parked_version = ?
            WHERE id = ? AND semantic_generation = ? AND ontology_category_id IS NULL
-             AND COALESCE(ontology_attempts, 0) >= ?`).run(fallback.categoryId, new Date().toISOString(), factId, expectedSemanticGeneration, MAX_CLASSIFY_ATTEMPTS);
+             AND COALESCE(ontology_attempts, 0) >= ?`).run(fallback.categoryId, now, now, parkToken, factId, expectedSemanticGeneration, MAX_CLASSIFY_ATTEMPTS);
     if (result.changes === 0) {
         // Lost the race (or already parked): the current meaning is not the one
         // that exhausted its attempts — it stays pending for classification.
@@ -623,115 +695,136 @@ async function classifyFactsBatchInternal(db, facts, options = {}) {
         return { classified: [], deterministic, failed: preFailed, transient: preTransient, stale, assignments };
     }
     const domains = listDomains(db);
-    // Structured JSON payload, NOT concatenated prose sections: fact text is a
-    // JSON string literal, so a fact containing "### Fact 3" / fake JSON cannot
-    // spoof section boundaries and shift the index mapping. DB-sourced names /
-    // descriptions (past LLM output) are single-lined and length-capped — see
-    // oneLine() for the poisoning-loop rationale.
-    const payload = {
-        domains: domains.map((d) => ({
-            name: oneLine(d.name, MAX_NAME_LEN),
-            description: d.description ? oneLine(d.description, MAX_DESCRIPTION_LEN) : undefined,
-        })),
-        facts: remaining.map((fact, i) => ({
-            index: i,
-            // Bound each fact's contribution so a 20-fact batch stays a few KB.
-            fact: fact.fact.length > 400 ? `${fact.fact.slice(0, 400)}…` : fact.fact,
-            fact_category: fact.category,
-            candidates: (hitsByFact.get(fact.id) ?? []).map((h) => ({
-                domain: oneLine(h.domainName, MAX_NAME_LEN),
-                category: oneLine(h.category.name, MAX_NAME_LEN),
-                description: h.category.description ? oneLine(h.category.description, MAX_DESCRIPTION_LEN) : undefined,
-            })),
-        })),
-    };
-    let response;
-    try {
-        response = await callMemoryModel(BATCH_CLASSIFY_SYSTEM_PROMPT, JSON.stringify(payload), 256 * remaining.length + 512, { modelContext: options.modelContext });
-    }
-    catch (error) {
-        const errorCode = error?.code;
-        if (errorCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || errorCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
-            // The request reached the provider but produced unusable bounded output;
-            // count those facts as content failures so the existing parking ledger
-            // can cap them without classifying an outage as transient.
-            return {
-                classified: [],
-                deterministic,
-                failed: [...preFailed, ...remaining.map((fact) => fact.id)],
-                transient: preTransient,
-                stale,
-                assignments,
-            };
-        }
-        if (isModelBudgetExhausted(error))
-            throw error;
-        console.error(`Batch classification call failed (transient, no attempt burned):`, error);
-        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], stale, assignments };
-    }
-    // The Agent SDK can end a stream without a result message, yielding '' —
-    // that is a call-level (transient) failure, not the facts' fault.
-    if (!response || response.trim() === '') {
-        console.error('Batch classification returned an empty response (transient, no attempt burned)');
-        return { classified: [], deterministic, failed: preFailed, transient: [...preTransient, ...remaining.map((f) => f.id)], stale, assignments };
-    }
-    const parsed = parseJsonResponse(response);
-    // Index the response items; tolerate partial/malformed arrays — every fact
-    // without a usable item is reported as failed (attempt counting is the
-    // caller's responsibility, and honest failure counts matter: the previous
-    // pipeline swallowed errors and logged "failed 0" regardless).
-    // index must be an in-range integer; a DUPLICATED index means the model got
-    // confused about item identity, so ALL claimants for that index are
-    // distrusted and dropped (first-wins would let a fabricated early item
-    // pre-empt the authentic one). The fact takes a content failure and is
-    // retried in a later — differently composed — batch.
-    const byIndex = new Map();
-    const conflicted = new Set();
-    if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-            if (item &&
-                Number.isInteger(item.index) &&
-                item.index >= 0 &&
-                item.index < remaining.length &&
-                typeof item.domain === 'string' &&
-                item.domain.trim() !== '' &&
-                typeof item.category === 'string' &&
-                item.category.trim() !== '') {
-                if (conflicted.has(item.index))
-                    continue;
-                if (byIndex.has(item.index)) {
-                    byIndex.delete(item.index);
-                    conflicted.add(item.index);
-                    continue;
-                }
-                byIndex.set(item.index, item);
-            }
-        }
-    }
     const classified = [];
     const failed = [];
-    for (let i = 0; i < remaining.length; i++) {
-        const fact = remaining[i];
-        const item = byIndex.get(i);
-        if (!item) {
-            failed.push(fact.id);
-            continue;
-        }
+    const transient = [];
+    /**
+     * One model round trip over a SUBSET of the batch.
+     *
+     * 이슈 #41(문제 3): 출력 토큰 예산은 `256 * n + 512`로 배치 크기의 함수이지
+     * 실제 응답 길이의 함수가 아니다. 예산을 넘기면 예전 코드는 배치 전체(최대
+     * BATCH_HARD_CAP=50개)를 각각 content 실패로 기록했다 — 시스템 원인의 실패를
+     * 개별 fact에게 청구하는 구조라, 배치 3번이면 무고한 50개가 전부 General/Misc로
+     * 파킹됐다. 이제는 배치를 반으로 나눠 다시 호출한다(BATCH_HARD_CAP 청킹과 같은
+     * 분할 규칙). 한 fact만 남았는데도 넘치면 그건 정말 그 fact의 출력이 크다는
+     * 뜻이므로 그때만 content 실패로 청구한다. attempts는 분할 단계에서 소모되지
+     * 않는다.
+     */
+    const runModelLane = async (subset) => {
+        if (subset.length === 0)
+            return;
+        // Structured JSON payload, NOT concatenated prose sections: fact text is a
+        // JSON string literal, so a fact containing "### Fact 3" / fake JSON cannot
+        // spoof section boundaries and shift the index mapping. DB-sourced names /
+        // descriptions (past LLM output) are single-lined and length-capped — see
+        // oneLine() for the poisoning-loop rationale.
+        const payload = {
+            domains: domains.map((d) => ({
+                name: oneLine(d.name, MAX_NAME_LEN),
+                description: d.description ? oneLine(d.description, MAX_DESCRIPTION_LEN) : undefined,
+            })),
+            facts: subset.map((fact, i) => ({
+                index: i,
+                // Bound each fact's contribution so a 20-fact batch stays a few KB.
+                fact: fact.fact.length > 400 ? `${fact.fact.slice(0, 400)}…` : fact.fact,
+                fact_category: fact.category,
+                candidates: (hitsByFact.get(fact.id) ?? []).map((h) => ({
+                    domain: oneLine(h.domainName, MAX_NAME_LEN),
+                    category: oneLine(h.category.name, MAX_NAME_LEN),
+                    description: h.category.description ? oneLine(h.category.description, MAX_DESCRIPTION_LEN) : undefined,
+                })),
+            })),
+        };
+        let response;
         try {
-            const applied = await applyClassification(db, fact.id, item, fact.semantic_generation, expectedTaxonomyEpoch);
-            assignments.set(fact.id, applied);
-            classified.push(fact.id);
+            response = await callMemoryModel(BATCH_CLASSIFY_SYSTEM_PROMPT, JSON.stringify(payload), 256 * subset.length + 512, { modelContext: options.modelContext });
         }
         catch (error) {
-            if (error instanceof StaleFactMutationError) {
-                console.error(`Batch classification stale for fact ${fact.id}:`, error);
-                stale.push(fact.id);
+            const errorCode = error?.code;
+            if (errorCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || errorCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
+                if (subset.length > 1) {
+                    const mid = Math.ceil(subset.length / 2);
+                    console.error(`Batch classification output budget exceeded for ${subset.length} facts — splitting into ${mid}/${subset.length - mid} and retrying (no attempt burned)`);
+                    await runModelLane(subset.slice(0, mid));
+                    await runModelLane(subset.slice(mid));
+                    return;
+                }
+                // A SINGLE fact still overflows the bound: the output really is this
+                // fact's own doing, so the ledger may charge it.
+                console.error(`Ontology classification output budget exceeded for a single fact ${subset[0].id}`);
+                failed.push(subset[0].id);
+                return;
+            }
+            if (isModelBudgetExhausted(error))
+                throw error;
+            console.error(`Batch classification call failed (transient, no attempt burned):`, error);
+            transient.push(...subset.map((f) => f.id));
+            return;
+        }
+        // The Agent SDK can end a stream without a result message, yielding '' —
+        // that is a call-level (transient) failure, not the facts' fault.
+        if (!response || response.trim() === '') {
+            console.error('Batch classification returned an empty response (transient, no attempt burned)');
+            transient.push(...subset.map((f) => f.id));
+            return;
+        }
+        const parsed = parseJsonResponse(response);
+        // Index the response items; tolerate partial/malformed arrays — every fact
+        // without a usable item is reported as failed (attempt counting is the
+        // caller's responsibility, and honest failure counts matter: the previous
+        // pipeline swallowed errors and logged "failed 0" regardless).
+        // index must be an in-range integer; a DUPLICATED index means the model got
+        // confused about item identity, so ALL claimants for that index are
+        // distrusted and dropped (first-wins would let a fabricated early item
+        // pre-empt the authentic one). The fact takes a content failure and is
+        // retried in a later — differently composed — batch.
+        const byIndex = new Map();
+        const conflicted = new Set();
+        if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+                if (item &&
+                    Number.isInteger(item.index) &&
+                    item.index >= 0 &&
+                    item.index < subset.length &&
+                    typeof item.domain === 'string' &&
+                    item.domain.trim() !== '' &&
+                    typeof item.category === 'string' &&
+                    item.category.trim() !== '') {
+                    if (conflicted.has(item.index))
+                        continue;
+                    if (byIndex.has(item.index)) {
+                        byIndex.delete(item.index);
+                        conflicted.add(item.index);
+                        continue;
+                    }
+                    byIndex.set(item.index, item);
+                }
+            }
+        }
+        for (let i = 0; i < subset.length; i++) {
+            const fact = subset[i];
+            const item = byIndex.get(i);
+            if (!item) {
+                failed.push(fact.id);
                 continue;
             }
-            console.error(`Batch classification apply failed for fact ${fact.id}:`, error);
-            failed.push(fact.id);
+            try {
+                const applied = await applyClassification(db, fact.id, item, fact.semantic_generation, expectedTaxonomyEpoch);
+                assignments.set(fact.id, applied);
+                classified.push(fact.id);
+            }
+            catch (error) {
+                if (error instanceof StaleFactMutationError) {
+                    console.error(`Batch classification stale for fact ${fact.id}:`, error);
+                    stale.push(fact.id);
+                    continue;
+                }
+                console.error(`Batch classification apply failed for fact ${fact.id}:`, error);
+                failed.push(fact.id);
+            }
         }
-    }
+    };
+    await runModelLane(remaining);
     const budgetId = getModelWorkContext()?.budgetId;
     if (budgetId && (classified.length > 0 || deterministic.length > 0)) {
         settleModelWorkTargets(db, {
@@ -740,7 +833,14 @@ async function classifyFactsBatchInternal(db, facts, options = {}) {
             targetIds: [...classified, ...deterministic],
         });
     }
-    return { classified, deterministic, failed: [...preFailed, ...failed], transient: preTransient, stale, assignments };
+    return {
+        classified,
+        deterministic,
+        failed: [...preFailed, ...failed],
+        transient: [...preTransient, ...transient],
+        stale,
+        assignments,
+    };
 }
 /**
  * Resolve one ontology budget and register the complete requested batch before
@@ -780,11 +880,18 @@ const BATCH_HARD_CAP = 50;
  * ~29K relations — new-fact inserts keep detecting them).
  */
 export async function backfillClassifyBatch(db, factIds, opts = {}) {
+    // 이슈 #41: 파킹된 fact는 ontology_category_id가 NULL이 아니므로 아래
+    // 셀렉터에 절대 걸리지 않았다 = 영구 파킹. 현재 (정책, 임베딩) 토큰에서
+    // 아직 재시도를 쓰지 않은 파킹 행만 조건부로 pending으로 되돌린다.
+    let released = 0;
+    for (const id of factIds) {
+        released += releaseParkedFact(db, id);
+    }
     const rows = factIds
         .map((id) => db.prepare(`SELECT * FROM facts WHERE id = ? AND is_active = 1 AND ontology_category_id IS NULL`).get(id))
         .filter((r) => Boolean(r));
     const facts = rows.map((r) => rowToFact(r));
-    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0 };
+    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, released };
     // 재감사 Privacy-P1(v4): 폴백 parking도 taxonomy epoch로 가드한다.
     const expectedTaxonomyEpoch = getTaxonomyEpoch(db);
     for (let start = 0; start < facts.length; start += BATCH_HARD_CAP) {
@@ -846,15 +953,43 @@ export async function backfillClassifyBatch(db, factIds, opts = {}) {
  */
 export function parkExhaustedFacts(db) {
     const fallback = ensureFallbackCategory(db);
+    const now = new Date().toISOString();
     // Single conditional UPDATE: atomic (no select-then-write window against a
     // concurrent successful classification) and the returned count is the
     // number of rows ACTUALLY parked — not the number selected, which would
     // over-report whenever a concurrent path won the race.
     const result = db
-        .prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?
+        .prepare(`UPDATE facts SET ontology_category_id = ?, updated_at = ?,
+         ontology_state = '${ONTOLOGY_STATE_PARKED}', ontology_parked_at = ?, ontology_parked_version = ?
        WHERE is_active = 1 AND ontology_category_id IS NULL AND COALESCE(ontology_attempts, 0) >= ?`)
-        .run(fallback.categoryId, new Date().toISOString(), MAX_CLASSIFY_ATTEMPTS);
+        .run(fallback.categoryId, now, now, ontologyParkToken(EMBEDDING_VERSION), MAX_CLASSIFY_ATTEMPTS);
     return result.changes;
+}
+/**
+ * 이슈 #41: 파킹을 영구형에서 유한 재시도형으로 바꾸는 반쪽 — 릴리스.
+ *
+ * 파킹된 fact를 현재 (정책, 임베딩) 토큰으로 정확히 한 번 pending으로 되돌린다.
+ * 되돌리는 순간 parked_version을 현재 토큰으로 갱신하므로, 재시도 도중 크래시가
+ * 나더라도 같은 토큰에서 두 번째 재시도는 발생하지 않는다(무한 재분류 금지).
+ * 조건부 단일 UPDATE라 동시 writer와의 select-then-write 창이 없다.
+ *
+ * @returns 실제로 릴리스된 행 수(0 = 이미 재시도됐거나 파킹 상태가 아님)
+ */
+export function releaseParkedFact(db, factId) {
+    const parkToken = ontologyParkToken(EMBEDDING_VERSION);
+    return db
+        .prepare(`UPDATE facts SET ontology_category_id = NULL, ontology_attempts = 0,
+         ontology_state = NULL, ontology_parked_at = NULL, ontology_parked_version = ?,
+         ontology_last_attempt_at = NULL, updated_at = ?
+       WHERE id = ? AND is_active = 1 AND ontology_state = '${ONTOLOGY_STATE_PARKED}'
+         AND COALESCE(ontology_parked_version, '') <> ?`)
+        .run(parkToken, new Date().toISOString(), factId, parkToken).changes;
+}
+/** Parked facts still owed their one retry for the current policy/embedding token. */
+export function countParkedRetryable(db) {
+    const { clause, params } = buildOntologyParkedRetryClause({ embeddingVersion: EMBEDDING_VERSION, alias: 'f' });
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM facts f WHERE ${clause}`).get(...params);
+    return Number(row?.n ?? 0);
 }
 // 2 (was 5): each candidate costs one LLM call, so per-fact ontology cost
 // was classify ×1 + relations ×0..5 = up to 6 calls. Capping candidates at 2

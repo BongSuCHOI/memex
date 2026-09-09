@@ -338,3 +338,58 @@ test("index --help points only at documents that exist", () => {
     assert.ok(fs.existsSync(path.join(REPO, referenced)), `${referenced} must exist`);
   }
 });
+
+// ── Issue #41 — parked ontology facts and the index-repair banner ──────────
+test("parked facts are their own bucket, not silently counted as classified", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.exec(`CREATE TABLE facts (
+    id TEXT PRIMARY KEY, fact TEXT, category TEXT, scope_type TEXT,
+    scope_project TEXT, is_active INTEGER, ontology_category_id TEXT,
+    ontology_state TEXT, ontology_parked_at TEXT, ontology_parked_version TEXT);`);
+  const insert = db.prepare(`INSERT INTO facts
+    (id, fact, category, scope_type, scope_project, is_active, ontology_category_id, ontology_state, ontology_parked_version)
+    VALUES (?, 'fact', 'decision', 'project', '/tmp/p', 1, ?, ?, ?)`);
+  // The audited real-root shape: LLM-chosen Misc assignments are classified…
+  insert.run("f1", "cat-misc", null, null);
+  insert.run("f2", "cat-a", null, null);
+  // …a fact parked after bounded failures is NOT.
+  insert.run("f3", "cat-misc", "parked", "p1:e1");
+  db.prepare(`INSERT INTO extraction_log (session_id, processed_at, extracted, saved, last_exchange_rowid)
+    SELECT 's1','2026-08-26T01:00:00Z', 1, 1, COALESCE(MAX(rowid), 0) FROM exchanges WHERE session_id = 's1'`).run();
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.ontology.classifiedFacts, 2);
+  assert.equal(st.ontology.parkedFacts, 1);
+  assert.equal(st.ontology.pendingFacts, 0);
+  // Parked under a STALE token → one retry is still owed and backfill must see it.
+  assert.equal(st.ontology.parkedRetryable, 1);
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("(2 classified, 1 parked, 0 pending)"), text);
+  assert.ok(text.includes("parked: held in General/Misc"), text);
+  db.close();
+});
+
+test("IndexRepairError reaches status instead of dying in backfill-ontology.log", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.exec(`CREATE TABLE facts (
+    id TEXT PRIMARY KEY, fact TEXT, category TEXT, scope_type TEXT,
+    scope_project TEXT, is_active INTEGER, ontology_category_id TEXT,
+    ontology_state TEXT, ontology_parked_at TEXT, ontology_parked_version TEXT);
+  CREATE TABLE ontology_index_repair_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL,
+    blocked_reason TEXT, detail TEXT, detected_at TEXT, cleared_at TEXT);`);
+  db.prepare(`INSERT INTO ontology_index_repair_state
+    (id, state, blocked_reason, detail, detected_at)
+    VALUES (1, 'blocked', 'write', 'vec_categories unwritable', '2026-08-26T01:00:00Z')`).run();
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.ontology.indexRepair.blocked, true);
+  assert.equal(st.ontology.indexRepair.reason, "write");
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("MANUAL REPAIR REQUIRED (write"), text);
+  db.close();
+});

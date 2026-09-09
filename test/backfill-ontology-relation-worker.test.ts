@@ -37,12 +37,21 @@ export function initDatabase() {
   };
 }
 `);
+  // Issue #41: the worker now selects through the shared ontology selector,
+  // so the sandbox needs that (dependency-free) module and an embedding version.
+  fs.writeFileSync(path.join(dist, "ontology-selector.js"), `
+export const MAX_CLASSIFY_ATTEMPTS = 3;
+export function buildOntologyPendingClause() {
+  return { clause: "f.is_active = 1 AND f.ontology_category_id IS NULL", params: [] };
+}
+`);
+  fs.writeFileSync(path.join(dist, "embeddings.js"), `export const EMBEDDING_VERSION = 3;\n`);
   fs.writeFileSync(path.join(dist, "ontology-classifier.js"), `
 import fs from 'node:fs';
-export const MAX_CLASSIFY_ATTEMPTS = 3;
+export { MAX_CLASSIFY_ATTEMPTS } from './ontology-selector.js';
 export function parkExhaustedFacts() { return 0; }
 export function backfillClassifyBatch() {
-  ${mode === "budget" ? "throw { code: 'MEMEX_MODEL_BUDGET' };" : "return Promise.resolve({ classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0 });"}
+  ${mode === "budget" ? "throw { code: 'MEMEX_MODEL_BUDGET' };" : "return Promise.resolve({ classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, released: 0 });"}
 }
 export async function backfillRelationBatch(_db, ids) {
   fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(ids) + '\\n');

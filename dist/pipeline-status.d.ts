@@ -55,9 +55,30 @@ export interface PipelineStatus {
         activeFacts: number;
         factVectorsPending: number;
     };
+    /**
+     * Issue #41. `classifiedFacts` counts only facts a classifier actually
+     * placed; facts PARKED in General/Misc after bounded failures are their own
+     * bucket. Before this split a parked fact was counted as classified, drove
+     * `pendingFacts` to 0 and made status report `Ontology: READY` while the
+     * overlay was silently stuck.
+     */
     ontology: {
         classifiedFacts: number;
         pendingFacts: number;
+        /** Facts held in General/Misc because classification exhausted its attempts. */
+        parkedFacts: number;
+        /** …of which still owed their one retry for the current policy/embedding token. */
+        parkedRetryable: number;
+        /**
+         * `IndexRepairError` — "manual repair required" used to exist only inside
+         * logs/backfill-ontology.log, which no status command reads.
+         */
+        indexRepair: {
+            blocked: boolean;
+            reason: string | null;
+            detail: string | null;
+            detectedAt: string | null;
+        };
     };
     relations: number;
     /**
@@ -115,6 +136,8 @@ export declare function getPipelineStatus(opts?: {
 }): PipelineStatus;
 /** Zero counters for a data root with no queue table yet. */
 export declare function emptyJobCounters(): JobCounters;
+/** Zero counters for a data root with no ontology overlay yet. */
+export declare function emptyOntology(): PipelineStatus["ontology"];
 /** Zero counters for a data root with no database yet. */
 export declare function emptyAttention(): PipelineStatus["attention"];
 export declare function formatPipelineStatus(s: PipelineStatus): string;
