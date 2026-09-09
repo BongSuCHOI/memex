@@ -814,6 +814,9 @@ function moveFactTier(db, id, direction, options) {
     const target = options.to ?? TIER_ORDER[fromIndex + direction];
     if (!target)
         throw new TierStepError(start.tier, direction > 0 ? 'global' : 'workstream');
+    if (!TIER_ORDER.includes(target)) {
+        throw new Error(`unknown tier: ${String(target)} (expected ${TIER_ORDER.join(' | ')})`);
+    }
     const toIndex = TIER_ORDER.indexOf(target);
     if (toIndex === fromIndex)
         throw new TierStepError(start.tier, target);

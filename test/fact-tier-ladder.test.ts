@@ -119,6 +119,7 @@ describe("user promotion and demotion (#19)", () => {
     const id = await branchFact("skip", project, "state.runtime.skip");
     expect(() => promoteFact(db, id, { actor: "user", to: "global" })).toThrow(TierStepError);
     expect(() => demoteFact(db, id, { actor: "user", to: "global" })).toThrow(TierStepError);
+    expect(() => promoteFact(db, id, { actor: "user", to: "bogus" as never })).toThrow("unknown tier");
     expect(readFactTier(db, id).tier).toBe("workstream");
   });
 
