@@ -4,7 +4,7 @@
 
 ## 처음 읽는 순서
 
-1. [운영 가이드](GUIDE.md) — 설치, 첫 동기화, 일상 사용, 진단, 제거
+1. [운영 가이드](GUIDE.md) — 설치, 첫 동기화, 일상 사용, [CLI 전체](GUIDE.md#18-cli-한눈에-보기), [환경 변수](GUIDE.md#19-환경-변수), 진단, [실패 클래스별 복구](GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구), 제거
 2. [아키텍처](ARCHITECTURE.md) — 전체 계층, 데이터 흐름, 상태 모델
 3. [대화 라이프사이클](CONVERSATION-LIFECYCLE.md) — rollout → archive/index → sync
 4. [팩트 라이프사이클](FACT-LIFECYCLE.md) — 추출, 통합, 수정, 비활성화, 삭제
@@ -17,6 +17,11 @@
 11. [계보](LINEAGE.md) — upstream attribution과 Codex-native 경계
 12. [Continuity as-built](CONTINUITY.md) — lifecycle/journal/outbox/worker, Capsule, identity, Chronicle, Memory Broker, sync/privacy의 실제 구현 지도. 규범은 [Final RFC](architecture/memex-continuity-v1.md), 차이는 [deviation record](verification/continuity-v1/rfc-deviations.md)
 
+0.6.0 **범위 모델(브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌)의 단일 출처**는
+[FACT-LIFECYCLE.md §1](FACT-LIFECYCLE.md#1-fact란-무엇인가)의 표이고, 결정 규칙은
+[CONTINUITY.md §5](CONTINUITY.md#5-project--workspace--workstream--session-10),
+저장 형태는 [SCHEMA.md §3](SCHEMA.md#3-facts)입니다. README / README-KR의 같은 표는 이 문서의 사본입니다.
+
 ## 핵심 개념
 
 Memex는 데이터를 한 덩어리로 취급하지 않습니다.
@@ -27,6 +32,7 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 - **Lineage metadata** — `source_exchange_ids`는 set union, `consolidated_count`는 max로 단조 수렴합니다.
 - **Local derived state** — `fact_kr`, ontology, relation, vector. protocol v4에서는 sync하지 않고 각 기기가 재구축합니다.
 - **Durable sync state** — facts, revisions, tombstones, recall receipts만 generation snapshot으로 교환합니다.
+- **기억 계층(memory tier)** — 같은 fact라도 브랜치 tier / 프로젝트 공용 / 글로벌 중 어디에 있느냐가 주입과 조회 범위를 정합니다. `facts.promotion_state`와 `facts.tier_reason`이 그 위치와 근거이고, 이동은 Chronicle `PROMOTED`/`DEMOTED`로 남습니다.
 
 이 분리는 multi-device sync에서 의미 편집, 비활성화, provenance, 파생 상태가 서로를 덮어쓰지 않게 하는 기본 설계입니다.
 
@@ -39,6 +45,10 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | cross-device sync | `src/sync-export.ts`, `src/sync-import.ts`, `src/fact-management.ts` | `CONVERSATION-LIFECYCLE.md`, `FACT-LIFECYCLE.md` |
 | facts/provenance | `src/fact-extractor.ts`, `src/fact-db.ts` | `FACT-LIFECYCLE.md` |
 | fact mutation/consolidation | `src/fact-management.ts`, `src/consolidator.ts` | `FACT-LIFECYCLE.md`, `SCHEMA.md` |
+| 기억 계층·승격 사다리 | `src/fact-management.ts`(`promoteFact`/`demoteFact`/`reconcileFactTiers`), `src/fact-db.ts`(`defaultTierFor`) | `FACT-LIFECYCLE.md`, `SCHEMA.md` |
+| project identity 신뢰 경계·read scope | `src/project-identity.ts`, `src/read-scope.ts` | `CONVERSATION-LIFECYCLE.md`, `RETRIEVAL-AND-CONTEXT.md` |
+| terminal 상태 복구 | `src/job-recovery.ts`, `src/pipeline-status.ts` | `GUIDE.md` |
+| 주입 관측 로그 | `src/inject-log.ts`, `src/inject-core.ts` | `RETRIEVAL-AND-CONTEXT.md`, `GUIDE.md` |
 | ontology/relations | `src/ontology-classifier.ts`, `src/ontology-db.ts` | `KNOWLEDGE-GRAPH.md` |
 | search/RAG/injection | `src/search.ts`, `src/inject-*.ts` | `RETRIEVAL-AND-CONTEXT.md` |
 | lifecycle/hooks | `src/lifecycle.ts`, `scripts/*hook*` | `GUIDE.md`, `CONVERSATION-LIFECYCLE.md` |

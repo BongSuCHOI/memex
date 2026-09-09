@@ -33,7 +33,9 @@ Memex turns local Codex session history into a searchable conversation archive, 
 
 **No model work without an explicit action.** Capture hooks perform bounded local I/O only. Opening a Web UI page never starts model work; automatic maintenance resumes unfinished work only when its cooldown and shared rolling call cap permit.
 
-**Project isolation.** Memex resolves the canonical absolute `session_meta.cwd` to a local workspace and uses a stable `project_id` for logical identity. Search, related facts, tracing, and every graph hop share the same scope, and the MCP server never infers project identity from its own process cwd.
+**Project isolation.** Memex resolves the canonical absolute `session_meta.cwd` to a local workspace and uses a stable `project_id` for logical identity. Search, related facts, tracing, and every graph hop share the same scope, and the MCP server never infers project identity from its own process cwd. A cwd that cannot name a project (`/`, `unknown`, or any path with an empty basename) is refused rather than bucketed: that session reads global memory only.
+
+**Memory tiers, not one flat pile.** Inside a Git project the directory is the project and the branch is the tier: work on the default branch is project-common memory, work on any other branch or worktree stays in its own branch tier, and a one-rung ladder (`branch ⇄ project-common ⇄ global`) moves a memory up or down with an explicit record of who moved it and why. A plain directory has no branch layer at all. See [Scope and memory tiers](#scope-and-memory-tiers).
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md), [FACT-LIFECYCLE.md](docs/FACT-LIFECYCLE.md), and [WEBUI-WORKSPACE.md](docs/WEBUI-WORKSPACE.md).
 
@@ -182,11 +184,22 @@ Sync protocol v4 separates fact state into independent axes:
 
 This separation matters because editing a fact and deactivating it are different events. A newer semantic edit must not accidentally undo a newer deactivation, and provenance must never disappear just because another device has an older snapshot.
 
-### Scope and consolidation
+### Scope and memory tiers
+
+| Situation | Behavior |
+| --- | --- |
+| **Git project** | Directory = project. Memory from a default-branch session (`main`/`master`/`origin/HEAD`) → **project-common**. Memory from any other branch or worktree session → an independent **branch tier** keyed on `(project, branch)`, so branches never dilute each other and two worktrees of the same repository checked out on the same branch share one tier and see each other's memory. Injection and lookup = global + project-common + the current branch. |
+| **Plain (non-Git) project** | Directory = project, no branch layer. All memory is project-common (+ global). |
+| **Plain → Git transition** | `workspace_id` and `project_id` are unchanged; only the workspace metadata is refreshed, plus a `WORKSPACE_LOCATION_CHANGED` event. Existing project-common memory stays exactly as it is, with no data change. The branch rule applies from the next session onward. If you never create a branch, nothing changes. If the new common dir or remote already belongs to another project, nothing is merged automatically: the conflict is recorded on the `WORKSPACE_LOCATION_CHANGED` row as `requires_approval = 1` plus a `suggest` entry in `project_identity_audit`, and the merge waits for an explicit `approved_remote_mappings` approval. |
+| **Promotion / demotion** | The ladder is `branch ⇄ project-common ⇄ global`, one rung at a time. Three channels: (1) a user assertion in the Web UI or CLI, (2) evidence-based automation (re-confirmed on another branch or on the default branch → project; confirmed in two or more different projects → global; upper evidence gone → demotion), (3) an explicit in-session request ("remember this for the whole project" → `actor=user-directive`). All three write a Chronicle `PROMOTED`/`DEMOTED`. A personal preference classified as global at extraction time keeps that first classification. |
+
+In channel (1), only the CLI exists in 0.6.0: the Web UI's fact-mutation allowlist is `edit|deactivate|restore|delete`, and promote/demote buttons arrive in 0.6.1 (#22). The stored column is `facts.promotion_state` (`workstream` = branch tier, `project-current` = project-common, `scope_type = global`) and `facts.tier_reason` records the branch signal (`no-branch-signal` | `default-branch` | `branch:<name>`) that placed it there.
 
 Supported fact/query scopes are **project** (project-wide truth plus global facts where appropriate), **workspace/workstream/session** (the selected work scope and permitted parent truth), **global** (global facts only), and **all** (explicit cross-project access).
 
-Read scope and consolidation permission are separate. Consolidation preserves different workstreams and promotion states, adopts only verified input wording, and leaves ambiguous legacy identity for review. Existing data can be [backed up, audited, and selectively repaired](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구) without re-extracting every fact.
+Read scope and consolidation permission are separate. Consolidation preserves different tiers and promotion states, adopts only verified input wording, and leaves ambiguous legacy identity for review. Existing data can be [backed up, audited, and selectively repaired](docs/GUIDE.md#16-기억-정합성-감사와-선별-복구) without re-extracting every fact.
+
+Facts extracted before 0.6.0 all sit in the branch tier. `memex facts migrate-tiers --dry-run` lists the ones the new rule would make project-common; `--apply` moves them.
 
 ### Recall without self-training loops
 
@@ -214,7 +227,7 @@ Deep dives: [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [CONVERSATION-LIFECYCLE.m
 
 ```bash
 memex search "why did we choose SQLite?"
-memex search --both "authentication migration"
+memex search --text "ERR_MODULE_NOT_FOUND"     # exact string, no embedding
 memex facts list
 memex stats
 memex analyze --top 30 --out ~/memex-report.md
@@ -223,22 +236,29 @@ memex status
 
 | Command | Purpose |
 | --- | --- |
+| `memex setup` | Check for a conflict with Codex built-in Memory; `--install-cli` / `--uninstall-cli` manage the `~/.local/bin/memex` shim |
+| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
+| `memex setup-hooks` / `memex remove-hooks` | Register or remove Memex-owned lifecycle hooks (explicit fallback hosts only) |
+| `memex update` | Refresh the marketplace/plugin while preserving data |
 | `memex sync` | Archive and index new Codex rollouts |
+| `memex index` | Index, verify, repair, or rebuild the conversation index |
 | `memex search` | Semantic, text, or hybrid conversation search |
 | `memex show` | Read one archived conversation |
 | `memex stats` | Inspect corpus/index statistics |
 | `memex analyze` | Generate a deterministic history report |
-| `memex facts` | Inspect and manage durable facts |
+| `memex facts` | Inspect and manage durable facts: `list\|show\|edit\|deactivate\|restore\|history\|explain\|delete` |
 | `memex facts tier\|promote\|demote` | Inspect or move a memory on the `workstream ⇄ project ⇄ global` ladder, one rung at a time |
 | `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
-| `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
-| `memex status` | Inspect pipeline readiness |
-| `memex jobs` | Inspect and recover memory jobs: `list|show|retry|dismiss` |
+| `memex status` | Inspect pipeline readiness, `Needs attention`, and quarantined projects |
+| `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
-| `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
-| `memex update` | Refresh the marketplace/plugin while preserving data |
-| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
+| `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
+| `memex doctor` | Diagnose dependencies, build, hooks, injection output, and recall provenance |
+| `memex home` | Print the resolved Memex data root |
+| `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02) |
+
+Every subcommand accepts `--help` / `-h`, prints usage only, and exits `0`; the commands with side effects (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`) write nothing when asked for help.
 
 Fact management includes edit, deactivate, restore, history, and guarded hard-delete operations. Semantic edits keep fact identity and revision history while invalidating stale derived state.
 
@@ -287,18 +307,31 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 
 ```text
 ~/.config/memex/
+├── lifecycle-registration.json         # explicit fallback hook registration
 ├── conversation-archive/
+│   └── <project>--<hash>/              # archived rollouts (.jsonl) and summaries
 ├── conversation-index/
-│   ├── db.sqlite
+│   ├── db.sqlite                       # (+ -wal, -shm)
+│   ├── exclude.txt
+│   ├── inject-daemon.sock
+│   ├── logs/
+│   │   └── inject-context.jsonl        # (+ .old, rotated at 5 MB)
+│   ├── state/
+│   │   └── inject-ledger/
 │   ├── sync/
-│   └── logs/
+│   │   ├── export-status.json
+│   │   └── devices/<device>/CURRENT, generations/<id>/
+│   └── *.lock, *.log                   # backfill / consolidate / reembed workers
+├── journals/<session>/<epoch>.jsonl    # rolling transcript journal
+├── run-locks/
 ├── ui/
 │   └── operations.json
 └── logs/
+    ├── hook-events.jsonl
     └── ui-audit.jsonl
 ```
 
-`ui/operations.json` keeps metadata for admin commands the Web UI ran, and `logs/ui-audit.jsonl` is its audit trail; both record metadata only, never conversation text, fact text, or command output. The original `$CODEX_HOME/sessions` rollouts are always treated as read-only input. Run `memex home` (or `memex home --json`) before deleting or moving Memex data.
+`ui/operations.json` keeps metadata for admin commands the Web UI ran, and `logs/ui-audit.jsonl` is its audit trail; both record metadata only, never conversation text, fact text, or command output. `logs/hook-events.jsonl` records only the event name and timestamp of each observed lifecycle hook. `conversation-index/logs/inject-context.jsonl` records one line per retrieval — status, counts, and duration, not prompt or fact text. `conversation-archive/` and `journals/` do hold real conversation text, so treat them as sensitive. The original `$CODEX_HOME/sessions` rollouts are always treated as read-only input. Run `memex home` (or `memex home --json`) before deleting or moving Memex data.
 
 ---
 

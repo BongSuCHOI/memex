@@ -62,6 +62,9 @@ node scripts/web-ui-browser-e2e.mjs
 | lifecycle | SessionStart/UserPromptSubmit/Stop/Interrupt/PreCompact/PostCompact/SessionEnd + cleanup |
 | UI | empty/populated/mutation/security/accessibility |
 | data integrity | FK check, vector/parent consistency, repair behavior |
+| 기억 계층 0.6.0 | 브랜치 신호 분류, 결정론적 workstream id, 기본 tier, 사다리 한 칸 제약, 자동 재조정, workspace 전이, untrusted cwd 격리 |
+| terminal 상태 복구 0.6.0 | 여덟 terminal 상태 카운트, `recover`/`jobs retry\|dismiss`의 단일 트랜잭션 리셋, `retry_history` 보존 |
+| 주입 관측 0.6.0 | `injected`/`context-only` 구분, `receipt-failed`, `baseline_margin_gap`, `lexical_lane_unavailable`, doctor 판정 |
 
 Phase 1 gate의 mandatory matrix는 `test/continuity-correctness-spine.test.ts`의 deterministic seeded
 pagination, migration/page-commit crash stages, ten duplicate deliveries, checkpoint ordinal ordering,
@@ -82,6 +85,24 @@ installed plugin의 SessionStart/UserPromptSubmit/Stop/SessionEnd stdin, JSON ad
 SessionEnd foreground final fence, 별도 Luna Capsule worker, compact 즉시 복원을 검증합니다.
 Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 process 회귀는
 `test/runtime-exec-slice.test.mjs`가 담당합니다.
+
+0.6.0에서 추가된 회귀 suite(모두 `npm test` 또는 `node --test test/*slice.test.mjs`가 이미 실행하는
+경로에 있으므로 §2의 gate 명령은 바뀌지 않습니다):
+
+| Suite | 고정하는 회귀 |
+| --- | --- |
+| `test/scope-tier-identity.test.ts` | 브랜치·기본 브랜치 감지, `no-branch-signal`/`default-branch`/`branch:<name>` 분류, `(project_id, branch)` 결정론적 workstream id, 워크트리 공유, workspace 전이와 `WORKSPACE_LOCATION_CHANGED`, 승인 없는 병합 거부, untrusted cwd 거절과 quarantine |
+| `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply |
+| `test/fixtures/fact-scope-directive-cases.json` | 세션 내 한국어·영어 범위 지시문 인식 fixture |
+| `test/job-recovery.test.ts` | `recover`/`jobs retry\|dismiss`의 한 트랜잭션 리셋 범위, `retry_history` 보존, dry-run 무변경, `dismiss`의 `superseded` |
+| `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록 |
+| `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
+| `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
+| `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱 |
+| `test/recall-receipt-observability.test.ts` | `receipt-failed` 로그 기록과 `recall-provenance`/`inject-output` doctor 판정 |
+| `test/cli-help-guard-slice.test.mjs` | 모든 서브커맨드의 `--help`가 부작용 없이 exit 0 (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects` 포함) |
+| `test/runtime-exec-slice.test.mjs` | 설치본 의존성 부재 시 stderr 1줄 경고 후 npx 폴백(조용한 폴백 금지) |
+| `test/lifecycle-slice.test.mjs` | `doctor`의 `dependencies` 판정이 설치된 plugin root를 본다는 회귀 |
 
 ## 4. Merge-gate receipt 절차
 
@@ -135,6 +156,12 @@ receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 �
 - translation semantic CAS와 batch cardinality/type validation
 - export serialization의 SQLite `BEGIN IMMEDIATE` 전환
 - generation hash/count/schema fail-closed
+- 세션마다 새 workstream을 만들던 폴백의 부재(한 프로젝트 = 브랜치별 stream 하나)
+- 사다리 한 칸 제약과 `user-directive` 2단계가 한 트랜잭션에서 이벤트 두 개를 남기는 것
+- `tier_reason`이 추출 시 브랜치 신호를, 이동 시 `tier:<actor>`를 기록하는 것
+- terminal 상태를 `retry`로 되덮지 않는 guarded update
+- 컨텍스트를 발행했는데 recall 영수증이 없으면 `receipt-failed`로 드러나는 것
+- `--help`가 부작용을 일으키지 않는 것
 
 ## 7. Raw receipts
 

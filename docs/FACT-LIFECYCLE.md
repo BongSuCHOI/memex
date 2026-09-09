@@ -21,10 +21,21 @@ workspace provenance/legacy query key입니다.
 
 | 상황 | 동작 |
 |---|---|
-| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → **브랜치 tier** `(workspace, branch)`로 독립(서로 희석 안 됨; 같은 저장소의 워크트리 두 개가 같은 브랜치면 공유). 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
+| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → `(project, branch)`로 키를 잡는 독립 **브랜치 tier**. 브랜치끼리 서로 희석되지 않고, 같은 저장소의 워크트리 두 개가 같은 브랜치를 체크아웃하고 있으면 하나의 tier를 공유해 서로의 기억을 봅니다. 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
 | **일반(비-git) 프로젝트** | 디렉터리 = 프로젝트, 브랜치 계층 없음. 모든 기억 = 프로젝트 공용 (+ 글로벌). |
-| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 명시 승인 후 병합(`PROJECT_MERGED`). |
+| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 자동으로 병합하지 않고, `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남긴 뒤 `approved_remote_mappings` 명시 승인을 기다립니다. |
 | **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청(“이건 프로젝트 공용으로 기억하자” → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
+
+브랜치 tier의 stream 키 `(project, branch)`는 `deterministicWorkstreamId`
+(`src/continuity-identity.ts`)가 만듭니다. 워크트리는 git-common-dir 규칙으로 같은 project를 가지므로,
+workspace가 달라도 브랜치가 같으면 한 tier를 공유합니다. 표의 세 계층은 각각
+`facts.promotion_state = workstream`(브랜치 tier), `project-current`(프로젝트 공용),
+`facts.scope_type = global`(글로벌)로 저장됩니다.
+표의 승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다.** Web UI의 fact 변경
+allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다.
+
+계획된 후속(0.6.0에는 없음): 회수 시그널의 durable 사용자 오버레이(#29)와 추출 규칙의 durable
+구조화 오버레이(#30)는 0.6.1 대상이며, 현재는 내장 규칙만 동작합니다.
 
 새 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다. 신호가 없으면(비-git 디렉터리, 또는 기본
 브랜치 세션) `project-current`, 그 외 브랜치·워크트리 세션이면 `workstream`이며 판단 근거는
@@ -43,7 +54,7 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 
 | 이동 | 자동(근거 기반) 조건 | 사용자 명시 |
 |---|---|---|
-| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | UI 버튼 / `memex facts promote <id>` |
+| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
 | project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때 | 동일 |
 | 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
 
@@ -53,9 +64,14 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
-  (Web UI 버튼도 같은 함수를 호출합니다).
+  (0.6.1의 Web UI 버튼도 같은 함수를 호출할 예정입니다).
 - 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v4에 additive로 실려 갑니다.
   이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
+
+0.6.0 이전에 추출된 fact는 모두 `workstream`(브랜치 tier)에 있습니다. `memex facts migrate-tiers --dry-run`이
+새 기본 tier 규칙상 프로젝트 공용이어야 하는 항목만 나열하고, `--apply`가 실제로 옮기며 fact마다 Chronicle
+`PROMOTED`(actor `migration`, reason `no-branch-signal`) 한 건을 남깁니다. 두 플래그 중 하나를 명시하지 않으면
+아무 일도 하지 않으며 자동 실행되지 않습니다. CLI 사용법은 [GUIDE §7](GUIDE.md#7-fact-관리)에 있습니다.
 
 ## 2. 네 종류의 상태
 
@@ -565,6 +581,7 @@ worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.
 | `VALIDATED` | trusted `test_execution` 성공 evidence를 가진 observation, remediation | 0 |
 | `INCIDENT` | trusted test failure 또는 human repeated_signal observation | 0 |
 | `CONTRADICTED` | 순서/authority가 모호한 경쟁 evidence, consolidator verdict가 temporal 판정에 실패한 경우 | 0 |
+| `PROMOTED` / `DEMOTED` (0.6.0) | 사다리 한 칸 이동. actor `user`(UI/CLI), `auto`(유지보수의 SQL 판정), `user-directive`(세션 내 명시 지시), `migrate-tiers`의 `migration`. `outcome`에 `from_tier`/`to_tier`/`actor`/`reason`/`evidence_ids` | 1 |
 
 기존 consolidation relation mapping: `DUPLICATE` → event 없음(재표현), `EVOLUTION`/`CONTRADICTION` →
 temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDENT` → 없음. consolidator `reason`은 항상

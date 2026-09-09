@@ -102,5 +102,9 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
 | `MEMEX_AUTO_ONTOLOGY` | unset (on) | `0`으로 fact 저장 후와 SessionStart의 자동 ontology 분류 비활성화; 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |
 | `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용 |
+| `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Capsule 한 세대의 bounded storage size(§4). 초과 patch는 죽이지 않고 우선순위대로 절단 |
+| `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (`0`–`1`) | 주입 관련성 게이트의 baseline 대비 마진(§8). 범위 밖 값은 기본값으로 되돌아감 |
+
+사용자 대면 환경 변수의 전체 목록은 [GUIDE §19](GUIDE.md#19-환경-변수)에 있습니다.
 
 PostCompact 등록은 optional telemetry입니다.

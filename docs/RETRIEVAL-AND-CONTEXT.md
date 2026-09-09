@@ -54,6 +54,12 @@ adapter를 거치며 scope 생략 시 global만 읽습니다. Legacy row의 read
 Workspace/workstream/session은 project membership을 검증합니다. 명시적으로 공유한 workstream은
 여러 workspace의 session에서 사용할 수 있으므로 workstream의 최초 workspace를 독점 owner로 보지 않습니다.
 
+`readScopeForSession`(0.6.0)은 세션의 `session_memory_state`에서 scope를 유도합니다. project와
+workstream이 모두 있으면 `workstream-id` scope(= 글로벌 + 프로젝트 공용 + 현재 브랜치 tier)이고,
+project에 붙지 못했거나 그 project가 `quarantined = 1`이면 **글로벌 전용**으로 낮춥니다. 아무것도 못 읽는
+쪽이 남의 프로젝트 기억을 자기 것으로 읽는 쪽보다 안전하기 때문입니다(#38). 브랜치 tier 사이에는
+가시성이 없으므로 다른 브랜치의 기억은 승격되기 전까지 주입되지 않습니다.
+
 `process.cwd()`나 MCP 설치 경로는 project 추론 근거가 아닙니다. Graph는 seed와 모든 hop에 같은
 scope를 적용하고 범위 밖 node를 다음 hop의 bridge로 쓰지 않습니다. 읽기 범위는
 [MutationPolicy](FACT-LIFECYCLE.md#6-semantic-mutation)의 수정 권한을 부여하지 않습니다.
@@ -289,5 +295,8 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 관련성 게이트(`similarity - baseline >= margin`)의 마진은 기본 `0.045`이고 `MEMEX_INJECT_BASELINE_MARGIN`으로 조정합니다. 후보가 임계값에서 얼마나 떨어져 있었는지는 retrieval당 1행씩 `continuity_telemetry`의 `baseline_margin_gap`에 기록됩니다(`value` = 가장 근접한 gap, `dims.gaps`/`margin`/`baseline`/`passed`/`rejected`). 마진 조정은 이 측정값을 근거로 하십시오.
 
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
+
+계획된 후속(0.6.0에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,
+추출 규칙의 durable 구조화 오버레이는 #30이며 둘 다 0.6.1 대상입니다. 현재는 내장 규칙만 동작합니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

@@ -28,6 +28,19 @@ For project-sensitive tools, pass the current Codex thread's canonical absolute
 cwd as `project`/`current_project`, or use an explicit `global`/`all` scope.
 Never let the MCP server's installed-plugin cwd stand in for the user's project.
 
+## Memory tiers
+
+A memory sits in one of three tiers: the **branch tier** (`promotion_state`
+`workstream`/`workspace`), **project-common** (`project-current`/`decision`), or
+**global** (`scope_type: global`). A project scope reads global plus
+project-common plus the current branch tier, so a memory recorded on a different
+branch will not appear until it is promoted. When a search comes back empty and
+the user believes the memory exists, say that it may still be in another branch's
+tier rather than asserting it was never recorded; `trace_fact` shows the tier and
+any `PROMOTED`/`DEMOTED` event. Moving a memory between tiers is a CLI action
+(`memex facts promote|demote`), never something to do on the user's behalf
+without being asked.
+
 ## Handoff
 
 Synthesize the evidence into an answer for the current task. Keep conversation
