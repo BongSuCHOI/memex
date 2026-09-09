@@ -123,7 +123,7 @@ try {
     blocks.flatMap((block) => block.hooks.map((hook) => hook.command)),
   );
   if (
-    hookCommands.length !== 11 ||
+    hookCommands.length !== 12 ||
     hookCommands.some(
       (command) => !command.includes("${PLUGIN_ROOT}/cli/runtime-exec.js"),
     )
