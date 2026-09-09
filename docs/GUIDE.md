@@ -90,6 +90,9 @@ memex status --json
     파이프라인에 있을 때 이 줄이 그것을 이어줍니다. 같은 사유로 3회 연속 건너뛰면 다음 호출에서
     하위 레인을 한 번 강제로 통과시킵니다(우선순위는 유지, 기아는 방지). 백로그 자체는
     `memex jobs list --state retry` / `memex recover`로 해소합니다.
+  - `Memory jobs: N (state=…, …)` 줄과 그 아래 kind별 줄은(0.6.1 #46) `memory_jobs`를 kind × state로
+    집계한 것입니다. `Needs attention`의 dead/retry는 이 표의 부분집합입니다. `--json`에서는
+    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다.
   - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
     self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
     재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.
@@ -98,7 +101,9 @@ memex status --json
 - `memex backfill ontology` — local ontology/relation 생성
 - `memex backfill embeddings` — 누락된 semantic vector 생성
 - `memex backfill receipts` — 누락된 로컬 의미 검증 영수증(`fact_evidence_receipts`) 재구성.
-  model 호출이 없습니다(0.6.1 #45). 영수증이 없는 fact는 자동 통합에서 제외되므로,
+  model 호출이 없습니다(0.6.1 #45). 한 번에 기본 1,000건까지 훑으므로(`BACKFILL_RECEIPTS_MAX`)
+  백로그가 크면 `facts without local evidence`가 0이 될 때까지 반복 실행하십시오.
+  영수증이 없는 fact는 자동 통합에서 제외되므로,
   `memex status`의 `facts without local evidence: N / M` 줄이 0이 아니면 이 단계를 돌리십시오.
   (`memex status`와 `memex backfill --help`는 이 상태를 "lose sync tie-breaks"라고도 표현하지만,
   실제 sync 충돌 판정은 `semantic_updated_at`과 내용 키만 봅니다 — 영수증을 읽는 코드 경로는
@@ -817,7 +822,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) | [§7](#7-fact-관리) |
 | `memex ontology` | 로컬 taxonomy 조회·수리: `list\|merge\|rename`. `merge`는 `--dry-run` | [§4](#ontology-taxonomy-수리-061-47) |
 | `memex backfill` | `all\|extract\|ontology\|embeddings\|receipts` backlog 처리. `--background` | [§4](#4-최초-onboarding) |
-| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계 (`--json`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
+| `memex status` | pipeline readiness, `Needs attention`, terminal 상태, 격리된 프로젝트, `memory_jobs`의 kind × state 집계(`--json`의 `jobs.total`·`byKind`·`byState`) | [§4](#4-최초-onboarding), [§15](#작업이-실패했을-때-terminal-상태-복구), [§20](#20-문제가-생겼을-때--실패-클래스별-복구) |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
@@ -885,6 +890,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_AUTO_MODEL_MAX_ATTEMPTS` | `256` | 한 data root의 자동 유지보수 24시간 공통 호출 한도. `0`이면 차단 |
 
 `BACKFILL_RELATIONS=1`은 `memex backfill ontology`에 새 관계 검사도 함께 요청합니다.
+`BACKFILL_RECEIPTS_MAX`는 `memex backfill receipts` 한 번이 훑을 fact 수입니다(기본 `1000`, 상한
+`20000`). CLI는 워커에 인자를 넘기지 않으므로 `memex backfill receipts --max N`은 무시됩니다 —
+한 번에 더 많이 처리하려면 이 환경 변수를 쓰거나 워커를 직접 실행하십시오.
 
 ## 20. 문제가 생겼을 때 — 실패 클래스별 복구
 
