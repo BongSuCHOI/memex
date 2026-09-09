@@ -101,6 +101,30 @@ extract 단계에서 세션 선점이 실패하면 워커는 사유를 구분해
 - `DEFERRED (retry backoff until <ISO>)` — 러너는 없고 재시도 backoff만 남은 상태. 표시된 시각 이후에 다시 선정됩니다. 요약줄의 `backoff-deferred N`과 `memex status`의 `N backoff` / `earliest retry <ISO>`가 같은 큐를 셉니다(모두 `pending`의 내역이며 terminal `deferred`와 다릅니다).
 - `SKIPPED (attempt cap reached)` — 시도 상한 도달. exact range가 failed-visible로 기록되며 운영 점검 대상입니다.
 
+### Ontology taxonomy 수리 (0.6.1 #47)
+
+0.6.1 이전 taxonomy는 append-only였습니다 — merge도 rename도 delete도 없어서, 근사 중복 category
+(`Auth` / `Authentication` / `AuthN`)가 생기면 온톨로지 전체를 날리는 것 외에 방법이 없었습니다.
+(이 classifier는 과거에 category 1,612개 ≈ 95K 토큰까지 번진 적이 있습니다.)
+
+```bash
+memex ontology list [--json]                                        # id / domain / category
+memex ontology merge <from-category-id> <to-category-id> --dry-run  # 계획만
+memex ontology merge <from-category-id> <to-category-id>            # fact 재지정 + 원본 삭제
+memex ontology rename <category-id> "Authentication"                # label만 변경
+```
+
+- `merge`는 `from`의 모든 fact를 `to`로 옮기고 `from` 행과 그 vector를 삭제합니다.
+- `rename`은 fact 할당을 유지하고 category vector만 무효화합니다 — `memex backfill embeddings`(또는
+  다음 분류의 self-heal)가 새 label로 다시 임베딩합니다. 같은 domain에 이미 있는 이름으로는 거부되며
+  merge를 안내합니다.
+- 둘 다 fact 의미를 건드리지 않습니다: Chronicle 이벤트 없음, semantic/lifecycle generation bump 없음,
+  attempt ledger reset 없음, taxonomy epoch bump 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+
+0.6.1부터 domain 이름과 domain 내 category 이름에 unique index가 생기고, 기존 대소문자 중복은 DB를
+열 때 자동 병합됩니다(가장 오래된 행 유지). 무비용 결정론적 재사용 레인은 `MEMEX_ONTOLOGY_DET_GATE`를
+설정하지 않으면 꺼져 있습니다(기본 `+Infinity`).
+
 ### KR translation은 별도 수동 단계
 
 `fact_kr`는 local derived state이며 `backfill all`에 포함되지 않습니다. SessionStart마다 번역 LLM을 자동 실행하지 않습니다.

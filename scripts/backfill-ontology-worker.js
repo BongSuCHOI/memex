@@ -185,7 +185,7 @@ async function main() {
       batches.push({ kind: 'ontology', ids: ontologyIds.slice(i, i + BATCH_SIZE) });
     }
 
-    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, released: 0, budgetExhausted: 0, processed: 0 };
+    const totals = { classified: 0, deterministic: 0, fallback: 0, failed: 0, transient: 0, stale: 0, released: 0, budgetExhausted: 0, processed: 0 };
     const queue = [...batches];
     // Circuit breaker: transient failures burn no attempts (by design), so a
     // dead proxy/SDK would otherwise let every run re-spawn batch after batch
@@ -220,11 +220,17 @@ async function main() {
             totals.fallback += stats.fallback;
             totals.failed += stats.failed;
             totals.transient += stats.transient;
+            totals.stale += stats.stale;
             totals.released += stats.released;
           }
+          // Issue #47: a STALE result is progress, not a stalled call. The
+          // fact's meaning moved during the round trip, so the new meaning is
+          // the next classification target and nothing is stuck. Leaving it out
+          // made a 100%-stale batch look like a no-progress transient batch and
+          // pushed the circuit breaker toward a false trip.
           const anyProgress = batch.kind === 'relation'
             ? stats.completed > 0
-            : stats.classified + stats.deterministic + stats.fallback + stats.failed > 0;
+            : stats.classified + stats.deterministic + stats.fallback + stats.failed + stats.stale > 0;
           const transientCount = batch.kind === 'relation' ? stats.pending : stats.transient;
           consecutiveTransient = !anyProgress && transientCount > 0 ? consecutiveTransient + 1 : 0;
         } catch (error) {
@@ -248,11 +254,11 @@ async function main() {
           log(`circuit breaker OPEN: ${consecutiveTransient} consecutive all-transient batches — aborting run (${queue.length} batches unprocessed, resume next run)`);
           queue.length = 0;
         }
-        log(`progress: ${totals.processed}/${ontologyIds.length + relationIds.length} (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient})`);
+        log(`progress: ${totals.processed}/${ontologyIds.length + relationIds.length} (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, stale ${totals.stale})`);
       }
     });
     await Promise.all(workers);
-    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, released-from-park ${totals.released}, budget-exhausted ${totals.budgetExhausted})`);
+    log(`backfill-ontology: done this run (llm ${totals.classified}, deterministic ${totals.deterministic}, fallback ${totals.fallback}, failed ${totals.failed}, transient ${totals.transient}, stale ${totals.stale}, released-from-park ${totals.released}, budget-exhausted ${totals.budgetExhausted})`);
   } catch (error) {
     log(`backfill-ontology: FATAL ${error instanceof Error ? error.message : error}`);
     process.exitCode = 1;

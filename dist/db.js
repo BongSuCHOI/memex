@@ -624,6 +624,68 @@ export function initDatabase(options = {}) {
     if (!ontologyCategoryColumns.has("embedding_version")) {
         db.exec("ALTER TABLE ontology_categories ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0");
     }
+    // 이슈 #47: taxonomy 유일성을 애플리케이션 조회가 아니라 스키마로 보장한다.
+    //
+    // dedup은 지금까지 getDomainByName/getCategoryByName(둘 다 COLLATE NOCASE)
+    // 조회에만 의존했고, 그 읽기와 INSERT가 better-sqlite3 기본 DEFERRED
+    // transaction 안에 있었다 — 추출 경로(MCP 서버 프로세스)와 분리된 backfill
+    // 워커가 서로 다른 커넥션에서 동시에 "없음"을 읽고 둘 다 INSERT할 수 있고,
+    // unique index가 없으니 안전망도 없었다. 과거에 카테고리가 1,612개(≈95K
+    // 토큰)까지 번진 적이 있으므로 스프롤은 가설이 아니다.
+    //
+    // 인덱스를 만들기 전에 이미 존재하는 대소문자 중복을 먼저 병합한다:
+    // 가장 오래된 행을 남기고 fact/카테고리를 그쪽으로 재지정한 뒤 나머지를
+    // 지운다. Chronicle 이벤트는 남기지 않는다 — taxonomy는 local-derived
+    // overlay이고 fact 의미는 전혀 바뀌지 않기 때문이다(protocol v4 payload에도
+    // 없다). SQLite의 NOCASE/LOWER는 ASCII만 접으므로 'Café' vs 'café'는 여전히
+    // 다른 이름이다(문서화된 한계).
+    const mergeTaxonomyDuplicates = db.transaction(() => {
+        const domains = db
+            .prepare("SELECT id, name, created_at FROM ontology_domains ORDER BY created_at, id")
+            .all();
+        const domainKeeper = new Map();
+        for (const domain of domains) {
+            const key = domain.name.toLowerCase();
+            const keeper = domainKeeper.get(key);
+            if (keeper === undefined) {
+                domainKeeper.set(key, domain.id);
+                continue;
+            }
+            db.prepare("UPDATE ontology_categories SET domain_id = ? WHERE domain_id = ?").run(keeper, domain.id);
+            db.prepare("DELETE FROM ontology_domains WHERE id = ?").run(domain.id);
+        }
+        const categories = db
+            .prepare("SELECT id, domain_id, name, created_at FROM ontology_categories ORDER BY created_at, id")
+            .all();
+        const categoryKeeper = new Map();
+        for (const category of categories) {
+            const key = `${category.domain_id} ${category.name.toLowerCase()}`;
+            const keeper = categoryKeeper.get(key);
+            if (keeper === undefined) {
+                categoryKeeper.set(key, category.id);
+                continue;
+            }
+            db.prepare("UPDATE facts SET ontology_category_id = ? WHERE ontology_category_id = ?").run(keeper, category.id);
+            db.prepare("DELETE FROM ontology_categories WHERE id = ?").run(category.id);
+            try {
+                db.prepare("DELETE FROM vec_categories WHERE id = ?").run(category.id);
+            }
+            catch { /* vec table may be absent on very old databases */ }
+        }
+    });
+    try {
+        mergeTaxonomyDuplicates.immediate();
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_domains_name
+         ON ontology_domains(name COLLATE NOCASE)`);
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_categories_domain_name
+         ON ontology_categories(domain_id, name COLLATE NOCASE)`);
+    }
+    catch (error) {
+        // A database that still refuses the constraint must not brick startup:
+        // createDomain/createCategory keep their oldest-row re-select, which is
+        // correct (only slower to converge) without the index.
+        console.error("ontology taxonomy uniqueness migration skipped:", error);
+    }
     db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,

@@ -271,6 +271,7 @@ memex status
 | `memex facts tier\|promote\|demote` | `workstream ⇄ project ⇄ global` 사다리 조회·이동(한 칸씩) |
 | `memex facts migrate-tiers` | 0.6.0 기본 tier 규칙 back-fill 목록(`--dry-run`)·적용(`--apply`) |
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
+| `memex ontology` | local taxonomy 조회·수리: `list\|merge\|rename` (더 이상 append-only가 아님) |
 | `memex status` | pipeline readiness(`Ontology: … classified, … parked, … pending`)와 `Needs attention`·격리된 프로젝트·`memory_jobs`의 kind × state 집계. `--json` |
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |

@@ -22646,6 +22646,49 @@ function initDatabase(options = {}) {
       "ALTER TABLE ontology_categories ADD COLUMN embedding_version INTEGER NOT NULL DEFAULT 0"
     );
   }
+  const mergeTaxonomyDuplicates = db.transaction(() => {
+    const domains = db.prepare("SELECT id, name, created_at FROM ontology_domains ORDER BY created_at, id").all();
+    const domainKeeper = /* @__PURE__ */ new Map();
+    for (const domain of domains) {
+      const key = domain.name.toLowerCase();
+      const keeper = domainKeeper.get(key);
+      if (keeper === void 0) {
+        domainKeeper.set(key, domain.id);
+        continue;
+      }
+      db.prepare("UPDATE ontology_categories SET domain_id = ? WHERE domain_id = ?").run(keeper, domain.id);
+      db.prepare("DELETE FROM ontology_domains WHERE id = ?").run(domain.id);
+    }
+    const categories = db.prepare("SELECT id, domain_id, name, created_at FROM ontology_categories ORDER BY created_at, id").all();
+    const categoryKeeper = /* @__PURE__ */ new Map();
+    for (const category of categories) {
+      const key = `${category.domain_id}\0${category.name.toLowerCase()}`;
+      const keeper = categoryKeeper.get(key);
+      if (keeper === void 0) {
+        categoryKeeper.set(key, category.id);
+        continue;
+      }
+      db.prepare("UPDATE facts SET ontology_category_id = ? WHERE ontology_category_id = ?").run(keeper, category.id);
+      db.prepare("DELETE FROM ontology_categories WHERE id = ?").run(category.id);
+      try {
+        db.prepare("DELETE FROM vec_categories WHERE id = ?").run(category.id);
+      } catch {
+      }
+    }
+  });
+  try {
+    mergeTaxonomyDuplicates.immediate();
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_domains_name
+         ON ontology_domains(name COLLATE NOCASE)`
+    );
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ontology_categories_domain_name
+         ON ontology_categories(domain_id, name COLLATE NOCASE)`
+    );
+  } catch (error2) {
+    console.error("ontology taxonomy uniqueness migration skipped:", error2);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS ontology_relations (
       id TEXT PRIMARY KEY,

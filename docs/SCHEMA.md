@@ -294,6 +294,19 @@ state이고 protocol v4 payload에 포함되지 않으므로 sync 호환성에�
   재시도 selector는 이 값이 현재 토큰과 다를 때만 park를 pending으로 되돌립니다 — 세대당 정확히 한 번.
 - `ontology_similarity`: assignment 시점의 코사인 유사도(nullable). 낮은 신뢰도 할당의 사후 선별 입력.
 
+### Ontology taxonomy uniqueness (0.6.1)
+
+```sql
+CREATE UNIQUE INDEX idx_ontology_domains_name           ON ontology_domains(name COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_ontology_categories_domain_name ON ontology_categories(domain_id, name COLLATE NOCASE);
+```
+
+index 생성 전에 idempotent migration이 기존 대소문자 중복을 병합합니다: 가장 오래된 행을 남기고
+category/fact를 재지정한 뒤 나머지 행과 그 vector를 지웁니다. Chronicle 이벤트도 generation bump도
+없습니다(taxonomy는 local-derived overlay이고 fact 의미는 바뀌지 않습니다). `COLLATE NOCASE`는 ASCII만
+접으므로 `Café`/`café`는 여전히 별개입니다. Index 생성이 실패해도 초기화는 계속되며, 이때
+`createDomain`/`createCategory`의 "가장 오래된 행 재조회"가 수렴을 보장합니다(느릴 뿐).
+
 ### Ontology index repair state (0.6.1 additive)
 
 ```text

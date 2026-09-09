@@ -49,6 +49,17 @@ export function bumpTaxonomyEpoch(db: Database.Database): void {
 
 // === Domain CRUD ===
 
+/**
+ * Resolve-or-create a domain (이슈 #47).
+ *
+ * The old unconditional INSERT relied on the caller's prior
+ * `getDomainByName` miss, and that read+write pair sat inside better-sqlite3's
+ * DEFERRED transaction: two connections (insert-time extraction and the
+ * detached backfill worker) could both observe "absent" and both insert.
+ * `ON CONFLICT DO NOTHING` + re-select makes the loser adopt the winner's row
+ * instead of forking the taxonomy — the unique index created in db.ts is what
+ * turns the second INSERT into a no-op.
+ */
 export function createDomain(
   db: Database.Database,
   name: string,
@@ -57,8 +68,13 @@ export function createDomain(
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO ontology_domains (id, name, description, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
   ).run(id, name, description ?? null, now);
+  const existing = getDomainByName(db, name);
+  if (existing) return existing;
+  // No unique index (very old database) and no row: the insert really did
+  // land under a name the NOCASE lookup cannot see. Report what we wrote.
   return { id, name, description: description ?? null, created_at: now };
 }
 
@@ -73,15 +89,21 @@ export function getDomain(db: Database.Database, id: string): OntologyDomain | n
 }
 
 export function getDomainByName(db: Database.Database, name: string): OntologyDomain | null {
+  // Deterministic winner (oldest row) so a database that predates the unique
+  // index still converges on ONE row per name instead of alternating.
   return (
     (db
-      .prepare(`SELECT * FROM ontology_domains WHERE name = ? COLLATE NOCASE`)
+      .prepare(
+        `SELECT * FROM ontology_domains WHERE name = ? COLLATE NOCASE
+         ORDER BY created_at, id LIMIT 1`,
+      )
       .get(name) as OntologyDomain | undefined) ?? null
   );
 }
 
 // === Category CRUD ===
 
+/** Resolve-or-create a category. Same race contract as createDomain (이슈 #47). */
 export function createCategory(
   db: Database.Database,
   domainId: string,
@@ -91,8 +113,11 @@ export function createCategory(
   const id = randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO ontology_categories (id, domain_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`,
   ).run(id, domainId, name, description ?? null, now);
+  const existing = getCategoryByName(db, name, domainId);
+  if (existing) return existing;
   return { id, domain_id: domainId, name, description: description ?? null, created_at: now, embedding_version: 0 };
 }
 
@@ -108,6 +133,14 @@ export function listCategories(
   return (db.prepare(`SELECT * FROM ontology_categories ORDER BY name`).all() as OntologyCategory[]);
 }
 
+export function getCategory(db: Database.Database, id: string): OntologyCategory | null {
+  return (
+    (db.prepare(`SELECT * FROM ontology_categories WHERE id = ?`).get(id) as
+      | OntologyCategory
+      | undefined) ?? null
+  );
+}
+
 export function getCategoryByName(
   db: Database.Database,
   name: string,
@@ -117,14 +150,18 @@ export function getCategoryByName(
     return (
       (db
         .prepare(
-          `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE AND domain_id = ?`,
+          `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE AND domain_id = ?
+           ORDER BY created_at, id LIMIT 1`,
         )
         .get(name, domainId) as OntologyCategory | undefined) ?? null
     );
   }
   return (
     (db
-      .prepare(`SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE`)
+      .prepare(
+        `SELECT * FROM ontology_categories WHERE name = ? COLLATE NOCASE
+         ORDER BY created_at, id LIMIT 1`,
+      )
       .get(name) as OntologyCategory | undefined) ?? null
   );
 }

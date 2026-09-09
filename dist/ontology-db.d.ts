@@ -14,12 +14,25 @@ export declare function getTaxonomyEpoch(db: Database.Database): number;
  * (the privacy purge) so classifiers can never observe the wipe without the
  * epoch move, or the epoch move without the wipe. */
 export declare function bumpTaxonomyEpoch(db: Database.Database): void;
+/**
+ * Resolve-or-create a domain (이슈 #47).
+ *
+ * The old unconditional INSERT relied on the caller's prior
+ * `getDomainByName` miss, and that read+write pair sat inside better-sqlite3's
+ * DEFERRED transaction: two connections (insert-time extraction and the
+ * detached backfill worker) could both observe "absent" and both insert.
+ * `ON CONFLICT DO NOTHING` + re-select makes the loser adopt the winner's row
+ * instead of forking the taxonomy — the unique index created in db.ts is what
+ * turns the second INSERT into a no-op.
+ */
 export declare function createDomain(db: Database.Database, name: string, description?: string): OntologyDomain;
 export declare function listDomains(db: Database.Database): OntologyDomain[];
 export declare function getDomain(db: Database.Database, id: string): OntologyDomain | null;
 export declare function getDomainByName(db: Database.Database, name: string): OntologyDomain | null;
+/** Resolve-or-create a category. Same race contract as createDomain (이슈 #47). */
 export declare function createCategory(db: Database.Database, domainId: string, name: string, description?: string): OntologyCategory;
 export declare function listCategories(db: Database.Database, domainId?: string): OntologyCategory[];
+export declare function getCategory(db: Database.Database, id: string): OntologyCategory | null;
 export declare function getCategoryByName(db: Database.Database, name: string, domainId?: string): OntologyCategory | null;
 /**
  * Store/replace a category's embedding in vec_categories (atomic DELETE+INSERT,

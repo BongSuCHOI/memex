@@ -271,6 +271,7 @@ memex status
 | `memex facts tier\|promote\|demote` | Inspect or move a memory on the `workstream ⇄ project ⇄ global` ladder, one rung at a time |
 | `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
+| `memex ontology` | Inspect and repair the local taxonomy: `list\|merge\|rename` (the taxonomy is no longer append-only) |
 | `memex status` | Inspect pipeline readiness (`Ontology: … classified, … parked, … pending`), `Needs attention`, quarantined projects, and `memory_jobs` by kind × state; `--json` |
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |

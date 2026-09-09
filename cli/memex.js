@@ -83,6 +83,7 @@ COMMANDS:
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
+  ontology    Inspect and repair the local taxonomy: list|merge|rename
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -228,6 +229,22 @@ Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
 Run backlog work explicitly; never auto-started by status. 'all' runs each stage
 in order and stops at the first failure. Foreground is the default; exit 2 means
 the run completed with outstanding work.`,
+  ontology: `Usage:
+  memex ontology list [--json]
+  memex ontology merge <from-category-id> <to-category-id> [--dry-run] [--json]
+  memex ontology rename <category-id> "<new name>" [--json]
+
+Repair the LOCAL ontology overlay. Before 0.6.1 the taxonomy was append-only:
+near-duplicate categories ("Auth" / "Authentication" / "AuthN") could only be
+removed by wiping the whole ontology.
+
+merge re-points every fact under <from-category-id> to <to-category-id> and
+deletes the source category and its vector. rename changes one category's label
+and invalidates its vector (rebuilt by 'memex backfill embeddings').
+
+Neither touches fact meaning: no Chronicle event, no semantic/lifecycle
+generation bump, no attempt-ledger reset and no taxonomy-epoch bump. Each
+writes one metadata-only line to logs/ui-audit.jsonl.`,
   facts: `Usage: memex facts <list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete> [options]
 
   list        [--project <p>] [--scope global|all] [--all] [--limit n] [--offset n]
@@ -631,6 +648,111 @@ async function main() {
               "Usage: memex facts <list|show|edit|deactivate|restore|history|tier|promote|demote|migrate-tiers|delete> [--id <uuid>] ...",
             );
             process.exitCode = 1;
+          }
+        } finally {
+          db.close();
+        }
+        break;
+      }
+
+      // Issue #47: the taxonomy used to be append-only — no merge, no rename,
+      // no delete. Near-duplicate categories could only be fixed by wiping the
+      // whole ontology. Both operations are local-derived overlay edits: fact
+      // meaning is untouched, so there is no Chronicle event and no generation
+      // bump, only one metadata line in logs/ui-audit.jsonl.
+      case "ontology": {
+        const { initDatabase } = await import(join(distDir, "db.js"));
+        const { mergeCategories, renameCategory } = await import(
+          join(distDir, "ontology-admin.js")
+        );
+        const { listCategories, listDomains } = await import(
+          join(distDir, "ontology-db.js")
+        );
+        const json = args.includes("--json");
+        const dryRun = args.includes("--dry-run");
+        const positional = args.filter((a) => !a.startsWith("-"));
+        const sub = positional[0];
+        if (!["list", "merge", "rename"].includes(sub ?? "")) {
+          console.error(COMMAND_USAGE.ontology);
+          process.exitCode = 1;
+          break;
+        }
+        const db = initDatabase();
+        try {
+          if (sub === "list") {
+            const domains = listDomains(db);
+            const byDomain = new Map(domains.map((d) => [d.id, d.name]));
+            const categories = listCategories(db);
+            if (json) {
+              console.log(
+                JSON.stringify(
+                  categories.map((c) => ({
+                    id: c.id,
+                    name: c.name,
+                    domain: byDomain.get(c.domain_id) ?? "?",
+                    domainId: c.domain_id,
+                  })),
+                  null,
+                  2,
+                ),
+              );
+            } else {
+              for (const c of categories) {
+                console.log(`${c.id}  ${byDomain.get(c.domain_id) ?? "?"} / ${c.name}`);
+              }
+              console.log(`(${domains.length} domains, ${categories.length} categories)`);
+            }
+          } else if (sub === "merge") {
+            const [, fromId, toId] = positional;
+            if (!fromId || !toId) {
+              throw new Error(
+                "usage: memex ontology merge <from-category-id> <to-category-id> [--dry-run]",
+              );
+            }
+            const plan = mergeCategories(db, {
+              fromCategoryId: fromId,
+              toCategoryId: toId,
+              dryRun,
+            });
+            if (json) {
+              console.log(JSON.stringify(plan, null, 2));
+            } else {
+              console.log(
+                `${plan.dryRun ? "[dry-run] Would merge" : "Merged"} "${plan.fromName}" (${plan.fromCategoryId}) into "${plan.toName}" (${plan.toCategoryId})`,
+              );
+              console.log(`Facts re-pointed: ${plan.factsMoved}`);
+              if (plan.crossDomain) {
+                console.log(
+                  "Note: the two categories live under different domains; the facts move to the target's domain.",
+                );
+              }
+              if (!plan.dryRun) {
+                console.log(
+                  "Fact meaning, attempt ledgers and the taxonomy epoch are unchanged; only the overlay moved.",
+                );
+              }
+            }
+          } else {
+            const [, id, ...nameParts] = positional;
+            const explicitName = (() => {
+              const index = args.indexOf("--name");
+              return index >= 0 ? args[index + 1] : undefined;
+            })();
+            const name = explicitName ?? nameParts.join(" ");
+            if (!id || !name) {
+              throw new Error('usage: memex ontology rename <category-id> "<new name>"');
+            }
+            const result = renameCategory(db, { categoryId: id, name });
+            if (json) {
+              console.log(JSON.stringify(result, null, 2));
+            } else {
+              console.log(
+                `Renamed ${result.categoryId}: "${result.previousName}" -> "${result.name}"`,
+              );
+              console.log(
+                "Facts keep their assignment; the category vector was invalidated and is rebuilt by: memex backfill embeddings",
+              );
+            }
           }
         } finally {
           db.close();
