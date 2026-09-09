@@ -68,7 +68,7 @@ node scripts/web-ui-browser-e2e.mjs
 | context dependency | server mapping, atomic save, consolidation union, edit/sync clear, privacy/FK cascade |
 | extraction quality | 17-case curated fixture, baseline diff, FP/MISS taxonomy, model call/token/latency |
 | fact mutation | semantic/lifecycle generation과 derived-state CAS |
-| sync v4 | generation integrity, strict schema, semantic/lifecycle/lineage convergence |
+| sync v5 | generation integrity, strict schema, semantic/lifecycle/lineage convergence, 모든 tier의 export/import 왕복과 project-wide NULL 강제, protocol 4/5 혼재 |
 | privacy | conversation purge, pending checkpoint/job/target cascade, terminal session guard, in-flight capture-index race, fact tombstone, taxonomy epoch race |
 | retrieval | scope-before-limit, recall provenance, dedup/budget |
 | continuity identity v4 | path migration/re-run, worktree/rename/clone link-split, conservative binding, promotion slots, memory revision/correction, Hot Evidence TTL/pagination, stable MCP/sync/privacy scope |
@@ -83,6 +83,12 @@ node scripts/web-ui-browser-e2e.mjs
 | 기억 계층 0.6.0 | 브랜치 신호 분류, 결정론적 workstream id, 기본 tier, 사다리 한 칸 제약, 자동 재조정, workspace 전이, untrusted cwd 격리 |
 | terminal 상태 복구 0.6.0 | 여덟 terminal 상태 카운트, `recover`/`jobs retry\|dismiss`의 단일 트랜잭션 리셋, `retry_history` 보존 |
 | 주입 관측 0.6.0 | `injected`/`context-only` 구분, `receipt-failed`, `baseline_margin_gap`, `lexical_lane_unavailable`, doctor 판정 |
+| 크로스디바이스 스위치 0.6.1 | 기본 off, 공유 폴더 해석 순서, 원자적 세대 publish, 변경 없을 때 export 생략, off일 때 두 훅의 no-op, `doctor`의 `skipped(off)`→warn→ok |
+| 설치본 해석 0.6.1 | `MEMEX_PLUGIN_ROOT`→codex cache→`codex plugin list --json`→launcher 순서를 `doctor`·`deps materialize`·`runtime-exec`가 공유 |
+| Ontology 0.6.1 | parked 상태와 세대당 1회 재시도, `classified` 제외, 대소문자 UNIQUE와 중복 병합 마이그레이션, `ontology list\|merge\|rename`, index repair 상태의 status/doctor 노출 |
+| 유지보수 계보·기아 0.6.1 | wave 계보의 컬럼화와 기존 중첩 id 정규화, derived lane 연속 skip 카운터와 3회 뒤 강제 통과 |
+| 근거 영수증 0.6.1 | `backfill receipts`의 재구성 범위, `recordLocalMeaningEvidence` 실패 보고, sync-import의 `peer-authority` 강등 |
+| Web UI 0.6.1 | 계층 배지·`hiddenByTier` 배너·`tiers=all`, `/api/v2/facts/promote\|demote`, `/api/v2/sync`, 실패 클래스 카탈로그와 도움말 앵커의 코드/문서 대조 |
 
 Phase 1 gate의 mandatory matrix는 `test/continuity-correctness-spine.test.ts`의 deterministic seeded
 pagination, migration/page-commit crash stages, ten duplicate deliveries, checkpoint ordinal ordering,
@@ -137,6 +143,14 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/pipeline-status-slice.test.mjs` | `status --json`의 `jobs`가 `memory_jobs`를 kind × state로 집계하는지, 큐가 없으면 빈 객체인지, `memex index --help`가 존재하는 문서만 가리키는지 (#46) |
 | `test/real-root-isolation-slice.test.mjs` | 격리 검사 자체의 회귀: 0.5.0의 `ui-audit.jsonl` 유출 형태를 잡는지, 추가/삭제 보고, 내용이 같은 mtime 변화는 실패로 보지 않는지, `run-locks`는 기본 제외·`--strict` 포함 (#26) |
 | `test/lifecycle-slice.test.mjs` (추가분) | 이름 없는 hook 호출이 `event: "Unknown"`으로 기록되지 않고 거절되는지, CLI 진입점이 event 이름을 요구하고 session_id/cwd를 받는지 (#26 항목 6) |
+| `test/ontology-parking.test.ts` | parked fact가 `classified`에서 빠지는지, 정책/embedding 세대당 정확히 1회만 재시도되는지, output budget 초과가 배치 분할로 처리되고 fact마다 content failure를 물리지 않는지, `IndexRepairError`가 status/doctor까지 오는지 (#41) |
+| `test/ontology-taxonomy-repair.test.ts` | domain/category의 대소문자 무시 UNIQUE, 기존 중복을 병합하는 idempotent 마이그레이션, `ON CONFLICT DO NOTHING` + 재조회, `applyClassification`의 immediate transaction, `result.stale` 집계 (#47) |
+| `test/ontology-cli-slice.test.mjs` | `memex ontology list\|merge\|rename`의 동작과 부작용 경계 — fact 재지정·vector 무효화는 하되 Chronicle·generation·epoch은 건드리지 않고 감사 1줄만 남기는지 (#47) |
+| `test/maintenance-wave-lineage.test.ts` | rollover 계보가 `root_wave_id`/`run_seq` 컬럼으로 표현되는지, 자식이 root wave id를 물려받는지, 기존 중첩 `:run:<uuid>` id가 rolling-cap 연결을 잃지 않고 정규화되는지 (#42) |
+| `test/derived-lane-skip.test.ts`, `test/derived-lane-skip-e2e.test.ts` | P0/P1 조기 반환이 지속되는 연속 skip 카운터가 되는지, 같은 사유 3회 뒤 derived lane이 한 번 통과하는지, `memex status`에 `Derived lanes: skipped …`로 드러나는지 (#43) |
+| `test/evidence-receipt-backfill.test.ts` | `memex backfill receipts`가 model 없이 누락 영수증만 재구성하는지, `recordLocalMeaningEvidence` 실패가 보고되는지, sync-import가 영수증을 삭제하지 않고 `peer-authority`로 강등하는지 (#45) |
+| `ui/test/guidance.test.cjs` | `src/`의 `throw new *Error(...)` 문자열과 skip 사유·terminal 상태 enum을 추출해 전부 실패 클래스에 매핑되거나 대장에 명시돼 있는지, 매핑되지 않은 오류가 원인을 지어내지 않는지 (#23) |
+| `ui/test/help.test.cjs` | 메뉴·배지·관리 명령·범위 옵션에 도움말 항목이 있는지와, 인용한 문서 앵커가 실제 헤딩으로 존재하는지 (#28) |
 
 ## 4. Merge-gate receipt 절차
 
