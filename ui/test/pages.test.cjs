@@ -136,6 +136,17 @@ test('계층 승격·강등 이벤트에는 한국어 라벨이 있다',()=>{
  assert.equal(name('DEMOTED'),'계층 강등');
 });
 
+test('보조 텍스트도 11px 아래로 내려가지 않는다',()=>{
+ const dir=path.join(__dirname,'../public');
+ const files=['style.css','app.mjs','ui.mjs','details.mjs','guidance.mjs','help.mjs','graph-engine.mjs',...fs.readdirSync(path.join(dir,'pages')).map(f=>'pages/'+f)];
+ const small=[];
+ for(const file of files){
+  const text=fs.readFileSync(path.join(dir,file),'utf8');
+  for(const m of text.matchAll(/font(?:-size)?:\s*(\d+(?:\.\d+)?)px/g))if(Number(m[1])<11)small.push(`${file}: ${m[0]}`);
+ }
+ assert.deepEqual(small,[],'스펙상 보조 텍스트도 읽혀야 합니다(#26): '+small.join(', '));
+});
+
 // --- #48 관리 › 동기화 탭 ---
 const syncStatus=extra=>({status:{enabled:false,dir:'/shared/memex-sync',dirSource:'configured',dirExists:true,dirWritable:true,configPath:'/home/me/.config/memex/sync/config.json',updatedAt:'2026-09-10T00:00:00.000Z',deviceId:null,lastExport:null,peers:[],...extra}});
 const syncCtx=ctx('tab=sync',{});

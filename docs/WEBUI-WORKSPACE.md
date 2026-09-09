@@ -12,6 +12,9 @@
 
 `/facts?fact=<id>`는 `/facts/<id>`와 같은 상세 패널을 연다(#26).
 
+본문은 14px, **보조 텍스트도 11px 아래로 내려가지 않는다**(#26). 밀도 설정은 글자 크기가 아니라
+표·타임라인의 세로 여백을 조절한다.
+
 **0.6.0 기억 계층과의 대응.** 화면에 보이는 승격 상태는 [범위 모델](FACT-LIFECYCLE.md#1-fact란-무엇인가)의
 세 계층과 다음처럼 대응한다: `workstream`(과 `workspace`) = 브랜치 tier, `project-current`(와 `decision`) =
 프로젝트 공용, `scope_type = global` = 글로벌. 새 기억의 기본 계층은 세션의 브랜치 신호가 정하므로,
