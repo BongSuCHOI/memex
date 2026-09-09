@@ -232,8 +232,11 @@ memex status
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
 | `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | Inspect pipeline readiness |
+| `memex jobs` | Inspect and recover memory jobs: `list|show|retry|dismiss` |
+| `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex doctor` | Diagnose runtime, plugin, MCP, and lifecycle state |
 | `memex update` | Refresh the marketplace/plugin while preserving data |
+| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
 
 Fact management includes edit, deactivate, restore, history, and guarded hard-delete operations. Semantic edits keep fact identity and revision history while invalidating stale derived state.
 
@@ -307,6 +310,8 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 | `CODEX_HOME` | Codex home; `$CODEX_HOME/sessions` is the read-only rollout source |
 | `MEMEX_AUTO_ONTOLOGY` | Automatic ontology is on by default; `0` disables it |
 | `MEMEX_STRICT_CAPTURE` | `1` makes a capture hook fail instead of recording a capture gap |
+| `MEMEX_CAPSULE_MAX_CHARS` | Bounded storage size for one Work Capsule generation (default `12000`, floor `2000`); an oversized patch is truncated by priority and recorded, never dropped |
+| `MEMEX_INJECT_BASELINE_MARGIN` | Relevance margin a fact must clear over the prompt's background baseline to be injected (default `0.045`, 0-1); measure first with the `baseline_margin_gap` telemetry metric |
 | `PORT` | Web UI port (default `3847`) |
 
 Automatic ontology stays available through manual `memex backfill ontology`, and existing derived data and core embeddings remain in place when it is disabled.

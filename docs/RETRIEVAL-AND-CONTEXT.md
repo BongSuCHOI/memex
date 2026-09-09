@@ -275,13 +275,19 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 
 대표 injection status:
 
-- `injected`
+- `injected` — 추출된 fact가 1개 이상 들어간 발행
+- `context-only` — 번들은 발행했지만 fact는 0개(Capsule `WORK NOW` / `ASSISTANT CONTEXT`만). 이전에는 이 경우도 `injected`로 기록돼 "기억이 주입됐다"와 구분되지 않았습니다.
 - `no-match`
 - `deduped`
 - `skipped` (`gate: skip:<reason>`, `embedding_calls`)
 - `no-session-provenance`
+- `receipt-failed` — 컨텍스트를 발행했으나 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반)
 - `error`
 
-`injected` 로그는 `gate: retrieve:<triggers>`, `embedding_calls`, `sections`를 함께 기록합니다.
+`injected`/`context-only` 로그는 `gate: retrieve:<triggers>`, `embedding_calls`, `sections`, `lexical_lane`을 함께 기록합니다. `lexical_lane: unavailable`은 리터럴 매칭 레인이 예외로 죽었다는 뜻이며 `lexical_lane_unavailable` 텔레메트리로도 남습니다.
+
+관련성 게이트(`similarity - baseline >= margin`)의 마진은 기본 `0.045`이고 `MEMEX_INJECT_BASELINE_MARGIN`으로 조정합니다. 후보가 임계값에서 얼마나 떨어져 있었는지는 retrieval당 1행씩 `continuity_telemetry`의 `baseline_margin_gap`에 기록됩니다(`value` = 가장 근접한 gap, `dims.gaps`/`margin`/`baseline`/`passed`/`rejected`). 마진 조정은 이 측정값을 근거로 하십시오.
+
+`memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

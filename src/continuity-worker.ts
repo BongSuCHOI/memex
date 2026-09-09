@@ -13,8 +13,6 @@ import {
   completeEmptyCapsuleCheckpoint,
   readWorkCapsule,
   scheduleCapsuleBacklog,
-  validateWorkCapsulePatch,
-  type WorkCapsulePatch,
 } from "./continuity-core.js";
 import { parseConversation } from "./codex-rollout.js";
 import { ingestPrefixExchanges } from "./archive-ingestion.js";
@@ -25,7 +23,13 @@ import {
   isConversationExcludedSession,
   purgeConversationFromIndex,
 } from "./conversation-policy.js";
-import { appendSessionEvidence, readCapsulePage } from "./continuity-evidence.js";
+import {
+  appendSessionEvidence,
+  readCapsulePage,
+  shrinkCapsulePageHint,
+  skipCapsuleEvidenceHead,
+  type CapsulePage,
+} from "./continuity-evidence.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import {
   deferMemoryJobForModelBudget,
@@ -326,7 +330,7 @@ async function processCaptureIndex(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    failMemoryJob(db, {
+    const transition = failMemoryJob(db, {
       jobId,
       owner,
       leaseGeneration: claim.lease_generation,
@@ -334,7 +338,9 @@ async function processCaptureIndex(
       retry: true,
       now: new Date(),
     });
-    const state = (db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
+    // Issue #34: the queue's own transition is authoritative. Only a lost CAS
+    // (null) has to fall back to reading the row someone else moved.
+    const state = transition ?? (db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
       .get(jobId) as { state?: string } | undefined)?.state;
     return {
       jobId,
@@ -389,8 +395,13 @@ async function processCapsule(
   if (!claim || !claim.checkpoint_id) {
     return { jobId, kind: "capsule_update", state: "deferred", detail: "claim unavailable" };
   }
+  // Issue #33: the failure path needs the exact page this attempt read, so the
+  // frontier can record partial progress instead of freezing the workstream.
+  let attemptPage: CapsulePage | null = null;
+  let attemptWorkstreamId: string | null = null;
   try {
     const checkpoint = checkpointRow(db, claim.checkpoint_id);
+    attemptWorkstreamId = checkpoint.workstream_id;
     const state = db.prepare(`
       SELECT expected_generation FROM capsule_checkpoint_state WHERE checkpoint_id = ?
     `).get(checkpoint.checkpoint_id) as { expected_generation: number } | undefined;
@@ -406,6 +417,7 @@ async function processCapsule(
     // session's missing immutable generations before freezing this job target.
     appendSessionEvidence(db, checkpoint.session_id);
     const page = db.transaction(() => readCapsulePage(db, checkpoint.checkpoint_id)).immediate();
+    attemptPage = page;
     const evidence = page.evidence;
     if (evidence.length === 0) {
       if (!completeEmptyCapsuleCheckpoint(db, {
@@ -446,12 +458,15 @@ async function processCapsule(
         : null;
     } catch { /* exact JSON is mandatory */ }
     if (!parsed) throw new Error("capsule model returned invalid JSON");
-    const patch: WorkCapsulePatch = validateWorkCapsulePatch(parsed);
+    // Issue #17: validate/truncate exactly once, inside the write transaction,
+    // so the Capsule row records what the truncation removed. Validating here
+    // first would hand `applyWorkCapsulePatch` an already-fitted patch and its
+    // `truncated` bookkeeping would read as "nothing was removed".
     const applied = applyWorkCapsulePatch(db, {
       workstreamId: checkpoint.workstream_id,
       expectedGeneration,
       throughCheckpointId: checkpoint.checkpoint_id,
-      patch,
+      patch: parsed,
       evidencePage: page,
       jobLease: {
         jobId,
@@ -460,7 +475,7 @@ async function processCapsule(
       },
     });
     if (!applied) {
-      const deferred = failMemoryJob(db, {
+      const transition = failMemoryJob(db, {
         jobId,
         owner,
         leaseGeneration: claim.lease_generation,
@@ -468,13 +483,15 @@ async function processCapsule(
         retry: true,
         now: new Date(),
       });
-      if (deferred) {
+      // Issue #34: only write 'retry' when the queue actually chose retry, and
+      // never over a terminal row (same guard as model-budget's defer path).
+      if (transition === "retry") {
         const currentGeneration = readWorkCapsule(db, checkpoint.workstream_id)?.generation ?? 0;
         db.prepare(`
           UPDATE capsule_checkpoint_state
           SET state = 'retry', expected_generation = ?,
               last_error = 'capsule generation changed during model call', updated_at = ?
-          WHERE checkpoint_id = ?
+          WHERE checkpoint_id = ? AND state IN ('processing','retry','pending')
         `).run(currentGeneration, new Date().toISOString(), checkpoint.checkpoint_id);
       }
       return { jobId, kind: "capsule_update", state: "stale", detail: "generation CAS rejected" };
@@ -504,7 +521,7 @@ async function processCapsule(
         detail: message,
       };
     }
-    const deferred = failMemoryJob(db, {
+    const transition = failMemoryJob(db, {
       jobId,
       owner,
       leaseGeneration: claim.lease_generation,
@@ -512,19 +529,39 @@ async function processCapsule(
       retry: true,
       now: new Date(),
     });
-    if (deferred) {
+    // Issue #34: branch on the transition the queue actually took. Treating
+    // both as "deferred" is what overwrote the store's terminal
+    // `failed-visible` with `retry` — the state the real data root was stuck in.
+    const state = transition ?? (db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
+      .get(jobId) as { state?: string } | undefined)?.state;
+    let detail = message;
+    if (transition === "retry") {
+      // Issue #33: make the retry different from the attempt that just failed.
+      // Halving the page is the only lever the worker holds over its own input.
+      const shrunk = shrinkCapsulePageHint(db, claim.checkpoint_id);
+      if (shrunk) detail = `${message} (next page items=${shrunk.items} chars=${shrunk.chars})`;
       db.prepare(`
         UPDATE capsule_checkpoint_state SET state = 'retry', last_error = ?, updated_at = ?
-        WHERE checkpoint_id = ?
-      `).run(message.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
+        WHERE checkpoint_id = ? AND state IN ('processing','retry','pending')
+      `).run(detail.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
+    } else if (transition === "dead" && attemptPage && attemptWorkstreamId) {
+      // Terminal after shrinking: step the frontier over exactly the fragment
+      // that could not be distilled so the workstream is not frozen at seq 0
+      // forever (and its Capsule is not reported permanently stale).
+      const skipped = skipCapsuleEvidenceHead(db, attemptWorkstreamId, attemptPage);
+      if (skipped !== null) {
+        detail = `${message} (skipped evidence seq ${skipped}; frontier advanced)`;
+        db.prepare(`
+          UPDATE capsule_checkpoint_state SET last_error = ?, updated_at = ?
+          WHERE checkpoint_id = ?
+        `).run(detail.slice(0, 1_000), new Date().toISOString(), claim.checkpoint_id);
+      }
     }
-    const state = (db.prepare("SELECT state FROM memory_jobs WHERE job_id = ?")
-      .get(jobId) as { state?: string } | undefined)?.state;
     return {
       jobId,
       kind: "capsule_update",
       state: state === "dead" ? "dead" : "retry",
-      detail: message,
+      detail,
     };
   }
 }

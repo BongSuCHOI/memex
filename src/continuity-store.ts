@@ -40,6 +40,7 @@ export type ContinuityMigrationStage =
   | "chronicle-indexes"
   | "recall-gate-columns"
   | "evidence-sequence"
+  | "capsule-terminal-state-repair"
   | "fts-rebuild"
   | "exchange-metadata"
   | "schema-meta"
@@ -214,7 +215,10 @@ export function ensureContinuitySchema(
         last_error TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #20: memex jobs retry clears last_error; the failure it
+        -- cleared is preserved here as a JSON array, never deleted.
+        retry_history TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -386,7 +390,12 @@ export function ensureContinuitySchema(
         through_checkpoint_id TEXT,
         authority TEXT NOT NULL DEFAULT 'context-only'
           CHECK(authority = 'context-only'),
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #17: a patch over MEMEX_CAPSULE_MAX_CHARS is stored shortened,
+        -- never dropped. These record exactly what the truncation removed.
+        truncated INTEGER NOT NULL DEFAULT 0,
+        truncated_fields_json TEXT NOT NULL DEFAULT '[]',
+        original_chars INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS capsule_checkpoint_state (
@@ -396,7 +405,11 @@ export function ensureContinuitySchema(
           CHECK(state IN ('pending','processing','processed','retry','failed-visible')),
         expected_generation INTEGER NOT NULL,
         last_error TEXT,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #33: retry feedback. A failed attempt halves the next page so
+        -- the retry reads strictly less than the attempt that failed.
+        page_items_hint INTEGER,
+        page_chars_hint INTEGER
       );
 
     `);
@@ -814,10 +827,43 @@ export function ensureContinuitySchema(
       INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
     `);
     const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
-    for (const name of ["target_seq", "target_revision"]) {
+    // Issue #33: `page_items_hint` / `page_chars_hint` make a failed attempt
+    // change the next attempt's input. Without them every retry read the same
+    // bytes and failed identically until `max_attempts` was spent.
+    for (const name of ["target_seq", "target_revision", "page_items_hint", "page_chars_hint"]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
     }
+    // Issue #17: priority-truncation bookkeeping on existing Capsule rows.
+    const capsuleColumns = columnNames(db, "work_capsules");
+    if (!capsuleColumns.has("truncated")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!capsuleColumns.has("truncated_fields_json")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN truncated_fields_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!capsuleColumns.has("original_chars")) {
+      db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
+    }
+    // Issue #20: operator retry preserves the failure it clears.
+    if (!columnNames(db, "memory_jobs").has("retry_history")) {
+      db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
+    }
     options.afterMigrationStage?.("evidence-sequence");
+
+    // Issue #34 repair: continuity-worker used to overwrite the terminal
+    // `failed-visible` that failMemoryJob had just written with `retry`. The
+    // result is a row nobody drains (its job is already `dead`) and no status
+    // surface reports as failed. Seven such rows existed on the real data root.
+    // Idempotent: only rows whose owning capsule job is terminal are corrected.
+    const repaired = db.prepare(`
+      UPDATE capsule_checkpoint_state
+      SET state = 'failed-visible', updated_at = ?
+      WHERE state IN ('retry','processing','pending') AND EXISTS (
+        SELECT 1 FROM memory_jobs j
+        WHERE j.checkpoint_id = capsule_checkpoint_state.checkpoint_id
+          AND j.kind = 'capsule_update' AND j.state = 'dead')
+    `).run(new Date().toISOString());
+    if (repaired.changes > 0) options.afterMigrationStage?.("capsule-terminal-state-repair");
 
     db.exec(`
 
@@ -1607,6 +1653,16 @@ export function completeMemoryJob(
   ).changes === 1;
 }
 
+/**
+ * Which transition a failed claim actually took (issue #34).
+ *
+ * `failMemoryJob` used to answer `true` for both, so callers that wanted to
+ * write "retry" alongside it could not tell that the queue had just made the
+ * job terminal — and they overwrote the store's own `failed-visible` with
+ * `retry`. `null` still means the CAS found no owned running row.
+ */
+export type MemoryJobFailureTransition = "retry" | "dead";
+
 export function failMemoryJob(
   db: Database.Database,
   input: {
@@ -1618,7 +1674,7 @@ export function failMemoryJob(
     availableAt?: Date;
     now?: Date;
   },
-): boolean {
+): MemoryJobFailureTransition | null {
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const row = db.prepare(`
@@ -1634,9 +1690,9 @@ export function failMemoryJob(
         kind: string;
       }
     | undefined;
-  if (!row) return false;
+  if (!row) return null;
   const retry = input.retry && row.attempts < row.max_attempts;
-  const state = retry ? "retry" : "dead";
+  const state: MemoryJobFailureTransition = retry ? "retry" : "dead";
   const defaultBackoffMs = Math.min(
     60 * 60_000,
     1000 * 2 ** Math.max(0, row.attempts - 1),
@@ -1659,7 +1715,7 @@ export function failMemoryJob(
       input.leaseGeneration,
       nowIso,
     ).changes;
-    if (changed !== 1) return false;
+    if (changed !== 1) return null;
     // Extraction targets own their richer exact-range checkpoint state. For
     // checkpoint-native Continuity work, keep terminal/retry accountability
     // synchronized with the queue transition itself.
@@ -1692,7 +1748,7 @@ export function failMemoryJob(
         );
       }
     }
-    return true;
+    return state;
   });
   return db.inTransaction ? fail() : fail.immediate();
 }

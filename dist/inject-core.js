@@ -29,6 +29,27 @@ const TOP_K = 5;
 // unrelated -0.028~-0.091; long compound "memory" facts can leak in at
 // +0.04~+0.045, so the margin sits just above that noise band.
 const BASELINE_MARGIN = 0.045;
+/**
+ * Issue #32 — the margin is now tunable and measurable.
+ *
+ * The observed data root ran the pipeline 12 times over five days with
+ * `candidate_facts = 5` and `current_facts = 0` every single time: not one of
+ * 127 extracted facts ever entered a prompt. Nothing recorded where those
+ * candidates actually sat relative to the threshold, so the constant could not
+ * be judged from data. `baseline_margin_gap` telemetry now records that
+ * distribution, and this override lets it be moved once the data says where.
+ * The default is unchanged: retuning it without evidence would be guessing.
+ */
+export const INJECT_BASELINE_MARGIN_DEFAULT = BASELINE_MARGIN;
+export function resolveBaselineMargin() {
+    const raw = process.env.MEMEX_INJECT_BASELINE_MARGIN;
+    if (raw === undefined)
+        return BASELINE_MARGIN;
+    const parsed = Number.parseFloat(String(raw).trim());
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1)
+        return BASELINE_MARGIN;
+    return parsed;
+}
 const MAX_CONTEXT_FACTS = 8;
 // Phase 5 budget (RFC §12.5): normal prompt delta target 700 / hard 1,000 chars.
 // detectRepeat 는 313k exchanges 벡터검색 (p50 21ms / p95 498ms 실측) — tail 이
@@ -350,13 +371,22 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // matches are fetched independently and then given deterministic priority.
         const semanticCandidates = embedding ? searchFactsInScope(db, embedding, scope, TOP_K, 0) : [];
         let lexicalCandidates = [];
+        let lexicalLane = "ok";
         if (canQuery(db)) {
             try {
                 lexicalCandidates = searchFactsLexicallyInScope(db, userPrompt, scope, TOP_K);
             }
-            catch {
-                // Semantic retrieval and correction/hot evidence remain available if
-                // a legacy database or partial integration lacks lexical columns.
+            catch (error) {
+                // Issue #32: this catch used to be empty. Semantic retrieval and
+                // correction/hot evidence do remain available when a legacy database
+                // or partial integration lacks lexical columns — but a lane that is
+                // dead for every prompt looked exactly like a lane with no matches.
+                lexicalLane = "unavailable";
+                sampleTelemetry(db, {
+                    metric: "lexical_lane_unavailable", value: 1,
+                    projectId: sessionScope.projectId, sessionId,
+                    dims: { reason: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) },
+                });
             }
         }
         const candidates = [...([...semanticCandidates.map((result) => ({
@@ -391,12 +421,33 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             const bSemantic = b.semanticSimilarity ?? -Infinity;
             return bSemantic - aSemantic || a.fact.id.localeCompare(b.fact.id);
         }).slice(0, TOP_K);
+        // Issue #32: record where each candidate actually sat relative to the
+        // threshold. Without this the gate's effect is invisible: the log only ever
+        // showed "5 candidates, 0 injected" with no way to tell a correct rejection
+        // from a threshold set too high.
+        const margin = resolveBaselineMargin();
+        const gaps = [];
         const results = orderedCandidates.filter((r) => {
             if (r.lexicalScore !== null)
                 return true;
             const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
-            return similarity - baseline >= BASELINE_MARGIN;
+            const gap = similarity - baseline;
+            gaps.push(Math.round(gap * 1e4) / 1e4);
+            return gap >= margin;
         });
+        if (gaps.length > 0) {
+            const passed = gaps.filter((gap) => gap >= margin).length;
+            sampleTelemetry(db, {
+                // The closest miss is the decision-relevant number; `dims.gaps` keeps
+                // the whole bounded distribution (at most TOP_K entries).
+                metric: "baseline_margin_gap",
+                value: Math.max(...gaps),
+                unit: "similarity",
+                projectId: sessionScope.projectId,
+                sessionId,
+                dims: { margin, gaps, passed, rejected: gaps.length - passed, baseline: Math.round(baseline * 1e4) / 1e4 },
+            });
+        }
         let rawEvidence = [];
         if (canQuery(db)) {
             try {
@@ -665,6 +716,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                 deduped: dedupedCount,
                 gate: gateLabel,
                 embedding_calls: calls,
+                lexical_lane: lexicalLane,
                 duration_ms: Date.now() - t0,
                 via,
             });
@@ -696,7 +748,8 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
         }
         appendInjectLog({
-            status: "injected",
+            // Issue #32: a bundle with zero facts is not an injection of memory.
+            status: injectedIds.length > 0 ? "injected" : "context-only",
             project,
             prompt_len: userPrompt.length,
             candidates: candidates.length,
@@ -706,6 +759,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             gate: gateLabel,
             embedding_calls: calls,
             sections: sectionKinds,
+            lexical_lane: lexicalLane,
             duration_ms: Date.now() - t0,
             via,
         });

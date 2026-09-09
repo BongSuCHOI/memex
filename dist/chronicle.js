@@ -987,6 +987,12 @@ export const TELEMETRY_METRICS = [
     "embedding_cache_hits",
     "candidate_facts",
     "current_facts",
+    // Issue #32: make the injection relevance gate measurable instead of a
+    // constant nobody can check. One sample per retrieval carries the
+    // `similarity - baseline` distribution of the candidates it saw.
+    "baseline_margin_gap",
+    /** The literal-match lane threw instead of returning nothing. */
+    "lexical_lane_unavailable",
     "delta_facts",
     "injected_facts",
     "injected_chars",

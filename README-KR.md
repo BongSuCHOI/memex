@@ -232,8 +232,11 @@ memex status
 | `memex backfill` | extraction / ontology / embedding backlog 처리 |
 | `memex model-work status` | 모델 시도·관측 사용량·대기 작업 확인; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | pipeline readiness 확인 |
+| `memex jobs` | memory job 조회·복구: `list|show|retry|dismiss` |
+| `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex doctor` | runtime/plugin/MCP/lifecycle 진단 |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent) |
 
 Fact 관리에는 edit, deactivate, restore, history, guarded hard delete가 포함됩니다. semantic edit는 fact ID와 revision history를 유지하면서 이전 의미에서 파생된 상태를 무효화합니다.
 
@@ -307,6 +310,8 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 | `CODEX_HOME` | Codex home. `$CODEX_HOME/sessions`가 read-only rollout 원본 |
 | `MEMEX_AUTO_ONTOLOGY` | 자동 ontology는 기본 활성화이며 `0`이면 끔 |
 | `MEMEX_STRICT_CAPTURE` | `1`이면 capture gap 대신 hook이 실패 |
+| `MEMEX_CAPSULE_MAX_CHARS` | Work Capsule 한 세대의 bounded storage size (기본 `12000`, 하한 `2000`). 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 기록 |
+| `MEMEX_INJECT_BASELINE_MARGIN` | 주입 관련성 게이트가 요구하는 baseline 대비 마진 (기본 `0.045`, 0~1). 조정 전에 `baseline_margin_gap` 텔레메트리로 측정 |
 | `PORT` | Web UI 포트 (기본 `3847`) |
 
 자동 ontology를 꺼도 수동 `memex backfill ontology`와 기존 파생 데이터·core embedding은 그대로 유지됩니다.

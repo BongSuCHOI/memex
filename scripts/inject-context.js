@@ -71,7 +71,30 @@ function emitContext(context) {
   });
 }
 
-async function markRecallEmitted(sessionId, prompt, receiptId = null) {
+/**
+ * Issue #44: a failure here means context reached the model with no durable
+ * recall receipt behind it — the provenance contract is broken for that
+ * emission. Codex discards hook stderr, so this must also land in the injection
+ * log, which is the surface `memex doctor` reads.
+ */
+async function logReceiptFailure(via, prompt, message) {
+  try {
+    const { appendInjectLog } = await import(
+      path.join(__dirname, "../dist/inject-log.js")
+    );
+    appendInjectLog({
+      status: "receipt-failed",
+      via,
+      prompt_len: prompt ? prompt.length : 0,
+      error: message,
+    });
+  } catch {
+    /* observability is best-effort and must never break the prompt path */
+  }
+  process.stderr.write(`inject-context: recall receipt remained prepared: ${message}\n`);
+}
+
+async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fallback") {
   if (!sessionId || !prompt) return;
   try {
     const { initDatabase, markRecallEventEmitted } = await import(
@@ -86,8 +109,10 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null) {
       db.close();
     }
   } catch (error) {
-    process.stderr.write(
-      `inject-context: recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`,
+    await logReceiptFailure(
+      via,
+      prompt,
+      error instanceof Error ? error.message : String(error),
     );
   }
 }
@@ -181,7 +206,7 @@ async function main() {
   if (daemonResult !== null) {
     if (daemonResult.context) {
       await emitContext(daemonResult.context);
-      await markRecallEmitted(sessionId, prompt, daemonResult.receiptId);
+      await markRecallEmitted(sessionId, prompt, daemonResult.receiptId, "daemon");
     }
     return;
   }
@@ -201,7 +226,7 @@ async function main() {
     );
     if (context) {
       await emitContext(context);
-      await markRecallEmitted(sessionId, prompt, receiptId);
+      await markRecallEmitted(sessionId, prompt, receiptId, "fallback");
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

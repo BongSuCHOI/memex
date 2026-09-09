@@ -23,7 +23,7 @@ import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved } from "./observe-hook-event.js";
-import { getMemexHome } from "./paths.js";
+import { getDbPath, getMemexHome } from "./paths.js";
 import { readExportStatus } from "./sync-export.js";
 import { getInjectLogPath } from "./inject-log.js";
 const runtimeRequire = createRequire(import.meta.url);
@@ -368,6 +368,158 @@ function pluginManagedHookEvents() {
         return [];
     }
 }
+/** How many recent injection-log lines the injection checks read. */
+const INJECT_LOG_WINDOW = 20;
+/** Parse the tail of the injection log; malformed lines are skipped, never thrown. */
+function readInjectLogTail(limit) {
+    try {
+        const logPath = getInjectLogPath();
+        if (!fs.existsSync(logPath))
+            return [];
+        const lines = fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+        const out = [];
+        for (const line of lines.slice(-limit)) {
+            try {
+                const parsed = JSON.parse(line);
+                if (parsed && typeof parsed === "object")
+                    out.push(parsed);
+            }
+            catch {
+                /* a truncated tail line is not a diagnosis */
+            }
+        }
+        return out;
+    }
+    catch {
+        return [];
+    }
+}
+/** Count rows without importing the heavy db.js chain; null when unreadable. */
+function countRows(table) {
+    try {
+        const dbPath = getDbPath();
+        if (!fs.existsSync(dbPath))
+            return null;
+        const Database = runtimeRequire("better-sqlite3");
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        try {
+            const exists = db
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
+                .get(table);
+            if (!exists)
+                return null;
+            return Number(db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get().c);
+        }
+        finally {
+            db.close();
+        }
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Issue #44 — the injection log and `recall_events` can diverge completely.
+ *
+ * The observed data root emitted 7 bundles (`status: "injected"`) and held 0
+ * `recall_events` rows, with no privacy purge to explain it. Every emission is
+ * supposed to be backed by a durable `prepared` receipt
+ * (RETRIEVAL-AND-CONTEXT.md §43-48), so post-hoc audit — which fact entered
+ * which session, when — was impossible. Nothing compared the two numbers.
+ */
+function recallProvenanceCheck(recent) {
+    const emitted = recent.filter((entry) => entry.status === "injected" || entry.status === "context-only").length;
+    const receiptFailures = recent.filter((entry) => entry.status === "receipt-failed").length;
+    const receipts = countRows("recall_events");
+    if (receipts === null) {
+        return {
+            name: "recall-provenance",
+            status: emitted > 0 ? "warn" : "ok",
+            detail: emitted > 0
+                ? `${emitted} emitted bundle(s) in the last ${recent.length} log lines but recall_events is unreadable`
+                : "no recall_events table yet (no injection observed)",
+        };
+    }
+    if (receiptFailures > 0) {
+        return {
+            name: "recall-provenance",
+            status: "fail",
+            detail: `${receiptFailures} of the last ${recent.length} injections emitted context whose recall receipt stayed 'prepared' ` +
+                `(recall_events rows=${receipts}). Post-hoc audit of those emissions is impossible.`,
+        };
+    }
+    if (emitted > 0 && receipts === 0) {
+        return {
+            name: "recall-provenance",
+            status: "fail",
+            detail: `${emitted} emitted bundle(s) in the last ${recent.length} log lines but recall_events is empty — ` +
+                "the injection provenance contract is broken (no privacy purge explains an empty table).",
+        };
+    }
+    if (emitted > receipts) {
+        return {
+            name: "recall-provenance",
+            status: "warn",
+            detail: `${emitted} emitted bundle(s) in the last ${recent.length} log lines vs ${receipts} recall_events row(s)`,
+        };
+    }
+    return {
+        name: "recall-provenance",
+        status: "ok",
+        detail: `${receipts} recall_events row(s) back ${emitted} emitted bundle(s) in the last ${recent.length} log lines`,
+    };
+}
+/** A run that produced no facts, whatever else it emitted. */
+const ZERO_FACT_STATUSES = new Set(["context-only", "no-match", "deduped"]);
+/** Consecutive zero-fact runs before the pipeline is reported as not delivering. */
+const ZERO_FACT_STREAK_LIMIT = 8;
+/**
+ * Issue #32 — "the memory system is running" was indistinguishable from
+ * "no fact has ever been injected".
+ *
+ * The observed data root ran the pipeline 12 times over five days: candidates
+ * = 5 every time, injected facts = 0 every time, sum of `injected_facts`
+ * telemetry = 0. Seven of those runs emitted a bundle (Capsule or assistant
+ * context) and were logged as `injected`, so the number of injected facts was
+ * unreadable from the log. Doctor read only the LAST line, whose `no-match`
+ * status is a normal outcome, and reported `inject-output: ok`.
+ */
+function injectionYieldCheck(recent) {
+    const retrievals = recent.filter((entry) => entry.status === "injected" ||
+        ZERO_FACT_STATUSES.has(String(entry.status)));
+    if (retrievals.length === 0) {
+        return {
+            name: "injection-yield",
+            status: "ok",
+            detail: "no retrieval recorded yet in the injection log",
+        };
+    }
+    const facts = retrievals.reduce((sum, entry) => sum + Number(entry.injected ?? 0), 0);
+    let streak = 0;
+    for (let i = retrievals.length - 1; i >= 0; i--) {
+        if (Number(retrievals[i].injected ?? 0) > 0)
+            break;
+        streak++;
+    }
+    const contextOnly = retrievals.filter((entry) => entry.status === "context-only").length;
+    const lexicalDead = recent.filter((entry) => entry.lexical_lane === "unavailable").length;
+    const suffix = (contextOnly > 0 ? ` context-only=${contextOnly}` : "") +
+        (lexicalDead > 0 ? ` lexical_lane=unavailable×${lexicalDead}` : "");
+    if (streak >= ZERO_FACT_STREAK_LIMIT && facts === 0) {
+        return {
+            name: "injection-yield",
+            status: "warn",
+            detail: `${streak} consecutive retrievals injected 0 facts (candidates were found).` +
+                `${suffix} Inspect the relevance gate: telemetry metric baseline_margin_gap, ` +
+                "override MEMEX_INJECT_BASELINE_MARGIN.",
+        };
+    }
+    return {
+        name: "injection-yield",
+        status: lexicalDead > 0 ? "warn" : "ok",
+        detail: `${facts} fact(s) injected across the last ${retrievals.length} retrieval(s), current zero-fact streak ${streak}.${suffix}`,
+    };
+}
 /** Read-only diagnosis. Distinguishes configured vs observed. */
 export function doctor() {
     const checks = [];
@@ -377,7 +529,15 @@ export function doctor() {
         "@xenova/transformers",
         "sqlite-vec",
     ];
-    const nodeModules = runtimeDependencies.every((dependency) => {
+    // Issue #40: check the INSTALLED plugin root, not the running process. A
+    // marketplace install whose dependencies were never materialized has no
+    // node_modules beside the launcher, so every hook falls back to
+    // `npx github:BongSuCHOI/memex#main` — an unpinned revision. Resolving from
+    // the running process passes inside that very npx copy, which is exactly the
+    // state this check has to report.
+    const dependencyRoot = pluginRoot();
+    const missingAtPluginRoot = runtimeDependencies.filter((dependency) => !fs.existsSync(path.join(dependencyRoot, "node_modules", dependency, "package.json")));
+    const resolvableHere = runtimeDependencies.every((dependency) => {
         try {
             runtimeRequire.resolve(dependency);
             return true;
@@ -388,10 +548,14 @@ export function doctor() {
     });
     checks.push({
         name: "dependencies",
-        status: nodeModules ? "ok" : "fail",
-        detail: nodeModules
-            ? "runtime dependencies resolvable"
-            : "runtime package dependencies unavailable — verify Node/npm network and cache",
+        status: missingAtPluginRoot.length === 0 ? "ok" : "fail",
+        detail: missingAtPluginRoot.length === 0
+            ? `runtime dependencies materialized at ${path.join(dependencyRoot, "node_modules")}`
+            : `missing at ${path.join(dependencyRoot, "node_modules")}: ${missingAtPluginRoot.join(", ")} — ` +
+                "every hook silently falls back to npx github:BongSuCHOI/memex#main (an unpinned revision) — run: memex install" +
+                (resolvableHere
+                    ? " (this process resolved them elsewhere, i.e. from the npx copy rather than the pinned plugin)"
+                    : ""),
     });
     const distEntry = fs.existsSync(path.join(pluginRoot(), "dist", "db.js"));
     checks.push({
@@ -446,15 +610,11 @@ export function doctor() {
         detail: observedDetail,
     });
     // Inject output parse/consumption — distinguishes valid injection vs error vs no-match
+    const recent = readInjectLogTail(INJECT_LOG_WINDOW);
     try {
         const logPath = getInjectLogPath();
         if (fs.existsSync(logPath)) {
-            const lines = fs
-                .readFileSync(logPath, "utf8")
-                .trim()
-                .split("\n")
-                .filter(Boolean);
-            const last = lines.length ? JSON.parse(lines[lines.length - 1]) : null;
+            const last = recent.length ? recent[recent.length - 1] : null;
             if (last) {
                 const okStatuses = {
                     injected: true,
@@ -462,14 +622,23 @@ export function doctor() {
                     deduped: true,
                     skipped: true,
                 };
+                // Issue #44: a broken provenance receipt is a contract violation, not a
+                // benign outcome. It used to exist only on a hook's discarded stderr.
+                const receiptFailures = recent.filter((entry) => entry.status === "receipt-failed").length;
+                const failing = last.status === "error" || last.status === "receipt-failed";
                 checks.push({
                     name: "inject-output",
-                    status: okStatuses[last.status]
-                        ? "ok"
-                        : last.status === "error"
-                            ? "fail"
+                    status: failing
+                        ? "fail"
+                        : okStatuses[String(last.status)]
+                            ? receiptFailures > 0
+                                ? "warn"
+                                : "ok"
                             : "warn",
-                    detail: `${last.status} via=${last.via ?? "unknown"} ${last.ts ?? ""} ${last.error ? `error=${String(last.error).slice(0, 80)}` : ""}`.trim(),
+                    detail: `${last.status} via=${last.via ?? "unknown"} ${last.ts ?? ""} ${last.error ? `error=${String(last.error).slice(0, 80)}` : ""}`.trim() +
+                        (receiptFailures > 0
+                            ? ` — ${receiptFailures}/${recent.length} recent runs emitted context with no durable recall receipt`
+                            : ""),
                 });
             }
             else {
@@ -495,6 +664,8 @@ export function doctor() {
             detail: "unable to read inject log",
         });
     }
+    checks.push(recallProvenanceCheck(recent));
+    checks.push(injectionYieldCheck(recent));
     // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
     let trustedEntries = 0;
     const configToml = path.join(codexHome(), "config.toml");

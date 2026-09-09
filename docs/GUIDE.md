@@ -275,13 +275,25 @@ node scripts/lifecycle-e2e.mjs
 
 자주 확인할 항목:
 
+- `dependencies: fail` — **설치된 플러그인 루트**(`~/.codex/plugins/cache/.../<version>/`)에 `node_modules`가 없다는 뜻입니다. 이 상태에서는 모든 hook이 조용히 `npx github:BongSuCHOI/memex#main`으로 폴백해 고정한 버전이 아니라 `main` HEAD가 실행되고, foreground hook마다 npx 해석 비용이 붙습니다. 폴백이 실제로 일어나면 stderr에 `[memex] runtime deps missing at <ROOT>; falling back to npx … — run: memex install` 1줄이 남습니다. 복구는 `memex install`(idempotent, 네트워크 없이 이미 설치된 production 의존성만 Codex cache로 복사)입니다.
 - runtime 준비 실패 — Node/npm network, cache permission
 - MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
-- injection 없음 — `injected`, `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- injection 없음 — `injected`(fact ≥ 1), `context-only`(fact = 0, Capsule/assistant context만 발행), `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- `injection-yield: warn` — 최근 retrieval이 연속으로 fact를 0개 주입했다는 뜻입니다(후보는 있었음). 관련성 게이트를 확인하십시오. 탈락한 후보가 임계값에서 얼마나 떨어져 있었는지는 `continuity_telemetry`의 `baseline_margin_gap`(`dims.gaps`, `dims.margin`, `dims.baseline`)에 남고, 임계값은 `MEMEX_INJECT_BASELINE_MARGIN`(기본 `0.045`)으로 조정합니다 — **측정 후에 조정하십시오.** 리터럴 매칭 레인이 예외로 죽으면 `lexical_lane: unavailable`과 `lexical_lane_unavailable` 텔레메트리로 드러납니다(이전에는 빈 `catch`가 삼켰습니다).
+
+```sql
+-- sqlite3 "$(memex home)/conversation-index/db.sqlite"
+SELECT recorded_at, value AS closest_gap, dims_json
+FROM continuity_telemetry WHERE metric = 'baseline_margin_gap'
+ORDER BY recorded_at DESC LIMIT 20;
+```
+- `inject-output: fail` / `recall-provenance: fail` — 컨텍스트를 내보냈는데 durable recall 영수증이 남지 않았다는 뜻입니다(`logs/inject-context.jsonl`의 `status: "receipt-failed"`). 훅의 stderr는 Codex가 버리므로 이 로그와 doctor가 유일한 관측 지점입니다. `recall-provenance`는 최근 로그의 emit 건수와 `recall_events` 행 수를 비교하며, emit이 있는데 `recall_events`가 비어 있으면 실패로 보고합니다 — 이 상태에서는 "어떤 fact가 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다.
 - stale socket — Memex-owned orphan socket만 정리
 - repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행
 
 검증 절차와 최신 merge-gate baseline은 [VERIFICATION.md](VERIFICATION.md)를 참조하십시오.
+
+모든 서브커맨드는 `--help`/`-h`를 인식하며, 사용법만 출력하고 exit 0으로 끝납니다. 부작용이 있는 명령(`update`, `setup-hooks`, `remove-hooks`, `migrate-projects`, `install`)도 `--help`로는 아무것도 쓰지 않습니다.
 
 ## 14. 제거와 데이터 보존
 
@@ -326,12 +338,41 @@ memex status --json
 capture hook은 commit 후 detached worker를 깨웁니다. wake 실패·expired lease·retry 잔량은 다음 `SessionStart(startup|resume)`에서 복구되고, 수동으로는 다음으로 확인합니다.
 
 ```bash
-memex status --json                 # 단계별 pending/processing/retry/dead
+memex status --json                 # 단계별 pending/processing/retry/dead + 종료 상태 카운트
 node scripts/continuity-worker.js   # 즉시 drain (설치 artifact에서는 memex-continuity-worker)
 memex backfill all                  # extraction/ontology/embedding backlog
 ```
 
-`dead` job/target과 `failed-visible` range는 완료로 위장되지 않습니다. 원인을 고친 뒤 재실행하면 lease가 회수됩니다.
+worker 재실행이 회수하는 것은 **만료된 lease를 가진 비-terminal 행**뿐입니다.
+
+### 작업이 실패했을 때 (terminal 상태 복구)
+
+`dead` job/target, `dead-letter`/`failed-visible` checkpoint, `failed-visible` range는 완료로 위장되지 않지만, **재실행으로는 회복되지 않습니다.** worker를 몇 번 다시 돌려도 dead target이나 failed-visible range는 다시 선택되지 않습니다(`pending-extraction`이 dead target을 가진 세션을 제외하고, claim은 `pending/retry/running`만 봅니다). 회복은 명시적으로 실행합니다.
+
+```bash
+memex status                        # "Needs attention: N" + 종료 상태 내역
+memex jobs list --state dead        # 무엇이 왜 죽었는지 (last_error 포함)
+memex jobs show <job-id>            # checkpoint / target / 실패 range / retry_history
+memex recover <job-id> --dry-run    # 무엇을 되돌릴지 먼저 확인
+memex recover <job-id>              # 한 트랜잭션에서 6개 테이블을 함께 리셋
+memex recover --all-dead            # dead job/target 전부
+memex jobs retry <job-id|--all-dead> [--kind capsule_update]   # recover와 동일 동작
+memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시도하지 않고 정리
+```
+
+| 명령 | 하는 일 |
+| --- | --- |
+| `memex jobs list [--state dead\|retry\|running\|pending\|all] [--kind <kind>] [--limit n] [--json]` | 큐 상태 조회(읽기 전용). 만료된 lease를 `[lease expired]`로 표시 |
+| `memex jobs show <job-id> [--json]` | 한 job의 checkpoint·capsule state·target·실패 range·`retry_history` |
+| `memex jobs retry <job-id\|--all-dead> [--kind <kind>] [--dry-run]` | `memex recover`와 같은 복구 |
+| `memex jobs dismiss <job-id> --reason "..."` | job을 `superseded`로 정리. `last_error = 'user dismissed: <reason>'` + `logs/ui-audit.jsonl` 감사 1줄 |
+| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다 |
+
+`recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+
+복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
+
+`capture_gaps.state = 'open'`과 `model_work_budgets.state = 'exhausted'`는 `recover` 대상이 아닙니다. 전자는 다음 성공 캡처에서 자동 해소되고(둘 다 `memex status`에 카운트로 표시), 후자는 `memex model-work resume <budget-id> --new-run`으로 복구합니다.
 
 ### Journal/checkpoint 무결성과 capture gap
 
@@ -364,6 +405,16 @@ memex facts explain --subject state.runtime.session_store --project-id <project_
 ```
 
 MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가 current → Chronicle → source → other session을 보여 줍니다. `grounded cause (source-cited)`와 `classifier note (…NOT authoritative)`는 항상 분리 표시됩니다.
+
+Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다.
+
+```sql
+-- sqlite3 "$(memex home)/conversation-index/db.sqlite"
+SELECT workstream_id, generation, truncated, original_chars, truncated_fields_json
+FROM work_capsules WHERE truncated = 1;
+```
+
+이 상한은 Capsule projection에만 적용됩니다. 긴 붙여넣기 프롬프트는 `exchanges`에 원문 그대로 보관되고, 추출은 `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS`(기본 120,000자) 창으로 분할되므로 이 상한과 무관합니다.
 
 ### Privacy purge
 

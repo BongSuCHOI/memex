@@ -53,10 +53,22 @@ if (binary === 'memex-mcp-server') {
 // completed `memex install` yet.
 const localRelative = LOCAL_BINARIES.get(binary);
 const localTarget = localRelative ? path.join(ROOT, localRelative) : null;
-const localReady = process.env.MEMEX_RUNTIME_FORCE_REMOTE !== '1'
-  && fs.existsSync(path.join(ROOT, 'node_modules', 'better-sqlite3', 'package.json'))
+const forcedRemote = process.env.MEMEX_RUNTIME_FORCE_REMOTE === '1';
+const runtimeDepsReady = fs.existsSync(path.join(ROOT, 'node_modules', 'better-sqlite3', 'package.json'));
+const localReady = !forcedRemote
+  && runtimeDepsReady
   && localTarget !== null
   && fs.existsSync(localTarget);
+// Issue #40: the fallback used to be completely silent. A marketplace install
+// that never ran `memex install` has no node_modules, so every hook quietly ran
+// `main` HEAD instead of the pinned revision and paid npx resolution on each
+// foreground prompt. One stderr line names the condition and the fix. A
+// deliberate MEMEX_RUNTIME_FORCE_REMOTE=1 is not a defect and stays quiet.
+if (!localReady && !forcedRemote && !runtimeDepsReady) {
+  process.stderr.write(
+    `[memex] runtime deps missing at ${ROOT}; falling back to npx ${RUNTIME_PACKAGE} — run: memex install\n`,
+  );
+}
 const executable = localReady && /\.(?:c?js|mjs)$/.test(localTarget)
   ? process.execPath
   : localReady

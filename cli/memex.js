@@ -63,6 +63,7 @@ USAGE:
 
 COMMANDS:
   setup       Detect conflicting Codex built-in Memory and disable it only with approval
+  install     Register the plugin and materialize its runtime dependencies (idempotent)
   sync        Sync conversations from Codex session rollouts and index them
   update      Refresh the marketplace and reinstall the latest Memex plugin
   index       Index conversations for search
@@ -76,6 +77,8 @@ COMMANDS:
   migrate-projects  Re-derive project identity from cwd evidence (CX-02 migration)
   home        Print the resolved Memex data root (read-only)
   status      Show pipeline readiness per stage (read-only)
+  jobs        Inspect and recover memory jobs: list|show|retry|dismiss
+  recover     Reset terminal (dead) work back to claimable in one transaction
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|delete
@@ -96,14 +99,173 @@ EXAMPLES:
   memex show --format html conversation.jsonl > output.html`);
 }
 
+const MODEL_WORK_USAGE = `Usage:
+  memex model-work status [budget-id] [--json]
+  memex model-work resume <budget-id> --new-run [options]
+
+status is read-only and reports parent wave, stage/job/target attempts, and
+pending work. resume requires --new-run; it creates a fresh budget while
+preserving the exhausted run's attempt ledger and rebinds only lease-free
+pending jobs.
+
+resume options:
+  --wave-id <id>            Distinct parent wave for the new run
+  --max-attempts <n>        Attempt cap for the new run
+  --max-input-chars <n>     Input character cap for the new run
+  --max-output-chars <n>    Output character cap for the new run
+  --deadline-at <ISO>       Absolute deadline for the new run
+  --json                    Print machine-readable output`;
+
+/**
+ * Issue #36 — `--help` on a side-effecting command used to do the work.
+ *
+ * `memex update --help` reinstalled the plugin, `memex setup-hooks --help`
+ * wrote $CODEX_HOME/hooks.json, `memex remove-hooks --help` removed entries and
+ * `memex migrate-projects --help` rewrote exchanges/facts/archive_paths —
+ * because each decided dry-run purely from `args.includes('--dry-run')` and
+ * never looked at `--help`, while the top-level help actively told users to
+ * type it.
+ *
+ * The guard is default-deny: every known subcommand is intercepted before its
+ * case runs. A command with a richer help text delegates to the script that
+ * owns it, invoked with `--help` and nothing else; every other command answers
+ * from this table. A subcommand added later is protected without remembering
+ * anything, which is the point.
+ */
+const HELP_DELEGATES = {
+  setup: (dist) => join(dist, "..", "scripts", "setup-memex.js"),
+  index: () => join(__dirname, "index-conversations.js"),
+  search: (dist) => join(dist, "search-cli.js"),
+  show: (dist) => join(dist, "show-cli.js"),
+  stats: (dist) => join(dist, "stats-cli.js"),
+  analyze: (dist) => join(dist, "analyze-cli.js"),
+  sync: (dist) => join(dist, "sync-cli.js"),
+};
+
+const COMMAND_USAGE = {
+  install: `Usage: memex install [--dry-run] [--marketplace <source>] [--plugin-root <path>]
+
+Register the Memex plugin with Codex and materialize its runtime dependencies
+into the installed plugin cache. Idempotent; no network install or version
+resolution occurs (already-installed production packages are copied).`,
+  update: `Usage: memex update [--dry-run]
+
+Refresh the Memex marketplace entry and reinstall the plugin, preserving the
+Memex data root. --dry-run performs read-only discovery only.`,
+  "setup-hooks": `Usage: memex setup-hooks [--dry-run]
+
+Register Memex lifecycle hooks in $CODEX_HOME/hooks.json. Foreign entries are
+preserved byte-for-byte and re-running is an idempotent no-op.
+--dry-run prints the exact diff without writing anything.`,
+  "remove-hooks": `Usage: memex remove-hooks [--dry-run]
+
+Remove only Memex-owned lifecycle hook entries. The Memex data root and the
+Codex session rollouts are never touched.
+--dry-run prints what would be removed without writing anything.`,
+  doctor: `Usage: memex doctor [--json]
+
+Read-only diagnosis of dependencies, build, Codex home, lifecycle registration,
+observed hook events, injection output, recall provenance, and sync export.
+Exits 1 when any check fails.`,
+  "migrate-projects": `Usage: memex migrate-projects [--dry-run]
+
+Re-derive project identity from cwd evidence (CX-02). Rewrites exchanges, facts
+and archive_paths and writes a backup first. Exchanges with no cwd evidence are
+reported as ambiguous and are never moved.
+--dry-run prints the plan without writing anything.`,
+  home: `Usage: memex home [--json]
+
+Print the resolved Memex data root (read-only). Use this before deleting or
+moving Memex data.`,
+  status: `Usage: memex status [--json]
+
+Show read-only conversation, fact, and graph pipeline readiness.
+
+Options:
+  --json  Print the same pipeline counters as JSON`,
+  jobs: `Usage:
+  memex jobs list [--state dead|retry|running|pending|all] [--kind <kind>] [--limit <n>] [--json]
+  memex jobs show <job-id> [--json]
+  memex jobs retry <job-id|--all-dead> [--kind <kind>] [--dry-run] [--json]
+  memex jobs dismiss <job-id> --reason "<why>" [--json]
+
+list and show are read-only. retry is the same recovery as 'memex recover': it
+resets the whole terminal unit (job, checkpoint, capsule state, extraction
+target/items/ranges) in one transaction, sets the job pending with attempts 0
+and a cleared lease, and preserves the cleared failure in retry_history.
+dismiss retires a job as 'superseded' with
+last_error = 'user dismissed: <reason>' and one audit line. Nothing is deleted.`,
+  recover: `Usage: memex recover <job-id|target-id|--all-dead> [--kind <kind>] [--dry-run] [--json]
+
+Reset terminal (dead) Continuity work back to claimable, resetting memory_jobs,
+checkpoints, capsule_checkpoint_state, extraction_targets,
+extraction_target_items, exchange_extraction_state and extraction_failed_ranges
+in ONE transaction — the same unit that was made terminal together.
+
+--dry-run reports exactly what would be reset and writes nothing.
+Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
+  "model-work": MODEL_WORK_USAGE,
+  backfill: `Usage: memex backfill <all|extract|ontology|embeddings> [--background]
+
+Run backlog work explicitly; never auto-started by status. 'all' runs each stage
+in order and stops at the first failure. Foreground is the default; exit 2 means
+the run completed with outstanding work.`,
+  facts: `Usage: memex facts <list|show|edit|deactivate|restore|history|explain|delete> [options]
+
+  list        [--project <p>] [--scope global|all] [--all] [--limit n] [--offset n]
+  show        --id <uuid>
+  edit        --id <uuid> --text "new text" [--reason "why"] [--source-exchange <id>]
+  deactivate  --id <uuid>
+  restore     --id <uuid>
+  history     --id <uuid> | --subject <subject_key> --project-id <project_id>
+  explain     (alias of history)
+  delete      --id <full-uuid> --hard --yes   (default delete is deactivate)`,
+};
+
+const KNOWN_COMMANDS = new Set([
+  ...Object.keys(HELP_DELEGATES),
+  ...Object.keys(COMMAND_USAGE),
+]);
+
+async function printCommandUsage(command, distDir) {
+  const delegate = HELP_DELEGATES[command];
+  if (delegate) {
+    // Only the help flag is forwarded, so the delegate cannot do work.
+    await runScript(delegate(distDir), ["--help"]);
+    return;
+  }
+  console.log(COMMAND_USAGE[command] ?? "");
+}
+
 async function main() {
   try {
     const distDir = join(__dirname, "../dist");
+
+    // Issue #36: help never runs the command. Checked before the dispatch so a
+    // subcommand added later cannot reintroduce the regression.
+    if (
+      KNOWN_COMMANDS.has(command) &&
+      (args.includes("--help") || args.includes("-h"))
+    ) {
+      await printCommandUsage(command, distDir);
+      process.exitCode = 0;
+      return;
+    }
 
     switch (command) {
       case "setup":
         await runScript(
           join(__dirname, "..", "scripts", "setup-memex.js"),
+          args,
+        );
+        break;
+
+      // Issue #40: `memex doctor` and the runtime launcher both point here when
+      // an installed plugin has no materialized dependencies. The command has
+      // to exist for that instruction to be true.
+      case "install":
+        await runScript(
+          join(__dirname, "..", "scripts", "install-memex.mjs"),
           args,
         );
         break;
@@ -374,6 +536,145 @@ async function main() {
         break;
       }
 
+      // Issues #20/#39: dead work used to be a dead end. `jobs` inspects the
+      // queue; `jobs retry` and `recover` are the same one-transaction reset of
+      // every table that was made terminal together.
+      case "jobs":
+      case "recover": {
+        const json = args.includes("--json");
+        const dryRun = args.includes("--dry-run");
+        const allDead = args.includes("--all-dead");
+        const valueFlags = new Set(["--state", "--kind", "--limit", "--reason"]);
+        const optValue = (name) => {
+          const index = args.indexOf(name);
+          if (index < 0) return undefined;
+          const value = args[index + 1];
+          if (value === undefined || value.startsWith("--")) {
+            throw new Error(`missing value for ${name}`);
+          }
+          return value;
+        };
+        const positional = [];
+        for (let i = 0; i < args.length; i++) {
+          if (valueFlags.has(args[i])) i++;
+          else if (!args[i].startsWith("-")) positional.push(args[i]);
+        }
+        const sub = command === "recover" ? "recover" : positional[0];
+        const id = command === "recover" ? positional[0] : positional[1];
+        if (command === "jobs" && !["list", "show", "retry", "dismiss"].includes(sub ?? "")) {
+          console.error(
+            "Usage: memex jobs <list|show|retry|dismiss> [...] (see: memex jobs --help)",
+          );
+          process.exitCode = 1;
+          break;
+        }
+
+        const { getDbPath } = await import(join(distDir, "paths.js"));
+        const dbPath = getDbPath();
+        if (!fsSync(dbPath)) {
+          console.error(`No database at ${dbPath} — nothing to inspect or recover.`);
+          process.exitCode = 1;
+          break;
+        }
+        const recovery = await import(join(distDir, "job-recovery.js"));
+        const readOnly = sub === "list" || sub === "show";
+        let db;
+        if (readOnly) {
+          const { openReadDb } = await import(join(distDir, "db.js"));
+          db = openReadDb(dbPath);
+        } else {
+          const { initDatabase } = await import(join(distDir, "db.js"));
+          db = initDatabase();
+        }
+        try {
+          if (sub === "list") {
+            const state = optValue("--state") ?? "all";
+            const rows = recovery.listMemoryJobs(db, {
+              state,
+              kind: optValue("--kind"),
+              limit: Number.parseInt(optValue("--limit") ?? "50", 10),
+            });
+            if (json) {
+              console.log(JSON.stringify(rows, null, 2));
+            } else {
+              for (const row of rows) {
+                console.log(
+                  `${row.state.padEnd(10)} ${row.kind.padEnd(14)} ${row.jobId}  attempts=${row.attempts}/${row.maxAttempts}  ${row.partitionKey}` +
+                    (row.leaseExpired && row.state === "running" ? "  [lease expired]" : ""),
+                );
+                if (row.lastError) console.log(`    last_error: ${row.lastError.slice(0, 160)}`);
+              }
+              console.log(`(${rows.length} job${rows.length === 1 ? "" : "s"}${state === "all" ? "" : `, state=${state}`})`);
+            }
+            break;
+          }
+          if (sub === "show") {
+            if (!id) throw new Error("usage: memex jobs show <job-id> [--json]");
+            const detail = recovery.showMemoryJob(db, id);
+            if (!detail) throw new Error(`no memory job with id ${id}`);
+            console.log(JSON.stringify(detail, null, 2));
+            break;
+          }
+          if (sub === "dismiss") {
+            if (!id) throw new Error('usage: memex jobs dismiss <job-id> --reason "why"');
+            const reason = optValue("--reason");
+            if (!reason) throw new Error('memex jobs dismiss requires --reason "why"');
+            const result = recovery.dismissMemoryJob(db, { jobId: id, reason });
+            if (json) {
+              console.log(JSON.stringify(result, null, 2));
+            } else {
+              console.log(`Dismissed ${result.jobId} (${result.fromState} -> superseded)`);
+              console.log(`Reason recorded in last_error: user dismissed: ${result.reason}`);
+              for (const [table, count] of Object.entries(result.reset)) {
+                console.log(`  ${table}: ${count}`);
+              }
+              if (result.auditPath) console.log(`Audit: ${result.auditPath}`);
+              console.log("Nothing was deleted. Check the count: memex status");
+            }
+            break;
+          }
+          // retry / recover
+          if (!id && !allDead) {
+            throw new Error(
+              command === "recover"
+                ? "usage: memex recover <job-id|target-id|--all-dead> [--dry-run]"
+                : "usage: memex jobs retry <job-id|--all-dead> [--kind <kind>] [--dry-run]",
+            );
+          }
+          const result = recovery.recoverTerminalWork(db, {
+            jobId: id && !allDead ? id : undefined,
+            targetId: undefined,
+            allDead,
+            kind: optValue("--kind"),
+            dryRun,
+          });
+          if (!dryRun) recovery.recordRecoveryAudit(result, `${command} ${sub === "recover" ? "" : sub}`.trim());
+          if (json) {
+            console.log(JSON.stringify(result, null, 2));
+          } else {
+            const label = dryRun ? "[dry-run] would recover" : "Recovered";
+            console.log(`${label}: ${result.entries.length} unit(s)`);
+            for (const entry of result.entries) {
+              const tables = Object.entries(entry.reset)
+                .map(([table, count]) => `${table}=${count}`)
+                .join(" ");
+              console.log(
+                `  ${entry.kind} ${entry.jobId ?? entry.targetId} (${entry.fromState}) ${tables || "no rows"}`,
+              );
+            }
+            for (const note of result.notes) console.log(`  note: ${note}`);
+            if (!dryRun && result.entries.length > 0) {
+              console.log("Run the worker to drain the recovered work:");
+              console.log("  memex-continuity-worker    # or: node scripts/continuity-worker.js");
+              console.log("  memex backfill extract     # for fact extraction targets");
+            }
+          }
+        } finally {
+          db.close();
+        }
+        break;
+      }
+
       case "home": {
         // Read-only: print the resolved data root. This is the authoritative
         // answer for uninstall/backup paths that need the EXACT directory.
@@ -388,15 +689,7 @@ async function main() {
       }
 
       case "status": {
-        if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
-          console.log(`Usage: memex status [--json]
-
-Show read-only conversation, fact, and graph pipeline readiness.
-
-Options:
-  --json  Print the same pipeline counters as JSON`);
-          break;
-        }
+        // --help is handled by the common guard above (issue #36).
         if (args.length > 1 || (args.length === 1 && args[0] !== "--json")) {
           console.error("Usage: memex status [--json]");
           process.exitCode = 1;
@@ -448,28 +741,8 @@ Options:
             throw new Error(`${name} is too large`);
           return parsed;
         };
-        const usage = () => {
-          console.log(`Usage:
-  memex model-work status [budget-id] [--json]
-  memex model-work resume <budget-id> --new-run [options]
-
-status is read-only and reports parent wave, stage/job/target attempts, and
-pending work. resume requires --new-run; it creates a fresh budget while
-preserving the exhausted run's attempt ledger and rebinds only lease-free
-pending jobs.
-
-resume options:
-  --wave-id <id>            Distinct parent wave for the new run
-  --max-attempts <n>        Attempt cap for the new run
-  --max-input-chars <n>     Input character cap for the new run
-  --max-output-chars <n>    Output character cap for the new run
-  --deadline-at <ISO>       Absolute deadline for the new run
-  --json                    Print machine-readable output`);
-        };
-        if (args.includes("--help") || args.includes("-h")) {
-          usage();
-          break;
-        }
+        // Single source with the common --help guard above (issue #36).
+        const usage = () => console.log(MODEL_WORK_USAGE);
         if (!["status", "resume"].includes(subcommand)) {
           usage();
           process.exitCode = 1;
