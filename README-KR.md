@@ -237,9 +237,10 @@ memex status
 | 명령 | 역할 |
 | --- | --- |
 | `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 |
-| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent) |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent). `--root`로 설치본 루트 직접 지정 |
+| `memex deps materialize` | 해석된 설치 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`). `--root`, `--dry-run`, `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) |
-| `memex update` | data를 보존하면서 marketplace/plugin 갱신 |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | 새 Codex rollout archive/index |
 | `memex index` | conversation index 생성·검증·복구·재구축 |
 | `memex search` | semantic / text / hybrid conversation search |

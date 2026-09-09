@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const RUNTIME_PACKAGE = 'github:BongSuCHOI/memex#main';
 const ALLOWED_BINARIES = new Set([
@@ -65,8 +65,24 @@ const localReady = !forcedRemote
 // foreground prompt. One stderr line names the condition and the fix. A
 // deliberate MEMEX_RUNTIME_FORCE_REMOTE=1 is not a defect and stays quiet.
 if (!localReady && !forcedRemote && !runtimeDepsReady) {
+  // Issue #53: name the root that actually has to be materialized. When this
+  // launcher IS the npx cache copy, ROOT is not the installed plugin, and
+  // "run: memex install" against ROOT was advice nobody could act on. The
+  // resolver is filesystem-only here (no `codex` spawn) so a foreground hook
+  // never pays for a subprocess on its way to the fallback.
+  let installedRoot = ROOT;
+  try {
+    const { resolveInstalledPluginRoot } = await import(
+      pathToFileURL(path.join(ROOT, 'dist', 'plugin-root.js')).href
+    );
+    installedRoot = resolveInstalledPluginRoot({ fallbackRoot: ROOT }).root;
+  } catch {
+    // dist/ absent (raw checkout): ROOT is the only honest answer.
+  }
+  const target = installedRoot === ROOT ? '' : `; installed plugin root: ${installedRoot}`;
   process.stderr.write(
-    `[memex] runtime deps missing at ${ROOT}; falling back to npx ${RUNTIME_PACKAGE} — run: memex install\n`,
+    `[memex] runtime deps missing at ${ROOT}${target}; falling back to npx ${RUNTIME_PACKAGE}` +
+      ` — run: memex install (or: memex deps materialize --root "${installedRoot}")\n`,
   );
 }
 const executable = localReady && /\.(?:c?js|mjs)$/.test(localTarget)

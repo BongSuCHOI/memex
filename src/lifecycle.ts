@@ -26,6 +26,11 @@ import { lastObserved } from "./observe-hook-event.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { readExportStatus } from "./sync-export.js";
 import { getInjectLogPath } from "./inject-log.js";
+import {
+  missingRuntimeDependencies,
+  RUNTIME_DEPENDENCIES,
+  resolveInstalledPluginRoot,
+} from "./plugin-root.js";
 
 const runtimeRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -657,23 +662,24 @@ export function doctor(): DoctorReport {
   const checks: Check[] = [];
 
   // Dependency + build readiness (report-only; never auto-install).
-  const runtimeDependencies = [
-    "better-sqlite3",
-    "@xenova/transformers",
-    "sqlite-vec",
-  ];
   // Issue #40: check the INSTALLED plugin root, not the running process. A
   // marketplace install whose dependencies were never materialized has no
   // node_modules beside the launcher, so every hook falls back to
   // `npx github:BongSuCHOI/memex#main` — an unpinned revision. Resolving from
   // the running process passes inside that very npx copy, which is exactly the
   // state this check has to report.
-  const dependencyRoot = pluginRoot();
-  const missingAtPluginRoot = runtimeDependencies.filter(
-    (dependency) =>
-      !fs.existsSync(path.join(dependencyRoot, "node_modules", dependency, "package.json")),
-  );
-  const resolvableHere = runtimeDependencies.every((dependency) => {
+  // Issue #53: the running process is frequently the npx cache copy itself
+  // (`~/.local/bin/memex` is an npx shim), so `__dirname/..` named the WRONG
+  // root and reported a failure that belonged to nothing. Resolution now lives
+  // in src/plugin-root.ts, shared with `memex install`, `memex deps
+  // materialize` and the cli/runtime-exec.js fallback message.
+  const installed = resolveInstalledPluginRoot({
+    fallbackRoot: pluginRoot(),
+    probeCodex: true,
+  });
+  const dependencyRoot = installed.root;
+  const missingAtPluginRoot = missingRuntimeDependencies(dependencyRoot);
+  const resolvableHere = RUNTIME_DEPENDENCIES.every((dependency) => {
     try {
       runtimeRequire.resolve(dependency);
       return true;
@@ -681,14 +687,19 @@ export function doctor(): DoctorReport {
       return false;
     }
   });
+  const rootNote =
+    `installed plugin root ${dependencyRoot} (via ${installed.source}` +
+    (installed.version ? `, version ${installed.version}` : "") +
+    ")";
   checks.push({
     name: "dependencies",
     status: missingAtPluginRoot.length === 0 ? "ok" : "fail",
     detail:
       missingAtPluginRoot.length === 0
-        ? `runtime dependencies materialized at ${path.join(dependencyRoot, "node_modules")}`
+        ? `runtime dependencies materialized at ${path.join(dependencyRoot, "node_modules")} — ${rootNote}`
         : `missing at ${path.join(dependencyRoot, "node_modules")}: ${missingAtPluginRoot.join(", ")} — ` +
-          "every hook silently falls back to npx github:BongSuCHOI/memex#main (an unpinned revision) — run: memex install" +
+          "every hook silently falls back to npx github:BongSuCHOI/memex#main (an unpinned revision) — " +
+          `run: memex deps materialize --root "${dependencyRoot}" (or run: memex install) — ${rootNote}` +
           (resolvableHere
             ? " (this process resolved them elsewhere, i.e. from the npx copy rather than the pinned plugin)"
             : ""),

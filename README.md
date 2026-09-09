@@ -237,9 +237,10 @@ memex status
 | Command | Purpose |
 | --- | --- |
 | `memex setup` | Check for a conflict with Codex built-in Memory; `--install-cli` / `--uninstall-cli` manage the `~/.local/bin/memex` shim |
-| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent) |
+| `memex install` | Register the plugin and materialize its runtime dependencies (idempotent); `--root` targets an explicit installed plugin root |
+| `memex deps materialize` | Install the runtime dependencies into the resolved installed plugin root (`npm install --omit=dev --no-audit --no-fund`); `--root`, `--dry-run`, `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Register or remove Memex-owned lifecycle hooks (explicit fallback hosts only) |
-| `memex update` | Refresh the marketplace/plugin while preserving data |
+| `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | Archive and index new Codex rollouts |
 | `memex index` | Index, verify, repair, or rebuild the conversation index |
 | `memex search` | Semantic, text, or hybrid conversation search |

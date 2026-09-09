@@ -304,9 +304,16 @@ conversation exclusion이 적용되면 해당 conversation에서 유래한 Memex
 ```bash
 memex update --dry-run
 memex update
+memex update --marketplace <name>     # Memex 설치가 둘 이상일 때 하나를 지정
+memex update --no-materialize         # 의존성 materialize를 건너뛰고 명령만 안내
 ```
 
 Git marketplace에서는 marketplace snapshot을 갱신하고 plugin cache를 다시 설치합니다. Memex data root는 보존합니다. 완료 후 Codex를 재시작하십시오.
+
+`codex plugin add`는 새 버전을 **비어 있는** cache 디렉터리에 풀어놓기 때문에, 업데이트 직후에는
+설치본에 `node_modules`가 없어 모든 hook이 다시 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)
+폴백으로 돌아갑니다. 그래서 `memex update`는 재설치 성공 직후 새 plugin root에서
+`memex deps materialize`를 자동 수행합니다(`--no-materialize`면 실행 대신 명령만 출력).
 
 ## 13. 진단
 
@@ -325,7 +332,7 @@ exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 
 | 점검 | ok / warn / fail |
 | --- | --- |
-| `dependencies` | 설치된 plugin root의 `better-sqlite3`·`@xenova/transformers`·`sqlite-vec` 존재 여부. 없으면 fail |
+| `dependencies` | 설치된 plugin root의 `better-sqlite3`·`@xenova/transformers`·`sqlite-vec` 존재 여부. 없으면 fail. 어떤 root를 봤는지와 그 해석 경로(`env`/`codex-cache`/`codex-plugin-list`/`launcher`)를 detail에 함께 출력합니다 |
 | `build` | plugin root의 `dist/db.js` 존재 여부 |
 | `codex-home` | `CODEX_HOME` 디렉터리 존재 여부 |
 | `lifecycle-configured` | 7개 hook event 전부 활성이면 ok, 일부면 warn, 전무하면 fail |
@@ -336,6 +343,19 @@ exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
 | `sync-export` | 마지막 export 결과. 실패면 fail, 상태 파일을 못 읽으면 warn, 기록이 없으면 ok |
+
+`dependencies`가 검사하는 **설치된 plugin root**는 다음 순서로 해석하며, `memex install`,
+`memex deps materialize`, `cli/runtime-exec.js`의 폴백 메시지가 모두 같은 값을 씁니다.
+
+```text
+MEMEX_PLUGIN_ROOT
+→ $CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest version>
+→ codex plugin list --json 의 installedPath
+→ 실행 중인 launcher의 루트
+```
+
+`~/.local/bin/memex` shim은 `npx --package=github:BongSuCHOI/memex#main`이라 CLI가 npx cache에서
+실행됩니다. 예전에는 그 npx cache를 "설치된 plugin root"로 착각해 실제 설치본과 다른 판정을 냈습니다.
 
 `dependencies`, `inject-output` / `recall-provenance`, `injection-yield`의 원인과 복구 명령은
 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)이 단일 출처입니다. 여기서는 §20이 다루지 않는 항목만
@@ -622,9 +642,10 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | 명령 | 역할 | 상세 |
 | --- | --- | --- |
 | `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 | [§3](#3-cli-shim과-codex-memory-충돌-점검) |
-| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent, 네트워크 설치 없음) | [§13](#13-진단) |
+| `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent). `--marketplace`·`--plugin-root`·`--root`·`--dry-run` | [§13](#13-진단) |
+| `memex deps materialize` | 설치된 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`). `--root`·`--dry-run`·`--force`·`--json` | [§13](#13-진단) |
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) | [§5](#5-lifecycle-hooks), [§14](#14-제거와-데이터-보존) |
-| `memex update` | data를 보존하면서 marketplace/plugin 갱신 | [§12](#12-업데이트) |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
 | `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session` | [§4](#4-최초-onboarding) |
 | `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
@@ -725,7 +746,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | model-work budget exhausted | `terminal state: modelWorkBudgetsExhausted=…` | run 예산(시도·deadline) 소진 | `memex model-work status` → `memex model-work resume <budget-id> --new-run` |
 | 되살릴 가치가 없는 작업 | 위 어느 줄이든 | 원인이 사라졌거나 다른 방식으로 처리함 | `memex jobs dismiss <job-id> --reason "왜 포기하는가"` — `superseded`로 정리, 삭제 없음, 감사 1줄 |
 | 격리된 프로젝트 | `Quarantined projects: N (…)` | `/`처럼 프로젝트를 지목할 수 없는 cwd에서 만들어진 프로젝트. fact는 보존하고 주입·조회에서만 제외 | 복구 명령 없음(사람이 판단). 정상 cwd에서 다시 작업하면 올바른 프로젝트로 기록되고, 이전 fact가 필요하면 `memex facts list --scope all`로 확인 후 `memex facts promote/demote`로 옮깁니다 |
-| 런타임 의존성 없음 | `doctor`의 `dependencies: fail`, stderr `[memex] runtime deps missing at <ROOT>; falling back to npx …` | 설치된 플러그인 루트에 `better-sqlite3` / `@xenova/transformers` / `sqlite-vec` 중 하나라도 없어 모든 hook이 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)으로 폴백 | `memex install` (idempotent, 네트워크 설치 없음) |
+| 런타임 의존성 없음 | `doctor`의 `dependencies: fail`, stderr `[memex] runtime deps missing at <ROOT>; installed plugin root: <설치본>; falling back to npx …` | 설치된 플러그인 루트에 `better-sqlite3` / `@xenova/transformers` / `sqlite-vec` 중 하나라도 없어 모든 hook이 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)으로 폴백 | `memex deps materialize` (해석된 설치본에서 `npm install --omit=dev --no-audit --no-fund` 실행). 루트를 직접 지정하려면 `--root <path>`. `memex install`도 같은 단계를 수행합니다 |
 | 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
 | 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
