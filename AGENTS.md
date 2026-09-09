@@ -139,7 +139,7 @@ Update the owner document in the same change when its behavior changes:
 - `docs/RETRIEVAL-AND-CONTEXT.md` — search and injection
 - `docs/SCHEMA.md` — persisted schema/invariants
 - `docs/MCP-AND-SKILLS.md` — MCP and skills
-- `docs/VISUALIZATION.md` — Web UI
+- `docs/WEBUI-WORKSPACE.md` — Web UI
 - `docs/VERIFICATION.md` — gates and receipts
 - `docs/LINEAGE.md` — upstream/project lineage
 

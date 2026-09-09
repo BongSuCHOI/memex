@@ -95,8 +95,9 @@
       "status": "PASS",
       "observed": [
         "ui/server.cjs",
-        "ui/relations/index.html",
-        "ui/relations/app.js"
+        "ui/lib/server.cjs",
+        "ui/public/index.html",
+        "ui/public/app.mjs"
       ]
     },
     {

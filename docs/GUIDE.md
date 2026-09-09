@@ -173,23 +173,31 @@ graph_stats
 
 세부 schema와 routing은 [MCP-AND-SKILLS.md](MCP-AND-SKILLS.md)를 참조하십시오.
 
-## 9. Web UI와 Knowledge Galaxy
+## 9. Web UI
 
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex-ui
-# http://localhost:3847
+# http://127.0.0.1:3847  (PORT로 변경)
 ```
 
 | URL | 역할 |
 | --- | --- |
-| `/` | projects/conversations/search |
-| `/facts` | fact, revision, provenance, mutation |
-| `/graph?scope=global` | global graph |
-| `/graph?scope=project&project=/abs/path` | project + global graph |
-| `/graph?scope=all` | explicit all-project graph |
-| `/pipeline` | readiness/backlog |
+| `/` | 개요: 파이프라인 준비 상태, 최근 기억 변화, 활동 |
+| `/conversations` | 대화 원장: 세션, 대화 턴, 원문 |
+| `/facts` | 기억: fact, revision, 직접 근거와 해석 맥락, 변경 |
+| `/taxonomy` | 분류: ontology domain/category |
+| `/graph` | 지식 지도: WebGL 2D/3D 관계 그래프 (Canvas2D fallback) |
+| `/activity` | 활동·추적: Chronicle, 작업, 모델 시도, 주입, 로그, 관리 실행 |
+| `/settings` | 관리: 런타임, 관리 명령, 화면 설정, 진단 |
 
-UI server는 loopback에만 bind합니다. mutation은 same-origin POST JSON과 service-level validation을 통과합니다.
+범위는 화면 상단에서 명시적으로 선택하며 query에도 그대로 반영됩니다:
+`scope=global`, `scope=project&project=/abs/path`, `scope=all`.
+
+UI server는 127.0.0.1에만 bind하고 Host/Origin을 검사합니다. 변경 요청은 same-origin
+POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어의
+`fact-management` 트랜잭션을 그대로 사용합니다.
+
+자세한 내용은 [WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md)를 참고하세요.
 
 ## 10. 저장 위치와 sync
 

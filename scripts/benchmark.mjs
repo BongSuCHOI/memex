@@ -302,7 +302,12 @@ function startUiServer(env, port) {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
-      if (stdout.includes(`Memex UI: http://localhost:${port}`)) {
+      // Memex Workspace <version> / http://127.0.0.1:<port> / DB: <path>
+      if (
+        stdout.includes("Memex Workspace") &&
+        stdout.includes(`http://127.0.0.1:${port}`) &&
+        stdout.includes("\nDB: ")
+      ) {
         clearTimeout(timer);
         resolve();
       }
@@ -670,13 +675,19 @@ async function main() {
 
     const port = await getFreePort();
     const ui = startUiServer(
-      { MEMEX_HOME: primary.home, TEST_DB_PATH: primary.dbPath },
+      {
+        // The UI writes its audit log and operation metadata under MEMEX_HOME;
+        // pin the XDG fallback too so no run can reach the real ~/.config/memex.
+        MEMEX_HOME: primary.home,
+        XDG_CONFIG_HOME: path.join(primary.home, "xdg"),
+        TEST_DB_PATH: primary.dbPath,
+      },
       port,
     );
     processes.push(ui);
     await ui.ready;
     const graphUrl = `http://127.0.0.1:${port}/graph?scope=all`;
-    const graphApiUrl = `http://127.0.0.1:${port}/api/graph-data?scope=all`;
+    const graphApiUrl = `http://127.0.0.1:${port}/api/v2/graph?scope=all`;
     const apiSamples = [];
     let graphPayload;
     for (let i = 0; i < 10; i++) {
@@ -688,9 +699,17 @@ async function main() {
         throw new Error(`graph API failed: ${JSON.stringify(payload)}`);
       graphPayload = payload;
     }
-    if (graphPayload.meta.facts !== 50 || graphPayload.meta.relations !== 49) {
+    if (graphPayload.nodes.length !== 50 || graphPayload.edges.length !== 49) {
       throw new Error(
-        `graph API correctness failed: ${JSON.stringify(graphPayload.meta)}`,
+        `graph API correctness failed: ${JSON.stringify({
+          nodes: graphPayload.nodes.length,
+          edges: graphPayload.edges.length,
+          domains: graphPayload.domains.length,
+          categories: graphPayload.categories.length,
+          types: graphPayload.types,
+          total: graphPayload.total,
+          truncated: graphPayload.truncated,
+        })}`,
       );
     }
     const browser = await probeGraphBrowser({ url: graphUrl, iterations: 3 });
@@ -702,7 +721,10 @@ async function main() {
     if (
       browser.samples.some(
         (sample) =>
-          !sample.bootHidden || !sample.canvasWidth || sample.facts !== "50",
+          !sample.bootHidden ||
+          !sample.canvasWidth ||
+          sample.nodes !== 50 ||
+          sample.relations !== 49,
       )
     ) {
       throw new Error(
@@ -810,14 +832,14 @@ async function main() {
           },
         },
         AC_PERF_05_3d_graph: {
-          api_transport: "loopback HTTP /api/graph-data",
+          api_transport: "loopback HTTP /api/v2/graph",
           browser_transport: "Google Chrome headless via CDP",
           api_p50_ms: percentile(apiSamples, 50),
           api_p95_ms: percentile(apiSamples, 95),
           browser_first_interactive_p50_ms: percentile(browserSamples, 50),
           browser_first_interactive_p95_ms: percentile(browserSamples, 95),
-          rendered_nodes: graphPayload.meta.facts,
-          rendered_edges: graphPayload.meta.relations,
+          rendered_nodes: graphPayload.nodes.length,
+          rendered_edges: graphPayload.edges.length,
           raw_samples: { api_ms: apiSamples, browser: browser.samples },
           threshold_check: {
             api_p95_pass:
@@ -826,8 +848,8 @@ async function main() {
               percentile(browserSamples, 95) <=
               THRESHOLDS.AC_PERF_05_browser_p95_ms,
             populated_graph_pass:
-              graphPayload.meta.facts === 50 &&
-              graphPayload.meta.relations === 49,
+              graphPayload.nodes.length === 50 &&
+              graphPayload.edges.length === 49,
           },
         },
         AC_PERF_06_full_history_analyze: {

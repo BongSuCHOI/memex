@@ -55,7 +55,7 @@ flowchart TB
       CLI[CLI]
       MCP[9 MCP tools]
       UI[Web UI]
-      Galaxy[3D Galaxy]
+      Map[지식 지도]
     end
 
     Rollout --> ArchiveIndex
@@ -89,7 +89,7 @@ flowchart TB
     Retrieve --> CLI
     Retrieve --> MCP
     Facts --> UI
-    Tax --> Galaxy
+    Tax --> Map
 ```
 
 ## 3. Fact 상태 모델
@@ -165,7 +165,7 @@ semantic state와 local conversation corpus에 종속됩니다.
 | `src/search.ts` | vector/text/hybrid retrieval |
 | `src/inject-*.ts` | warm/cold retrieval, dedup, budget, recall receipt |
 | `src/mcp-server.ts` | MCP validation과 dispatch |
-| `ui/server.cjs` | loopback UI/API와 guarded fact mutation |
+| `ui/server.cjs`, `ui/lib/`, `ui/public/` | loopback Web UI, API v2, guarded fact mutation |
 
 ## 5. End-to-end 흐름
 

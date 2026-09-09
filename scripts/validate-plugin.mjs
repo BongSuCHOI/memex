@@ -347,8 +347,9 @@ async function main() {
   const skills = validateSkills(installedRoot);
   for (const relative of [
     "ui/server.cjs",
-    "ui/relations/index.html",
-    "ui/relations/app.js",
+    "ui/lib/server.cjs",
+    "ui/public/index.html",
+    "ui/public/app.mjs",
   ]) {
     if (!fs.existsSync(path.join(installedRoot, relative)))
       throw new Error(`installed Web UI missing ${relative}`);
@@ -441,8 +442,9 @@ async function main() {
         status: "PASS",
         observed: [
           "ui/server.cjs",
-          "ui/relations/index.html",
-          "ui/relations/app.js",
+          "ui/lib/server.cjs",
+          "ui/public/index.html",
+          "ui/public/app.mjs",
         ],
       },
       {

@@ -122,4 +122,4 @@ ontology_last_attempt_at = NULL
 - project query에서 다른 project fact 0
 - provenance 없는 fact는 health gap으로 보고
 
-`graph_stats`와 `/api/graph-data`는 이 local-derived graph 상태를 관측하는 public surface입니다.
+`graph_stats`와 `/api/v2/graph`는 이 local-derived graph 상태를 관측하는 public surface입니다.

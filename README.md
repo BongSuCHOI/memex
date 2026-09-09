@@ -26,7 +26,7 @@ Memex builds several layers from your local Codex history:
 - **Knowledge graph** — classifies facts into domains/categories and creates typed relations.
 - **Context recall** — injects small, relevance-gated memory blocks into later Codex prompts.
 - **MCP tools and skills** — exposes conversations, facts, graph traversal, provenance, and analysis to Codex.
-- **Local Web UI** — provides conversation browsing, fact management, pipeline health, and a 3D Knowledge Galaxy.
+- **Local Web UI** — a loopback workspace for conversation browsing, fact management, pipeline health, and a WebGL knowledge map.
 - **Multi-device durable sync** — reconciles fact state across devices without syncing local derived overlays.
 
 Memex is intentionally **local-first**. Source Codex rollouts remain read-only, and the primary database, indexes, derived graph, and operational logs live under the local Memex data root.
@@ -274,7 +274,7 @@ See [MCP and skills](docs/MCP-AND-SKILLS.md).
 
 ---
 
-## Web UI and Knowledge Galaxy
+## Web UI
 
 Start the local UI:
 
@@ -285,19 +285,30 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 Then open:
 
 ```text
-http://localhost:3847
+http://127.0.0.1:3847
 ```
 
-Main routes:
+Set `PORT` to use another port. There is no separate frontend build and no
+extra npm package: the UI ships as plain server-side CommonJS plus ES modules
+served to the browser.
 
-- `/` — projects, conversations, search, exchange details
-- `/facts` — facts, revisions, provenance, mutations
-- `/graph` — scoped 3D knowledge graph
-- `/pipeline` — indexing/backfill readiness
+Seven pages:
 
-The server binds to loopback only. Fact mutations use the same transactional service as the CLI.
+- `/` — overview: pipeline readiness, recent memory changes, activity
+- `/conversations` — conversation ledger: sessions, exchanges, source text
+- `/facts` — memory: facts, revisions, authoritative provenance, interpretive
+  context, and guarded edit/deactivate/restore/delete
+- `/taxonomy` — classification: ontology domains and categories
+- `/graph` — knowledge map: WebGL 2D/3D relation graph with a Canvas2D fallback
+- `/activity` — chronicle, jobs, model attempts, recalls, logs, admin runs
+- `/settings` — runtime, admin commands, display preferences, diagnostics
 
-See [Visualization](docs/VISUALIZATION.md).
+Every page takes an explicit scope: one project, global memory, or all
+projects. The server binds to 127.0.0.1 only, validates Host/Origin, and
+requires a CSRF token for writes. Fact mutations use the same transactional
+service as the CLI.
+
+See [Web UI](docs/WEBUI-WORKSPACE.md).
 
 ---
 
@@ -457,7 +468,7 @@ The documentation set is organized by ownership rather than as one large manual:
 | [RETRIEVAL-AND-CONTEXT.md](docs/RETRIEVAL-AND-CONTEXT.md) | search, RAG, context injection |
 | [SCHEMA.md](docs/SCHEMA.md) | SQLite schema and transaction invariants |
 | [MCP-AND-SKILLS.md](docs/MCP-AND-SKILLS.md) | MCP tools and bundled skills |
-| [VISUALIZATION.md](docs/VISUALIZATION.md) | Web UI and Knowledge Galaxy |
+| [WEBUI-WORKSPACE.md](docs/WEBUI-WORKSPACE.md) | local Web UI pages, scope model, knowledge map |
 | [VERIFICATION.md](docs/VERIFICATION.md) | tests, E2E gates, release evidence |
 | [LINEAGE.md](docs/LINEAGE.md) | upstream attribution and project lineage |
 

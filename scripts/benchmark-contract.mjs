@@ -1,3 +1,11 @@
+// Loopback graph-API surfaces that count as direct HTTP evidence. The Memex
+// Workspace UI serves /api/v2/graph; receipts recorded before it measured the
+// same loopback surface at /api/graph-data.
+const GRAPH_API_TRANSPORTS = new Set([
+  'loopback HTTP /api/v2/graph',
+  'loopback HTTP /api/graph-data',
+]);
+
 const REQUIRED_CHECKS = [
   'AC_PERF_01_conversation_search',
   'AC_PERF_02_fact_and_graph_search',
@@ -45,7 +53,7 @@ export function validateBenchmarkReport(report) {
   }
 
   const graph = results.AC_PERF_05_3d_graph ?? {};
-  if (graph.api_transport !== 'loopback HTTP /api/graph-data') {
+  if (!GRAPH_API_TRANSPORTS.has(graph.api_transport)) {
     errors.push('AC_PERF_05 API was not measured through loopback HTTP');
   }
   if (graph.browser_transport !== 'Google Chrome headless via CDP') {

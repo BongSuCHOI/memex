@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="Memex 로컬 기억 탐색·추적 워크스페이스">
+<title>Memex · 기억 워크스페이스</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script type="module" src="/assets/app.mjs"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">본문으로 이동</a>
+<div id="application"><aside id="sidebar" class="sidebar" aria-label="주 메뉴"></aside><div class="workspace"><header id="topbar" class="topbar"></header><main id="main" tabindex="-1"><div class="boot"><span class="spinner"></span><p>로컬 기억 저장소에 연결하고 있습니다.</p></div></main></div></div>
+<dialog id="detail" class="drawer" aria-label="상세 정보"></dialog>
+<dialog id="modal" class="modal" aria-label="작업 확인"></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<noscript><p>Memex UI를 사용하려면 브라우저에서 JavaScript를 활성화하세요.</p></noscript>
+</body>
+</html>

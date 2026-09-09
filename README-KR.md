@@ -26,7 +26,7 @@ Memex는 로컬 Codex 대화 기록에서 다음 계층을 만듭니다.
 - **지식 그래프** — fact를 domain/category에 분류하고 typed relation을 생성합니다.
 - **컨텍스트 recall** — 관련도와 예산을 통과한 작은 기억 블록만 이후 Codex prompt에 주입합니다.
 - **MCP 도구와 skills** — 대화, fact, graph traversal, provenance, 전체 이력 분석을 Codex에서 직접 사용할 수 있게 합니다.
-- **로컬 Web UI** — 대화 탐색, fact 관리, pipeline 상태, 3D Knowledge Galaxy를 제공합니다.
+- **로컬 Web UI** — 대화 탐색, fact 관리, pipeline 상태, WebGL 지식 지도를 loopback 워크스페이스로 제공합니다.
 - **멀티디바이스 durable sync** — local derived overlay는 동기화하지 않고, 장기 상태만 기기 간 수렴시킵니다.
 
 Memex는 **local-first**를 기본 전제로 합니다. 원본 Codex rollout은 항상 read-only이고, DB·검색 인덱스·지식 그래프·운영 로그는 로컬 Memex data root 아래에 저장됩니다.
@@ -273,7 +273,7 @@ Bundled Codex skill은 다음 워크플로를 담당합니다.
 
 ---
 
-## Web UI와 Knowledge Galaxy
+## Web UI
 
 로컬 UI 실행:
 
@@ -284,19 +284,26 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 접속:
 
 ```text
-http://localhost:3847
+http://127.0.0.1:3847
 ```
 
-주요 route:
+포트는 `PORT`로 바꿉니다. 별도의 프런트엔드 빌드나 추가 npm 패키지가 없습니다.
 
-- `/` — project, conversation, search, exchange detail
-- `/facts` — fact, revision, provenance, mutation
-- `/graph` — scoped 3D knowledge graph
-- `/pipeline` — indexing/backfill readiness
+7개 화면:
 
-서버는 loopback에만 bind합니다. Fact mutation은 CLI와 동일한 transactional service를 사용합니다.
+- `/` 개요 — 파이프라인 준비 상태, 최근 기억 변화, 활동 요약
+- `/conversations` 대화 원장 — 세션, 대화 턴, 원문
+- `/facts` 기억 — fact, revision, 직접 근거와 해석 맥락, 확인 후 수정·비활성화·복원·삭제
+- `/taxonomy` 분류 — ontology domain과 category
+- `/graph` 지식 지도 — WebGL 2D/3D 관계 그래프, Canvas2D fallback
+- `/activity` 활동·추적 — Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행
+- `/settings` 관리 — 런타임, 관리 명령, 화면 설정, 진단
 
-자세한 내용은 [Visualization](docs/VISUALIZATION.md)을 참고하세요.
+모든 화면은 프로젝트 / 공통 기억 / 전체 범위를 명시적으로 선택합니다. 서버는
+127.0.0.1에만 bind하고 Host/Origin을 검사하며 변경 요청에는 CSRF 토큰을 요구합니다.
+Fact mutation은 CLI와 동일한 transactional service를 사용합니다.
+
+자세한 내용은 [Web UI](docs/WEBUI-WORKSPACE.md)를 참고하세요.
 
 ---
 
@@ -454,7 +461,7 @@ Receipt에는 committed candidate SHA, environment, exact gate 결과, hard-safe
 | [RETRIEVAL-AND-CONTEXT.md](docs/RETRIEVAL-AND-CONTEXT.md) | search, RAG, context injection |
 | [SCHEMA.md](docs/SCHEMA.md) | SQLite schema와 transaction invariant |
 | [MCP-AND-SKILLS.md](docs/MCP-AND-SKILLS.md) | MCP 도구와 bundled skills |
-| [VISUALIZATION.md](docs/VISUALIZATION.md) | Web UI와 Knowledge Galaxy |
+| [WEBUI-WORKSPACE.md](docs/WEBUI-WORKSPACE.md) | 로컬 Web UI 화면, 범위 모델, 지식 지도 |
 | [VERIFICATION.md](docs/VERIFICATION.md) | tests, E2E gate, release evidence |
 | [LINEAGE.md](docs/LINEAGE.md) | upstream attribution과 project lineage |
 
