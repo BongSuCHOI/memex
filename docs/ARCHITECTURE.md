@@ -268,8 +268,11 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
 호출하지 못한 대상도 대기 상태와 재개 범위에 포함합니다.
 같은 maintenance wave의 추출·검증·재시도·Capsule·통합·요청된 분류는 durable budget ID를 공유합니다.
 프로세스 안의 context 전달은 ID 운반 수단이며 실제 상한은 SQLite reservation이 집행합니다.
-예산이 소진되면 미완료 작업과 이유를 보존하고, 새 한도는 명시적 `model-work resume --new-run`으로
-부여합니다. 완료된 wave 이후의 새 증거는 별도 run으로 처리합니다.
+예산 소진 시 미완료 상태와 이유를 보존합니다. 시작·메시지 제출 시 자동 유지보수는 공통 rolling 호출
+상한·재개 대기 시간·lease 검사를 통과할 때 하나의 transaction에서 새 run을 만들고 미완료
+작업만 옮깁니다. 자동 재개는 실패 횟수를 초기화하지 않습니다. 명시적 수동
+`model-work resume --new-run` 경로는 별도로 유지합니다.
+구체적인 기본값과 사용법은 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단)를 따릅니다.
 
 ## 8. 보안과 신뢰 경계
 

@@ -1,0 +1,166 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-09T05:55:18.644174+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Temporary homes for install, package and lifecycle gates; the authenticated four-arm synthetic comparison is recorded separately."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/automatic-maintenance-resume",
+    "codeSha": "cf4c171686241e4860ba116729f187d736892812",
+    "packageVersion": "0.4.2",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "Unreleased automatic-maintenance improvement. All eleven gates ran on this clean committed SHA. Only receipt files change afterward; no push, tag, release, or installed-plugin update is performed."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:07.905327+00:00",
+      "durationSeconds": 3.132,
+      "logPath": "/private/tmp/memex-auto-resume-gates/typecheck.log",
+      "logSha256": "c8f41ab8c74adbf15be0836f98afb2de28d3d835b38e747c6d5c8633a38591eb"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:11.038055+00:00",
+      "durationSeconds": 3.386,
+      "logPath": "/private/tmp/memex-auto-resume-gates/build.log",
+      "logSha256": "cddd8551903f5d5b3eb2c1be6901af2b166dc3350138ad70cff0ef7650cfe91a"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:14.424143+00:00",
+      "durationSeconds": 19.885,
+      "logPath": "/private/tmp/memex-auto-resume-gates/tests.log",
+      "logSha256": "a22b9afa6229b73b559464f97d29464a6b875236fdb9fa256404e5c9fccb2472"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:34.310380+00:00",
+      "durationSeconds": 3.584,
+      "logPath": "/private/tmp/memex-auto-resume-gates/codex-slice.log",
+      "logSha256": "450c3bdc3a7eb0b98d050d7265d99fb67795003211d7aaa27e0ca772b3972819"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:37.894274+00:00",
+      "durationSeconds": 9.874,
+      "logPath": "/private/tmp/memex-auto-resume-gates/slice-tests.log",
+      "logSha256": "c087ceadcc22391323a14fd7b5a3581d9481ae345023a916e59130f7753a2c75"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:47.769969+00:00",
+      "durationSeconds": 9.172,
+      "logPath": "/private/tmp/memex-auto-resume-gates/install-e2e.log",
+      "logSha256": "500f49c6a3acc1e6cb783ddd490288a2103aae476f0e97104910af22418bffc9"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:56.942101+00:00",
+      "durationSeconds": 0.44,
+      "logPath": "/private/tmp/memex-auto-resume-gates/marketplace-e2e.log",
+      "logSha256": "3bdc7cc36edcf301daf5687d741e74f1f74a692e1c5ab8f67418289abc75160a"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:52:57.382391+00:00",
+      "durationSeconds": 86.924,
+      "logPath": "/private/tmp/memex-auto-resume-gates/package-runtime-e2e.log",
+      "logSha256": "4531b0fd67ace07eb3cab2e079e11dc6695f5d0289197a4aa4bb08b9b1dfabcd"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:54:24.307390+00:00",
+      "durationSeconds": 8.64,
+      "logPath": "/private/tmp/memex-auto-resume-gates/lifecycle-e2e.log",
+      "logSha256": "c8f0c36ffbd6e763ecc02f7f3265c3bf05f1052223f58c09935977b904aa61a8"
+    },
+    {
+      "name": "codex-host-fixtures",
+      "command": "node --test test/codex-host-compat.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:54:32.948039+00:00",
+      "durationSeconds": 1.412,
+      "logPath": "/private/tmp/memex-auto-resume-gates/codex-host-fixtures.log",
+      "logSha256": "f10c952cb5624eaa6a96caaf03b4cda9d389c587e809a187e93d5e7920027da0"
+    },
+    {
+      "name": "comparison-harness",
+      "command": "node --test test/codex-memory-comparison.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T05:54:34.360237+00:00",
+      "durationSeconds": 0.449,
+      "logPath": "/private/tmp/memex-auto-resume-gates/comparison-harness.log",
+      "logSha256": "8bc799f3ede9dd5bb28748600452a95d081754a2152d4cb2657d4437dc1e20d2"
+    }
+  ],
+  "packageRuntime": {
+    "status": "PASS",
+    "artifact": "memex-0.4.2.tgz",
+    "packedBytes": 1305948,
+    "unpackedBytes": 5357341,
+    "files": 283,
+    "mcpTools": 9,
+    "onboarding": [
+      "setup --dry-run",
+      "sync",
+      "backfill all",
+      "status"
+    ],
+    "hooks": [
+      "UserPromptSubmit valid-or-empty",
+      "SessionEnd final fence + deferred worker"
+    ]
+  },
+  "automaticMaintenance": {
+    "ontologyDefault": "on; explicit MEMEX_AUTO_ONTOLOGY=0 disables",
+    "defaultRolling24HourAttempts": 256,
+    "minimumResumeCooldownMs": 3600000,
+    "scope": "SessionStart maintenance waves in one data root; explicit unrelated worker/operator budgets retain their existing resume contract",
+    "regressions": "12 isolated automatic-resume tests plus real-SQL pending-first worker selection; includes two child processes, shared reservation cap, rollback, legacy migration and actual backup restoration",
+    "productionDataMutation": false,
+    "liveModelQualityComparison": "NOT_PROVEN: not rerun for this change"
+  },
+  "priorEvidence": {
+    "receipt": "merge-gate-0.4.2.json",
+    "codeSha": "e3be25fc63aec8e7250ba1c54c60ecd31a59a375",
+    "note": "Earlier model, restore and package evidence keeps its original SHA and scope."
+  },
+  "releaseConclusion": "All eleven automated gates PASS: 96 files / 1010 Vitest tests, 26 Codex slices, 103 total slices, installer/marketplace/package runtime, offline lifecycle, host fixtures and comparison harness. Automatic continuation/default ON is implemented and tested in isolated fixtures; long-term production quality is not established. No release."
+}

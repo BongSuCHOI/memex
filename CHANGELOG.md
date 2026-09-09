@@ -2,6 +2,21 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.4.3 - 2026-09-09
+
+- Resume unfinished automatic maintenance from `SessionStart` and asynchronously
+  from `UserPromptSubmit`, coalescing wakeups once per minute per data root without
+  resetting model budgets or waiting for workers.
+- Create a new automatic run only after a one-hour cooldown and within a shared
+  rolling 24-hour cap of 256 model attempts. Preserve completed work, retry history,
+  active claims, backoff and failed-call accounting across atomic renewal.
+- Prioritize pending ontology and relation work, and enable automatic ontology by
+  default. `MEMEX_AUTO_ONTOLOGY=0` disables new automatic classification while
+  explicit manual model-work renewal remains operator-controlled.
+- Add the operational ledger and wake state as local-only, additive schema. Stop
+  older Memex workers before updating; sync protocol v4 is unchanged. See the
+  [maintenance budget and wait diagnostics](docs/GUIDE.md#17-모델-작업-예산과-대기-진단).
+
 ## 0.4.2 - 2026-09-09
 
 - Send asynchronous startup status notices to stderr so they cannot become

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
+import Database from "better-sqlite3";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,7 +26,7 @@ export function initDatabase() {
     prepare(sql) {
       return {
         all() {
-          if (String(sql).includes('model_work_targets')) return ${JSON.stringify(ids)}.map((id) => ({ id }));
+          if (String(sql).includes('SELECT DISTINCT t.target_id')) return ${JSON.stringify(ids)}.map((id) => ({ id }));
           if (String(sql).includes('FROM facts')) return ${JSON.stringify(ontologyIds)};
           return [];
         },
@@ -69,8 +70,8 @@ export function isModelBudgetExhausted(error) { return error?.code === 'MEMEX_MO
   return callsPath;
 }
 
-function runWorker(): { out: string; calls: string[][] } {
-  const env = { ...process.env, BACKFILL_CONCURRENCY: "1", BACKFILL_BATCH_SIZE: "1", BACKFILL_ONTOLOGY_MAX: "10" };
+function runWorker(max = "10"): { out: string; calls: string[][] } {
+  const env = { ...process.env, BACKFILL_CONCURRENCY: "1", BACKFILL_BATCH_SIZE: "1", BACKFILL_ONTOLOGY_MAX: max };
   delete env.BACKFILL_RELATIONS;
   const out = execFileSync(process.execPath, ["scripts/backfill-ontology-worker.js"], {
     cwd: sandbox,
@@ -89,6 +90,45 @@ beforeEach(() => { sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "mb-ontology-
 afterEach(() => { fs.rmSync(sandbox, { recursive: true, force: true }); });
 
 describe("ontology relation-only worker regressions", () => {
+  it("uses the real SQL to prioritize pending relation and ontology work over new facts", () => {
+    const callsPath = writeStubs("relation");
+    const dbPath = path.join(sandbox, "queue.sqlite");
+    const db = new Database(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE facts(id TEXT PRIMARY KEY,is_active INTEGER,ontology_category_id TEXT,
+          ontology_attempts INTEGER,created_at TEXT,updated_at TEXT);
+        CREATE TABLE model_work_targets(budget_id TEXT,stage TEXT,state TEXT,target_id TEXT);
+        INSERT INTO facts VALUES ('relation',1,'category',0,'2026-09-02','2026-09-02'),
+          ('pending',1,NULL,0,'2026-09-03','2026-09-03'),('unbound',1,NULL,0,'2026-09-01','2026-09-01');
+        INSERT INTO model_work_targets VALUES ('budget-1','relation','pending','relation'),
+          ('budget-1','ontology','pending','pending');
+      `);
+      fs.writeFileSync(path.join(sandbox, "dist/db.js"), `
+        import {createRequire} from 'node:module';
+        const Database=createRequire(${JSON.stringify(path.join(process.cwd(), "package.json"))})('better-sqlite3');
+        export function initDatabase(){return new Database(${JSON.stringify(dbPath)});}
+      `);
+      fs.writeFileSync(path.join(sandbox, "dist/ontology-classifier.js"), `
+        import fs from 'node:fs';
+        export const MAX_CLASSIFY_ATTEMPTS=3;
+        export function parkExhaustedFacts(){return 0;}
+        export async function backfillRelationBatch(_db,ids){
+          fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(ids)+'\\n');
+          return {completed:ids.length,pending:0};
+        }
+        export async function backfillClassifyBatch(_db,ids){
+          fs.appendFileSync(${JSON.stringify(callsPath)},JSON.stringify(ids)+'\\n');
+          return {classified:ids.length,deterministic:0,fallback:0,failed:0,transient:0};
+        }
+      `);
+      expect(runWorker("1").calls).toEqual([["relation"]]);
+      db.exec("UPDATE model_work_targets SET state='completed' WHERE stage='relation'");
+      fs.writeFileSync(callsPath, "");
+      expect(runWorker("1").calls).toEqual([["pending"]]);
+    } finally { db.close(); }
+  });
+
   it("drains existing relation memberships without BACKFILL_RELATIONS", () => {
     writeStubs("relation");
     const { out, calls } = runWorker();

@@ -241,8 +241,8 @@ async function main() {
     const file = path.join(CODEX_HOME, "hooks.json");
     const after1 = fs.readFileSync(file, "utf8");
     const owned1 = (after1.match(/_memex/g) || []).length;
-    if (owned1 !== 11)
-      throw new Error(`expected 11 owned entries, got ${owned1}`);
+    if (owned1 !== 12)
+      throw new Error(`expected 12 owned entries, got ${owned1}`);
 
     r = MB(["setup-hooks"]);
     if (r.status !== 0) throw new Error(r.stderr);
@@ -646,7 +646,7 @@ let input=''; process.stdin.on('data',d=>input+=d); process.stdin.on('end',()=>{
     ) {
       throw new Error("owned entries not removed");
     }
-    return `removed 11 owned, foreign preserved`;
+    return `removed 12 owned, foreign preserved`;
   });
 
   await step("remove isolated plugin and marketplace registrations", () => {

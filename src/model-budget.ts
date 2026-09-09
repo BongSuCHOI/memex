@@ -24,10 +24,14 @@ const DEFAULT_MAX_INPUT_CHARS = 120_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 16_000;
 const DEFAULT_DEADLINE_MS = 15 * 60_000;
 const MAX_DEADLINE_MS = 24 * 60 * 60_000;
+export const AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 60_000;
+export const AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 60_000;
+const DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
+export const MAINTENANCE_WAKE_INTERVAL_MS = 60_000;
 
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
-export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled";
+export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled" | "window";
 export type ModelWorkTargetState = "pending" | "completed" | "failed" | "cancelled";
 
 export interface ModelBudgetLimits {
@@ -48,6 +52,7 @@ export interface ModelWorkBudget {
   deadlineAt: string | null;
   createdAt: string;
   updatedAt: string;
+  automatic: boolean;
 }
 
 export interface ModelWorkContext {
@@ -308,7 +313,16 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
         ON model_work_targets(job_id, state, updated_at);
       CREATE INDEX IF NOT EXISTS idx_model_work_budgets_state
         ON model_work_budgets(state, updated_at);
+
+      CREATE TABLE IF NOT EXISTS model_maintenance_wake (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        wake_after TEXT NOT NULL
+      );
     `);
+
+    if (!columnNames(db, MODEL_BUDGET_TABLE).has("automatic")) {
+      db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
+    }
 
     // memory_jobs is created by ensureContinuitySchema. Keep these columns
     // nullable so old rows remain valid and bind once their first model call
@@ -382,12 +396,12 @@ export function modelBudgetLimitsFromEnv(now = Date.now()): ModelBudgetLimits {
 
 /**
  * Automatic ontology classification is an optional local-derived maintenance
- * lane. It is opt-in so an installation does not incur model work until
- * MEMEX_AUTO_ONTOLOGY=1 is explicitly configured. The manual ontology
+ * lane. It is enabled by default; MEMEX_AUTO_ONTOLOGY=0 disables it. The manual ontology
  * backfill command remains available regardless of this switch.
  */
 export function isAutomaticOntologyEnabled(): boolean {
-  return process.env.MEMEX_AUTO_ONTOLOGY?.trim() === "1";
+  const value = process.env.MEMEX_AUTO_ONTOLOGY?.trim();
+  return value === undefined || value === "" || value === "1";
 }
 
 function normalizeLimits(input: Partial<ModelBudgetLimits> = {}): ModelBudgetLimits {
@@ -418,6 +432,7 @@ function budgetFromRow(row: Record<string, unknown>): ModelWorkBudget {
     deadlineAt: row.deadline_at == null ? null : String(row.deadline_at),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    automatic: row.automatic === 1,
   };
 }
 
@@ -778,6 +793,8 @@ export function rebindMemoryJobToBudget(
     budgetId: string;
     expectedBudgetId?: string | null;
     now?: Date;
+    /** Automatic continuation must preserve retry history and backoff. */
+    automatic?: boolean;
   },
 ): boolean {
   ensureModelBudgetSchema(db);
@@ -809,7 +826,7 @@ export function rebindMemoryJobToBudget(
         input.expectedBudgetId ?? "<unbound>",
       );
     }
-    if (job.state === "running" || ["completed", "superseded"].includes(job.state)) {
+    if ((job.state === "running" && !input.automatic) || ["completed", "superseded"].includes(job.state)) {
       throw new Error(`memory job ${input.jobId} is not resumable from state ${job.state}`);
     }
     if (
@@ -824,16 +841,22 @@ export function rebindMemoryJobToBudget(
     const changed = db.prepare(`
       UPDATE memory_jobs
       SET budget_id = ?, maintenance_wave_id = ?, state = 'pending',
-          attempts = 0, available_at = ?, lease_owner = NULL, lease_until = NULL,
+          attempts = CASE WHEN ? THEN attempts ELSE 0 END,
+          available_at = CASE WHEN ? THEN MAX(available_at, ?) ELSE ? END,
+          lease_owner = NULL, lease_until = NULL,
           last_error = NULL, updated_at = ?
-      WHERE job_id = ? AND state IN ('pending','retry','dead')
+      WHERE job_id = ? AND (state IN ('pending','retry','dead') OR (? AND state = 'running'))
         AND (lease_until IS NULL OR lease_until <= ?)
     `).run(
       budget.budgetId,
       budget.parentWaveId,
+      input.automatic ? 1 : 0,
+      input.automatic ? 1 : 0,
+      nowIso,
       nowIso,
       nowIso,
       input.jobId,
+      input.automatic ? 1 : 0,
       nowIso,
     ).changes;
     if (changed !== 1) return false;
@@ -842,8 +865,9 @@ export function rebindMemoryJobToBudget(
         UPDATE extraction_targets
         SET state = 'pending', lease_owner = NULL, lease_until = NULL,
             last_error = NULL, updated_at = ?
-        WHERE target_id = ? AND state IN ('pending','retry','dead')
-      `).run(nowIso, job.target_id);
+        WHERE target_id = ? AND (state IN ('pending','retry','dead')
+          OR (? AND state = 'running' AND (lease_until IS NULL OR lease_until <= ?)))
+      `).run(nowIso, job.target_id, input.automatic ? 1 : 0, nowIso);
       db.prepare(`
         UPDATE extraction_target_items SET state = 'pending'
         WHERE target_id = ? AND state IN ('retry','processing','failed-visible')
@@ -914,6 +938,7 @@ export function startNewModelWorkRunForBudget(
     parentWaveId?: string;
     limits?: Partial<ModelBudgetLimits>;
     now?: Date;
+    automatic?: boolean;
   },
 ): ModelWorkRunResumeResult {
   ensureModelBudgetSchema(db);
@@ -928,19 +953,21 @@ export function startNewModelWorkRunForBudget(
   if (requestedWave && requestedWave === previousBudget.parentWaveId) {
     throw new Error("new model work run requires a distinct parentWaveId");
   }
-  const budget = startNewModelWorkRun(db, {
+  const createBudget = input.automatic ? insertModelWorkBudget : startNewModelWorkRun;
+  const budget = createBudget(db, {
     parentWaveId:
       requestedWave || `${previousBudget.parentWaveId}:run:${randomUUID()}`,
     limits: input.limits,
+    now: input.now,
   });
   const now = input.now ?? new Date();
   const rows = tableExists(db, "memory_jobs")
     ? (db.prepare(`
         SELECT job_id, state, lease_until
         FROM memory_jobs
-        WHERE budget_id = ? AND state IN ('pending','retry','dead')
+        WHERE budget_id = ? AND (state IN ('pending','retry','dead') OR (? AND state = 'running'))
         ORDER BY updated_at, job_id
-      `).all(previousBudget.budgetId) as Array<{
+      `).all(previousBudget.budgetId, input.automatic ? 1 : 0) as Array<{
         job_id: string;
         state: string;
         lease_until: string | null;
@@ -959,6 +986,7 @@ export function startNewModelWorkRunForBudget(
         budgetId: budget.budgetId,
         expectedBudgetId: previousBudget.budgetId,
         now,
+        automatic: input.automatic,
       });
       if (rebound) {
         reboundJobIds.push(row.job_id);
@@ -1016,7 +1044,7 @@ export function startNewModelWorkRunForBudget(
  * Release a claimed queue item because its parent model budget is exhausted.
  * This transition intentionally does not increment queue attempts, move a
  * cursor, or mark a target dead. The scheduler filters the exhausted budget
- * until an operator explicitly starts a new run and rebinds the item.
+ * until bounded automatic maintenance or an explicit operator run rebinds it.
  */
 export function deferMemoryJobForModelBudget(
   db: Database.Database,
@@ -1116,6 +1144,9 @@ function budgetExhaustion(
   if (budget.state === "cancelled") return "cancelled";
   if (budget.reservedAttempts >= budget.maxAttempts) return "attempts";
   if (budget.deadlineAt && Date.parse(budget.deadlineAt) <= now) return "deadline";
+  // An exhausted window stays fenced until the scheduler explicitly rolls
+  // its pending work forward; an old process cannot revive it on its own.
+  if (budget.state === "exhausted") return "attempts";
   return null;
 }
 
@@ -1151,7 +1182,8 @@ export function reserveModelAttempt(
     if (input.inputChars > budget.maxInputChars) {
       throw new ModelBudgetInputLimitError(input.inputChars, budget.maxInputChars);
     }
-    const reason = budgetExhaustion(budget, now.getTime());
+    const reason = budgetExhaustion(budget, now.getTime()) ??
+      (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
     if (reason) {
       db.prepare(
         "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ?",
@@ -1479,6 +1511,114 @@ function latestMaintenanceBudget(
   return row ? budgetFromRow(row) : null;
 }
 
+/** One rolling cap across all automatic maintenance waves in this data root. */
+export function automaticMaintenanceWindow(db: Database.Database, now = new Date()): {
+  maxAttempts: number; used: number; remaining: number; retryAt: string | null;
+} {
+  const maxAttempts = envInt(["MEMEX_AUTO_MODEL_MAX_ATTEMPTS"], DEFAULT_AUTOMATIC_MAX_ATTEMPTS, 100_000);
+  const cutoff = new Date(now.getTime() - AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString();
+  const { used } = db.prepare(`
+    SELECT COUNT(*) AS used FROM model_work_attempts a
+    JOIN model_work_budgets b ON b.budget_id = a.budget_id
+    WHERE b.automatic = 1 AND a.started_at > ?
+  `).get(cutoff) as { used: number };
+  const oldest = maxAttempts > 0 && used >= maxAttempts ? db.prepare(`
+    SELECT a.started_at FROM model_work_attempts a
+    JOIN model_work_budgets b ON b.budget_id = a.budget_id
+    WHERE b.automatic = 1 AND a.started_at > ?
+    ORDER BY a.started_at, a.attempt_id LIMIT 1 OFFSET ?
+  `).get(cutoff, used - maxAttempts) as { started_at: string } | undefined : undefined;
+  return {
+    maxAttempts, used, remaining: Math.max(0, maxAttempts - used),
+    retryAt: oldest ? new Date(Date.parse(oldest.started_at) + AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString() : null,
+  };
+}
+
+/** Coalesce prompt/startup wakeups before scanning queues; no model call. */
+export function claimMaintenanceWake(db: Database.Database, now = new Date()): boolean {
+  return db.prepare(`
+    INSERT INTO model_maintenance_wake(id, wake_after) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET wake_after = excluded.wake_after
+    WHERE model_maintenance_wake.wake_after <= ?
+  `).run(new Date(now.getTime() + MAINTENANCE_WAKE_INTERVAL_MS).toISOString(), now.toISOString()).changes === 1;
+}
+
+/**
+ * SessionStart continuation. Selection, rollover and target moves are one
+ * write transaction; simultaneous sessions cannot mint independent budgets.
+ * Explicit worker/operator budgets retain their existing resume contract.
+ */
+export function getOrCreateAutomaticMaintenanceModelBudget(
+  db: Database.Database,
+  input: { parentWaveId?: string; limits?: Partial<ModelBudgetLimits>; now?: Date } = {},
+): ModelWorkBudget {
+  ensureModelBudgetSchema(db);
+  const parentWaveId = input.parentWaveId?.trim() || "maintenance";
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const limits = { ...modelBudgetLimitsFromEnv(now.getTime()), ...input.limits };
+  const maintain = db.transaction(() => {
+    // Adopt the existing named maintenance history, including pre-upgrade
+    // attempts. Changing the wave name cannot bypass the shared rolling cap.
+    db.prepare(`UPDATE model_work_budgets SET automatic = 1
+      WHERE parent_wave_id = ? OR parent_wave_id LIKE ? ESCAPE '\\'
+    `).run(parentWaveId, maintenanceWavePattern(parentWaveId));
+    let latest = latestMaintenanceBudget(db, parentWaveId);
+    const window = automaticMaintenanceWindow(db, now);
+    const lastAttempt = latest ? db.prepare(`
+      SELECT MAX(started_at) AS started_at FROM model_work_attempts WHERE budget_id = ?
+    `).get(latest.budgetId) as { started_at: string | null } : null;
+    const retryAt = latest ? Math.max(
+      Date.parse(lastAttempt?.started_at ?? latest.createdAt) + AUTOMATIC_MAINTENANCE_COOLDOWN_MS,
+      window.retryAt ? Date.parse(window.retryAt) : 0,
+    ) : 0;
+    if (latest?.state === "cancelled") return latest;
+    if (latest?.state === "active" && (budgetExhaustion(latest, now.getTime()) || window.remaining === 0)) {
+      db.prepare("UPDATE model_work_budgets SET state = 'exhausted', updated_at = ? WHERE budget_id = ?")
+        .run(nowIso, latest.budgetId);
+      latest = readBudgetById(db, latest.budgetId)!;
+    }
+    if (latest) {
+      // A queue claim outranks maintenance, even after the provider cap is
+      // exhausted. Expired claims may be recovered without resetting retries.
+      const held = tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("lease_until")
+        ? db.prepare("SELECT 1 FROM memory_jobs WHERE budget_id = ? AND lease_until > ? LIMIT 1").get(latest.budgetId, nowIso)
+        : null;
+      if (held) return latest;
+      const reserved = countPendingModelWork(db, latest.budgetId).reserved;
+      if (reserved > 0) {
+        // Provider calls are bounded by the run deadline. Retain crashed
+        // reservations as unknown usage, never free their spent attempts.
+        if (!latest.deadlineAt || now.getTime() < Date.parse(latest.deadlineAt) + 60_000) return latest;
+        db.prepare(`UPDATE model_work_attempts SET state = 'unknown', finished_at = ?,
+          error_class = 'expired_reservation' WHERE budget_id = ? AND state = 'reserved'`)
+          .run(nowIso, latest.budgetId);
+      }
+      const pending = countPendingModelWork(db, latest.budgetId).pending > 0 || countPendingModelWork(db).unbound > 0;
+      if (!pending) {
+        db.prepare("UPDATE model_work_budgets SET state = 'completed', updated_at = ? WHERE budget_id = ? AND state != 'completed'")
+          .run(nowIso, latest.budgetId);
+        return readBudgetById(db, latest.budgetId)!;
+      }
+      if (latest.state === "active") return latest;
+      if (window.remaining === 0 || now.getTime() < retryAt) return latest;
+    }
+    const next = latest?.state === "exhausted"
+      ? startNewModelWorkRunForBudget(db, {
+          budgetId: latest.budgetId, parentWaveId: `${parentWaveId}:run:${randomUUID()}`,
+          limits, now, automatic: true,
+        }).budget
+      : insertModelWorkBudget(db, {
+          parentWaveId: latest ? `${parentWaveId}:run:${randomUUID()}` : parentWaveId,
+          limits, now,
+        });
+    db.prepare("UPDATE model_work_budgets SET automatic = 1, state = ? WHERE budget_id = ?")
+      .run(window.remaining === 0 ? "exhausted" : "active", next.budgetId);
+    return readBudgetById(db, next.budgetId)!;
+  });
+  return maintain.immediate();
+}
+
 /** Stable budget used by the SessionStart maintenance sibling wave. */
 function getOrCreateWaveModelBudget(
   db: Database.Database,
@@ -1617,6 +1757,7 @@ export interface ModelWorkStageDiagnostics {
 }
 
 export interface ModelWorkDiagnostics {
+  automaticMaintenance?: ReturnType<typeof automaticMaintenanceWindow>;
   budgets: ModelWorkBudget[];
   attempts: ModelAttemptDiagnostic[];
   pending: Array<{
@@ -2002,15 +2143,23 @@ export function getModelWorkDiagnostics(
         (item.tokenUsageStatus === "NOT_PROVEN" || item.tokenUsageStatus == null),
     ).length;
   }
-  return { budgets, attempts, pending, unassigned, totals, stages: [...stages.values()] };
+  return {
+    budgets, attempts, pending, unassigned, totals, stages: [...stages.values()],
+    automaticMaintenance: columnNames(db, MODEL_BUDGET_TABLE).has("automatic")
+      ? automaticMaintenanceWindow(db) : undefined,
+  };
 }
 
 export function formatModelWorkDiagnostics(diagnostics: ModelWorkDiagnostics): string {
   const lines: string[] = [];
+  if (diagnostics.automaticMaintenance) {
+    const window = diagnostics.automaticMaintenance;
+    lines.push(`automatic-maintenance attempts=${window.used}/${window.maxAttempts} remaining=${window.remaining} window_ms=${AUTOMATIC_MAINTENANCE_WINDOW_MS} cooldown_ms=${AUTOMATIC_MAINTENANCE_COOLDOWN_MS} window_retry_at=${window.retryAt ?? "-"}`);
+  }
   for (const budget of diagnostics.budgets) {
     const remaining = Math.max(0, budget.maxAttempts - budget.reservedAttempts);
     lines.push(
-      `wave=${budget.parentWaveId} budget=${budget.budgetId} state=${budget.state} attempts=${budget.reservedAttempts}/${budget.maxAttempts} remaining=${remaining}`,
+      `wave=${budget.parentWaveId} budget=${budget.budgetId} state=${budget.state} attempts=${budget.reservedAttempts}/${budget.maxAttempts} remaining=${remaining} automatic=${budget.automatic}`,
     );
   }
   for (const attempt of diagnostics.attempts) {

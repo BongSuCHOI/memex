@@ -1,0 +1,157 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-09T04:49:57.509775+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Temporary homes for install, package and lifecycle gates; the authenticated four-arm synthetic comparison is recorded separately."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/memory-integrity",
+    "codeSha": "e3be25fc63aec8e7250ba1c54c60ecd31a59a375",
+    "packageVersion": "0.4.2",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "All eleven automated gates ran on this clean committed SHA. Receipt-only commit follows. Final release archive is verified separately before publication."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:46:59.324488+00:00",
+      "durationSeconds": 3.236,
+      "logPath": "/private/tmp/memex-042-gates/typecheck.log",
+      "logSha256": "c8f41ab8c74adbf15be0836f98afb2de28d3d835b38e747c6d5c8633a38591eb"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:02.560470+00:00",
+      "durationSeconds": 3.565,
+      "logPath": "/private/tmp/memex-042-gates/build.log",
+      "logSha256": "bc7b5b44f7b689661e7b5cc531fc22d5d3aa4966c83dc6905ec59a5cf5cc3c38"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:06.126328+00:00",
+      "durationSeconds": 21.086,
+      "logPath": "/private/tmp/memex-042-gates/tests.log",
+      "logSha256": "d1180d78dd82c985a772a6e7815f46400202bb1f37f867c2149b331edbbc4f8f"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:27.213858+00:00",
+      "durationSeconds": 3.925,
+      "logPath": "/private/tmp/memex-042-gates/codex-slice.log",
+      "logSha256": "5c18cf770f21e4d8694c8115fd6b40812bd39146fceb2c706d9a7c66c8c48138"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:31.138895+00:00",
+      "durationSeconds": 11.133,
+      "logPath": "/private/tmp/memex-042-gates/slice-tests.log",
+      "logSha256": "fc4f4ebfecd7dddcc40f7f2ca95c30b337890e35e0dacb03e30d1634ffe538ee"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:42.275853+00:00",
+      "durationSeconds": 9.253,
+      "logPath": "/private/tmp/memex-042-gates/install-e2e.log",
+      "logSha256": "46de8c58f6409d86831a13a4ab5ae55c10e2759f2af7d02e91d9f399758f5e57"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:51.529162+00:00",
+      "durationSeconds": 0.457,
+      "logPath": "/private/tmp/memex-042-gates/marketplace-e2e.log",
+      "logSha256": "326d302e7b3ccb639fb2805248a04b1081428377c0958bd01773c6b5890475be"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:47:51.986297+00:00",
+      "durationSeconds": 86.988,
+      "logPath": "/private/tmp/memex-042-gates/package-runtime-e2e.log",
+      "logSha256": "717e4b0ecc2e0582d2499e4f64a7876d6d36838b4845bda7f22a50c328e46c74"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:49:18.974780+00:00",
+      "durationSeconds": 10.0,
+      "logPath": "/private/tmp/memex-042-gates/lifecycle-e2e.log",
+      "logSha256": "57c8c035ccf9a3d6680af78b4bc9cf6ba0b3b7d5278e823a5079bbb6b579b1b7"
+    },
+    {
+      "name": "codex-host-fixtures",
+      "command": "node --test test/codex-host-compat.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:49:28.979350+00:00",
+      "durationSeconds": 1.702,
+      "logPath": "/private/tmp/memex-042-gates/codex-host-fixtures.log",
+      "logSha256": "7d8f125c4d44aea663e0b4bef5ffcb1b897a4dc7faa1d06463e9e49ce0fdb983"
+    },
+    {
+      "name": "comparison-harness",
+      "command": "node --test test/codex-memory-comparison.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T04:49:30.681669+00:00",
+      "durationSeconds": 0.461,
+      "logPath": "/private/tmp/memex-042-gates/comparison-harness.log",
+      "logSha256": "b9a3b7650a1a9923fc50daed0e0b4e664a86b7d296e72a64e273e790c76906ad"
+    }
+  ],
+  "packageRuntime": {
+    "status": "PASS",
+    "artifact": "memex-0.4.2.tgz",
+    "packedBytes": 1296728,
+    "unpackedBytes": 5331451,
+    "files": 282,
+    "mcpTools": 9,
+    "onboarding": [
+      "setup --dry-run",
+      "sync",
+      "backfill all",
+      "status"
+    ],
+    "hooks": [
+      "UserPromptSubmit valid-or-empty",
+      "SessionEnd final fence + deferred worker"
+    ]
+  },
+  "priorEvidence": {
+    "receipt": "merge-gate-pre-0.4.2.json",
+    "codeSha": "eff1c25538d72d9a22b5ec38310e43784b0084d4",
+    "note": "Earlier restore, integrity, authenticated model and comparison observations retain their original dates, SHAs and limits; they were not rerun as live production evaluations."
+  },
+  "releaseConclusion": "All eleven automated gates PASS on the clean 0.4.2 candidate: 95 files / 997 Vitest tests, 26 Codex slices, 103 total slices, installer/marketplace/package runtime, offline lifecycle, host fixtures and comparison harness. Long-term production recall quality is not established by these gates. Final release archive verification is recorded as a release asset."
+}

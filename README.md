@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.4.2-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.3-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -220,14 +220,14 @@ Memex integrates with the full Codex continuity lifecycle:
 | --- | --- |
 | **SessionStart(startup/resume)** | resolve session state, recover the durable queue, then run independent background sync/import/maintenance |
 | **SessionStart(clear/compact)** | advance `context_epoch`; compact immediately returns a bounded Capsule/current-fact bundle |
-| **UserPromptSubmit** | scoped retrieval, relevance gate, deduplication, bounded context injection |
+| **UserPromptSubmit** | scoped retrieval and bounded context injection; separate asynchronous maintenance wake check |
 | **Stop** | append only new complete transcript bytes and commit a closed-turn fence |
 | **Interrupt** | append delta and preserve an interrupted/open fence |
 | **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
 | **PostCompact** | optional telemetry only; correctness never depends on it |
-
-Automatic ontology is opt-in (`MEMEX_AUTO_ONTOLOGY=1`); manual `memex backfill ontology` and core embeddings remain available. See [measured results and limits](docs/verification/codex-usability/README.md#four-arm-result-and-default-decision).
 | **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export |
+
+Automatic ontology is enabled by default; set `MEMEX_AUTO_ONTOLOGY=0` to disable it. Automatic maintenance resumes unfinished work on a later SessionStart or UserPromptSubmit when its cooldown and shared rolling call cap permit. Manual `memex backfill ontology`, existing derived data and core embeddings remain available. See [maintenance limits](docs/GUIDE.md#17-모델-작업-예산과-대기-진단).
 
 Capture hooks perform bounded local I/O only. The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.
 

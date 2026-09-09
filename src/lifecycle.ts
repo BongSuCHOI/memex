@@ -58,7 +58,10 @@ export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
     { script: "scripts/sync-import-hook.js", async: true, matcher: "startup|resume" },
     { script: "scripts/session-start-maintenance.js", async: true, matcher: "startup|resume" },
   ],
-  UserPromptSubmit: [{ script: "scripts/inject-context-hook.sh" }],
+  UserPromptSubmit: [
+    { script: "scripts/inject-context-hook.sh" },
+    { script: "scripts/session-start-maintenance.js", args: ["--prompt"], async: true },
+  ],
   Stop: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
   Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
   PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],

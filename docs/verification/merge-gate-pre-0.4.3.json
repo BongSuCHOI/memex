@@ -1,0 +1,177 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-09T06:18:06.174794+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.0.0",
+    "platform": "darwin arm64",
+    "isolation": "Temporary homes for install, package and lifecycle gates; the authenticated four-arm synthetic comparison is recorded separately."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "codex/automatic-maintenance-resume",
+    "codeSha": "a11705e38a3d64171ee4f027fd49103a17fb44e3",
+    "packageVersion": "0.4.2",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "Unreleased automatic-maintenance and prompt-wake improvement. All eleven gates ran on this clean committed SHA. Only receipt files change afterward; no push, tag, release, or installed-plugin update is performed."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:14:49.871425+00:00",
+      "durationSeconds": 3.165,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/typecheck.log",
+      "logSha256": "c8f41ab8c74adbf15be0836f98afb2de28d3d835b38e747c6d5c8633a38591eb"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:14:53.036520+00:00",
+      "durationSeconds": 3.433,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/build.log",
+      "logSha256": "cddd8551903f5d5b3eb2c1be6901af2b166dc3350138ad70cff0ef7650cfe91a"
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:14:56.470406+00:00",
+      "durationSeconds": 19.667,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/tests.log",
+      "logSha256": "37f738e8081cf713b56c62d4cb70dd8f02491728489bf9db28793d71691a86a7"
+    },
+    {
+      "name": "codex-slice",
+      "command": "node --test test/codex-slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:15:16.138147+00:00",
+      "durationSeconds": 3.658,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/codex-slice.log",
+      "logSha256": "f836f5c40457a0d5487ec5fbcb999898fa94fc6c736b5e6cfa48a3d72e9deb15"
+    },
+    {
+      "name": "slice-tests",
+      "command": "node --test test/*slice.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:15:19.796178+00:00",
+      "durationSeconds": 10.13,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/slice-tests.log",
+      "logSha256": "46e05cfdfce71fe8b3128c964ae27e5838c712f1c92b59af10463e1646f08a8e"
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:15:29.926384+00:00",
+      "durationSeconds": 9.353,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/install-e2e.log",
+      "logSha256": "754ac1eaa196eb6e7b5b8ac83bb5265875305970fa6d38db3dbb1497ea6ceb9f"
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:15:39.279411+00:00",
+      "durationSeconds": 0.434,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/marketplace-e2e.log",
+      "logSha256": "2e50a1c80f49e6f910a919503c8ad244d81c31c7d9b27ede25d45b3f67679d09"
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:15:39.713974+00:00",
+      "durationSeconds": 85.326,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/package-runtime-e2e.log",
+      "logSha256": "3b19bb68755ee4a0246e4a17a172d93b487de014dbee4431cd3d7b8bf58f6124"
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:17:05.043193+00:00",
+      "durationSeconds": 9.12,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/lifecycle-e2e.log",
+      "logSha256": "3c65766fa2cec16b524b41db5fc51a32d1992b19e283f277e068d7ec6d253bf5"
+    },
+    {
+      "name": "codex-host-fixtures",
+      "command": "node --test test/codex-host-compat.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:17:14.164390+00:00",
+      "durationSeconds": 1.321,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/codex-host-fixtures.log",
+      "logSha256": "3857d140af7654ee3a09a9610b01f998e71adec0860e1a71de365db5ae57cd1e"
+    },
+    {
+      "name": "comparison-harness",
+      "command": "node --test test/codex-memory-comparison.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T06:17:15.485475+00:00",
+      "durationSeconds": 0.449,
+      "logPath": "/private/tmp/memex-prompt-wake-complete-gates/comparison-harness.log",
+      "logSha256": "b68897a01526c28e14632966f83ba371e91cba134b56c12f51633d9e624bb8de"
+    }
+  ],
+  "packageRuntime": {
+    "status": "PASS",
+    "artifact": "memex-0.4.2.tgz",
+    "packedBytes": 1308839,
+    "unpackedBytes": 5368102,
+    "files": 284,
+    "mcpTools": 9,
+    "onboarding": [
+      "setup --dry-run",
+      "sync",
+      "backfill all",
+      "status"
+    ],
+    "hooks": [
+      "UserPromptSubmit valid-or-empty",
+      "SessionEnd final fence + deferred worker"
+    ]
+  },
+  "automaticMaintenance": {
+    "ontologyDefault": "on; explicit MEMEX_AUTO_ONTOLOGY=0 disables",
+    "defaultRolling24HourAttempts": 256,
+    "minimumResumeCooldownMs": 3600000,
+    "scope": "SessionStart and UserPromptSubmit maintenance waves in one data root; explicit unrelated worker/operator budgets retain their existing resume contract",
+    "regressions": "12 isolated automatic-resume tests plus real-SQL pending-first worker selection; includes two child processes, shared reservation cap, rollback, legacy migration and actual backup restoration",
+    "productionDataMutation": false,
+    "liveModelQualityComparison": "NOT_PROVEN: not rerun for this change"
+  },
+  "priorEvidence": {
+    "receipt": "merge-gate-pre-prompt-wake.json",
+    "codeSha": "cf4c171686241e4860ba116729f187d736892812",
+    "note": "Prior automatic-resume evidence is preserved unchanged; earlier release evidence remains linked from that receipt."
+  },
+  "releaseConclusion": "All eleven automated gates PASS: 97 files / 1013 Vitest tests, 26 Codex slices, 103 total slices, installer/marketplace/package runtime, offline lifecycle, host fixtures and comparison harness. Prompt-triggered async maintenance is verified in isolated fixtures. Actual Codex UI latency and long-term production quality are NOT_PROVEN. No release.",
+  "promptMaintenanceWake": {
+    "events": [
+      "SessionStart",
+      "UserPromptSubmit"
+    ],
+    "sharedWakeIntervalMs": 60000,
+    "async": true,
+    "regressions": "Three isolated tests verify plugin/fallback registration, durable cross-connection wake claims without model-budget writes, and two real hook processes coalescing to one fixture worker. Hook launchers return with empty stdout before the worker completes.",
+    "liveCodexUiLatency": "NOT_PROVEN: actual desktop response latency was not measured",
+    "productionDataMutation": false
+  }
+}
