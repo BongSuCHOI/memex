@@ -136,6 +136,52 @@ test('계층 승격·강등 이벤트에는 한국어 라벨이 있다',()=>{
  assert.equal(name('DEMOTED'),'계층 강등');
 });
 
+// --- #48 관리 › 동기화 탭 ---
+const syncStatus=extra=>({status:{enabled:false,dir:'/shared/memex-sync',dirSource:'configured',dirExists:true,dirWritable:true,configPath:'/home/me/.config/memex/sync/config.json',updatedAt:'2026-09-10T00:00:00.000Z',deviceId:null,lastExport:null,peers:[],...extra}});
+const syncCtx=ctx('tab=sync',{});
+test('동기화는 기본이 꺼짐이고, 꺼져 있으면 수동 실행 버튼이 잠긴다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
+ assert(html.includes('기본으로 꺼져 있습니다'),'기본값이 꺼짐이라는 설명이 없음');
+ assert(/id="sync-switch"[^>]*>/.test(html)&&!/id="sync-switch"[^>]*checked/.test(html),'스위치가 꺼진 상태로 그려지지 않음');
+ assert(/data-sync="export" disabled/.test(html)&&/data-sync="import" disabled/.test(html),'꺼짐 상태에서 실행 버튼이 잠기지 않음');
+ assert(html.includes('먼저 켜세요'),'왜 잠겼는지 설명이 없음');
+});
+test('켜져 있으면 폴더·기기·마지막 내보내기를 그대로 보여준다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({
+  enabled:true,deviceId:'device-aaa',
+  lastExport:{ok:true,at:'2026-09-10T01:00:00.000Z',counts:{facts:12,revisions:4,tombstones:1,recallEvents:9}},
+  peers:[{deviceId:'device-aaa',isSelf:true,generation:'g-self',exportedAt:null,hostname:'mine',counts:null},
+         {deviceId:'device-bbb',isSelf:false,generation:'generation-2222',exportedAt:'2026-09-09T00:00:00.000Z',hostname:'other-mac',counts:{facts:7,revisions:2,tombstones:0,recallEvents:3}}],
+ }),null,null);
+ assert(html.includes('/shared/memex-sync')&&html.includes('이 화면에서 지정'));
+ assert(html.includes('device-aaa')&&html.includes('device-bbb')&&html.includes('other-mac'));
+ assert(!/data-sync="export" disabled/.test(html),'켜짐 상태에서 실행 버튼이 잠김');
+ assert(html.includes('기억 12'),'마지막 내보내기 행 수가 없음');
+ assert.equal((html.match(/device-aaa/g)||[]).length,1,'자기 기기를 다른 기기 목록에 넣지 않아야 합니다');
+});
+test('가져오기 결과와 거부된 세대 사유를 원문 그대로 보여준다',()=>{
+ const run={action:'import',at:'2026-09-10T02:00:00.000Z',outcome:{skipped:null,error:null,result:{newFacts:5,updatedFacts:2,deletedFacts:1,newRevisions:3,newTombstones:1,newRecallEvents:4,updatedRecallEvents:0,
+  malformedRows:[{file:'devices/device-bbb/CURRENT',line:1,error:'generation g-2 integrity check failed, device device-bbb snapshot rejected'}]}}};
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true}),null,run);
+ assert(html.includes('기억 +5 / ~2 / -1'),'+N/~N/-N 요약이 없음');
+ assert(html.includes('integrity check failed'),'거부 사유 원문이 없음');
+ assert(html.includes('devices/device-bbb/CURRENT'));
+ const skipped=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true}),null,{action:'export',at:null,outcome:{skipped:'unchanged',result:null,error:null}});
+ assert(skipped.includes('durable 변경이 없습니다'),'건너뛴 사유를 설명하지 않음');
+});
+test('0.6.2로 미룬 범위를 각주로 밝힌다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
+ assert(html.includes('0.6.2'));
+ for(const deferred of ['수동 파일','기기 별칭','충돌 이력'])assert(html.includes(deferred),'미룬 범위를 밝히지 않음: '+deferred);
+});
+test('코어에 동기화 서비스가 없으면 빈 화면 대신 이유를 말한다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:false},null,null,null);
+ assert(html.includes('dist/sync-control.js'));
+ assert(!html.includes('data-sync='),'서비스가 없으면 실행 버튼을 만들지 않아야 합니다');
+ const failed=settingsPage.syncTab(syncCtx,{sync:true},null,'권한이 없습니다',null);
+ assert(failed.includes('권한이 없습니다'));
+});
+
 // --- #24 메뉴 이름 · 기본 범위 · 주입 범위 안내 · 공통 범위 원클릭 전환 ---
 test('사이드바 메뉴와 기억 페이지 제목이 기억·사실로 통일된다',async()=>{
  assert(APP.includes("['/facts','memory','기억·사실']"),'app.mjs navigation 라벨이 바뀌지 않음');

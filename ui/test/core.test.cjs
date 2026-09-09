@@ -32,6 +32,54 @@ test('계층 이동 서비스가 없는 코어에서는 쓰기를 열지 않는�
  await assert.rejects(x.c.tier({id:uid(1),action:'promote'},x.scope),{status:503,code:'CORE_UNAVAILABLE'});
  assert.equal(x.closed(),0);assert.equal(x.calls.length,0);
 }finally{x.clean();}});
+function syncSetup(){
+ const x=setup();const calls=[];
+ x.c.modules.set('sync-control',{
+  getSyncStatus(){calls.push(['status',process.env.MEMEX_HOME,process.env.MEMEX_DB_PATH]);return {enabled:false,dir:'/shared/memex',dirSource:'configured',peers:[]};},
+  setSyncEnabled(input){calls.push(['set',input]);return {enabled:input.enabled,dir:input.dir??null,peers:[]};},
+  runSyncExport(options){calls.push(['export',options]);return {skipped:null,result:{facts:3,revisions:1,tombstones:0,recallEvents:2},error:null};},
+  async runSyncImport(){calls.push(['import']);return {skipped:null,result:{newFacts:2,malformedRows:[]},error:null};},
+ });
+ return {...x,syncCalls:calls};
+}
+test('동기화 호출은 이 서버가 해석한 home과 DB로 코어 경로를 고정하고 되돌린다',async()=>{
+ const x=syncSetup();const before={home:process.env.MEMEX_HOME,db:process.env.MEMEX_DB_PATH};
+ try{
+  const result=await x.c.sync('status');
+  assert.equal(result.status.dir,'/shared/memex');
+  const [,home,db]=x.syncCalls.find(c=>c[0]==='status');
+  assert.equal(home,x.c.home);assert.equal(db,x.c.dbPath);
+  assert.equal(process.env.MEMEX_HOME,before.home,'호출 뒤 MEMEX_HOME을 되돌리지 않았습니다');
+  assert.equal(process.env.MEMEX_DB_PATH,before.db,'호출 뒤 MEMEX_DB_PATH를 되돌리지 않았습니다');
+  assert.equal(x.c.syncBusy,false);
+ }finally{x.clean();}
+});
+test('동기화 켜기는 절대 경로만 받고, 수동 내보내기는 변경이 없어도 강제한다',async()=>{
+ const x=syncSetup();
+ try{
+  await assert.rejects(x.c.sync('enable',{dir:'relative/path'}),{status:400,code:'INVALID_SYNC_DIR'});
+  await assert.rejects(x.c.sync('enable',{dir:'   '}),{status:400});
+  await assert.rejects(x.c.sync('teleport'),{status:400});
+  await x.c.sync('enable',{dir:'/shared//memex/'});
+  assert.deepEqual(x.syncCalls.find(c=>c[0]==='set')[1],{enabled:true,dir:'/shared/memex/'});
+  await x.c.sync('disable');
+  assert.deepEqual(x.syncCalls.filter(c=>c[0]==='set')[1][1],{enabled:false});
+  const exported=await x.c.sync('export');
+  assert.deepEqual(x.syncCalls.find(c=>c[0]==='export')[1],{force:true});
+  assert.equal(exported.outcome.result.facts,3);
+  const imported=await x.c.sync('import');
+  assert.equal(imported.outcome.result.newFacts,2);
+  assert(imported.status,'실행 뒤 상태를 함께 돌려주지 않았습니다');
+ }finally{x.clean();}
+});
+test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()=>{
+ const x=setup();
+ try{
+  x.c.modules.set('sync-control',{getSyncStatus(){return {};}});
+  await assert.rejects(x.c.sync('status'),{status:503,code:'CORE_UNAVAILABLE'});
+  assert.equal(x.c.syncBusy,undefined);
+ }finally{x.clean();}
+});
 test('no DB file is created when the initial read fails',async()=>{const f=fixture(),filename=path.join(f.home,'missing','never.sqlite');const c=new Core({root:f.home,dbPath:filename,home:f.home});try{await assert.rejects(c.connect(),{status:503});assert.equal(fs.existsSync(filename),false);}finally{f.close();fs.rmSync(f.home,{recursive:true,force:true});}});
 test('API helper sends POST plus token when a body exists',async()=>{const mod=await import('../public/api.mjs');const saved={fetch:global.fetch,location:global.location};try{global.location={origin:'http://127.0.0.1:3847'};let captured;global.fetch=async(url,opts)=>{captured={url:String(url),opts};return new Response('{"ok":true}',{status:200,headers:{'content-type':'application/json'}});};mod.setToken('test-token');assert.deepEqual(await mod.request('facts/mutate',{scope:'global'},{body:{action:'edit'}}),{ok:true});assert.equal(captured.opts.method,'POST');assert.equal(captured.opts.headers['X-Memex-CSRF'],'test-token');await mod.request('facts');assert.equal(captured.opts.method,'GET');assert.equal(captured.opts.body,undefined);}finally{global.fetch=saved.fetch;global.location=saved.location;}});
 test('safe Markdown escapes scripts, event attributes and remote image syntax',async()=>{const {markdown,esc}=await import('../public/ui.mjs');const html=markdown('<img src=x onerror=alert(1)>\n\n<script>alert(2)</script>\n\n![remote](https://invalid/x)');assert(!html.includes('<img'));assert(!html.includes('<script'));assert(html.includes('&lt;script&gt;'));assert.equal(esc('"\'<>&'),'&quot;&#39;&lt;&gt;&amp;');});

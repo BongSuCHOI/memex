@@ -19,6 +19,20 @@ test('계층 이동 API는 CSRF 토큰과 POST를 요구한다',async()=>{
   assert.equal((await get('/api/v2/facts/'+action+'?'+scope)).status,405);
  }
 });
+test('동기화 상태는 DB 없이도 읽히고, 변경에는 토큰과 명시적 확인이 필요하다',async()=>{
+ const read=await get('/api/v2/sync');
+ assert.equal(read.status,200);
+ assert.equal(read.data.status.enabled,false,'기본값은 꺼짐이어야 합니다');
+ assert(read.data.status.configPath.endsWith('config.json'));
+ const url=base+'/api/v2/sync',headers={'Content-Type':'application/json','X-Memex-CSRF':app.token};
+ const noToken=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'export',confirm:true})});
+ assert.equal((await noToken.json()).error.code,'CSRF_REJECTED');
+ const noConfirm=await fetch(url,{method:'POST',headers,body:JSON.stringify({action:'export'})});
+ assert.equal(noConfirm.status,400);assert.equal((await noConfirm.json()).error.code,'CONFIRMATION_REQUIRED');
+ const confirmed=await fetch(url,{method:'POST',headers,body:JSON.stringify({action:'export',confirm:true})});
+ assert.equal((await confirmed.json()).error.code,'FIXTURE_READ_ONLY');
+ assert.equal((await fetch(url,{method:'DELETE',headers})).status,405);
+});
 test('계층 이관 명령은 관리 명령 allowlist에 등록되어 있다',async()=>{
  const boot=(await get('/api/v2/bootstrap')).data;
  assert.deepEqual(boot.commands['tiers-preview'].args,['facts','migrate-tiers','--dry-run']);

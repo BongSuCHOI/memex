@@ -93,7 +93,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/taxonomy` 분류 | ontology domain과 category |
 | `/graph` 지식 지도 | WebGL 2D/3D 관계 그래프, Canvas2D fallback |
 | `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 — 각 탭에 [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 실패 클래스 표에서 파생한 "다음 행동" 안내 |
-| `/settings` 관리 | 런타임, 관리 명령, 화면 설정, 진단 |
+| `/settings` 관리 | 런타임, 관리 명령, 다기기 동기화(기본 꺼짐), 화면 설정, 진단 |
 
 모든 화면에 도움말이 붙어 있습니다 — 제목 옆 ⓘ가 한 문단 설명과 이 릴리스 태그의 문서 링크를 주고, 컨트롤·배지·표 머리글에는 한 줄 툴팁이, `?`에는 검색 가능한 용어집이 있습니다. 표시 정도는 관리 › 화면 설정에서 조절합니다.
 

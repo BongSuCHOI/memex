@@ -64,6 +64,18 @@ function createServer(options={}){
         if(req.method!=='POST')throw new HttpError(405,'POST만 허용됩니다.');
         const b=await readBody(req);if(b.action!=='cancel')throw new HttpError(400,'cancel만 허용됩니다.');json(res,200,operations.cancel(b.id));return;
       }
+      if(p==='/api/v2/sync'){
+        // 조회는 DB 연결과 무관하다. DB가 없어도 동기화 설정은 읽을 수 있어야 한다.
+        if(req.method==='GET'){json(res,200,await core.sync('status'));return;}
+        if(req.method!=='POST')throw new HttpError(405,'GET 또는 POST만 허용됩니다.');
+        const b=await readBody(req);
+        if(b.confirm!==true)throw new HttpError(400,'동기화 작업은 명시적 확인이 필요합니다.','CONFIRMATION_REQUIRED');
+        if(operations.children?.size)throw new HttpError(409,'관리 명령이 실행 중입니다. 완료 후 실행하세요.','OPERATION_BUSY');
+        let result;
+        try{result=await core.sync(b.action,b);try{logs.audit({action:'sync.'+b.action,status:'completed'});}catch{}}
+        catch(e){try{logs.audit({action:'sync.'+String(b.action),status:'failed',error_code:e.code||e.name});}catch{}throw e;}
+        notify();json(res,200,result);return;
+      }
       if(p==='/api/v2/environment'){if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');json(res,200,core.environment());return;}
       if(p==='/api/v2/diagnostics'){
         if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');

@@ -60,9 +60,13 @@ function fixture(options={}){
 }
 class FixtureCore{
  constructor(f){Object.assign(this,{fixture:f,root:path.resolve(__dirname,'../../..'),home:f.home,dbPath:f.filename===':memory:'?path.join(f.home,'db.sqlite'):f.filename,db:f.db,store:f.store,version:'0.4.2 · fixture',busy:new Set()});}
- async connect(){return this.store;}environment(){return {root:this.root,home:this.home,dbPath:this.dbPath,version:this.version,node:process.version,platform:process.platform,pid:process.pid,values:{MEMEX_AUTO_ONTOLOGY:null,MEMEX_MODEL_BUDGET_MAX_ATTEMPTS:null},autoOntology:false,mutable:false,commands:false,demo:true,note:'검증용 환경입니다. 실제 플러그인을 실행하지 않습니다.'};}
+ async connect(){return this.store;}environment(){return {root:this.root,home:this.home,dbPath:this.dbPath,version:this.version,node:process.version,platform:process.platform,pid:process.pid,values:{MEMEX_AUTO_ONTOLOGY:null,MEMEX_MODEL_BUDGET_MAX_ATTEMPTS:null},autoOntology:false,mutable:false,commands:false,sync:true,demo:true,note:'검증용 환경입니다. 실제 플러그인을 실행하지 않습니다.'};}
  async pipeline(){const a=this.store.overview(this.store.scope(new URLSearchParams({scope:'all'})));return {dataRootEmpty:false,conversations:{sessionsIndexed:a.sessions,exchanges:a.exchanges,archiveFiles:16,ready:true},extraction:{total:16,done:13,pending:1,excluded:0,deferred:0,claimed:1,failedPermanent:1,retriable:1,lastSuccessAt:this.fixture.ts(34)},embeddings:{activeFacts:a.facts.active,factVectorsPending:6},ontology:{classifiedFacts:a.facts.active-a.facts.unclassified,pendingFacts:a.facts.unclassified},relations:{total:120},readiness:{conversationReady:true,factReady:true,graphReady:true},lifecycleLastEventAt:this.fixture.ts(4)};}
  async mutate(){throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');}
- async tier(){throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');}async impact(id,s){this.store.visibleFact(id,s);return {exists:true,revisions:1,relations:2,contextDependencies:1};}close(){this.fixture.close();}
+ async tier(){throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');}
+ async sync(action){
+  if(action!=='status')throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');
+  return {status:{enabled:false,dir:path.join(this.home,'conversation-index','sync'),dirSource:'default',dirExists:false,dirWritable:false,configPath:path.join(this.home,'sync','config.json'),updatedAt:null,deviceId:null,lastExport:null,peers:[]}};
+ }async impact(id,s){this.store.visibleFact(id,s);return {exists:true,revisions:1,relations:2,contextDependencies:1};}close(){this.fixture.close();}
 }
 module.exports={fixture,FixtureCore,uid,PROJECT,OTHER};

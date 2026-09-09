@@ -52,11 +52,52 @@ class Core {
       autoOntology:(v=>v===undefined||v===''||v==='1')(process.env.MEMEX_AUTO_ONTOLOGY?.trim()),
       mutable:fs.existsSync(path.join(this.root,'dist','fact-management.js')),
       commands:fs.existsSync(path.join(this.root,'cli','memex.js')),
+      sync:fs.existsSync(path.join(this.root,'dist','sync-control.js')),
     };
   }
   async impact(id,scope){
     const store=await this.connect();store.visibleFact(id,scope);
     const fm=await this.module('fact-management');return fm.hardDeleteImpact(this.db,id);
+  }
+  /**
+   * Cross-device sync through dist/sync-control.js (#48).
+   *
+   * The core module resolves its own paths from MEMEX_HOME / MEMEX_DB_PATH, and this UI may have
+   * derived a different home from an explicitly pointed DB. So the env is pinned to the home and
+   * DB this server actually resolved for the duration of the call and restored afterwards — a
+   * temp-DB session must never write sync state into the user's real data root. One sync call at a
+   * time keeps that window from overlapping with another.
+   */
+  async sync(action,body={}){
+    if(!['status','enable','disable','export','import'].includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
+    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 이미 진행 중입니다.','SYNC_BUSY');
+    if(action!=='status'&&this.busy.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
+    const m=await this.module('sync-control');
+    for(const fn of ['getSyncStatus','setSyncEnabled','runSyncExport','runSyncImport'])
+      if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 동기화 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+    this.syncBusy=true;
+    const saved={MEMEX_HOME:process.env.MEMEX_HOME,MEMEX_DB_PATH:process.env.MEMEX_DB_PATH};
+    process.env.MEMEX_HOME=this.home;process.env.MEMEX_DB_PATH=this.dbPath;
+    try{
+      if(action==='status')return {status:m.getSyncStatus()};
+      if(action==='enable'){
+        const dir=text(body.dir,4096).trim();
+        if(!dir)throw new HttpError(400,'공유 폴더 경로를 입력하세요.');
+        if(!path.isAbsolute(dir)||/[\x00-\x1f]/.test(dir))throw new HttpError(400,'공유 폴더는 정규화 가능한 절대 경로여야 합니다.','INVALID_SYNC_DIR');
+        return {status:m.setSyncEnabled({enabled:true,dir:path.normalize(dir)})};
+      }
+      if(action==='disable')return {status:m.setSyncEnabled({enabled:false})};
+      // 사용자가 버튼을 눌렀다면 변경이 없어도 내보낸다(force). 자동 훅만 빈 세대를 피한다.
+      const outcome=action==='export'?m.runSyncExport({force:true}):await m.runSyncImport();
+      return {outcome,status:m.getSyncStatus()};
+    }catch(e){
+      if(e.status)throw e;
+      if(/not writable/.test(e.message))throw new HttpError(400,'공유 폴더에 쓸 수 없습니다. 경로와 권한을 확인하세요: '+e.message,'SYNC_DIR_UNWRITABLE');
+      throw e;
+    }finally{
+      this.syncBusy=false;
+      for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+    }
   }
   /**
    * Tier ladder move through dist/fact-management.js promoteFact/demoteFact.

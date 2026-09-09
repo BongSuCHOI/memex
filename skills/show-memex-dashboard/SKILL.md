@@ -33,7 +33,7 @@ the request:
 | 분류 | `/taxonomy` | 온톨로지 도메인과 주제 분류 |
 | 지식 지도 | `/graph` | 기억 관계 지도 (2D Map / 3D Galaxy) |
 | 활동 · 추적 | `/activity` | 처리 작업, 모델 시도, 변경 이력, 로그 |
-| 관리 | `/settings` | 런타임, 관리 작업, 화면 설정, 진단 |
+| 관리 | `/settings` | 런타임, 관리 작업, 다기기 동기화(기본 꺼짐), 화면 설정, 진단 |
 
 Scope is a query parameter on every route: `?scope=all` reads every project plus
 common memory, `?scope=global` reads common memory only, and

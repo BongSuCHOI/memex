@@ -93,7 +93,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/taxonomy` classification | ontology domains and categories |
 | `/graph` knowledge map | WebGL 2D/3D relation graph with a Canvas2D fallback |
 | `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
-| `/settings` administration | runtime, admin commands, display preferences, diagnostics |
+| `/settings` administration | runtime, admin commands, cross-device sync (off by default), display preferences, diagnostics |
 
 Every page carries its own help: an ⓘ next to the title linking the matching section of the docs at this release tag, one-line tooltips on controls, badges and table headers, and a searchable glossary on `?`. Turn it down or off in 관리 › 화면 설정.
 

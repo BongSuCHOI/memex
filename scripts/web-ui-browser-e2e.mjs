@@ -1761,6 +1761,63 @@ try {
     true,
   );
 
+  // #48: the sync tab drives the real dist/sync-control.js. The shared folder lives inside this
+  // run's temp root, so nothing reaches a real data root.
+  const SHARED_SYNC = path.join(TEMP, "shared-sync");
+  const syncTab = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=sync",
+    probe(`
+      const submit=async(label)=>{
+        const form=await until(label+' modal',()=>document.querySelector('#modal[open] #modal-form'));
+        form.requestSubmit();
+        await until(label+' committed',()=>{
+          const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+          if(error)throw new Error(label+' rejected: '+error);
+          return !document.querySelector('#modal[open]');
+        },120000);
+      };
+      const tabText=()=>document.querySelector('#main')?.textContent||'';
+      await until('sync tab',()=>tabText().includes('다기기 동기화'));
+      const offSwitch=document.querySelector('#sync-switch');
+      const before={
+        checked:offSwitch.checked,
+        exportDisabled:document.querySelector('[data-sync="export"]').disabled,
+        importDisabled:document.querySelector('[data-sync="import"]').disabled,
+        footnote:document.querySelector('#main .footer-note')?.textContent||'',
+      };
+      offSwitch.click();
+      const enable=await until('enable modal',()=>document.querySelector('#modal[open] input[name="dir"]'));
+      enable.value=${JSON.stringify(SHARED_SYNC)};
+      await submit('enable');
+      await until('sync on',()=>document.querySelector('#sync-switch')?.checked===true,60000);
+      const on={
+        folder:tabText().includes(${JSON.stringify(SHARED_SYNC)}),
+        exportDisabled:document.querySelector('[data-sync="export"]').disabled,
+      };
+      document.querySelector('[data-sync="export"]').click();
+      (await until('export confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
+      await submit('export');
+      await until('export result',()=>tabText().includes('마지막 내보내기'),120000);
+      const exported=tabText();
+      document.querySelector('[data-sync="import"]').click();
+      (await until('import confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
+      await submit('import');
+      await until('import result',()=>tabText().includes('마지막 가져오기'),120000);
+      const imported=document.querySelector('#main').textContent;
+      return {
+        before,
+        on,
+        deviceAssigned:!/아직 없음 · 첫 내보내기에서 부여됩니다/.test(imported),
+        exportedHasCounts:/내보낸 행 수/.test(exported),
+        importSummary:(imported.match(/기억 \\+\\d+ \\/ ~\\d+ \\/ -\\d+/)||[''])[0],
+        rejected:imported.includes('거부된 세대가 없습니다'),
+      };
+    `),
+    "settings-sync.png",
+    false,
+  );
+
   // #22: the project screen must admit the branch-tier memory exists and be able to include it.
   const tierBanner = await pageProbe(
     cdp,
@@ -1980,6 +2037,20 @@ try {
     );
   }
   if (
+    syncTab.before.checked ||
+    !syncTab.before.exportDisabled ||
+    !syncTab.before.importDisabled ||
+    !syncTab.before.footnote.includes("0.6.2") ||
+    !syncTab.on.folder ||
+    syncTab.on.exportDisabled ||
+    !syncTab.deviceAssigned ||
+    !syncTab.exportedHasCounts ||
+    !syncTab.importSummary ||
+    !syncTab.rejected
+  ) {
+    throw new Error("Sync tab assertion failed: " + JSON.stringify(syncTab));
+  }
+  if (
     !tierBanner.bannerText.includes("브랜치/작업 흐름 범위 기억 1건이 더 있습니다") ||
     tierBanner.before !== 1 ||
     tierBanner.after !== 2 ||
@@ -2118,6 +2189,7 @@ try {
           tierPromote,
           jobGuidance,
           attention,
+          syncTab,
           facts,
           factDetail,
           factsTaxonomy,
