@@ -32,6 +32,7 @@
     "memex-ui": "./ui/server.cjs",
     "memex-hook-version-drift": "./scripts/version-drift-check.js",
     "memex-hook-sync-import": "./scripts/sync-import-hook.js",
+    "memex-hook-sync-export": "./scripts/sync-export-hook.js",
     "memex-hook-maintenance": "./scripts/session-start-maintenance.js",
     "memex-hook-inject": "./scripts/inject-context.js",
     "memex-hook-continuity": "./scripts/continuity-hook.js",

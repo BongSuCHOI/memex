@@ -8,8 +8,14 @@ const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
     console.log(`
 Usage: memex sync [--background]
+       memex sync enable [--dir <shared folder>]
+       memex sync disable
+       memex sync status [--json]
+       memex sync export [--force] [--json]
+       memex sync import [--json]
 
-Sync conversations from Codex session rollouts to archive and index them.
+Without a subcommand: sync conversations from Codex session rollouts to archive
+and index them.
 
 This command:
 1. Copies new or updated .jsonl files to conversation archive
@@ -24,6 +30,15 @@ even when their source rollouts have not changed.
 OPTIONS:
   --background    Run sync in background (for hooks, returns immediately)
 
+CROSS-DEVICE SUBCOMMANDS (durable memory state between your own machines):
+  enable          Turn cross-device sync on (OFF by default) and pin the shared
+                  folder — an iCloud Drive / Dropbox / Syncthing path you own
+  disable         Turn it off; every hook becomes a one-line no-op
+  status          Shared folder, this device, last export, devices seen
+  export          Publish one generation now (--force publishes even when the
+                  durable state has not changed since the last export)
+  import          Reconcile every peer generation now
+
 EXAMPLES:
   # Sync all new conversations
   memex sync
@@ -31,10 +46,80 @@ EXAMPLES:
   # Sync in background (for hooks)
   memex sync --background
 
-  # Use in a Codex SessionEnd hook:
-  # hooks.json -> "command": "node cli/memex.js sync --background"
+  # Set a second Mac up against a shared folder
+  memex sync enable --dir ~/Library/Mobile\\ Documents/com~apple~CloudDocs/memex-sync
+  memex sync export
+  memex sync status
 `);
     process.exit(0);
+}
+// #35/#48 — cross-device sync subcommands. The rollout archive sync above takes
+// no positional argument, so a leading non-flag token can only be one of these.
+const SYNC_SUBCOMMANDS = new Set(['enable', 'disable', 'status', 'export', 'import']);
+const subcommand = args[0] && !args[0].startsWith('-') ? args[0] : null;
+if (subcommand !== null) {
+    if (!SYNC_SUBCOMMANDS.has(subcommand)) {
+        console.error(`Unknown 'memex sync' subcommand: ${subcommand}\n` +
+            `Expected one of: ${[...SYNC_SUBCOMMANDS].join(', ')} (or no subcommand for rollout sync)`);
+        process.exit(1);
+    }
+    const json = args.includes('--json');
+    const { formatSyncStatus, getSyncStatus, runSyncExport, runSyncImport, setSyncEnabled, } = await import('./sync-control.js');
+    const emit = (payload, text) => {
+        if (json)
+            console.log(JSON.stringify(payload, null, 2));
+        else
+            console.log(text);
+    };
+    try {
+        if (subcommand === 'enable' || subcommand === 'disable') {
+            const dirIndex = args.indexOf('--dir');
+            const dir = dirIndex >= 0 ? args[dirIndex + 1] : undefined;
+            if (dirIndex >= 0 && !dir)
+                throw new Error('--dir needs a path');
+            const status = setSyncEnabled({ enabled: subcommand === 'enable', dir });
+            emit(status, formatSyncStatus(status));
+        }
+        else if (subcommand === 'status') {
+            const status = getSyncStatus();
+            emit(status, formatSyncStatus(status));
+        }
+        else if (subcommand === 'export') {
+            const outcome = runSyncExport({ force: args.includes('--force') });
+            if (outcome.error)
+                throw new Error(outcome.error);
+            emit(outcome, outcome.skipped === 'disabled'
+                ? 'sync export skipped: cross-device sync is off (memex sync enable)'
+                : outcome.skipped === 'unchanged'
+                    ? 'sync export skipped: no durable change since the last export (--force to publish anyway)'
+                    : outcome.skipped === 'locked'
+                        ? 'sync export skipped: another export is in progress'
+                        : `sync export: ${outcome.result.facts} facts, ${outcome.result.revisions} revisions, ` +
+                            `${outcome.result.tombstones} tombstones, ${outcome.result.recallEvents} recall events`);
+        }
+        else {
+            const outcome = await runSyncImport();
+            if (outcome.error)
+                throw new Error(outcome.error);
+            if (outcome.skipped === 'disabled') {
+                emit(outcome, 'sync import skipped: cross-device sync is off (memex sync enable)');
+            }
+            else {
+                const r = outcome.result;
+                emit(outcome, `sync import: facts +${r.newFacts}/~${r.updatedFacts}/-${r.deletedFacts}, ` +
+                    `+${r.newRevisions} revisions, +${r.newTombstones} tombstones, ` +
+                    `+${r.newRecallEvents}/~${r.updatedRecallEvents} recall events` +
+                    (r.malformedRows.length
+                        ? `\n${r.malformedRows.map((issue) => `  rejected ${issue.file}:${issue.line} — ${issue.error}`).join('\n')}`
+                        : ''));
+            }
+        }
+        process.exit(0);
+    }
+    catch (error) {
+        console.error(`memex sync ${subcommand} failed: ${error instanceof Error ? error.message : error}`);
+        process.exit(1);
+    }
 }
 // Check if running in background mode
 const isBackground = args.includes('--background');

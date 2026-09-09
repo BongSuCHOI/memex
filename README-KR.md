@@ -217,6 +217,16 @@ user-role message의 `DO NOT INDEX` marker는 해당 conversation 전체를 Meme
 
 ### 멀티디바이스 sync
 
+크로스디바이스 동기화는 **기본 off**이며, 켜기 전에는 아무것도 기기 밖으로 나가지 않습니다. 두 맥이 같은 공유 폴더(본인 계정의 iCloud Drive·Dropbox·Syncthing 등)를 보게 하면 durable 기억 상태가 서로 맞춰집니다.
+
+```bash
+memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
+memex sync export      # 이 기기의 첫 세대 내보내기
+memex sync status      # 공유 폴더·이 기기·마지막 export·감지된 다른 기기
+```
+
+이후 export는 자동입니다. SessionEnd의 async 훅과 자동 유지보수 wake가 "마지막 export 이후 durable 변경이 있을 때만" 세대를 만들고, SessionStart가 다른 기기의 세대를 가져옵니다. `MEMEX_SYNC_DIR`은 저장된 공유 폴더보다 우선하며, on/off 스위치는 `<data root>/sync/config.json`의 기기 로컬 상태라 전송되지 않습니다. `memex sync disable`이면 이 경로 전부가 stderr 한 줄짜리 no-op이 됩니다. 공유 폴더의 기억은 평문 JSONL이고 암호화는 범위 밖이므로 **본인 계정의** 클라우드만 사용하십시오.
+
 protocol v5는 기기별로 하나의 committed generation을 export하며, 각 generation은 `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`과 protocol version·device/generation identity·row count·payload별 SHA-256을 담은 `meta.json`으로 구성됩니다. Importer는 SQLite를 변경하기 전에 generation 전체를 pin하고 검증하며, 필수 파일 누락·hash 불일치·JSON 오류·row schema 오류가 하나라도 있으면 해당 device generation 전체를 reject합니다. 같은 local device의 exporter는 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화되므로 늦게 끝난 오래된 export가 `CURRENT`를 되돌릴 수 없고 cloud-sync되는 lockfile도 필요하지 않습니다. KR 번역, ontology category, relation, vector index는 각 기기에서 로컬로 다시 만듭니다.
 
 | 기억 계층 | 전송 | 받는 기기에서 |
@@ -250,7 +260,8 @@ memex status
 | `memex deps materialize` | 해석된 설치 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`). `--root`, `--dry-run`, `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize` |
-| `memex sync` | 새 Codex rollout archive/index |
+| `memex sync` | 새 Codex rollout archive/index. `--background` |
+| `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` |
 | `memex index` | conversation index 생성·검증·복구·재구축 |
 | `memex search` | semantic / text / hybrid conversation search |
 | `memex show` | archive conversation 읽기 |

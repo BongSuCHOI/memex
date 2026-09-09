@@ -74,6 +74,15 @@ async function main() {
       }
     };
 
+    // 0.6.1 cross-device sync (#35/#48 decision 2): the maintenance wake is the
+    // second automatic export trigger beside SessionEnd. Detached and gated —
+    // the child exits immediately unless sync is enabled AND durable state
+    // changed since the last export, so an idle machine publishes nothing.
+    try {
+      const { readSyncConfig } = await import('../dist/sync-paths.js');
+      if (readSyncConfig().enabled) spawnDetached('sync-export-hook.js');
+    } catch { /* non-fatal: SessionEnd is the other trigger */ }
+
     // 0.6.0 tier ladder (#19): evidence-based automatic promotion/demotion.
     // Model-free and bounded — a few indexed SQL passes over the projection —
     // so it runs before the priority gate below and never spends model budget.

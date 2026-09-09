@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
 import { resolveProjectWorkspace } from './continuity-identity.js';
 import { getMemexHome } from './paths.js';
+import { getSyncDir } from './sync-paths.js';
 const SYNC_DIR_NAME = 'sync';
 const GENERATIONS_DIR_NAME = 'generations';
 const CURRENT_MANIFEST = 'CURRENT';
@@ -56,11 +57,6 @@ export function withExportTransaction(db, operation) {
         db.pragma('busy_timeout = 5000');
     }
 }
-/** The payload files a committed generation must carry (meta.json excluded —
- * it is the integrity manifest OF these files). Protocol v4: ontology
- * domains/categories/relations and the KR translation are LOCAL DERIVED state
- * — every device rebuilds them from its own facts, so they no longer travel,
- * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
 /**
  * Every promotion state a project fact can hold. Before 0.6.1 the export
  * carried only the project-wide three, so branch/workspace-tier memories never
@@ -86,6 +82,11 @@ export const EXPORTED_PROMOTION_STATES = [
  * an older peer rejects the whole generation and says why.
  */
 export const SYNC_PROTOCOL_VERSION = 5;
+/** The payload files a committed generation must carry (meta.json excluded —
+ * it is the integrity manifest OF these files). Protocol v5: ontology
+ * domains/categories/relations and the KR translation are LOCAL DERIVED state
+ * — every device rebuilds them from its own facts, so they no longer travel,
+ * and private-derived taxonomy can never leak through sync (재감사 P1-4 v4). */
 export const SYNC_PAYLOAD_FILE_NAMES = [
     'facts.jsonl',
     'fact-revisions.jsonl',
@@ -103,15 +104,51 @@ export function countPayloadRows(content) {
 export function payloadSha256(content) {
     return createHash('sha256').update(content, 'utf8').digest('hex');
 }
-export function getSyncDir() {
-    const dir = path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    return dir;
-}
+/**
+ * The shared generation folder. Resolution (MEMEX_SYNC_DIR > configured shared
+ * folder > the historical local default) lives in sync-paths.ts so the
+ * exporter, the importer and `memex sync status` cannot disagree (#35/#48).
+ */
+export { getSyncDir };
+/**
+ * The last-attempt record is LOCAL state about this device, so it stays in the
+ * data root even when the generations live in a shared cloud folder — two
+ * devices writing one status file would each erase the other's diagnosis.
+ */
 function getExportStatusPath() {
     return path.join(getMemexHome(), 'conversation-index', SYNC_DIR_NAME, EXPORT_STATUS_FILE);
+}
+/**
+ * Cheap fingerprint of everything the payload carries. Counts alone would miss
+ * an in-place semantic edit, so each table contributes its row count and its
+ * newest clock.
+ */
+export function durableStateFingerprint(db) {
+    const scalar = (sql) => {
+        try {
+            const row = db.prepare(sql).get();
+            return String(Object.values(row ?? {})[0] ?? '');
+        }
+        catch {
+            // A table that does not exist yet contributes nothing rather than
+            // failing the export gate.
+            return '';
+        }
+    };
+    const parts = [
+        scalar('SELECT COUNT(*) AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(updated_at), "") AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(semantic_updated_at), "") AS v FROM facts'),
+        scalar('SELECT COALESCE(MAX(lifecycle_updated_at), "") AS v FROM facts'),
+        scalar('SELECT COUNT(*) AS v FROM fact_revisions'),
+        scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM fact_revisions'),
+        scalar('SELECT COUNT(*) AS v FROM fact_tombstones'),
+        scalar('SELECT COALESCE(MAX(deleted_at), "") AS v FROM fact_tombstones'),
+        scalar('SELECT COUNT(*) AS v FROM chronicle_tombstones'),
+        scalar('SELECT COUNT(*) AS v FROM recall_events'),
+        scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM recall_events'),
+    ];
+    return createHash('sha256').update(parts.join('\0'), 'utf8').digest('hex');
 }
 export function readExportStatus() {
     try {
@@ -377,19 +414,22 @@ export function exportForSync() {
                 { rows: countPayloadRows(payloadFiles[name]), sha256: payloadSha256(payloadFiles[name]) },
             ])),
         };
-        const files = {
-            ...payloadFiles,
-            'meta.json': JSON.stringify(meta, null, 2),
-        };
         const generationsDir = path.join(deviceDir, GENERATIONS_DIR_NAME);
         fs.mkdirSync(generationsDir, { recursive: true });
         const genPath = path.join(generationsDir, generationId);
         const tmpPath = `${genPath}.tmp`;
         fs.rmSync(tmpPath, { recursive: true, force: true }); // leftover from a crash
         fs.mkdirSync(tmpPath, { recursive: true });
-        for (const [name, body] of Object.entries(files)) {
-            fs.writeFileSync(path.join(tmpPath, name), body);
+        // #48 A — publish order matters when the folder is a cloud drive that
+        // uploads file by file: every payload file is written first and the
+        // integrity manifest LAST, so a generation directory observed mid-upload
+        // either has no meta.json (importers ignore it) or has one that already
+        // pins complete payload files. The directory rename is the local commit;
+        // the manifest-last order is what protects a REMOTE observer.
+        for (const name of SYNC_PAYLOAD_FILE_NAMES) {
+            fs.writeFileSync(path.join(tmpPath, name), payloadFiles[name]);
         }
+        fs.writeFileSync(path.join(tmpPath, 'meta.json'), JSON.stringify(meta, null, 2));
         fs.renameSync(tmpPath, genPath);
         // The manifest flip is the commit point: before it, readers resolve the
         // previous generation; after it, this complete one.

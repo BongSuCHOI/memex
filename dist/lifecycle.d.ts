@@ -9,6 +9,13 @@ export interface LifecycleCommandConfig {
 }
 /** Relative-to-plugin-root commands registered for each event. */
 export declare const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]>;
+/** Hook scripts that must be registered for cross-device sync to work at all. */
+export declare const SYNC_LIFECYCLE_SCRIPTS: {
+    readonly export: "scripts/sync-export-hook.js";
+    readonly import: "scripts/sync-import-hook.js";
+};
+/** True when `script` is registered for at least one lifecycle event. */
+export declare function isLifecycleScriptRegistered(script: string): boolean;
 export interface LifecycleRegistration {
     schemaVersion: 2;
     installedAt: string;

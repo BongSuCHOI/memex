@@ -23,6 +23,7 @@ function isolatedEnv(t) {
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'version-drift-check.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'cli', 'memex.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'sync-import-hook.js'), '#!/usr/bin/env node\n');
+  fs.writeFileSync(path.join(pluginRoot, 'scripts', 'sync-export-hook.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-start-maintenance.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'session-end-hook.js'), '#!/usr/bin/env node\n');
   fs.writeFileSync(path.join(pluginRoot, 'scripts', 'continuity-hook.js'), '#!/usr/bin/env node\n');
@@ -70,7 +71,7 @@ test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign 
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r1 = setupHooks();
-  assert.equal(r1.diff.add.length, 12);
+  assert.equal(r1.diff.add.length, 13); // +1: SessionEnd async sync-export (#35)
   assert.equal(r1.changed, true);
   const afterFirst = fs.readFileSync(file, 'utf8');
 
@@ -86,7 +87,7 @@ test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign 
 
   // Ownership record exists with fingerprints.
   const reg = JSON.parse(fs.readFileSync(registrationPath(), 'utf8'));
-  assert.equal(reg.entries.length, 12);
+  assert.equal(reg.entries.length, 13);
   assert.ok(reg.entries.every((e) => e.fingerprint && /"(.+)"/.test(e.command)));
 
   // Desired commands use absolute paths under the plugin root.
@@ -101,7 +102,7 @@ test('dry-run mutates nothing', (t) => {
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r = setupHooks({ dryRun: true });
-  assert.equal(r.diff.add.length, 12);
+  assert.equal(r.diff.add.length, 13);
   assert.equal(fs.readFileSync(file, 'utf8'), FOREIGN_HOOKS);
   assert.ok(!fs.existsSync(registrationPath()));
 });
@@ -113,12 +114,12 @@ test('remove-hooks removes only owned entries and keeps foreign bytes intact', (
   setupHooks();
 
   const dry = removeHooks({ dryRun: true });
-  assert.equal(dry.removed, 12);
+  assert.equal(dry.removed, 13);
   const configured = JSON.parse(fs.readFileSync(file, 'utf8')).hooks.SessionStart;
   assert.equal(configured.flatMap((block) => block.hooks).length, 6); // foreign + 5 ours
 
   const r = removeHooks();
-  assert.equal(r.removed, 12);
+  assert.equal(r.removed, 13);
   assert.equal(r.preservedForeignEntries, 2); // atuin + foreign-canary
   const after = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.deepEqual(after.hooks.PreToolUse[0].hooks[0].command, 'atuin hook codex');

@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { lastObserved } from "./observe-hook-event.js";
 import { getDbPath, getMemexHome } from "./paths.js";
 import { readExportStatus } from "./sync-export.js";
+import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
 import { getInjectLogPath } from "./inject-log.js";
 import { missingRuntimeDependencies, RUNTIME_DEPENDENCIES, resolveInstalledPluginRoot, } from "./plugin-root.js";
 const runtimeRequire = createRequire(import.meta.url);
@@ -55,8 +56,24 @@ export const LIFECYCLE_COMMANDS = {
     Interrupt: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
     PreCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 5 }],
     PostCompact: [{ script: "scripts/continuity-hook.js", matcher: "manual|auto", timeout: 3 }],
-    SessionEnd: [{ script: "scripts/continuity-hook.js", timeout: 3 }],
+    // Issue #35: SessionEnd is still a bounded final capture fence — the export
+    // is a SEPARATE async entry that Codex does not wait for. It is a no-op
+    // unless cross-device sync is enabled AND durable state changed since the
+    // last export, so the common case costs one process that exits immediately.
+    SessionEnd: [
+        { script: "scripts/continuity-hook.js", timeout: 3 },
+        { script: "scripts/sync-export-hook.js", async: true },
+    ],
 };
+/** Hook scripts that must be registered for cross-device sync to work at all. */
+export const SYNC_LIFECYCLE_SCRIPTS = {
+    export: "scripts/sync-export-hook.js",
+    import: "scripts/sync-import-hook.js",
+};
+/** True when `script` is registered for at least one lifecycle event. */
+export function isLifecycleScriptRegistered(script) {
+    return HOOK_EVENTS.some((event) => LIFECYCLE_COMMANDS[event].some((command) => command.script === script));
+}
 const OWNERSHIP_KEY = "_memex";
 function codexHome() {
     return process.env.CODEX_HOME
@@ -718,16 +735,48 @@ export function doctor() {
     // SessionEnd chain — a failed export must surface here instead of
     // disappearing behind the hook's exit 0.
     try {
+        // Issue #35: "no status file" used to be reported as ok with the advice to
+        // wait for a SessionEnd — but no hook ever invoked the exporter, so that
+        // was a wiring failure reported as health. The check now distinguishes
+        // three states: off (skipped, not a warning — #48 decision 5), on but never
+        // exported (warn), and on with a recorded result (ok/fail). It also
+        // verifies the export script is actually registered in a lifecycle event.
+        const syncConfig = readSyncConfig();
         const exportStatus = readExportStatus();
-        checks.push({
-            name: "sync-export",
-            status: !exportStatus ? "ok" : exportStatus.ok ? "ok" : "fail",
-            detail: !exportStatus
-                ? "no sync export recorded yet (first SessionEnd will write one)"
-                : exportStatus.ok
-                    ? `last export ok at ${exportStatus.at}`
+        const registered = isLifecycleScriptRegistered(SYNC_LIFECYCLE_SCRIPTS.export);
+        if (!syncConfig.enabled) {
+            checks.push({
+                name: "sync-export",
+                status: "ok",
+                detail: `skipped(off) — cross-device sync is disabled; enable it with: ` +
+                    `memex sync enable --dir <shared folder>`,
+            });
+        }
+        else if (!registered) {
+            checks.push({
+                name: "sync-export",
+                status: "warn",
+                detail: `sync is enabled but ${SYNC_LIFECYCLE_SCRIPTS.export} is not registered in any hook — ` +
+                    "nothing exports automatically; run: memex sync export",
+            });
+        }
+        else if (!exportStatus) {
+            checks.push({
+                name: "sync-export",
+                status: "warn",
+                detail: `sync is enabled (shared folder ${resolveSyncDir(syncConfig)}) but nothing has been ` +
+                    "exported yet — run: memex sync export, or end one session to trigger the SessionEnd export",
+            });
+        }
+        else {
+            checks.push({
+                name: "sync-export",
+                status: exportStatus.ok ? "ok" : "fail",
+                detail: exportStatus.ok
+                    ? `last export ok at ${exportStatus.at} (shared folder ${resolveSyncDir(syncConfig)})`
                     : `last export FAILED at ${exportStatus.at}: ${exportStatus.error ?? "unknown"}`,
-        });
+            });
+        }
     }
     catch {
         checks.push({

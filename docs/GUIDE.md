@@ -122,7 +122,7 @@ node scripts/translate-facts.mjs
 | Interrupt | incremental journal append + interrupted/open fence | 3초 timeout, 완료 처리 금지 |
 | PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze + outbox | 5초 timeout |
 | PostCompact(manual/auto) | telemetry/diagnostics only | correctness 비의존, 3초 timeout |
-| SessionEnd | final delta + final fence + outbox | 3초 timeout, foreground extraction/export 없음 |
+| SessionEnd | final delta + final fence + outbox, 그리고 **별도 async** 크로스디바이스 export | fence는 3초 timeout·foreground extraction 없음. export는 async 항목이라 세션을 붙잡지 않고, 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 즉시 no-op |
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 
@@ -259,6 +259,8 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   │   ├── export-status.json
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
+├── sync/
+│   └── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
@@ -288,6 +290,39 @@ DB path는 별도로 `MEMEX_DB_PATH`가 우선할 수 있습니다.
 memex home
 memex home --json
 ```
+
+### 두 번째 맥 설정 절차 (크로스디바이스 동기화)
+
+크로스디바이스 동기화는 **기본 off**입니다. 켜기 전에는 아무것도 기기 밖으로 나가지 않습니다.
+
+```bash
+# 1) 두 기기 모두: 본인 계정의 공유 폴더를 지정하고 켠다
+memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
+memex sync status            # 공유 폴더·쓰기 가능 여부·이 기기 id·다른 기기 목록
+
+# 2) 첫 기기: 첫 세대를 내보낸다
+memex sync export
+
+# 3) 두 번째 기기: 가져온다 (SessionStart에서도 자동으로 실행됩니다)
+memex sync import
+memex sync status
+```
+
+- **공유 폴더 지정 순서**: `MEMEX_SYNC_DIR` → `memex sync enable --dir`로 저장한 값 →
+  기존 로컬 기본값 `<data root>/conversation-index/sync`. 지정하지 않으면 0.6.0까지와 같은 경로입니다.
+- **on/off 스위치**는 data root의 `sync/config.json`에 저장됩니다. 공유 폴더가 아니라 **기기 로컬**
+  상태이므로 다른 기기의 스위치를 건드리지 않습니다. off일 때 export 훅·유지보수 export·SessionStart
+  import은 모두 stderr 한 줄만 남기고 끝납니다.
+- **자동 export 시점**: SessionEnd(별도 async 항목)와 자동 유지보수 wake. 두 경우 모두
+  "마지막 성공 export 이후 durable 변경이 있을 때만" 세대를 만듭니다(빈 세대 방지).
+  변경이 없어도 강제로 내보내려면 `memex sync export --force`.
+- **원자성**: 세대는 임시 디렉터리에 payload를 먼저 쓰고 `meta.json`을 **마지막에** 쓴 뒤
+  rename으로 공개합니다. 클라우드가 파일 단위로 업로드하는 중에 관측되더라도 `meta.json`이 없거나,
+  있으면 이미 완전한 payload를 가리킵니다. `CURRENT`가 새 세대를 가리키는 순간이 commit point입니다.
+- **로컬 재생성 항목**: 대화 원문·아카이브, KR 번역, ontology·관계, 벡터는 전송되지 않고 각 기기가
+  다시 만듭니다.
+- **평문 주의**: 공유 폴더의 기억은 평문 JSONL입니다. 암호화는 범위 밖이므로 **본인 계정의
+  클라우드/드라이브만** 공유 폴더로 사용하십시오.
 
 ### Sync에 포함되는 것
 
@@ -362,7 +397,7 @@ exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
-| `sync-export` | 마지막 export 결과. 실패면 fail, 상태 파일을 못 읽으면 warn, 기록이 없으면 ok |
+| `sync-export` | 동기화가 꺼져 있으면 `skipped(off)`로 ok(경고 아님). 켜져 있는데 export 훅이 어느 hook에도 등록되지 않았거나 한 번도 내보낸 적이 없으면 warn. 마지막 export가 실패면 fail, 성공이면 ok |
 
 `dependencies`가 검사하는 **설치된 plugin root**는 다음 순서로 해석하며, `memex install`,
 `memex deps materialize`, `cli/runtime-exec.js`의 폴백 메시지가 모두 같은 값을 씁니다.
@@ -667,6 +702,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) | [§5](#5-lifecycle-hooks), [§14](#14-제거와-데이터-보존) |
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
+| `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
 | `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session` | [§4](#4-최초-onboarding) |
 | `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
 | `memex show` | archive conversation 읽기 (`--format markdown\|html`) | [§6](#6-검색과-분석) |
@@ -698,6 +734,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_HOME` | — | Memex data root. 가장 우선하는 지정 |
 | `XDG_CONFIG_HOME` | — | 대체 경로 `$XDG_CONFIG_HOME/memex` |
 | `MEMEX_DB_PATH` | `<home>/conversation-index/db.sqlite` | data root와 별개로 index DB 경로를 지정 |
+| `MEMEX_SYNC_DIR` | `<home>/conversation-index/sync` | 크로스디바이스 동기화 공유 폴더(iCloud Drive/Dropbox/Syncthing 등). `memex sync enable --dir`로 저장한 값보다 우선합니다 |
 | `CODEX_HOME` | `~/.codex` | Codex home. `$CODEX_HOME/sessions`가 read-only rollout 원본 |
 | `MEMEX_SESSIONS_DIR` | `$CODEX_HOME/sessions` | rollout 원본 디렉터리를 직접 지정 (Web UI의 관리 화면도 이 값을 표시합니다) |
 | `MEMEX_ALLOWED_TRANSCRIPT_ROOTS` | Codex sessions root | hook이 읽어도 되는 transcript root |
@@ -770,7 +807,9 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
 | 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
-| sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남 | `conversation-index/sync/export-status.json` 확인 후 원인 수정, 다음 SessionEnd에서 재시도 |
+| sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남(대개 공유 폴더에 쓸 수 없음) | `memex sync status`로 공유 폴더·쓰기 가능 여부 확인 → 원인 수정 → `memex sync export`. 다음 SessionEnd/유지보수 wake에서도 재시도합니다 |
+| 동기화가 켜져 있는데 한 번도 나가지 않음 | `doctor`의 `sync-export: warn` | 스위치는 on인데 export 기록이 없음(또는 export 훅이 어느 hook에도 등록되지 않음) | `memex sync export`로 첫 세대를 만들고 `memex sync status`로 확인 |
+| 동기화가 꺼져 있음 | `doctor`의 `sync-export: ok` + `skipped(off)` | 기본값. 고장이 아님 | 쓰려면 `memex sync enable --dir <공유 폴더>` |
 | 기억이 브랜치에 갇혀 있음 | `memex facts tier <id>` 또는 `memex facts show --id <id>`가 `workstream`(`memex facts list`는 tier를 출력하지 않습니다) | 0.6.0 이전 fact는 전부 브랜치 tier에 있음 | `memex facts migrate-tiers --dry-run` → `memex facts migrate-tiers --apply` |
 
 탈락한 후보가 임계값에서 얼마나 떨어져 있었는지는 조정 전에 이 질의로 확인하십시오.

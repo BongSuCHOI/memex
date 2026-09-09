@@ -217,6 +217,16 @@ A user-role `DO NOT INDEX` marker excludes the whole conversation from the Memex
 
 ### Multi-device sync
 
+Cross-device sync is **off by default** and nothing leaves the machine until it is turned on. Point both machines at one shared folder you own — an iCloud Drive, Dropbox, or Syncthing path — and the durable memory state reconciles between them:
+
+```bash
+memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
+memex sync export      # publish this device's first generation
+memex sync status      # shared folder, this device, last export, devices seen
+```
+
+Afterwards the export runs by itself: an async SessionEnd hook and the automatic maintenance wake publish a generation whenever the durable state changed since the last one, and SessionStart imports the peers'. `MEMEX_SYNC_DIR` overrides the configured folder; the on/off switch is local state in `<data root>/sync/config.json` and never travels. `memex sync disable` turns every one of those paths back into a one-line no-op. Memories in the shared folder are plaintext JSONL — encryption is out of scope, so use a cloud folder that is yours.
+
 Protocol v5 exports one committed generation per local device, containing `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`, and a `meta.json` recording the protocol version, device/generation identity, row counts, and SHA-256 integrity for each payload file. Imports pin and validate an entire generation before mutating SQLite: missing files, hash mismatches, invalid JSON, or schema-invalid rows reject that device generation as a whole. Local exporters are serialized with SQLite's process-owned `BEGIN IMMEDIATE` transaction, so a slower export cannot move `CURRENT` back to an older snapshot and no cloud-synced lockfile is required. KR translations, ontology categories, relations, and vector indexes are rebuilt locally instead.
 
 | Memory tier | Travels | On the receiving device |
@@ -250,7 +260,8 @@ memex status
 | `memex deps materialize` | Install the runtime dependencies into the resolved installed plugin root (`npm install --omit=dev --no-audit --no-fund`); `--root`, `--dry-run`, `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Register or remove Memex-owned lifecycle hooks (explicit fallback hosts only) |
 | `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
-| `memex sync` | Archive and index new Codex rollouts |
+| `memex sync` | Archive and index new Codex rollouts; `--background` |
+| `memex sync enable\|disable\|status\|export\|import` | Cross-device sync switch (OFF by default), shared folder (`--dir`), status, manual export (`--force`) / import; `--json` |
 | `memex index` | Index, verify, repair, or rebuild the conversation index |
 | `memex search` | Semantic, text, or hybrid conversation search |
 | `memex show` | Read one archived conversation |
