@@ -378,7 +378,11 @@ async function processCapsule(
       jobId,
       kind: "capsule_update",
       state: "deferred",
-      detail: `model work budget exhausted: ${spentBudget.reason}`,
+      // Issue #14: name the exit, not just the wall. The pre-claim check has
+      // just made the budget durably exhausted, so this command now works.
+      detail:
+        `model work budget exhausted: ${spentBudget.reason}` +
+        ` — memex model-work resume ${spentBudget.budgetId} --new-run`,
     };
   }
   const claim = claimMemoryJobById(db, { jobId, owner, now, leaseMs: 5 * 60_000 });

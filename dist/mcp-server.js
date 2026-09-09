@@ -7829,8 +7829,16 @@ function startNewModelWorkRunForJob(db, input) {
 }
 function startNewModelWorkRunForBudget(db, input) {
   ensureModelBudgetSchema(db);
-  const previousBudget = readBudgetById(db, input.budgetId);
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  let previousBudget = readBudgetById(db, input.budgetId);
   if (!previousBudget) throw new ModelBudgetNotFoundError(input.budgetId);
+  if (previousBudget.state === "active") {
+    const spent = resolveBudgetExhaustion(db, previousBudget, now);
+    if (spent) {
+      markModelBudgetExhausted(db, previousBudget.budgetId, spent, now.toISOString());
+      previousBudget = readBudgetById(db, previousBudget.budgetId);
+    }
+  }
   if (!["exhausted", "cancelled"].includes(previousBudget.state)) {
     throw new Error(
       `model work budget ${input.budgetId} is still active; resume requires an exhausted or cancelled budget`
@@ -7846,7 +7854,6 @@ function startNewModelWorkRunForBudget(db, input) {
     limits: input.limits,
     now: input.now
   });
-  const now = input.now ?? /* @__PURE__ */ new Date();
   const rows = tableExists2(db, "memory_jobs") ? db.prepare(`
         SELECT job_id, state, lease_until
         FROM memory_jobs
@@ -7913,8 +7920,9 @@ function findExhaustedModelBudgetForClaim(db, input) {
   const requested = input.budgetId?.trim();
   if (!budget && requested) budget = readBudgetById(db, requested);
   if (!budget) return null;
-  const reason = budgetExhaustion(budget, now.getTime()) ?? (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+  const reason = resolveBudgetExhaustion(db, budget, now);
   if (!reason) return null;
+  markModelBudgetExhausted(db, budget.budgetId, reason, now.toISOString());
   return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
 }
 function hasModelAttemptSince(db, jobId, since) {
@@ -8011,6 +8019,14 @@ function budgetExhaustion(budget, now = Date.now()) {
   if (budget.state === "exhausted") return "attempts";
   return null;
 }
+function resolveBudgetExhaustion(db, budget, now) {
+  return budgetExhaustion(budget, now.getTime()) ?? (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+}
+function markModelBudgetExhausted(db, budgetId, reason, nowIso2) {
+  db.prepare(
+    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')"
+  ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso2, budgetId);
+}
 function reserveModelAttempt(db, input) {
   ensureModelBudgetSchema(db);
   if (!Number.isSafeInteger(input.inputChars) || input.inputChars < 0) {
@@ -8026,11 +8042,9 @@ function reserveModelAttempt(db, input) {
     if (input.inputChars > budget.maxInputChars) {
       throw new ModelBudgetInputLimitError(input.inputChars, budget.maxInputChars);
     }
-    const reason = budgetExhaustion(budget, now.getTime()) ?? (budget.automatic && automaticMaintenanceWindow(db, now).remaining === 0 ? "window" : null);
+    const reason = resolveBudgetExhaustion(db, budget, now);
     if (reason) {
-      db.prepare(
-        "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ?"
-      ).run(reason === "cancelled" ? "cancelled" : "exhausted", nowIso2, input.budgetId);
+      markModelBudgetExhausted(db, input.budgetId, reason, nowIso2);
       return new ModelBudgetExhaustedError(
         budget.budgetId,
         budget.parentWaveId,
@@ -8122,9 +8136,7 @@ function exhaustModelBudget(db, input) {
   const row = readBudgetById(db, input.budgetId);
   if (!row) throw new ModelBudgetNotFoundError(input.budgetId);
   const now = input.now ?? /* @__PURE__ */ new Date();
-  db.prepare(
-    "UPDATE model_work_budgets SET state = ?, updated_at = ? WHERE budget_id = ? AND state IN ('active','exhausted')"
-  ).run(input.reason === "cancelled" ? "cancelled" : "exhausted", now.toISOString(), input.budgetId);
+  markModelBudgetExhausted(db, input.budgetId, input.reason, now.toISOString());
   return new ModelBudgetExhaustedError(row.budgetId, row.parentWaveId, input.reason);
 }
 function isModelBudgetExhausted(error2) {
@@ -8327,8 +8339,9 @@ function getOrCreateAutomaticMaintenanceModelBudget(db, input = {}) {
       window.retryAt ? Date.parse(window.retryAt) : 0
     ) : 0;
     if (latest?.state === "cancelled") return latest;
-    if (latest?.state === "active" && (budgetExhaustion(latest, now.getTime()) || window.remaining === 0)) {
-      db.prepare("UPDATE model_work_budgets SET state = 'exhausted', updated_at = ? WHERE budget_id = ?").run(nowIso2, latest.budgetId);
+    const spent = latest?.state === "active" ? resolveBudgetExhaustion(db, latest, now) : null;
+    if (latest && spent) {
+      markModelBudgetExhausted(db, latest.budgetId, spent, nowIso2);
       latest = readBudgetById(db, latest.budgetId);
     }
     if (latest) {

@@ -225,6 +225,13 @@ export declare function startNewModelWorkRunForJob(db: Database.Database, input:
  * jobs that are still safe to retry. Running jobs remain bound to the old
  * budget; a lease-free CAS is used for every rebind so a concurrent worker
  * cannot be reset underneath an active claim.
+ *
+ * 🚨 Issue #14, belt and braces. A budget whose deadline/window has passed is
+ * spent whatever its stored `state` says, so resume settles that first rather
+ * than refusing the operator's only exit. It is the same transition every
+ * other caller makes, so a budget that arrives here already `exhausted` — the
+ * normal case — is unaffected. `state` alone still fences a genuinely live
+ * budget: an `active` budget with time left is refused as before.
  */
 export declare function startNewModelWorkRunForBudget(db: Database.Database, input: {
     budgetId: string;
@@ -234,8 +241,18 @@ export declare function startNewModelWorkRunForBudget(db: Database.Database, inp
     automatic?: boolean;
 }): ModelWorkRunResumeResult;
 /**
- * Read-only pre-flight for a queue claim: would this job be handed a budget
- * that is already spent?
+ * Pre-flight for a queue claim: would this job be handed a budget that is
+ * already spent? Read-only whenever the budget is genuinely fine; when it is
+ * not, it performs — and only then — the durable exhausted transition.
+ *
+ * 🚨 Issue #14. This check stands in for `reserveModelAttempt`, and the
+ * reservation did not merely *report* exhaustion: it wrote the budget durably
+ * to `exhausted` before throwing. Reporting without writing left budget
+ * `15af9e61` `active` with a deadline hours in the past, so every foreground
+ * backfill deferred and `model-work resume --new-run` refused the budget as
+ * "still active" — no way out but an automatic wake. The transition goes
+ * through the same `markModelBudgetExhausted` the reservation uses, so the
+ * pre-flight cannot leave a state the reservation would not have left.
  *
  * 🚨 Issue #12. The extractor claimed a job (which burns one `attempts`), then
  * resolved its budget deep inside the model call, and only there discovered

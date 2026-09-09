@@ -2296,6 +2296,7 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             saved: 0,
             skipped: "budget_exhausted",
             budgetReason: spentBudget.reason,
+            budgetId: spentBudget.budgetId,
         };
     }
     const claimOutcome = claimExtractionTargetWithReason(db, target, undefined, claimedAt);
@@ -2393,6 +2394,7 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
                 saved: 0,
                 skipped: "budget_exhausted",
                 budgetReason: error.reason,
+                budgetId: error.budgetId,
             };
         }
         const kind = classifyLlmError(error);
