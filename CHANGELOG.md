@@ -2,7 +2,7 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-## Unreleased
+## 0.4.2 - 2026-09-09
 
 - Send asynchronous startup status notices to stderr so they cannot become
   extra model context and trigger another answer.
@@ -31,7 +31,7 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
 - Add read-only integrity previews, exact selected/idempotent repairs, and backup/restore
   verification tools. Keep unresolved legacy/semantic findings for review.
 - Update owner contracts and retain frozen before/after regressions plus recovery evidence.
-  This change does not publish a release or change the package version.
+  Existing schema v7 and sync protocol v4 remain unchanged.
 
 ## 0.4.1 - 2026-09-07
 
