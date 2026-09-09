@@ -147,10 +147,9 @@ memex stats
 memex analyze --top 30 --out ~/memex-report.md
 ```
 
-`memex search`의 mode 플래그는 `--vector`(의미만)와 `--text`(정확한 문자열만) 둘뿐이고, 아무것도 주지
-않으면 둘을 합친 hybrid가 기본입니다. 인자를 두 개 이상 주면 multi-concept AND 검색입니다.
-`memex search --help`의 예시에 남아 있는 `--both`는 **파싱되지 않는 이름**이며, 그대로 실행하면
-`--both`가 검색어 하나로 취급되어 2-concept AND 검색이 됩니다. 쓰지 마십시오.
+`memex search`의 mode 플래그는 `--vector`(의미만), `--text`(정확한 문자열만), `--both`(hybrid를 명시)
+셋이고, 아무것도 주지 않으면 hybrid가 기본입니다. 인자를 두 개 이상 주면 multi-concept AND 검색이며,
+인식하지 못한 `--` 옵션은 검색어로 삼지 않고 exit `1`로 거절합니다(#46).
 
 project-sensitive 명령과 MCP tool은 canonical absolute project 또는 explicit scope를 사용합니다. server process cwd를 project로 추측하지 않습니다.
 

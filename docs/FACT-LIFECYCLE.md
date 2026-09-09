@@ -21,21 +21,21 @@ workspace provenance/legacy query key입니다.
 
 | 상황 | 동작 |
 |---|---|
-| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → **브랜치 tier** `(workspace, branch)`로 독립(서로 희석 안 됨; 같은 저장소의 워크트리 두 개가 같은 브랜치면 공유). 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
+| **깃 프로젝트** | 디렉터리 = 프로젝트. 기본 브랜치(main/master/`origin/HEAD`) 세션의 기억 → **프로젝트 공용**. 그 외 브랜치/워크트리 세션의 기억 → `(project, branch)`로 키를 잡는 독립 **브랜치 tier**. 브랜치끼리 서로 희석되지 않고, 같은 저장소의 워크트리 두 개가 같은 브랜치를 체크아웃하고 있으면 하나의 tier를 공유해 서로의 기억을 봅니다. 주입·조회 = 글로벌 + 프로젝트 공용 + 현재 브랜치. |
 | **일반(비-git) 프로젝트** | 디렉터리 = 프로젝트, 브랜치 계층 없음. 모든 기억 = 프로젝트 공용 (+ 글로벌). |
-| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 명시 승인 후 병합(`PROJECT_MERGED`). |
+| **일반 → 깃 전환** | `workspace_id`·`project_id` 불변, workspace 메타데이터만 갱신 + `WORKSPACE_LOCATION_CHANGED` 이벤트. 기존 프로젝트 공용 기억은 데이터 변경 없이 그대로. 전이 이후 세션부터 브랜치 규칙 적용. 브랜치를 만들지 않으면 아무것도 달라지지 않음. 새 common dir/remote가 다른 프로젝트에 이미 묶여 있으면 자동으로 병합하지 않고, `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남긴 뒤 `approved_remote_mappings` 명시 승인을 기다립니다. |
 | **승격/강등** | 사다리 `브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌`, 한 칸씩만. 채널 3개: ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(다른 브랜치/기본 브랜치 재확인 → 프로젝트; 서로 다른 프로젝트 2곳 이상 확인 → 글로벌; 상위 근거 소실 → 강등) ③ 세션 내 명시 요청(“이건 프로젝트 공용으로 기억하자” → `actor=user-directive`). 모두 Chronicle `PROMOTED/DEMOTED`. 추출 시점의 개인 선호 → 글로벌 최초 분류는 유지. |
 
-표의 `(workspace, branch)`는 계층을 가리키는 표기이고 실제 stream 키는 `(project_id, branch)`입니다
-(`deterministicWorkstreamId`, `src/continuity-identity.ts`). 그래서 같은 저장소의 워크트리 두 개가
-같은 브랜치를 쓰면 한 tier를 공유합니다. 표의 세 계층은 각각 `facts.promotion_state = workstream`
-(브랜치 tier), `project-current`(프로젝트 공용), `facts.scope_type = global`(글로벌)로 저장됩니다.
+브랜치 tier의 stream 키 `(project, branch)`는 `deterministicWorkstreamId`
+(`src/continuity-identity.ts`)가 만듭니다. 워크트리는 git-common-dir 규칙으로 같은 project를 가지므로,
+workspace가 달라도 브랜치가 같으면 한 tier를 공유합니다. 표의 세 계층은 각각
+`facts.promotion_state = workstream`(브랜치 tier), `project-current`(프로젝트 공용),
+`facts.scope_type = global`(글로벌)로 저장됩니다.
 표의 승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다.** Web UI의 fact 변경
 allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다.
-표의 `PROJECT_MERGED`는 승인 단계의 이름이며 아직 존재하는 event kind가 아닙니다 — 0.6.0은 충돌을
-`workspace_location_events`의 `WORKSPACE_LOCATION_CHANGED` 행에 `requires_approval = 1`로,
-그리고 `project_identity_audit`의 `suggest` 행으로 남기고 병합은 기존 `approved_remote_mappings`
-승인 경로를 그대로 요구합니다.
+
+계획된 후속(0.6.0에는 없음): 회수 시그널의 durable 사용자 오버레이(#29)와 추출 규칙의 durable
+구조화 오버레이(#30)는 0.6.1 대상이며, 현재는 내장 규칙만 동작합니다.
 
 새 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다. 신호가 없으면(비-git 디렉터리, 또는 기본
 브랜치 세션) `project-current`, 그 외 브랜치·워크트리 세션이면 `workstream`이며 판단 근거는

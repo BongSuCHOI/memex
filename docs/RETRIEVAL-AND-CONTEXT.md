@@ -296,4 +296,7 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
+계획된 후속(0.6.0에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,
+추출 규칙의 durable 구조화 오버레이는 #30이며 둘 다 0.6.1 대상입니다. 현재는 내장 규칙만 동작합니다.
+
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.
