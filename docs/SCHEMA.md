@@ -137,6 +137,17 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 
 `projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
 
+`workspace_location_events`(0.6.0 additive, device-local, sync 미대상)는 workspace 전이를 기록합니다.
+세션 시작마다 경로가 실제로 존재하면 fresh inspection이 권위이며 workspace 행의 git 메타데이터를
+그 자리에서 갱신합니다 — `workspace_id`·`project_id`는 불변이라 프로젝트 공용 기억·Capsule·이력은
+그대로 유지됩니다. 존재하지 않는 historical 경로는 기존 값을 보존합니다. `location_kind`/common
+dir/inode identity/remote fingerprint 중 하나라도 바뀌면 `WORKSPACE_LOCATION_CHANGED` 한 건을 남기며,
+event_id는 시계가 아니라 전이의 모양에서 파생되므로 같은 전이가 세션마다 중복 기록되지 않습니다.
+새로 감지한 common dir/remote가 **다른 프로젝트**에 이미 묶여 있으면 자동 병합하지 않고
+`requires_approval = 1`과 `project_identity_audit`의 `suggest` 행으로 남겨 기존
+`approved_remote_mappings` 승인 경로를 그대로 요구합니다. `.git`이 사라지는 역방향 전이는 행만
+`directory`로 갱신하며 브랜치 tier 기억을 삭제하거나 자동 강등하지 않습니다.
+
 `session_memory_state`는 stable project/workspace/workstream, binding reason/confidence, `context_epoch`, resident/carry revision tuple, observed Capsule generation, project revision seen, latest checkpoint를 소유합니다. `workstream_sessions`는 여러 session이 같은 workstream Capsule을 공유할 수 있게 하되 unrelated workstream은 분리합니다. `hot_evidence`는 human 또는 learnable trusted repo/Git/test source만 저장하고 project/workspace/workstream/session scope, TTL, keyset pagination을 가집니다. 이 lane의 authority는 `hot-evidence`이며 Fact authority가 아닙니다.
 
 `work_capsules.authority`는 항상 `context-only`입니다. Patch는 exact required-key set, strict scalar/list bounds, declared existing source IDs, verified-source authority와 verified/hypothesis type separation을 통과해야 합니다. Generation·frontier revision·lease CAS와 Capsule/cursor/job write는 한 transaction에 commit됩니다. `capsule_checkpoint_state.expected_generation`은 model call 직전에 current generation으로 rebase되며 model await 중 변경되면 stale result를 버리고 retry합니다. `through_checkpoint_id`는 trigger/provenance이고 다중 세션 coverage는 아래 sequence frontier가 결정합니다. 미소비 evidence 또는 미완료 capture가 있으면 compact/resume에 deterministic tail baton을 함께 넣습니다.

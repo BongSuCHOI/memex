@@ -20,6 +20,7 @@ vi.mock("../src/embeddings.js", () => ({
 
 import { initDatabase, insertExchange } from "../src/db.js";
 import {
+  approveRemoteProjectMapping,
   branchSignalFor,
   deterministicWorkstreamId,
   inspectWorkspaceLocation,
@@ -169,6 +170,124 @@ describe("exchange branch propagation (#16)", () => {
     await insertExchange(db, exchange("ex-plain-1", "plain-1", project), new Array(384).fill(0.1));
     expect((db.prepare("SELECT git_branch FROM exchanges WHERE id = 'ex-plain-1'")
       .get() as { git_branch: string | null }).git_branch).toBeNull();
+  });
+});
+
+/**
+ * #21 — the observed state was 12 of 13 real workspaces still recorded as
+ * `directory` because nothing updated the row after `git init`, so a later
+ * worktree could not be matched by the git-common-dir rule and would split
+ * into a separate project.
+ */
+describe("workspace location transition (#21)", () => {
+  function events(workspaceId: string): Array<Record<string, unknown>> {
+    return db.prepare(
+      "SELECT * FROM workspace_location_events WHERE workspace_id = ? ORDER BY created_at, event_id",
+    ).all(workspaceId) as Array<Record<string, unknown>>;
+  }
+
+  it("keeps workspace_id and project_id across a directory → clone transition and records one event", () => {
+    const project = path.join(root, "transition");
+    fs.mkdirSync(project, { recursive: true });
+    const before = ensureSessionMemoryState(db, { sessionId: "t-1", project });
+    expect((db.prepare("SELECT location_kind FROM workspaces WHERE workspace_id = ?")
+      .get(before.workspaceId) as { location_kind: string }).location_kind).toBe("directory");
+    expect(events(before.workspaceId)).toHaveLength(0);
+
+    gitClone(project, "main");
+    const after = ensureSessionMemoryState(db, { sessionId: "t-2", project });
+    expect(after.workspaceId).toBe(before.workspaceId);
+    expect(after.projectId).toBe(before.projectId);
+    const row = db.prepare(
+      "SELECT location_kind, git_common_dir, git_common_identity, remote_fingerprint, branch FROM workspaces WHERE workspace_id = ?",
+    ).get(before.workspaceId) as Record<string, unknown>;
+    expect(row.location_kind).toBe("clone");
+    expect(row.git_common_dir).toBeTruthy();
+    expect(row.git_common_identity).toBeTruthy();
+    expect(row.remote_fingerprint).toBeTruthy();
+    expect(row.branch).toBe("main");
+
+    const recorded = events(before.workspaceId);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      event_kind: "WORKSPACE_LOCATION_CHANGED",
+      from_location_kind: "directory",
+      to_location_kind: "clone",
+      requires_approval: 0,
+    });
+    // Re-running the same session start does not duplicate the transition.
+    ensureSessionMemoryState(db, { sessionId: "t-3", project });
+    expect(events(before.workspaceId)).toHaveLength(1);
+  });
+
+  it("adds a worktree as a second workspace of the same project", () => {
+    const project = path.join(root, "wt-transition");
+    fs.mkdirSync(project, { recursive: true });
+    const before = ensureSessionMemoryState(db, { sessionId: "wt-0", project });
+    gitClone(project, "main");
+    ensureSessionMemoryState(db, { sessionId: "wt-1", project });
+
+    const worktree = path.join(root, "wt-transition-feature");
+    gitWorktree(project, worktree, "feature", "feature/x");
+    const added = ensureSessionMemoryState(db, { sessionId: "wt-2", project: worktree });
+    expect(added.projectId).toBe(before.projectId);
+    expect(added.workspaceId).not.toBe(before.workspaceId);
+    expect((db.prepare("SELECT location_kind FROM workspaces WHERE workspace_id = ?")
+      .get(added.workspaceId) as { location_kind: string }).location_kind).toBe("worktree");
+  });
+
+  it("requires explicit approval before the same remote cloned elsewhere joins the project", () => {
+    const origin = path.join(root, "remote-a");
+    gitClone(origin, "main");
+    const first = ensureSessionMemoryState(db, { sessionId: "r-1", project: origin });
+
+    const clone = path.join(root, "remote-b");
+    gitClone(clone, "main");
+    const second = ensureSessionMemoryState(db, { sessionId: "r-2", project: clone });
+    // No auto-merge: a shared remote alone never links two paths.
+    expect(second.projectId).not.toBe(first.projectId);
+    const suggestion = db.prepare(`
+      SELECT reason FROM project_identity_audit WHERE action = 'suggest' ORDER BY created_at DESC LIMIT 1
+    `).get() as { reason: string } | undefined;
+    expect(suggestion?.reason).toContain("approval");
+
+    const fingerprint = (db.prepare("SELECT remote_fingerprint FROM workspaces WHERE workspace_id = ?")
+      .get(first.workspaceId) as { remote_fingerprint: string }).remote_fingerprint;
+    approveRemoteProjectMapping(db, first.projectId, fingerprint);
+    const third = path.join(root, "remote-c");
+    gitClone(third, "main");
+    expect(resolveProjectWorkspace(db, { cwd: third })).toMatchObject({
+      projectId: first.projectId, reason: "approved-remote",
+    });
+  });
+
+  it("updates the row only when .git is removed and never demotes branch memory", async () => {
+    const project = path.join(root, "reverse");
+    gitClone(project, "feature/reverse");
+    const state = ensureSessionMemoryState(db, { sessionId: "rev-1", project });
+    await insertExchange(db, exchange("ex-rev-1", "rev-1", project), new Array(384).fill(0.1));
+    const factId = insertFact(db, {
+      fact: "Reverse transition keeps branch memory", category: "knowledge", scope_type: "project",
+      scope_project: project, source_exchange_ids: ["ex-rev-1"], embedding: new Array(384).fill(0.1),
+      subject_key: "state.reverse.memory",
+    });
+    expect(db.prepare("SELECT promotion_state FROM facts WHERE id = ?").get(factId))
+      .toEqual({ promotion_state: "workstream" });
+
+    fs.rmSync(path.join(project, ".git"), { recursive: true, force: true });
+    const after = ensureSessionMemoryState(db, { sessionId: "rev-2", project });
+    expect(after.workspaceId).toBe(state.workspaceId);
+    expect(db.prepare(
+      "SELECT location_kind, git_common_dir, remote_fingerprint, branch FROM workspaces WHERE workspace_id = ?",
+    ).get(state.workspaceId)).toEqual({
+      location_kind: "directory", git_common_dir: null, remote_fingerprint: null, branch: null,
+    });
+    // The branch-tier fact is left exactly where it was: no auto-demotion.
+    expect(db.prepare("SELECT promotion_state, workstream_id FROM facts WHERE id = ?").get(factId))
+      .toEqual({ promotion_state: "workstream", workstream_id: state.workstreamId });
+    expect(events(state.workspaceId).at(-1)).toMatchObject({
+      from_location_kind: "clone", to_location_kind: "directory",
+    });
   });
 });
 

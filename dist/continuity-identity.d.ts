@@ -51,6 +51,23 @@ export declare function inspectWorkspaceLocation(cwd: string): {
     gitCommonIdentity: string | null;
     gitDirIdentity: string | null;
 };
+/**
+ * #21 — `WORKSPACE_LOCATION_CHANGED`. Its id is derived from the transition's
+ * shape, not from the clock, so re-running the same session start records the
+ * same single event instead of one per session.
+ */
+export declare function recordWorkspaceLocationChange(db: Database.Database, input: {
+    workspaceId: string;
+    projectId: string;
+    from: string;
+    to: string;
+    gitCommonDir: string | null;
+    remoteFingerprint: string | null;
+    branch: string | null;
+    changedFields: string[];
+    conflictProjectIds: string[];
+    now?: string;
+}): string;
 export declare function resolveProjectWorkspace(db: Database.Database, input: {
     cwd: string;
     projectId?: string | null;

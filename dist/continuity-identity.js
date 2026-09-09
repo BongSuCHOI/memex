@@ -137,6 +137,61 @@ export function inspectWorkspaceLocation(cwd) {
         gitDirIdentity: inodeIdentity(gitDir),
     };
 }
+function directoryExists(value) {
+    try {
+        return fs.statSync(value).isDirectory();
+    }
+    catch {
+        return false;
+    }
+}
+/** Projects other than `projectId` that already claim this git identity/remote. */
+function conflictingProjects(db, device, projectId, next) {
+    if (!next.gitCommonDir && !next.gitCommonIdentity && !next.remoteFingerprint)
+        return [];
+    const rows = db.prepare(`
+    SELECT DISTINCT project_id FROM workspaces
+    WHERE device_id = ? AND project_id <> ? AND (
+      (? IS NOT NULL AND git_common_dir = ?) OR
+      (? IS NOT NULL AND git_common_identity = ?) OR
+      (? IS NOT NULL AND remote_fingerprint = ?)
+    )
+  `).all(device, projectId, next.gitCommonDir, next.gitCommonDir, next.gitCommonIdentity, next.gitCommonIdentity, next.remoteFingerprint, next.remoteFingerprint);
+    const approved = new Set(next.remoteFingerprint
+        ? db.prepare("SELECT project_id FROM approved_remote_mappings WHERE remote_fingerprint = ?")
+            .all(next.remoteFingerprint).map((row) => row.project_id)
+        : []);
+    return rows.map((row) => row.project_id).filter((id) => !approved.has(id)).sort();
+}
+/**
+ * #21 — `WORKSPACE_LOCATION_CHANGED`. Its id is derived from the transition's
+ * shape, not from the clock, so re-running the same session start records the
+ * same single event instead of one per session.
+ */
+export function recordWorkspaceLocationChange(db, input) {
+    const at = nowIso(input.now);
+    const eventId = `wsloc-${hash("workspace-location-v1", input.workspaceId, input.from, input.to, input.gitCommonDir, input.remoteFingerprint).slice(0, 32)}`;
+    db.prepare(`
+    INSERT OR IGNORE INTO workspace_location_events
+      (event_id, workspace_id, project_id, event_kind, from_location_kind, to_location_kind,
+       git_common_dir, remote_fingerprint, branch, requires_approval, detail_json, created_at)
+    VALUES (?, ?, ?, 'WORKSPACE_LOCATION_CHANGED', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(eventId, input.workspaceId, input.projectId, input.from, input.to, input.gitCommonDir, input.remoteFingerprint, input.branch, input.conflictProjectIds.length > 0 ? 1 : 0, JSON.stringify({ changed: input.changedFields, conflict_project_ids: input.conflictProjectIds }), at);
+    audit(db, {
+        action: input.conflictProjectIds.length > 0 ? "suggest" : "resolve",
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        reason: input.conflictProjectIds.length > 0
+            ? "workspace location changed into an identity another project already claims"
+            : "workspace location changed",
+        detail: {
+            from: input.from, to: input.to, gitCommonDir: input.gitCommonDir,
+            changed: input.changedFields, candidates: input.conflictProjectIds,
+        },
+        now: at,
+    });
+    return eventId;
+}
 function projectRow(db, projectId) {
     return db.prepare(`
     SELECT project_id, portable_project_key, memory_revision FROM projects WHERE project_id = ?
@@ -177,19 +232,67 @@ export function resolveProjectWorkspace(db, input) {
             if (input.portableProjectKey && input.portableProjectKey !== byPath.portable_project_key) {
                 throw new Error("workspace portable_project_key conflicts with its linked project");
             }
+            // #21 — a directory can become a clone, gain a worktree, or lose `.git`
+            // between sessions. When the path is actually present the fresh
+            // inspection is authoritative and replaces the stored git metadata in
+            // place; workspace_id and project_id never change, so project-common
+            // memory, Capsules and history survive the transition untouched. A
+            // historical or vanished path keeps whatever was recorded.
+            const observed = directoryExists(canonicalPath);
+            const previous = {
+                locationKind: String(byPath.location_kind ?? "directory"),
+                gitCommonDir: byPath.git_common_dir ?? null,
+                gitCommonIdentity: byPath.git_common_identity ?? null,
+                gitDirIdentity: byPath.git_dir_identity ?? null,
+                remoteFingerprint: byPath.remote_fingerprint ?? null,
+                branch: byPath.branch ?? null,
+            };
+            const next = observed
+                ? {
+                    locationKind,
+                    gitCommonDir: gitCommonDir ? canonicalizeProjectPath(gitCommonDir) : null,
+                    gitCommonIdentity: inspected.gitCommonIdentity,
+                    gitDirIdentity: inspected.gitDirIdentity,
+                    remoteFingerprint,
+                    branch: input.branch ?? inspected.branch ?? null,
+                }
+                : {
+                    locationKind,
+                    gitCommonDir: gitCommonDir ? canonicalizeProjectPath(gitCommonDir) : previous.gitCommonDir,
+                    gitCommonIdentity: inspected.gitCommonIdentity ?? previous.gitCommonIdentity,
+                    gitDirIdentity: inspected.gitDirIdentity ?? previous.gitDirIdentity,
+                    remoteFingerprint: remoteFingerprint ?? previous.remoteFingerprint,
+                    branch: input.branch ?? inspected.branch ?? previous.branch,
+                };
             db.prepare(`
-        UPDATE workspaces SET git_common_dir = COALESCE(?, git_common_dir),
-          git_common_identity = COALESCE(?, git_common_identity),
-          git_dir_identity = COALESCE(?, git_dir_identity),
-          remote_fingerprint = COALESCE(?, remote_fingerprint), location_kind = ?,
-          branch = COALESCE(?, branch), default_branch = COALESCE(?, default_branch),
-          last_seen_at = ? WHERE workspace_id = ?
-      `).run(gitCommonDir, inspected.gitCommonIdentity, inspected.gitDirIdentity, remoteFingerprint, locationKind, input.branch ?? inspected.branch ?? null, inspected.defaultBranch, at, byPath.workspace_id);
+        UPDATE workspaces SET git_common_dir = ?, git_common_identity = ?, git_dir_identity = ?,
+          remote_fingerprint = ?, location_kind = ?, branch = ?,
+          default_branch = COALESCE(?, default_branch), last_seen_at = ? WHERE workspace_id = ?
+      `).run(next.gitCommonDir, next.gitCommonIdentity, next.gitDirIdentity, next.remoteFingerprint, next.locationKind, next.branch, inspected.defaultBranch, at, byPath.workspace_id);
+            const changedFields = ["locationKind", "gitCommonDir", "gitCommonIdentity", "gitDirIdentity", "remoteFingerprint"]
+                .filter((key) => previous[key] !== next[key]);
+            if (changedFields.length > 0) {
+                recordWorkspaceLocationChange(db, {
+                    workspaceId: String(byPath.workspace_id),
+                    projectId: String(byPath.project_id),
+                    from: previous.locationKind,
+                    to: next.locationKind,
+                    gitCommonDir: next.gitCommonDir,
+                    remoteFingerprint: next.remoteFingerprint,
+                    branch: next.branch,
+                    changedFields: [...changedFields],
+                    // No auto-merge: an identity that already belongs to another project
+                    // stays a suggestion the user must approve, exactly like a shared
+                    // remote does today.
+                    conflictProjectIds: conflictingProjects(db, device, String(byPath.project_id), next),
+                    now: at,
+                });
+            }
             return {
                 projectId: String(byPath.project_id), workspaceId: String(byPath.workspace_id), canonicalPath,
                 portableProjectKey: byPath.portable_project_key ? String(byPath.portable_project_key) : null,
                 memoryRevision: Number(byPath.memory_revision), locationKind,
-                branch: input.branch ?? inspected.branch ?? (byPath.branch ? String(byPath.branch) : null),
+                branch: next.branch,
                 defaultBranch: inspected.defaultBranch ?? (byPath.default_branch ? String(byPath.default_branch) : null),
                 reason: "existing-path",
             };

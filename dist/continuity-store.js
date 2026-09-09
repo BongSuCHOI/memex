@@ -374,6 +374,24 @@ export function ensureContinuitySchema(db, options = {}) {
         UNIQUE(device_id, canonical_path)
       );
 
+      -- 0.6.0 (#21): a workspace that becomes a clone/worktree, or loses its
+      -- .git, keeps its workspace_id and project_id and records the transition
+      -- here. Additive and device-local; never exported by sync.
+      CREATE TABLE IF NOT EXISTS workspace_location_events (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        event_kind TEXT NOT NULL DEFAULT 'WORKSPACE_LOCATION_CHANGED',
+        from_location_kind TEXT,
+        to_location_kind TEXT,
+        git_common_dir TEXT,
+        remote_fingerprint TEXT,
+        branch TEXT,
+        requires_approval INTEGER NOT NULL DEFAULT 0,
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS approved_remote_mappings (
         remote_fingerprint TEXT NOT NULL,
         project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -806,6 +824,8 @@ export function ensureContinuitySchema(db, options = {}) {
         ON workspaces(device_id, git_common_dir) WHERE git_common_dir IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_workspaces_git_identity
         ON workspaces(device_id, git_common_identity, git_dir_identity);
+      CREATE INDEX IF NOT EXISTS idx_workspace_location_events_scope
+        ON workspace_location_events(project_id, workspace_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_workstreams_scope
         ON minimal_workstreams(project_id, workspace_id, status, branch_hint);
       CREATE INDEX IF NOT EXISTS idx_hot_evidence_scope

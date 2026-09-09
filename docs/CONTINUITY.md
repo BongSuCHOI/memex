@@ -55,6 +55,14 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 쓰면 하나의 workstream을 공유하고(워크트리는 git-common-dir 규칙으로 같은 project를 갖습니다), 브랜치가
 다르면 서로 희석되지 않습니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 없어졌습니다.
 
+**전이(일반 → 깃, 또는 그 반대).** 경로가 실제로 존재하면 세션 시작의 재검사가 권위이며 workspace 행의
+`location_kind`/`git_common_dir`/`git_common_identity`/`git_dir_identity`/`remote_fingerprint`/`branch`를
+그 자리에서 갱신합니다. `workspace_id`·`project_id`는 불변이므로 전이 이전 기억은 데이터 변경 없이
+그대로 남고, 전이 이후 세션부터 브랜치 규칙이 적용됩니다. 변경이 있으면 `workspace_location_events`에
+`WORKSPACE_LOCATION_CHANGED` 한 건이 남습니다. 새 common dir/remote가 이미 다른 프로젝트에 묶여 있으면
+자동 병합하지 않고 `approved_remote_mappings` 명시 승인을 요구합니다(`requires_approval = 1`).
+`.git`이 제거되면 행만 `directory`로 되돌리고 브랜치 tier 기억은 삭제도 자동 강등도 하지 않습니다.
+
 ## 6. Current facts · subject · Chronicle (§4.3–4.4, §15–17)
 
 - `facts` = current projection; `(project_id, subject_key, promotion_state, workspace_id, workstream_id)` active unique slot. 추출된 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다(§5): 신호가 없으면(비-git 또는 기본 브랜치) 바로 프로젝트 공용 `project-current`, 그 외 브랜치/워크트리 세션이면 `workstream`. 근거는 `facts.tier_reason`에 남습니다(BRANCH TRUTH). 이후 이동은 사다리 `workstream ⇄ project ⇄ global`을 한 칸씩만 따르며, ① Web UI/CLI 사용자 확언 ② 근거 기반 자동(모델 호출 없이 SQL) ③ 세션 내 명시 범위 지시 세 채널 모두 Chronicle `PROMOTED`/`DEMOTED`를 남깁니다. 전체 표는 `FACT-LIFECYCLE.md` §1.
