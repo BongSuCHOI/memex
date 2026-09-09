@@ -24,7 +24,15 @@ export interface InjectLogEntry {
   | "skipped"
   | "error"
   | "deduped"
-  | "no-session-provenance";
+  | "no-session-provenance"
+  /**
+   * Issue #44: context was emitted but its durable `prepared` recall receipt
+   * could not be marked emitted. The provenance contract
+   * (RETRIEVAL-AND-CONTEXT.md §43-48) is broken for that emission. This used to
+   * go to a hook's stderr, which Codex discards, so a contract violation was
+   * unobservable — the real data root had 7 emitted bundles and 0 recall_events.
+   */
+  | "receipt-failed";
  project?: string;
  prompt_len?: number;
  candidates?: number;
@@ -35,8 +43,8 @@ export interface InjectLogEntry {
  chars?: number;
  duration_ms?: number;
  error?: string;
- /** Which execution path served this injection: warm MCP-server daemon or cold fallback. */
- via?: "daemon" | "fallback";
+ /** Which execution path served this injection: warm MCP-server daemon, cold fallback, or the Continuity hook. */
+ via?: "daemon" | "fallback" | "continuity";
  /** Phase 5 cheap gate outcome: why retrieval ran or was skipped. */
  gate?: string;
  /** Number of embedding model calls made for this prompt (0 on the skip path). */

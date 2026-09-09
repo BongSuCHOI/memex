@@ -44,9 +44,22 @@ async function markRecallEmitted(sessionId, receipt) {
       db.close();
     }
   } catch (error) {
-    process.stderr.write(
-      `[memex continuity] recall receipt remained prepared: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    // Issue #44: the same provenance break as the injection hook, and the same
+    // reason it was invisible — Codex discards hook stderr. Record it where
+    // `memex doctor` looks.
+    try {
+      const { appendInjectLog } = await import(path.join(here, "../dist/inject-log.js"));
+      appendInjectLog({
+        status: "receipt-failed",
+        via: "continuity",
+        prompt_len: receipt.prompt.length,
+        error: message,
+      });
+    } catch {
+      /* observability is best-effort */
+    }
+    process.stderr.write(`[memex continuity] recall receipt remained prepared: ${message}\n`);
   }
 }
 

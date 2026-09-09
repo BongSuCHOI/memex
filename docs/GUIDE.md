@@ -279,6 +279,7 @@ node scripts/lifecycle-e2e.mjs
 - runtime 준비 실패 — Node/npm network, cache permission
 - MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
 - injection 없음 — `injected`, `no-match`, `deduped`, `skipped`, `error` 로그 상태
+- `inject-output: fail` / `recall-provenance: fail` — 컨텍스트를 내보냈는데 durable recall 영수증이 남지 않았다는 뜻입니다(`logs/inject-context.jsonl`의 `status: "receipt-failed"`). 훅의 stderr는 Codex가 버리므로 이 로그와 doctor가 유일한 관측 지점입니다. `recall-provenance`는 최근 로그의 emit 건수와 `recall_events` 행 수를 비교하며, emit이 있는데 `recall_events`가 비어 있으면 실패로 보고합니다 — 이 상태에서는 "어떤 fact가 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다.
 - stale socket — Memex-owned orphan socket만 정리
 - repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행
 
