@@ -100,7 +100,7 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_CODEX_BIN`, `MEMEX_CODEX_MODEL`, `MEMEX_CODEX_EXEC_TIMEOUT_MS`, `MEMEX_LLM_RETRIES`, `MEMEX_LLM_RETRY_BASE_MS` | 설치 기본 | worker model 호출 |
 | `MEMEX_EMBEDDING_MODEL` | e5 | embedding model |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
-| `MEMEX_AUTO_ONTOLOGY` | unset (on) | `0`으로 fact 저장 후와 SessionStart의 자동 ontology 분류 비활성화; 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |
+| `MEMEX_AUTO_ONTOLOGY` | unset (on) | fact 저장 후와 SessionStart의 자동 ontology 분류 스위치. on은 미설정·빈 문자열·`1`뿐이고 그 밖의 값은 모두 off입니다. 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |
 | `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용. `MEMEX_PLUGIN_ROOT`는 설치본 해석의 첫 단계이기도 합니다(0.6.1 #53) |
 | `MEMEX_SYNC_DIR` | `<home>/conversation-index/sync` | 크로스디바이스 공유 폴더. 저장된 `sync/config.json`의 `dir`보다 우선합니다(0.6.1 #35) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Capsule 한 세대의 bounded storage size(§4). 초과 patch는 죽이지 않고 우선순위대로 절단 |

@@ -370,7 +370,7 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 | `MEMEX_DB_PATH` | data root와 별개로 index DB 경로를 지정 |
 | `CODEX_HOME` | Codex home. `$CODEX_HOME/sessions`가 read-only rollout 원본 |
 | `MEMEX_SYNC_DIR` | 크로스디바이스 공유 폴더. `memex sync enable --dir`로 저장한 값보다 우선합니다 (기본 `<data root>/conversation-index/sync`) |
-| `MEMEX_AUTO_ONTOLOGY` | 자동 ontology는 기본 활성화이며 `0`이면 끔 |
+| `MEMEX_AUTO_ONTOLOGY` | 자동 ontology는 기본 활성화. `1`(또는 빈 값)이 아닌 값을 넣으면 꺼집니다 |
 | `MEMEX_STRICT_CAPTURE` | `1`이면 capture gap 대신 hook이 실패 |
 | `MEMEX_CAPSULE_MAX_CHARS` | Work Capsule 한 세대의 bounded storage size (기본 `12000`, 하한 `2000`). 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | 주입 관련성 게이트가 요구하는 baseline 대비 마진 (기본 `0.045`, 0~1). 조정 전에 `baseline_margin_gap` 텔레메트리로 측정 |

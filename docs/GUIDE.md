@@ -92,7 +92,12 @@ memex status --json
     `memex jobs list --state retry` / `memex recover`로 해소합니다.
   - `Memory jobs: N (state=…, …)` 줄과 그 아래 kind별 줄은(0.6.1 #46) `memory_jobs`를 kind × state로
     집계한 것입니다. `Needs attention`의 dead/retry는 이 표의 부분집합입니다. `--json`에서는
-    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다.
+    `jobs.total` · `jobs.byKind` · `jobs.byState`로 같은 값을 읽습니다. 큐가 비어 있으면 0으로 채운
+    표가 아니라 빈 객체입니다.
+  - 0.6.1이 `memex status --json`에 더한 키: `evidence`(`factsWithoutLocalEvidence` ·
+    `activeFactsWithSources`), `jobs`, `derivedLaneSkips`(`reason` · `consecutive` · `totalSkips` ·
+    `lastSkippedAt` · `lastForcedAt`, 한 번도 건너뛴 적이 없으면 `null`), 그리고 `ontology`에 붙은
+    `parkedFacts` · `parkedRetryable` · `indexRepair`.
   - `ontology category index: MANUAL REPAIR REQUIRED (...)` 줄이 보이면 category vector index가
     self-heal로 고칠 수 없는 상태이며 분류가 멈춰 있습니다. `memex backfill embeddings`로 vector를
     재생성하십시오. 같은 상태는 `memex doctor`의 `ontology-index` check가 FAIL로 보고합니다.
@@ -861,7 +866,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (허용 `0`–`1`) | 주입 관련성 게이트가 요구하는 baseline 대비 마진. 범위를 벗어난 값은 기본값으로 되돌아갑니다. **`baseline_margin_gap`으로 측정한 뒤에 조정하십시오** |
-| `MEMEX_AUTO_ONTOLOGY` | unset (= on) | `0`이면 자동 ontology 분류와 후속 관계 작업을 끕니다. 수동 `memex backfill ontology`는 유지 |
+| `MEMEX_AUTO_ONTOLOGY` | unset (= on) | 자동 ontology 분류와 후속 관계 작업 스위치. **on으로 인정하는 값은 미설정·빈 문자열·`1` 뿐**이고 그 밖의 값(`0`은 물론 `true`·`yes`도)은 끕니다. 수동 `memex backfill ontology`는 유지 |
 | `MEMEX_ONTOLOGY_DET_GATE` | unset (= `+Infinity`, 꺼짐) | 무비용 결정론적 category 재사용 레인의 유사도 임계값. 설정하지 않으면 어떤 후보도 통과하지 못합니다(0.6.1 #47). 켤 때는 현재 taxonomy에서 `facts.ontology_similarity`로 **측정한** `(0,1)` 값을 쓰십시오 |
 | `MEMEX_MAX_EXTRACT_WINDOWS` | `12` | 세션당 extraction generator window 예산. 미설정이면 `MEMEX_MAX_EXTRACT_CALLS`를 봅니다 |
 | `MEMEX_MAX_EXTRACT_CALLS` | `12` | 위 변수의 이전 이름 (호환) |
