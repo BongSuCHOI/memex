@@ -97,24 +97,34 @@ async function measurePage(cdp, url) {
     await loaded;
     const expression = `new Promise((resolve, reject) => {
       const deadline = setTimeout(() => reject(new Error('graph did not become interactive')), 15000);
+      const num = (part) => {
+        if (!part) return null;
+        const value = Number(part.trim().split(' ')[0].split(',').join(''));
+        return Number.isFinite(value) ? value : null;
+      };
       const finish = () => {
-        const boot = document.querySelector('#boot');
-        const canvas = document.querySelector('#stage canvas');
-        const loadFailure = boot && boot.textContent.includes('로드 실패');
-        if (loadFailure) {
+        const failure = document.querySelector('#main .empty h3');
+        if (failure && failure.textContent.includes('데이터를 불러오지 못했습니다')) {
           clearTimeout(deadline);
-          reject(new Error(boot.textContent.trim()));
+          reject(new Error(document.querySelector('#main .empty').textContent.trim()));
           return true;
         }
-        if (canvas && boot && boot.classList.contains('hide')) {
+        const canvas = document.querySelector('#graph-stage canvas.graph-canvas');
+        const renderer = document.querySelector('#graph-renderer');
+        const booting = document.querySelector('.boot');
+        if (canvas && canvas.width && renderer && renderer.textContent && !booting) {
           requestAnimationFrame(() => {
             clearTimeout(deadline);
+            const meta = (document.querySelector('#graph-stage .graph-meta')?.textContent || '').split('·');
             resolve({
               firstInteractiveMs: performance.now(),
               canvasWidth: canvas.width,
               canvasHeight: canvas.height,
-              domains: document.querySelector('#stDomains')?.textContent,
-              facts: document.querySelector('#stFacts')?.textContent,
+              renderer: renderer.textContent.trim(),
+              nodes: num(meta[0]),
+              relations: num(meta[1]),
+              domains: num(document.querySelector('.graph-summary strong')?.textContent),
+              mode: document.querySelector('[data-graph-mode].active')?.dataset.graphMode || null,
               bootHidden: true
             });
           });

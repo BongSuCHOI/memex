@@ -191,7 +191,9 @@ function authoritativeRoot(marketName, addResult = null) {
     "scripts/inject-context-hook.sh",
     "package.json",
     "ui/server.cjs",
-    "ui/relations/app.js",
+    "ui/lib/server.cjs",
+    "ui/public/index.html",
+    "ui/public/app.mjs",
   ]) {
     if (!fs.existsSync(path.join(root, required))) {
       throw new Error(

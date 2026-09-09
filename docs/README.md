@@ -12,7 +12,7 @@
 6. [검색과 컨텍스트](RETRIEVAL-AND-CONTEXT.md) — FTS/vector/RAG/injection
 7. [스키마](SCHEMA.md) — SQLite 테이블과 transaction 불변식
 8. [MCP와 스킬](MCP-AND-SKILLS.md) — 9개 MCP 도구와 3개 스킬
-9. [시각화](VISUALIZATION.md) — Web UI와 3D Knowledge Galaxy
+9. [Web UI](WEBUI-WORKSPACE.md) — Memex Workspace 로컬 화면, 범위 선택, 지식 지도
 10. [검증](VERIFICATION.md) — merge gate, E2E, receipt 규칙
 11. [계보](LINEAGE.md) — upstream attribution과 Codex-native 경계
 12. [Continuity as-built](CONTINUITY.md) — lifecycle/journal/outbox/worker, Capsule, identity, Chronicle, Memory Broker, sync/privacy의 실제 구현 지도. 규범은 [Final RFC](architecture/memex-continuity-v1.md), 차이는 [deviation record](verification/continuity-v1/rfc-deviations.md)
@@ -43,7 +43,7 @@ Memex는 데이터를 한 덩어리로 취급하지 않습니다.
 | search/RAG/injection | `src/search.ts`, `src/inject-*.ts` | `RETRIEVAL-AND-CONTEXT.md` |
 | lifecycle/hooks | `src/lifecycle.ts`, `scripts/*hook*` | `GUIDE.md`, `CONVERSATION-LIFECYCLE.md` |
 | MCP | `src/mcp-server.ts`, `.mcp.json` | `MCP-AND-SKILLS.md` |
-| UI/3D | `ui/server.cjs`, `ui/relations/` | `VISUALIZATION.md` |
+| Web UI | `ui/server.cjs`, `ui/lib/`, `ui/public/` | `WEBUI-WORKSPACE.md` |
 | persistence | `src/db.ts`, `src/fact-db.ts`, `src/ontology-db.ts` | `SCHEMA.md` |
 | installation/package/update | `.codex-plugin/`, `cli/runtime-exec.js`, installer/update scripts | `GUIDE.md`, `ARCHITECTURE.md` |
 | release evidence | tests, E2E, `docs/verification/*` | `VERIFICATION.md` |

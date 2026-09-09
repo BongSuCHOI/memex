@@ -19,11 +19,16 @@ function freePort() {
   });
 }
 
-function startUi(dbPath, port) {
+function startUi(dbPath, port, home) {
   const child = spawn(process.execPath, [path.join(REPO, "ui/server.cjs")], {
     cwd: REPO,
     env: {
       ...process.env,
+      // The UI writes its audit log and operation metadata under MEMEX_HOME:
+      // pin both it and the XDG fallback to this test's temp dir so nothing
+      // lands in the developer's real ~/.config/memex.
+      MEMEX_HOME: home,
+      XDG_CONFIG_HOME: path.join(home, "xdg"),
       MEMEX_DB_PATH: dbPath,
       MEMEX_PLUGIN_ROOT: REPO,
       PORT: String(port),
@@ -41,8 +46,11 @@ function startUi(dbPath, port) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
+    let stdout = "";
     child.stdout.on("data", (chunk) => {
-      if (chunk.includes(`Memex UI: http://localhost:${port}`)) {
+      stdout += chunk;
+      // ui/lib/server.cjs prints "Memex Workspace <v>\nhttp://127.0.0.1:<port>".
+      if (stdout.includes(`http://127.0.0.1:${port}`)) {
         clearTimeout(timer);
         resolve();
       }
@@ -70,12 +78,31 @@ async function stop(child) {
   });
 }
 
-async function mutate(base, action, id, extra = {}) {
-  const response = await fetch(`${base}/api/facts-mutate`, {
+async function bootstrap(base) {
+  const response = await fetch(`${base}/api/v2/bootstrap`, {
+    headers: { Origin: base },
+  });
+  const payload = await response.json();
+  assert.equal(
+    response.status,
+    200,
+    `bootstrap failed: ${JSON.stringify(payload)}`,
+  );
+  assert.equal(
+    payload.db.available,
+    true,
+    `UI could not open the DB: ${JSON.stringify(payload.db.error)}`,
+  );
+  return payload;
+}
+
+async function mutate(base, token, action, id, extra = {}) {
+  const response = await fetch(`${base}/api/v2/facts/mutate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Origin: base,
+      "X-Memex-CSRF": token,
     },
     body: JSON.stringify({ action, id, ...extra }),
   });
@@ -90,12 +117,20 @@ async function mutate(base, action, id, extra = {}) {
 
 test("Web UI mutations use a sqlite-vec initialized writable connection", async (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "memex-ui-db-factory-"));
+  const home = path.join(temp, "home");
+  fs.mkdirSync(home, { recursive: true });
   const dbPath = path.join(temp, "db.sqlite");
-  const previousDbPath = process.env.MEMEX_DB_PATH;
+  const restore = {};
+  for (const key of ["MEMEX_DB_PATH", "MEMEX_HOME", "XDG_CONFIG_HOME"])
+    restore[key] = process.env[key];
   process.env.MEMEX_DB_PATH = dbPath;
+  process.env.MEMEX_HOME = home;
+  process.env.XDG_CONFIG_HOME = path.join(home, "xdg");
   t.after(() => {
-    if (previousDbPath === undefined) delete process.env.MEMEX_DB_PATH;
-    else process.env.MEMEX_DB_PATH = previousDbPath;
+    for (const [key, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     fs.rmSync(temp, { recursive: true, force: true });
   });
 
@@ -118,19 +153,21 @@ test("Web UI mutations use a sqlite-vec initialized writable connection", async 
   db.close();
 
   const port = await freePort();
-  const ui = startUi(dbPath, port);
+  const ui = startUi(dbPath, port, home);
   t.after(() => stop(ui.child));
   await ui.ready;
   const base = `http://127.0.0.1:${port}`;
 
+  const { csrfToken } = await bootstrap(base);
+
   const editedText = "The Web UI always shares initialized database connections.";
-  const edit = await mutate(base, "edit", id, {
+  const edit = await mutate(base, csrfToken, "edit", id, {
     text: editedText,
     reason: "Web UI vec0 E2E",
   });
   assert.equal(edit.embeddingRefreshed, true);
-  await mutate(base, "deactivate", id);
-  await mutate(base, "restore", id);
+  await mutate(base, csrfToken, "deactivate", id);
+  await mutate(base, csrfToken, "restore", id);
 
   const check = initDatabase();
   assert.deepEqual(
@@ -141,16 +178,31 @@ test("Web UI mutations use a sqlite-vec initialized writable connection", async 
       .get(id),
     { fact: editedText, is_active: 1, needs_consolidation: 1 },
   );
-  assert.equal(
+  // fact_revisions is the Chronicle ledger: one event per applied mutation.
+  assert.deepEqual(
     check
-      .prepare("SELECT COUNT(*) AS c FROM fact_revisions WHERE fact_id = ?")
-      .get(id).c,
-    1,
+      .prepare(
+        "SELECT event_kind, COUNT(*) AS c FROM fact_revisions WHERE fact_id = ? GROUP BY event_kind ORDER BY event_kind",
+      )
+      .all(id),
+    [
+      { event_kind: "CHANGED", c: 1 },
+      { event_kind: "RESTORED", c: 1 },
+      { event_kind: "RETIRED", c: 1 },
+    ],
   );
   assert.equal(
     check.prepare("SELECT COUNT(*) AS c FROM vec_facts WHERE id = ?").get(id).c,
     1,
   );
   check.close();
+  // Isolation receipt: the UI audit trail for a temp DB stays in the temp home.
+  const audit = path.join(home, "logs", "ui-audit.jsonl");
+  assert.equal(fs.existsSync(audit), true, "UI audit log missing from temp home");
+  assert.equal(
+    fs.readFileSync(audit, "utf8").trim().split("\n").length,
+    3,
+    "expected exactly the three UI mutations in the isolated audit log",
+  );
   assert.doesNotMatch(ui.getStderr(), /no such module|DB open failed|Error:/i);
 });

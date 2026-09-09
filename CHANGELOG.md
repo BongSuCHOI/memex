@@ -2,6 +2,33 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.5.0 - 2026-09-09
+
+- Replace the Web UI with Memex Workspace: seven pages (overview, conversation
+  ledger, memory, taxonomy, knowledge map, activity & tracing, management), a
+  shared fact detail panel (summary / evidence / history / processing & reuse)
+  reachable from conversations, search, the graph and jobs, project and
+  common-memory scope selection, ⌘K search, dark mode and a responsive layout.
+  Reads are served from `/api/v2/*` over the read-only connection; fact edits,
+  deactivation, restore and hard delete go through the existing
+  `fact-management` service behind a per-session CSRF token on a loopback-only
+  listener. The `memex-ui` command and port 3847 are unchanged.
+- Render the knowledge map with native WebGL (2D map by default, 3D galaxy on
+  demand, Canvas2D fallback) and remove the bundled three.js copy, so the UI
+  ships no third-party JavaScript.
+- Show Chronicle changes with effective and recorded time, processing jobs with
+  input versions and model attempts, context-injection records, system logs and
+  management runs. Unobserved values render as 미수집 instead of 0, and
+  injections that provided no memory never use a success badge.
+- Run doctor, status, sync and backfill only after explicit confirmation with a
+  time limit and cancellation; opening or refreshing a page never starts model
+  work. The edit dialog discloses the local embedding-model run and the
+  taxonomy reset that a meaning change causes.
+- Derive the UI audit-log location from `MEMEX_DB_PATH` when `MEMEX_HOME` is
+  unset, and isolate `MEMEX_HOME`/`XDG_CONFIG_HOME` in every UI test and gate.
+- Fold `docs/VISUALIZATION.md` into `docs/WEBUI-WORKSPACE.md`; point the browser
+  E2E, benchmark and graph-probe scripts at the new UI (`/api/v2/graph`).
+
 ## 0.4.4 - 2026-09-09
 
 - Report foreground backfill as partially complete when retryable, active or

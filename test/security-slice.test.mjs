@@ -80,13 +80,24 @@ test('SQL inputs stay parameterized: quote-bearing search neither crashes nor le
 });
 
 test('graph and facts surfaces render fact text as text, never as markup', async (t) => {
-  const appJs = fs.readFileSync(path.join(REPO, 'ui', 'relations', 'app.js'), 'utf8');
-  // Fact text flows through esc() at every innerHTML insertion site.
-  assert.ok(/esc\(of\[2\]\)/.test(appJs), 'relation panel must escape fact text');
-  assert.ok(/esc\(f\[2\]\)/.test(appJs), 'hover/detail must escape fact text');
-  const factsPage = fs.readFileSync(path.join(REPO, 'ui', 'server.cjs'), 'utf8');
-  assert.ok(factsPage.includes("tdFact.textContent = f.fact"), 'facts table must use textContent');
-  void factsPage;
+  const pub = (rel) => fs.readFileSync(path.join(REPO, 'ui', 'public', rel), 'utf8');
+  // esc() is the single HTML-escaping primitive for template insertion.
+  const uiJs = pub('ui.mjs');
+  assert.match(uiJs, /export const esc=.*\[&<>"'\]/, 'esc() must escape & < > " \'');
+  // Fact text reaches innerHTML only through esc().
+  assert.match(pub('pages/facts.mjs'), /\$\{esc\((?:ctx\.prefs\.korean&&)?f\.fact_kr\?f\.fact_kr:f\.fact\)\}/, 'facts table must escape fact text');
+  assert.match(pub('details.mjs'), /\$\{esc\(translated\?f\.fact_kr:f\.fact\)\}/, 'fact drawer must escape fact text');
+  assert.match(pub('pages/graph.mjs'), /\$\{esc\(n\.fact_kr\|\|n\.fact\)\}/, 'graph node list must escape fact text');
+  // Graph tooltip is DOM text, never markup.
+  assert.match(pub('graph-engine.mjs'), /tooltip\.textContent=n\.fact_kr\|\|n\.fact/, 'graph tooltip must use textContent');
+  // No raw fact interpolation anywhere in the frontend.
+  const dir = path.join(REPO, 'ui', 'public');
+  const files = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else if (f.endsWith('.mjs')) files.push(f); } };
+  walk(dir);
+  for (const f of files) {
+    assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /\$\{\s*[\w.]*\.fact(?:_kr)?\s*\}/, `unescaped fact interpolation in ${path.relative(REPO, f)}`);
+  }
 });
 
 test('model-child rollouts are not self-ingested (worker prompt guard + recursion guard)', async (t) => {
