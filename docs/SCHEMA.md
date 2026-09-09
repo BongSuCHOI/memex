@@ -228,14 +228,22 @@ facts (
   workspace_id,
   workstream_id,
   subject_key,
-  promotion_state
+  promotion_state,
+  tier_reason
 )
 ```
 
 `promotion_state`는 `legacy-project|decision|project-current|workspace|workstream`입니다. Active subject
 slot은 project와 optional workspace/workstream 범위에서 unique입니다. `decision`은 explicit decision,
-`project-current`는 merged/validated evidence만 허용하고 experimental state는 `workstream` 또는 Capsule에
-남습니다. Branch 전체 fact graph는 만들지 않습니다.
+`project-current`는 `merged`/`validated`/`no-branch-signal` evidence만 허용하고 experimental state는
+`workstream` 또는 Capsule에 남습니다. Branch 전체 fact graph는 만들지 않습니다.
+
+`tier_reason`(0.6.0 additive, nullable)은 fact가 그 tier에 놓인 근거입니다: `no-branch-signal`(비-git
+프로젝트 또는 브랜치를 못 읽음), `default-branch`(저장소 기본 브랜치 세션), `branch:<name>`(그 외
+브랜치·워크트리 세션). 앞의 둘은 프로젝트 공용(`project-current`), 마지막은 브랜치 tier(`workstream`)로
+들어갑니다. "브랜치 신호 없음"은 추측이 아니라 그 자체가 근거이므로 `project-current`의 정당한 evidence
+값(`no-branch-signal`)입니다. 같은 값이 추출 시 Chronicle `ASSERTED` 이벤트 `outcome.tier_reason`에도
+남습니다.
 
 ### Semantic fields
 
@@ -286,14 +294,14 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 | `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
 | `previous_fact` / `new_fact` | previous/new value |
 | `project_id`, `subject_key` | stable slot |
-| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED` |
+| `event_kind` | `ASSERTED|CHANGED|RETIRED|RESTORED|VALIDATED|INCIDENT|CONTRADICTED|PROMOTED|DEMOTED`(뒤 둘은 0.6.0 additive) |
 | `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
 | `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
 | `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
 | `outcome_json` | validation/incident/temporal 판정 결과 |
 | `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
 | `reverts_event_id`, `related_event_ids` | rollback/관계 |
-| `actor` | `extractor|consolidator|user|sync|legacy` |
+| `actor` | `extractor|consolidator|user|sync|legacy|auto|user-directive|migration`(뒤 셋은 0.6.0 additive) |
 | `policy_version`, `evidence_authority` | `chronicle-v1`; `human-decision|human|trusted-tool|unknown` |
 | `effective_at` / `effective_at_source` | 실제 사건 시점(`source`) 또는 처리 시점 fallback(`recorded`), peer 수신(`peer`) |
 | `recorded_at` | worker 처리 시점 |

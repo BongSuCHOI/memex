@@ -81,7 +81,7 @@ COMMANDS:
   recover     Reset terminal (dead) work back to claimable in one transaction
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings backlog explicitly ('all' runs each stage in order)
-  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|delete
+  facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|migrate-tiers|delete
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -524,9 +524,37 @@ async function main() {
             console.log(
               `Deleted: ${id} (revisions=${r.impact.revisions}, relations=${r.impact.relations})`,
             );
+          // --- 0.6.0 tier ladder (#18) -------------------------------------
+          } else if (sub === "migrate-tiers") {
+            const apply = flag("--apply");
+            if (!apply && !flag("--dry-run")) {
+              throw new Error(
+                "usage: memex facts migrate-tiers --dry-run | --apply [--json]",
+              );
+            }
+            const candidates = fm.listTierMigrationCandidates(db);
+            const result = apply ? fm.applyTierMigration(db) : null;
+            if (flag("--json")) {
+              console.log(JSON.stringify({ candidates, applied: result }, null, 2));
+            } else if (candidates.length === 0) {
+              console.log("No workstream facts would move to project-common.");
+            } else {
+              for (const c of candidates) {
+                console.log(
+                  `${c.id}  [${c.tierReason}] ${String(c.fact).slice(0, 80)}${String(c.fact).length > 80 ? "…" : ""}`,
+                );
+              }
+              console.log(
+                apply
+                  ? `Promoted ${result.promoted.length} fact(s) to project-current; skipped ${result.skipped.length}.`
+                  : `${candidates.length} fact(s) would move workstream → project-current. Re-run with --apply.`,
+              );
+              for (const s of result?.skipped ?? []) console.error(`skipped ${s.id}: ${s.reason}`);
+            }
+          // --- end 0.6.0 tier ladder ---------------------------------------
           } else {
             console.error(
-              "Usage: memex facts <list|show|edit|deactivate|restore|history|delete> [--id <uuid>] ...",
+              "Usage: memex facts <list|show|edit|deactivate|restore|history|migrate-tiers|delete> [--id <uuid>] ...",
             );
             process.exitCode = 1;
           }

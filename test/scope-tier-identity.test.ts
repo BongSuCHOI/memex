@@ -26,6 +26,9 @@ import {
   resolveProjectWorkspace,
 } from "../src/continuity-identity.js";
 import { ensureSessionMemoryState } from "../src/continuity-core.js";
+import { insertFact } from "../src/fact-db.js";
+import { saveExtractedFacts } from "../src/fact-extractor.js";
+import { applyTierMigration, listTierMigrationCandidates } from "../src/fact-management.js";
 import type { ConversationExchange } from "../src/types.js";
 
 let root: string;
@@ -166,5 +169,127 @@ describe("exchange branch propagation (#16)", () => {
     await insertExchange(db, exchange("ex-plain-1", "plain-1", project), new Array(384).fill(0.1));
     expect((db.prepare("SELECT git_branch FROM exchanges WHERE id = 'ex-plain-1'")
       .get() as { git_branch: string | null }).git_branch).toBeNull();
+  });
+});
+
+/**
+ * #18 — the observed state was 9 ict-indicator facts (a non-git directory)
+ * stuck on `promotion_state='workstream'`, invisible to the project screen and
+ * never injected into the next session of the same project.
+ */
+describe("default tier rule at extraction insert (#18)", () => {
+  async function factFor(sessionId: string, project: string, branch?: string): Promise<Record<string, unknown>> {
+    const state = ensureSessionMemoryState(db, { sessionId, project, branch });
+    await insertExchange(db, exchange(`ex-${sessionId}`, sessionId, project), new Array(384).fill(0.1));
+    const id = insertFact(db, {
+      fact: `Session store decision from ${sessionId}`,
+      category: "knowledge", scope_type: "project", scope_project: project,
+      source_exchange_ids: [`ex-${sessionId}`], embedding: new Array(384).fill(0.1),
+      subject_key: `state.runtime.store_${sessionId.replace(/-/g, "_")}`,
+    });
+    expect(state.workstreamId).toBeTruthy();
+    return db.prepare("SELECT promotion_state, tier_reason, workstream_id, workspace_id FROM facts WHERE id = ?")
+      .get(id) as Record<string, unknown>;
+  }
+
+  it("writes a non-git session's fact as project-common with tier_reason no-branch-signal", async () => {
+    const project = path.join(root, "tier-plain");
+    fs.mkdirSync(project, { recursive: true });
+    expect(await factFor("tier-plain-1", project)).toEqual({
+      promotion_state: "project-current", tier_reason: "no-branch-signal",
+      workstream_id: null, workspace_id: null,
+    });
+  });
+
+  it("writes a default-branch session's fact as project-common with tier_reason default-branch", async () => {
+    const repo = path.join(root, "tier-default");
+    gitClone(repo, "main");
+    expect(await factFor("tier-default-1", repo)).toEqual({
+      promotion_state: "project-current", tier_reason: "default-branch",
+      workstream_id: null, workspace_id: null,
+    });
+  });
+
+  it("keeps a non-default-branch session's fact on the branch tier", async () => {
+    const repo = path.join(root, "tier-branch");
+    gitClone(repo, "feature/tier");
+    const row = await factFor("tier-branch-1", repo);
+    expect(row.promotion_state).toBe("workstream");
+    expect(row.tier_reason).toBe("branch:feature/tier");
+    expect(row.workstream_id).toBeTruthy();
+  });
+
+  it("records the tier decision on the ASSERTED Chronicle event", async () => {
+    const project = path.join(root, "tier-chronicle");
+    fs.mkdirSync(project, { recursive: true });
+    ensureSessionMemoryState(db, { sessionId: "tier-ch-1", project });
+    await insertExchange(db, exchange("ex-tier-ch-1", "tier-ch-1", project), new Array(384).fill(0.1));
+    await saveExtractedFacts(
+      db,
+      [{
+        fact: "Cache uses SQLite", category: "knowledge", scope_type: "project",
+        subject_key: "state.runtime.cache", evidence: ["human_assertion"],
+      }] as never,
+      project,
+      ["ex-tier-ch-1"],
+    );
+    const event = db.prepare(
+      "SELECT event_kind, outcome_json FROM fact_revisions WHERE event_kind = 'ASSERTED' ORDER BY chronicle_seq DESC LIMIT 1",
+    ).get() as { event_kind: string; outcome_json: string | null } | undefined;
+    expect(event).toBeTruthy();
+    expect(JSON.parse(event!.outcome_json ?? "{}")).toMatchObject({
+      tier: "project-current", tier_reason: "no-branch-signal",
+    });
+  });
+});
+
+describe("facts migrate-tiers (#18)", () => {
+  it("lists pre-0.6.0 workstream facts with no branch signal and moves them only on apply", async () => {
+    const project = path.join(root, "migrate-plain");
+    fs.mkdirSync(project, { recursive: true });
+    const branchRepo = path.join(root, "migrate-branch");
+    gitClone(branchRepo, "feature/keep");
+
+    const plain = ensureSessionMemoryState(db, { sessionId: "mig-plain", project });
+    const branchy = ensureSessionMemoryState(db, { sessionId: "mig-branch", project: branchRepo });
+    await insertExchange(db, exchange("ex-mig-plain", "mig-plain", project), new Array(384).fill(0.1));
+    await insertExchange(db, exchange("ex-mig-branch", "mig-branch", branchRepo), new Array(384).fill(0.1));
+
+    // Reproduce the legacy placement: everything on the workstream tier.
+    const legacy = insertFact(db, {
+      fact: "ict-indicator uses a single loader", category: "knowledge", scope_type: "project",
+      scope_project: project, source_exchange_ids: ["ex-mig-plain"], embedding: new Array(384).fill(0.1),
+      subject_key: "state.loader.mode", project_id: plain.projectId,
+      workspace_id: plain.workspaceId, workstream_id: plain.workstreamId,
+      promotion_state: "workstream", promotion_evidence: "experimental",
+    });
+    const keep = insertFact(db, {
+      fact: "Branch experiment uses Redis", category: "knowledge", scope_type: "project",
+      scope_project: branchRepo, source_exchange_ids: ["ex-mig-branch"], embedding: new Array(384).fill(0.1),
+      subject_key: "state.branch.cache", project_id: branchy.projectId,
+      workspace_id: branchy.workspaceId, workstream_id: branchy.workstreamId,
+      promotion_state: "workstream", promotion_evidence: "experimental",
+    });
+
+    expect(listTierMigrationCandidates(db).map((c) => c.id)).toEqual([legacy]);
+    // A dry run changes nothing.
+    expect(db.prepare("SELECT promotion_state FROM facts WHERE id = ?").get(legacy))
+      .toEqual({ promotion_state: "workstream" });
+
+    const applied = applyTierMigration(db, { now: "2026-09-10T00:00:00.000Z" });
+    expect(applied).toEqual({ promoted: [legacy], skipped: [] });
+    expect(db.prepare("SELECT promotion_state, tier_reason, workstream_id FROM facts WHERE id = ?").get(legacy))
+      .toEqual({ promotion_state: "project-current", tier_reason: "no-branch-signal", workstream_id: null });
+    expect(db.prepare("SELECT promotion_state FROM facts WHERE id = ?").get(keep))
+      .toEqual({ promotion_state: "workstream" });
+    const event = db.prepare(
+      "SELECT event_kind, actor, outcome_json FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
+    ).get(legacy) as { event_kind: string; actor: string; outcome_json: string };
+    expect(event.actor).toBe("migration");
+    expect(JSON.parse(event.outcome_json)).toMatchObject({
+      from_tier: "workstream", to_tier: "project-current", reason: "no-branch-signal",
+    });
+    // Idempotent: nothing is left to migrate.
+    expect(listTierMigrationCandidates(db)).toEqual([]);
   });
 });

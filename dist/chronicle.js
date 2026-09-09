@@ -16,7 +16,9 @@ export const CHRONICLE_LANE_LABELS = {
 };
 const TRUSTED_TOOL_SOURCE_TYPES = new Set(["repo_file", "git_history", "test_execution"]);
 const KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
-const PROJECTION_KINDS = new Set(["ASSERTED", "CHANGED", "RETIRED", "RESTORED"]);
+const PROJECTION_KINDS = new Set(["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "PROMOTED", "DEMOTED"]);
+/** Tier moves change placement, never meaning: they never touch the fact text. */
+export const TIER_EVENT_KINDS = new Set(["PROMOTED", "DEMOTED"]);
 const EVENT_ONLY_KINDS = new Set(["VALIDATED", "INCIDENT", "CONTRADICTED"]);
 export class ChronicleGroundingError extends Error {
     constructor(message) {
@@ -187,7 +189,7 @@ export function recordChronicleEvent(db, input) {
         if (!reverted)
             throw new Error(`reverts_event_id does not exist: ${input.revertsEventId}`);
     }
-    if (input.userStatedRationale && input.actor !== "user") {
+    if (input.userStatedRationale && input.actor !== "user" && input.actor !== "user-directive") {
         throw new ChronicleGroundingError("only actor 'user' can state a rationale without source evidence");
     }
     const grounded = {

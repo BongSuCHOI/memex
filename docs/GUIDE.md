@@ -154,12 +154,20 @@ memex facts edit --id <uuid> --text "updated fact"
 memex facts deactivate --id <uuid>
 memex facts restore --id <uuid>
 memex facts history --id <uuid>
+memex facts migrate-tiers --dry-run
+memex facts migrate-tiers --apply
 memex facts delete --id <full-uuid> --hard --yes
 ```
+
+| 명령 | 하는 일 |
+| --- | --- |
+| `memex facts migrate-tiers --dry-run` | 0.6.0 기본 tier 규칙대로면 프로젝트 공용이어야 하는 기존 `workstream` fact 목록만 출력(변경 없음) |
+| `memex facts migrate-tiers --apply` | 위 목록을 `project-current`로 이동. fact마다 Chronicle `PROMOTED`(actor `migration`, reason `no-branch-signal`) 한 건 |
 
 - edit는 revision과 semantic derived-state invalidation을 하나의 transaction으로 처리합니다.
 - deactivate/restore는 의미 편집과 독립적인 lifecycle event입니다.
 - hard delete는 full UUID, `--hard`, `--yes`가 모두 필요합니다.
+- `migrate-tiers`는 `--dry-run` 또는 `--apply` 중 하나가 반드시 필요하며 자동 실행되지 않습니다. `--json`을 붙이면 후보와 적용 결과를 JSON으로 출력합니다.
 
 ## 8. MCP와 skills
 

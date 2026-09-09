@@ -431,6 +431,8 @@ export function ensureContinuitySchema(db, options = {}) {
             ["facts", "workstream_id", "TEXT"],
             ["facts", "subject_key", "TEXT"],
             ["facts", "promotion_state", "TEXT NOT NULL DEFAULT 'legacy-project'"],
+            // 0.6.0 (#18): the branch signal that placed the fact in its tier.
+            ["facts", "tier_reason", "TEXT"],
             ["recall_events", "project_id", "TEXT"],
             ["recall_events", "workspace_id", "TEXT"],
             ["recall_events", "workstream_id", "TEXT"],
@@ -870,6 +872,10 @@ export const CHRONICLE_EVENT_KINDS = [
     "VALIDATED",
     "INCIDENT",
     "CONTRADICTED",
+    // 0.6.0 tier ladder (#18/#19). Additive: a pre-0.6.0 peer rejects a sync row
+    // carrying these kinds visibly, exactly as it does any unknown kind today.
+    "PROMOTED",
+    "DEMOTED",
 ];
 const CHRONICLE_COLUMNS = [
     ["project_id", "TEXT"],

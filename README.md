@@ -229,6 +229,7 @@ memex status
 | `memex stats` | Inspect corpus/index statistics |
 | `memex analyze` | Generate a deterministic history report |
 | `memex facts` | Inspect and manage durable facts |
+| `memex facts migrate-tiers` | List (`--dry-run`) or apply (`--apply`) the 0.6.0 default-tier back-fill |
 | `memex backfill` | Run extraction / ontology / embedding backlog work |
 | `memex model-work status` | Inspect model attempts, observed usage, and pending work; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
 | `memex status` | Inspect pipeline readiness |

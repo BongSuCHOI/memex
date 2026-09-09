@@ -932,7 +932,14 @@ export function assignFactSubject(
     projectId: string;
     subjectKey: string;
     promotionState: "decision" | "project-current" | "workspace" | "workstream";
-    evidence: "explicit-decision" | "merged" | "validated" | "experimental";
+    /**
+     * #18 — `no-branch-signal` is admissible evidence for project-current: a
+     * non-git or default-branch session has no branch for the fact to belong
+     * to, so project-common IS its grounded placement, not a promotion.
+     */
+    evidence: "explicit-decision" | "merged" | "validated" | "experimental" | "no-branch-signal";
+    /** Recorded on the fact: `no-branch-signal` | `default-branch` | `branch:<name>`. */
+    tierReason?: string | null;
     workspaceId?: string | null;
     workstreamId?: string | null;
   },
@@ -941,8 +948,9 @@ export function assignFactSubject(
   if (input.promotionState === "decision" && input.evidence !== "explicit-decision") {
     throw new Error("project decision requires explicit decision evidence");
   }
-  if (input.promotionState === "project-current" && !["merged", "validated"].includes(input.evidence)) {
-    throw new Error("project current state requires merged or validated evidence");
+  if (input.promotionState === "project-current" &&
+      !["merged", "validated", "no-branch-signal"].includes(input.evidence)) {
+    throw new Error("project current state requires merged, validated or no-branch-signal evidence");
   }
   if (input.promotionState === "workspace" && !input.workspaceId) throw new Error("workspace state requires workspace_id");
   if (input.promotionState === "workstream" && !input.workstreamId) throw new Error("workstream state requires workstream_id");
@@ -979,11 +987,12 @@ export function assignFactSubject(
     assertMutationPolicy(db, policy, input.factId);
     const changed = db.prepare(`
       UPDATE facts SET project_id = ?, subject_key = ?, promotion_state = ?, workspace_id = ?, workstream_id = ?,
+        tier_reason = COALESCE(?, tier_reason),
         semantic_generation = semantic_generation + 1, semantic_updated_at = ?, updated_at = ?
       WHERE id = ?
     `).run(
       input.projectId, input.subjectKey, input.promotionState,
-      input.workspaceId ?? null, input.workstreamId ?? null,
+      input.workspaceId ?? null, input.workstreamId ?? null, input.tierReason ?? null,
       new Date().toISOString(), new Date().toISOString(), input.factId,
     );
     if (changed.changes !== 1) throw new Error("fact not found");

@@ -1925,12 +1925,14 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
             }
             if (!existing) {
                 const factId = insertFact(db, insertParams);
-                const row = db.prepare("SELECT project_id, subject_key FROM facts WHERE id = ?").get(factId);
+                const row = db.prepare("SELECT project_id, subject_key, promotion_state, tier_reason FROM facts WHERE id = ?").get(factId);
                 recordChronicleEvent(db, {
                     kind: "ASSERTED",
                     projectId: row.project_id,
                     subjectKey: row.subject_key,
                     factId,
+                    // #18 — the tier the fact was born into and the branch signal behind it.
+                    outcome: row.tier_reason ? { tier: row.promotion_state, tier_reason: row.tier_reason } : null,
                     fromSemanticGeneration: null,
                     toSemanticGeneration: 1,
                     previousValue: null,

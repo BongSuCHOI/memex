@@ -205,3 +205,23 @@ export declare function hardDeleteFact(db: Database.Database, id: string, opts: 
     deleted: true;
     impact: HardDeleteImpact;
 };
+export interface TierMigrationCandidate {
+    id: string;
+    fact: string;
+    projectId: string;
+    subjectKey: string;
+    workstreamId: string | null;
+    branchHint: string | null;
+    tierReason: string;
+}
+export declare function listTierMigrationCandidates(db: Database.Database): TierMigrationCandidate[];
+export interface TierMigrationResult {
+    promoted: string[];
+    skipped: Array<{
+        id: string;
+        reason: string;
+    }>;
+}
+export declare function applyTierMigration(db: Database.Database, options?: {
+    now?: string;
+}): TierMigrationResult;

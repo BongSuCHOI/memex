@@ -2,6 +2,7 @@ import { assertMutationPolicy, captureMutationPolicy, recordLocalMeaningEvidence
 export { StaleFactMutationError } from './fact-policy.js';
 import { clearFactContextDependencies, getRevisions, mergeFactContextDependencies, vecParamFor, } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
+import { assignFactSubject, branchSignalFor } from './continuity-identity.js';
 import { normalizeSlotText, purgeChronicleForSources, readChronicleTimeline, recordChronicleEvent, } from './chronicle.js';
 function tableExists(db, name) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(name) !== undefined;
@@ -625,4 +626,76 @@ export function hardDeleteFact(db, id, opts) {
 }
 function isFullUuid(id) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+export function listTierMigrationCandidates(db) {
+    if (!tableExists(db, 'minimal_workstreams') || !tableExists(db, 'workspaces'))
+        return [];
+    const rows = db.prepare(`
+    SELECT f.id, f.fact, f.project_id, f.subject_key, f.workstream_id,
+           w.branch_hint, ws.default_branch
+    FROM facts f
+    LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
+    LEFT JOIN workspaces ws ON ws.workspace_id = COALESCE(f.workspace_id, w.workspace_id)
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream' AND f.project_id IS NOT NULL
+    ORDER BY f.created_at, f.id
+  `).all();
+    const candidates = [];
+    for (const row of rows) {
+        const signal = branchSignalFor({ branch: row.branch_hint, defaultBranch: row.default_branch });
+        if (signal.kind === 'branch')
+            continue;
+        candidates.push({
+            id: row.id,
+            fact: row.fact,
+            projectId: row.project_id,
+            subjectKey: row.subject_key ?? `workstream.fact.${row.id}`,
+            workstreamId: row.workstream_id,
+            branchHint: row.branch_hint,
+            tierReason: signal.tierReason,
+        });
+    }
+    return candidates;
+}
+export function applyTierMigration(db, options = {}) {
+    const result = { promoted: [], skipped: [] };
+    const recordedAt = options.now ?? new Date().toISOString();
+    for (const candidate of listTierMigrationCandidates(db)) {
+        const tx = db.transaction(() => {
+            assignFactSubject(db, {
+                factId: candidate.id,
+                projectId: candidate.projectId,
+                subjectKey: candidate.subjectKey,
+                promotionState: 'project-current',
+                evidence: 'no-branch-signal',
+                tierReason: 'no-branch-signal',
+            });
+            recordChronicleEvent(db, {
+                kind: 'PROMOTED',
+                projectId: candidate.projectId,
+                subjectKey: candidate.subjectKey,
+                factId: candidate.id,
+                outcome: {
+                    from_tier: 'workstream',
+                    to_tier: 'project-current',
+                    actor: 'migration',
+                    reason: 'no-branch-signal',
+                    evidence_ids: [],
+                },
+                actor: 'migration',
+                evidenceAuthority: 'unknown',
+                recordedAt,
+                effectiveAt: recordedAt,
+                effectiveAtSource: 'recorded',
+                projectionApplied: true,
+            });
+        });
+        try {
+            tx();
+            result.promoted.push(candidate.id);
+        }
+        catch (error) {
+            result.skipped.push({ id: candidate.id, reason: error instanceof Error ? error.message : String(error) });
+        }
+    }
+    return result;
 }

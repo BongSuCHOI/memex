@@ -18,6 +18,7 @@ import {
   vecParamFor,
 } from './fact-db.js';
 import { generateEmbedding, EMBEDDING_VERSION } from './embeddings.js';
+import { assignFactSubject, branchSignalFor } from './continuity-identity.js';
 import {
   normalizeSlotText,
   purgeChronicleForSources,
@@ -884,4 +885,107 @@ export function hardDeleteFact(db: Database.Database, id: string, opts: { confir
 
 function isFullUuid(id: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+
+// ---------------------------------------------------------------------------
+// 0.6.0 tier migration (#18)
+//
+// Facts extracted before the default-tier rule all landed on `workstream`,
+// including those from non-git projects and default-branch sessions that have
+// no branch for their memory to belong to. The new rule would have written
+// them as project-common. Nothing is rewritten automatically: the caller lists
+// candidates first and only an explicit apply moves them, one Chronicle
+// PROMOTED event per fact with actor `migration`, reason `no-branch-signal`.
+// ---------------------------------------------------------------------------
+
+export interface TierMigrationCandidate {
+  id: string;
+  fact: string;
+  projectId: string;
+  subjectKey: string;
+  workstreamId: string | null;
+  branchHint: string | null;
+  tierReason: string;
+}
+
+export function listTierMigrationCandidates(db: Database.Database): TierMigrationCandidate[] {
+  if (!tableExists(db, 'minimal_workstreams') || !tableExists(db, 'workspaces')) return [];
+  const rows = db.prepare(`
+    SELECT f.id, f.fact, f.project_id, f.subject_key, f.workstream_id,
+           w.branch_hint, ws.default_branch
+    FROM facts f
+    LEFT JOIN minimal_workstreams w ON w.workstream_id = f.workstream_id
+    LEFT JOIN workspaces ws ON ws.workspace_id = COALESCE(f.workspace_id, w.workspace_id)
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream' AND f.project_id IS NOT NULL
+    ORDER BY f.created_at, f.id
+  `).all() as Array<{
+    id: string; fact: string; project_id: string; subject_key: string | null;
+    workstream_id: string | null; branch_hint: string | null; default_branch: string | null;
+  }>;
+  const candidates: TierMigrationCandidate[] = [];
+  for (const row of rows) {
+    const signal = branchSignalFor({ branch: row.branch_hint, defaultBranch: row.default_branch });
+    if (signal.kind === 'branch') continue;
+    candidates.push({
+      id: row.id,
+      fact: row.fact,
+      projectId: row.project_id,
+      subjectKey: row.subject_key ?? `workstream.fact.${row.id}`,
+      workstreamId: row.workstream_id,
+      branchHint: row.branch_hint,
+      tierReason: signal.tierReason,
+    });
+  }
+  return candidates;
+}
+
+export interface TierMigrationResult {
+  promoted: string[];
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+export function applyTierMigration(
+  db: Database.Database,
+  options: { now?: string } = {},
+): TierMigrationResult {
+  const result: TierMigrationResult = { promoted: [], skipped: [] };
+  const recordedAt = options.now ?? new Date().toISOString();
+  for (const candidate of listTierMigrationCandidates(db)) {
+    const tx = db.transaction(() => {
+      assignFactSubject(db, {
+        factId: candidate.id,
+        projectId: candidate.projectId,
+        subjectKey: candidate.subjectKey,
+        promotionState: 'project-current',
+        evidence: 'no-branch-signal',
+        tierReason: 'no-branch-signal',
+      });
+      recordChronicleEvent(db, {
+        kind: 'PROMOTED',
+        projectId: candidate.projectId,
+        subjectKey: candidate.subjectKey,
+        factId: candidate.id,
+        outcome: {
+          from_tier: 'workstream',
+          to_tier: 'project-current',
+          actor: 'migration',
+          reason: 'no-branch-signal',
+          evidence_ids: [],
+        },
+        actor: 'migration',
+        evidenceAuthority: 'unknown',
+        recordedAt,
+        effectiveAt: recordedAt,
+        effectiveAtSource: 'recorded',
+        projectionApplied: true,
+      });
+    });
+    try {
+      tx();
+      result.promoted.push(candidate.id);
+    } catch (error) {
+      result.skipped.push({ id: candidate.id, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
 }

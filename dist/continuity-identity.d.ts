@@ -142,7 +142,14 @@ export declare function assignFactSubject(db: Database.Database, input: {
     projectId: string;
     subjectKey: string;
     promotionState: "decision" | "project-current" | "workspace" | "workstream";
-    evidence: "explicit-decision" | "merged" | "validated" | "experimental";
+    /**
+     * #18 — `no-branch-signal` is admissible evidence for project-current: a
+     * non-git or default-branch session has no branch for the fact to belong
+     * to, so project-common IS its grounded placement, not a promotion.
+     */
+    evidence: "explicit-decision" | "merged" | "validated" | "experimental" | "no-branch-signal";
+    /** Recorded on the fact: `no-branch-signal` | `default-branch` | `branch:<name>`. */
+    tierReason?: string | null;
     workspaceId?: string | null;
     workstreamId?: string | null;
 }): void;

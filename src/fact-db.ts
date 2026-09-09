@@ -16,7 +16,7 @@ import {
   normalizeVecDistance,
   l2DistanceToSimilarity,
 } from "./db.js";
-import { resolveProjectWorkspace } from "./continuity-identity.js";
+import { branchSignalFor, resolveProjectWorkspace } from "./continuity-identity.js";
 import { readChronicleTimeline, recordChronicleEvent } from "./chronicle.js";
 import { isInternalContextMessage } from "./codex-rollout.js";
 import {
@@ -51,7 +51,9 @@ interface InsertFactParams {
   workstream_id?: string | null;
   subject_key?: string | null;
   promotion_state?: Fact['promotion_state'];
-  promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental';
+  promotion_evidence?: 'explicit-decision' | 'merged' | 'validated' | 'experimental' | 'no-branch-signal';
+  /** 0.6.0 (#18): why the fact landed in its tier — `no-branch-signal`, `default-branch`, `branch:<name>`. */
+  tier_reason?: string | null;
 }
 
 interface UpdateFactParams {
@@ -127,6 +129,36 @@ export interface ResolvedFactInsertIdentity {
   workspaceId: string | null;
   workstreamId: string | null;
   promotionState: NonNullable<Fact['promotion_state']>;
+  /** #18 — the branch signal that decided the tier, or null when not derived. */
+  tierReason: string | null;
+}
+
+/**
+ * #18 default tier rule. A session with a real branch signal keeps its memory
+ * on the branch tier; a session with none (non-git project, or the repository
+ * default branch) writes project-common memory directly, because there is no
+ * branch for it to be diluted by. "No branch signal" is itself the evidence.
+ */
+function defaultTierFor(
+  db: Database.Database,
+  input: { workspaceId: string | null; workstreamId: string | null },
+): { promotionState: 'workstream' | 'project-current'; tierReason: string } {
+  const stream = input.workstreamId
+    ? db.prepare("SELECT branch_hint, workspace_id FROM minimal_workstreams WHERE workstream_id = ?")
+      .get(input.workstreamId) as { branch_hint: string | null; workspace_id: string | null } | undefined
+    : undefined;
+  const workspaceId = input.workspaceId ?? stream?.workspace_id ?? null;
+  const workspace = workspaceId
+    ? db.prepare("SELECT default_branch FROM workspaces WHERE workspace_id = ?")
+      .get(workspaceId) as { default_branch: string | null } | undefined
+    : undefined;
+  const signal = branchSignalFor({
+    branch: stream?.branch_hint ?? null,
+    defaultBranch: workspace?.default_branch ?? null,
+  });
+  return signal.kind === "branch" && input.workstreamId
+    ? { promotionState: "workstream", tierReason: signal.tierReason }
+    : { promotionState: "project-current", tierReason: signal.tierReason };
 }
 
 /**
@@ -136,7 +168,7 @@ export interface ResolvedFactInsertIdentity {
  */
 export function resolveFactInsertIdentity(
   db: Database.Database,
-  params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence'>,
+  params: Pick<InsertFactParams, 'scope_type' | 'scope_project' | 'source_exchange_ids' | 'project_id' | 'workspace_id' | 'workstream_id' | 'promotion_state' | 'promotion_evidence' | 'tier_reason'>,
 ): ResolvedFactInsertIdentity {
   const now = new Date().toISOString();
   let projectId = params.project_id ?? null;
@@ -163,18 +195,30 @@ export function resolveFactInsertIdentity(
     projectId = identity.projectId;
     workspaceId ??= identity.workspaceId;
   }
+  const derived = params.promotion_state === undefined && params.scope_type === "project" && workstreamId
+    ? defaultTierFor(db, { workspaceId, workstreamId })
+    : null;
   const promotionState = params.promotion_state ?? (
-    params.scope_type === "project" && workstreamId ? "workstream" : "legacy-project"
+    derived?.promotionState ?? "legacy-project"
   );
+  // Project-wide truth never keeps workspace/workstream scope.
+  if (derived?.promotionState === "project-current") {
+    workspaceId = null;
+    workstreamId = null;
+  }
   const promotionEvidence = params.promotion_evidence ?? (
-    params.promotion_state === undefined && promotionState === "workstream" ? "experimental" : undefined
+    params.promotion_state === undefined && promotionState === "workstream" ? "experimental"
+      : params.promotion_state === undefined && derived?.promotionState === "project-current" ? "no-branch-signal"
+      : undefined
   );
+  const tierReason = params.tier_reason ?? derived?.tierReason ?? null;
   if (promotionState === "decision" && promotionEvidence !== "explicit-decision") {
     throw new Error("project decision requires explicit decision evidence");
   }
   if (promotionState === "project-current" &&
-      promotionEvidence !== "merged" && promotionEvidence !== "validated") {
-    throw new Error("project current state requires merged or validated evidence");
+      promotionEvidence !== "merged" && promotionEvidence !== "validated" &&
+      promotionEvidence !== "no-branch-signal") {
+    throw new Error("project current state requires merged, validated or no-branch-signal evidence");
   }
   if (promotionState === "workspace" && (!workspaceId || promotionEvidence !== "validated")) {
     throw new Error("workspace state requires workspace_id and validated evidence");
@@ -203,7 +247,7 @@ export function resolveFactInsertIdentity(
       throw new Error("fact workstream_id is outside project_id");
     }
   }
-  return { projectId, workspaceId, workstreamId, promotionState };
+  return { projectId, workspaceId, workstreamId, promotionState, tierReason };
 }
 
 export function insertFact(
@@ -212,7 +256,7 @@ export function insertFact(
 ): string {
   const id = randomUUID();
   const now = new Date().toISOString();
-  const { projectId, workspaceId, workstreamId, promotionState } = resolveFactInsertIdentity(db, params);
+  const { projectId, workspaceId, workstreamId, promotionState, tierReason } = resolveFactInsertIdentity(db, params);
   const subjectKey = params.subject_key ?? (
     params.scope_type === "global" ? `global.fact.${id}` : `${promotionState}.fact.${id}`
   );
@@ -221,9 +265,9 @@ export function insertFact(
       id, fact, category, scope_type, scope_project, source_exchange_ids, embedding,
       created_at, updated_at, consolidated_count, is_active, fact_kr,
       embedding_version, semantic_generation, semantic_updated_at,
-      project_id, workspace_id, workstream_id, subject_key, promotion_state
+      project_id, workspace_id, workstream_id, subject_key, promotion_state, tier_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     params.fact,
@@ -244,6 +288,7 @@ export function insertFact(
     workstreamId,
     subjectKey,
     promotionState,
+    tierReason,
   );
 
   // Insert into vector index (atomic DELETE+INSERT via transaction)

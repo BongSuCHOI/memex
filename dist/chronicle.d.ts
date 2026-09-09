@@ -19,7 +19,7 @@ export { CHRONICLE_EVENT_KINDS };
  * `effective_at`, never by worker completion order.
  */
 export type ChronicleEventKind = (typeof CHRONICLE_EVENT_KINDS)[number];
-export type ChronicleActor = "extractor" | "consolidator" | "user" | "sync" | "legacy";
+export type ChronicleActor = "extractor" | "consolidator" | "user" | "sync" | "legacy" | "auto" | "user-directive" | "migration";
 export type EvidenceAuthority = "human-decision" | "human" | "trusted-tool" | "unknown";
 export type EffectiveAtSource = "source" | "recorded" | "peer";
 export declare const CHRONICLE_POLICY_VERSION = "chronicle-v1";
@@ -33,6 +33,8 @@ export declare const CHRONICLE_LANE_LABELS: {
     readonly hotEvidence: "HOT EVIDENCE — NOT YET DISTILLED";
     readonly telemetry: "TELEMETRY — MEASURED, NOT A FACT";
 };
+/** Tier moves change placement, never meaning: they never touch the fact text. */
+export declare const TIER_EVENT_KINDS: Set<"ASSERTED" | "CHANGED" | "RETIRED" | "RESTORED" | "VALIDATED" | "INCIDENT" | "CONTRADICTED" | "PROMOTED" | "DEMOTED">;
 export declare class ChronicleGroundingError extends Error {
     constructor(message: string);
 }
