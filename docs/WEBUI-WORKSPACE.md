@@ -4,7 +4,7 @@
 
 ## 화면
 
-`/` 개요, `/conversations` 대화 원장, `/facts` 기억·사실, `/taxonomy` 분류, `/graph` WebGL/Canvas 지도, `/activity` Chronicle·작업·모델 시도·주입·로그·관리 실행, `/settings` 환경·작업 실행·화면 설정·진단.
+`/` 개요, `/conversations` 대화 원장, `/facts` 기억·사실, `/taxonomy` 분류, `/graph` WebGL/Canvas 지도, `/activity` Chronicle·작업·모델 시도·주입·로그·관리 실행, `/settings` 런타임·관리 작업·동기화·화면 설정·진단.
 
 범위는 상단에서 명시적으로 선택하며 선택 순서는 **전체 프로젝트 (조회) → 공통 기억 → 프로젝트 목록**이고, 각 항목에 그 범위의 활성 기억 수를 함께 보여준다. 화면의 기본값은 **전체 프로젝트 (조회)** 다(0.6.1, #24). 프로젝트 범위는 공통 기억 포함 여부와 승격 상태(`promotion_state`)를 구분한다. 상세 패널과 검색에도 같은 범위를 적용한다.
 
@@ -54,7 +54,9 @@
 ## 동기화 탭 (0.6.1 #48, UI 절반)
 
 관리 › **동기화**는 `dist/sync-control.js`의 `getSyncStatus` · `setSyncEnabled` · `runSyncExport` ·
-`runSyncImport`를 `/api/v2/sync`(GET 조회, POST 변경 · CSRF · 명시적 확인 · 감사 1줄)로 노출한다.
+`runSyncImport`를 **엔드포인트 하나**(`/api/v2/sync`)로 노출한다. GET은 조회, POST는 본문의
+`action`(`enable`·`disable`·`export`·`import`)으로 동작을 고르며 CSRF·명시적 확인(`confirm: true`)·
+감사 1줄을 요구한다. 하위 경로(`/api/v2/sync/...`)는 없다.
 
 - **스위치는 기본 꺼짐**이다. 켜는 모달에서 공유 폴더 절대 경로를 받아 폴더를 만들고 **지금 쓰기
   가능한지 확인**한다. 실패하면 켜지 않는다. 설정은 데이터 루트의 `sync/config.json`에 저장된다.
@@ -129,7 +131,7 @@ MEMEX_PLUGIN_ROOT="$PWD" node ui/server.cjs
 
 Chronicle의 사건 발생/기록 시각을 구분하고 직접 근거와 해석 맥락을 분리한다. 연결 ID가 없는 기록을 추정 연결하지 않으며 후보 탈락 사유·토큰 미수집을 만들어내지 않는다. 그래프 위치는 임베딩 거리 수치가 아니다. 컨텍스트 제공은 답변에서 실제 사용됐다는 증거가 아니다.
 
-관리 명령은 `doctor`, `status`, `sync`, `backfill extract|ontology|embeddings|all`, `recover --all-dead`, `facts migrate-tiers --dry-run|--apply`만 실행한다. argv는 항상 고정이다 — 작업 ID나 사유를 받는 명령은 버튼이 아니라 복사 가능한 명령으로 안내한다. 모두 전체 저장소 범위로 확인을 요구한다. 상단 필터가 CLI 실행 범위를 제한하지 않는다. 취소는 완료된 데이터 변경을 롤백하지 않는다.
+관리 명령은 `doctor`, `status`, `sync`, `backfill extract|ontology|embeddings|all`, `recover --all-dead`, `facts migrate-tiers --dry-run|--apply`만 실행한다. `memex backfill receipts`와 `memex ontology merge|rename`은 allowlist에 없다 — 인자를 받는 명령이라 CLI 전용이다. argv는 항상 고정이다 — 작업 ID나 사유를 받는 명령은 버튼이 아니라 복사 가능한 명령으로 안내한다. 모두 전체 저장소 범위로 확인을 요구한다. 상단 필터가 CLI 실행 범위를 제한하지 않는다. 취소는 완료된 데이터 변경을 롤백하지 않는다.
 
 SSE는 조회 갱신 알림이다. 로그/추적 원장 전체 재생 프로토콜이 아니다. UI 연결 상태는 플러그인 전체 건강 상태와 다르다. 실행 출력은 메모리 제한 보관, 실행 메타데이터만 로컬 JSON에 보존한다.
 

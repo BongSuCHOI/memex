@@ -214,12 +214,12 @@ exporter는 local DB에서 하나의 consistent snapshot을 읽고 generation te
 importer는 `CURRENT`가 가리키는 generation을 DB mutation 전에 pin합니다. 다음 중 하나라도 실패하면 그 device generation 전체를 reject합니다.
 
 - `meta.json` 누락/파싱 실패
-- protocol version != 4
+- protocol version ∉ {4, 5}
 - generation/device mismatch
 - payload file 누락
 - SHA-256/row count mismatch
 - JSON parse failure
-- v4 row schema failure
+- row schema failure (모르는 `promotion_state`와 불법 tier 조합 포함, 0.6.1 #37)
 - pinning 중 파일이 사라지거나 읽기 실패
 
 partial generation이나 malformed row를 일부만 적용하지 않습니다.
@@ -233,7 +233,10 @@ partial generation이나 malformed row를 일부만 적용하지 않습니다.
 `semantic_updated_at`이 더 최신인 의미가 승리합니다. 정확한 timestamp tie는 canonical semantic key로 결정합니다.
 Import plan은 embedding 전에 `replicated` MutationPolicy를 캡처하고 최종 transaction에서 local
 semantic/placement 상태를 확인합니다. Lifecycle 축은 별도 LWW를 유지합니다. Peer authority는 보존하되
-local entailment receipt로 승격하지 않으며 semantic replacement는 이전 local receipt를 지웁니다.
+local entailment receipt로 승격하지 않습니다. 0.6.1(#45)부터 remote semantic win은 이전 local receipt를
+**삭제하지 않고** `fact_evidence_receipts.authority = 'peer-authority'`로 강등합니다 — 영수증은 설계상
+export되지 않으므로 삭제하면 그 기기에서 증거 결속이 영구히 사라졌습니다. `hasLocalMeaningEvidence`는
+여전히 false이지만 `memex backfill receipts`가 다시 로컬로 승격할 수 있습니다.
 
 ### Lifecycle winner
 

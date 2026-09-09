@@ -31,11 +31,12 @@ workspace provenance/legacy query key입니다.
 workspace가 달라도 브랜치가 같으면 한 tier를 공유합니다. 표의 세 계층은 각각
 `facts.promotion_state = workstream`(브랜치 tier), `project-current`(프로젝트 공용),
 `facts.scope_type = global`(글로벌)로 저장됩니다.
-표의 승격/강등 채널 ①에서 **0.6.0에 실제로 존재하는 경로는 CLI뿐입니다.** Web UI의 fact 변경
-allowlist는 `edit|deactivate|restore|delete`이고 승격/강등 버튼은 0.6.1(#22)에서 들어옵니다.
+표의 승격/강등 채널 ①은 0.6.1부터 **CLI와 Web UI 둘 다**입니다(#22). Web UI의 fact 변경
+allowlist는 `edit|deactivate|restore|delete`에 계층 이동 두 개가 더해져
+`POST /api/v2/facts/promote|demote`가 같은 `promoteFact`/`demoteFact`를 `actor=user`로 호출합니다.
 
-계획된 후속(0.6.0에는 없음): 회수 시그널의 durable 사용자 오버레이(#29)와 추출 규칙의 durable
-구조화 오버레이(#30)는 0.6.1 대상이며, 현재는 내장 규칙만 동작합니다.
+계획된 후속(0.6.1에는 없음): 회수 시그널의 durable 사용자 오버레이(#29)와 추출 규칙의 durable
+구조화 오버레이(#30)는 0.6.2 대상이며, 현재는 내장 규칙만 동작합니다.
 
 새 fact의 기본 tier는 세션의 **브랜치 신호**가 정합니다. 신호가 없으면(비-git 디렉터리, 또는 기본
 브랜치 세션) `project-current`, 그 외 브랜치·워크트리 세션이면 `workstream`이며 판단 근거는
@@ -64,7 +65,7 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
-  (0.6.1의 Web UI 버튼도 같은 함수를 호출할 예정입니다).
+  (0.6.1의 Web UI 승격/강등 버튼도 `/api/v2/facts/promote|demote`를 통해 같은 함수를 호출합니다).
 - 다중 기기 sync: `PROMOTED`/`DEMOTED`와 `facts.tier_reason`은 protocol v5에 실려 갑니다.
   이 event kind를 모르는 이전 peer는 지금과 동일하게 해당 generation을 **눈에 보이게 거절**합니다.
 - 0.6.1(#37/#48 결정 3)부터 **모든 tier가 전송**됩니다. `workstream`(브랜치)·`workspace` fact가

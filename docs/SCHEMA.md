@@ -295,7 +295,7 @@ slot은 project와 optional workspace/workstream 범위에서 unique입니다. `
 
 `ontology_state` / `ontology_parked_at` / `ontology_parked_version` / `ontology_similarity`는 전부 additive
 nullable column이며 Continuity schema version(=7)을 올리지 않습니다. Ontology overlay는 local-derived
-state이고 protocol v4 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
+state이고 protocol v5 payload에 포함되지 않으므로 sync 호환성에도 영향이 없습니다.
 
 - `ontology_state`: `'parked'` 이면 bounded 분류 실패 후 General/Misc에 보관 중이라는 뜻입니다. LLM이
   실제로 Misc를 고른 assignment는 `NULL`입니다. 이 구분이 없으면 status가 park를 classified로 셉니다.

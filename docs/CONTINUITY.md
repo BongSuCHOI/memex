@@ -11,7 +11,7 @@
 | `Stop` / `Interrupt` | `""` | rolling journal append + fsync, closed/interrupted fence, checkpoint+outbox 원자 commit, detached worker wake | worker 완료 |
 | `PreCompact` | `manual\|auto` | fsync + immutable prefix checkpoint + carry freeze + Capsule job coalesce | — |
 | `PostCompact` | `manual\|auto` | telemetry only (D-009) | 어떤 correctness transition도 없음 |
-| `SessionEnd` | `""` | final delta + final fence + outbox; foreground extraction/export 없음 (D-011) | — |
+| `SessionEnd` | `""` | final delta + final fence + outbox; foreground extraction/export 없음 (D-011). 0.6.1부터 같은 이벤트에 **별도 async 항목**으로 크로스디바이스 export(`scripts/sync-export-hook.js`)가 붙지만 fence는 그것을 기다리지 않습니다(#35) | — |
 
 현재 검증 환경과 CLI 버전은 [merge-gate receipt](verification/merge-gate.json)의 `environment`를 확인하십시오. hook 실행은 `cli/runtime-exec.js`가 설치된 artifact의 local binary를 고정 실행합니다(D-013). `scripts/validate-plugin.mjs`는 repository 소유 검증 도구이며 Codex 공식 validator가 아닙니다.
 
@@ -84,7 +84,7 @@ stdout callback 성공 뒤 정확한 receipt ID만 `emitted`로 바꿉니다. Ho
 
 ## 9. Sync · privacy (§9, §20)
 
-protocol v5 다섯 파일에 stable project identity, subject/promotion, Chronicle event row, event tombstone row가 additive로 실립니다(D-015, D-018, D-019). 구 peer는 generation 전체를 visible reject합니다. privacy purge는 journal/checkpoint/job/exchange/fact/event/incident/Capsule(D-035)/vector/Hot Evidence/session state를 한 transaction에서 지우고 tombstone을 남겨 worker/sync/cache 재생성을 막습니다.
+protocol v5 다섯 파일에 stable project identity, subject/promotion, Chronicle event row, event tombstone row가 additive로 실립니다(D-015, D-018, D-019). 구 peer는 generation 전체를 visible reject합니다. 0.6.1부터 이 교환에는 **스위치**가 붙습니다: `<data root>/sync/config.json`의 `enabled`가 기본 `false`이고, 켜기 전에는 export/import 훅이 stderr 한 줄로 끝납니다([운영 가이드 §10](GUIDE.md#두-번째-맥-설정-절차-크로스디바이스-동기화)). privacy purge는 journal/checkpoint/job/exchange/fact/event/incident/Capsule(D-035)/vector/Hot Evidence/session state를 한 transaction에서 지우고 tombstone을 남겨 worker/sync/cache 재생성을 막습니다.
 
 ## 10. Schema와 flag
 
@@ -101,7 +101,8 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_EMBEDDING_MODEL` | e5 | embedding model |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
 | `MEMEX_AUTO_ONTOLOGY` | unset (on) | `0`으로 fact 저장 후와 SessionStart의 자동 ontology 분류 비활성화; 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |
-| `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용 |
+| `MEMEX_MCP_AUTOSTART`, `MEMEX_RUNTIME_FORCE_REMOTE`, `MEMEX_PLUGIN_ROOT` | — | MCP/launcher 진단용. `MEMEX_PLUGIN_ROOT`는 설치본 해석의 첫 단계이기도 합니다(0.6.1 #53) |
+| `MEMEX_SYNC_DIR` | `<home>/conversation-index/sync` | 크로스디바이스 공유 폴더. 저장된 `sync/config.json`의 `dir`보다 우선합니다(0.6.1 #35) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Capsule 한 세대의 bounded storage size(§4). 초과 patch는 죽이지 않고 우선순위대로 절단 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (`0`–`1`) | 주입 관련성 게이트의 baseline 대비 마진(§8). 범위 밖 값은 기본값으로 되돌아감 |
 
