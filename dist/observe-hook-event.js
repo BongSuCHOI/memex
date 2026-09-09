@@ -74,7 +74,13 @@ export function lastObserved(event) {
     }
     return null;
 }
+// Bundle-safe entry guard: inside the esbuild bundle (dist/mcp-server.js) every
+// inlined module shares the bundle's import.meta.url, so comparing argv[1] with
+// it alone fired this block whenever the MCP server started — that is how the
+// "Unknown" rows got into hook-events.jsonl, and after #26 it would have exited
+// the server with the usage error. Require the script itself to be argv[1].
 if (process.argv[1] &&
+    path.basename(process.argv[1]) === "observe-hook-event.js" &&
     path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     // Manual invocation:
     //   node dist/observe-hook-event.js <event> [session_id] [cwd]
