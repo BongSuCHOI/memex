@@ -1,22 +1,22 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-09T10:56:04.543+00:00",
+  "recordedAt": "2026-09-09T11:34:35.745+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
     "platform": "darwin arm64",
     "chrome": "Google Chrome 152.0.7977.83",
-    "isolation": "Temporary homes for install, marketplace, package, lifecycle, plugin, Workspace browser and benchmark gates; no user data root was read or mutated."
+    "isolation": "Temporary homes for install, marketplace, package, lifecycle, plugin and Workspace browser gates; no user data root was read or mutated."
   },
   "candidate": {
     "repository": "memex",
     "branch": "feat/webui-workspace",
-    "codeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+    "codeSha": "c0066d950e8417755b2ddad7fe5862a2e650ee81",
     "packageVersion": "0.5.0",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
     "sameHead": true,
-    "note": "v0.5.0 release candidate (Web UI replaced by Memex Workspace). The first twelve gates ran on this clean committed SHA; `git status --porcelain` was empty before them and `npm run build` reproduced the tracked dist/ byte-for-byte. Afterwards only receipt files changed, plus one non-runtime cleanup: scripts/benchmark-contract.mjs dropped the legacy `loopback HTTP /api/graph-data` transport, and the thirteenth gate (benchmark-contract) re-ran against that narrowed contract and the new benchmark receipt. No push, tag, release or installed-plugin update is performed by this receipt."
+    "note": "v0.5.0 release candidate after the docs-only correction commit c0066d95 (third-party notice, Workspace owner docs, GUIDE, READMEs, VERIFICATION acceptance-map rows). This receipt supersedes the earlier 236d7362 receipt: those docs are packaged files, so per the AGENTS.md merge-gate rule a new clean baseline was created and all thirteen gates were re-run on this SHA rather than carried over. `git status --porcelain` was empty before the gates and HEAD was unchanged after them; `npm run build` reproduced the tracked dist/ byte-for-byte, and the packaged artifact grew from 310 to 311 files, which is exactly the corrected documentation. Only docs/verification receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
@@ -25,9 +25,9 @@
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:48:45.767+00:00",
-      "durationSeconds": 3.541,
-      "logPath": "/private/tmp/memex-0.5.0-gates/typecheck.log",
+      "startedAt": "2026-09-09T11:30:00.687+00:00",
+      "durationSeconds": 3.272,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/typecheck.log",
       "logSha256": "3650fd43dbc367020f18a7b6aeca7616f10122a7b6a984cd1776afc1c0e2a6ab"
     },
     {
@@ -35,10 +35,10 @@
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:48:54.033+00:00",
-      "durationSeconds": 3.614,
-      "logPath": "/private/tmp/memex-0.5.0-gates/build.log",
-      "logSha256": "00d40bcfec51f4468893beb4d2d72bc21226a0c7f2976f94d650d94333de1e3a",
+      "startedAt": "2026-09-09T11:30:03.999+00:00",
+      "durationSeconds": 3.562,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/build.log",
+      "logSha256": "39a88af44b8c95066bab8ea662d86813e432387865968a4bc8a756f4b885f8bc",
       "observed": "tsc + esbuild bundle reproduced the tracked dist/; `git status --porcelain` empty afterwards"
     },
     {
@@ -46,10 +46,10 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:49:03.006+00:00",
-      "durationSeconds": 18.214,
-      "logPath": "/private/tmp/memex-0.5.0-gates/tests.log",
-      "logSha256": "ce9da0055e7e133b5c92af5af0ffa5e87f4320935c637fa67ee75a9637881eeb",
+      "startedAt": "2026-09-09T11:30:15.910+00:00",
+      "durationSeconds": 17.982,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/tests.log",
+      "logSha256": "716e635cc2bc232613f2118aa9518d199dc2882aedd00980364d244245012d40",
       "observed": "98 files / 1015 Vitest tests passed"
     },
     {
@@ -57,10 +57,10 @@
       "command": "node --test test/codex-slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:49:26.836+00:00",
-      "durationSeconds": 3.794,
-      "logPath": "/private/tmp/memex-0.5.0-gates/codex-slice.log",
-      "logSha256": "cc35ed5efaddb13594f11238e0c460d2c55844f4602f579a5ed1c6aacf1bd39d",
+      "startedAt": "2026-09-09T11:30:33.944+00:00",
+      "durationSeconds": 3.398,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/codex-slice.log",
+      "logSha256": "1941d8be6c0e8b5838f9705b0c70e47d2d4743a06d225d634009b96b200bc887",
       "observed": "26 slices passed"
     },
     {
@@ -68,10 +68,10 @@
       "command": "node --test test/*slice.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:49:35.020+00:00",
-      "durationSeconds": 7.937,
-      "logPath": "/private/tmp/memex-0.5.0-gates/slice-tests.log",
-      "logSha256": "51c2e68f4b4536b433a4861a7d35e35bd11d969a2bf67103566a507ff7b49ad3",
+      "startedAt": "2026-09-09T11:30:37.408+00:00",
+      "durationSeconds": 8.198,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/slice-tests.log",
+      "logSha256": "7fe29c57b5cfe2fb0f33474920c45c330daf3fbf099c5f7b3b00045751795ce2",
       "observed": "105 slices / 1 suite passed"
     },
     {
@@ -79,10 +79,10 @@
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:49:47.549+00:00",
-      "durationSeconds": 6.774,
-      "logPath": "/private/tmp/memex-0.5.0-gates/install-e2e.log",
-      "logSha256": "fc86ac1f7579a7fcc78e890f6858f5e3cede96bd321bab761929e464d9b7a60c",
+      "startedAt": "2026-09-09T11:30:52.000+00:00",
+      "durationSeconds": 6.804,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/install-e2e.log",
+      "logSha256": "19fcfaa8ec837159f50071ceef22400dbe4d36d4d8ee4a2032d481d40bfade33",
       "observed": "dry-run, real install, idempotent re-run, removal and isolation checks all true in an isolated CODEX_HOME/MEMEX_HOME"
     },
     {
@@ -90,10 +90,10 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:49:58.717+00:00",
-      "durationSeconds": 0.345,
-      "logPath": "/private/tmp/memex-0.5.0-gates/marketplace-e2e.log",
-      "logSha256": "c48d8709516e622f949ac784e990acdf9849aa40ca8c2b58f0971df0f4503f55",
+      "startedAt": "2026-09-09T11:30:58.847+00:00",
+      "durationSeconds": 0.357,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/marketplace-e2e.log",
+      "logSha256": "eec0679d13dffd5951ae4a484b0c411b4165936492af02cddba74aced1466de2",
       "observed": "7 lifecycle events registered; cleanup PASS"
     },
     {
@@ -101,21 +101,21 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:50:03.195+00:00",
-      "durationSeconds": 82.378,
-      "logPath": "/private/tmp/memex-0.5.0-gates/package-runtime-e2e.log",
-      "logSha256": "9c656c50179c3259f1316aaefbabf2eb0c5475b65c5b508c5663bee795ac7df0",
-      "observed": "memex-0.5.0.tgz, 310 files, 9 MCP tools"
+      "startedAt": "2026-09-09T11:30:59.248+00:00",
+      "durationSeconds": 82.355,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/package-runtime-e2e.log",
+      "logSha256": "66ebfb73fe35b3f2f08440a269776dc585cbe0b457046c8c7dfd6a0ce326a8db",
+      "observed": "memex-0.5.0.tgz, 311 files, 9 MCP tools; one file and 16,647 unpacked bytes more than the 236d7362 baseline, matching the corrected docs"
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:51:31.524+00:00",
-      "durationSeconds": 6.088,
-      "logPath": "/private/tmp/memex-0.5.0-gates/lifecycle-e2e.log",
-      "logSha256": "d6205f809cc944988f3cf343f0606ccb42d6c32d92cc9a75afdae3adcaa7788a",
+      "startedAt": "2026-09-09T11:32:32.372+00:00",
+      "durationSeconds": 5.934,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/lifecycle-e2e.log",
+      "logSha256": "f5ffa2457ba48910c34908ef04b95829caf3560d6df0eb52f30881fc82c2d994",
       "observed": "offline tier: 9/9 steps, 12 owned hook entries removed, 7-surface cleanup inventory all true"
     },
     {
@@ -123,10 +123,10 @@
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:51:42.714+00:00",
-      "durationSeconds": 6.331,
-      "logPath": "/private/tmp/memex-0.5.0-gates/web-ui-browser-e2e.log",
-      "logSha256": "59fe5d4ad108c452beec6961461b3f89e69aa22cbea227e2a74edbb815f83702",
+      "startedAt": "2026-09-09T11:32:38.354+00:00",
+      "durationSeconds": 6.318,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/web-ui-browser-e2e.log",
+      "logSha256": "65683ad55bafb33cbddfde0d7e9e232c55cfff98476425380049d29db3fff971",
       "observed": "real headless Chrome via CDP at 1440x900 against Memex Workspace 1.0.0: 10 check groups PASS, runtimeErrors 0"
     },
     {
@@ -134,10 +134,10 @@
       "command": "node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:51:55.054+00:00",
-      "durationSeconds": 0.244,
-      "logPath": "/private/tmp/memex-0.5.0-gates/ui-tests.log",
-      "logSha256": "e37d5c2b0ca31f3c08ed187d4acc490cd6cc1d09cd7a6384f787c9c5781ff4f5",
+      "startedAt": "2026-09-09T11:32:58.157+00:00",
+      "durationSeconds": 0.236,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/ui-tests.log",
+      "logSha256": "1922c735dc9e0237fbe1221cf759e2db43242942e17ca6c31ebf26c1a1c58c83",
       "observed": "82 Workspace unit tests passed"
     },
     {
@@ -145,10 +145,10 @@
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:52:00.015+00:00",
-      "durationSeconds": 4.463,
-      "logPath": "/private/tmp/memex-0.5.0-gates/plugin-validation.log",
-      "logSha256": "5c37a3b57b804abe4b2aa32d474d209a9d8c7a006f60f799ac16acb308a45b69",
+      "startedAt": "2026-09-09T11:32:58.447+00:00",
+      "durationSeconds": 4.416,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/plugin-validation.log",
+      "logSha256": "15d23f8856b7b191db06f73eb890e66a4263cbff84f5864d83f6a9ed41dcf77d",
       "observed": "11 isolated substitute checks PASS; formal `codex plugin validate` unavailable in this CLI"
     },
     {
@@ -156,20 +156,19 @@
       "command": "node --test test/benchmark-contract.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-09T10:54:03.790+00:00",
-      "durationSeconds": 0.103,
-      "logPath": "/private/tmp/memex-0.5.0-gates/benchmark-contract.log",
-      "logSha256": "370b20fe40ece2e5790592661c256aa03e649ed57704f7f66c8be13371f1557f",
-      "observed": "1 test passed against the narrowed transport set and the new benchmark receipt",
-      "treeState": "Ran on the working tree after scripts/benchmark-contract.mjs dropped the legacy /api/graph-data transport, not on the pristine 236d7362 tree."
+      "startedAt": "2026-09-09T11:33:02.907+00:00",
+      "durationSeconds": 0.109,
+      "logPath": "/private/tmp/memex-0.5.0-gates-c0066d9/benchmark-contract.log",
+      "logSha256": "12e1f74268286dd3cc047f01ce35353ce1a31524b2d55784e4b085d2b0b110ba",
+      "observed": "1 test passed; unlike the 236d7362 run this gate ran on the pristine committed tree, because the /api/v2/graph-only transport set is already committed"
     }
   ],
   "packageRuntime": {
     "status": "PASS",
     "artifact": "memex-0.5.0.tgz",
-    "packedBytes": 1221368,
-    "unpackedBytes": 4949306,
-    "files": 310,
+    "packedBytes": 1226104,
+    "unpackedBytes": 4965953,
+    "files": 311,
     "mcpTools": 9,
     "onboarding": [
       "setup --dry-run",
@@ -188,7 +187,7 @@
     "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
     "isolatedSubstitute": "PASS: 11 checks — plugin 0.5.0 in the Codex cache, MCP serverInfo 0.5.0, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
     "receiptPath": "docs/verification/plugin-validation.json",
-    "receiptSha256": "5c37a3b57b804abe4b2aa32d474d209a9d8c7a006f60f799ac16acb308a45b69"
+    "receiptSha256": "15d23f8856b7b191db06f73eb890e66a4263cbff84f5864d83f6a9ed41dcf77d"
   },
   "webUi": {
     "surface": "Memex Workspace 1.0.0 (replaces the previous Web UI)",
@@ -220,7 +219,11 @@
     },
     "benchmark": {
       "status": "PASS",
+      "rerunForThisCandidate": false,
+      "reason": "c0066d95 is documentation-only and scripts/benchmark.mjs, the UI runtime and dist/ are byte-identical to 236d7362, so the full acceptance benchmark was not re-run. The report below is prior evidence from the 236d7362 run and is not a measurement of this SHA.",
       "command": "node scripts/benchmark.mjs",
+      "measuredOnCodeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+      "recordedAt": "2026-09-09T10:53:25.807Z",
       "reportPath": "docs/verification/benchmark.json",
       "reportSha256": "1f6fcb58fac8c85074b0549361de780846251e2a24bcaf1751ee16ee3b4ecd26",
       "logPath": "/private/tmp/memex-0.5.0-gates/benchmark.log",
@@ -252,25 +255,41 @@
         "full_history_analyze": 80.717542
       },
       "thresholdChecks": "6/6 AC_PERF gates true; thresholds were predeclared in the report",
-      "contractCleanup": "scripts/benchmark-contract.mjs now accepts only `loopback HTTP /api/v2/graph`; the legacy /api/graph-data transport was removed after this report was recorded.",
-      "previousReceipt": "docs/verification/benchmark.json is a single-run receipt with no archive convention in docs/VERIFICATION.md, so the 2026-09-03 run was replaced in place rather than archived."
+      "contractGate": "test/benchmark-contract.test.mjs re-ran on this SHA and still validates this report against the /api/v2/graph-only transport set.",
+      "archiveConvention": "docs/verification/benchmark.json is a single-run receipt with no archive convention in docs/VERIFICATION.md, so it is replaced in place rather than versioned."
     },
     "productionDataMutation": false,
-    "liveUserData": "NOT_PROVEN: every Workspace gate and the benchmark ran against synthetic fixtures in isolated MEMEX_HOME/XDG_CONFIG_HOME temp roots; the user's data root was never opened.",
+    "liveUserData": "NOT_PROVEN: every Workspace gate and the referenced benchmark ran against synthetic fixtures in isolated MEMEX_HOME/XDG_CONFIG_HOME temp roots; the user's data root was never opened.",
     "realUserPerception": "NOT_PROVEN: no human usability session, screen reader run or multi-browser matrix was performed; evidence is one headless Chrome build at a single viewport."
   },
-  "priorEvidence": {
-    "receipt": "merge-gate-pre-0.5.0.json",
-    "sha256": "1f13609d603e8299596f66c4087b314c2579265a2176aca5cd416aa5a43c9d70",
-    "codeSha": "5618515b709a9c7add8c6dba4eda52668209da59",
-    "note": "The v0.4.4 gate receipt is preserved byte-for-byte; its historical values, including its backfill, automatic-maintenance and prompt-wake sections, were not rewritten or carried forward into this receipt."
-  },
+  "priorEvidence": [
+    {
+      "receipt": "merge-gate-pre-0.5.0.json",
+      "sha256": "1f13609d603e8299596f66c4087b314c2579265a2176aca5cd416aa5a43c9d70",
+      "codeSha": "5618515b709a9c7add8c6dba4eda52668209da59",
+      "note": "The v0.4.4 gate receipt is preserved byte-for-byte and untouched by this re-baseline; its historical backfill, automatic-maintenance and prompt-wake sections were not carried forward."
+    },
+    {
+      "receipt": "benchmark.json",
+      "sha256": "1f6fcb58fac8c85074b0549361de780846251e2a24bcaf1751ee16ee3b4ecd26",
+      "codeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+      "note": "The full acceptance benchmark run. It was measured on 236d7362 and deliberately not re-run for c0066d95, which changes documentation only; treat its numbers as evidence for that SHA."
+    },
+    {
+      "receipt": "merge-gate.json at commit 44b4b5a (superseded, not archived as a file)",
+      "sha256": "06430743507f292fc969821e9c34cdbd873c0ea07bfe6587f5545f0f60014eb2",
+      "codeSha": "236d7362e546d9987082bdbe9e9bba7172b58fff",
+      "note": "The first v0.5.0 receipt. It remains readable in git history; this file supersedes it in place because packaged documentation changed after it was written."
+    }
+  ],
   "notProven": {
     "liveUserData": "NOT_PROVEN: gates ran on isolated fixtures and temporary homes; no user data root was read or mutated.",
     "authenticatedCodexTier": "NOT_PROVEN: scripts/lifecycle-e2e.mjs ran its default offline tier; no real authenticated `codex exec` session was executed for this candidate.",
     "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` does not exist in codex-cli 0.153.4, so only the repository-owned isolated substitute was observed.",
+    "benchmarkOnThisSha": "NOT_PROVEN: the acceptance benchmark was measured on 236d7362 and not re-run here. The inference that a documentation-only commit cannot move those numbers is an argument, not a measurement.",
     "realWorldPerformance": "NOT_PROVEN: benchmark numbers come from a 200-rollout / 800-exchange synthetic corpus on one Apple-silicon host, not from production history or other hardware.",
-    "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only."
+    "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only.",
+    "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the correctness of the third-party notice and owner docs corrected by c0066d95 rests on human review, not on these gates."
   },
-  "releaseConclusion": "All twelve required gates PASS on the clean v0.5.0 candidate 236d7362: typecheck, a build that reproduced the tracked dist/, 98 files / 1015 Vitest tests, 26 Codex slices, 105 total slices, installer, marketplace, packaged runtime (memex-0.5.0.tgz, 310 files, 9 MCP tools), offline lifecycle 9/9, the real-Chrome Memex Workspace E2E (10 check groups, 0 runtime errors) and 82 Workspace unit tests. Isolated plugin validation passes all 11 substitute checks with matching 0.5.0 plugin and MCP server versions, and is PASS-WITH-NOTES only because the formal `codex plugin validate` subcommand does not exist in codex-cli 0.153.4. The full acceptance benchmark is PASS with 6/6 AC_PERF threshold groups true and measures the knowledge map through the new `loopback HTTP /api/v2/graph` transport with 50 nodes and 49 edges rendered by the native LOCAL WEBGL renderer. A thirteenth gate re-ran the benchmark contract after the legacy /api/graph-data transport was removed from scripts/benchmark-contract.mjs. Live user data, an authenticated Codex tier run, the formal plugin validator, real-world performance and model quality are NOT_PROVEN."
+  "releaseConclusion": "All thirteen gates PASS on the clean, docs-corrected v0.5.0 candidate c0066d95: typecheck, a build that reproduced the tracked dist/, 98 files / 1015 Vitest tests, 26 Codex slices, 105 total slices, installer, marketplace, packaged runtime (memex-0.5.0.tgz, 311 files, 9 MCP tools), offline lifecycle 9/9, the real-Chrome Memex Workspace E2E (10 check groups, 0 runtime errors), 82 Workspace unit tests and the benchmark contract. Isolated plugin validation passes all 11 substitute checks with matching 0.5.0 plugin and MCP server versions, and is PASS-WITH-NOTES only because the formal `codex plugin validate` subcommand does not exist in codex-cli 0.153.4. Every gate was re-executed on this SHA rather than inherited from the superseded 236d7362 receipt, because the documentation corrected by c0066d95 ships inside the package — the artifact grew from 310 to 311 files. The full acceptance benchmark was NOT re-run: it is referenced as prior evidence measured on 236d7362 (PASS, 6/6 AC_PERF groups, knowledge map through `loopback HTTP /api/v2/graph` with 50 nodes and 49 edges on the native LOCAL WEBGL renderer), and the contract gate confirms that report still satisfies the committed contract. Live user data, an authenticated Codex tier run, the formal plugin validator, benchmark numbers for this exact SHA, real-world performance, model quality and the prose accuracy of the corrected docs are NOT_PROVEN."
 }
