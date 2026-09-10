@@ -1342,14 +1342,27 @@ export interface ExtractionRulesCheck {
   detail: string;
 }
 
+/** Per-reason held-job counts, as `heldJobSummary()` in model-budget.ts returns them. */
+export interface HeldJobCount {
+  reason: string;
+  jobs: number;
+}
+
 /**
  * `extraction-rules-overlay` and `extraction-rules-hold`.
  *
  * A held job is the "stopped quietly" class of bug doctor exists to surface, so
  * it is a `fail` rather than a `warn`: nothing was stored, and nothing will be
  * until an operator fixes the rules or clears the quarantine.
+ *
+ * `heldJobs` is passed IN rather than read here. This module must stay DB-free:
+ * `src/lifecycle.ts` answers doctor with a lightweight read-only connection
+ * precisely so it can report when the heavy db chain will not load, and the Web
+ * UI reads overlays with no database at all.
  */
-export async function extractionRulesChecks(db?: unknown): Promise<ExtractionRulesCheck[]> {
+export function extractionRulesChecks(
+  heldJobs: readonly HeldJobCount[] = [],
+): ExtractionRulesCheck[] {
   const checks: ExtractionRulesCheck[] = [];
   const rules = loadExtractionRules();
   const errors = rules.issues.filter((issue) => issue.severity === "error");
@@ -1388,17 +1401,7 @@ export async function extractionRulesChecks(db?: unknown): Promise<ExtractionRul
     );
   }
 
-  let summary: Array<{ reason: string; jobs: number }> = [];
-  if (db) {
-    try {
-      const { heldJobSummary } = await import("./model-budget.js");
-      summary = heldJobSummary(db as Parameters<typeof heldJobSummary>[0]).filter((row) =>
-        row.reason.startsWith("extraction_rules_"),
-      );
-    } catch {
-      summary = [];
-    }
-  }
+  const summary = heldJobs.filter((row) => row.reason.startsWith("extraction_rules_"));
   const total = summary.reduce((sum, row) => sum + row.jobs, 0);
   checks.push(
     total === 0

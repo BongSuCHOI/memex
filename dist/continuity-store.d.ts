@@ -164,6 +164,8 @@ export interface ExtractionTarget {
     itemCount: number;
     policyVersion: string;
     state: MemoryJobState;
+    /** Issue #30: the rule overlay hash recorded at claim time, if any. */
+    rulesHash?: string | null;
 }
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
 export declare function ensureExtractionTarget(db: Database.Database, input: {
@@ -172,6 +174,16 @@ export declare function ensureExtractionTarget(db: Database.Database, input: {
     policyVersion?: string;
     now?: string;
 }): ExtractionTarget | null;
+/**
+ * Issue #30 — stamp the rule overlay hash a claim is running under.
+ *
+ * Reporting only: `extraction-rules-drift` reads it to say which sessions were
+ * extracted under a different rule set, and `memex extract rules reextract`
+ * scopes an EXPLICIT re-run by it. Nothing schedules on it. Idempotent, and a
+ * no-op when the value is already what it should be, so the claim path can call
+ * it unconditionally.
+ */
+export declare function setExtractionTargetRulesHash(db: Database.Database, targetId: string, rulesHash: string | null): boolean;
 export declare function readExtractionTargetItems(db: Database.Database, targetId: string, afterOrdinal: number, limit: number): ExtractionTargetItem[];
 export declare function recordExtractionFailure(db: Database.Database, input: {
     targetId: string;

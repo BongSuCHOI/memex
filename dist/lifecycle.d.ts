@@ -100,5 +100,4 @@ export interface Check {
  * this check the only symptom is "nothing is being extracted any more".
  */
 export declare function llmModelCheck(): Check;
-/** Read-only diagnosis. Distinguishes configured vs observed. */
 export declare function doctor(): Promise<DoctorReport>;
