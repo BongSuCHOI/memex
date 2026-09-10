@@ -188,6 +188,35 @@ test('진행 중이거나 정상인 기록에는 안내를 붙이지 않는다',
  assert.equal(guidance.operationGuidance({status:'failed',exit_code:2}).id,'operation-incomplete');
 });
 
+test('짧은 열거값은 단어 경계로만 매칭한다 (#80)',()=>{
+ // 자유 텍스트 안의 broadcast·case·casing은 claim 사유가 아니다. 원인을 지어내지 않고 unknown으로 둔다.
+ for(const raw of ['broadcast failed','unsupported case in patch builder','casing mismatch','exit 25: unknown'])
+  assert.equal(guidance.classify(raw).id,'unknown','부분 문자열로 원인을 단정함: '+raw);
+ // 진짜 열거값은 계속 매칭한다.
+ assert.equal(guidance.classify('cas conflict').id,'claim-handoff');
+ assert.equal(guidance.classify('claim lost to a concurrent writer').id,'claim-handoff');
+ assert.equal(guidance.classify('exit 2').id,'operation-incomplete');
+ assert.equal(guidance.classify('backoff until 2026-09-10T00:00:00Z').id,'claim-backoff');
+ // 카탈로그 불변식: 4자 이하의 짧은 영문 열거값을 문자열로 남겨 두지 않는다.
+ const short=[];
+ for(const cls of guidance.CLASSES)for(const rule of cls.match)
+  if(typeof rule==='string'&&/^[a-z0-9 ]{1,6}$/.test(rule))short.push(cls.id+': '+rule);
+ assert.deepEqual(short,[],'짧은 열거값은 /\\b…\\b/ 정규식으로 써야 합니다: '+short.join(', '));
+});
+
+test('모델 호출 실패와 응답 형식 오류를 분리한다 (#80)',()=>{
+ const call=guidance.classify('LLM call failed: authentication expired');
+ assert.equal(call.id,'model-call-failed');
+ assert(call.cause.includes('네트워크'),'호출 경로 문제라고 말하지 않음');
+ assert(!call.cause.includes('JSON'),'응답 형식 문제로 설명함');
+ assert.equal(guidance.classify('TransientLlmError: fetch failed').id,'model-call-failed');
+ assert.equal(guidance.classify('spawn codex ENOENT').id,'model-call-failed');
+ assert.equal(guidance.classify('ontology classify: unparseable LLM response').id,'model-invalid-json');
+ assert.equal(guidance.classify('model returned invalid json').id,'model-invalid-json');
+ assert(!guidance.guidanceFor('model-invalid-json').match.some(r=>String(r).includes('llm call failed')),'응답 형식 클래스가 호출 실패 문자열을 계속 매칭함');
+ assert(guidance.CLASSES.findIndex(c=>c.id==='model-call-failed')<guidance.CLASSES.findIndex(c=>c.id==='model-invalid-json'),'호출 실패 클래스가 더 뒤에 있어 이기지 못함');
+});
+
 test('과거 Capsule 상한 실패는 정상 잘림과 다른 클래스다 (#79)',()=>{
  const legacy=guidance.classify('capsule patch exceeds bounded storage size');
  assert.equal(legacy.id,'capsule-bound-exceeded');

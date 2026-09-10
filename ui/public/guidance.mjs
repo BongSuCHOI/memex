@@ -14,6 +14,11 @@ const RECOVER=[{kind:'operation',command:'recover',label:'실패 종료 작업 �
 /**
  * 클래스 목록. `match`의 문자열은 소문자 비교로 부분 일치, 정규식은 그대로 시험한다.
  * 위에 있는 클래스가 먼저 이긴다.
+ *
+ * 규칙 (0.6.3 #80): **짧은 열거값은 반드시 단어 경계 정규식으로 쓴다.** 부분 일치로 두면
+ * `cas`가 `broadcast`·`case`·`casing`에, `exit 2`가 `exit 25`에 걸려서, 원인을 모르는 오류를
+ * "무시해도 되는 원인"으로 단정한다 — 이 카탈로그가 금지하는 바로 그 날조다. 여러 단어로 된
+ * 문장이나 코어의 긴 오류 원문만 부분 일치로 둔다.
  */
 export const CLASSES=[
  {id:'db-unavailable',title:'로컬 데이터베이스에 연결할 수 없음',
@@ -60,7 +65,7 @@ export const CLASSES=[
   source:'docs/GUIDE.md#17-모델-작업-예산과-대기-진단'},
 
  {id:'claim-handoff',title:'다른 실행기가 먼저 가져감',
-  match:['lease_held','claim lost to a concurrent writer','claim lost','cas'],
+  match:['lease_held','claim lost to a concurrent writer','claim lost',/\bcas\b/],
   cause:'같은 작업을 다른 worker가 이미 임대(lease)했거나, 동시 쓰기 경합에서 이번 실행이 졌습니다.',
   impact:'없습니다. 작업은 이긴 실행기가 처리합니다.',
   next:'무시해도 됩니다. 같은 작업이 계속 넘겨지기만 한다면 임대가 만료된 실행기가 남아 있는지 확인하세요.',
@@ -68,7 +73,7 @@ export const CLASSES=[
   source:GUIDE},
 
  {id:'claim-backoff',title:'재시도 대기 중(backoff)',
-  match:['backoff','retry backoff','memoryjobsbackoff'],
+  match:[/\bbackoff\b/,'retry backoff','memoryjobsbackoff'],
   cause:'실패 후의 재시도 시각이 아직 되지 않았습니다. 고장이 아닙니다.',
   impact:'해당 작업만 잠시 미뤄집니다.',
   next:'기다리거나 worker를 실행하세요. 즉시 되돌리려면 해당 작업만 재시도하세요.',
@@ -145,8 +150,18 @@ export const CLASSES=[
   ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'running'},label:'실행 중 작업 보기'}],
   source:GUIDE},
 
+ // 0.6.3 (#80): 호출 자체가 실패한 것과 응답 형식이 틀린 것은 원인이 반대다. 이 클래스가
+ // model-invalid-json보다 먼저 와야 TransientLlmError가 "응답 형식 문제"로 뒤바뀌지 않는다.
+ {id:'model-call-failed',title:'모델 호출 자체가 실패',
+  match:['llm call failed','transientllmerror','fetch failed',/\bspawn\b/,/\beconnrefused\b/,/\betimedout\b/],
+  cause:'모델을 호출하는 단계에서 실패했습니다 — 네트워크, 실행기(codex) 기동, 인증 같은 호출 경로의 문제이며 응답 내용의 문제가 아닙니다.',
+  impact:'그 호출의 산출물이 없습니다. 코어는 이 실패를 일시적 오류로 보고 시도를 소모하지 않으므로 예산은 그대로입니다.',
+  next:'대개 재시도로 해결됩니다. 반복되면 모델 시도 탭의 오류 원문으로 실행기·인증 상태를 먼저 확인하세요 — 프롬프트나 입력 길이를 고칠 문제가 아닙니다.',
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'attempts',state:'failed'},label:'모델 시도 보기'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
+  source:GUIDE},
+
  {id:'model-invalid-json',title:'모델이 형식에 맞지 않는 응답을 반환',
-  match:['unparseable llm response','invalid json','model returned invalid json','unusable domain/category name','empty llm response','llm call failed'],
+  match:['unparseable llm response','invalid json','model returned invalid json','unusable domain/category name','empty llm response'],
   cause:'모델 응답이 요구한 JSON 스키마를 만족하지 않아 코어가 저장을 거부했습니다.',
   impact:'그 시도의 산출물만 버려집니다. 잘못된 내용이 기억으로 저장되지는 않습니다.',
   next:'대개 재시도로 해결됩니다. 반복되면 모델 시도 탭에서 오류 원문과 입력 길이를 확인하세요.',
@@ -154,7 +169,7 @@ export const CLASSES=[
   source:GUIDE},
 
  {id:'embedding-unavailable',title:'임베딩 런타임을 준비하지 못함',
-  match:['embedding model unavailable','candidate embedding unavailable','embedding not available','embedder','vec_facts','vec0','임베딩'],
+  match:['embedding model unavailable','candidate embedding unavailable','embedding not available','embedder','vec_facts',/\bvec0\b/,'임베딩'],
   cause:'로컬 임베딩 모델을 적재하지 못했습니다. 모델 파일이 없거나 런타임 의존성이 준비되지 않은 상태입니다.',
   impact:'의미 검색과 분류가 멈추고, 의미 수정 저장도 실패합니다. 저장된 기억은 그대로입니다.',
   next:'의존성을 실체화하고 진단을 실행한 뒤, 누락된 임베딩을 백필하세요.',
@@ -162,7 +177,7 @@ export const CLASSES=[
   source:'docs/GUIDE.md#13-진단'},
 
  {id:'ontology-parked',title:'분류가 보류(parked)된 기억',
-  match:['parked','ontology_state','ontology park'],
+  match:[/\bparked\b/,'ontology_state','ontology park'],
   cause:'분류를 정해진 횟수만큼 시도했지만 실패해 General/Misc에 보류된 기억입니다. 분류 완료로 세지 않습니다.',
   impact:'분류·지도에서 제 자리를 찾지 못합니다. 기억 자체와 주입에는 영향이 없습니다.',
   next:'정책·임베딩 토큰이 바뀐 보류 건은 한 번의 재시도를 받을 수 있습니다. 온톨로지 백필을 실행하세요.',
@@ -266,7 +281,7 @@ export const CLASSES=[
   source:'docs/GUIDE.md#10-저장-위치와-sync'},
 
  {id:'sync-unchanged',title:'내보낼 변경이 없음',
-  match:['no durable change since the last export','unchanged'],
+  match:['no durable change since the last export',/\bunchanged\b/],
   cause:'마지막 export 이후 durable 기억이 바뀌지 않았습니다. 빈 세대를 만들지 않기 위한 정상 동작입니다.',
   impact:'없습니다. 다른 기기가 이미 마지막 세대를 받았다면 받을 것도 없습니다.',
   next:'무시해도 됩니다. 그래도 새 세대를 만들려면 CLI에서 --force로 내보내세요.',
@@ -282,7 +297,7 @@ export const CLASSES=[
   source:'docs/GUIDE.md#10-저장-위치와-sync'},
 
  {id:'operation-incomplete',title:'관리 실행이 남은 작업을 두고 끝남',
-  match:['exit 2','남은 작업'],
+  match:[/\bexit 2\b/,'남은 작업'],
   cause:'백필이 전경에서 끝났지만 처리할 작업이 남아 종료 코드 2로 끝났습니다. 실패가 아닙니다.',
   impact:'남은 대상은 다음 실행이나 worker가 처리합니다.',
   next:'같은 명령을 다시 실행하거나 worker를 돌리세요.',
