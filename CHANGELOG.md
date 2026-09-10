@@ -2,6 +2,23 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.1 - 2026-09-11
+
+Hotfix found while validating 0.7.0 on a live data root.
+
+### Model selection
+
+- `memex models show` no longer fails with `no such column: model` on a database
+  that predates the 0.7.0 migration. Its read-only status path queried the new
+  ledger columns (`model`, `reasoning_effort`, `duration_ms`, `error_class`)
+  before anything had run the migration — on every existing install, until Codex
+  was restarted. The last-probe row is now skipped on an unmigrated ledger and
+  `show` stays read-only (it neither migrates nor grows the database). (#31)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change beyond 0.7.0's.
+
 ## 0.7.0 - 2026-09-11
 
 Three things you can now decide for yourself — what gets recalled, what never
