@@ -7,6 +7,7 @@ import { ensureIndexDir, getDbPath, getIndexDir } from './paths.js';
 import { computeInjectContext } from './inject-core.js';
 import { embeddingStubEnabled, generateEmbedding, initEmbeddings } from './embeddings.js';
 import { readManifestVersion, resolveInstalledPluginRoot } from './plugin-root.js';
+import { recordHookEvent } from './observe-hook-event.js';
 /**
  * Warm inject daemon — a unix-socket sidecar inside the long-lived MCP server.
  *
@@ -176,6 +177,25 @@ export function injectDaemonPolicy() {
 }
 export function injectSocketPath() {
     return path.join(getIndexDir(), 'inject-daemon.sock');
+}
+/**
+ * Bytes a unix socket path may occupy, NOT counting the NUL terminator.
+ *
+ * `sockaddr_un.sun_path` is a fixed array — 104 bytes on macOS/BSD, 108 on Linux
+ * — and both `bind(2)` and `connect(2)` refuse anything longer. A long
+ * `MEMEX_HOME` is all it takes, and nothing about the resulting failure was
+ * visible before 0.6.6: `listen()` reported it asynchronously, the error handler
+ * dropped every code that was not EADDRINUSE, and `doctor` could only say the
+ * socket file was absent — which reads as "nothing has started yet". Issue #99.
+ */
+export function injectSocketPathLimitBytes() {
+    return process.platform === 'linux' ? 107 : 103;
+}
+/** `null` when the path fits; otherwise the measurement `doctor` reports. */
+export function injectSocketPathTooLong(sockPath = injectSocketPath()) {
+    const bytes = Buffer.byteLength(sockPath, 'utf8');
+    const limit = injectSocketPathLimitBytes();
+    return bytes > limit ? { bytes, limit } : null;
 }
 /** Serializes probe→bind across starters. Never held across a request. */
 export function injectDaemonLockPath() {
@@ -462,6 +482,13 @@ export function startInjectDaemon() {
         instanceId: randomUUID(),
         startedAt: new Date().toISOString(),
     };
+    /**
+     * "We have stepped aside for the installed root" (#84) — and NOT a tombstone.
+     *
+     * `armYieldWatch()` clears it again when the caller we yielded to never bound
+     * (#99), which is the only way a session that lost its handover mid-flight ever
+     * gets a warm daemon back.
+     */
     let retired = false;
     /** True only between our own `listening` and our own close: "the socket is ours". */
     let owning = false;
@@ -568,6 +595,13 @@ export function startInjectDaemon() {
      * Cooperative handover. A 0.6.3+ owner steps aside for the INSTALLED root and
      * for nobody else: honouring any caller would turn the socket into a
      * free-for-all in the other direction.
+     *
+     * The check is on the CODE the caller claims to be, not on the caller's
+     * identity — `from` is entirely self-reported. That is deliberate and the
+     * threat model says so (socket mode 600, same-user only): a same-user process
+     * can already `unlink` the socket, so a forged retire buys it no new capability.
+     * What it must not buy is a PERMANENT loss of the fast path, which is what
+     * `armYieldWatch()` below now prevents (#99).
      */
     function handleRetire(req, current) {
         const from = ownerFrom(req.from && typeof req.from === 'object' && !Array.isArray(req.from)
@@ -597,7 +631,48 @@ export function startInjectDaemon() {
         }
         catch { /* raced */ }
         note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? 'unknown'})`);
+        armYieldWatch();
         return { type: 'retired', ...current };
+    }
+    /**
+     * Retiring is YIELDING, not dying (issue #99).
+     *
+     * 0.6.5 set `retired` for ever and disarmed the re-probe with it, so a caller
+     * whose own `bind()` then failed — an over-long socket path, a third racer
+     * winning in between — left the session with no warm daemon at all and no way
+     * back: the process that had just stepped aside was the one process that would
+     * have reclaimed the socket, and it had stopped looking. Every prompt then paid
+     * the ~2.3s cold path until the host restarted, and `doctor` could only report
+     * that the socket was absent.
+     *
+     * A yield is a promise that a better owner takes over. This checks the promise
+     * was kept — ONCE, one re-acquire interval later — and re-enters the race
+     * through the ordinary `armReacquire()` path when it was not. One-shot and
+     * `unref()`ed, so a handover that did complete costs exactly one probe and the
+     * timer can never hold the MCP server open.
+     */
+    let yieldWatch = null;
+    function armYieldWatch() {
+        if (yieldWatch)
+            return;
+        yieldWatch = setTimeout(() => {
+            yieldWatch = null;
+            if (owning || !retired)
+                return;
+            void probeInjectDaemon(sockPath)
+                .then((probe) => {
+                // Somebody is there: the promise was kept, and stepping back in would
+                // only fight the owner we deliberately made way for.
+                if (probe.listening || owning || !retired)
+                    return;
+                note('the caller that asked us to retire never bound — re-entering the race');
+                retired = false;
+                armReacquire();
+                tryReclaim('retire handover did not complete');
+            })
+                .catch(() => { });
+        }, injectDaemonReacquireIntervalMs());
+        yieldWatch.unref();
     }
     /**
      * Load the embedding model in the background, off the request path (issue #92).
@@ -688,6 +763,11 @@ export function startInjectDaemon() {
         if (releasedOwnership)
             return;
         releasedOwnership = true;
+        // A pending yield check must not bring a shut-down sidecar back (#99).
+        if (yieldWatch) {
+            clearTimeout(yieldWatch);
+            yieldWatch = null;
+        }
         dropCandidate();
         if (!owning)
             return;
@@ -722,7 +802,15 @@ export function startInjectDaemon() {
         catch { /* someone reclaimed it */ }
     }
     /**
-     * Claim the socket under an `O_EXCL` lock so two starting servers cannot both
+     * `mtime:size` of every lock THIS starter has already found unreadable (#102).
+     *
+     * Per starter on purpose: "I have looked at this exact lock once" is a fact
+     * about one competitor's patience, and sharing it would let a second starter in
+     * the same process skip straight to the delete.
+     */
+    const unreadableLocksSeen = new Set();
+    /**
+     * Claim the socket under an exclusive lock so two starting servers cannot both
      * decide the socket is dead and both bind. A lock left by a process that is
      * gone (SIGKILL) is replaced; a lock held by a live process means another
      * starter is mid-probe and this one simply does not serve.
@@ -733,24 +821,63 @@ export function startInjectDaemon() {
         let held = false;
         for (let attempt = 0; attempt < 2 && !held; attempt++) {
             try {
-                // Create AND fill in one call: an `openSync` followed by a separate
-                // write leaves a window in which the lock exists but is empty, and a
-                // second starter reading it then takes the "unreadable means stale"
-                // branch below and deletes a live holder's lock.
-                fs.writeFileSync(lockPath, mine, { flag: 'wx' });
-                held = true;
+                // Atomic create-WITH-content (#102): write the payload under a private
+                // name no competitor reads, then `link(2)` it into place. `link` fails
+                // with EEXIST when the lock is already there, and when it succeeds the
+                // file that appears is ALREADY filled in — there is no instant at which
+                // another starter can observe our lock empty and call it stale.
+                // `writeFileSync(..., {flag:'wx'})` could not promise that: it is an
+                // `open(O_CREAT|O_EXCL)` and then a `write()`.
+                const staging = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+                try {
+                    fs.writeFileSync(staging, mine);
+                    fs.linkSync(staging, lockPath);
+                    held = true;
+                }
+                finally {
+                    try {
+                        fs.unlinkSync(staging);
+                    }
+                    catch { /* never created */ }
+                }
             }
             catch (error) {
                 if (error.code !== 'EEXIST')
                     throw error;
+                let text = null;
+                let stamp = '';
+                try {
+                    text = fs.readFileSync(lockPath, 'utf8');
+                    const stat = fs.statSync(lockPath);
+                    stamp = `${stat.mtimeMs}:${stat.size}`;
+                }
+                catch { /* it vanished between the EEXIST and the read */ }
+                if (text === null)
+                    continue; // the holder released it — try to create again
                 let holder = -1;
                 try {
-                    holder = Number(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid);
+                    holder = Number(JSON.parse(text).pid);
                 }
-                catch { /* unreadable lock counts as stale */ }
-                if (pidAlive(holder)) {
+                catch { /* no readable holder — decided just below */ }
+                const attributable = Number.isInteger(holder) && holder > 0;
+                if (attributable && pidAlive(holder)) {
                     note(`another starter holds ${lockPath} (pid ${holder}) — not serving`);
                     return;
+                }
+                if (!attributable) {
+                    // No readable holder — the state 0.6.5 called stale and deleted on the
+                    // spot, which is how a LIVE holder's lock got removed (#102). Take two
+                    // looks instead of a clock: the first look never deletes, so a writer
+                    // caught mid-flight keeps its lock and this starter simply does not
+                    // serve for one re-probe interval. A lock that is STILL byte-for-byte
+                    // unreadable on the next look had no writer behind it and is cleared,
+                    // so an abandoned one cannot close the fast path for good either.
+                    if (!unreadableLocksSeen.has(stamp)) {
+                        unreadableLocksSeen.add(stamp);
+                        note(`${lockPath} has no readable holder yet — presuming a starter mid-write, not serving`);
+                        return;
+                    }
+                    note(`${lockPath} is still unreadable on a second look — treating it as abandoned`);
                 }
                 try {
                     fs.unlinkSync(lockPath);
@@ -778,6 +905,29 @@ export function startInjectDaemon() {
     };
     /** True from `listen()` until `listening` or the error that answers it. */
     let binding = false;
+    /**
+     * Say out loud that the socket could not be bound, and why (issue #99).
+     *
+     * 0.6.5 swallowed this completely: the synchronous `catch` below only reset a
+     * flag, and `server.on('error')` returned for every code that was not
+     * EADDRINUSE. To an operator with a long `MEMEX_HOME` the daemon simply never
+     * came up — no log line, no hook-event, and a `doctor` that could only report
+     * the socket as absent. The reason goes to the daemon log AND to
+     * `logs/hook-events.jsonl`, because the stderr of an MCP server is routinely
+     * discarded by its host while the log file outlives the process.
+     */
+    function recordBindFailure(error, when) {
+        const errno = error?.code ?? null;
+        const tooLong = injectSocketPathTooLong(sockPath);
+        const reason = [
+            errno ?? (error instanceof Error ? error.message : String(error)),
+            tooLong
+                ? `socket path too long (${tooLong.bytes} bytes; this platform allows ${tooLong.limit})`
+                : null,
+        ].filter(Boolean).join(' — ');
+        note(`could not bind ${sockPath} (${when}): ${reason}`);
+        recordHookEvent('InjectDaemonBindFailed', { detail: `${when}: ${reason}` });
+    }
     const bind = () => {
         if (retired || owning || binding)
             return;
@@ -786,8 +936,14 @@ export function startInjectDaemon() {
             server.listen(sockPath, onListen);
             server.unref();
         }
-        catch {
-            binding = false; /* sidecar is best-effort */
+        catch (error) {
+            // A synchronous throw means the path itself is unusable. Both halves of
+            // the fix matter (#99): the reason becomes visible, and this process stays
+            // in the race — a bind that failed right after we talked an owner into
+            // retiring is exactly the case where giving up leaves NOBODY serving.
+            binding = false;
+            recordBindFailure(error, 'listen threw');
+            armReacquire();
         }
     };
     /**
@@ -843,7 +999,14 @@ export function startInjectDaemon() {
                         fs.unlinkSync(sockPath);
                 }
                 catch { /* already gone */ }
-                return bind();
+                bind();
+                // We just talked the only warm daemon in this session out of serving, so a
+                // bind that did not even get started here is the worst outcome of all: keep
+                // re-probing instead of leaving the socket to nobody. Asynchronous listen
+                // failures arm this from `server.on('error')` (#99).
+                if (!owning && !binding)
+                    armReacquire();
+                return;
             }
             if (trigger !== REPROBE_TRIGGER) {
                 note(`owner ${probe.owner.version ?? 'unknown'} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? 'no answer')}) — not serving`);
@@ -904,8 +1067,14 @@ export function startInjectDaemon() {
     let reclaimAttempted = false;
     server.on('error', (err) => {
         binding = false;
-        if (err.code !== 'EADDRINUSE')
-            return; // best-effort sidecar — never crash the MCP server
+        if (err.code !== 'EADDRINUSE') {
+            // Not a race for the path but a refusal of it — EINVAL/ENAMETOOLONG for an
+            // over-long socket path, EACCES, ENOENT. Never a crash (this is a sidecar),
+            // but never silent either, and never a reason to stop competing. Issue #99.
+            recordBindFailure(err, 'listen failed');
+            armReacquire();
+            return;
+        }
         armReacquire();
         if (reclaimAttempted)
             return;

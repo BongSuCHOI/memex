@@ -36,6 +36,33 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
   reverse, classifying a feature branch as the default and leaking branch-local
   memory into the project-common tier. (#100)
 
+### Injection fast path
+
+- `retire` is a yield, not a retirement. An owner that steps aside for the
+  installed root now checks, one re-acquire interval later, that somebody
+  actually bound the socket, and re-enters the race through the ordinary
+  re-probe path when nobody did. Until now `retired` was permanent and it
+  disarmed re-acquisition with it, so a handover whose second half failed left
+  the session with no warm daemon at all — every prompt on the ~2.3 s cold path
+  until the host restarted — and `doctor` could only report the socket as
+  absent. (#99)
+- A `listen()` that fails for any reason other than EADDRINUSE is logged with
+  its reason and recorded in `logs/hook-events.jsonl` as
+  `InjectDaemonBindFailed`, and the process keeps re-probing instead of going
+  quiet; a bind that fails right after a successful `retire` arms
+  re-acquisition too. Previously every such error was dropped silently. (#99)
+- `memex doctor`'s `inject-daemon` check reports `socket path too long (N
+  bytes; this platform allows M)` when the data root makes the socket path
+  exceed the platform's `sun_path` (104 bytes on macOS, 108 on Linux). No
+  process can bind or connect to such a path, and the state used to be
+  indistinguishable from an ordinary cold start. (#99)
+- The bind lock is created atomically (write to a private name, then `link(2)`),
+  so it is never observable empty. A lock with no readable holder is no longer
+  deleted on sight: the first look leaves it alone and does not serve, and only
+  a lock still byte-for-byte unreadable on the next cycle is cleared. A starter
+  that caught another's lock inside the old open-then-write window deleted a
+  LIVE holder's lock and entered the serialized section beside it. (#102)
+
 ## 0.6.5 - 2026-09-10
 
 Hotfix for the embedding-model cache location (#92), found while validating

@@ -12,9 +12,16 @@ export declare function observationLogPath(): string;
  * is told) rather than written down.
  *
  * Returns whether a line was written.
+ *
+ * `info.detail` (issue #99) is for a MACHINE fact about the event that a later
+ * diagnosis needs and cannot recover — an errno, a path length, a reason string
+ * the code itself wrote. It is written only when it is a non-empty string, and it
+ * must never carry user content; everything this log already refuses (prompts,
+ * transcripts, facts) stays refused.
  */
 export declare function recordHookEvent(event: string, info: {
     sessionId?: unknown;
     cwd?: unknown;
+    detail?: unknown;
 }): boolean;
 export declare function lastObserved(event: string): string | null;

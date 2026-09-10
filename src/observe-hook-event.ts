@@ -1,8 +1,9 @@
 // CX-01 lifecycle event observation log (privacy-safe).
 //
 // Appends one line per hook event to <data root>/logs/hook-events.jsonl with
-// ONLY: event name, ISO timestamp, session id, and cwd. Never logs the prompt,
-// transcript contents, or extracted facts.
+// ONLY: event name, ISO timestamp, session id, cwd, and an optional machine
+// `detail` (an errno, a byte count — see `recordHookEvent`). Never logs the
+// prompt, transcript contents, or extracted facts.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,20 +30,28 @@ export function observationLogPath(): string {
  * is told) rather than written down.
  *
  * Returns whether a line was written.
+ *
+ * `info.detail` (issue #99) is for a MACHINE fact about the event that a later
+ * diagnosis needs and cannot recover — an errno, a path length, a reason string
+ * the code itself wrote. It is written only when it is a non-empty string, and it
+ * must never carry user content; everything this log already refuses (prompts,
+ * transcripts, facts) stays refused.
  */
 export function recordHookEvent(
   event: string,
-  info: { sessionId?: unknown; cwd?: unknown },
+  info: { sessionId?: unknown; cwd?: unknown; detail?: unknown },
 ): boolean {
   const name = typeof event === "string" ? event.trim() : "";
   if (!name || name === "Unknown") return false;
   try {
+    const detail = typeof info.detail === "string" ? info.detail.trim() : "";
     const line =
       JSON.stringify({
         ts: new Date().toISOString(),
         event: name,
         session_id: typeof info.sessionId === "string" ? info.sessionId : "",
         cwd: typeof info.cwd === "string" ? info.cwd : "",
+        ...(detail ? { detail } : {}),
       }) + "\n";
     const file = observationLogPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });

@@ -25444,11 +25444,13 @@ function recordHookEvent(event, info) {
   const name = typeof event === "string" ? event.trim() : "";
   if (!name || name === "Unknown") return false;
   try {
+    const detail = typeof info.detail === "string" ? info.detail.trim() : "";
     const line = JSON.stringify({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       event: name,
       session_id: typeof info.sessionId === "string" ? info.sessionId : "",
-      cwd: typeof info.cwd === "string" ? info.cwd : ""
+      cwd: typeof info.cwd === "string" ? info.cwd : "",
+      ...detail ? { detail } : {}
     }) + "\n";
     const file = observationLogPath();
     fs9.mkdirSync(path10.dirname(file), { recursive: true });
@@ -26889,6 +26891,14 @@ function injectDaemonPolicy() {
 function injectSocketPath() {
   return path11.join(getIndexDir(), "inject-daemon.sock");
 }
+function injectSocketPathLimitBytes() {
+  return process.platform === "linux" ? 107 : 103;
+}
+function injectSocketPathTooLong(sockPath = injectSocketPath()) {
+  const bytes = Buffer.byteLength(sockPath, "utf8");
+  const limit = injectSocketPathLimitBytes();
+  return bytes > limit ? { bytes, limit } : null;
+}
 function injectDaemonLockPath() {
   return path11.join(getIndexDir(), "inject-daemon.lock");
 }
@@ -27168,7 +27178,25 @@ function startInjectDaemon() {
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
+    armYieldWatch();
     return { type: "retired", ...current };
+  }
+  let yieldWatch = null;
+  function armYieldWatch() {
+    if (yieldWatch) return;
+    yieldWatch = setTimeout(() => {
+      yieldWatch = null;
+      if (owning || !retired) return;
+      void probeInjectDaemon(sockPath).then((probe) => {
+        if (probe.listening || owning || !retired) return;
+        note("the caller that asked us to retire never bound \u2014 re-entering the race");
+        retired = false;
+        armReacquire();
+        tryReclaim("retire handover did not complete");
+      }).catch(() => {
+      });
+    }, injectDaemonReacquireIntervalMs());
+    yieldWatch.unref();
   }
   const warmUp = () => {
     if (warmState !== "cold") return;
@@ -27222,6 +27250,10 @@ function startInjectDaemon() {
   function releaseOwnership() {
     if (releasedOwnership) return;
     releasedOwnership = true;
+    if (yieldWatch) {
+      clearTimeout(yieldWatch);
+      yieldWatch = null;
+    }
     dropCandidate();
     if (!owning) return;
     owning = false;
@@ -27250,24 +27282,52 @@ function startInjectDaemon() {
     } catch {
     }
   }
+  const unreadableLocksSeen = /* @__PURE__ */ new Set();
   const withLock = async (claim) => {
     const lockPath = injectDaemonLockPath();
     const mine = lockPayload;
     let held = false;
     for (let attempt = 0; attempt < 2 && !held; attempt++) {
       try {
-        fs10.writeFileSync(lockPath, mine, { flag: "wx" });
-        held = true;
+        const staging = `${lockPath}.${process.pid}.${randomUUID6()}.tmp`;
+        try {
+          fs10.writeFileSync(staging, mine);
+          fs10.linkSync(staging, lockPath);
+          held = true;
+        } finally {
+          try {
+            fs10.unlinkSync(staging);
+          } catch {
+          }
+        }
       } catch (error2) {
         if (error2.code !== "EEXIST") throw error2;
-        let holder = -1;
+        let text = null;
+        let stamp = "";
         try {
-          holder = Number(JSON.parse(fs10.readFileSync(lockPath, "utf8")).pid);
+          text = fs10.readFileSync(lockPath, "utf8");
+          const stat = fs10.statSync(lockPath);
+          stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
-        if (pidAlive(holder)) {
+        if (text === null) continue;
+        let holder = -1;
+        try {
+          holder = Number(JSON.parse(text).pid);
+        } catch {
+        }
+        const attributable = Number.isInteger(holder) && holder > 0;
+        if (attributable && pidAlive(holder)) {
           note(`another starter holds ${lockPath} (pid ${holder}) \u2014 not serving`);
           return;
+        }
+        if (!attributable) {
+          if (!unreadableLocksSeen.has(stamp)) {
+            unreadableLocksSeen.add(stamp);
+            note(`${lockPath} has no readable holder yet \u2014 presuming a starter mid-write, not serving`);
+            return;
+          }
+          note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
           fs10.unlinkSync(lockPath);
@@ -27291,14 +27351,26 @@ function startInjectDaemon() {
     }
   };
   let binding = false;
+  function recordBindFailure(error2, when) {
+    const errno = error2?.code ?? null;
+    const tooLong = injectSocketPathTooLong(sockPath);
+    const reason = [
+      errno ?? (error2 instanceof Error ? error2.message : String(error2)),
+      tooLong ? `socket path too long (${tooLong.bytes} bytes; this platform allows ${tooLong.limit})` : null
+    ].filter(Boolean).join(" \u2014 ");
+    note(`could not bind ${sockPath} (${when}): ${reason}`);
+    recordHookEvent("InjectDaemonBindFailed", { detail: `${when}: ${reason}` });
+  }
   const bind = () => {
     if (retired || owning || binding) return;
     binding = true;
     try {
       server2.listen(sockPath, onListen);
       server2.unref();
-    } catch {
+    } catch (error2) {
       binding = false;
+      recordBindFailure(error2, "listen threw");
+      armReacquire();
     }
   };
   const reclaim = async (trigger) => {
@@ -27336,7 +27408,9 @@ function startInjectDaemon() {
           if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
         } catch {
         }
-        return bind();
+        bind();
+        if (!owning && !binding) armReacquire();
+        return;
       }
       if (trigger !== REPROBE_TRIGGER) {
         note(`owner ${probe.owner.version ?? "unknown"} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? "no answer")}) \u2014 not serving`);
@@ -27377,7 +27451,11 @@ function startInjectDaemon() {
   let reclaimAttempted = false;
   server2.on("error", (err) => {
     binding = false;
-    if (err.code !== "EADDRINUSE") return;
+    if (err.code !== "EADDRINUSE") {
+      recordBindFailure(err, "listen failed");
+      armReacquire();
+      return;
+    }
     armReacquire();
     if (reclaimAttempted) return;
     reclaimAttempted = true;

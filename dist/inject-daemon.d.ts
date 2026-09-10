@@ -142,6 +142,22 @@ export declare function injectDaemonIdentityMatches(expected: Partial<InjectDaem
  */
 export declare function injectDaemonPolicy(): InjectDaemonPolicy;
 export declare function injectSocketPath(): string;
+/**
+ * Bytes a unix socket path may occupy, NOT counting the NUL terminator.
+ *
+ * `sockaddr_un.sun_path` is a fixed array — 104 bytes on macOS/BSD, 108 on Linux
+ * — and both `bind(2)` and `connect(2)` refuse anything longer. A long
+ * `MEMEX_HOME` is all it takes, and nothing about the resulting failure was
+ * visible before 0.6.6: `listen()` reported it asynchronously, the error handler
+ * dropped every code that was not EADDRINUSE, and `doctor` could only say the
+ * socket file was absent — which reads as "nothing has started yet". Issue #99.
+ */
+export declare function injectSocketPathLimitBytes(): number;
+/** `null` when the path fits; otherwise the measurement `doctor` reports. */
+export declare function injectSocketPathTooLong(sockPath?: string): {
+    bytes: number;
+    limit: number;
+} | null;
 /** Serializes probe→bind across starters. Never held across a request. */
 export declare function injectDaemonLockPath(): string;
 /**
