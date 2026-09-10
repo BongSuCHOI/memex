@@ -71,6 +71,12 @@ export interface ExportStatus {
      * SessionEnd never publishes an empty generation.
      */
     stateFingerprint?: string;
+    /**
+     * Resolved shared folder this export published to (#68). The fingerprint
+     * above describes what reached THAT destination, so a new folder must not
+     * inherit its "nothing changed" verdict.
+     */
+    dir?: string;
 }
 /**
  * Cheap fingerprint of everything the payload carries. Counts alone would miss

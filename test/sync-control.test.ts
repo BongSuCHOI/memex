@@ -244,6 +244,37 @@ describe('cross-device sync control (#35/#48)', () => {
     expect(check()?.detail).toContain('last export ok');
   });
 
+  /**
+   * Issue #68 — observed procedure: export to folder A, `memex sync enable
+   * --dir B` (empty), then `memex sync export` →
+   *   "sync export skipped: no durable change since the last export"
+   * and B never received a generation until the DB itself changed. The status
+   * file is LOCAL, so folder A's fingerprint was read as a verdict about B.
+   */
+  it('a new shared folder gets its own first export instead of inheriting the old fingerprint', async () => {
+    await seed(rootA, { id: 'fact-dest', text: 'must reach both folders', subject: 'shared.dest.case' });
+    const control = await import('../src/sync-control.js');
+    const folderA = path.join(temp, 'folder-a');
+    const folderB = path.join(temp, 'folder-b');
+    process.env.MEMEX_HOME = rootA;
+    delete process.env.MEMEX_SYNC_DIR; // env would pin ONE folder for both halves
+
+    control.setSyncEnabled({ enabled: true, dir: folderA });
+    expect(control.runSyncExport().skipped).toBeNull();
+    // The empty-generation guard still holds for the SAME folder (#48 B).
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+    const deviceId = control.getSyncStatus().deviceId!;
+    expect(fs.existsSync(path.join(folderA, 'devices', deviceId, 'CURRENT'))).toBe(true);
+
+    control.setSyncEnabled({ enabled: true, dir: folderB });
+    // Switching folders drops the fingerprint recorded for the old destination.
+    expect(control.getSyncStatus().lastExport?.stateFingerprint).toBeUndefined();
+    expect(control.runSyncExport().skipped).toBeNull();
+    expect(fs.existsSync(path.join(folderB, 'devices', deviceId, 'CURRENT'))).toBe(true);
+    // And the new folder gets its own skip baseline.
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+  });
+
   it('the export hook script is registered on SessionEnd as an async entry', async () => {
     const { LIFECYCLE_COMMANDS, SYNC_LIFECYCLE_SCRIPTS, isLifecycleScriptRegistered } =
       await import('../src/lifecycle.js');
