@@ -7,7 +7,7 @@
 
 > Codex를 위한 로컬 우선 장기 기억 계층입니다. 대화를 모으고, 재사용할 지식을 증류하고, 서로 연결한 뒤, 필요한 순간에 다시 꺼내 씁니다.
 
-![Memex Workspace 개요 화면: 파이프라인 준비 상태, 최근 기억의 변화, 범위별 활동 지표](assets/readme/overview.png)
+![Memex Workspace 개요 화면: 파이프라인 준비 상태, 최근 기억의 변화, 범위별 활동 지표](assets/readme/ko/overview.png)
 
 Memex는 로컬 Codex 세션 이력을 검색 가능한 대화 아카이브, 장기 fact, 범위가 분리된 지식 그래프, 그리고 이후 작업에 다시 주입할 수 있는 제한된 컨텍스트로 바꿉니다. Memex는 **두 번째 에이전트가 아니라 기억 시스템**입니다. 실제 작업은 Codex가 계속 수행하고, Memex는 그 주변에서 장기 기억 계층을 제공합니다.
 
@@ -103,22 +103,22 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 
 모든 화면은 프로젝트 / 공통 기억 / 전체 프로젝트 범위를 명시적으로 선택합니다. 기본값은 전체 프로젝트이고 이 범위는 **조회 전용**입니다 — 실제 주입 범위는 언제나 현재 프로젝트 + 공통 기억이며, 범위 선택 옆에 그 사실을 상시 표시합니다. 화면을 여는 것만으로는 모델 작업이 시작되지 않습니다.
 
-![기억 상세 패널의 근거 탭. 직접 근거와 해석에 참고한 맥락이 별도 절로 나뉘어 있다](assets/readme/facts-detail.png)
+![기억 상세 패널의 근거 탭. 직접 근거와 해석에 참고한 맥락이 별도 절로 나뉘어 있다](assets/readme/ko/facts-detail.png)
 
 *기억 상세 · 근거 탭 — 직접 근거와 해석에 참고한 맥락을 분리해 보여주고, 그 아래에 검증 영수증을 남깁니다.*
 
-![2D 지식 지도에서 노드 하나가 선택되고 연결된 관계가 강조된 화면](assets/readme/graph.png)
+![2D 지식 지도에서 노드 하나가 선택되고 연결된 관계가 강조된 화면](assets/readme/ko/graph.png)
 
 *지식 지도 — fact 노드와 typed relation(`SUPPORTS`, `INFLUENCES`, `SUPERSEDES`, `CONTRADICTS`)을 브라우저 네이티브 WebGL로 그립니다. 레이아웃은 도메인 그룹만 인코딩하며, 화면상의 거리는 임베딩 유사도 수치가 **아닙니다**.*
 
-![활동·추적의 처리 작업 탭에서 durable job 하나가 대상·입력 버전·모델 시도까지 펼쳐진 화면](assets/readme/activity-jobs.png)
+![활동·추적의 처리 작업 탭에서 durable job 하나가 대상·입력 버전·모델 시도까지 펼쳐진 화면](assets/readme/ko/activity-jobs.png)
 
 *활동 · 추적 · 처리 작업 — durable job 하나를 추출 대상, 처리한 입력 버전, 모델 실행 시도까지 펼쳐 확인합니다.*
 
 <details>
 <summary>다크 모드</summary>
 
-![같은 개요 화면을 다크 모드로 렌더링한 모습](assets/readme/overview-dark.png)
+![같은 개요 화면을 다크 모드로 렌더링한 모습](assets/readme/ko/overview-dark.png)
 
 </details>
 

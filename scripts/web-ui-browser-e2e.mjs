@@ -6,9 +6,38 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// #109 L5: expectations come from the shipped dictionaries, never from a second
+// copy of the prose. One `L` object is built here and used by BOTH sides — the
+// injected probe string and the Node assertion block — so `--lang en` and
+// `--lang ko` assert the same screens without two sets of literals.
+import { setLocale, t, tn } from "../ui/public/i18n/index.mjs";
+import { loadDictionary } from "../ui/public/i18n/load.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// Product default is en, so the gate's default is en too. ko is one explicit
+// release-gate run: `node scripts/web-ui-browser-e2e.mjs --lang ko`.
+const langArg = process.argv.indexOf("--lang");
+const LANG = langArg >= 0 ? String(process.argv[langArg + 1]) : "en";
+if (!["en", "ko"].includes(LANG))
+  throw new Error("--lang must be en or ko, got " + JSON.stringify(process.argv[langArg + 1]));
+const ALT = LANG === "en" ? "ko" : "en";
+setLocale(LANG, loadDictionary(LANG).dict);
+const ALT_DICT = loadDictionary(ALT).dict;
+/** Pick the fixture wording for this run. Demo data, not UI prose. */
+const sc = (ko, en) => (LANG === "en" ? en : ko);
+/** Dictionary value as the DOM shows it — `tHtml` markup is stripped, text is not. */
+const plain = (key, params) => String(t(key, params)).replace(/<[^>]+>/g, "");
+/**
+ * Dictionary value as a RegExp: everything is escaped except the named params,
+ * whose replacements are spliced in as regex fragments (`{total}` -> `\d+`).
+ */
+function tRe(key, params) {
+  let out = String(t(key)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const [name, fragment] of Object.entries(params))
+    out = out.split("\\{" + name + "\\}").join(fragment);
+  return new RegExp(out);
+}
 const evidenceArg = process.argv.indexOf("--evidence-dir");
 const EVIDENCE =
   evidenceArg >= 0
@@ -28,19 +57,50 @@ const PROFILE = path.join(TEMP, "chrome-profile");
 const CONTEXT_PROJECT = "/tmp/memex-web-ui";
 const DOMAIN_ID = "engineering";
 const CATEGORY_ID = "storage";
+// ★ The Korean tail stays Korean in BOTH languages. What this probe asserts is
+// that the markup is escaped and the Hangul still renders — content safety, not
+// UI language (design §10.3, the single exception to "no Hangul in en").
 const MALICIOUS =
   "<img src=x onerror=globalThis.__memexInjected=true> 한글 사실은 안전하게 표시됩니다";
+const MALICIOUS_VISIBLE = "한글 사실";
 const EDITED =
   "The Memex Workspace mutation path uses an initialized vec0 connection.";
 // #22 branch-tier seed: a project memory the default project predicate hides.
 const TIER_WORKSTREAM_ID = "stream-web-ui";
 const TIER_BRANCH = "feature/tier-ladder";
 const TIER_AT = "2026-08-01T00:00:00.000Z";
-const BRANCH_FACT =
-  "브랜치 계층 기억은 그 브랜치 세션에만 주입된다.";
+const BRANCH_FACT = sc(
+  "브랜치 계층 기억은 그 브랜치 세션에만 주입된다.",
+  "A branch-tier memory is injected only into sessions on that branch.",
+);
 // #23 failure-class seed.
 const DEAD_JOB_ID = "e2e-dead-capsule-job";
 const DEAD_JOB_ERROR = "capsule patch exceeds bounded storage size";
+// Gate fixture prose that reaches the screen. Languaged so the en run can assert
+// "zero Hangul outside user content" without carving out half the surface.
+const CONTEXT_USER = sc("그 선택으로 진행해줘.", "Go ahead with that choice.");
+const CONTEXT_ASSISTANT = sc(
+  "SQLite를 선택하면 로컬 우선 요구사항을 충족합니다.",
+  "Choosing SQLite satisfies the local-first requirement.",
+);
+const DOMAIN_NAME = sc("엔지니어링", "Engineering");
+const DOMAIN_DESC = sc("코어, 저장소와 데이터 처리", "Core, storage and data handling");
+const CATEGORY_NAME = sc("데이터 저장소", "Data storage");
+const CATEGORY_DESC = sc("SQLite 접근과 데이터 일관성", "SQLite access and data consistency");
+const PEER_FACT = sc(
+  "두 번째 맥에서 만든 기억은 세대 파일로 넘어온다.",
+  "A memory made on the second Mac arrives in a generation file.",
+);
+const PEER_QUERY = sc("세대 파일", "generation file");
+const PEER_ALIAS = sc("두 번째 맥", "Second Mac");
+const LOCAL_ALIAS = sc("이 맥", "This Mac");
+const NO_MATCH_QUERY = sc(
+  "이문자열은어떤기억과도일치하지않습니다",
+  "thisstringmatchesnostoredmemory",
+);
+const OVERLAY_PATTERN = sc("배포\\s*이력", "deploy\\s*history");
+const OVERLAY_PATTERN_TEXT = sc("배포", "deploy");
+const OVERLAY_NOTE = sc("릴리스 질문은 항상 회수", "Always recall release questions");
 
 class Cdp {
   constructor(url) {
@@ -49,6 +109,10 @@ class Cdp {
     this.pending = new Map();
     this.waiters = [];
     this.runtimeErrors = [];
+    // #109 L5: `Runtime.exceptionThrown` alone sees neither a CSP violation nor a
+    // `console.error`, and the missing-key report is a console.error. `Log.enable`
+    // plus `Runtime.consoleAPICalled` are what make both observable.
+    this.consoleMessages = [];
   }
   async connect() {
     this.ws = new WebSocket(this.url);
@@ -86,6 +150,20 @@ class Cdp {
           message.params?.exceptionDetails?.exception?.description ||
             message.params?.exceptionDetails?.text ||
             "runtime exception",
+        );
+      }
+      if (message.method === "Log.entryAdded") {
+        const entry = message.params?.entry || {};
+        this.consoleMessages.push(
+          [entry.source, entry.level, entry.text].filter(Boolean).join(" "),
+        );
+      }
+      if (message.method === "Runtime.consoleAPICalled") {
+        const args = (message.params?.args || [])
+          .map((a) => (a.value !== undefined ? String(a.value) : a.description || ""))
+          .join(" ");
+        this.consoleMessages.push(
+          "console " + (message.params?.type || "log") + " " + args,
         );
       }
       if (message.id) {
@@ -161,10 +239,14 @@ function startServer(port, home = MEMEX_HOME, xdg = XDG_CONFIG_HOME) {
       XDG_CONFIG_HOME: xdg,
       MEMEX_PLUGIN_ROOT: ROOT,
       PORT: String(port),
-      // #109 lane-0: 제품 기본 언어는 en이지만 이 게이트의 probe는 아직 한국어 화면을
-      // 단정한다. 문자열 이관이 끝날 때까지 서버 기본 언어를 ko로 고정한다 — i18n L5가
-      // `--lang en|ko` 파라미터화와 함께 이 줄을 가져간다.
-      MEMEX_UI_LANG: process.env.MEMEX_UI_LANG || "ko",
+      // #109 L5: the server default is what `<html data-lang>` carries, and the
+      // CSP probe below reads exactly that with no `?lang` in the URL. Every
+      // other navigation also pins `&lang=`, because a stored preference would
+      // otherwise beat the server default.
+      MEMEX_UI_LANG: LANG,
+      // Screenshots are compared side by side across languages, so the clock the
+      // page formats with must not be the developer's.
+      TZ: "UTC",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -216,7 +298,8 @@ function startChrome(profile = PROFILE, extraArgs = []) {
       ...extraArgs,
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    // Intl in the page formats against the browser's zone, not the server's.
+    { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, TZ: "UTC" } },
   );
   const ready = new Promise((resolve, reject) => {
     let stderr = "";
@@ -263,6 +346,7 @@ async function pageProbe(
   screenshotName,
   keyboard = false,
 ) {
+  if (process.env.MEMEX_E2E_TRACE) console.error("probe " + screenshotName + " " + url);
   const { targetId } = await cdp.send("Target.createTarget", {
     url: "about:blank",
   });
@@ -273,6 +357,9 @@ async function pageProbe(
   try {
     await cdp.send("Page.enable", {}, sessionId);
     await cdp.send("Runtime.enable", {}, sessionId);
+    // CSP violations and console.error (= the i18n missing-key report) only reach
+    // the transport once these two domains are on for the session.
+    await cdp.send("Log.enable", {}, sessionId).catch(() => {});
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
       {
@@ -403,7 +490,125 @@ const DRIVER = `
   const mapPixels=canvas=>mapSurface(canvas).painted;
 `;
 
-const probe = (body) => `(async()=>{${DRIVER}${body}})()`;
+// ---------------------------------------------------------------------------
+// #109 L5 · the one expectation table.
+//
+// `probe()` injects this page-side as `L`, and the Node assertion block reads the
+// same object, so a label is written once and checked on both sides. Everything
+// here comes out of `ui/public/i18n/<ns>/<lang>.mjs` — a literal in this file
+// would be a second translation nobody maintains.
+// ---------------------------------------------------------------------------
+const L = {
+  lang: LANG,
+  // shell · scope
+  scopeAllOption: t("shell.scope.allProjectsOption"),
+  commonMemory: t("common.commonMemory"),
+  projectGroup: t("shell.scope.projectGroup"),
+  scopeInjection: t("shell.scope.injection"),
+  scopeHint: t("shell.scope.hint"),
+  scopeAllLine: t("shell.scope.allLine"),
+  navFacts: t("shell.nav.facts"),
+  // "· N memories" / "· 기억 N개". en splits one/other, ko has only other, so the
+  // alternation is built from whichever forms this language's dictionary declares.
+  factCountRe: ["one", "other"]
+    .filter((form) => loadDictionary(LANG).dict["shell.scope.factCount." + form] !== undefined)
+    .map((form) => tRe("shell.scope.factCount." + form, { total: "\\d+" }).source)
+    .join("|"),
+  // facts
+  factsTitle: t("pages.facts.title"),
+  factsEmptyScope: t("pages.facts.empty.scope.title"),
+  factsEmptyFiltered: t("pages.facts.empty.filtered.title"),
+  taxonomyAll: t("pages.facts.taxonomy.all"),
+  taxonomyFilterBanner: plain("pages.facts.taxonomy.filterBanner", { htmlClear: "" }).trim(),
+  hiddenTierOne: tn("pages.facts.hiddenTier.more.title", 1, { n: "1" }),
+  // conversations · taxonomy · graph
+  conversationsGlobalScope: t("pages.conversations.globalScope.title"),
+  taxonomyMapAction: t("pages.taxonomy.action.map"),
+  graphTitle: t("pages.graph.title"),
+  graphEmptyTitle: t("pages.graph.empty.title"),
+  graphLegend3d: t("pages.graph.legend.pan.3d"),
+  graphRendererWebgl: t("pages.graph.renderer.webgl"),
+  graphRendererCanvas2d: t("pages.graph.renderer.canvas2d"),
+  // fact detail
+  factDetailTitle: t("details.fact.title"),
+  evidenceIntro: plain("details.fact.evidence.intro"),
+  evidenceEmpty: t("details.fact.evidence.empty.title"),
+  evidenceHeading: tn("details.fact.evidence.title", 1, { n: "1" }).split(" · ")[0],
+  contextTitle: t("details.fact.context.title"),
+  contextOnly: t("details.source.contextOnly", { kind: "assistant_context" }),
+  historyTab: t("details.fact.tab.history"),
+  reuseTitle: t("details.fact.reuse.title"),
+  reuseActive: t("details.fact.reuse.active"),
+  tierLadder: plain("details.tier.ladder"),
+  tierBranch: t("tier.workstream.branch", { branch: TIER_BRANCH }),
+  tierBranchExplain: t("tier.workstream.explain.branch", { branch: TIER_BRANCH }),
+  tierGlobal: t("tier.global.label"),
+  tierProject: t("tier.project.label"),
+  promoted: t("badge.PROMOTED.label"),
+  badgeActive: t("badge.active.label"),
+  badgeInactive: t("badge.inactive.label"),
+  jobTarget: t("details.job.target.title"),
+  operationStatus: t("details.operation.status"),
+  operationCompleted: t("badge.completed.label"),
+  // help layer
+  helpFactsBody: t("help.page.facts.body"),
+  helpScopeControl: t("help.control.scope.body"),
+  glossaryCapsule: t("help.glossary.capsule.term"),
+  // guidance
+  attentionHeading: t("guidance.attention.heading"),
+  jobDeadTitle: t("guidance.job-dead.title"),
+  jobDeadImpact: t("guidance.job-dead.impact"),
+  nextAction: t("activity.nextAction"),
+  actionNeeded: t("guidance.ignorable.false"),
+  pipelineConversations: t("pages.overview.pipeline.conversations.title"),
+  // settings · diagnostics / sync / models / overlays
+  diagnosticsReadable: t("settings.diagnostics.capabilities.present"),
+  syncSwitchTitle: t("settings.sync.switch.title"),
+  syncRunExport: t("settings.sync.run.title.export"),
+  syncRunImport: t("settings.sync.run.title.import"),
+  syncDeviceMissing: t("settings.sync.deviceId.missing"),
+  syncRows: t("settings.sync.rows"),
+  syncRejectedEmpty: t("settings.sync.rejected.empty"),
+  archiveIntro: plain("settings.archive.intro"),
+  archivePreviewTitle: t("settings.archive.preview.title"),
+  archiveImportWarning: plain("settings.archive.import.modal.warning"),
+  archivePreviewDeltas: t("settings.archive.preview.deltas", { added: "1", updated: "0", deleted: "0" }),
+  importCountsRe: tRe("settings.sync.importCounts", {
+    newFacts: "\\d+", updatedFacts: "\\d+", deletedFacts: "\\d+", newRevisions: "\\d+",
+    newTombstones: "\\d+", newRecalls: "\\d+", updatedRecalls: "\\d+",
+  }).source,
+  modelHoldNoDamage: t("models.hold.noDamage"),
+  modelHeldBadge: t("common.job.hold.model_config_rejected"),
+  modelAltTitle: ALT_DICT["models.llm.title"],
+  overlaysNotShared: t("overlays.notShared"),
+  overlaysNoRecord: t("overlays.gate.test.caption"),
+  overlaysOriginUser: t("overlays.gate.origin.user"),
+  overlaysSavedToast: t("overlays.toast.saved", { revision: "1" }),
+  overlaysVerifierUnchanged: t("overlays.rules.verifierUnchanged"),
+  overlaysTiming: t("overlays.rules.timingBody"),
+  overlaysHeld: t("overlays.rules.held.title"),
+  // fixture values the probes type or look for
+  branchFact: BRANCH_FACT,
+  peerFact: PEER_FACT,
+  peerAlias: PEER_ALIAS,
+  localAlias: LOCAL_ALIAS,
+  noMatchQuery: NO_MATCH_QUERY,
+  overlayPattern: OVERLAY_PATTERN,
+  overlayPatternText: OVERLAY_PATTERN_TEXT,
+  overlayNote: OVERLAY_NOTE,
+  maliciousVisible: MALICIOUS_VISIBLE,
+  deadJobError: DEAD_JOB_ERROR,
+  editedFact: EDITED,
+  // ★ Content that is legitimately in the OTHER language because it is data, not
+  // UI prose. The leak probe strips these before judging a text node, so the
+  // exemption is a short, named list rather than "skip this subtree".
+  userContent: LANG === "en"
+    ? ["한글 사실은 안전하게 표시됩니다"]
+    : [EDITED, DEAD_JOB_ERROR,
+       "The 'gpt-6-astraX' model is not supported when using Codex with a ChatGPT account."],
+};
+
+const probe = (body) => `(async()=>{const L=${JSON.stringify(L)};${DRIVER}${body}})()`;
 
 // ---------------------------------------------------------------------------
 // Documentation screenshots (`--screenshots <dir>`), opt-in only.
@@ -415,86 +620,94 @@ const probe = (body) => `(async()=>{${DRIVER}${body}})()`;
 // ---------------------------------------------------------------------------
 const SHOWCASE_PROJECT = "/Users/demo/projects/atlas-notes";
 const SHOWCASE_PROJECT_ALT = "/Users/demo/projects/atlas-mobile";
+// Demo content, fully bilingual: the English screenshots must not show a single
+// Korean sentence (design §10.3), so every fixture row carries both wordings and
+// `sc()` picks one. Nothing here is UI prose — it is the store's content.
 const SHOWCASE_DOMAINS = [
-  ["engineering", "엔지니어링", "저장소, 동기화, 검색 런타임"],
-  ["product", "제품 · 경험", "탐색 구조와 편집 경험"],
-  ["operations", "운영 · 신뢰", "관측, 보안, 진단"],
-  ["workflow", "작업 방식", "릴리스 절차와 팀 규칙"],
+  ["engineering", sc("엔지니어링", "Engineering"), sc("저장소, 동기화, 검색 런타임", "Storage, sync and the search runtime")],
+  ["product", sc("제품 · 경험", "Product · experience"), sc("탐색 구조와 편집 경험", "Navigation structure and the editing experience")],
+  ["operations", sc("운영 · 신뢰", "Operations · trust"), sc("관측, 보안, 진단", "Observability, security, diagnostics")],
+  ["workflow", sc("작업 방식", "Ways of working"), sc("릴리스 절차와 팀 규칙", "Release process and team conventions")],
 ];
 const SHOWCASE_CATEGORIES = [
-  ["storage", "engineering", "로컬 저장소", "SQLite 스키마와 파일 배치"],
-  ["sync", "engineering", "동기화", "변경 로그 교환과 충돌 해결"],
-  ["search", "engineering", "검색", "FTS 인덱스와 임베딩 조회"],
-  ["navigation", "product", "정보 구조", "노트 목록과 탐색 경로"],
-  ["editor", "product", "편집 경험", "단축키, 자동 저장, 서식"],
-  ["observability", "operations", "관측 · 추적", "로그, 지표, 실패 기록"],
-  ["security", "operations", "보안 · 권한", "자격 증명과 데이터 보호"],
-  ["release", "workflow", "릴리스 절차", "브랜치, 태그, 배포 일정"],
-  ["conventions", "workflow", "팀 규칙", "리뷰, 문서화, 개인 선호"],
+  ["storage", "engineering", sc("로컬 저장소", "Local storage"), sc("SQLite 스키마와 파일 배치", "SQLite schema and file layout")],
+  ["sync", "engineering", sc("동기화", "Sync"), sc("변경 로그 교환과 충돌 해결", "Change-log exchange and conflict resolution")],
+  ["search", "engineering", sc("검색", "Search"), sc("FTS 인덱스와 임베딩 조회", "FTS index and embedding lookups")],
+  ["navigation", "product", sc("정보 구조", "Information architecture"), sc("노트 목록과 탐색 경로", "Note lists and navigation paths")],
+  ["editor", "product", sc("편집 경험", "Editing experience"), sc("단축키, 자동 저장, 서식", "Shortcuts, autosave, formatting")],
+  ["observability", "operations", sc("관측 · 추적", "Observability · tracing"), sc("로그, 지표, 실패 기록", "Logs, metrics, failure records")],
+  ["security", "operations", sc("보안 · 권한", "Security · permissions"), sc("자격 증명과 데이터 보호", "Credentials and data protection")],
+  ["release", "workflow", sc("릴리스 절차", "Release process"), sc("브랜치, 태그, 배포 일정", "Branches, tags, release schedule")],
+  ["conventions", "workflow", sc("팀 규칙", "Team conventions"), sc("리뷰, 문서화, 개인 선호", "Review, documentation, personal preferences")],
 ];
-// [category, kind, Korean text, English source text or null]
+// [category, kind, Korean text, English text]
 const SHOWCASE_FACTS = [
   ["storage", "decision", "노트 본문은 로컬 SQLite에 저장하고, 원격에는 변경 로그만 내보낸다.", "Atlas keeps note bodies in local SQLite and exports only the change log."],
-  ["storage", "constraint", "노트 삭제는 즉시 파기하지 않고 30일 동안 휴지통에 보관한 뒤 정리한다.", null],
-  ["storage", "pattern", "첨부 파일은 본문 테이블과 분리해 콘텐츠 해시 경로에 저장한다.", null],
-  ["storage", "knowledge", "데이터베이스 마이그레이션은 실행 전에 자동으로 스냅샷을 남긴다.", null],
+  ["storage", "constraint", "노트 삭제는 즉시 파기하지 않고 30일 동안 휴지통에 보관한 뒤 정리한다.", "A deleted note is not destroyed at once: it stays in the trash for 30 days, then is cleaned up."],
+  ["storage", "pattern", "첨부 파일은 본문 테이블과 분리해 콘텐츠 해시 경로에 저장한다.", "Attachments live under a content-hash path, separate from the body table."],
+  ["storage", "knowledge", "데이터베이스 마이그레이션은 실행 전에 자동으로 스냅샷을 남긴다.", "A database migration snapshots itself automatically before it runs."],
   ["sync", "decision", "동기화 충돌은 마지막 쓰기 승리 대신 필드 단위 병합으로 해결한다.", "Sync resolves conflicts field by field instead of last-write-wins."],
-  ["sync", "constraint", "동기화 실패를 조용히 넘기지 않고 실패 사유를 그대로 남긴다.", null],
-  ["sync", "pattern", "기기별 커서는 서버가 아니라 각 기기의 로컬 상태에 보관한다.", null],
-  ["sync", "knowledge", "오프라인 편집은 재연결 시 한 번의 배치로 전송된다.", null],
+  ["sync", "constraint", "동기화 실패를 조용히 넘기지 않고 실패 사유를 그대로 남긴다.", "A sync failure is never passed over quietly; its reason is kept verbatim."],
+  ["sync", "pattern", "기기별 커서는 서버가 아니라 각 기기의 로컬 상태에 보관한다.", "Per-device cursors are kept in each device's local state, never on a server."],
+  ["sync", "knowledge", "오프라인 편집은 재연결 시 한 번의 배치로 전송된다.", "Offline edits are sent as a single batch once the device reconnects."],
   ["search", "decision", "검색은 FTS5 인덱스를 먼저 조회하고, 결과가 부족할 때만 임베딩 검색으로 보완한다.", "Search queries FTS5 first and only falls back to embeddings when results are thin."],
-  ["search", "constraint", "검색 인덱스 재구축은 사용자가 명시적으로 시작할 때만 실행한다.", null],
-  ["search", "knowledge", "제목 일치는 본문 일치보다 높은 가중치를 받는다.", null],
-  ["navigation", "decision", "노트 목록의 기본 정렬은 최근 수정순이다.", null],
-  ["navigation", "preference", "사이드바 폭은 사용자가 조절한 값을 기기별로 기억한다.", null],
-  ["navigation", "pattern", "폴더 대신 태그를 기본 분류 수단으로 사용한다.", null],
+  ["search", "constraint", "검색 인덱스 재구축은 사용자가 명시적으로 시작할 때만 실행한다.", "A search index rebuild runs only when the user starts it explicitly."],
+  ["search", "knowledge", "제목 일치는 본문 일치보다 높은 가중치를 받는다.", "A title match is weighted higher than a body match."],
+  ["navigation", "decision", "노트 목록의 기본 정렬은 최근 수정순이다.", "The note list sorts by most recently edited by default."],
+  ["navigation", "preference", "사이드바 폭은 사용자가 조절한 값을 기기별로 기억한다.", "The sidebar width the user sets is remembered per device."],
+  ["navigation", "pattern", "폴더 대신 태그를 기본 분류 수단으로 사용한다.", "Tags, not folders, are the primary way notes are classified."],
   ["editor", "constraint", "에디터 단축키는 운영체제의 기본 텍스트 단축키를 재정의하지 않는다.", "The editor never overrides the operating system's default text shortcuts."],
-  ["editor", "decision", "자동 저장은 입력이 멈춘 뒤 800ms에 한 번만 실행한다.", null],
-  ["editor", "preference", "마크다운 미리보기는 기본으로 접어 두고 필요할 때 펼친다.", null],
-  ["observability", "constraint", "로그에는 노트 제목과 본문을 남기지 않는다.", null],
-  ["observability", "knowledge", "성능 회귀는 노트 1,000개 기준 벤치마크로 확인한다.", null],
+  ["editor", "decision", "자동 저장은 입력이 멈춘 뒤 800ms에 한 번만 실행한다.", "Autosave runs once, 800ms after typing stops."],
+  ["editor", "preference", "마크다운 미리보기는 기본으로 접어 두고 필요할 때 펼친다.", "The markdown preview stays collapsed by default and opens on demand."],
+  ["observability", "constraint", "로그에는 노트 제목과 본문을 남기지 않는다.", "Logs never carry note titles or note bodies."],
+  ["observability", "knowledge", "성능 회귀는 노트 1,000개 기준 벤치마크로 확인한다.", "Performance regressions are measured against a 1,000-note benchmark."],
   ["observability", "pattern", "수집되지 않은 지표는 0이 아니라 미수집으로 표시한다.", "Uncollected metrics are shown as not-collected, never as zero."],
-  ["security", "constraint", "인증 토큰은 운영체제 키체인에 저장하고 설정 파일에 남기지 않는다.", null],
-  ["security", "decision", "원격 저장소는 노트 본문을 평문으로 보관하지 않는다.", null],
-  ["security", "knowledge", "내보내기 파일에는 기기 식별자를 포함하지 않는다.", null],
-  ["release", "decision", "릴리스는 매월 첫째 주 화요일에만 태그한다.", null],
-  ["release", "pattern", "핫픽스는 릴리스 브랜치에서 분기하고 main으로 되돌려 병합한다.", null],
-  ["release", "constraint", "실험 기능은 기본 꺼짐 상태로 배포하고 설정에서만 켠다.", null],
-  ["conventions", "decision", "변경은 최소 한 명의 리뷰 승인을 받은 뒤 병합한다.", null],
-  ["conventions", "preference", "회의록은 별도 도구 대신 Atlas 노트 안에서 관리한다.", null],
-  ["conventions", "knowledge", "공개 동작이 바뀌면 같은 변경에서 문서도 함께 고친다.", null],
+  ["security", "constraint", "인증 토큰은 운영체제 키체인에 저장하고 설정 파일에 남기지 않는다.", "Auth tokens are kept in the OS keychain and never written to a config file."],
+  ["security", "decision", "원격 저장소는 노트 본문을 평문으로 보관하지 않는다.", "The remote store never holds note bodies in plain text."],
+  ["security", "knowledge", "내보내기 파일에는 기기 식별자를 포함하지 않는다.", "An export file carries no device identifier."],
+  ["release", "decision", "릴리스는 매월 첫째 주 화요일에만 태그한다.", "Releases are tagged only on the first Tuesday of the month."],
+  ["release", "pattern", "핫픽스는 릴리스 브랜치에서 분기하고 main으로 되돌려 병합한다.", "A hotfix branches off the release branch and merges back into main."],
+  ["release", "constraint", "실험 기능은 기본 꺼짐 상태로 배포하고 설정에서만 켠다.", "Experimental features ship off by default and are turned on in settings only."],
+  ["conventions", "decision", "변경은 최소 한 명의 리뷰 승인을 받은 뒤 병합한다.", "A change merges only after at least one review approval."],
+  ["conventions", "preference", "회의록은 별도 도구 대신 Atlas 노트 안에서 관리한다.", "Meeting notes are kept inside Atlas notes rather than in a separate tool."],
+  ["conventions", "knowledge", "공개 동작이 바뀌면 같은 변경에서 문서도 함께 고친다.", "When public behaviour changes, the documentation changes in the same commit."],
 ];
 const SHOWCASE_GLOBAL_FACTS = [
-  ["conventions", "preference", "커밋 메시지는 무엇을 왜 바꿨는지 한 문장으로 먼저 적는다.", null],
-  ["observability", "preference", "실패한 작업은 재시도 횟수와 마지막 오류를 함께 확인한다.", null],
-  ["conventions", "knowledge", "설계 결정은 결정 시점의 근거와 함께 기록해 둔다.", null],
+  ["conventions", "preference", "커밋 메시지는 무엇을 왜 바꿨는지 한 문장으로 먼저 적는다.", "A commit message opens with one sentence on what changed and why."],
+  ["observability", "preference", "실패한 작업은 재시도 횟수와 마지막 오류를 함께 확인한다.", "A failed job is reviewed together with its retry count and its last error."],
+  ["conventions", "knowledge", "설계 결정은 결정 시점의 근거와 함께 기록해 둔다.", "A design decision is recorded together with the reasoning behind it."],
 ];
 const SHOWCASE_ALT_FACTS = [
-  ["storage", "decision", "모바일은 최근 200개 노트만 오프라인으로 보관한다.", null],
-  ["editor", "constraint", "모바일 편집기는 첨부 업로드를 25MB로 제한한다.", null],
-  ["navigation", "preference", "모바일 첫 화면은 검색이 아니라 최근 노트를 보여준다.", null],
+  ["storage", "decision", "모바일은 최근 200개 노트만 오프라인으로 보관한다.", "Mobile keeps only the 200 most recent notes offline."],
+  ["editor", "constraint", "모바일 편집기는 첨부 업로드를 25MB로 제한한다.", "The mobile editor caps attachment uploads at 25MB."],
+  ["navigation", "preference", "모바일 첫 화면은 검색이 아니라 최근 노트를 보여준다.", "The mobile home screen shows recent notes rather than search."],
 ];
+// [session title, opening user turn]
 const SHOWCASE_SESSIONS = [
-  ["로컬 우선 저장 구조를 어떻게 잡을까?", "노트 본문과 첨부를 어디에 두는지 정리하고 싶어.", "storage"],
-  ["두 기기에서 같은 노트를 고치면 어떻게 되지?", "충돌 처리 규칙을 정해두자.", "sync"],
-  ["검색이 느려지는 구간을 찾아보자.", "인덱스 구성과 조회 순서를 확인하고 싶어.", "search"],
-  ["에디터 단축키 정책을 확정하자.", "운영체제 기본 동작과 겹치는 부분이 문제야.", "editor"],
-  ["첨부 파일 저장 위치를 정리하자.", "본문과 같은 테이블에 두면 나중에 곤란할 것 같아.", "storage"],
-  ["릴리스와 핫픽스 흐름을 문서로 남기자.", "브랜치 규칙이 사람마다 다르게 이해되고 있어.", "release"],
-  ["토큰 보관과 로그 정책을 점검하자.", "설정 파일에 토큰이 남는 경로가 있는지 확인해줘.", "security"],
-  ["노트 목록 정렬과 사이드바 동작을 맞추자.", "기기마다 다르게 보이는 이유를 알고 싶어.", "navigation"],
-  ["성능 회귀를 어떤 기준으로 볼까?", "벤치마크 조건을 고정해두면 좋겠어.", "observability"],
+  [sc("로컬 우선 저장 구조를 어떻게 잡을까?", "How should local-first storage be laid out?"), sc("노트 본문과 첨부를 어디에 두는지 정리하고 싶어.", "I want to settle where note bodies and attachments live.")],
+  [sc("두 기기에서 같은 노트를 고치면 어떻게 되지?", "What happens when the same note is edited on two devices?"), sc("충돌 처리 규칙을 정해두자.", "Let's pin down the conflict rules.")],
+  [sc("검색이 느려지는 구간을 찾아보자.", "Let's find where search slows down."), sc("인덱스 구성과 조회 순서를 확인하고 싶어.", "I want to check the index layout and the lookup order.")],
+  [sc("에디터 단축키 정책을 확정하자.", "Let's settle the editor shortcut policy."), sc("운영체제 기본 동작과 겹치는 부분이 문제야.", "The overlap with the operating system defaults is the problem.")],
+  [sc("첨부 파일 저장 위치를 정리하자.", "Let's tidy up where attachments are stored."), sc("본문과 같은 테이블에 두면 나중에 곤란할 것 같아.", "Keeping them in the body table will hurt us later.")],
+  [sc("릴리스와 핫픽스 흐름을 문서로 남기자.", "Let's write down the release and hotfix flow."), sc("브랜치 규칙이 사람마다 다르게 이해되고 있어.", "People read the branch rules differently.")],
+  [sc("토큰 보관과 로그 정책을 점검하자.", "Let's review token storage and the logging policy."), sc("설정 파일에 토큰이 남는 경로가 있는지 확인해줘.", "Check whether a token can end up in a config file.")],
+  [sc("노트 목록 정렬과 사이드바 동작을 맞추자.", "Let's align note-list sorting with the sidebar."), sc("기기마다 다르게 보이는 이유를 알고 싶어.", "I want to know why it looks different on each device.")],
+  [sc("성능 회귀를 어떤 기준으로 볼까?", "What should a performance regression be measured against?"), sc("벤치마크 조건을 고정해두면 좋겠어.", "Pinning the benchmark conditions would help.")],
 ];
 const SHOWCASE_SESSIONS_ALT = [
-  ["모바일 오프라인 편집 범위를 정하자.", "전부 내려받는 건 현실적이지 않아 보여.", "storage"],
-  ["모바일 업로드 제한을 얼마로 둘까?", "큰 첨부에서 실패가 반복되고 있어.", "editor"],
-  ["모바일 첫 화면 구성을 정리하자.", "실제로 가장 많이 쓰는 동선을 기준으로 하자.", "navigation"],
+  [sc("모바일 오프라인 편집 범위를 정하자.", "Let's decide how much mobile keeps offline."), sc("전부 내려받는 건 현실적이지 않아 보여.", "Downloading everything does not look realistic.")],
+  [sc("모바일 업로드 제한을 얼마로 둘까?", "What should the mobile upload limit be?"), sc("큰 첨부에서 실패가 반복되고 있어.", "Large attachments keep failing.")],
+  [sc("모바일 첫 화면 구성을 정리하자.", "Let's tidy up the mobile home screen."), sc("실제로 가장 많이 쓰는 동선을 기준으로 하자.", "Let's base it on the path people actually use.")],
 ];
 
 /** Build a presentable demo database against the real core schema. */
 function seedShowcase(initDatabase, dbPath) {
   const db = initDatabase({ dbPath });
-  const now = Date.now();
+  // The en and ko passes run minutes apart, so a raw `Date.now()` would put the
+  // two sets of shots in different relative-time buckets and, across midnight,
+  // on different calendar days. Anchoring on today's UTC noon keeps every
+  // rendered date and every "N days ago" identical between the two runs.
+  const now = Date.parse(new Date().toISOString().slice(0, 10) + "T12:00:00.000Z");
   const at = (minutes) => new Date(now - minutes * 60000).toISOString();
   const run = (sql, args) => db.prepare(sql).run(...args);
   const uid = (n) => `7c1f0a20-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -573,10 +786,19 @@ function seedShowcase(initDatabase, dbPath) {
             ? spec[0]
             : t === 1
               ? spec[1]
-              : "결정한 내용을 기록해 두고, 나중에 근거를 찾을 수 있게 원문 위치도 남겨줘.",
+              : sc(
+                  "결정한 내용을 기록해 두고, 나중에 근거를 찾을 수 있게 원문 위치도 남겨줘.",
+                  "Record what we decided, and keep the transcript location so the evidence can be found later.",
+                ),
           t === 0
-            ? "현재 구조를 확인한 뒤, 결정할 지점과 이미 정해진 제약을 나눠서 정리하겠습니다."
-            : "정리한 결정과 그 근거가 된 대화 위치를 함께 남겨두겠습니다. 확정되지 않은 항목은 결정으로 기록하지 않습니다.",
+            ? sc(
+                "현재 구조를 확인한 뒤, 결정할 지점과 이미 정해진 제약을 나눠서 정리하겠습니다.",
+                "I will look at the current structure, then separate what still needs deciding from the constraints already fixed.",
+              )
+            : sc(
+                "정리한 결정과 그 근거가 된 대화 위치를 함께 남겨두겠습니다. 확정되지 않은 항목은 결정으로 기록하지 않습니다.",
+                "I will record each decision together with the conversation location that supports it. Anything still unsettled is not recorded as a decision.",
+              ),
           "/Users/demo/.config/atlas/archive/" + sessionId + ".jsonl",
           t * 2 + 1,
           t * 2 + 2,
@@ -605,15 +827,21 @@ function seedShowcase(initDatabase, dbPath) {
   );
 
   // One durable job pipeline per session, with a couple of honest non-success
-  // states so the 처리 작업 screen is not a wall of green.
+  // states so the jobs screen is not a wall of green.
   sessions.forEach((session, index) => {
     const state =
       index === 0 ? "running" : index === 3 ? "retry" : index === 6 ? "dead" : "completed";
     const lastError =
       state === "retry"
-        ? "MODEL_BUDGET_EXHAUSTED: 이번 실행의 시도 예산을 모두 사용했습니다."
+        ? sc(
+            "MODEL_BUDGET_EXHAUSTED: 이번 실행의 시도 예산을 모두 사용했습니다.",
+            "MODEL_BUDGET_EXHAUSTED: this run used up its attempt budget.",
+          )
         : state === "dead"
-          ? "EVIDENCE_UNRESOLVED: 근거로 지목된 원문을 다시 찾지 못했습니다."
+          ? sc(
+              "EVIDENCE_UNRESOLVED: 근거로 지목된 원문을 다시 찾지 못했습니다.",
+              "EVIDENCE_UNRESOLVED: the transcript named as evidence could not be found again.",
+            )
           : null;
     const targetId = "target-" + session.sessionId;
     const budgetId = "budget-" + session.sessionId;
@@ -749,14 +977,17 @@ function seedShowcase(initDatabase, dbPath) {
           index % 3 === 0 ? "NOT_PROVEN" : "observed",
           state === "retry" ? "deadline_exceeded" : state === "dead" ? "evidence_unresolved" : null,
           state === "retry"
-            ? "모델 작업 기한을 초과했습니다."
+            ? sc("모델 작업 기한을 초과했습니다.", "The model work deadline was exceeded.")
             : state === "dead"
-              ? "근거 원문을 확인하지 못해 저장하지 않았습니다."
+              ? sc(
+                  "근거 원문을 확인하지 못해 저장하지 않았습니다.",
+                  "Nothing was saved because the evidence transcript could not be confirmed.",
+                )
               : null,
         ],
       );
     // Capture indexing and Work Capsule jobs run on the same queue; showing only
-    // extraction would misrepresent what the 처리 작업 tab actually lists.
+    // extraction would misrepresent what the jobs tab actually lists.
     for (const [suffix, kind, jobState, minutes] of [
       ["index", "capture_index", "completed", 8],
       ["capsule", "capsule_update", index === 1 ? "retry" : "completed", 7],
@@ -779,7 +1010,10 @@ function seedShowcase(initDatabase, dbPath) {
           jobState === "retry" ? 2 : 1,
           5,
           jobState === "retry"
-            ? "CAPSULE_STALE: 이후 턴이 먼저 반영되어 이 갱신을 다시 계산합니다."
+            ? sc(
+                "CAPSULE_STALE: 이후 턴이 먼저 반영되어 이 갱신을 다시 계산합니다.",
+                "CAPSULE_STALE: a later turn landed first, so this update is recomputed.",
+              )
             : null,
           "demo-job-" + session.sessionId + "-" + suffix,
           at(session.ageBase - 2),
@@ -799,7 +1033,10 @@ function seedShowcase(initDatabase, dbPath) {
           session.exchanges[session.exchanges.length - 1].rowid,
           "demo-payload",
           "model_budget",
-          "작업 기한을 초과해 이 구간을 재시도 대상으로 남겼습니다.",
+          sc(
+            "작업 기한을 초과해 이 구간을 재시도 대상으로 남겼습니다.",
+            "The deadline was exceeded, so this range is left for a retry.",
+          ),
           "retry",
           2,
           at(session.ageBase - 2),
@@ -808,7 +1045,7 @@ function seedShowcase(initDatabase, dbPath) {
       );
   });
 
-  // Facts, bound to real exchanges in the same project so 근거 has something
+  // Facts, bound to real exchanges in the same project so the evidence tab has something
   // to show, plus a smaller alternate project and a few global preferences.
   const mainSessions = sessions.filter((s) => s.project === SHOWCASE_PROJECT);
   const altSessions = sessions.filter((s) => s.project === SHOWCASE_PROJECT_ALT);
@@ -816,6 +1053,10 @@ function seedShowcase(initDatabase, dbPath) {
   let seq = 0;
   const addFact = (index, entry, options) => {
     const [category, kind, korean, english] = entry;
+    // ★ The run's language IS the stored original; `fact_kr` stays null. Filling
+    // it would put a "· translated" meta line and a "stored original" fold into
+    // the shots, which is a different feature than the one being documented.
+    const primary = sc(korean, english);
     const id = uid(index + 1);
     const session = options.session;
     const source = session.exchanges[index % session.exchanges.length];
@@ -826,8 +1067,8 @@ function seedShowcase(initDatabase, dbPath) {
       "INSERT INTO facts (id, fact, fact_kr, category, scope_type, scope_project, project_id, workspace_id, workstream_id, promotion_state, subject_key, is_active, ontology_category_id, source_exchange_ids, consolidated_count, created_at, updated_at, semantic_generation, semantic_updated_at, lifecycle_generation, lifecycle_updated_at, embedding_version, needs_consolidation) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       [
         id,
-        english || korean,
-        english ? korean : null,
+        primary,
+        null,
         kind,
         options.global ? "global" : "project",
         options.global ? null : session.project,
@@ -850,7 +1091,7 @@ function seedShowcase(initDatabase, dbPath) {
         0,
       ],
     );
-    factIds.push({ id, category, korean, english, global: !!options.global, project: session.project });
+    factIds.push({ id, category, text: primary, global: !!options.global, project: session.project });
     run(
       "INSERT INTO fact_context_dependencies (fact_id, exchange_id, dependency_kind, created_at) VALUES (?,?,?,?)",
       [id, context.id, "assistant_context", updatedAt],
@@ -872,8 +1113,10 @@ function seedShowcase(initDatabase, dbPath) {
       [
         "event-" + (++seq),
         id,
-        changed ? "이 항목은 아직 결정되지 않은 후보였습니다." : null,
-        english || korean,
+        changed
+          ? sc("이 항목은 아직 결정되지 않은 후보였습니다.", "This entry was still an undecided candidate.")
+          : null,
+        primary,
         null,
         source.id,
         updatedAt,
@@ -884,8 +1127,14 @@ function seedShowcase(initDatabase, dbPath) {
         index % 4 === 0 ? 2 : 1,
         1,
         changed
-          ? "대화에서 확정된 표현으로 문장을 교체하고 근거를 다시 연결했습니다."
-          : "사용자가 직접 확정한 문장을 그대로 기록했습니다.",
+          ? sc(
+              "대화에서 확정된 표현으로 문장을 교체하고 근거를 다시 연결했습니다.",
+              "The wording was replaced with the phrasing settled in the conversation and the evidence was relinked.",
+            )
+          : sc(
+              "사용자가 직접 확정한 문장을 그대로 기록했습니다.",
+              "Recorded exactly as the user settled it.",
+            ),
         JSON.stringify([source.id]),
         "[]",
         "[]",
@@ -931,7 +1180,10 @@ function seedShowcase(initDatabase, dbPath) {
           relatable[i].id,
           types[(i + offset) % types.length],
           target.id,
-          "같은 설계 주제를 서로 다른 관점에서 설명하는 기억입니다.",
+          sc(
+            "같은 설계 주제를 서로 다른 관점에서 설명하는 기억입니다.",
+            "Memories that explain the same design topic from different angles.",
+          ),
           at(60 * i + 20),
         ],
       );
@@ -961,7 +1213,7 @@ function seedShowcase(initDatabase, dbPath) {
     facts: factIds,
     evidenceFactId: factIds[0].id,
     jobId: "job-" + mainSessions[0].sessionId,
-    graphLabel: factIds[0].korean,
+    graphLabel: factIds[0].text,
   };
 }
 
@@ -975,6 +1227,7 @@ async function showcaseShot(cdp, url, body, file, after) {
   try {
     await cdp.send("Page.enable", {}, sessionId);
     await cdp.send("Runtime.enable", {}, sessionId);
+    await cdp.send("Log.enable", {}, sessionId).catch(() => {});
     await cdp.send(
       "Emulation.setDeviceMetricsOverride",
       { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false },
@@ -1002,7 +1255,7 @@ async function showcaseShot(cdp, url, body, file, after) {
       { format: "png", captureBeyondViewport: false },
       sessionId,
     );
-    fs.writeFileSync(path.join(SCREENSHOTS, file), Buffer.from(shot.data, "base64"));
+    fs.writeFileSync(path.join(SCREENSHOTS, LANG, file), Buffer.from(shot.data, "base64"));
     return { file, value, extra };
   } finally {
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
@@ -1018,7 +1271,10 @@ async function captureShowcase() {
   let browser;
   let shotCdp;
   try {
-    fs.mkdirSync(SCREENSHOTS, { recursive: true });
+    // `--screenshots assets/readme --lang en` writes assets/readme/en/*.png. The
+    // subdirectory is chosen here, not by the caller, so the flag and the folder
+    // can never disagree.
+    fs.mkdirSync(path.join(SCREENSHOTS, LANG), { recursive: true });
     const { initDatabase } = await import(path.join(ROOT, "dist", "db.js"));
     const seeded = seedShowcase(initDatabase, dbPath);
     const port = await freePort();
@@ -1035,8 +1291,14 @@ async function captureShowcase() {
     shotCdp = new Cdp(await browser.ready);
     await shotCdp.connect();
     const base = "http://127.0.0.1:" + port;
+    // `?lang` outranks every stored preference, and the dark-mode shot writes to
+    // localStorage, so the language is pinned on the URL as well as in the server
+    // env: env alone loses to storage, URL alone flashes the default on first paint.
     const scope =
-      "?scope=project&project=" + encodeURIComponent(SHOWCASE_PROJECT) + "&includeGlobal=1";
+      "?scope=project&project=" +
+      encodeURIComponent(SHOWCASE_PROJECT) +
+      "&includeGlobal=1&lang=" +
+      LANG;
     const settled = `
       await until('page rendered',()=>document.querySelector('#main .page-header h1'));
       await until('shell rendered',()=>document.querySelector('#sidebar .nav-item'));
@@ -1070,10 +1332,10 @@ async function captureShowcase() {
          await until('rows',()=>document.querySelectorAll('#main .data-table tbody tr').length>5);
          const body=await until('evidence tab',()=>{
            const el=document.querySelector('#detail[open] .drawer-body');
-           return el&&el.textContent.includes('해석에 참고한 맥락')?el:null;
+           return el&&el.textContent.includes(L.contextTitle)?el:null;
          });
          await sleep(350);
-         return {tab:text('#detail .tab.active'),hasDirectEvidence:body.textContent.includes('직접 근거')};`,
+         return {tab:text('#detail .tab.active'),hasDirectEvidence:body.textContent.includes(L.evidenceHeading)};`,
         "facts-detail.png",
       ),
     );
@@ -1148,7 +1410,7 @@ async function captureShowcase() {
          await until('job rows',()=>document.querySelectorAll('#main .data-table tbody tr').length>3);
          await until('job drawer',()=>{
            const el=document.querySelector('#detail[open] .drawer-body');
-           return el&&el.textContent.includes('처리 대상')?el:null;
+           return el&&el.textContent.includes(L.jobTarget)?el:null;
          });
          await sleep(350);
          return {title:text('#detail .drawer-title'),rows:document.querySelectorAll('#main .data-table tbody tr').length};`,
@@ -1205,8 +1467,8 @@ try {
     contextExchangeId,
     CONTEXT_PROJECT,
     "2026-08-31T00:00:00.000Z",
-    "그 선택으로 진행해줘.",
-    "SQLite를 선택하면 로컬 우선 요구사항을 충족합니다.",
+    CONTEXT_USER,
+    CONTEXT_ASSISTANT,
     CONTEXT_PROJECT + "/session.jsonl",
     10,
     11,
@@ -1226,16 +1488,16 @@ try {
       dependency_kind: "assistant_context",
     },
   ]);
-  // Taxonomy seed: the 분류 filter on /facts and the 지도에서 보기 link on
+  // Taxonomy seed: the topic filter on /facts and the "show on map" link on
   // /taxonomy both need one classified fact. The edit probe below clears
   // ontology_category_id (core resets it on a meaning change), so every
   // taxonomy assertion has to run before the mutation probe.
   db.prepare(
     "INSERT INTO ontology_domains (id, name, description) VALUES (?, ?, ?)",
-  ).run(DOMAIN_ID, "엔지니어링", "코어, 저장소와 데이터 처리");
+  ).run(DOMAIN_ID, DOMAIN_NAME, DOMAIN_DESC);
   db.prepare(
     "INSERT INTO ontology_categories (id, domain_id, name, description) VALUES (?, ?, ?, ?)",
-  ).run(CATEGORY_ID, DOMAIN_ID, "데이터 저장소", "SQLite 접근과 데이터 일관성");
+  ).run(CATEGORY_ID, DOMAIN_ID, CATEGORY_NAME, CATEGORY_DESC);
   db.prepare("UPDATE facts SET ontology_category_id = ? WHERE id = ?").run(
     CATEGORY_ID,
     factId,
@@ -1284,11 +1546,9 @@ try {
 
   // #48 (0.6.3): a SECOND data root stands in for the other Mac. It exports one
   // generation as a zip with the real core (sync switched off, no shared folder),
-  // and the browser then drives this server's 수동 파일 가져오기 against that file —
+  // and the browser then drives this server's manual file import against that file —
   // a genuine two-root round trip through the UI, without touching a real home.
   const PEER_HOME = path.join(TEMP, "peer-home");
-  const PEER_FACT = "두 번째 맥에서 만든 기억은 세대 파일로 넘어온다.";
-  const PEER_ALIAS = "두 번째 맥";
   const peerArchive = await (async () => {
     process.env.MEMEX_HOME = PEER_HOME;
     delete process.env.MEMEX_SYNC_DIR;
@@ -1404,16 +1664,18 @@ try {
   const base = "http://127.0.0.1:" + port;
   // ?scope=all is the explicit cross-project scope; conversations (and therefore
   // interpretive context rows) are never visible from the global-only scope.
-  const allScope = "?scope=all";
+  // Every gate URL pins `&lang=` for the same reason the showcase does: the browser
+  // profile is shared across probes and `?lang` outranks anything stored in it.
+  const allScope = "?scope=all&lang=" + LANG;
   const projectScope =
-    "?scope=project&project=" + encodeURIComponent(CONTEXT_PROJECT);
+    "?scope=project&lang=" + LANG + "&project=" + encodeURIComponent(CONTEXT_PROJECT);
 
-  // #24: with no scope in the URL the workspace must land on 전체 프로젝트 (조회), not
-  // common memory. This probe runs before anything that calls changeScope(), because
+  // #24: with no scope in the URL the workspace must land on all-projects (read-only),
+  // not common memory. This probe runs before anything that calls changeScope(), because
   // the browser profile is shared and a persisted scope would mask the default.
   const scopeDefaults = await pageProbe(
     cdp,
-    base + "/facts",
+    base + "/facts?lang=" + LANG,
     probe(`
       await until('facts row',()=>document.querySelector('#main .data-table .fact-text'));
       const select=document.querySelector('#scope-select');
@@ -1438,7 +1700,7 @@ try {
   // #26: /facts?fact=<id> opens the same drawer as the /facts/<id> path form.
   const factDeepLink = await pageProbe(
     cdp,
-    base + "/facts?scope=all&fact=" + encodeURIComponent(factId),
+    base + "/facts?scope=all&lang=" + LANG + "&fact=" + encodeURIComponent(factId),
     probe(`
       await until('deep-linked drawer',()=>document.querySelector('#detail[open] .drawer-meta'));
       const params=new URL(location.href).searchParams;
@@ -1456,7 +1718,7 @@ try {
   // #24: common memory has no conversations, so the banner must switch scope in one click.
   const scopeSwitch = await pageProbe(
     cdp,
-    base + "/conversations?scope=global",
+    base + "/conversations?scope=global&lang=" + LANG,
     probe(`
       const button=await until('scope switch',()=>document.querySelector('#main [data-action="scope-all"]'));
       const bannerText=text('#main .banner');
@@ -1500,7 +1762,7 @@ try {
       input.dispatchEvent(new Event('input',{bubbles:true}));
       await sleep(150);
       const visible=[...list.querySelectorAll('[data-term]')].filter(x=>!x.hidden).map(x=>x.querySelector('strong').textContent);
-      return {helpText:helpText.slice(0,260),docHref,terms,visible,badgeTitle,headerTitle,scopeTitle,sidebarGlossary:Boolean(document.querySelector('#sidebar [data-action="glossary"]'))};
+      return {helpText:helpText.slice(0,260),hasFactsBody:helpText.includes(L.helpFactsBody),docHref,terms,visible,badgeTitle,headerTitle,scopeTitle,sidebarGlossary:Boolean(document.querySelector('#sidebar [data-action="glossary"]'))};
     `),
     "facts-help.png",
     false,
@@ -1512,7 +1774,7 @@ try {
     probe(`
       const cell=await until('facts row',()=>{
         const el=document.querySelector('#main .data-table .fact-text');
-        return el&&el.textContent.includes('한글 사실')?el:null;
+        return el&&el.textContent.includes(L.maliciousVisible)?el:null;
       });
       return {
         title:document.title,
@@ -1540,17 +1802,17 @@ try {
       document.querySelector('#detail [data-panel-tab="evidence"]').click();
       const body=await until('evidence tab',()=>{
         const el=document.querySelector('#detail .drawer-body');
-        return el&&el.textContent.includes('해석에 참고한 맥락')?el:null;
+        return el&&el.textContent.includes(L.contextTitle)?el:null;
       });
       return {
         heading:text('#detail .drawer-title'),
         factId:text('#detail .drawer-meta'),
         tabs:[...document.querySelectorAll('#detail .tab')].map(x=>x.textContent),
-        separationBanner:body.textContent.includes('직접 근거와 해석에 참고한 맥락을 분리합니다'),
-        directEvidenceEmpty:body.textContent.includes('연결된 직접 근거 없음'),
-        hasContextSection:body.textContent.includes('해석에 참고한 맥락'),
+        separationBanner:body.textContent.includes(L.evidenceIntro),
+        directEvidenceEmpty:body.textContent.includes(L.evidenceEmpty),
+        hasContextSection:body.textContent.includes(L.contextTitle),
         hasAssistantKind:body.textContent.includes('assistant_context'),
-        hasNonAuthoritativeLabel:body.textContent.includes('직접 근거 아님'),
+        hasNonAuthoritativeLabel:body.textContent.includes(L.contextOnly),
         hasContextExchange:body.textContent.includes(${JSON.stringify(contextExchangeId)}),
         overflowX:overflows('#detail .drawer-body'),
       };
@@ -1575,10 +1837,10 @@ try {
       const filteredRowText=row.textContent;
       const keptSelection=form().querySelector('select[name="taxonomy"]').value;
       const bannerText=text('#main .banner');
-      await rerender('no-match search',f=>{f.querySelector('input[name="q"]').value='이문자열은어떤기억과도일치하지않습니다';f.requestSubmit();});
+      await rerender('no-match search',f=>{f.querySelector('input[name="q"]').value=L.noMatchQuery;f.requestSubmit();});
       const filteredEmpty=await until('filtered empty state',()=>{
         const el=document.querySelector('#main .empty h3');
-        return el&&el.textContent.includes('조건에 맞는')?el.textContent.trim():null;
+        return el&&el.textContent.includes(L.factsEmptyFiltered)?el.textContent.trim():null;
       });
       const reset=await until('reset action',()=>document.querySelector('#main [data-action="reset-facts-filter"]'));
       reset.click();
@@ -1586,7 +1848,7 @@ try {
       const restored=await until('restored row',()=>document.querySelector('#main .data-table .fact-text'));
       return {
         options,
-        hasAllOption:options.some(o=>o.value===''&&o.label==='전체 분류'),
+        hasAllOption:options.some(o=>o.value===''&&o.label===L.taxonomyAll),
         hasUnclassifiedOption:options.some(o=>o.value==='unclassified'),
         categoryGroups:[...new Set(options.map(o=>o.group).filter(Boolean))],
         filteredRowText,
@@ -1607,7 +1869,7 @@ try {
     probe(`
       const card=await until('taxonomy card',()=>document.querySelector('#main .taxonomy-card'));
       const mapLink=card.querySelector('a[data-taxonomy-map]');
-      if(!mapLink)throw new Error('지도에서 보기 link missing on the taxonomy card');
+      if(!mapLink)throw new Error('taxonomy map link missing on the card');
       const cardTitle=card.querySelector('h3')?.textContent?.trim()||'';
       const mapHref=mapLink.getAttribute('href');
       const factsHref=card.querySelector('.footer a[href*="taxonomy="]')?.getAttribute('href')||'';
@@ -1674,14 +1936,14 @@ try {
       await submit('deactivate');
       const inactive=await until('inactive fact',()=>{
         const badges=[...document.querySelectorAll('#detail .drawer-body .tag')].map(x=>x.textContent);
-        return badges.includes('비활성')?badges:null;
+        return badges.includes(L.badgeInactive)?badges:null;
       },30000);
       const listWhileInactive=[...document.querySelectorAll('#main .data-table .fact-text')].map(x=>x.textContent);
       (await drawerButton('restore')).click();
       await submit('restore');
       const active=await until('active fact',()=>{
         const badges=[...document.querySelectorAll('#detail .drawer-body .tag')].map(x=>x.textContent);
-        return badges.includes('활성')?badges:null;
+        return badges.includes(L.badgeActive)?badges:null;
       },30000);
       const row=await until('restored row',()=>document.querySelector('#main .data-table .fact-text'));
       return {
@@ -1724,7 +1986,7 @@ try {
     cdp,
     base + "/" + allScope,
     probe(`
-      const card=await until('attention card',()=>[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태')));
+      const card=await until('attention card',()=>[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes(L.attentionHeading)));
       const before=card.textContent;
       const recover=await until('recover action',()=>card.querySelector('[data-command="recover"]:not([disabled])'));
       recover.click();
@@ -1737,12 +1999,12 @@ try {
         if(error)throw new Error('recover rejected: '+error);
         return document.querySelector('#detail[open] #operation-body');
       },60000);
-      // The command's own label contains 실패, so completion is read from the status row,
+      // The command's own label says "failed", so completion is read from the status row,
       // not from the drawer text; the cancel button only exists while it is still running.
       const finished=await until('operation finished',()=>{
         const body=document.querySelector('#detail[open] #operation-body');
         if(!body||body.querySelector('[data-action="cancel-operation"]'))return null;
-        const term=[...body.querySelectorAll('.kv dt')].find(d=>d.textContent.trim()==='상태');
+        const term=[...body.querySelectorAll('.kv dt')].find(d=>d.textContent.trim()===L.operationStatus);
         return term?.nextElementSibling?.textContent?.trim()||null;
       },180000);
       const output=(document.querySelector('#operation-output')?.textContent||'').slice(-600);
@@ -1752,14 +2014,14 @@ try {
       document.querySelector('[data-action="refresh"]').click();
       await until('overview reloaded',()=>{const now=document.querySelector('#main .metrics');return now&&now!==staleMetrics?now:null;},60000);
       await sleep(400);
-      const after=[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes('확인이 필요한 상태'))?.textContent||'';
+      const after=[...document.querySelectorAll('#main .card')].find(c=>c.textContent.includes(L.attentionHeading))?.textContent||'';
       return {
-        beforeHasDeadClass:before.includes('실패로 종료된 작업'),
-        beforeHasImpact:before.includes('기억으로 추출되지 않습니다'),
+        beforeHasDeadClass:before.includes(L.jobDeadTitle),
+        beforeHasImpact:before.includes(L.jobDeadImpact),
         modalCommand:modalText.includes('memex recover --all-dead'),
         output,
         finishedState:finished,
-        afterHasDeadClass:after.includes('실패로 종료된 작업'),
+        afterHasDeadClass:after.includes(L.jobDeadTitle),
       };
     `),
     "overview-attention.png",
@@ -1789,7 +2051,7 @@ try {
 
   const diagnostics = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=diagnostics",
+    base + "/settings?scope=all&lang=" + LANG + "&tab=diagnostics",
     probe(`
       const table=await until('capability table',()=>{
         const el=document.querySelector('#main .data-table tbody');
@@ -1799,8 +2061,8 @@ try {
         title:document.title,
         heading:text('#main .page-header h1'),
         rows:table.querySelectorAll('tr').length,
-        factsReadable:[...table.querySelectorAll('tr')].some(r=>r.textContent.includes('facts')&&r.textContent.includes('조회 가능')),
-        contextTableReadable:[...table.querySelectorAll('tr')].some(r=>r.textContent.includes('fact_context_dependencies')&&r.textContent.includes('조회 가능')),
+        factsReadable:[...table.querySelectorAll('tr')].some(r=>r.textContent.includes('facts')&&r.textContent.includes(L.diagnosticsReadable)),
+        contextTableReadable:[...table.querySelectorAll('tr')].some(r=>r.textContent.includes('fact_context_dependencies')&&r.textContent.includes(L.diagnosticsReadable)),
         exportButton:Boolean(document.querySelector('#main [data-action="diagnostics-download"]')),
         tabs:[...document.querySelectorAll('#main .tabs .tab')].map(x=>x.textContent),
       };
@@ -1825,7 +2087,7 @@ try {
       await until('3D galaxy active',()=>document.querySelector('[data-graph-mode="3d"]').classList.contains('active'));
       const legend=await until('3D legend',()=>{
         const el=document.querySelector('#graph-stage .graph-legend');
-        return el&&el.textContent.includes('회전')?el.textContent:null;
+        return el&&el.textContent.includes(L.graphLegend3d)?el.textContent:null;
       });
       const labelPixels3d=await until('3D map labels painted',()=>painted(labels)||null,20000);
       const nodePixels3d=await until('3D map nodes painted',()=>mapPixels(stage)||null,20000);
@@ -1856,7 +2118,7 @@ try {
     probe(`
       const empty=await until('graph empty state',()=>{
         const el=document.querySelector('#graph-stage .empty');
-        return el&&el.textContent.includes('표시할 기억이 없습니다')?el:null;
+        return el&&el.textContent.includes(L.graphEmptyTitle)?el:null;
       },20000).catch(e=>{throw new Error(e.message+' | main='+(document.querySelector('#main')?.innerText||'').slice(0,500).replace(/\\s+/g,' ')+' | nodes='+document.querySelectorAll('#node-list [data-fact]').length+' | meta='+text('#graph-stage .graph-meta'));});
       const canvas=document.querySelector('#graph-stage .graph-canvas');
       const surface=mapSurface(canvas);
@@ -1885,7 +2147,7 @@ try {
   const SHARED_SYNC = path.join(TEMP, "shared-sync");
   const syncTab = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=sync",
+    base + "/settings?scope=all&lang=" + LANG + "&tab=sync",
     probe(`
       const submit=async(label)=>{
         const form=await until(label+' modal',()=>document.querySelector('#modal[open] #modal-form'));
@@ -1897,7 +2159,7 @@ try {
         },120000);
       };
       const tabText=()=>document.querySelector('#main')?.textContent||'';
-      await until('sync tab',()=>tabText().includes('다기기 동기화'));
+      await until('sync tab',()=>tabText().includes(L.syncSwitchTitle));
       const offSwitch=document.querySelector('#sync-switch');
       const before={
         checked:offSwitch.checked,
@@ -1917,20 +2179,20 @@ try {
       document.querySelector('[data-sync="export"]').click();
       (await until('export confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
       await submit('export');
-      await until('export result',()=>tabText().includes('마지막 내보내기'),120000);
+      await until('export result',()=>tabText().includes(L.syncRunExport),120000);
       const exported=tabText();
       document.querySelector('[data-sync="import"]').click();
       (await until('import confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
       await submit('import');
-      await until('import result',()=>tabText().includes('마지막 가져오기'),120000);
+      await until('import result',()=>tabText().includes(L.syncRunImport),120000);
       const imported=document.querySelector('#main').textContent;
       return {
         before,
         on,
-        deviceAssigned:!/아직 없음 · 첫 내보내기에서 부여됩니다/.test(imported),
-        exportedHasCounts:/내보낸 행 수/.test(exported),
-        importSummary:(imported.match(/기억 \\+\\d+ \\/ ~\\d+ \\/ -\\d+/)||[''])[0],
-        rejected:imported.includes('거부된 세대가 없습니다'),
+        deviceAssigned:!imported.includes(L.syncDeviceMissing),
+        exportedHasCounts:exported.includes(L.syncRows),
+        importSummary:(imported.match(new RegExp(L.importCountsRe))||[''])[0],
+        rejected:imported.includes(L.syncRejectedEmpty),
       };
     `),
     "settings-sync.png",
@@ -1943,7 +2205,7 @@ try {
   // clicked: it would make a real provider call, which a gate must never do.
   const modelTab = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=models",
+    base + "/settings?scope=all&lang=" + LANG + "&tab=models",
     probe(`
       const tabText=()=>document.querySelector('#main')?.textContent||'';
       await until('model tab',()=>document.querySelector('#model-llm form#model-llm-form'));
@@ -1954,7 +2216,7 @@ try {
         reasoning:[...reasoningSelect.options].map(o=>o.value),
         selected:modelSelect.value,
         holdBanner:Boolean(document.querySelector('#main .banner.error')),
-        holdResumes:tabText().includes('자동으로 재개'),
+        holdResumes:tabText().includes(L.modelHoldNoDamage),
         heldCard:Boolean(document.querySelector('#model-held-jobs')),
         heldBadge:document.querySelector('#model-held-jobs .tag')?.textContent?.trim()||'',
         embeddingReadOnly:Boolean(document.querySelector('#model-embedding')),
@@ -1985,24 +2247,25 @@ try {
     false,
   );
 
-  // #31: the same tab in English. `?lang=en` wins over every stored preference, so this
-  // costs one navigation and answers the question a ko-only gate cannot: does the longer
-  // English prose overflow the existing card/kv/select tokens (= does this tab need CSS)?
-  const modelTabEn = await pageProbe(
+  // #31 + #109 L5: the same tab in the OTHER language. `?lang` wins over every stored
+  // preference, so one navigation answers the question a single-language gate cannot:
+  // does the other language's prose overflow the existing card/kv/select tokens? Whichever
+  // way the gate is run, both widths are measured on the same screen.
+  const modelTabAlt = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=models&lang=en",
+    base + "/settings?scope=all&tab=models&lang=" + ALT,
     probe(`
-      await until('model tab en',()=>document.querySelector('#model-llm form#model-llm-form'));
+      await until('model tab alt',()=>document.querySelector('#model-llm form#model-llm-form'));
       const body=document.querySelector('#main').textContent;
       return {
-        english:body.includes('The model that makes memories'),
+        otherLanguage:body.includes(L.modelAltTitle),
         bodyOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
         mainOverflow:overflows('#main'),
         cardOverflow:overflows('#model-llm')||overflows('#model-embedding'),
         tableOverflow:overflows('#model-held-jobs .table-wrap'),
       };
     `),
-    "settings-model-en.png",
+    "settings-model-alt.png",
     false,
   );
 
@@ -2013,7 +2276,7 @@ try {
   // with the row that needs fixing, not as a bare toast.
   const overlayTab = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=overlays&overlay=gate",
+    base + "/settings?scope=all&lang=" + LANG + "&tab=overlays&overlay=gate",
     probe(`
       const tabText=()=>document.querySelector('#main')?.textContent||'';
       await until('overlay tab',()=>document.querySelector('#overlay-subnav'));
@@ -2023,10 +2286,10 @@ try {
         active:document.querySelector('#overlay-subnav .filter-chip.active')?.dataset.paramValue,
         builtinRows:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
         testForm:Boolean(document.querySelector('#gate-test-form textarea[name="prompt"]')),
-        notShared:tabText().includes('아직 기기 간에 공유되지 않습니다'),
-        noRecord:tabText().includes('프롬프트도 판정도 기록하지 않습니다'),
+        notShared:tabText().includes(L.overlaysNotShared),
+        noRecord:tabText().includes(L.overlaysNoRecord),
       };
-      // (1) 거절되는 정규식 — 행별 사유가 보여야 한다.
+      // (1) A refused regex — the reason has to show up per row.
       const form=document.querySelector('#gate-add-form');
       form.querySelector('[name="source"]').value='(a+)+b';
       form.requestSubmit();
@@ -2039,24 +2302,24 @@ try {
         toast:document.querySelector('#toast.show')?.textContent?.trim()||'',
         table:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
       };
-      // 토스트 노드는 하나뿐이라 거절 문장이 아직 보인다 — 내려 두고 다음 결과를 기다린다.
+      // There is one toast node, so the refusal is still showing: clear it first.
       document.querySelector('#toast')?.classList.remove('show');
-      // (2) 통과하는 정규식 — 토스트가 revision을 말하고 표에 사용자 규칙이 나타난다.
-      form.querySelector('[name="source"]').value='배포\\\\s*이력';
-      form.querySelector('[name="note"]').value='릴리스 질문은 항상 회수';
+      // (2) An accepted regex — the toast names the revision and the row appears.
+      form.querySelector('[name="source"]').value=L.overlayPattern;
+      form.querySelector('[name="note"]').value=L.overlayNote;
       form.requestSubmit();
       const toast=await until('save toast',
         ()=>document.querySelector('#toast.show')?.textContent?.trim()||null,60000);
       const row=await until('user pattern row',()=>[...document.querySelectorAll('#gate-patterns .data-table tbody tr')]
-        .find(r=>r.textContent.includes('배포')),60000);
+        .find(r=>r.textContent.includes(L.overlayPatternText)),60000);
       const saved={
         toast,
         id:row.querySelector('code')?.textContent?.trim()||'',
-        origin:row.textContent.includes('사용자'),
-        note:row.textContent.includes('릴리스 질문은 항상 회수'),
+        origin:row.textContent.includes(L.overlaysOriginUser),
+        note:row.textContent.includes(L.overlayNote),
         rows:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
       };
-      // (3) 하위 내비로 추출 규칙 화면으로 간다 — 같은 탭, 다른 화면.
+      // (3) The sub-nav goes to the extraction-rules view — same tab, other screen.
       document.querySelector('#overlay-subnav [data-param-value="rules"]').click();
       await until('rules view',()=>document.querySelector('#rules-editor-form'));
       const rulesText=tabText();
@@ -2065,11 +2328,11 @@ try {
         rawPromptField:Boolean(document.querySelector('#rules-editor-form [name="system_prompt"],#rules-editor-form [name="raw_prompt"]')),
         clause:Boolean(document.querySelector('#rules-clause')),
         simulate:Boolean(document.querySelector('#rules-simulate-form [type="submit"]')),
-        verifierUnchanged:rulesText.includes('불변입니다'),
+        verifierUnchanged:rulesText.includes(L.overlaysVerifierUnchanged),
         enforcement:['fact_insert','incident','remediation','chronicle'].every(p=>rulesText.includes(p)),
         schedulingKey:rulesText.includes('continuity-fact-v1'),
-        timing:rulesText.includes('강화는 즉시 적용되고'),
-        heldBanner:rulesText.includes('추출이 이 규칙 때문에 대기 중입니다'),
+        timing:rulesText.includes(L.overlaysTiming),
+        heldBanner:rulesText.includes(L.overlaysHeld),
         noReextractApply:!document.querySelector('[data-rules="reextract"]'),
         gateFormGone:!document.querySelector('#gate-test-form'),
         bodyOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
@@ -2086,7 +2349,7 @@ try {
     cdp,
     base + "/facts" + projectScope,
     probe(`
-      const node=await until('tier banner',()=>[...document.querySelectorAll('#main .banner')].find(b=>b.textContent.includes('브랜치/작업 흐름 범위 기억')));
+      const node=await until('tier banner',()=>[...document.querySelectorAll('#main .banner')].find(b=>b.textContent.includes(L.hiddenTierOne)));
       const bannerText=node.textContent;
       const before=document.querySelectorAll('#main .data-table tbody tr').length;
       node.querySelector('[data-param-key="tiers"]').click();
@@ -2116,7 +2379,7 @@ try {
     probe(`
       const drawer=await until('injection section',()=>{
         const el=document.querySelector('#detail[open] .drawer-body');
-        return el&&el.textContent.includes('이 기억이 주입되는 조건')?el:null;
+        return el&&el.textContent.includes(L.reuseTitle)?el:null;
       });
       const condition=drawer.textContent.slice(0,600);
       const conditionBadge=drawer.querySelector('[data-tier]');
@@ -2139,7 +2402,7 @@ try {
       },60000);
       const history=await until('promotion event',()=>{
         const el=document.querySelector('#detail[open] .drawer-body');
-        return el&&el.textContent.includes('계층 승격')?el:null;
+        return el&&el.textContent.includes(L.promoted)?el:null;
       },60000);
       const historyTab=text('#detail .tab.active');
       const promotedBadge=await until('promoted badge',()=>{
@@ -2148,7 +2411,7 @@ try {
         return el&&el.dataset.tier==='project'?el.textContent.trim():null;
       },30000);
       const bannerGone=await until('banner cleared',()=>
-        [...document.querySelectorAll('#main .banner')].every(b=>!b.textContent.includes('브랜치/작업 흐름 범위 기억'))?'cleared':null,30000);
+        [...document.querySelectorAll('#main .banner')].every(b=>!b.textContent.includes(L.hiddenTierOne))?'cleared':null,30000);
       return {
         condition,
         conditionTier:conditionBadge?.dataset.tier,
@@ -2157,7 +2420,7 @@ try {
         demoteDisabled,
         rule,
         historyTab,
-        historyHasPromotion:history.textContent.includes('계층 승격'),
+        historyHasPromotion:history.textContent.includes(L.promoted),
         promotedBadge,
         bannerGone,
       };
@@ -2173,7 +2436,7 @@ try {
   // generation and read the imported memory back.
   const syncArchive = await pageProbe(
     cdp,
-    base + "/settings?scope=all&tab=sync",
+    base + "/settings?scope=all&lang=" + LANG + "&tab=sync",
     probe(`
       const submit=async(label)=>{
         const form=await until(label+' modal',()=>document.querySelector('#modal[open] #modal-form'));
@@ -2189,17 +2452,17 @@ try {
       const before={
         importLocked:document.querySelector('[data-archive="import"]').disabled,
         defaultDir:/sync\\/exports/.test(tabText()),
-        plaintext:tabText().includes('평문 JSONL'),
+        plaintext:tabText().includes(L.archiveIntro),
       };
 
-      // (1) 이 기기 이름 지정 — 상태 블록의 별칭 편집
+      // (1) Name this device — the alias editor in the status block.
       document.querySelector('[data-alias]').click();
       const aliasField=await until('alias modal',()=>document.querySelector('#modal[open] input[name="alias"]'));
-      aliasField.value=${JSON.stringify("이 맥")};
+      aliasField.value=L.localAlias;
       await submit('alias');
-      await until('alias shown',()=>tabText().includes(${JSON.stringify("이 맥")}));
+      await until('alias shown',()=>tabText().includes(L.localAlias));
 
-      // (2) 세대 파일로 내보내기 — 서버가 데이터 루트 안에 쓰고 경로를 보여준다
+      // (2) Export a generation — the server writes inside the data root and says where.
       document.querySelector('[data-archive="export"]').click();
       (await until('export confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
       await submit('archive export');
@@ -2213,25 +2476,25 @@ try {
         finderHint:document.querySelector('#sync-archive').textContent.includes('⇧⌘G'),
       };
 
-      // (3) 다른 루트의 세대 파일 검증 → 미리보기
+      // (3) Verify the other root's generation file, then preview it.
       const form=await until('import form',()=>document.querySelector('#archive-import-form'));
       form.querySelector('input[name="path"]').value=${JSON.stringify(peerArchive.path)};
       form.requestSubmit();
-      await until('preview rendered',()=>document.querySelector('#sync-archive').textContent.includes('가져오기 미리보기'),120000);
+      await until('preview rendered',()=>document.querySelector('#sync-archive').textContent.includes(L.archivePreviewTitle),120000);
       const previewText=document.querySelector('#sync-archive').textContent;
       const preview={
-        summary:(previewText.match(/기억 \\+\\d+ \\/ ~\\d+ \\/ -\\d+/)||[''])[0],
+        summary:previewText.includes(L.archivePreviewDeltas)?L.archivePreviewDeltas:'',
         peerAlias:previewText.includes(${JSON.stringify(PEER_ALIAS)}),
         importOpen:!document.querySelector('[data-archive="import"]').disabled,
       };
 
-      // (4) 확인하고 가져오기 — 미리보기에서 확인한 그 파일만 적용한다
+      // (4) Confirm and import — only the file reviewed in the preview is applied.
       document.querySelector('[data-archive="import"]').click();
       const confirmBox=await until('import confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'));
       const modalText=document.querySelector('#modal[open]').textContent;
       confirmBox.checked=true;
       await submit('archive import');
-      await until('import applied',()=>tabText().includes('마지막 가져오기'),180000);
+      await until('import applied',()=>tabText().includes(L.syncRunImport),180000);
       return {before,exported,preview,modalText,applied:tabText()};
     `),
     "settings-sync-archive.png",
@@ -2241,7 +2504,7 @@ try {
   // #48: the imported memory must be a real memory on this device afterwards.
   const importedFact = await pageProbe(
     cdp,
-    base + "/facts?scope=global&q=" + encodeURIComponent("세대 파일"),
+    base + "/facts?scope=global&lang=" + LANG + "&q=" + encodeURIComponent(PEER_QUERY),
     probe(`
       const row=await until('imported fact row',()=>[...document.querySelectorAll('#main .data-table .fact-text')].find(x=>x.textContent.includes(${JSON.stringify(PEER_FACT)})));
       return {text:row.textContent.trim()};
@@ -2250,19 +2513,169 @@ try {
     false,
   );
 
+  // #109 L5: the language-integrity sweep. It walks every visible text node of all
+  // seven pages plus the two drawers and reports the nodes that betray a broken
+  // translation. Two exemptions, both structural rather than "skip this screen":
+  //   · `[data-endonym]` subtrees — a language name is never translated (§7.1)
+  //   · `docs/*.md#<anchor>` links — docs/ is Korean only, with no English edition (§6.4)
+  // Fixture content that is legitimately in the other language (the XSS sentence in
+  // en, the provider's own message in ko) is stripped via `L.userContent` BEFORE the
+  // judgement, so it exempts those strings and nothing else.
+  //
+  // What counts as broken:
+  //   · a dotted namespace key on screen  — a missing dictionary entry, either language
+  //   · Hangul in en mode                 — a string that was never moved to the dictionary
+  //   · two English function words in ko  — an English sentence leaking into a ko screen
+  const langIntegrity = await pageProbe(
+    cdp,
+    base + "/" + allScope,
+    probe(`
+      const strip=s=>{
+        let out=String(s).replace(/docs\\/[A-Za-z0-9._-]+\\.md#[^\\s]*/g,' ');
+        for(const allowed of L.userContent) out=out.split(allowed).join(' ');
+        return out;
+      };
+      const KEYISH=/\\b(?:pages|activity|details|settings|help|guidance|badge|common|shell|ui|tier|a11y|error|overlays|models|status|action|unit|op|pagination|sync)\\.[a-z][A-Za-z0-9]*(?:\\.[A-Za-z0-9_-]+)+/;
+      const HANGUL=/[\\uac00-\\ud7a3\\u1100-\\u11ff\\u3130-\\u318f]/;
+      const FUNCTION_WORD=/\\b(?:the|of|and|is|are|to|in|for|with|not|no|this|that|an?|be|on|by|it|as|at|from|or|was|were|been|which|when|only|never|your)\\b/gi;
+      const findings=[];
+      // §14.1: .kv is a 145px + minmax(0,1fr) grid. A longer label wrapping to two
+      // lines is fine; a dt that overflows its own column is not. Both are counted,
+      // and only the second one is a failure.
+      const kv={rows:0,wrapped:[],overflowing:[]};
+      const measureKv=()=>{
+        for(const dt of document.querySelectorAll('.kv dt')){
+          kv.rows++;
+          const line=parseFloat(getComputedStyle(dt).lineHeight)||16;
+          if(dt.getBoundingClientRect().height>line*1.5&&kv.wrapped.length<12)kv.wrapped.push(dt.textContent.trim());
+          if(dt.scrollWidth>dt.clientWidth+1)kv.overflowing.push(dt.textContent.trim());
+        }
+      };
+      const sweep=where=>{
+        measureKv();
+        const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+        for(let node=walker.nextNode();node;node=walker.nextNode()){
+          const el=node.parentElement;
+          // <noscript> keeps its markup as a TEXT node once scripting is on, so it
+          // has to go with script/style/template rather than be judged as prose.
+          if(!el||el.closest('script,style,template,noscript,[data-endonym],[hidden]'))continue;
+          const raw=node.nodeValue.trim();
+          if(!raw)continue;
+          const value=strip(raw).trim();
+          if(!value)continue;
+          if(KEYISH.test(value))findings.push({where,kind:'key',text:value.slice(0,120)});
+          else if(L.lang==='en'&&HANGUL.test(value))findings.push({where,kind:'hangul',text:value.slice(0,120)});
+          else if(L.lang==='ko'&&!HANGUL.test(value)&&(value.match(FUNCTION_WORD)||[]).length>1)
+            findings.push({where,kind:'english',text:value.slice(0,120)});
+        }
+      };
+      // The shell is an SPA: the click handler intercepts a[data-nav], so one probe
+      // covers every page and the console stays attached for the whole sweep. The
+      // node has to be looked up again each time — render() replaces #sidebar
+      // wholesale, and a DETACHED anchor's click is not intercepted, it navigates.
+      const nav=sel=>until('nav '+sel,()=>document.querySelector('#sidebar nav .nav-item'+sel));
+      const navHrefs=[...document.querySelectorAll('#sidebar nav .nav-item')].map(a=>a.getAttribute('href'));
+      const visited=[];
+      for(const href of navHrefs){
+        (await nav('[href="'+href+'"]')).click();
+        await until('page '+href,()=>document.querySelector('#main .page-header h1'));
+        await sleep(450);
+        visited.push(text('#main .page-header h1'));
+        sweep(href);
+      }
+      // The memory drawer (summary, then evidence) on top of the same shell.
+      (await nav('[href^="/facts"]')).click();
+      const row=await until('facts rows',()=>document.querySelector('#main .data-table .fact-text'));
+      row.click();
+      await until('fact drawer',()=>document.querySelector('#detail[open] .drawer-body'));
+      await sleep(350);
+      sweep('drawer:fact');
+      document.querySelector('#detail [data-panel-tab="evidence"]').click();
+      await until('evidence tab',()=>document.querySelector('#detail[open] .drawer-body').textContent.includes(L.contextTitle));
+      sweep('drawer:fact/evidence');
+      // §14.1 width measurement. English labels are longer than Korean ones, and the
+      // two CSS changes the design pre-authorised (.nav-label ellipsis, .kv minmax)
+      // are only warranted if a real overflow shows up. The numbers go in the receipt
+      // so the decision is made on measurements, not on a guess.
+      const sidebar=document.querySelector('#sidebar');
+      const labels=()=>[...document.querySelectorAll('#sidebar nav .nav-label')]
+        .map(el=>({label:el.textContent,text:Math.ceil(el.scrollWidth),box:Math.ceil(el.clientWidth)}));
+      const wide=labels();
+      // The ≤1150px breakpoint narrows --sidebar-width to 190px, and that is where the
+      // longer language runs out of room. Setting the variable reproduces exactly that
+      // box without leaving the gate's fixed 1440×900 viewport.
+      document.documentElement.style.setProperty('--sidebar-width','190px');
+      await sleep(120);
+      // Per nav ITEM, not per sidebar: the sidebar also holds two hard-coded English
+      // captions ("MEMORY SPACE", "OBSERVE & CONTROL") that are wider than 190px in
+      // both languages, so a whole-sidebar measurement cannot tell en from ko.
+      const narrow={
+        overflow:[...document.querySelectorAll('#sidebar nav .nav-item')]
+          .filter(el=>el.scrollWidth>el.clientWidth+1).map(el=>el.textContent.trim()),
+        clipped:labels().filter(w=>w.text>w.box+1).map(w=>w.label),
+        sidebarOverflow:sidebar.scrollWidth>sidebar.clientWidth+1,
+      };
+      document.documentElement.style.removeProperty('--sidebar-width');
+      return {visited,findings:findings.slice(0,40),total:findings.length,
+        htmlLang:document.documentElement.lang,dataLang:document.documentElement.dataset.lang,
+        width:{sidebarOverflow:sidebar.scrollWidth>sidebar.clientWidth+1,navLabels:wide,
+          navLabelOverflow:wide.filter(w=>w.text>w.box+1).map(w=>w.label),narrow,kv}};
+    `),
+    "lang-integrity.png",
+    false,
+  );
+
+  // #109 L5 · §9.4 (5): the ONLY automated check that a fresh browser with no stored
+  // preference picks up the server's language. A brand-new profile means no
+  // localStorage, and the URL carries no `?lang`, so `<html data-lang>` — planted by
+  // the server, read by an external module because CSP forbids an inline script — is
+  // the only channel left. Its companion assertion is "zero CSP console messages".
+  let freshChrome;
+  let freshCdp;
+  let serverLangDefault;
+  try {
+    freshChrome = startChrome(path.join(TEMP, "chrome-fresh"));
+    freshCdp = new Cdp(await freshChrome.ready);
+    await freshCdp.connect();
+    serverLangDefault = await pageProbe(
+      freshCdp,
+      base + "/",
+      probe(`
+        await until('shell rendered',()=>document.querySelector('#sidebar .nav-item'));
+        await until('page rendered',()=>document.querySelector('#main .page-header h1'));
+        await sleep(300);
+        return {
+          htmlLang:document.documentElement.lang,
+          dataLang:document.documentElement.dataset.lang,
+          meta:document.querySelector('meta[name="memex-ui-lang"]')?.content||'',
+          storedLanguage:localStorage.getItem('memex.workspace.language'),
+          navFacts:[...document.querySelectorAll('#sidebar nav .nav-item .nav-label')].map(x=>x.textContent),
+          scopeInjection:text('#scope-hint'),
+          urlHasLang:new URL(location.href).searchParams.has('lang'),
+        };
+      `),
+      "server-language-default.png",
+      false,
+    );
+    serverLangDefault.consoleMessages = [...freshCdp.consoleMessages];
+  } finally {
+    freshCdp?.close();
+    await stop(freshChrome?.child);
+  }
+
   if (
     scopeDefaults.urlScope !== "all" ||
     scopeDefaults.selected !== "all" ||
-    !scopeDefaults.options[0]?.startsWith("전체 프로젝트 (조회)") ||
-    !scopeDefaults.options[1]?.startsWith("공통 기억") ||
-    !scopeDefaults.options.slice(0, 2).every((o) => /기억 \d/.test(o)) ||
-    !scopeDefaults.groups.includes("프로젝트") ||
-    !scopeDefaults.navLabels.includes("기억·사실") ||
-    scopeDefaults.heading !== "기억·사실" ||
-    !scopeDefaults.title.startsWith("기억·사실 · ") ||
-    !scopeDefaults.hint.includes("주입") ||
-    !scopeDefaults.hintTitle.includes("공통 기억") ||
-    !scopeDefaults.scopeLine.includes("조회 전용")
+    !scopeDefaults.options[0]?.startsWith(L.scopeAllOption) ||
+    !scopeDefaults.options[1]?.startsWith(L.commonMemory) ||
+    !scopeDefaults.options.slice(0, 2).every((o) => new RegExp(L.factCountRe).test(o)) ||
+    !scopeDefaults.groups.includes(L.projectGroup) ||
+    !scopeDefaults.navLabels.includes(L.navFacts) ||
+    scopeDefaults.heading !== L.factsTitle ||
+    !scopeDefaults.title.startsWith(L.factsTitle + " · ") ||
+    scopeDefaults.hint !== L.scopeInjection ||
+    scopeDefaults.hintTitle !== L.scopeHint ||
+    !scopeDefaults.scopeLine.includes(L.scopeAllLine)
   ) {
     throw new Error(
       "Default scope assertion failed: " + JSON.stringify(scopeDefaults),
@@ -2281,7 +2694,7 @@ try {
   if (
     scopeSwitch.scope !== "all" ||
     scopeSwitch.selected !== "all" ||
-    !scopeSwitch.bannerText.includes("공통 기억 범위에는 대화가 없습니다") ||
+    !scopeSwitch.bannerText.includes(L.conversationsGlobalScope) ||
     !scopeSwitch.bannerCleared
   ) {
     throw new Error(
@@ -2289,16 +2702,16 @@ try {
     );
   }
   if (
-    !helpLayer.helpText.includes("Memex가 기억하는 문장과 그 근거") ||
+    !helpLayer.hasFactsBody ||
     !helpLayer.docHref.startsWith("https://github.com/BongSuCHOI/memex/blob/") ||
     !helpLayer.docHref.includes("/docs/GUIDE.md#") ||
     /blob\/main\//.test(helpLayer.docHref) ||
     !helpLayer.badgeTitle ||
     !helpLayer.headerTitle ||
-    !helpLayer.scopeTitle.includes("주입 범위와 다릅니다") ||
+    helpLayer.scopeTitle !== L.helpScopeControl ||
     !helpLayer.sidebarGlossary ||
     helpLayer.terms < 10 ||
-    !helpLayer.visible.includes("Capsule") ||
+    !helpLayer.visible.includes(L.glossaryCapsule) ||
     helpLayer.visible.length !== 1
   ) {
     throw new Error("Help layer assertion failed: " + JSON.stringify(helpLayer));
@@ -2308,15 +2721,15 @@ try {
     facts.injectedFlag ||
     facts.rowCount !== 2 ||
     facts.pageOverflowX ||
-    !facts.factText.includes("한글 사실") ||
+    !facts.factText.includes(L.maliciousVisible) ||
     facts.navItems.length !== 7 ||
-    facts.navItems[2] !== "기억·사실" ||
+    facts.navItems[2] !== L.navFacts ||
     facts.scopeSelected !== "all"
   ) {
     throw new Error("Facts browser assertion failed: " + JSON.stringify(facts));
   }
   if (
-    factDetail.heading !== "기억 상세" ||
+    factDetail.heading !== L.factDetailTitle ||
     factDetail.factId !== factId ||
     !factDetail.separationBanner ||
     !factDetail.directEvidenceEmpty ||
@@ -2333,12 +2746,12 @@ try {
   if (
     !factsTaxonomy.hasAllOption ||
     !factsTaxonomy.hasUnclassifiedOption ||
-    !factsTaxonomy.categoryGroups.includes("엔지니어링") ||
+    !factsTaxonomy.categoryGroups.includes(DOMAIN_NAME) ||
     factsTaxonomy.keptSelection !== CATEGORY_ID ||
-    !factsTaxonomy.filteredRowText.includes("한글 사실") ||
-    !factsTaxonomy.bannerText.includes("분류 필터가 적용됐습니다") ||
-    factsTaxonomy.filteredEmpty !== "조건에 맞는 기억이 없습니다" ||
-    !factsTaxonomy.restoredRowText.includes("한글 사실") ||
+    !factsTaxonomy.filteredRowText.includes(L.maliciousVisible) ||
+    !factsTaxonomy.bannerText.includes(L.taxonomyFilterBanner) ||
+    factsTaxonomy.filteredEmpty !== L.factsEmptyFiltered ||
+    !factsTaxonomy.restoredRowText.includes(L.maliciousVisible) ||
     /taxonomy=/.test(factsTaxonomy.resetUrl)
   ) {
     throw new Error(
@@ -2346,14 +2759,14 @@ try {
     );
   }
   if (
-    taxonomyMap.mapText !== "지도에서 보기" ||
+    taxonomyMap.mapText !== L.taxonomyMapAction ||
     !taxonomyMap.mapHref.includes("/graph") ||
     !taxonomyMap.mapHref.includes("domain=" + DOMAIN_ID) ||
     !taxonomyMap.factsHref.includes("taxonomy=" + CATEGORY_ID) ||
     !taxonomyMap.url.startsWith("/graph") ||
     !taxonomyMap.url.includes("domain=" + DOMAIN_ID) ||
     taxonomyMap.domainSelected !== DOMAIN_ID ||
-    taxonomyMap.heading !== "지식 지도" ||
+    taxonomyMap.heading !== L.graphTitle ||
     taxonomyMap.nodeButtons !== 1
   ) {
     throw new Error(
@@ -2361,7 +2774,7 @@ try {
     );
   }
   if (
-    factsEmptyScope.title !== "이 범위에 저장된 기억이 없습니다" ||
+    factsEmptyScope.title !== L.factsEmptyScope ||
     !factsEmptyScope.hasActionsLink ||
     factsEmptyScope.hasResetAction
   ) {
@@ -2371,8 +2784,8 @@ try {
   }
   if (
     mutations.factId !== factId ||
-    !mutations.activeBadges.includes("활성") ||
-    !mutations.inactiveBadges.includes("비활성") ||
+    !mutations.activeBadges.includes(L.badgeActive) ||
+    !mutations.inactiveBadges.includes(L.badgeInactive) ||
     !mutations.factText.includes("initialized vec0 connection") ||
     !mutations.rowText.includes("initialized vec0 connection") ||
     // Deactivating drops the row from the default active list, and only that row.
@@ -2408,12 +2821,15 @@ try {
     !syncArchive.exported.hasCopy ||
     !syncArchive.exported.finderHint ||
     // The other root's generation previews as one new memory, named by its alias.
-    syncArchive.preview.summary !== "기억 +1 / ~0 / -0" ||
+    syncArchive.preview.summary !== L.archivePreviewDeltas ||
     !syncArchive.preview.peerAlias ||
     !syncArchive.preview.importOpen ||
-    !syncArchive.modalText.includes("변경 이력에 기록") ||
-    !syncArchive.applied.includes("기억 +1") ||
-    !syncArchive.applied.includes("이 맥") ||
+    !syncArchive.modalText.includes(L.archiveImportWarning) ||
+    !tRe("settings.sync.importCounts", {
+      newFacts: "1", updatedFacts: "\\d+", deletedFacts: "\\d+", newRevisions: "\\d+",
+      newTombstones: "\\d+", newRecalls: "\\d+", updatedRecalls: "\\d+",
+    }).test(syncArchive.applied) ||
+    !syncArchive.applied.includes(LOCAL_ALIAS) ||
     importedFact.text !== PEER_FACT
   ) {
     throw new Error(
@@ -2422,15 +2838,14 @@ try {
     );
   }
   if (
-    !tierBanner.bannerText.includes("브랜치/작업 흐름 범위 기억 1건이 더 있습니다") ||
+    !tierBanner.bannerText.includes(L.hiddenTierOne) ||
     tierBanner.before !== 1 ||
     tierBanner.after !== 2 ||
     !tierBanner.hasRevert ||
     !tierBanner.badges.some(
-      (b) => b.tier === "workstream" && b.label === "브랜치: " + TIER_BRANCH &&
-        b.title === "브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.",
+      (b) => b.tier === "workstream" && b.label === L.tierBranch && b.title === L.tierBranchExplain,
     ) ||
-    !tierBanner.badges.some((b) => b.tier === "global" && b.label === "글로벌 공용")
+    !tierBanner.badges.some((b) => b.tier === "global" && b.label === L.tierGlobal)
   ) {
     throw new Error(
       "Hidden tier banner assertion failed: " + JSON.stringify(tierBanner),
@@ -2438,15 +2853,15 @@ try {
   }
   if (
     tierPromote.conditionTier !== "workstream" ||
-    tierPromote.conditionLabel !== "브랜치: " + TIER_BRANCH ||
-    !tierPromote.condition.includes("브랜치 " + TIER_BRANCH + " 세션에만 주입됩니다.") ||
-    !tierPromote.condition.includes("활성 — 주입 후보") ||
-    tierPromote.summaryBadge !== "브랜치: " + TIER_BRANCH ||
+    tierPromote.conditionLabel !== L.tierBranch ||
+    !tierPromote.condition.includes(L.tierBranchExplain) ||
+    !tierPromote.condition.includes(L.reuseActive) ||
+    tierPromote.summaryBadge !== L.tierBranch ||
     !tierPromote.demoteDisabled ||
-    !tierPromote.rule.includes("글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요") ||
-    tierPromote.historyTab !== "변경 이력" ||
+    !tierPromote.rule.includes(L.tierLadder) ||
+    tierPromote.historyTab !== L.historyTab ||
     !tierPromote.historyHasPromotion ||
-    tierPromote.promotedBadge !== "프로젝트 공용" ||
+    tierPromote.promotedBadge !== L.tierProject ||
     tierPromote.bannerGone !== "cleared"
   ) {
     throw new Error(
@@ -2454,11 +2869,11 @@ try {
     );
   }
   if (
-    !jobGuidance.heads.includes("다음 행동") ||
+    !jobGuidance.heads.includes(L.nextAction) ||
     // #79: a dead job is classified by its STATE, so the historical capsule bound
     // error can no longer present a terminal job as harmless.
-    !jobGuidance.guidanceText.includes("실패로 종료된 작업") ||
-    jobGuidance.ignorable !== "조치가 필요합니다" ||
+    !jobGuidance.guidanceText.includes(L.jobDeadTitle) ||
+    jobGuidance.ignorable !== L.actionNeeded ||
     !jobGuidance.operationButtons.includes("recover") ||
     !jobGuidance.copyCommands.some((c) => c.includes("memex recover")) ||
     // The stored error text stays on the row: nothing is hidden, only reclassified.
@@ -2472,7 +2887,7 @@ try {
     !attention.beforeHasDeadClass ||
     !attention.beforeHasImpact ||
     !attention.modalCommand ||
-    attention.finishedState !== "완료" ||
+    attention.finishedState !== L.operationCompleted ||
     !attention.output.includes("Recovered") ||
     attention.afterHasDeadClass
   ) {
@@ -2482,7 +2897,7 @@ try {
   }
   if (
     pipeline.steps.length !== 4 ||
-    !pipeline.text.includes("대화 수집") ||
+    !pipeline.text.includes(L.pipelineConversations) ||
     !pipeline.diagnosticsLink ||
     pipeline.metrics.length !== 4
   ) {
@@ -2512,13 +2927,13 @@ try {
     graph.nodeButtons !== 2 ||
     !graph.meta.includes("2 NODES") ||
     graph.relationFilters.length !== 4 ||
-    !["LOCAL WEBGL", "CANVAS 2D · WEBGL 사용 불가"].includes(graph.renderer)
+    ![L.graphRendererWebgl, L.graphRendererCanvas2d].includes(graph.renderer)
   ) {
     throw new Error("Graph browser assertion failed: " + JSON.stringify(graph));
   }
   if (
     !graphEmpty.emptyState ||
-    graphEmpty.emptyTitle !== "표시할 기억이 없습니다" ||
+    graphEmpty.emptyTitle !== L.graphEmptyTitle ||
     !graphEmpty.canvas.every(Boolean) ||
     !graphEmpty.meta.includes("0 NODES") ||
     graphEmpty.labelPixels !== 0 ||
@@ -2554,7 +2969,7 @@ try {
     !modelTab.before.holdBanner ||
     !modelTab.before.holdResumes ||
     !modelTab.before.heldCard ||
-    modelTab.before.heldBadge !== "모델 설정 대기" ||
+    modelTab.before.heldBadge !== L.modelHeldBadge ||
     !modelTab.before.embeddingReadOnly ||
     !modelTab.before.testButton ||
     modelTab.after.selected !== "gpt-6-astra" ||
@@ -2565,18 +2980,18 @@ try {
     throw new Error("Model tab assertion failed: " + JSON.stringify(modelTab));
   }
   if (
-    !modelTabEn.english ||
-    modelTabEn.bodyOverflow ||
-    modelTabEn.mainOverflow ||
-    modelTabEn.cardOverflow ||
-    modelTabEn.tableOverflow
+    !modelTabAlt.otherLanguage ||
+    modelTabAlt.bodyOverflow ||
+    modelTabAlt.mainOverflow ||
+    modelTabAlt.cardOverflow ||
+    modelTabAlt.tableOverflow
   ) {
-    throw new Error("Model tab (en) assertion failed: " + JSON.stringify(modelTabEn));
+    throw new Error("Model tab (other language) assertion failed: " + JSON.stringify(modelTabAlt));
   }
   // #29/#30: one tab, two screens; a refused pattern must name the row it came from, and an
   // accepted one must reach the table through a real lock + CAS write.
   if (
-    overlayTab.lang !== "ko" ||
+    overlayTab.lang !== LANG ||
     overlayTab.gate.subnav.join(",") !== "gate,rules" ||
     overlayTab.gate.active !== "gate" ||
     overlayTab.gate.builtinRows < 1 ||
@@ -2587,7 +3002,7 @@ try {
     !/^patterns\.add\[\d+\]\.source$/.test(overlayTab.refused.path) ||
     overlayTab.refused.table !== overlayTab.gate.builtinRows ||
     !overlayTab.refused.toast ||
-    !overlayTab.saved.toast.includes("revision") ||
+    overlayTab.saved.toast !== L.overlaysSavedToast ||
     !overlayTab.saved.id.startsWith("user.") ||
     !overlayTab.saved.origin ||
     !overlayTab.saved.note ||
@@ -2614,7 +3029,7 @@ try {
     savedOverlay.revision !== 1 ||
     savedOverlay.updated_by?.surface !== "web-ui" ||
     savedOverlay.patterns.add.length !== 1 ||
-    savedOverlay.patterns.add[0].source !== "배포\\s*이력"
+    savedOverlay.patterns.add[0].source !== OVERLAY_PATTERN
   ) {
     throw new Error(
       "recall-gate.json was not written by the UI: " + JSON.stringify(savedOverlay),
@@ -2625,6 +3040,49 @@ try {
   );
   if (savedSelection.llm.model !== "gpt-6-astra" || savedSelection.llm.reasoning !== "high")
     throw new Error("models.json was not written by the UI: " + JSON.stringify(savedSelection));
+  // #109 L5 · §9.4 (4): every surface is in this run's language and nothing else.
+  if (
+    langIntegrity.total ||
+    langIntegrity.visited.length !== 7 ||
+    langIntegrity.htmlLang !== LANG ||
+    langIntegrity.dataLang !== LANG ||
+    // §14.1: the longer language must not spill out of the shell — at the gate's own
+    // width or at the 190px sidebar the ≤1150px breakpoint uses. `.nav-label` truncates
+    // instead (the `title` attribute keeps the full label reachable), and a `.kv` label
+    // may wrap but must never overflow its column.
+    langIntegrity.width.sidebarOverflow ||
+    langIntegrity.width.navLabelOverflow.length ||
+    langIntegrity.width.narrow.overflow.length ||
+    langIntegrity.width.kv.overflowing.length
+  ) {
+    throw new Error(
+      "Language integrity assertion failed (" + LANG + "): " + JSON.stringify(langIntegrity),
+    );
+  }
+  // #109 L5 · §9.4 (5): a fresh profile, no `?lang`, server default only.
+  if (
+    serverLangDefault.htmlLang !== LANG ||
+    serverLangDefault.dataLang !== LANG ||
+    serverLangDefault.meta !== LANG ||
+    serverLangDefault.storedLanguage !== null ||
+    serverLangDefault.urlHasLang ||
+    !serverLangDefault.navFacts.includes(L.navFacts) ||
+    serverLangDefault.scopeInjection !== L.scopeInjection
+  ) {
+    throw new Error(
+      "Server default language assertion failed: " + JSON.stringify(serverLangDefault),
+    );
+  }
+  // #109 L5 · §9.4 (6): CSP is never relaxed for the language channel, and a missing
+  // dictionary key is a build-time bug — neither may ever reach the browser console.
+  const consoleMessages = [...cdp.consoleMessages, ...serverLangDefault.consoleMessages];
+  const cspViolations = consoleMessages.filter((m) => /Content Security Policy/i.test(m));
+  const missingKeys = consoleMessages.filter((m) => /\[memex-ui\]\[i18n\] missing/.test(m));
+  if (cspViolations.length || missingKeys.length)
+    throw new Error(
+      "browser console is not clean: " +
+        JSON.stringify({ cspViolations, missingKeys }),
+    );
   if (cdp.runtimeErrors.length)
     throw new Error("browser runtime errors: " + cdp.runtimeErrors.join("; "));
   console.log(
@@ -2636,6 +3094,8 @@ try {
           browser: "Google Chrome headless",
           transport: "CDP",
           viewport: "1440x900",
+          language: LANG,
+          timezone: "UTC",
           server: readyLines.split("\n")[0],
         },
         verdict: "PASS",
@@ -2651,9 +3111,11 @@ try {
           syncTab,
           syncArchive,
           modelTab,
-          modelTabEn,
+          modelTabAlt,
           overlayTab,
           importedFact,
+          langIntegrity,
+          serverLangDefault,
           facts,
           factDetail,
           factsTaxonomy,
@@ -2673,10 +3135,11 @@ try {
     console.log(
       "__WEB_UI_SCREENSHOTS__" +
         JSON.stringify({
-          directory: SCREENSHOTS,
+          directory: path.join(SCREENSHOTS, LANG),
+          language: LANG,
           files: showcase.results.map((r) => ({
             file: r.file,
-            bytes: fs.statSync(path.join(SCREENSHOTS, r.file)).size,
+            bytes: fs.statSync(path.join(SCREENSHOTS, LANG, r.file)).size,
             observed: { ...r.value, ...(r.extra || {}) },
           })),
         }),

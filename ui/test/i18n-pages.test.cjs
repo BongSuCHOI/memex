@@ -53,16 +53,34 @@ function ctx(params, data, extra = {}) {
 }
 
 /**
- * 페이지 헤더의 도움말 버튼은 `help.mjs`(L4, PENDING_MIGRATION)의 한국어 제목을 그대로
- * 싣는다. 한국어 잔존 검사에서만 잘라낸다 — 키 누출 검사는 전체 HTML을 본다.
+ * 화면 전체 한글 0건 (L5, #109).
+ *
+ * L1~L4가 전부 머지된 뒤로는 `ui.mjs`·`help.mjs` PENDING_MIGRATION 예외가 사라졌으므로,
+ * "이관한 한국어 목록"을 열거하는 대신 **en 렌더에 한글이 한 글자도 없음**을 단정한다.
+ * 열거 목록은 빼먹은 문장을 놓치지만, 전수 검사는 놓치지 않는다.
+ *
+ * 면제는 구조적으로 둘뿐이고 둘 다 텍스트 허용 목록이 아니다:
+ *   · `doc-anchors.mjs`의 한국어 문서 앵커 — `docs/*.md`에 영문판이 없다 (설계 §6.4)
+ *   · 픽스처의 사용자 콘텐츠(`fact_kr` 등) — UI 문구가 아니라 데이터다
  */
-const stripPending = html => html.replace(/<button class="icon-btn help-toggle"[\s\S]*?<\/button>/g, '');
+const PAGE_HANGUL = /[가-힣ㄱ-ㅎㅏ-ㅣ]/;
+/** 이 파일의 픽스처가 담은 한국어 "사용자 데이터". UI 문구가 아니므로 검사에서 뺀다. */
+const FIXTURE_CONTENT = ['로컬 우선 저장은 기기에 남는다.', '번역만 있음'];
+
+function assertNoHangul(html, where) {
+  const anchors = require('../public/i18n/doc-anchors.mjs').DOC_ANCHORS;
+  let body = String(html);
+  for (const anchor of Object.values(anchors)) body = body.split(anchor).join('');
+  for (const text of FIXTURE_CONTENT) body = body.split(text).join('');
+  const hit = body.split(/\n/).find(line => PAGE_HANGUL.test(line));
+  assert.equal(hit, undefined, `${where}: en 렌더에 한글이 남아 있다 — ${String(hit).trim().slice(0, 160)}`);
+}
 
 /** (a)+(c)를 한 번에 본다. 호출자는 en 랜드마크만 따로 단정하면 된다. */
 function assertEnglish(html, migratedKorean, where) {
   assert.deepEqual(html.match(LEAKED_KEY) ?? [], [], `${where}: 미번역 키가 화면에 노출됐다`);
-  const body = stripPending(html);
-  for (const text of migratedKorean) assert.ok(!body.includes(text), `${where}: 이관한 한국어가 남아 있다 — ${text}`);
+  for (const text of migratedKorean) assert.ok(!html.includes(text), `${where}: 이관한 한국어가 남아 있다 — ${text}`);
+  assertNoHangul(html, where);
 }
 
 // ╭──────────────────────────────────────────────────────────────────────────╮

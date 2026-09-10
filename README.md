@@ -7,7 +7,7 @@
 
 > A local-first long-term memory layer for Codex: collect conversations, distill durable facts, connect them, and bring the right context back when it matters.
 
-![Memex Workspace overview: pipeline readiness, recent memory changes, and scope-aware activity metrics](assets/readme/overview.png)
+![Memex Workspace overview: pipeline readiness, recent memory changes, and scope-aware activity metrics](assets/readme/en/overview.png)
 
 Memex turns local Codex session history into a searchable conversation archive, durable facts, a scoped knowledge graph, and bounded context that can be recalled in later work. It is designed as a **memory system**, not a second agent — Codex remains the working agent; Memex provides the persistent layer around it.
 
@@ -103,22 +103,22 @@ Every page carries its own help: an ⓘ next to the title linking the matching s
 
 Every page takes an explicit scope: one project, common (global) memory, or all projects. All projects is the default view and is read-only breadth — injection always uses the current project plus common memory, and the scope selector says so permanently. Opening a page never starts model work.
 
-![Fact detail drawer on the evidence tab, showing direct evidence and interpretive context as separate sections](assets/readme/facts-detail.png)
+![Fact detail drawer on the evidence tab, showing direct evidence and interpretive context as separate sections](assets/readme/en/facts-detail.png)
 
 *Memory detail, evidence tab — direct evidence and interpretive context stay in separate lanes, with the verification receipt below them.*
 
-![Knowledge map in 2D with one node selected and its typed relations highlighted](assets/readme/graph.png)
+![Knowledge map in 2D with one node selected and its typed relations highlighted](assets/readme/en/graph.png)
 
 *Knowledge map — fact nodes and typed relations (`SUPPORTS`, `INFLUENCES`, `SUPERSEDES`, `CONTRADICTS`) drawn with browser-native WebGL. Layout encodes domain grouping only; on-screen distance is **not** an embedding-similarity number.*
 
-![Jobs tab of the activity page with one durable job expanded into its target, inputs and model attempts](assets/readme/activity-jobs.png)
+![Jobs tab of the activity page with one durable job expanded into its target, inputs and model attempts](assets/readme/en/activity-jobs.png)
 
 *Activity · tracking, processing jobs — one durable job expanded down to its extraction target, input versions, and model attempts.*
 
 <details>
 <summary>Dark mode</summary>
 
-![The same overview page rendered in dark mode](assets/readme/overview-dark.png)
+![The same overview page rendered in dark mode](assets/readme/en/overview-dark.png)
 
 </details>
 
