@@ -154,6 +154,25 @@ function createServer(options={}){
         catch(e){try{logs.audit({action:'sync.'+String(b.action),status:'failed',error_code:e.code||e.name});}catch{}throw e;}
         notify();json(res,200,result);return;
       }
+      /* #31 — 모델 선택. sync 블록 바로 뒤, `p.startsWith('/api/')`의 DB 요구 구간보다 **위**에
+       * 둔다: 모델 설정은 파일과 환경 변수만으로 답할 수 있어야 하고(새 설치에 DB가 없다), 그
+       * 아래는 `core.connect()`가 DB를 강제한다. 안전장치는 sync와 동일하다 — CSRF(guard),
+       * 명시적 confirm, 관리 명령 실행 중 거절. 오류 문장은 코어가 만들고 번역은 클라이언트가
+       * 한다(§12.2 C2): 여기서 사전을 조회하지 않는다. */
+      if(p==='/api/v2/models'){
+        if(req.method==='GET'){json(res,200,await core.models('status'));return;}
+        if(req.method!=='POST')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'models.error.method_not_allowed',
+          message:'GET or POST only'});
+        const b=await readBody(req);
+        if(b.confirm!==true)throw new HttpError(400,{code:'CONFIRMATION_REQUIRED',key:'models.error.confirm_required',
+          message:'a model settings change needs an explicit confirm'});
+        if(operations.children?.size)throw new HttpError(409,{code:'OPERATION_BUSY',key:'models.error.operation_busy',
+          message:'an admin command is running'});
+        let result;
+        try{result=await core.models(b.action,b);try{logs.audit({action:'models.'+b.action,status:'completed'});}catch{}}
+        catch(e){try{logs.audit({action:'models.'+String(b.action),status:'failed',error_code:e.code||e.name});}catch{}throw e;}
+        notify();json(res,200,result);return;
+      }
       if(p==='/api/v2/environment'){if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');json(res,200,core.environment());return;}
       if(p==='/api/v2/diagnostics'){
         if(req.method!=='GET')throw new HttpError(405,'GET만 허용됩니다.');
