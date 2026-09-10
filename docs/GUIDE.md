@@ -566,9 +566,11 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 | `memex jobs show <job-id> [--json]` | 한 job의 checkpoint·capsule state·target·실패 range·`retry_history` |
 | `memex jobs retry <job-id\|--all-dead> [--kind <kind>] [--dry-run]` | `memex recover`와 같은 복구 |
 | `memex jobs dismiss <job-id> --reason "..."` | job을 `superseded`로 정리. `last_error = 'user dismissed: <reason>'` + `logs/ui-audit.jsonl` 감사 1줄 |
-| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다 |
+| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다. 대상 해석과 쓰기가 한 트랜잭션이며, 실행 중인 lease를 빼앗지 않습니다 |
 
 `recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `capsule_frontiers`(건너뛴 조각이 있으면 전진 전 위치로), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+
+단위 해석도 그 트랜잭션 안에서 합니다(0.6.2). `memory_jobs` CAS가 0행이면 — 그 사이 다른 복구자나 worker가 job을 가져간 것이므로 — 그 단위의 **나머지 리셋을 전혀 하지 않고** 사유를 출력의 note에 남깁니다(부분 리셋 없음). `memex recover <target-id>`는 그 target을 소유한 job이 **실행 중이고 lease가 살아 있으면 거부합니다** — 소유 job이 terminal(`dead`/`retry`)이거나 lease가 만료된 경우에만 되돌립니다. 예전에는 실행 중 job이 `pending`·`attempts=0`·`lease_owner=NULL`로 리셋돼 같은 단위를 두 worker가 동시에 처리(중복 모델 호출·중복 추출)했습니다.
 
 복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
 
