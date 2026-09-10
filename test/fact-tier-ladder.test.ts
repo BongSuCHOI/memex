@@ -421,6 +421,40 @@ describe("evidence-based automatic ladder (#19)", () => {
     db.prepare("UPDATE facts SET is_active = 0 WHERE id = ?").run(witness);
     const after = reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" });
     expect(after.demoted.map((r) => r.id)).toContain(first);
+    expect(after.demoted.find((r) => r.id === first)).toMatchObject({ from: "project", to: "workstream" });
     expect(readFactTier(db, first).tier).toBe("workstream");
+
+    // #61 — exactly one rung, and repeating the pass never digs deeper.
+    const again = reconcileFactTiers(db, { now: "2026-09-10T02:00:00.000Z" });
+    expect(again.demoted).toEqual([]);
+    expect(readFactTier(db, first).tier).toBe("workstream");
+  });
+
+  it("never undoes a later user placement, and says so in skipped (#61)", async () => {
+    const project = path.join(root, "user-wins");
+    gitClone(project, "feature/a");
+    const id = await branchFact("user-wins-a", project, "state.runtime.kept", "Kept truth");
+    const second = ensureSessionMemoryState(db, { sessionId: "user-wins-b", project, branch: "feature/b" });
+    await insertExchange(db, exchange("ex-user-wins-b", "user-wins-b", project, "Kept truth"), emb);
+    const witness = insertFact(db, {
+      fact: "Kept truth", category: "knowledge", scope_type: "project", scope_project: project,
+      source_exchange_ids: ["ex-user-wins-b"], embedding: emb, subject_key: "state.runtime.kept",
+      project_id: second.projectId, workspace_id: second.workspaceId,
+      workstream_id: second.workstreamId, promotion_state: "workstream", promotion_evidence: "experimental",
+    });
+    reconcileFactTiers(db, { now: "2026-09-10T00:00:00.000Z" });
+    expect(readFactTier(db, id).tier).toBe("project");
+
+    // A person then places it globally: their decision is the fact's last word.
+    promoteFact(db, id, { actor: "user", reason: "applies everywhere" });
+    expect(readFactTier(db, id).tier).toBe("global");
+    db.prepare("UPDATE facts SET is_active = 0 WHERE id = ?").run(witness);
+
+    for (const at of ["2026-09-10T01:00:00.000Z", "2026-09-10T02:00:00.000Z"]) {
+      const pass = reconcileFactTiers(db, { now: at });
+      expect(pass.demoted).toEqual([]);
+      expect(pass.skipped).toEqual([{ id, reason: "superseded by a user decision" }]);
+      expect(readFactTier(db, id).tier).toBe("global");
+    }
   });
 });

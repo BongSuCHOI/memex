@@ -1228,11 +1228,13 @@ export function reconcileFactTiers(
     direction: 1 | -1,
     reason: string,
     evidenceFactIds: string[],
+    to?: FactTier,
   ): void => {
     try {
+      const options: TierMoveOptions = { actor: 'auto', reason, evidenceFactIds, now, ...(to ? { to } : {}) };
       const move = direction > 0
-        ? promoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now })
-        : demoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now });
+        ? promoteFact(db, id, options)
+        : demoteFact(db, id, options);
       (direction > 0 ? result.promoted : result.demoted).push({
         id, from: move.from, to: move.to, reason,
       });
@@ -1309,29 +1311,69 @@ export function reconcileFactTiers(
     step(row.id, 1, `confirmed in ${row.projects} projects`, witnesses);
   }
 
-  // 3. An automatic promotion whose cited evidence is gone comes back down.
-  const promotions = db.prepare(`
-    SELECT r.fact_id AS id, r.outcome_json
+  // 3. An automatic promotion whose cited evidence is gone comes back down —
+  //    but only while that promotion is still the fact's LAST word on its tier.
+  //    #61 — the pass used to read `PROMOTED AND actor = 'auto'` rows alone, so a
+  //    later human placement (or an earlier pass's own demotion) was invisible,
+  //    and `demoteFact` without `to` walked one rung down from wherever the fact
+  //    currently was. A user's `global` therefore eroded to `workstream` over two
+  //    maintenance runs. Now the latest tier event must BE that auto promotion,
+  //    its recorded `to_tier` must still be the current tier, and the
+  //    destination is the recorded `from_tier` — never "one step down from here".
+  interface TierEventRow {
+    eventId: string; id: string; eventKind: string; actor: string; outcomeJson: string | null;
+  }
+  const tierEvents = db.prepare(`
+    SELECT r.id AS eventId, r.fact_id AS id, r.event_kind AS eventKind, r.actor AS actor,
+           r.outcome_json AS outcomeJson
     FROM fact_revisions r
     JOIN facts f ON f.id = r.fact_id AND f.is_active = 1
-    WHERE r.event_kind = 'PROMOTED' AND r.actor = 'auto' AND r.fact_id IS NOT NULL
+    WHERE r.event_kind IN ('PROMOTED', 'DEMOTED') AND r.fact_id IS NOT NULL
     ORDER BY r.chronicle_seq DESC
-  `).all() as Array<{ id: string; outcome_json: string | null }>;
-  const seen = new Set<string>();
-  for (const row of promotions) {
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
+  `).all() as TierEventRow[];
+  const latestTierEvent = new Map<string, TierEventRow>();
+  const latestAutoPromotion = new Map<string, TierEventRow>();
+  for (const row of tierEvents) {
+    if (!latestTierEvent.has(row.id)) latestTierEvent.set(row.id, row);
+    if (row.eventKind === 'PROMOTED' && row.actor === 'auto' && !latestAutoPromotion.has(row.id)) {
+      latestAutoPromotion.set(row.id, row);
+    }
+  }
+  for (const factId of [...latestAutoPromotion.keys()].sort()) {
+    const promotion = latestAutoPromotion.get(factId) as TierEventRow;
     let cited: string[] = [];
+    let fromTier: string | null = null;
+    let toTier: string | null = null;
     try {
-      const parsed: unknown = JSON.parse(row.outcome_json ?? '{}');
-      const ids = (parsed as { evidence_fact_ids?: unknown }).evidence_fact_ids;
-      cited = Array.isArray(ids) ? ids.filter((v): v is string => typeof v === 'string') : [];
+      const parsed = JSON.parse(promotion.outcomeJson ?? '{}') as {
+        evidence_fact_ids?: unknown; from_tier?: unknown; to_tier?: unknown;
+      };
+      cited = Array.isArray(parsed.evidence_fact_ids)
+        ? parsed.evidence_fact_ids.filter((v): v is string => typeof v === 'string')
+        : [];
+      fromTier = typeof parsed.from_tier === 'string' ? parsed.from_tier : null;
+      toTier = typeof parsed.to_tier === 'string' ? parsed.to_tier : null;
     } catch { cited = []; }
     if (cited.length === 0) continue;
     const alive = (db.prepare(
       `SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND id IN (${cited.map(() => '?').join(',')})`,
     ).get(...cited) as { n: number }).n;
-    if (alive === 0) step(row.id, -1, 'upper evidence is no longer active', cited);
+    if (alive > 0) continue;
+    const latest = latestTierEvent.get(factId);
+    if (!latest || latest.eventId !== promotion.eventId) {
+      result.skipped.push({
+        id: factId,
+        reason: latest?.actor === 'user' || latest?.actor === 'user-directive'
+          ? 'superseded by a user decision'
+          : `superseded by a later ${latest?.actor ?? 'unknown'} tier event`,
+      });
+      continue;
+    }
+    if (!fromTier || !TIER_ORDER.includes(fromTier as FactTier) || toTier !== readFactTier(db, factId).tier) {
+      result.skipped.push({ id: factId, reason: 'recorded promotion no longer matches the current tier' });
+      continue;
+    }
+    step(factId, -1, 'upper evidence is no longer active', cited, fromTier as FactTier);
   }
   return result;
 }

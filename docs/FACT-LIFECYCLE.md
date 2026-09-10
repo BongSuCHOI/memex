@@ -57,7 +57,12 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 |---|---|---|
 | workstream → project | 같은 `subject_key` slot의 fact가 **같은 내용**(`LOWER(TRIM(fact))`)으로 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
 | project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때(`GROUP BY LOWER(TRIM(fact))`가 내용 동일성을 보장) | 동일 |
-| 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
+| 강등 | 그 fact의 **가장 최근 tier 이벤트**가 auto 승격이고, 그 승격이 인용한 상위 근거가 모두 비활성화·삭제됐을 때. 목적지는 기록된 `from_tier` | `memex facts demote <id>` |
+
+0.6.2(#61)부터 자동 강등은 **사용자 결정을 덮지 않습니다**. 판정은 `PROMOTED`/`DEMOTED` 중 가장 최근
+이벤트가 그 auto 승격 자신인지 보고, 기록된 `to_tier`가 현재 tier와 같을 때만 실행되며, 목적지로
+기록된 `from_tier`를 **명시**해서 내려갑니다("지금 위치에서 한 칸"이 아닙니다). 이후에 사람이 올린
+뒤라면 `skipped`에 `superseded by a user decision`으로 남고 tier는 그대로입니다.
 
 0.6.2(#60)부터 "재확인"은 **내용 동일성**을 요구합니다. 같은 slot에 서로 다른 내용의 활성 브랜치 fact가
 2개 이상이면(예: 브랜치 A “SQLite를 쓴다” / 브랜치 B “PostgreSQL을 쓴다”) 어느 쪽도 승격하지 않고
