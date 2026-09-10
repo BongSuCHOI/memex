@@ -79,7 +79,13 @@ export interface UserPatternHits {
     quarantined: string[];
     /** True when the worker could not be used at all (startup, death, queue drain). */
     unavailable: boolean;
+    /** EXECUTION window only — queue wait and worker startup are excluded. */
     elapsedMs: number;
+    /**
+     * Regexes this request had to compile. 0 means the resident worker's memo held,
+     * which is the difference between the warm and the cold matcher cost.
+     */
+    compiledPatterns: number;
 }
 export interface MatchRequest {
     text: string;
@@ -99,10 +105,22 @@ export interface MatcherHandle {
     state(): "ready" | "dead" | "unavailable";
 }
 export declare const EMPTY_USER_PATTERN_HITS: UserPatternHits;
+/**
+ * Narrow seams, used by test/overlay-matcher*.test.ts.
+ *
+ * Production callers pass nothing. `entry` lets a test stand in a worker that
+ * dies or never answers, which is the only way to exercise the death and
+ * queue-drain branches for real; `respawnMs` shortens the 5 s respawn window so
+ * the suite does not have to wait it out.
+ */
+export interface MatcherOptions {
+    respawnMs?: number;
+    entry?: URL;
+}
 /** One resident worker per inject daemon; respawns at most once per 5 s. */
-export declare function persistentMatcher(): MatcherHandle;
+export declare function persistentMatcher(options?: MatcherOptions): MatcherHandle;
 /** A throwaway worker for the cold hook, the CLI and the extraction worker. */
-export declare function oneShotMatcher(): MatcherHandle;
+export declare function oneShotMatcher(options?: MatcherOptions): MatcherHandle;
 /**
  * A handle that can never run a user pattern. Used where a matcher is structurally
  * required but overlays are switched off (`MEMEX_DISABLE_OVERLAYS=1`).

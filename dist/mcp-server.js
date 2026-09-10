@@ -10078,16 +10078,16 @@ import fs10 from "node:fs";
 import path11 from "node:path";
 import { randomUUID as randomUUID6 } from "node:crypto";
 function unavailableHits(elapsedMs, timedOut = false) {
-  return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs };
+  return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs, compiledPatterns: 0 };
 }
 function workerEntry() {
   return new URL("./overlay-matcher-worker.mjs", import.meta.url);
 }
-function persistentMatcher() {
-  return new TimeBoxedMatcher(true);
+function persistentMatcher(options) {
+  return new TimeBoxedMatcher(true, options);
 }
-function oneShotMatcher() {
-  return new TimeBoxedMatcher(false);
+function oneShotMatcher(options) {
+  return new TimeBoxedMatcher(false, options);
 }
 function quarantineKey(patternId, sourceSha8) {
   return `${patternId}|${sourceSha8}`;
@@ -10183,11 +10183,13 @@ var init_overlay_matcher = __esm({
       timedOut: false,
       quarantined: Object.freeze([]),
       unavailable: false,
-      elapsedMs: 0
+      elapsedMs: 0,
+      compiledPatterns: 0
     });
     TimeBoxedMatcher = class {
-      constructor(persistent) {
+      constructor(persistent, options = {}) {
         this.persistent = persistent;
+        this.options = options;
       }
       worker = null;
       progress = null;
@@ -10230,7 +10232,7 @@ var init_overlay_matcher = __esm({
         if (this.worker && this.status === "ready") return this.worker;
         if (this.status !== "ready") {
           if (!this.persistent) return null;
-          if (Date.now() - this.goneAt < MATCHER_RESPAWN_MS) return null;
+          if (Date.now() - this.goneAt < (this.options.respawnMs ?? MATCHER_RESPAWN_MS)) return null;
         }
         return this.spawn();
       }
@@ -10240,7 +10242,7 @@ var init_overlay_matcher = __esm({
           const progress = new Int32Array(buffer);
           Atomics.store(progress, 0, 0);
           Atomics.store(progress, 1, -1);
-          const worker = new Worker(workerEntry(), { workerData: { progress: buffer } });
+          const worker = new Worker(this.options.entry ?? workerEntry(), { workerData: { progress: buffer } });
           worker.unref();
           let settleOnline = () => {
           };
@@ -10392,7 +10394,8 @@ var init_overlay_matcher = __esm({
           timedOut: true,
           quarantined: [culprit.id],
           unavailable: false,
-          elapsedMs
+          elapsedMs,
+          compiledPatterns: 0
         };
       }
       collect(reply, patterns, elapsedMs) {
@@ -10406,7 +10409,15 @@ var init_overlay_matcher = __esm({
           if (!intent) return;
           (intents[intent] ??= []).push(entry.id);
         });
-        return { intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs };
+        return {
+          intents,
+          matched,
+          timedOut: false,
+          quarantined: [],
+          unavailable: false,
+          elapsedMs,
+          compiledPatterns: Number(reply.compiled ?? 0)
+        };
       }
     };
     QUARANTINE_SCHEMA = "memex.overlay-quarantine";

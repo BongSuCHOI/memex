@@ -89,7 +89,13 @@ export interface UserPatternHits {
   quarantined: string[];
   /** True when the worker could not be used at all (startup, death, queue drain). */
   unavailable: boolean;
+  /** EXECUTION window only — queue wait and worker startup are excluded. */
   elapsedMs: number;
+  /**
+   * Regexes this request had to compile. 0 means the resident worker's memo held,
+   * which is the difference between the warm and the cold matcher cost.
+   */
+  compiledPatterns: number;
 }
 
 export interface MatchRequest {
@@ -118,20 +124,35 @@ export const EMPTY_USER_PATTERN_HITS: UserPatternHits = Object.freeze({
   quarantined: Object.freeze([]) as unknown as string[],
   unavailable: false,
   elapsedMs: 0,
+  compiledPatterns: 0,
 });
 
 function unavailableHits(elapsedMs: number, timedOut = false): UserPatternHits {
-  return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs };
+  return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs, compiledPatterns: 0 };
 }
 
 interface WorkerReply {
   generation: number;
   hits: { byPattern: Array<{ id: string; intent: GateIntent | null; matched: boolean }> };
   elapsedMs: number;
+  compiled?: number;
 }
 
 function workerEntry(): URL {
   return new URL("./overlay-matcher-worker.mjs", import.meta.url);
+}
+
+/**
+ * Narrow seams, used by test/overlay-matcher*.test.ts.
+ *
+ * Production callers pass nothing. `entry` lets a test stand in a worker that
+ * dies or never answers, which is the only way to exercise the death and
+ * queue-drain branches for real; `respawnMs` shortens the 5 s respawn window so
+ * the suite does not have to wait it out.
+ */
+export interface MatcherOptions {
+  respawnMs?: number;
+  entry?: URL;
 }
 
 class TimeBoxedMatcher implements MatcherHandle {
@@ -152,7 +173,10 @@ class TimeBoxedMatcher implements MatcherHandle {
   /** Observability for tests: how many workers this handle has constructed. */
   spawnCount = 0;
 
-  constructor(private readonly persistent: boolean) {}
+  constructor(
+    private readonly persistent: boolean,
+    private readonly options: MatcherOptions = {},
+  ) {}
 
   state(): "ready" | "dead" | "unavailable" {
     if (this.disposed) return "unavailable";
@@ -187,7 +211,7 @@ class TimeBoxedMatcher implements MatcherHandle {
       // A handle that lost its worker answers `unavailable` until the respawn
       // window opens; a one-shot handle never respawns at all.
       if (!this.persistent) return null;
-      if (Date.now() - this.goneAt < MATCHER_RESPAWN_MS) return null;
+      if (Date.now() - this.goneAt < (this.options.respawnMs ?? MATCHER_RESPAWN_MS)) return null;
     }
     return this.spawn();
   }
@@ -198,7 +222,7 @@ class TimeBoxedMatcher implements MatcherHandle {
       const progress = new Int32Array(buffer);
       Atomics.store(progress, 0, 0);
       Atomics.store(progress, 1, -1);
-      const worker = new Worker(workerEntry(), { workerData: { progress: buffer } });
+      const worker = new Worker(this.options.entry ?? workerEntry(), { workerData: { progress: buffer } });
       // Never hold a process open. During a request the race's own timer keeps
       // the event loop alive, so the reply still arrives in a short-lived hook.
       worker.unref();
@@ -375,6 +399,7 @@ class TimeBoxedMatcher implements MatcherHandle {
       quarantined: [culprit.id],
       unavailable: false,
       elapsedMs,
+      compiledPatterns: 0,
     };
   }
 
@@ -393,18 +418,21 @@ class TimeBoxedMatcher implements MatcherHandle {
       if (!intent) return;
       (intents[intent] ??= []).push(entry.id);
     });
-    return { intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs };
+    return {
+      intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs,
+      compiledPatterns: Number(reply.compiled ?? 0),
+    };
   }
 }
 
 /** One resident worker per inject daemon; respawns at most once per 5 s. */
-export function persistentMatcher(): MatcherHandle {
-  return new TimeBoxedMatcher(true);
+export function persistentMatcher(options?: MatcherOptions): MatcherHandle {
+  return new TimeBoxedMatcher(true, options);
 }
 
 /** A throwaway worker for the cold hook, the CLI and the extraction worker. */
-export function oneShotMatcher(): MatcherHandle {
-  return new TimeBoxedMatcher(false);
+export function oneShotMatcher(options?: MatcherOptions): MatcherHandle {
+  return new TimeBoxedMatcher(false, options);
 }
 
 /**

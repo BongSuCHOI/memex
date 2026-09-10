@@ -61,15 +61,17 @@ export const EMPTY_USER_PATTERN_HITS = Object.freeze({
     quarantined: Object.freeze([]),
     unavailable: false,
     elapsedMs: 0,
+    compiledPatterns: 0,
 });
 function unavailableHits(elapsedMs, timedOut = false) {
-    return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs };
+    return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs, compiledPatterns: 0 };
 }
 function workerEntry() {
     return new URL("./overlay-matcher-worker.mjs", import.meta.url);
 }
 class TimeBoxedMatcher {
     persistent;
+    options;
     worker = null;
     progress = null;
     generation = 0;
@@ -86,8 +88,9 @@ class TimeBoxedMatcher {
     tail = Promise.resolve();
     /** Observability for tests: how many workers this handle has constructed. */
     spawnCount = 0;
-    constructor(persistent) {
+    constructor(persistent, options = {}) {
         this.persistent = persistent;
+        this.options = options;
     }
     state() {
         if (this.disposed)
@@ -121,7 +124,7 @@ class TimeBoxedMatcher {
             // window opens; a one-shot handle never respawns at all.
             if (!this.persistent)
                 return null;
-            if (Date.now() - this.goneAt < MATCHER_RESPAWN_MS)
+            if (Date.now() - this.goneAt < (this.options.respawnMs ?? MATCHER_RESPAWN_MS))
                 return null;
         }
         return this.spawn();
@@ -132,7 +135,7 @@ class TimeBoxedMatcher {
             const progress = new Int32Array(buffer);
             Atomics.store(progress, 0, 0);
             Atomics.store(progress, 1, -1);
-            const worker = new Worker(workerEntry(), { workerData: { progress: buffer } });
+            const worker = new Worker(this.options.entry ?? workerEntry(), { workerData: { progress: buffer } });
             // Never hold a process open. During a request the race's own timer keeps
             // the event loop alive, so the reply still arrives in a short-lived hook.
             worker.unref();
@@ -317,6 +320,7 @@ class TimeBoxedMatcher {
             quarantined: [culprit.id],
             unavailable: false,
             elapsedMs,
+            compiledPatterns: 0,
         };
     }
     collect(reply, patterns, elapsedMs) {
@@ -332,16 +336,19 @@ class TimeBoxedMatcher {
                 return;
             (intents[intent] ??= []).push(entry.id);
         });
-        return { intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs };
+        return {
+            intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs,
+            compiledPatterns: Number(reply.compiled ?? 0),
+        };
     }
 }
 /** One resident worker per inject daemon; respawns at most once per 5 s. */
-export function persistentMatcher() {
-    return new TimeBoxedMatcher(true);
+export function persistentMatcher(options) {
+    return new TimeBoxedMatcher(true, options);
 }
 /** A throwaway worker for the cold hook, the CLI and the extraction worker. */
-export function oneShotMatcher() {
-    return new TimeBoxedMatcher(false);
+export function oneShotMatcher(options) {
+    return new TimeBoxedMatcher(false, options);
 }
 /**
  * A handle that can never run a user pattern. Used where a matcher is structurally

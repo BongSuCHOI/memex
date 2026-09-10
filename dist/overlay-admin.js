@@ -239,12 +239,25 @@ export function probeCorpus(sources) {
         "!".repeat(2000),
         " ".repeat(2000),
     ];
-    const alphabet = [...new Set(sources.join("").replace(/[^\p{L}\p{N}]/gu, ""))].join("") || "a";
+    const letters = [...new Set(sources.join("").replace(/[^\p{L}\p{N}]/gu, ""))];
+    const alphabet = letters.join("") || "a";
+    const failingSuffixes = [" ", "!", "Z"];
     for (const k of [20, 80, 400]) {
         const body = alphabet.repeat(Math.ceil(k / alphabet.length)).slice(0, k);
         probes.push(body);
-        for (const suffix of [" ", "!", "Z"])
+        for (const suffix of failingSuffixes)
             probes.push(body + suffix);
+        // EACH literal character on its own, not only the concatenation. For
+        // `^a+b?a+b?a+$` the concatenated alphabet is "ab", and `abab…!` fails fast
+        // because the `b?` slots are already filled — it is `aaaa…!` that forces the
+        // engine through every split. A corpus without this misses the exact family
+        // the reviewer's counterexample belongs to.
+        for (const letter of letters.slice(0, 4)) {
+            const run = letter.repeat(k);
+            probes.push(run);
+            for (const suffix of failingSuffixes)
+                probes.push(run + suffix);
+        }
     }
     probes.push(`\n${alphabet.repeat(10)}\n`);
     return probes;
@@ -313,12 +326,32 @@ export async function validateOverlay(overlay, doc, opts = {}) {
     if (!structural.ok || !structural.doc || opts.probe !== true)
         return structural;
     const issues = [...structural.issues];
-    for (const pattern of structural.doc.patterns?.add ?? []) {
+    const added = structural.doc.patterns?.add ?? [];
+    for (const pattern of added) {
         const probe = await probeRegexSafety([
             { label: pattern.id, source: pattern.source, flags: pattern.flags },
         ]);
         if (!probe.ok) {
-            issues.push(overlayIssue("error", "PATTERN_TOO_SLOW", `validation did not finish within the ${PROBE_WALL_MS} ms limit`, { path: `patterns.add`, params: { id: pattern.id, limitMs: PROBE_WALL_MS } }));
+            issues.push(overlayIssue("error", "PATTERN_TOO_SLOW", `validation did not finish within the ${PROBE_WALL_MS} ms limit`, { path: "patterns.add", params: { id: pattern.id, limitMs: PROBE_WALL_MS } }));
+        }
+    }
+    // The COMPOSED pattern too (§2.3.2): a branch that is fast on its own can be
+    // slow once it is one alternative among sixty, because the engine retries every
+    // branch at every position. Composing is exactly what the gate does at runtime,
+    // so probing the individual branch alone would measure something else.
+    const disabled = new Set(structural.doc.patterns?.disable ?? []);
+    for (const intent of ["memory", "trace", "highImpact"]) {
+        const userSources = added.filter((pattern) => pattern.intent === intent).map((p) => p.source);
+        if (userSources.length === 0)
+            continue;
+        const builtinSources = BUILTIN_GATE_PATTERNS
+            .filter((p) => p.intent === intent && p.form === "alternative" && !disabled.has(p.id))
+            .map((p) => p.source);
+        const probe = await probeRegexSafety([
+            { label: `composed:${intent}`, source: `(${[...builtinSources, ...userSources].join("|")})`, flags: "i" },
+        ]);
+        if (!probe.ok) {
+            issues.push(overlayIssue("error", "PATTERN_TOO_SLOW", `the composed ${intent} pattern did not finish within the ${PROBE_WALL_MS} ms limit`, { path: "patterns.add", params: { intent, limitMs: PROBE_WALL_MS, composed: true } }));
         }
     }
     return {
