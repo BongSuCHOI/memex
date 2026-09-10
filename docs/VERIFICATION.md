@@ -57,6 +57,7 @@ Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니�
 ```bash
 node --test ui/test/*.test.cjs
 node scripts/web-ui-browser-e2e.mjs
+node scripts/web-ui-browser-e2e.mjs --lang ko
 ```
 
 ## 3. Acceptance map
