@@ -85,7 +85,8 @@ test('graph and facts surfaces render fact text as text, never as markup', async
   const uiJs = pub('ui.mjs');
   assert.match(uiJs, /export const esc=.*\[&<>"'\]/, 'esc() must escape & < > " \'');
   // Fact text reaches innerHTML only through esc().
-  assert.match(pub('pages/facts.mjs'), /\$\{esc\((?:ctx\.prefs\.korean&&)?f\.fact_kr\?f\.fact_kr:f\.fact\)\}/, 'facts table must escape fact text');
+  // 0.7.0 (#109): prefs.korean은 prefs.preferTranslatedFacts로 개명됐다(UI 언어와 다른 축).
+  assert.match(pub('pages/facts.mjs'), /\$\{esc\((?:ctx\.prefs\.(?:korean|preferTranslatedFacts)&&)?f\.fact_kr\?f\.fact_kr:f\.fact\)\}/, 'facts table must escape fact text');
   assert.match(pub('details.mjs'), /\$\{esc\(translated\?f\.fact_kr:f\.fact\)\}/, 'fact drawer must escape fact text');
   assert.match(pub('pages/graph.mjs'), /\$\{esc\(n\.fact_kr\|\|n\.fact\)\}/, 'graph node list must escape fact text');
   // Graph tooltip is DOM text, never markup.
