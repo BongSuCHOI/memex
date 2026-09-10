@@ -22,7 +22,11 @@ vi.mock("../src/embeddings.js", () => ({
 import { initDatabase, insertExchange } from "../src/db.js";
 import { insertFact } from "../src/fact-db.js";
 import { ensureSessionMemoryState } from "../src/continuity-core.js";
-import { EXTRACTION_SYSTEM_PROMPT, saveExtractedFacts } from "../src/fact-extractor.js";
+import {
+  EXTRACTION_SYSTEM_PROMPT,
+  saveExtractedFacts,
+  validateExtractedFactCandidate,
+} from "../src/fact-extractor.js";
 import {
   TierStepError,
   applyScopeDirective,
@@ -253,6 +257,79 @@ describe("in-session scope directive (#19)", () => {
     expect((db.prepare(
       "SELECT actor FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
     ).get(saved[0]) as { actor: string }).actor).toBe("user-directive");
+  });
+});
+
+describe("a model-proposed scope directive is not user authority (#59)", () => {
+  /** Tool-only evidence: the model read a file, no human said where to store it. */
+  const toolExchange = (id: string) => ({
+    id,
+    user_message: "run the tests please",
+    assistant_message: "ok",
+    tool_evidence: [{
+      id: "call-1", tool_name: "shell",
+      tool_result: "config says database = sqlite",
+      source_type: "repo_file", learnable: 1,
+    }],
+  });
+  const toolCandidate = (directive: string) => ({
+    fact: "The runtime database is SQLite",
+    category: "knowledge", scope_type: "project",
+    grounding_type: "verified", durable: true, confidence: 0.9,
+    subject_key: "state.runtime.database",
+    scope_directive: directive,
+    evidence: [{
+      exchange_index: 1, source: "tool", kind: "repo_file", source_type: "repo_file",
+      tool_call_id: "call-1", tool_name: "shell", supporting_span: "database = sqlite",
+    }],
+  });
+
+  it("drops the directive and records why, while keeping the fact itself", () => {
+    const validated = validateExtractedFactCandidate(toolCandidate("global"), [toolExchange("ex-r59-tool")]);
+    expect(validated).not.toBeNull();
+    expect(validated?.fact).toBe("The runtime database is SQLite");
+    expect(validated?.scope_directive).toBeUndefined();
+    expect(validated?.classifier_notes?.join("\n")).toContain(
+      "dropped scope_directive without human evidence: global",
+    );
+  });
+
+  it("leaves the saved fact on its branch tier with no PROMOTED event", async () => {
+    const project = path.join(root, "r59-tool");
+    gitClone(project, "feature/r59");
+    ensureSessionMemoryState(db, { sessionId: "r59-tool", project });
+    await insertExchange(db, exchange("ex-r59-tool", "r59-tool", project, "run the tests please"), emb);
+    const validated = validateExtractedFactCandidate(toolCandidate("global"), [toolExchange("ex-r59-tool")]);
+    const saved = await saveExtractedFacts(db, [validated as never], project, ["ex-r59-tool"]);
+    expect(saved).toHaveLength(1);
+    expect(readFactTier(db, saved[0]).tier).toBe("workstream");
+    expect((db.prepare(
+      "SELECT COUNT(*) AS n FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
+    ).get(saved[0]) as { n: number }).n).toBe(0);
+    expect((db.prepare(
+      "SELECT COUNT(*) AS n FROM fact_revisions WHERE fact_id = ? AND actor = 'user-directive'",
+    ).get(saved[0]) as { n: number }).n).toBe(0);
+  });
+
+  it("keeps the directive when a human assertion grounds it", () => {
+    const validated = validateExtractedFactCandidate({
+      fact: "The loader uses a single entry point",
+      category: "decision", scope_type: "project",
+      grounding_type: "explicit", durable: true, confidence: 0.9,
+      subject_key: "decision.loader.entry_point",
+      scope_directive: "global",
+      evidence: [{
+        exchange_index: 1, source: "human", kind: "decision",
+        supporting_span: "the loader uses a single entry point",
+      }],
+    }, [{
+      id: "ex-r59-human",
+      user_message: "the loader uses a single entry point — make this a global memory",
+      assistant_message: "ok",
+      provenance: JSON.stringify(["human_assertion"]),
+    }]);
+    expect(validated?.scope_directive).toBe("global");
+    expect((validated?.classifier_notes ?? []).join("\n")).not.toContain("dropped scope_directive");
   });
 });
 

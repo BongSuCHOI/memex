@@ -61,6 +61,11 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 
 - `workstream → global` 직행은 불가합니다. 한 칸씩만 움직이며 위반은 `TierStepError`입니다. 예외는
   세션 내 명시 지시뿐이고, 그것도 **한 트랜잭션 안에서 두 단계로 실행되어 이벤트 두 개**를 남깁니다.
+- 0.6.2(#59)부터 `scope_directive`는 **검증기가 센 사람 근거**로만 채택됩니다:
+  `grounding_type === "explicit"`이고 human evidence가 1건 이상일 때만 남고, 그 외(예: tool 근거만
+  있는 `verified` 후보)는 `classifier_notes`에
+  `dropped scope_directive without human evidence: <값>`로 떨어집니다. 모델이 제안한 배치는
+  `user-directive`/`human-decision` 권한을 얻지 못하므로 두 칸 점프도 일어나지 않습니다.
 - 구현: `promoteFact` / `demoteFact`(`src/fact-management.ts`), actor `user` | `auto` | `user-directive`.
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
