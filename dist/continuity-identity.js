@@ -71,103 +71,495 @@ function readGitFile(file) {
         return null;
     }
 }
-/** Drop an unquoted `#`/`;` comment, the way git's config parser does. */
-function stripConfigComment(line) {
-    let quoted = false;
-    for (let index = 0; index < line.length; index += 1) {
-        const char = line[index];
+/** git's own `MAX_INCLUDE_DEPTH`. */
+const MAX_INCLUDE_DEPTH = 10;
+/**
+ * git's config tokenizer (`config.c`: `git_parse_source`, `get_base_var`,
+ * `get_extended_base_var`, `get_value`, `parse_value`) over a file's whole text.
+ *
+ * Issue #100: the previous line-and-regex scanner stripped one pair of outer
+ * quotes and nothing else, so it read `tr"unk"` as `tr"unk"` where git reads
+ * `trunk`, `"tr" unk` as `"tr" unk` where git reads `tr unk`, `"tr\"unk"` with
+ * the backslash still in it, dropped the trailing space git keeps inside
+ * `"trunk "`, and — worst of the three — accepted `[init "x"] defaultBranch` as
+ * `init.defaultBranch` when git calls it `init.x.defaultBranch`. Every one of
+ * those mis-reads lands on `branchSignalFor`, which is what decides a fact's
+ * tier: a default branch read as a feature branch strands facts on the
+ * `workstream` tier (#65), and a feature branch read as the default promotes
+ * branch-local memory into the project-common tier.
+ *
+ * git refuses a malformed file outright; this keeps whatever it read before the
+ * error, which is never worse than the scanner it replaces.
+ */
+function parseGitConfigText(text) {
+    const entries = [];
+    let section = "";
+    let subsection = null;
+    let index = 0;
+    let atEof = false;
+    /** git's `get_next_char`: `\r\n` folds to `\n`, and EOF reads as one `\n`. */
+    const next = () => {
+        if (index >= text.length) {
+            atEof = true;
+            return "\n";
+        }
+        const char = text[index++];
+        if (char === "\r" && text[index] === "\n") {
+            index += 1;
+            return "\n";
+        }
+        return char;
+    };
+    const isSpace = (char) => char === " " || char === "\t"
+        || char === "\n" || char === "\r" || char === "\v" || char === "\f";
+    const isKeyChar = (char) => /[A-Za-z0-9-]/.test(char);
+    /** `[section]` or `[section "subsection"]`; false on a malformed header. */
+    const readSectionHeader = () => {
+        let name = "";
+        for (;;) {
+            const char = next();
+            if (atEof)
+                return false;
+            if (char === "]") {
+                section = name;
+                subsection = null;
+                return name.length > 0;
+            }
+            if (isSpace(char)) {
+                // `[base "extension"]`. The subsection is case-sensitive and `\` only
+                // escapes the next character — it has no `\n`/`\t` meaning here.
+                let lead = char;
+                do {
+                    if (lead === "\n")
+                        return false;
+                    lead = next();
+                } while (isSpace(lead));
+                if (lead !== '"')
+                    return false;
+                let extension = "";
+                for (;;) {
+                    let inner = next();
+                    if (inner === "\n")
+                        return false;
+                    if (inner === '"')
+                        break;
+                    if (inner === "\\") {
+                        inner = next();
+                        if (inner === "\n")
+                            return false;
+                    }
+                    extension += inner;
+                }
+                if (next() !== "]")
+                    return false;
+                section = name;
+                subsection = extension;
+                return name.length > 0;
+            }
+            if (!isKeyChar(char) && char !== ".")
+                return false;
+            name += char.toLowerCase();
+        }
+    };
+    /**
+     * git's `parse_value`. Whitespace outside quotes is held back and flushed as
+     * single spaces only once another value character follows, so it is kept
+     * between words and dropped at both ends; whitespace inside quotes is kept
+     * verbatim. `null` means git would have rejected the file.
+     */
+    const readValue = () => {
+        let value = "";
+        let quoted = false;
+        let comment = false;
+        let pending = 0;
+        for (;;) {
+            const char = next();
+            if (char === "\n")
+                return quoted ? null : value;
+            if (comment)
+                continue;
+            if (isSpace(char) && !quoted) {
+                if (value.length > 0)
+                    pending += 1;
+                continue;
+            }
+            if (!quoted && (char === ";" || char === "#")) {
+                comment = true;
+                continue;
+            }
+            for (; pending > 0; pending -= 1)
+                value += " ";
+            if (char === "\\") {
+                const escaped = next();
+                if (escaped === "\n")
+                    continue; // line continuation
+                if (escaped === "t")
+                    value += "\t";
+                else if (escaped === "b")
+                    value += "\b";
+                else if (escaped === "n")
+                    value += "\n";
+                else if (escaped === "\\" || escaped === '"')
+                    value += escaped;
+                else
+                    return null; // git rejects every other escape
+                continue;
+            }
+            if (char === '"') {
+                quoted = !quoted;
+                continue;
+            }
+            value += char;
+        }
+    };
+    /** git's `get_value`: the rest of the key name, then `= value` or nothing. */
+    const readEntry = (first) => {
+        let key = first.toLowerCase();
+        let char = next();
+        while (!atEof && isKeyChar(char)) {
+            key += char.toLowerCase();
+            char = next();
+        }
+        while (char === " " || char === "\t")
+            char = next();
+        if (char === "\n") {
+            entries.push({ section, subsection, key, value: null });
+            return true;
+        }
+        if (char !== "=")
+            return false;
+        const value = readValue();
+        if (value === null)
+            return false;
+        entries.push({ section, subsection, key, value });
+        return true;
+    };
+    let comment = false;
+    for (;;) {
+        const char = next();
+        if (char === "\n") {
+            if (atEof)
+                return entries;
+            comment = false;
+            continue;
+        }
+        if (comment || isSpace(char))
+            continue;
+        if (char === "#" || char === ";") {
+            comment = true;
+            continue;
+        }
+        if (char === "[") {
+            if (!readSectionHeader())
+                return entries;
+            continue;
+        }
+        if (!/[A-Za-z]/.test(char))
+            return entries;
+        if (!readEntry(char))
+            return entries;
+    }
+}
+function escapeRegExp(value) {
+    return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+/** One path component of a `wildmatch` pattern; `null` = we will not guess. */
+function globComponentSource(component) {
+    let source = "";
+    for (let index = 0; index < component.length; index += 1) {
+        const char = component[index];
+        if (char === "*") {
+            source += "[^/]*";
+            continue;
+        }
+        if (char === "?") {
+            source += "[^/]";
+            continue;
+        }
         if (char === "\\") {
             index += 1;
+            if (index >= component.length)
+                return null;
+            source += escapeRegExp(component[index]);
             continue;
         }
-        if (char === '"') {
-            quoted = !quoted;
+        if (char === "[") {
+            // POSIX classes (`[[:alpha:]]`) are git's business, not ours: leave the
+            // condition unresolved rather than mis-read it.
+            if (component.startsWith("[[:", index))
+                return null;
+            let end = index + 1;
+            if (component[end] === "!" || component[end] === "^")
+                end += 1;
+            if (component[end] === "]")
+                end += 1;
+            while (end < component.length && component[end] !== "]") {
+                if (component[end] === "\\")
+                    end += 1;
+                end += 1;
+            }
+            if (end >= component.length)
+                return null;
+            const body = component.slice(index + 1, end);
+            // Under `WM_PATHNAME` a bracket expression never matches `/`.
+            source += `(?!/)[${body.startsWith("!") ? `^${body.slice(1)}` : body}]`;
+            index = end;
             continue;
         }
-        if (!quoted && (char === "#" || char === ";"))
-            return line.slice(0, index);
+        source += escapeRegExp(char);
     }
-    return line;
+    return source;
 }
 /**
- * `init.defaultBranch` from one git config file's text.
- *
- * Section-aware on purpose: the earlier `/\[init\][\s\S]*?defaultBranch/` regex
- * could cross a section boundary and read some other section's key. Git keeps
- * the LAST value a file declares, so this does too.
+ * git's `wildmatch(..., WM_PATHNAME)`: `*`, `?` and `[...]` stay inside one path
+ * component, and only a whole `**` component crosses `/`. Such a component may
+ * also match zero components, so a pattern of `a`, `**` and `b` joined by
+ * slashes matches `a/b` too, the way git documents it.
  */
-function initDefaultBranchIn(config) {
-    let inInit = false;
-    let value = null;
-    const readEntry = (text) => {
-        const entry = text.trim().match(/^defaultBranch\s*=\s*(.*)$/i);
-        if (!entry)
-            return;
-        const raw = entry[1].trim().replace(/^"(.*)"$/s, "$1").trim();
-        if (raw)
-            value = raw;
-    };
-    for (const rawLine of config.split(/\r?\n/)) {
-        const line = stripConfigComment(rawLine).trim();
-        if (!line)
-            continue;
-        // Git also accepts `[section] key = value` on one line.
-        const section = line.match(/^\[\s*([A-Za-z0-9.\-]+)\s*(?:"(?:[^"\\]|\\.)*")?\s*\](.*)$/);
-        if (section) {
-            inInit = section[1].toLowerCase() === "init";
-            if (inInit && section[2].trim())
-                readEntry(section[2]);
+function pathGlobToRegExp(pattern, icase) {
+    const components = pattern.split("/");
+    let source = "^";
+    for (let index = 0; index < components.length; index += 1) {
+        const last = index === components.length - 1;
+        if (components[index] === "**") {
+            source += last ? ".*" : "(?:[^/]*/)*";
             continue;
         }
-        if (inInit)
-            readEntry(line);
+        const component = globComponentSource(components[index]);
+        if (component === null)
+            return null;
+        source += component;
+        if (!last)
+            source += "/";
     }
+    try {
+        return new RegExp(`${source}$`, icase ? "is" : "s");
+    }
+    catch {
+        return null;
+    }
+}
+/** `~` and `~/…`; `~user/` is git's `interpolate_path`, not ours. */
+function expandTildePath(value) {
+    if (value === "~" || value.startsWith("~/")) {
+        const home = process.env.HOME || os.homedir();
+        if (!home)
+            return null;
+        return value === "~" ? home : path.join(home, value.slice(2));
+    }
+    if (value.startsWith("~"))
+        return null;
     return value;
 }
+function realpathOrAbsolute(value) {
+    try {
+        return fs.realpathSync(value);
+    }
+    catch {
+        return path.resolve(value);
+    }
+}
 /**
- * The config files `git config --global` and `--system` write to, in the order
- * git resolves them (global overrides system).
+ * git's `prepare_include_condition_pattern`: `~` is expanded, a `./` pattern is
+ * anchored at the including file's directory (and that part is compared
+ * literally, so wildcards in it cannot leak), a pattern that is neither
+ * absolute nor `./` gains a leading `**` component, and one ending in `/` gains
+ * a trailing `**` component.
+ */
+function prepareGitdirPattern(pattern, file) {
+    let value = expandTildePath(pattern);
+    if (value === null)
+        return null;
+    let prefix = 0;
+    if (value[0] === "." && (value[1] === "/" || value[1] === path.sep)) {
+        if (!file)
+            return null; // git: a relative conditional must come from a file
+        const directory = path.dirname(realpathOrAbsolute(file));
+        value = `${directory}${value.slice(1)}`;
+        prefix = directory.length + 1;
+    }
+    else if (!path.isAbsolute(value)) {
+        value = `**/${value}`;
+    }
+    if (value.endsWith("/"))
+        value += "**";
+    return { pattern: value, prefix };
+}
+function matchGitdirPattern(prepared, text, icase) {
+    const { pattern, prefix } = prepared;
+    if (prefix > 0) {
+        if (text.length < prefix)
+            return false;
+        const left = pattern.slice(0, prefix);
+        const right = text.slice(0, prefix);
+        if (icase ? left.toLowerCase() !== right.toLowerCase() : left !== right)
+            return false;
+    }
+    const regex = pathGlobToRegExp(pattern.slice(prefix), icase);
+    return regex ? regex.test(text.slice(prefix)) : false;
+}
+/**
+ * `includeIf` — `gitdir:`, `gitdir/i:` and `onbranch:`. Everything else,
+ * `hasconfig:remote.*.url:` included, is false here exactly as it is in git's
+ * `include_condition_is_true` for an unknown conditional: an include we cannot
+ * evaluate is not applied, which is the behaviour that was there before.
+ */
+function gitIncludeConditionIsTrue(condition, file, context) {
+    const gitdir = (pattern, icase) => {
+        if (!context.gitDir)
+            return false;
+        const prepared = prepareGitdirPattern(pattern, file);
+        return prepared ? matchGitdirPattern(prepared, context.gitDir, icase) : false;
+    };
+    if (condition.startsWith("gitdir:"))
+        return gitdir(condition.slice("gitdir:".length), false);
+    if (condition.startsWith("gitdir/i:"))
+        return gitdir(condition.slice("gitdir/i:".length), true);
+    if (condition.startsWith("onbranch:")) {
+        if (!context.branch)
+            return false;
+        let pattern = condition.slice("onbranch:".length);
+        if (pattern.endsWith("/"))
+            pattern += "**";
+        const regex = pathGlobToRegExp(pattern, false);
+        return regex ? regex.test(context.branch) : false;
+    }
+    return false;
+}
+function isGitIncludeEntry(entry) {
+    if (entry.key !== "path")
+        return false;
+    if (entry.section === "include")
+        return entry.subsection === null;
+    return entry.section === "includeif" && entry.subsection !== null;
+}
+/** git's `handle_path_include`: `~` expanded, relative to the including file. */
+function resolveIncludePath(value, file) {
+    const expanded = expandTildePath(value);
+    if (expanded === null)
+        return null;
+    if (path.isAbsolute(expanded))
+        return expanded;
+    if (!file)
+        return null;
+    return path.resolve(path.dirname(file), expanded);
+}
+/**
+ * Every entry one config file contributes, in git's order, with `include.path`
+ * and a true `includeIf` expanded *in place* — so a value set after an include
+ * still wins over the included one, as it does in git.
+ *
+ * `stack` holds the realpaths on the current include chain — the file being read
+ * included — so a file that includes itself, directly or through a ring, stops
+ * instead of recursing; including the same snippet from two different files is
+ * still allowed, as git allows it. git has no such set and instead `die`s once
+ * the depth passes 10, which would leave the branch unclassified altogether; the
+ * depth limit is kept as a second bound.
+ */
+function gitConfigEntries(text, file, context, stack = []) {
+    const collected = [];
+    for (const entry of parseGitConfigText(text)) {
+        if (!isGitIncludeEntry(entry)) {
+            collected.push(entry);
+            continue;
+        }
+        if (!entry.value)
+            continue;
+        if (entry.section === "includeif"
+            && !gitIncludeConditionIsTrue(entry.subsection, file, context))
+            continue;
+        // `stack` already holds the including file, so this bounds the chain at
+        // git's ten includes.
+        if (stack.length > MAX_INCLUDE_DEPTH)
+            continue;
+        const target = resolveIncludePath(entry.value, file);
+        if (!target)
+            continue;
+        const resolved = realpathOrAbsolute(target);
+        if (stack.includes(resolved))
+            continue;
+        // git ignores an include whose file is not there.
+        const body = readGitFile(target);
+        if (body === null)
+            continue;
+        collected.push(...gitConfigEntries(body, target, context, [...stack, resolved]));
+    }
+    return collected;
+}
+/** The `init.defaultBranch` git would report: the last one declared wins. */
+function lastInitDefaultBranch(entries) {
+    let value = null;
+    for (const entry of entries) {
+        if (entry.section !== "init" || entry.subsection !== null)
+            continue;
+        if (entry.key !== "defaultbranch")
+            continue;
+        value = entry.value;
+    }
+    // A valueless or empty key is git's boolean true / empty string, not a branch.
+    return value ? value : null;
+}
+const SYSTEM_GIT_CONFIG_CANDIDATES = [
+    "/etc/gitconfig",
+    "/usr/local/etc/gitconfig",
+    "/opt/homebrew/etc/gitconfig",
+];
+function isReadableFile(value) {
+    try {
+        return fs.statSync(value).isFile();
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * The config files `git config --system` and `--global` write to, in the order
+ * git *reads* them — system, then the XDG file, then `~/.gitconfig` — so the
+ * last declared value wins, which is how git resolves precedence.
  *
  * Issue #65: these are read as files rather than through `git config`, so no
- * process is spawned on the session-binding path and an absent file is simply
- * absent. Within the global tier git reads the XDG file first and `~/.gitconfig`
- * second, so `~/.gitconfig` wins; `GIT_CONFIG_GLOBAL` replaces both, and
- * `GIT_CONFIG_SYSTEM` / `GIT_CONFIG_NOSYSTEM` override the system tier the same
- * way git itself honours them.
+ * process is spawned on the session-binding path (`inspectWorkspaceLocation`
+ * runs inside the resolver's transaction) and an absent file is simply absent.
+ * `GIT_CONFIG_GLOBAL` replaces both global files, and `GIT_CONFIG_SYSTEM` /
+ * `GIT_CONFIG_NOSYSTEM` override the system tier the same way git honours them.
  */
-function userGitConfigFiles() {
+function gitConfigFilesInReadOrder() {
     const files = [];
+    if (process.env.GIT_CONFIG_NOSYSTEM !== "1") {
+        const systemOverride = process.env.GIT_CONFIG_SYSTEM;
+        if (systemOverride) {
+            // `/dev/null` is git's documented way to say "no config here".
+            if (systemOverride !== "/dev/null")
+                files.push(systemOverride);
+        }
+        else {
+            // The compiled-in location differs per install; git has exactly one, so
+            // probe the usual prefixes and keep the first that exists.
+            const system = SYSTEM_GIT_CONFIG_CANDIDATES.find(isReadableFile);
+            if (system)
+                files.push(system);
+        }
+    }
     const globalOverride = process.env.GIT_CONFIG_GLOBAL;
     if (globalOverride) {
-        // `/dev/null` is git's documented way to say "no global config".
         if (globalOverride !== "/dev/null")
             files.push(globalOverride);
-    }
-    else {
-        const home = process.env.HOME || os.homedir();
-        if (home)
-            files.push(path.join(home, ".gitconfig"));
-        const xdg = process.env.XDG_CONFIG_HOME
-            ? path.join(process.env.XDG_CONFIG_HOME, "git", "config")
-            : home ? path.join(home, ".config", "git", "config") : null;
-        if (xdg)
-            files.push(xdg);
-    }
-    if (process.env.GIT_CONFIG_NOSYSTEM === "1")
-        return files;
-    const systemOverride = process.env.GIT_CONFIG_SYSTEM;
-    if (systemOverride) {
-        if (systemOverride !== "/dev/null")
-            files.push(systemOverride);
         return files;
     }
-    // Compiled-in location differs per install; probe the usual prefixes.
-    files.push("/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig");
+    const home = process.env.HOME || os.homedir();
+    const xdg = process.env.XDG_CONFIG_HOME
+        ? path.join(process.env.XDG_CONFIG_HOME, "git", "config")
+        : home ? path.join(home, ".config", "git", "config") : null;
+    if (xdg)
+        files.push(xdg);
+    if (home)
+        files.push(path.join(home, ".gitconfig"));
     return files;
 }
 /**
- * Repository default branch: `origin/HEAD`, then the repository's own
- * `init.defaultBranch`, then the user's global/system `init.defaultBranch`.
+ * Repository default branch: `origin/HEAD`, then `init.defaultBranch` resolved
+ * across every config file git would read, in git's order (system → global →
+ * repository, last wins), following `include.path` and a matching `includeIf`.
  *
  * Issue #65: stopping at the repository config classified a perfectly ordinary
  * default branch as a feature branch. A clone with no `origin/HEAD` and no
@@ -176,8 +568,12 @@ function userGitConfigFiles() {
  * `{kind: 'branch', tierReason: 'branch:trunk'}` and every new fact stayed on
  * the `workstream` tier — where `listTierMigrationCandidates` also skips it,
  * putting it out of reach of `memex facts migrate-tiers` too.
+ *
+ * Issue #100: the same failure survived #65 for anyone who keeps
+ * `init.defaultBranch` in an `include`d or `includeIf`-gated file — the common
+ * work/personal gitconfig split — because includes were not followed at all.
  */
-function detectDefaultBranch(commonDir, config) {
+function detectDefaultBranch(commonDir, config, context) {
     const originHead = readGitFile(path.join(commonDir, "refs", "remotes", "origin", "HEAD"));
     const symbolic = originHead?.match(/^ref:\s+refs\/remotes\/origin\/(.+)$/)?.[1]?.trim();
     if (symbolic)
@@ -186,18 +582,17 @@ function detectDefaultBranch(commonDir, config) {
     const packedHead = packed.match(/^\s*ref:\s+refs\/remotes\/origin\/(.+)$/m)?.[1]?.trim();
     if (packedHead)
         return packedHead;
-    const repoInit = initDefaultBranchIn(config);
-    if (repoInit)
-        return repoInit;
-    for (const file of userGitConfigFiles()) {
+    const entries = [];
+    for (const file of gitConfigFilesInReadOrder()) {
         const text = readGitFile(file);
         if (text === null)
             continue;
-        const init = initDefaultBranchIn(text);
-        if (init)
-            return init;
+        entries.push(...gitConfigEntries(text, file, context, [realpathOrAbsolute(file)]));
     }
-    return null;
+    // The repository's own config is read last, so it wins.
+    const repoFile = path.join(commonDir, "config");
+    entries.push(...gitConfigEntries(config, repoFile, context, [realpathOrAbsolute(repoFile)]));
+    return lastInitDefaultBranch(entries);
 }
 export function inspectWorkspaceLocation(cwd) {
     const canonical = canonicalizeProjectPath(cwd);
@@ -234,6 +629,7 @@ export function inspectWorkspaceLocation(cwd) {
     const config = readGitFile(path.join(common, "config")) ?? "";
     const origin = config.match(/\[remote\s+"origin"\][\s\S]*?\n\s*url\s*=\s*([^\n]+)/i)?.[1]?.trim();
     const head = readGitFile(path.join(gitDir, "HEAD"));
+    const branch = head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null;
     const inodeIdentity = (value) => {
         try {
             const stat = fs.statSync(value);
@@ -247,8 +643,8 @@ export function inspectWorkspaceLocation(cwd) {
         gitCommonDir: canonicalizeProjectPath(common),
         remoteFingerprint: origin ? hash("remote-v1", origin).slice(0, 40) : null,
         locationKind,
-        branch: head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null,
-        defaultBranch: detectDefaultBranch(common, config),
+        branch,
+        defaultBranch: detectDefaultBranch(common, config, { gitDir, branch }),
         gitCommonIdentity: inodeIdentity(common),
         gitDirIdentity: inodeIdentity(gitDir),
     };

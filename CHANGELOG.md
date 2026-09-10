@@ -18,6 +18,24 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
   change is also refused with 409 `SYNC_BUSY` while a sync is running, mirroring
   the refusal `sync` already gives a mutation. (#96)
 
+### Memory tiers
+
+- Default-branch detection now parses git config the way git does, so the branch
+  signal that places every fact stops disagreeing with `git config`. A quoted
+  value is read with git's own value parser (quote state, `\"`/`\\`/`\n`/`\t`
+  escapes, `#`/`;` comments outside quotes, whitespace kept inside quotes and
+  dropped outside), `[init "x"]` is the separate key `init.x.defaultBranch`
+  rather than `init.defaultBranch`, and `include.path` / `includeIf` are followed
+  — `gitdir:`, `gitdir/i:` and `onbranch:`, with `~` expansion, paths resolved
+  against the including file, git's depth limit of 10, and a condition we cannot
+  evaluate left unapplied. `init.defaultBranch` is resolved across every file git
+  reads, in git's order (system → global → repository, last wins). Before this,
+  the common work/personal gitconfig split left #65 unfixed — a default branch
+  kept in an included file was still classified as a feature branch and its facts
+  still stranded on the `workstream` tier — and `[init "anything"]` could do the
+  reverse, classifying a feature branch as the default and leaking branch-local
+  memory into the project-common tier. (#100)
+
 ## 0.6.5 - 2026-09-10
 
 Hotfix for the embedding-model cache location (#92), found while validating
