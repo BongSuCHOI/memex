@@ -183,6 +183,12 @@ export function durableStateFingerprint(db: Database.Database): string {
     scalar('SELECT COUNT(*) AS v FROM chronicle_tombstones'),
     scalar('SELECT COUNT(*) AS v FROM recall_events'),
     scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM recall_events'),
+    // Issue #67: a receipt flipping `prepared` -> `emitted` changes the exported
+    // payload without touching either the row count or MAX(created_at), so the
+    // gate above called it "unchanged" and the convergence never propagated.
+    // `status`/`emitted_at` are exported columns, so they belong in the gate.
+    scalar("SELECT COUNT(*) AS v FROM recall_events WHERE status = 'emitted'"),
+    scalar('SELECT COALESCE(MAX(emitted_at), "") AS v FROM recall_events'),
   ];
   return createHash('sha256').update(parts.join('\0'), 'utf8').digest('hex');
 }

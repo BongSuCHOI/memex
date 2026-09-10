@@ -384,7 +384,8 @@ memex sync status
   이 판정은 **목적지까지 포함**합니다(0.6.2): 생략은 `export-status.json`에 기록된 공유 폴더가
   현재 폴더와 같고 그 폴더에 이 기기의 `devices/<id>/CURRENT`가 실제로 있을 때만 일어납니다.
   `memex sync enable --dir <새 폴더>`는 이전 목적지의 fingerprint를 지우므로 새 폴더는
-  항상 자기 첫 세대를 받습니다.
+  항상 자기 첫 세대를 받습니다. durable 변경 판정에는 recall 영수증의 `status`/`emitted_at`도
+  들어갑니다(0.6.2) — `prepared → emitted` 전이만으로도 다음 export가 나갑니다.
 - **원자성**: 세대는 임시 디렉터리에 payload를 먼저 쓰고 `meta.json`을 **마지막에** 쓴 뒤
   rename으로 공개합니다. 클라우드가 파일 단위로 업로드하는 중에 관측되더라도 `meta.json`이 없거나,
   있으면 이미 완전한 payload를 가리킵니다. `CURRENT`가 새 세대를 가리키는 순간이 commit point입니다.

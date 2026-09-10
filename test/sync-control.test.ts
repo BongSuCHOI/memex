@@ -275,6 +275,50 @@ describe('cross-device sync control (#35/#48)', () => {
     expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
   });
 
+  /**
+   * Issue #67 — observed: {"flipped":true,"fingerprintChanged":false,
+   * "row":{"status":"emitted",...}}. `status`/`emitted_at` are exported
+   * columns, but the gate read only COUNT(*) and MAX(created_at), so the
+   * convergence never left the device.
+   */
+  it('a recall receipt flipping to emitted moves the fingerprint and publishes a generation', async () => {
+    await seed(rootA, { id: 'fact-receipt', text: 'receipts travel too', subject: 'shared.receipt.case' });
+    const control = await import('../src/sync-control.js');
+    control.setSyncEnabled({ enabled: true });
+    expect(control.runSyncExport().skipped).toBeNull();
+
+    const { initDatabase, recordRecallEvent, markRecallEventEmitted } = await import('../src/db.js');
+    const { durableStateFingerprint } = await import('../src/sync-export.js');
+    let receiptId: string | null = null;
+    let before = '';
+    let after = '';
+    let db = initDatabase();
+    try {
+      receiptId = recordRecallEvent(db, {
+        sessionId: 'sess-receipt', project: '/shared', prompt: 'hello',
+        factIds: [], context: 'some injected context',
+      });
+      expect(receiptId).not.toBeNull();
+    } finally {
+      db.close();
+    }
+    // Publish the `prepared` receipt so only the flip is left to detect.
+    expect(control.runSyncExport().skipped).toBeNull();
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+
+    db = initDatabase();
+    try {
+      before = durableStateFingerprint(db);
+      expect(markRecallEventEmitted(db, { sessionId: 'sess-receipt', prompt: 'hello', id: receiptId! })).toBe(true);
+      after = durableStateFingerprint(db);
+    } finally {
+      db.close();
+    }
+    expect(after).not.toBe(before);
+    // Before the fix this reported `unchanged` and the flip never propagated.
+    expect(control.runSyncExport().skipped).toBeNull();
+  });
+
   it('the export hook script is registered on SessionEnd as an async entry', async () => {
     const { LIFECYCLE_COMMANDS, SYNC_LIFECYCLE_SCRIPTS, isLifecycleScriptRegistered } =
       await import('../src/lifecycle.js');
