@@ -10,7 +10,7 @@ import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
 import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, supersedeStaleExtractionTarget, } from "./continuity-store.js";
-import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, withResolvedModelWorkContext, } from "./model-budget.js";
+import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, releaseExtractionClaimOnHold, withResolvedModelWorkContext, } from "./model-budget.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
@@ -1721,7 +1721,13 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
     const transientFailures = [];
     const windowQueue = [...selectedWindows];
+    // Issue #31: a rejected request envelope stops the WHOLE loop at once. The
+    // selection is wrong for every window, so splitting or continuing would just
+    // buy more refusals and, worse, record this conversation's ranges as failed.
+    let configRejection = null;
     for (let b = 0; b < windowQueue.length; b++) {
+        if (configRejection)
+            break;
         if (allFacts.length >= MAX_FACTS_PER_SESSION) {
             if (options?.progress)
                 options.progress.budgetExhausted = true;
@@ -1832,6 +1838,16 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
             //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
             const cls = classifyLlmError(error);
+            if (cls === "config") {
+                // BEFORE the deterministic branch on purpose: an envelope rejection
+                // carries a 400 and invalid-request wording, so reaching the splitter
+                // would mean log2(n) identical refusals and a permanent failed range
+                // for a conversation that did nothing wrong.
+                configRejection = error;
+                console.error("Window extraction held: the provider rejected the request envelope " +
+                    "(no split, no failed range, no attempt consumed):", error instanceof Error ? error.message : String(error));
+                break;
+            }
             if (cls === "deterministic") {
                 if (window.length > 1) {
                     const middle = Math.ceil(window.length / 2);
@@ -1868,6 +1884,13 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     }
     // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
     // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
+    //
+    // Issue #31: a config rejection is surfaced FIRST and the same way — nothing
+    // is written, so the session stays pending and the next run retries it once
+    // the selection is fixed.
+    if (configRejection) {
+        throw new LlmCallError(configRejection);
+    }
     if (transientFailures.length > 0) {
         throw new LlmCallError(transientFailures[0]);
     }
@@ -2204,6 +2227,11 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
 export function classifyExtractionFailure(err) {
     if (err instanceof ClaimLostError)
         return "handoff";
+    // 설정 거절은 래핑 여부와 무관하게 같은 판정이어야 한다 — 래핑되지 않은
+    // CodexRequestRejectedError 가 "internal"(= 예산 소모 + 운영 경보)로 집계되면
+    // 보류 계약이 소비자 보고에서만 조용히 깨진다.
+    if (classifyLlmError(err) === "config")
+        return "config";
     if (err instanceof LlmCallError) {
         return classifyLlmError(err) === "deterministic"
             ? "provider_deterministic"
@@ -2233,6 +2261,15 @@ export const FAILURE_REPORT = {
         note: "공급자 일시 실패 — 예산 미소모, 다음 run 재시도",
         bucket: "transient",
         consumesBudget: false,
+        escalate: false,
+    },
+    config: {
+        label: "HELD",
+        note: "모델 설정 거절 — 예산 미소모, 설정을 고치면 자동 재개(memex models show)",
+        bucket: "held",
+        consumesBudget: false,
+        // 운영자가 손을 대야 하지만 **런타임 점검 대상은 아니다**: 고치는 곳이
+        // 코드나 DB 가 아니라 설정 한 줄이고, doctor 의 llm-model 체크가 안내한다.
         escalate: false,
     },
     provider_deterministic: {
@@ -2472,6 +2509,26 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             };
         }
         const kind = classifyLlmError(error);
+        // 🚨 이슈 #31 — 여기가 claim 회계를 되돌리는 지점이다.
+        //
+        // claimExtractionTargetWithReason 는 이미 memory_jobs(running·lease·attempts+1)
+        // ·extraction_targets(동일)·checkpoints(processing) 세 가지를 썼다. 설정 거절에
+        // recordExtractionFailure 를 쓰면 이 대화의 범위가 **실패로 확정**되고 job 은
+        // running + 소모된 attempt 로 남아 결국 dead 가 된다 — 대화의 잘못이 아닌 이유로.
+        // 그래서 실패를 기록하지 않고 claim 자체를 반환한다.
+        if (kind === "config") {
+            releaseExtractionClaimOnHold(db, {
+                targetId: target.targetId,
+                jobId: target.jobId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+                reason: "model_config_rejected",
+                detail: error instanceof Error ? error.message : String(error),
+            });
+            console.error(`extraction: session ${sessionId} held on a model setting — claim returned, ` +
+                "no attempt consumed, no failed range recorded (memex models show)");
+            throw error;
+        }
         if (!(error instanceof ClaimLostError)) {
             recordExtractionFailure(db, {
                 targetId: target.targetId,

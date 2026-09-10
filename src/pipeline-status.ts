@@ -140,6 +140,15 @@ export interface PipelineStatus {
     memoryJobsRetry: number;
     /** Subset of `memoryJobsRetry` whose backoff has not elapsed. */
     memoryJobsBackoff: number;
+    /**
+     * Issue #31 — jobs waiting on a model setting.
+     *
+     * NOT part of `total`: a held job is neither dead nor in retry, nothing is
+     * lost, and the action is one setting rather than a queue operation. It gets
+     * its own line so "extraction is not progressing" is traceable to the
+     * configuration that actually stopped it.
+     */
+    modelConfigHeld: number;
     terminal: {
       checkpointsDeadLetter: number;
       checkpointsFailedVisible: number;
@@ -183,6 +192,13 @@ function tableExists(db: Database.Database, name: string): boolean {
     db
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
       .get(name) !== undefined
+  );
+}
+
+function columnNames(db: Database.Database, table: string): Set<string> {
+  return new Set(
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map((row) => row.name),
   );
 }
 
@@ -746,6 +762,7 @@ export function emptyAttention(): PipelineStatus["attention"] {
     memoryJobsDead: 0,
     memoryJobsRetry: 0,
     memoryJobsBackoff: 0,
+    modelConfigHeld: 0,
     terminal: {
       checkpointsDeadLetter: 0,
       checkpointsFailedVisible: 0,
@@ -774,6 +791,14 @@ function readAttention(db: Database.Database): PipelineStatus["attention"] {
   attention.memoryJobsRetry = stateCount("memory_jobs", "state = 'retry'");
   attention.memoryJobsBackoff = stateCount("memory_jobs", "state = 'retry' AND available_at > ?", nowIso);
   attention.total = attention.memoryJobsDead + attention.memoryJobsRetry;
+  // Issue #31. Guarded: a pre-0.7.0 database has no such column.
+  attention.modelConfigHeld =
+    tableExists(db, "memory_jobs") && columnNames(db, "memory_jobs").has("hold_reason")
+      ? stateCount(
+          "memory_jobs",
+          "hold_reason = 'model_config_rejected' AND state NOT IN ('completed','superseded','dead')",
+        )
+      : 0;
   attention.terminal = {
     checkpointsDeadLetter: stateCount("checkpoints", "state = 'dead-letter'"),
     checkpointsFailedVisible: stateCount("checkpoints", "state = 'failed-visible'"),
@@ -938,6 +963,14 @@ export function formatPipelineStatus(s: PipelineStatus): string {
   );
   if (a.total > 0) {
     lines.push("  inspect: memex jobs list --state dead   recover: memex recover --all-dead   retire: memex jobs dismiss <id> --reason \"...\"");
+  }
+  // Issue #31: a held job is not a failure, so it gets its own line and its own
+  // remedy rather than being folded into the dead/retry count.
+  if (a.modelConfigHeld > 0) {
+    lines.push(
+      `  model config held: ${a.modelConfigHeld} job(s) waiting on a model setting — ` +
+        "no attempt was consumed; fix it and they resume automatically: memex models show",
+    );
   }
   const terminal = Object.entries(a.terminal).filter(([, count]) => count > 0);
   if (terminal.length > 0) {

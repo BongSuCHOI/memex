@@ -32,9 +32,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/ajv/dist/compile/codegen/code.js
+// ../../../node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -186,9 +186,9 @@ var require_code = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/scope.js
+// ../../../node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -331,9 +331,9 @@ var require_scope = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/index.js
+// ../../../node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1051,9 +1051,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/util.js
+// ../../../node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "node_modules/ajv/dist/compile/util.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1218,9 +1218,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/names.js
+// ../../../node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "node_modules/ajv/dist/compile/names.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1257,9 +1257,9 @@ var require_names = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/errors.js
+// ../../../node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "node_modules/ajv/dist/compile/errors.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1379,9 +1379,9 @@ var require_errors = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../../node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1430,9 +1430,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/rules.js
+// ../../../node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "node_modules/ajv/dist/compile/rules.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1461,9 +1461,9 @@ var require_rules = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/applicability.js
+// ../../../node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1484,9 +1484,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/dataType.js
+// ../../../node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1668,9 +1668,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/defaults.js
+// ../../../node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1705,9 +1705,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/code.js
+// ../../../node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1838,9 +1838,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/keyword.js
+// ../../../node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1956,9 +1956,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/subschema.js
+// ../../../node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2039,9 +2039,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// node_modules/fast-deep-equal/index.js
+// ../../../node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "node_modules/fast-deep-equal/index.js"(exports, module) {
+  "../../../node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b2) {
       if (a === b2) return true;
@@ -2074,9 +2074,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// node_modules/json-schema-traverse/index.js
+// ../../../node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "node_modules/json-schema-traverse/index.js"(exports, module) {
+  "../../../node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2162,9 +2162,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/resolve.js
+// ../../../node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2318,9 +2318,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/index.js
+// ../../../node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2826,9 +2826,9 @@ var require_validate = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/validation_error.js
+// ../../../node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2842,9 +2842,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/ref_error.js
+// ../../../node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2859,9 +2859,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/index.js
+// ../../../node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "node_modules/ajv/dist/compile/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3083,9 +3083,9 @@ var require_compile = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/data.json
+// ../../../node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "../../../node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3102,9 +3102,9 @@ var require_data = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/utils.js
+// ../../../node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "../../../node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3260,8 +3260,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input = path15;
+    function removeDotSegments(path17) {
+      let input = path17;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3599,9 +3599,9 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/schemes.js
+// ../../../node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "../../../node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -3666,8 +3666,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path15 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const path17 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path17 && path17 !== "/" ? path17 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -3810,9 +3810,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// node_modules/fast-uri/index.js
+// ../../../node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "node_modules/fast-uri/index.js"(exports, module) {
+  "../../../node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -4209,9 +4209,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/uri.js
+// ../../../node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -4220,9 +4220,9 @@ var require_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/core.js
+// ../../../node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "node_modules/ajv/dist/core.js"(exports) {
+  "../../../node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4831,9 +4831,9 @@ var require_core = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/id.js
+// ../../../node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4846,9 +4846,9 @@ var require_id = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../../node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -4968,9 +4968,9 @@ var require_ref = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/index.js
+// ../../../node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -4989,9 +4989,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5021,9 +5021,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5049,9 +5049,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/ucs2length.js
+// ../../../node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str) {
@@ -5075,9 +5075,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5107,9 +5107,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5144,9 +5144,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5173,9 +5173,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5255,9 +5255,9 @@ var require_required = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5284,9 +5284,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/equal.js
+// ../../../node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5295,9 +5295,9 @@ var require_equal = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5362,9 +5362,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5391,9 +5391,9 @@ var require_const = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5440,9 +5440,9 @@ var require_enum = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5478,9 +5478,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5531,9 +5531,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5588,9 +5588,9 @@ var require_items = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5605,9 +5605,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5640,9 +5640,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5734,9 +5734,9 @@ var require_contains = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5828,9 +5828,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5871,9 +5871,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5977,9 +5977,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -6035,9 +6035,9 @@ var require_properties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6109,9 +6109,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6140,9 +6140,9 @@ var require_not = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6157,9 +6157,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6215,9 +6215,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6242,9 +6242,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6311,9 +6311,9 @@ var require_if = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6329,9 +6329,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6377,9 +6377,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/format.js
+// ../../../node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6467,9 +6467,9 @@ var require_format = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/index.js
+// ../../../node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6478,9 +6478,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/metadata.js
+// ../../../node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6501,9 +6501,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/draft7.js
+// ../../../node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6523,9 +6523,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../../node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6537,9 +6537,9 @@ var require_types = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../../node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6642,9 +6642,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../../node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "../../../node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6799,9 +6799,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/ajv.js
+// ../../../node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "node_modules/ajv/dist/ajv.js"(exports, module) {
+  "../../../node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6869,9 +6869,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/formats.js
+// ../../../node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "node_modules/ajv-formats/dist/formats.js"(exports) {
+  "../../../node_modules/ajv-formats/dist/formats.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatNames = exports.fastFormats = exports.fullFormats = void 0;
@@ -7072,9 +7072,9 @@ var require_formats = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/limit.js
+// ../../../node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "node_modules/ajv-formats/dist/limit.js"(exports) {
+  "../../../node_modules/ajv-formats/dist/limit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatLimitDefinition = void 0;
@@ -7144,9 +7144,9 @@ var require_limit = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/index.js
+// ../../../node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "node_modules/ajv-formats/dist/index.js"(exports, module) {
+  "../../../node_modules/ajv-formats/dist/index.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -7173,12 +7173,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs13, exportName) {
+    function addFormats(ajv, list, fs15, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs13[f]);
+        ajv.addFormat(f, fs15[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7246,6 +7246,9 @@ function ensureDbDir() {
   const dbDir = path2.dirname(getDbPath());
   if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
   return dbDir;
+}
+function getModelSettingsPath() {
+  return path2.join(getMemexHome(), "models.json");
 }
 var MEMEX_DEFAULT_BASENAME, LLM_WORKDIR_BASENAME;
 var init_paths = __esm({
@@ -7763,15 +7766,330 @@ var init_ontology_selector = __esm({
   }
 });
 
+// src/model-settings.ts
+var model_settings_exports = {};
+__export(model_settings_exports, {
+  ALLOWED_REASONING_EFFORTS: () => ALLOWED_REASONING_EFFORTS,
+  DEFAULT_LLM_MODEL: () => DEFAULT_LLM_MODEL,
+  LLM_MODEL_ENV: () => LLM_MODEL_ENV,
+  LLM_REASONING_ENV: () => LLM_REASONING_ENV,
+  MODEL_SETTINGS_VERSION: () => MODEL_SETTINGS_VERSION,
+  defaultModelSettings: () => defaultModelSettings,
+  invalidateModelSettingsCache: () => invalidateModelSettingsCache,
+  isReasoningEffort: () => isReasoningEffort,
+  isValidModelId: () => isValidModelId,
+  llmSelectionFingerprint: () => llmSelectionFingerprint,
+  modelSettingsPath: () => modelSettingsPath,
+  normalizeReasoningEffort: () => normalizeReasoningEffort,
+  readModelSettings: () => readModelSettings,
+  resetModelSettings: () => resetModelSettings,
+  resolveLlmModel: () => resolveLlmModel,
+  resolveLlmSelection: () => resolveLlmSelection,
+  resolveReasoningEffort: () => resolveReasoningEffort,
+  writeModelSettings: () => writeModelSettings
+});
+import { createHash as createHash4 } from "node:crypto";
+import fs5 from "node:fs";
+import path8 from "node:path";
+function defaultModelSettings() {
+  return {
+    version: MODEL_SETTINGS_VERSION,
+    updatedAt: null,
+    llm: { model: null, reasoning: null, stages: {} },
+    embedding: { desiredModel: null, desiredDims: null, desiredProtocol: null }
+  };
+}
+function modelSettingsPath() {
+  return getModelSettingsPath();
+}
+function isValidModelId(id) {
+  if (typeof id !== "string") return false;
+  const trimmed = id.trim();
+  if (!trimmed || trimmed.length > 256) return false;
+  return /^[\w./:@+-]+$/.test(trimmed);
+}
+function isReasoningEffort(value) {
+  return typeof value === "string" && ALLOWED_REASONING_EFFORTS.includes(value);
+}
+function normalizeReasoningEffort(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  return isReasoningEffort(trimmed) ? trimmed : null;
+}
+function invalidateModelSettingsCache() {
+  memo = null;
+}
+function statStamp(target) {
+  try {
+    const stat = fs5.statSync(target);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "absent";
+  }
+}
+function parseSettings(raw) {
+  const fallback = { value: defaultModelSettings(), raw: null };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const object3 = raw;
+  if (object3.version !== MODEL_SETTINGS_VERSION) {
+    if (!warnedUnsupportedVersion) {
+      warnedUnsupportedVersion = true;
+      console.error(
+        `[memex] ${modelSettingsPath()}: unsupported version ${String(object3.version)} (this build understands ${MODEL_SETTINGS_VERSION}) \u2014 using core defaults; the file is left unchanged`
+      );
+    }
+    return fallback;
+  }
+  const llmRaw = object3.llm && typeof object3.llm === "object" && !Array.isArray(object3.llm) ? object3.llm : {};
+  const embeddingRaw = object3.embedding && typeof object3.embedding === "object" && !Array.isArray(object3.embedding) ? object3.embedding : {};
+  const stagesRaw = llmRaw.stages && typeof llmRaw.stages === "object" && !Array.isArray(llmRaw.stages) ? llmRaw.stages : {};
+  if (Object.keys(stagesRaw).length > 0 && !warnedStages) {
+    warnedStages = true;
+    console.error(
+      `[memex] ${modelSettingsPath()}: llm.stages is reserved and ignored in this release`
+    );
+  }
+  const dims = typeof embeddingRaw.desired_dims === "number" && Number.isSafeInteger(embeddingRaw.desired_dims) && embeddingRaw.desired_dims > 0 ? embeddingRaw.desired_dims : null;
+  const protocol = embeddingRaw.desired_protocol === "e5" || embeddingRaw.desired_protocol === "plain" ? embeddingRaw.desired_protocol : null;
+  return {
+    value: {
+      version: MODEL_SETTINGS_VERSION,
+      updatedAt: typeof object3.updated_at === "string" ? object3.updated_at : null,
+      llm: {
+        model: isValidModelId(llmRaw.model) ? String(llmRaw.model).trim() : null,
+        reasoning: normalizeReasoningEffort(llmRaw.reasoning),
+        stages: {}
+      },
+      embedding: {
+        desiredModel: typeof embeddingRaw.desired_model === "string" && embeddingRaw.desired_model.trim() ? embeddingRaw.desired_model.trim() : null,
+        desiredDims: dims,
+        desiredProtocol: protocol
+      }
+    },
+    raw: object3
+  };
+}
+function readModelSettings(options) {
+  const target = modelSettingsPath();
+  const now = options?.now ?? Date.now();
+  if (memo && memo.path === target && now - memo.revalidatedAt < REVALIDATE_MS) {
+    return memo.value;
+  }
+  const stamp = statStamp(target);
+  if (memo && memo.path === target && memo.stamp === stamp) {
+    memo.revalidatedAt = now;
+    return memo.value;
+  }
+  let parsed;
+  if (stamp === "absent") {
+    parsed = { value: defaultModelSettings(), raw: null };
+  } else {
+    try {
+      parsed = parseSettings(JSON.parse(fs5.readFileSync(target, "utf8")));
+    } catch {
+      parsed = { value: defaultModelSettings(), raw: null };
+    }
+  }
+  memo = { path: target, stamp, revalidatedAt: now, value: parsed.value, raw: parsed.raw };
+  return parsed.value;
+}
+function readRawSettings() {
+  try {
+    const parsed = JSON.parse(fs5.readFileSync(modelSettingsPath(), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...parsed };
+    }
+  } catch {
+  }
+  return {};
+}
+function writeModelSettings(patch, now = /* @__PURE__ */ new Date()) {
+  const raw = readRawSettings();
+  const rawUnsupported = raw.version !== void 0 && raw.version !== MODEL_SETTINGS_VERSION;
+  const llmRaw = raw.llm && typeof raw.llm === "object" && !Array.isArray(raw.llm) && !rawUnsupported ? { ...raw.llm } : {};
+  const embeddingRaw = raw.embedding && typeof raw.embedding === "object" && !Array.isArray(raw.embedding) && !rawUnsupported ? { ...raw.embedding } : {};
+  if (patch.llm && "model" in patch.llm) {
+    const model = patch.llm.model;
+    if (model === null || model === void 0) {
+      llmRaw.model = null;
+    } else {
+      if (!isValidModelId(model)) {
+        throw new Error(
+          `invalid model id ${JSON.stringify(String(model))} \u2014 expected 1-256 characters matching [\\w./:@+-]`
+        );
+      }
+      llmRaw.model = model.trim();
+    }
+  }
+  if (patch.llm && "reasoning" in patch.llm) {
+    const reasoning = patch.llm.reasoning;
+    if (reasoning === null || reasoning === void 0) {
+      llmRaw.reasoning = null;
+    } else {
+      const normalized = normalizeReasoningEffort(reasoning);
+      if (!normalized) {
+        throw new Error(
+          `invalid reasoning effort ${JSON.stringify(String(reasoning))} \u2014 expected one of ${ALLOWED_REASONING_EFFORTS.join(", ")}`
+        );
+      }
+      llmRaw.reasoning = normalized;
+    }
+  }
+  if (patch.embedding && "desiredModel" in patch.embedding) {
+    embeddingRaw.desired_model = patch.embedding.desiredModel ?? null;
+  }
+  if (patch.embedding && "desiredDims" in patch.embedding) {
+    embeddingRaw.desired_dims = patch.embedding.desiredDims ?? null;
+  }
+  if (patch.embedding && "desiredProtocol" in patch.embedding) {
+    embeddingRaw.desired_protocol = patch.embedding.desiredProtocol ?? null;
+  }
+  const document = {
+    ...rawUnsupported ? {} : raw,
+    version: MODEL_SETTINGS_VERSION,
+    updated_at: now.toISOString(),
+    llm: llmRaw,
+    ...Object.keys(embeddingRaw).length > 0 ? { embedding: embeddingRaw } : {}
+  };
+  const target = modelSettingsPath();
+  fs5.mkdirSync(path8.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs5.writeFileSync(tmp, `${JSON.stringify(document, null, 2)}
+`, { mode: 384 });
+  try {
+    fs5.renameSync(tmp, target);
+  } catch (error2) {
+    try {
+      fs5.rmSync(tmp, { force: true });
+    } catch {
+    }
+    throw error2;
+  }
+  try {
+    fs5.chmodSync(target, 384);
+  } catch {
+  }
+  invalidateModelSettingsCache();
+  return readModelSettings();
+}
+function resetModelSettings() {
+  try {
+    fs5.rmSync(modelSettingsPath(), { force: true });
+  } catch {
+  }
+  invalidateModelSettingsCache();
+  return readModelSettings();
+}
+function envModel() {
+  const raw = process.env[LLM_MODEL_ENV];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+function envReasoning() {
+  const raw = process.env[LLM_REASONING_ENV];
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const normalized = normalizeReasoningEffort(raw);
+  if (!normalized) {
+    if (warnedEnvReasoning !== raw) {
+      warnedEnvReasoning = raw;
+      console.error(
+        `[memex] ${LLM_REASONING_ENV}=${raw} is not one of ${ALLOWED_REASONING_EFFORTS.join(", ")} \u2014 ignored`
+      );
+    }
+    return null;
+  }
+  return normalized;
+}
+function resolveLlmModel(options) {
+  const fromEnv = envModel();
+  if (fromEnv) return { value: fromEnv, source: "env" };
+  const fromFile = readModelSettings(options).llm.model;
+  if (fromFile) return { value: fromFile, source: "file" };
+  return { value: DEFAULT_LLM_MODEL, source: "default" };
+}
+function resolveReasoningEffort(options) {
+  const fromEnv = envReasoning();
+  if (fromEnv) return { value: fromEnv, source: "env" };
+  const fromFile = readModelSettings(options).llm.reasoning;
+  if (fromFile) return { value: fromFile, source: "file" };
+  return { value: null, source: "default" };
+}
+function resolveLlmSelection(overrides, options) {
+  let model;
+  let modelSource;
+  const overrideModel = typeof overrides?.model === "string" ? overrides.model.trim() : "";
+  if (overrideModel) {
+    model = overrideModel;
+    modelSource = "explicit";
+  } else {
+    const resolved = resolveLlmModel(options);
+    model = resolved.value;
+    modelSource = resolved.source;
+  }
+  let reasoning;
+  let reasoningSource;
+  if (overrides && "reasoningEffort" in overrides && overrides.reasoningEffort !== void 0) {
+    reasoning = normalizeReasoningEffort(overrides.reasoningEffort);
+    reasoningSource = "explicit";
+  } else {
+    const resolved = resolveReasoningEffort(options);
+    reasoning = resolved.value;
+    reasoningSource = resolved.source;
+  }
+  return {
+    model,
+    reasoning,
+    modelSource,
+    reasoningSource,
+    fingerprint: fingerprintOf(model, reasoning, modelSource, reasoningSource)
+  };
+}
+function fingerprintOf(model, reasoning, modelSource, reasoningSource) {
+  return createHash4("sha256").update(`${model}|${reasoning ?? ""}|${modelSource}|${reasoningSource}`).digest("hex");
+}
+function llmSelectionFingerprint(overrides, options) {
+  return resolveLlmSelection(overrides, options).fingerprint;
+}
+var MODEL_SETTINGS_VERSION, DEFAULT_LLM_MODEL, ALLOWED_REASONING_EFFORTS, LLM_MODEL_ENV, LLM_REASONING_ENV, REVALIDATE_MS, memo, warnedUnsupportedVersion, warnedStages, warnedEnvReasoning;
+var init_model_settings = __esm({
+  "src/model-settings.ts"() {
+    "use strict";
+    init_paths();
+    MODEL_SETTINGS_VERSION = 1;
+    DEFAULT_LLM_MODEL = "gpt-5.6-luna";
+    ALLOWED_REASONING_EFFORTS = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ];
+    LLM_MODEL_ENV = "MEMEX_CODEX_MODEL";
+    LLM_REASONING_ENV = "MEMEX_CODEX_REASONING";
+    REVALIDATE_MS = 1e3;
+    memo = null;
+    warnedUnsupportedVersion = false;
+    warnedStages = false;
+    warnedEnvReasoning = null;
+  }
+});
+
 // src/model-budget.ts
 var model_budget_exports = {};
 __export(model_budget_exports, {
   AUTOMATIC_MAINTENANCE_COOLDOWN_MS: () => AUTOMATIC_MAINTENANCE_COOLDOWN_MS,
   AUTOMATIC_MAINTENANCE_WINDOW_MS: () => AUTOMATIC_MAINTENANCE_WINDOW_MS,
+  BUDGET_FREE_OUTCOMES: () => BUDGET_FREE_OUTCOMES,
+  HOLD_REASONS: () => HOLD_REASONS,
   MAINTENANCE_WAKE_INTERVAL_MS: () => MAINTENANCE_WAKE_INTERVAL_MS,
   MODEL_ATTEMPT_TABLE: () => MODEL_ATTEMPT_TABLE,
   MODEL_BUDGET_SCHEMA_VERSION: () => MODEL_BUDGET_SCHEMA_VERSION,
   MODEL_BUDGET_TABLE: () => MODEL_BUDGET_TABLE,
+  MODEL_CONFIG_HOLD_TTL_MS: () => MODEL_CONFIG_HOLD_TTL_MS,
   MODEL_TARGET_TABLE: () => MODEL_TARGET_TABLE,
   ModelBudgetAffinityError: () => ModelBudgetAffinityError,
   ModelBudgetError: () => ModelBudgetError,
@@ -7780,9 +8098,15 @@ __export(model_budget_exports, {
   ModelBudgetNotFoundError: () => ModelBudgetNotFoundError,
   ModelBudgetOutputLimitError: () => ModelBudgetOutputLimitError,
   ModelBudgetOutputSchemaError: () => ModelBudgetOutputSchemaError,
+  ModelConfigHeldError: () => ModelConfigHeldError,
+  activeModelConfigHold: () => activeModelConfigHold,
   automaticMaintenanceWindow: () => automaticMaintenanceWindow,
   bindMemoryJobToBudget: () => bindMemoryJobToBudget,
   claimMaintenanceWake: () => claimMaintenanceWake,
+  clearJobHold: () => clearJobHold,
+  clearModelConfigHold: () => clearModelConfigHold,
+  clearModelConfigHoldsForSelection: () => clearModelConfigHoldsForSelection,
+  currentModelConfigHold: () => currentModelConfigHold,
   deferMemoryJobForModelBudget: () => deferMemoryJobForModelBudget,
   ensureModelBudgetSchema: () => ensureModelBudgetSchema,
   exhaustModelBudget: () => exhaustModelBudget,
@@ -7797,24 +8121,36 @@ __export(model_budget_exports, {
   getOrCreateMaintenanceModelBudget: () => getOrCreateMaintenanceModelBudget,
   getOrCreateModelWorkBudget: () => getOrCreateModelWorkBudget,
   getOrCreateWorkerModelBudget: () => getOrCreateWorkerModelBudget,
+  heldJobSummary: () => heldJobSummary,
+  holdMemoryJob: () => holdMemoryJob,
   isAutomaticOntologyEnabled: () => isAutomaticOntologyEnabled,
   isModelBudgetExhausted: () => isModelBudgetExhausted,
+  listModelConfigHolds: () => listModelConfigHolds,
   modelBudgetErrorFromUnknown: () => modelBudgetErrorFromUnknown,
   modelBudgetLimitsFromEnv: () => modelBudgetLimitsFromEnv,
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
+  recordModelConfigHold: () => recordModelConfigHold,
   registerModelWorkTargets: () => registerModelWorkTargets,
+  releaseExtractionClaimOnHold: () => releaseExtractionClaimOnHold,
+  releaseHeldJobs: () => releaseHeldJobs,
   reserveModelAttempt: () => reserveModelAttempt,
   rootWaveIdOf: () => rootWaveIdOf,
+  settleConfigRejectedAttempt: () => settleConfigRejectedAttempt,
   settleModelWorkTargets: () => settleModelWorkTargets,
   startNewModelWorkRun: () => startNewModelWorkRun,
   startNewModelWorkRunForBudget: () => startNewModelWorkRunForBudget,
   startNewModelWorkRunForJob: () => startNewModelWorkRunForJob,
+  touchModelConfigHold: () => touchModelConfigHold,
   withModelWorkContext: () => withModelWorkContext,
   withResolvedModelWorkContext: () => withResolvedModelWorkContext
 });
 import { AsyncLocalStorage } from "node:async_hooks";
 import Database from "better-sqlite3";
 import { randomUUID as randomUUID3 } from "node:crypto";
+function budgetRelevantOutcomeSql(alias) {
+  const list = BUDGET_FREE_OUTCOMES.map((value) => `'${value}'`).join(",");
+  return `COALESCE(${alias}.outcome,'') NOT IN (${list})`;
+}
 function getModelWorkContext() {
   return modelWorkStorage.getStore();
 }
@@ -7896,7 +8232,15 @@ function ensureModelBudgetSchema(db) {
         token_usage_status TEXT
           CHECK(token_usage_status IN ('observed','partial','NOT_PROVEN')),
         error_class TEXT,
-        error_message TEXT
+        error_message TEXT,
+        -- Issue #31: which selection this attempt intended and actually used.
+        model TEXT,
+        reasoning_effort TEXT,
+        -- Issue #31: NULL for an ordinary attempt; 'config_rejected' for one the
+        -- provider refused before any model work started. No CHECK: the value
+        -- set can grow (other "cost nothing" outcomes) and every existing row
+        -- must stay NULL, so the restriction is application-level only.
+        outcome TEXT
       );
 
       CREATE TABLE IF NOT EXISTS model_work_targets (
@@ -7931,7 +8275,57 @@ function ensureModelBudgetSchema(db) {
         id INTEGER PRIMARY KEY CHECK(id = 1),
         wake_after TEXT NOT NULL
       );
+
+      /*
+       * Issue #31 \u2014 durable "this model selection is unusable" state.
+       *
+       * Keyed on the SELECTION FINGERPRINT, one row per selection, NOT a single
+       * id=1 row. v2 of the design used a single row that a lookup deleted on a
+       * fingerprint mismatch, so in one data root a process with different env
+       * erased another process's valid hold (2nd review (b)5). With the
+       * fingerprint as the key, every process reads and writes only its OWN
+       * row \u2014 so there is no delete race to lose, and fixing the setting simply
+       * means no active row matches any more.
+       *
+       * Clearing does not delete: cleared_at / cleared_by are written so the
+       * history stays auditable. "Active" means cleared_at IS NULL.
+       */
+      CREATE TABLE IF NOT EXISTS model_config_holds (
+        selection_fingerprint TEXT PRIMARY KEY,
+        held_at TEXT NOT NULL,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT,
+        provider_status INTEGER,
+        provider_type TEXT,
+        provider_message TEXT,
+        first_stage TEXT,
+        first_job_id TEXT,
+        observed_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        cleared_at TEXT,
+        cleared_by TEXT
+          CHECK(cleared_by IS NULL OR cleared_by IN ('probe-ok','manual','ttl'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_config_holds_live
+        ON model_config_holds(cleared_at, last_observed_at);
     `);
+    const attemptColumns = columnNames2(db, MODEL_ATTEMPT_TABLE);
+    for (const column of ["model", "reasoning_effort", "outcome"]) {
+      if (!attemptColumns.has(column)) {
+        db.exec(`ALTER TABLE ${MODEL_ATTEMPT_TABLE} ADD COLUMN ${column} TEXT`);
+      }
+    }
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_model_work_attempts_outcome
+         ON ${MODEL_ATTEMPT_TABLE}(budget_id, outcome)`
+    );
+    db.prepare(
+      `UPDATE model_config_holds SET cleared_at = ?, cleared_by = 'ttl'
+       WHERE cleared_at IS NULL AND last_observed_at < ?`
+    ).run(
+      (/* @__PURE__ */ new Date()).toISOString(),
+      new Date(Date.now() - MODEL_CONFIG_HOLD_TTL_MS).toISOString()
+    );
     if (!columnNames2(db, MODEL_BUDGET_TABLE).has("automatic")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
     }
@@ -7995,6 +8389,9 @@ function ensureModelBudgetSchema(db) {
       }
       if (!columns.has("maintenance_wave_id")) {
         db.exec("ALTER TABLE memory_jobs ADD COLUMN maintenance_wave_id TEXT");
+      }
+      if (!columns.has("hold_reason")) {
+        db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
       }
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_memory_jobs_budget ON memory_jobs(budget_id, state, updated_at)"
@@ -8523,9 +8920,12 @@ function findExhaustedModelBudgetForClaim(db, input) {
   return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
 }
 function hasModelAttemptSince(db, jobId, since) {
+  const outcomeAware = columnNames2(db, MODEL_ATTEMPT_TABLE).has("outcome");
   return db.prepare(`
-    SELECT 1 FROM model_work_attempts
-    WHERE job_id = ? AND started_at >= ? LIMIT 1
+    SELECT 1 FROM model_work_attempts a
+    WHERE a.job_id = ? AND a.started_at >= ?
+      ${outcomeAware ? `AND ${budgetRelevantOutcomeSql("a")}` : ""}
+    LIMIT 1
   `).get(jobId, since.toISOString()) !== void 0;
 }
 function deferMemoryJobForModelBudget(db, input) {
@@ -8605,6 +9005,252 @@ function deferMemoryJobForModelBudget(db, input) {
   });
   return defer.immediate();
 }
+function assertHoldReason(reason) {
+  if (!HOLD_REASONS.includes(reason)) {
+    throw new Error(
+      `unknown hold reason ${JSON.stringify(reason)}; expected one of ${HOLD_REASONS.join(", ")}`
+    );
+  }
+  return reason;
+}
+function ensureHoldReasonColumn(db) {
+  if (!tableExists2(db, "memory_jobs")) return false;
+  if (columnNames2(db, "memory_jobs").has("hold_reason")) return true;
+  db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+  return true;
+}
+function holdDetail(reason, detail) {
+  return `held (${reason}): ${detail}`.replace(/\s+/g, " ").trim().slice(0, 1e3);
+}
+function holdJobStatement(db) {
+  return db.prepare(`
+    UPDATE memory_jobs
+    SET state = 'pending', available_at = ?, lease_owner = NULL, lease_until = NULL,
+        attempts = MAX(attempts - 1, 0), hold_reason = ?, last_error = ?, updated_at = ?
+    WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+      AND lease_generation = ? AND lease_until > ?
+  `);
+}
+function holdMemoryJob(db, input) {
+  const reason = assertHoldReason(input.reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const detail = holdDetail(reason, input.detail);
+  const hold = db.transaction(
+    () => holdJobStatement(db).run(
+      nowIso2,
+      reason,
+      detail,
+      nowIso2,
+      input.jobId,
+      input.owner,
+      input.leaseGeneration,
+      nowIso2
+    ).changes === 1
+  );
+  return db.inTransaction ? hold() : hold.immediate();
+}
+function releaseExtractionClaimOnHold(db, input) {
+  const reason = assertHoldReason(input.reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const detail = holdDetail(reason, input.detail);
+  const release = db.transaction(() => {
+    const row = db.prepare(`
+      SELECT target_id, checkpoint_id, kind FROM memory_jobs
+      WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+        AND lease_generation = ? AND lease_until > ?
+    `).get(input.jobId, input.owner, input.leaseGeneration, nowIso2);
+    if (!row) return false;
+    const changed = holdJobStatement(db).run(
+      nowIso2,
+      reason,
+      detail,
+      nowIso2,
+      input.jobId,
+      input.owner,
+      input.leaseGeneration,
+      nowIso2
+    ).changes;
+    if (changed !== 1) return false;
+    const targetId = input.targetId || row.target_id;
+    if (targetId && tableExists2(db, "extraction_targets")) {
+      const refundTargetAttempt = columnNames2(db, "extraction_targets").has("attempts");
+      db.prepare(`
+        UPDATE extraction_targets
+        SET state = 'pending', lease_owner = NULL, lease_until = NULL,
+            last_error = ?, updated_at = ?
+            ${refundTargetAttempt ? ", attempts = MAX(attempts - 1, 0)" : ""}
+        WHERE target_id = ? AND state = 'running' AND lease_owner = ?
+          AND lease_generation = ?
+      `).run(detail, nowIso2, targetId, input.owner, input.leaseGeneration);
+    }
+    if (row.checkpoint_id && tableExists2(db, "checkpoints")) {
+      db.prepare(
+        "UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processing'"
+      ).run(row.checkpoint_id);
+    }
+    return true;
+  });
+  return db.inTransaction ? release() : release.immediate();
+}
+function clearJobHold(db, jobId) {
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  return db.prepare(
+    "UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE job_id = ? AND hold_reason IS NOT NULL"
+  ).run((/* @__PURE__ */ new Date()).toISOString(), jobId).changes === 1;
+}
+function releaseHeldJobs(db, reason) {
+  assertHoldReason(reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return 0;
+  return db.prepare(
+    "UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE hold_reason = ?"
+  ).run((/* @__PURE__ */ new Date()).toISOString(), reason).changes;
+}
+function heldJobSummary(db) {
+  if (!tableExists2(db, "memory_jobs")) return [];
+  if (!columnNames2(db, "memory_jobs").has("hold_reason")) return [];
+  const rows = db.prepare(`
+    SELECT hold_reason AS reason, COUNT(*) AS jobs, MIN(updated_at) AS oldest
+    FROM memory_jobs
+    WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+    GROUP BY hold_reason
+    ORDER BY hold_reason
+  `).all();
+  return rows.filter((row) => HOLD_REASONS.includes(row.reason)).map((row) => ({ reason: row.reason, jobs: Number(row.jobs), oldestHeldAt: row.oldest ?? null }));
+}
+function holdFromRow(row) {
+  return {
+    fingerprint: String(row.selection_fingerprint),
+    heldAt: String(row.held_at),
+    model: String(row.model),
+    reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+    status: row.provider_status == null ? null : Number(row.provider_status),
+    providerType: row.provider_type == null ? null : String(row.provider_type),
+    providerMessage: row.provider_message == null ? "" : String(row.provider_message),
+    observedCount: Number(row.observed_count ?? 1),
+    lastObservedAt: String(row.last_observed_at)
+  };
+}
+function recordModelConfigHold(db, input) {
+  ensureModelBudgetSchema(db);
+  const nowIso2 = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  db.prepare(`
+    INSERT INTO model_config_holds
+      (selection_fingerprint, held_at, model, reasoning_effort, provider_status,
+       provider_type, provider_message, first_stage, first_job_id,
+       observed_count, last_observed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(selection_fingerprint) DO UPDATE SET
+      observed_count = model_config_holds.observed_count + 1,
+      last_observed_at = excluded.last_observed_at,
+      provider_status = excluded.provider_status,
+      provider_type = excluded.provider_type,
+      provider_message = excluded.provider_message,
+      -- A re-observation revives a cleared row: the selection is still broken.
+      cleared_at = NULL,
+      cleared_by = NULL
+  `).run(
+    input.fingerprint,
+    nowIso2,
+    input.model,
+    input.reasoningEffort,
+    input.status,
+    input.providerType,
+    input.providerMessage.slice(0, 400),
+    input.stage ?? null,
+    input.jobId ?? null,
+    nowIso2
+  );
+}
+function touchModelConfigHold(db, fingerprint, now = /* @__PURE__ */ new Date()) {
+  if (!tableExists2(db, "model_config_holds")) return;
+  db.prepare(
+    `UPDATE model_config_holds
+     SET observed_count = observed_count + 1, last_observed_at = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`
+  ).run(now.toISOString(), fingerprint);
+}
+function activeModelConfigHold(db, fingerprint) {
+  if (!tableExists2(db, "model_config_holds")) return null;
+  const row = db.prepare(
+    "SELECT * FROM model_config_holds WHERE selection_fingerprint = ? AND cleared_at IS NULL"
+  ).get(fingerprint);
+  return row ? holdFromRow(row) : null;
+}
+function clearModelConfigHold(db, fingerprint, reason, now = /* @__PURE__ */ new Date()) {
+  ensureModelBudgetSchema(db);
+  return db.prepare(
+    `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`
+  ).run(now.toISOString(), reason, fingerprint).changes === 1;
+}
+function clearModelConfigHoldsForSelection(db, selection, reason, now = /* @__PURE__ */ new Date()) {
+  ensureModelBudgetSchema(db);
+  return db.prepare(
+    `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE cleared_at IS NULL AND model = ?
+       AND COALESCE(reasoning_effort,'') = COALESCE(?,'')`
+  ).run(now.toISOString(), reason, selection.model, selection.reasoningEffort).changes;
+}
+function listModelConfigHolds(db, currentFingerprint) {
+  if (!tableExists2(db, "model_config_holds")) return [];
+  const rows = db.prepare(
+    "SELECT * FROM model_config_holds WHERE cleared_at IS NULL ORDER BY held_at, selection_fingerprint"
+  ).all();
+  return rows.map((row) => {
+    const hold = holdFromRow(row);
+    return { ...hold, current: currentFingerprint === hold.fingerprint };
+  });
+}
+function currentModelConfigHold(db, overrides) {
+  return activeModelConfigHold(db, llmSelectionFingerprint(overrides));
+}
+function settleConfigRejectedAttempt(db, input) {
+  ensureModelBudgetSchema(db);
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const settle = db.transaction(() => {
+    const changed = db.prepare(`
+      UPDATE ${MODEL_ATTEMPT_TABLE}
+      SET state = 'failed', outcome = 'config_rejected', error_class = ?,
+          finished_at = ?, duration_ms = ?
+      WHERE attempt_id = ? AND state = 'reserved'
+    `).run(
+      (input.errorClass ?? "CodexRequestRejectedError").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120),
+      nowIso2,
+      input.durationMs == null ? null : Math.max(0, Math.trunc(input.durationMs)),
+      input.attemptId
+    ).changes;
+    if (changed !== 1) return false;
+    const row = db.prepare(
+      `SELECT budget_id FROM ${MODEL_ATTEMPT_TABLE} WHERE attempt_id = ?`
+    ).get(input.attemptId);
+    if (!row) return false;
+    db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE}
+      SET reserved_attempts = MAX(reserved_attempts - 1, 0), updated_at = ?
+      WHERE budget_id = ?
+    `).run(nowIso2, row.budget_id);
+    db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE} SET state = 'active', updated_at = ?
+      WHERE budget_id = ? AND state = 'exhausted'
+        AND reserved_attempts < max_attempts
+        AND (SELECT COUNT(*) FROM ${MODEL_ATTEMPT_TABLE} a
+              WHERE a.budget_id = ${MODEL_BUDGET_TABLE}.budget_id
+                AND ${budgetRelevantOutcomeSql("a")}) < max_attempts
+        AND (deadline_at IS NULL OR deadline_at > ?)
+    `).run(nowIso2, row.budget_id, nowIso2);
+    return true;
+  });
+  return db.inTransaction ? settle() : settle.immediate();
+}
 function remainingDeadlineMs(deadlineAt, now = Date.now()) {
   if (!deadlineAt) return null;
   return Math.max(0, Date.parse(deadlineAt) - now);
@@ -8632,6 +9278,8 @@ function reserveModelAttempt(db, input) {
   const now = input.now ?? /* @__PURE__ */ new Date();
   const nowIso2 = now.toISOString();
   const stage = input.stage?.trim() || "standalone";
+  const intendedModel = input.model?.trim() || resolveLlmModel().value;
+  const intendedEffort = input.reasoningEffort !== void 0 ? input.reasoningEffort : resolveReasoningEffort().value;
   const reserve = db.transaction(() => {
     const row = db.prepare("SELECT * FROM model_work_budgets WHERE budget_id = ?").get(input.budgetId);
     if (!row) throw new ModelBudgetNotFoundError(input.budgetId);
@@ -8648,13 +9296,18 @@ function reserveModelAttempt(db, input) {
         reason
       );
     }
-    const attemptNo = budget.reservedAttempts + 1;
+    const attemptNo = Number(
+      db.prepare(
+        `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS n FROM ${MODEL_ATTEMPT_TABLE} WHERE budget_id = ?`
+      ).get(budget.budgetId).n
+    );
+    const nextReserved = budget.reservedAttempts + 1;
     const attemptId = randomUUID3();
     db.prepare(`
       INSERT INTO model_work_attempts
         (attempt_id, budget_id, attempt_no, stage, job_id, target_id,
-         state, started_at, input_chars, token_usage_status)
-      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN')
+         state, started_at, input_chars, token_usage_status, model, reasoning_effort)
+      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN', ?, ?)
     `).run(
       attemptId,
       budget.budgetId,
@@ -8663,14 +9316,16 @@ function reserveModelAttempt(db, input) {
       input.jobId ?? null,
       input.targetId ?? null,
       nowIso2,
-      input.inputChars
+      input.inputChars,
+      intendedModel,
+      intendedEffort
     );
-    const nextState = attemptNo >= budget.maxAttempts || budget.deadlineAt != null && Date.parse(budget.deadlineAt) <= now.getTime() ? "exhausted" : "active";
+    const nextState = nextReserved >= budget.maxAttempts || budget.deadlineAt != null && Date.parse(budget.deadlineAt) <= now.getTime() ? "exhausted" : "active";
     db.prepare(`
       UPDATE model_work_budgets
       SET reserved_attempts = ?, state = ?, updated_at = ?
       WHERE budget_id = ? AND reserved_attempts = ?
-    `).run(attemptNo, nextState, nowIso2, budget.budgetId, budget.reservedAttempts);
+    `).run(nextReserved, nextState, nowIso2, budget.budgetId, budget.reservedAttempts);
     if (input.jobId) {
       const job = db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?").get(input.jobId);
       if (job?.budget_id && job.budget_id !== input.budgetId) {
@@ -8691,7 +9346,7 @@ function reserveModelAttempt(db, input) {
       deadlineAt: budget.deadlineAt,
       maxInputChars: budget.maxInputChars,
       maxOutputChars: budget.maxOutputChars,
-      remainingAttempts: Math.max(0, budget.maxAttempts - attemptNo),
+      remainingAttempts: Math.max(0, budget.maxAttempts - nextReserved),
       remainingDeadlineMs: remainingDeadlineMs(budget.deadlineAt, now.getTime())
     };
   });
@@ -8713,7 +9368,9 @@ function finishModelAttempt(db, input) {
       UPDATE model_work_attempts
       SET state = ?, finished_at = ?, duration_ms = ?, output_chars = ?,
           token_usage_json = ?, token_usage_status = ?, error_class = ?,
-          error_message = ?
+          error_message = ?,
+          model = COALESCE(?, model),
+          reasoning_effort = CASE WHEN ? THEN ? ELSE reasoning_effort END
       WHERE attempt_id = ? AND state = 'reserved'
     `).run(
     input.state,
@@ -8724,6 +9381,11 @@ function finishModelAttempt(db, input) {
     durableTokenUsageStatus,
     durableErrorClass,
     null,
+    input.model ?? null,
+    // `reasoningEffort: null` is a real observation ("no flag was sent"), so
+    // it must be distinguishable from "the caller said nothing".
+    input.reasoningEffort !== void 0 ? 1 : 0,
+    input.reasoningEffort ?? null,
     input.attemptId
   ).changes;
   return changed === 1;
@@ -8896,15 +9558,16 @@ function latestMaintenanceBudget(db, parentWaveId) {
 function automaticMaintenanceWindow(db, now = /* @__PURE__ */ new Date()) {
   const maxAttempts = envInt(["MEMEX_AUTO_MODEL_MAX_ATTEMPTS"], DEFAULT_AUTOMATIC_MAX_ATTEMPTS, 1e5);
   const cutoff = new Date(now.getTime() - AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString();
+  const budgetRelevant = columnNames2(db, MODEL_ATTEMPT_TABLE).has("outcome") ? `AND ${budgetRelevantOutcomeSql("a")}` : "";
   const { used } = db.prepare(`
     SELECT COUNT(*) AS used FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
   `).get(cutoff);
   const oldest = maxAttempts > 0 && used >= maxAttempts ? db.prepare(`
     SELECT a.started_at FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
     ORDER BY a.started_at, a.attempt_id LIMIT 1 OFFSET ?
   `).get(cutoff, used - maxAttempts) : void 0;
   return {
@@ -9052,6 +9715,7 @@ function getModelWorkDiagnostics(db, filter = {}) {
         completed: 0,
         failed: 0,
         unknown: 0,
+        configRejected: 0,
         pending: 0,
         durationMs: null,
         inputChars: null,
@@ -9120,7 +9784,10 @@ function getModelWorkDiagnostics(db, filter = {}) {
         cachedInputTokens: integerOrNull(usage?.cached_input_tokens),
         tokenUsageStatus: row.token_usage_status == null ? null : String(row.token_usage_status),
         errorClass: row.error_class == null ? null : String(row.error_class),
-        errorMessage: row.error_message == null ? null : String(row.error_message)
+        errorMessage: row.error_message == null ? null : String(row.error_message),
+        model: row.model == null ? null : String(row.model),
+        reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+        outcome: row.outcome == null ? null : String(row.outcome)
       });
     }
   }
@@ -9256,11 +9923,16 @@ function getModelWorkDiagnostics(db, filter = {}) {
       });
     }
   }
+  const isConfigRejected = (attempt) => attempt.outcome != null && BUDGET_FREE_OUTCOMES.includes(attempt.outcome);
   const totals = {
     reserved: attempts.length,
     completed: attempts.filter((attempt) => attempt.state === "completed").length,
-    failed: attempts.filter((attempt) => attempt.state === "failed").length,
+    // A refused envelope is `state='failed'` in the ledger but is NOT a failed
+    // model call: reporting it as one is what made "the budget is burning"
+    // indistinguishable from "the setting is wrong".
+    failed: attempts.filter((attempt) => attempt.state === "failed" && !isConfigRejected(attempt)).length,
     unknown: attempts.filter((attempt) => attempt.state === "unknown" || attempt.state === "reserved").length,
+    configRejected: attempts.filter(isConfigRejected).length,
     pending: pending.length,
     durationMs: null,
     inputChars: null,
@@ -9295,6 +9967,7 @@ function getModelWorkDiagnostics(db, filter = {}) {
         completed: 0,
         failed: 0,
         unknown: 0,
+        configRejected: 0,
         durationMs: null,
         inputChars: null,
         outputChars: null,
@@ -9309,7 +9982,8 @@ function getModelWorkDiagnostics(db, filter = {}) {
     }
     stage.reserved++;
     if (attempt.state === "completed") stage.completed++;
-    if (attempt.state === "failed") stage.failed++;
+    if (attempt.state === "failed" && !isConfigRejected(attempt)) stage.failed++;
+    if (isConfigRejected(attempt)) stage.configRejected++;
     if (attempt.state === "unknown" || attempt.state === "reserved") stage.unknown++;
     stage.durationMs = sumKnown(
       attempts.filter((item) => item.stage === attempt.stage).map((item) => item.durationMs)
@@ -9363,12 +10037,12 @@ function formatModelWorkDiagnostics(diagnostics) {
   }
   for (const attempt of diagnostics.attempts) {
     lines.push(
-      `  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`
+      `  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} model=${attempt.model ?? "?"} effort=${attempt.reasoningEffort ?? "-"} outcome=${attempt.outcome ?? "-"} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`
     );
   }
   for (const stage of diagnostics.stages) {
     lines.push(
-      `stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`
+      `stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} config_rejected=${stage.configRejected} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`
     );
   }
   for (const pending of diagnostics.pending) {
@@ -9382,7 +10056,7 @@ function formatModelWorkDiagnostics(diagnostics) {
     );
   }
   lines.push(
-    `totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`
+    `totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} config_rejected=${diagnostics.totals.configRejected} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`
   );
   return lines.join("\n");
 }
@@ -9454,13 +10128,14 @@ async function withResolvedModelWorkContext(requested, fn) {
     if (ownsDb) db.close();
   }
 }
-var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, modelWorkStorage;
+var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, MODEL_CONFIG_HOLD_TTL_MS, HOLD_REASONS, BUDGET_FREE_OUTCOMES, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, ModelConfigHeldError, modelWorkStorage;
 var init_model_budget = __esm({
   "src/model-budget.ts"() {
     "use strict";
     init_paths();
     init_embeddings();
     init_ontology_selector();
+    init_model_settings();
     MODEL_BUDGET_SCHEMA_VERSION = 1;
     MODEL_BUDGET_TABLE = "model_work_budgets";
     MODEL_ATTEMPT_TABLE = "model_work_attempts";
@@ -9474,6 +10149,16 @@ var init_model_budget = __esm({
     AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 6e4;
     DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
     MAINTENANCE_WAKE_INTERVAL_MS = 3 * 6e4;
+    MODEL_CONFIG_HOLD_TTL_MS = 30 * 24 * 60 * 6e4;
+    HOLD_REASONS = [
+      "model_config_rejected",
+      // the provider refused the request envelope
+      "extraction_rules_invalid",
+      // a never_extract pattern was quarantined
+      "extraction_rules_unavailable"
+      // the never_extract check could not finish
+    ];
+    BUDGET_FREE_OUTCOMES = ["config_rejected"];
     ModelBudgetError = class extends Error {
       code = "MEMEX_MODEL_BUDGET";
       budgetId;
@@ -9540,11 +10225,22 @@ var init_model_budget = __esm({
         this.name = "ModelBudgetAffinityError";
       }
     };
+    ModelConfigHeldError = class extends Error {
+      code = "MEMEX_MODEL_CONFIG_HELD";
+      hold;
+      constructor(hold) {
+        super(
+          `model work is held: the provider rejected the request envelope for model "${hold.model}"${hold.reasoningEffort ? ` at reasoning effort "${hold.reasoningEffort}"` : ""} (${hold.status ?? "?"} ${hold.providerType ?? "provider error"}). Fix the selection and it resumes automatically: memex models show`
+        );
+        this.name = "ModelConfigHeldError";
+        this.hold = hold;
+      }
+    };
     modelWorkStorage = new AsyncLocalStorage();
   }
 });
 
-// node_modules/zod/v3/external.js
+// ../../../node_modules/zod/v3/external.js
 var external_exports = {};
 __export(external_exports, {
   BRAND: () => BRAND,
@@ -9656,7 +10352,7 @@ __export(external_exports, {
   void: () => voidType
 });
 
-// node_modules/zod/v3/helpers/util.js
+// ../../../node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
   util2.assertEqual = (_2) => {
@@ -9790,7 +10486,7 @@ var getParsedType = (data) => {
   }
 };
 
-// node_modules/zod/v3/ZodError.js
+// ../../../node_modules/zod/v3/ZodError.js
 var ZodIssueCode = util.arrayToEnum([
   "invalid_type",
   "invalid_literal",
@@ -9908,7 +10604,7 @@ ZodError.create = (issues) => {
   return error2;
 };
 
-// node_modules/zod/v3/locales/en.js
+// ../../../node_modules/zod/v3/locales/en.js
 var errorMap = (issue2, _ctx) => {
   let message;
   switch (issue2.code) {
@@ -10011,7 +10707,7 @@ var errorMap = (issue2, _ctx) => {
 };
 var en_default = errorMap;
 
-// node_modules/zod/v3/errors.js
+// ../../../node_modules/zod/v3/errors.js
 var overrideErrorMap = en_default;
 function setErrorMap(map) {
   overrideErrorMap = map;
@@ -10020,10 +10716,10 @@ function getErrorMap() {
   return overrideErrorMap;
 }
 
-// node_modules/zod/v3/helpers/parseUtil.js
+// ../../../node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path15, errorMaps, issueData } = params;
-  const fullPath = [...path15, ...issueData.path || []];
+  const { data, path: path17, errorMaps, issueData } = params;
+  const fullPath = [...path17, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -10130,20 +10826,20 @@ var isDirty = (x2) => x2.status === "dirty";
 var isValid = (x2) => x2.status === "valid";
 var isAsync = (x2) => typeof Promise !== "undefined" && x2 instanceof Promise;
 
-// node_modules/zod/v3/helpers/errorUtil.js
+// ../../../node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
 (function(errorUtil2) {
   errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
   errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
 })(errorUtil || (errorUtil = {}));
 
-// node_modules/zod/v3/types.js
+// ../../../node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path15, key) {
+  constructor(parent, value, path17, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path15;
+    this._path = path17;
     this._key = key;
   }
   get path() {
@@ -13585,7 +14281,7 @@ var coerce = {
 };
 var NEVER = INVALID;
 
-// node_modules/zod/v4/core/core.js
+// ../../../node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -13645,7 +14341,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -13781,10 +14477,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path15) {
-  if (!path15)
+function getElementAtPath(obj, path17) {
+  if (!path17)
     return obj;
-  return path15.reduce((acc, key) => acc?.[key], obj);
+  return path17.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -14104,11 +14800,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path15, issues) {
+function prefixIssues(path17, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path15);
+    iss.path.unshift(path17);
     return iss;
   });
 }
@@ -14166,7 +14862,7 @@ var Class = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../node_modules/zod/v4/core/errors.js
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -14241,7 +14937,7 @@ function formatError(error2, _mapper) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -14291,7 +14987,7 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
 };
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][^\s-]{8,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/;
@@ -14349,7 +15045,7 @@ var _null = /null/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// node_modules/zod/v4/core/checks.js
+// ../../../node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -14734,7 +15430,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = []) {
     this.content = [];
@@ -14770,14 +15466,14 @@ var Doc = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 0,
   patch: 0
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -16015,7 +16711,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../node_modules/zod/v4/locales/en.js
 var parsedType = (data) => {
   const t = typeof data;
   switch (t) {
@@ -16133,7 +16829,7 @@ function en_default2() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../node_modules/zod/v4/core/registries.js
 var $output = Symbol("ZodOutput");
 var $input = Symbol("ZodInput");
 var $ZodRegistry = class {
@@ -16183,7 +16879,7 @@ function registry() {
 }
 var globalRegistry = /* @__PURE__ */ registry();
 
-// node_modules/zod/v4/core/api.js
+// ../../../node_modules/zod/v4/core/api.js
 function _string(Class2, params) {
   return new Class2({
     type: "string",
@@ -16622,7 +17318,7 @@ function _refine(Class2, fn, _params) {
   return schema;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -16685,7 +17381,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -16726,7 +17422,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../node_modules/zod/v4/classic/errors.js
 var initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
@@ -16760,13 +17456,13 @@ var ZodRealError = $constructor("ZodError", initializer2, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../node_modules/zod/v4/classic/schemas.js
 var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   $ZodType.init(inst, def);
   inst.def = def;
@@ -17377,10 +18073,10 @@ function preprocess(fn, schema) {
   return pipe(transform(fn), schema);
 }
 
-// node_modules/zod/v4/classic/external.js
+// ../../../node_modules/zod/v4/classic/external.js
 config(en_default2());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -18899,18 +19595,18 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// node_modules/zod-to-json-schema/dist/esm/Options.js
+// ../../../node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
 
-// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// ../../../node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -18931,7 +19627,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -19885,7 +20581,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -19953,7 +20649,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -20166,7 +20862,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -20201,7 +20897,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -20572,10 +21268,10 @@ var Server = class extends Protocol {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process2 from "node:process";
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -20612,7 +21308,7 @@ function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
@@ -20681,19 +21377,19 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 init_paths();
-import { createHash as createHash6, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
 import net from "node:net";
-import fs10 from "node:fs";
-import path11 from "node:path";
+import fs11 from "node:fs";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/db.ts
 init_paths();
 init_codex_rollout();
 import Database2 from "better-sqlite3";
-import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
-import fs5 from "node:fs";
-import path8 from "path";
+import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
+import fs6 from "node:fs";
+import path9 from "path";
 import * as sqliteVec from "sqlite-vec";
 init_embeddings();
 
@@ -21923,7 +22619,10 @@ function ensureContinuitySchema(db, options = {}) {
         updated_at TEXT NOT NULL,
         -- Issue #20: memex jobs retry clears last_error; the failure it
         -- cleared is preserved here as a JSON array, never deleted.
-        retry_history TEXT
+        retry_history TEXT,
+        -- Issue #31: which unusable configuration this pending job waits on.
+        -- NULL for every ordinary job. Values: see HOLD_REASONS.
+        hold_reason TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -22590,8 +23289,12 @@ function ensureContinuitySchema(db, options = {}) {
     if (!capsuleColumns.has("original_chars")) {
       db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
     }
-    if (!columnNames(db, "memory_jobs").has("retry_history")) {
+    const memoryJobColumns = columnNames(db, "memory_jobs");
+    if (!memoryJobColumns.has("retry_history")) {
       db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
+    }
+    if (!memoryJobColumns.has("hold_reason")) {
+      db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
     const repaired = db.prepare(`
@@ -22994,12 +23697,12 @@ function initializeConnection(db, mode) {
   }
 }
 function openWriteDb(dbPath = getDbPath()) {
-  fs5.mkdirSync(path8.dirname(dbPath), { recursive: true });
+  fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   return initializeConnection(new Database2(dbPath), "write");
 }
 function initDatabase(options = {}) {
   const dbPath = options.dbPath ?? getDbPath();
-  if (options.dbPath) fs5.mkdirSync(path8.dirname(dbPath), { recursive: true });
+  if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
   const db = openWriteDb(dbPath);
   if (options.busyTimeoutMs !== void 0) {
@@ -23579,7 +24282,7 @@ function initDatabase(options = {}) {
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash4("sha256").update(prompt, "utf8").digest("hex");
+  return createHash5("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0 && !event.context?.trim()) return null;
@@ -23675,7 +24378,7 @@ function assertReadScope(db, scope) {
 init_embeddings();
 
 // src/chronicle.ts
-import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
 var INCIDENT_COALESCE_WINDOW_MS = 30 * 60 * 1e3;
 var CHRONICLE_TIMELINE_MAX_LIMIT = 100;
 var CHRONICLE_LANE_LABELS = {
@@ -23688,7 +24391,7 @@ var CHRONICLE_LANE_LABELS = {
 };
 var KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
 function sha2562(value) {
-  return createHash5("sha256").update(value, "utf8").digest("hex");
+  return createHash6("sha256").update(value, "utf8").digest("hex");
 }
 function parseStringArray(raw) {
   if (typeof raw !== "string" || raw === "") return [];
@@ -24639,11 +25342,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs7 from "fs";
+import fs8 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs6 from "fs";
+import fs7 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -24663,7 +25366,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs6.statSync(p);
+      return fs7.statSync(p);
     } catch {
       return null;
     }
@@ -24712,7 +25415,7 @@ function readArchiveFile(filePath) {
       code: "ENOENT"
     });
   }
-  const buf = fs6.readFileSync(resolved);
+  const buf = fs7.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -24721,27 +25424,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs6.createReadStream(filePath);
+    return fs7.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs6.createReadStream(resolved);
+      const source = fs7.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs6.readFileSync(resolved));
+    const content = requireZstdSync()(fs7.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs6.createReadStream(resolved);
+  return fs7.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs6.statSync(resolved);
+    return fs7.statSync(resolved);
   } catch {
     return null;
   }
@@ -24753,7 +25456,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs7.statSync(p);
+    const st = fs8.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -25366,28 +26069,28 @@ async function detectRepeat(prompt, project, limit = 3, threshold = 0.82, opts =
 
 // src/inject-log.ts
 init_paths();
-import fs8 from "fs";
-import path9 from "path";
+import fs9 from "fs";
+import path10 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path9.join(getIndexDir(), "logs");
-  if (!fs8.existsSync(dir)) {
-    fs8.mkdirSync(dir, { recursive: true });
+  const dir = path10.join(getIndexDir(), "logs");
+  if (!fs9.existsSync(dir)) {
+    fs9.mkdirSync(dir, { recursive: true });
   }
-  return path9.join(dir, "inject-context.jsonl");
+  return path10.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs8.statSync(logPath);
+      const stat = fs9.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs8.renameSync(logPath, `${logPath}.old`);
+        fs9.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs8.appendFileSync(logPath, line + "\n");
+    fs9.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
@@ -25431,14 +26134,14 @@ init_paths();
 
 // src/observe-hook-event.ts
 init_paths();
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function dataRoot() {
   return getMemexHome();
 }
 function observationLogPath() {
-  return path10.join(dataRoot(), "logs", "hook-events.jsonl");
+  return path11.join(dataRoot(), "logs", "hook-events.jsonl");
 }
 function recordHookEvent(event, info) {
   const name = typeof event === "string" ? event.trim() : "";
@@ -25453,14 +26156,14 @@ function recordHookEvent(event, info) {
       ...detail ? { detail } : {}
     }) + "\n";
     const file = observationLogPath();
-    fs9.mkdirSync(path10.dirname(file), { recursive: true });
-    fs9.appendFileSync(file, line);
+    fs10.mkdirSync(path11.dirname(file), { recursive: true });
+    fs10.appendFileSync(file, line);
     return true;
   } catch {
     return false;
   }
 }
-if (process.argv[1] && path10.basename(process.argv[1]) === "observe-hook-event.js" && path10.resolve(process.argv[1]) === fileURLToPath3(import.meta.url)) {
+if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.js" && path11.resolve(process.argv[1]) === fileURLToPath3(import.meta.url)) {
   const [event, sessionId, cwd] = process.argv.slice(2);
   if (!recordHookEvent(event ?? "", { sessionId, cwd })) {
     process.stderr.write(
@@ -26320,10 +27023,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const current = embeddingCallStats();
       return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
     };
-    const sampleEmbeddingMetrics = (path15, unavailable) => {
+    const sampleEmbeddingMetrics = (path17, unavailable) => {
       const { calls: calls2, hits } = embeddingMetrics();
-      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path15, unavailable } });
-      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path15 } });
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path17, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path17 } });
       return calls2;
     };
     let embedding = null;
@@ -26819,26 +27522,26 @@ init_embeddings();
 init_plugin_root();
 var INJECT_DAEMON_PROTOCOL = 1;
 var INJECT_DAEMON_WARMING = "warming";
-var HERE2 = path11.dirname(fileURLToPath4(import.meta.url));
+var HERE2 = path12.dirname(fileURLToPath4(import.meta.url));
 function realpathOrSelf(target) {
   try {
-    return fs10.realpathSync(target);
+    return fs11.realpathSync(target);
   } catch {
-    return path11.resolve(target);
+    return path12.resolve(target);
   }
 }
 function injectDaemonExecutionRoot() {
-  return realpathOrSelf(path11.resolve(HERE2, ".."));
+  return realpathOrSelf(path12.resolve(HERE2, ".."));
 }
 function injectDaemonBuildId(root = injectDaemonExecutionRoot()) {
-  const bundle = path11.join(root, "dist", "mcp-server.js");
+  const bundle = path12.join(root, "dist", "mcp-server.js");
   try {
-    return `sha256:${createHash6("sha256").update(fs10.readFileSync(bundle)).digest("hex")}`;
+    return `sha256:${createHash7("sha256").update(fs11.readFileSync(bundle)).digest("hex")}`;
   } catch {
   }
-  for (const entry of [path11.join(root, "dist", "inject-daemon.js"), path11.join(root, "src", "inject-daemon.ts")]) {
+  for (const entry of [path12.join(root, "dist", "inject-daemon.js"), path12.join(root, "src", "inject-daemon.ts")]) {
     try {
-      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs10.statSync(entry).mtimeMs)}`;
+      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs11.statSync(entry).mtimeMs)}`;
     } catch {
     }
   }
@@ -26857,7 +27560,7 @@ function injectDaemonIdentityFor(root) {
     };
     identityCache.set(pluginRoot, code);
   }
-  return { ...code, dbPath: path11.resolve(getDbPath()) };
+  return { ...code, dbPath: path12.resolve(getDbPath()) };
 }
 function injectDaemonIdentity() {
   return injectDaemonIdentityFor(injectDaemonExecutionRoot());
@@ -26889,7 +27592,7 @@ function injectDaemonPolicy() {
   return { ...base, open: true, reason: `execution root is the installed root (${installedSource})` };
 }
 function injectSocketPath() {
-  return path11.join(getIndexDir(), "inject-daemon.sock");
+  return path12.join(getIndexDir(), "inject-daemon.sock");
 }
 function injectSocketPathLimitBytes() {
   return process.platform === "linux" ? 107 : 103;
@@ -26900,10 +27603,10 @@ function injectSocketPathTooLong(sockPath = injectSocketPath()) {
   return bytes > limit ? { bytes, limit } : null;
 }
 function injectDaemonLockPath() {
-  return path11.join(getIndexDir(), "inject-daemon.lock");
+  return path12.join(getIndexDir(), "inject-daemon.lock");
 }
 function injectDaemonCandidateDir() {
-  return path11.join(getIndexDir(), "inject-daemon.candidates");
+  return path12.join(getIndexDir(), "inject-daemon.candidates");
 }
 var INJECT_DAEMON_REQUEST_TIMEOUT_MS = 1e4;
 var PROBE_TIMEOUT_MS = 500;
@@ -27174,7 +27877,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+      if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
@@ -27236,16 +27939,16 @@ function startInjectDaemon() {
     owning = true;
     disarmReacquire();
     try {
-      fs10.chmodSync(sockPath, 384);
+      fs11.chmodSync(sockPath, 384);
     } catch {
     }
     warmUp();
   };
-  const candidatePath = () => path11.join(injectDaemonCandidateDir(), `${process.pid}.json`);
+  const candidatePath = () => path12.join(injectDaemonCandidateDir(), `${process.pid}.json`);
   function publishCandidate() {
     try {
-      fs10.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
-      fs10.writeFileSync(
+      fs11.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
+      fs11.writeFileSync(
         candidatePath(),
         JSON.stringify({ ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt, reprobeMs: injectDaemonReacquireIntervalMs() })
       );
@@ -27254,7 +27957,7 @@ function startInjectDaemon() {
   }
   function dropCandidate() {
     try {
-      fs10.unlinkSync(candidatePath());
+      fs11.unlinkSync(candidatePath());
     } catch {
     }
   }
@@ -27271,7 +27974,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+      if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
     } catch {
     }
     releaseLockIfOurs();
@@ -27279,7 +27982,7 @@ function startInjectDaemon() {
   const lockPayload = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
   function holdsOurLock() {
     try {
-      return fs10.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
+      return fs11.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
     } catch {
       return false;
     }
@@ -27287,7 +27990,7 @@ function startInjectDaemon() {
   function releaseLockIfOurs() {
     if (!holdsOurLock()) return;
     try {
-      fs10.unlinkSync(injectDaemonLockPath());
+      fs11.unlinkSync(injectDaemonLockPath());
     } catch {
     }
   }
@@ -27300,12 +28003,12 @@ function startInjectDaemon() {
       try {
         const staging = `${lockPath}.${process.pid}.${randomUUID6()}.tmp`;
         try {
-          fs10.writeFileSync(staging, mine);
-          fs10.linkSync(staging, lockPath);
+          fs11.writeFileSync(staging, mine);
+          fs11.linkSync(staging, lockPath);
           held = true;
         } finally {
           try {
-            fs10.unlinkSync(staging);
+            fs11.unlinkSync(staging);
           } catch {
           }
         }
@@ -27314,8 +28017,8 @@ function startInjectDaemon() {
         let text = null;
         let stamp = "";
         try {
-          text = fs10.readFileSync(lockPath, "utf8");
-          const stat = fs10.statSync(lockPath);
+          text = fs11.readFileSync(lockPath, "utf8");
+          const stat = fs11.statSync(lockPath);
           stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
@@ -27339,7 +28042,7 @@ function startInjectDaemon() {
           note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
-          fs10.unlinkSync(lockPath);
+          fs11.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -27353,7 +28056,7 @@ function startInjectDaemon() {
     } finally {
       if (holdsOurLock()) {
         try {
-          fs10.unlinkSync(lockPath);
+          fs11.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -27388,7 +28091,7 @@ function startInjectDaemon() {
       const probe = await probeInjectDaemon(sockPath);
       if (!probe.listening) {
         try {
-          fs10.unlinkSync(sockPath);
+          fs11.unlinkSync(sockPath);
         } catch {
         }
         note(`reclaiming the socket (${trigger}; ${probe.code ?? "absent"})`);
@@ -27414,7 +28117,7 @@ function startInjectDaemon() {
       if (reply?.type === "retired") {
         note(`took over from ${String(reply.version ?? "unknown")} at ${String(reply.pluginRoot ?? "?")} (pid ${String(reply.pid ?? "?")})`);
         try {
-          if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+          if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
         } catch {
         }
         bind();
@@ -27475,7 +28178,7 @@ function startInjectDaemon() {
   return server2;
 }
 
-// node_modules/marked/lib/marked.esm.js
+// ../../../node_modules/marked/lib/marked.esm.js
 function L() {
   return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
 }
@@ -28952,10 +29655,16 @@ init_embeddings();
 
 // src/llm.ts
 init_paths();
-import path13 from "node:path";
+import path15 from "node:path";
 import os6 from "node:os";
 
 // src/llm-error-class.ts
+var CONFIG_ERROR_CODES = /* @__PURE__ */ new Set([
+  "MEMEX_MODEL_CONFIG",
+  // CodexRequestRejectedError — provider refused the envelope
+  "MEMEX_MODEL_CONFIG_HELD"
+  // ModelConfigHeldError — a durable hold refused the call
+]);
 function extractStatus(x2) {
   const o = x2;
   for (const c of [o?.status, o?.statusCode, o?.response?.status, o?.response?.statusCode]) {
@@ -28985,6 +29694,7 @@ function classifyLlmError(err) {
   if (unwrapped instanceof EmptyLlmResponseError) return "transient";
   const e = unwrapped;
   const localCode = unwrapped?.code;
+  if (typeof localCode === "string" && CONFIG_ERROR_CODES.has(localCode)) return "config";
   if (localCode === "MEMEX_MODEL_OUTPUT_LIMIT" || localCode === "MEMEX_MODEL_OUTPUT_SCHEMA") {
     return "deterministic";
   }
@@ -29012,11 +29722,22 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs11 from "node:fs";
+import fs12 from "node:fs";
 import os5 from "node:os";
-import path12 from "node:path";
+import path13 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
+var CodexRequestRejectedError = class extends Error {
+  name = "CodexRequestRejectedError";
+  code = "MEMEX_MODEL_CONFIG";
+  detail;
+  constructor(detail) {
+    super(
+      `codex exec rejected the request envelope for model "${detail.model}"` + (detail.reasoningEffort ? ` at reasoning effort "${detail.reasoningEffort}"` : "") + ` (${detail.status ?? "?"} ${detail.providerType ?? "provider error"}): ${detail.providerMessage}`
+    );
+    this.detail = detail;
+  }
+};
 var MAX_EVENT_CAPTURE_CHARS = 4 * 1024 * 1024;
 var MAX_STDERR_CAPTURE_CHARS = 64 * 1024;
 function appendBounded(current, chunk, limit) {
@@ -29029,6 +29750,29 @@ function buildCodexPrompt(systemPrompt, userMessage) {
 ---
 
 ${userMessage}` : userMessage;
+}
+var selectionResolvers = null;
+var selectionResolversUnavailable = false;
+async function loadSelectionResolvers() {
+  if (selectionResolvers || selectionResolversUnavailable) return;
+  try {
+    const mod = await Promise.resolve().then(() => (init_model_settings(), model_settings_exports));
+    selectionResolvers = {
+      resolveLlmModel: () => mod.resolveLlmModel(),
+      resolveReasoningEffort: () => mod.resolveReasoningEffort()
+    };
+  } catch {
+    selectionResolversUnavailable = true;
+  }
+}
+async function resolveCodexSelection(opts = {}) {
+  await loadSelectionResolvers();
+  return currentSelection(opts);
+}
+function currentSelection(opts) {
+  const model = opts.model != null && String(opts.model).trim() ? String(opts.model).trim() : selectionResolvers ? selectionResolvers.resolveLlmModel().value : process.env.MEMEX_CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
+  const reasoningEffort = opts.reasoningEffort !== void 0 ? opts.reasoningEffort == null ? null : String(opts.reasoningEffort).trim() || null : selectionResolvers ? selectionResolvers.resolveReasoningEffort().value : process.env.MEMEX_CODEX_REASONING?.trim() || null;
+  return { model, reasoningEffort };
 }
 function buildCodexExecArgs(opts) {
   const args = [
@@ -29048,13 +29792,72 @@ function buildCodexExecArgs(opts) {
     "-C",
     opts.workdir
   ];
-  const model = opts.model != null ? opts.model : process.env.MEMEX_CODEX_MODEL || DEFAULT_CODEX_MODEL;
-  const trimmed = model ? String(model).trim() : "";
-  if (trimmed) args.push("-m", trimmed);
+  const selection = currentSelection(opts);
+  if (selection.model) args.push("-m", selection.model);
+  if (selection.reasoningEffort) {
+    if (/^[a-z]+$/.test(selection.reasoningEffort)) {
+      args.push("-c", `model_reasoning_effort=${selection.reasoningEffort}`);
+    } else {
+      console.error(
+        `[memex] ignoring reasoning effort ${JSON.stringify(selection.reasoningEffort)} \u2014 expected lowercase letters only`
+      );
+    }
+  }
   if (opts.outputLast) args.push("-o", opts.outputLast);
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   args.push("--json", "-");
   return args;
+}
+function turnErrorFromEvents(stdout) {
+  let fromErrorEvent = null;
+  let fromTurnFailed = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    let raw;
+    if (event.type === "error") {
+      raw = event.message;
+    } else if (event.type === "turn.failed") {
+      const inner = event.error;
+      raw = inner && typeof inner === "object" && !Array.isArray(inner) ? inner.message ?? JSON.stringify(inner) : inner;
+    } else {
+      continue;
+    }
+    const text = typeof raw === "string" ? raw : raw == null ? "" : JSON.stringify(raw);
+    if (!text.trim()) continue;
+    if (event.type === "error") fromErrorEvent = text;
+    else fromTurnFailed = text;
+  }
+  const message = fromErrorEvent ?? fromTurnFailed;
+  if (message === null) return null;
+  return { message, status: statusFromText(message), type: errorTypeFromText(message) };
+}
+function statusFromText(text) {
+  const labelled = text.match(
+    /(?:"?status(?:_code)?"?\s*[:=]\s*|status\s+|error\s+code:?\s*|\bhttp\s+)(\d{3})\b/i
+  );
+  if (labelled) return Number.parseInt(labelled[1], 10);
+  return null;
+}
+function errorTypeFromText(text) {
+  const match = text.match(/"type"\s*:\s*"([a-z_]+)"/i) ?? text.match(/\b(invalid_request_error)\b/i);
+  return match ? match[1] : null;
+}
+var ENVELOPE_REJECTION_RE = /\[reasoning\.effort\]|reasoning_effort|model is not supported|unknown model|model_not_found|model is not available/i;
+function isEnvelopeRejection(error2) {
+  if (!error2) return false;
+  if (error2.status !== 400) return false;
+  if (error2.type !== null && error2.type !== "invalid_request_error") return false;
+  return ENVELOPE_REJECTION_RE.test(error2.message);
+}
+function sanitizeProviderMessage(message, limit = 400) {
+  return message.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
 }
 function lastAgentMessageFromEvents(stdout) {
   let last = "";
@@ -29182,7 +29985,7 @@ async function modelBudgetLimitError(kind, observed, limit) {
 function readOutputFile(filePath, maxOutputChars) {
   let stat;
   try {
-    stat = fs11.statSync(filePath);
+    stat = fs12.statSync(filePath);
   } catch {
     return { text: "", exceeded: false };
   }
@@ -29192,17 +29995,17 @@ function readOutputFile(filePath, maxOutputChars) {
     Math.max(1, charCap * 4 + 4)
   );
   const bytesToRead = Math.min(stat.size, byteCap + 1);
-  const fd = fs11.openSync(filePath, "r");
+  const fd = fs12.openSync(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const read = fs11.readSync(fd, buffer, 0, bytesToRead, 0);
+    const read = fs12.readSync(fd, buffer, 0, bytesToRead, 0);
     const text = buffer.subarray(0, read).toString("utf8").trim();
     return {
       text,
       exceeded: stat.size > byteCap || text.length > charCap
     };
   } finally {
-    fs11.closeSync(fd);
+    fs12.closeSync(fd);
   }
 }
 async function runCodex(opts = {}) {
@@ -29218,8 +30021,12 @@ async function runCodex(opts = {}) {
   }
   const maxInputChars = assertLimit(opts.maxInputChars, "maxInputChars");
   const maxOutputChars = assertLimit(opts.maxOutputChars, "maxOutputChars");
-  const workdir = fs11.mkdtempSync(path12.join(os5.tmpdir(), "memex-llm-"));
-  const outPath = path12.join(workdir, "last-message.txt");
+  const selection = await resolveCodexSelection({
+    model: opts.model,
+    reasoningEffort: opts.reasoningEffort
+  });
+  const workdir = fs12.mkdtempSync(path13.join(os5.tmpdir(), "memex-llm-"));
+  const outPath = path13.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
   const observe = (token_usage) => {
@@ -29228,7 +30035,9 @@ async function runCodex(opts = {}) {
     try {
       opts.onObservation?.({
         duration_ms: performance.now() - started,
-        token_usage
+        token_usage,
+        model: selection.model,
+        reasoning_effort: selection.reasoningEffort
       });
     } catch {
     }
@@ -29248,9 +30057,15 @@ async function runCodex(opts = {}) {
       1,
       Math.min(timeoutMs, remaining === null ? timeoutMs : remaining)
     );
-    const schemaPath = opts.outputSchema ? path12.join(workdir, "output-schema.json") : void 0;
-    if (schemaPath) fs11.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
+    const schemaPath = opts.outputSchema ? path13.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs12.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const args = buildCodexExecArgs({
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
+      workdir,
+      outputLast: outPath,
+      outputSchemaPath: schemaPath
+    });
     const res = await runChild(bin, args, workdir, prompt, effectiveTimeoutMs);
     const tokenUsage = tokenUsageFromEvents(res.stdout);
     observe(tokenUsage);
@@ -29276,6 +30091,18 @@ async function runCodex(opts = {}) {
     if (maxOutputChars !== void 0 && text.length > maxOutputChars) {
       throw await modelBudgetLimitError("output", text.length, maxOutputChars);
     }
+    if (!text) {
+      const turnError = turnErrorFromEvents(res.stdout);
+      if (isEnvelopeRejection(turnError)) {
+        throw new CodexRequestRejectedError({
+          status: turnError.status,
+          providerType: turnError.type,
+          providerMessage: sanitizeProviderMessage(turnError.message),
+          model: selection.model,
+          reasoningEffort: selection.reasoningEffort
+        });
+      }
+    }
     if (!text && res.code !== 0) {
       throw new Error(
         `codex exec failed (code=${res.code}${res.signal ? ` signal=${res.signal}` : ""}): ${res.stderr.slice(-400)}`
@@ -29287,7 +30114,7 @@ async function runCodex(opts = {}) {
     throw error2;
   } finally {
     try {
-      fs11.rmSync(workdir, { recursive: true, force: true });
+      fs12.rmSync(workdir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -29295,7 +30122,40 @@ async function runCodex(opts = {}) {
 
 // src/llm.ts
 init_model_budget();
-var LLM_WORKDIR = path13.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
+init_model_settings();
+
+// src/ontology-admin.ts
+init_paths();
+import fs13 from "node:fs";
+import path14 from "node:path";
+function appendOntologyAudit(action, detail) {
+  try {
+    const dir = path14.join(getMemexHome(), "logs");
+    fs13.mkdirSync(dir, { recursive: true, mode: 448 });
+    const file = path14.join(dir, "ui-audit.jsonl");
+    const stat = fs13.existsSync(file) ? fs13.lstatSync(file) : null;
+    if (stat?.isSymbolicLink()) return;
+    fs13.appendFileSync(
+      file,
+      `${JSON.stringify({
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        source: "memex-core",
+        action,
+        status: "ok",
+        operation: null,
+        error_code: null,
+        ...detail
+      })}
+`,
+      { mode: 384 }
+    );
+  } catch {
+  }
+}
+var appendUiAuditLine = appendOntologyAudit;
+
+// src/llm.ts
+var LLM_WORKDIR = path15.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -29311,13 +30171,13 @@ function backoffMs(attempt) {
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}, reservation) {
-  const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
   return runCodex({
     systemPrompt,
     userMessage,
-    model,
+    model: options.model ?? null,
+    ..."reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort } : {},
     timeoutMs,
     deadlineAt: reservation?.deadlineAt,
     maxInputChars: reservation?.maxInputChars,
@@ -29384,6 +30244,34 @@ function errorClassFor(error2) {
   }
   return "unknown";
 }
+function recordConfigHold(db, selection, error2, context) {
+  const detail = error2?.detail;
+  const held = error2?.hold;
+  recordModelConfigHold(db, {
+    fingerprint: selection.fingerprint,
+    model: selection.model,
+    reasoningEffort: selection.reasoning,
+    status: detail?.status ?? held?.status ?? null,
+    providerType: detail?.providerType ?? held?.providerType ?? null,
+    providerMessage: detail?.providerMessage ?? held?.providerMessage ?? (error2 instanceof Error ? sanitizeProviderMessage(error2.message) : String(error2)),
+    stage: context.stage ?? null,
+    jobId: context.jobId ?? null
+  });
+  console.error(
+    `callMemoryModel: model work held \u2014 the provider rejected the request envelope for model "${selection.model}"${selection.reasoning ? ` at reasoning effort "${selection.reasoning}"` : ""}. No job failed and no attempt was consumed. Fix the selection and it resumes automatically: memex models show`
+  );
+  try {
+    appendUiAuditLine("models.llm.hold", {
+      model: selection.model,
+      reasoning: selection.reasoning,
+      provider_status: detail?.status ?? held?.status ?? null,
+      provider_type: detail?.providerType ?? held?.providerType ?? null,
+      stage: context.stage ?? null,
+      fingerprint_prefix: selection.fingerprint.slice(0, 12)
+    });
+  } catch {
+  }
+}
 function summarizeObservations(attempts, started, observations) {
   const withUsage = observations.filter(
     (observation) => observation.token_usage !== null
@@ -29434,6 +30322,17 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
 ---
 
 ${userMessage}` : userMessage).length;
+  const selection = resolveLlmSelection({
+    model: options.model,
+    ..."reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort } : {}
+  });
+  if (!options.bypassConfigHold) {
+    const hold = activeModelConfigHold(db, selection.fingerprint);
+    if (hold) {
+      touchModelConfigHold(db, selection.fingerprint);
+      throw new ModelConfigHeldError(hold);
+    }
+  }
   for (let attempt = 0; attempt <= retries; attempt++) {
     const attemptStarted = performance.now();
     const reservation = reserveModelAttempt(db, {
@@ -29441,7 +30340,9 @@ ${userMessage}` : userMessage).length;
       stage: context.stage ?? "model",
       jobId: context.jobId ?? null,
       targetId: context.targetId ?? null,
-      inputChars
+      inputChars,
+      model: selection.model,
+      reasoningEffort: selection.reasoning
     });
     let attemptObservation;
     try {
@@ -29473,7 +30374,9 @@ ${userMessage}` : userMessage).length;
         durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
         outputChars: text.length,
         tokenUsage: attemptObservation?.token_usage ?? null,
-        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN"
+        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
+        model: attemptObservation?.model ?? null,
+        ...attemptObservation && "reasoning_effort" in attemptObservation ? { reasoningEffort: attemptObservation.reasoning_effort } : {}
       });
       return {
         text,
@@ -29485,17 +30388,30 @@ ${userMessage}` : userMessage).length;
       };
     } catch (error2) {
       const localDeterministic = error2 instanceof ModelBudgetOutputLimitError || error2 instanceof ModelBudgetOutputSchemaError || error2 instanceof ModelBudgetInputLimitError;
-      finishModelAttempt(db, {
-        attemptId: reservation.attemptId,
-        state: localDeterministic ? "failed" : "unknown",
-        durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
-        outputChars: attemptObservation ? void 0 : null,
-        tokenUsage: attemptObservation?.token_usage ?? null,
-        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
-        errorClass: errorClassFor(error2)
-      });
+      const errorClass = classifyLlmError(error2);
+      if (errorClass === "config") {
+        settleConfigRejectedAttempt(db, {
+          attemptId: reservation.attemptId,
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          errorClass: errorClassFor(error2)
+        });
+        recordConfigHold(db, selection, error2, context);
+      } else {
+        finishModelAttempt(db, {
+          attemptId: reservation.attemptId,
+          state: localDeterministic ? "failed" : "unknown",
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          outputChars: attemptObservation ? void 0 : null,
+          tokenUsage: attemptObservation?.token_usage ?? null,
+          tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
+          errorClass: errorClassFor(error2),
+          model: attemptObservation?.model ?? null
+        });
+      }
       lastError = error2;
-      if (localDeterministic || classifyLlmError(error2) === "deterministic") throw error2;
+      if (localDeterministic || errorClass === "deterministic" || errorClass === "config") {
+        throw error2;
+      }
     }
     if (attempt < retries) {
       const remaining = reservation.deadlineAt ? Math.max(0, Date.parse(reservation.deadlineAt) - Date.now()) : null;
@@ -29615,6 +30531,14 @@ async function askAvatar(db, question, project, scope, identityScope) {
     response = await callMemoryModel(AVATAR_SYSTEM_PROMPT, prompt, 1024);
   } catch (error2) {
     console.error("ask_avatar: LLM call failed after retries:", error2);
+    if (classifyLlmError(error2) === "config") {
+      return {
+        answer: "\u26A0\uFE0F \uBAA8\uB378 \uC124\uC815\uC774 \uAC70\uC808\uB410\uC2B5\uB2C8\uB2E4. `memex models show` \uB85C \uD604\uC7AC \uC120\uD0DD\uC744 \uD655\uC778\uD558\uACE0 `memex models test` \uB85C \uAC80\uC99D\uD574 \uC8FC\uC138\uC694. \uC124\uC815\uC744 \uACE0\uCE58\uBA74 \uC790\uB3D9\uC73C\uB85C \uC7AC\uAC1C\uB429\uB2C8\uB2E4.",
+        sources: [],
+        confidence: 0,
+        relatedDecisions
+      };
+    }
     return {
       answer: `\u26A0\uFE0F LLM \uD638\uCD9C\uC774 \uC7AC\uC2DC\uB3C4 \uD6C4\uC5D0\uB3C4 \uC2E4\uD328\uD574 \uB2F5\uBCC0\uC744 \uC0DD\uC131\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${classifyLlmError(error2)}). \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.`,
       sources: [],
@@ -29653,8 +30577,8 @@ async function askAvatar(db, question, project, scope, identityScope) {
 }
 
 // src/mcp-server.ts
-import path14 from "path";
-import fs12 from "fs";
+import path16 from "path";
+import fs14 from "fs";
 init_paths();
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
@@ -30388,7 +31312,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path14.resolve(params.path);
+      const resolvedPath = path16.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -30396,16 +31320,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs12.realpathSync(resolvedFile);
+      const realFile = fs14.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs12.realpathSync(root);
+          return fs14.realpathSync(root);
         } catch {
-          return path14.resolve(root);
+          return path16.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path14.sep)
+        (root) => realFile === root || realFile.startsWith(root + path16.sep)
       );
       if (!isAllowed) {
         throw new Error(

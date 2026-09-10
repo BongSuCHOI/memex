@@ -56,16 +56,9 @@ export const PENDING_MIGRATION = [
   'ui/lib/util.cjs',
   'ui/public/api.mjs',
   'ui/public/app.mjs',
-  'ui/public/graph-engine.mjs',
   'ui/public/guidance.mjs',
   'ui/public/help.mjs',
   'ui/public/ui.mjs',
-  'ui/public/pages/activity.mjs',
-  'ui/public/pages/conversations.mjs',
-  'ui/public/pages/facts.mjs',
-  'ui/public/pages/graph.mjs',
-  'ui/public/pages/overview.mjs',
-  'ui/public/pages/taxonomy.mjs',
 ];
 
 /**

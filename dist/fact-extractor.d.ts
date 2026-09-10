@@ -193,7 +193,7 @@ export declare function saveExtractedFactsDetailed(db: Database.Database, facts:
  * 즉 예산이 조용히 타들어가는 동안 로그는 "곧 재시도됨"이라고 말했다(Codex R12 HIGH).
  * 분류를 4분류로 맞추고 라우팅 술어까지 같은 모듈에 둬서 둘이 어긋날 수 없게 한다.
  */
-export type ExtractionFailureKind = "handoff" | "provider_transient" | "provider_deterministic" | "internal";
+export type ExtractionFailureKind = "handoff" | "config" | "provider_transient" | "provider_deterministic" | "internal";
 export declare function classifyExtractionFailure(err: unknown): ExtractionFailureKind;
 /**
  * 소비자 보고·집계 표 — 라벨·문구뿐 아니라 **카운터 버킷과 예산 소모 여부까지** 여기서
@@ -207,7 +207,7 @@ export declare function classifyExtractionFailure(err: unknown): ExtractionFailu
 export declare const FAILURE_REPORT: Record<ExtractionFailureKind, {
     label: string;
     note: string;
-    bucket: "handoff" | "transient" | "budget";
+    bucket: "handoff" | "transient" | "budget" | "held";
     consumesBudget: boolean;
     escalate: boolean;
 }>;

@@ -38,6 +38,13 @@ export interface MemoryJobSummary {
   /** A lease held past its expiry: the row looks `running` but nobody owns it. */
   leaseExpired: boolean;
   lastError: string | null;
+  /**
+   * Issue #31 — which unusable configuration this pending job is waiting on, or
+   * null. A held job is NOT a failure and NOT dead: reading it as either is what
+   * the hold contract exists to prevent, so every job surface has to be able to
+   * say "waiting on a setting". `null` on a pre-0.7.0 database.
+   */
+  holdReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -130,6 +137,7 @@ function toSummary(row: Record<string, unknown>, nowIso: string): MemoryJobSumma
     leaseUntil,
     leaseExpired: leaseUntil !== null && leaseUntil <= nowIso,
     lastError: row.last_error == null ? null : String(row.last_error),
+    holdReason: row.hold_reason == null ? null : String(row.hold_reason),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
