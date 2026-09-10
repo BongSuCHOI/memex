@@ -1010,6 +1010,10 @@ FROM continuity_telemetry WHERE metric = 'baseline_margin_gap'
 ORDER BY recorded_at DESC LIMIT 20;
 ```
 
+`dims_json`의 `gaps`와 `value`는 소수 4자리 **표시값**이고, `passed`/`rejected`는 반올림 전 원값으로
+센 수입니다(0.6.3, #75). 따라서 `passed`는 주입된 semantic 후보 수와 항상 일치하며, `gaps`를 직접
+마진과 비교해 다시 세면 경계(예: 마진 `0.045`, gap `0.04496`)에서 다른 답이 나올 수 있습니다.
+
 복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker` 또는 `memex backfill extract`).
 `memex recover`와 `memex jobs retry`는 **아무것도 삭제하지 않습니다**: 지워진 `last_error`는
 `memory_jobs.retry_history` JSON 배열에 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.

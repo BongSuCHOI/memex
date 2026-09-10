@@ -129,7 +129,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록, 리스트 항목 수 상한 절단(`itemCaps` kept/dropped, 12개 `touchedAreas`가 retry 없이 completed, 절단 후 evidence source 재검증, 0.6.3 이전 배열 형태 읽기) (#85), 제어문자 scalar에서도 `finalChars <= maxChars` 보장과 `overBudget` 보고, 일반 텍스트의 기존 우선순위 불변 (#74) |
 | `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
 | `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
-| `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱 |
+| `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱, 경계 gap에서 `passed`/`rejected`가 원값 기준이고 주입 결과와 일치하며 `dims.gaps`는 소수 4자리 유지 (#75) |
 | `test/recall-receipt-observability.test.ts` | `receipt-failed` 로그 기록과 `recall-provenance`/`inject-output` doctor 판정 |
 | `test/cli-help-guard-slice.test.mjs` | 모든 서브커맨드의 `--help`가 부작용 없이 exit 0 (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects` 포함) |
 | `test/runtime-exec-slice.test.mjs` | 설치본 의존성 부재 시 stderr 1줄 경고 후 npx 폴백(조용한 폴백 금지) |

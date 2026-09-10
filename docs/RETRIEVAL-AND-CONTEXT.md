@@ -307,6 +307,8 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 
 관련성 게이트(`similarity - baseline >= margin`)의 마진은 기본 `0.045`이고 `MEMEX_INJECT_BASELINE_MARGIN`으로 조정합니다. 후보가 임계값에서 얼마나 떨어져 있었는지는 retrieval당 1행씩 `continuity_telemetry`의 `baseline_margin_gap`에 기록됩니다(`value` = 가장 근접한 gap, `dims.gaps`/`margin`/`baseline`/`passed`/`rejected`). 마진 조정은 이 측정값을 근거로 하십시오.
 
+`passed`/`rejected`는 **반올림 전 gap**으로 셉니다(0.6.3, #75). `dims.gaps`와 `value`는 소수 4자리 표시값이지만, 게이트의 판단은 원값이므로 집계를 표시값으로 다시 계산하면 경계에서 어긋납니다 — 기본 마진 `0.045`에서 gap `0.04496`은 게이트가 **거부**하지만 반올림하면 `0.045`로 "통과"해, 일어나지 않은 주입이 telemetry에 남았습니다. 이제 `passed`는 주입된 semantic 후보 수와 항상 일치합니다.
+
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
 계획된 후속(0.6.1에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,

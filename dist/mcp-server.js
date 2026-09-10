@@ -25845,25 +25845,31 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       return bSemantic - aSemantic || a.fact.id.localeCompare(b2.fact.id);
     }).slice(0, TOP_K);
     const margin = resolveBaselineMargin();
-    const gaps = [];
+    const rawGaps = [];
     const results = orderedCandidates.filter((r) => {
       if (r.lexicalScore !== null) return true;
       const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
       const gap = similarity - baseline;
-      gaps.push(Math.round(gap * 1e4) / 1e4);
+      rawGaps.push(gap);
       return gap >= margin;
     });
-    if (gaps.length > 0) {
-      const passed = gaps.filter((gap) => gap >= margin).length;
+    if (rawGaps.length > 0) {
+      const passed = rawGaps.filter((gap) => gap >= margin).length;
       sampleTelemetry(db, {
         // The closest miss is the decision-relevant number; `dims.gaps` keeps
         // the whole bounded distribution (at most TOP_K entries).
         metric: "baseline_margin_gap",
-        value: Math.max(...gaps),
+        value: Math.round(Math.max(...rawGaps) * 1e4) / 1e4,
         unit: "similarity",
         projectId: sessionScope.projectId,
         sessionId,
-        dims: { margin, gaps, passed, rejected: gaps.length - passed, baseline: Math.round(baseline * 1e4) / 1e4 }
+        dims: {
+          margin,
+          gaps: rawGaps.map((gap) => Math.round(gap * 1e4) / 1e4),
+          passed,
+          rejected: rawGaps.length - passed,
+          baseline: Math.round(baseline * 1e4) / 1e4
+        }
       });
     }
     let rawEvidence = [];
