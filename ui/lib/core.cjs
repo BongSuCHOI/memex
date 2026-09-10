@@ -74,6 +74,9 @@ class Core {
       sync:fs.existsSync(path.join(this.root,'dist','sync-control.js')),
       // #31 — 모델 탭의 capability. `sync:` 선례와 같은 등급이고, 없으면 탭이 배너로 degrade한다.
       models:fs.existsSync(path.join(this.root,'dist','model-settings.js')),
+      // #29/#30 — 오버레이 탭의 capability. 쓰기 모듈이 기준이다: 읽기만 되는 설치에서 "추가"
+      // 버튼을 내보내면 그 버튼이 503으로만 끝난다.
+      overlays:fs.existsSync(path.join(this.root,'dist','overlay-admin.js')),
     };
   }
   async impact(id,scope){
@@ -134,6 +137,8 @@ class Core {
     if(!SYNC_ACTIONS.includes(action))throw new HttpError(400,{code:'INVALID_SYNC_ACTION',key:'error.sync.unsupportedAction',message:'Unsupported sync action.'});
     if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.sync.alreadyRunning',message:'A sync run is already in progress.'});
     if(action!=='status'&&this.busy.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.sync.blockedByMutation',message:'A memory change is in progress. Run this after it finishes.'});
+    // #96 대칭 — overlays()가 syncBusy를 보고 거절하는 것의 반대 방향.
+    if(action!=='status'&&this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
     this.syncBusy=true;
     try{
       return await this.pinned(async()=>{
@@ -200,6 +205,7 @@ class Core {
     if(this.busy.has(id))throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.fact.mutationInFlight',message:'A change to this memory is already in progress.'});
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
     if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
+    if(this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
     this.busy.add(id);let writer;
     try{
       return await this.pinned(async()=>{
@@ -235,6 +241,7 @@ class Core {
     if(this.busy.has(id))throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.fact.mutationInFlight',message:'A change to this memory is already in progress.'});
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
     if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
+    if(this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
     // #106 — 잠금은 첫 await 앞에서 동기적으로 잡는다(#77이 tier()에 세운 규칙과 같다). 0.6.6은
     // syncBusy를 검사한 뒤 `await this.connect()`로 양보하고 나서야 busy.add(id)를 했고, 그 창에
     // 들어온 sync()는 빈 busy를 보고 통과했다. 재개된 변경은 syncBusy를 다시 보지 않으므로 동기화와
@@ -287,7 +294,7 @@ class Core {
       message:`unsupported model action: ${text(action,40)}`});
     if(this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',
       message:'a model settings action is already running'});
-    if(action!=='status'&&(this.busy.size||this.syncBusy))throw new HttpError(409,{code:'MUTATION_BUSY',key:'models.error.mutation_busy',
+    if(action!=='status'&&(this.busy.size||this.syncBusy||this.overlayBusy))throw new HttpError(409,{code:'MUTATION_BUSY',key:'models.error.mutation_busy',
       message:'a memory change or a sync is running'});
     this.modelsBusy=true;
     try{
@@ -515,8 +522,368 @@ class Core {
     try{const admin=await this.module('ontology-admin');admin.appendUiAuditLine?.(action,detail);}
     catch{/* 원장이 durable 기록이고 감사 줄은 best-effort다 */}
   }
+  /* ═══ Issue #29 · #30 — 사용자 오버레이 (`/api/v2/overlays`) ═══════════════════════════ *
+   * `memex gate`가 부르는 **바로 그 코어 함수들**을 부른다: 읽기는 `dist/recall-gate-overlay.js`와
+   * `dist/extraction-rules.js`(둘 다 DB 없는 leaf), 쓰기는 `dist/overlay-admin.js`(lock + revision
+   * CAS), 사용자 정규식 실행은 `dist/overlay-matcher.js`의 시간 상자 worker, 대기 작업 집계는
+   * `dist/model-budget.js`의 `heldJobSummary`다. `memex`를 셸로 실행하지 않는다 — 자식 프로세스의
+   * 환경이 오버레이 파일 경로를 정하게 되고(#78) 결과를 구조화해서 받을 수도 없다.
+   *
+   * 네 가지 규칙:
+   *  1. **조회·쓰기 모두 DB 없이 된다.** 오버레이는 `<home>/overlays/*.json` 파일이므로 인덱스
+   *     데이터베이스가 없는 새 설치에서도 200이다. 대기 작업·드리프트·시뮬레이션만 DB를 본다.
+   *  2. **코어 호출은 `pinned()` 안에서 한다.** 오버레이 파일·히스토리·`logs/ui-audit.jsonl`이 모두
+   *     `getMemexHome()`에서 오므로, 고정하지 않으면 임시 DB로 띄운 세션이 사용자의 실제 데이터
+   *     루트에 쓴다(#78).
+   *  3. **한 번에 하나.** `overlayBusy`는 sync의 단일 실행 락과 같고 기억 변경·동기화와도 배타적이다
+   *     (#96 대칭). 검증 프로브가 lock 안에서 최대 300 ms를 쓰므로 두 쓰기가 겹치면 "무엇이
+   *     저장됐는가"가 경합으로 결정된다.
+   *  4. **감사는 코어가 남긴다.** `overlay-admin`이 `appendUiAuditLine`으로 이미 쓰므로 여기서
+   *     다시 쓰지 않는다(§1.4의 "네 번째 writer를 만들지 않는다" 규칙 — 이중 기록 금지).
+   */
+  async overlays(action,body={}){
+    if(!Core.OVERLAY_ACTIONS.includes(action))throw new HttpError(400,{code:'INVALID_ACTION',key:'overlays.error.invalidAction',
+      message:`unsupported overlay action: ${text(action,40)}`});
+    const write=Core.OVERLAY_WRITE_ACTIONS.has(action);
+    if(write){
+      if(this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',
+        message:'an overlay change is already in progress'});
+      if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'overlays.error.syncBusy',message:'a sync run is in progress'});
+      if(this.busy.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'overlays.error.mutationBusy',message:'a memory change is in progress'});
+      this.overlayBusy=true;                       // 첫 await 앞에서 동기적으로 (#76/#106 규칙)
+    }
+    try{
+      return await this.pinned(async()=>{
+        const gate=await this.overlayModule('recall-gate-overlay');
+        const rules=await this.overlayModule('extraction-rules');
+        if(action==='status')return await this.overlayStatus(gate,rules);
+        const overlay=body.overlay==='rules'?'rules':body.overlay==='gate'?'gate':null;
+        if(overlay===null)throw new HttpError(400,{code:'INVALID_OVERLAY',key:'overlays.error.invalidOverlay',
+          message:'overlay must be "gate" or "rules"'});
+        if(action==='validate')return await this.overlayValidate(overlay,gate,rules,body);
+        if(action==='test'){
+          if(overlay!=='gate')throw new HttpError(400,{code:'INVALID_ACTION',key:'overlays.error.gateOnly',
+            message:'test applies to the recall-gate overlay only'});
+          return await this.overlayTest(gate,body);
+        }
+        if(action==='simulate'){
+          if(overlay!=='rules')throw new HttpError(400,{code:'INVALID_ACTION',key:'overlays.error.rulesOnly',
+            message:'simulate applies to the extraction-rules overlay only'});
+          return await this.overlaySimulate(rules,body);
+        }
+        const result=await this.overlayWrite(overlay,action,gate,rules,body);
+        return {ok:true,...result,status:await this.overlayStatus(gate,rules)};
+      });
+    }finally{if(write)this.overlayBusy=false;}
+  }
+  /** 오버레이 모듈은 없을 수 있다 — 코어를 빌드하지 않은 설치에서 503의 사유가 이것이다. */
+  async overlayModule(name){
+    if(!fs.existsSync(path.join(this.root,'dist',name+'.js')))
+      throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'overlays.error.coreUnavailable',params:{module:`dist/${name}.js`},
+        message:`dist/${name}.js is missing. Build the core.`});
+    return this.module(name);
+  }
+  /**
+   * 두 오버레이의 전체 상태. 항상 성공한다 — 파일이 깨져 있으면 그 사실이 `issues[]`로 실린다
+   * (게이트는 내장으로 계속, 추출은 HOLD라는 비대칭이 화면에서 읽혀야 한다).
+   */
+  async overlayStatus(gate,rules){
+    const loadedGate=gate.loadRecallGateOverlay();
+    const catalog=gate.gateCatalog();
+    const loadedRules=rules.loadExtractionRules();
+    const resolved=rules.resolveExtractionRules(null,loadedRules);
+    const matcher=await this.module('overlay-matcher');
+    const admin=await this.overlayModule('overlay-admin');
+    const policy=await this.extractionPolicyVersion();
+    const doc=loadedGate.doc;
+    return {
+      available:true,
+      // 0.7.0은 기기 간 공유가 없다 (§1.7). 화면이 이 사실을 배너로 말하고 0.7.1을 가리킨다.
+      shared:false,
+      limits:{...gate.OVERLAY_LIMITS,matchWallMs:matcher.MATCH_WALL_MS,probeWallMs:admin.PROBE_WALL_MS,
+        rules:rules.EXTRACTION_RULES_LIMITS,inputChars:matcher.MATCH_INPUT_CHARS,historySnapshots:admin.HISTORY_SNAPSHOT_LIMIT},
+      paths:typeof admin.overlayPaths==='function'?admin.overlayPaths():null,
+      disabledByEnv:!!loadedRules.disabledByEnv,
+      gate:{
+        present:loadedGate.present,revision:loadedGate.revision,hash:loadedGate.hash,
+        updatedAt:doc?.updated_at??null,updatedBy:doc?.updated_by?.surface??null,
+        builtin:{patterns:catalog.builtin.map(p=>({id:p.id,intent:p.intent,source:p.source,flags:p.flags,form:p.form})),
+          words:Object.fromEntries(Object.entries(catalog.words).map(([k,v])=>[k,[...v]]))},
+        user:{patterns:(doc?.patterns?.add??[]).map(p=>({...p})),disabled:[...loadedGate.disabled],
+          words:{add:{...loadedGate.words.add},disable:{...loadedGate.words.disable}}},
+        quarantined:loadedGate.quarantined.map(q=>({...q})),
+        issues:loadedGate.issues,
+        history:admin.listOverlayHistory('recall-gate',20),
+        snapshots:typeof admin.listOverlaySnapshots==='function'?admin.listOverlaySnapshots('recall-gate'):[],
+      },
+      rules:{
+        present:loadedRules.present,revision:loadedRules.revision,hash:loadedRules.hash,
+        updatedAt:loadedRules.doc?.updated_at??null,updatedBy:loadedRules.doc?.updated_by?.surface??null,
+        schema:rules.EXTRACTION_RULES_OVERLAY_SCHEMA,version:rules.EXTRACTION_RULES_OVERLAY_VERSION,
+        doc:loadedRules.doc,emptyDoc:rules.emptyExtractionRulesDoc(),
+        resolved:{preferredLanguage:resolved.preferredLanguage,excludeTopics:resolved.excludeTopics,
+          neverExtract:resolved.neverExtract,decisionHints:resolved.decisionHints},
+        clause:(text=>({chars:text.length,text}))(rules.renderExtractionConstraintClause(resolved)),
+        // 검증기·증거 기준은 오버레이가 건드릴 수 없다 — 화면이 그 사실을 단정으로 말한다.
+        verifierUnchanged:true,
+        enforcementPoints:[...rules.EXTRACTION_RULE_ENFORCEMENT_POINTS],
+        schedulingPolicyVersion:policy.scheduling,
+        effectivePolicyVersion:policy.scheduling===null?null
+          :rules.composeEffectivePolicyVersion(policy.scheduling,loadedRules.hash),
+        quarantined:loadedRules.quarantined.map(q=>({...q})),
+        issues:loadedRules.issues,
+        history:admin.listOverlayHistory('extraction-rules',20),
+        snapshots:typeof admin.listOverlaySnapshots==='function'?admin.listOverlaySnapshots('extraction-rules'):[],
+        drift:{...this.overlayDrift(loadedRules.hash),heldJobs:await this.overlayHeldJobs()},
+      },
+    };
+  }
+  /** 스케줄링 키는 코어 상수다 — UI가 복제하면 두 값이 갈라진다. 읽을 수 없으면 null이다. */
+  async extractionPolicyVersion(){
+    try{
+      const store=await this.module('continuity-store');
+      return {scheduling:typeof store.FACT_EXTRACTION_POLICY_VERSION==='string'?store.FACT_EXTRACTION_POLICY_VERSION:null};
+    }catch{return {scheduling:null};}
+  }
+  /**
+   * 다른 규칙으로 추출된 대상과 규칙 오류로 대기 중인 작업. DB가 없으면 `available:false`이고
+   * 0을 지어내지 않는다. 없는 표·컬럼도 "없음"이며 오류가 아니다(0.6.x DB로도 화면은 열린다).
+   */
+  overlayDrift(currentHash){
+    if(!fs.existsSync(this.dbPath))return {available:false,staleTargets:0,staleSessions:0,heldJobs:[]};
+    let db=this.db,owned=false;
+    const out={available:true,staleTargets:0,staleSessions:0,heldJobs:[]};
+    try{
+      if(!db){const better=require(path.join(this.root,'node_modules','better-sqlite3'));db=new better(this.dbPath,{readonly:true});owned=true;}
+      if(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_targets'").get()){
+        const columns=new Set(db.prepare("SELECT name FROM pragma_table_info('extraction_targets')").all().map(r=>r.name));
+        if(columns.has('rules_hash')){
+          const row=db.prepare(`SELECT COUNT(*) AS targets, COUNT(DISTINCT session_id) AS sessions
+            FROM extraction_targets WHERE IFNULL(rules_hash,'') IS NOT ?`).get(currentHash??'');
+          out.staleTargets=Number(row?.targets||0);out.staleSessions=Number(row?.sessions||0);
+        }
+      }
+    }catch{out.available=false;}
+    finally{if(owned&&db){try{db.close();}catch{}}}
+    return out;
+  }
+  /** 규칙 오류로 파킹된 작업 수. `model-budget`의 HOLD 집계를 그대로 읽는다(지어내지 않는다). */
+  async overlayHeldJobs(){
+    if(!fs.existsSync(this.dbPath))return [];
+    let db=this.db,owned=false;
+    try{
+      if(!db){const factories=await this.module('db');db=factories.openReadDb(this.dbPath);owned=true;}
+      const budget=await this.module('model-budget');
+      if(typeof budget.heldJobSummary!=='function')return [];
+      return budget.heldJobSummary(db).filter(r=>String(r.reason).startsWith('extraction_rules_'));
+    }catch{return [];}
+    finally{if(owned&&db){try{db.close();}catch{}}}
+  }
+  /** 검증만. 파일을 건드리지 않고 `Issue[]`를 그대로 돌려준다(프로브 포함). */
+  async overlayValidate(overlay,gate,rules,body){
+    const doc=body.doc;
+    if(doc===null||typeof doc!=='object')throw new HttpError(400,{code:'INVALID_DOCUMENT',key:'overlays.error.invalidDocument',
+      message:'validate needs a doc object'});
+    const admin=await this.overlayModule('overlay-admin');
+    const result=await admin.validateOverlay(overlay==='gate'?'recall-gate':'extraction-rules',doc,{
+      probe:body.probe!==false,forWrite:true,
+      ...(overlay==='rules'?{validator:rules.validateExtractionRules}:{}),
+    });
+    return {ok:!!result.ok,issues:result.issues??[]};
+  }
+  /**
+   * 한 프롬프트를 내장 + 오버레이로 판정해 **왜 발화했는지**를 돌려준다. 모델도 임베딩도 부르지
+   * 않고, 어떤 기록도 남기지 않는다 — 유일한 예외는 격리 파일이며, 그것은 이 호출이 실제 matcher를
+   * 썼다는 사실 그대로다(§2.4 explainRecall).
+   */
+  async overlayTest(gate,body){
+    const prompt=text(body.prompt,8000);
+    if(!prompt.trim())throw new HttpError(400,{code:'PROMPT_REQUIRED',key:'overlays.error.promptRequired',
+      message:'test needs a prompt'});
+    const matcher=await this.module('overlay-matcher');
+    const handle=matcher.oneShotMatcher();
+    try{
+      return await gate.explainRecall({prompt,compareBuiltin:body.compareBuiltin===true},handle);
+    }finally{try{handle.dispose();}catch{}}
+  }
+  /**
+   * 모델 0회 시뮬레이션 (§3.8 1단계): 저장된 기억·최근 교환에 **운영과 같은 matcher worker로**
+   * 금지 패턴을 돌려 "무엇이 차단되는가"를 결정적으로 보여준다. 이미 저장된 것은 바뀌지 않고,
+   * `exclude_topics`·결정 힌트·선호 언어는 **로컬에서 판정할 수 없다**는 사실을 그대로 싣는다.
+   */
+  async overlaySimulate(rules,body){
+    const loaded=rules.loadExtractionRules();
+    const resolved=rules.resolveExtractionRules(typeof body.projectId==='string'?body.projectId:null,loaded);
+    const report={
+      rulesHash:loaded.hash,
+      clause:(clause=>({chars:clause.length,text:clause}))(rules.renderExtractionConstraintClause(resolved)),
+      verifierUnchanged:true,
+      enforcementPoints:[...rules.EXTRACTION_RULE_ENFORCEMENT_POINTS],
+      existingFacts:{scanned:0,wouldBeBlocked:[]},
+      recentExchanges:{scanned:0,matched:[]},
+      matcher:{elapsedMs:0,timedOut:false,unavailable:false,quarantined:[]},
+      advisoryOnly:{excludeTopics:resolved.excludeTopics,decisionHints:resolved.decisionHints.map(p=>p.id),
+        preferredLanguage:resolved.preferredLanguage},
+      available:true,
+    };
+    if(!fs.existsSync(this.dbPath))throw new HttpError(503,{code:'DB_INDEX_MISSING',key:'overlays.error.dbMissing',
+      message:'the index database is missing, so there is nothing to simulate against'});
+    if(resolved.neverExtract.length===0)return report;
+    const store=await this.connect();
+    const facts=store.all(`SELECT id, fact, fact_kr, category FROM facts WHERE is_active = 1 ORDER BY updated_at DESC LIMIT 200`);
+    const exchanges=store.all(`SELECT id, session_id, user_message, assistant_message FROM exchanges ORDER BY timestamp DESC LIMIT 50`);
+    report.existingFacts.scanned=facts.length;
+    report.recentExchanges.scanned=exchanges.length;
+    const matcher=await this.module('overlay-matcher');
+    const handle=matcher.oneShotMatcher();
+    try{
+      const candidates=[
+        ...facts.map(f=>({item:{kind:'fact',row:f},candidate:{factText:[f.fact,f.fact_kr].filter(Boolean),evidence:[]}})),
+        ...exchanges.map(e=>({item:{kind:'exchange',row:e},
+          candidate:{factText:[],evidence:[e.user_message,e.assistant_message].filter(Boolean)}})),
+      ];
+      const bulk=await rules.buildBlockSet(handle,resolved.neverExtract,candidates,'web-ui');
+      if(!bulk.ok){
+        report.available=false;report.reason=bulk.reason;report.detail=bulk.detail;
+        report.matcher.quarantined=bulk.quarantined;
+        report.matcher.timedOut=bulk.reason==='extraction_rules_unavailable';
+        return report;
+      }
+      report.matcher.elapsedMs=bulk.elapsedMs;
+      // 어느 규칙이 막았는지는 **막힌 항목만** 1건씩 다시 돌려 귀속한다(운영 경로는 집합만 필요하다).
+      for(const entry of candidates){
+        if(!bulk.blocked.has(entry.item))continue;
+        const one=await rules.buildBlockSet(handle,resolved.neverExtract,[entry],'web-ui');
+        const patternId=one.ok?(one.patternIds[0]??null):null;
+        if(entry.item.kind==='fact')report.existingFacts.wouldBeBlocked.push({id:entry.item.row.id,
+          category:entry.item.row.category,patternId,preview:String(entry.item.row.fact||'').slice(0,160)});
+        else report.recentExchanges.matched.push({exchangeId:entry.item.row.id,sessionId:entry.item.row.session_id,
+          patternId,preview:String(entry.item.row.user_message||entry.item.row.assistant_message||'').slice(0,160)});
+        if(report.existingFacts.wouldBeBlocked.length+report.recentExchanges.matched.length>=50)break;
+      }
+    }finally{try{handle.dispose();}catch{}}
+    return report;
+  }
+  /**
+   * 쓰기 네 갈래. 전부 `overlay-admin`의 lock + revision CAS를 지나며, 추출 규칙은 **lane C의
+   * 검증기와 빈 문서**를 요구하는 래퍼(`extraction-rules`의 set/reset/rollback)를 쓴다. 규칙 쓰기가
+   * 성공하면 그 래퍼가 `releaseExtractionRulesHold(db)`로 대기 작업을 함께 푼다.
+   */
+  async overlayWrite(overlay,action,gate,rules,body){
+    const admin=await this.overlayModule('overlay-admin');
+    const name=overlay==='gate'?'recall-gate':'extraction-rules';
+    const expectedRevision=body.expectedRevision===undefined||body.expectedRevision===null
+      ?undefined:Number(body.expectedRevision);
+    if(expectedRevision!==undefined&&!Number.isInteger(expectedRevision))
+      throw new HttpError(400,{code:'INVALID_REVISION',key:'overlays.error.invalidRevision',message:'expectedRevision must be an integer'});
+    let writer=null;
+    const db=()=>{
+      if(writer||overlay!=='rules'||!fs.existsSync(this.dbPath))return writer;
+      try{writer=this.openOverlayWriteDb();}catch{writer=null;}
+      return writer;
+    };
+    try{
+      if(action==='quarantine-clear'){
+        const all=body.all===true;
+        const patternId=all?undefined:text(body.patternId,200).trim();
+        if(!all&&!patternId)throw new HttpError(400,{code:'PATTERN_REQUIRED',key:'overlays.error.patternRequired',
+          message:'quarantine-clear needs a patternId or all:true'});
+        return await admin.clearQuarantine(patternId,{surface:'web-ui'});
+      }
+      if(action==='reset'){
+        if(overlay==='rules')return await rules.resetExtractionRules({surface:'web-ui',expectedRevision,db:db()});
+        return await admin.resetOverlay('recall-gate',{surface:'web-ui',expectedRevision,
+          ...(body.intent?{intent:String(body.intent)}:{})});
+      }
+      if(action==='rollback'){
+        const revision=Number(body.revision);
+        if(!Number.isInteger(revision)||revision<1)throw new HttpError(400,{code:'INVALID_REVISION',key:'overlays.error.invalidRevision',
+          message:'rollback needs the revision to restore'});
+        if(overlay==='rules')return await rules.rollbackExtractionRules(revision,{surface:'web-ui',expectedRevision,db:db()});
+        return await admin.rollbackOverlay('recall-gate',revision,{surface:'web-ui',expectedRevision});
+      }
+      if(action==='set'){
+        if(overlay!=='rules')throw new HttpError(400,{code:'INVALID_ACTION',key:'overlays.error.rulesOnly',
+          message:'set applies to the extraction-rules overlay only'});
+        if(body.doc===null||typeof body.doc!=='object')throw new HttpError(400,{code:'INVALID_DOCUMENT',key:'overlays.error.invalidDocument',
+          message:'set needs a doc object'});
+        // 전체 문서 경로는 갱신 유실을 막기 위해 파일이 있으면 expectedRevision이 필수다 (§1.5).
+        if(expectedRevision===undefined&&rules.currentExtractionRulesRevision()>0)
+          throw new HttpError(400,{code:'EXPECTED_REVISION_REQUIRED',key:'overlays.error.expectedRevisionRequired',
+            message:'set needs expectedRevision when a rules file already exists'});
+        return await rules.setExtractionRules(body.doc,{surface:'web-ui',expectedRevision,db:db()});
+      }
+      // patch — 한 호출 = 한 가지 변경. 감사 줄과 히스토리 항목이 무엇이 바뀌었는지 말할 수 있어야 한다.
+      if(overlay!=='gate')throw new HttpError(400,{code:'INVALID_ACTION',key:'overlays.error.gateOnly',
+        message:'patch applies to the recall-gate overlay only'});
+      return await this.overlayGatePatch(admin,gate,body,expectedRevision);
+    }catch(e){throw this.overlayError(e,name);}
+    finally{if(writer){try{writer.close();}catch{}}}
+  }
+  /** 규칙 쓰기의 HOLD 해제용 쓰기 연결. 없으면 null이고, 그때는 1시간 안전망이 복구한다. */
+  openOverlayWriteDb(){
+    const better=require(path.join(this.root,'node_modules','better-sqlite3'));
+    return new better(this.dbPath);
+  }
+  async overlayGatePatch(admin,gate,body,expectedRevision){
+    const add=Array.isArray(body.patternsAdd)?body.patternsAdd:[];
+    const disable=Array.isArray(body.patternsDisable)?body.patternsDisable:[];
+    const enable=Array.isArray(body.patternsEnable)?body.patternsEnable:[];
+    const words=body.words&&typeof body.words==='object'?body.words:null;
+    const chosen=[add.length?'add':null,disable.length?'disable':null,enable.length?'enable':null,words?'words':null].filter(Boolean);
+    if(chosen.length!==1)throw new HttpError(400,{code:'INVALID_PATCH',key:'overlays.error.invalidPatch',
+      message:'a patch carries exactly one of patternsAdd, patternsDisable, patternsEnable, words'});
+    if(chosen[0]==='add'){
+      const input=add[0];
+      if(!input||typeof input!=='object')throw new HttpError(400,{code:'INVALID_PATTERN',key:'overlays.error.invalidPattern',
+        message:'patternsAdd needs {intent, source}'});
+      return admin.addGatePattern({intent:String(input.intent||''),source:text(input.source,400),
+        flags:input.flags===undefined?undefined:text(input.flags,8),
+        ...(input.note?{note:text(input.note,200)}:{})},{surface:'web-ui',expectedRevision});
+    }
+    if(chosen[0]==='disable')return admin.disableGatePattern(text(disable[0],400),{surface:'web-ui',expectedRevision});
+    if(chosen[0]==='enable'){
+      // `disable`의 역연산은 `patterns.disable`에서 id를 빼는 것이다 — 내장 항목은 카탈로그에 남는다.
+      const id=text(enable[0],400);
+      if(!gate.loadRecallGateOverlay().disabled.includes(id))
+        throw new HttpError(422,{code:'PATTERN_NOT_DISABLED',key:'overlays.error.patternNotDisabled',params:{id},
+          message:`${id} is not disabled`,details:{issues:[{field:'patternId',key:'overlays.error.patternNotDisabled',params:{id}}]}});
+      return admin.applyOverlayChange('recall-gate',{delta:{patternsRemove:[id]}},
+        {surface:'web-ui',expectedRevision,probe:false,auditAction:'gate.pattern-enable',history:{removed:[id]}});
+    }
+    const lexicon=String(words.lexicon||'');
+    if(!['ack','continue','filler'].includes(lexicon))throw new HttpError(400,{code:'INVALID_LEXICON',key:'overlays.error.invalidLexicon',
+      message:'words.lexicon must be ack, continue or filler'});
+    const list=key=>Array.isArray(words[key])?words[key].map(w=>text(w,32)).filter(Boolean):undefined;
+    const change={add:list('add'),disable:list('disable'),removeAdd:list('removeAdd'),removeDisable:list('removeDisable')};
+    if(!Object.values(change).some(v=>v&&v.length))throw new HttpError(400,{code:'INVALID_PATCH',key:'overlays.error.invalidPatch',
+      message:'words needs at least one of add, disable, removeAdd, removeDisable'});
+    return admin.setGateWords(lexicon,change,{surface:'web-ui',expectedRevision});
+  }
+  /**
+   * 코어의 오버레이 오류를 HTTP로 옮긴다. 이름으로 분기한다 — `extraction-rules`가 동적 import로
+   * 가져온 클래스와 이 서버가 본 클래스가 같은 모듈 인스턴스라는 보장이 없으므로 instanceof는
+   * 조용히 실패할 수 있다.
+   */
+  overlayError(e,overlay){
+    if(e instanceof HttpError)return e;
+    // 코어의 영어 한 줄은 로그·curl용으로 `message`에 실리고, 사용자가 읽는 문장은 `key`가 만든다
+    // (패스스루가 아니다 — 아래 OVERLAY_REJECTED 하나만 key:null이다).
+    const line=e&&e.message?e.message:String(e);
+    if(e&&e.name==='OverlayInvalidError')return new HttpError(422,{code:'OVERLAY_INVALID',key:'overlays.error.overlayInvalid',
+      params:{count:(e.issues||[]).filter(i=>i.severity!=='warning').length},message:line,details:{issues:e.issues||[]}});
+    if(e&&e.name==='OverlayStaleError')return new HttpError(409,{code:'OVERLAY_STALE',key:'overlays.error.overlayStale',
+      params:{current:e.currentRevision,expected:e.expectedRevision},message:line});
+    if(e&&e.name==='OverlayLockedError')return new HttpError(409,{code:'OVERLAY_LOCKED',key:'overlays.error.overlayLocked',
+      params:{pid:e.holderPid===null?0:e.holderPid},message:line});
+    // 분류되지 않은 코어 원문은 key:null로 통과시킨다 — 그 문장이 유일한 진단 정보다 (§5.2).
+    return new HttpError(422,{code:'OVERLAY_REJECTED',key:null,params:{overlay},message:line});
+  }
   close(){if(this.db){try{this.db.close();}catch{}this.db=null;}}
 }
 /** `/api/v2/models` 본문의 action. 0.7.1이 preview-embedding·set-embedding을 더한다. */
 Core.MODEL_ACTIONS=['status','set-llm','test','reset'];
+/** `/api/v2/overlays` 본문의 action (§4.1). 하위 경로는 만들지 않는다 — sync·models와 같은 규칙. */
+Core.OVERLAY_ACTIONS=['status','validate','test','simulate','patch','set','reset','rollback','quarantine-clear'];
+Core.OVERLAY_WRITE_ACTIONS=new Set(['patch','set','reset','rollback','quarantine-clear']);
 module.exports={Core};

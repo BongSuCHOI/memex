@@ -286,5 +286,7 @@ test('E7 ui/lib에 문자열 첫 인자 호출이 0건이고 패스스루 3곳�
   }
   assert.deepEqual(stringFirst, [], '위치 인자 호출이 남아 있습니다 — 어댑터가 조용히 흡수합니다');
   assert.deepEqual(passthrough, [], '패스스루에 key:null이 명시되지 않았습니다');
-  assert.equal(explicitNull.length, 3, '패스스루 지점 수가 바뀌었습니다: ' + explicitNull.join(', '));
+  // 4번째는 #29/#30의 `Core.overlayError()`다 — 분류되지 않은 오버레이 코어 오류(lock·검증기 밖의
+  // 원문)를 그대로 보여주는 지점이며, 나머지 오버레이 오류는 모두 `overlays.error.*` key를 가진다.
+  assert.equal(explicitNull.length, 4, '패스스루 지점 수가 바뀌었습니다: ' + explicitNull.join(', '));
 });

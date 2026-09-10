@@ -173,6 +173,34 @@ function createServer(options={}){
         catch(e){try{logs.audit({action:'models.'+String(b.action),status:'failed',error_code:e.code||e.name});}catch{}throw e;}
         notify();json(res,200,result);return;
       }
+      /* #29/#30 — 사용자 오버레이. models 블록 바로 뒤, `p.startsWith('/api/')`의 DB 요구 구간보다
+       * **위**에 둔다: 오버레이는 `<home>/overlays/*.json` 파일이므로 인덱스 데이터베이스가 없어도
+       * 읽고 써야 하고(회수 게이트 규칙은 DB와 무관하게 적용된다), 그 아래는 `core.connect()`가 DB를
+       * 강제한다. 안전장치는 sync·models와 같다 — CSRF(guard), 쓰기 action에 명시적 confirm, 관리
+       * 명령 실행 중 거절. **읽기 action(validate·test·simulate)은 confirm을 요구하지 않고 감사 줄도
+       * 남기지 않는다**: dry-run은 어떤 기록에도 쓰지 않는다는 계약이다(§1.4). */
+      if(p==='/api/v2/overlays'){
+        if(req.method==='GET'){json(res,200,await core.overlays('status'));return;}
+        if(req.method!=='POST')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'overlays.error.methodNotAllowed',
+          message:'GET or POST only'});
+        const b=await readBody(req);
+        const action=typeof b.action==='string'?b.action:'';
+        const write=Core.OVERLAY_WRITE_ACTIONS.has(action);
+        if(write&&b.confirm!==true)throw new HttpError(400,{code:'CONFIRMATION_REQUIRED',key:'overlays.error.confirmRequired',
+          message:'an overlay change needs an explicit confirm'});
+        if(write&&operations.children?.size)throw new HttpError(409,{code:'OPERATION_BUSY',key:'overlays.error.operationBusy',
+          message:'an admin command is running'});
+        let result;
+        try{
+          result=await core.overlays(action,b);
+          if(write)try{logs.audit({action:'overlays.'+action,status:'completed'});}catch{}
+        }catch(e){
+          if(write)try{logs.audit({action:'overlays.'+String(action),status:'failed',error_code:e.code||e.name});}catch{}
+          throw e;
+        }
+        if(write)notify();
+        json(res,200,result);return;
+      }
       if(p==='/api/v2/environment'){if(req.method!=='GET')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'error.method.getOnly',message:'Only GET is allowed.'});json(res,200,core.environment());return;}
       if(p==='/api/v2/diagnostics'){
         if(req.method!=='GET')throw new HttpError(405,{code:'METHOD_NOT_ALLOWED',key:'error.method.getOnly',message:'Only GET is allowed.'});
