@@ -40,7 +40,15 @@ export interface InjectLogEntry {
    * go to a hook's stderr, which Codex discards, so a contract violation was
    * unobservable — the real data root had 7 emitted bundles and 0 recall_events.
    */
-  | "receipt-failed";
+  | "receipt-failed"
+  /**
+   * Issue #89: the bundle was ready but the client it was computed for had
+   * already given up, so the whole transaction rolled back — no receipt, no
+   * residency, no gate state. NOT an error: it is the daemon correctly refusing
+   * to leave a `prepared` receipt behind for a hook that has fallen back
+   * in-process, and the fallback's own line records what the user actually got.
+   */
+  | "abandoned";
  project?: string;
  prompt_len?: number;
  candidates?: number;

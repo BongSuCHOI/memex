@@ -60,6 +60,15 @@ const REPEAT_ELAPSED_BUDGET_MS = 700;
 /** A WATCH signature or TRACE pointer is not repeated within this many substantive prompts unless it changed. */
 const WATCH_TTL_PROMPTS = 5;
 const TOPIC_FINGERPRINT_MAX = 64;
+/**
+ * The bundle transaction refused itself because its client is gone (#89).
+ *
+ * A distinct type, not a message convention: it has to be separable from a real
+ * failure inside the same transaction (a fact whose generation moved, a scope
+ * change) so the log can call one `abandoned` and the other `error`.
+ */
+class UndeliverableInjection extends Error {
+}
 function commitInjectionState(db, input) {
     let receiptId = null;
     const write = () => {
@@ -659,6 +668,9 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
         let preparedReceiptId = null;
         const commitBundle = () => {
+            const undeliverable = options.deliverable?.();
+            if (undeliverable)
+                throw new UndeliverableInjection(undeliverable);
             if (canQuery(db)) {
                 const emittedRaw = rendered.sections.find(section => section.kind === "RAW EVIDENCE")?.emitted.length ?? 0;
                 for (const evidence of rawEvidence.slice(0, emittedRaw)) {
@@ -784,6 +796,21 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof UndeliverableInjection) {
+            // Rolled back on purpose: a client that is gone must not leave durable
+            // state behind. `abandoned`, not `error`, so `doctor` does not report a
+            // correct refusal as a broken injection path.
+            appendInjectLog({
+                status: "abandoned",
+                project,
+                prompt_len: userPrompt.length,
+                duration_ms: Date.now() - t0,
+                error: message.slice(0, 300),
+                via,
+                ...daemonNote,
+            });
+            return "";
+        }
         appendInjectLog({
             status: "error",
             project,

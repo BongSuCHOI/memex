@@ -635,9 +635,34 @@ async function injectDaemonCheck() {
         };
     }
     if (!probe.listening) {
+        // Issue #89 split this. `no daemon` used to cover both "nothing has started
+        // yet", which is ordinary, and "the owner exited and left its socket file
+        // behind", which on the observed data root meant every prompt paid the 70s
+        // cold path for as long as the host kept running — and was reported as ok.
+        if (probe.code === "ENOENT") {
+            return {
+                name, status: "ok",
+                detail: `absent — no socket file; every prompt pays the cold in-process path (~2.3s). ${where}`,
+            };
+        }
+        const candidates = daemon.readInjectDaemonCandidates();
+        const stale = `stale — a socket file exists but nothing listens on it (${probe.code ?? "unreachable"}): ` +
+            `its owner exited. Every prompt pays the cold in-process path (~2.3s) until it is reclaimed.`;
+        if (candidates.length === 0) {
+            return {
+                name, status: "warn",
+                detail: `${stale} NO live MCP server is waiting to reclaim it, so nothing will: start a host with this ` +
+                    `plugin (or restart the one you have) to reopen the fast path. ${where}`,
+            };
+        }
+        const who = candidates
+            .map((candidate) => `pid ${candidate.pid} version ${candidate.version ?? "unknown"} root ${candidate.pluginRoot}` +
+            (candidate.reprobeMs > 0 ? ` (re-probes every ${candidate.reprobeMs}ms)` : ""))
+            .join("; ");
         return {
             name, status: "ok",
-            detail: `no daemon — every prompt pays the cold in-process path (~2.3s). ${where}`,
+            detail: `${stale} Reacquisition is pending — ${candidates.length} live server(s) re-probe it on a timer and ` +
+                `on their next MCP request: ${who}. ${where}`,
         };
     }
     // A pid identifies the WHOLE MCP server, not a daemon thread: stopping it
@@ -647,7 +672,8 @@ async function injectDaemonCheck() {
     if (!probe.owner) {
         return {
             name, status: "warn",
-            detail: `a listener holds the socket but did not identify itself (${probe.problem ?? "no answer"}). ` +
+            detail: `hung — a listener holds the socket but did not identify itself within ` +
+                `${daemon.INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS}ms (${probe.problem ?? "no answer"}). ` +
                 `Hooks fall back in-process, so injection is correct but slow until it exits. ${pidNote}. ${where}`,
         };
     }
@@ -655,12 +681,12 @@ async function injectDaemonCheck() {
     const ownerNote = `owner pid ${owner.pid} version ${owner.version ?? "unknown"} build ${owner.buildId ?? "unknown"} ` +
         `root ${owner.pluginRoot} db ${owner.dbPath} started ${owner.startedAt || "unknown"}`;
     if (daemon.injectDaemonIdentityMatches(expected, owner)) {
-        return { name, status: "ok", detail: `served by this installation — ${ownerNote}. ${where}` };
+        return { name, status: "ok", detail: `ok — served by this installation — ${ownerNote}. ${where}` };
     }
     return {
         name, status: "warn",
-        detail: `the socket is owned by a DIFFERENT build, so the fast path is refused and every prompt falls back ` +
-            `in-process: ${ownerNote}. ${pidNote}. ${where}`,
+        detail: `mismatch — the socket is owned by a DIFFERENT build, so the fast path is refused and every prompt ` +
+            `falls back in-process: ${ownerNote}. ${pidNote}. ${where}`,
     };
 }
 /** Read-only diagnosis. Distinguishes configured vs observed. */

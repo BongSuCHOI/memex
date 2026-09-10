@@ -24,6 +24,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const HOOK = path.join(REPO, 'scripts', 'inject-context.js');
@@ -118,14 +119,147 @@ async function fakeDaemon(t, sockPath, respond) {
       try { request = JSON.parse(buf.slice(0, nl)); } catch { /* malformed */ }
       buf = buf.slice(nl + 1);
       received.push(request);
-      const reply = respond(request);
-      if (reply === null) return;
+      // `socket` is handed over so a stand-in can write the 0.6.4 two-message
+      // exchange (an `ack`, then the context — or, for the compute-timeout case,
+      // an `ack` and then nothing at all) and return null to say "handled".
+      const reply = respond(request, socket);
+      if (reply === null || reply === undefined) return;
       socket.end(`${JSON.stringify(reply)}\n`);
     });
   });
   await new Promise((resolve) => server.listen(sockPath, resolve));
   t.after(() => new Promise((resolve) => server.close(() => resolve())));
   return { server, received };
+}
+
+/**
+ * Leave a real socket FILE with nobody behind it.
+ *
+ * This is what #89 observed on the real data root: the owning MCP server was
+ * gone and `inject-daemon.sock` was still there, so every connect got
+ * ECONNREFUSED rather than ENOENT — the distinction the hook, the re-probe and
+ * `doctor` all now draw.
+ */
+async function orphanSocketFile(sockPath) {
+  const orphan = spawn(process.execPath, ['--input-type=module', '-e', `
+    import net from 'node:net';
+    const server = net.createServer(() => {});
+    server.listen(${JSON.stringify(sockPath)}, () => { console.log('bound'); });
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  await new Promise((resolve, reject) => {
+    orphan.stdout.once('data', resolve);
+    orphan.once('error', reject);
+    setTimeout(() => reject(new Error('orphan never bound')), 5000);
+  });
+  orphan.kill('SIGKILL');
+  await new Promise((resolve) => orphan.once('exit', resolve));
+  assert.ok(fs.existsSync(sockPath), 'a SIGKILLed owner must leave its socket behind');
+}
+
+/**
+ * A real sidecar in its own process — `startInjectDaemon()` and nothing else.
+ *
+ * The re-acquisition cases cannot be faked in one process: the defect is about
+ * what a SECOND MCP server does after the FIRST one dies, so both have to be
+ * real children that can be killed independently.
+ */
+function spawnDaemon(t, root, extraEnv = {}) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { startInjectDaemon, injectDaemonReacquireNow } from './dist/inject-daemon.js';
+    // The real sidecar lives inside an MCP server whose stdio transport READS
+    // stdin, which is what makes 'end' fire when the host closes it. The sidecar
+    // must never resume stdin itself — it would steal bytes from the transport —
+    // so this stand-in does the reading the transport would do.
+    process.stdin.resume();
+    const server = startInjectDaemon();
+    if (!server) { console.error('policy refused'); process.exit(2); }
+    const announce = () => console.log('bound ' + process.pid);
+    if (server.listening) announce(); else server.once('listening', announce);
+    console.log('started ' + process.pid);
+    // A line on stdin stands in for an MCP tool request: src/mcp-server.ts calls
+    // exactly this from its CallToolRequest handler.
+    process.stdin.on('data', () => { console.log('request'); injectDaemonReacquireNow(); });
+    setInterval(() => {}, 200);
+  `], {
+    cwd: REPO,
+    env: {
+      ...process.env,
+      MEMEX_HOME: root,
+      TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+      MEMEX_INJECT_DAEMON: '1',
+      MEMEX_EMBEDDING_STUB: '1',
+      ...extraEnv,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let text = '';
+  const waiters = [];
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  const absorb = (chunk) => {
+    text += chunk;
+    for (const waiter of [...waiters]) {
+      const match = text.match(waiter.pattern);
+      if (!match) continue;
+      waiters.splice(waiters.indexOf(waiter), 1);
+      waiter.resolve(match);
+    }
+  };
+  child.stdout.on('data', absorb);
+  child.stderr.on('data', absorb);
+  t.after(() => child.kill('SIGKILL'));
+  return {
+    child,
+    get output() { return text; },
+    exited: new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
+    waitFor(pattern, timeoutMs = 10_000) {
+      const already = text.match(pattern);
+      if (already) return Promise.resolve(already);
+      return new Promise((resolve, reject) => {
+        waiters.push({ pattern, resolve });
+        setTimeout(() => reject(new Error(`timed out waiting for ${pattern} in:\n${text}`)), timeoutMs);
+      });
+    },
+  };
+}
+
+/** The read-only identity question `doctor` and every starter ask. */
+function identify(sockPath, timeoutMs = 3_000) {
+  return new Promise((resolve) => {
+    const conn = net.connect(sockPath);
+    let buf = '';
+    const finish = (value) => {
+      clearTimeout(timer);
+      try { conn.destroy(); } catch { /* already gone */ }
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    conn.on('connect', () => conn.write(`${JSON.stringify({ type: 'identify', protocol: 1 })}\n`));
+    conn.on('data', (chunk) => {
+      buf += String(chunk);
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      try { finish(JSON.parse(buf.slice(0, nl))); } catch { finish(null); }
+    });
+    conn.on('error', () => finish(null));
+  });
+}
+
+/** Recall receipts still waiting to be marked emitted — #44's broken contract. */
+function preparedReceipts(root) {
+  const dbFile = path.join(root, 'conversation-index', 'db.sqlite');
+  if (!fs.existsSync(dbFile)) return 0;
+  const db = new Database(dbFile, { readonly: true });
+  try {
+    const table = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'recall_events'")
+      .get();
+    if (!table) return 0;
+    return db.prepare("SELECT COUNT(*) AS n FROM recall_events WHERE status = 'prepared'").get().n;
+  } finally {
+    db.close();
+  }
 }
 
 test('inject daemon creates its index directory on a fresh data root', async (t) => {
@@ -288,14 +422,19 @@ test('a matching identity is served on the fast path and attributed in the log',
   assert.ok(lines.some((line) => line.via === 'daemon' || line.status === 'receipt-failed'), JSON.stringify(lines));
 });
 
-test('nothing listening logs no daemon note at all', async (t) => {
+test('no socket file at all is logged as reason "absent"', async (t) => {
+  // Issue #89 changed this from "no daemon note at all". A cold start and "the
+  // socket has been dead for an hour and every prompt pays 70s" produced the
+  // same silence, so the state this bug actually created was invisible in the
+  // one surface `doctor` reads. ENOENT now names itself.
   const root = tempRoot(t, 'empty');
   const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-empty' });
   assert.equal(run.exitCode, 0, run.stderr);
   const last = readLog(root).at(-1);
   assert.ok(last, 'the fallback must still write its line');
   assert.equal(last.via, 'fallback');
-  assert.equal(last.daemon, undefined, 'a cold start is not a conflict');
+  assert.equal(last.daemon.reason, 'absent', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got, null, 'there was nobody to report an identity');
 });
 
 // ---------------------------------------------------------------------------
@@ -308,20 +447,7 @@ test('a stale socket file is reclaimed, and a live same-build owner is not displ
   // A real socket file with nobody behind it — exactly what the observed SIGKILL
   // left (`lsof -U` showed node 44184 and the file outlived it). Connecting gives
   // ECONNREFUSED, not ENOENT, which is why the probe has to distinguish them.
-  const orphan = spawn(process.execPath, ['--input-type=module', '-e', `
-    import net from 'node:net';
-    const server = net.createServer(() => {});
-    server.listen(${JSON.stringify(sockPath)}, () => { console.log('bound'); });
-    setInterval(() => {}, 1000);
-  `], { stdio: ['ignore', 'pipe', 'pipe'] });
-  await new Promise((resolve, reject) => {
-    orphan.stdout.once('data', resolve);
-    orphan.once('error', reject);
-    setTimeout(() => reject(new Error('orphan never bound')), 5000);
-  });
-  orphan.kill('SIGKILL');
-  await new Promise((resolve) => orphan.once('exit', resolve));
-  assert.ok(fs.existsSync(sockPath), 'the SIGKILLed owner must leave its socket behind');
+  await orphanSocketFile(sockPath);
 
   const code = `
     import fs from 'node:fs';
@@ -677,7 +803,7 @@ test('doctor judges the owner against the INSTALLED root, not its own copy', asy
   assert.match(check.detail, /this diagnostic runs from/);
 });
 
-test('doctor reports no daemon, this installation, and a foreign owner', async (t) => {
+test('doctor reports an absent daemon, this installation, and a foreign owner', async (t) => {
   const root = tempRoot(t, 'doctor');
   const code = `
     const { doctor } = await import('./dist/lifecycle.js');
@@ -693,7 +819,7 @@ test('doctor reports no daemon, this installation, and a foreign owner', async (
 
   const none = JSON.parse((await runModule(code, env)).stdout.trim());
   assert.equal(none.status, 'ok');
-  assert.match(none.detail, /no daemon/);
+  assert.match(none.detail, /absent — no socket file/);
 
   // An owner running this very build: ok, with its pid and version.
   const identity = JSON.parse((await runModule(`
@@ -727,4 +853,258 @@ test('doctor reports no daemon, this installation, and a foreign owner', async (
   assert.match(other.detail, /pid 44184/);
   assert.match(other.detail, /pids can be reused/);
   await new Promise((resolve) => foreign.server.close(() => resolve()));
+});
+
+// ---------------------------------------------------------------------------
+// (d) issue #89 — re-acquisition, refusal classification and the four states
+// ---------------------------------------------------------------------------
+
+test('a duplicate server reclaims the socket after the owner dies', async (t) => {
+  const root = tempRoot(t, 'reacq');
+  const sockPath = socketIn(root);
+  const candidateDir = path.join(root, 'conversation-index', 'inject-daemon.candidates');
+  const lockPath = path.join(root, 'conversation-index', 'inject-daemon.lock');
+
+  // The observed shape exactly: Codex keeps one MCP server per session/thread,
+  // the first one owns the socket, and the later ones saw a live same-identity
+  // owner and stopped looking. pid 75485 then exited and nothing ever reclaimed.
+  const owner = spawnDaemon(t, root);
+  const ownerPid = Number((await owner.waitFor(/bound (\d+)/))[1]);
+  const duplicate = spawnDaemon(t, root, { MEMEX_INJECT_DAEMON_REACQUIRE_MS: '250' });
+  const duplicatePid = Number((await duplicate.waitFor(/started (\d+)/))[1]);
+  await duplicate.waitFor(/same build \(pid \d+\)/);
+  assert.match(duplicate.output, /re-probing every 250ms/);
+  assert.notEqual(ownerPid, duplicatePid);
+
+  // A live candidate announces itself so `doctor` can say a reclaim is pending.
+  assert.deepEqual(fs.readdirSync(candidateDir), [`${duplicatePid}.json`]);
+
+  // SIGKILL, not SIGTERM: the socket file survives and every connect gives
+  // ECONNREFUSED, which is the state that used to be permanent.
+  owner.child.kill('SIGKILL');
+  await owner.exited;
+
+  await duplicate.waitFor(/bound (\d+)/, 10_000);
+  const answer = await identify(sockPath);
+  assert.ok(answer, `the reclaimed socket must answer: ${duplicate.output}`);
+  assert.equal(answer.type, 'identity');
+  assert.equal(answer.pid, duplicatePid, 'the handshake must now carry the reclaimer’s identity');
+  assert.ok(!fs.existsSync(lockPath), 'the bind lock is released after the reclaim');
+  assert.deepEqual(
+    fs.existsSync(candidateDir) ? fs.readdirSync(candidateDir) : [],
+    [], 'an owner is no longer a candidate');
+});
+
+test('an MCP request reclaims the socket without waiting for the timer', async (t) => {
+  const root = tempRoot(t, 'opp');
+  // The timer is pushed out to ten minutes, so ONLY the opportunistic probe can
+  // reclaim here: a host that is actively working must not have to sit out an
+  // interval, and the trigger is named in the log line that proves which fired.
+  const owner = spawnDaemon(t, root);
+  await owner.waitFor(/bound (\d+)/);
+  const duplicate = spawnDaemon(t, root, { MEMEX_INJECT_DAEMON_REACQUIRE_MS: '600000' });
+  const duplicatePid = Number((await duplicate.waitFor(/started (\d+)/))[1]);
+  await duplicate.waitFor(/same build \(pid \d+\)/);
+
+  owner.child.kill('SIGKILL');
+  await owner.exited;
+  assert.ok(fs.existsSync(socketIn(root)), 'the SIGKILLed owner leaves its socket behind');
+  // Past the 2s rate limit that keeps the per-request probe cheap; a busy host
+  // calls it many times a second and all but one call returns immediately.
+  await new Promise((resolve) => setTimeout(resolve, 2_200));
+
+  duplicate.child.stdin.write('tool\n');
+  await duplicate.waitFor(/reclaiming the socket \(mcp request; ECONNREFUSED\)/, 5_000);
+  await duplicate.waitFor(/bound (\d+)/, 5_000);
+  const answer = await identify(socketIn(root));
+  assert.equal(answer?.pid, duplicatePid, duplicate.output);
+});
+
+test('the hook falls back immediately on a stale socket, leaving no prepared receipt', async (t) => {
+  const root = tempRoot(t, 'refused');
+  await orphanSocketFile(socketIn(root));
+
+  const started = Date.now();
+  const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-refused' },
+    { MEMEX_EMBEDDING_STUB: '1' });
+  const elapsed = Date.now() - started;
+  assert.equal(run.exitCode, 0, run.stderr);
+
+  const last = readLog(root).at(-1);
+  assert.ok(last, 'the fallback must still write its line');
+  assert.equal(last.via, 'fallback');
+  // Not `response timeout`: ECONNREFUSED is a fact about the socket, available
+  // in microseconds, and it names the #89 state instead of blurring it into the
+  // same label a slow daemon produced.
+  assert.equal(last.daemon.reason, 'refused', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got, null);
+  // Immediate means immediate: the old 3s response window is not waited out.
+  assert.ok(elapsed < 3_000, `fell back in ${elapsed}ms, which is not immediate`);
+  assert.ok(!readLog(root).some((line) => line.status === 'receipt-failed'), JSON.stringify(readLog(root)));
+  assert.equal(preparedReceipts(root), 0, 'a refused fast path must leave no prepared receipt');
+});
+
+test('an ack then silence is a compute timeout, not a dead daemon', async (t) => {
+  const root = tempRoot(t, 'ackstall');
+  // Exactly the 0.6.4 contract: the handshake passed, so the daemon acks before
+  // computing — and then stalls (on the real data root it was loading the
+  // embedding model, and took 74s). The hook must wait on the compute budget,
+  // not the 3s handshake budget, and then say which budget ran out.
+  const daemon = await fakeDaemon(t, socketIn(root), (request, socket) => {
+    socket.write(`${JSON.stringify({
+      type: 'ack',
+      protocol: request.protocol, version: request.version, buildId: request.buildId,
+      pluginRoot: request.pluginRoot, dbPath: request.dbPath, pid: 909,
+    })}\n`);
+    return null; // …and never answers
+  });
+
+  const started = Date.now();
+  const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-ack' },
+    { MEMEX_EMBEDDING_STUB: '1', MEMEX_INJECT_COMPUTE_TIMEOUT_MS: '600' });
+  const elapsed = Date.now() - started;
+  assert.equal(run.exitCode, 0, run.stderr);
+  assert.equal(daemon.received[0].type, 'inject');
+
+  const last = readLog(root).at(-1);
+  assert.equal(last.via, 'fallback');
+  assert.equal(last.daemon.reason, 'compute timeout', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got.pid, 909, 'the stalling daemon is named');
+  // The ack really did buy time: the hook outwaited its own handshake window.
+  assert.ok(elapsed >= 600, `gave up after ${elapsed}ms, before the compute budget`);
+});
+
+test('an ack that does not echo our identity is refused without waiting', async (t) => {
+  const root = tempRoot(t, 'ackecho');
+  // A squatter can write `ack` as easily as it can write `ok`, so the ack has to
+  // prove the same five fields before it is handed the longer budget.
+  await fakeDaemon(t, socketIn(root), (request, socket) => {
+    socket.write(`${JSON.stringify({
+      type: 'ack',
+      protocol: request.protocol, version: request.version,
+      buildId: 'sha256:not-the-build-you-asked-for',
+      pluginRoot: request.pluginRoot, dbPath: request.dbPath, pid: 1234,
+    })}\n`);
+    return null;
+  });
+
+  const run = await runHook(root, { prompt: 'why Redis?', cwd: root, session_id: 's-ackecho' },
+    { MEMEX_EMBEDDING_STUB: '1', MEMEX_INJECT_COMPUTE_TIMEOUT_MS: '30000' });
+  assert.equal(run.exitCode, 0, run.stderr);
+  const last = readLog(root).at(-1);
+  assert.equal(last.via, 'fallback');
+  assert.equal(last.daemon.reason, 'identity mismatch', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got.buildId, 'sha256:not-the-build-you-asked-for');
+});
+
+test('the real daemon acks before it computes, and leaves no receipt behind', async (t) => {
+  const root = tempRoot(t, 'realack');
+  const daemon = spawnDaemon(t, root);
+  await daemon.waitFor(/bound (\d+)/);
+
+  const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-realack' },
+    { MEMEX_EMBEDDING_STUB: '1' });
+  assert.equal(run.exitCode, 0, run.stderr);
+  const lines = readLog(root);
+  assert.ok(lines.some((line) => line.via === 'daemon'), JSON.stringify(lines));
+  // A served prompt never goes through the `abandoned` rollback.
+  assert.ok(!lines.some((line) => line.status === 'abandoned'), JSON.stringify(lines));
+  assert.equal(preparedReceipts(root), 0, 'nothing may be left prepared on the served path');
+});
+
+test('doctor reports absent, stale-with-reclaim, stale-with-nobody and hung', async (t) => {
+  const root = tempRoot(t, 'states');
+  const code = `
+    const { doctor } = await import('./dist/lifecycle.js');
+    const report = await doctor();
+    console.log(JSON.stringify(report.json.find((c) => c.name === 'inject-daemon')));
+  `;
+  const env = {
+    MEMEX_HOME: root,
+    TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+    MEMEX_PLUGIN_ROOT: REPO,
+    CODEX_HOME: path.join(root, 'codex'),
+  };
+  const check = async () => JSON.parse((await runModule(code, env)).stdout.trim());
+
+  // 1. absent — no socket file at all. Ordinary, and ok.
+  const absent = await check();
+  assert.equal(absent.status, 'ok', absent.detail);
+  assert.match(absent.detail, /^absent — no socket file/);
+
+  // 2. stale with nobody to fix it — warn. This is the #89 state, which 0.6.3
+  // reported as `ok` for the whole life of the host.
+  await orphanSocketFile(socketIn(root));
+  const nobody = await check();
+  assert.equal(nobody.status, 'warn', nobody.detail);
+  assert.match(nobody.detail, /^stale — a socket file exists but nothing listens on it \(ECONNREFUSED\)/);
+  assert.match(nobody.detail, /NO live MCP server is waiting to reclaim it/);
+
+  // 3. stale with a live candidate — ok, naming who will reclaim it and when.
+  // The candidate is this very test process, which is certainly alive.
+  const candidateDir = path.join(root, 'conversation-index', 'inject-daemon.candidates');
+  fs.mkdirSync(candidateDir, { recursive: true });
+  const identity = JSON.parse((await runModule(`
+    import { injectDaemonIdentity } from './dist/inject-daemon.js';
+    console.log(JSON.stringify(injectDaemonIdentity()));
+  `, env)).stdout.trim());
+  fs.writeFileSync(path.join(candidateDir, `${process.pid}.json`), JSON.stringify({
+    ...identity, pid: process.pid, instanceId: 'waiting', startedAt: new Date().toISOString(), reprobeMs: 20_000,
+  }));
+  const pending = await check();
+  assert.equal(pending.status, 'ok', pending.detail);
+  assert.match(pending.detail, /^stale — /);
+  assert.match(pending.detail, /Reacquisition is pending — 1 live server\(s\)/);
+  assert.match(pending.detail, new RegExp(`pid ${process.pid} version `));
+  assert.match(pending.detail, /re-probes every 20000ms/);
+
+  // A candidate whose process is gone claims nothing: back to warn.
+  fs.writeFileSync(path.join(candidateDir, '4194304.json'), JSON.stringify({
+    ...identity, pid: 2 ** 22, instanceId: 'dead', startedAt: new Date().toISOString(), reprobeMs: 20_000,
+  }));
+  fs.rmSync(path.join(candidateDir, `${process.pid}.json`));
+  const deadCandidate = await check();
+  assert.equal(deadCandidate.status, 'warn', deadCandidate.detail);
+  assert.match(deadCandidate.detail, /NO live MCP server is waiting to reclaim it/);
+  fs.rmSync(candidateDir, { recursive: true, force: true });
+
+  // 4. hung — it accepts the connection and never identifies itself.
+  fs.rmSync(socketIn(root), { force: true });
+  const mute = await fakeDaemon(t, socketIn(root), () => null);
+  const hung = await check();
+  assert.equal(hung.status, 'warn', hung.detail);
+  assert.match(hung.detail, /^hung — a listener holds the socket but did not identify itself within 3000ms/);
+  await new Promise((resolve) => mute.server.close(() => resolve()));
+});
+
+test('an owner unlinks its socket and drops its lock when it is told to stop', async (t) => {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const root = tempRoot(t, `exit-${signal}`);
+    const sockPath = socketIn(root);
+    const owner = spawnDaemon(t, root);
+    await owner.waitFor(/bound (\d+)/);
+    assert.ok(fs.existsSync(sockPath), `${signal}: the owner must have bound`);
+
+    owner.child.kill(signal);
+    const { code, signal: bySignal } = await owner.exited;
+    // Cleanup must not swallow the signal: installing a handler suppresses
+    // Node's default terminate, so the sidecar re-raises it.
+    assert.ok(bySignal === signal || code === 0, `${signal}: exited with ${code}/${bySignal}`);
+    assert.ok(!fs.existsSync(sockPath),
+      `${signal}: the socket file must be unlinked, or the next prompt gets ECONNREFUSED for ever`);
+    assert.ok(!fs.existsSync(path.join(root, 'conversation-index', 'inject-daemon.lock')),
+      `${signal}: the bind lock must be released`);
+  }
+});
+
+test('an owner unlinks its socket when its stdin closes', async (t) => {
+  const root = tempRoot(t, 'exit-stdin');
+  const sockPath = socketIn(root);
+  const owner = spawnDaemon(t, root);
+  await owner.waitFor(/bound (\d+)/);
+  // How a host says "you are done" without a signal; the MCP stdio transport
+  // ends on the same event.
+  owner.child.stdin.end();
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  assert.ok(!fs.existsSync(sockPath), `the socket must be gone: ${owner.output}`);
 });

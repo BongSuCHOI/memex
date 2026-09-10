@@ -8,7 +8,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { startInjectDaemon } from "./inject-daemon.js";
+import { injectDaemonReacquireNow, startInjectDaemon } from "./inject-daemon.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -841,6 +841,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Handle Tool Calls
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  // Issue #89: a host that rotates MCP servers leaves the inject socket owned by
+  // a process that has since exited, and the servers that deferred to it never
+  // looked again. A request is the cheapest possible signal that this process is
+  // alive and working, so it doubles as an opportunistic re-probe: rate-limited,
+  // fire-and-forget, a no-op once this process owns the socket or never deferred.
+  injectDaemonReacquireNow();
   const { name, arguments: args } = request.params;
   return handleToolCall(name, args ?? {});
 });
