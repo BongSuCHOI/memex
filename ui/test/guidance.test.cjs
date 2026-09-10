@@ -369,13 +369,14 @@ const UI_CODE_CLASSES={
  SYNC_DIR_UNWRITABLE:'sync-export-failed',
  INVALID_ARCHIVE:'sync-archive-invalid',
  INVALID_ARCHIVE_PATH:'sync-archive-invalid',
+ SYNC_DIR_REQUIRED:'sync-export-failed',
 };
 /**
- * ★ L1에서 올 코드. `ui/lib/core.cjs`가 아직 code 없이 던지는(= REQUEST_FAILED) 공유 폴더 경로
- * 요구에 L1이 `SYNC_DIR_REQUIRED`를 부여한다(설계 §6.1). 여기 있는 코드는 `ui/lib`에 **아직 없어도
- * 통과**하지만, 분류 규칙은 지금 있어야 한다 — 그래야 L1 머지 시점에 회귀 창이 생기지 않는다.
+ * ★ L1에서 올 코드. 분류 규칙을 먼저 두어 L1 머지 시점에 회귀 창이 생기지 않게 했다(설계 §6.1).
+ * L1이 머지되면서 `SYNC_DIR_REQUIRED`는 실제로 `ui/lib/core.cjs`에 들어왔고 위 표로 옮겼다 —
+ * 이 목록이 비어 있는 것이 정상 상태다.
  */
-const EXPECTED_FROM_L1={SYNC_DIR_REQUIRED:'sync-export-failed'};
+const EXPECTED_FROM_L1={};
 /** 실패 클래스를 두지 않는 코드. 화면에서 취할 행동이 폼·요청 그 자체이거나 코어 버그다. */
 const UI_CODE_EXEMPT={
  AMBIGUOUS_PROJECT:'같은 경로에 프로젝트가 여러 개다. 상단 범위 선택으로 해소하고 복구 명령이 없다.',
@@ -395,6 +396,26 @@ const UI_CODE_EXEMPT={
  SCOPE_MISMATCH:'범위와 대상이 어긋난 요청. 상단 범위를 맞추면 해소된다.',
  SYNC_BUSY:'동기화 작업이 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
  TIER_TARGET_REQUIRED:'계층 이동의 대상 범위를 먼저 골라야 한다. 다음 행동이 상단 범위 선택이다.',
+ // ── L1이 0.7.0에서 새로 부여한 코드 (설계 §5.3 "38건에 안정적인 code 부여") ──
+ // 전부 **요청 모양·입력 형식** 검증이다: 데이터 상태를 말하지 않으므로 실패 클래스를 두면
+ // 복구 절차를 지어내게 된다. 오류 카드가 문장과 코드를 보여주는 것이 취할 수 있는 전부다.
+ ARCHIVE_PATH_REQUIRED:'세대 파일 경로를 입력하라는 요구. 다음 행동이 그 입력 자체다.',
+ BODY_TOO_LARGE:'요청 본문 상한 초과. 화면이 보내는 크기는 고정이므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_ACTION:'실행 내역 API가 cancel만 받는다. 버튼으로만 호출되므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_FACT_ACTION:'기억 변경 action allowlist(edit·deactivate·restore·delete). 화면이 값을 만든다.',
+ INVALID_FACT_STATE:'기억 상태 필터 검증(all·active·inactive). 상단 컨트롤이 값을 만든다.',
+ INVALID_FACT_TEXT:'기억 본문 길이 검증. 다음 행동이 입력 수정이며 수정 모달이 같은 한도를 안내한다.',
+ INVALID_FILE:'일반 파일이 아닌 로그 경로. 목록이 고른 항목만 열리므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_JSON:'요청 본문이 JSON 객체가 아니다. 화면이 직렬화하므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_PATH:'정적 에셋 경로 검증. 링크만 값을 만든다.',
+ INVALID_RELATION:'관계 유형 필터 검증. 지식 지도의 범례가 값을 만든다.',
+ INVALID_SYNC_ACTION:'동기화 action allowlist. 화면의 버튼만 값을 만든다.',
+ INVALID_TIER_ACTION:'계층 이동 action allowlist(promote·demote). 버튼만 값을 만든다.',
+ INVALID_URL:'요청 URL 파싱 실패. 브라우저가 만든 주소이므로 사용자 경로에서 발생하지 않는다.',
+ METHOD_NOT_ALLOWED:'라우트가 허용하지 않는 HTTP 메서드. 화면은 정해진 메서드만 보낸다.',
+ REQUEST_ABORTED:'클라이언트가 요청을 끊었다. 화면 전환·취소의 정상 결과이며 실패가 아니다.',
+ TOO_MANY_CLIENTS:'실시간 연결 상한(24). 탭을 줄이면 해소되고 데이터 상태와 무관하다.',
+ UNSUPPORTED_MEDIA_TYPE:'Content-Type 검증. 화면이 헤더를 붙이므로 사용자 경로에서 발생하지 않는다.',
 };
 
 test('ui/lib이 던지는 오류 코드는 모두 클래스가 있거나 대장에 올라 있다 (#109)',()=>{

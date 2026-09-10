@@ -1,4 +1,5 @@
 'use strict';
+const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
@@ -284,8 +285,9 @@ test('코어에 동기화 서비스가 없으면 빈 화면 대신 이유를 말
 
 // --- #24 메뉴 이름 · 기본 범위 · 주입 범위 안내 · 공통 범위 원클릭 전환 ---
 test('사이드바 메뉴와 기억 페이지 제목이 기억·사실로 통일된다',async()=>{
- assert(APP.includes("['/facts','memory','기억·사실']"),'app.mjs navigation 라벨이 바뀌지 않음');
- assert(!/\['\/facts','memory','기억'\]/.test(APP),'옛 메뉴 라벨이 남아 있음');
+ // #109: 라벨은 사전으로 옮겼다 — 소스는 키를, 값은 ko 사전이 갖는다.
+ assert(APP.includes("['/facts','memory',t('shell.nav.facts')]"),'app.mjs navigation이 사전 키를 쓰지 않음');
+ assert.equal(ko['shell.nav.facts'],'기억·사실','ko 메뉴 라벨이 바뀌지 않음');
  const {html}=await renderFacts('',{facts:factsPage([row()])});
  assert(html.includes('<h1>기억·사실</h1>'),'페이지 제목이 바뀌지 않음');
 });
@@ -295,16 +297,21 @@ test('조회 기본 범위는 공통 기억이 아니라 전체 프로젝트다'
  assert(APP.includes("u.searchParams.set('scope',DEFAULT_SCOPE)"),'기본 범위를 주소에 명시하지 않음');
 });
 test('범위 선택 옆에 주입 범위 안내를 상시 표시한다',()=>{
- const hint=APP.match(/export const SCOPE_HINT='([^']+)'/);
- assert(hint,'SCOPE_HINT 상수 없음');
- assert(hint[1].includes('공통 기억')&&hint[1].includes('조회'),'안내 문구가 주입·조회 범위를 설명하지 않음: '+hint[1]);
+ // #109: 상수가 사전 조회 함수로 바뀌었다(설계 §2.6) — 문구는 shell 네임스페이스가 갖는다.
+ assert(APP.includes("export const scopeHint=()=>t('shell.scope.hint')"),'scopeHint() 접근자 없음');
+ const hint=ko['shell.scope.hint'];
+ assert(hint,'shell.scope.hint 문구 없음');
+ assert(hint.includes('공통 기억')&&hint.includes('조회'),'안내 문구가 주입·조회 범위를 설명하지 않음: '+hint);
  assert(APP.includes('id="scope-hint"'),'상시 안내 요소가 렌더링되지 않음');
 });
 test('범위 드롭다운은 전체 → 공통 → 프로젝트 순서로 기억 수와 함께 나열한다',()=>{
  const shell=APP.slice(APP.indexOf('const scopeOptions='));
- assert(shell.indexOf("'all','전체 프로젝트 (조회)'")<shell.indexOf("'global','공통 기억'"),'전체 프로젝트가 공통 기억보다 뒤에 있음');
- assert(shell.includes('optgroup label="프로젝트"'),'프로젝트 목록 그룹이 없음');
- assert(APP.includes("' · 기억 '+number(n)+'개'"),'항목별 기억 수 표시가 없음');
+ assert(shell.indexOf("'all',t('shell.scope.allProjectsOption')")<shell.indexOf("'global',t('common.commonMemory')"),'전체 프로젝트가 공통 기억보다 뒤에 있음');
+ assert(shell.includes("t('shell.scope.projectGroup')"),'프로젝트 목록 그룹이 없음');
+ assert(APP.includes("tn('shell.scope.factCount',n,{total:number(n)})"),'항목별 기억 수 표시가 없음');
+ assert.equal(ko['shell.scope.allProjectsOption'],'전체 프로젝트 (조회)');
+ assert.equal(ko['common.commonMemory'],'공통 기억');
+ assert.equal(ko['shell.scope.factCount.other'],'기억 {total}개');
 });
 test('/facts?fact=<id> 딥링크가 상세 패널을 연다',()=>{
  assert(/u\.pathname==='\/facts'&&u\.searchParams\.get\('fact'\)/.test(APP),'fact= 딥링크 정규화가 없음');

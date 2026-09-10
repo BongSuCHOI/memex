@@ -53,15 +53,18 @@ function normalizeErrorInfo(info, legacyCode) {
 }
 function integer(value, fallback, min = 0, max = 500) {
   if (value === undefined || value === null || value === '') return fallback;
-  if (!/^\d+$/.test(String(value))) throw new HttpError(400, '정수 형식의 값이 필요합니다.', 'INVALID_NUMBER');
+  if (!/^\d+$/.test(String(value)))
+    throw new HttpError(400, { code: 'INVALID_NUMBER', key: 'error.validate.integerRequired', message: 'An integer value is required.' });
   const n = Number(value);
-  if (!Number.isSafeInteger(n) || n < min || n > max) throw new HttpError(400, `허용 범위: ${min}–${max}`, 'INVALID_NUMBER');
+  if (!Number.isSafeInteger(n) || n < min || n > max)
+    throw new HttpError(400, { code: 'INVALID_NUMBER', key: 'error.validate.rangeExceeded', params: { min, max }, message: `Allowed range: ${min}-${max}` });
   return n;
 }
 function text(value, max = 500) { return typeof value === 'string' ? value.slice(0, max) : ''; }
 function identifier(value) {
   const id = text(value, 200);
-  if (!id || /[\x00-\x1f]/.test(id)) throw new HttpError(400, '유효한 ID가 필요합니다.', 'INVALID_ID');
+  if (!id || /[\x00-\x1f]/.test(id))
+    throw new HttpError(400, { code: 'INVALID_ID', key: 'error.validate.idRequired', message: 'A valid ID is required.' });
   return id;
 }
 function sqlName(name) {
@@ -87,7 +90,8 @@ function redact(input) {
 }
 function hash(input) { return crypto.createHash('sha256').update(String(input)).digest('hex'); }
 function canonicalProject(value) {
-  if (!value || !path.isAbsolute(value) || /[\x00-\x1f]/.test(value)) throw new HttpError(400, '프로젝트는 정규화 가능한 절대 경로여야 합니다.', 'INVALID_SCOPE');
+  if (!value || !path.isAbsolute(value) || /[\x00-\x1f]/.test(value))
+    throw new HttpError(400, { code: 'INVALID_SCOPE', key: 'error.scope.projectPathAbsolute', message: 'A project must be an absolute path that can be normalised.' });
   return path.normalize(value).replace(/\/+$/, '') || '/';
 }
 module.exports = { HttpError, normalizeErrorInfo, integer, text, identifier, sqlName, parseJSON, array, cleanRow, redact, hash, canonicalProject };

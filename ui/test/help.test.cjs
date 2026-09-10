@@ -40,7 +40,8 @@ function anchorsOf(file){
 }
 
 test('메뉴 7개에 모두 도움말 항목이 있다',()=>{
- const nav=[...APP.matchAll(/\['(\/[a-z]*)','[a-z]+','[^']+'\]/g)].map(m=>m[1]);
+ // 0.7.0 (#109): 라벨이 사전 키가 됐다 — `['/facts','memory',t('shell.nav.facts')]`.
+ const nav=[...APP.matchAll(/\['(\/[a-z]*)','[a-z]+',t\('shell\.nav\.[a-z]+'\)\]/g)].map(m=>m[1]);
  assert.equal(nav.length,7,'app.mjs navigation 추출 실패: '+JSON.stringify(nav));
  for(const route of nav)assert(help.PAGES[route],'도움말 없는 메뉴: '+route);
  assert.equal(Object.keys(help.PAGES).length,nav.length,'navigation에 없는 도움말 항목이 있습니다');

@@ -4,6 +4,8 @@ const {Store}=require('./store.cjs');const {HttpError,text,identifier}=require('
 /** `/api/v2/sync` 본문의 action. 0.6.3에서 수동 세대 파일과 기기 별칭이 추가됐다 (#48). */
 const SYNC_ACTIONS=['status','enable','disable','export','import','archive-export','archive-preview','archive-import','alias'];
 const ARCHIVE_SERVICES=['exportGenerationArchive','previewImportArchive','importArchive','setDeviceAlias'];
+/** 기억 본문 길이 한도. 문구에 보간되므로 상수로 둔다 — 0.6.x는 검사와 문장에 각각 박혀 있었다. */
+const FACT_TEXT_MIN=4,FACT_TEXT_MAX=20000;
 class Core {
   constructor(options={}) {
     this.root=options.root||process.env.MEMEX_PLUGIN_ROOT||process.env.PLUGIN_ROOT||path.resolve(__dirname,'../..');
@@ -54,14 +56,14 @@ class Core {
   }
   async pipeline(){
     const m=await this.module('pipeline-status');
-    if(typeof m.getPipelineStatus!=='function')throw new HttpError(503,'파이프라인 상태 모듈이 없습니다.','CORE_UNAVAILABLE');
+    if(typeof m.getPipelineStatus!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.pipelineModuleMissing',message:'The pipeline status module is missing.'});
     return m.getPipelineStatus({dbPath:this.dbPath});
   }
   environment(){
     const names=['MEMEX_AUTO_ONTOLOGY','MEMEX_CODEX_MODEL','MEMEX_MODEL_BUDGET_MAX_ATTEMPTS','MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS','MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS','MEMEX_MODEL_BUDGET_DEADLINE_MS','CODEX_HOME','MEMEX_SESSIONS_DIR'];
     return {root:this.root,home:this.home,dbPath:this.dbPath,version:this.version,node:process.version,platform:process.platform,pid:process.pid,
       values:Object.fromEntries(names.map(k=>[k,process.env[k]??null])),
-      note:'이 UI 서버가 시작될 때 상속한 환경입니다. 이미 실행 중인 플러그인·훅 프로세스의 환경을 증명하지 않습니다.',
+      noteKey:'note.environment.inherited',
       // Mirrors src/model-budget.ts isAutomaticOntologyEnabled(): on by default
       // since 0.4.3; only an explicit non-empty value other than '1' disables it.
       autoOntology:(v=>v===undefined||v===''||v==='1')(process.env.MEMEX_AUTO_ONTOLOGY?.trim()),
@@ -125,26 +127,26 @@ class Core {
    * action으로 들어온다. 하위 경로(`/api/v2/sync/...`)는 만들지 않는다.
    */
   async sync(action,body={}){
-    if(!SYNC_ACTIONS.includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
-    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 이미 진행 중입니다.','SYNC_BUSY');
-    if(action!=='status'&&this.busy.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
+    if(!SYNC_ACTIONS.includes(action))throw new HttpError(400,{code:'INVALID_SYNC_ACTION',key:'error.sync.unsupportedAction',message:'Unsupported sync action.'});
+    if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.sync.alreadyRunning',message:'A sync run is already in progress.'});
+    if(action!=='status'&&this.busy.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.sync.blockedByMutation',message:'A memory change is in progress. Run this after it finishes.'});
     this.syncBusy=true;
     try{
       return await this.pinned(async()=>{
         const m=await this.module('sync-control');
         for(const fn of ['getSyncStatus','setSyncEnabled','runSyncExport','runSyncImport'])
-          if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 동기화 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+          if(typeof m[fn]!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.syncServiceMissing',message:'The installed core has no sync service. Build the core.'});
         if(action==='status')return {status:m.getSyncStatus()};
         if(action==='enable'){
           const dir=text(body.dir,4096).trim();
-          if(!dir)throw new HttpError(400,'공유 폴더 경로를 입력하세요.');
-          if(!path.isAbsolute(dir)||/[\x00-\x1f]/.test(dir))throw new HttpError(400,'공유 폴더는 정규화 가능한 절대 경로여야 합니다.','INVALID_SYNC_DIR');
+          if(!dir)throw new HttpError(400,{code:'SYNC_DIR_REQUIRED',key:'error.sync.dirRequired',message:'Enter the shared folder path.'});
+          if(!path.isAbsolute(dir)||/[\x00-\x1f]/.test(dir))throw new HttpError(400,{code:'INVALID_SYNC_DIR',key:'error.sync.dirNotAbsolute',message:'The shared folder must be an absolute path that can be normalised.'});
           return {status:m.setSyncEnabled({enabled:true,dir:path.normalize(dir)})};
         }
         if(action==='disable')return {status:m.setSyncEnabled({enabled:false})};
         if(action!=='export'&&action!=='import'){
           for(const fn of ARCHIVE_SERVICES)
-            if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 세대 파일·기기 별칭 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+            if(typeof m[fn]!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.archiveServiceMissing',message:'The installed core has no generation-archive or device-alias service. Build the core.'});
           if(action==='alias'){
             // 빈 이름은 별칭 삭제다. 별칭은 로컬 sync/devices.json에만 쓰고 피어 설정은 건드리지 않는다.
             m.setDeviceAlias(identifier(body.deviceId),text(body.alias,200).trim()||null);
@@ -155,8 +157,8 @@ class Core {
           // 가져오기 경로는 사용자가 다른 맥에서 받아 둔 파일을 지목한다. 경로는 제한하지 않지만
           // payload는 기존 v5 검증을 그대로 통과해야 하므로 동기화 파일이 아니면 사유와 함께 거부된다.
           const source=text(body.path,4096).trim();
-          if(!source)throw new HttpError(400,'세대 파일(zip) 또는 세대 디렉터리의 절대 경로를 입력하세요.');
-          if(!path.isAbsolute(source)||/[\x00-\x1f]/.test(source))throw new HttpError(400,'세대 파일 경로는 정규화 가능한 절대 경로여야 합니다.','INVALID_ARCHIVE_PATH');
+          if(!source)throw new HttpError(400,{code:'ARCHIVE_PATH_REQUIRED',key:'error.archive.pathRequired',message:'Enter the absolute path of a generation archive (zip) or a generation directory.'});
+          if(!path.isAbsolute(source)||/[\x00-\x1f]/.test(source))throw new HttpError(400,{code:'INVALID_ARCHIVE_PATH',key:'error.archive.pathNotAbsolute',message:'The generation archive path must be an absolute path that can be normalised.'});
           const normalized=path.normalize(source);
           if(action==='archive-preview')return {preview:m.previewImportArchive(normalized)};
           return {outcome:await m.importArchive(normalized),status:m.getSyncStatus()};
@@ -167,9 +169,9 @@ class Core {
       });
     }catch(e){
       if(e.status)throw e;
-      if(/not writable/.test(e.message))throw new HttpError(400,'공유 폴더에 쓸 수 없습니다. 경로와 권한을 확인하세요: '+e.message,'SYNC_DIR_UNWRITABLE');
+      if(/not writable/.test(e.message))throw new HttpError(400,{code:'SYNC_DIR_UNWRITABLE',key:'error.sync.dirUnwritable',params:{detail:e.message},message:'The shared folder is not writable. Check the path and its permissions: '+e.message});
       // 코어의 세대 파일 거부 사유는 사용자가 고칠 수 있는 입력 문제다. 원문을 그대로 전달한다.
-      if(/^sync archive /.test(e.message))throw new HttpError(400,e.message,'INVALID_ARCHIVE');
+      if(/^sync archive /.test(e.message))throw new HttpError(400,{code:'INVALID_ARCHIVE',key:null,message:e.message});
       throw e;
     }finally{this.syncBusy=false;}
   }
@@ -190,23 +192,23 @@ class Core {
    */
   async tier(body,scope){
     const id=identifier(body.id);const action=body.action;
-    if(!['promote','demote'].includes(action))throw new HttpError(400,'지원하지 않는 계층 이동입니다.');
-    if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    if(!['promote','demote'].includes(action))throw new HttpError(400,{code:'INVALID_TIER_ACTION',key:'error.tier.unsupportedAction',message:'Unsupported tier move.'});
+    if(this.busy.has(id))throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.fact.mutationInFlight',message:'A change to this memory is already in progress.'});
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
-    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 진행 중입니다. 완료 후 실행하세요.','SYNC_BUSY');
+    if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
     this.busy.add(id);let writer;
     try{
       return await this.pinned(async()=>{
         const store=await this.connect();const current=store.visibleFact(id,scope);
-        if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
+        if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,{code:'STALE_FACT',key:'error.fact.stale',message:'This memory changed in another operation. Refresh, then check again.'});
         const fm=await this.module('fact-management');
-        if(typeof fm.promoteFact!=='function'||typeof fm.demoteFact!=='function')throw new HttpError(503,'설치된 코어에 계층 이동 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+        if(typeof fm.promoteFact!=='function'||typeof fm.demoteFact!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.tierServiceMissing',message:'The installed core has no tier-move service. Build the core.'});
         // 읽은 tier에서 한 칸만 — 목표를 코어에 명시해야 경쟁에서 져도 두 칸이 움직이지 않는다.
         const LADDER=['workstream','project','global'];
         const from=typeof fm.factTierOf==='function'
           ?fm.factTierOf({scope_type:current.scope_type,promotion_state:current.promotion_state??null}):null;
         const to=from?LADDER[LADDER.indexOf(from)+(action==='promote'?1:-1)]:undefined;
-        if(from&&!to)throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
+        if(from&&!to)throw new HttpError(409,{code:'TIER_STEP',key:'error.tier.oneRungOnly',message:'Tiers move one rung at a time. To reach global, promote to project-wide first.'});
         const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);
         const options={actor:'user',reason:text(body.reason,500)||null,projectId:scope.projectId||null,workstreamId:scope.workstreamId||null,
           ...(to?{to}:{}),expected:{...(from?{tier:from}:{}),...(current.updated_at?{updatedAt:current.updated_at}:{})}};
@@ -214,21 +216,21 @@ class Core {
       });
     }catch(e){
       if(e.status)throw e;
-      if(e.name==='TierStaleError')throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
-      if(e.name==='TierStepError')throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
-      if(/requires a target project/.test(e.message))throw new HttpError(400,'글로벌 기억을 강등하려면 상단에서 대상 프로젝트 범위를 먼저 선택하세요.','TIER_TARGET_REQUIRED');
-      if(/requires a workstream/.test(e.message))throw new HttpError(400,'브랜치 계층으로 강등하려면 상세 조회 범위에서 작업 흐름을 먼저 선택하세요.','TIER_TARGET_REQUIRED');
-      if(/requires project identity/.test(e.message))throw new HttpError(400,'이 기억에는 프로젝트 식별자가 없어 계층을 옮길 수 없습니다. CLI에서 확인하세요.','TIER_TARGET_REQUIRED');
+      if(e.name==='TierStaleError')throw new HttpError(409,{code:'STALE_FACT',key:'error.fact.stale',message:'This memory changed in another operation. Refresh, then check again.'});
+      if(e.name==='TierStepError')throw new HttpError(409,{code:'TIER_STEP',key:'error.tier.oneRungOnly',message:'Tiers move one rung at a time. To reach global, promote to project-wide first.'});
+      if(/requires a target project/.test(e.message))throw new HttpError(400,{code:'TIER_TARGET_REQUIRED',key:'error.tier.targetProjectRequired',message:'To demote a global memory, pick the target project scope at the top first.'});
+      if(/requires a workstream/.test(e.message))throw new HttpError(400,{code:'TIER_TARGET_REQUIRED',key:'error.tier.targetWorkstreamRequired',message:'To demote to the branch tier, pick a workstream in the detail scope first.'});
+      if(/requires project identity/.test(e.message))throw new HttpError(400,{code:'TIER_TARGET_REQUIRED',key:'error.tier.projectIdentityMissing',message:'This memory has no project identifier, so its tier cannot move. Check it from the CLI.'});
       throw e;
     }
     finally{this.busy.delete(id);if(writer&&writer!==this.db){try{writer.close();}catch{}}}
   }
   async mutate(body,scope){
     const id=identifier(body.id);const action=body.action;
-    if(!['edit','deactivate','restore','delete'].includes(action))throw new HttpError(400,'지원하지 않는 기억 변경 작업입니다.');
-    if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    if(!['edit','deactivate','restore','delete'].includes(action))throw new HttpError(400,{code:'INVALID_FACT_ACTION',key:'error.fact.unsupportedMutation',message:'Unsupported memory change.'});
+    if(this.busy.has(id))throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.fact.mutationInFlight',message:'A change to this memory is already in progress.'});
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
-    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 진행 중입니다. 완료 후 실행하세요.','SYNC_BUSY');
+    if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
     // #106 — 잠금은 첫 await 앞에서 동기적으로 잡는다(#77이 tier()에 세운 규칙과 같다). 0.6.6은
     // syncBusy를 검사한 뒤 `await this.connect()`로 양보하고 나서야 busy.add(id)를 했고, 그 창에
     // 들어온 sync()는 빈 busy를 보고 통과했다. 재개된 변경은 syncBusy를 다시 보지 않으므로 동기화와
@@ -236,10 +238,10 @@ class Core {
     this.busy.add(id);let writer;
     try{
       const store=await this.connect();const current=store.visibleFact(id,scope);
-      if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
-      if(body.expectedText!==undefined&&current.fact!==body.expectedText)throw new HttpError(409,'기억 내용이 변경됐습니다. 새로고침하세요.','STALE_FACT');
-      if(action==='edit'&&(typeof body.text!=='string'||body.text.trim().length<4||body.text.length>20000))throw new HttpError(400,'기억 내용은 4–20,000자로 입력하세요.');
-      if(action==='delete'&&(!body.confirm||body.confirmId!==id||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))throw new HttpError(400,'영향을 확인한 뒤 전체 UUID를 정확히 입력하세요.','CONFIRMATION_REQUIRED');
+      if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,{code:'STALE_FACT',key:'error.fact.stale',message:'This memory changed in another operation. Refresh, then check again.'});
+      if(body.expectedText!==undefined&&current.fact!==body.expectedText)throw new HttpError(409,{code:'STALE_FACT',key:'error.fact.textStale',message:'The memory text changed. Refresh the page.'});
+      if(action==='edit'&&(typeof body.text!=='string'||body.text.trim().length<FACT_TEXT_MIN||body.text.length>FACT_TEXT_MAX))throw new HttpError(400,{code:'INVALID_FACT_TEXT',key:'error.fact.textLength',params:{min:FACT_TEXT_MIN,max:FACT_TEXT_MAX},message:`Enter between ${FACT_TEXT_MIN} and ${FACT_TEXT_MAX} characters of memory text.`});
+      if(action==='delete'&&(!body.confirm||body.confirmId!==id||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))throw new HttpError(400,{code:'CONFIRMATION_REQUIRED',key:'error.fact.deleteConfirmRequired',message:'Review the impact, then type the full UUID exactly.'});
       // #78 — 코어의 감사 줄도 이 서버의 home에 남아야 하므로 코어 호출을 pinned() 안에서 한다.
       return await this.pinned(async()=>{
         const fm=await this.module('fact-management');const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);
@@ -256,7 +258,7 @@ class Core {
         if(action==='restore')return await fm.restoreFact(writer,id);
         return await fm.hardDeleteFact(writer,id,{confirm:true});
       });
-    }catch(e){if(e.name==='StaleFactMutationError')throw new HttpError(409,e.message,'STALE_FACT');throw e;}
+    }catch(e){if(e.name==='StaleFactMutationError')throw new HttpError(409,{code:'STALE_FACT',key:null,message:e.message});throw e;}
     finally{this.busy.delete(id);if(writer&&writer!==this.db){try{writer.close();}catch{}}}
   }
   close(){if(this.db){try{this.db.close();}catch{}this.db=null;}}

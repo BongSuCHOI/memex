@@ -48,15 +48,9 @@ export const ALLOW = [
  * (`stale`) 줄을 지우도록 강제한다 — 목록이 조용히 남아 가림막이 되는 것을 막는다.
  */
 export const PENDING_MIGRATION = [
-  'ui/lib/core.cjs',
-  'ui/lib/logs.cjs',
-  'ui/lib/operations.cjs',
-  'ui/lib/server.cjs',
-  'ui/lib/store.cjs',
-  'ui/lib/util.cjs',
-  'ui/public/api.mjs',
-  'ui/public/app.mjs',
-  'ui/public/ui.mjs',
+  // **비었다.** 네 레인이 모두 자기 파일을 비웠다: L1(ui/lib · 셸 · 포맷터 · 배지 · 오류),
+  // L2(상세 · 관리), L3(페이지 · 활동), L4(도움말 · 안내). 이제 `ALLOW`의 경로 3개 밖에서
+  // 한글 리터럴이 하나라도 나오면 그것은 **예정된 미이관이 아니라 회귀**다.
 ];
 
 /**
@@ -71,6 +65,12 @@ export const DYNAMIC_PREFIXES = [
   'unit.',              // tn() 단위
   'op.',                // operations.cjs의 command 키
   'common.job.hold.',   // memory_jobs.hold_reason 값으로 조립 (decisions-v3 H2)
+  // HTTP 200 본문의 프로즈. 서버가 `<field>Key`로 키를 싣고 api.mjs의 payloadText()가
+  // **런타임에 받은 문자열로** 조회하므로 AST로 수확할 수 없다 — `op.`과 같은 성질이다
+  // (설계 §5.3 분류 c · §5.4). 소스에 리터럴 호출이 없는 것이 정상이다.
+  'label.',             // label.session.untitled
+  'state.',             // state.schema.tableAbsent · state.fact.sourceUnavailable · state.log.selectFileFirst
+  'note.',              // note.environment.inherited · note.log.tailOnlyRedaction · note.job.relatedFactsBasis
 ];
 
 const rel = file => path.relative(ROOT, file).split(path.sep).join('/');

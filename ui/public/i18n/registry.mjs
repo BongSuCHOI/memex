@@ -21,7 +21,8 @@ export const NAMESPACES = Object.freeze([
 export const PREFIXES = Object.freeze({
   common: ['common.', 'unit.', 'action.', 'label.', 'state.', 'note.', 'op.'],
   shell: ['shell.'],
-  ui: ['tier.', 'a11y.', 'pagination.', 'sync.', 'status.'],
+  // event.* 는 i18n L1이 추가했다 — ui.mjs eventRow()의 타임라인 문구(설계 §12.3 L1).
+  ui: ['tier.', 'a11y.', 'pagination.', 'sync.', 'status.', 'event.'],
   badge: ['badge.'],
   errors: ['error.'],
   pages: ['pages.'],

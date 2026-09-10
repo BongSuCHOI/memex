@@ -1,12 +1,107 @@
 // errors — 서버 오류 키의 **클라이언트 측** 번역. 소유: i18n L1.
 // ui/lib은 이 파일을 require하지 않는다(설계 §16.2 C3.3) — 서버는 key를 검증 없이 통과시키고
-// 번역은 전부 클라이언트가 한다. lane-0은 오류 봉투 렌더와 DB 연결 경로(§5.5)에 필요한
-// 키만 넣는다. 나머지 error.* 는 L1이 같은 파일에 채운다.
+// 번역은 전부 클라이언트가 한다. 서버 코드에 박힌 en `message`는 로그·curl 전용이고, 화면은
+// 항상 이 사전을 쓴다. 두 문장이 달라도 문제가 아니다(설계 §5.1).
 export default {
+  // ── 클라이언트 자작 오류 ────────────────────────────────────────────────────
   'error.client.unknown': 'The request failed.',
+  'error.client.invalidResponse': 'The server response could not be read.',
+  'error.client.timeout': 'The request timed out. A write may still be running on the server, so check the run history before retrying.',
+  'error.client.clipboardUnavailable': 'The clipboard is not available.',
+  'error.card.title': 'Could not load the data',
+  // key===null 일 때만 붙는 캡션 — 번역 누락이 아니라 코어 원문이라는 표시다.
+  'error.fromCore': 'Reported by the core:',
   'error.issue.at': 'Row {row} · {field}',
   'error.issue.warning': 'Warning',
+  // ── 입력 검증 (util.cjs) ───────────────────────────────────────────────────
+  'error.validate.integerRequired': 'An integer value is required.',
+  'error.validate.rangeExceeded': 'Allowed range: {min}–{max}',
+  'error.validate.idRequired': 'A valid ID is required.',
+  // ── 범위 (util.cjs · store.cjs) ────────────────────────────────────────────
+  'error.scope.projectPathAbsolute': 'A project must be an absolute path that can be normalised.',
+  'error.scope.unknownType': 'Read scope must be project, global or all.',
+  'error.scope.unknownTiers': 'The tiers filter must be default or all.',
+  'error.scope.projectOnlyInProjectScope': 'project is allowed only in the project scope.',
+  'error.scope.workScopeNeedsProject': 'A work scope needs a project.',
+  'error.scope.ambiguousProject': 'Several project IDs share this path. Confirm the project identifier from the CLI.',
+  'error.scope.workScopeUnverifiable': 'This database cannot confirm the work scope.',
+  'error.scope.foreignProject': 'That work scope belongs to another project.',
+  'error.scope.workstreamWorkspaceMismatch': 'The workstream and the workspace do not match.',
+  // ── 스키마·DB·코어 ─────────────────────────────────────────────────────────
+  'error.schema.tableMissing': 'The {table} table is missing. Check the installed core for its initialisation and migration state.',
   'error.db.connectFailed': 'Cannot connect to the local database.',
   'error.db.indexMissing': 'The index database is missing. Run a conversation sync first.',
   'error.core.openReadDbMissing': 'The installed core has no openReadDb. Build the core and restart the server.',
+  'error.core.pipelineModuleMissing': 'The pipeline status module is missing.',
+  'error.core.syncServiceMissing': 'The installed core has no sync service. Build the core.',
+  'error.core.archiveServiceMissing': 'The installed core has no generation-archive or device-alias service. Build the core.',
+  'error.core.tierServiceMissing': 'The installed core has no tier-move service. Build the core.',
+  'error.core.cliMissing': 'The core CLI is missing. Apply Memex to the source repository, then run it.',
+  // ── 기억 ───────────────────────────────────────────────────────────────────
+  'error.fact.invalidState': 'Invalid memory state.',
+  'error.fact.notFoundInScope': 'No memory found in the current scope.',
+  'error.fact.unsupportedMutation': 'Unsupported memory change.',
+  'error.fact.mutationInFlight': 'A change to this memory is already in progress.',
+  'error.fact.blockedBySync': 'A sync run is in progress. Run this after it finishes.',
+  'error.fact.blockedByOperation': 'An admin command is running. Change memories after it finishes.',
+  'error.fact.stale': 'This memory changed in another operation. Refresh, then check again.',
+  'error.fact.textStale': 'The memory text changed. Refresh the page.',
+  'error.fact.textLength': 'Enter between {min} and {max} characters of memory text.',
+  'error.fact.deleteConfirmRequired': 'Review the impact, then type the full UUID exactly.',
+  // ── 대화·작업·이벤트 ───────────────────────────────────────────────────────
+  'error.session.notFoundInScope': 'No conversation found in the current scope.',
+  'error.exchange.notFoundInScope': 'No transcript found in the current scope. Change the scope, then check again.',
+  'error.job.notFoundInScope': 'No job found in the current scope.',
+  'error.event.notFoundInScope': 'No event found in the current scope.',
+  'error.attempt.notFoundInScope': 'No model attempt found in the current scope.',
+  // ── 지식 지도 ──────────────────────────────────────────────────────────────
+  'error.graph.unknownRelationType': 'Unknown relation type.',
+  // ── 동기화·세대 파일 ───────────────────────────────────────────────────────
+  'error.sync.unsupportedAction': 'Unsupported sync action.',
+  'error.sync.alreadyRunning': 'A sync run is already in progress.',
+  'error.sync.blockedByMutation': 'A memory change is in progress. Run this after it finishes.',
+  'error.sync.blockedByOperation': 'An admin command is running. Run this after it finishes.',
+  'error.sync.confirmRequired': 'A sync action needs explicit confirmation.',
+  'error.sync.dirRequired': 'Enter the shared folder path.',
+  'error.sync.dirNotAbsolute': 'The shared folder must be an absolute path that can be normalised.',
+  'error.sync.dirUnwritable': 'The shared folder is not writable. Check the path and its permissions: {detail}',
+  'error.archive.pathRequired': 'Enter the absolute path of a generation archive (zip) or a generation directory.',
+  'error.archive.pathNotAbsolute': 'The generation archive path must be an absolute path that can be normalised.',
+  // ── 주입 계층 ──────────────────────────────────────────────────────────────
+  'error.tier.unsupportedAction': 'Unsupported tier move.',
+  'error.tier.oneRungOnly': 'Tiers move one rung at a time. To reach global, promote to project-wide first.',
+  'error.tier.targetProjectRequired': 'To demote a global memory, pick the target project scope at the top first.',
+  'error.tier.targetWorkstreamRequired': 'To demote to the branch tier, pick a workstream in the detail scope first.',
+  'error.tier.projectIdentityMissing': 'This memory has no project identifier, so its tier cannot move. Check it from the CLI.',
+  // ── 로그 ───────────────────────────────────────────────────────────────────
+  'error.log.fileNotFound': 'Log file not found.',
+  'error.log.notRegularFile': 'Not a regular file.',
+  // ── 관리 작업 ──────────────────────────────────────────────────────────────
+  'error.operation.notFound': 'Run history entry not found.',
+  'error.operation.commandNotAllowed': 'That command is not allowed.',
+  'error.operation.confirmRequired': 'CLI actions apply to all data. Confirm the full scope and the run.',
+  'error.operation.busy': 'Another admin action is running. Let it finish or stop it, then run again.',
+  'error.operation.blockedByMutation': 'A memory change is in progress. Run this after it finishes.',
+  'error.operation.cancelOnly': 'Only cancel is allowed.',
+  // ── 요청·보안 ──────────────────────────────────────────────────────────────
+  'error.request.contentTypeJson': 'Content-Type: application/json is required.',
+  'error.request.bodyTooLarge': 'The request body is too large.',
+  'error.request.jsonObjectRequired': 'A valid JSON object is required.',
+  'error.request.aborted': 'The request was aborted.',
+  'error.request.invalidUrl': 'Invalid URL.',
+  'error.security.loopbackHostOnly': 'Only a loopback Host is allowed.',
+  'error.security.originRejected': 'Requests from another origin are not allowed.',
+  'error.security.crossSiteBlocked': 'A cross-site request was blocked.',
+  'error.security.csrfMissing': 'The session security token is missing. Refresh the page.',
+  'error.events.tooManyClients': 'Too many live connections.',
+  // ── 메서드·경로 ────────────────────────────────────────────────────────────
+  'error.method.getOnly': 'Only GET is allowed.',
+  'error.method.getOrPostOnly': 'Only GET or POST is allowed.',
+  'error.method.postOnly': 'Only POST is allowed.',
+  'error.method.readApiGetOnly': 'Read APIs allow GET only.',
+  'error.method.notAllowed': 'That HTTP method is not allowed.',
+  'error.route.apiNotFound': 'API not found.',
+  'error.route.pageNotFound': 'Page not found.',
+  'error.asset.invalidPath': 'Invalid path.',
+  'error.asset.fileNotFound': 'File not found.',
 };

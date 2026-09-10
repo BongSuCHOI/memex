@@ -579,3 +579,139 @@ test('L2 · 관리 화면은 en에서도 마크업 강조와 endonym을 유지�
   assert.ok(display.includes('English') && display.includes('한국어'), 'endonym이 사라졌다');
   assert.match(display, /data-endonym/);
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// i18n L1 — 셸 · 포맷터 · 배지 · 오류 표면 (#109 · 설계 §9.2)
+//
+// 페이지 섹션이 "화면 전체 한글 0건"을 미룬 이유(`ui.mjs`가 미이관)는 이 레인이 들어오면서
+// 사라졌다. 그래서 여기서는 **잘라내기 없이** 한글 0건을 단정한다.
+//
+// app.mjs는 모듈 최상위에서 DOM을 만지므로 require할 수 없다 — 셸 문구의 실제 렌더는 e2e가
+// 맡고(§9.4), 여기서는 app.mjs가 쓰는 사전 키가 전부 해소되는지를 소스에서 수확해 본다.
+// ═════════════════════════════════════════════════════════════════════════════
+const ui = require('../public/ui.mjs');
+const {PREFIXES} = require('../public/i18n/registry.mjs');
+const {TABLES} = require('../public/i18n/load.mjs');
+const nodeFs = require('node:fs');
+const nodePath = require('node:path');
+
+const L1_NAMESPACES = ['common', 'shell', 'ui', 'errors'];
+/** 셸 표면에서 텍스트로 새어 나온 키. 페이지 섹션의 LEAKED_KEY와 접두사가 다르다. */
+const LEAKED_SHELL_KEY = /\b(?:shell|common|unit|action|tier|a11y|pagination|sync|event|error)\.[a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9_-]+)+/;
+const shellText = html => String(html).replace(/<svg[\s\S]*?<\/svg>/g, ' ').replace(/<[^>]*>/g, ' ');
+
+const L1_FACT = {
+  id: '11111111-2222-3333-4444-555555555555', fact: 'The release gate runs twice.',
+  fact_kr: '릴리스 게이트는 두 번 돈다.', category: 'decision', is_active: 1,
+  scope_type: 'project', scope_project: '/repo/memex', promotion_state: 'workstream',
+  tier_reason: 'branch:feat/i18n',
+};
+const L1_EVENT = {
+  event_kind: 'SYNC_IMPORTED', actor: 'sync', fact_id: L1_FACT.id,
+  recorded_at: '2026-09-10T04:05:06.000Z', effective_at: '2026-09-09T04:05:06.000Z', projection_applied: 0,
+  outcome_json: JSON.stringify({source_device_id: 'device-aaaaaaaa', generation: 'gen-bbbbbbbb', winner: 'peer', reason: 'peer-newer'}),
+};
+
+/** 한 번에 렌더해 두 언어에서 같은 단정을 돌린다. */
+function shellSurfaces() {
+  return {
+    tierBadgeBranch: ui.tierBadge(L1_FACT, '/repo/memex'),
+    tierBadgeGlobal: ui.tierBadge({...L1_FACT, scope_type: 'global'}, null),
+    tierBadgeWorkspace: ui.tierBadge({...L1_FACT, promotion_state: 'workspace', tier_reason: null}, '/repo/memex'),
+    tierBadgeProject: ui.tierBadge({...L1_FACT, promotion_state: 'project-current', tier_reason: null}, null),
+    badge: ui.badge('dead') + ui.badge('no-match') + ui.badge('NOT_PROVEN') + ui.badge('SYNC_IMPORTED'),
+    name: [ui.name(null), ui.name('project-current'), ui.name('capsule_update'), ui.name('not-an-enum')].join(' '),
+    basename: ui.basename('') + ' ' + ui.basename('/repo/memex'),
+    dates: [ui.date('2026-09-10T04:05:06.000Z'), ui.date(null), ui.relative(null)].join(' '),
+    units: [ui.duration(null), ui.duration(400), ui.duration(4000), ui.duration(400000),
+      ui.bytes(null), ui.bytes(12), ui.bytes(2048), ui.bytes(3 * 1024 ** 2)].join(' '),
+    pagination: ui.pagination({total: 1, offset: 0, limit: 40}, {}) + ui.pagination({total: 4210, offset: 40, limit: 40}, {}),
+    eventRow: ui.eventRow(L1_EVENT),
+    syncOriginTag: ui.syncOriginTag(L1_EVENT),
+    errorCard: ui.errorCard({code: 'DB_INDEX_MISSING', key: 'error.db.indexMissing', message: 'Index database is missing.'}),
+    errorCardFromCore: ui.errorCard({code: 'DB_UNAVAILABLE', key: null, message: 'SQLITE_CANTOPEN: unable to open database file'}),
+    renderIssues: ui.renderIssues([{key: 'error.issue.warning', severity: 'warning', path: 'patterns.add[2].source'}]),
+    factLink: ui.factLink(L1_FACT),
+    searchField: ui.searchField(),
+    raw: ui.raw({a: 1}),
+    markdown: ui.markdown('**bold** and `code`'),
+  };
+}
+
+test('L1 en 셸 표면에 한글이 0건이고 미번역 키가 노출되지 않는다', () => {
+  locale.useEn();
+  ui.setPreferTranslatedFacts(false);
+  const surfaces = shellSurfaces();
+  for (const [label, html] of Object.entries(surfaces)) {
+    assert.equal(HANGUL.test(html), false, `${label}: en 렌더에 한글이 남았습니다 — ${html}`);
+    const leak = shellText(html).match(LEAKED_SHELL_KEY);
+    assert.equal(leak, null, `${label}: 미번역 키가 노출됐습니다 — ${leak && leak[0]}`);
+  }
+  // 랜드마크가 사전 값과 정확히 일치한다 — 사전을 실제로 읽고 있다는 증거.
+  assert.ok(surfaces.tierBadgeGlobal.includes(locale.en['tier.global.label']));
+  assert.ok(surfaces.tierBadgeBranch.includes('Branch: feat/i18n'), '브랜치 이름 보간이 깨졌습니다');
+  assert.ok(surfaces.badge.includes(locale.en['badge.dead.label']));
+  assert.equal(ui.name(null), locale.en['common.unknown']);
+  assert.equal(ui.name('not-an-enum'), 'not-an-enum', '모르는 값의 이름을 지어내면 안 된다');
+  assert.equal(ui.basename(''), locale.en['common.commonMemory']);
+  // en 복수형과 천 단위 구분 — Intl을 실제로 통과했는지.
+  assert.ok(surfaces.pagination.includes('1 row') && surfaces.pagination.includes('4,210 rows'),
+    '영어 복수형·천 단위 구분이 적용되지 않았습니다: ' + surfaces.pagination);
+  assert.ok(surfaces.units.includes('6m 40s') && surfaces.units.includes('3.0 MB'), surfaces.units);
+  assert.ok(surfaces.errorCard.includes(locale.en['error.card.title']));
+  // key===null일 때만 "코어가 보고한 내용" 캡션이 붙는다.
+  assert.ok(surfaces.errorCardFromCore.includes(locale.en['error.fromCore']), '코어 원문 캡션이 없습니다');
+  assert.ok(!surfaces.errorCard.includes(locale.en['error.fromCore']), '분류된 오류에 코어 캡션이 붙었습니다');
+  // §14.5 — en 화면·스크린샷에 저장된 한국어 번역이 새어 나오지 않는다.
+  assert.ok(surfaces.factLink.includes(L1_FACT.fact) && !surfaces.factLink.includes(L1_FACT.fact_kr),
+    'en에서 fact_kr가 우선됐습니다');
+});
+
+test('L1 ko 셸 표면은 0.6.x 문구를 유지하고 fact_kr를 우선한다', () => {
+  locale.useKo();
+  ui.setPreferTranslatedFacts(true);
+  const surfaces = shellSurfaces();
+  for (const [label, html] of Object.entries(surfaces)) {
+    const leak = shellText(html).match(LEAKED_SHELL_KEY);
+    assert.equal(leak, null, `${label}: ko 렌더에 미번역 키가 노출됐습니다 — ${leak && leak[0]}`);
+  }
+  assert.ok(surfaces.factLink.includes(L1_FACT.fact_kr), 'ko에서 fact_kr가 우선되지 않았습니다');
+  assert.ok(surfaces.pagination.includes('총 4,210개'), '페이지네이션 문구가 바뀌었습니다: ' + surfaces.pagination);
+  assert.ok(surfaces.tierBadgeProject.includes('프로젝트 공용'));
+  assert.ok(surfaces.errorCardFromCore.includes(locale.ko['error.fromCore']));
+  ui.setPreferTranslatedFacts(null);
+});
+
+test('L1 사전의 en 쪽에 한글이 없고 키가 접두사 규율을 지킨다', () => {
+  const leaks = [], prefixes = [];
+  for (const ns of L1_NAMESPACES) {
+    for (const [key, value] of Object.entries(TABLES.en[ns])) if (HANGUL.test(value)) leaks.push(`${ns}/${key}: ${value}`);
+    for (const tag of ['en', 'ko']) {
+      for (const key of Object.keys(TABLES[tag][ns])) {
+        if (!PREFIXES[ns].some(p => key.startsWith(p))) prefixes.push(`${tag}/${ns}: ${key}`);
+      }
+    }
+  }
+  assert.deepEqual(leaks, [], 'en 사전에 한글이 남아 있습니다');
+  assert.deepEqual(prefixes, [], '네임스페이스 접두사 규율을 어긴 키가 있습니다');
+});
+
+test('L1 app.mjs·index.html이 쓰는 셸 키가 양쪽 사전에서 해소된다', () => {
+  // app.mjs는 DOM 없이 require할 수 없으므로 소스에서 키를 수확해 대조한다.
+  const {used} = extract.harvestKeys(['ui/public/app.mjs']);
+  const shellKeys = [...used.keys()].filter(key => key.startsWith('shell.'));
+  assert.ok(shellKeys.length > 30, 'app.mjs의 shell 키 수집 실패: ' + shellKeys.length);
+  for (const [key, where] of used) {
+    assert.ok(key in locale.en, `en 사전에 없는 키: ${key} (${where[0]})`);
+    assert.ok(key in locale.ko, `ko 사전에 없는 키: ${key} (${where[0]})`);
+  }
+  // 부팅 셸은 index.html의 data-i18n에 있고 app.mjs가 DOM에서 읽어 t()에 넘긴다.
+  for (const [key] of extract.harvestHtmlKeys()) {
+    assert.ok(key in locale.en && key in locale.ko, '부팅 셸 키가 사전에 없습니다: ' + key);
+  }
+  // 서버가 치환하는 토큰 2개는 en 원문이어야 한다 — localizeHtml()이 정확 일치 리터럴로 바꾼다.
+  const html = nodeFs.readFileSync(nodePath.join(__dirname, '../public/index.html'), 'utf8');
+  assert.ok(html.includes('<html lang="en" data-lang="en"'));
+  assert.ok(html.includes('<meta name="memex-ui-lang" content="en">'));
+  assert.equal(HANGUL.test(html), false, 'index.html에 한글이 남아 있습니다');
+});

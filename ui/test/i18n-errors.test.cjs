@@ -216,3 +216,75 @@ test('E9 issues는 200행에서 잘리고 key 없는 행은 원문 message로 �
   useKo();
   assert.ok(renderIssues(body.details.issues).includes('raw engine error'));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// i18n L1이 더한 단정 (#109 · 설계 §9.5 E5 ① · E6 · E7 ①②).
+// lane-0의 검사는 소스의 코드 문자열과 생성자 모양을 본다. 아래는 그 둘이 덮지 않는 것:
+// 실제 응답으로 나오는 code·key, 보간 값의 타입 보존, 그리고 "문자열 첫 인자 0건"이다.
+// ─────────────────────────────────────────────────────────────────────────────
+const {fixture, FixtureCore} = require('./fixture.cjs');
+
+test('E5 code가 없던 405·404·415 경로가 실제 응답에서 코드와 키를 싣는다', async () => {
+  const f = fixture();
+  const app = createServer({core: new FixtureCore(f)});
+  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + app.server.address().port;
+  const envelope = async (url, init) => (await (await fetch(base + url, init)).json()).error;
+  try {
+    const csrf = {'X-Memex-CSRF': app.token};
+    // 0.6.9에서 code가 없어 전부 REQUEST_FAILED로 뭉개졌던 대표 3계열.
+    const method = await envelope('/api/v2/bootstrap', {method: 'DELETE', headers: csrf});
+    assert.equal(method.code, 'METHOD_NOT_ALLOWED');
+    assert.equal(method.key, 'error.method.getOnly');
+    const asset = await envelope('/assets/does-not-exist.css');
+    assert.equal(asset.code, 'NOT_FOUND');
+    assert.equal(asset.key, 'error.asset.fileNotFound');
+    const media = await envelope('/api/v2/facts/mutate', {method: 'POST', headers: csrf, body: '{}'});
+    assert.equal(media.code, 'UNSUPPORTED_MEDIA_TYPE');
+    assert.equal(media.key, 'error.request.contentTypeJson');
+    // 기존 코드 경로는 그대로다 — 클라이언트가 이 값으로 분기한다.
+    assert.equal((await envelope('/api/v2/facts/mutate', {method: 'POST'})).code, 'CSRF_REJECTED');
+    assert.equal((await envelope('/api/v2/nope')).code, 'NOT_FOUND');
+    // 모든 키가 사전에서 해소된다 — 서버가 key를 검증하지 않는 대가를 여기서 치른다.
+    for (const e of [method, asset, media]) {
+      assert.ok(e.key in en && e.key in ko, '사전에 없는 key: ' + e.key);
+    }
+  } finally { app.close(); fs.rmSync(f.home, {recursive: true, force: true}); }
+});
+
+test('E6 유한한 수·boolean·null 보간 값은 타입이 보존된다', () => {
+  // 문자열로 바꾸면 복수형 선택(tn)과 숫자 포맷이 흔들린다 — 이 값들은 비밀을 담을 수 없다.
+  const body = errorBody(new HttpError(400, {
+    code: 'INVALID_NUMBER', key: 'error.validate.rangeExceeded',
+    params: {min: 0, max: 500, ok: true, none: null}, message: 'Allowed range: 0-500',
+  }));
+  assert.deepEqual(body.params, {min: 0, max: 500, ok: true, none: null});
+});
+
+test('E7 ui/lib에 문자열 첫 인자 호출이 0건이고 패스스루 3곳만 key:null이다', () => {
+  const ts = require('typescript');
+  const stringFirst = [], passthrough = [], explicitNull = [];
+  for (const file of LIB) {
+    const src = fs.readFileSync(file, 'utf8');
+    const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    (function visit(node) {
+      if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'HttpError') {
+        const where = `${path.basename(file)}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}`;
+        const info = (node.arguments ?? [])[1];
+        const text = node.getText(sf);
+        // lane-0의 검사는 객체 인자일 때의 모양만 본다. 문자열 인자는 어댑터가 흡수하므로
+        // 통과해 버리는데, 그것이 바로 이관이 끝나지 않았다는 신호다.
+        if (info && (ts.isStringLiteral(info) || ts.isTemplateExpression(info)
+          || ts.isNoSubstitutionTemplateLiteral(info))) stringFirst.push(where);
+        if (/key:\s*null/.test(text)) explicitNull.push(where);
+        // 코어·런타임 원문을 감싸는 곳은 key:null이 **코드에 보여야** 한다. 생략도 null로
+        // 정규화되지만, 패스스루는 의도적 선택이다.
+        if (/message:\s*(?:e|error)\.message/.test(text) && !/key:\s*null/.test(text)) passthrough.push(where);
+      }
+      ts.forEachChild(node, visit);
+    })(sf);
+  }
+  assert.deepEqual(stringFirst, [], '위치 인자 호출이 남아 있습니다 — 어댑터가 조용히 흡수합니다');
+  assert.deepEqual(passthrough, [], '패스스루에 key:null이 명시되지 않았습니다');
+  assert.equal(explicitNull.length, 3, '패스스루 지점 수가 바뀌었습니다: ' + explicitNull.join(', '));
+});
