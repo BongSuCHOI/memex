@@ -243,7 +243,14 @@ export function ensureContinuitySchema(
         last_error TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #30: the extraction-rules overlay hash this target was claimed
+        -- under (rules:sha8), or NULL when no overlay applied. LOCAL and
+        -- never synced: a hash is only interpretable against this machine's
+        -- overlay history. It is REPORTING only — the scheduling key is
+        -- policy_version, and mixing the rule hash into it would turn one
+        -- edited character into a full-corpus re-extraction.
+        rules_hash TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_target_items (
@@ -916,6 +923,12 @@ export function ensureContinuitySchema(
     // by a table rewrite to add the next reason.
     if (!memoryJobColumns.has("hold_reason")) {
       db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+    }
+    // Issue #30 — the rule-overlay hash a target was claimed under. Additive,
+    // nullable, local (never in a sync generation) and reporting-only.
+    const extractionTargetColumns = columnNames(db, "extraction_targets");
+    if (!extractionTargetColumns.has("rules_hash")) {
+      db.exec("ALTER TABLE extraction_targets ADD COLUMN rules_hash TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
 
@@ -1862,6 +1875,8 @@ export interface ExtractionTarget {
   itemCount: number;
   policyVersion: string;
   state: MemoryJobState;
+  /** Issue #30: the rule overlay hash recorded at claim time, if any. */
+  rulesHash?: string | null;
 }
 
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
@@ -2025,7 +2040,28 @@ function targetFromRow(row: Record<string, unknown>): ExtractionTarget {
     itemCount: Number(row.item_count),
     policyVersion: String(row.policy_version),
     state: row.state as MemoryJobState,
+    rulesHash: typeof row.rules_hash === "string" ? row.rules_hash : null,
   };
+}
+
+/**
+ * Issue #30 — stamp the rule overlay hash a claim is running under.
+ *
+ * Reporting only: `extraction-rules-drift` reads it to say which sessions were
+ * extracted under a different rule set, and `memex extract rules reextract`
+ * scopes an EXPLICIT re-run by it. Nothing schedules on it. Idempotent, and a
+ * no-op when the value is already what it should be, so the claim path can call
+ * it unconditionally.
+ */
+export function setExtractionTargetRulesHash(
+  db: Database.Database,
+  targetId: string,
+  rulesHash: string | null,
+): boolean {
+  if (!columnNames(db, "extraction_targets").has("rules_hash")) return false;
+  return db.prepare(
+    "UPDATE extraction_targets SET rules_hash = ? WHERE target_id = ? AND IFNULL(rules_hash, '') IS NOT ?",
+  ).run(rulesHash, targetId, rulesHash ?? "").changes === 1;
 }
 
 export function readExtractionTargetItems(

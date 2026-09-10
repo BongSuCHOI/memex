@@ -29,6 +29,7 @@ import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
 import { getInjectLogPath } from "./inject-log.js";
 import { recallGateOverlayChecks } from "./recall-gate-overlay.js";
+import { extractionRulesChecks } from "./extraction-rules.js";
 import { missingRuntimeDependencies, RUNTIME_DEPENDENCIES, resolveInstalledPluginRoot, } from "./plugin-root.js";
 import { embeddingCacheStatus, formatCacheBytes, legacyEmbeddingCacheCandidates, } from "./model-cache.js";
 const runtimeRequire = createRequire(import.meta.url);
@@ -880,6 +881,43 @@ function embeddingCacheCheck() {
     };
 }
 /** Read-only diagnosis. Distinguishes configured vs observed. */
+/**
+ * Per-reason held-job counts, read the same library-light read-only way the rest
+ * of doctor reads the database: doctor has to answer even when the heavy db.js
+ * chain will not load, which is exactly the state a held queue can accompany.
+ */
+function readHeldJobCounts() {
+    try {
+        const dbPath = getDbPath();
+        if (!fs.existsSync(dbPath))
+            return [];
+        const Database = runtimeRequire("better-sqlite3");
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        try {
+            const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'memory_jobs'").get() !==
+                undefined;
+            if (!hasTable)
+                return [];
+            const columns = new Set(db.prepare("PRAGMA table_info(memory_jobs)").all().map((row) => row.name));
+            if (!columns.has("hold_reason"))
+                return [];
+            return db.prepare(`
+        SELECT hold_reason AS reason, COUNT(*) AS jobs FROM memory_jobs
+        WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+        GROUP BY hold_reason ORDER BY hold_reason
+      `).all().map((row) => ({
+                reason: String(row.reason),
+                jobs: Number(row.jobs),
+            }));
+        }
+        finally {
+            db.close();
+        }
+    }
+    catch {
+        return [];
+    }
+}
 export async function doctor() {
     const checks = [];
     // Dependency + build readiness (report-only; never auto-install).
@@ -1174,6 +1212,24 @@ export async function doctor() {
             name: "recall-gate-overlay",
             status: "warn",
             detail: "unable to inspect the recall-gate overlay",
+        });
+    }
+    // Issue #30 (0.7.0) — the extraction-rules overlay's two checks, same shape
+    // and for the same reason: the wording lives with the lane that owns the
+    // overlay, this file only assembles.
+    //
+    // `extraction-rules-hold` is a `fail` because a held job is invisible
+    // otherwise: it is neither `retry` nor `dead`, so every existing status
+    // surface reports it as ordinary pending work while nothing is being stored.
+    try {
+        for (const check of extractionRulesChecks(readHeldJobCounts()))
+            checks.push(check);
+    }
+    catch {
+        checks.push({
+            name: "extraction-rules-overlay",
+            status: "warn",
+            detail: "unable to inspect the extraction-rules overlay",
         });
     }
     const hasFail = checks.some((c) => c.status === "fail");
