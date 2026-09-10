@@ -29,6 +29,7 @@ import {
   listOverlayHistory,
   listOverlaySnapshots,
   overlayPaths,
+  readOverlaySnapshot,
   resetOverlay,
   resolveGatePatternId,
   rollbackOverlay,
@@ -72,8 +73,8 @@ const USAGE = `Usage:
   memex gate history [--limit <n>] [--json]
   memex gate quarantine list [--json]
   memex gate quarantine clear [<pattern-id>|--all] [--json]
-  memex gate reset [--intent <intent>] --yes [--json]
-  memex gate rollback --to <revision> [--json]
+  memex gate reset [--intent <intent>] --yes [--dry-run] [--json]
+  memex gate rollback --to <revision> [--dry-run] [--json]
 
 The recall-gate overlay adds your own regexes and words to the built-in gate
 that decides whether a prompt retrieves memory. Built-ins are never deleted:
@@ -351,13 +352,16 @@ function expectRevision(): number | undefined {
 }
 
 /** The exact command to re-run, with the revision observed during the dry run. */
-function rerunCommand(revision: number): string {
+function rerunCommand(revision: number, extra: string[] = []): string {
   const parts = ["memex", "gate"];
   for (const arg of argv) {
     if (arg === "--dry-run") continue;
     if (arg === "--expect-revision") continue;
     parts.push(/[\s'"\\]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg);
   }
+  // Flags the destructive form requires but the dry run did not: printing a
+  // command that then refuses with CONFIRMATION_REQUIRED is not a re-run command.
+  for (const flag of extra) if (!parts.includes(flag)) parts.push(flag);
   // Drop the value that followed --expect-revision, then re-add the observed one.
   const index = argv.indexOf("--expect-revision");
   if (index >= 0) {
@@ -373,10 +377,20 @@ function rerunCommand(revision: number): string {
  * Validate the document a write would produce, print the re-run command and
  * write nothing. Exits 1 when validation found an error (§4).
  */
-async function dryRun(next: RawGateDoc, summary: string[]): Promise<never> {
+async function dryRun(
+  next: RawGateDoc,
+  summary: string[],
+  opts: { probe?: boolean; extraFlags?: string[] } = {},
+): Promise<never> {
   const revision = currentRecallGateRevision();
   next.revision = revision + 1;
-  const result = await validateOverlay("recall-gate", next, { probe: true, forWrite: true });
+  const result = await validateOverlay("recall-gate", next, {
+    // `probe: false` mirrors the write this dry run stands in for. Rollback and
+    // reset do not re-probe (§2.4), and probing here would refuse a recovery
+    // path on a busy machine that the real command would have accepted.
+    probe: opts.probe !== false,
+    forWrite: true,
+  });
   const errors = result.issues.filter((issue) => issue.severity === "error");
   if (errors.length > 0) {
     fail(
@@ -395,14 +409,14 @@ async function dryRun(next: RawGateDoc, summary: string[]): Promise<never> {
       revision,
       nextRevision: revision + 1,
       issues: result.issues,
-      rerun: rerunCommand(revision),
+      rerun: rerunCommand(revision, opts.extraFlags ?? []),
     },
     [
       "시험 실행 — 아무것도 저장하지 않았습니다.",
       ...summary.map((line) => `  ${line}`),
       `검증  오류 0개 · 경고 ${result.issues.length}개`,
       ...issueLines(result.issues),
-      `다음  ${rerunCommand(revision)}`,
+      `다음  ${rerunCommand(revision, opts.extraFlags ?? [])}`,
     ],
   );
   process.exit(0);
@@ -1307,6 +1321,41 @@ async function cmdReset(): Promise<void> {
   if (intent !== undefined && !(INTENTS as readonly string[]).includes(intent)) {
     usageError(`--intent must be one of: ${INTENTS.join(", ")}`);
   }
+  // `--dry-run` comes BEFORE the --yes gate: a dry run writes nothing, so demanding
+  // a confirmation for it would only teach the habit of typing --yes.
+  if (bools.has("--dry-run")) {
+    const current = currentRawDoc();
+    const add = (current.patterns?.add ?? []) as Array<Record<string, unknown>>;
+    const disable = (current.patterns?.disable ?? []) as string[];
+    let next: RawGateDoc;
+    let summary: string[];
+    if (intent === undefined) {
+      next = emptyGateDoc() as RawGateDoc;
+      summary = [
+        `비울 예정  사용자 패턴 ${add.length}개 · 비활성 표시 ${disable.length}개 — 내장 기본값만 남습니다`,
+      ];
+    } else {
+      const builtinOfIntent = new Set(
+        gateCatalog().builtin.filter((pattern) => pattern.intent === intent).map((pattern) => pattern.id),
+      );
+      const removed = add.filter((pattern) => pattern.intent === intent).map((pattern) => String(pattern.id));
+      const reEnabled = disable.filter((id) => builtinOfIntent.has(id));
+      next = {
+        ...current,
+        patterns: {
+          ...(current.patterns ?? {}),
+          add: add.filter((pattern) => pattern.intent !== intent),
+          disable: disable.filter((id) => !builtinOfIntent.has(id)),
+        },
+      } as RawGateDoc;
+      summary = [
+        `비울 예정  intent=${intent}  사용자 패턴 ${removed.length}개 · 재활성 ${reEnabled.length}개`,
+        ...(removed.length > 0 ? [`  삭제  ${removed.join(" · ")}`] : []),
+        ...(reEnabled.length > 0 ? [`  재활성  ${reEnabled.join(" · ")}`] : []),
+      ];
+    }
+    await dryRun(next, summary, { probe: false, extraFlags: ["--yes"] });
+  }
   if (!bools.has("--yes")) {
     fail("CONFIRMATION_REQUIRED", [
       "거부 — 아무것도 저장하지 않았습니다.",
@@ -1348,6 +1397,23 @@ async function cmdRollback(): Promise<void> {
   if (raw === undefined) usageError("rollback needs --to <revision>");
   const revision = Number(raw);
   if (!Number.isInteger(revision) || revision < 0) usageError("--to must be a non-negative integer");
+  if (bools.has("--dry-run")) {
+    const kept = readOverlaySnapshot("recall-gate", revision);
+    if (kept === null) {
+      fail("SNAPSHOT_NOT_FOUND", [
+        "시험 실행 — 되돌릴 수 없습니다. 아무것도 저장하지 않았습니다.",
+        `  SNAPSHOT_NOT_FOUND  revision ${revision}의 스냅숏이 없습니다 (보관 중: ${listOverlaySnapshots("recall-gate").join(", ") || "없음"})`,
+      ]);
+    }
+    const doc = JSON.parse(JSON.stringify(kept)) as RawGateDoc;
+    const add = (doc.patterns?.add ?? []) as unknown[];
+    const disable = (doc.patterns?.disable ?? []) as unknown[];
+    await dryRun(
+      doc,
+      [`되돌릴 예정  revision ${revision}의 스냅숏  사용자 패턴 ${add.length}개 · 비활성 표시 ${disable.length}개`],
+      { probe: false },
+    );
+  }
   const snapshot = before();
   let result: WriteResult;
   try {

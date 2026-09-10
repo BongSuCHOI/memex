@@ -613,7 +613,16 @@ export async function recallGateOverlayChecks(matcherProbe) {
         });
     }
     else if (overlay.patterns.length === 0) {
-        checks.push({ name: "overlay-matcher", status: "warn", detail: "no user pattern to run" });
+        // OK, not `warn`. Nothing is wrong with a machine that has no user patterns —
+        // that is the default install — and a warn here made `memex doctor` report
+        // PARTIAL out of the box, which trains operators to ignore the verdict. A
+        // matcher that is idle because there is nothing to run is the correct state;
+        // `warn`/`fail` below are for an overlay that IS present and cannot run.
+        checks.push({
+            name: "overlay-matcher",
+            status: "ok",
+            detail: "no user patterns — matcher idle",
+        });
     }
     else {
         let available = false;

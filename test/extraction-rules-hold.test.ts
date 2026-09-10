@@ -57,8 +57,10 @@ import {
   SESSION,
   claimSnapshot,
   factCandidate,
+  pinOverlayEnv,
   resetMatcherScript,
   resetScript,
+  restoreOverlayEnv,
   rulesDoc,
   script,
   seedExchanges,
@@ -86,7 +88,7 @@ function makeClaimable(): void {
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-rules-hold-"));
-  process.env.MEMEX_HOME = root;
+  pinOverlayEnv(root);
   process.env.MEMEX_DB_PATH = path.join(root, "db.sqlite");
   process.env.MEMEX_EMBEDDING_STUB = "1";
   process.env.MEMEX_LLM_RETRY_BASE_MS = "0";
@@ -106,7 +108,7 @@ afterEach(async () => {
   try { db.close(); } catch { /* already closed */ }
   const { invalidateModelSettingsCache } = await import("../src/model-settings.js");
   invalidateModelSettingsCache();
-  delete process.env.MEMEX_HOME;
+  restoreOverlayEnv();
   delete process.env.MEMEX_DB_PATH;
   delete process.env.MEMEX_EMBEDDING_STUB;
   delete process.env.MEMEX_LLM_RETRY_BASE_MS;
@@ -192,6 +194,28 @@ describe("no matcher plus a never_extract pattern holds before the claim", () =>
     expect(script.calls).toBe(0);
     const after = claimSnapshot(db);
     expect(after.jobAttempts).toBe(0);
+    expect(after.jobHoldReason).toBe("extraction_rules_unavailable");
+  });
+
+  it("holds for an EVIDENCE-only rule set too", async () => {
+    // The availability probe used to select `scope: "fact_text"` specs only, so a
+    // rule set that is entirely `scope: "evidence"` produced an empty spec list
+    // and the probe answered "available" without ever trying to build a worker.
+    // The claim, the model call and the embeddings were then all spent before the
+    // storage boundary discovered there was no matcher — which is exactly the
+    // cost this pre-claim gate exists to avoid.
+    writeRules(root, rulesDoc([{ id: "user.secret", source: PATTERN, scope: "evidence" }]));
+    resetExtractionRulesCache();
+    resetMatcherScript("worker-dead", true);
+
+    const result = await runFactExtraction(db, SESSION, PROJECT);
+
+    expect(result.skipped).toBe("extraction_rules_unavailable");
+    expect(script.calls).toBe(0);
+    const after = claimSnapshot(db);
+    expect(after.jobAttempts).toBe(0);
+    expect(after.targetAttempts).toBe(0);
+    expect(after.jobLeaseOwner).toBeNull();
     expect(after.jobHoldReason).toBe("extraction_rules_unavailable");
   });
 

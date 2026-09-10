@@ -481,6 +481,67 @@ test('reset needs --yes, and rollback restores a kept snapshot', (t) => {
   assert.deepEqual(history.snapshots, [1, 2, 3, 4, 5]);
 });
 
+/**
+ * `--dry-run` is the promise that NOTHING moved. The shared parser accepted the
+ * flag for every verb, but `reset` and `rollback` had no dry-run branch at all and
+ * performed the real write — the rules file, the revision, the snapshot and the
+ * history line all changed while the operator was told it was a trial.
+ */
+test('reset and rollback honour --dry-run, changing nothing', (t) => {
+  const fixture = isolated(t);
+  ok(fixture, ['patterns', 'add', 'memory', '배포\\s*이력']);
+  ok(fixture, ['patterns', 'add', 'trace', '결정\\s*근거']);
+  const before = fs.readFileSync(fixture.gateFile);
+  const historyBefore = fs.readFileSync(path.join(fixture.overlayDir, 'history.jsonl'));
+  const snapshotsBefore = fs.readdirSync(path.join(fixture.overlayDir, 'history', 'recall-gate')).sort();
+
+  const unchanged = (label) => {
+    assert.ok(fs.readFileSync(fixture.gateFile).equals(before), `${label}: the overlay changed`);
+    assert.ok(
+      fs.readFileSync(path.join(fixture.overlayDir, 'history.jsonl')).equals(historyBefore),
+      `${label}: a history line was appended`,
+    );
+    assert.deepEqual(
+      fs.readdirSync(path.join(fixture.overlayDir, 'history', 'recall-gate')).sort(),
+      snapshotsBefore,
+      `${label}: a snapshot was written`,
+    );
+  };
+
+  // A dry run does not need --yes: it writes nothing, so demanding the
+  // confirmation would only teach the habit of typing it.
+  const full = asJson(ok(fixture, ['reset', '--dry-run', '--json']));
+  assert.equal(full.dryRun, true);
+  assert.equal(full.revision, 2);
+  assert.equal(full.nextRevision, 3);
+  assert.match(full.rerun, /reset .*--yes/);
+  assert.match(full.rerun, /--expect-revision 2/);
+  unchanged('reset --dry-run');
+
+  const scoped = asJson(ok(fixture, ['reset', '--intent', 'trace', '--dry-run', '--json']));
+  assert.equal(scoped.dryRun, true);
+  unchanged('reset --intent --dry-run');
+
+  const text = ok(fixture, ['reset', '--yes', '--dry-run']);
+  assert.match(text.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
+  unchanged('reset --yes --dry-run');
+
+  const rolled = asJson(ok(fixture, ['rollback', '--to', '1', '--dry-run', '--json']));
+  assert.equal(rolled.dryRun, true);
+  assert.equal(rolled.nextRevision, 3);
+  unchanged('rollback --dry-run');
+
+  const missing = run(fixture, ['rollback', '--to', '999', '--dry-run']);
+  assert.equal(missing.status, 1);
+  assert.match(both(missing), /SNAPSHOT_NOT_FOUND/);
+  unchanged('rollback --to 999 --dry-run');
+
+  // And the real thing still works right after, from the revision the dry run
+  // reported.
+  const applied = ok(fixture, ['reset', '--yes', '--expect-revision', '2']);
+  assert.match(applied.stdout, /revision 2 → 3/);
+});
+
 test('replay compares built-in and overlay verdicts over recent prompts, writing nothing', async (t) => {
   const fixture = isolated(t);
   const quiet = ok(fixture, ['replay']);

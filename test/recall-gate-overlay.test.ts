@@ -366,8 +366,19 @@ describe("doctor checks", () => {
     ]);
     expect(checks[0]).toMatchObject({ status: "ok", detail: "absent — built-in defaults only" });
     expect(checks[1].status).toBe("ok");
-    // No user pattern to run is a warn, not an ok: there is nothing to prove.
-    expect(checks[2]).toMatchObject({ status: "warn", detail: "no user pattern to run" });
+    // A default install has no user patterns and nothing is wrong with it. A warn
+    // here made `memex doctor` report PARTIAL out of the box, which is how a
+    // verdict stops meaning anything. `warn`/`fail` are for an overlay that IS
+    // present and cannot run.
+    expect(checks[2]).toMatchObject({ status: "ok", detail: "no user patterns — matcher idle" });
+    expect(checks.every((check) => check.status === "ok")).toBe(true);
+  });
+
+  it("still FAILS when patterns exist and the matcher cannot run them", async () => {
+    write(doc({ patterns: { add: [{ id: "user.a", intent: "memory", source: "배포", flags: "i" }] } }));
+    resetRecallGateOverlayCache();
+    const checks = await recallGateOverlayChecks(async () => false);
+    expect(checks.find((check) => check.name === "overlay-matcher")).toMatchObject({ status: "fail" });
   });
 
   it("FAILS loudly when the overlay is invalid, naming the built-in fallback", async () => {

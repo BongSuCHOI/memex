@@ -170,6 +170,16 @@ async function seedDb(fixture, { staleHash = 'rules:deadbeef' } = {}) {
   }
 }
 
+async function writeDb(fixture, sql, params = []) {
+  const Database = (await import('better-sqlite3')).default;
+  const db = new Database(fixture.dbPath);
+  try {
+    db.prepare(sql).run(...params);
+  } finally {
+    db.close();
+  }
+}
+
 async function readDb(fixture, sql, params = []) {
   const Database = (await import('better-sqlite3')).default;
   const db = new Database(fixture.dbPath, { readonly: true });
@@ -412,6 +422,72 @@ test('reset needs --yes, rollback restores a snapshot, and history lists both', 
   assert.ok(history.history.every((entry) => entry.overlay === 'extraction-rules'));
   assert.deepEqual(history.snapshots, [1, 2, 3, 4]);
   assert.match(ok(fixture, ['rules', 'history']).stdout, /이력 +4개/);
+});
+
+/**
+ * `--dry-run` is the promise that NOTHING moved. The shared parser accepted the
+ * flag for every verb, but `reset` and `rollback` had no dry-run branch and did
+ * the real write — the rules file, the revision, the snapshot, the history line,
+ * and on this side the held jobs were released too.
+ */
+test('rules reset and rollback honour --dry-run, changing nothing', async (t) => {
+  const fixture = isolated(t);
+  await seedDb(fixture);
+  ok(fixture, ['rules', 'set', candidate(fixture, 'rules.json', SECRET_RULES), '--expect-revision', '0']);
+  // A job parked on this overlay: a dry run must not resume it either.
+  await writeDb(
+    fixture,
+    "UPDATE memory_jobs SET hold_reason = 'extraction_rules_invalid' WHERE job_id = 'job-1'",
+  );
+
+  const before = fs.readFileSync(fixture.rulesFile);
+  const historyBefore = fs.readFileSync(path.join(fixture.overlayDir, 'history.jsonl'));
+  const snapshotsBefore = fs.readdirSync(path.join(fixture.overlayDir, 'history', 'extraction-rules')).sort();
+
+  const unchanged = async (label) => {
+    assert.ok(fs.readFileSync(fixture.rulesFile).equals(before), `${label}: the overlay changed`);
+    assert.ok(
+      fs.readFileSync(path.join(fixture.overlayDir, 'history.jsonl')).equals(historyBefore),
+      `${label}: a history line was appended`,
+    );
+    assert.deepEqual(
+      fs.readdirSync(path.join(fixture.overlayDir, 'history', 'extraction-rules')).sort(),
+      snapshotsBefore,
+      `${label}: a snapshot was written`,
+    );
+    assert.equal(
+      (await readDb(fixture, "SELECT hold_reason FROM memory_jobs WHERE job_id = 'job-1'")).hold_reason,
+      'extraction_rules_invalid',
+      `${label}: a held job was released`,
+    );
+  };
+
+  const reset = asJson(ok(fixture, ['rules', 'reset', '--dry-run', '--json']));
+  assert.equal(reset.dryRun, true);
+  assert.equal(reset.action, 'rules.reset');
+  assert.equal(reset.revision, 1);
+  assert.equal(reset.nextRevision, 2);
+  assert.match(reset.rerun ?? '', /--yes/);
+  await unchanged('rules reset --dry-run');
+
+  const text = ok(fixture, ['rules', 'reset', '--yes', '--dry-run']);
+  assert.match(text.stdout, /시험 실행 — 아무것도 저장하지 않았습니다\./);
+  await unchanged('rules reset --yes --dry-run');
+
+  const rolled = asJson(ok(fixture, ['rules', 'rollback', '1', '--dry-run', '--json']));
+  assert.equal(rolled.dryRun, true);
+  assert.equal(rolled.action, 'rules.rollback');
+  assert.equal(rolled.fromSnapshot, 1);
+  await unchanged('rules rollback --dry-run');
+
+  const missing = run(fixture, ['rules', 'rollback', '999', '--dry-run']);
+  assert.equal(missing.status, 1);
+  assert.match(both(missing), /SNAPSHOT_NOT_FOUND/);
+  await unchanged('rules rollback 999 --dry-run');
+
+  // The real command still works right after, from the revision the dry run named.
+  const applied = ok(fixture, ['rules', 'reset', '--yes', '--expect-revision', '1']);
+  assert.match(applied.stdout, /revision 1 → 2/);
 });
 
 test('test previews the deterministic never_extract block and labels the rest model-only', async (t) => {

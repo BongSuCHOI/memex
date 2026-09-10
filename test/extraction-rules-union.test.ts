@@ -34,7 +34,13 @@ import {
   resolveExtractionRules,
   type ResolvedExtractionRules,
 } from "../src/extraction-rules.js";
-import { rulesDoc, removeRules, writeRules } from "./extraction-rules-fixture.js";
+import {
+  pinOverlayEnv,
+  removeRules,
+  restoreOverlayEnv,
+  rulesDoc,
+  writeRules,
+} from "./extraction-rules-fixture.js";
 import type { ExtractedFact } from "../src/types.js";
 
 const ALPHA = "alpha-token-value";
@@ -87,7 +93,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-rules-union-"));
   home = path.join(root, "home");
   process.env.TEST_DB_PATH = path.join(root, "memex.sqlite");
-  process.env.MEMEX_HOME = home;
+  pinOverlayEnv(home);
   process.env.MEMEX_EMBEDDING_STUB = "1";
   resetExtractionRulesCache();
   db = initDatabase();
@@ -114,7 +120,7 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   delete process.env.TEST_DB_PATH;
-  delete process.env.MEMEX_HOME;
+  restoreOverlayEnv();
   delete process.env.MEMEX_EMBEDDING_STUB;
   resetExtractionRulesCache();
   fs.rmSync(root, { recursive: true, force: true });

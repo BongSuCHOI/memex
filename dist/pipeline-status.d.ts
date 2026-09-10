@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { type DerivedLaneSkipState } from "./derived-lane-skip.js";
+import { type HoldReason } from "./model-budget.js";
 export interface StageCounters {
     total: number;
     done: number;
@@ -109,13 +110,25 @@ export interface PipelineStatus {
         /** Subset of `memoryJobsRetry` whose backoff has not elapsed. */
         memoryJobsBackoff: number;
         /**
-         * Issue #31 — jobs waiting on a model setting.
+         * Issue #31 / #30 — jobs waiting on a CONFIGURATION, across every hold family.
          *
          * NOT part of `total`: a held job is neither dead nor in retry, nothing is
          * lost, and the action is one setting rather than a queue operation. It gets
          * its own line so "extraction is not progressing" is traceable to the
          * configuration that actually stopped it.
+         *
+         * Counting only `model_config_rejected` here made the two extraction-rules
+         * families — which hold the whole extraction queue — invisible on the one
+         * surface an operator checks when nothing is progressing.
          */
+        held: number;
+        /** Per-reason breakdown of `held`, so the line names the remedy. */
+        heldByReason: Array<{
+            reason: HoldReason;
+            jobs: number;
+            oldestHeldAt: string | null;
+        }>;
+        /** The `model_config_rejected` subset of `held`. Kept for compatibility. */
         modelConfigHeld: number;
         terminal: {
             checkpointsDeadLetter: number;

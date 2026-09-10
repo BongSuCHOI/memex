@@ -30,7 +30,12 @@ import {
   validateExtractionRulesDoc,
   type NeverExtractPattern,
 } from "../src/extraction-rules.js";
-import { rulesDoc, writeRules } from "./extraction-rules-fixture.js";
+import {
+  pinOverlayEnv,
+  restoreOverlayEnv,
+  rulesDoc,
+  writeRules,
+} from "./extraction-rules-fixture.js";
 
 let root: string;
 
@@ -40,15 +45,12 @@ function codes(raw: unknown): string[] {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-rules-unit-"));
-  process.env.MEMEX_HOME = root;
-  delete process.env.MEMEX_OVERLAY_DIR;
-  delete process.env.MEMEX_DISABLE_OVERLAYS;
+  pinOverlayEnv(root);
   resetExtractionRulesCache();
 });
 
 afterEach(() => {
-  delete process.env.MEMEX_HOME;
-  delete process.env.MEMEX_DISABLE_OVERLAYS;
+  restoreOverlayEnv();
   resetExtractionRulesCache();
   fs.rmSync(root, { recursive: true, force: true });
 });

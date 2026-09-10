@@ -20,8 +20,8 @@
  *    this overlay had put on hold, and says how many.
  */
 import fs from "fs";
-import { OverlayInvalidError, OverlayLockedError, OverlayStaleError, PROBE_WALL_MS, listOverlayHistory, listOverlaySnapshots, overlayPaths, } from "./overlay-admin.js";
-import { EXTRACTION_RULES_LIMITS, EXTRACTION_RULE_ENFORCEMENT_POINTS, buildBlockSet, composeEffectivePolicyVersion, currentExtractionRulesRevision, emptyLoadedExtractionRules, extractionRulesDocHash, isEmptyExtractionRules, loadExtractionRules, overlaysDisabled, readExtractionRulesFile, renderExtractionConstraintClause, resetExtractionRules, resolveExtractionRules, rollbackExtractionRules, setExtractionRules, validateExtractionRules, validateExtractionRulesDoc, } from "./extraction-rules.js";
+import { OverlayInvalidError, OverlayLockedError, OverlayStaleError, PROBE_WALL_MS, listOverlayHistory, listOverlaySnapshots, overlayPaths, readOverlaySnapshot, } from "./overlay-admin.js";
+import { EXTRACTION_RULES_LIMITS, EXTRACTION_RULE_ENFORCEMENT_POINTS, buildBlockSet, composeEffectivePolicyVersion, currentExtractionRulesRevision, emptyExtractionRulesDoc, emptyLoadedExtractionRules, extractionRulesDocHash, isEmptyExtractionRules, loadExtractionRules, overlaysDisabled, readExtractionRulesFile, renderExtractionConstraintClause, resetExtractionRules, resolveExtractionRules, rollbackExtractionRules, setExtractionRules, validateExtractionRules, validateExtractionRulesDoc, } from "./extraction-rules.js";
 import { MATCH_WALL_MS, oneShotMatcher, readQuarantine, } from "./overlay-matcher.js";
 import { extractionRulesOverlayPath, getDbPath } from "./paths.js";
 const USAGE = `Usage:
@@ -30,8 +30,8 @@ const USAGE = `Usage:
   memex extract rules set <file> [--expect-revision <n>] [--dry-run] [--json]
   memex extract rules test [--exchange <id>] [--recent <n>] [--project <p>] [--limit <n>] [--json]
   memex extract rules history [--limit <n>] [--json]
-  memex extract rules reset --yes [--json]
-  memex extract rules rollback <revision> [--json]
+  memex extract rules reset --yes [--dry-run] [--json]
+  memex extract rules rollback <revision> [--dry-run] [--json]
   memex extract rules reextract (--dry-run | --apply --yes) [--project <id>] [--session <id>] [--json]
   memex extract eval [--rules <path>] [--fixture <path>] [--session <id>] [--baseline <path>] [--out <path>]
 
@@ -357,7 +357,7 @@ function expectRevision() {
     return parsed;
 }
 /** The exact command to re-run, with the revision observed during the dry run. */
-function rerunCommand(revision) {
+function rerunCommand(revision, extra = []) {
     const parts = ["memex", "extract"];
     for (const arg of argv) {
         if (arg === "--dry-run")
@@ -366,6 +366,11 @@ function rerunCommand(revision) {
             continue;
         parts.push(/[\s'"\\]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg);
     }
+    // Flags the destructive form requires but the dry run did not: printing a
+    // command that then refuses with CONFIRMATION_REQUIRED is not a re-run command.
+    for (const flag of extra)
+        if (!parts.includes(flag))
+            parts.push(flag);
     const index = argv.indexOf("--expect-revision");
     if (index >= 0) {
         const stale = argv[index + 1];
@@ -911,7 +916,42 @@ async function cmdSet() {
 /* -------------------------------------------------------------------------- */
 /* rules reset / rollback / history                                            */
 /* -------------------------------------------------------------------------- */
+/**
+ * What a `reset` / `rollback` dry run prints.
+ *
+ * The shared shape matters more than the wording: `--dry-run` is the promise that
+ * nothing moved, so it names the revision it observed, the document it would
+ * write, and the exact command that applies it — and it touches no file, no
+ * snapshot, no history line and no held job.
+ */
+function emitWriteDryRun(action, doc, headline, payload = {}, extraFlags = []) {
+    const revision = currentExtractionRulesRevision();
+    const resolved = resolveDoc(doc, null);
+    emit({
+        dryRun: true,
+        action,
+        revision,
+        nextRevision: revision + 1,
+        currentHash: loadExtractionRules().hash,
+        hash: resolved.hash,
+        rerun: rerunCommand(revision, extraFlags),
+        ...payload,
+    }, [
+        "시험 실행 — 아무것도 저장하지 않았습니다.",
+        ...headline,
+        row("해시", `${loadExtractionRules().hash ?? "없음"} → ${resolved.hash ?? "없음"}  (revision ${revision} → ${revision + 1})`),
+        row("보류", "설정 대기(hold) 중인 추출 작업은 그대로 둡니다 — 해제는 실제 적용 때만 일어납니다."),
+        row("적용", rerunCommand(revision, extraFlags)),
+    ]);
+}
 async function cmdReset() {
+    if (bools.has("--dry-run")) {
+        const current = loadExtractionRules();
+        emitWriteDryRun("rules.reset", emptyExtractionRulesDoc(), [
+            row("초기화 예정", `규칙을 비웁니다 — 금지 패턴 ${current.global.neverExtract.length}개 · 제외 주제 ${current.global.excludeTopics.length}개가 사라집니다. 이미 추출된 기억은 바뀌지 않습니다.`),
+        ], {}, ["--yes"]);
+        return;
+    }
     if (!bools.has("--yes")) {
         fail("CONFIRMATION_REQUIRED", [
             "거부 — 아무것도 저장하지 않았습니다.",
@@ -943,6 +983,24 @@ async function cmdRollback() {
     const revision = Number(raw);
     if (!Number.isInteger(revision) || revision < 0) {
         usageError("rollback needs a non-negative integer revision");
+    }
+    if (bools.has("--dry-run")) {
+        const kept = readOverlaySnapshot("extraction-rules", revision);
+        if (kept === null) {
+            fail("SNAPSHOT_NOT_FOUND", [
+                "시험 실행 — 되돌릴 수 없습니다. 아무것도 저장하지 않았습니다.",
+                `  SNAPSHOT_NOT_FOUND  revision ${revision}의 스냅숏이 없습니다 (보관 중: ${listOverlaySnapshots("extraction-rules").join(", ") || "없음"})`,
+            ]);
+        }
+        const validation = await validateExtractionRules(kept, { probe: false, forWrite: true });
+        if (!validation.ok || !validation.doc) {
+            fail("OVERLAY_INVALID", [
+                "시험 실행 — 거부되었습니다. 아무것도 저장하지 않았습니다.",
+                ...issueLines(validation.issues),
+            ], { dryRun: true, issues: validation.issues });
+        }
+        emitWriteDryRun("rules.rollback", validation.doc, [row("되돌릴 예정", `revision ${revision}의 스냅숏을 revision ${currentExtractionRulesRevision() + 1}로 다시 적용합니다.`)], { fromSnapshot: revision, issues: validation.issues });
+        return;
     }
     const snapshot = beforeState();
     const handle = await openWriteDbIfPresent();
@@ -1084,48 +1142,25 @@ async function cmdReextract() {
         }
         const now = new Date().toISOString();
         const changed = {};
-        const bump = (table, changes) => {
-            if (changes > 0)
-                changed[table] = (changed[table] ?? 0) + changes;
-        };
         const requeued = [];
+        // One shared implementation with the store that owns these tables, so the
+        // progress fields a re-queue has to rewind cannot drift apart from the ones
+        // the claim path reads.
+        const { requeueCompletedExtractionTarget } = await import("./continuity-store.js");
         db.transaction(() => {
             for (const candidate of rows) {
-                // CAS on `completed`: a target a worker has since re-claimed must not be
-                // pulled out from under it.
-                const target = db
-                    .prepare(`UPDATE extraction_targets
-                SET state = 'pending', attempts = 0, lease_owner = NULL, lease_until = NULL,
-                    last_error = NULL, rules_hash = NULL, updated_at = ?
-              WHERE target_id = ? AND state = 'completed'`)
-                    .run(now, candidate.targetId).changes;
-                if (target === 0)
+                const counts = requeueCompletedExtractionTarget(db, {
+                    targetId: candidate.targetId,
+                    jobId: candidate.jobId,
+                    checkpointId: candidate.checkpointId,
+                    now,
+                });
+                if (Object.keys(counts).length === 0)
                     continue;
-                bump("extraction_targets", target);
                 requeued.push(candidate.targetId);
-                if (candidate.jobId !== null) {
-                    bump("memory_jobs", db
-                        .prepare(`UPDATE memory_jobs
-                    SET state = 'pending', attempts = 0, available_at = ?, lease_owner = NULL,
-                        lease_until = NULL, last_error = NULL, hold_reason = NULL, updated_at = ?
-                  WHERE job_id = ? AND state IN ('completed','superseded')`)
-                        .run(now, now, candidate.jobId).changes);
+                for (const [table, value] of Object.entries(counts)) {
+                    changed[table] = (changed[table] ?? 0) + value;
                 }
-                if (candidate.checkpointId !== null) {
-                    bump("checkpoints", db
-                        .prepare("UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processed'")
-                        .run(candidate.checkpointId).changes);
-                }
-                bump("extraction_target_items", db
-                    .prepare("UPDATE extraction_target_items SET state = 'pending' WHERE target_id = ? AND state <> 'pending'")
-                    .run(candidate.targetId).changes);
-                // This is what makes the work claimable again: `ensureExtractionTarget`
-                // treats an exact `processed` row as the only completion authority.
-                bump("exchange_extraction_state", db
-                    .prepare(`UPDATE exchange_extraction_state
-                  SET state = 'pending', processed_at = NULL
-                WHERE target_id = ? AND state <> 'pending'`)
-                    .run(candidate.targetId).changes);
             }
         }).immediate();
         const { appendUiAuditLine } = await import("./ontology-admin.js");

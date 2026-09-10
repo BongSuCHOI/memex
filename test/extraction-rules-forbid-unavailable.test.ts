@@ -50,8 +50,10 @@ import {
   SESSION,
   claimSnapshot,
   factCandidate,
+  pinOverlayEnv,
   resetMatcherScript,
   resetScript,
+  restoreOverlayEnv,
   rulesDoc,
   scanWholeDatabase,
   seedExchanges,
@@ -89,7 +91,7 @@ const CASES: Array<{ mode: MatcherMode; reason: string; quarantines: boolean; la
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-rules-unavail-"));
-  process.env.MEMEX_HOME = root;
+  pinOverlayEnv(root);
   process.env.MEMEX_DB_PATH = path.join(root, "db.sqlite");
   process.env.MEMEX_EMBEDDING_STUB = "1";
   process.env.MEMEX_LLM_RETRY_BASE_MS = "0";
@@ -111,7 +113,7 @@ afterEach(async () => {
   try { db.close(); } catch { /* already closed */ }
   const { invalidateModelSettingsCache } = await import("../src/model-settings.js");
   invalidateModelSettingsCache();
-  delete process.env.MEMEX_HOME;
+  restoreOverlayEnv();
   delete process.env.MEMEX_DB_PATH;
   delete process.env.MEMEX_EMBEDDING_STUB;
   delete process.env.MEMEX_LLM_RETRY_BASE_MS;
