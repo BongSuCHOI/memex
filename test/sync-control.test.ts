@@ -890,7 +890,7 @@ describe('cross-device sync control (#35/#48)', () => {
     });
   });
 
-  it('the export hook script is registered on SessionEnd as an async entry', async () => {
+  it('the export hook script is registered on SessionEnd as a timed synchronous entry', async () => {
     const { LIFECYCLE_COMMANDS, SYNC_LIFECYCLE_SCRIPTS, isLifecycleScriptRegistered } =
       await import('../src/lifecycle.js');
     // The regression: before 0.6.1 this script was in no hook at all.
@@ -898,20 +898,23 @@ describe('cross-device sync control (#35/#48)', () => {
     const entry = LIFECYCLE_COMMANDS.SessionEnd.find(
       (command) => command.script === SYNC_LIFECYCLE_SCRIPTS.export,
     );
-    expect(entry).toMatchObject({ async: true });
+    // #110: no `async` — Codex runs SessionEnd hooks synchronously and warned when told otherwise.
+    expect(entry).toMatchObject({ timeout: 10 });
+    expect(entry).not.toHaveProperty('async');
     // The bounded capture fence stays synchronous and untouched beside it.
     expect(LIFECYCLE_COMMANDS.SessionEnd[0]).toMatchObject({
       script: 'scripts/continuity-hook.js',
       timeout: 3,
     });
     const manifest = JSON.parse(fs.readFileSync('hooks.json', 'utf8')) as {
-      hooks: Record<string, Array<{ hooks: Array<{ command: string; async?: boolean }> }>>;
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; async?: boolean; timeout?: number }> }>>;
     };
     const manifestEntries = manifest.hooks.SessionEnd.flatMap((block) => block.hooks);
     expect(manifestEntries).toHaveLength(2);
     expect(manifestEntries[1]).toMatchObject({
       command: 'node "${PLUGIN_ROOT}/cli/runtime-exec.js" memex-hook-sync-export',
-      async: true,
+      timeout: 10,
     });
+    expect(manifestEntries[1]).not.toHaveProperty('async');
   });
 });

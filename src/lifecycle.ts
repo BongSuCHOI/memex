@@ -83,7 +83,9 @@ export const LIFECYCLE_COMMANDS: Record<HookEvent, LifecycleCommandConfig[]> = {
   // last export, so the common case costs one process that exits immediately.
   SessionEnd: [
     { script: "scripts/continuity-hook.js", timeout: 3 },
-    { script: "scripts/sync-export-hook.js", async: true },
+    // #110: a synchronous timed entry — Codex runs SessionEnd hooks synchronously
+    // regardless and warned on every session end when this was `async`.
+    { script: "scripts/sync-export-hook.js", timeout: 10 },
   ],
 };
 
