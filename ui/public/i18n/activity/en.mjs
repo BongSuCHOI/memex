@@ -68,6 +68,8 @@ export default {
   'activity.jobs.th.state': 'State',
   'activity.jobs.th.attempts': 'Attempts',
   'activity.jobs.th.updated': 'Updated',
+  // memory_jobs.hold_reason. Held work is not a queue wait — it never runs until someone fixes the setting.
+  'activity.jobs.hold.next': 'This job is not waiting its turn: it is held until the setting that owns it is fixed.',
   'activity.jobs.a11y.trace': 'Trace job',
   'activity.jobs.empty.title': 'No jobs',
   'activity.jobs.empty.body': 'Only jobs linked to this scope are shown. Look in the all-projects scope for jobs that cannot be linked.',

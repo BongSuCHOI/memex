@@ -57,7 +57,23 @@ class Core {
   async pipeline(){
     const m=await this.module('pipeline-status');
     if(typeof m.getPipelineStatus!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.pipelineModuleMissing',message:'The pipeline status module is missing.'});
-    return m.getPipelineStatus({dbPath:this.dbPath});
+    const status=await m.getPipelineStatus({dbPath:this.dbPath});
+    // `pipeline-status`의 `attention`은 보류 중 `model_config_rejected` 하나만 센다(#31). 개요의
+    // "확인이 필요한 작업" 카드는 세 사유를 모두 세야 하므로, 모델·오버레이 탭이 이미 쓰는 같은
+    // 집계를 그대로 덧붙인다 — 숫자를 새로 만들지 않는다.
+    return {...status,heldJobs:await this.heldJobs()};
+  }
+  /** 사유별 보류 작업 수. `model-budget`의 HOLD 집계를 그대로 읽는다(지어내지 않는다). */
+  async heldJobs(){
+    if(!fs.existsSync(this.dbPath))return [];
+    let db=this.db,owned=false;
+    try{
+      if(!db){const factories=await this.module('db');db=factories.openReadDb(this.dbPath);owned=true;}
+      const budget=await this.module('model-budget');
+      if(typeof budget.heldJobSummary!=='function')return [];
+      return budget.heldJobSummary(db);
+    }catch{return [];}
+    finally{if(owned&&db){try{db.close();}catch{}}}
   }
   environment(){
     // #31: MEMEX_CODEX_REASONING·MEMEX_EMBEDDING_* 는 모델 탭이 "환경 변수로 고정됨"을 말할 때
@@ -667,17 +683,9 @@ class Core {
     finally{if(owned&&db){try{db.close();}catch{}}}
     return out;
   }
-  /** 규칙 오류로 파킹된 작업 수. `model-budget`의 HOLD 집계를 그대로 읽는다(지어내지 않는다). */
+  /** 규칙 오류로 파킹된 작업 수. 소유 화면이 추출 규칙인 사유만 남긴다. */
   async overlayHeldJobs(){
-    if(!fs.existsSync(this.dbPath))return [];
-    let db=this.db,owned=false;
-    try{
-      if(!db){const factories=await this.module('db');db=factories.openReadDb(this.dbPath);owned=true;}
-      const budget=await this.module('model-budget');
-      if(typeof budget.heldJobSummary!=='function')return [];
-      return budget.heldJobSummary(db).filter(r=>String(r.reason).startsWith('extraction_rules_'));
-    }catch{return [];}
-    finally{if(owned&&db){try{db.close();}catch{}}}
+    return (await this.heldJobs()).filter(r=>String(r.reason).startsWith('extraction_rules_'));
   }
   /** 검증만. 파일을 건드리지 않고 `Issue[]`를 그대로 돌려준다(프로브 포함). */
   async overlayValidate(overlay,gate,rules,body){

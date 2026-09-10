@@ -8,7 +8,7 @@
 // order forces the count into the dictionary); thresholds, env vars and versions stay as
 // literals inside the prose. The catalogue never invents a cause it cannot evidence.
 export default {
-  // ── 36 classes × {title, cause, impact, next}; the module owns the array order ──
+  // ── 37 classes × {title, cause, impact, next}; the module owns the array order ──
   'guidance.db-unavailable.title': 'Cannot connect to the local database',
   'guidance.db-unavailable.cause': 'The index database file is missing or cannot be opened: either nothing has been synced yet, or the path or permissions changed.',
   'guidance.db-unavailable.impact': 'Reads, injection and memory changes all stop. Stored memories are not lost.',
@@ -63,6 +63,11 @@ export default {
   'guidance.failed-visible.cause': 'A failure that repeats identically on retry, so it is shown as-is rather than hidden.',
   'guidance.failed-visible.impact': 'Only that range produces no memories. Other ranges process normally.',
   'guidance.failed-visible.next': 'Read the stored error text and the failed range in the job detail, then recover.',
+
+  'guidance.job-held.title': 'Work held until a setting is fixed',
+  'guidance.job-held.cause': 'The job carries a hold reason: the model selection was rejected by the provider, the extraction rules overlay failed validation, or the forbidden-pattern check could not be run at all. The core spends no attempt while a hold is on.',
+  'guidance.job-held.impact': 'It sits in the pending state but is never attempted, so it does not clear itself by waiting. Nothing is lost and no attempt is spent — the conversation range stays unextracted until someone fixes the setting.',
+  'guidance.job-held.next': 'Fix the configuration that owns the hold: the model selection under Administration › Models, or the extraction rules under Administration › Overlays. A successful write releases the jobs that hold was keeping.',
 
   'guidance.job-dead.title': 'Work ended in failure',
   'guidance.job-dead.cause': 'Work that reached a terminal state after exhausting the retry cap.',
@@ -201,6 +206,8 @@ export default {
   'guidance.action.syncConversations': 'Sync conversations',
   'guidance.action.viewRuntime': 'Runtime information',
   'guidance.action.viewDeadJobs': 'View failed work',
+  'guidance.action.viewModelSettings': 'Model selection settings',
+  'guidance.action.viewExtractionRules': 'Extraction rules settings',
   'guidance.action.viewEnvVars': 'Check environment variables',
   'guidance.action.viewAttempts': 'View model attempts',
   'guidance.action.viewRunningJobs': 'View running work',
@@ -222,6 +229,7 @@ export default {
   'guidance.action.exportDiagnostics': 'Export diagnostics',
 
   // ── The 11 count labels on the Overview attention card; one-slot patterns ──
+  'guidance.attention.job-held.detail': '{count} waiting on a configuration fix',
   'guidance.attention.job-dead.detail': '{count} failed',
   'guidance.attention.job-retry.detail': '{count} awaiting retry',
   'guidance.attention.failed-visible.detail': '{count} deterministically failed ranges',

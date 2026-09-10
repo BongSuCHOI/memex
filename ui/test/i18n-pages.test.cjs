@@ -282,13 +282,14 @@ test('L4 en: 도움말 카탈로그 36항목과 용어집 17항목이 en으로 �
   assert.equal(help.badgeHelp('dead'), locale.en['badge.dead.help']);
 });
 
-test('L4 en: 실패 분류 37개의 제목·원인·영향·다음 행동이 en으로 읽힌다', () => {
+test('L4 en: 실패 분류 38개의 제목·원인·영향·다음 행동이 en으로 읽힌다', () => {
   locale.useEn();
   const entries = [];
   for (const cls of [...guidance.CLASSES, guidance.unknownClass('boom')])
     for (const field of ['title', 'cause', 'impact', 'next']) entries.push([`${cls.id}.${field}`, cls[field]]);
   assert.deepEqual(catalogueProblems(entries), []);
-  assert.equal(guidance.CLASSES.length, 36, '실패 클래스 수가 바뀌었다');
+  // 0.7.0 (#31/#30): `job-held`가 들어와 36 → 37이 됐다(+ unknown = 38).
+  assert.equal(guidance.CLASSES.length, 37, '실패 클래스 수가 바뀌었다');
   assert.equal(guidance.guidanceFor('job-dead').title, locale.en['guidance.job-dead.title']);
 });
 
@@ -1358,4 +1359,80 @@ test('F: 0.7.1 공유 연기 공지는 두 화면 모두에 항상 있다', () =
     const shared = overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS({}, {}, {shared: true}), null);
     assert.ok(!shared.includes(locale[tag]['overlays.notShared']));
   }
+});
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ H · 보류된 작업 + 문서 고지 (#31/#30 · #109 §6.4)                         │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// 두 가지를 못질한다.
+//   (1) `memory_jobs.hold_reason`이 붙은 작업은 `pending`이지만 **설정 대기**다. 처리 작업 표의
+//       사유 배지와 소유 탭 링크, 개요 경고 카드의 설명이 두 로케일에서 모두 나와야 한다.
+//   (2) `help.docs.koreanOnly`는 정의돼 있었지만 **아무도 렌더하지 않았다.** en에서만 한 줄이
+//       붙고 ko에서는 빈 문자열이어야 한다.
+const H_HOLD_REASONS = ['model_config_rejected', 'extraction_rules_invalid', 'extraction_rules_unavailable'];
+const H_OWNER_HREF = {
+  model_config_rejected: '/settings?tab=models',
+  extraction_rules_invalid: '/settings?tab=overlays&amp;overlay=rules',
+  extraction_rules_unavailable: '/settings?tab=overlays&amp;overlay=rules',
+};
+const hHeldJobs = hold_reason => ({available: true, total: 1, limit: 40, offset: 0,
+  items: [{job_id: 'job-held-1', session_id: 'session-h', kind: 'fact_extract', state: 'pending',
+    attempts: 0, max_attempts: 5, last_error: null, updated_at: '2026-09-10T00:00:00.000Z', hold_reason}]});
+
+test('H: 보류된 작업의 사유 배지·다음 행동·소유 탭 링크가 두 로케일에서 나온다', async () => {
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    for (const reason of H_HOLD_REASONS) {
+      const html = (await activity.render(ctx('tab=jobs', {jobs: hHeldJobs(reason)}))).html;
+      assert.deepEqual(html.match(LEAKED_KEY) ?? [], [], `${tag} ${reason}: 미번역 키가 노출됐다`);
+      assert.ok(html.includes(dict['common.job.hold.' + reason]), `${tag} ${reason}: 사유 배지가 없다`);
+      assert.ok(html.includes(dict['activity.jobs.hold.next']), `${tag} ${reason}: 다음 행동 한 줄이 없다`);
+      assert.ok(html.includes(`href="${H_OWNER_HREF[reason]}"`), `${tag} ${reason}: 소유 탭 링크가 없다`);
+      assert.ok(html.includes(dict['guidance.job-held.title']), `${tag} ${reason}: 보류 클래스 제목이 없다`);
+      assert.ok(html.includes(dict['guidance.ignorable.false']), `${tag} ${reason}: 무시 가능으로 표시됐다`);
+    }
+    // 보류가 없으면 아무것도 덧붙이지 않는다.
+    const plain = (await activity.render(ctx('tab=jobs', {jobs: hHeldJobs(null)}))).html;
+    assert.ok(!plain.includes(dict['activity.jobs.hold.next']), `${tag}: 보류가 아닌 작업에 보류 안내가 붙었다`);
+  }
+});
+
+test('H: 개요 경고 카드가 세 사유의 보류를 합쳐 세고 두 로케일로 설명한다', () => {
+  const held = H_HOLD_REASONS.map((reason, i) => ({reason, jobs: i + 1, oldestHeldAt: '2026-09-10T00:00:00.000Z'}));
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const groups = guidance.attentionFromPipeline({attention: {terminal: {}}, ontology: {indexRepair: {blocked: false}},
+      evidence: {}, quarantinedProjects: [], heldJobs: held});
+    const group = groups.find(g => g.cls.id === 'job-held');
+    assert.ok(group, `${tag}: 보류 묶음이 없다`);
+    assert.equal(group.count, 6, `${tag}: 사유 하나만 셌다`);
+    assert.equal(group.detail, dict['guidance.attention.job-held.detail'].replace('{count}', '6'));
+    const card = guidance.attentionCard(groups, guidanceCtx);
+    assert.ok(card.includes(dict['guidance.job-held.title']), `${tag}: 제목이 없다`);
+    assert.ok(card.includes(dict['guidance.job-held.next']), `${tag}: 다음 행동이 없다`);
+    assert.ok(card.includes(dict['guidance.action.viewModelSettings']), `${tag}: 모델 설정 액션이 없다`);
+    assert.ok(card.includes(dict['guidance.action.viewExtractionRules']), `${tag}: 추출 규칙 액션이 없다`);
+    if (tag === 'en') assert.equal(HANGUL.test(visibleText(card)), false, 'en 카드에 한글이 남았다');
+  }
+});
+
+test('H: 문서 링크 옆 고지는 en에서만 렌더되고 ko에서는 빈 문자열이다 (#109 §6.4)', () => {
+  // app.mjs는 DOM 없이 require할 수 없으므로 **렌더는 컴포넌트로, 배치는 소스로** 본다
+  // (L1 섹션의 app.mjs 키 수확과 같은 방식).
+  locale.useEn();
+  const rendered = ui.docsNoticeTag();
+  assert.ok(rendered.includes(locale.en['help.docs.koreanOnly']), 'en 고지가 렌더되지 않았다');
+  assert.equal(HANGUL.test(shellText(rendered)), false, '고지 자체에 한글이 있다');
+  locale.useKo();
+  assert.equal(ui.docsNoticeTag(), '', 'ko에서 고지를 그렸다');
+  // 도움말 계층이 app.mjs에서 그리는 문서 링크 2곳(도움말 패널·용어집) 모두에 붙어 있다.
+  const appSrc = nodeFs.readFileSync(nodePath.join(__dirname, '../public/app.mjs'), 'utf8');
+  const docLinks = appSrc.match(/docUrl\(/g) ?? [];
+  assert.equal(docLinks.length, 2, 'app.mjs의 문서 링크 수가 바뀌었다: ' + docLinks.length);
+  assert.equal((appSrc.match(/docsNoticeTag\(\)/g) ?? []).length, 2, '문서 링크마다 고지가 붙어 있지 않다');
+  assert.ok(/shell\.help\.docsLink[\s\S]{0,80}?docsNoticeTag\(\)/.test(appSrc), '도움말 패널 링크 옆에 고지가 없다');
+  assert.ok(/docUrl\(g\.source,version\)[\s\S]{0,200}?docsNoticeTag\(\)/.test(appSrc), '용어집 링크 옆에 고지가 없다');
 });

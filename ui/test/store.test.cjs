@@ -72,3 +72,17 @@ test('symbolic-link logs are not exposed',()=>{fs.symlinkSync('/etc/passwd',path
 test('stable project ID overrides an obsolete matching path',()=>{const existing=store.visibleFact(uid(73),scope({scope:'all'}));f.db.prepare('UPDATE facts SET scope_project=? WHERE id=?').run(PROJECT,existing.id);assert.throws(()=>store.visibleFact(existing.id,scope({scope:'project',project:PROJECT})),{status:404});f.db.prepare('UPDATE facts SET scope_project=? WHERE id=?').run(OTHER,existing.id);});
 test('missing optional telemetry table reports unavailable rather than zero',()=>{f.db.exec('DROP TABLE recall_events');store.refreshSchema();const d=store.recalls(q(),scope({scope:'all'}));assert.equal(d.available,false);assert.equal(d.total,null);});
 test('FTS only activates when readiness flag is set; tokens are quoted',()=>{f.db.exec("CREATE TABLE fts_meta(key TEXT PRIMARY KEY,value TEXT);CREATE VIRTUAL TABLE exchanges_fts USING fts5(user_message,assistant_message,content='exchanges',content_rowid='rowid',detail=column);INSERT INTO exchanges_fts(exchanges_fts) VALUES('rebuild');INSERT INTO fts_meta VALUES('exchanges_fts_built','0');");store.refreshSchema();assert.equal(store.searchClause(q({q:'SQLite'}))[2],'contains');f.db.exec("UPDATE fts_meta SET value='1'");assert.equal(store.searchClause(q({q:'SQLite OR'}))[2],'fts');assert(store.exchanges(q({q:'SQLite'}),scope({scope:'all'})).total>0);});
+// #31/#30: `hold_reason`은 0.7.0에 추가된 nullable 컬럼이다. 화면은 "보류 아님"과 "컬럼 없음"을
+// 구분할 수 없어야 한다 — 둘 다 null이어야 보류 배지가 0.6.x DB에서 거짓 양성이 되지 않는다.
+test('보류 사유는 컬럼이 없는 DB에서도 행에 null로 실린다',()=>{
+ const before=store.jobs(q({limit:'100'}),scope({scope:'all'}));
+ assert(before.items.length,'작업 행이 없어 단정할 수 없습니다');
+ assert(before.items.every(j=>'hold_reason' in j&&j.hold_reason===null),'컬럼이 없는 DB에서 hold_reason이 행에 없습니다');
+ f.db.exec('ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT');
+ f.db.prepare("UPDATE memory_jobs SET hold_reason='model_config_rejected' WHERE job_id='job-1'").run();
+ store.refreshSchema();
+ const after=store.jobs(q({limit:'100'}),scope({scope:'all'}));
+ assert.equal(after.items.find(j=>j.job_id==='job-1').hold_reason,'model_config_rejected');
+ assert(after.items.filter(j=>j.job_id!=='job-1').every(j=>j.hold_reason===null),'보류가 아닌 작업에 사유가 생겼습니다');
+ assert.equal(store.job('job-1',scope({scope:'all'})).job.hold_reason,'model_config_rejected','작업 상세에 사유가 없습니다');
+});

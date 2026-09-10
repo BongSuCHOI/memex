@@ -161,7 +161,7 @@ test('코어가 선언한 skip 사유와 terminal 상태는 모두 클래스가 
 });
 
 test('이슈가 요구한 실패 클래스가 모두 존재한다',()=>{
- for(const id of ['capsule-truncated','budget-exhausted','claim-handoff','claim-backoff','claim-attempts','excluded-project','failed-visible','model-invalid-json','lease-expired','db-unavailable','embedding-unavailable','ontology-parked','ontology-index-repair','job-dead','job-retry','derived-lane-skip','evidence-missing','sync-disabled','sync-never-exported'])
+ for(const id of ['capsule-truncated','budget-exhausted','claim-handoff','claim-backoff','claim-attempts','excluded-project','failed-visible','model-invalid-json','lease-expired','db-unavailable','embedding-unavailable','ontology-parked','ontology-index-repair','job-held','job-dead','job-retry','derived-lane-skip','evidence-missing','sync-disabled','sync-never-exported'])
   assert(guidance.guidanceFor(id),'클래스 없음: '+id);
  for(const cls of guidance.CLASSES){
   for(const key of ['title','cause','impact','next','source'])assert(typeof cls[key]==='string'&&cls[key].length>5,`${cls.id}.${key} 누락`);
@@ -305,6 +305,47 @@ test('개요 경고 카드는 클래스별로 묶고 0은 만들지 않는다',(
  for(const id of ['job-dead','job-retry','failed-visible','budget-exhausted','ontology-parked','evidence-missing','quarantined-project','derived-lane-skip'])assert(ids.includes(id),'빠진 클래스: '+id);
  assert.equal(groups.find(g=>g.cls.id==='job-dead').count,7);
  assert.equal(groups.find(g=>g.cls.id==='evidence-missing').count,118);
+});
+
+/**
+ * ★ #31/#30 — `memory_jobs.hold_reason`. 보류된 작업은 상태가 `pending`이라서 **정상 대기**로
+ * 보이지만, 사람이 설정을 고치지 않는 한 시도조차 되지 않는다. 세 사유 전부가 하나의 비무시
+ * 클래스로 가고, 개요 카드가 사유를 가리지 않고 모두 세는지 본다.
+ */
+const HOLD_REASONS=['model_config_rejected','extraction_rules_invalid','extraction_rules_unavailable'];
+const heldPipeline=heldJobs=>({attention:{terminal:{}},ontology:{indexRepair:{blocked:false}},evidence:{},quarantinedProjects:[],heldJobs});
+
+test('설정 대기로 보류된 작업은 재시도 대기와 다른 비무시 클래스다 (#31/#30)',()=>{
+ for(const reason of HOLD_REASONS){
+  const cls=guidance.classify({hold_reason:reason});
+  assert.equal(cls.id,'job-held','보류 사유가 분류되지 않음: '+reason);
+  assert.equal(cls.ignorable,false,'설정을 고쳐야 풀리는 보류를 무시 가능으로 단정함: '+reason);
+  // 사유 배지는 공용 네임스페이스가 두 로케일로 갖는다(화면이 'common.job.hold.'+reason으로 읽는다).
+  for(const [tag,dict] of [['en',en],['ko',ko]])
+   assert(dict['common.job.hold.'+reason],`${tag} 사전에 없는 보류 라벨: common.job.hold.${reason}`);
+  // 보류는 상태 규칙보다 먼저다 — pending 단축 경로에 먹히면 화면에서 안내가 사라진다.
+  assert.equal(guidance.jobGuidance({state:'pending',last_error:null,hold_reason:reason}).id,'job-held',reason);
+ }
+ // 보류가 아닌 대기는 그대로 "안내 없음"이다. 모든 pending에 보류를 붙이지 않는다.
+ assert.equal(guidance.jobGuidance({state:'pending',last_error:null,hold_reason:null}),null);
+ // 소유 화면 두 곳이 액션으로 있다 — 모델 선택과 추출 규칙은 서로 다른 탭이 고친다.
+ const views=guidance.guidanceFor('job-held').actions.filter(a=>a.kind==='view');
+ assert.deepEqual(views.map(a=>a.query.tab),['models','overlays']);
+ assert.equal(views[1].query.overlay,'rules');
+});
+
+test('개요 경고 카드는 세 보류 사유를 모두 세고 0은 만들지 않는다 (#31/#30)',()=>{
+ // pipeline-status의 attention은 model_config_rejected 하나만 센다 — 화면은 사유별 집계를 본다.
+ const groups=guidance.attentionFromPipeline(heldPipeline(
+  HOLD_REASONS.map((reason,i)=>({reason,jobs:i+1,oldestHeldAt:'2026-09-10T00:00:00.000Z'}))));
+ const held=groups.find(g=>g.cls.id==='job-held');
+ assert(held,'보류가 개요 카드에 없습니다');
+ assert.equal(held.count,6,'사유 하나만 세고 있습니다');
+ assert.equal(held.detail,ko['guidance.attention.job-held.detail'].replace('{count}','6'));
+ assert.equal(groups[0].cls.id,'job-held','설정을 기다리는 보류가 실패 작업보다 먼저 와야 합니다');
+ // 보류가 없으면(또는 필드 자체가 없으면) 0을 만들지 않는다.
+ assert(!guidance.attentionFromPipeline(heldPipeline([])).some(g=>g.cls.id==='job-held'));
+ assert(!guidance.attentionFromPipeline(heldPipeline(undefined)).some(g=>g.cls.id==='job-held'));
 });
 
 test('안내 렌더링은 기존 컴포넌트만 쓰고 액션을 실제 버튼으로 만든다',()=>{

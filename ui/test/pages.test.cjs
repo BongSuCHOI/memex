@@ -329,3 +329,38 @@ test('공통 기억 범위의 대화·활동은 원클릭 전환 버튼을 준�
  const wide=await activityPage.render(ctx('',{chronicle:emptyPage}));
  assert(!wide.html.includes('data-action="scope-all"'),'전체 범위에서 불필요한 배너가 표시됨');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #31/#30 · 보류된 작업(memory_jobs.hold_reason) — 활동 · 추적 › 처리 작업
+//
+// 보류는 실패도 재시도 대기도 아니다. 상태만 보면 `pending`이라 "차례를 기다리는 중"으로
+// 읽히지만, 사람이 설정을 고칠 때까지 시도조차 되지 않는다. 그래서 표는 (a) 사유 배지와
+// (b) 그 사유를 **소유한 관리 탭**으로 가는 한 줄을 함께 실어야 한다.
+// ─────────────────────────────────────────────────────────────────────────────
+const HOLD_OWNER_TAB={
+ model_config_rejected:'/settings?tab=models',
+ extraction_rules_invalid:'/settings?tab=overlays&amp;overlay=rules',
+ extraction_rules_unavailable:'/settings?tab=overlays&amp;overlay=rules',
+};
+const heldJobsPage=hold_reason=>({available:true,total:1,limit:40,offset:0,
+ items:[{job_id:'job-held-1',kind:'fact_extract',session_id:'session-0',state:'pending',attempts:0,max_attempts:5,
+  last_error:null,updated_at:'2026-09-10T00:00:00.000Z',hold_reason}]});
+
+test('보류된 작업은 사유 배지와 소유 화면 링크를 함께 보여준다',async()=>{
+ for(const [reason,href] of Object.entries(HOLD_OWNER_TAB)){
+  const {html}=await activityPage.render(ctx('tab=jobs',{jobs:heldJobsPage(reason)}));
+  assert(html.includes(ko['common.job.hold.'+reason]),`${reason}: 보류 사유 배지가 없음`);
+  assert(html.includes(ko['activity.jobs.hold.next']),`${reason}: 다음 행동 한 줄이 없음`);
+  assert(html.includes(`href="${href}"`),`${reason}: 소유 화면(${href}) 링크가 없음`);
+  // 보류는 "기다리면 풀리는 재시도"로 설명되면 안 된다.
+  assert(!html.includes(ko['guidance.job-retry.title']),`${reason}: 재시도 대기로 설명함`);
+  assert(html.includes(ko['guidance.job-held.title']),`${reason}: 다음 행동 열에 보류 클래스가 없음`);
+ }
+});
+
+test('보류가 아닌 대기 작업에는 보류 배지도 링크도 붙지 않는다',async()=>{
+ const {html}=await activityPage.render(ctx('tab=jobs',{jobs:heldJobsPage(null)}));
+ assert(!html.includes(ko['activity.jobs.hold.next']),'보류가 아닌 작업에 보류 안내가 붙음');
+ for(const reason of Object.keys(HOLD_OWNER_TAB))assert(!html.includes(ko['common.job.hold.'+reason]),'보류 배지가 붙음: '+reason);
+ assert(!html.includes('/settings?tab=models'),'불필요한 모델 설정 링크가 생김');
+});

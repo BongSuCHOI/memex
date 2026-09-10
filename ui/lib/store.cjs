@@ -338,7 +338,10 @@ class Store {
     if(q.get('id')){w+=' AND j.job_id=?';p.push(identifier(q.get('id')));}
     if(q.get('from')){w+=' AND j.updated_at>=?';p.push(text(q.get('from'),40));}
     if(q.get('to')){w+=' AND j.updated_at<=?';p.push(text(q.get('to'),40)+'T23:59:59.999Z');}
-    return this.page(from,w,p,'j.updated_at DESC,j.job_id DESC',q,`j.*,${session} AS session_id,${project} AS project`);
+    // `hold_reason`은 0.7.0에 추가된 nullable 컬럼이다(#31/#30). 그 컬럼이 없는 0.6.x DB에서도
+    // 행의 모양이 같아야 화면이 "보류 아님"과 "컬럼 없음"을 같은 길로 처리한다 — NULL로 채운다.
+    const hold=this.has('memory_jobs','hold_reason')?'':',NULL AS hold_reason';
+    return this.page(from,w,p,'j.updated_at DESC,j.job_id DESC',q,`j.*${hold},${session} AS session_id,${project} AS project`);
   }
   job(id,s) {
     const page=this.jobs(new URLSearchParams({id,limit:'1'}),s);const job=page.items[0];if(!job)throw new HttpError(404,{code:'NOT_FOUND', key:'error.job.notFoundInScope', message:'No job found in the current scope.'});

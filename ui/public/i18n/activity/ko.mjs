@@ -70,6 +70,8 @@ export default {
   'activity.jobs.th.state': '상태',
   'activity.jobs.th.attempts': '시도',
   'activity.jobs.th.updated': '업데이트',
+  // memory_jobs.hold_reason. 보류는 순서를 기다리는 것이 아니라 설정이 고쳐지기를 기다리는 상태다.
+  'activity.jobs.hold.next': '차례를 기다리는 것이 아니라, 이 작업을 붙잡고 있는 설정이 고쳐져야 풀립니다.',
   'activity.jobs.a11y.trace': '작업 추적',
   'activity.jobs.empty.title': '처리 작업이 없습니다',
   'activity.jobs.empty.body': '이 범위에 연결된 작업만 표시합니다. 연결할 수 없는 작업은 전체 프로젝트 범위에서 확인하세요.',

@@ -1,4 +1,4 @@
-import {badgeHelp,helpFor} from './help.mjs';
+import {badgeHelp,helpFor,docsNotice} from './help.mjs';
 import {t,tHtml,tn,intlTag,localeTag} from './i18n/index.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
@@ -60,6 +60,11 @@ export const tierBadge=(f,project)=>`<span class="tag outline" data-tier="${esc(
 export const tierHiddenTotal=hidden=>hidden?Number(hidden.workstream||0)+Number(hidden.workspace||0):0;
 export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
 const tip=badgeHelp(v);return `<span class="tag ${esc(color)}"${tip?` title="${esc(tip)}"`:''}>${esc(name(v))}</span>`;}
+/**
+ * 문서 링크 옆의 한 줄 고지. `docs/*.md` 13편은 전부 한국어이고 영문판이 없으므로 en UI도 같은
+ * 문서로 보내되 **무엇을 여는지 미리 밝힌다**(설계 §6.4). ko에서는 값이 비어 아무것도 그리지 않는다.
+ */
+export function docsNoticeTag(){const notice=docsNotice();return notice?`<span class="caption">${esc(notice)}</span>`:'';}
 export const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString(intlTag());
 export const short=id=>id?String(id).slice(0,8):'—';
 export const basename=p=>p?p.split('/').filter(Boolean).pop()||'/':t('common.commonMemory');

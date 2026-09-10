@@ -106,6 +106,17 @@ export const CLASSES=[
   ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs'},labelKey:'guidance.action.viewJobs'}],
   source:A.GUIDE_RECOVER}),
 
+ // 0.7.0 (#31/#30): `memory_jobs.hold_reason`이 붙은 작업은 상태가 `pending`이지만 **설정이
+ // 고쳐질 때까지 한 번도 시도하지 않는다.** 재시도 대기(job-retry)와 같은 줄에 두면 "기다리면
+ // 풀린다"로 읽히지만, 사람이 모델 선택이나 추출 규칙을 고치지 않는 한 영원히 풀리지 않는다 —
+ // 그래서 무시 가능이 아니다. job-dead/job-retry보다 먼저 와서 상태 규칙에 가려지지 않는다.
+ failure('job-held',{
+  match:['model_config_rejected','extraction_rules_invalid','extraction_rules_unavailable','waiting on configuration'],
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'models'},labelKey:'guidance.action.viewModelSettings'},
+   {kind:'view',to:'/settings',query:{tab:'overlays',overlay:'rules'},labelKey:'guidance.action.viewExtractionRules'},
+   {kind:'command',text:'memex jobs list --state pending'}],
+  source:GUIDE}),
+
  failure('job-dead',{
   match:[/\bdead-letter\b/,/\bdead\b/,'checkpointsdeadletter','extractiontargetsdead','memoryjobsdead'],
   ignorable:false,actions:[...RECOVER,DISMISS,{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},labelKey:'guidance.action.viewDeadJobs'}],
@@ -266,7 +277,7 @@ export function unknownClass(raw){
 const haystack=input=>{
  if(!input)return '';
  if(typeof input==='string')return input.toLowerCase();
- return [input.code,input.error_code,input.error,input.errorClass,input.error_class,input.error_message,input.last_error,input.reason,input.state,input.status,input.kind]
+ return [input.code,input.error_code,input.error,input.errorClass,input.error_class,input.error_message,input.last_error,input.hold_reason,input.reason,input.state,input.status,input.kind]
   .filter(x=>typeof x==='string').join('   ').toLowerCase();
 };
 
@@ -293,6 +304,9 @@ export function attentionFromPipeline(p){
  const terminal=p.attention?.terminal||{};
  const detail=(id,count)=>t(`guidance.attention.${id}.detail`,{count:number(count)});
  const rows=[
+  // 보류는 큐가 아니라 **사람의 설정**을 기다린다 — 가장 위에 둔다. 사유별 집계를 합치므로
+  // `pipeline-status`가 세지 않는 추출 규칙 보류 2종도 빠지지 않는다(ui/lib/core.cjs pipeline()).
+  ['job-held',(p.heldJobs||[]).reduce((sum,row)=>sum+Number(row.jobs||0),0)],
   ['job-dead',(p.attention?.memoryJobsDead||0)+(terminal.checkpointsDeadLetter||0)+(terminal.extractionTargetsDead||0)],
   ['job-retry',p.attention?.memoryJobsRetry||0],
   ['failed-visible',(terminal.checkpointsFailedVisible||0)+(terminal.extractionTargetItemsFailedVisible||0)+(terminal.capsuleCheckpointFailedVisible||0)],
@@ -324,6 +338,9 @@ export function attentionFromPipeline(p){
  */
 export function jobGuidance(j){
  if(!j)return null;
+ // 0.7.0 (#31/#30): **보류가 상태보다 먼저다.** 보류된 작업은 `pending`이므로 아래의 "정상 대기"
+ // 단축 경로에 걸려 안내가 사라진다 — 그러면 설정을 고쳐야 풀리는 작업이 화면에서 사라진다.
+ if(j.hold_reason)return guidanceFor('job-held');
  if(j.state==='running'&&j.lease_until&&Date.parse(j.lease_until)<Date.now())return guidanceFor('lease-expired');
  if(!j.last_error&&['completed','processed','superseded','pending','running'].includes(j.state))return null;
  if(j.state==='dead')return guidanceFor('job-dead');

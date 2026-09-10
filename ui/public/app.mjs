@@ -1,5 +1,5 @@
 import {request,setToken} from './api.mjs';
-import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts} from './ui.mjs';
+import {esc,icon,btn,linkBtn,banner,errorCard,skeleton,empty,options,basename,short,number,copy,download,name,factText,setPreferTranslatedFacts,docsNoticeTag} from './ui.mjs';
 import {renderDetail,commandModal} from './details.mjs';
 import {helpFor,docUrl,GLOSSARY,CONTROLS} from './help.mjs';
 import * as overview from './pages/overview.mjs';import * as facts from './pages/facts.mjs';import * as conversations from './pages/conversations.mjs';import * as taxonomy from './pages/taxonomy.mjs';import * as graph from './pages/graph.mjs';import * as activity from './pages/activity.mjs';import * as settings from './pages/settings.mjs';
@@ -107,12 +107,12 @@ function applyHelpVisibility(root){if(prefs.help!=='first')return;const seen=hel
 function openHelp(key){
  const entry=helpFor(key);if(!entry)return;markHelpSeen(key);
  const url=docUrl(entry.source,bootstrap?.environment?.version);
- showModal(entry.title,banner(esc(entry.body))+`<p class="caption mt">${tHtml('shell.help.source',{source:entry.source})}</p><div class="row wrap mt"><a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon('external')}${esc(t('shell.help.docsLink'))}</a>${btn(t('shell.help.openGlossary'),'memory','type="button" data-action="glossary"','ghost')}</div>`,t('action.close'),()=>{});
+ showModal(entry.title,banner(esc(entry.body))+`<p class="caption mt">${tHtml('shell.help.source',{source:entry.source})}</p><div class="row wrap mt"><a class="btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon('external')}${esc(t('shell.help.docsLink'))}</a>${docsNoticeTag()}${btn(t('shell.help.openGlossary'),'memory','type="button" data-action="glossary"','ghost')}</div>`,t('action.close'),()=>{});
 }
 function glossaryPanel(){
  if(modal.open)modal.close();
  const version=bootstrap?.environment?.version;
- const item=g=>`<div class="source-item" data-term="${esc(g.term.toLowerCase())}"><div class="spread"><strong>${esc(g.term)}</strong>${linkBtn(t('action.goTo'),'arrow',href(g.to),'small ghost')}</div><p class="caption mt">${esc(g.body)}</p><p class="caption"><a href="${esc(docUrl(g.source,version))}" target="_blank" rel="noopener noreferrer">${esc(g.source)}</a></p></div>`;
+ const item=g=>`<div class="source-item" data-term="${esc(g.term.toLowerCase())}"><div class="spread"><strong>${esc(g.term)}</strong>${linkBtn(t('action.goTo'),'arrow',href(g.to),'small ghost')}</div><p class="caption mt">${esc(g.body)}</p><p class="caption"><a href="${esc(docUrl(g.source,version))}" target="_blank" rel="noopener noreferrer">${esc(g.source)}</a>${docsNoticeTag()}</p></div>`;
  modal.innerHTML=`<header class="modal-head"><h2 id="modal-title">${esc(t('shell.glossary.title'))}</h2><button class="icon-btn" data-action="close-modal" aria-label="${esc(t('action.close'))}">${icon('close')}</button></header><div class="modal-body"><label class="search-field" style="max-width:none">${icon('search')}<input id="glossary-input" type="search" placeholder="${esc(t('shell.glossary.search'))}" aria-label="${esc(t('shell.glossary.search'))}" maxlength="120"></label><p class="caption mt">${esc(t('shell.glossary.note'))}</p><div class="stack mt" id="glossary-list">${GLOSSARY.map(item).join('')}</div></div>`;
  modal.setAttribute('aria-labelledby','modal-title');modal.showModal();
  const input=modal.querySelector('#glossary-input');input.focus();

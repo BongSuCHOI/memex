@@ -10,7 +10,7 @@
 //   2. 임계값·환경 변수·버전은 보간이 아니라 **산문에 박힌 리터럴**이다(MEMEX_CAPSULE_MAX_CHARS,
 //      0.6.1, General/Misc, MEMEX_STRICT_CAPTURE=1). 번역할 때도 그대로 둔다.
 export default {
-  // ── 36 클래스 × {title, cause, impact, next}. 배열 순서는 모듈이 갖는다 ──
+  // ── 37 클래스 × {title, cause, impact, next}. 배열 순서는 모듈이 갖는다 ──
   'guidance.db-unavailable.title': '로컬 데이터베이스에 연결할 수 없음',
   'guidance.db-unavailable.cause': '인덱스 DB 파일이 없거나 열 수 없습니다. 아직 한 번도 동기화하지 않았거나 경로·권한이 바뀐 상태입니다.',
   'guidance.db-unavailable.impact': '조회·주입·기억 변경이 모두 멈춥니다. 저장된 기억이 사라진 것은 아닙니다.',
@@ -65,6 +65,11 @@ export default {
   'guidance.failed-visible.cause': '재시도해도 같은 결과가 나오는 실패라서, 숨기지 않고 그대로 표시한 상태입니다.',
   'guidance.failed-visible.impact': '해당 구간의 기억만 만들어지지 않습니다. 다른 구간은 정상 처리됩니다.',
   'guidance.failed-visible.next': '작업 상세에서 저장된 오류 원문과 실패 구간을 확인한 뒤 복구하세요.',
+
+  'guidance.job-held.title': '설정을 고쳐야 풀리는 보류 작업',
+  'guidance.job-held.cause': '작업에 보류 사유가 붙어 있습니다. 모델 선택이 제공자에게 거절됐거나, 추출 규칙 오버레이가 검증에 실패했거나, 금지 패턴 검사를 아예 돌릴 수 없었습니다. 보류 중에는 코어가 시도를 한 번도 쓰지 않습니다.',
+  'guidance.job-held.impact': '상태는 대기(pending)지만 시도되지 않으므로 기다려서 풀리지 않습니다. 손실도 시도 소진도 없지만, 사람이 설정을 고칠 때까지 그 대화 구간은 추출되지 않습니다.',
+  'guidance.job-held.next': '보류를 소유한 설정을 고치세요 — 모델 선택은 관리 › 모델, 추출 규칙은 관리 › 오버레이입니다. 쓰기가 성공하면 그 보류가 잡아 둔 작업이 함께 풀립니다.',
 
   'guidance.job-dead.title': '실패로 종료된 작업',
   'guidance.job-dead.cause': '재시도 상한을 소진해 terminal 상태가 된 작업입니다.',
@@ -203,6 +208,8 @@ export default {
   'guidance.action.syncConversations': '대화 동기화',
   'guidance.action.viewRuntime': '런타임 정보',
   'guidance.action.viewDeadJobs': '실패 작업 보기',
+  'guidance.action.viewModelSettings': '모델 선택 설정 열기',
+  'guidance.action.viewExtractionRules': '추출 규칙 설정 열기',
   'guidance.action.viewEnvVars': '환경 변수 확인',
   'guidance.action.viewAttempts': '모델 시도 보기',
   'guidance.action.viewRunningJobs': '실행 중 작업 보기',
@@ -224,6 +231,7 @@ export default {
   'guidance.action.exportDiagnostics': '진단 내보내기',
 
   // ── 개요 경고 카드의 수량 라벨 11개. **1슬롯 패턴**이다(어순을 사전이 가져야 한다) ──
+  'guidance.attention.job-held.detail': '설정 수정을 기다리는 작업 {count}건',
   'guidance.attention.job-dead.detail': '실패로 종료된 작업 {count}건',
   'guidance.attention.job-retry.detail': '재시도를 기다리는 작업 {count}건',
   'guidance.attention.failed-visible.detail': '결정론적 실패로 표시된 구간 {count}개',
