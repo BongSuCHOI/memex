@@ -527,6 +527,26 @@ test('memex models test refuses a bogus --reasoning before spending a call', (t)
   );
 });
 
+test('memex models set/reset leave the same audit lines the UI leaves', (t) => {
+  // The CLI wrote nothing at all, and the settings leaf has no audit of its own,
+  // so a selection changed from the terminal left no history anywhere (§10.1).
+  const fixture = isolated(t);
+  assert.equal(run(fixture.env, ['models', 'set', '--model', 'gpt-6-astra', '--reasoning', 'high']).status, 0);
+  assert.equal(run(fixture.env, ['models', 'reset']).status, 0);
+  const log = path.join(fixture.home, 'logs', 'ui-audit.jsonl');
+  assert.ok(fs.existsSync(log), 'no audit log was written under this data root');
+  const lines = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const set = lines.filter(l => l.action === 'models.llm.set').pop();
+  assert.ok(set, 'models.llm.set is missing');
+  assert.equal(set.to_model, 'gpt-6-astra');
+  assert.equal(set.to_reasoning, 'high');
+  assert.equal(set.source, 'cli');
+  const reset = lines.filter(l => l.action === 'models.reset').pop();
+  assert.ok(reset, 'models.reset is missing');
+  assert.equal(reset.had_llm, true);
+  assert.equal(reset.source, 'cli');
+});
+
 test('memex models test does not read stdin', (t) => {
   // `run()` closes stdin. A verb that prompted would hang until the 60s timeout,
   // which `spawnSync` reports as a signal rather than an exit code.

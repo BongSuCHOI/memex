@@ -21,8 +21,17 @@ export function llmWorkdir() {
     }
     return LLM_WORKDIR;
 }
-/** 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지. */
-function retryBudget() {
+/**
+ * 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지.
+ *
+ * 호출별 `maxRetries` 가 환경 변수보다 **먼저** 온다: "1회 테스트"처럼 호출 횟수 자체가
+ * 사용자와의 계약인 호출은 공통 기본값(2회 재시도)에 좌우되면 안 된다.
+ */
+function retryBudget(options = {}) {
+    const requested = options.maxRetries;
+    if (typeof requested === 'number' && Number.isInteger(requested) && requested >= 0) {
+        return Math.min(5, requested);
+    }
     const raw = process.env.MEMEX_LLM_RETRIES;
     if (raw != null && /^\d+$/.test(raw.trim()))
         return Math.min(5, parseInt(raw.trim(), 10));
@@ -46,19 +55,25 @@ const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
  *
- * Issue #31: this function no longer resolves the model. `buildCodexExecArgs`
- * is the single interpretation point, so a per-call override is forwarded and
- * everything else (env, models.json, the core default) is decided there — the
- * callers that bypass this module entirely get the same answer.
+ * Issue #31: this function no longer resolves the model — and, since the
+ * pre-release review of 0.7.0, it no longer lets anything else resolve it
+ * either. The ALREADY RESOLVED selection of the enclosing call is passed in and
+ * forwarded verbatim, so the model named in the ledger row, in a HOLD
+ * fingerprint and in the provider's argv is the same one on every attempt of
+ * that call. Re-deriving it here (from `options` plus env/models.json) made a
+ * mid-retry configuration change record B's rejection against A's fingerprint:
+ * A was blocked and B was not.
  */
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}, reservation) {
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options, reservation, selection) {
     const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
     const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
     return runCodex({
         systemPrompt,
         userMessage,
-        model: options.model ?? null,
-        ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
+        // Both are always sent, `null` reasoning included: `reasoningEffort:
+        // undefined` would hand the decision back to the file/env layer.
+        model: selection.model,
+        reasoningEffort: selection.reasoning,
         timeoutMs,
         deadlineAt: reservation?.deadlineAt,
         maxInputChars: reservation?.maxInputChars,
@@ -218,7 +233,7 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
     if (!existingContext?.db || !existingContext.budgetId) {
         return withResolvedModelWorkContext(options.modelContext ?? {}, () => callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options));
     }
-    const retries = retryBudget();
+    const retries = retryBudget(options);
     let lastError;
     const observations = [];
     const started = performance.now();
@@ -234,6 +249,11 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
     // one-off model is gated on its own selection and cannot be blocked by (or
     // block) the default one. Past this point a held selection costs nothing at
     // all: no reservation, no provider call.
+    //
+    // This snapshot is also the ONLY selection this call uses: it is forwarded to
+    // every attempt's provider invocation (see `callOnce`), so the model the
+    // ledger row and a HOLD fingerprint name is the model the provider was asked
+    // for, even if the configuration changes mid-retry.
     const selection = resolveLlmSelection({
         model: options.model,
         ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
@@ -269,7 +289,7 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
             const text = await callOnce(systemPrompt, userMessage, maxTokens, (observation) => {
                 attemptObservation = observation;
                 observations.push(observation);
-            }, options, reservation);
+            }, options, reservation, selection);
             if (!text || text.trim() === '') {
                 throw new EmptyLlmResponseError(`LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`);
             }

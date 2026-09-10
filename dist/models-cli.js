@@ -336,6 +336,27 @@ async function settleAfterSelectionChange(previousFingerprint, nextFingerprint) 
         db.close();
     }
 }
+/**
+ * One audit line per selection change, through the SHARED writer.
+ *
+ * The UI wrote `models.llm.set` / `models.reset` and the CLI wrote nothing, so a
+ * change made from the terminal left no history at all — and the settings leaf
+ * has no audit of its own, so there was no second place to look. Same action
+ * names as the UI (design §10.1); only `source` differs.
+ *
+ * Dynamic import for the reason `settleAfterSelectionChange` uses one: `show`
+ * must stay a light, read-only command. Best-effort by construction — a missing
+ * or unwritable log must never turn a saved setting into a failed command.
+ */
+async function auditSelectionChange(action, detail) {
+    try {
+        const { appendUiAuditLine } = await import('./ontology-admin.js');
+        appendUiAuditLine(action, { ...detail, source: 'cli' });
+    }
+    catch {
+        /* models.json itself is the durable record of the selection */
+    }
+}
 function refuse(message) {
     if (json)
         console.log(JSON.stringify({ ok: false, error: message }, null, 2));
@@ -379,6 +400,12 @@ async function runSet() {
     const settings = readModelSettings();
     const after = resolveLlmSelection();
     const settled = await settleAfterSelectionChange(before.fingerprint, after.fingerprint);
+    await auditSelectionChange('models.llm.set', {
+        from_model: before.model,
+        to_model: after.model,
+        from_reasoning: before.reasoning,
+        to_reasoning: after.reasoning,
+    });
     const catalog = readCodexCatalog();
     const catalogModel = modelArg !== undefined ? findCatalogModel(catalog, modelArg.trim()) : null;
     // The level is checked against the model this command SAVED, not the one the
@@ -462,6 +489,7 @@ async function runReset() {
     resetModelSettings();
     const after = resolveLlmSelection();
     const settled = await settleAfterSelectionChange(before.fingerprint, after.fingerprint);
+    await auditSelectionChange('models.reset', { had_llm: existed });
     const embedding = embeddingReport();
     const payload = {
         ok: true,
