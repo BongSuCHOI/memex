@@ -576,8 +576,95 @@ function injectionYieldCheck(recent) {
         detail: `${facts} fact(s) injected across the last ${retrievals.length} retrieval(s), current zero-fact streak ${streak}.${suffix}`,
     };
 }
+/**
+ * Who owns the injection fast-path socket, and is it this installation (#84)?
+ *
+ * Read-only by construction: the probe asks for an identity, never for an
+ * injection, so running `doctor` cannot produce a recall receipt or a log line.
+ *
+ * Observed on the real data root: a development checkout's MCP server, started
+ * by another host from a pre-0.6.0 `dist`, held the socket and answered every
+ * prompt the 0.6.2 hook sent. Nothing in `doctor` or `status` showed it — this
+ * check exists so that state is visible instead of inferred from odd log lines.
+ */
+async function injectDaemonCheck() {
+    const name = "inject-daemon";
+    let daemon;
+    try {
+        // Dynamic: keeps the injection core (and the embedding model chain) off
+        // every other doctor check's import path.
+        daemon = await import("./inject-daemon.js");
+    }
+    catch (error) {
+        return {
+            name, status: "warn",
+            detail: `unable to inspect the inject daemon: ${error instanceof Error ? error.message : String(error)}`,
+        };
+    }
+    const policy = daemon.injectDaemonPolicy();
+    // The identity that MATTERS is the one `scripts/inject-context.js` computes,
+    // and that script runs from the INSTALLED root. This process is frequently not
+    // that root: `~/.local/bin/memex` is an npx shim (issue #53), so judging the
+    // owner against doctor's own copy would report a perfectly healthy
+    // installation as "a different build" and point the operator at a pid to kill.
+    // `probeCodex: true` is allowed here — a diagnostic may spawn.
+    const installedRoot = (() => {
+        try {
+            return resolveInstalledPluginRoot({ fallbackRoot: pluginRoot(), probeCodex: true }).root;
+        }
+        catch {
+            return pluginRoot();
+        }
+    })();
+    const expected = daemon.injectDaemonIdentityFor(installedRoot);
+    const self = daemon.injectDaemonIdentity();
+    const where = `socket ${daemon.injectSocketPath()}; hooks run from ${expected.pluginRoot} ` +
+        `(version ${expected.version ?? "unknown"})` +
+        (self.pluginRoot === expected.pluginRoot
+            ? ""
+            : `; this diagnostic runs from ${self.pluginRoot}`) +
+        `; listener here ${policy.open ? "on" : "off"}: ${policy.reason}`;
+    let probe;
+    try {
+        probe = await daemon.probeInjectDaemon(undefined, daemon.INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS);
+    }
+    catch (error) {
+        return {
+            name, status: "warn",
+            detail: `could not probe the inject daemon: ${error instanceof Error ? error.message : String(error)} — ${where}`,
+        };
+    }
+    if (!probe.listening) {
+        return {
+            name, status: "ok",
+            detail: `no daemon — every prompt pays the cold in-process path (~2.3s). ${where}`,
+        };
+    }
+    // A pid identifies the WHOLE MCP server, not a daemon thread: stopping it
+    // stops that host's memory tools too, and pids are reused, so the advice
+    // always names the build as well.
+    const pidNote = "the pid is the whole MCP server process (stopping it affects that host's Memex tools), and pids can be reused — confirm the owner before acting";
+    if (!probe.owner) {
+        return {
+            name, status: "warn",
+            detail: `a listener holds the socket but did not identify itself (${probe.problem ?? "no answer"}). ` +
+                `Hooks fall back in-process, so injection is correct but slow until it exits. ${pidNote}. ${where}`,
+        };
+    }
+    const owner = probe.owner;
+    const ownerNote = `owner pid ${owner.pid} version ${owner.version ?? "unknown"} build ${owner.buildId ?? "unknown"} ` +
+        `root ${owner.pluginRoot} db ${owner.dbPath} started ${owner.startedAt || "unknown"}`;
+    if (daemon.injectDaemonIdentityMatches(expected, owner)) {
+        return { name, status: "ok", detail: `served by this installation — ${ownerNote}. ${where}` };
+    }
+    return {
+        name, status: "warn",
+        detail: `the socket is owned by a DIFFERENT build, so the fast path is refused and every prompt falls back ` +
+            `in-process: ${ownerNote}. ${pidNote}. ${where}`,
+    };
+}
 /** Read-only diagnosis. Distinguishes configured vs observed. */
-export function doctor() {
+export async function doctor() {
     const checks = [];
     // Dependency + build readiness (report-only; never auto-install).
     // Issue #40: check the INSTALLED plugin root, not the running process. A
@@ -682,7 +769,15 @@ export function doctor() {
         detail: observedDetail,
     });
     // Inject output parse/consumption — distinguishes valid injection vs error vs no-match
-    const recent = readInjectLogTail(INJECT_LOG_WINDOW);
+    //
+    // Issue #84: the `inject-daemon` check probes the socket, and a pre-0.6.3
+    // daemon answers that probe by running `computeInjectContext("")`, which
+    // appends `status:"no-session-provenance", via:"daemon", prompt_len:0`. Left
+    // in, the NEXT `memex doctor` would read that line as the log tail and warn
+    // about a line doctor itself wrote. A real prompt is never empty — the hook
+    // returns before any daemon call for a blank prompt — so an empty-prompt
+    // provenance line can only be a probe artifact, and is dropped here.
+    const recent = readInjectLogTail(INJECT_LOG_WINDOW).filter((entry) => !(entry.status === "no-session-provenance" && Number(entry.prompt_len ?? 0) === 0));
     try {
         const logPath = getInjectLogPath();
         if (fs.existsSync(logPath)) {
@@ -738,6 +833,7 @@ export function doctor() {
     }
     checks.push(recallProvenanceCheck(recent));
     checks.push(injectionYieldCheck(recent));
+    checks.push(await injectDaemonCheck());
     // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
     let trustedEntries = 0;
     const configToml = path.join(codexHome(), "config.toml");

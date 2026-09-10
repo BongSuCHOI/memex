@@ -1,3 +1,4 @@
+import { type InjectLogEntry } from "./inject-log.js";
 import { type RecallGateConfig } from "./recall-gate.js";
 /**
  * Issue #32 — the margin is now tunable and measurable.
@@ -19,6 +20,13 @@ export interface InjectOptions {
     now?: string;
     /** Receives the exact prepared receipt only after its transaction commits. */
     onPreparedReceipt?: (id: string) => void;
+    /**
+     * Issue #84: daemon attribution for this run's log line — the answering
+     * daemon's identity on the fast path, or the identity mismatch that sent the
+     * hook in-process. Recorded on whichever line this call writes, so the
+     * fast-path decision and its outcome are one record.
+     */
+    daemon?: InjectLogEntry["daemon"];
 }
 /**
  * Compute the UserPromptSubmit context block for a prompt.

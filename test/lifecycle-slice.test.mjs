@@ -132,9 +132,9 @@ test('remove-hooks removes only owned entries and keeps foreign bytes intact', (
   assert.equal(removeHooks().removed, 0);
 });
 
-test('doctor distinguishes missing build vs configured lifecycle', (t) => {
+test('doctor distinguishes missing build vs configured lifecycle', async (t) => {
   const { env } = isolatedEnv(t);
-  const before = doctor();
+  const before = await doctor();
   assert.equal(before.overall, 'FAIL'); // no dist in fake plugin root
 
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
@@ -144,7 +144,7 @@ test('doctor distinguishes missing build vs configured lifecycle', (t) => {
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true });
 
   setupHooks();
-  const after = doctor();
+  const after = await doctor();
   const byName = Object.fromEntries(after.json.map((c) => [c.name, c.status]));
   assert.equal(byName['lifecycle-configured'], 'ok');
   assert.equal(byName['build'], 'ok');
@@ -160,14 +160,14 @@ test('doctor distinguishes missing build vs configured lifecycle', (t) => {
  * The old check resolved from the RUNNING process, which passes inside that
  * very fallback copy, so doctor reported `dependencies: ok`.
  */
-test('doctor fails the dependencies check when the installed plugin root has no node_modules', (t) => {
+test('doctor fails the dependencies check when the installed plugin root has no node_modules', async (t) => {
   const { env } = isolatedEnv(t);
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
   fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist', 'db.js'), '');
   // The exact observed state: everything but the runtime dependency closure.
   fs.rmSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true, force: true });
 
-  const report = doctor();
+  const report = await doctor();
   const dependencies = report.json.find((check) => check.name === 'dependencies');
   assert.equal(dependencies.status, 'fail');
   assert.match(dependencies.detail, /better-sqlite3/);
@@ -182,12 +182,12 @@ test('doctor fails the dependencies check when the installed plugin root has no 
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: dep }));
   }
   assert.equal(
-    doctor().json.find((check) => check.name === 'dependencies').status,
+    (await doctor()).json.find((check) => check.name === 'dependencies').status,
     'ok',
   );
 });
 
-test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.json', (t) => {
+test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.json', async (t) => {
   const { env } = isolatedEnv(t);
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist'), { recursive: true });
   fs.writeFileSync(path.join(env.MEMEX_PLUGIN_ROOT, 'dist', 'db.js'), '');
@@ -201,7 +201,7 @@ test('doctor recognizes plugin-managed hooks without mutating CODEX_HOME/hooks.j
   }));
   fs.mkdirSync(path.join(env.MEMEX_PLUGIN_ROOT, 'node_modules'), { recursive: true });
 
-  const report = doctor();
+  const report = await doctor();
   const lifecycle = report.json.find((check) => check.name === 'lifecycle-configured');
   assert.equal(lifecycle.status, 'ok');
   assert.match(lifecycle.detail, /plugin manifest/);

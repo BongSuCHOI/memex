@@ -225,23 +225,23 @@ describe('cross-device sync control (#35/#48)', () => {
     process.env.CODEX_HOME = codexHome;
     on(rootA);
     const { doctor } = await import('../src/lifecycle.js');
-    const check = () => doctor().json.find((entry) => (entry as { name: string }).name === 'sync-export') as
+    const check = async () => (await doctor()).json.find((entry) => (entry as { name: string }).name === 'sync-export') as
       | { name: string; status: string; detail: string }
       | undefined;
 
-    expect(check()?.status).toBe('ok');
-    expect(check()?.detail).toContain('skipped(off)');
+    expect((await check())?.status).toBe('ok');
+    expect((await check())?.detail).toContain('skipped(off)');
 
     const control = await import('../src/sync-control.js');
     control.setSyncEnabled({ enabled: true });
-    expect(check()?.status).toBe('warn');
-    expect(check()?.detail).toContain('nothing has been exported yet');
+    expect((await check())?.status).toBe('warn');
+    expect((await check())?.detail).toContain('nothing has been exported yet');
 
     await seed(rootA, { id: 'fact-doctor', text: 'doctor sees an export', subject: 'shared.doctor.case' });
     on(rootA);
     expect(control.runSyncExport().skipped).toBeNull();
-    expect(check()?.status).toBe('ok');
-    expect(check()?.detail).toContain('last export ok');
+    expect((await check())?.status).toBe('ok');
+    expect((await check())?.detail).toContain('last export ok');
   });
 
   /**

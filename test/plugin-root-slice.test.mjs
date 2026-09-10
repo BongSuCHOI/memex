@@ -205,7 +205,7 @@ test('doctor judges the installed plugin root, not the copy that is running', as
   });
 
   const { doctor } = await import(path.join(REPO, 'dist/lifecycle.js'));
-  const dependencies = doctor().json.find((check) => check.name === 'dependencies');
+  const dependencies = (await doctor()).json.find((check) => check.name === 'dependencies');
   assert.equal(dependencies.status, 'fail');
   assert.ok(dependencies.detail.includes(f.installed), dependencies.detail);
   assert.ok(!dependencies.detail.includes(path.join(REPO, 'node_modules')), dependencies.detail);
@@ -315,7 +315,7 @@ test('doctor reports an ambiguous cache pick instead of presenting it as loaded 
   });
 
   const { doctor } = await import(path.join(REPO, 'dist/lifecycle.js'));
-  const dependencies = doctor().json.find((check) => check.name === 'dependencies');
+  const dependencies = (await doctor()).json.find((check) => check.name === 'dependencies');
   assert.match(dependencies.detail, /via codex-cache/);
   assert.match(dependencies.detail, /2 cached versions \(9\.9\.9, 0\.5\.2\)/);
   assert.match(dependencies.detail, /not a confirmed load/);

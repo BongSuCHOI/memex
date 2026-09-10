@@ -29,8 +29,8 @@ import { ensureSessionMemoryState } from "../src/continuity-core.js";
 
 let root: string;
 
-function check(name: string) {
-  return doctor().json.find((entry) => entry.name === name)!;
+async function check(name: string) {
+  return (await doctor()).json.find((entry) => entry.name === name)!;
 }
 
 /** The exact 12-line shape from the issue, as the log records it after the fix. */
@@ -190,11 +190,11 @@ it("a zero-fact bundle is logged as context-only, not as injected", async () => 
   expect(lines.reduce((sum, line) => sum + Number(line.injected ?? 0), 0)).toBe(0);
 });
 
-it("doctor warns on a zero-fact streak instead of reporting ok on the last line", () => {
+it("doctor warns on a zero-fact streak instead of reporting ok on the last line", async () => {
   replayObservedLog();
   // The observed last line is `no-match`, which is a normal outcome.
-  expect(check("inject-output").status).toBe("ok");
-  const yieldCheck = check("injection-yield");
+  expect((await check("inject-output")).status).toBe("ok");
+  const yieldCheck = await check("injection-yield");
   expect(yieldCheck.status).toBe("warn");
   expect(yieldCheck.detail).toContain("12 consecutive retrievals injected 0 facts");
   expect(yieldCheck.detail).toContain("context-only=7");
@@ -202,25 +202,25 @@ it("doctor warns on a zero-fact streak instead of reporting ok on the last line"
   expect(yieldCheck.detail).toContain("MEMEX_INJECT_BASELINE_MARGIN");
 });
 
-it("doctor stays ok once a retrieval actually injects a fact", () => {
+it("doctor stays ok once a retrieval actually injects a fact", async () => {
   replayObservedLog();
   appendInjectLog({
     status: "injected", project: root, prompt_len: 40, candidates: 5, injected: 2,
     chars: 300, sections: ["CURRENT TRUTH"], lexical_lane: "ok", via: "fallback",
   });
-  const yieldCheck = check("injection-yield");
+  const yieldCheck = await check("injection-yield");
   expect(yieldCheck.status).toBe("ok");
   expect(yieldCheck.detail).toContain("current zero-fact streak 0");
 });
 
-it("a dead lexical lane is reported instead of swallowed", () => {
+it("a dead lexical lane is reported instead of swallowed", async () => {
   for (let i = 0; i < 3; i++) {
     appendInjectLog({
       status: "injected", project: root, prompt_len: 40, candidates: 5, injected: 1,
       lexical_lane: "unavailable", via: "fallback",
     });
   }
-  const yieldCheck = check("injection-yield");
+  const yieldCheck = await check("injection-yield");
   expect(yieldCheck.status).toBe("warn");
   expect(yieldCheck.detail).toContain("lexical_lane=unavailable×3");
 });

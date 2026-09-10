@@ -29,8 +29,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 let root: string;
 
-function check(name: string) {
-  return doctor().json.find((entry) => entry.name === name)!;
+async function check(name: string) {
+  return (await doctor()).json.find((entry) => entry.name === name)!;
 }
 
 beforeEach(() => {
@@ -52,19 +52,44 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-it("doctor fails inject-output on a receipt-failed line", () => {
+it("doctor fails inject-output on a receipt-failed line", async () => {
   const db = initDatabase();
   db.close();
   appendInjectLog({ status: "injected", chars: 208, sections: ["ASSISTANT CONTEXT"], via: "fallback" });
   appendInjectLog({ status: "receipt-failed", via: "fallback", error: "prepared receipt not found" });
 
-  const injectOutput = check("inject-output");
+  const injectOutput = await check("inject-output");
   expect(injectOutput.status).toBe("fail");
   expect(injectOutput.detail).toContain("receipt-failed");
   expect(injectOutput.detail).toContain("no durable recall receipt");
 });
 
-it("doctor fails recall-provenance when emitted bundles have no recall_events rows", () => {
+/**
+ * Issue #84 — the `inject-daemon` check probes the socket for an identity, and a
+ * pre-0.6.3 daemon answers that probe by running `computeInjectContext("")`,
+ * appending `no-session-provenance, via:"daemon", prompt_len:0`. Left in the log
+ * readers, the NEXT `memex doctor` would warn about a line doctor itself caused.
+ * A real prompt is never empty, so an empty-prompt provenance line can only be a
+ * probe artifact.
+ */
+it("an empty-prompt provenance line from the daemon probe does not become a doctor warning", async () => {
+  const db = initDatabase();
+  db.close();
+  appendInjectLog({ status: "injected", chars: 208, sections: ["CURRENT TRUTH"], injected: 2, via: "daemon" });
+  appendInjectLog({ status: "no-session-provenance", via: "daemon", prompt_len: 0 });
+
+  const injectOutput = await check("inject-output");
+  expect(injectOutput.status).toBe("ok");
+  // The verdict belongs to the real run, not to the probe artifact.
+  expect(injectOutput.detail).toContain("injected");
+  expect(injectOutput.detail).not.toContain("no-session-provenance");
+
+  // A provenance line from a REAL prompt is still a warning.
+  appendInjectLog({ status: "no-session-provenance", via: "fallback", prompt_len: 42 });
+  expect((await check("inject-output")).status).toBe("warn");
+});
+
+it("doctor fails recall-provenance when emitted bundles have no recall_events rows", async () => {
   const db = initDatabase();
   try {
     // The exact observed rows: emissions logged, receipts absent, no purge.
@@ -77,14 +102,14 @@ it("doctor fails recall-provenance when emitted bundles have no recall_events ro
     appendInjectLog({ status: "injected", chars: 208, sections: ["ASSISTANT CONTEXT"], via: "fallback" });
   }
 
-  const provenance = check("recall-provenance");
+  const provenance = await check("recall-provenance");
   expect(provenance.status).toBe("fail");
   expect(provenance.detail).toContain("7 emitted bundle(s)");
   expect(provenance.detail).toContain("recall_events is empty");
-  expect(doctor().overall).toBe("FAIL");
+  expect((await doctor()).overall).toBe("FAIL");
 });
 
-it("doctor passes recall-provenance once the receipts exist", () => {
+it("doctor passes recall-provenance once the receipts exist", async () => {
   const db = initDatabase();
   try {
     const now = new Date().toISOString();
@@ -101,7 +126,7 @@ it("doctor passes recall-provenance once the receipts exist", () => {
     appendInjectLog({ status: "injected", chars: 208, via: "fallback" });
   }
 
-  const provenance = check("recall-provenance");
+  const provenance = await check("recall-provenance");
   expect(provenance.status).toBe("ok");
   expect(provenance.detail).toContain("3 recall_events row(s)");
 });
@@ -112,9 +137,23 @@ it("the real injection hook logs receipt-failed after emitting context with no r
   // database — exactly the observed shape: context emitted, receipt absent.
   const socketPath = path.join(process.env.MEMEX_HOME!, "conversation-index", "inject-daemon.sock");
   fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+  // Issue #84: the hook only trusts a daemon that answers `type:"ok"` with the
+  // identity it asked for, so the stand-in echoes the handshake back.
   const server = net.createServer((socket) => {
-    socket.on("data", () => {
-      socket.write(JSON.stringify({ ok: true, context: "MEMORY CONTEXT", receiptId: "never-prepared" }) + "\n");
+    socket.on("data", (chunk) => {
+      const asked = JSON.parse(String(chunk).split("\n")[0]) as Record<string, unknown>;
+      socket.write(JSON.stringify({
+        type: "ok",
+        protocol: asked.protocol,
+        version: asked.version,
+        buildId: asked.buildId,
+        pluginRoot: asked.pluginRoot,
+        dbPath: asked.dbPath,
+        pid: process.pid,
+        ok: true,
+        context: "MEMORY CONTEXT",
+        receiptId: "never-prepared",
+      }) + "\n");
     });
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
@@ -147,6 +186,6 @@ it("the real injection hook logs receipt-failed after emitting context with no r
   expect(lines.at(-1)).toMatchObject({ status: "receipt-failed", via: "daemon" });
   expect(String(lines.at(-1).error)).toContain("prepared receipt not found");
 
-  expect(check("inject-output").status).toBe("fail");
-  expect(check("recall-provenance").status).toBe("fail");
+  expect((await check("inject-output")).status).toBe("fail");
+  expect((await check("recall-provenance")).status).toBe("fail");
 });

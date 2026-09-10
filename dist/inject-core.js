@@ -167,12 +167,14 @@ function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
 export async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
     const t0 = Date.now();
     const now = options.now ?? new Date().toISOString();
+    const daemonNote = options.daemon ? { daemon: options.daemon } : {};
     if (!sessionId) {
         appendInjectLog({
             status: "no-session-provenance",
             project,
             prompt_len: userPrompt.length,
             via,
+            ...daemonNote,
         });
         return "";
     }
@@ -324,6 +326,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                 embedding_calls: calls,
                 duration_ms: Date.now() - t0,
                 via,
+                ...daemonNote,
             });
             return "";
         }
@@ -731,6 +734,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                 lexical_lane: lexicalLane,
                 duration_ms: Date.now() - t0,
                 via,
+                ...daemonNote,
             });
             if (dedupedCount > 0) {
                 sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -774,6 +778,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             lexical_lane: lexicalLane,
             duration_ms: Date.now() - t0,
             via,
+            ...daemonNote,
         });
         return block;
     }
@@ -786,6 +791,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             duration_ms: Date.now() - t0,
             error: message.slice(0, 300),
             via,
+            ...daemonNote,
         });
         return ""; // non-fatal: never disrupt the user's prompt
     }

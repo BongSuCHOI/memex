@@ -18,7 +18,7 @@ import {
 } from "./embeddings.js";
 import { getRelatedFactsInScope } from "./ontology-db.js";
 import { detectRepeat } from "./repeat-detector.js";
-import { appendInjectLog } from "./inject-log.js";
+import { appendInjectLog, type InjectLogEntry } from "./inject-log.js";
 import { recordRecallEvent } from "./db.js";
 import {
   matchIncidentPatterns,
@@ -115,6 +115,13 @@ export interface InjectOptions {
   now?: string;
   /** Receives the exact prepared receipt only after its transaction commits. */
   onPreparedReceipt?: (id: string) => void;
+  /**
+   * Issue #84: daemon attribution for this run's log line — the answering
+   * daemon's identity on the fast path, or the identity mismatch that sent the
+   * hook in-process. Recorded on whichever line this call writes, so the
+   * fast-path decision and its outcome are one record.
+   */
+  daemon?: InjectLogEntry["daemon"];
 }
 
 function commitInjectionState(
@@ -294,12 +301,14 @@ export async function computeInjectContext(
 ): Promise<string> {
   const t0 = Date.now();
   const now = options.now ?? new Date().toISOString();
+  const daemonNote = options.daemon ? { daemon: options.daemon } : {};
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
       project,
       prompt_len: userPrompt.length,
       via,
+      ...daemonNote,
     });
     return "";
   }
@@ -450,6 +459,7 @@ export async function computeInjectContext(
         embedding_calls: calls,
         duration_ms: Date.now() - t0,
         via,
+        ...daemonNote,
       });
       return "";
     }
@@ -828,6 +838,7 @@ export async function computeInjectContext(
         lexical_lane: lexicalLane,
         duration_ms: Date.now() - t0,
         via,
+        ...daemonNote,
       });
       if (dedupedCount > 0) {
         sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -872,6 +883,7 @@ export async function computeInjectContext(
       lexical_lane: lexicalLane,
       duration_ms: Date.now() - t0,
       via,
+      ...daemonNote,
     });
     return block;
   } catch (error) {
@@ -883,6 +895,7 @@ export async function computeInjectContext(
       duration_ms: Date.now() - t0,
       error: message.slice(0, 300),
       via,
+      ...daemonNote,
     });
     return ""; // non-fatal: never disrupt the user's prompt
   }

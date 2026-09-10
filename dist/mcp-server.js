@@ -3260,8 +3260,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path13) {
-      let input = path13;
+    function removeDotSegments(path14) {
+      let input = path14;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3666,8 +3666,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path13 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
+        const path14 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path14 && path14 !== "/" ? path14 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7173,12 +7173,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs11, exportName) {
+    function addFormats(ajv, list, fs12, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs11[f]);
+        ajv.addFormat(f, fs12[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -9670,8 +9670,8 @@ function getErrorMap() {
 
 // ../../../node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path13, errorMaps, issueData } = params;
-  const fullPath = [...path13, ...issueData.path || []];
+  const { data, path: path14, errorMaps, issueData } = params;
+  const fullPath = [...path14, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -9787,11 +9787,11 @@ var errorUtil;
 
 // ../../../node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path13, key) {
+  constructor(parent, value, path14, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path13;
+    this._path = path14;
     this._key = key;
   }
   get path() {
@@ -13429,10 +13429,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path13) {
-  if (!path13)
+function getElementAtPath(obj, path14) {
+  if (!path14)
     return obj;
-  return path13.reduce((acc, key) => acc?.[key], obj);
+  return path14.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -13752,11 +13752,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path13, issues) {
+function prefixIssues(path14, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path13);
+    iss.path.unshift(path14);
     return iss;
   });
 }
@@ -20329,9 +20329,11 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 init_paths();
+import { createHash as createHash6, randomUUID as randomUUID6 } from "node:crypto";
 import net from "node:net";
-import fs8 from "node:fs";
-import path9 from "node:path";
+import fs9 from "node:fs";
+import path10 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/db.ts
 init_paths();
@@ -25639,12 +25641,14 @@ function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
 async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
   const t0 = Date.now();
   const now = options.now ?? (/* @__PURE__ */ new Date()).toISOString();
+  const daemonNote = options.daemon ? { daemon: options.daemon } : {};
   if (!sessionId) {
     appendInjectLog({
       status: "no-session-provenance",
       project,
       prompt_len: userPrompt.length,
-      via
+      via,
+      ...daemonNote
     });
     return "";
   }
@@ -25691,10 +25695,10 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const current = embeddingCallStats();
       return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
     };
-    const sampleEmbeddingMetrics = (path13, unavailable) => {
+    const sampleEmbeddingMetrics = (path14, unavailable) => {
       const { calls: calls2, hits } = embeddingMetrics();
-      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path13, unavailable } });
-      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path13 } });
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path14, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path14 } });
       return calls2;
     };
     let embedding = null;
@@ -25766,7 +25770,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         gate: `skip:${decision.skipReason}`,
         embedding_calls: calls2,
         duration_ms: Date.now() - t0,
-        via
+        via,
+        ...daemonNote
       });
       return "";
     }
@@ -25939,8 +25944,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     if (fresh.length > 0) {
       sections.push({
         kind: "CURRENT TRUTH",
-        items: fresh.map(({ fact, note }) => ({
-          text: `${note ? note + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${fact.created_at.slice(0, 10)})`,
+        items: fresh.map(({ fact, note: note2 }) => ({
+          text: `${note2 ? note2 + " " : ""}[${fact.category}] ${truncateFact(fact.fact)} (${fact.created_at.slice(0, 10)})`,
           ref: revisionOf(fact)
         }))
       });
@@ -26109,7 +26114,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         embedding_calls: calls2,
         lexical_lane: lexicalLane,
         duration_ms: Date.now() - t0,
-        via
+        via,
+        ...daemonNote
       });
       if (dedupedCount > 0) {
         sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -26150,7 +26156,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       sections: sectionKinds,
       lexical_lane: lexicalLane,
       duration_ms: Date.now() - t0,
-      via
+      via,
+      ...daemonNote
     });
     return block;
   } catch (error2) {
@@ -26161,7 +26168,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       prompt_len: userPrompt.length,
       duration_ms: Date.now() - t0,
       error: message.slice(0, 300),
-      via
+      via,
+      ...daemonNote
     });
     return "";
   }
@@ -26169,15 +26177,339 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
 
 // src/inject-daemon.ts
 init_embeddings();
+
+// src/plugin-root.ts
+import fs8 from "node:fs";
+import os4 from "node:os";
+import path9 from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var HERE = path9.dirname(fileURLToPath2(import.meta.url));
+var INSTALL_MARKERS = ["cli/memex.js", ".codex-plugin/plugin.json"];
+function codexHomeDir(codexHome) {
+  const configured = codexHome ?? process.env.CODEX_HOME;
+  return configured ? path9.resolve(configured) : path9.join(os4.homedir(), ".codex");
+}
+function readManifestVersion(root) {
+  for (const relative of [
+    path9.join(".codex-plugin", "plugin.json"),
+    "package.json"
+  ]) {
+    try {
+      const parsed = JSON.parse(fs8.readFileSync(path9.join(root, relative), "utf8"));
+      if (typeof parsed.version === "string" && parsed.version.trim()) {
+        return parsed.version.trim();
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+function looksInstalled(candidate) {
+  return INSTALL_MARKERS.every((marker) => fs8.existsSync(path9.join(candidate, marker)));
+}
+function compareVersions(a, b2) {
+  const parse3 = (value) => value.split(/[.\-+]/).map((part) => /^\d+$/.test(part) ? Number(part) : -1);
+  const left = parse3(a);
+  const right = parse3(b2);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const diff = (left[i] ?? -1) - (right[i] ?? -1);
+    if (diff !== 0) return diff;
+  }
+  return a.localeCompare(b2);
+}
+function codexCacheCandidates(codexHome) {
+  const cacheRoot = path9.join(codexHomeDir(codexHome), "plugins", "cache");
+  let markets;
+  try {
+    markets = fs8.readdirSync(cacheRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const market of markets) {
+    if (!market.isDirectory()) continue;
+    const pluginDir = path9.join(cacheRoot, market.name, "memex");
+    let versions;
+    try {
+      versions = fs8.readdirSync(pluginDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const version2 of versions) {
+      if (!version2.isDirectory()) continue;
+      const root = path9.join(pluginDir, version2.name);
+      if (!looksInstalled(root)) continue;
+      found.push({ root, marketplace: market.name, version: version2.name });
+    }
+  }
+  return found.sort(
+    (a, b2) => compareVersions(b2.version, a.version) || (a.marketplace === "memex" ? -1 : b2.marketplace === "memex" ? 1 : 0) || a.root.localeCompare(b2.root)
+  );
+}
+function fromCodexCache(wantedVersion, codexHome) {
+  const candidates = codexCacheCandidates(codexHome);
+  if (candidates.length === 0) return null;
+  const exact = wantedVersion ? candidates.find((candidate) => candidate.version === wantedVersion) : void 0;
+  const chosen = exact ?? candidates[0];
+  return { root: chosen.root, version: chosen.version };
+}
+var codexPluginListCache = /* @__PURE__ */ new Map();
+function fromCodexPluginList() {
+  const key = `${process.env.PATH ?? ""}\0${process.env.CODEX_HOME ?? ""}`;
+  if (codexPluginListCache.has(key)) return codexPluginListCache.get(key) ?? null;
+  const resolved = probeCodexPluginList();
+  codexPluginListCache.set(key, resolved);
+  return resolved;
+}
+function probeCodexPluginList() {
+  let listed;
+  try {
+    const result = spawnSync("codex", ["plugin", "list", "--json"], {
+      encoding: "utf8",
+      // Short on purpose: this now runs before the filesystem fallback, so a
+      // hung or missing `codex` must not hold a diagnostic open. An absent
+      // binary surfaces as `result.error` and is simply "no answer".
+      timeout: 2e3
+    });
+    if (result.error || result.status !== 0 || !result.stdout) return null;
+    listed = JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+  const installed = listed?.installed;
+  if (!Array.isArray(installed)) return null;
+  for (const entry of installed) {
+    if (entry?.name !== "memex" || entry.installed === false) continue;
+    const installedPath = entry.installedPath;
+    if (typeof installedPath !== "string" || !path9.isAbsolute(installedPath)) continue;
+    if (!fs8.existsSync(installedPath)) continue;
+    return {
+      root: fs8.realpathSync(installedPath),
+      version: typeof entry.version === "string" ? entry.version : null
+    };
+  }
+  return null;
+}
+function resolveInstalledPluginRoot(options = {}) {
+  const fallbackRoot = path9.resolve(options.fallbackRoot ?? path9.join(HERE, ".."));
+  const cacheVersions = codexCacheCandidates(options.codexHome).map((entry) => entry.version);
+  if (options.explicitRoot) {
+    const root = path9.resolve(options.explicitRoot);
+    return { root, source: "env", version: readManifestVersion(root), cacheVersions };
+  }
+  if (process.env.MEMEX_PLUGIN_ROOT) {
+    const root = path9.resolve(process.env.MEMEX_PLUGIN_ROOT);
+    return { root, source: "env", version: readManifestVersion(root), cacheVersions };
+  }
+  if (options.probeCodex) {
+    const listed = fromCodexPluginList();
+    if (listed) {
+      return {
+        root: listed.root,
+        source: "codex-plugin-list",
+        version: listed.version ?? readManifestVersion(listed.root),
+        cacheVersions
+      };
+    }
+  }
+  const localVersion = readManifestVersion(fallbackRoot);
+  const cached2 = fromCodexCache(localVersion, options.codexHome);
+  if (cached2) {
+    return { root: cached2.root, source: "codex-cache", version: cached2.version, cacheVersions };
+  }
+  return { root: fallbackRoot, source: "launcher", version: localVersion, cacheVersions };
+}
+
+// src/inject-daemon.ts
+var INJECT_DAEMON_PROTOCOL = 1;
+var HERE2 = path10.dirname(fileURLToPath3(import.meta.url));
+function realpathOrSelf(target) {
+  try {
+    return fs9.realpathSync(target);
+  } catch {
+    return path10.resolve(target);
+  }
+}
+function injectDaemonExecutionRoot() {
+  return realpathOrSelf(path10.resolve(HERE2, ".."));
+}
+function injectDaemonBuildId(root = injectDaemonExecutionRoot()) {
+  const bundle = path10.join(root, "dist", "mcp-server.js");
+  try {
+    return `sha256:${createHash6("sha256").update(fs9.readFileSync(bundle)).digest("hex")}`;
+  } catch {
+  }
+  for (const entry of [path10.join(root, "dist", "inject-daemon.js"), path10.join(root, "src", "inject-daemon.ts")]) {
+    try {
+      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs9.statSync(entry).mtimeMs)}`;
+    } catch {
+    }
+  }
+  return null;
+}
+var identityCache = /* @__PURE__ */ new Map();
+function injectDaemonIdentityFor(root) {
+  const pluginRoot = realpathOrSelf(root);
+  let code = identityCache.get(pluginRoot);
+  if (!code) {
+    code = {
+      protocol: INJECT_DAEMON_PROTOCOL,
+      version: readManifestVersion(pluginRoot),
+      buildId: injectDaemonBuildId(pluginRoot),
+      pluginRoot
+    };
+    identityCache.set(pluginRoot, code);
+  }
+  return { ...code, dbPath: path10.resolve(getDbPath()) };
+}
+function injectDaemonIdentity() {
+  return injectDaemonIdentityFor(injectDaemonExecutionRoot());
+}
+function injectDaemonIdentityMatches(expected, actual) {
+  if (!expected || !actual) return false;
+  return expected.protocol === actual.protocol && expected.version === actual.version && expected.buildId === actual.buildId && expected.pluginRoot === actual.pluginRoot && expected.dbPath === actual.dbPath;
+}
+function injectDaemonPolicy() {
+  const executionRoot = injectDaemonExecutionRoot();
+  let installedRoot = executionRoot;
+  let installedSource = "unknown";
+  try {
+    const resolved = resolveInstalledPluginRoot({ fallbackRoot: executionRoot, probeCodex: false });
+    installedRoot = realpathOrSelf(resolved.root);
+    installedSource = resolved.source;
+  } catch {
+  }
+  const base = { executionRoot, installedRoot, installedSource };
+  const forced = process.env.MEMEX_INJECT_DAEMON;
+  if (forced === "1") return { ...base, open: true, reason: "MEMEX_INJECT_DAEMON=1" };
+  if (forced === "0") return { ...base, open: false, reason: "MEMEX_INJECT_DAEMON=0" };
+  if (installedSource === "launcher") {
+    return { ...base, open: false, reason: "no installed plugin root resolved (source=launcher)" };
+  }
+  if (installedRoot !== executionRoot) {
+    return { ...base, open: false, reason: `execution root is not the installed root (${installedSource})` };
+  }
+  return { ...base, open: true, reason: `execution root is the installed root (${installedSource})` };
+}
 function injectSocketPath() {
-  return path9.join(getIndexDir(), "inject-daemon.sock");
+  return path10.join(getIndexDir(), "inject-daemon.sock");
+}
+function injectDaemonLockPath() {
+  return path10.join(getIndexDir(), "inject-daemon.lock");
+}
+var CLIENT_TIMEOUT_MS = 1e4;
+var PROBE_TIMEOUT_MS = 500;
+function note(message) {
+  console.error(`[memex] inject-daemon: ${message}`);
+}
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error2) {
+    return error2.code === "EPERM";
+  }
+}
+function askSocket(sockPath, request, timeoutMs = PROBE_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (reply, error2) => {
+      if (settled) return;
+      settled = true;
+      resolve({ reply, error: error2 });
+    };
+    let conn;
+    try {
+      conn = net.connect(sockPath);
+    } catch (error2) {
+      return done(null, error2);
+    }
+    conn.setTimeout(timeoutMs, () => {
+      conn.destroy();
+      done(null, null);
+    });
+    conn.on("error", (error2) => done(null, error2));
+    conn.on("connect", () => {
+      conn.write(`${JSON.stringify(request)}
+`);
+      let buf = "";
+      conn.on("data", (chunk) => {
+        buf += chunk.toString("utf8");
+        const nl = buf.indexOf("\n");
+        if (nl < 0) {
+          if (buf.length > 1e6) {
+            conn.destroy();
+            done(null, null);
+          }
+          return;
+        }
+        try {
+          done(JSON.parse(buf.slice(0, nl)), null);
+        } catch {
+          done(null, null);
+        }
+        conn.destroy();
+      });
+      conn.on("end", () => done(null, null));
+    });
+  });
+}
+function ownerFrom(reply) {
+  if (!reply || typeof reply.pluginRoot !== "string" || typeof reply.dbPath !== "string") return null;
+  if (typeof reply.protocol !== "number") return null;
+  return {
+    protocol: reply.protocol,
+    version: typeof reply.version === "string" ? reply.version : null,
+    buildId: typeof reply.buildId === "string" ? reply.buildId : null,
+    pluginRoot: reply.pluginRoot,
+    dbPath: reply.dbPath,
+    pid: typeof reply.pid === "number" ? reply.pid : -1,
+    instanceId: typeof reply.instanceId === "string" ? reply.instanceId : "",
+    startedAt: typeof reply.startedAt === "string" ? reply.startedAt : ""
+  };
+}
+async function probeInjectDaemon(sockPath = injectSocketPath(), timeoutMs = PROBE_TIMEOUT_MS) {
+  const { reply, error: error2 } = await askSocket(sockPath, {
+    type: "identify",
+    protocol: INJECT_DAEMON_PROTOCOL
+  }, timeoutMs);
+  if (error2) {
+    if (error2.code === "ENOENT" || error2.code === "ECONNREFUSED" || error2.code === "ENOTSOCK") {
+      return { listening: false, owner: null, problem: null };
+    }
+    return { listening: true, owner: null, problem: error2.code ?? error2.message };
+  }
+  const owner = ownerFrom(reply);
+  if (!owner) {
+    return {
+      listening: true,
+      owner: null,
+      problem: reply === null ? "no identity answer (a pre-0.6.3 daemon, or a foreign listener)" : `unexpected reply type ${String(reply.type ?? "none")}`
+    };
+  }
+  return { listening: true, owner, problem: null };
 }
 function startInjectDaemon() {
+  const policy = injectDaemonPolicy();
+  if (!policy.open) {
+    note(`listener not opened \u2014 ${policy.reason} (execution root ${policy.executionRoot}, installed root ${policy.installedRoot})`);
+    return null;
+  }
   ensureIndexDir();
   const sockPath = injectSocketPath();
+  const identity = injectDaemonIdentity();
+  const self = {
+    ...identity,
+    pid: process.pid,
+    instanceId: randomUUID6(),
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  let retired = false;
   const server2 = net.createServer((conn) => {
     let buf = "";
-    conn.setTimeout(1e4, () => conn.destroy());
+    conn.setTimeout(CLIENT_TIMEOUT_MS, () => conn.destroy());
     conn.on("error", () => {
     });
     conn.on("data", (chunk) => {
@@ -26189,54 +26521,193 @@ function startInjectDaemon() {
       }
       const line = buf.slice(0, nl);
       void (async () => {
+        const reply = (payload) => {
+          try {
+            conn.end(`${JSON.stringify(payload)}
+`);
+          } catch {
+          }
+        };
+        const mine = () => ({
+          ...injectDaemonIdentity(),
+          pid: self.pid,
+          instanceId: self.instanceId,
+          startedAt: self.startedAt
+        });
         try {
           const req = JSON.parse(line);
+          if (req.type === "identify") return reply({ type: "identity", ...mine() });
+          if (req.type === "retire") return reply(handleRetire(req, mine()));
+          if (req.type !== "inject") {
+            return reply({ type: "mismatch", ...mine(), reason: "missing inject handshake" });
+          }
+          const asked = {
+            protocol: typeof req.protocol === "number" ? req.protocol : void 0,
+            version: typeof req.version === "string" ? req.version : null,
+            buildId: typeof req.buildId === "string" ? req.buildId : null,
+            pluginRoot: typeof req.pluginRoot === "string" ? req.pluginRoot : void 0,
+            dbPath: typeof req.dbPath === "string" ? req.dbPath : void 0
+          };
+          const current = mine();
+          if (!injectDaemonIdentityMatches(asked, current)) {
+            return reply({ type: "mismatch", ...current, reason: "identity mismatch" });
+          }
           let receiptId = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ""),
             String(req.cwd ?? process.cwd()),
             "daemon",
-            req.session_id ? String(req.session_id) : void 0,
-            { onPreparedReceipt: (id) => {
-              receiptId = id;
-            } }
+            req.sessionId ? String(req.sessionId) : void 0,
+            {
+              onPreparedReceipt: (id) => {
+                receiptId = id;
+              },
+              daemon: { version: current.version, buildId: current.buildId, pid: current.pid }
+            }
           );
-          conn.end(JSON.stringify({ ok: true, context, receiptId }) + "\n");
+          reply({ type: "ok", ...current, ok: true, context, receiptId });
         } catch {
           try {
-            conn.end(JSON.stringify({ ok: false }) + "\n");
+            conn.end(`${JSON.stringify({ type: "error", ok: false })}
+`);
           } catch {
           }
         }
       })();
     });
   });
-  server2.on("error", (err) => {
-    if (err.code !== "EADDRINUSE") return;
-    const probe = net.connect(sockPath);
-    probe.setTimeout(500, () => probe.destroy());
-    probe.on("connect", () => probe.destroy());
-    probe.on("error", () => {
-      try {
-        fs8.unlinkSync(sockPath);
-        server2.listen(sockPath, onListen);
-      } catch {
-      }
-    });
-  });
+  function handleRetire(req, current) {
+    const from = ownerFrom(
+      req.from && typeof req.from === "object" && !Array.isArray(req.from) ? req.from : null
+    );
+    if (req.protocol !== INJECT_DAEMON_PROTOCOL || !from) {
+      return { type: "refused", ...current, reason: "unreadable retire request" };
+    }
+    if (injectDaemonIdentityMatches(from, current)) {
+      return { type: "duplicate", ...current, reason: "caller runs this same build" };
+    }
+    const installed = injectDaemonPolicy().installedRoot;
+    if (from.pluginRoot !== installed) {
+      return { type: "refused", ...current, reason: "caller is not the installed plugin root" };
+    }
+    retired = true;
+    try {
+      server2.close();
+    } catch {
+    }
+    try {
+      if (fs9.existsSync(sockPath)) fs9.unlinkSync(sockPath);
+    } catch {
+    }
+    note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
+    return { type: "retired", ...current };
+  }
   const onListen = () => {
     try {
-      fs8.chmodSync(sockPath, 384);
+      fs9.chmodSync(sockPath, 384);
     } catch {
     }
     void initEmbeddings().catch(() => {
     });
   };
-  try {
-    server2.listen(sockPath, onListen);
-    server2.unref();
-  } catch {
-  }
+  const withLock = async (claim) => {
+    const lockPath = injectDaemonLockPath();
+    const mine = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
+    const holdsOurLock = () => {
+      try {
+        return fs9.readFileSync(lockPath, "utf8") === mine;
+      } catch {
+        return false;
+      }
+    };
+    let held = false;
+    for (let attempt = 0; attempt < 2 && !held; attempt++) {
+      try {
+        fs9.writeFileSync(lockPath, mine, { flag: "wx" });
+        held = true;
+      } catch (error2) {
+        if (error2.code !== "EEXIST") throw error2;
+        let holder = -1;
+        try {
+          holder = Number(JSON.parse(fs9.readFileSync(lockPath, "utf8")).pid);
+        } catch {
+        }
+        if (pidAlive(holder)) {
+          note(`another starter holds ${lockPath} (pid ${holder}) \u2014 not serving`);
+          return;
+        }
+        try {
+          fs9.unlinkSync(lockPath);
+        } catch {
+        }
+      }
+    }
+    if (!held) {
+      note("could not take the bind lock \u2014 not serving");
+      return;
+    }
+    try {
+      await claim();
+    } finally {
+      if (holdsOurLock()) {
+        try {
+          fs9.unlinkSync(lockPath);
+        } catch {
+        }
+      }
+    }
+  };
+  const bind = () => {
+    if (retired) return;
+    try {
+      server2.listen(sockPath, onListen);
+      server2.unref();
+    } catch {
+    }
+  };
+  let reclaimAttempted = false;
+  server2.on("error", (err) => {
+    if (err.code !== "EADDRINUSE") return;
+    if (reclaimAttempted) {
+      note("socket was claimed by another starter during the handover \u2014 not serving");
+      return;
+    }
+    reclaimAttempted = true;
+    void withLock(async () => {
+      const probe = await probeInjectDaemon(sockPath);
+      if (!probe.listening) {
+        try {
+          fs9.unlinkSync(sockPath);
+        } catch {
+        }
+        return bind();
+      }
+      if (probe.owner && injectDaemonIdentityMatches(probe.owner, injectDaemonIdentity())) {
+        note(`socket already served by this same build (pid ${probe.owner.pid}) \u2014 not serving`);
+        return;
+      }
+      if (!probe.owner) {
+        note(`socket held by an unidentified listener (${probe.problem ?? "no answer"}) \u2014 left alone, hooks will use the in-process fallback`);
+        return;
+      }
+      const { reply } = await askSocket(sockPath, {
+        type: "retire",
+        protocol: INJECT_DAEMON_PROTOCOL,
+        from: { ...injectDaemonIdentity(), pid: process.pid, instanceId: self.instanceId, startedAt: self.startedAt }
+      });
+      if (reply?.type === "retired") {
+        note(`took over from ${String(reply.version ?? "unknown")} at ${String(reply.pluginRoot ?? "?")} (pid ${String(reply.pid ?? "?")})`);
+        try {
+          if (fs9.existsSync(sockPath)) fs9.unlinkSync(sockPath);
+        } catch {
+        }
+        return bind();
+      }
+      note(`owner ${probe.owner.version ?? "unknown"} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? "no answer")}) \u2014 not serving`);
+    }).catch(() => {
+    });
+  });
+  bind();
   return server2;
 }
 
@@ -27717,8 +28188,8 @@ init_embeddings();
 
 // src/llm.ts
 init_paths();
-import path11 from "node:path";
-import os5 from "node:os";
+import path12 from "node:path";
+import os6 from "node:os";
 
 // src/llm-error-class.ts
 function extractStatus(x2) {
@@ -27777,9 +28248,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs9 from "node:fs";
-import os4 from "node:os";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import os5 from "node:os";
+import path11 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 var MAX_EVENT_CAPTURE_CHARS = 4 * 1024 * 1024;
@@ -27947,7 +28418,7 @@ async function modelBudgetLimitError(kind, observed, limit) {
 function readOutputFile(filePath, maxOutputChars) {
   let stat;
   try {
-    stat = fs9.statSync(filePath);
+    stat = fs10.statSync(filePath);
   } catch {
     return { text: "", exceeded: false };
   }
@@ -27957,17 +28428,17 @@ function readOutputFile(filePath, maxOutputChars) {
     Math.max(1, charCap * 4 + 4)
   );
   const bytesToRead = Math.min(stat.size, byteCap + 1);
-  const fd = fs9.openSync(filePath, "r");
+  const fd = fs10.openSync(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const read = fs9.readSync(fd, buffer, 0, bytesToRead, 0);
+    const read = fs10.readSync(fd, buffer, 0, bytesToRead, 0);
     const text = buffer.subarray(0, read).toString("utf8").trim();
     return {
       text,
       exceeded: stat.size > byteCap || text.length > charCap
     };
   } finally {
-    fs9.closeSync(fd);
+    fs10.closeSync(fd);
   }
 }
 async function runCodex(opts = {}) {
@@ -27983,8 +28454,8 @@ async function runCodex(opts = {}) {
   }
   const maxInputChars = assertLimit(opts.maxInputChars, "maxInputChars");
   const maxOutputChars = assertLimit(opts.maxOutputChars, "maxOutputChars");
-  const workdir = fs9.mkdtempSync(path10.join(os4.tmpdir(), "memex-llm-"));
-  const outPath = path10.join(workdir, "last-message.txt");
+  const workdir = fs10.mkdtempSync(path11.join(os5.tmpdir(), "memex-llm-"));
+  const outPath = path11.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
   const observe = (token_usage) => {
@@ -28013,8 +28484,8 @@ async function runCodex(opts = {}) {
       1,
       Math.min(timeoutMs, remaining === null ? timeoutMs : remaining)
     );
-    const schemaPath = opts.outputSchema ? path10.join(workdir, "output-schema.json") : void 0;
-    if (schemaPath) fs9.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const schemaPath = opts.outputSchema ? path11.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs10.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
     const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
     const res = await runChild(bin, args, workdir, prompt, effectiveTimeoutMs);
     const tokenUsage = tokenUsageFromEvents(res.stdout);
@@ -28052,7 +28523,7 @@ async function runCodex(opts = {}) {
     throw error2;
   } finally {
     try {
-      fs9.rmSync(workdir, { recursive: true, force: true });
+      fs10.rmSync(workdir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -28060,7 +28531,7 @@ async function runCodex(opts = {}) {
 
 // src/llm.ts
 init_model_budget();
-var LLM_WORKDIR = path11.join(os5.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path12.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -28418,8 +28889,8 @@ async function askAvatar(db, question, project, scope, identityScope) {
 }
 
 // src/mcp-server.ts
-import path12 from "path";
-import fs10 from "fs";
+import path13 from "path";
+import fs11 from "fs";
 init_paths();
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
@@ -29152,7 +29623,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path12.resolve(params.path);
+      const resolvedPath = path13.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -29160,16 +29631,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs10.realpathSync(resolvedFile);
+      const realFile = fs11.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs10.realpathSync(root);
+          return fs11.realpathSync(root);
         } catch {
-          return path12.resolve(root);
+          return path13.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path12.sep)
+        (root) => realFile === root || realFile.startsWith(root + path13.sep)
       );
       if (!isAllowed) {
         throw new Error(
