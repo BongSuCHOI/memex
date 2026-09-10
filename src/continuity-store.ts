@@ -410,7 +410,12 @@ export function ensureContinuitySchema(
         -- Issue #33: retry feedback. A failed attempt halves the next page so
         -- the retry reads strictly less than the attempt that failed.
         page_items_hint INTEGER,
-        page_chars_hint INTEGER
+        page_chars_hint INTEGER,
+        -- Issue #71: a terminal skip of one undistillable fragment records WHERE
+        -- the frontier stood before it stepped, so memex recover can put the
+        -- fragment back into the recovered job's input instead of losing it.
+        skipped_seq INTEGER,
+        frontier_before_skip INTEGER
       );
 
     `);
@@ -876,7 +881,12 @@ export function ensureContinuitySchema(
     // Issue #33: `page_items_hint` / `page_chars_hint` make a failed attempt
     // change the next attempt's input. Without them every retry read the same
     // bytes and failed identically until `max_attempts` was spent.
-    for (const name of ["target_seq", "target_revision", "page_items_hint", "page_chars_hint"]) {
+    // Issue #71: `skipped_seq` / `frontier_before_skip` make a terminal skip
+    // reversible — recovery reads them to restore the pre-skip frontier.
+    for (const name of [
+      "target_seq", "target_revision", "page_items_hint", "page_chars_hint",
+      "skipped_seq", "frontier_before_skip",
+    ]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
     }
     // Issue #17: priority-truncation bookkeeping on existing Capsule rows.

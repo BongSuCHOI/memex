@@ -7495,7 +7495,8 @@ function rootWaveIdOf(parentWaveId) {
 }
 function parseWaveId(parentWaveId) {
   const root = rootWaveIdOf(parentWaveId);
-  const compact = /^(.*)#(\d+)$/.exec(parentWaveId.split(":run:")[0]);
+  if (parentWaveId.includes(":run:")) return { root, seq: null };
+  const compact = /^(.*)#(\d+)$/.exec(parentWaveId);
   return { root, seq: compact ? Number(compact[2]) : null };
 }
 function runWaveId(root, seq) {
@@ -7601,10 +7602,26 @@ function ensureModelBudgetSchema(db) {
       const takenNames = new Set(
         db.prepare("SELECT parent_wave_id FROM model_work_budgets").all().map((row) => row.parent_wave_id)
       );
+      const runKey = (root, seq) => `${root}\0${seq}`;
+      const runOwner = /* @__PURE__ */ new Map();
+      for (const row of db.prepare(
+        `SELECT budget_id, root_wave_id, run_seq FROM model_work_budgets
+           WHERE root_wave_id IS NOT NULL AND run_seq IS NOT NULL`
+      ).all()) {
+        runOwner.set(runKey(row.root_wave_id, Number(row.run_seq)), row.budget_id);
+      }
       for (const row of legacyRows) {
         const parsed = parseWaveId(row.parent_wave_id);
         const root = parsed.root;
-        const seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        let seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        while (true) {
+          const owner = runOwner.get(runKey(root, seq));
+          if (owner === void 0 || owner === row.budget_id) break;
+          seq += 1;
+        }
+        const previousKey = row.root_wave_id !== null && row.run_seq !== null ? runKey(row.root_wave_id, Number(row.run_seq)) : null;
+        if (previousKey !== null) runOwner.delete(previousKey);
+        runOwner.set(runKey(root, seq), row.budget_id);
         seqByRoot.set(root, Math.max(seqByRoot.get(root) ?? 0, seq));
         let name = runWaveId(root, seq);
         if (name !== row.parent_wave_id && takenNames.has(name)) name = row.parent_wave_id;
@@ -7619,10 +7636,6 @@ function ensureModelBudgetSchema(db) {
         db.prepare("UPDATE model_work_budgets SET root_wave_id = ?, run_seq = ? WHERE budget_id = ?").run(root, seq, row.budget_id);
       }
     }
-    db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
-         ON model_work_budgets(root_wave_id, run_seq)`
-    );
     if (tableExists2(db, "memory_jobs")) {
       const columns = columnNames2(db, "memory_jobs");
       if (!columns.has("budget_id")) {
@@ -7637,6 +7650,16 @@ function ensureModelBudgetSchema(db) {
     }
   });
   migrate.immediate();
+  try {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
+         ON model_work_budgets(root_wave_id, run_seq)`
+    );
+  } catch (error2) {
+    console.warn(
+      `[memex] model budget lineage index not created (${error2 instanceof Error ? error2.message : String(error2)}); run numbers are still recorded`
+    );
+  }
 }
 function nonNegativeInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
@@ -21402,7 +21425,12 @@ function ensureContinuitySchema(db, options = {}) {
         -- Issue #33: retry feedback. A failed attempt halves the next page so
         -- the retry reads strictly less than the attempt that failed.
         page_items_hint INTEGER,
-        page_chars_hint INTEGER
+        page_chars_hint INTEGER,
+        -- Issue #71: a terminal skip of one undistillable fragment records WHERE
+        -- the frontier stood before it stepped, so memex recover can put the
+        -- fragment back into the recovered job's input instead of losing it.
+        skipped_seq INTEGER,
+        frontier_before_skip INTEGER
       );
 
     `);
@@ -21853,7 +21881,14 @@ function ensureContinuitySchema(db, options = {}) {
       INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
     `);
     const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
-    for (const name of ["target_seq", "target_revision", "page_items_hint", "page_chars_hint"]) {
+    for (const name of [
+      "target_seq",
+      "target_revision",
+      "page_items_hint",
+      "page_chars_hint",
+      "skipped_seq",
+      "frontier_before_skip"
+    ]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
     }
     const capsuleColumns = columnNames(db, "work_capsules");

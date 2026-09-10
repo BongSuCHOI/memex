@@ -289,6 +289,78 @@ it("refuses to recover or dismiss the wrong state and unknown ids", async () => 
   expect(() => dismissMemoryJob(db, { jobId: pending, reason: "  " })).toThrow(/requires --reason/);
 });
 
+/**
+ * Issue #70 — observed with the fixture below:
+ *   R3-1(a) running job recovered through its dead target:
+ *     before {"state":"running","lease_owner":"worker-B","attempts":2}
+ *     after  {"state":"pending","lease_owner":null,"attempts":0}
+ * `claimExtractionTarget` re-queues a target under the same job, so a `dead`
+ * target can belong to a job that is running again — and recovery stole its
+ * lease, leaving two workers on one unit.
+ */
+it("refuses a target-id recovery whose owning job is running under a live lease", () => {
+  const { jobId, targetId } = deadExtractionUnit();
+  db.prepare(`UPDATE memory_jobs
+    SET state = 'running', lease_owner = 'worker-B', lease_until = ?, attempts = 2
+    WHERE job_id = ?`).run(new Date(Date.now() + 60_000).toISOString(), jobId);
+  db.prepare("UPDATE extraction_target_items SET state = 'processing' WHERE target_id = ?").run(targetId);
+
+  expect(() => recoverTerminalWork(db, { targetId })).toThrow(/is owned by job .* which is 'running'/);
+  expect(db.prepare("SELECT state, lease_owner, attempts FROM memory_jobs WHERE job_id = ?").get(jobId))
+    .toMatchObject({ state: "running", lease_owner: "worker-B", attempts: 2 });
+  // Nothing below the job moved either.
+  expect(stateCounts("extraction_target_items")).toEqual({ processing: 1 });
+  expect(stateCounts("extraction_targets")).toEqual({ dead: 1 });
+
+  // An EXPIRED lease is exactly what recovery exists for, so it still works.
+  db.prepare("UPDATE memory_jobs SET lease_until = ? WHERE job_id = ?")
+    .run(new Date(Date.now() - 60_000).toISOString(), jobId);
+  const result = recoverTerminalWork(db, { targetId });
+  expect(result.entries[0].reset.memory_jobs).toBe(1);
+  expect(stateCounts("extraction_target_items")).toEqual({ pending: 1 });
+});
+
+/**
+ * Issue #70 — observed after a lost CAS:
+ *   job {"state":"running","lease_owner":"worker-B"}   # the CAS matched 0 rows
+ *   items [{"state":"pending"}]                        # reset anyway
+ *   reset {"checkpoints":1,"extraction_targets":1,"extraction_target_items":1}
+ */
+it("a job claimed between resolve and the CAS leaves the whole unit untouched", () => {
+  const { jobId, targetId } = deadExtractionUnit();
+  db.prepare("UPDATE extraction_target_items SET state = 'processing' WHERE target_id = ?").run(targetId);
+
+  // Deterministically interleave a competing claim just before the job CAS.
+  const realPrepare = db.prepare.bind(db);
+  let flipped = false;
+  (db as unknown as { prepare: unknown }).prepare = (sql: string) => {
+    const statement = realPrepare(sql);
+    if (!flipped && /UPDATE\s+memory_jobs/.test(sql) && /state = 'pending'/.test(sql)) {
+      flipped = true;
+      realPrepare(`UPDATE memory_jobs
+        SET state = 'running', lease_owner = 'worker-B', lease_until = ? WHERE job_id = ?`)
+        .run(new Date(Date.now() + 60_000).toISOString(), jobId);
+    }
+    return statement;
+  };
+  let result;
+  try {
+    result = recoverTerminalWork(db, { jobId });
+  } finally {
+    (db as unknown as { prepare: unknown }).prepare = realPrepare;
+  }
+
+  expect(result!.entries[0].reset).toEqual({});
+  expect(result!.notes.some((note) => note.includes("claimed by another recoverer or worker"))).toBe(true);
+  expect(db.prepare("SELECT state, lease_owner FROM memory_jobs WHERE job_id = ?").get(jobId))
+    .toMatchObject({ state: "running", lease_owner: "worker-B" });
+  // The holder's in-flight work is still its own.
+  expect(stateCounts("extraction_target_items")).toEqual({ processing: 1 });
+  expect(stateCounts("extraction_targets")).toEqual({ dead: 1 });
+  expect(stateCounts("checkpoints")).toEqual({ "failed-visible": 1 });
+  expect(stateCounts("extraction_failed_ranges")).toEqual({ "failed-visible": 1 });
+});
+
 it("the CLI drives the same recovery and refuses a job id it cannot recover", async () => {
   const jobId = await deadCapsuleJob("session-A", "capsule-source-1");
   db.close();

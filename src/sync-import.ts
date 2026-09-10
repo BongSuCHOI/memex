@@ -1024,6 +1024,13 @@ function rejectStableIdentityConflicts(
         reject(generation, "stable project_id and portable_project_key resolve to different local projects");
         continue;
       }
+      // The slot is enforced only over active rows, so an inactive history row
+      // can never collide with anything (#66). Exporters deliberately ship
+      // inactive facts (src/sync-export.ts), and a superseded predecessor
+      // sitting in the same slot as its active successor is a legal local
+      // state — judging it a conflict wedges the whole generation, tombstones
+      // included. The project-key checks above still apply to every row.
+      if (fact.is_active !== 1) continue;
       const localProjectId = byPortable?.project_id ?? byId?.project_id ?? fact.project_id;
       const subjectKey = fact.subject_key ?? `legacy.fact.${fact.id}`;
       // The subject slot is the one the local UNIQUE index enforces

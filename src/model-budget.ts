@@ -269,10 +269,21 @@ export function rootWaveIdOf(parentWaveId: string): string {
   return compact ? compact[1] : withoutRun;
 }
 
-/** Parse a wave id into (root, explicit run number when the name carries one). */
+/**
+ * Parse a wave id into (root, explicit run number when the name carries one).
+ *
+ * 이슈 #72: only a BARE compact name states its own run number. A legacy
+ * `:run:` suffix means "one rollover past the name in front of it", so
+ * `maintenance#2` and `maintenance#2:run:<uuid>` are two DIFFERENT runs of the
+ * same root — reading the `#2` out of the chain's prefix collapsed them onto
+ * the same (root, seq) and made `UNIQUE(root_wave_id, run_seq)` impossible to
+ * create. A chained name gets `seq: null` so the caller assigns the next free
+ * run instead; the root (and therefore the rolling cap it shares) is unchanged.
+ */
 function parseWaveId(parentWaveId: string): { root: string; seq: number | null } {
   const root = rootWaveIdOf(parentWaveId);
-  const compact = /^(.*)#(\d+)$/.exec(parentWaveId.split(":run:")[0]);
+  if (parentWaveId.includes(":run:")) return { root, seq: null };
+  const compact = /^(.*)#(\d+)$/.exec(parentWaveId);
   return { root, seq: compact ? Number(compact[2]) : null };
 }
 
@@ -409,10 +420,33 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
         (db.prepare("SELECT parent_wave_id FROM model_work_budgets").all() as Array<{ parent_wave_id: string }>)
           .map((row) => row.parent_wave_id),
       );
+      // 이슈 #72: (root_wave_id, run_seq) must stay unique across budgets, or
+      // the UNIQUE index below cannot be created and DB open dies with it.
+      // Track who owns each pair and walk to the first free run number.
+      const runKey = (root: string, seq: number) => `${root} ${seq}`;
+      const runOwner = new Map<string, string>();
+      for (const row of db
+        .prepare(
+          `SELECT budget_id, root_wave_id, run_seq FROM model_work_budgets
+           WHERE root_wave_id IS NOT NULL AND run_seq IS NOT NULL`,
+        )
+        .all() as Array<{ budget_id: string; root_wave_id: string; run_seq: number }>) {
+        runOwner.set(runKey(row.root_wave_id, Number(row.run_seq)), row.budget_id);
+      }
       for (const row of legacyRows) {
         const parsed = parseWaveId(row.parent_wave_id);
         const root = parsed.root;
-        const seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        let seq = row.run_seq ?? parsed.seq ?? (seqByRoot.get(root) ?? 0) + 1;
+        while (true) {
+          const owner = runOwner.get(runKey(root, seq));
+          if (owner === undefined || owner === row.budget_id) break;
+          seq += 1;
+        }
+        const previousKey = row.root_wave_id !== null && row.run_seq !== null
+          ? runKey(row.root_wave_id, Number(row.run_seq))
+          : null;
+        if (previousKey !== null) runOwner.delete(previousKey);
+        runOwner.set(runKey(root, seq), row.budget_id);
         seqByRoot.set(root, Math.max(seqByRoot.get(root) ?? 0, seq));
         let name = runWaveId(root, seq);
         // A compact name that is already taken by a DIFFERENT budget must not
@@ -434,11 +468,6 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
           .run(root, seq, row.budget_id);
       }
     }
-    db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
-         ON model_work_budgets(root_wave_id, run_seq)`,
-    );
-
     // memory_jobs is created by ensureContinuitySchema. Keep these columns
     // nullable so old rows remain valid and bind once their first model call
     // is reserved. The ledger remains the authority for the binding while the
@@ -457,6 +486,24 @@ export function ensureModelBudgetSchema(db: Database.Database): void {
     }
   });
   migrate.immediate();
+  // 이슈 #72: the lineage UNIQUE index is a HARDENING, never a precondition.
+  // It used to live inside the migration transaction, so one duplicate
+  // (root_wave_id, run_seq) pair left behind by a mixed-version rollover rolled
+  // the whole migration back and `initDatabase()` threw on every call — CLI,
+  // hooks and UI all dead. Create it outside the transaction and, if the data
+  // still cannot satisfy it, say so once and leave the index for a later run.
+  try {
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run
+         ON model_work_budgets(root_wave_id, run_seq)`,
+    );
+  } catch (error) {
+    console.warn(
+      `[memex] model budget lineage index not created (${
+        error instanceof Error ? error.message : String(error)
+      }); run numbers are still recorded`,
+    );
+  }
 }
 
 function nonNegativeInt(value: unknown, fallback: number, max = Number.MAX_SAFE_INTEGER): number {

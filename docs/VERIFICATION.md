@@ -122,7 +122,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/scope-tier-identity.test.ts` | 브랜치·기본 브랜치 감지, `no-branch-signal`/`default-branch`/`branch:<name>` 분류, `(project_id, branch)` 결정론적 workstream id, 워크트리 공유, workspace 전이와 `WORKSPACE_LOCATION_CHANGED`, 승인 없는 병합 거부, untrusted cwd 거절과 quarantine |
 | `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply |
 | `test/fixtures/fact-scope-directive-cases.json` | 세션 내 한국어·영어 범위 지시문 인식 fixture |
-| `test/job-recovery.test.ts` | `recover`/`jobs retry\|dismiss`의 한 트랜잭션 리셋 범위, `retry_history` 보존, dry-run 무변경, `dismiss`의 `superseded` |
+| `test/job-recovery.test.ts` | `recover`/`jobs retry\|dismiss`의 한 트랜잭션 리셋 범위, `retry_history` 보존, dry-run 무변경, `dismiss`의 `superseded`, 실행 중 lease를 가진 소유 job의 target 경로 거부와 CAS 경쟁 시 부분 리셋 없음 (#70) |
 | `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록 |
 | `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
 | `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
@@ -137,8 +137,8 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | Suite | 고정하는 회귀 |
 | --- | --- |
 | `test/plugin-root-slice.test.mjs` | npx shim 루트와 plugin 루트가 **같은** 설치본을 해석하는지, `doctor`가 실행 중인 사본이 아니라 설치본을 판정하는지, `memex deps materialize --dry-run`이 해석된 루트를 지목하고 아무것도 바꾸지 않는지 (#53) |
-| `test/sync-tier-import.test.ts` | 피어의 승격이 합법적인 project-wide 행을 만드는지(workspace/workstream NULL 강제), 모르는 `promotion_state`와 불법 tier 조합이 malformed로 보고되는지, 브랜치 tier 기억의 A→B 왕복, protocol 4/5 혼재 동작 (#37/#48) |
-| `test/sync-control.test.ts` | 기본 off·`MEMEX_SYNC_DIR` 우선순위·A export→B import(+N)→B 수정→export→A import(~N)·손상된 `meta.json` 세대 거부·disable 시 no-op, `doctor`의 `skipped(off)`→warn→ok 전이, SessionEnd async export 등록 (#35/#48) |
+| `test/sync-tier-import.test.ts` | 피어의 승격이 합법적인 project-wide 행을 만드는지(workspace/workstream NULL 강제), 모르는 `promotion_state`와 불법 tier 조합이 malformed로 보고되는지, 브랜치 tier 기억의 A→B 왕복, protocol 4/5 혼재 동작 (#37/#48), 비활성 이력 행이 활성 slot 충돌로 판정되지 않고 같은 세대의 tombstone까지 도달하는지 (#66) |
+| `test/sync-control.test.ts` | 기본 off·`MEMEX_SYNC_DIR` 우선순위·A export→B import(+N)→B 수정→export→A import(~N)·손상된 `meta.json` 세대 거부·disable 시 no-op, `doctor`의 `skipped(off)`→warn→ok 전이, SessionEnd async export 등록 (#35/#48), 공유 폴더를 바꾸면 첫 export가 생략되지 않고 같은 폴더에서는 여전히 `unchanged`인지 (#68), recall 영수증 `prepared→emitted` 전이가 fingerprint를 움직여 새 세대를 내는지 (#67) |
 | `test/async-hook-output-slice.test.mjs` | 동기화 off일 때 두 sync 훅이 stdout을 건드리지 않고 stderr 한 줄로 끝나는지, export 훅의 unchanged/published 보고 (#35) |
 | `test/pipeline-status-slice.test.mjs` | `status --json`의 `jobs`가 `memory_jobs`를 kind × state로 집계하는지, 큐가 없으면 빈 객체인지, `memex index --help`가 존재하는 문서만 가리키는지 (#46) |
 | `test/real-root-isolation-slice.test.mjs` | 격리 검사 자체의 회귀: 0.5.0의 `ui-audit.jsonl` 유출 형태를 잡는지, 추가/삭제 보고, 내용이 같은 mtime 변화는 실패로 보지 않는지, `run-locks`는 기본 제외·`--strict` 포함 (#26) |
@@ -146,7 +146,8 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/ontology-parking.test.ts` | parked fact가 `classified`에서 빠지는지, 정책/embedding 세대당 정확히 1회만 재시도되는지, output budget 초과가 배치 분할로 처리되고 fact마다 content failure를 물리지 않는지, `IndexRepairError`가 status/doctor까지 오는지 (#41) |
 | `test/ontology-taxonomy-repair.test.ts` | domain/category의 대소문자 무시 UNIQUE, 기존 중복을 병합하는 idempotent 마이그레이션, `ON CONFLICT DO NOTHING` + 재조회, `applyClassification`의 immediate transaction, `result.stale` 집계 (#47) |
 | `test/ontology-cli-slice.test.mjs` | `memex ontology list\|merge\|rename`의 동작과 부작용 경계 — fact 재지정·vector 무효화는 하되 Chronicle·generation·epoch은 건드리지 않고 감사 1줄만 남기는지 (#47) |
-| `test/maintenance-wave-lineage.test.ts` | rollover 계보가 `root_wave_id`/`run_seq` 컬럼으로 표현되는지, 자식이 root wave id를 물려받는지, 기존 중첩 `:run:<uuid>` id가 rolling-cap 연결을 잃지 않고 정규화되는지 (#42) |
+| `test/capsule-retry-convergence.test.ts` (#71 추가분) | 일시적 모델·네트워크 실패로 terminal이 되면 frontier가 그대로이고 `skipped evidence`가 기록되지 않는지, 최소 page의 내용성 실패만 건너뛰며 `skipped_seq`/`frontier_before_skip`을 남기는지, `memex recover`가 frontier를 되돌려 그 조각이 다시 모델 입력에 오는지 (#71) |
+| `test/maintenance-wave-lineage.test.ts` | rollover 계보가 `root_wave_id`/`run_seq` 컬럼으로 표현되는지, 자식이 root wave id를 물려받는지, 기존 중첩 `:run:<uuid>` id가 rolling-cap 연결을 잃지 않고 정규화되는지 (#42), `<root>#<n>`과 `<root>#<n>:run:<uuid>`가 서로 다른 run으로 갈라지고 UNIQUE 인덱스 생성 실패가 DB 열기를 막지 않는지 (#72) |
 | `test/derived-lane-skip.test.ts`, `test/derived-lane-skip-e2e.test.ts` | P0/P1 조기 반환이 지속되는 연속 skip 카운터가 되는지, 같은 사유 3회 뒤 derived lane이 한 번 통과하는지, `memex status`에 `Derived lanes: skipped …`로 드러나는지 (#43) |
 | `test/evidence-receipt-backfill.test.ts` | `memex backfill receipts`가 model 없이 누락 영수증만 재구성하는지, `recordLocalMeaningEvidence` 실패가 보고되는지, sync-import가 영수증을 삭제하지 않고 `peer-authority`로 강등하는지 (#45) |
 | `ui/test/guidance.test.cjs` | `src/`의 `throw new *Error(...)` 문자열과 skip 사유·terminal 상태 enum을 추출해 전부 실패 클래스에 매핑되거나 대장에 명시돼 있는지, 매핑되지 않은 오류가 원인을 지어내지 않는지 (#23) |

@@ -146,7 +146,7 @@ export function showMemoryJob(db, jobId, options = {}) {
         })),
     };
 }
-function resolveUnits(db, input) {
+function resolveUnits(db, input, nowIso) {
     const jobRow = (where, ...params) => db.prepare(`SELECT * FROM memory_jobs WHERE ${where}`).get(...params);
     const unitFromJob = (row) => ({
         jobId: String(row.job_id),
@@ -201,8 +201,24 @@ function resolveUnits(db, input) {
         throw new Error(`target ${id} is '${byTarget.state}'; only '${RECOVERABLE_TARGET_STATE}' work is recovered`);
     }
     const owner = jobRow("target_id = ?", id);
-    if (owner)
+    if (owner) {
+        // Issue #70: a target can be `dead` while the job that owns it was picked
+        // up again — `claimExtractionTarget` re-queues the target under the same
+        // job. Recovering through the target id then reset a RUNNING job to
+        // `pending` with `attempts = 0` and `lease_owner = NULL`, stealing a live
+        // lease: the holder kept working while a second worker claimed the same
+        // unit, so the model call and the extraction both ran twice. Only work
+        // nobody is holding may be recovered — a terminal state, or an expired
+        // lease (which is what recovery is for).
+        const ownerState = String(owner.state);
+        const leaseUntil = owner.lease_until == null ? null : String(owner.lease_until);
+        const leaseLive = leaseUntil !== null && leaseUntil > nowIso;
+        if (leaseLive && ownerState !== RECOVERABLE_JOB_STATE && ownerState !== "retry") {
+            throw new Error(`target ${id} is owned by job ${String(owner.job_id)} which is '${ownerState}' ` +
+                `with a lease held until ${leaseUntil}; recover it once that lease is terminal or expired`);
+        }
         return [unitFromJob(owner)];
+    }
     return [{
             jobId: null, targetId: byTarget.target_id, checkpointId: null, kind: "fact_extract",
             fromState: byTarget.state, attempts: byTarget.attempts, lastError: byTarget.last_error,
@@ -218,10 +234,17 @@ export function recoverTerminalWork(db, input) {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
     const dryRun = input.dryRun === true;
-    const units = resolveUnits(db, input);
     const notes = [];
     const entries = [];
     const run = () => {
+        // A rolled-back attempt must not leave its half-built report behind.
+        notes.length = 0;
+        entries.length = 0;
+        // Issue #70: resolve the unit INSIDE the write transaction. Reading the
+        // target first and writing afterwards left a window in which a worker or a
+        // second recoverer could move the job, and the reports below were built
+        // from the stale read.
+        const units = resolveUnits(db, input, nowIso);
         for (const unit of units) {
             const reset = {};
             const bump = (table, changes) => {
@@ -242,6 +265,24 @@ export function recoverTerminalWork(db, input) {
               WHERE job_id = ? AND state = ?
             `).run(nowIso, JSON.stringify(history), nowIso, unit.jobId, unit.fromState).changes;
                 bump("memory_jobs", changes);
+                // Issue #70: the CAS is the unit's gate, not a statistic. When it
+                // matches nothing the job has already left `unit.fromState` — another
+                // recoverer took it, or a worker claimed it — and resetting the child
+                // tables anyway pulled `processing` items back to `pending` underneath
+                // the holder, which is the duplicate-extraction path. Leave the whole
+                // unit alone and say why.
+                if (changes === 0) {
+                    notes.push(`job ${unit.jobId} left '${unit.fromState}' before it could be reset ` +
+                        "(claimed by another recoverer or worker); nothing in that unit was changed.");
+                    entries.push({
+                        jobId: unit.jobId,
+                        targetId: unit.targetId,
+                        kind: unit.kind,
+                        fromState: unit.fromState,
+                        reset,
+                    });
+                    continue;
+                }
             }
             if (unit.checkpointId) {
                 bump("checkpoints", dryRun
@@ -251,6 +292,27 @@ export function recoverTerminalWork(db, input) {
               WHERE checkpoint_id = ? AND state IN ('dead-letter','failed-visible','retry')`)
                         .run(unit.checkpointId).changes);
                 if (tableExists(db, "capsule_checkpoint_state")) {
+                    // Issue #71: a terminal skip stepped the frontier over one fragment.
+                    // Recovery has to put that fragment back in the recovered job's input
+                    // — clearing the page hint alone re-read everything AFTER the skip, so
+                    // the fragment stayed lost however often the operator recovered. The
+                    // pre-skip position is read from the checkpoint row and restored under
+                    // a CAS on the skipped seq, so a frontier that has since moved on
+                    // under a later successful commit is never rewound.
+                    const hasSkipColumns = columnExists(db, "capsule_checkpoint_state", "frontier_before_skip");
+                    const skip = hasSkipColumns
+                        ? db.prepare(`SELECT workstream_id, skipped_seq, frontier_before_skip
+                FROM capsule_checkpoint_state WHERE checkpoint_id = ?`)
+                            .get(unit.checkpointId)
+                        : undefined;
+                    if (skip && skip.skipped_seq !== null && skip.frontier_before_skip !== null) {
+                        bump("capsule_frontiers", dryRun
+                            ? Number(!!db.prepare("SELECT 1 FROM capsule_frontiers WHERE workstream_id = ? AND through_seq = ?")
+                                .get(skip.workstream_id, skip.skipped_seq))
+                            : db.prepare(`UPDATE capsule_frontiers SET through_seq = ?
+                  WHERE workstream_id = ? AND through_seq = ?`)
+                                .run(skip.frontier_before_skip, skip.workstream_id, skip.skipped_seq).changes);
+                    }
                     // Also clears the #33 page-shrink hint and the frozen target so the
                     // recovered job re-reads a full page against the current frontier.
                     bump("capsule_checkpoint_state", dryRun
@@ -259,7 +321,7 @@ export function recoverTerminalWork(db, input) {
                         : db.prepare(`UPDATE capsule_checkpoint_state
                 SET state = 'pending', last_error = NULL, updated_at = ?,
                     target_seq = NULL, target_revision = NULL,
-                    page_items_hint = NULL, page_chars_hint = NULL
+                    page_items_hint = NULL, page_chars_hint = NULL${hasSkipColumns ? ", skipped_seq = NULL, frontier_before_skip = NULL" : ""}
                 WHERE checkpoint_id = ? AND state <> 'processed'`)
                             .run(nowIso, unit.checkpointId).changes);
                 }

@@ -89,6 +89,7 @@ const EXEMPT_LITERALS=[
  ['fact-db.ts','updateFact cannot change fact text'],
  ['job-recovery.ts','only \'${RECOVERABLE_JOB_STATE}\' work is recovered'],
  ['job-recovery.ts','only \'${RECOVERABLE_TARGET_STATE}\' work is recovered'],
+ ['job-recovery.ts','is owned by job'],
  ['ontology-classifier.ts','taxonomy was invalidated during classification'],
  ['ontology-classifier.ts','changed meaning during classification'],
  ['fact-management.ts','fact source_exchange_ids must be a JSON string array'],

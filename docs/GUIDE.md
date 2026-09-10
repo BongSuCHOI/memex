@@ -381,6 +381,11 @@ memex sync status
 - **자동 export 시점**: SessionEnd(별도 async 항목)와 자동 유지보수 wake. 두 경우 모두
   "마지막 성공 export 이후 durable 변경이 있을 때만" 세대를 만듭니다(빈 세대 방지).
   변경이 없어도 강제로 내보내려면 `memex sync export --force`.
+  이 판정은 **목적지까지 포함**합니다(0.6.2): 생략은 `export-status.json`에 기록된 공유 폴더가
+  현재 폴더와 같고 그 폴더에 이 기기의 `devices/<id>/CURRENT`가 실제로 있을 때만 일어납니다.
+  `memex sync enable --dir <새 폴더>`는 이전 목적지의 fingerprint를 지우므로 새 폴더는
+  항상 자기 첫 세대를 받습니다. durable 변경 판정에는 recall 영수증의 `status`/`emitted_at`도
+  들어갑니다(0.6.2) — `prepared → emitted` 전이만으로도 다음 export가 나갑니다.
 - **원자성**: 세대는 임시 디렉터리에 payload를 먼저 쓰고 `meta.json`을 **마지막에** 쓴 뒤
   rename으로 공개합니다. 클라우드가 파일 단위로 업로드하는 중에 관측되더라도 `meta.json`이 없거나,
   있으면 이미 완전한 payload를 가리킵니다. `CURRENT`가 새 세대를 가리키는 순간이 commit point입니다.
@@ -566,9 +571,11 @@ memex jobs dismiss <job-id> --reason "왜 포기하는가"            # 재시�
 | `memex jobs show <job-id> [--json]` | 한 job의 checkpoint·capsule state·target·실패 range·`retry_history` |
 | `memex jobs retry <job-id\|--all-dead> [--kind <kind>] [--dry-run]` | `memex recover`와 같은 복구 |
 | `memex jobs dismiss <job-id> --reason "..."` | job을 `superseded`로 정리. `last_error = 'user dismissed: <reason>'` + `logs/ui-audit.jsonl` 감사 1줄 |
-| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다 |
+| `memex recover <job-id\|target-id\|--all-dead> [--dry-run] [--kind <kind>] [--json]` | terminal이 된 단위와 **같은 단위**로 되돌립니다. 대상 해석과 쓰기가 한 트랜잭션이며, 실행 중인 lease를 빼앗지 않습니다 |
 
-`recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+`recover`는 terminal 상태가 함께 쓰인 트랜잭션과 같은 범위를 한 트랜잭션에서 되돌립니다 — `memory_jobs`(pending, attempts 0, lease 해제), `checkpoints`, `capsule_checkpoint_state`(page 축소 힌트·고정 target 해제), `capsule_frontiers`(건너뛴 조각이 있으면 전진 전 위치로), `extraction_targets`, `extraction_target_items`, `exchange_extraction_state`, `extraction_failed_ranges`(CHECK 제약상 `retry`로만 되돌아가며 오류 원문은 보존). 지운 것은 없습니다: `last_error`는 `retry_history` JSON 배열로 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+
+단위 해석도 그 트랜잭션 안에서 합니다(0.6.2). `memory_jobs` CAS가 0행이면 — 그 사이 다른 복구자나 worker가 job을 가져간 것이므로 — 그 단위의 **나머지 리셋을 전혀 하지 않고** 사유를 출력의 note에 남깁니다(부분 리셋 없음). `memex recover <target-id>`는 그 target을 소유한 job이 **실행 중이고 lease가 살아 있으면 거부합니다** — 소유 job이 terminal(`dead`/`retry`)이거나 lease가 만료된 경우에만 되돌립니다. 예전에는 실행 중 job이 `pending`·`attempts=0`·`lease_owner=NULL`로 리셋돼 같은 단위를 두 worker가 동시에 처리(중복 모델 호출·중복 추출)했습니다.
 
 복구 후에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker`, `memex backfill extract`). `memex status`의 "Needs attention"은 `retry`/`dismiss` 직후 바로 줄어듭니다.
 
@@ -916,7 +923,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | checkpoint dead-letter / failed-visible | `terminal state: checkpointsDeadLetter=…` / `checkpointsFailedVisible=…` | P0 capture-index가 hash·journal 경계 검증에 반복 실패 | `memex recover <job-id> --dry-run` → `memex recover <job-id>` |
 | extraction target dead | `terminal state: extractionTargetsDead=…`, `Fact extraction … N deferred` | 추출 target이 재시도를 소진 | `memex recover <target-id>` 또는 `--all-dead` |
 | extraction target item failed-visible | `terminal state: extractionTargetItemsFailedVisible=…` | 특정 item이 결정론적으로 실패 | 같은 단위로 `memex recover` |
-| Capsule checkpoint failed-visible | `terminal state: capsuleCheckpointFailedVisible=…` | 최소 page로 줄여도 Capsule patch가 실패해 frontier를 전진시키고 표시한 상태 | `memex recover <job-id>`. `--kind capsule_update`로 종류를 좁히는 것은 `--all-dead`와 함께일 때만 의미가 있고, job id를 직접 준 경우에는 무시됩니다 |
+| Capsule checkpoint failed-visible | `terminal state: capsuleCheckpointFailedVisible=…` | Capsule patch가 재시도를 소진한 상태. frontier는 **최소 page(조각 1개)까지 줄였는데도 내용성 실패가 난 경우에만** 전진하고(0.6.2), 일시적 모델·네트워크 실패는 frontier를 그대로 둡니다 | `memex recover <job-id>`. 전진했던 경우 `recover`가 frontier를 전진 전 위치로 되돌려 그 조각을 다시 포함시킵니다. `--kind capsule_update`로 종류를 좁히는 것은 `--all-dead`와 함께일 때만 의미가 있고, job id를 직접 준 경우에는 무시됩니다 |
 | extraction failed range | `terminal state: extractionFailedRanges=…`, `N failed-visible` | 정확히 어떤 구간이 실패했는지 기록된 terminal range | `memex recover …` (CHECK 제약상 `retry`로 되돌아가며 오류 원문은 보존) |
 | capture gap open | `terminal state: captureGapsOpen=…` | capture가 fail-open으로 넘어간 구간 | **`recover` 대상 아님.** 같은 세션의 다음 성공 capture가 닫습니다. 실패를 즉시 드러내려면 `MEMEX_STRICT_CAPTURE=1` |
 | model-work budget exhausted | `terminal state: modelWorkBudgetsExhausted=…` | run 예산(시도·deadline) 소진 | `memex model-work status` → `memex model-work resume <budget-id> --new-run` |

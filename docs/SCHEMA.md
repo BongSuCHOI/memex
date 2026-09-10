@@ -135,6 +135,13 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
 표현합니다(테이블 재작성 없이 additive). 마이그레이션은 기존 중첩 id를 `<root>#<n>`으로 정규화하고
 `memory_jobs.maintenance_wave_id`의 같은 문자열도 함께 갱신합니다.
+run 번호는 **bare compact 이름만** 자기 번호를 주장합니다(0.6.2). `<root>#<n>:run:<uuid>`는
+`<root>#<n>`의 rollover이므로 같은 `(root, n)`이 아니라 그 root의 다음 빈 `run_seq`를 받습니다.
+`(root_wave_id, run_seq)`가 다른 budget에 점유돼 있으면 빈 번호까지 올라갑니다. 이 UNIQUE 인덱스는
+hardening이지 전제가 아니므로 마이그레이션 트랜잭션 밖에서 생성하며, 데이터가 아직 인덱스를
+만족하지 못하면 경고 한 줄을 남기고 계보 컬럼만 기록한 채 다음 실행으로 미룹니다 —
+`ensureModelBudgetSchema`는 `initDatabase()`가 가드 없이 호출하므로 인덱스 실패가 DB 열기를
+막으면 CLI·훅·UI가 전부 멈춥니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
 원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
 이 상태와 ledger는 protocol v5에 export하지 않습니다.
@@ -174,6 +181,13 @@ bounded storage size는 `MEMEX_CAPSULE_MAX_CHARS`(기본 12,000자, 하한 2,000
 `capsule_checkpoint_state`의 `page_items_hint`/`page_chars_hint`(0.6.0 additive, nullable)는 실패한 시도가
 다음 evidence page를 절반으로 줄이도록 하는 힌트입니다. 최소 page에서도 실패하면 그 head fragment를
 건너뛰고 frontier를 전진시키므로 한 workstream이 영원히 멈추지 않습니다.
+건너뛰기 조건은 0.6.2에서 좁혀졌습니다: **이미 최소 page였고**(hint가 바닥) **실패가 일시적
+분류가 아닐 때만** 전진합니다(`src/llm-error-class.ts`). 일시적 모델·네트워크 실패는 그 조각에 대해
+아무것도 말해주지 않으므로 frontier를 그대로 두고 `failed-visible`로 남겨 `memex recover`가 재시도합니다.
+건너뛸 때는 `capsule_checkpoint_state.skipped_seq` / `frontier_before_skip`(0.6.2 additive, nullable
+INTEGER)에 전진 전 위치를 기록하므로 복구가 되돌릴 수 있습니다. `memex recover`는 frontier가 여전히
+`skipped_seq`일 때만(CAS) `frontier_before_skip`으로 되돌리고 두 컬럼을 비웁니다 — 그 뒤 성공한
+commit이 frontier를 더 밀었다면 되돌리지 않습니다.
 `memory_jobs.retry_history`(0.6.0 additive, nullable TEXT)는 `recover`/`retry`가 지운 `last_error`를 JSON
 배열로 보존합니다 — 복구는 아무것도 삭제하지 않습니다. `failMemoryJob`은 실제 전이(`retry` | `dead`)를
 반환하고, worker는 terminal `failed-visible`을 `retry`로 덮어쓰지 않습니다(guarded `UPDATE` + 1회성

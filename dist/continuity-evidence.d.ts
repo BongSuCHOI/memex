@@ -36,6 +36,16 @@ export declare function shrinkCapsulePageHint(db: Database.Database, checkpointI
     chars: number;
     atFloor: boolean;
 } | null;
+/**
+ * Has shrinking already reached one fragment (issue #71)?
+ *
+ * The terminal skip below is only defensible once the page cannot get any
+ * smaller: until then the failure may still be about the page, not about the
+ * head fragment, and stepping over that fragment throws away evidence that a
+ * smaller page would have distilled. The dead path never shrinks, so the hint
+ * this reads is the budget the failed attempt actually used.
+ */
+export declare function capsulePageHintAtFloor(db: Database.Database, checkpointId: string): boolean;
 /** A drained or successfully committed page restores the full page budget. */
 export declare function clearCapsulePageHint(db: Database.Database, checkpointId: string): void;
 /**

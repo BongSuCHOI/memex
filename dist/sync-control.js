@@ -140,7 +140,19 @@ export function setSyncEnabled(input) {
             throw new Error(`shared sync folder is not writable: ${dir}`);
         }
     }
+    const previousDir = resolveSyncDir(current);
     writeSyncConfig(next);
+    // Issue #68: the recorded fingerprint is a statement about the OLD folder —
+    // "everything the DB holds already reached it". Pointing sync at a new,
+    // empty folder used to inherit that verdict, so the first automatic export
+    // reported `unchanged` and the new folder stayed empty until the DB moved.
+    if (resolveSyncDir(next) !== previousDir) {
+        const previous = readExportStatus();
+        if (previous?.stateFingerprint !== undefined) {
+            const { stateFingerprint: _discarded, ...rest } = previous;
+            recordExportStatus(rest);
+        }
+    }
     return getSyncStatus();
 }
 /**
@@ -155,11 +167,14 @@ export function runSyncExport(options = {}) {
     const config = readSyncConfig();
     if (!config.enabled)
         return { skipped: "disabled", result: null, error: null };
+    const dir = resolveSyncDir(config);
     let fingerprint = null;
+    let deviceId = null;
     try {
         const db = initDatabase();
         try {
             fingerprint = durableStateFingerprint(db);
+            deviceId = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get()?.value ?? null;
         }
         finally {
             db.close();
@@ -170,10 +185,19 @@ export function runSyncExport(options = {}) {
         fingerprint = null;
     }
     const previous = readExportStatus();
+    // Issue #68: "nothing changed" is a claim about a DESTINATION, not about the
+    // DB alone. The status file is local, so after `memex sync enable --dir B`
+    // the fingerprint recorded for folder A skipped the first export to B and B
+    // stayed empty. Require the same folder, and require that this device's own
+    // generation pointer is actually there.
+    const destinationHasThisDevice = deviceId !== null &&
+        fs.existsSync(path.join(dir, "devices", deviceId, "CURRENT"));
     if (!options.force &&
         fingerprint !== null &&
         previous?.ok === true &&
-        previous.stateFingerprint === fingerprint) {
+        previous.stateFingerprint === fingerprint &&
+        previous.dir === dir &&
+        destinationHasThisDevice) {
         return { skipped: "unchanged", result: null, error: null };
     }
     try {
@@ -182,6 +206,7 @@ export function runSyncExport(options = {}) {
             ok: true,
             at: new Date().toISOString(),
             counts: result,
+            dir,
             ...(fingerprint ? { stateFingerprint: fingerprint } : {}),
         });
         return { skipped: null, result, error: null };

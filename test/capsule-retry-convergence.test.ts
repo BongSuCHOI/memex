@@ -7,6 +7,7 @@ import { initDatabase, insertExchange } from "../src/db.js";
 import { captureTranscriptPrefix, ensureSessionMemoryState } from "../src/continuity-core.js";
 import { runContinuityWorker } from "../src/continuity-worker.js";
 import { CAPSULE_PAGE_ITEMS } from "../src/continuity-evidence.js";
+import { recoverTerminalWork } from "../src/job-recovery.js";
 
 /**
  * Issue #33 — Capsule retries did not converge.
@@ -74,6 +75,17 @@ function checkpointState(): Array<{ state: string; last_error: string | null; pa
   return db.prepare(
     "SELECT state, last_error, page_items_hint, page_chars_hint FROM capsule_checkpoint_state",
   ).all() as Array<{ state: string; last_error: string | null; page_items_hint: number | null; page_chars_hint: number | null }>;
+}
+
+function skipRecord(): { checkpoint_id: string; skipped_seq: number | null; frontier_before_skip: number | null } {
+  return db.prepare(
+    "SELECT checkpoint_id, skipped_seq, frontier_before_skip FROM capsule_checkpoint_state",
+  ).get() as { checkpoint_id: string; skipped_seq: number | null; frontier_before_skip: number | null };
+}
+
+function deadCapsuleJobId(): string {
+  return (db.prepare("SELECT job_id FROM memory_jobs WHERE kind = 'capsule_update' AND state = 'dead'")
+    .get() as { job_id: string }).job_id;
 }
 
 /**
@@ -147,6 +159,67 @@ it("an attempts-exhausted Capsule advances the frontier past the fragment it cou
   ).toEqual({ c: CAPSULE_PAGE_ITEMS - 1 });
   const [state] = checkpointState();
   expect(state.last_error).toContain("skipped evidence seq 1");
+  // Issue #71: the skip records where the frontier stood so it is reversible.
+  expect(skipRecord()).toMatchObject({ skipped_seq: 1, frontier_before_skip: 0 });
+});
+
+/**
+ * Issue #71 — observed with `max_attempts = 1` and one network failure:
+ *   attempt: {"state":"dead","detail":"LLM call failed: fetch failed (ECONNRESET)
+ *             (skipped evidence seq 1; frontier advanced)","pageItems":8}
+ *   frontier after one transient failure: 1
+ *   checkpoint state: [{"state":"failed-visible","page_items_hint":null,...}]
+ *   frontier after memex recover: 1
+ * The page had never been shrunk and the provider — not the evidence — failed,
+ * yet the fragment was stepped over and no recovery path brought it back.
+ */
+it("a transient failure leaves the frontier where it was, even when it is terminal", async () => {
+  db.prepare("UPDATE memory_jobs SET max_attempts = 1 WHERE kind = 'capsule_update' AND state = 'pending'").run();
+  let pageItems = 0;
+  const result = await runContinuityWorker(db, {
+    maxJobs: 1,
+    model: async (_system, user) => {
+      pageItems = JSON.parse(user).contiguousSegment.length;
+      throw new Error("LLM call failed: fetch failed (ECONNRESET)");
+    },
+  });
+
+  expect(result[0]?.state).toBe("dead");
+  expect(pageItems).toBe(CAPSULE_PAGE_ITEMS);
+  // The provider failed; nothing was learned about the evidence.
+  expect(frontier()).toBe(0);
+  const [state] = checkpointState();
+  expect(state.state).toBe("failed-visible");
+  expect(state.last_error).not.toContain("skipped evidence");
+  expect(skipRecord()).toMatchObject({ skipped_seq: null, frontier_before_skip: null });
+  // So every fragment is still waiting for the recovered job.
+  expect(
+    db.prepare("SELECT COUNT(*) AS c FROM workstream_evidence WHERE workstream_id = ? AND seq > ?")
+      .get(workstream, frontier()),
+  ).toEqual({ c: CAPSULE_PAGE_ITEMS });
+});
+
+it("recovering a skipped Capsule puts the skipped fragment back into the model input", async () => {
+  await drainFailingAttempts([], 5);
+  expect(frontier()).toBe(1);
+  const jobId = deadCapsuleJobId();
+
+  const recovered = recoverTerminalWork(db, { jobId, now: new Date(Date.now() + 6 * 3_600_000) });
+  expect(recovered.entries[0].reset.capsule_frontiers).toBe(1);
+  // Before this change the frontier stayed at 1 and seq 1 was never read again.
+  expect(frontier()).toBe(0);
+  expect(skipRecord()).toMatchObject({ skipped_seq: null, frontier_before_skip: null });
+
+  const seen: number[] = [];
+  await runContinuityWorker(db, {
+    maxJobs: 1,
+    now: new Date(Date.now() + 7 * 3_600_000),
+    model: async (_system, user) => {
+      for (const item of JSON.parse(user).contiguousSegment) seen.push(item.evidenceSeq);
+      throw new Error("still failing");
+    },
+  });
+  expect(seen).toContain(1);
 });
 
 it("a dead Capsule job is not re-created by the next checkpoint", async () => {

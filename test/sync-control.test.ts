@@ -244,6 +244,81 @@ describe('cross-device sync control (#35/#48)', () => {
     expect(check()?.detail).toContain('last export ok');
   });
 
+  /**
+   * Issue #68 — observed procedure: export to folder A, `memex sync enable
+   * --dir B` (empty), then `memex sync export` →
+   *   "sync export skipped: no durable change since the last export"
+   * and B never received a generation until the DB itself changed. The status
+   * file is LOCAL, so folder A's fingerprint was read as a verdict about B.
+   */
+  it('a new shared folder gets its own first export instead of inheriting the old fingerprint', async () => {
+    await seed(rootA, { id: 'fact-dest', text: 'must reach both folders', subject: 'shared.dest.case' });
+    const control = await import('../src/sync-control.js');
+    const folderA = path.join(temp, 'folder-a');
+    const folderB = path.join(temp, 'folder-b');
+    process.env.MEMEX_HOME = rootA;
+    delete process.env.MEMEX_SYNC_DIR; // env would pin ONE folder for both halves
+
+    control.setSyncEnabled({ enabled: true, dir: folderA });
+    expect(control.runSyncExport().skipped).toBeNull();
+    // The empty-generation guard still holds for the SAME folder (#48 B).
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+    const deviceId = control.getSyncStatus().deviceId!;
+    expect(fs.existsSync(path.join(folderA, 'devices', deviceId, 'CURRENT'))).toBe(true);
+
+    control.setSyncEnabled({ enabled: true, dir: folderB });
+    // Switching folders drops the fingerprint recorded for the old destination.
+    expect(control.getSyncStatus().lastExport?.stateFingerprint).toBeUndefined();
+    expect(control.runSyncExport().skipped).toBeNull();
+    expect(fs.existsSync(path.join(folderB, 'devices', deviceId, 'CURRENT'))).toBe(true);
+    // And the new folder gets its own skip baseline.
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+  });
+
+  /**
+   * Issue #67 — observed: {"flipped":true,"fingerprintChanged":false,
+   * "row":{"status":"emitted",...}}. `status`/`emitted_at` are exported
+   * columns, but the gate read only COUNT(*) and MAX(created_at), so the
+   * convergence never left the device.
+   */
+  it('a recall receipt flipping to emitted moves the fingerprint and publishes a generation', async () => {
+    await seed(rootA, { id: 'fact-receipt', text: 'receipts travel too', subject: 'shared.receipt.case' });
+    const control = await import('../src/sync-control.js');
+    control.setSyncEnabled({ enabled: true });
+    expect(control.runSyncExport().skipped).toBeNull();
+
+    const { initDatabase, recordRecallEvent, markRecallEventEmitted } = await import('../src/db.js');
+    const { durableStateFingerprint } = await import('../src/sync-export.js');
+    let receiptId: string | null = null;
+    let before = '';
+    let after = '';
+    let db = initDatabase();
+    try {
+      receiptId = recordRecallEvent(db, {
+        sessionId: 'sess-receipt', project: '/shared', prompt: 'hello',
+        factIds: [], context: 'some injected context',
+      });
+      expect(receiptId).not.toBeNull();
+    } finally {
+      db.close();
+    }
+    // Publish the `prepared` receipt so only the flip is left to detect.
+    expect(control.runSyncExport().skipped).toBeNull();
+    expect(control.runSyncExport()).toMatchObject({ skipped: 'unchanged' });
+
+    db = initDatabase();
+    try {
+      before = durableStateFingerprint(db);
+      expect(markRecallEventEmitted(db, { sessionId: 'sess-receipt', prompt: 'hello', id: receiptId! })).toBe(true);
+      after = durableStateFingerprint(db);
+    } finally {
+      db.close();
+    }
+    expect(after).not.toBe(before);
+    // Before the fix this reported `unchanged` and the flip never propagated.
+    expect(control.runSyncExport().skipped).toBeNull();
+  });
+
   it('the export hook script is registered on SessionEnd as an async entry', async () => {
     const { LIFECYCLE_COMMANDS, SYNC_LIFECYCLE_SCRIPTS, isLifecycleScriptRegistered } =
       await import('../src/lifecycle.js');

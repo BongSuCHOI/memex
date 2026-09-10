@@ -25,11 +25,13 @@ import {
 } from "./conversation-policy.js";
 import {
   appendSessionEvidence,
+  capsulePageHintAtFloor,
   readCapsulePage,
   shrinkCapsulePageHint,
   skipCapsuleEvidenceHead,
   type CapsulePage,
 } from "./continuity-evidence.js";
+import { classifyLlmError } from "./llm-error-class.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import {
   deferMemoryJobForModelBudget,
@@ -548,9 +550,34 @@ async function processCapsule(
       // Terminal after shrinking: step the frontier over exactly the fragment
       // that could not be distilled so the workstream is not frozen at seq 0
       // forever (and its Capsule is not reported permanently stale).
-      const skipped = skipCapsuleEvidenceHead(db, attemptWorkstreamId, attemptPage);
+      //
+      // Issue #71: that is only true of a fragment PROVEN undistillable. Two
+      // conditions, both required. The page must already be at the floor —
+      // otherwise a smaller page was never tried. And the failure must be about
+      // the content, not the provider: a recognized transient model/network
+      // error says nothing about this evidence, and stepping over it lost the
+      // fragment permanently (every later read starts past it and recovery did
+      // not roll the frontier back). Anything else stays `failed-visible` at an
+      // unchanged frontier, which is exactly what `memex recover` re-queues.
+      const errorClass = classifyLlmError(error);
+      const atFloor = capsulePageHintAtFloor(db, claim.checkpoint_id);
+      const skipped = atFloor && errorClass !== "transient"
+        ? skipCapsuleEvidenceHead(db, attemptWorkstreamId, attemptPage)
+        : null;
       if (skipped !== null) {
         detail = `${message} (skipped evidence seq ${skipped}; frontier advanced)`;
+        db.prepare(`
+          UPDATE capsule_checkpoint_state
+          SET last_error = ?, updated_at = ?, skipped_seq = ?, frontier_before_skip = ?
+          WHERE checkpoint_id = ?
+        `).run(
+          detail.slice(0, 1_000), new Date().toISOString(),
+          skipped, attemptPage.fromSeq, claim.checkpoint_id,
+        );
+      } else {
+        detail = `${message} (evidence kept at seq ${attemptPage.fromSeq}: ` +
+          `${atFloor ? `${errorClass} failure` : "page was never shrunk to one fragment"}` +
+          "; memex recover re-queues it)";
         db.prepare(`
           UPDATE capsule_checkpoint_state SET last_error = ?, updated_at = ?
           WHERE checkpoint_id = ?
