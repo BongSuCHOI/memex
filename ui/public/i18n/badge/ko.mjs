@@ -1,7 +1,14 @@
-// badge — 상태 배지의 이름(.label)과 한 줄 설명(.help). 소유: i18n L1.
-// ui.mjs의 label 사전 71개와 help.mjs의 BADGES 71개를 **한 파일로 합친 것**이다(설계 §12.3 X1).
-// name(v)=t(`badge.${v}.label`), badgeHelp(v)=t(`badge.${v}.help`) 로 런타임에 조립되므로
-// 사전 완전성 검사는 DYNAMIC_PREFIXES의 `badge.`로 면제된다.
+// badge — 상태 배지 71종의 `label`(짧은 이름)과 `help`(한 줄 설명). (#109)
+//
+// 0.6.x에서는 같은 계약이 **두 파일에 흩어져** 있었다: `ui.mjs`의 `label`(71)과 `help.mjs`의
+// `BADGES`(71)가 키를 1:1로 맞춰야 했고 `ui/test/help.test.cjs`가 양방향 차집합으로 그것을
+// 강제했다. 두 맵을 이 네임스페이스 하나로 합치면 계약이 **`.label`/`.help` 쌍의 존재**로
+// 좁혀진다(설계 §6.2 선행 조건 2 · §12.3 X1).
+//
+// 소유: i18n L4가 142키를 작성한다. 소비자는 둘이다 —
+//   `ui.mjs`   name(v)      → t('badge.'+v+'.label')   ← L1이 `label` 테이블을 지우고 전환한다
+//   `help.mjs` badgeHelp(v) → t('badge.'+v+'.help')    ← L4가 이미 전환했다
+// 키는 코어 enum·상태 문자열 그대로다. 음차하거나 번역하지 않는다.
 export default {
   'badge.ASSERTED.label': '기억 확정',
   'badge.ASSERTED.help': '추출기나 사용자가 이 기억을 확정한 이벤트입니다.',

@@ -48,16 +48,9 @@ export const ALLOW = [
  * (`stale`) 줄을 지우도록 강제한다 — 목록이 조용히 남아 가림막이 되는 것을 막는다.
  */
 export const PENDING_MIGRATION = [
-  'ui/public/details.mjs',
-  'ui/public/guidance.mjs',
-  'ui/public/help.mjs',
-  'ui/public/pages/activity.mjs',
-  'ui/public/pages/conversations.mjs',
-  'ui/public/pages/facts.mjs',
-  'ui/public/pages/graph.mjs',
-  'ui/public/pages/overview.mjs',
-  'ui/public/pages/settings.mjs',
-  'ui/public/pages/taxonomy.mjs',
+  // **비었다.** 네 레인이 모두 자기 파일을 비웠다: L1(ui/lib · 셸 · 포맷터 · 배지 · 오류),
+  // L2(상세 · 관리), L3(페이지 · 활동), L4(도움말 · 안내). 이제 `ALLOW`의 경로 3개 밖에서
+  // 한글 리터럴이 하나라도 나오면 그것은 **예정된 미이관이 아니라 회귀**다.
 ];
 
 /**

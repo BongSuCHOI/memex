@@ -261,6 +261,13 @@ export function initDatabase(options: { busyTimeoutMs?: number; dbPath?: string 
   if (!recallColumns.has("emitted_at")) {
     db.exec("ALTER TABLE recall_events ADD COLUMN emitted_at TEXT");
   }
+  // Issue #29 (0.7.0): which recall-gate overlay decided this receipt, as
+  // `gate:<sha8>`. Additive and nullable; pre-0.7.0 rows stay NULL, and the hash
+  // is resolvable only through this machine's `overlays/history.jsonl`, so the
+  // column is deliberately NOT part of the sync payload (docs/SCHEMA.md).
+  if (!recallColumns.has("gate_overlay_hash")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN gate_overlay_hash TEXT");
+  }
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)",
   );
@@ -1772,6 +1779,8 @@ export function recordRecallEvent(
     /** Context-only delivery can be recorded even without fact IDs. The
      * context body is intentionally not persisted in this receipt. */
     context?: string;
+    /** Issue #29: `gate:<sha8>` of the recall-gate overlay that decided this. */
+    gateOverlayHash?: string | null;
   },
 ): string | null {
   if (!event.sessionId || (event.factIds.length === 0 && !event.context?.trim())) return null;
@@ -1779,8 +1788,9 @@ export function recordRecallEvent(
   db.prepare(`
     INSERT INTO recall_events
       (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
-       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at,
+       gate_overlay_hash)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
@@ -1793,6 +1803,7 @@ export function recordRecallEvent(
     event.contextEpoch ?? 0,
     event.projectMemoryRevision ?? 0,
     new Date().toISOString(),
+    event.gateOverlayHash ?? null,
   );
   return id;
 }

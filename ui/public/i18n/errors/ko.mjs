@@ -53,8 +53,6 @@ export default {
   'error.attempt.notFoundInScope': '현재 범위에서 모델 시도를 찾을 수 없습니다.',
   // ── 지식 지도 ──────────────────────────────────────────────────────────────
   'error.graph.unknownRelationType': '알 수 없는 관계 유형입니다.',
-  'error.graph.canvasUnavailable': '이 브라우저에서 그래픽 캔버스를 사용할 수 없습니다. 왼쪽 기억 목록으로 탐색하세요.',
-  'error.graph.contextLost': 'WebGL 컨텍스트가 중단됐습니다. 브라우저 복구 후 다시 그립니다.',
   // ── 동기화·세대 파일 ───────────────────────────────────────────────────────
   'error.sync.unsupportedAction': '지원하지 않는 동기화 작업입니다.',
   'error.sync.alreadyRunning': '동기화 작업이 이미 진행 중입니다.',

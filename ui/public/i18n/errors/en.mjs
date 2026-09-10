@@ -56,8 +56,6 @@ export default {
   'error.attempt.notFoundInScope': 'No model attempt found in the current scope.',
   // ── 지식 지도 ──────────────────────────────────────────────────────────────
   'error.graph.unknownRelationType': 'Unknown relation type.',
-  'error.graph.canvasUnavailable': 'This browser cannot use the graphics canvas. Browse the memory list on the left instead.',
-  'error.graph.contextLost': 'The WebGL context was lost. The map is redrawn once the browser recovers.',
   // ── 동기화·세대 파일 ───────────────────────────────────────────────────────
   'error.sync.unsupportedAction': 'Unsupported sync action.',
   'error.sync.alreadyRunning': 'A sync run is already in progress.',

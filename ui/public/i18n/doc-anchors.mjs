@@ -17,6 +17,11 @@ export const DOC_ANCHORS = Object.freeze({
   GUIDE_DIAG: 'docs/GUIDE.md#13-진단',
   GUIDE_TIERS: 'docs/GUIDE.md#수집과-기억-계층',
   GUIDE_RECOVER: 'docs/GUIDE.md#작업이-실패했을-때-terminal-상태-복구',
+  // ↓ L4(#109): lane-0은 help.mjs의 **이름 붙은** 상수 16개만 옮겼다. help.mjs와 guidance.mjs의
+  //   `source`에 인라인으로 박혀 있던 한국어 앵커 3개가 남아 §8.2 게이트를 막으므로 같이 올린다.
+  GUIDE_SEARCH: 'docs/GUIDE.md#6-검색과-분석',
+  GUIDE_ONTOLOGY_REPAIR: 'docs/GUIDE.md#ontology-taxonomy-수리-061-47',
+  GUIDE_DO_NOT_INDEX: 'docs/GUIDE.md#11-do-not-index와-재분류-비용',
   WEBUI: 'docs/WEBUI-WORKSPACE.md#화면',
   WEBUI_TIERS: 'docs/WEBUI-WORKSPACE.md#계층-배지와-숨겨진-계층-061-22',
   WEBUI_PROMOTE: 'docs/WEBUI-WORKSPACE.md#승격강등과-계층-이관-061-22',

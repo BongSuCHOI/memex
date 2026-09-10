@@ -1,10 +1,7 @@
-import {t,tn} from './i18n/index.mjs';
-// factText()는 prefs.preferTranslatedFacts를 존중한다 — 노드 라벨·툴팁이 fact_kr를 무조건 먼저
-// 쓰면 en 지식 지도에 한국어가 남는다(설계 §14.5).
-import {factText} from './ui.mjs';
 /** Native WebGL renderer. No CDN, external fonts, telemetry, or render loop at rest.
  * Layout encodes domain grouping only; physical distance is NOT semantic similarity.
  */
+import {t,tn} from './i18n/index.mjs';
 export const palette=['#72c7b0','#7aaad5','#bd9ee0','#e2b87c','#76b9c5','#db9ead','#a6c982','#b5bfd7','#d7bda6','#82bdab','#c3abd0','#91bfc9'];
 const color=(hex,alpha=1)=>[parseInt(hex.slice(1,3),16)/255,parseInt(hex.slice(3,5),16)/255,parseInt(hex.slice(5,7),16)/255,alpha];
 const edgeColors={SUPPORTS:'#71bda7',INFLUENCES:'#80aee0',SUPERSEDES:'#dcbb83',CONTRADICTS:'#d77e86'};
@@ -13,7 +10,10 @@ void main(){float cy=cos(u_rotate.x),sy=sin(u_rotate.x),cx=cos(u_rotate.y),sx=si
 const fs=`precision mediump float;varying vec4 v_color;uniform float u_points;void main(){float a=v_color.a;if(u_points>.5){float d=distance(gl_PointCoord,vec2(.5));if(d>.5)discard;a*=1.0-smoothstep(.32,.5,d);}gl_FragColor=vec4(v_color.rgb,a);}`;
 export class KnowledgeGraph{
   constructor(stage,data,options={}){
-    this.stage=stage;this.data=data;this.options=options;this.canvas=stage.querySelector('canvas.graph-canvas');this.labels=stage.querySelector('canvas.labels');this.ctx=this.labels.getContext('2d');this.tooltip=stage.querySelector('.graph-tooltip');this.abort=new AbortController();this.selected=null;this.hovered=null;this.mode=options.mode||'2d';this.yaw=this.mode==='3d'?.35:0;this.pitch=this.mode==='3d'?.2:0;this.zoom=.86;this.panX=0;this.panY=0;this.raf=0;this.frames=0;this.destroyed=false;this.gl=null;stage.__knowledgeGraph=this;
+    this.stage=stage;this.data=data;this.options=options;this.canvas=stage.querySelector('canvas.graph-canvas');this.labels=stage.querySelector('canvas.labels');this.ctx=this.labels.getContext('2d');this.tooltip=stage.querySelector('.graph-tooltip');this.abort=new AbortController();this.selected=null;this.hovered=null;this.mode=options.mode||'2d';
+    // 노드 라벨은 표시 설정을 존중한다 — fact_kr을 무조건 우선하면 en 화면과 스크린샷에
+    // 한국어가 남는다(설계 §10.3 · §14.5). 기본값은 off: 호출자가 명시적으로 켠다.
+    this.preferTranslated=!!options.preferTranslated;this.yaw=this.mode==='3d'?.35:0;this.pitch=this.mode==='3d'?.2:0;this.zoom=.86;this.panX=0;this.panY=0;this.raf=0;this.frames=0;this.destroyed=false;this.gl=null;stage.__knowledgeGraph=this;
     this.layout();this.initGL();this.events();this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(stage);this.resize();
   }
   layout(){
@@ -24,14 +24,14 @@ export class KnowledgeGraph{
     for(const [key,items]of groups){
       const angle=gi*2*Math.PI/groupCount-Math.PI/2;const spread=Math.max(.19,Math.sqrt(items.length/total)*.65);const radius=groupCount===1?0:.72;
       const center=[Math.cos(angle)*radius,Math.sin(angle)*radius,Math.sin(gi*1.7)*.18];const hue=key==='unclassified'?'#7e929c':palette[(domains.get(key)?.index||0)%palette.length];
-      this.clusters.push({name:domains.get(key)?.name||t('common.uncategorized'),center,color:hue,count:items.length});
+      this.clusters.push({name:domains.get(key)?.name||t('pages.shared.domain.unclassified'),center,color:hue,count:items.length});
       items.forEach((f,i)=>{const a=i*2.3999632297;const r=Math.sqrt((i+.5)/items.length)*spread;const pos=[center[0]+Math.cos(a)*r,center[1]+Math.sin(a)*r,center[2]+Math.sin(i*2.05)*spread*.65];this.nodes.push({...f,pos,hue,degree:degrees.get(f.id)||0,size:Math.min(12,5+Math.sqrt(degrees.get(f.id)||0))});});gi++;
     }
     this.byId=new Map(this.nodes.map(n=>[n.id,n]));this.neighbors=new Map();for(const e of this.data.edges){for(const [a,b]of [[e.source_fact_id,e.target_fact_id],[e.target_fact_id,e.source_fact_id]]){if(!this.neighbors.has(a))this.neighbors.set(a,new Set());this.neighbors.get(a).add(b);}}
   }
   initGL(){
     const gl=this.canvas.getContext('webgl',{antialias:true,alpha:false,preserveDrawingBuffer:true,powerPreference:'low-power'});
-    if(!gl){this.renderer='Canvas 2D';this.fallback=this.canvas.getContext('2d');if(!this.fallback)throw new Error(t('error.graph.canvasUnavailable'));return;}this.renderer='WebGL';this.gl=gl;
+    if(!gl){this.renderer='Canvas 2D';this.fallback=this.canvas.getContext('2d');if(!this.fallback)throw new Error(t('pages.graph.error.canvas'));return;}this.renderer='WebGL';this.gl=gl;
     const compile=(type,source)=>{const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS)){const msg=gl.getShaderInfoLog(shader);gl.deleteShader(shader);throw new Error(msg);}return shader;};
     const vert=compile(gl.VERTEX_SHADER,vs),frag=compile(gl.FRAGMENT_SHADER,fs);const program=gl.createProgram();gl.attachShader(program,vert);gl.attachShader(program,frag);gl.linkProgram(program);gl.deleteShader(vert);gl.deleteShader(frag);
     if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));this.program=program;gl.useProgram(program);
@@ -66,23 +66,25 @@ export class KnowledgeGraph{
     c.globalAlpha=1;
   }
   drawLabels(){const c=this.ctx;c.setTransform(this.dpr,0,0,this.dpr,0,0);c.clearRect(0,0,this.width,this.height);c.textAlign='center';c.textBaseline='middle';
-    for(const cl of this.clusters){const[x,y]=this.project(cl.center);c.fillStyle='#8eabb6';c.font='10px system-ui';c.fillText(cl.name.slice(0,30),x,y-36*this.zoom);c.fillStyle='#557783';c.font='9px system-ui';c.fillText(tn('unit.memories',cl.count,{count:cl.count}),x,y-22*this.zoom);}
+    for(const cl of this.clusters){const[x,y]=this.project(cl.center);c.fillStyle='#8eabb6';c.font='10px system-ui';c.fillText(cl.name.slice(0,30),x,y-36*this.zoom);c.fillStyle='#557783';c.font='9px system-ui';c.fillText(tn('pages.graph.cluster.memories',cl.count,{n:String(cl.count)}),x,y-22*this.zoom);}
     const selected=this.selected||this.hovered;if(!selected)return;
     for(const e of this.data.edges){if(e.source_fact_id!==selected&&e.target_fact_id!==selected)continue;const a=this.byId.get(e.source_fact_id),b=this.byId.get(e.target_fact_id);if(!a||!b)continue;const p=this.project(a.pos),q=this.project(b.pos),dx=q[0]-p[0],dy=q[1]-p[1],d=Math.hypot(dx,dy);if(d<15)continue;const ux=dx/d,uy=dy/d;const x=q[0]-ux*10,y=q[1]-uy*10;c.strokeStyle=edgeColors[e.relation_type];c.lineWidth=1;c.beginPath();c.moveTo(x-ux*5-uy*3,y-uy*5+ux*3);c.lineTo(x,y);c.lineTo(x-ux*5+uy*3,y-uy*5-ux*3);c.stroke();}
-    const n=this.byId.get(selected);if(n){const[x,y]=this.project(n.pos);c.strokeStyle=n.hue;c.lineWidth=1;c.beginPath();c.arc(x,y,11,0,Math.PI*2);c.stroke();c.fillStyle='#d2e6e8';c.font='11px system-ui';c.fillText(factText(n).slice(0,45),x,Math.max(70,y-25));}
+    const n=this.byId.get(selected);if(n){const[x,y]=this.project(n.pos);c.strokeStyle=n.hue;c.lineWidth=1;c.beginPath();c.arc(x,y,11,0,Math.PI*2);c.stroke();c.fillStyle='#d2e6e8';c.font='11px system-ui';c.fillText(this.nodeLabel(n).slice(0,45),x,Math.max(70,y-25));}
   }
+  /** 기억 본문 라벨. preferTranslated일 때만 fact_kr을 앞세운다. */
+  nodeLabel(n){if(!n)return '';return (this.preferTranslated&&n.fact_kr?n.fact_kr:n.fact)||n.fact_kr||'';}
   pick(x,y){let best=null,dist=13;for(const n of this.nodes){const p=this.project(n.pos);const d=Math.hypot(p[0]-x,p[1]-y);if(d<dist){best=n;dist=d;}}return best;}
   select(id){this.selected=id;this.upload();}
   reset(){this.panX=this.panY=0;this.zoom=.86;this.yaw=this.mode==='3d'?.35:0;this.pitch=this.mode==='3d'?.2:0;this.selected=null;this.upload();}
   setMode(mode){this.mode=mode;this.yaw=mode==='3d'?.35:0;this.pitch=mode==='3d'?.2:0;this.schedule();}
   events(){const signal=this.abort.signal;let down=null;
     this.canvas.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY,lastX:e.clientX,lastY:e.clientY,moved:false};this.canvas.setPointerCapture(e.pointerId);},{signal});
-    this.canvas.addEventListener('pointermove',e=>{const r=this.canvas.getBoundingClientRect();if(down){const dx=e.clientX-down.lastX,dy=e.clientY-down.lastY;if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>4)down.moved=true;if(this.mode==='3d'&&!e.shiftKey){this.yaw+=dx*.007;this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+dy*.007));}else{this.panX+=dx*2/this.width;this.panY-=dy*2/this.height;}down.lastX=e.clientX;down.lastY=e.clientY;this.tooltip.hidden=true;this.schedule();return;}const n=this.pick(e.clientX-r.left,e.clientY-r.top);if(this.hovered!==n?.id){this.hovered=n?.id||null;this.schedule();}this.canvas.style.cursor=n?'pointer':this.mode==='3d'?'grab':'move';this.tooltip.hidden=!n;if(n){this.tooltip.textContent=factText(n);this.tooltip.style.left=Math.max(8,Math.min(this.width-290,e.clientX-r.left+16))+'px';this.tooltip.style.top=Math.max(60,Math.min(this.height-100,e.clientY-r.top+15))+'px';}},{signal});
+    this.canvas.addEventListener('pointermove',e=>{const r=this.canvas.getBoundingClientRect();if(down){const dx=e.clientX-down.lastX,dy=e.clientY-down.lastY;if(Math.hypot(e.clientX-down.x,e.clientY-down.y)>4)down.moved=true;if(this.mode==='3d'&&!e.shiftKey){this.yaw+=dx*.007;this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+dy*.007));}else{this.panX+=dx*2/this.width;this.panY-=dy*2/this.height;}down.lastX=e.clientX;down.lastY=e.clientY;this.tooltip.hidden=true;this.schedule();return;}const n=this.pick(e.clientX-r.left,e.clientY-r.top);if(this.hovered!==n?.id){this.hovered=n?.id||null;this.schedule();}this.canvas.style.cursor=n?'pointer':this.mode==='3d'?'grab':'move';this.tooltip.hidden=!n;if(n){this.tooltip.textContent=this.nodeLabel(n);this.tooltip.style.left=Math.max(8,Math.min(this.width-290,e.clientX-r.left+16))+'px';this.tooltip.style.top=Math.max(60,Math.min(this.height-100,e.clientY-r.top+15))+'px';}},{signal});
     this.canvas.addEventListener('pointerup',e=>{if(!down)return;const moved=down.moved;down=null;if(!moved){const r=this.canvas.getBoundingClientRect();const n=this.pick(e.clientX-r.left,e.clientY-r.top);if(n){this.select(n.id);this.options.onSelect?.(n.id);}else{this.select(null);}}},{signal});
     this.canvas.addEventListener('pointercancel',()=>down=null,{signal});this.canvas.addEventListener('pointerleave',()=>{this.tooltip.hidden=true;this.hovered=null;this.schedule();},{signal});
     this.canvas.addEventListener('wheel',e=>{e.preventDefault();const previous=this.zoom;this.zoom=Math.min(8,Math.max(.15,this.zoom*Math.exp(-e.deltaY*.001)));if(this.mode==='2d'){const r=this.canvas.getBoundingClientRect();const x=(e.clientX-r.left)/this.width*2-1,y=1-(e.clientY-r.top)/this.height*2;const k=this.zoom/previous;this.panX=x-(x-this.panX)*k;this.panY=y-(y-this.panY)*k;}this.schedule();},{signal,passive:false});
     this.canvas.addEventListener('keydown',e=>{const steps={ArrowLeft:[.1,0],ArrowRight:[-.1,0],ArrowUp:[0,-.1],ArrowDown:[0,.1]};if(steps[e.key]){e.preventDefault();if(this.mode==='3d'){this.yaw+=steps[e.key][0];this.pitch=Math.max(-1.4,Math.min(1.4,this.pitch+steps[e.key][1]));}else{this.panX+=steps[e.key][0];this.panY+=steps[e.key][1];}}else if(['+','=','-'].includes(e.key)){e.preventDefault();this.zoom=Math.min(8,Math.max(.15,this.zoom*(e.key==='-'?.9:1.1)));}else if(e.key==='0'){this.reset();}else if(e.key==='Enter'&&this.selected)this.options.onSelect?.(this.selected);this.schedule();},{signal});
-    this.canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();this.options.onError?.(t('error.graph.contextLost'));},{signal});
+    this.canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();this.options.onError?.(t('pages.graph.error.contextLost'));},{signal});
     this.canvas.addEventListener('webglcontextrestored',()=>{this.initGL();this.schedule();},{signal});
   }
   exportPNG(){this.draw();const output=document.createElement('canvas');output.width=this.canvas.width;output.height=this.canvas.height;const c=output.getContext('2d');c.drawImage(this.canvas,0,0);c.drawImage(this.labels,0,0);const a=document.createElement('a');a.href=output.toDataURL('image/png');a.download='memex-knowledge-map.png';a.click();}

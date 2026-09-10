@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 export interface ContinuityWorkerResult {
     jobId: string;
     kind: "capture_index" | "capsule_update";
-    state: "completed" | "partial" | "retry" | "dead" | "stale" | "deferred";
+    state: "completed" | "partial" | "retry" | "dead" | "stale" | "deferred" | "held";
     detail: string;
 }
 type ModelCall = (system: string, user: string) => Promise<string>;

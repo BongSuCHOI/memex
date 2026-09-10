@@ -4,7 +4,6 @@
 export default {
   // ── 공통 명사 ──────────────────────────────────────────────────────────────
   'common.unknown': '미수집',
-  'common.uncategorized': '미분류',
   'common.commonMemory': '공통 기억',
   'common.allProjects': '전체',
   'common.search': '검색',
@@ -15,8 +14,6 @@ export default {
   'common.job.hold.extraction_rules_unavailable': '추출 규칙을 확인하지 못함',
   'common.job.hold.model_config_rejected': '모델 설정 대기',
   // ── 단위 ───────────────────────────────────────────────────────────────────
-  'unit.count.other': '{count}개',
-  'unit.memories.other': '기억 {count}개',
   'unit.duration.ms': '{value} ms',
   'unit.duration.sec': '{value} s',
   'unit.duration.minsec': '{m}분 {s}초',

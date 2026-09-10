@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getDbPath } from "./paths.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { ontologyPendingSqlInline } from "./ontology-selector.js";
+import { llmSelectionFingerprint, resolveLlmModel, resolveReasoningEffort, } from "./model-settings.js";
 /**
  * Durable accounting for model work.
  *
@@ -28,6 +29,32 @@ export const AUTOMATIC_MAINTENANCE_WINDOW_MS = 24 * 60 * 60_000;
 export const AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
 export const MAINTENANCE_WAKE_INTERVAL_MS = 3 * 60_000;
+/** Issue #31: an active hold nobody observes for this long is closed by TTL. */
+export const MODEL_CONFIG_HOLD_TTL_MS = 30 * 24 * 60 * 60_000;
+/**
+ * Issue #31 — `memory_jobs.hold_reason`. The value set lives here, in ONE
+ * place, and both HOLD transitions validate against it so the check is not
+ * scattered across the six call sites that use them.
+ */
+export const HOLD_REASONS = [
+    "model_config_rejected", // the provider refused the request envelope
+    "extraction_rules_invalid", // a never_extract pattern was quarantined
+    "extraction_rules_unavailable", // the never_extract check could not finish
+];
+/**
+ * Attempt outcomes that exist as EVIDENCE but are excluded from every budget
+ * aggregate (reserved / used / exhausted, and the 24h automatic window).
+ *
+ * Adding a member here is the whole change needed to make a new "cost nothing"
+ * outcome free: the SQL below is generated from this array rather than
+ * hand-written per query.
+ */
+export const BUDGET_FREE_OUTCOMES = ["config_rejected"];
+/** `COALESCE(<alias>.outcome,'') NOT IN (...)` — a budget-relevant attempt. */
+function budgetRelevantOutcomeSql(alias) {
+    const list = BUDGET_FREE_OUTCOMES.map((value) => `'${value}'`).join(",");
+    return `COALESCE(${alias}.outcome,'') NOT IN (${list})`;
+}
 export class ModelBudgetError extends Error {
     code = "MEMEX_MODEL_BUDGET";
     budgetId;
@@ -89,6 +116,25 @@ export class ModelBudgetAffinityError extends Error {
     constructor(jobId, existing, requested) {
         super(`memory job ${jobId} is already bound to budget ${existing}; refusing rebind to ${requested}`);
         this.name = "ModelBudgetAffinityError";
+    }
+}
+/**
+ * Issue #31 — an active config hold refused this call before it could reserve.
+ *
+ * Classified `'config'` by `classifyLlmError` (via `code`), so the caller takes
+ * the same HOLD path a live provider rejection takes. The difference is cost:
+ * this one spends NOTHING — no reservation, no provider call.
+ */
+export class ModelConfigHeldError extends Error {
+    code = "MEMEX_MODEL_CONFIG_HELD";
+    hold;
+    constructor(hold) {
+        super(`model work is held: the provider rejected the request envelope for model ` +
+            `"${hold.model}"${hold.reasoningEffort ? ` at reasoning effort "${hold.reasoningEffort}"` : ""}` +
+            ` (${hold.status ?? "?"} ${hold.providerType ?? "provider error"}). ` +
+            `Fix the selection and it resumes automatically: memex models show`);
+        this.name = "ModelConfigHeldError";
+        this.hold = hold;
     }
 }
 const modelWorkStorage = new AsyncLocalStorage();
@@ -203,7 +249,15 @@ export function ensureModelBudgetSchema(db) {
         token_usage_status TEXT
           CHECK(token_usage_status IN ('observed','partial','NOT_PROVEN')),
         error_class TEXT,
-        error_message TEXT
+        error_message TEXT,
+        -- Issue #31: which selection this attempt intended and actually used.
+        model TEXT,
+        reasoning_effort TEXT,
+        -- Issue #31: NULL for an ordinary attempt; 'config_rejected' for one the
+        -- provider refused before any model work started. No CHECK: the value
+        -- set can grow (other "cost nothing" outcomes) and every existing row
+        -- must stay NULL, so the restriction is application-level only.
+        outcome TEXT
       );
 
       CREATE TABLE IF NOT EXISTS model_work_targets (
@@ -238,7 +292,56 @@ export function ensureModelBudgetSchema(db) {
         id INTEGER PRIMARY KEY CHECK(id = 1),
         wake_after TEXT NOT NULL
       );
+
+      /*
+       * Issue #31 — durable "this model selection is unusable" state.
+       *
+       * Keyed on the SELECTION FINGERPRINT, one row per selection, NOT a single
+       * id=1 row. v2 of the design used a single row that a lookup deleted on a
+       * fingerprint mismatch, so in one data root a process with different env
+       * erased another process's valid hold (2nd review (b)5). With the
+       * fingerprint as the key, every process reads and writes only its OWN
+       * row — so there is no delete race to lose, and fixing the setting simply
+       * means no active row matches any more.
+       *
+       * Clearing does not delete: cleared_at / cleared_by are written so the
+       * history stays auditable. "Active" means cleared_at IS NULL.
+       */
+      CREATE TABLE IF NOT EXISTS model_config_holds (
+        selection_fingerprint TEXT PRIMARY KEY,
+        held_at TEXT NOT NULL,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT,
+        provider_status INTEGER,
+        provider_type TEXT,
+        provider_message TEXT,
+        first_stage TEXT,
+        first_job_id TEXT,
+        observed_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        cleared_at TEXT,
+        cleared_by TEXT
+          CHECK(cleared_by IS NULL OR cleared_by IN ('probe-ok','manual','ttl'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_config_holds_live
+        ON model_config_holds(cleared_at, last_observed_at);
     `);
+        // Issue #31: the attempt ledger had no column guards at all. Three additive
+        // nullable columns; existing rows stay NULL, which reads correctly as
+        // "recorded before Memex could name its own selection".
+        const attemptColumns = columnNames(db, MODEL_ATTEMPT_TABLE);
+        for (const column of ["model", "reasoning_effort", "outcome"]) {
+            if (!attemptColumns.has(column)) {
+                db.exec(`ALTER TABLE ${MODEL_ATTEMPT_TABLE} ADD COLUMN ${column} TEXT`);
+            }
+        }
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_model_work_attempts_outcome
+         ON ${MODEL_ATTEMPT_TABLE}(budget_id, outcome)`);
+        // TTL: an active hold nobody has seen for 30 days is closed (never deleted)
+        // so the table cannot grow without bound. The same fingerprint being
+        // rejected again simply records a fresh hold.
+        db.prepare(`UPDATE model_config_holds SET cleared_at = ?, cleared_by = 'ttl'
+       WHERE cleared_at IS NULL AND last_observed_at < ?`).run(new Date().toISOString(), new Date(Date.now() - MODEL_CONFIG_HOLD_TTL_MS).toISOString());
         if (!columnNames(db, MODEL_BUDGET_TABLE).has("automatic")) {
             db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
         }
@@ -330,6 +433,13 @@ export function ensureModelBudgetSchema(db) {
             }
             if (!columns.has("maintenance_wave_id")) {
                 db.exec("ALTER TABLE memory_jobs ADD COLUMN maintenance_wave_id TEXT");
+            }
+            // Issue #31: `ensureContinuitySchema` owns this column (it owns the
+            // table), but the HOLD transitions live here and must work on any
+            // connection that reached them — including a fixture that only ran the
+            // budget migration. Both guards are the same idempotent ALTER.
+            if (!columns.has("hold_reason")) {
+                db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
             }
             db.exec("CREATE INDEX IF NOT EXISTS idx_memory_jobs_budget ON memory_jobs(budget_id, state, updated_at)");
         }
@@ -949,11 +1059,20 @@ export function findExhaustedModelBudgetForClaim(db, input) {
     markModelBudgetExhausted(db, budget.budgetId, reason, now.toISOString());
     return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
 }
-/** Did this claim actually spend a provider attempt before it gave up? */
+/**
+ * Did this claim actually spend a provider attempt before it gave up?
+ *
+ * A config-rejected row is NOT a spent call — the provider refused the envelope
+ * before doing any work — so it must not make an unspent claim look spent and
+ * lose its refund (#31 §3.5.3-3).
+ */
 function hasModelAttemptSince(db, jobId, since) {
+    const outcomeAware = columnNames(db, MODEL_ATTEMPT_TABLE).has("outcome");
     return db.prepare(`
-    SELECT 1 FROM model_work_attempts
-    WHERE job_id = ? AND started_at >= ? LIMIT 1
+    SELECT 1 FROM model_work_attempts a
+    WHERE a.job_id = ? AND a.started_at >= ?
+      ${outcomeAware ? `AND ${budgetRelevantOutcomeSql("a")}` : ""}
+    LIMIT 1
   `).get(jobId, since.toISOString()) !== undefined;
 }
 /**
@@ -1036,6 +1155,336 @@ export function deferMemoryJobForModelBudget(db, input) {
     });
     return defer.immediate();
 }
+/* ------------------------------------------------------------------------- *
+ * Issue #31 — HOLD transitions.
+ *
+ * Classifying a rejection `'config'` is not enough on its own: by the time the
+ * model answers, the claim ALREADY happened. Extraction's
+ * `claimExtractionTargetWithReason` has written three things — `memory_jobs`
+ * (running + lease + attempts+1), `extraction_targets` (the same), and
+ * `checkpoints.state='processing'` — so a hold has to UNDO all three, or the
+ * job sits `running` with a spent attempt and eventually goes `dead` for a
+ * reason that was never its fault (2nd review (b)1).
+ *
+ * The precedent is right above: `deferMemoryJobForModelBudget` already refunds
+ * a claim whose wall-clock budget died unspent. These transitions reuse its
+ * structure, with one difference that matters — the reason is a PARAMETER.
+ * Gate/extraction overlays hold work for reasons of their own (a quarantined
+ * `never_extract` pattern, a check that could not finish), and they must reach
+ * the identical state transition rather than a second near-copy of it.
+ * ------------------------------------------------------------------------- */
+function assertHoldReason(reason) {
+    if (!HOLD_REASONS.includes(reason)) {
+        throw new Error(`unknown hold reason ${JSON.stringify(reason)}; expected one of ${HOLD_REASONS.join(", ")}`);
+    }
+    return reason;
+}
+/** The column lives on `memory_jobs` (owned by ensureContinuitySchema) but is
+ *  written only here, so make sure it exists before the first write. */
+function ensureHoldReasonColumn(db) {
+    if (!tableExists(db, "memory_jobs"))
+        return false;
+    if (columnNames(db, "memory_jobs").has("hold_reason"))
+        return true;
+    db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+    return true;
+}
+/** One bounded line for `last_error`; the next normal claim overwrites it. */
+function holdDetail(reason, detail) {
+    return `held (${reason}): ${detail}`.replace(/\s+/g, " ").trim().slice(0, 1_000);
+}
+function holdJobStatement(db) {
+    return db.prepare(`
+    UPDATE memory_jobs
+    SET state = 'pending', available_at = ?, lease_owner = NULL, lease_until = NULL,
+        attempts = MAX(attempts - 1, 0), hold_reason = ?, last_error = ?, updated_at = ?
+    WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+      AND lease_generation = ? AND lease_until > ?
+  `);
+}
+/**
+ * Return one claimed job to "waiting on a configuration".
+ *
+ * Deliberately NOT `failMemoryJob`:
+ *  - state is `'pending'`, not `'retry'` — a hold does not belong on the
+ *    exponential backoff ladder, and `max_attempts` must never terminate it;
+ *  - `available_at` is now, so the session after the fix picks it up at once;
+ *  - attempts are REFUNDED (the claim bought nothing);
+ *  - `checkpoints` and `capsule_checkpoint_state` are untouched — a hold is not
+ *    a failure, and for Capsule work advancing anything here would step the
+ *    evidence frontier and lose a fragment permanently.
+ *
+ * The CAS is byte-for-byte `failMemoryJob`'s, so a stale owner can never
+ * overwrite a live claim. Returns false when it does not match.
+ */
+export function holdMemoryJob(db, input) {
+    const reason = assertHoldReason(input.reason);
+    ensureModelBudgetSchema(db);
+    if (!ensureHoldReasonColumn(db))
+        return false;
+    const now = input.now ?? new Date();
+    const nowIso = now.toISOString();
+    const detail = holdDetail(reason, input.detail);
+    const hold = db.transaction(() => holdJobStatement(db).run(nowIso, reason, detail, nowIso, input.jobId, input.owner, input.leaseGeneration, nowIso).changes === 1);
+    return db.inTransaction ? hold() : hold.immediate();
+}
+/**
+ * Return a whole extraction claim — job + target + checkpoint marker.
+ *
+ * Acceptance criterion, asserted by the tests: across this transition
+ * `memory_jobs.attempts` and `extraction_targets.attempts` are unchanged from
+ * before the claim, both states are `pending`, `extraction_failures` and
+ * `extraction_log` gain NO rows, and `checkpoints.state` is back off
+ * `processing`. A hold that leaves a failed range behind is not a hold.
+ */
+export function releaseExtractionClaimOnHold(db, input) {
+    const reason = assertHoldReason(input.reason);
+    ensureModelBudgetSchema(db);
+    if (!ensureHoldReasonColumn(db))
+        return false;
+    const now = input.now ?? new Date();
+    const nowIso = now.toISOString();
+    const detail = holdDetail(reason, input.detail);
+    const release = db.transaction(() => {
+        const row = db.prepare(`
+      SELECT target_id, checkpoint_id, kind FROM memory_jobs
+      WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+        AND lease_generation = ? AND lease_until > ?
+    `).get(input.jobId, input.owner, input.leaseGeneration, nowIso);
+        if (!row)
+            return false;
+        const changed = holdJobStatement(db).run(nowIso, reason, detail, nowIso, input.jobId, input.owner, input.leaseGeneration, nowIso).changes;
+        if (changed !== 1)
+            return false;
+        const targetId = input.targetId || row.target_id;
+        if (targetId && tableExists(db, "extraction_targets")) {
+            // Minimal fixtures model this table narrowly — the same `attempts` guard
+            // `deferMemoryJobForModelBudget` uses.
+            const refundTargetAttempt = columnNames(db, "extraction_targets").has("attempts");
+            db.prepare(`
+        UPDATE extraction_targets
+        SET state = 'pending', lease_owner = NULL, lease_until = NULL,
+            last_error = ?, updated_at = ?
+            ${refundTargetAttempt ? ", attempts = MAX(attempts - 1, 0)" : ""}
+        WHERE target_id = ? AND state = 'running' AND lease_owner = ?
+          AND lease_generation = ?
+      `).run(detail, nowIso, targetId, input.owner, input.leaseGeneration);
+        }
+        if (row.checkpoint_id && tableExists(db, "checkpoints")) {
+            // Only the marker the claim itself wrote. Any other value belongs to
+            // someone else's transition and is left exactly as found.
+            db.prepare("UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processing'").run(row.checkpoint_id);
+        }
+        return true;
+    });
+    return db.inTransaction ? release() : release.immediate();
+}
+/**
+ * Lift the hold marker so the next claim treats the job as ordinary work.
+ *
+ * Touches `hold_reason` and nothing else: the job is already `pending` with its
+ * attempts refunded, and rewriting state/attempts here would undo that.
+ */
+export function clearJobHold(db, jobId) {
+    ensureModelBudgetSchema(db);
+    if (!ensureHoldReasonColumn(db))
+        return false;
+    return db.prepare("UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE job_id = ? AND hold_reason IS NOT NULL").run(new Date().toISOString(), jobId).changes === 1;
+}
+/**
+ * Lift every hold with THIS reason. Returns how many rows were lifted.
+ *
+ * Reason isolation is the point: a fixed model selection must not release jobs
+ * that are waiting on a quarantined extraction rule, and vice versa. Each owner
+ * releases only its own.
+ */
+export function releaseHeldJobs(db, reason) {
+    assertHoldReason(reason);
+    ensureModelBudgetSchema(db);
+    if (!ensureHoldReasonColumn(db))
+        return 0;
+    return db.prepare("UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE hold_reason = ?").run(new Date().toISOString(), reason).changes;
+}
+/** Per-reason held-job counts for `memex status`, doctor and the Web UI. */
+export function heldJobSummary(db) {
+    if (!tableExists(db, "memory_jobs"))
+        return [];
+    if (!columnNames(db, "memory_jobs").has("hold_reason"))
+        return [];
+    const rows = db.prepare(`
+    SELECT hold_reason AS reason, COUNT(*) AS jobs, MIN(updated_at) AS oldest
+    FROM memory_jobs
+    WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+    GROUP BY hold_reason
+    ORDER BY hold_reason
+  `).all();
+    return rows
+        .filter((row) => HOLD_REASONS.includes(row.reason))
+        .map((row) => ({ reason: row.reason, jobs: Number(row.jobs), oldestHeldAt: row.oldest ?? null }));
+}
+function holdFromRow(row) {
+    return {
+        fingerprint: String(row.selection_fingerprint),
+        heldAt: String(row.held_at),
+        model: String(row.model),
+        reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+        status: row.provider_status == null ? null : Number(row.provider_status),
+        providerType: row.provider_type == null ? null : String(row.provider_type),
+        providerMessage: row.provider_message == null ? "" : String(row.provider_message),
+        observedCount: Number(row.observed_count ?? 1),
+        lastObservedAt: String(row.last_observed_at),
+    };
+}
+/**
+ * Record (or re-observe) a hold for ONE selection fingerprint.
+ *
+ * "Exactly once per data root" is explicitly NOT promised: the hold is written
+ * AFTER a rejection is observed, so calls already in flight each take one
+ * rejection. The guarantee is the bound — the number of provider calls a wrong
+ * setting can cause equals the number of calls already in flight when the hold
+ * commits (measured 1-4 workers), and zero afterwards. Retry and splitting can
+ * never add to it.
+ */
+export function recordModelConfigHold(db, input) {
+    ensureModelBudgetSchema(db);
+    const nowIso = (input.now ?? new Date()).toISOString();
+    db.prepare(`
+    INSERT INTO model_config_holds
+      (selection_fingerprint, held_at, model, reasoning_effort, provider_status,
+       provider_type, provider_message, first_stage, first_job_id,
+       observed_count, last_observed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(selection_fingerprint) DO UPDATE SET
+      observed_count = model_config_holds.observed_count + 1,
+      last_observed_at = excluded.last_observed_at,
+      provider_status = excluded.provider_status,
+      provider_type = excluded.provider_type,
+      provider_message = excluded.provider_message,
+      -- A re-observation revives a cleared row: the selection is still broken.
+      cleared_at = NULL,
+      cleared_by = NULL
+  `).run(input.fingerprint, nowIso, input.model, input.reasoningEffort, input.status, input.providerType, input.providerMessage.slice(0, 400), input.stage ?? null, input.jobId ?? null, nowIso);
+}
+/**
+ * Note one more time this hold blocked work.
+ *
+ * The gate refuses a call without reaching the provider, so nothing else would
+ * record it — yet "this selection has stopped work 14 times" is exactly what
+ * doctor should be able to say, and it also keeps the 30-day TTL from closing a
+ * hold that is actively fencing every session.
+ */
+export function touchModelConfigHold(db, fingerprint, now = new Date()) {
+    if (!tableExists(db, "model_config_holds"))
+        return;
+    db.prepare(`UPDATE model_config_holds
+     SET observed_count = observed_count + 1, last_observed_at = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`).run(now.toISOString(), fingerprint);
+}
+/** The active hold for THIS fingerprint, or null. Other fingerprints' rows are
+ *  never read, updated or deleted here — that is the whole (b)5 fix. */
+export function activeModelConfigHold(db, fingerprint) {
+    if (!tableExists(db, "model_config_holds"))
+        return null;
+    const row = db.prepare("SELECT * FROM model_config_holds WHERE selection_fingerprint = ? AND cleared_at IS NULL").get(fingerprint);
+    return row ? holdFromRow(row) : null;
+}
+/** Close one fingerprint's hold. The row is kept (audit), never deleted. */
+export function clearModelConfigHold(db, fingerprint, reason, now = new Date()) {
+    ensureModelBudgetSchema(db);
+    return db.prepare(`UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`).run(now.toISOString(), reason, fingerprint).changes === 1;
+}
+/**
+ * Close every active hold for this model + reasoning pair, whatever SOURCE
+ * recorded it, and report how many were closed.
+ *
+ * Lookups are fingerprint-scoped on purpose — that is what stops two processes
+ * with different env from erasing each other's hold. A REPAIR is different: it
+ * is deliberate and user-initiated ("this model works now"), and the user means
+ * the model, not the path the id took to get here. Without this, a probe run as
+ * `memex models test --model X` could never lift the hold that the same X
+ * recorded through env or models.json, and the repair command would be unable to
+ * repair anything.
+ */
+export function clearModelConfigHoldsForSelection(db, selection, reason, now = new Date()) {
+    ensureModelBudgetSchema(db);
+    return db.prepare(`UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE cleared_at IS NULL AND model = ?
+       AND COALESCE(reasoning_effort,'') = COALESCE(?,'')`).run(now.toISOString(), reason, selection.model, selection.reasoningEffort).changes;
+}
+/** Every active hold, flagged with whether it is the one blocking this process.
+ *  Other selections' holds are visible but inert here. */
+export function listModelConfigHolds(db, currentFingerprint) {
+    if (!tableExists(db, "model_config_holds"))
+        return [];
+    const rows = db.prepare("SELECT * FROM model_config_holds WHERE cleared_at IS NULL ORDER BY held_at, selection_fingerprint").all();
+    return rows.map((row) => {
+        const hold = holdFromRow(row);
+        return { ...hold, current: currentFingerprint === hold.fingerprint };
+    });
+}
+/**
+ * The hold (if any) blocking THIS process's current selection.
+ *
+ * A convenience for the pre-claim gates in the detached workers and the session
+ * hook, which otherwise each have to import two modules to ask one question.
+ */
+export function currentModelConfigHold(db, overrides) {
+    return activeModelConfigHold(db, llmSelectionFingerprint(overrides));
+}
+/**
+ * Settle a reservation the provider refused before any model work began.
+ *
+ * Four things together make a wrong setting cost ZERO budget: no retry (llm.ts),
+ * this refund, exclusion from the 24h automatic window, and the claim refund
+ * above. What remains is one evidence row and one hold row.
+ *
+ * The exhaustion release is the subtle half. `reserveModelAttempt` marks a
+ * budget `exhausted` when it hands out the last attempt, and `budgetExhaustion`
+ * treats that state as STICKY — so decrementing the counter alone does not
+ * unblock anything. The release condition cannot look at the refunded row's own
+ * `attempt_no` either: with `max_attempts=2`, if A reserves #1, B reserves #2
+ * (exhausting it), B then completes and A is rejected, the reservation that
+ * caused exhaustion was B's while the one being refunded is A's — the observed
+ * result was `('exhausted', 1, 2)`. So it counts EFFECTIVE USAGE right now
+ * instead, and deadline/cancelled exhaustion is never revived.
+ */
+export function settleConfigRejectedAttempt(db, input) {
+    ensureModelBudgetSchema(db);
+    const now = input.now ?? new Date();
+    const nowIso = now.toISOString();
+    const settle = db.transaction(() => {
+        // Idempotency guard: only a still-`reserved` row can be settled, so a
+        // double call cannot refund twice.
+        const changed = db.prepare(`
+      UPDATE ${MODEL_ATTEMPT_TABLE}
+      SET state = 'failed', outcome = 'config_rejected', error_class = ?,
+          finished_at = ?, duration_ms = ?
+      WHERE attempt_id = ? AND state = 'reserved'
+    `).run((input.errorClass ?? "CodexRequestRejectedError").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120), nowIso, input.durationMs == null ? null : Math.max(0, Math.trunc(input.durationMs)), input.attemptId).changes;
+        if (changed !== 1)
+            return false;
+        const row = db.prepare(`SELECT budget_id FROM ${MODEL_ATTEMPT_TABLE} WHERE attempt_id = ?`).get(input.attemptId);
+        if (!row)
+            return false;
+        db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE}
+      SET reserved_attempts = MAX(reserved_attempts - 1, 0), updated_at = ?
+      WHERE budget_id = ?
+    `).run(nowIso, row.budget_id);
+        db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE} SET state = 'active', updated_at = ?
+      WHERE budget_id = ? AND state = 'exhausted'
+        AND reserved_attempts < max_attempts
+        AND (SELECT COUNT(*) FROM ${MODEL_ATTEMPT_TABLE} a
+              WHERE a.budget_id = ${MODEL_BUDGET_TABLE}.budget_id
+                AND ${budgetRelevantOutcomeSql("a")}) < max_attempts
+        AND (deadline_at IS NULL OR deadline_at > ?)
+    `).run(nowIso, row.budget_id, nowIso);
+        return true;
+    });
+    return db.inTransaction ? settle() : settle.immediate();
+}
 function remainingDeadlineMs(deadlineAt, now = Date.now()) {
     if (!deadlineAt)
         return null;
@@ -1099,6 +1548,10 @@ export function reserveModelAttempt(db, input) {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
     const stage = input.stage?.trim() || "standalone";
+    const intendedModel = input.model?.trim() || resolveLlmModel().value;
+    const intendedEffort = input.reasoningEffort !== undefined
+        ? input.reasoningEffort
+        : resolveReasoningEffort().value;
     const reserve = db.transaction(() => {
         const row = db
             .prepare("SELECT * FROM model_work_budgets WHERE budget_id = ?")
@@ -1117,15 +1570,25 @@ export function reserveModelAttempt(db, input) {
             // look active again on the next worker restart.
             return new ModelBudgetExhaustedError(budget.budgetId, budget.parentWaveId, reason);
         }
-        const attemptNo = budget.reservedAttempts + 1;
+        // Issue #31: the LEDGER sequence and the ACCOUNTING counter had to be
+        // separated. `attempt_no` used to be `reservedAttempts + 1`, which is the
+        // same number only while nothing is ever refunded — and
+        // `settleConfigRejectedAttempt` refunds. With a config-rejected row still
+        // holding sequence 1, the next reservation recomputed 1 and died on
+        // `idx_model_work_attempts_sequence` (UNIQUE(budget_id, attempt_no)), so a
+        // rejected selection wedged the budget it was supposed to free. The sequence
+        // now comes from the ledger (dense, unique, never reused) and the counter
+        // stays the spend accounting.
+        const attemptNo = Number(db.prepare(`SELECT COALESCE(MAX(attempt_no), 0) + 1 AS n FROM ${MODEL_ATTEMPT_TABLE} WHERE budget_id = ?`).get(budget.budgetId).n);
+        const nextReserved = budget.reservedAttempts + 1;
         const attemptId = randomUUID();
         db.prepare(`
       INSERT INTO model_work_attempts
         (attempt_id, budget_id, attempt_no, stage, job_id, target_id,
-         state, started_at, input_chars, token_usage_status)
-      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN')
-    `).run(attemptId, budget.budgetId, attemptNo, stage, input.jobId ?? null, input.targetId ?? null, nowIso, input.inputChars);
-        const nextState = attemptNo >= budget.maxAttempts ||
+         state, started_at, input_chars, token_usage_status, model, reasoning_effort)
+      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN', ?, ?)
+    `).run(attemptId, budget.budgetId, attemptNo, stage, input.jobId ?? null, input.targetId ?? null, nowIso, input.inputChars, intendedModel, intendedEffort);
+        const nextState = nextReserved >= budget.maxAttempts ||
             (budget.deadlineAt != null && Date.parse(budget.deadlineAt) <= now.getTime())
             ? "exhausted"
             : "active";
@@ -1133,7 +1596,7 @@ export function reserveModelAttempt(db, input) {
       UPDATE model_work_budgets
       SET reserved_attempts = ?, state = ?, updated_at = ?
       WHERE budget_id = ? AND reserved_attempts = ?
-    `).run(attemptNo, nextState, nowIso, budget.budgetId, budget.reservedAttempts);
+    `).run(nextReserved, nextState, nowIso, budget.budgetId, budget.reservedAttempts);
         if (input.jobId) {
             const job = db
                 .prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?")
@@ -1154,7 +1617,7 @@ export function reserveModelAttempt(db, input) {
             deadlineAt: budget.deadlineAt,
             maxInputChars: budget.maxInputChars,
             maxOutputChars: budget.maxOutputChars,
-            remainingAttempts: Math.max(0, budget.maxAttempts - attemptNo),
+            remainingAttempts: Math.max(0, budget.maxAttempts - nextReserved),
             remainingDeadlineMs: remainingDeadlineMs(budget.deadlineAt, now.getTime()),
         };
     });
@@ -1193,10 +1656,15 @@ export function finishModelAttempt(db, input) {
       UPDATE model_work_attempts
       SET state = ?, finished_at = ?, duration_ms = ?, output_chars = ?,
           token_usage_json = ?, token_usage_status = ?, error_class = ?,
-          error_message = ?
+          error_message = ?,
+          model = COALESCE(?, model),
+          reasoning_effort = CASE WHEN ? THEN ? ELSE reasoning_effort END
       WHERE attempt_id = ? AND state = 'reserved'
     `)
-        .run(input.state, finishedAt, input.durationMs == null ? null : Math.max(0, Math.trunc(input.durationMs)), input.outputChars == null ? null : Math.max(0, Math.trunc(input.outputChars)), usage, durableTokenUsageStatus, durableErrorClass, null, input.attemptId).changes;
+        .run(input.state, finishedAt, input.durationMs == null ? null : Math.max(0, Math.trunc(input.durationMs)), input.outputChars == null ? null : Math.max(0, Math.trunc(input.outputChars)), usage, durableTokenUsageStatus, durableErrorClass, null, input.model ?? null, 
+    // `reasoningEffort: null` is a real observation ("no flag was sent"), so
+    // it must be distinguishable from "the caller said nothing".
+    input.reasoningEffort !== undefined ? 1 : 0, input.reasoningEffort ?? null, input.attemptId).changes;
     return changed === 1;
 }
 /** Mark a known budget exhausted without reserving a synthetic provider call. */
@@ -1407,15 +1875,21 @@ function latestMaintenanceBudget(db, parentWaveId) {
 export function automaticMaintenanceWindow(db, now = new Date()) {
     const maxAttempts = envInt(["MEMEX_AUTO_MODEL_MAX_ATTEMPTS"], DEFAULT_AUTOMATIC_MAX_ATTEMPTS, 100_000);
     const cutoff = new Date(now.getTime() - AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString();
+    // Issue #31: a config-rejected row is evidence, not a spent call. Counting it
+    // here would let a wrong setting eat the 24h cap, so automatic maintenance
+    // would stay blocked even after the setting was fixed.
+    const budgetRelevant = columnNames(db, MODEL_ATTEMPT_TABLE).has("outcome")
+        ? `AND ${budgetRelevantOutcomeSql("a")}`
+        : "";
     const { used } = db.prepare(`
     SELECT COUNT(*) AS used FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
   `).get(cutoff);
     const oldest = maxAttempts > 0 && used >= maxAttempts ? db.prepare(`
     SELECT a.started_at FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
     ORDER BY a.started_at, a.attempt_id LIMIT 1 OFFSET ?
   `).get(cutoff, used - maxAttempts) : undefined;
     return {
@@ -1607,6 +2081,7 @@ export function getModelWorkDiagnostics(db, filter = {}) {
                 completed: 0,
                 failed: 0,
                 unknown: 0,
+                configRejected: 0,
                 pending: 0,
                 durationMs: null,
                 inputChars: null,
@@ -1683,6 +2158,9 @@ export function getModelWorkDiagnostics(db, filter = {}) {
                     : String(row.token_usage_status),
                 errorClass: row.error_class == null ? null : String(row.error_class),
                 errorMessage: row.error_message == null ? null : String(row.error_message),
+                model: row.model == null ? null : String(row.model),
+                reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+                outcome: row.outcome == null ? null : String(row.outcome),
             });
         }
     }
@@ -1838,11 +2316,17 @@ export function getModelWorkDiagnostics(db, filter = {}) {
             });
         }
     }
+    const isConfigRejected = (attempt) => attempt.outcome != null &&
+        BUDGET_FREE_OUTCOMES.includes(attempt.outcome);
     const totals = {
         reserved: attempts.length,
         completed: attempts.filter((attempt) => attempt.state === "completed").length,
-        failed: attempts.filter((attempt) => attempt.state === "failed").length,
+        // A refused envelope is `state='failed'` in the ledger but is NOT a failed
+        // model call: reporting it as one is what made "the budget is burning"
+        // indistinguishable from "the setting is wrong".
+        failed: attempts.filter((attempt) => attempt.state === "failed" && !isConfigRejected(attempt)).length,
         unknown: attempts.filter((attempt) => attempt.state === "unknown" || attempt.state === "reserved").length,
+        configRejected: attempts.filter(isConfigRejected).length,
         pending: pending.length,
         durationMs: null,
         inputChars: null,
@@ -1875,6 +2359,7 @@ export function getModelWorkDiagnostics(db, filter = {}) {
                 completed: 0,
                 failed: 0,
                 unknown: 0,
+                configRejected: 0,
                 durationMs: null,
                 inputChars: null,
                 outputChars: null,
@@ -1890,8 +2375,10 @@ export function getModelWorkDiagnostics(db, filter = {}) {
         stage.reserved++;
         if (attempt.state === "completed")
             stage.completed++;
-        if (attempt.state === "failed")
+        if (attempt.state === "failed" && !isConfigRejected(attempt))
             stage.failed++;
+        if (isConfigRejected(attempt))
+            stage.configRejected++;
         if (attempt.state === "unknown" || attempt.state === "reserved")
             stage.unknown++;
         stage.durationMs = sumKnown(attempts.filter((item) => item.stage === attempt.stage).map((item) => item.durationMs));
@@ -1922,10 +2409,10 @@ export function formatModelWorkDiagnostics(diagnostics) {
         lines.push(`wave=${budget.parentWaveId} budget=${budget.budgetId} state=${budget.state} attempts=${budget.reservedAttempts}/${budget.maxAttempts} remaining=${remaining} automatic=${budget.automatic}`);
     }
     for (const attempt of diagnostics.attempts) {
-        lines.push(`  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`);
+        lines.push(`  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} model=${attempt.model ?? "?"} effort=${attempt.reasoningEffort ?? "-"} outcome=${attempt.outcome ?? "-"} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`);
     }
     for (const stage of diagnostics.stages) {
-        lines.push(`stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`);
+        lines.push(`stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} config_rejected=${stage.configRejected} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`);
     }
     for (const pending of diagnostics.pending) {
         lines.push(`pending stage=${pending.stage} job=${pending.jobId ?? "-"} target=${pending.targetId ?? "-"} state=${pending.state} reason=${pending.reason ?? "budget/work remains"}`);
@@ -1933,7 +2420,7 @@ export function formatModelWorkDiagnostics(diagnostics) {
     for (const item of diagnostics.unassigned) {
         lines.push(`unassigned stage=${item.stage} target=${item.targetId} state=${item.state} reason=${item.reason}`);
     }
-    lines.push(`totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`);
+    lines.push(`totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} config_rejected=${diagnostics.totals.configRejected} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`);
     return lines.join("\n");
 }
 /** Resolve a context's DB and budget, then run one bounded model operation. */

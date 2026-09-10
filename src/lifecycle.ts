@@ -24,9 +24,11 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved } from "./observe-hook-event.js";
 import { getDbPath, getMemexHome } from "./paths.js";
+import { resolveLlmSelection } from "./model-settings.js";
 import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
 import { getInjectLogPath } from "./inject-log.js";
+import { recallGateOverlayChecks } from "./recall-gate-overlay.js";
 import {
   missingRuntimeDependencies,
   RUNTIME_DEPENDENCIES,
@@ -472,7 +474,7 @@ export interface DoctorReport {
   overall: "PASS" | "PARTIAL" | "FAIL";
 }
 
-interface Check {
+export interface Check {
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
@@ -877,6 +879,117 @@ async function injectDaemonCheck(): Promise<Check> {
 }
 
 /**
+ * Issue #31 — which model is Memex using, and is anything waiting on it?
+ *
+ * Two things were invisible before. Which model and reasoning level this
+ * installation resolves (and from WHERE — env, models.json, or the built-in
+ * default), and whether a rejected selection has quietly paused model work. The
+ * second matters most: a hold fails no job and consumes no attempt, so without
+ * this check the only symptom is "nothing is being extracted any more".
+ */
+export function llmModelCheck(): Check {
+  const name = "llm-model";
+  let selection: ReturnType<typeof resolveLlmSelection>;
+  try {
+    selection = resolveLlmSelection();
+  } catch (error) {
+    return {
+      name, status: "warn",
+      detail: `unable to resolve the model selection: ${
+        error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const where =
+    `model ${selection.model} (via ${selection.modelSource}), reasoning ` +
+    `${selection.reasoning ?? "unset"} (via ${selection.reasoningSource})`;
+
+  // Read-only and library-light, the same lightweight connection countRows uses:
+  // doctor must answer here even when the heavy db.js chain cannot load.
+  let holds: Array<{
+    model: string;
+    reasoning_effort: string | null;
+    provider_status: number | null;
+    provider_type: string | null;
+    provider_message: string | null;
+    held_at: string;
+    observed_count: number;
+    selection_fingerprint: string;
+  }> = [];
+  let heldJobs: Array<{ hold_reason: string; jobs: number }> = [];
+  try {
+    const dbPath = getDbPath();
+    if (fs.existsSync(dbPath)) {
+      const Database = runtimeRequire("better-sqlite3");
+      const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        const has = (table: string): boolean =>
+          db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(table) !== undefined;
+        if (has("model_config_holds")) {
+          holds = db.prepare(
+            "SELECT * FROM model_config_holds WHERE cleared_at IS NULL ORDER BY held_at",
+          ).all() as typeof holds;
+        }
+        if (has("memory_jobs")) {
+          const columns = new Set(
+            (db.prepare("PRAGMA table_info(memory_jobs)").all() as Array<{ name: string }>)
+              .map((row: { name: string }) => row.name),
+          );
+          if (columns.has("hold_reason")) {
+            heldJobs = db.prepare(`
+              SELECT hold_reason, COUNT(*) AS jobs FROM memory_jobs
+              WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+              GROUP BY hold_reason ORDER BY hold_reason
+            `).all() as typeof heldJobs;
+          }
+        }
+      } finally {
+        db.close();
+      }
+    }
+  } catch {
+    return { name, status: "ok", detail: `ok — ${where} (hold state unreadable)` };
+  }
+
+  const current = holds.find(
+    (hold) => hold.selection_fingerprint === selection.fingerprint,
+  );
+  const heldSummary = heldJobs.length > 0
+    ? ` Held jobs: ${heldJobs.map((row) => `${row.hold_reason}=${row.jobs}`).join(", ")}.`
+    : "";
+  if (current) {
+    return {
+      name, status: "warn",
+      detail:
+        `held — the provider rejected the request envelope for model "${current.model}"` +
+        (current.reasoning_effort ? ` at reasoning effort "${current.reasoning_effort}"` : "") +
+        ` (${current.provider_status ?? "?"} ${current.provider_type ?? "provider error"}: ` +
+        `"${current.provider_message ?? ""}"), first seen ${current.held_at}, ` +
+        `${current.observed_count} occurrence(s). Model work is paused — no job was failed and ` +
+        `no attempt was consumed. Fix the selection and it resumes automatically. ` +
+        `Run: memex models show -> memex models set --model <id> -> memex models test.` +
+        heldSummary + ` ${where}`,
+    };
+  }
+  if (holds.length > 0) {
+    return {
+      name, status: "ok",
+      detail:
+        `ok — ${where}. ${holds.length} hold(s) recorded for OTHER selections ` +
+        `(${holds.map((hold) => hold.model).join(", ")}); none of them blocks this one.` + heldSummary,
+    };
+  }
+  if (heldJobs.length > 0) {
+    return {
+      name, status: "warn",
+      detail:
+        `ok — ${where}, no model-config hold. But work is held for another reason:` +
+        heldSummary + " See: memex status",
+    };
+  }
+  return { name, status: "ok", detail: `ok — ${where}` };
+}
+
+/**
  * Issue #92 — is the embedding model on disk, and where?
  *
  * The state this reports was completely invisible. On the observed data root the
@@ -1123,6 +1236,7 @@ export async function doctor(): Promise<DoctorReport> {
   }
   checks.push(recallProvenanceCheck(recent));
   checks.push(injectionYieldCheck(recent));
+  checks.push(llmModelCheck());
   checks.push(embeddingCacheCheck());
   checks.push(await injectDaemonCheck());
   // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
@@ -1233,6 +1347,23 @@ export async function doctor(): Promise<DoctorReport> {
       name: "sync-export",
       status: "warn",
       detail: "unable to read sync export status",
+    });
+  }
+
+  // Issue #29 (0.7.0) — the recall-gate overlay's three checks. The check
+  // FUNCTIONS live in src/recall-gate-overlay.ts so the overlay lane owns their
+  // wording and this file stays the single place that assembles the report.
+  //
+  // A quarantined pattern is a `fail`, not a `warn`: it is the operator's own
+  // rule silently switched off, which is exactly the "stopped quietly" class of
+  // bug doctor exists to surface.
+  try {
+    for (const check of await recallGateOverlayChecks()) checks.push(check);
+  } catch {
+    checks.push({
+      name: "recall-gate-overlay",
+      status: "warn",
+      detail: "unable to inspect the recall-gate overlay",
     });
   }
 

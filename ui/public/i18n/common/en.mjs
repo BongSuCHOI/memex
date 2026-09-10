@@ -8,7 +8,6 @@
 export default {
   // ── 공통 명사 ──────────────────────────────────────────────────────────────
   'common.unknown': 'Not recorded',
-  'common.uncategorized': 'Uncategorised',
   'common.commonMemory': 'Common memory',
   'common.allProjects': 'all projects',
   'common.search': 'Search',
@@ -19,10 +18,6 @@ export default {
   'common.job.hold.extraction_rules_unavailable': 'Extraction rules could not be checked',
   'common.job.hold.model_config_rejected': 'Waiting on model configuration',
   // ── 단위 ───────────────────────────────────────────────────────────────────
-  'unit.count.one': '{count} item',
-  'unit.count.other': '{count} items',
-  'unit.memories.one': '{count} memory',
-  'unit.memories.other': '{count} memories',
   'unit.duration.ms': '{value} ms',
   'unit.duration.sec': '{value} s',
   'unit.duration.minsec': '{m}m {s}s',

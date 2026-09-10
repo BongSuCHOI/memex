@@ -43,7 +43,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc && npm run bundle",
+    "build": "tsc && npm run copy-assets && npm run bundle",
+    "copy-assets": "node scripts/copy-dist-assets.mjs",
     "bundle": "esbuild src/mcp-server.ts --bundle --platform=node --format=esm --outfile=dist/mcp-server.js --external:fsevents --external:sharp --external:onnxruntime-node --external:better-sqlite3 --external:@xenova/transformers --external:sqlite-vec",
     "test": "vitest run",
     "test:marketplace": "node scripts/marketplace-e2e.mjs",

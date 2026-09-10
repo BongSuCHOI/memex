@@ -61,6 +61,8 @@ export declare function recordRecallEvent(db: Database.Database, event: {
     /** Context-only delivery can be recorded even without fact IDs. The
      * context body is intentionally not persisted in this receipt. */
     context?: string;
+    /** Issue #29: `gate:<sha8>` of the recall-gate overlay that decided this. */
+    gateOverlayHash?: string | null;
 }): string | null;
 export declare function markRecallEventEmitted(db: Database.Database, event: {
     sessionId: string;

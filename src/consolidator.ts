@@ -234,7 +234,16 @@ async function drainPending(
         llmCalls++;
         console.error(`Consolidation call failed for fact ${newFact.id}:`, error);
 
-        if (error instanceof StaleFactMutationError) {
+        if (classifyLlmError(error) === 'config') {
+          // Issue #31: the dirty flag stays set and NO attempt is charged — the
+          // fact is not at fault, the selection is. Draining stops immediately
+          // because every remaining fact would hit the same refusal.
+          console.error(
+            'Consolidation held: the provider rejected the model selection — ' +
+              'no fact was skipped and no attempt was consumed (memex models show)',
+          );
+          break;
+        } else if (error instanceof StaleFactMutationError) {
           // 재감사 P1-2: 비교 중 fact 의미가 바뀌었다 — 판정은 폐기됐고 dirty는
           // 유지된다(clear가 실행되지 않음). 내부 실패가 아니므로 큐를 멈추지 않고
           // 다음 run이 새 의미를 다시 비교한다.

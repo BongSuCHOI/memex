@@ -8,8 +8,12 @@ require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 k
  * 새 오류가 코어에 들어오면 이 테스트가 먼저 실패한다 — 그게 이 테스트의 목적이다.
  */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
+const ts=require('typescript');
 const guidance=require('../public/guidance.mjs');
+const {en,ko}=require('./helpers/locale.cjs');
+const {DOC_ANCHORS}=require('../public/i18n/doc-anchors.mjs');
 const SRC=path.resolve(__dirname,'../../src');
+const UI_LIB=path.resolve(__dirname,'../lib');
 
 /** src/의 모든 throw new *Error("…") 문자열 리터럴. 템플릿 보간은 그대로 둔다. */
 function throwLiterals(){
@@ -54,6 +58,7 @@ const EXEMPT_FILES={
  'continuity-identity.ts':'프로젝트·워크스페이스 동일성 불변식. 위반은 코어 버그이고 사용자 행동이 없다.',
  'continuity-core.ts':'Capsule/체크포인트 내부 계약. 사용자에게 보이는 결과는 작업 상태로 이미 표현된다.',
  'read-scope.ts':'ReadScope 불변식. 위반은 코어 버그다.',
+ 'overlay-admin.ts':'오버레이 쓰기 API의 호출 전제조건(validator/emptyDoc 누락, 델타 대상, 스냅숏 부재, 심볼릭 링크 거부). CLI/UI가 같은 조건을 먼저 검증하고 422/400으로 돌려주며, 작업 상태 표면에 도달하지 않는다 (#29).',
  'legacy-read-scope.ts':'레거시 ReadScope 불변식. 코어 버그이며 사용자 행동이 없다.',
  'fact-policy.ts':'MutationPolicy 불변식. UI는 이 경로를 직접 노출하지 않는다.',
  'chronicle.ts':'Chronicle 근거 계약. 위반은 이벤트 기록 거부로 끝나고 별도 복구 명령이 없다.',
@@ -113,6 +118,11 @@ const EXEMPT_LITERALS=[
  ['ontology-classifier.ts','ontology classify: fact not found'],
  ['embeddings.ts','embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)'],
  ['sync-paths.ts','device id is not a sync device identifier'],
+ // #31 모델 선택 저장 경계의 입력 검증. 두 문장은 사용자가 방금 입력한 값을
+ // 그대로 되돌려주는 거부이고, Web UI는 같은 값을 폼에서 먼저 검증한다
+ // (sync-cli.ts 면제와 같은 성격).
+ ['model-settings.ts','invalid model id'],
+ ['model-settings.ts','invalid reasoning effort'],
 ];
 
 const exemptLiteral=(file,literal)=>EXEMPT_LITERALS.some(([f,prefix])=>f===file&&literal.toLowerCase().includes(prefix.toLowerCase()));
@@ -159,12 +169,55 @@ test('이슈가 요구한 실패 클래스가 모두 존재한다',()=>{
  }
 });
 
+/**
+ * 0.7.0 (#109): 산문은 `i18n/guidance/{en,ko}.mjs`가 갖고 모듈은 게터로 읽는다. 모듈에 한국어
+ * 산문이 되돌아오거나 en 쪽이 비면 여기서 드러난다 — 키 노출은 값이 키와 같아지는 것으로 보인다.
+ */
+test('클래스 산문은 두 로케일에 다 있고 모듈은 사전 값을 그대로 반환한다',()=>{
+ const problems=[];
+ const ids=[...guidance.CLASSES.map(c=>c.id),'unknown'];
+ for(const id of ids){
+  for(const field of ['title','cause','impact','next']){
+   const key=`guidance.${id}.${field}`;
+   if(!en[key])problems.push('en 누락: '+key);
+   if(!ko[key])problems.push('ko 누락: '+key);
+  }
+ }
+ for(const cls of guidance.CLASSES){
+  for(const field of ['title','cause','impact','next'])
+   if(cls[field]!==ko[`guidance.${cls.id}.${field}`])problems.push(`${cls.id}.${field}가 ko 사전과 다름`);
+ }
+ const unknown=guidance.unknownClass('x');
+ if(unknown.cause!==ko['guidance.unknown.cause'])problems.push('unknown.cause가 ko 사전과 다름');
+ // 액션 라벨도 사전이 갖는다. `text`(복사되는 CLI 명령)만 모듈에 남는다.
+ for(const cls of [...guidance.CLASSES,unknown])for(const a of cls.actions){
+  if(a.kind==='command'){if(!a.text)problems.push(cls.id+': command 액션에 text가 없음');continue;}
+  if(!a.labelKey)problems.push(`${cls.id}: ${a.kind} 액션에 labelKey가 없음`);
+  else for(const [tag,dict] of [['en',en],['ko',ko]])if(!dict[a.labelKey])problems.push(`${tag} 누락: ${a.labelKey}`);
+ }
+ assert.deepEqual(problems,[]);
+});
+
+/**
+ * ★ 설계 §14.4: 한국어 `match` 7건이 서버의 한국어 오류 원문에 의존했고, 서버 메시지를 en 한 줄 +
+ * 안정적 코드로 바꾸면 그 규칙들이 **에러 없이 조용히 죽는다.** 구조적으로 다시 들어오지 못하게
+ * 막는다 — 규칙은 코드·영어 원문·단어 경계 정규식 중 하나여야 한다.
+ */
+test('match 규칙에 한글이 없다 (#109)',()=>{
+ const hangul=[];
+ for(const cls of guidance.CLASSES)for(const rule of cls.match)
+  if(/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(String(rule)))hangul.push(cls.id+': '+String(rule));
+ assert.deepEqual(hangul,[],'한국어 match는 서버 메시지가 영어가 되면 조용히 죽습니다: '+hangul.join(', '));
+});
+
 test('알 수 없는 오류는 원인을 지어내지 않고 원문과 진단 안내를 남긴다',()=>{
  const cls=guidance.classify('완전히 새로운 오류 문자열 zzqq');
  assert.equal(cls.id,'unknown');
  assert.equal(cls.raw,'완전히 새로운 오류 문자열 zzqq');
  assert.equal(cls.ignorable,null);
+ assert.equal(cls.cause,ko['guidance.unknown.cause']);
  assert(cls.cause.includes('추측하지 않습니다'));
+ assert(/do not guess/i.test(en['guidance.unknown.cause']),'en에서도 원인을 추측하지 않는다고 말해야 합니다');
  assert(cls.actions.some(a=>a.kind==='diagnostics'));
  assert.equal(guidance.classify(''),null);
  assert.equal(guidance.classify(null),null);
@@ -200,10 +253,12 @@ test('짧은 열거값은 단어 경계로만 매칭한다 (#80)',()=>{
  assert.equal(guidance.classify('claim lost to a concurrent writer').id,'claim-handoff');
  assert.equal(guidance.classify('exit 2').id,'operation-incomplete');
  assert.equal(guidance.classify('backoff until 2026-09-10T00:00:00Z').id,'claim-backoff');
- // 카탈로그 불변식: 4자 이하의 짧은 영문 열거값을 문자열로 남겨 두지 않는다.
+ // 카탈로그 불변식: 6자 이하의 짧은 열거값을 문자열로 남겨 두지 않는다.
+ // 0.7.0 (#109): ASCII 전용 `/^[a-z0-9 ]{1,6}$/`는 `'임베딩'` 같은 한국어 2글자 규칙을 못 막았다.
+ // 유니코드로 확장해 어떤 문자 체계의 짧은 열거값도 단어 경계 정규식을 쓰게 강제한다(설계 §14.4).
  const short=[];
  for(const cls of guidance.CLASSES)for(const rule of cls.match)
-  if(typeof rule==='string'&&/^[a-z0-9 ]{1,6}$/.test(rule))short.push(cls.id+': '+rule);
+  if(typeof rule==='string'&&/^[\p{L}\p{N} ]{1,6}$/u.test(rule))short.push(cls.id+': '+rule);
  assert.deepEqual(short,[],'짧은 열거값은 /\\b…\\b/ 정규식으로 써야 합니다: '+short.join(', '));
 });
 
@@ -255,12 +310,148 @@ test('안내 렌더링은 기존 컴포넌트만 쓰고 액션을 실제 버튼�
  const html=guidance.guidancePanel(guidance.guidanceFor('job-dead'),ctx);
  assert(html.includes('data-command="recover"'),'복구 실행 버튼 없음');
  assert(html.includes('data-copy-command="memex jobs dismiss'),'복사 가능한 정리 명령 없음');
- assert(html.includes('docs/GUIDE.md#20-'),'단일 출처 표기가 없음');
+ assert(html.includes(DOC_ANCHORS.GUIDE_FAIL),'단일 출처 표기가 없음');
+ assert(html.includes(ko['guidance.source.label']),'단일 출처 라벨이 없음');
  assert(!/class="[^"]*guidance-/.test(html),'새 컴포넌트 클래스를 도입했습니다');
  for(const cls of ['card','tag','btn','kv'])assert(html.includes('class="'+cls)||html.includes(' '+cls),'기존 컴포넌트 미사용: '+cls);
  const locked=guidance.guidancePanel(guidance.guidanceFor('job-dead'),{href:ctx.href,bootstrap:{environment:{commands:false}}});
  assert(/data-command="recover" disabled/.test(locked),'CLI가 없으면 실행 버튼을 잠가야 함');
- const card=guidance.attentionCard(guidance.attentionFromPipeline({attention:{memoryJobsDead:7,terminal:{}},ontology:{indexRepair:{blocked:false}},evidence:{},quarantinedProjects:[]}),ctx);
- assert(card.includes('확인이 필요한 상태')&&card.includes('실패로 종료된 작업'));
+ const groups=guidance.attentionFromPipeline({attention:{memoryJobsDead:7,terminal:{}},ontology:{indexRepair:{blocked:false}},evidence:{},quarantinedProjects:[]});
+ const card=guidance.attentionCard(groups,ctx);
+ assert(card.includes(ko['guidance.attention.heading']),'카드 제목이 사전 값과 다릅니다');
+ // 수량은 사전의 1슬롯 패턴이 어순까지 갖는다 — 타이포그래피 이어붙이기를 없앴다(설계 §6.0).
+ assert.equal(groups[0].detail,ko['guidance.attention.job-dead.detail'].replace('{count}','7'));
+ assert(card.includes(groups[0].detail),'수량 라벨이 렌더되지 않았습니다');
+ assert(card.includes(ko['guidance.job-dead.title']));
  assert.equal(guidance.attentionCard([],ctx),'');
+});
+
+/**
+ * ★ 설계 §14.4 완화 (2). `guidance.test.cjs`의 기존 커버리지 테스트는 `src/*.ts`의 **코어** 오류
+ * 리터럴만 수확하고 `ui/lib`의 메시지는 보지 않는다. 서버 메시지가 en 한 줄 + 안정적 코드로 바뀌면
+ * 분류는 **코드**를 봐야 하므로, `ui/lib`이 던지는 모든 `HttpError`의 `code`를 수확해 각각이
+ * 클래스에 매핑되거나 면제 대장에 올라 있는지 대조한다 — 이 구멍을 구조적으로 막는 유일한 방법이다.
+ */
+function uiLibCodes(){
+ const out=new Map();   // code → [file:line]
+ const uncoded=[];
+ const add=(code,where)=>{if(!out.has(code))out.set(code,[]);out.get(code).push(where);};
+ for(const file of fs.readdirSync(UI_LIB).filter(f=>f.endsWith('.cjs'))){
+  const src=fs.readFileSync(path.join(UI_LIB,file),'utf8');
+  const sf=ts.createSourceFile(file,src,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const at=node=>`${file}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line+1}`;
+  const hasCode=node=>{let found=false;(function s(i){if(ts.isPropertyAssignment(i)&&i.name&&i.name.getText(sf)==='code')found=true;ts.forEachChild(i,s);})(node);return found;};
+  (function visit(node){
+   if(ts.isNewExpression(node)&&ts.isIdentifier(node.expression)&&node.expression.text==='HttpError'){
+    const args=node.arguments??[];
+    // 레거시 위치 인자 3번째(legacyCode)와 객체 인자의 `code:` 둘 다 본다(설계 §16.1 C1.8).
+    if(args[2]&&ts.isStringLiteral(args[2]))add(args[2].text,at(node));
+    for(const arg of args)(function scan(inner){
+     if(ts.isObjectLiteralExpression(inner))for(const prop of inner.properties)
+      if(ts.isPropertyAssignment(prop)&&prop.name&&prop.name.getText(sf)==='code'&&ts.isStringLiteral(prop.initializer))add(prop.initializer.text,at(node));
+     ts.forEachChild(inner,scan);
+    })(arg);
+    if(args[1]&&!(args[2]&&ts.isStringLiteral(args[2]))&&!hasCode(args[1]))uncoded.push(at(node));
+   }
+   ts.forEachChild(node,visit);
+  })(sf);
+ }
+ return {codes:out,uncoded};
+}
+
+/** 코드 → 기대 클래스 id. 값이 맞아야 하고, 코드가 사라지면 죽은 항목으로 잡힌다. */
+const UI_CODE_CLASSES={
+ DB_UNAVAILABLE:'db-unavailable',
+ DB_INDEX_MISSING:'db-unavailable',
+ STALE_FACT:'stale-fact',
+ TIER_STEP:'tier-step',
+ INVALID_SYNC_DIR:'sync-export-failed',
+ SYNC_DIR_UNWRITABLE:'sync-export-failed',
+ INVALID_ARCHIVE:'sync-archive-invalid',
+ INVALID_ARCHIVE_PATH:'sync-archive-invalid',
+ SYNC_DIR_REQUIRED:'sync-export-failed',
+};
+/**
+ * ★ L1에서 올 코드. 분류 규칙을 먼저 두어 L1 머지 시점에 회귀 창이 생기지 않게 했다(설계 §6.1).
+ * L1이 머지되면서 `SYNC_DIR_REQUIRED`는 실제로 `ui/lib/core.cjs`에 들어왔고 위 표로 옮겼다 —
+ * 이 목록이 비어 있는 것이 정상 상태다.
+ */
+const EXPECTED_FROM_L1={};
+/** 실패 클래스를 두지 않는 코드. 화면에서 취할 행동이 폼·요청 그 자체이거나 코어 버그다. */
+const UI_CODE_EXEMPT={
+ AMBIGUOUS_PROJECT:'같은 경로에 프로젝트가 여러 개다. 상단 범위 선택으로 해소하고 복구 명령이 없다.',
+ CONFIRMATION_REQUIRED:'영향을 확인한 뒤 확인 입력을 요구하는 가드. 다음 행동이 화면의 입력 자체다.',
+ CORE_UNAVAILABLE:'설치된 코어에 그 서비스가 없다. 오류 카드가 코드를 그대로 보여주고 진단이 같은 말을 한다.',
+ CSRF_REJECTED:'요청 위조 방어. 사용자가 취할 행동은 화면을 다시 불러오는 것뿐이다.',
+ HOST_REJECTED:'루프백이 아닌 Host 헤더 거부. 서버 바인딩 정책이며 데이터 상태가 아니다.',
+ INVALID_COMMAND:'allowlist에 없는 관리 명령. 버튼으로만 실행되므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_ID:'UUID 형식 검증. 다음 행동이 입력 수정이다.',
+ INVALID_NUMBER:'정수·범위 검증. 다음 행동이 입력 수정이다.',
+ INVALID_SCOPE:'조회 범위 인자 검증. 상단 컨트롤이 값을 만들므로 사용자 경로에서 발생하지 않는다.',
+ MUTATION_BUSY:'같은 기억에 변경이 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
+ NOT_FOUND:'없는 리소스. 실패 클래스가 아니라 404다.',
+ OPERATION_BUSY:'관리 실행이 이미 진행 중이다. 실행 내역에서 진행 상황을 본다.',
+ ORIGIN_REJECTED:'교차 출처 거부. 서버 정책이며 데이터 상태가 아니다.',
+ SCHEMA_UNAVAILABLE:'기대한 테이블이 없는 구버전 DB. 코어 업그레이드 안내와 겹친다.',
+ SCOPE_MISMATCH:'범위와 대상이 어긋난 요청. 상단 범위를 맞추면 해소된다.',
+ SYNC_BUSY:'동기화 작업이 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
+ TIER_TARGET_REQUIRED:'계층 이동의 대상 범위를 먼저 골라야 한다. 다음 행동이 상단 범위 선택이다.',
+ // ── L1이 0.7.0에서 새로 부여한 코드 (설계 §5.3 "38건에 안정적인 code 부여") ──
+ // 전부 **요청 모양·입력 형식** 검증이다: 데이터 상태를 말하지 않으므로 실패 클래스를 두면
+ // 복구 절차를 지어내게 된다. 오류 카드가 문장과 코드를 보여주는 것이 취할 수 있는 전부다.
+ ARCHIVE_PATH_REQUIRED:'세대 파일 경로를 입력하라는 요구. 다음 행동이 그 입력 자체다.',
+ BODY_TOO_LARGE:'요청 본문 상한 초과. 화면이 보내는 크기는 고정이므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_ACTION:'실행 내역 API가 cancel만 받는다. 버튼으로만 호출되므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_FACT_ACTION:'기억 변경 action allowlist(edit·deactivate·restore·delete). 화면이 값을 만든다.',
+ INVALID_FACT_STATE:'기억 상태 필터 검증(all·active·inactive). 상단 컨트롤이 값을 만든다.',
+ INVALID_FACT_TEXT:'기억 본문 길이 검증. 다음 행동이 입력 수정이며 수정 모달이 같은 한도를 안내한다.',
+ INVALID_FILE:'일반 파일이 아닌 로그 경로. 목록이 고른 항목만 열리므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_JSON:'요청 본문이 JSON 객체가 아니다. 화면이 직렬화하므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_PATH:'정적 에셋 경로 검증. 링크만 값을 만든다.',
+ INVALID_RELATION:'관계 유형 필터 검증. 지식 지도의 범례가 값을 만든다.',
+ INVALID_SYNC_ACTION:'동기화 action allowlist. 화면의 버튼만 값을 만든다.',
+ INVALID_TIER_ACTION:'계층 이동 action allowlist(promote·demote). 버튼만 값을 만든다.',
+ INVALID_URL:'요청 URL 파싱 실패. 브라우저가 만든 주소이므로 사용자 경로에서 발생하지 않는다.',
+ METHOD_NOT_ALLOWED:'라우트가 허용하지 않는 HTTP 메서드. 화면은 정해진 메서드만 보낸다.',
+ REQUEST_ABORTED:'클라이언트가 요청을 끊었다. 화면 전환·취소의 정상 결과이며 실패가 아니다.',
+ TOO_MANY_CLIENTS:'실시간 연결 상한(24). 탭을 줄이면 해소되고 데이터 상태와 무관하다.',
+ UNSUPPORTED_MEDIA_TYPE:'Content-Type 검증. 화면이 헤더를 붙이므로 사용자 경로에서 발생하지 않는다.',
+};
+
+test('ui/lib이 던지는 오류 코드는 모두 클래스가 있거나 대장에 올라 있다 (#109)',()=>{
+ const {codes,uncoded}=uiLibCodes();
+ assert(codes.size>15,'코드 수확이 깨졌습니다: '+codes.size);
+ const untriaged=[],wrong=[];
+ for(const [code,where] of codes){
+  const expected=UI_CODE_CLASSES[code];
+  if(expected){
+   const cls=guidance.classify({code});
+   if(!cls||cls.id!==expected)wrong.push(`${code} → ${cls?cls.id:'null'} (기대: ${expected}, ${where[0]})`);
+   continue;
+  }
+  if(UI_CODE_EXEMPT[code])continue;
+  untriaged.push(`${code} (${where[0]})`);
+ }
+ assert.deepEqual(untriaged,[],'분류도 면제도 되지 않은 UI 오류 코드가 있습니다. guidance.mjs의 match에 코드를 넣거나 대장에 올리세요:\n'+untriaged.join('\n'));
+ assert.deepEqual(wrong,[],'코드가 기대한 클래스로 가지 않습니다:\n'+wrong.join('\n'));
+ // L1이 부여할 코드는 아직 없어도 되지만 규칙은 지금 있어야 한다.
+ for(const [code,expected] of Object.entries(EXPECTED_FROM_L1)){
+  const cls=guidance.classify({code});
+  assert(cls&&cls.id===expected,`L1에서 올 코드의 규칙이 없습니다: ${code} → ${cls?cls.id:'null'} (기대: ${expected})`);
+ }
+ // 대장에 죽은 항목을 남기지 않는다 — L1 예정 코드는 예외다.
+ for(const code of [...Object.keys(UI_CODE_CLASSES),...Object.keys(UI_CODE_EXEMPT)])
+  if(!EXPECTED_FROM_L1[code])assert(codes.has(code),'ui/lib에 더 이상 없는 코드가 대장에 남아 있습니다: '+code);
+ for(const reason of Object.values(UI_CODE_EXEMPT))assert(reason.length>10,'면제 사유가 비었습니다');
+ // 코드 없이 던지는 호출은 전부 REQUEST_FAILED로 뭉개진다(설계 §1.3 (12)). L1이 38건에 코드를
+ // 부여하므로 수가 늘어나면 실패한다 — 줄어드는 방향만 허용한다.
+ assert(uncoded.length<=38,`code 없는 HttpError가 늘었습니다(${uncoded.length} > 38):\n`+uncoded.join('\n'));
+});
+
+/** 코드는 레코드의 `code`/`error_code`로 들어온다 — haystack이 그 필드를 봐야 분류가 동작한다. */
+test('오류 코드는 레코드 필드로도 분류된다 (#109)',()=>{
+ assert.equal(guidance.classify({code:'DB_INDEX_MISSING'}).id,'db-unavailable');
+ assert.equal(guidance.classify({error_code:'SYNC_DIR_UNWRITABLE'}).id,'sync-export-failed');
+ assert.equal(guidance.classify({code:'TIER_STEP',state:'failed'}).id,'tier-step');
+ assert.equal(guidance.classify({code:'REQUEST_FAILED'}).id,'unknown','원인을 모르는 기본 코드를 단정하지 않습니다');
 });

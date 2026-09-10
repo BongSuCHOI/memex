@@ -104,6 +104,20 @@ function releaseLock() {
   } catch { /* ignore */ }
 }
 
+/**
+ * Issue #31 — pre-claim gate. The session hook already skips spawning us when a
+ * model selection is held, but this worker can be run directly, so the gate
+ * lives here too. Returning is exit 0: a held selection is not a failure.
+ */
+async function modelConfigHeld(db) {
+  try {
+    const { currentModelConfigHold } = await import('../dist/model-budget.js');
+    return currentModelConfigHold(db);
+  } catch {
+    return null; // a pre-0.7.0 database has no hold table
+  }
+}
+
 async function main() {
   if (!acquireLock()) {
     console.log('backfill-ontology: another worker is running, exiting');
@@ -116,6 +130,14 @@ async function main() {
   let db;
   try {
     db = initDatabase();
+    const held = await modelConfigHeld(db);
+    if (held) {
+      log(
+        `backfill-ontology: held on a model setting ("${held.model}") — no work claimed, ` +
+          'no attempt consumed; fix it and it resumes automatically (memex models show)',
+      );
+      return;
+    }
     const requestedBudgetId = process.env.MEMEX_MODEL_BUDGET_ID?.trim();
     const maintenanceBudget = requestedBudgetId
       ? getModelWorkBudget(db, requestedBudgetId)

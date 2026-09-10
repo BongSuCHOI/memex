@@ -65,6 +65,7 @@ function toSummary(row, nowIso) {
         leaseUntil,
         leaseExpired: leaseUntil !== null && leaseUntil <= nowIso,
         lastError: row.last_error == null ? null : String(row.last_error),
+        holdReason: row.hold_reason == null ? null : String(row.hold_reason),
         createdAt: String(row.created_at),
         updatedAt: String(row.updated_at),
     };
