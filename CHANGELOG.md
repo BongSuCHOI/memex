@@ -2,6 +2,141 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.0 - unreleased
+
+Three things you can now decide for yourself — what gets recalled, what never
+gets stored, and which model does the work — plus a workspace that opens in
+English.
+
+### Recall-gate overlay
+
+- Your own regexes and words sit on top of the built-in gate that decides
+  whether a prompt retrieves memory, and built-in rules are disabled by id
+  rather than deleted. `memex gate show|patterns|words|test|replay|validate|history|quarantine|reset|rollback`
+  reads and writes `<data root>/overlays/recall-gate.json`; `test` and `replay`
+  call no model and no embedding and write neither the injection log nor a
+  recall receipt. Writes take the overlay lock, bump `revision`, keep a rollback
+  snapshot, and accept `--dry-run` (which prints the command to re-run) and
+  `--expect-revision <n>` (which refuses a write the overlay changed under). With
+  no overlay file the gate decision and its label are byte-identical to 0.6.9. (#29)
+- A user pattern runs only inside a worker thread with a 50 ms budget per prompt,
+  and one that burns the budget is quarantined — it stops being applied until you
+  fix the regex, which clears the quarantine automatically, or run
+  `memex gate quarantine clear`. The syntax limits and the 300 ms write-time
+  probe are defence in depth, not a proof that no pattern is slow; the guarantee
+  is that a slow pattern cannot stall the hook thread. A broken overlay is
+  ignored whole and the prompt is still served on the built-in rules. (#29)
+- The injection label carries `@gate:<sha8>` and, when the matcher timed out or
+  could not run, `+overlay_timeout` / `+overlay_unavailable`; the receipt carries
+  `recall_events.gate_overlay_hash`. `memex doctor` gains `recall-gate-overlay`,
+  `overlay-pattern-quarantine` and `overlay-matcher` — a quarantined pattern is a
+  `fail`, because it is the operator's own rule switched off silently. (#29)
+
+### Extraction-rules overlay
+
+- Your own restrictions on what becomes a memory: topics to stay away from,
+  patterns that must never be stored, decision hints, and a preferred language,
+  globally or per project. `memex extract rules show|validate|set|test|history|reset|rollback|reextract`
+  reads and writes `<data root>/overlays/extraction-rules.json` under the same
+  lock, revision and dry-run contract as the gate overlay. The command does not
+  extract — extraction still runs through `memex backfill extract` and the
+  background workers. `memex extract eval` is the only verb that spends model
+  calls, and `--rules <path>` evaluates a candidate overlay without applying it. (#30)
+- Restrictions only ever suppress. `never_extract` is enforced at the storage
+  boundary — `fact_insert`, `incident`, `remediation`, `chronicle` — rather than
+  suggested in a prompt, and a blocked candidate is a drop, not a failure: no
+  attempt, no failed range, and the rest of the batch is stored. The constraint
+  clause is appended to the extraction prompt and never edits it, so
+  `policy_version` keeps its meaning and the verifier prompt stays byte-identical.
+  A project override can narrow the global rules but never relax them. (#30)
+- The rules that apply to a claim are the snapshot taken when it was claimed
+  union the latest valid rules re-read just before the write, so tightening takes
+  effect immediately and relaxation from the next claim. If the overlay is
+  invalid or the check cannot finish, the claim is returned unsaved and the job
+  is held rather than failed: `memex doctor` reports
+  `extraction-rules-overlay` / `extraction-rules-hold` as a `fail`, and a
+  successful rules write releases the jobs that were waiting. Changing rules
+  never re-extracts anything by itself — `memex extract rules reextract` is the
+  explicit, scoped way to ask. (#30)
+
+### Model selection
+
+- `memex models show|set|reset|test` chooses the model and reasoning effort Memex
+  uses for its own model work, stored in `<data root>/models.json`. Resolution is
+  `MEMEX_CODEX_MODEL` / `MEMEX_CODEX_REASONING` > the file > the built-in default
+  (`gpt-5.6-luna`, no reasoning flag), and `show` says which layer each value came
+  from. `set` refuses an unknown reasoning level and only warns when the Codex
+  catalog disagrees, because the catalog can be stale and only a real call can
+  prove an id. `test` makes exactly one call, records it in the model-work ledger
+  as stage `model_probe`, and clears the configuration hold on success. (#31)
+- A provider that refuses the request envelope is now its own error class,
+  `config`, beside `transient`, `deterministic` and `unknown`. It is not retried,
+  it does not split extraction windows, and it does not fail the job: the work is
+  parked with `memory_jobs.hold_reason = 'model_config_rejected'`, the attempt is
+  refunded, and the attempt row is settled as `config_rejected` so it costs
+  nothing against the run budget or the 24-hour cap. Fixing the selection changes
+  its fingerprint, so the work resumes on its own — no `memex recover`. Capture
+  keeps running throughout. (#31)
+- `memex status`, `memex jobs list` and the new `llm-model` doctor check say what
+  is waiting and on what; the held count is reported apart from `Needs attention`
+  because a held job is neither dead nor retrying. Web UI 관리 › 모델 shows the same
+  state and offers the same three actions over `/api/v2/models`. Switching the
+  embedding model is not part of this — the database owns the vector space. (#31)
+
+### Web UI language
+
+- The workspace ships in **English** and switches to Korean from `?lang=ko`, the
+  `EN`/`KO` button in the header, or 관리 › 화면 설정 — each remembered in that
+  browser. `memex-ui --lang en|ko` and `MEMEX_UI_LANG` set the server default (the
+  flag wins; an unknown value fails startup), and `navigator.language` is
+  deliberately not consulted. Every user-visible string now lives in
+  `ui/public/i18n/<ns>/{en,ko}.mjs`; a missing key renders as the key rather than
+  falling back to English, so a gap is a visible bug instead of a silent one. (#109)
+- Server errors carry `{code, key, params, message, details}`. `message` is still
+  an English line for logs and non-browser callers, `key` is translated in the
+  browser, and `key: null` marks core text passed through verbatim. Failure
+  classification in the UI now reads `code` instead of Korean prose.
+  `node scripts/i18n-extract.mjs --lint` and `--keys` are release gates, and the
+  browser E2E runs once per language. (#109)
+- The stored `prefs.korean` display preference is now `preferTranslatedFacts`. It
+  controls whether a stored Korean translation of a memory is shown, which is a
+  different axis from the interface language; the old key is read once and
+  carried over. The documents under `docs/` stay Korean, and the English UI links
+  to the same Korean sections. (#109)
+
+### Verification
+
+- The performance receipt must now declare what it ran on: `environment.models`
+  (model, reasoning effort, embedding model, version, measured dimensions,
+  source of each) and `environment.overlays` (observed from the benchmark root's
+  filesystem, not echoed from the environment) are required, every sub-field
+  included. `node scripts/benchmark-contract.mjs` judges the committed record and
+  exits non-zero, the 0.6.0-era record is archived as
+  `docs/verification/benchmark-pre-0.7.0.json` as historical evidence, and the
+  0.7.0 record is regenerated rather than edited. See VERIFICATION.md §4.1.
+
+### Upgrade
+
+Run `memex update` and restart Codex.
+
+Schema changes are additive and nullable — `memory_jobs.hold_reason`,
+`extraction_targets.rules_hash`, `recall_events.gate_overlay_hash` and the new
+`model_config_holds` table — so existing rows read `NULL` and a downgrade to
+0.6.x is harmless: it simply stops reading the overlays, and held jobs look like
+ordinary pending work.
+
+The Web UI's default language becomes English. Pick Korean in 관리 › 화면 설정
+(remembered per browser) or start the server with `memex-ui --lang ko`. Your
+stored display preferences are migrated: `prefs.korean` becomes
+`preferTranslatedFacts` and keeps its value.
+
+The benchmark record is regenerated for this release; the archived pre-0.7.0
+record is kept as evidence for the build it measured and is never judged against
+the current contract.
+
+Deferred to 0.7.1: sharing overlays between machines, switching the embedding
+model, and overriding the recall-gate thresholds.
+
 ## 0.6.9 - 2026-09-10
 
 Follow-up to 0.6.8: Codex clamps SessionEnd hook timeouts to 3 s and warns when
