@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   CodexRequestRejectedError,
   isEnvelopeRejection,
+  runCodex,
   sanitizeProviderMessage,
   turnErrorFromEvents,
 } from '../src/codex-exec.js';
@@ -157,6 +162,81 @@ describe('classification', () => {
     expect(error.message).toContain('bad-model');
     expect(error.code).toBe('MEMEX_MODEL_CONFIG');
     expect(error.name).toBe('CodexRequestRejectedError');
+  });
+});
+
+/**
+ * The connected path, which the unit tests above cannot see.
+ *
+ * Parser and classifier were both correct in isolation while the two were not
+ * joined: `runCodex` only surfaced ENVELOPE rejections and dropped every other
+ * turn error, so an exit-0 context-length 400 came back as `''` and `llm.ts`
+ * turned it into `EmptyLlmResponseError` — 'transient'. The fixture below is the
+ * same measured body the `isEnvelopeRejection` cases use.
+ */
+describe('input-too-large 400 stays deterministic from the provider stream to the caller', () => {
+  const roots: string[] = [];
+
+  function fakeCodex(stream: string, calls?: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-turn-error-'));
+    roots.push(dir);
+    const bin = path.join(dir, 'fake-codex');
+    // exit 0 with the error stream and NO final agent message — measured shape.
+    fs.writeFileSync(
+      bin,
+      `#!${process.execPath}\n` +
+        `const fs=require('node:fs');\n` +
+        `fs.readFileSync(0,'utf8');\n` +
+        (calls ? `fs.appendFileSync(${JSON.stringify(calls)},'call\\n');\n` : '') +
+        `process.stdout.write(${JSON.stringify(stream + '\n')});\n`,
+    );
+    fs.chmodSync(bin, 0o755);
+    return bin;
+  }
+
+  afterEach(() => {
+    for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    for (const key of ['MEMEX_HOME', 'MEMEX_DB_PATH', 'MEMEX_CODEX_BIN', 'MEMEX_LLM_RETRY_BASE_MS']) {
+      delete process.env[key];
+    }
+  });
+
+  it('runCodex rejects instead of returning an empty body, and the class is deterministic', async () => {
+    const bin = fakeCodex(INPUT_TOO_LARGE_STREAM);
+    const error = await runCodex({ codexBin: bin, userMessage: 'x', timeoutMs: 15_000 }).then(
+      (text) => ({ returned: text }) as unknown,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).name).toBe('CodexTurnFailedError');
+    expect((error as { status?: number | null }).status).toBe(400);
+    expect(classifyLlmError(error)).toBe('deterministic');
+    expect(classifyLlmError(new LlmCallError(error))).toBe('deterministic');
+  });
+
+  it('callMemoryModel spends ONE provider call on it — deterministic is never retried', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-turn-error-home-'));
+    roots.push(root);
+    const calls = path.join(root, 'calls.txt');
+    process.env.MEMEX_HOME = root;
+    process.env.MEMEX_DB_PATH = path.join(root, 'db.sqlite');
+    process.env.MEMEX_CODEX_BIN = fakeCodex(INPUT_TOO_LARGE_STREAM, calls);
+    process.env.MEMEX_LLM_RETRY_BASE_MS = '0';
+
+    const { ensureModelBudgetSchema } = await import('../src/model-budget.js');
+    const db = new Database(process.env.MEMEX_DB_PATH);
+    ensureModelBudgetSchema(db);
+    try {
+      const { callMemoryModel } = await import('../src/llm.js');
+      const error = await callMemoryModel('sys', 'user', 64, { modelContext: { db } }).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(classifyLlmError(error)).toBe('deterministic');
+      expect(fs.readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1);
+    } finally {
+      db.close();
+    }
   });
 });
 

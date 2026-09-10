@@ -113,6 +113,38 @@ export class CodexRequestRejectedError extends Error {
 /** Design-document name for the class above; both refer to one identity. */
 export { CodexRequestRejectedError as MemexModelConfigError };
 
+/**
+ * The turn failed and the CLI still exited 0 with no final message.
+ *
+ * Measured: the Codex CLI reports a provider rejection inside the JSONL stream
+ * and exits 0, so WITHOUT this class the only thing left to return was `''` —
+ * which `llm.ts` turns into `EmptyLlmResponseError`, i.e. 'transient'. That is
+ * the wrong verdict for the whole deterministic family: an input-too-large 400
+ * must stay 'deterministic' so the extractor halves its window and recovers the
+ * conversation instead of retrying the identical oversized request three times
+ * and then holding it forever (design §3.2).
+ *
+ * It is deliberately NOT `CodexRequestRejectedError`: the envelope predicate
+ * stays narrow, and everything it refuses is classified from the provider's own
+ * status and sentence by `classifyLlmError`, which is the single classifier.
+ */
+export class CodexTurnFailedError extends Error {
+  readonly name = 'CodexTurnFailedError';
+  /** Read by `extractStatus` in llm-error-class, so 400/413/429/5xx decide. */
+  readonly status: number | null;
+  readonly providerType: string | null;
+
+  constructor(turnError: CodexTurnError) {
+    super(
+      `codex exec turn failed` +
+        (turnError.status === null ? '' : ` (status ${turnError.status})`) +
+        `: ${sanitizeProviderMessage(turnError.message)}`,
+    );
+    this.status = turnError.status;
+    this.providerType = turnError.type;
+  }
+}
+
 export interface CodexTurnError {
   message: string;
   status: number | null;
@@ -675,6 +707,10 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
           reasoningEffort: selection.reasoningEffort,
         });
       }
+      // Every OTHER turn error is surfaced too. Dropping it returned `''`, which
+      // `llm.ts` reads as an empty response — 'transient' — so a context-length
+      // 400 was retried unchanged and then held, instead of halving the window.
+      if (turnError) throw new CodexTurnFailedError(turnError);
     }
     if (!text && res.code !== 0) {
       throw new Error(
