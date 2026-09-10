@@ -302,7 +302,8 @@ test('서버는 index.html에 언어를 심고 CSP는 그대로다 (인라인 �
 });
 
 test('문서 앵커는 언어 무관 상수 모듈 하나에 모여 있다', () => {
-  assert.equal(Object.keys(DOC_ANCHORS).length, 16);
+  // 16 → 19: L4(#109)가 help.mjs·guidance.mjs의 인라인 한국어 앵커 3개를 같이 올렸다.
+  assert.equal(Object.keys(DOC_ANCHORS).length, 19);
   for (const value of Object.values(DOC_ANCHORS)) assert.match(value, /^docs\/[A-Z-]+\.md#/);
   // 앵커는 사전에 들어가지 않는다 — 두 벌로 갈라지면 드리프트한다.
   for (const dict of Object.values(DICTS)) {
