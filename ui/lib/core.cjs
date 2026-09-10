@@ -60,7 +60,9 @@ class Core {
     return m.getPipelineStatus({dbPath:this.dbPath});
   }
   environment(){
-    const names=['MEMEX_AUTO_ONTOLOGY','MEMEX_CODEX_MODEL','MEMEX_MODEL_BUDGET_MAX_ATTEMPTS','MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS','MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS','MEMEX_MODEL_BUDGET_DEADLINE_MS','CODEX_HOME','MEMEX_SESSIONS_DIR'];
+    // #31: MEMEX_CODEX_REASONING·MEMEX_EMBEDDING_* 는 모델 탭이 "환경 변수로 고정됨"을 말할 때
+    // 근거로 쓰는 값이므로 런타임 탭의 표에도 그대로 보여야 한다.
+    const names=['MEMEX_AUTO_ONTOLOGY','MEMEX_CODEX_MODEL','MEMEX_CODEX_REASONING','MEMEX_MODEL_BUDGET_MAX_ATTEMPTS','MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS','MEMEX_MODEL_BUDGET_MAX_OUTPUT_CHARS','MEMEX_MODEL_BUDGET_DEADLINE_MS','MEMEX_EMBEDDING_MODEL','MEMEX_EMBEDDING_DIMS','MEMEX_MODEL_CACHE_DIR','CODEX_HOME','MEMEX_SESSIONS_DIR'];
     return {root:this.root,home:this.home,dbPath:this.dbPath,version:this.version,node:process.version,platform:process.platform,pid:process.pid,
       values:Object.fromEntries(names.map(k=>[k,process.env[k]??null])),
       noteKey:'note.environment.inherited',
@@ -70,6 +72,8 @@ class Core {
       mutable:fs.existsSync(path.join(this.root,'dist','fact-management.js')),
       commands:fs.existsSync(path.join(this.root,'cli','memex.js')),
       sync:fs.existsSync(path.join(this.root,'dist','sync-control.js')),
+      // #31 — 모델 탭의 capability. `sync:` 선례와 같은 등급이고, 없으면 탭이 배너로 degrade한다.
+      models:fs.existsSync(path.join(this.root,'dist','model-settings.js')),
     };
   }
   async impact(id,scope){
@@ -261,6 +265,258 @@ class Core {
     }catch(e){if(e.name==='StaleFactMutationError')throw new HttpError(409,{code:'STALE_FACT',key:null,message:e.message});throw e;}
     finally{this.busy.delete(id);if(writer&&writer!==this.db){try{writer.close();}catch{}}}
   }
+  /* ═══ Issue #31 — 모델 선택 (`/api/v2/models`) ══════════════════════════════════════════ *
+   * 이 블록은 `memex models`가 부르는 **바로 그 코어 함수들**을 부른다: 설정 파일은
+   * `dist/model-settings.js`, 목록은 `dist/codex-catalog.js`, 1회 테스트는
+   * `dist/model-settings-probe.js`, 보류·대기 작업은 `dist/model-budget.js`의 HOLD API다.
+   * `memex` CLI를 셸로 실행하지 않는다 — 그러면 이 서버가 해석한 home이 아니라 자식 프로세스의
+   * 환경이 경로를 정하게 되고(#78), 결과를 구조화해서 받을 수도 없다.
+   *
+   * 세 가지 규칙:
+   *  1. **조회는 DB 없이도 답한다.** 선택과 출처는 파일·환경 변수만으로 결정되므로, 인덱스
+   *     데이터베이스가 없는 새 설치에서도 200이다. 보류·대기 작업·마지막 테스트만 비게 된다.
+   *  2. **코어 호출은 `pinned()` 안에서 한다.** `models.json` 경로와 코어의 감사 줄이 모두
+   *     `getMemexHome()`에서 오므로, 고정하지 않으면 임시 DB로 띄운 세션이 사용자의 실제
+   *     데이터 루트에 쓴다(#78).
+   *  3. **한 번에 하나.** `modelsBusy`는 sync의 단일 실행 락과 같고, 기억 변경·동기화와도
+   *     배타적이다 — 테스트 호출은 최대 3분이 걸릴 수 있고 그 사이 같은 파일을 두 번 쓰면
+   *     "무엇이 저장됐는가"가 경합으로 결정된다.
+   */
+  async models(action,body={}){
+    if(!Core.MODEL_ACTIONS.includes(action))throw new HttpError(400,{code:'UNKNOWN_ACTION',key:'models.error.unknown_action',
+      message:`unsupported model action: ${text(action,40)}`});
+    if(this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',
+      message:'a model settings action is already running'});
+    if(action!=='status'&&(this.busy.size||this.syncBusy))throw new HttpError(409,{code:'MUTATION_BUSY',key:'models.error.mutation_busy',
+      message:'a memory change or a sync is running'});
+    this.modelsBusy=true;
+    try{
+      return await this.pinned(async()=>{
+        const settings=await this.module('model-settings');
+        for(const fn of ['readModelSettings','writeModelSettings','resetModelSettings','resolveLlmSelection','isValidModelId','normalizeReasoningEffort'])
+          if(typeof settings[fn]!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'models.error.core_unavailable',
+            message:`dist/model-settings.js has no ${fn}. Build the core.`});
+        if(action==='status')return await this.modelStatus(settings);
+        if(action==='reset'){
+          const had=fs.existsSync(settings.modelSettingsPath());
+          const before=settings.resolveLlmSelection();
+          settings.resetModelSettings();
+          const after=settings.resolveLlmSelection();
+          const settled=await this.settleModelSelection(before.fingerprint,after.fingerprint);
+          await this.modelAudit('models.reset',{had_llm:had,source:'ui'});
+          return {ok:true,removed:had,settled,warnings:this.modelSettleWarnings(settled),status:await this.modelStatus(settings)};
+        }
+        const input=this.modelSelectionInput(settings,body);
+        if(action==='set-llm'){
+          if(input.model===undefined&&input.reasoning===undefined)
+            throw new HttpError(422,{code:'NOTHING_TO_SAVE',key:'models.error.nothing_to_save',
+              message:'choose a model and/or a reasoning effort',
+              details:{issues:[{field:'model',key:'models.error.nothing_to_save'}]}});
+          const before=settings.resolveLlmSelection();
+          settings.writeModelSettings({llm:{
+            ...(input.model!==undefined?{model:input.model}:{}),
+            ...(input.reasoning!==undefined?{reasoning:input.reasoning}:{}),
+          }});
+          const saved=settings.readModelSettings();
+          const after=settings.resolveLlmSelection();
+          const settled=await this.settleModelSelection(before.fingerprint,after.fingerprint);
+          await this.modelAudit('models.llm.set',{from_model:before.model,to_model:after.model,
+            from_reasoning:before.reasoning,to_reasoning:after.reasoning,source:'ui'});
+          const status=await this.modelStatus(settings);
+          return {ok:true,saved:{model:saved.llm.model,reasoning:saved.llm.reasoning},settled,
+            warnings:[...await this.modelSaveWarnings(settings,input,saved,after),...this.modelSettleWarnings(settled)],status};
+        }
+        // test — 실제 제공자 호출 1회. 원장에 시도 1건을 남기므로 쓰기 가능한 DB가 필요하다.
+        if(!fs.existsSync(this.dbPath))throw new HttpError(503,{code:'DB_INDEX_MISSING',key:'models.error.db_missing',
+          message:'the index database is missing, so a probe has nowhere to record its attempt'});
+        const probe=await this.module('model-settings-probe');
+        if(typeof probe.probeModel!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'models.error.core_unavailable',
+          message:'dist/model-settings-probe.js has no probeModel. Build the core.'});
+        const selection=settings.resolveLlmSelection({
+          ...(input.model!==undefined&&input.model!==null?{model:input.model}:{}),
+          ...(input.reasoning!==undefined?{reasoningEffort:input.reasoning}:{}),
+        });
+        const factories=await this.module('db');
+        const writer=factories.openWriteDb(this.dbPath);
+        let result;
+        try{result=await probe.probeModel(writer,{model:selection.model,reasoning:selection.reasoning});}
+        finally{try{writer.close();}catch{}}
+        return {ok:!!result.ok,probe:result,status:await this.modelStatus(settings)};
+      });
+    }finally{this.modelsBusy=false;}
+  }
+  /**
+   * 입력 검증. 모델 id·추론 강도는 **형식만** 보고, 맞지 않으면 정규화하지 않고 422로 거절한다
+   * (설정 저장은 조용한 교정이 오류보다 나쁜 유일한 자리다 — 한 시간 뒤 원인 모를 보류가 된다).
+   * 행별 사유를 `details.issues`로 실어 클라이언트의 renderIssues()가 그대로 그린다.
+   */
+  modelSelectionInput(settings,body){
+    const out={};
+    if(body.model!==undefined&&body.model!==null&&text(body.model,256).trim()!==''){
+      const model=text(body.model,256).trim();
+      if(!settings.isValidModelId(model))throw new HttpError(422,{code:'INVALID_MODEL_ID',key:'models.error.invalid_model_id',
+        params:{value:model},message:`invalid model id ${JSON.stringify(model)} — expected 1-256 characters matching [\\w./:@+-]`,
+        details:{issues:[{field:'model',key:'models.error.invalid_model_id',params:{value:model}}]}});
+      out.model=model;
+    }
+    if(body.reasoning!==undefined){
+      // `none`은 제공자의 실제 강도이므로, "플래그를 보내지 않음"은 null 또는 'unset'으로만 말한다.
+      const raw=body.reasoning===null||body.reasoning===''||body.reasoning==='unset'?null:text(body.reasoning,40).trim();
+      if(raw===null)out.reasoning=null;
+      else{
+        const normalized=settings.normalizeReasoningEffort(raw);
+        const allowed=(settings.ALLOWED_REASONING_EFFORTS||[]).join(', ');
+        if(!normalized)throw new HttpError(422,{code:'INVALID_REASONING',key:'models.error.invalid_reasoning',
+          params:{allowed},message:`invalid reasoning effort ${JSON.stringify(raw)} — expected one of ${allowed}`,
+          details:{issues:[{field:'reasoning',key:'models.error.invalid_reasoning',params:{allowed}}]}});
+        out.reasoning=normalized;
+      }
+    }
+    return out;
+  }
+  /** 선택·출처·카탈로그·보류·대기 작업·마지막 테스트를 한 번에. 항상 성공한다. */
+  async modelStatus(settings){
+    const catalog=await this.module('codex-catalog');
+    const selection=settings.resolveLlmSelection();
+    const saved=settings.readModelSettings();
+    const read=typeof catalog.readCodexCatalog==='function'?catalog.readCodexCatalog():null;
+    const levels=read&&typeof catalog.reasoningEffortsForModel==='function'
+      ?catalog.reasoningEffortsForModel(selection.model,read):null;
+    const facts=await this.modelDbFacts(selection.fingerprint);
+    const settingsPath=settings.modelSettingsPath();
+    return {
+      settingsPath,fileExists:fs.existsSync(settingsPath),version:saved.version,updatedAt:saved.updatedAt,
+      llm:{
+        effective:{model:{value:selection.model,source:selection.modelSource},
+          reasoning:{value:selection.reasoning,source:selection.reasoningSource}},
+        saved:{model:saved.llm.model,reasoning:saved.llm.reasoning},
+        defaults:{model:settings.DEFAULT_LLM_MODEL,reasoning:null},
+        allowedReasoning:[...(settings.ALLOWED_REASONING_EFFORTS||[])],
+        catalogReasoning:levels,
+        catalog:read?{source:read.source,path:read.path,fetchedAt:read.fetchedAt,
+          codexHome:typeof catalog.codexHome==='function'?catalog.codexHome():null,
+          models:read.models.map(m=>({slug:m.slug,displayName:m.displayName,visible:m.visible,
+            defaultReasoning:m.defaultReasoning,reasoningEfforts:m.reasoningEfforts}))}:null,
+        fingerprint:selection.fingerprint,
+        hold:facts.holds.find(h=>h.current)||null,holds:facts.holds,heldJobs:facts.heldJobs,lastProbe:facts.lastProbe,
+      },
+      embedding:await this.modelEmbeddingReport(),
+      env:{MEMEX_CODEX_MODEL:process.env.MEMEX_CODEX_MODEL??null,MEMEX_CODEX_REASONING:process.env.MEMEX_CODEX_REASONING??null,
+        MEMEX_EMBEDDING_MODEL:process.env.MEMEX_EMBEDDING_MODEL??null,MEMEX_EMBEDDING_DIMS:process.env.MEMEX_EMBEDDING_DIMS??null},
+      db:{path:this.dbPath,exists:facts.exists},
+    };
+  }
+  /**
+   * 보류·대기 작업·마지막 테스트. 없는 테이블·컬럼은 "없음"이고 오류가 아니다 — 0.6.x DB로도
+   * 이 화면은 열려야 한다. 읽기 연결은 이미 열려 있으면 재사용하고, 내가 열었으면 내가 닫는다.
+   */
+  async modelDbFacts(fingerprint){
+    const out={exists:fs.existsSync(this.dbPath),holds:[],heldJobs:[],lastProbe:null};
+    if(!out.exists)return out;
+    let db=this.db,owned=false;
+    try{
+      if(!db){const factories=await this.module('db');db=factories.openReadDb(this.dbPath);owned=true;}
+      const budget=await this.module('model-budget');
+      if(typeof budget.listModelConfigHolds==='function')out.holds=budget.listModelConfigHolds(db,fingerprint);
+      if(typeof budget.heldJobSummary==='function')out.heldJobs=budget.heldJobSummary(db);
+      const probe=await this.module('model-settings-probe');
+      out.lastProbe=this.modelLastProbe(db,probe.MODEL_PROBE_STAGE||'model_probe');
+    }catch{/* 조회는 부분 실패해도 선택·출처는 답해야 한다 */}
+    finally{if(owned&&db){try{db.close();}catch{}}}
+    return out;
+  }
+  /** 원장에서 읽는 마지막 `model_probe` 시도. 추정하지 않고, 없으면 null이다. */
+  modelLastProbe(db,stage){
+    try{
+      if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_work_attempts'").get())return null;
+      const columns=new Set(db.prepare("SELECT name FROM pragma_table_info('model_work_attempts')").all().map(r=>r.name));
+      const extra=['model','reasoning_effort'].filter(c=>columns.has(c));
+      const row=db.prepare(`SELECT state, started_at, finished_at, duration_ms, error_class${extra.map(c=>', '+c).join('')}
+        FROM model_work_attempts WHERE stage = ? ORDER BY started_at DESC, attempt_id DESC LIMIT 1`).get(stage);
+      if(!row)return null;
+      return {ok:row.state==='completed',at:row.finished_at??row.started_at,latencyMs:row.duration_ms??null,
+        model:row.model??null,reasoning:row.reasoning_effort??null,errorClass:row.error_class??null};
+    }catch{return null;}
+  }
+  /** 0.7.0의 임베딩은 읽기 전용이다. 측정하지 않은 차원을 주장하지 않는다(0.7.1). */
+  async modelEmbeddingReport(){
+    try{
+      const cacheModule=await this.module('model-cache');
+      const cache=typeof cacheModule.embeddingCacheStatus==='function'?cacheModule.embeddingCacheStatus():null;
+      return {readOnly:true,model:cacheModule.EMBEDDING_MODEL??null,
+        source:process.env.MEMEX_EMBEDDING_MODEL?'env':'default',
+        cache:{present:!!cache?.present,files:cache?.files??0,bytes:cache?.bytes??0,
+          modelDir:cache?.modelDir??null,stub:!!cache?.stub}};
+    }catch(e){return {readOnly:true,model:null,source:'default',
+      cache:{present:false,files:0,bytes:0,modelDir:null,stub:false},error:e.message};}
+  }
+  /**
+   * 선택이 바뀌면 **옛 지문의 보류는 영원히 다시 매칭되지 않으므로** 여기서 닫고, 그 사유로
+   * 파킹된 작업도 함께 푼다(§3.5.2 규칙 3). 내 지문의 행만 만진다 — 다른 설정으로 도는
+   * 프로세스의 보류를 지우지 않는 것이 이 설계의 핵심이다.
+   */
+  async settleModelSelection(previousFingerprint,nextFingerprint){
+    if(previousFingerprint===nextFingerprint||!fs.existsSync(this.dbPath))return null;
+    let writer=null;
+    try{
+      const factories=await this.module('db');
+      const budget=await this.module('model-budget');
+      if(typeof budget.clearModelConfigHold!=='function'||typeof budget.releaseHeldJobs!=='function')return null;
+      writer=factories.openWriteDb(this.dbPath);
+      const clearedHolds=budget.clearModelConfigHold(writer,previousFingerprint,'manual')?1:0;
+      const releasedJobs=budget.releaseHeldJobs(writer,'model_config_rejected');
+      if(clearedHolds>0)await this.modelAudit('models.llm.hold.cleared',{reason:'manual',
+        fingerprint_prefix:String(previousFingerprint).slice(0,12),source:'ui'});
+      return {clearedHolds,releasedJobs};
+    }catch{return null;}
+    finally{if(writer){try{writer.close();}catch{}}}
+  }
+  modelSettleWarnings(settled){
+    return settled&&(settled.clearedHolds>0||settled.releasedJobs>0)
+      ?[{code:'HOLD_CLEARED',params:{holds:settled.clearedHolds,jobs:settled.releasedJobs}}]:[];
+  }
+  /**
+   * 저장은 성공했지만 사용자가 알아야 하는 것들. **거절이 아니라 경고**인 이유: 카탈로그는 낡을
+   * 수 있고 id는 실제 호출만이 증명한다(§3.3 규칙 2).
+   */
+  async modelSaveWarnings(settings,input,saved,after){
+    const catalog=await this.module('codex-catalog');
+    const read=typeof catalog.readCodexCatalog==='function'?catalog.readCodexCatalog():null;
+    const warnings=[];
+    if(input.model!==undefined&&read){
+      if(read.source==='none')warnings.push({code:'CATALOG_UNAVAILABLE',
+        params:{home:typeof catalog.codexHome==='function'?catalog.codexHome():''}});
+      else{
+        const entry=typeof catalog.findCatalogModel==='function'?catalog.findCatalogModel(read,input.model):null;
+        if(!entry)warnings.push({code:'MODEL_NOT_IN_CATALOG',params:{model:input.model,path:read.path||''}});
+        else if(!entry.visible)warnings.push({code:'MODEL_HIDDEN_IN_CATALOG',params:{model:input.model}});
+      }
+    }
+    // 강도는 **저장한 모델**을 기준으로 본다 — 환경 변수가 이기는 모델의 목록을 경고하면 버그로 읽힌다.
+    const checked=input.model!==undefined?input.model:after.model;
+    const levels=read&&typeof catalog.reasoningEffortsForModel==='function'
+      ?catalog.reasoningEffortsForModel(checked,read):null;
+    if(saved.llm.reasoning&&levels&&!levels.includes(saved.llm.reasoning))
+      warnings.push({code:'REASONING_UNSUPPORTED',params:{model:checked,levels:levels.join(' / ')}});
+    if(after.modelSource==='env'&&input.model!==undefined)
+      warnings.push({code:'ENV_OVERRIDES_MODEL',params:{name:'MEMEX_CODEX_MODEL',value:after.model,model:input.model}});
+    if(after.reasoningSource==='env'&&input.reasoning!==undefined)
+      warnings.push({code:'ENV_OVERRIDES_REASONING',params:{name:'MEMEX_CODEX_REASONING',value:after.reasoning??''}});
+    return warnings;
+  }
+  /**
+   * 감사 줄은 코어의 writer를 재사용한다(설계 §10.1 C5) — 새 모듈을 만들지 않고, 없으면 기능은
+   * 그대로 돌고 줄만 빠진다. `pinned()` 안에서 불리므로 이 서버의 home에 떨어진다(#78).
+   * 서버 라우트의 `logs.audit()`와 역할이 다르다: 그 줄은 "요청이 성공했는가", 이 줄은 "무엇이
+   * 바뀌었는가"를 남긴다.
+   */
+  async modelAudit(action,detail){
+    // await으로 끝낸다 — pinned()를 빠져나간 뒤에 쓰면 이 서버의 home이 아닌 곳에 떨어진다.
+    try{const admin=await this.module('ontology-admin');admin.appendUiAuditLine?.(action,detail);}
+    catch{/* 원장이 durable 기록이고 감사 줄은 best-effort다 */}
+  }
   close(){if(this.db){try{this.db.close();}catch{}this.db=null;}}
 }
+/** `/api/v2/models` 본문의 action. 0.7.1이 preview-embedding·set-embedding을 더한다. */
+Core.MODEL_ACTIONS=['status','set-llm','test','reset'];
 module.exports={Core};

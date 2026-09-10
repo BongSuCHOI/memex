@@ -1,5 +1,8 @@
 import {esc,icon,header,btn,linkBtn,banner,kv,badge,name,options,table,number,date,short,bytes} from '../ui.mjs';
 import {visibleTabs,tabFor,renderedBySettingsPage} from './settings-tabs.mjs';
+// 레지스트리는 렌더 함수만 들고 있다(C4.2). 배선은 탭 모듈이 자기 것을 가지고 있고, 그 탭이
+// 아니면 선택자를 하나도 찾지 못해 no-op다 (#31 lane E).
+import {mountModelTab} from './model.mjs';
 import {t,tHtml,tn,localeTag,LOCALES} from '../i18n/index.mjs';
 import {ENDONYMS} from '../i18n/endonyms.mjs';
 // 한국어 테이블이던 상수는 전부 함수다 — 사전은 boot()에서 꽂히고 모듈 최상위는 그보다 먼저
@@ -160,6 +163,7 @@ export async function render(ctx){
  el.querySelectorAll('[data-alias]').forEach(b=>b.addEventListener('click',()=>renameDevice(ctx,b.dataset.alias,b.dataset.aliasName)));
  el.querySelector('[data-archive="export"]')?.addEventListener('click',()=>exportArchive(ctx));
  el.querySelector('[data-archive="import"]')?.addEventListener('click',()=>importArchive(ctx));
+ mountModelTab(el,ctx);
  el.querySelector('#archive-import-form')?.addEventListener('submit',async event=>{
   event.preventDefault();
   const path=String(new FormData(event.currentTarget).get('path')||'').trim();

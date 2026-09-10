@@ -7,6 +7,11 @@
 // 항목을 추가하면 중복 탭이 된다(C4.2). 레이블 키 7개는 이미 i18n/settings/{en,ko}.mjs에
 // 있으므로 기능 레인이 사전에 손댈 settings.* 키는 없다(C4.3 · decisions-v3 I3).
 
+// #31 lane E — 모델 탭. capability(`environment.models`)가 없을 때도 탭은 남기고 화면이 이유를
+// 배너로 설명한다: `enabled`는 ctx를 받지 않아 여기서 판단할 수 없고, "탭이 사라졌다"보다
+// "왜 못 쓰는지"가 고칠 수 있는 화면이다(설계 §12.3의 degrade 패턴).
+import { render as modelTab } from './model.mjs';
+
 /**
  * `render`가 이 함수면 "settings.mjs가 자기 분기로 그린다"는 뜻이다. 탭이 보이는 조건
  * (`enabled && render`)은 그대로 만족시키면서, i18n L2가 탭별 렌더 함수로 쪼갤 때
@@ -22,7 +27,7 @@ export const SETTINGS_TABS = [
   { id: 'diagnostics', labelKey: 'settings.tabs.diagnostics', enabled: true, render: renderedBySettingsPage },
   // ↓ 오버레이·모델 레인은 이 두 항목의 enabled·render만 바꾼다.
   { id: 'overlays', labelKey: 'settings.tabs.overlays', enabled: false, render: null },
-  { id: 'models', labelKey: 'settings.tabs.models', enabled: false, render: null },
+  { id: 'models', labelKey: 'settings.tabs.models', enabled: true, render: modelTab },
 ];
 
 export const DEFAULT_TAB = 'runtime';
