@@ -21,16 +21,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { initDatabase } from "./db.js";
+import { initDatabase, openReadDb } from "./db.js";
 import { getMemexHome } from "./paths.js";
 import { createZip, readZip } from "./zip.js";
 import { CURRENT_MANIFEST, ExportLockedError, GENERATIONS_DIR_NAME, SYNC_PAYLOAD_FILE_NAMES, durableStateFingerprint, exportForSync, readExportStatus, recordExportStatus, } from "./sync-export.js";
 import { importFromSync, previewSyncImport, } from "./sync-import.js";
 import { localSyncStateDir, readDeviceAliases, readSyncConfig, resolveSyncDir, syncConfigPath, syncDirSource, writeSyncConfig, } from "./sync-paths.js";
 export { DEVICE_ALIAS_MAX_LENGTH, deviceAliasPath, readDeviceAliases, readSyncConfig, resolveSyncDir, setDeviceAlias, syncConfigPath, syncDirSource, } from "./sync-paths.js";
+/**
+ * This device's sync identity, or null when there is none to read.
+ *
+ * Read-only on purpose (#97): the callers are an identity QUESTION — "did this
+ * machine write the file I am looking at?" — and one of them is reached from
+ * `memex sync import --archive --dry-run`, which promises to change nothing.
+ * `initDatabase()` would have created the database file and run every
+ * `CREATE TABLE`/`ALTER TABLE` migration before the preview's own transaction
+ * even opened, so a dry-run on a machine with no index left an empty one behind
+ * and a dry-run on an old schema migrated it irreversibly. `openReadDb()` is
+ * `fileMustExist`, so no index means no device id — which is the correct answer
+ * to the question in both callers.
+ */
 function localDeviceId() {
     try {
-        const db = initDatabase();
+        const db = openReadDb();
         try {
             const row = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
             return row?.value ?? null;
@@ -287,56 +300,135 @@ function archiveError(message) {
  * shared folder, while this is an explicit user action whose whole point is
  * having no shared folder. The generation is written through the normal
  * exporter, so the file a user carries is the same set-atomic, hash-pinned
- * generation a peer would have read from a shared folder. `export-status.json`
- * is deliberately NOT updated: it records what reached the shared DESTINATION,
- * and a hand-carried file proves nothing about that.
+ * generation a peer would have read from a shared folder.
+ *
+ * Issue #95 — it publishes into a PRIVATE staging directory inside the data
+ * root, never into the shared folder. Before this it called the exporter with no
+ * destination, so the exporter resolved the shared folder and `getSyncDir()`
+ * CREATED it: with the switch off, and even after the user had deleted the
+ * folder, one `--archive` re-created an iCloud/Dropbox folder and published
+ * plaintext memories into it — while `memex sync status` still said `Sync: OFF`.
+ * A hand-carried file has nothing to do with the shared destination, so it now
+ * touches neither the folder nor what a peer would read from it. That also makes
+ * the deliberate absence of an `export-status.json` update consistent: that
+ * record states what reached the shared DESTINATION, and nothing does here.
  */
 export function exportGenerationArchive(options = {}) {
-    const counts = exportForSync();
-    const dir = resolveSyncDir();
-    const deviceId = localDeviceId();
-    if (!deviceId)
-        throw archiveError("export found no device id after exporting — the local DB is unreadable");
-    const deviceDir = path.join(dir, "devices", deviceId);
-    let generation;
+    // Reject an impossible destination BEFORE exporting anything: a path the rule
+    // forbids must not cost the user a generation (or leave staging behind).
+    const requested = options.outPath ? resolveArchiveTarget(options.outPath) : null;
+    if (!requested)
+        assertInsideDataRoot(archiveExportDir());
+    // Staging holds the same plaintext JSONL the zip does, so it is held to the
+    // same rule as the output: if `<data root>/sync` is a link out of the data
+    // root, refuse rather than write memories through it for even a moment.
+    fs.mkdirSync(localSyncStateDir(), { recursive: true });
+    assertInsideDataRoot(localSyncStateDir());
+    const dir = fs.mkdtempSync(path.join(localSyncStateDir(), "archive-staging-"));
     try {
-        generation = JSON.parse(fs.readFileSync(path.join(deviceDir, CURRENT_MANIFEST), "utf8")).generation;
+        const counts = exportForSync({ syncDir: dir });
+        const deviceId = localDeviceId();
+        if (!deviceId)
+            throw archiveError("export found no device id after exporting — the local DB is unreadable");
+        const deviceDir = path.join(dir, "devices", deviceId);
+        let generation;
+        try {
+            generation = JSON.parse(fs.readFileSync(path.join(deviceDir, CURRENT_MANIFEST), "utf8")).generation;
+        }
+        catch (error) {
+            throw archiveError(`export could not read the generation it just published: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const generationDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
+        const entries = ARCHIVE_FILE_NAMES.map((name) => ({
+            name,
+            data: fs.readFileSync(path.join(generationDir, name)),
+        }));
+        let exportedAt = null;
+        try {
+            exportedAt = JSON.parse(entries[entries.length - 1].data.toString("utf8"))
+                .exported_at;
+        }
+        catch {
+            /* the manifest was just written by the exporter; treat an unreadable date as absent */
+        }
+        const target = requested ?? path.join(archiveExportDir(), `${deviceId}-${generation}.zip`);
+        if (!requested)
+            assertArchiveTargetAllowed(target);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const body = createZip(entries);
+        // Same publish discipline as a generation: write beside, then rename, so a
+        // reader (or a cloud folder watcher) never sees a half-written archive.
+        const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+        fs.writeFileSync(tmp, body);
+        fs.renameSync(tmp, target);
+        return {
+            path: target,
+            deviceId,
+            deviceAlias: readDeviceAliases()[deviceId] ?? null,
+            generation,
+            exportedAt,
+            bytes: body.length,
+            counts,
+        };
     }
-    catch (error) {
-        throw archiveError(`export could not read the generation it just published: ${error instanceof Error ? error.message : String(error)}`);
+    finally {
+        // The zip holds the whole generation in memory by now; staging is scratch.
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+        catch {
+            /* a staging directory that refuses to go is not a reason to fail an export */
+        }
     }
-    const generationDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
-    const entries = ARCHIVE_FILE_NAMES.map((name) => ({
-        name,
-        data: fs.readFileSync(path.join(generationDir, name)),
-    }));
-    let exportedAt = null;
+}
+/**
+ * Real location of the deepest part of `target` that exists, including `target`
+ * itself. Symlinks are resolved, so this is the path a write would truly reach.
+ */
+function deepestRealPath(target) {
+    let probe = path.resolve(target);
+    while (!fs.existsSync(probe) && path.dirname(probe) !== probe)
+        probe = path.dirname(probe);
     try {
-        exportedAt = JSON.parse(entries[entries.length - 1].data.toString("utf8"))
-            .exported_at;
+        return fs.realpathSync(probe);
     }
     catch {
-        /* the manifest was just written by the exporter; treat an unreadable date as absent */
+        return probe;
     }
-    const target = options.outPath
-        ? resolveArchiveTarget(options.outPath)
-        : path.join(archiveExportDir(), `${deviceId}-${generation}.zip`);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const body = createZip(entries);
-    // Same publish discipline as a generation: write beside, then rename, so a
-    // reader (or a cloud folder watcher) never sees a half-written archive.
-    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    fs.writeFileSync(tmp, body);
-    fs.renameSync(tmp, target);
-    return {
-        path: target,
-        deviceId,
-        deviceAlias: readDeviceAliases()[deviceId] ?? null,
-        generation,
-        exportedAt,
-        bytes: body.length,
-        counts,
-    };
+}
+/**
+ * Issue #101 — containment compares REAL locations, not path strings.
+ *
+ * `path.resolve()` does not resolve symlinks, so a string prefix check let one
+ * link inside the data root carry a write outside it (`<root>/link/x.zip` with
+ * `<root>/link -> ~/Documents`). Resolving the root too fixes the mirror-image
+ * misbehaviour: a data root reached through a link (macOS `/tmp` ->
+ * `/private/tmp`) used to reject legitimate absolute paths naming its own files.
+ */
+function insideDataRoot(target) {
+    const root = deepestRealPath(getMemexHome());
+    const real = deepestRealPath(target);
+    return real === root || real.startsWith(root + path.sep);
+}
+function assertInsideDataRoot(target) {
+    if (!insideDataRoot(target)) {
+        throw archiveError(`export path must stay inside the data root (${deepestRealPath(getMemexHome())})`);
+    }
+}
+function assertArchiveTargetAllowed(target) {
+    assertInsideDataRoot(target);
+    // An existing final component that is itself a symlink is refused rather than
+    // followed: the rule is about where bytes land, and a link's target is not
+    // covered by the check above.
+    let link = null;
+    try {
+        link = fs.lstatSync(target);
+    }
+    catch {
+        /* nothing there yet is the normal case */
+    }
+    if (link?.isSymbolicLink())
+        throw archiveError("export path is a symlink");
 }
 /**
  * Keep a server-side write inside the data root.
@@ -351,10 +443,7 @@ function resolveArchiveTarget(outPath) {
     if (!path.isAbsolute(outPath))
         throw archiveError("export path must be absolute");
     const resolved = path.resolve(outPath);
-    const root = path.resolve(getMemexHome());
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-        throw archiveError(`export path must stay inside the data root (${root})`);
-    }
+    assertArchiveTargetAllowed(resolved);
     if (!resolved.toLowerCase().endsWith(".zip"))
         throw archiveError("export path must end with .zip");
     return resolved;

@@ -170,6 +170,15 @@ export function durableStateFingerprint(db) {
         // `status`/`emitted_at` are exported columns, so they belong in the gate.
         scalar("SELECT COUNT(*) AS v FROM recall_events WHERE status = 'emitted'"),
         scalar('SELECT COALESCE(MAX(emitted_at), "") AS v FROM recall_events'),
+        // Issue #98: this device's own alias is a field of every manifest it
+        // publishes (`device_alias` below), so it belongs in the gate for the same
+        // reason #67's receipt status does — the gate measures what would be
+        // EXPORTED, and `memex sync alias <name>` changes exactly that. Without it
+        // naming a device was never propagated: the automatic export reported
+        // `unchanged` forever and the peer kept showing the old name (or a UUID).
+        // Only THIS device's entry counts; an alias this machine assigns to a PEER
+        // is a local override that never travels, so it must not trigger an export.
+        readDeviceAliases()[scalar("SELECT value AS v FROM sync_meta WHERE key = 'device_id'")] ?? '',
     ];
     return createHash('sha256').update(parts.join('\0'), 'utf8').digest('hex');
 }
@@ -263,8 +272,16 @@ export function pruneGenerations(generationsDir, currentId) {
  * readers are Memex v2 importers, and writing a non-atomic mirror beside an
  * atomic generation re-opened the mixed-snapshot hole for the reader that
  * also read it (재감사 P1-1). Committed generations are the whole protocol.
+ *
+ * `syncDir` overrides the destination (#95). The default is the SHARED folder,
+ * created on demand — which is right for the automatic paths and wrong for
+ * `memex sync export --archive`, whose whole point is a file the user carries by
+ * hand. That caller passes a private staging directory inside the data root, so
+ * nothing reaches the shared folder (and the shared folder is not even created)
+ * while the archive is still produced by this one exporter, hash-pinned and
+ * set-atomic exactly like a published generation.
  */
-export function exportForSync() {
+export function exportForSync(options = {}) {
     let db;
     try {
         // Export contention is a normal skip/retry condition. Use a zero timeout
@@ -277,7 +294,7 @@ export function exportForSync() {
             throw new ExportLockedError();
         throw error;
     }
-    const syncDir = getSyncDir();
+    const syncDir = options.syncDir ?? getSyncDir();
     const performExport = () => {
         let device = db.prepare("SELECT value FROM sync_meta WHERE key = 'device_id'").get();
         if (!device) {

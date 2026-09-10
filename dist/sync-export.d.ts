@@ -123,5 +123,15 @@ export declare function pruneGenerations(generationsDir: string, currentId: stri
  * readers are Memex v2 importers, and writing a non-atomic mirror beside an
  * atomic generation re-opened the mixed-snapshot hole for the reader that
  * also read it (재감사 P1-1). Committed generations are the whole protocol.
+ *
+ * `syncDir` overrides the destination (#95). The default is the SHARED folder,
+ * created on demand — which is right for the automatic paths and wrong for
+ * `memex sync export --archive`, whose whole point is a file the user carries by
+ * hand. That caller passes a private staging directory inside the data root, so
+ * nothing reaches the shared folder (and the shared folder is not even created)
+ * while the archive is still produced by this one exporter, hash-pinned and
+ * set-atomic exactly like a published generation.
  */
-export declare function exportForSync(): SyncExportResult;
+export declare function exportForSync(options?: {
+    syncDir?: string;
+}): SyncExportResult;

@@ -82,12 +82,21 @@ export interface SyncImportPreview {
  *
  * Runs the REAL validation and the REAL decision rules
  * (`collectCommittedGenerations` → `rejectInvalidRows` →
- * `rejectStableIdentityConflicts` → `planFactImports` / `planTombstoneImports`),
- * then throws the work away: the whole pass happens inside a transaction that is
- * always rolled back, because the planner may materialize a `projects` row while
- * resolving identity. Revision and recall-receipt counts are NOT previewed —
- * they depend on rows the fact pass would insert first, and this must not report
- * a number it cannot stand behind.
+ * `rejectStableIdentityConflicts` → `importTombstones` → `planFactImports`) in
+ * the order an apply runs them, then throws the work away: the whole pass happens
+ * inside a transaction that is always rolled back, because the planner may
+ * materialize a `projects` row while resolving identity. Revision and
+ * recall-receipt counts are NOT previewed — they depend on rows the fact pass
+ * would insert first, and this must not report a number it cannot stand behind.
+ *
+ * Issue #97 — a dry-run must not WRITE. The database is opened without the
+ * schema bootstrap (`initDatabase()` creates the file and runs every
+ * `CREATE TABLE`/`ALTER TABLE` migration plus a normalizing `UPDATE`, all of it
+ * before the rollback-only transaction opens, so none of it could be undone): a
+ * machine with no index yet is told to sync once instead of being handed an empty
+ * 880 KB database, and an old schema is never silently migrated by a preview.
+ * A plain read-only connection is not enough — the fact planner materializes a
+ * `projects` row while resolving identity, which the ROLLBACK takes back.
  */
 export declare function previewSyncImport(options: {
     syncDir: string;
