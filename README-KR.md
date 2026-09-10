@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.6.8-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.6.9-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -228,7 +228,7 @@ memex sync status      # 공유 폴더·이 기기·마지막 export·감지된 
 memex sync alias "집 맥미니"   # 기기 이름 — 세대 manifest에 실려 상대에게도 보입니다
 ```
 
-이후 export는 자동입니다. SessionEnd의 별도 훅 항목(10초 timeout)과 자동 유지보수 wake가 "마지막 export 이후 durable 변경이 있을 때만" 세대를 만들고, SessionStart가 다른 기기의 세대를 가져옵니다. `MEMEX_SYNC_DIR`은 저장된 공유 폴더보다 우선하며, on/off 스위치는 `<data root>/sync/config.json`의 기기 로컬 상태라 전송되지 않습니다. `memex sync disable`이면 이 경로 전부가 stderr 한 줄짜리 no-op이 됩니다. 공유 폴더의 기억은 평문 JSONL이고 암호화는 범위 밖이므로 **본인 계정의** 클라우드만 사용하십시오.
+이후 export는 자동입니다. SessionEnd의 별도 훅 항목(3초 timeout)과 자동 유지보수 wake가 "마지막 export 이후 durable 변경이 있을 때만" 세대를 만들고, SessionStart가 다른 기기의 세대를 가져옵니다. `MEMEX_SYNC_DIR`은 저장된 공유 폴더보다 우선하며, on/off 스위치는 `<data root>/sync/config.json`의 기기 로컬 상태라 전송되지 않습니다. `memex sync disable`이면 이 경로 전부가 stderr 한 줄짜리 no-op이 됩니다. 공유 폴더의 기억은 평문 JSONL이고 암호화는 범위 밖이므로 **본인 계정의** 클라우드만 사용하십시오.
 
 **공유 폴더가 없으면** 세대 하나를 파일로 옮길 수 있습니다. 같은 protocol v5 generation을 zip에 담을 뿐이므로 검증도 똑같습니다.
 
@@ -336,7 +336,7 @@ Bundled Codex skill 3개는 과거 대화 기억, 전체 대화 분석, Memex da
 | **Interrupt** | delta append와 interrupted/open fence 보존 |
 | **PreCompact** | journal fsync, carry freeze, checkpoint + outbox atomic commit |
 | **PostCompact** | optional telemetry 전용; correctness 비의존 |
-| **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음. 같은 이벤트의 **별도 항목**(10초 timeout)이 동기화가 켜져 있을 때 크로스디바이스 세대를 내보내고, 꺼져 있으면 즉시 no-op입니다 |
+| **SessionEnd** | final delta + final fence + durable job만 수행; foreground model/embedding/extraction/export 없음. 같은 이벤트의 **별도 항목**(3초 timeout — Codex가 SessionEnd에 허용하는 최대)이 동기화가 켜져 있을 때 크로스디바이스 세대를 내보내고, 꺼져 있으면 즉시 no-op입니다 |
 
 Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리합니다. SessionStart background 작업은 eventual consistency이며 각 writer가 자체 transaction/CAS 안전성을 책임집니다.
 

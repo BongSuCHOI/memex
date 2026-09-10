@@ -1,6 +1,6 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.6.8-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.6.9-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -228,7 +228,7 @@ memex sync status      # shared folder, this device, last export, devices seen
 memex sync alias "home mini"   # name this device; the name travels in the manifest
 ```
 
-Afterwards the export runs by itself: a SessionEnd hook (its own entry, 10 s timeout) and the automatic maintenance wake publish a generation whenever the durable state changed since the last one, and SessionStart imports the peers'. `MEMEX_SYNC_DIR` overrides the configured folder; the on/off switch is local state in `<data root>/sync/config.json` and never travels. `memex sync disable` turns every one of those paths back into a one-line no-op. Memories in the shared folder are plaintext JSONL — encryption is out of scope, so use a cloud folder that is yours.
+Afterwards the export runs by itself: a SessionEnd hook (its own entry, 3 s timeout) and the automatic maintenance wake publish a generation whenever the durable state changed since the last one, and SessionStart imports the peers'. `MEMEX_SYNC_DIR` overrides the configured folder; the on/off switch is local state in `<data root>/sync/config.json` and never travels. `memex sync disable` turns every one of those paths back into a one-line no-op. Memories in the shared folder are plaintext JSONL — encryption is out of scope, so use a cloud folder that is yours.
 
 **No shared folder?** Hand one generation over as a file. It is the same protocol-v5 generation in a zip, so it gets the same validation:
 
@@ -336,7 +336,7 @@ Three bundled Codex skills cover remembering conversations, analyzing all conver
 | **Interrupt** | append delta and preserve an interrupted/open fence |
 | **PreCompact** | fsync the journal, freeze carry candidates, and atomically commit checkpoint + outbox |
 | **PostCompact** | optional telemetry only; correctness never depends on it |
-| **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export. A separate entry on the same event (10 s timeout) publishes a cross-device sync generation when sync is on, and is an instant no-op when it is off |
+| **SessionEnd** | final delta + final fence + durable jobs; no foreground model, embedding, extraction, or export. A separate entry on the same event (3 s timeout, the most Codex allows at SessionEnd) publishes a cross-device sync generation when sync is on, and is an instant no-op when it is off |
 
 The durable worker queue runs capture indexing first, Work Capsule updates second, and fact/derived work afterward. SessionStart background jobs remain eventually consistent; each writer owns its transaction/CAS safety.
 

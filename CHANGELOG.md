@@ -2,6 +2,24 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.9 - 2026-09-10
+
+Follow-up to 0.6.8: Codex clamps SessionEnd hook timeouts to 3 s and warns when
+a manifest asks for more.
+
+### Hooks
+
+- The SessionEnd export entry's timeout is 3 s, the maximum Codex allows at
+  SessionEnd; 0.6.8's 10 s produced `warning: clamping SessionEnd hook timeout to
+  3s` at every session end — one warning replaced by another. The export still
+  exits in well under a second when sync is off or nothing changed, and an
+  export that cannot finish inside 3 s is retried by the next maintenance wake,
+  as before. (#112)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.6.8 - 2026-09-10
 
 Hotfix for a warning Codex printed at the end of every session since 0.6.1.

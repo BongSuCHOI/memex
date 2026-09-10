@@ -899,7 +899,7 @@ describe('cross-device sync control (#35/#48)', () => {
       (command) => command.script === SYNC_LIFECYCLE_SCRIPTS.export,
     );
     // #110: no `async` — Codex runs SessionEnd hooks synchronously and warned when told otherwise.
-    expect(entry).toMatchObject({ timeout: 10 });
+    expect(entry).toMatchObject({ timeout: 3 });
     expect(entry).not.toHaveProperty('async');
     // The bounded capture fence stays synchronous and untouched beside it.
     expect(LIFECYCLE_COMMANDS.SessionEnd[0]).toMatchObject({
@@ -913,7 +913,7 @@ describe('cross-device sync control (#35/#48)', () => {
     expect(manifestEntries).toHaveLength(2);
     expect(manifestEntries[1]).toMatchObject({
       command: 'node "${PLUGIN_ROOT}/cli/runtime-exec.js" memex-hook-sync-export',
-      timeout: 10,
+      timeout: 3,
     });
     expect(manifestEntries[1]).not.toHaveProperty('async');
   });
