@@ -18,6 +18,10 @@
  * macOS `sockaddr_un` paths are ~104 bytes, so every socket here lives under a
  * short `/tmp` directory rather than the repository's own temp tree.
  */
+// Issue #92: the model cache now lives in the data root, and this suite gives
+// every case its OWN temp data root — without the pin each real fallback would
+// fetch 129 MB of weights into a directory it then deletes.
+import './model-cache-pin.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
@@ -972,6 +976,89 @@ test('an ack then silence is a compute timeout, not a dead daemon', async (t) =>
   assert.equal(last.daemon.got.pid, 909, 'the stalling daemon is named');
   // The ack really did buy time: the hook outwaited its own handshake window.
   assert.ok(elapsed >= 600, `gave up after ${elapsed}ms, before the compute budget`);
+});
+
+test('a warming daemon is refused immediately and logged as reason "warming"', async (t) => {
+  const root = tempRoot(t, 'warming');
+  // Issue #92. The 0.6.4 owner acked and then queued the request behind the
+  // embedding-model load; on a cold cache that load is a 129 MB download, so the
+  // ack bought nothing but a `compute timeout` 10s later — and then the hook's
+  // fallback downloaded the SAME 129 MB concurrently (measured `daemon 68,647 ms`
+  // + `fallback 67,941 ms`). A 0.6.5 owner says `warming` instead, BEFORE any
+  // computation, and the prompt falls back at once.
+  const daemon = await fakeDaemon(t, socketIn(root), (request) =>
+    request.type === 'inject'
+      ? {
+          type: 'warming',
+          protocol: request.protocol, version: request.version, buildId: request.buildId,
+          pluginRoot: request.pluginRoot, dbPath: request.dbPath, pid: 7711,
+          reason: 'warming',
+        }
+      : null);
+
+  const started = Date.now();
+  const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-warming' },
+    { MEMEX_EMBEDDING_STUB: '1', MEMEX_INJECT_COMPUTE_TIMEOUT_MS: '30000' });
+  const elapsed = Date.now() - started;
+  assert.equal(run.exitCode, 0, run.stderr);
+  assert.equal(daemon.received[0].type, 'inject');
+
+  const last = readLog(root).at(-1);
+  assert.equal(last.via, 'fallback');
+  assert.equal(last.daemon.reason, 'warming', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got.pid, 7711, 'the warming owner is still named');
+  // The whole point: microseconds, not the 30s budget this run was given.
+  assert.ok(elapsed < 20_000, `waited ${elapsed}ms instead of falling back immediately`);
+  // Nothing the daemon did can leave a receipt the fallback has to account for.
+  assert.equal(preparedReceipts(root), 0, 'a warming refusal must not prepare a receipt');
+});
+
+test('an owner publishes its warm state on the identify wire', async (t) => {
+  const root = tempRoot(t, 'warmstate');
+  // Doctor reads this field, so it has to exist on the wire rather than be
+  // inferred. Under MEMEX_EMBEDDING_STUB there is no model to load, so the owner
+  // is ready the moment it binds and must say `false` — a `warming` reply here
+  // would refuse prompts for a download that is never going to happen.
+  const daemon = spawnDaemon(t, root);
+  await daemon.waitFor(/bound \d+/);
+  const identity = await identify(socketIn(root));
+  assert.equal(identity.type, 'identity');
+  assert.equal(identity.warming, false, JSON.stringify(identity));
+});
+
+test('doctor reports a warming owner as ok, not as a daemon problem', async (t) => {
+  const root = tempRoot(t, 'doctorwarm');
+  const code = `
+    const { doctor } = await import('./dist/lifecycle.js');
+    const report = await doctor();
+    console.log(JSON.stringify(report.json.find((c) => c.name === 'inject-daemon')));
+  `;
+  const env = {
+    MEMEX_HOME: root,
+    TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+    MEMEX_PLUGIN_ROOT: REPO,
+    CODEX_HOME: path.join(root, 'codex'),
+  };
+  const identity = JSON.parse((await runModule(`
+    import { injectDaemonIdentity } from './dist/inject-daemon.js';
+    console.log(JSON.stringify(injectDaemonIdentity()));
+  `, env)).stdout.trim());
+
+  const warming = await fakeDaemon(t, socketIn(root), (request) =>
+    request.type === 'identify'
+      ? {
+          type: 'identity', ...identity, pid: 5150, instanceId: 'w',
+          startedAt: '2026-09-10T00:00:00.000Z', warming: true,
+        }
+      : null);
+  const check = JSON.parse((await runModule(code, env)).stdout.trim());
+  // A correct owner mid-start: reported, with the fixing command, but never a
+  // warn — the prompts it refuses are answered correctly in-process.
+  assert.equal(check.status, 'ok', check.detail);
+  assert.match(check.detail, /still warming its embedding model/);
+  assert.match(check.detail, /memex deps warm/);
+  assert.match(check.detail, /owner pid 5150/);
+  await new Promise((resolve) => warming.server.close(() => resolve()));
 });
 
 test('an ack that does not echo our identity is refused without waiting', async (t) => {

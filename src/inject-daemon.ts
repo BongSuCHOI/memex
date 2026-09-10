@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureIndexDir, getDbPath, getIndexDir } from './paths.js';
 import { computeInjectContext } from './inject-core.js';
-import { initEmbeddings } from './embeddings.js';
+import { embeddingStubEnabled, generateEmbedding, initEmbeddings } from './embeddings.js';
 import { readManifestVersion, resolveInstalledPluginRoot } from './plugin-root.js';
 
 /**
@@ -75,7 +75,28 @@ export interface InjectDaemonOwner extends InjectDaemonIdentity {
   pid: number;
   instanceId: string;
   startedAt: string;
+  /**
+   * Issue #92: is this owner still loading the embedding model?
+   *
+   * Absent from a pre-0.6.5 owner's reply, which is why it is optional and why
+   * `undefined` must read as "it did not say" rather than as `false`.
+   */
+  warming?: boolean;
 }
+
+/**
+ * The owner's embedding-model readiness (issue #92).
+ *
+ * `cold` is the window between `listen()` and the warm-up actually starting;
+ * `warming` is the one that matters — on a cold model cache it lasted 68-74s on
+ * the observed data root, and every `inject` request that arrived inside it used
+ * to queue behind the download, blow the 10s compute budget, and leave the hook
+ * to fall back into a SECOND concurrent download of the same 129 MB.
+ */
+export type InjectDaemonWarmState = 'cold' | 'warming' | 'ready' | 'failed';
+
+/** Reply type and `daemon.reason` for a request that arrived mid-warm-up. */
+export const INJECT_DAEMON_WARMING = 'warming';
 
 /** Why the listener was or was not opened — one log line, and doctor's note. */
 export interface InjectDaemonPolicy {
@@ -439,6 +460,8 @@ function ownerFrom(reply: Record<string, unknown> | null): InjectDaemonOwner | n
     pid: typeof reply.pid === 'number' ? reply.pid : -1,
     instanceId: typeof reply.instanceId === 'string' ? reply.instanceId : '',
     startedAt: typeof reply.startedAt === 'string' ? reply.startedAt : '',
+    // Left undefined by a pre-0.6.5 owner: "it did not say", not "it is ready".
+    ...(typeof reply.warming === 'boolean' ? { warming: reply.warming } : {}),
   };
 }
 
@@ -523,6 +546,8 @@ export function startInjectDaemon(): net.Server | null {
   let retired = false;
   /** True only between our own `listening` and our own close: "the socket is ours". */
   let owning = false;
+  /** Embedding-model readiness of THIS owner (issue #92). */
+  let warmState: InjectDaemonWarmState = 'cold';
 
   const server = net.createServer((conn) => {
     let buf = '';
@@ -543,6 +568,7 @@ export function startInjectDaemon(): net.Server | null {
         // `identity()` is re-read per request so a moved data root is visible.
         const mine = (): InjectDaemonOwner => ({
           ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt,
+          warming: warmState === 'warming',
         });
         try {
           const req = JSON.parse(line) as Record<string, unknown>;
@@ -565,6 +591,18 @@ export function startInjectDaemon(): net.Server | null {
           if (!injectDaemonIdentityMatches(asked, current)) {
             // No computation, no receipt, no log line: nothing happened here.
             return reply({ type: 'mismatch', ...current, reason: 'identity mismatch' });
+          }
+          // Issue #92: the model is still loading, so say so INSTEAD of acking.
+          //
+          // An ack hands this connection the 10s compute budget, and a cold
+          // model cache needs 68-74s (measured) — so the ack used to buy nothing
+          // but a guaranteed `compute timeout` and a second concurrent download
+          // in the hook's fallback. Answering immediately costs the prompt
+          // microseconds instead of 10s, and the fallback it runs is the ~2.3s
+          // cold path (or ~2.3s+download, once, in the same shared cache the
+          // warm-up is filling). No computation, no receipt, no log line here.
+          if (warmState === 'warming') {
+            return reply({ type: INJECT_DAEMON_WARMING, ...current, reason: INJECT_DAEMON_WARMING });
           }
           // Issue #89: say "handshake accepted, computing" BEFORE computing.
           // Silence on this socket used to mean two different things the hook
@@ -636,6 +674,46 @@ export function startInjectDaemon(): net.Server | null {
     return { type: 'retired', ...current };
   }
 
+  /**
+   * Load the embedding model in the background, off the request path (issue #92).
+   *
+   * Only the OWNER warms: a server that did not bind has no requests to serve,
+   * and making every candidate process download 129 MB would multiply the very
+   * cost this fixes. Errors are swallowed — a warm-up that fails leaves
+   * `warmState: 'failed'`, which is the same behaviour as before this existed:
+   * the next request loads the model on its own request path.
+   *
+   * The probe is a real `generateEmbedding`, not just `initEmbeddings`, so the
+   * first ONNX inference (graph allocation, not only the download) is paid here
+   * too. It is skipped entirely under `MEMEX_EMBEDDING_STUB`, where there is no
+   * model and `warming` would be a lie.
+   */
+  const warmUp = (): void => {
+    if (warmState !== 'cold') return;
+    if (embeddingStubEnabled()) {
+      // No model, nothing to load: a `warming` reply here would refuse prompts
+      // for a download that is never going to happen.
+      warmState = 'ready';
+      return;
+    }
+    warmState = 'warming';
+    const startedAt = Date.now();
+    void (async () => {
+      try {
+        await initEmbeddings();
+        await generateEmbedding('memex embedding warm-up probe', 'passage');
+        warmState = 'ready';
+        const elapsed = Date.now() - startedAt;
+        // Worth one line only when it was slow enough to have cost a prompt.
+        if (elapsed >= 3_000) note(`embedding model warm after ${elapsed}ms`);
+      } catch (error) {
+        warmState = 'failed';
+        note(`embedding warm-up failed (requests will load the model themselves): ${
+          error instanceof Error ? error.message : String(error)}`);
+      }
+    })();
+  };
+
   const onListen = (): void => {
     binding = false;
     owning = true;
@@ -643,7 +721,7 @@ export function startInjectDaemon(): net.Server | null {
     try { fs.chmodSync(sockPath, 0o600); } catch { /* best-effort */ }
     // Pre-warm the embedding model so even the FIRST prompt after session
     // start gets the fast path (load happens once, off the request path).
-    void initEmbeddings().catch(() => { /* first request will retry */ });
+    warmUp();
   };
 
   const candidatePath = (): string => path.join(injectDaemonCandidateDir(), `${process.pid}.json`);

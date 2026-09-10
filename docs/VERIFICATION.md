@@ -44,6 +44,13 @@ data root(`MEMEX_HOME` > `$XDG_CONFIG_HOME/memex` > `~/.config/memex`)의 파일
 있는 세션은 journal과 log를 정당하게 씁니다. 실행 중에만 존재하는 `run-locks/`와 unix socket은 기본
 제외이며 `--strict`로 포함합니다. 스냅숏 파일은 data root 밖(`--out`)에 씁니다.
 
+0.6.5부터 embedding model 가중치도 data root 안(`<data root>/models`, #92)에 캐시되므로, 이 검사가
+잡아야 하는 유출 경로가 하나 늘었습니다. gate는 모델 캐시를 **체크아웃의 transformers 캐시**에
+고정해 둡니다 — `.ts` 스위트는 `vitest.config.ts`의 `env`, `.mjs` 스위트는
+`import './model-cache-pin.mjs'`(`MEMEX_MODEL_CACHE_DIR`를 체크아웃 경로로 설정)입니다. 고정이
+없으면 `MEMEX_HOME`을 격리하지 않은 스위트가 실 루트에 129 MB를 남기고, 임시 data root를 쓰는
+스위트는 루트마다 한 번씩 내려받습니다. 새 테스트가 모델을 적재한다면 둘 중 하나를 따르십시오.
+
 변경 범위에 따라 plugin validation, browser E2E, benchmark, specialized regression suite를 추가합니다.
 Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니다.
 
@@ -84,6 +91,7 @@ node scripts/web-ui-browser-e2e.mjs
 | terminal 상태 복구 0.6.0 | 여덟 terminal 상태 카운트, `recover`/`jobs retry\|dismiss`의 단일 트랜잭션 리셋, `retry_history` 보존 |
 | 주입 관측 0.6.0 | `injected`/`context-only` 구분, `receipt-failed`, `baseline_margin_gap`, `lexical_lane_unavailable`, doctor 판정 |
 | 주입 fast path 정체 0.6.3 (#84) | 훅↔daemon 핸드셰이크(계산 전 5필드 일치), 불일치·구버전·타임아웃의 in-process fallback과 `daemon.reason`/`got` 기록, socket 소유권(O_EXCL lock, 죽은 socket 회수, EACCES 비개입, `retire` 인계/거절), 설치 루트 전용 listener와 `MEMEX_INJECT_DAEMON` 강제, `doctor`의 `inject-daemon` 보고(설치 루트 기준 판정, probe 부산물이 `inject-output`을 오염시키지 않음), `ok` 응답의 정체 echo 검증, 구버전 daemon에 session 미전달 |
+| 모델 캐시와 워밍 0.6.5 (#92) | 캐시가 data root(`<data root>/models`)로 해석되고 `MEMEX_MODEL_CACHE_DIR`가 우선, transformers `env.cacheDir`가 pipeline 생성 전에 설정되며 `allowRemoteModels` 불변, 레거시 per-root 캐시의 1회 **복사**(원본 불변·캐시 밖 미기록·멱등·불완전 캐시 거부), daemon 워밍 중 `{type:"warming"}` 즉시 응답과 훅의 `reason:"warming"` fallback(receipt 없음, 10s 예산 불변), `identify`의 `warming` 필드와 `doctor`의 ok 판정, `doctor`의 `embedding-cache` 상태, `memex deps warm`과 materialize의 워밍 단계(`--no-warm`, 실패는 경고) |
 | 크로스디바이스 스위치 0.6.1 | 기본 off, 공유 폴더 해석 순서, 원자적 세대 publish, 변경 없을 때 export 생략, off일 때 두 훅의 no-op, `doctor`의 `skipped(off)`→warn→ok |
 | 설치본 해석 0.6.1 | `MEMEX_PLUGIN_ROOT`→codex cache→`codex plugin list --json`→launcher 순서를 `doctor`·`deps materialize`·`runtime-exec`가 공유 |
 | 설치본 해석 0.6.3 (#69) | `probeCodex`일 때 `codex plugin list --json`이 cache 스캔보다 먼저, cache 버전 2개 중 조회가 가리킨 쪽 채택, 조회 불가·비정상 출력이면 cache 폴백, `probeCodex: false`는 spawn 없음, 모호한 cache 선택의 `doctor` 표시 (`test/plugin-root-slice.test.mjs`) |
@@ -130,7 +138,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록, 리스트 항목 수 상한 절단(`itemCaps` kept/dropped, 12개 `touchedAreas`가 retry 없이 completed, 절단 후 evidence source 재검증, 0.6.3 이전 배열 형태 읽기) (#85), 제어문자 scalar에서도 `finalChars <= maxChars` 보장과 `overBudget` 보고, 일반 텍스트의 기존 우선순위 불변 (#74) |
 | `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
 | `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
-| `test/inject-daemon-slice.test.mjs` | 핸드셰이크 없는/필드별로 다른 정체의 daemon 거절과 `via:"fallback"`+`daemon.reason`, 일치 시 fast path 제공과 빌드 귀속, 실제 daemon↔실제 훅 왕복(두 파일의 정체 계산이 어긋나면 fallback으로 드러남), SIGKILL이 남긴 socket·비-socket 파일 회수, EACCES 비개입, live/stale bind lock, `retire` 인계와 비설치 루트 거절, 설치 루트 정책과 `MEMEX_INJECT_DAEMON`, `doctor`의 세 판정 (#84) |
+| `test/inject-daemon-slice.test.mjs` | 핸드셰이크 없는/필드별로 다른 정체의 daemon 거절과 `via:"fallback"`+`daemon.reason`, 일치 시 fast path 제공과 빌드 귀속, 실제 daemon↔실제 훅 왕복(두 파일의 정체 계산이 어긋나면 fallback으로 드러남), SIGKILL이 남긴 socket·비-socket 파일 회수, EACCES 비개입, live/stale bind lock, `retire` 인계와 비설치 루트 거절, 설치 루트 정책과 `MEMEX_INJECT_DAEMON`, `doctor`의 세 판정 (#84), **워밍**: `{type:"warming"}` 응답이 즉시 fallback + `daemon.reason:"warming"`이 되고 prepared receipt를 남기지 않는지, `identify`가 `warming` 필드를 싣는지, `doctor`가 워밍 중 소유자를 warn이 아닌 ok로 보고하는지 (#92) |
 | `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱, 경계 gap에서 `passed`/`rejected`가 원값 기준이고 주입 결과와 일치하며 `dims.gaps`는 소수 4자리 유지 (#75) |
 | `test/recall-receipt-observability.test.ts` | `receipt-failed` 로그 기록과 `recall-provenance`/`inject-output` doctor 판정 |
 | `test/cli-help-guard-slice.test.mjs` | 모든 서브커맨드의 `--help`가 부작용 없이 exit 0 (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects` 포함) |
@@ -147,6 +155,8 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/zip.test.ts` | 세대 파일 컨테이너: store/deflate 왕복과 결정적 바이트, 시스템 `unzip`이 여는지와 시스템 `zip` 산출물을 읽는지, zip-slip 이름 거부, 잘린 컨테이너·CRC 불일치·엔트리/크기 상한에서 **부분 결과 대신 실패**하는지, CRC-32 표준값 (#48, 0.6.3) |
 | `test/async-hook-output-slice.test.mjs` | 동기화 off일 때 두 sync 훅이 stdout을 건드리지 않고 stderr 한 줄로 끝나는지, export 훅의 unchanged/published 보고 (#35) |
 | `test/pipeline-status-slice.test.mjs` | `status --json`의 `jobs`가 `memory_jobs`를 kind × state로 집계하는지, 큐가 없으면 빈 객체인지, `memex index --help`가 존재하는 문서만 가리키는지 (#46) |
+| `test/model-cache.test.ts` (0.6.5) | embedding model 캐시 해석: `MEMEX_MODEL_CACHE_DIR` > data root 규칙(`MEMEX_HOME`/`XDG_CONFIG_HOME`/기본), 경로에 `node_modules`가 섞이지 않는지, 상대 경로·빈 문자열 처리, `<cacheDir>/<org>/<name>` 레이아웃, transformers `env.cacheDir` 주입과 `allowRemoteModels` 유지, 상태 판정(없음/중단된 다운로드/0바이트 가중치/있음/stub `=1`만), **레거시 복사**: 복사 후 원본이 바이트 단위로 그대로인지·캐시 디렉터리 밖에 아무것도 쓰지 않는지·이미 있으면 no-op·불완전한 레거시는 거부·Codex plugin cache의 다른 버전 탐색과 실행 중 루트 우선·부분 복사 이어받기(기존 파일 보존). 전부 **가짜 파일**로, 모델을 내려받지 않습니다 (#92) |
+| `test/model-cache-slice.test.mjs` (0.6.5) | `doctor`의 `embedding-cache` 5상태(없음 warn + `memex deps warm` 안내·있음 ok·중단된 다운로드·stub ok·`via env`/`via data-root`)와 진단이 캐시 디렉터리를 만들지 않는지, `memex deps warm --help`/`-h` 가드(서브커맨드 help에 도달하고 아무것도 쓰지 않음)·`deps --help`가 두 서브커맨드를 문서화·알 수 없는 서브커맨드 거절, warm의 already-warm/stub 생략과 적재 실패 보고, materialize의 `--no-warm`·의존성이 이미 완전해도 warm 단계 실행·warm 실패는 경고(exit 0)·`--dry-run`이 아무것도 바꾸지 않음, `memex update --help`의 `--no-warm` (#92) |
 | `test/real-root-isolation-slice.test.mjs` | 격리 검사 자체의 회귀: 0.5.0의 `ui-audit.jsonl` 유출 형태를 잡는지, 추가/삭제 보고, 내용이 같은 mtime 변화는 실패로 보지 않는지, `run-locks`는 기본 제외·`--strict` 포함 (#26) |
 | `test/lifecycle-slice.test.mjs` (추가분) | 이름 없는 hook 호출이 `event: "Unknown"`으로 기록되지 않고 거절되는지, CLI 진입점이 event 이름을 요구하고 session_id/cwd를 받는지 (#26 항목 6) |
 | `test/ontology-parking.test.ts` | parked fact가 `classified`에서 빠지는지, 정책/embedding 세대당 정확히 1회만 재시도되는지, output budget 초과가 배치 분할로 처리되고 fact마다 content failure를 물리지 않는지, `IndexRepairError`가 status/doctor까지 오는지 (#41) |

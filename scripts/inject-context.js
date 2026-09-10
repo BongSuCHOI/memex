@@ -259,7 +259,9 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fal
  * `absent`  — ENOENT: no socket file. The ordinary cold state.
  * `refused` — ECONNREFUSED: a socket file whose owner has exited. A live MCP
  *             server should be re-acquiring it; `memex doctor` says which.
- * Both resolve in microseconds and fall back immediately.
+ * `warming` — issue #92: a healthy owner that is still loading the embedding
+ *             model. NOT a daemon problem, and not counted as one by doctor.
+ * All three resolve in microseconds and fall back immediately.
  */
 function connectRefusal(error) {
   const code = error && error.code ? error.code : "unknown";
@@ -333,6 +335,16 @@ function askDaemon(prompt, cwd, sessionId, identity) {
 
     /** Returns true once the exchange is settled. */
     const handle = (res) => {
+      // Issue #92: the owner is still loading the embedding model and said so
+      // instead of acking. That is a healthy daemon mid-start, not a failure —
+      // fall back NOW rather than spending the compute budget waiting for a
+      // 68-74s download (measured) to finish. `reason: "warming"` is the
+      // vocabulary doctor reads, and it is deliberately not counted as a daemon
+      // problem there.
+      if (res && res.type === "warming") {
+        giveUp("warming", reportedIdentity(res));
+        return true;
+      }
       if (res && res.type === "ack") {
         // An ack is not a free pass: the socket path is predictable and any
         // same-user process can squat it, so a daemon that claims the handshake

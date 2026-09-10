@@ -1,25 +1,13 @@
-import { pipeline } from '@xenova/transformers';
+import { env as transformersEnv, pipeline } from '@xenova/transformers';
+import { DEFAULT_EMBEDDING_MODEL, EMBEDDING_MODEL, adoptLegacyEmbeddingCache, embeddingCacheDir, ensureEmbeddingCacheDir, formatCacheBytes, } from './model-cache.js';
 /**
- * Multilingual retrieval model (Korean/English/100 langs), 384-dim — same
- * dimension as the original all-MiniLM-L6-v2 so vec tables are unchanged.
- *
- * Model selection (2026-06-12, measured on real-DB Korean/English pairs):
- *   - all-MiniLM-L6-v2: English-only — Korean queries score ~0 vs English facts
- *   - paraphrase-multilingual-MiniLM-L12-v2: top-1 ranking broke on real data
- *     (unrelated Korean pairs up to 0.82 — strong anisotropy)
- *   - multilingual-e5-small: perfect top-1 ranking on the hard set; absolute
- *     scores are compressed (~0.72-0.99) so consumers use either retuned
- *     thresholds (passage↔passage) or probe-baseline normalization (queries).
- *
- * e5 protocol: queries are embedded with a "query: " prefix, stored content
- * with "passage: ". Pass the mode explicitly at call sites.
- *
- * Vectors from different models are NOT comparable; EMBEDDING_VERSION tracks
- * which model produced a stored vector and the re-embed worker upgrades rows.
+ * The model id and the cache layout live in `./model-cache.js` — see its header
+ * for the 2026-06-12 model selection and for issue #92 (why the weights must not
+ * live under `node_modules`). They are re-exported here because every consumer
+ * has always asked this module for them.
  */
-const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
-export const EMBEDDING_MODEL = process.env.MEMEX_EMBEDDING_MODEL
-    || DEFAULT_EMBEDDING_MODEL;
+export { EMBEDDING_MODEL };
+export { embeddingCacheDir, embeddingCacheStatus, embeddingModelCacheDir, } from './model-cache.js';
 /**
  * Curated model → version map:
  *   1 = all-MiniLM-L6-v2 (English-only)
@@ -53,7 +41,7 @@ let embeddingPipeline = null;
  * calibration benchmark and no-model test environments use it so gate
  * behaviour can be measured without network or model downloads.
  */
-function embeddingStubEnabled() {
+export function embeddingStubEnabled() {
     return process.env.MEMEX_EMBEDDING_STUB === '1' || process.env.MEMEX_EMBEDDING_STUB === 'fail';
 }
 /** Harness seam: `MEMEX_EMBEDDING_STUB=fail` simulates an unavailable model. */
@@ -78,12 +66,69 @@ export function stubEmbedding(text, dimensions = 384) {
     norm = Math.sqrt(norm) || 1;
     return vector.map((value) => value / norm);
 }
+/**
+ * Point `@xenova/transformers` at the stable cache (issue #92).
+ *
+ * Assignment only — no filesystem work — so it is safe at module scope, which is
+ * what guarantees it happens BEFORE any `pipeline()` call however this module is
+ * reached. `initEmbeddings` re-applies it because a test harness (and the MCP
+ * server's own fixtures) can move `MEMEX_HOME` / `MEMEX_MODEL_CACHE_DIR` after
+ * import, and the value must follow the data root rather than the import order.
+ *
+ * `env.allowRemoteModels` is deliberately left at its default `true`: the model
+ * is fetched from the Hub on a cold cache, and that is the behaviour being made
+ * cheap here, not removed. `env.localModelPath` is left alone as well — Memex
+ * ships no local model directory, so the only thing pointing it at the cache
+ * would change is which empty directory transformers stats first.
+ */
+export function applyEmbeddingCacheDir() {
+    const dir = embeddingCacheDir();
+    transformersEnv.cacheDir = dir;
+    return dir;
+}
+applyEmbeddingCacheDir();
+/** Migration runs at most once per process, however many callers race it. */
+let cachePrepared = false;
+/**
+ * Make the stable cache usable: create it, and adopt a legacy per-root cache
+ * once if this data root has never held the model.
+ *
+ * Called on the model-load path only, so a stub run and the hook's fast path pay
+ * nothing and touch no filesystem.
+ */
+export function prepareEmbeddingCache() {
+    if (cachePrepared)
+        return;
+    cachePrepared = true;
+    applyEmbeddingCacheDir();
+    ensureEmbeddingCacheDir();
+    let adoption;
+    try {
+        adoption = adoptLegacyEmbeddingCache({ model: EMBEDDING_MODEL });
+    }
+    catch {
+        return; // a failed migration only means the model is downloaded again
+    }
+    // stderr: stdout of hook scripts is injected into the session as context.
+    if (adoption.copied) {
+        console.error(`[memex] adopted the embedding model cache from ${adoption.from} ` +
+            `(${adoption.kind}, ${formatCacheBytes(adoption.bytes)}, ${adoption.files} files) ` +
+            `into ${embeddingCacheDir()} — the source was copied, not moved`);
+    }
+    else if (adoption.reason === 'copy-failed') {
+        console.error(`[memex] could not adopt the embedding model cache from ${adoption.from}: ` +
+            `${adoption.error ?? 'incomplete copy'} — the model will be downloaded instead`);
+    }
+}
 export async function initEmbeddings() {
     if (embeddingStubFails())
         throw new Error('embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)');
     if (embeddingStubEnabled())
         return;
     if (!embeddingPipeline) {
+        // Issue #92: the cache directory is settled before the pipeline exists —
+        // transformers reads `env.cacheDir` while resolving each model file.
+        prepareEmbeddingCache();
         // stderr: stdout of hook scripts is injected into the session as context,
         // so progress logs must never go to stdout.
         console.error(`Loading embedding model ${EMBEDDING_MODEL} (first run may take time)...`);

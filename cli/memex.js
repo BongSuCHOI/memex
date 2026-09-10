@@ -64,7 +64,7 @@ USAGE:
 COMMANDS:
   setup       Detect conflicting Codex built-in Memory and disable it only with approval
   install     Register the plugin and materialize its runtime dependencies (idempotent)
-  deps        Materialize runtime dependencies into the installed plugin root: materialize
+  deps        Materialize what the installed plugin root needs: materialize|warm
   sync        Sync conversations from Codex session rollouts and index them
   update      Refresh the marketplace and reinstall the latest Memex plugin
   index       Index conversations for search
@@ -144,6 +144,26 @@ const HELP_DELEGATES = {
   sync: (dist) => join(dist, "sync-cli.js"),
 };
 
+/**
+ * Issue #92 — the guard has to reach SUBCOMMAND help too.
+ *
+ * `deps` has two subcommands that do very different work, and a single help text
+ * for both cannot say what either one does. The guard forwards `--help` and
+ * nothing else to the owning script, so the subcommand can neither run nor
+ * download anything, and its help has one source: the script itself.
+ */
+const HELP_SUBCOMMAND_DELEGATES = {
+  deps: {
+    materialize: () => join(__dirname, "..", "scripts", "materialize-deps.mjs"),
+    warm: () => join(__dirname, "..", "scripts", "warm-embedding-cache.mjs"),
+  },
+};
+
+/** One source for `memex deps` usage: the help text and the dispatch refusal. */
+const DEPS_USAGE = `Usage:
+  memex deps materialize [--root <path>] [--dry-run] [--force] [--no-warm] [--json]
+  memex deps warm [--force] [--json]`;
+
 const COMMAND_USAGE = {
   install: `Usage: memex install [--dry-run] [--marketplace <source>] [--plugin-root <path>] [--root <path>]
 
@@ -154,23 +174,35 @@ materialize into (default: the Codex cache identity, same as 'memex doctor').
 When the source checkout has a production dependency closure it is copied (no
 network, no version resolution); otherwise the installed root runs
 'npm install --omit=dev --no-audit --no-fund' (issue #53).`,
-  deps: `Usage: memex deps materialize [--root <path>] [--dry-run] [--force] [--json]
+  deps: `${DEPS_USAGE}
 
-Install the production runtime dependencies into the INSTALLED plugin root
-(resolved exactly as 'memex doctor' resolves it: MEMEX_PLUGIN_ROOT, then the
-$CODEX_HOME plugin cache, then 'codex plugin list --json', then this launcher).
-Without them every Codex hook silently falls back to
+materialize installs the production runtime dependencies into the INSTALLED
+plugin root (resolved exactly as 'memex doctor' resolves it: MEMEX_PLUGIN_ROOT,
+then the $CODEX_HOME plugin cache, then 'codex plugin list --json', then this
+launcher). Without them every Codex hook silently falls back to
 'npx github:BongSuCHOI/memex#main' — an unpinned revision.
 
 Runs: npm install --omit=dev --no-audit --no-fund
-Touches nothing else: no marketplace, plugin registry, hook file, or data root.`,
-  update: `Usage: memex update [--dry-run] [--marketplace <name>] [--no-materialize]
+Then warms the embedding model cache when it is empty (--no-warm skips it).
+Touches nothing else: no marketplace, plugin registry, hook file, or data root.
+
+warm downloads the embedding model into the stable cache '<data root>/models'
+('MEMEX_MODEL_CACHE_DIR' overrides) so the FIRST prompt does not pay the 129 MB
+itself. The cache survives plugin updates; before 0.6.5 it lived under the plugin
+root's node_modules and every update re-downloaded it, which made the first
+prompts take ~68s (issue #92). Reads and writes nothing but that directory.
+
+Run 'memex deps <materialize|warm> --help' for the full option list.`,
+  update: `Usage: memex update [--dry-run] [--marketplace <name>] [--no-materialize] [--no-warm]
 
 Refresh the Memex marketplace entry and reinstall the plugin, preserving the
 Memex data root. --dry-run performs read-only discovery only.
 --marketplace selects one install when Memex is registered more than once.
 After a successful reinstall the runtime dependencies are materialized into the
-new plugin root (issue #53); --no-materialize prints that command instead.`,
+new plugin root (issue #53); --no-materialize prints that command instead.
+Materializing also warms the embedding model cache when it is empty, so the first
+prompt after an update does not pay the 129 MB download (issue #92);
+--no-warm skips that step.`,
   "setup-hooks": `Usage: memex setup-hooks [--dry-run]
 
 Register Memex lifecycle hooks in $CODEX_HOME/hooks.json. Foreign entries are
@@ -278,6 +310,16 @@ const KNOWN_COMMANDS = new Set([
 ]);
 
 async function printCommandUsage(command, distDir) {
+  const subDelegates = HELP_SUBCOMMAND_DELEGATES[command];
+  if (subDelegates) {
+    const sub = args.find((a) => !a.startsWith("-"));
+    const subDelegate = sub ? subDelegates[sub] : undefined;
+    if (subDelegate) {
+      // Only the help flag is forwarded, so the subcommand cannot do work.
+      await runScript(subDelegate(distDir), ["--help"]);
+      return;
+    }
+  }
   const delegate = HELP_DELEGATES[command];
   if (delegate) {
     // Only the help flag is forwarded, so the delegate cannot do work.
@@ -324,14 +366,22 @@ async function main() {
       // needs a registered marketplace; this only needs the installed root.
       case "deps": {
         const sub = args.find((a) => !a.startsWith("-"));
-        if (sub !== undefined && sub !== "materialize") {
-          console.error("Usage: memex deps materialize [--root <path>] [--dry-run] [--force] [--json]");
+        // Issue #92: `warm` is the second thing a root needs materialized — the
+        // embedding model weights, which before 0.6.5 lived under the plugin
+        // root's node_modules and were thrown away by every update.
+        const DEPS_SUBCOMMANDS = {
+          materialize: "materialize-deps.mjs",
+          warm: "warm-embedding-cache.mjs",
+        };
+        const script = DEPS_SUBCOMMANDS[sub ?? "materialize"];
+        if (!script) {
+          console.error(DEPS_USAGE);
           process.exitCode = 1;
           break;
         }
         await runScript(
-          join(__dirname, "..", "scripts", "materialize-deps.mjs"),
-          args.filter((a) => a !== "materialize"),
+          join(__dirname, "..", "scripts", script),
+          args.filter((a) => a !== sub),
         );
         break;
       }

@@ -1,5 +1,9 @@
 // CX-02 Gate 2 — same-basename A/B isolation observed through sync, archive
 // layout, DB rows, and analyze. Plain node --test against dist modules.
+// Issue #92: pin the model cache before anything can load the model — this
+// suite isolates TEST_DB_PATH but not MEMEX_HOME, so the real data root would
+// otherwise collect 129 MB of weights.
+import './model-cache-pin.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
