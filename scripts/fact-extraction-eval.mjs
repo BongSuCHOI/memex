@@ -23,6 +23,12 @@ import {
 import { callMemoryModelObserved } from "../dist/llm.js";
 import { DEFAULT_CODEX_MODEL } from "../dist/codex-exec.js";
 import { getDbPath } from "../dist/paths.js";
+import {
+  ALLOWED_REASONING_EFFORTS,
+  resolveLlmModel,
+  resolveReasoningEffort,
+} from "../dist/model-settings.js";
+import { EMBEDDING_MODEL } from "../dist/model-cache.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_FIXTURE = path.join(
@@ -40,15 +46,27 @@ Curated mode (default):
   --case <id>         Evaluate one case; repeat to select multiple cases
   --baseline <path>   Compare this run with an earlier curated report
   --validate-only     Validate fixture coverage without calling the model
+  --allow-model-change  Report improvements/regressions even when the baseline
+                      used a different model or reasoning effort. Without it such
+                      a comparison is marked incomparable and reported as
+                      'differences', because a model change and a prompt change
+                      are otherwise indistinguishable in the same list.
 
 Archive shadow mode:
   --session <id>      Evaluate one archive session; repeat for multiple sessions
   --db <path>         Memex SQLite path (default: resolved Memex DB)
 
 Shared:
-  --model <id>        Codex model override (default: MEMEX_CODEX_MODEL or gpt-5.6-luna)
+  --model <id>        Codex model override (default: the resolved selection —
+                      MEMEX_CODEX_MODEL, then models.json, then ${DEFAULT_CODEX_MODEL})
+  --reasoning <level> Reasoning effort override: ${ALLOWED_REASONING_EFFORTS.join("|")}
+                      (default: the resolved selection; 'unset' sends no flag)
   --out <path>        Report path (default: ignored .fact-extraction-eval/ path)
   --help, -h          Show this help
+
+--model and --reasoning are passed PER CALL and never written to the
+environment or to models.json, so an evaluation run cannot change what the rest
+of this machine uses.
 
 Archive mode opens SQLite with readonly + query_only and never writes facts,
 extraction_log markers, watermarks, or source conversations.`;
@@ -62,8 +80,10 @@ function parseArgs(argv) {
     baseline: null,
     db: null,
     model: null,
+    reasoning: null,
     out: null,
     validateOnly: false,
+    allowModelChange: false,
     help: false,
   };
   const valueOptions = new Set([
@@ -73,6 +93,7 @@ function parseArgs(argv) {
     "--baseline",
     "--db",
     "--model",
+    "--reasoning",
     "--out",
   ]);
   for (let index = 0; index < argv.length; index++) {
@@ -83,6 +104,10 @@ function parseArgs(argv) {
     }
     if (arg === "--validate-only") {
       options.validateOnly = true;
+      continue;
+    }
+    if (arg === "--allow-model-change") {
+      options.allowModelChange = true;
       continue;
     }
     if (!valueOptions.has(arg)) throw new Error(`unknown option: ${arg}`);
@@ -98,7 +123,16 @@ function parseArgs(argv) {
     } else if (arg === "--baseline") options.baseline = value;
     else if (arg === "--db") options.db = value;
     else if (arg === "--model") options.model = value;
-    else if (arg === "--out") options.out = value;
+    else if (arg === "--reasoning") {
+      // Refused here, not normalized: a typo that is silently dropped turns into
+      // a receipt that claims a reasoning effort the run never used.
+      if (value !== "unset" && !ALLOWED_REASONING_EFFORTS.includes(value)) {
+        throw new Error(
+          `--reasoning must be one of ${ALLOWED_REASONING_EFFORTS.join("|")} (or 'unset'): ${value}`,
+        );
+      }
+      options.reasoning = value;
+    } else if (arg === "--out") options.out = value;
   }
   return options;
 }
@@ -138,7 +172,35 @@ function assertBaselineReport(value, file) {
   return value;
 }
 
-function gitRunContext(databaseMode) {
+/**
+ * #31 §13.2 — a comparison across a model change is not an improvement report.
+ *
+ * Run the harness against a different model and the prompt-policy effect and the
+ * model effect arrive in the SAME `improvements`/`regressions` lists, indis-
+ * tinguishable. So when the selection differs, the lists are renamed
+ * `differences` and the comparison is marked incomparable; `--allow-model-change`
+ * is the deliberate opt-out for someone who knows what they are reading.
+ */
+function labelModelIdentity(comparison, { report, baseline, allow }) {
+  const baselineReasoning = baseline.reasoning ?? "unset";
+  const sameModel = comparison.baseline_model === report.model;
+  const sameReasoning = baselineReasoning === report.reasoning;
+  const labelled = { ...comparison, baseline_reasoning: baselineReasoning };
+  if (sameModel && sameReasoning) return { ...labelled, incomparable: false };
+  const reason = !sameModel ? "model identity differs" : "reasoning effort differs";
+  if (allow) {
+    return { ...labelled, incomparable: false, model_change_allowed: true, reason };
+  }
+  const { improvements, regressions, ...rest } = labelled;
+  return {
+    ...rest,
+    incomparable: true,
+    reason,
+    differences: [...(improvements ?? []), ...(regressions ?? [])],
+  };
+}
+
+function gitRunContext(databaseMode, selection) {
   const head = spawnSync("git", ["rev-parse", "HEAD"], {
     cwd: ROOT,
     encoding: "utf8",
@@ -155,14 +217,34 @@ function gitRunContext(databaseMode) {
     arch: process.arch,
     extractor_profile: "production-current",
     database_mode: databaseMode,
+    // #31: a receipt that does not say WHERE the selection came from cannot be
+    // reproduced — the same command answers differently under a different env.
+    model_source: selection.modelSource,
+    reasoning_source: selection.reasoningSource,
+    embedding_model: EMBEDDING_MODEL,
   };
 }
 
-async function invokeModel({ systemPrompt, userMessage }) {
-  const result = await callMemoryModelObserved(systemPrompt, userMessage);
-  return {
-    text: result.text,
-    tokenUsage: result.observation.token_usage,
+/**
+ * #31: the selection travels as a per-call option rather than through
+ * `process.env.MEMEX_CODEX_MODEL`.
+ *
+ * The old shape wrote the flag into this process's environment, which every
+ * later import and every child inherited — a harness run could change what the
+ * rest of the machine believed it was using. `buildCodexExecArgs` is the single
+ * interpretation point now, so handing it the pair directly is both narrower and
+ * the only way to name a reasoning effort at all.
+ */
+function makeInvokeModel(selection) {
+  return async function invokeModel({ systemPrompt, userMessage }) {
+    const result = await callMemoryModelObserved(systemPrompt, userMessage, 2048, {
+      model: selection.model,
+      reasoningEffort: selection.reasoning,
+    });
+    return {
+      text: result.text,
+      tokenUsage: result.observation.token_usage,
+    };
   };
 }
 
@@ -199,9 +281,24 @@ async function main() {
     throw new Error("--baseline is available only in curated mode");
   }
 
-  const model =
-    options.model || process.env.MEMEX_CODEX_MODEL || DEFAULT_CODEX_MODEL;
-  if (options.model) process.env.MEMEX_CODEX_MODEL = options.model;
+  // #31: resolve once, pass per call, mutate no environment. `DEFAULT_CODEX_MODEL`
+  // stays imported as the documented bottom of the chain, which `resolveLlmModel`
+  // already returns when nothing else is chosen.
+  const resolvedModel = resolveLlmModel();
+  const resolvedReasoning = resolveReasoningEffort();
+  const selection = {
+    model: options.model || resolvedModel.value || DEFAULT_CODEX_MODEL,
+    modelSource: options.model ? "explicit" : resolvedModel.source,
+    reasoning: options.reasoning
+      ? options.reasoning === "unset"
+        ? null
+        : options.reasoning
+      : resolvedReasoning.value,
+    reasoningSource: options.reasoning ? "explicit" : resolvedReasoning.source,
+  };
+  const model = selection.model;
+  const reasoning = selection.reasoning ?? "unset";
+  const invokeModel = makeInvokeModel(selection);
 
   if (options.sessions.length === 0) {
     const fixturePath = path.resolve(ROOT, options.fixture || DEFAULT_FIXTURE);
@@ -228,14 +325,18 @@ async function main() {
       model,
       invokeModel,
     });
-    report.run_context = gitRunContext("not-opened");
+    report.reasoning = reasoning;
+    report.run_context = gitRunContext("not-opened", selection);
     if (options.baseline) {
       const baselinePath = path.resolve(ROOT, options.baseline);
       const baseline = assertBaselineReport(
         readJson(baselinePath, "baseline report"),
         baselinePath,
       );
-      report.comparison = compareFactExtractionReports(report, baseline);
+      report.comparison = labelModelIdentity(
+        compareFactExtractionReports(report, baseline),
+        { report, baseline, allow: options.allowModelChange },
+      );
     }
     const output = writeReport(options.out || defaultOutput("curated"), report);
     process.stdout.write(`${JSON.stringify(report.summary, null, 2)}\n`);
@@ -256,7 +357,8 @@ async function main() {
       options.sessions,
       { model, invokeModel },
     );
-    report.run_context = gitRunContext("read-only");
+    report.reasoning = reasoning;
+    report.run_context = gitRunContext("read-only", selection);
     const output = writeReport(options.out || defaultOutput("shadow"), report);
     process.stdout.write(`${JSON.stringify(report.summary, null, 2)}\n`);
     process.stderr.write(`Saved: ${output}\n`);
