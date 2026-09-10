@@ -345,6 +345,7 @@ const path = require('node:path');
 const extract = require('../../scripts/i18n-extract.mjs');
 
 /** `details.fact.tab.summary` 처럼 점이 2개 이상인 소문자 토큰 = 렌더된 사전 키. */
+const {DOC_ANCHORS: L2_DOC_ANCHORS} = require('../public/i18n/doc-anchors.mjs');
 const L2_KEYISH = /\b[a-z][a-z0-9]*(?:\.[a-zA-Z0-9]+){2,}\b/g;
 /** `data-endonym` 서브트리는 언어 이름(English / 한국어)을 번역하지 않으므로 면제한다(설계 §7.1). */
 const stripEndonyms = html => html.replace(/<select[^>]*\sdata-endonym[\s>][\s\S]*?<\/select>/g, '');
@@ -360,8 +361,9 @@ const PENDING_KOREAN = (() => {
 })();
 
 function assertEnglishOnly(label, html) {
-  // 문서 앵커(href)는 한국어 문서의 제목 조각이라 언어와 무관하게 한글을 담는다 — L4와 같은 예외.
-  const withoutAnchors = stripEndonyms(html).replace(/\shref="[^"]*"/g, '');
+  // 문서 앵커는 한국어 문서의 제목 조각이라 언어와 무관하게 한글을 담는다(href·본문 모두) — L4와 같은 예외.
+  let withoutAnchors = stripEndonyms(html).replace(/\shref="[^"]*"/g, '');
+  for (const anchor of Object.values(L2_DOC_ANCHORS)) withoutAnchors = withoutAnchors.split(anchor).join(' ');
   const hangul = [...new Set([...withoutAnchors.matchAll(/[가-힣ㄱ-ㅎㅏ-ㅣ]+/g)].map(m => m[0]))]
     .filter(word => !PENDING_KOREAN.has(word));
   assert.deepEqual(hangul, [], `${label}: en 렌더에 (이관 대기 모듈의 것이 아닌) 한글이 남았다`);

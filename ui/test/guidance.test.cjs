@@ -58,6 +58,7 @@ const EXEMPT_FILES={
  'continuity-identity.ts':'프로젝트·워크스페이스 동일성 불변식. 위반은 코어 버그이고 사용자 행동이 없다.',
  'continuity-core.ts':'Capsule/체크포인트 내부 계약. 사용자에게 보이는 결과는 작업 상태로 이미 표현된다.',
  'read-scope.ts':'ReadScope 불변식. 위반은 코어 버그다.',
+ 'overlay-admin.ts':'오버레이 쓰기 API의 호출 전제조건(validator/emptyDoc 누락, 델타 대상, 스냅숏 부재, 심볼릭 링크 거부). CLI/UI가 같은 조건을 먼저 검증하고 422/400으로 돌려주며, 작업 상태 표면에 도달하지 않는다 (#29).',
  'legacy-read-scope.ts':'레거시 ReadScope 불변식. 코어 버그이며 사용자 행동이 없다.',
  'fact-policy.ts':'MutationPolicy 불변식. UI는 이 경로를 직접 노출하지 않는다.',
  'chronicle.ts':'Chronicle 근거 계약. 위반은 이벤트 기록 거부로 끝나고 별도 복구 명령이 없다.',
