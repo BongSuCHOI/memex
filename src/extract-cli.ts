@@ -28,6 +28,7 @@ import {
   listOverlayHistory,
   listOverlaySnapshots,
   overlayPaths,
+  readOverlaySnapshot,
 } from "./overlay-admin.js";
 import {
   EXTRACTION_RULES_LIMITS,
@@ -35,6 +36,7 @@ import {
   buildBlockSet,
   composeEffectivePolicyVersion,
   currentExtractionRulesRevision,
+  emptyExtractionRulesDoc,
   emptyLoadedExtractionRules,
   extractionRulesDocHash,
   isEmptyExtractionRules,
@@ -70,8 +72,8 @@ const USAGE = `Usage:
   memex extract rules set <file> [--expect-revision <n>] [--dry-run] [--json]
   memex extract rules test [--exchange <id>] [--recent <n>] [--project <p>] [--limit <n>] [--json]
   memex extract rules history [--limit <n>] [--json]
-  memex extract rules reset --yes [--json]
-  memex extract rules rollback <revision> [--json]
+  memex extract rules reset --yes [--dry-run] [--json]
+  memex extract rules rollback <revision> [--dry-run] [--json]
   memex extract rules reextract (--dry-run | --apply --yes) [--project <id>] [--session <id>] [--json]
   memex extract eval [--rules <path>] [--fixture <path>] [--session <id>] [--baseline <path>] [--out <path>]
 
@@ -467,13 +469,16 @@ function expectRevision(): number | undefined {
 }
 
 /** The exact command to re-run, with the revision observed during the dry run. */
-function rerunCommand(revision: number): string {
+function rerunCommand(revision: number, extra: string[] = []): string {
   const parts = ["memex", "extract"];
   for (const arg of argv) {
     if (arg === "--dry-run") continue;
     if (arg === "--expect-revision") continue;
     parts.push(/[\s'"\\]/.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg);
   }
+  // Flags the destructive form requires but the dry run did not: printing a
+  // command that then refuses with CONFIRMATION_REQUIRED is not a re-run command.
+  for (const flag of extra) if (!parts.includes(flag)) parts.push(flag);
   const index = argv.indexOf("--expect-revision");
   if (index >= 0) {
     const stale = argv[index + 1];
@@ -1191,7 +1196,61 @@ async function cmdSet(): Promise<void> {
 /* rules reset / rollback / history                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * What a `reset` / `rollback` dry run prints.
+ *
+ * The shared shape matters more than the wording: `--dry-run` is the promise that
+ * nothing moved, so it names the revision it observed, the document it would
+ * write, and the exact command that applies it — and it touches no file, no
+ * snapshot, no history line and no held job.
+ */
+function emitWriteDryRun(
+  action: string,
+  doc: Record<string, unknown>,
+  headline: string[],
+  payload: Record<string, unknown> = {},
+  extraFlags: string[] = [],
+): void {
+  const revision = currentExtractionRulesRevision();
+  const resolved = resolveDoc(doc as unknown as ExtractionRulesDoc, null);
+  emit(
+    {
+      dryRun: true,
+      action,
+      revision,
+      nextRevision: revision + 1,
+      currentHash: loadExtractionRules().hash,
+      hash: resolved.hash,
+      rerun: rerunCommand(revision, extraFlags),
+      ...payload,
+    },
+    [
+      "시험 실행 — 아무것도 저장하지 않았습니다.",
+      ...headline,
+      row("해시", `${loadExtractionRules().hash ?? "없음"} → ${resolved.hash ?? "없음"}  (revision ${revision} → ${revision + 1})`),
+      row("보류", "설정 대기(hold) 중인 추출 작업은 그대로 둡니다 — 해제는 실제 적용 때만 일어납니다."),
+      row("적용", rerunCommand(revision, extraFlags)),
+    ],
+  );
+}
+
 async function cmdReset(): Promise<void> {
+  if (bools.has("--dry-run")) {
+    const current = loadExtractionRules();
+    emitWriteDryRun(
+      "rules.reset",
+      emptyExtractionRulesDoc() as unknown as Record<string, unknown>,
+      [
+        row(
+          "초기화 예정",
+          `규칙을 비웁니다 — 금지 패턴 ${current.global.neverExtract.length}개 · 제외 주제 ${current.global.excludeTopics.length}개가 사라집니다. 이미 추출된 기억은 바뀌지 않습니다.`,
+        ),
+      ],
+      {},
+      ["--yes"],
+    );
+    return;
+  }
   if (!bools.has("--yes")) {
     fail("CONFIRMATION_REQUIRED", [
       "거부 — 아무것도 저장하지 않았습니다.",
@@ -1227,6 +1286,33 @@ async function cmdRollback(): Promise<void> {
   const revision = Number(raw);
   if (!Number.isInteger(revision) || revision < 0) {
     usageError("rollback needs a non-negative integer revision");
+  }
+  if (bools.has("--dry-run")) {
+    const kept = readOverlaySnapshot("extraction-rules", revision);
+    if (kept === null) {
+      fail("SNAPSHOT_NOT_FOUND", [
+        "시험 실행 — 되돌릴 수 없습니다. 아무것도 저장하지 않았습니다.",
+        `  SNAPSHOT_NOT_FOUND  revision ${revision}의 스냅숏이 없습니다 (보관 중: ${listOverlaySnapshots("extraction-rules").join(", ") || "없음"})`,
+      ]);
+    }
+    const validation = await validateExtractionRules(kept, { probe: false, forWrite: true });
+    if (!validation.ok || !validation.doc) {
+      fail(
+        "OVERLAY_INVALID",
+        [
+          "시험 실행 — 거부되었습니다. 아무것도 저장하지 않았습니다.",
+          ...issueLines(validation.issues),
+        ],
+        { dryRun: true, issues: validation.issues },
+      );
+    }
+    emitWriteDryRun(
+      "rules.rollback",
+      validation.doc as unknown as Record<string, unknown>,
+      [row("되돌릴 예정", `revision ${revision}의 스냅숏을 revision ${currentExtractionRulesRevision() + 1}로 다시 적용합니다.`)],
+      { fromSnapshot: revision, issues: validation.issues },
+    );
+    return;
   }
   const snapshot = beforeState();
   const handle = await openWriteDbIfPresent();
