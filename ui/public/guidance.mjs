@@ -22,7 +22,9 @@ const RECOVER=[{kind:'operation',command:'recover',label:'실패 종료 작업 �
  */
 export const CLASSES=[
  {id:'db-unavailable',title:'로컬 데이터베이스에 연결할 수 없음',
-  match:['db_unavailable','인덱스 db가 없습니다','database is locked','unable to open database','sqlite_cantopen'],
+  // 0.7.0 (#109): 인덱스 DB 누락에 DB_INDEX_MISSING 코드가 붙었고 서버 메시지는 영어 한 줄이
+  // 됐다. 한국어 원문 매칭만 남기면 이 분류가 조용히 죽으므로 코드 문자열을 같이 둔다.
+  match:['db_unavailable','db_index_missing','인덱스 db가 없습니다','index database is missing','database is locked','unable to open database','sqlite_cantopen'],
   cause:'인덱스 DB 파일이 없거나 열 수 없습니다. 아직 한 번도 동기화하지 않았거나 경로·권한이 바뀐 상태입니다.',
   impact:'조회·주입·기억 변경이 모두 멈춥니다. 저장된 기억이 사라진 것은 아닙니다.',
   next:'관리 › 런타임에서 DB 경로를 확인하고, 진단을 실행한 뒤 대화 동기화로 인덱스를 만드세요.',

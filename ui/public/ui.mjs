@@ -1,4 +1,5 @@
 import {badgeHelp,helpFor} from './help.mjs';
+import {t} from './i18n/index.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -65,6 +66,31 @@ export const empty=(title,description,action='',ico='memory')=>`<div class="empt
 export const banner=(description,type='neutral',ico='info')=>`<div class="banner ${esc(type)}">${icon(ico)}<div>${description}</div></div>`;
 export const raw=(data,title='원시 데이터')=>`<details class="json-details"><summary>${esc(title)}</summary><pre>${esc(JSON.stringify(data,null,2))}</pre></details>`;
 export function errorCard(error){return `<div class="card">${empty('데이터를 불러오지 못했습니다',error.message,btn('다시 시도','refresh','data-action="refresh"'),'warning')}<div class="error-code right" style="padding:0 20px 15px">${esc(error.code||'REQUEST_FAILED')}</div></div>`;}
+/**
+ * 행별 검증 오류 (#109 · 설계 §5.2 F2). 422 응답의 `details.issues`를 목록으로 그린다.
+ * 오버레이·모델 설정 레인이 그대로 호출한다 — 새 CSS 컴포넌트는 만들지 않는다.
+ *
+ * 위치 표기는 `path`(구조적 경로)가 가장 구체적이므로 먼저 본다. 서버 경계에서 변환하지
+ * 않으므로 생산자가 쓴 표기가 그대로 도착한다.
+ */
+function issueLocation(i){
+ if(typeof i.path==='string'&&i.path)return i.path;
+ if(Number.isInteger(i.row))return t('error.issue.at',{row:i.row,field:i.field??t('common.unknown')});
+ return typeof i.field==='string'?i.field:'';
+}
+export function renderIssues(issues){
+ const list=Array.isArray(issues)?issues:[];
+ if(!list.length)return '';
+ return `<ul class="issue-list">${list.map(i=>{
+  const where=issueLocation(i);
+  const text=i.key?t(i.key,i.params||undefined):(i.message||t('error.client.unknown'));
+  const warn=i.severity==='warning';
+  return `<li${warn?' class="muted"':''}>`
+   +(warn?`<span class="tag amber">${esc(t('error.issue.warning'))}</span> `:'')
+   +(where?`<code>${esc(where)}</code> `:'')
+   +esc(text)+`</li>`;
+ }).join('')}</ul>`;
+}
 export const skeleton=()=>`<div class="page-header"><div class="skeleton" style="width:180px;height:28px"></div></div><div class="loading-grid">${Array(4).fill('<div class="skeleton card"></div>').join('')}</div><div class="skeleton card mt" style="height:300px"></div>`;
 export function pagination(page,ctx,keys={}){if(page.total===null||page.total===undefined)return '';const {offset,limit,total}=page;const prev=Math.max(0,offset-limit),next=offset+limit;return `<div class="pagination"><span>총 ${number(total)}개${total?` · ${number(offset+1)}–${number(Math.min(offset+limit,total))} 표시`:''}</span><div class="pages"><button class="btn" data-page="${prev}" ${keys.attr||''} ${offset===0?'disabled':''}>${icon('left')}이전</button><span>${Math.floor(offset/limit)+1} / ${Math.max(1,Math.ceil(total/limit))}</span><button class="btn" data-page="${next}" ${keys.attr||''} ${next>=total?'disabled':''}>다음${icon('chevron')}</button></div></div>`;}
 export const table=(heads,rows)=>`<div class="table-wrap"><table class="data-table"><thead><tr>${heads.map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;

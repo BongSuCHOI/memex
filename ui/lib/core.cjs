@@ -14,7 +14,7 @@ class Core {
     const homeForDb=file=>path.basename(path.dirname(file))==='conversation-index'?path.dirname(path.dirname(file)):path.dirname(file);
     this.home=options.home||process.env.MEMEX_HOME||(pointedDb?homeForDb(path.resolve(pointedDb)):path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'memex'));
     this.dbPath=pointedDb||path.join(this.home,'conversation-index','db.sqlite');
-    this.version=null;this.db=null;this.modules=new Map();this.lastConnect=0;this.error=null;this.busy=new Set();
+    this.version=null;this.db=null;this.modules=new Map();this.lastConnect=0;this.error=null;this.errorInfo=null;this.busy=new Set();
     // pinned() 중첩 깊이와 가장 바깥 호출이 저장한 환경 (#96).
     this.pinDepth=0;this.pinSaved=null;
     try{this.version=JSON.parse(fs.readFileSync(path.join(this.root,'package.json'),'utf8')).version;}catch{}
@@ -26,18 +26,28 @@ class Core {
       this.modules.set(name,{...(m.default&&typeof m.default==='object'?m.default:{}),...m});
     }return this.modules.get(name);
   }
+  /**
+   * 오류 캐시는 **메시지 문자열이 아니라 오류 레코드**다 (#109 · 설계 §5.5).
+   * 3초 스로틀 재throw가 code·key·params·message를 전부 복원해야 하고, 이미 분류된
+   * HttpError는 재포장하지 않아야 DB_INDEX_MISSING / CORE_UNAVAILABLE 구분이 살아남는다.
+   */
   async connect(force=false){
     if(this.db){this.store.refreshSchema();return this.store;}
     if(this.connecting)return this.connecting;
-    if(!force&&Date.now()-this.lastConnect<3000)throw new HttpError(503,this.error||'데이터베이스에 연결할 수 없습니다.','DB_UNAVAILABLE');
+    if(!force&&Date.now()-this.lastConnect<3000)throw new HttpError(503,this.errorInfo??{code:'DB_UNAVAILABLE',key:'error.db.connectFailed',message:'Cannot connect to the local database.'});
     this.lastConnect=Date.now();
     const pending=(async()=>{
       try{
-        if(!fs.existsSync(this.dbPath))throw new Error('인덱스 DB가 없습니다. memex sync를 먼저 실행하세요.');
+        if(!fs.existsSync(this.dbPath))throw new HttpError(503,{code:'DB_INDEX_MISSING',key:'error.db.indexMissing',message:'Index database is missing. Run `memex sync` first.'});
         const factory=await this.module('db');
-        if(typeof factory.openReadDb!=='function')throw new Error('dist/db.js에 openReadDb가 없습니다. 코어를 빌드하세요.');
-        this.db=factory.openReadDb(this.dbPath);this.store=new Store(this.db);this.error=null;return this.store;
-      }catch(e){this.error=e.message;this.db=null;throw new HttpError(503,e.message,'DB_UNAVAILABLE');}
+        if(typeof factory.openReadDb!=='function')throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.openReadDbMissing',message:'dist/db.js has no openReadDb. Build the core.'});
+        this.db=factory.openReadDb(this.dbPath);this.store=new Store(this.db);this.error=null;this.errorInfo=null;return this.store;
+      }catch(e){
+        // 코어·런타임 원문만 key:null로 감싼다 — 그 문장이 유일한 진단 정보다.
+        const wrapped=e instanceof HttpError?e:new HttpError(503,{code:'DB_UNAVAILABLE',key:null,message:e.message});
+        this.errorInfo={code:wrapped.code,key:wrapped.key,params:wrapped.params,message:wrapped.uiMessage};
+        this.error=wrapped.uiMessage;this.db=null;throw wrapped;
+      }
     })();
     this.connecting=pending;
     try{return await pending;}finally{if(this.connecting===pending)this.connecting=null;}
