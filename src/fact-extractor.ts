@@ -1597,11 +1597,24 @@ function validateExtractedFactCandidateDetailed(
   // #19 — an explicit scope directive is a placement instruction, never a
   // reason to accept or reject the fact itself. An unrecognised value is
   // dropped to a classifier note so a bad directive can never move a tier.
+  // #59 — a directive carries USER authority downstream (`user-directive`
+  // actor, `human-decision` evidence authority, and the only actor allowed to
+  // span two rungs). So the verifier's own grounding numbers must prove a human
+  // said it: `explicit` grounding with at least one human-evidence exchange.
+  // A tool-only `verified` candidate that emits a directive is a model proposal,
+  // not a placement instruction, and is dropped to a classifier note.
   const rawDirective = candidate.scope_directive;
   let scopeDirective: ExtractedFact["scope_directive"];
   if (rawDirective !== undefined && rawDirective !== null) {
     if (rawDirective === "workstream" || rawDirective === "project" || rawDirective === "global") {
-      scopeDirective = rawDirective;
+      if (groundingType === "explicit" && humanEvidenceCount >= 1) {
+        scopeDirective = rawDirective;
+      } else {
+        classifierNotes.push(
+          `dropped scope_directive without human evidence: ${rawDirective} `
+          + `(grounding_type: ${String(groundingType)}, human_evidence: ${humanEvidenceCount})`,
+        );
+      }
     } else {
       classifierNotes.push(`unrecognized scope_directive: ${String(rawDirective).slice(0, 40)}`);
     }
@@ -2579,6 +2592,12 @@ export async function saveExtractedFactsDetailed(
           if (Array.isArray(parsed)) liveSources = [...new Set([...parsed.filter((id): id is string => typeof id === "string"), ...factSources])];
         } catch { /* keep new evidence side */ }
         updateFact(db, existing.id, { consolidated_count_increment: true, source_exchange_ids: liveSources });
+        // #64 — a directive is a placement instruction, independent of the
+        // content verdict. Restating a fact you already hold and saying where it
+        // belongs must still move it.
+        if (p.fact.scope_directive) {
+          directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+        }
         outcome.merged++;
         continue;
       }
@@ -2641,6 +2660,12 @@ export async function saveExtractedFactsDetailed(
         recordedAt: now,
         projectionApplied: false,
       });
+      // #64 — same reason as the merge path: the placement instruction survives a
+      // `historical`/`contradicted` verdict about the incoming sentence, and it
+      // moves the fact that actually occupies the slot.
+      if (p.fact.scope_directive) {
+        directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+      }
       if (judgement.verdict === "historical") outcome.historical++;
       else outcome.contradicted++;
     }

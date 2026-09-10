@@ -55,6 +55,13 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 쓰면 하나의 workstream을 공유하고(워크트리는 git-common-dir 규칙으로 같은 project를 갖습니다), 브랜치가
 다르면 서로 희석되지 않습니다. 세션마다 새 stream을 만들던 `ws-hash(project, session)` 폴백은 없어졌습니다.
 
+0.6.2(#63)부터 `bindSessionWorkstream`의 **주제 유사도 휴리스틱**(`strong-topic-margin`, Capsule
+objective/state의 Jaccard ≥ 0.45 · 마진 ≥ 0.15)은 `signal.kind !== 'branch'` 세션에만 적용됩니다.
+브랜치 신호가 있으면 결정론적 `(project, branch)` stream이 유일한 답이며, 그 행이 아직 없는 **새 브랜치의
+첫 세션**도 휴리스틱을 거치지 않고 그 stream을 바로 만들어 씁니다. 예전에는 첫 세션이 같은 주제의 기본
+브랜치 stream에 붙어(`branch_hint` = 기본 브랜치) 새 fact가 `defaultTierFor` 규칙상 `project-current`로
+태어났고, 브랜치 실험이 곧바로 프로젝트 공용 기억이 됐습니다.
+
 **전이(일반 → 깃, 또는 그 반대).** 경로가 실제로 존재하면 세션 시작의 재검사가 권위이며 workspace 행의
 `location_kind`/`git_common_dir`/`git_common_identity`/`git_dir_identity`/`remote_fingerprint`/`branch`를
 그 자리에서 갱신합니다. `workspace_id`·`project_id`는 불변이므로 전이 이전 기억은 데이터 변경 없이

@@ -929,6 +929,32 @@ export class TierStepError extends Error {
   }
 }
 
+/**
+ * #77 — the fact moved (or its row changed) between the caller's read and this
+ * write. A caller that names the tier and row version it saw gets the move
+ * refused instead of a second rung applied on top of a concurrent winner.
+ */
+export class TierStaleError extends Error {
+  readonly id: string;
+  readonly expectedTier: FactTier | null;
+  readonly actualTier: FactTier;
+  constructor(
+    id: string,
+    expected: { tier?: FactTier; updatedAt?: string },
+    actual: { tier: FactTier; updatedAt: string | null },
+  ) {
+    super(
+      `fact ${id} changed before the tier move: expected `
+      + `${expected.tier ?? actual.tier}@${expected.updatedAt ?? 'any'}, `
+      + `found ${actual.tier}@${actual.updatedAt ?? 'unknown'}`,
+    );
+    this.name = 'TierStaleError';
+    this.id = id;
+    this.expectedTier = expected.tier ?? null;
+    this.actualTier = actual.tier;
+  }
+}
+
 export interface FactTierState {
   id: string;
   tier: FactTier;
@@ -982,6 +1008,12 @@ export interface TierMoveOptions {
   projectId?: string | null;
   /** Required to push a project fact onto a branch when it cannot be derived. */
   workstreamId?: string | null;
+  /**
+   * #77 — optimistic concurrency. The tier and/or `facts.updated_at` the caller
+   * read before deciding this move; a mismatch raises `TierStaleError` and
+   * nothing is written.
+   */
+  expected?: { tier?: FactTier; updatedAt?: string };
   now?: string;
 }
 
@@ -1136,6 +1168,18 @@ function moveFactTier(
 ): TierMoveResult {
   const recordedAt = options.now ?? new Date().toISOString();
   const start = readFactTier(db, id);
+  // #77 — refuse before any write when the caller's read is already stale, so a
+  // duplicate request cannot stack a second rung on a concurrent winner's move.
+  if (options.expected?.tier || options.expected?.updatedAt) {
+    const updatedAt = (db.prepare('SELECT updated_at FROM facts WHERE id = ?').get(id) as
+      { updated_at: string | null } | undefined)?.updated_at ?? null;
+    if (
+      (options.expected.tier && options.expected.tier !== start.tier)
+      || (options.expected.updatedAt && options.expected.updatedAt !== updatedAt)
+    ) {
+      throw new TierStaleError(id, options.expected, { tier: start.tier, updatedAt });
+    }
+  }
   const fromIndex = TIER_ORDER.indexOf(start.tier);
   const target = options.to ?? TIER_ORDER[fromIndex + direction];
   if (!target) throw new TierStepError(start.tier, direction > 0 ? 'global' : 'workstream');
@@ -1228,11 +1272,13 @@ export function reconcileFactTiers(
     direction: 1 | -1,
     reason: string,
     evidenceFactIds: string[],
+    to?: FactTier,
   ): void => {
     try {
+      const options: TierMoveOptions = { actor: 'auto', reason, evidenceFactIds, now, ...(to ? { to } : {}) };
       const move = direction > 0
-        ? promoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now })
-        : demoteFact(db, id, { actor: 'auto', reason, evidenceFactIds, now });
+        ? promoteFact(db, id, options)
+        : demoteFact(db, id, options);
       (direction > 0 ? result.promoted : result.demoted).push({
         id, from: move.from, to: move.to, reason,
       });
@@ -1241,15 +1287,40 @@ export function reconcileFactTiers(
     }
   };
 
+  // #60 — a slot whose active branch facts disagree on their text holds two
+  // competing branch truths, not one re-confirmed truth. No SQL fact says which
+  // sentence is right, so nothing is promoted and the slot is reported instead.
+  const conflictingSlots = db.prepare(`
+    SELECT f.project_id AS projectId, f.subject_key AS subjectKey, GROUP_CONCAT(f.id) AS ids
+    FROM facts f
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
+      AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
+    GROUP BY f.project_id, f.subject_key
+    HAVING COUNT(DISTINCT LOWER(TRIM(f.fact))) >= 2
+    ORDER BY f.project_id, f.subject_key
+  `).all() as Array<{ projectId: string; subjectKey: string; ids: string | null }>;
+  const conflictedSlots = new Set<string>();
+  for (const slot of conflictingSlots) {
+    conflictedSlots.add(`${slot.projectId} ${slot.subjectKey}`);
+    for (const id of String(slot.ids ?? '').split(',').filter(Boolean).sort()) {
+      result.skipped.push({ id, reason: 'slot has conflicting branch truths' });
+    }
+  }
+
   // 1. Branch truth re-confirmed outside its own branch becomes project truth.
   //    Only the slot's earliest branch fact moves, so a slot confirmed from two
   //    branches promotes one deterministic row instead of racing for the slot.
+  //    #60 — "re-confirmed" means the SAME normalized text (the normalizer pass
+  //    2 already uses); without it, two branches that disagree on one slot read
+  //    as confirmation and whichever row was created first became the project
+  //    truth.
   const confirmedOutsideBranch = db.prepare(`
-    SELECT f.id AS id, MIN(g.id) AS witness
+    SELECT f.id AS id, f.project_id AS projectId, f.subject_key AS subjectKey, MIN(g.id) AS witness
     FROM facts f
     JOIN facts g ON g.project_id = f.project_id AND g.subject_key = f.subject_key
       AND g.id <> f.id AND g.is_active = 1
       AND COALESCE(g.workstream_id, '') <> COALESCE(f.workstream_id, '')
+      AND LOWER(TRIM(g.fact)) = LOWER(TRIM(f.fact))
     WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
       AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
       AND NOT EXISTS (
@@ -1260,12 +1331,15 @@ export function reconcileFactTiers(
       )
     GROUP BY f.id
     ORDER BY f.id
-  `).all() as Array<{ id: string; witness: string }>;
+  `).all() as Array<{ id: string; projectId: string; subjectKey: string; witness: string }>;
   for (const row of confirmedOutsideBranch) {
+    if (conflictedSlots.has(`${row.projectId} ${row.subjectKey}`)) continue;
     step(row.id, 1, 'subject re-confirmed outside this workstream', [row.witness]);
   }
 
   // 2. The same project truth confirmed in two or more projects becomes global.
+  //    The GROUP BY is the content check: every witness in a group shares the
+  //    same LOWER(TRIM(fact)), so #60's conflicting-text case cannot arise here.
   const crossProject = db.prepare(`
     SELECT MIN(f.id) AS id, COUNT(DISTINCT f.project_id) AS projects,
            GROUP_CONCAT(f.id) AS witnesses
@@ -1281,29 +1355,69 @@ export function reconcileFactTiers(
     step(row.id, 1, `confirmed in ${row.projects} projects`, witnesses);
   }
 
-  // 3. An automatic promotion whose cited evidence is gone comes back down.
-  const promotions = db.prepare(`
-    SELECT r.fact_id AS id, r.outcome_json
+  // 3. An automatic promotion whose cited evidence is gone comes back down —
+  //    but only while that promotion is still the fact's LAST word on its tier.
+  //    #61 — the pass used to read `PROMOTED AND actor = 'auto'` rows alone, so a
+  //    later human placement (or an earlier pass's own demotion) was invisible,
+  //    and `demoteFact` without `to` walked one rung down from wherever the fact
+  //    currently was. A user's `global` therefore eroded to `workstream` over two
+  //    maintenance runs. Now the latest tier event must BE that auto promotion,
+  //    its recorded `to_tier` must still be the current tier, and the
+  //    destination is the recorded `from_tier` — never "one step down from here".
+  interface TierEventRow {
+    eventId: string; id: string; eventKind: string; actor: string; outcomeJson: string | null;
+  }
+  const tierEvents = db.prepare(`
+    SELECT r.id AS eventId, r.fact_id AS id, r.event_kind AS eventKind, r.actor AS actor,
+           r.outcome_json AS outcomeJson
     FROM fact_revisions r
     JOIN facts f ON f.id = r.fact_id AND f.is_active = 1
-    WHERE r.event_kind = 'PROMOTED' AND r.actor = 'auto' AND r.fact_id IS NOT NULL
+    WHERE r.event_kind IN ('PROMOTED', 'DEMOTED') AND r.fact_id IS NOT NULL
     ORDER BY r.chronicle_seq DESC
-  `).all() as Array<{ id: string; outcome_json: string | null }>;
-  const seen = new Set<string>();
-  for (const row of promotions) {
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
+  `).all() as TierEventRow[];
+  const latestTierEvent = new Map<string, TierEventRow>();
+  const latestAutoPromotion = new Map<string, TierEventRow>();
+  for (const row of tierEvents) {
+    if (!latestTierEvent.has(row.id)) latestTierEvent.set(row.id, row);
+    if (row.eventKind === 'PROMOTED' && row.actor === 'auto' && !latestAutoPromotion.has(row.id)) {
+      latestAutoPromotion.set(row.id, row);
+    }
+  }
+  for (const factId of [...latestAutoPromotion.keys()].sort()) {
+    const promotion = latestAutoPromotion.get(factId) as TierEventRow;
     let cited: string[] = [];
+    let fromTier: string | null = null;
+    let toTier: string | null = null;
     try {
-      const parsed: unknown = JSON.parse(row.outcome_json ?? '{}');
-      const ids = (parsed as { evidence_fact_ids?: unknown }).evidence_fact_ids;
-      cited = Array.isArray(ids) ? ids.filter((v): v is string => typeof v === 'string') : [];
+      const parsed = JSON.parse(promotion.outcomeJson ?? '{}') as {
+        evidence_fact_ids?: unknown; from_tier?: unknown; to_tier?: unknown;
+      };
+      cited = Array.isArray(parsed.evidence_fact_ids)
+        ? parsed.evidence_fact_ids.filter((v): v is string => typeof v === 'string')
+        : [];
+      fromTier = typeof parsed.from_tier === 'string' ? parsed.from_tier : null;
+      toTier = typeof parsed.to_tier === 'string' ? parsed.to_tier : null;
     } catch { cited = []; }
     if (cited.length === 0) continue;
     const alive = (db.prepare(
       `SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND id IN (${cited.map(() => '?').join(',')})`,
     ).get(...cited) as { n: number }).n;
-    if (alive === 0) step(row.id, -1, 'upper evidence is no longer active', cited);
+    if (alive > 0) continue;
+    const latest = latestTierEvent.get(factId);
+    if (!latest || latest.eventId !== promotion.eventId) {
+      result.skipped.push({
+        id: factId,
+        reason: latest?.actor === 'user' || latest?.actor === 'user-directive'
+          ? 'superseded by a user decision'
+          : `superseded by a later ${latest?.actor ?? 'unknown'} tier event`,
+      });
+      continue;
+    }
+    if (!fromTier || !TIER_ORDER.includes(fromTier as FactTier) || toTier !== readFactTier(db, factId).tier) {
+      result.skipped.push({ id: factId, reason: 'recorded promotion no longer matches the current tier' });
+      continue;
+    }
+    step(factId, -1, 'upper evidence is no longer active', cited, fromTier as FactTier);
   }
   return result;
 }

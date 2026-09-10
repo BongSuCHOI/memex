@@ -55,14 +55,33 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 
 | 이동 | 자동(근거 기반) 조건 | 사용자 명시 |
 |---|---|---|
-| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
-| project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때 | 동일 |
-| 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
+| workstream → project | 같은 `subject_key` slot의 fact가 **같은 내용**(`LOWER(TRIM(fact))`)으로 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
+| project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때(`GROUP BY LOWER(TRIM(fact))`가 내용 동일성을 보장) | 동일 |
+| 강등 | 그 fact의 **가장 최근 tier 이벤트**가 auto 승격이고, 그 승격이 인용한 상위 근거가 모두 비활성화·삭제됐을 때. 목적지는 기록된 `from_tier` | `memex facts demote <id>` |
+
+0.6.2(#61)부터 자동 강등은 **사용자 결정을 덮지 않습니다**. 판정은 `PROMOTED`/`DEMOTED` 중 가장 최근
+이벤트가 그 auto 승격 자신인지 보고, 기록된 `to_tier`가 현재 tier와 같을 때만 실행되며, 목적지로
+기록된 `from_tier`를 **명시**해서 내려갑니다("지금 위치에서 한 칸"이 아닙니다). 이후에 사람이 올린
+뒤라면 `skipped`에 `superseded by a user decision`으로 남고 tier는 그대로입니다.
+
+0.6.2(#60)부터 "재확인"은 **내용 동일성**을 요구합니다. 같은 slot에 서로 다른 내용의 활성 브랜치 fact가
+2개 이상이면(예: 브랜치 A “SQLite를 쓴다” / 브랜치 B “PostgreSQL을 쓴다”) 어느 쪽도 승격하지 않고
+`reconcileFactTiers`의 `skipped`에 `slot has conflicting branch truths`로 남겨 사람이 보게 합니다.
 
 - `workstream → global` 직행은 불가합니다. 한 칸씩만 움직이며 위반은 `TierStepError`입니다. 예외는
   세션 내 명시 지시뿐이고, 그것도 **한 트랜잭션 안에서 두 단계로 실행되어 이벤트 두 개**를 남깁니다.
+- 0.6.2(#59)부터 `scope_directive`는 **검증기가 센 사람 근거**로만 채택됩니다:
+  `grounding_type === "explicit"`이고 human evidence가 1건 이상일 때만 남고, 그 외(예: tool 근거만
+  있는 `verified` 후보)는 `classifier_notes`에
+  `dropped scope_directive without human evidence: <값>`로 떨어집니다. 모델이 제안한 배치는
+  `user-directive`/`human-decision` 권한을 얻지 못하므로 두 칸 점프도 일어나지 않습니다.
 - 구현: `promoteFact` / `demoteFact`(`src/fact-management.ts`), actor `user` | `auto` | `user-directive`.
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
+- 0.6.2(#77)부터 두 함수는 선택 인자 `expected: { tier?, updatedAt? }`를 받습니다. 호출자가 읽은
+  tier나 `facts.updated_at`과 실제가 다르면 **아무것도 쓰지 않고** `TierStaleError`를 던집니다
+  (Web UI는 409 `STALE_FACT`로 매핑). 목표 칸을 `to`로 명시하고 이 기대값을 함께 넘기면 중복 요청이
+  경쟁에서 이긴 이동 위에 한 칸을 더 얹을 수 없습니다. 같은 칸을 다시 요청하면 기존대로
+  `TierStepError`입니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
   (0.6.1의 Web UI 승격/강등 버튼도 `/api/v2/facts/promote|demote`를 통해 같은 함수를 호출합니다).
@@ -578,6 +597,12 @@ slot의 active current fact와 deterministic하게 비교합니다.
 | incoming effective_at > existing이고 authority ≥ existing | 기존 identity의 meaning mutation + `CHANGED`(from/to generation, previous/new) |
 | incoming effective_at < existing | historical `ASSERTED`(projection_applied=0), current 유지 |
 | 같은 effective_at 또는 낮은 authority | `CONTRADICTED` candidate(projection_applied=0, `outcome.resolution=unresolved`), current 유지 |
+
+0.6.2(#64)부터 candidate의 `scope_directive`는 **위 다섯 경로 모두**에서 적용됩니다. 지시는 내용 판정과
+독립한 배치 명령이므로, 이미 가진 사실을 같은 문장으로 재확인하면서 "이건 프로젝트 공용으로 기억하자"고
+말해도(merge 경로) 그 slot을 차지한 fact가 지시한 tier로 움직이고 `PROMOTED`(actor `user-directive`)
+한 건을 남깁니다. `historical`/`CONTRADICTED` 판정에서도 같습니다. 예전에는 신규 insert와 내용 변경
+적용(`CHANGED`) 경로에만 쌓여 지시가 조용히 사라졌습니다.
 
 authority rank: `human-decision`(decision/correction) 3 > `human` 2 = `trusted-tool` 2 > `unknown` 1.
 existing의 effective time을 알 수 없으면(event도 source도 없음) 순서 판정 불가로 보고 incoming을 적용합니다.

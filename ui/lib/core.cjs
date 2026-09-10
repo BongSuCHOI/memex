@@ -67,18 +67,22 @@ class Core {
    * DB this server actually resolved for the duration of the call and restored afterwards — a
    * temp-DB session must never write sync state into the user's real data root. One sync call at a
    * time keeps that window from overlapping with another.
+   *
+   * #76 — the lock is taken BEFORE the first `await`, and the env save/restore lives inside the
+   * same block. With no yield between the check and the set, a second caller cannot enter, so
+   * `saved` is always the original environment and no caller releases another's lock.
    */
   async sync(action,body={}){
     if(!['status','enable','disable','export','import'].includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
     if(this.syncBusy)throw new HttpError(409,'동기화 작업이 이미 진행 중입니다.','SYNC_BUSY');
     if(action!=='status'&&this.busy.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
-    const m=await this.module('sync-control');
-    for(const fn of ['getSyncStatus','setSyncEnabled','runSyncExport','runSyncImport'])
-      if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 동기화 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
     this.syncBusy=true;
     const saved={MEMEX_HOME:process.env.MEMEX_HOME,MEMEX_DB_PATH:process.env.MEMEX_DB_PATH};
     process.env.MEMEX_HOME=this.home;process.env.MEMEX_DB_PATH=this.dbPath;
     try{
+      const m=await this.module('sync-control');
+      for(const fn of ['getSyncStatus','setSyncEnabled','runSyncExport','runSyncImport'])
+        if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 동기화 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
       if(action==='status')return {status:m.getSyncStatus()};
       if(action==='enable'){
         const dir=text(body.dir,4096).trim();
@@ -103,22 +107,36 @@ class Core {
    * Tier ladder move through dist/fact-management.js promoteFact/demoteFact.
    * The ladder is branch ⇄ project-common ⇄ global, one rung per call: the core refuses a
    * two-rung jump for actor 'user', and this UI never sends 'user-directive'.
+   *
+   * #77 — the per-id lock is taken BEFORE the first `await` (the read, the version check and the
+   * module loads all yield), so two clicks can no longer both pass the same version check. The
+   * call also names the ONE rung the user approved (`options.to`) plus the tier and row version it
+   * read (`options.expected`), so a request that loses the race is refused by the core
+   * (`TierStaleError` / `TierStepError` → 409) instead of applying a second rung on top.
    */
   async tier(body,scope){
     const id=identifier(body.id);const action=body.action;
     if(!['promote','demote'].includes(action))throw new HttpError(400,'지원하지 않는 계층 이동입니다.');
     if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
-    const store=await this.connect();const current=store.visibleFact(id,scope);
-    if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
     this.busy.add(id);let writer;
     try{
+      const store=await this.connect();const current=store.visibleFact(id,scope);
+      if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
       const fm=await this.module('fact-management');
       if(typeof fm.promoteFact!=='function'||typeof fm.demoteFact!=='function')throw new HttpError(503,'설치된 코어에 계층 이동 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+      // 읽은 tier에서 한 칸만 — 목표를 코어에 명시해야 경쟁에서 져도 두 칸이 움직이지 않는다.
+      const LADDER=['workstream','project','global'];
+      const from=typeof fm.factTierOf==='function'
+        ?fm.factTierOf({scope_type:current.scope_type,promotion_state:current.promotion_state??null}):null;
+      const to=from?LADDER[LADDER.indexOf(from)+(action==='promote'?1:-1)]:undefined;
+      if(from&&!to)throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
       const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);
-      const options={actor:'user',reason:text(body.reason,500)||null,projectId:scope.projectId||null,workstreamId:scope.workstreamId||null};
+      const options={actor:'user',reason:text(body.reason,500)||null,projectId:scope.projectId||null,workstreamId:scope.workstreamId||null,
+        ...(to?{to}:{}),expected:{...(from?{tier:from}:{}),...(current.updated_at?{updatedAt:current.updated_at}:{})}};
       return action==='promote'?fm.promoteFact(writer,id,options):fm.demoteFact(writer,id,options);
     }catch(e){
       if(e.status)throw e;
+      if(e.name==='TierStaleError')throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
       if(e.name==='TierStepError')throw new HttpError(409,'계층은 한 칸씩만 움직입니다. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격하세요.','TIER_STEP');
       if(/requires a target project/.test(e.message))throw new HttpError(400,'글로벌 기억을 강등하려면 상단에서 대상 프로젝트 범위를 먼저 선택하세요.','TIER_TARGET_REQUIRED');
       if(/requires a workstream/.test(e.message))throw new HttpError(400,'브랜치 계층으로 강등하려면 상세 조회 범위에서 작업 흐름을 먼저 선택하세요.','TIER_TARGET_REQUIRED');

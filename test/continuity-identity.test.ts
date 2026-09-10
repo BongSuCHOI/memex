@@ -404,6 +404,46 @@ describe("conservative workstream binding and scoped truth", () => {
     expect((db.prepare("SELECT workstream_id FROM session_memory_state WHERE session_id = 'topic-session'").get() as { workstream_id: string }).workstream_id).toBe("redis-stream");
   });
 
+  it("binds a new branch's first session to its own stream, never by topic (#63)", async () => {
+    const repo = path.join(root, "repo");
+    gitClone(repo);
+    const identity = resolveProjectWorkspace(db, { cwd: repo });
+    // The project's default-branch stream already owns a Capsule on this topic,
+    // so the similarity heuristic would score it far above the 0.45/0.15 gate.
+    const defaultStream = deterministicWorkstreamId(identity.projectId, null);
+    createWorkstream(db, {
+      projectId: identity.projectId, workspaceId: identity.workspaceId,
+      projectPath: identity.canonicalPath, ownerSessionId: "owner-main",
+      workstreamId: defaultStream, branch: "main", topic: "sqlite durable cache",
+    });
+    db.prepare("INSERT INTO work_capsules(workstream_id, objective, current_state, updated_at) VALUES (?, ?, '', ?)")
+      .run(defaultStream, "sqlite durable cache", "2026-09-03T00:00:00.000Z");
+
+    const bound = bindSessionWorkstream(db, {
+      sessionId: "new-branch-session", projectId: identity.projectId,
+      workspaceId: identity.workspaceId, projectPath: identity.canonicalPath,
+      branch: "feature/cache-rewrite", prompt: "continue sqlite durable cache",
+    });
+    expect(bound.reason).toBe("workspace-branch");
+    expect(bound.workstreamId).toBe(deterministicWorkstreamId(identity.projectId, "feature/cache-rewrite"));
+    expect(bound.workstreamId).not.toBe(defaultStream);
+
+    // And a fact from that session is born on the branch tier, not project-common.
+    await insertExchange(db, exchange("ex-branch-first", "new-branch-session", repo,
+      "we will drop the cache entirely on this branch"), emb);
+    const factId = insertFact(db, {
+      fact: "The cache is dropped entirely", category: "decision", scope_type: "project",
+      scope_project: repo, source_exchange_ids: ["ex-branch-first"], embedding: emb,
+      subject_key: "decision.cache.strategy",
+    });
+    expect(db.prepare("SELECT promotion_state, tier_reason, workstream_id FROM facts WHERE id = ?").get(factId))
+      .toMatchObject({
+        promotion_state: "workstream",
+        tier_reason: "branch:feature/cache-rewrite",
+        workstream_id: bound.workstreamId,
+      });
+  });
+
   it("shares one Capsule across A/C but never injects its blocker into workstream B", () => {
     const identity = resolveProjectWorkspace(db, { cwd: path.join(root, "repo") });
     const a = createWorkstream(db, { projectId: identity.projectId, workspaceId: identity.workspaceId, projectPath: identity.canonicalPath, ownerSessionId: "owner-a", workstreamId: "capsule-a" });
