@@ -20973,7 +20973,7 @@ function bindSessionWorkstream(db, input) {
       reason = deterministicReason;
     }
   }
-  if (!workstreamId && input.prompt?.trim()) {
+  if (!workstreamId && signal.kind !== "branch" && input.prompt?.trim()) {
     const query = tokens(input.prompt);
     const rows = db.prepare(`
       SELECT w.workstream_id, c.objective, c.current_state

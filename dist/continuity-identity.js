@@ -635,7 +635,9 @@ export function bindSessionWorkstream(db, input) {
     // #16 — deterministic stream identity. A branch signal keys on the branch;
     // no signal (non-git or default branch) reuses the project's ONE default
     // stream. Both are looked up before the topic heuristic so repeated sessions
-    // converge on the same stream instead of splitting per session.
+    // converge on the same stream instead of splitting per session. #63 — with a
+    // real branch signal the deterministic stream is the ONLY answer: the topic
+    // heuristic below is skipped entirely for those sessions.
     const signal = branchSignalFor({
         branch: input.branch,
         defaultBranch: workspaceDefaultBranch(db, input.workspaceId),
@@ -651,7 +653,13 @@ export function bindSessionWorkstream(db, input) {
             reason = deterministicReason;
         }
     }
-    if (!workstreamId && input.prompt?.trim()) {
+    // #63 — the topic heuristic is for sessions with NO branch to key on. A branch
+    // session's stream identity is already decided by `(project, branch)`, so a
+    // new branch's FIRST session must mint that stream rather than fall through to
+    // a similarity match: the best match is usually the default-branch stream, and
+    // a fact born there is project-common (`defaultTierFor` → `project-current`)
+    // instead of branch-scoped, leaking the experiment into every later session.
+    if (!workstreamId && signal.kind !== "branch" && input.prompt?.trim()) {
         const query = tokens(input.prompt);
         const rows = db.prepare(`
       SELECT w.workstream_id, c.objective, c.current_state
