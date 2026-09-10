@@ -32,6 +32,11 @@ import {
   RUNTIME_DEPENDENCIES,
   resolveInstalledPluginRoot,
 } from "./plugin-root.js";
+import {
+  embeddingCacheStatus,
+  formatCacheBytes,
+  legacyEmbeddingCacheCandidates,
+} from "./model-cache.js";
 
 const runtimeRequire = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -851,6 +856,75 @@ async function injectDaemonCheck(): Promise<Check> {
   };
 }
 
+/**
+ * Issue #92 — is the embedding model on disk, and where?
+ *
+ * The state this reports was completely invisible. On the observed data root the
+ * model cache lived inside each plugin root's `node_modules`, so every update
+ * started cold and the next six prompts took 68-74s each while `doctor` reported
+ * every check green. Nothing said "the 129 MB is missing and the first prompt
+ * will pay for it".
+ *
+ * Read-only and library-free: `./model-cache.js` needs node builtins only, so
+ * this answers even on a host whose runtime closure is missing — which is exactly
+ * when a cold cache is most likely.
+ */
+function embeddingCacheCheck(): Check {
+  const name = "embedding-cache";
+  let status: ReturnType<typeof embeddingCacheStatus>;
+  try {
+    status = embeddingCacheStatus();
+  } catch (error) {
+    return {
+      name, status: "warn",
+      detail: `unable to resolve the embedding model cache: ${
+        error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const where = `cache ${status.dir} (via ${status.source}), model ${status.model}`;
+  if (status.stub) {
+    return {
+      name, status: "ok",
+      detail:
+        `stub — MEMEX_EMBEDDING_STUB=1 replaces the model with a deterministic vector, so no weights ` +
+        `are needed. ${where}`,
+    };
+  }
+  if (status.present) {
+    return {
+      name, status: "ok",
+      detail:
+        `ok — ${formatCacheBytes(status.bytes)} in ${status.files} file(s) at ${status.modelDir}. ` +
+        `It lives in the data root, so plugin updates keep it. ${where}`,
+    };
+  }
+  // A legacy per-root cache means the first model load will COPY rather than
+  // download, which is seconds instead of a minute — worth saying, because it
+  // changes what the user should expect from the advice.
+  const legacy = (() => {
+    try {
+      return legacyEmbeddingCacheCandidates();
+    } catch {
+      return [];
+    }
+  })();
+  const partial = status.files > 0
+    ? ` ${status.modelDir} holds ${status.files} file(s) / ${formatCacheBytes(status.bytes)} but no usable weights (an interrupted download).`
+    : "";
+  return {
+    name, status: "warn",
+    detail:
+      `missing — the embedding model is not cached, so the first prompt will be slow (~68s for the ` +
+      `129 MB download; measured) and a session's daemon and its hook fallback can download it at the ` +
+      `same time. Run: memex deps warm.${partial}` +
+      (legacy.length > 0
+        ? ` A pre-0.6.5 per-root cache exists at ${legacy[0].cacheDir} (${legacy[0].kind}) and is COPIED ` +
+          `on first use, so warming should take seconds rather than a download.`
+        : "") +
+      ` ${where}`,
+  };
+}
+
 /** Read-only diagnosis. Distinguishes configured vs observed. */
 export async function doctor(): Promise<DoctorReport> {
   const checks: Check[] = [];
@@ -1029,6 +1103,7 @@ export async function doctor(): Promise<DoctorReport> {
   }
   checks.push(recallProvenanceCheck(recent));
   checks.push(injectionYieldCheck(recent));
+  checks.push(embeddingCacheCheck());
   checks.push(await injectDaemonCheck());
   // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
   let trustedEntries = 0;
