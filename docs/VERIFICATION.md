@@ -57,7 +57,29 @@ Memex Workspace UI surface를 변경한 release는 다음 gate도 포함합니�
 ```bash
 node --test ui/test/*.test.cjs
 node scripts/web-ui-browser-e2e.mjs
+node scripts/i18n-extract.mjs --lint
+node scripts/i18n-extract.mjs --keys
 ```
+
+0.7.0부터 뒤의 두 줄이 UI gate에 들어갑니다(#109). `--lint`는 **ko 사전 밖의 한글 리터럴**을 찾고
+(허용 경로는 `i18n/<ns>/ko.mjs`·`i18n/doc-anchors.mjs`·`i18n/endonyms.mjs` 셋뿐) 1건이라도 있으면
+exit 1입니다. `--keys`는 소스의 `t()`/`tHtml()`/`tn()`·`ui/lib`의 `new HttpError({key})`·탭
+레지스트리의 `labelKey`·`index.html`의 `data-i18n`에서 키를 수확해 **en·ko 양쪽 사전과 대조**하고,
+누락·복수형 오용·죽은 번역이 있으면 exit 1입니다. 성공 출력은 각각
+`no Korean literals outside the ko dictionaries`와 `keys ok` 한 줄입니다.
+
+`--keys`가 필요한 이유는 서버가 `key`를 **검증하지 않기** 때문입니다 — `ui/lib`이 `ui/public`의
+사전에 의존하지 않는 대신, 이 스크립트가 컴파일 시점 대체물입니다
+([WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#메시지-키-규약-070-109)).
+
+브라우저 E2E는 **릴리스마다 두 언어로** 돌립니다. 기본값(en)으로 한 번, `--lang ko`로 한 번입니다 —
+영어가 기본값이 된 릴리스에서 ko 경로가 조용히 깨지는 것을 막고, README 두 편의 언어별 스크린샷
+(`assets/readme/{en,ko}/`)이 같은 실행에서 나옵니다.
+
+사용자 오버레이와 모델 설정은 **gate 실행에 끼어들면 안 됩니다.** `scripts/check-real-root-untouched.mjs`가
+실 data root를 해시로 비교하므로 `overlays/`·`models.json`을 실 루트에 쓰는 테스트는 즉시 실패하고,
+새 테스트는 임시 `MEMEX_HOME` 또는 `MEMEX_OVERLAY_DIR`를 씁니다. 벤치마크 쪽 격리 규칙은
+[§4.1](#41-성능-receipt의-모델-식별자오버레이-계약-070)에 있습니다.
 
 ## 3. Acceptance map
 
@@ -292,6 +314,13 @@ receipt는 기록된 code SHA에만 유효하며 future commit에 자동으로 �
 - terminal 상태를 `retry`로 되덮지 않는 guarded update
 - 컨텍스트를 발행했는데 recall 영수증이 없으면 `receipt-failed`로 드러나는 것
 - `--help`가 부작용을 일으키지 않는 것
+- 오버레이 파일이 없을 때 게이트 판정과 라벨이 0.6.9와 **바이트 동일**한 것(0.7.0 #29)
+- 의미 검증기 프롬프트가 추출 규칙 오버레이와 무관하게 바이트 동일한 것(0.7.0 #30)
+- 추출 스케줄 키(`policy_version`)에 규칙 해시가 섞이지 않는 것 — 규칙 한 글자가 전량 재추출이 되지 않는 것(0.7.0 #30)
+- 금지 패턴이 저장 경계의 4지점 전부에서 막히고, 탈락이 attempt·실패 범위를 만들지 않는 것(0.7.0 #30)
+- 설정 오류가 attempt를 쓰지 않고 작업을 `dead`로 보내지 않는 것, 그리고 설정을 고치면 자동 재개되는 것(0.7.0 #31)
+- 느린 사용자 패턴이 훅 스레드를 멈추지 못하는 것(50 ms 상한 + 격리, 0.7.0 #29)
+- ko 사전 밖에 한글 리터럴이 없고 en 폴백 없이 두 사전의 키가 일치하는 것(0.7.0 #109)
 
 ## 7. Raw receipts
 

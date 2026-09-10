@@ -24,7 +24,16 @@ behavior belongs in the owner documents under `docs/`.
 - Extraction claim, fact/provenance writes, saved counts, and watermark advance
   must commit atomically or remain retryable.
 - Model-backed work uses isolated local `codex exec` only. Default model:
-  `gpt-5.6-luna`; override with `MEMEX_CODEX_MODEL`.
+  `gpt-5.6-luna` with no reasoning flag. Resolution order is an explicit per-call
+  option, then `MEMEX_CODEX_MODEL` / `MEMEX_CODEX_REASONING`, then
+  `<data root>/models.json`, then the built-in default. A provider that refuses
+  the request envelope is the `config` error class: park the job with
+  `memory_jobs.hold_reason`, spend no attempt, and let a fixed selection resume
+  it. Never retry, split, or fail input on a configuration error.
+- User overlays (`<data root>/overlays/`) may only suppress. The recall gate
+  fails open on a broken overlay; extraction fails closed and holds. Neither the
+  rule hash nor the overlay ever enters the extraction scheduling key or a sync
+  generation.
 - Automatic lifecycle work must be bounded, retry-safe, and observable.
 
 ## Fact state and sync protocol v4
@@ -163,6 +172,20 @@ node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-ro
 narrower glob left six non-slice `.mjs` suites outside the documented gate.
 The isolation probe is read-only and proves the run left the real Memex data
 root byte-identical — see [docs/VERIFICATION.md](docs/VERIFICATION.md) §2.
+
+Web UI changes also require the dictionary gates and the Korean browser pass:
+
+```bash
+node --test ui/test/*.test.cjs
+node scripts/i18n-extract.mjs --lint
+node scripts/i18n-extract.mjs --keys
+node scripts/web-ui-browser-e2e.mjs            # and once more with --lang ko
+```
+
+The UI ships English by default; every user-visible string lives in
+`ui/public/i18n/<ns>/{en,ko}.mjs` and a missing key renders as the key rather
+than falling back to English. Server errors carry `{code, key, params, message,
+details}` — classify failures by `code`, never by prose.
 
 Run the nearest isolated E2E for installer/plugin/MCP/package/lifecycle/UI
 changes. Never weaken a failing test to obtain green output. Unobserved behavior
