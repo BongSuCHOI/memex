@@ -698,7 +698,7 @@ test('doctor reports no daemon, this installation, and a foreign owner', async (
 
   const none = JSON.parse((await runModule(code, env)).stdout.trim());
   assert.equal(none.status, 'ok');
-  assert.match(none.detail, /no daemon/);
+  assert.match(none.detail, /absent — no socket file/);
 
   // An owner running this very build: ok, with its pid and version.
   const identity = JSON.parse((await runModule(`
