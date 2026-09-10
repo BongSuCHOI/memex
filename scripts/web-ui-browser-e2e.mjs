@@ -2006,6 +2006,81 @@ try {
     false,
   );
 
+  // #29/#30: the overlay tab drives the real dist/overlay-admin.js. Saving a pattern takes the
+  // write lock, bumps `revision` and writes `overlays/recall-gate.json` inside this run's temp
+  // MEMEX_HOME — no real data root is touched, and no model or embedding call is involved. The
+  // refused pattern is the review's own counter-example shape: it must come back as ISSUE ROWS
+  // with the row that needs fixing, not as a bare toast.
+  const overlayTab = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=overlays&overlay=gate",
+    probe(`
+      const tabText=()=>document.querySelector('#main')?.textContent||'';
+      await until('overlay tab',()=>document.querySelector('#overlay-subnav'));
+      await until('pattern table',()=>document.querySelector('#gate-patterns .data-table'));
+      const gate={
+        subnav:[...document.querySelectorAll('#overlay-subnav .filter-chip')].map(c=>c.dataset.paramValue),
+        active:document.querySelector('#overlay-subnav .filter-chip.active')?.dataset.paramValue,
+        builtinRows:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
+        testForm:Boolean(document.querySelector('#gate-test-form textarea[name="prompt"]')),
+        notShared:tabText().includes('아직 기기 간에 공유되지 않습니다'),
+        noRecord:tabText().includes('프롬프트도 판정도 기록하지 않습니다'),
+      };
+      // (1) 거절되는 정규식 — 행별 사유가 보여야 한다.
+      const form=document.querySelector('#gate-add-form');
+      form.querySelector('[name="source"]').value='(a+)+b';
+      form.requestSubmit();
+      const issues=await until('issue rows',
+        ()=>document.querySelector('#gate-add-issues .issue-list li')?document.querySelector('#gate-add-issues'):null,60000);
+      const refused={
+        rows:issues.querySelectorAll('li').length,
+        path:issues.querySelector('code')?.textContent?.trim()||'',
+        text:issues.textContent.trim().slice(0,160),
+        toast:document.querySelector('#toast.show')?.textContent?.trim()||'',
+        table:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
+      };
+      // 토스트 노드는 하나뿐이라 거절 문장이 아직 보인다 — 내려 두고 다음 결과를 기다린다.
+      document.querySelector('#toast')?.classList.remove('show');
+      // (2) 통과하는 정규식 — 토스트가 revision을 말하고 표에 사용자 규칙이 나타난다.
+      form.querySelector('[name="source"]').value='배포\\\\s*이력';
+      form.querySelector('[name="note"]').value='릴리스 질문은 항상 회수';
+      form.requestSubmit();
+      const toast=await until('save toast',
+        ()=>document.querySelector('#toast.show')?.textContent?.trim()||null,60000);
+      const row=await until('user pattern row',()=>[...document.querySelectorAll('#gate-patterns .data-table tbody tr')]
+        .find(r=>r.textContent.includes('배포')),60000);
+      const saved={
+        toast,
+        id:row.querySelector('code')?.textContent?.trim()||'',
+        origin:row.textContent.includes('사용자'),
+        note:row.textContent.includes('릴리스 질문은 항상 회수'),
+        rows:document.querySelectorAll('#gate-patterns .data-table tbody tr').length,
+      };
+      // (3) 하위 내비로 추출 규칙 화면으로 간다 — 같은 탭, 다른 화면.
+      document.querySelector('#overlay-subnav [data-param-value="rules"]').click();
+      await until('rules view',()=>document.querySelector('#rules-editor-form'));
+      const rulesText=tabText();
+      const rules={
+        editor:Boolean(document.querySelector('#rules-editor-form textarea[name="exclude_topics"]')),
+        rawPromptField:Boolean(document.querySelector('#rules-editor-form [name="system_prompt"],#rules-editor-form [name="raw_prompt"]')),
+        clause:Boolean(document.querySelector('#rules-clause')),
+        simulate:Boolean(document.querySelector('#rules-simulate-form [type="submit"]')),
+        verifierUnchanged:rulesText.includes('불변입니다'),
+        enforcement:['fact_insert','incident','remediation','chronicle'].every(p=>rulesText.includes(p)),
+        schedulingKey:rulesText.includes('continuity-fact-v1'),
+        timing:rulesText.includes('강화는 즉시 적용되고'),
+        heldBanner:rulesText.includes('추출이 이 규칙 때문에 대기 중입니다'),
+        noReextractApply:!document.querySelector('[data-rules="reextract"]'),
+        gateFormGone:!document.querySelector('#gate-test-form'),
+        bodyOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
+        mainOverflow:overflows('#main'),
+      };
+      return {gate,refused,saved,rules,lang:document.documentElement.lang};
+    `),
+    "settings-overlays.png",
+    false,
+  );
+
   // #22: the project screen must admit the branch-tier memory exists and be able to include it.
   const tierBanner = await pageProbe(
     cdp,
@@ -2498,6 +2573,53 @@ try {
   ) {
     throw new Error("Model tab (en) assertion failed: " + JSON.stringify(modelTabEn));
   }
+  // #29/#30: one tab, two screens; a refused pattern must name the row it came from, and an
+  // accepted one must reach the table through a real lock + CAS write.
+  if (
+    overlayTab.lang !== "ko" ||
+    overlayTab.gate.subnav.join(",") !== "gate,rules" ||
+    overlayTab.gate.active !== "gate" ||
+    overlayTab.gate.builtinRows < 1 ||
+    !overlayTab.gate.testForm ||
+    !overlayTab.gate.notShared ||
+    !overlayTab.gate.noRecord ||
+    overlayTab.refused.rows < 1 ||
+    !/^patterns\.add\[\d+\]\.source$/.test(overlayTab.refused.path) ||
+    overlayTab.refused.table !== overlayTab.gate.builtinRows ||
+    !overlayTab.refused.toast ||
+    !overlayTab.saved.toast.includes("revision") ||
+    !overlayTab.saved.id.startsWith("user.") ||
+    !overlayTab.saved.origin ||
+    !overlayTab.saved.note ||
+    overlayTab.saved.rows !== overlayTab.gate.builtinRows + 1 ||
+    !overlayTab.rules.editor ||
+    overlayTab.rules.rawPromptField ||
+    !overlayTab.rules.clause ||
+    !overlayTab.rules.simulate ||
+    !overlayTab.rules.verifierUnchanged ||
+    !overlayTab.rules.enforcement ||
+    !overlayTab.rules.schedulingKey ||
+    !overlayTab.rules.timing ||
+    !overlayTab.rules.noReextractApply ||
+    !overlayTab.rules.gateFormGone ||
+    overlayTab.rules.bodyOverflow ||
+    overlayTab.rules.mainOverflow
+  ) {
+    throw new Error("Overlay tab assertion failed: " + JSON.stringify(overlayTab));
+  }
+  const savedOverlay = JSON.parse(
+    fs.readFileSync(path.join(MEMEX_HOME, "overlays", "recall-gate.json"), "utf8"),
+  );
+  if (
+    savedOverlay.revision !== 1 ||
+    savedOverlay.updated_by?.surface !== "web-ui" ||
+    savedOverlay.patterns.add.length !== 1 ||
+    savedOverlay.patterns.add[0].source !== "배포\\s*이력"
+  ) {
+    throw new Error(
+      "recall-gate.json was not written by the UI: " + JSON.stringify(savedOverlay),
+    );
+  }
   const savedSelection = JSON.parse(
     fs.readFileSync(path.join(MEMEX_HOME, "models.json"), "utf8"),
   );
@@ -2530,6 +2652,7 @@ try {
           syncArchive,
           modelTab,
           modelTabEn,
+          overlayTab,
           importedFact,
           facts,
           factDetail,

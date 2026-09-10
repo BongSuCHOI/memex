@@ -1074,3 +1074,288 @@ test('E: 경고 코드는 사전 문장으로 바뀌고, 모르는 코드는 코
   assert.equal(lines[4], 'SOMETHING_NEW_FROM_A_LATER_RELEASE', '모르는 코드를 빈 문장으로 숨기지 않는다');
   assert.deepEqual(modelPage.warningLines(undefined), []);
 });
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ F · 관리 › 오버레이 (pages/settings-overlays.mjs · namespace `overlays`)  │
+// │     — #29 회수 게이트 정규식 · #30 추출 규칙                              │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// 독립 섹션이다: 자기 로케일을 직접 꽂고, 자기 fixture만 쓰고, 위 섹션을 수정하지 않는다.
+// 단정 4개 — (a) `overlays.*` 키가 화면 문구로 새지 않는다, (b) en 랜드마크가 사전 값과 같다,
+// (c) ko에서 같은 화면이 한국어 사전 값으로 나온다, (d) 이 기능의 **정직함**을 문장으로 고정한다:
+// 0.7.1 공유 연기 공지(R16), 격리 배너, 설정 대기 배너(lane-0의 `common.job.hold.*`), 모델 전용
+// 규칙의 "로컬에서 판정 불가" 문구, 재추출 apply 버튼 없음.
+const overlayPage = require('../public/pages/settings-overlays.mjs');
+
+/** 점이 2개 이상인 `overlays.` 토큰 = 렌더된 사전 키. */
+const OVERLAY_KEYISH = /\boverlays(?:\.[a-zA-Z0-9]+){2,}\b/g;
+function assertNoOverlayKeys(label, html) {
+  const text = html.replace(/<[^>]*>/g, ' ');
+  const leaked = [...new Set([...text.matchAll(OVERLAY_KEYISH)].map(m => m[0]))];
+  assert.deepEqual(leaked, [], `${label}: 미번역 키가 화면에 렌더됐다`);
+}
+
+const BUILTIN_PATTERN = {id: 'memory.en.why', intent: 'memory', source: '\\bwhy\\b', flags: 'i', form: 'alternative'};
+const USER_PATTERN = {id: 'user.3f9a1c22', intent: 'memory', source: 'deploy\\s*history', flags: 'i',
+  note: 'release questions', created_at: '2026-09-10T00:00:00.000Z'};
+const QUARANTINE_ROW = {overlay: 'recall-gate', pattern_id: 'user.3f9a1c22', source_sha8: '9b2c1de0',
+  at: '2026-09-10T12:31:02.400Z', elapsed_ms: 50, input_chars: 812, surface: 'daemon'};
+const HISTORY_ROW = {ts: '2026-09-10T12:03:41.118Z', surface: 'web-ui', overlay: 'recall-gate',
+  action: 'gate.pattern-add', from_revision: 7, to_revision: 8, from_hash: 'gate:1111aaaa',
+  to_hash: 'gate:3f9a1c22', added: ['user.3f9a1c22']};
+const RULES_DOC = {
+  schema: 'memex.extraction-rules-overlay', version: 1, revision: 3,
+  updated_at: '2026-09-10T12:10:00.000Z', updated_by: {surface: 'web-ui'},
+  preferred_language: 'ko', exclude_topics: ['salary review'],
+  never_extract_patterns: [{id: 'user.9c1e4d07', source: '\\bsk-[A-Za-z0-9_-]{16,}', flags: '', scope: 'both', note: 'api key shape'}],
+  always_treat_as_decision_patterns: [{id: 'user.aa11bb22', source: '(final decision)', flags: 'i'}],
+  project_overrides: {'project-atlas': {preferred_language: 'en'}},
+};
+const OVERLAY_STATUS = (gate = {}, rules = {}, extra = {}) => ({
+  available: true, shared: false, disabledByEnv: false,
+  limits: {fileBytes: 32768, patternSource: 200, quantifiers: 8, noteChars: 200, matchWallMs: 50, probeWallMs: 300,
+    counts: {patternsAdd: 64}, rules: {fileBytes: 32768}, inputChars: 8000, historySnapshots: 20},
+  paths: {dir: '/home/me/overlays', gate: '/home/me/overlays/recall-gate.json', history: '/home/me/overlays/history.jsonl'},
+  gate: {
+    present: true, revision: 8, hash: 'gate:3f9a1c22', updatedAt: '2026-09-10T12:03:41.118Z', updatedBy: 'web-ui',
+    builtin: {patterns: [BUILTIN_PATTERN, {id: 'ack.en.1', intent: 'acknowledgement', source: '^(ok|okay)$', flags: 'i', form: 'whole'}],
+      words: {ack: ['ok', 'sure'], continue: ['go on'], filler: ['well']}},
+    user: {patterns: [USER_PATTERN], disabled: ['ack.en.1'],
+      words: {add: {ack: ['ack'], continue: [], filler: []}, disable: {ack: ['sure'], continue: [], filler: []}}},
+    quarantined: [], issues: [], history: [HISTORY_ROW], snapshots: [8],
+    ...gate,
+  },
+  rules: {
+    present: true, revision: 3, hash: 'rules:9c1e4d07', updatedAt: '2026-09-10T12:10:00.000Z', updatedBy: 'web-ui',
+    schema: 'memex.extraction-rules-overlay', version: 1, doc: RULES_DOC,
+    emptyDoc: {schema: 'memex.extraction-rules-overlay', version: 1, revision: 0},
+    resolved: {preferredLanguage: 'ko', excludeTopics: ['salary review'],
+      neverExtract: RULES_DOC.never_extract_patterns, decisionHints: RULES_DOC.always_treat_as_decision_patterns},
+    clause: {chars: 180, text: '## User rule overlay (local, operator-authored)\nrules_hash: 9c1e4d07'},
+    verifierUnchanged: true, enforcementPoints: ['fact_insert', 'incident', 'remediation', 'chronicle'],
+    schedulingPolicyVersion: 'continuity-fact-v1', effectivePolicyVersion: 'continuity-fact-v1+rules:9c1e4d07',
+    quarantined: [], issues: [], history: [{...HISTORY_ROW, overlay: 'extraction-rules', action: 'rules.set'}], snapshots: [3],
+    drift: {available: true, staleTargets: 0, staleSessions: 0, heldJobs: []},
+    ...rules,
+  },
+  ...extra,
+});
+const OVERLAY_ENV = {...ENV, overlays: true};
+const ISSUE_ROWS = [
+  {severity: 'error', code: 'REGEX_QUANTIFIED_GROUP', key: 'overlays.issue.regexQuantifiedGroup',
+    path: 'patterns.add[1].source', message: 'a group may not be repeated'},
+  {severity: 'warning', code: 'PATTERN_SHADOWED', key: 'overlays.issue.patternShadowed',
+    path: 'patterns.add[0].source', message: 'a built-in already has this source'},
+];
+/** 이 탭이 그리는 모든 상태. 한 번에 다 보이지 않으므로 조합마다 이름을 붙인다. */
+const overlayVariants = () => [
+  ['overlays/gate', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
+  ['overlays/gateQuarantined', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV,
+    OVERLAY_STATUS({quarantined: [QUARANTINE_ROW], issues: ISSUE_ROWS}), null)],
+  ['overlays/gateEmpty', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV,
+    OVERLAY_STATUS({present: false, revision: 0, hash: null, updatedAt: null, updatedBy: null,
+      user: {patterns: [], disabled: [], words: {add: {ack: [], continue: [], filler: []}, disable: {ack: [], continue: [], filler: []}}},
+      history: []}), null)],
+  ['overlays/gateFiltered', overlayPage.overlayTab(l2ctx('tab=overlays&intent=trace'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
+  ['overlays/rules', overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS(), null)],
+  ['overlays/rulesHeld', overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS({}, {
+    issues: ISSUE_ROWS, quarantined: [{...QUARANTINE_ROW, overlay: 'extraction-rules', pattern_id: 'user.9c1e4d07'}],
+    drift: {available: true, staleTargets: 4, staleSessions: 2,
+      heldJobs: [{reason: 'extraction_rules_invalid', jobs: 2, oldestHeldAt: '2026-09-10T01:00:00.000Z'}]},
+  }), null)],
+  ['overlays/rulesEmpty', overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS({}, {
+    present: false, revision: 0, hash: null, updatedAt: null, updatedBy: null, doc: null, history: [],
+    resolved: {preferredLanguage: null, excludeTopics: [], neverExtract: [], decisionHints: []},
+    clause: {chars: 0, text: ''}, effectivePolicyVersion: 'continuity-fact-v1',
+    drift: {available: false, staleTargets: 0, staleSessions: 0, heldJobs: []},
+  }), null)],
+  ['overlays/disabledByEnv', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS({}, {}, {disabledByEnv: true}), null)],
+  ['overlays/noCapability', overlayPage.overlayTab(l2ctx('tab=overlays'), {...ENV, overlays: false}, null, null)],
+  ['overlays/readFailed', overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, null, 'EACCES: permission denied')],
+  ['overlays/testResult', overlayPage.testResultHtml({
+    prompt: {chars: 12, tokens: []}, overlay: {present: true, hash: 'gate:3f9a1c22', revision: 8},
+    matcher: {elapsedMs: 3, timedOut: false, unavailable: false, quarantined: []},
+    intents: {memory: {fired: true, matched: [{id: 'memory.en.why', source: '\\bwhy\\b', origin: 'builtin'}]},
+      trace: {fired: false, matched: []}},
+    decision: {action: 'retrieve', triggers: ['explicit_memory_intent']},
+    builtinOnly: {action: 'skip', triggers: []},
+    diffCause: [{id: 'user.3f9a1c22', source: 'deploy\\s*history', intent: 'memory'}], stateSource: 'neutral'})],
+  ['overlays/simulation', overlayPage.simulationHtml({
+    rulesHash: 'rules:9c1e4d07', clause: {chars: 180, text: 'clause'}, verifierUnchanged: true,
+    enforcementPoints: ['fact_insert', 'incident', 'remediation', 'chronicle'],
+    existingFacts: {scanned: 120, wouldBeBlocked: [{id: 'fact-1', category: 'knowledge', patternId: 'user.9c1e4d07', preview: 'the staging key is sk-...'}]},
+    recentExchanges: {scanned: 50, matched: [{exchangeId: 'ex-1', sessionId: 's-1', patternId: 'user.9c1e4d07', preview: 'rotate sk-...'}]},
+    matcher: {elapsedMs: 12, timedOut: false, unavailable: false, quarantined: []},
+    advisoryOnly: {excludeTopics: ['salary review'], decisionHints: ['user.aa11bb22'], preferredLanguage: 'ko'},
+    available: true})],
+  ['overlays/simulationUnavailable', overlayPage.simulationHtml({available: false,
+    reason: 'extraction_rules_unavailable', detail: 'the matcher worker could not be used',
+    existingFacts: {scanned: 0, wouldBeBlocked: []}, recentExchanges: {scanned: 0, matched: []},
+    matcher: {elapsedMs: 0, timedOut: true, unavailable: true, quarantined: []}})],
+];
+
+test('F en: 오버레이 탭의 모든 상태가 en으로 렌더되고 한글·키 누출이 없다', () => {
+  locale.useEn();
+  for (const [label, html] of overlayVariants()) {
+    assertEnglishOnly(label, html);
+    assertNoOverlayKeys(label, html);
+  }
+});
+
+test('F en: 하위 내비가 두 화면을 가르고 딥링크로 고를 수 있다', () => {
+  locale.useEn();
+  const gate = overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS(), null);
+  assert.match(gate, /<div class="filters" id="overlay-subnav"/);
+  assert.match(gate, /class="filter-chip active" data-param-key="overlay" data-param-value="gate"/, '기본 화면은 회수 게이트다');
+  assert.ok(gate.includes('id="gate-test-form"') && gate.includes('id="gate-patterns"') && gate.includes('id="gate-add-form"'));
+  assert.ok(!gate.includes('id="rules-editor-form"'), '한 화면에 두 편집기를 함께 그리지 않는다');
+  const rules = overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS(), null);
+  assert.match(rules, /class="filter-chip active" data-param-key="overlay" data-param-value="rules"/);
+  assert.ok(rules.includes('id="rules-editor-form"') && rules.includes('id="rules-clause"') && rules.includes('id="rules-simulate-form"'));
+  assert.ok(!rules.includes('id="gate-test-form"'));
+  // 새 CSS 컴포넌트를 만들지 않았다 — 기존 토큰만 쓴다.
+  for (const token of ['class="card pad mt"', 'class="filter-chip', 'class="tag outline"', 'class="terminal mt"', 'class="check-row"'])
+    assert.ok(gate.includes(token) || rules.includes(token), `기존 디자인 토큰이 사라졌다: ${token}`);
+});
+
+test('F en: 패턴 표가 내장·사용자·비활성·격리를 한 표에서 구분한다', () => {
+  locale.useEn();
+  const rows = overlayPage.gatePatternRows(OVERLAY_STATUS({quarantined: [QUARANTINE_ROW]}).gate);
+  assert.deepEqual(rows.map(row => [row.id, row.origin, row.state]), [
+    ['memory.en.why', 'builtin', 'active'],
+    ['ack.en.1', 'builtin', 'disabled'],
+    ['user.3f9a1c22', 'user', 'quarantined'],
+  ]);
+  const html = overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS({quarantined: [QUARANTINE_ROW]}), null);
+  for (const key of ['overlays.gate.origin.builtin', 'overlays.gate.origin.user',
+    'overlays.gate.state.disabled', 'overlays.gate.state.quarantined'])
+    assert.ok(html.includes(locale.en[key]), `${key} 값이 표에 없다`);
+  // 끈 내장 항목은 "다시 켜기", 사용자 항목은 "삭제"가 다음 행동이다.
+  assert.match(html, /data-gate-enable="ack\.en\.1"/);
+  assert.match(html, /data-gate-disable="user\.3f9a1c22" data-origin="user"/);
+  assert.ok(html.includes(locale.en['overlays.gate.patterns.remove']));
+  // 격리는 배너 + 표 + 다시 시도이고, 고치면 자동 해제된다는 사실을 말한다.
+  assert.match(html, /data-quarantine-clear="user\.3f9a1c22" data-overlay="gate"/);
+  assert.ok(html.includes(locale.en['overlays.quarantine.autoClear']));
+  const filtered = overlayPage.overlayTab(l2ctx('tab=overlays&intent=trace'), OVERLAY_ENV, OVERLAY_STATUS(), null);
+  assert.ok(filtered.includes(locale.en['overlays.gate.patterns.empty']), '필터가 비면 빈 상태를 말한다');
+});
+
+test('F en: 랜드마크 문구가 en 사전 값과 같고 422는 renderIssues로 그려진다', () => {
+  locale.useEn();
+  const [, quarantined] = overlayVariants().find(([label]) => label === 'overlays/gateQuarantined');
+  for (const key of ['overlays.gate.test.title', 'overlays.gate.test.caption', 'overlays.gate.patterns.title',
+    'overlays.gate.add.title', 'overlays.gate.words.title', 'overlays.history.title',
+    'overlays.quarantine.title', 'overlays.notShared'])
+    assert.ok(quarantined.includes(locale.en[key]), `${key} 값이 화면에 없다: ${locale.en[key]}`);
+  assert.match(quarantined, /<strong>on top of<\/strong>/, 'tHtml의 강조가 이스케이프됐다');
+  // 행별 사유는 lane-0의 renderIssues()가 그린다 — path가 보존돼 어느 행인지 말한다.
+  assert.ok(quarantined.includes('<ul class="issue-list">'));
+  assert.ok(quarantined.includes('patterns.add[1].source'));
+  assert.ok(quarantined.includes(locale.en['overlays.issue.regexQuantifiedGroup']));
+  assert.ok(quarantined.includes(locale.en['overlays.issue.patternShadowed']));
+  assert.ok(quarantined.includes(locale.en['error.issue.warning']), '경고 배지는 lane-0의 공용 키를 쓴다');
+  const [, explained] = overlayVariants().find(([label]) => label === 'overlays/testResult');
+  assert.ok(explained.includes(locale.en['overlays.gate.test.fired']) && explained.includes(locale.en['overlays.gate.test.notFired']));
+  assert.ok(explained.includes(locale.en['overlays.gate.intent.memory']));
+  assert.ok(explained.includes('memory.en.why'), '어느 규칙이 발화시켰는지 말해야 한다');
+  assert.ok(explained.includes(locale.en['overlays.gate.test.row.builtinOnly']) && explained.includes('skip'));
+});
+
+test('F en: 추출 규칙 화면은 불변 조건·적용 시점·모델 전용 규칙을 문장으로 말한다', () => {
+  locale.useEn();
+  const [, rules] = overlayVariants().find(([label]) => label === 'overlays/rules');
+  for (const key of ['overlays.rules.verifierUnchanged', 'overlays.rules.timingBody', 'overlays.rules.clause.title',
+    'overlays.rules.simulate.storedUnchanged', 'overlays.rules.simulate.modelOnly', 'overlays.rules.drift.noApply',
+    'overlays.rules.row.schedulingNote'])
+    assert.ok(rules.includes(locale.en[key].replace('{topics}', 'salary review')), `${key} 값이 화면에 없다`);
+  assert.match(rules, /<strong>restrict<\/strong>/, '제한만 할 수 있다는 사실이 강조돼야 한다');
+  // 강제 지점 4개와 스케줄 키가 그대로 보인다(해시를 섞지 않는다).
+  for (const point of ['fact_insert', 'incident', 'remediation', 'chronicle']) assert.ok(rules.includes(point));
+  assert.ok(rules.includes('continuity-fact-v1'));
+  assert.ok(rules.includes('continuity-fact-v1+rules:9c1e4d07'));
+  // 구조화 편집기만 있고 원시 프롬프트 입력은 없다 (#30의 범위).
+  assert.match(rules, /<textarea name="exclude_topics"/);
+  assert.match(rules, /<input name="neverSource"/);
+  assert.match(rules, /<select name="preferred_language"/);
+  assert.ok(!/name="(system_prompt|raw_prompt|prompt)"/.test(rules), '원시 프롬프트 편집 필드가 생겼다');
+  assert.match(rules, /data-revision="3"/, '저장은 읽어 온 revision을 함께 보낸다');
+  assert.ok(rules.includes(locale.en['overlays.rules.overrides'].replace('{projects}', 'project-atlas')));
+  // 재추출은 버튼이 아니라 안내다 — 모델 호출을 쓰는 작업을 화면이 몰래 시작하지 않는다.
+  assert.ok(!/data-rules="reextract"/.test(rules));
+  const [, simulation] = overlayVariants().find(([label]) => label === 'overlays/simulation');
+  assert.ok(simulation.includes(locale.en['overlays.rules.simulate.kindFact']));
+  assert.ok(simulation.includes(locale.en['overlays.rules.simulate.kindExchange']));
+  assert.ok(simulation.includes('user.9c1e4d07'), '어느 규칙이 막았는지 귀속해야 한다');
+  const [, unavailable] = overlayVariants().find(([label]) => label === 'overlays/simulationUnavailable');
+  assert.ok(unavailable.includes('extraction_rules_unavailable'), '검사를 끝내지 못한 사실을 숨기지 않는다');
+});
+
+test('F en: 설정 대기·드리프트·capability 없음이 모두 화면으로 설명된다', () => {
+  locale.useEn();
+  const [, held] = overlayVariants().find(([label]) => label === 'overlays/rulesHeld');
+  assert.ok(held.includes(locale.en['overlays.rules.held.title']));
+  assert.ok(held.includes(locale.en['common.job.hold.extraction_rules_invalid']), '보류 배지는 lane-0의 공용 키다');
+  assert.ok(held.includes(locale.en['overlays.rules.held.body'].replace('{n}', '2')));
+  assert.ok(held.includes(locale.en['overlays.rules.drift.banner'].replace('{targets}', '4').replace('{sessions}', '2')));
+  const [, empty] = overlayVariants().find(([label]) => label === 'overlays/rulesEmpty');
+  assert.ok(empty.includes(locale.en['overlays.rules.clause.empty']));
+  assert.ok(empty.includes(locale.en['overlays.rules.drift.unavailable']), 'DB가 없으면 셀 수 없다고 말한다');
+  assert.ok(empty.includes(locale.en['overlays.notApplied']));
+  const [, disabled] = overlayVariants().find(([label]) => label === 'overlays/disabledByEnv');
+  assert.ok(disabled.includes(locale.en['overlays.disabledByEnv']));
+  const [, missing] = overlayVariants().find(([label]) => label === 'overlays/noCapability');
+  assert.match(missing, /<div class="banner error">/);
+  assert.match(missing, /<code>dist\/overlay-admin\.js<\/code>/);
+  const [, failed] = overlayVariants().find(([label]) => label === 'overlays/readFailed');
+  assert.ok(failed.includes('EACCES: permission denied'), '조회 실패 사유를 그대로 싣는다');
+});
+
+test('F: 탭 레지스트리가 오버레이 탭을 그리고, 조회 실패도 화면으로 설명한다', async () => {
+  locale.useEn();
+  const bootstrap = {uiVersion: '1.2.3', environment: OVERLAY_ENV, db: {available: true, error: null},
+    capabilities: {}, commands: COMMANDS};
+  const ctx = l2ctx('tab=overlays', {operations: {items: []}}, {bootstrap, savePrefs() {}});
+  const {html} = await settingsPage.render(ctx);
+  assert.ok(html.includes(locale.en['settings.tabs.overlays']), '탭 레이블은 lane-0의 settings 사전에서 온다');
+  assert.match(html, /class="tab active" href="[^"]*tab=overlays"/, '오버레이 탭이 활성 탭이다');
+  assert.match(html, /<div class="banner error">/);
+  assert.ok(html.includes('unexpected api call: overlays'));
+  const served = l2ctx('tab=overlays', {overlays: OVERLAY_STATUS(), operations: {items: []}}, {bootstrap, savePrefs() {}});
+  const ok = await settingsPage.render(served);
+  assert.ok(ok.html.includes(locale.en['overlays.gate.patterns.title']), '레지스트리 render가 본문을 그린다');
+  assertNoOverlayKeys('settings:tab=overlays', ok.html);
+  // mount는 이 탭이 아니면 no-op다 — 다른 탭에서 불려도 아무것도 찾지 못한다.
+  overlayPage.mountOverlayTab({querySelector: () => null, querySelectorAll: () => []}, served);
+});
+
+test('F ko: 같은 상태가 ko 사전 값으로 렌더된다', () => {
+  locale.useKo();
+  for (const [label, html] of overlayVariants()) assertNoOverlayKeys(label, html);
+  const gate = overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS({quarantined: [QUARANTINE_ROW]}), null);
+  for (const key of ['overlays.gate.test.title', 'overlays.gate.patterns.title', 'overlays.quarantine.title',
+    'overlays.notShared', 'overlays.gate.origin.builtin'])
+    assert.ok(gate.includes(locale.ko[key]), `${key} 의 ko 값이 화면에 없다: ${locale.ko[key]}`);
+  assert.ok(!gate.includes(locale.en['overlays.gate.patterns.title']), 'ko 화면에 en 문구가 섞였다');
+  assert.match(gate, /<strong>위에<\/strong>/, 'ko tHtml의 강조가 이스케이프됐다');
+  const rules = overlayPage.overlayTab(l2ctx('tab=overlays&overlay=rules'), OVERLAY_ENV, OVERLAY_STATUS({}, {
+    drift: {available: true, staleTargets: 1, staleSessions: 1,
+      heldJobs: [{reason: 'extraction_rules_unavailable', jobs: 1, oldestHeldAt: '2026-09-10T01:00:00.000Z'}]},
+  }), null);
+  for (const key of ['overlays.rules.verifierUnchanged', 'overlays.rules.timingBody', 'overlays.rules.held.title',
+    'common.job.hold.extraction_rules_unavailable'])
+    assert.ok(rules.includes(locale.ko[key]), `${key} 의 ko 값이 화면에 없다`);
+});
+
+test('F: 0.7.1 공유 연기 공지는 두 화면 모두에 항상 있다', () => {
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    for (const params of ['tab=overlays', 'tab=overlays&overlay=rules']) {
+      const html = overlayPage.overlayTab(l2ctx(params), OVERLAY_ENV, OVERLAY_STATUS(), null);
+      assert.ok(html.includes(locale[tag]['overlays.notShared']), `${tag} ${params}: 공유 연기 공지가 없다`);
+    }
+    // shared:true가 오면(0.7.1) 배너는 사라진다 — 문구를 조건 없이 박아 두지 않았다는 증거다.
+    const shared = overlayPage.overlayTab(l2ctx('tab=overlays'), OVERLAY_ENV, OVERLAY_STATUS({}, {}, {shared: true}), null);
+    assert.ok(!shared.includes(locale[tag]['overlays.notShared']));
+  }
+});

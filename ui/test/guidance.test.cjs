@@ -424,6 +424,23 @@ const UI_CODE_EXEMPT={
  TOO_MANY_CLIENTS:'실시간 연결 상한(24). 탭을 줄이면 해소되고 데이터 상태와 무관하다.',
  UNSUPPORTED_MEDIA_TYPE:'Content-Type 검증. 화면이 헤더를 붙이므로 사용자 경로에서 발생하지 않는다.',
  UNKNOWN_ACTION:'지원하지 않는 action 이름(#31). 화면의 버튼이 만드는 요청이 아니다.',
+ // ── #29/#30 사용자 오버레이 (lane F). 전부 **요청 모양·정규식 문법·revision** 검증이거나 단일
+ // 실행 락이다: 데이터 상태를 말하지 않으므로 실패 클래스를 두면 복구 절차를 지어내게 된다.
+ EXPECTED_REVISION_REQUIRED:'전체 문서 저장에 읽어 온 revision이 없다. 화면이 값을 만들므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_DOCUMENT:'규칙 문서가 객체가 아니다. 편집기가 문서를 만들므로 사용자 경로에서 발생하지 않는다.',
+ INVALID_LEXICON:'어휘 집합 allowlist(ack·continue·filler). 셀렉트만 값을 만든다.',
+ INVALID_OVERLAY:'오버레이 이름 allowlist(gate·rules). 하위 내비만 값을 만든다.',
+ INVALID_PATCH:'한 요청에 한 가지 변경만 받는다. 화면의 폼이 값을 만든다.',
+ INVALID_PATTERN:'새 패턴에 의도·정규식이 없다. 다음 행동이 폼 입력이다.',
+ INVALID_REVISION:'revision 형식 검증. 되돌리기 버튼이 값을 만든다.',
+ OVERLAY_BUSY:'오버레이 변경이 이미 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
+ OVERLAY_INVALID:'규칙 검증 실패. 422 issues가 어느 행·어느 항목인지 말하고 다음 행동이 그 수정이다.',
+ OVERLAY_LOCKED:'다른 프로세스가 오버레이 파일을 쓰고 있다. 잠시 뒤 다시 시도하는 것이 전부다.',
+ OVERLAY_REJECTED:'분류되지 않은 오버레이 코어 오류. 원문을 그대로 보여주는 것이 취할 수 있는 전부다.',
+ OVERLAY_STALE:'규칙이 다른 곳에서 먼저 바뀌었다. 다음 행동이 새로 고쳐 다시 확인하는 것이다.',
+ PATTERN_NOT_DISABLED:'켤 대상이 꺼져 있지 않다. 표를 다시 읽으면 해소되고 복구 명령이 없다.',
+ PATTERN_REQUIRED:'격리 해제 대상이 없다. 버튼이 값을 만들므로 사용자 경로에서 발생하지 않는다.',
+ PROMPT_REQUIRED:'테스트할 프롬프트가 비었다. 다음 행동이 입력 자체다.',
 };
 
 test('ui/lib이 던지는 오류 코드는 모두 클래스가 있거나 대장에 올라 있다 (#109)',()=>{

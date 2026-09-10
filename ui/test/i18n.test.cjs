@@ -245,15 +245,18 @@ test('관리 탭 레지스트리는 7항목이고 기존 id를 개명하지 않�
     assert.equal(tab.labelKey, `settings.tabs.${tab.id}`);
     assert.ok(tab.labelKey in en && tab.labelKey in ko, `${tab.labelKey}가 사전에 없다`);
   }
-  // 화면이 붙은 탭만 노출된다. models는 #31 lane E가 render를 넣으며 켰고(C4.2), overlays는
-  // 아직 비활성이다 — 항목은 그대로 7개이고 id도 개명되지 않았다.
-  assert.deepEqual(visibleTabs().map(x => x.id), ['runtime', 'actions', 'sync', 'interface', 'diagnostics', 'models']);
+  // 화면이 붙은 탭만 노출된다. models는 #31 lane E가, overlays는 #29/#30 lane F가 각자
+  // `enabled`·`render` 두 필드만 채웠다(C4.2) — 항목은 그대로 7개이고 id도 개명되지 않았다.
+  assert.deepEqual(visibleTabs().map(x => x.id),
+    ['runtime', 'actions', 'sync', 'interface', 'diagnostics', 'overlays', 'models']);
   assert.equal(typeof SETTINGS_TABS.find(x => x.id === 'models').render, 'function');
+  assert.equal(typeof SETTINGS_TABS.find(x => x.id === 'overlays').render, 'function');
   assert.equal(DEFAULT_TAB, 'runtime');
   assert.equal(tabFor('actions').id, 'actions');
   assert.equal(tabFor('interface').id, 'interface');
   assert.equal(tabFor('models').id, 'models');
-  assert.equal(tabFor('overlays').id, 'runtime', '비활성 탭은 runtime으로 떨어진다');
+  assert.equal(tabFor('overlays').id, 'overlays');
+  assert.equal(tabFor('nonsense').id, 'runtime', '미지원 탭은 runtime으로 떨어진다');
   assert.equal(tabFor(null).id, 'runtime');
 });
 

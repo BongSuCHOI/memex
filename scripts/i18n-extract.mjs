@@ -65,6 +65,9 @@ export const DYNAMIC_PREFIXES = [
   'unit.',              // tn() 단위
   'op.',                // operations.cjs의 command 키
   'common.job.hold.',   // memory_jobs.hold_reason 값으로 조립 (decisions-v3 H2)
+  // 오버레이 검증기가 `Issue.key`(= `overlays.issue.<camelCode>`)를 실어 보내고 ui.mjs의
+  // renderIssues()가 **런타임에** 조회한다 — 소스에 리터럴 호출이 없는 것이 정상이다 (#29/#30 §4.1 G5).
+  'overlays.issue.',
   // HTTP 200 본문의 프로즈. 서버가 `<field>Key`로 키를 싣고 api.mjs의 payloadText()가
   // **런타임에 받은 문자열로** 조회하므로 AST로 수확할 수 없다 — `op.`과 같은 성질이다
   // (설계 §5.3 분류 c · §5.4). 소스에 리터럴 호출이 없는 것이 정상이다.
