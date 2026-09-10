@@ -2,6 +2,78 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.2 - 2026-09-10
+
+Hotfix release for the defects an external code review of 0.6.0–0.6.1 found
+(#59–#80). Every fix carries a regression test that reproduces the reported
+state; the remaining review items ship in 0.6.3.
+
+### Memory tiers
+
+- A model-emitted `scope_directive` no longer carries user authority. It is
+  applied only when the candidate is `explicit` and has at least one
+  human-evidence exchange; otherwise it is dropped into `classifier_notes`.
+  Before, a tool-only candidate could be promoted two steps to global as a
+  `user-directive` with `human-decision` authority. (#59)
+- Evidence-based auto promotion requires the same normalized fact text across
+  the confirming branches. A slot that holds conflicting branch truths is
+  skipped with `slot has conflicting branch truths` instead of promoting
+  whichever fact was created first. (#60)
+- The demotion pass acts only when the fact's latest tier event is the auto
+  promotion it is reversing, and demotes explicitly to the recorded
+  `from_tier`. A later user placement is never undone. (#61)
+- A session with a real branch signal binds to its deterministic
+  `(project, branch)` stream and is never attached to another stream by topic
+  similarity, so a new branch's first memories are not born project-common. (#63)
+- A scope directive given while re-confirming an existing fact is applied on
+  the merge, historical and contradicted paths, not only on insert. (#64)
+
+### Cross-device sync
+
+- The importer judges subject-slot conflicts on active remote rows only,
+  matching the local partial UNIQUE index. A generation carrying an inactive
+  predecessor and its active successor in one slot imports cleanly and its
+  tombstones propagate; it used to be rejected whole. (#66)
+- The export fingerprint counts the recall-receipt status axis (`emitted`
+  count and latest `emitted_at`), so a `prepared → emitted` transition publishes
+  a generation. (#67)
+- Skipping an export is a statement about the destination: the previous
+  export must have gone to the same folder and that folder must hold this
+  device's `CURRENT`; `memex sync enable --dir <new>` clears the stored
+  fingerprint. `export-status.json` records `dir`. (#68)
+
+### Continuity and recovery
+
+- Wave-id normalization no longer collapses `<root>#<n>` and
+  `<root>#<n>:run:<uuid>` into the same `(root, run_seq)`; an occupied pair gets
+  the next free sequence, and creating the lineage UNIQUE index can no longer
+  make opening the database fail. (#72)
+- A dead Capsule job skips its head fragment only when the page is already at
+  the minimum size and the failure is not a transient model or network error;
+  the skip records `skipped_seq` / `frontier_before_skip`, and `memex recover`
+  restores the frontier so the fragment is distilled again. (#71)
+- `memex recover` resolves units inside the transaction, aborts a unit whose
+  job CAS updated no row instead of resetting its child tables, and refuses a
+  target whose owning job holds a live lease. (#70)
+
+### Web UI
+
+- Promote/demote takes the per-fact lock before the first `await`, passes the
+  explicit target tier and expected version to the core, and rejects the
+  losing duplicate with 409 `STALE_FACT`; a repeated request can no longer move
+  a fact two steps. (#77)
+- The sync lock is taken before the module load, so `MEMEX_HOME` /
+  `MEMEX_DB_PATH` are always restored. (#76)
+
+### Upgrade
+
+Run `memex update` and restart Codex. Schema version stays 7; two nullable
+columns are added to `capsule_checkpoint_state`. If a 0.6.1 data root already
+holds both `maintenance#N` and `maintenance#N:run:<uuid>` budget rows, the
+migration now assigns them distinct run numbers instead of failing to open the
+database. The first automatic export after the upgrade runs once regardless of
+the fingerprint because the stored export status has no `dir` yet.
+
 ## 0.6.1 - 2026-09-10
 
 ### Cross-device sync
