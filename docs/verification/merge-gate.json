@@ -106,7 +106,7 @@
       "durationSeconds": 20,
       "logPath": "/private/tmp/memex-0.6.9-gates/package-runtime-e2e.log",
       "logSha256": "91b15ef3ee25a938b7d3e8e3f13807bc3f878c3dd705140ed9e06acc54df7179",
-      "observed": "FAILED on the first attempt — `memex backfill all` in the packaged install aborted at the embeddings stage right after \"Loading embedding model Xenova/multilingual-e5-small\" (the CLI prints only \"embeddings backfill failed\", the underlying error is not surfaced; the packaged e2e does not pin MEMEX_MODEL_CACHE_DIR, so the model is fetched into the temporary data root on every run — a network-dependent step). Re-run alone immediately afterwards: PASS, memex-0.6.9.tgz, 332 files, 9 MCP tools. Recorded as a retry, not a first-attempt pass; follow-up filed as #113.",
+      "observed": "FAILED on the first attempt — `memex backfill all` in the packaged install aborted at the embeddings stage right after \"Loading embedding model Xenova/multilingual-e5-small\" (the CLI prints only \"embeddings backfill failed\", the underlying error is not surfaced; the packaged e2e does not pin MEMEX_MODEL_CACHE_DIR, so the model is fetched into the temporary data root on every run — a network-dependent step). Re-run alone immediately afterwards: PASS, memex-0.6.9.tgz, 332 files, 9 MCP tools. Recorded as a retry, not a first-attempt pass; follow-up filed as #114.",
       "attempts": 2,
       "firstAttempt": {
         "exitCode": 1,
@@ -217,7 +217,7 @@
   },
   "gateStability": {
     "gate": "package-runtime-e2e",
-    "observation": "1 transient failure in the 0.6.9 run at the packaged `memex backfill all` embeddings stage (model load/download into a fresh temp root), clean on re-run; 0.6.6/0.6.7/0.6.8 runs passed first time. Follow-up #113: pin the model cache for the packaged e2e and surface the underlying embeddings error."
+    "observation": "1 transient failure in the 0.6.9 run at the packaged `memex backfill all` embeddings stage (model load/download into a fresh temp root), clean on re-run; 0.6.6/0.6.7/0.6.8 runs passed first time. Follow-up #114: pin the model cache for the packaged e2e and surface the underlying embeddings error."
   },
   "reviewRemediation": {
     "source": "post-release warning check of 0.6.8 on the installed root",
@@ -247,5 +247,5 @@
     "liveTwoDeviceRoundTrip": "NOT_PROVEN: user-run two-Mac archive round trip (#48).",
     "benchmarkRefresh": "NOT_PROVEN: benchmark carried forward from v0.6.0."
   },
-  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 passes on the clean v0.6.9 candidate 80be0562: fourteen on the first attempt and package-runtime-e2e on an immediate re-run after a transient embeddings-stage failure that is recorded, not hidden (#113). 119 files / 1251 Vitest tests, 215 mjs tests, installer, marketplace, packaged runtime (memex-0.6.9.tgz, 332 files, 9 MCP tools), lifecycle 9/9, 151 Workspace unit tests, 22 browser probes, plugin validation, benchmark contract, pack dry-run, real root 144 files identical. #112 is fixed; the absence of any Codex warning at session end is verified after release on the installed root."
+  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 passes on the clean v0.6.9 candidate 80be0562: fourteen on the first attempt and package-runtime-e2e on an immediate re-run after a transient embeddings-stage failure that is recorded, not hidden (#114). 119 files / 1251 Vitest tests, 215 mjs tests, installer, marketplace, packaged runtime (memex-0.6.9.tgz, 332 files, 9 MCP tools), lifecycle 9/9, 151 Workspace unit tests, 22 browser probes, plugin validation, benchmark contract, pack dry-run, real root 144 files identical. #112 is fixed; the absence of any Codex warning at session end is verified after release on the installed root."
 }
