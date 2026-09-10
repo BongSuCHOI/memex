@@ -20,6 +20,10 @@ const argv = process.argv.slice(2);
 // The report does NOT echo this variable — it observes the filesystem — so a
 // polluted root cannot pass by merely claiming it was clean.
 process.env.MEMEX_DISABLE_OVERLAYS = "1";
+// The benchmark runs the MCP server from this checkout, which is not an
+// installed plugin root; since 0.6.3 (#84) such a server keeps the inject socket
+// closed unless told otherwise. AC_PERF measures the warm path, so open it.
+process.env.MEMEX_INJECT_DAEMON = "1";
 const numberArg = (name, fallback) => {
   const index = argv.indexOf(name);
   const value = index >= 0 ? Number(argv[index + 1]) : fallback;

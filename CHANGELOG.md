@@ -2,7 +2,7 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-## 0.7.0 - unreleased
+## 0.7.0 - 2026-09-11
 
 Three things you can now decide for yourself — what gets recalled, what never
 gets stored, and which model does the work — plus a workspace that opens in
