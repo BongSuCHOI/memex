@@ -41,27 +41,30 @@ describe('Continuity lifecycle hooks contract', () => {
     for (const event of ['Stop', 'Interrupt', 'PreCompact', 'PostCompact', 'SessionEnd']) {
       const entries = hooksFile()[event][0].hooks;
       // The capture gateway is always the FIRST entry and always synchronous.
-      // Only SessionEnd carries a second one — the async cross-device export
-      // (#35) — which Codex does not wait for.
+      // Only SessionEnd carries a second one — the cross-device export (#35),
+      // a timed synchronous entry since 0.6.8 (#110): Codex runs SessionEnd
+      // hooks synchronously anyway and warned when the entry said `async`.
       expect(entries[0].command).toContain('memex-hook-continuity');
       expect(entries[0].async).toBeUndefined();
       const extra = entries.slice(1);
       if (event === 'SessionEnd') {
         expect(extra).toHaveLength(1);
         expect(extra[0].command).toContain('memex-hook-sync-export');
-        expect(extra[0].async).toBe(true);
+        expect(extra[0].async).toBeUndefined();
+        expect(extra[0].timeout).toBe(10);
       } else {
         expect(extra).toHaveLength(0);
       }
     }
   });
 
-  it('SessionEnd is a final fence plus an async export, not the legacy extraction→export chain', () => {
+  it('SessionEnd is a final fence plus a timed export, not the legacy extraction→export chain', () => {
     const entries = hooksFile().SessionEnd[0].hooks;
     expect(entries).toHaveLength(2);
     for (const entry of entries) expect(entry.command).not.toContain('memex-hook-session-end');
     // The legacy chain ran extraction/consolidation/export in the foreground.
-    // The export is now a separate async entry gated on the sync switch.
-    expect(entries[1].async).toBe(true);
+    // The export is a separate timed entry gated on the sync switch (#110).
+    expect(entries[1].async).toBeUndefined();
+    expect(entries[1].timeout).toBe(10);
   });
 });

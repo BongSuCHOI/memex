@@ -185,7 +185,7 @@ node scripts/translate-facts.mjs
 | Interrupt | incremental journal append + interrupted/open fence | 3초 timeout, 완료 처리 금지 |
 | PreCompact(manual/auto) | fsync + immutable prefix checkpoint + carry freeze + outbox | 5초 timeout |
 | PostCompact(manual/auto) | telemetry/diagnostics only | correctness 비의존, 3초 timeout |
-| SessionEnd | final delta + final fence + outbox, 그리고 **별도 async** 크로스디바이스 export | fence는 3초 timeout·foreground extraction 없음. export는 async 항목이라 세션을 붙잡지 않고, 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 즉시 no-op |
+| SessionEnd | final delta + final fence + outbox, 그리고 **별도 항목**으로 크로스디바이스 export | fence는 3초 timeout·foreground extraction 없음. export 항목은 10초 timeout의 동기 훅입니다 — Codex는 SessionEnd에서 async 훅을 어차피 동기로 실행하며(0.6.7까지는 그 경고가 세션 종료마다 떴습니다), 동기화가 꺼져 있거나(기본) 마지막 export 이후 durable 변경이 없으면 0.2초 안에 no-op으로 끝납니다 |
 
 Capture가 만든 durable queue의 우선순위는 `capture_index`(P0) → `capsule_update`(P1) → fact extraction(이후)입니다. Stop/Interrupt boundary 6개 또는 8KiB, PreCompact, SessionEnd에서 Capsule job을 coalesce합니다. Capture hook은 commit 뒤 detached worker를 깨우지만 완료를 기다리지 않으며, wake 실패나 expired lease는 다음 startup/resume에서 복구합니다.
 
@@ -473,7 +473,7 @@ memex sync import --archive ~/Downloads/<device>-<generation>.zip
 - **on/off 스위치**는 data root의 `sync/config.json`에 저장됩니다. 공유 폴더가 아니라 **기기 로컬**
   상태이므로 다른 기기의 스위치를 건드리지 않습니다. off일 때 export 훅·유지보수 export·SessionStart
   import은 모두 stderr 한 줄만 남기고 끝납니다.
-- **자동 export 시점**: SessionEnd(별도 async 항목)와 자동 유지보수 wake. 두 경우 모두
+- **자동 export 시점**: SessionEnd(별도 항목, 10초 timeout)와 자동 유지보수 wake. 두 경우 모두
   "마지막 성공 export 이후 durable 변경이 있을 때만" 세대를 만듭니다(빈 세대 방지).
   변경이 없어도 강제로 내보내려면 `memex sync export --force`.
   이 판정은 **목적지까지 포함**합니다(0.6.2): 생략은 `export-status.json`에 기록된 공유 폴더가

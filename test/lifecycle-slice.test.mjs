@@ -72,7 +72,7 @@ test('setup-hooks registers the Continuity lifecycle and is idempotent; foreign 
   fs.writeFileSync(file, FOREIGN_HOOKS);
 
   const r1 = setupHooks();
-  assert.equal(r1.diff.add.length, 13); // +1: SessionEnd async sync-export (#35)
+  assert.equal(r1.diff.add.length, 13); // +1: SessionEnd sync-export entry (#35; synchronous since 0.6.8, #110)
   assert.equal(r1.changed, true);
   const afterFirst = fs.readFileSync(file, 'utf8');
 
