@@ -147,7 +147,11 @@ memex ontology rename <category-id> "Authentication"                # label만 �
   다음 분류의 self-heal)가 새 label로 다시 임베딩합니다. 같은 domain에 이미 있는 이름으로는 거부되며
   merge를 안내합니다.
 - 둘 다 fact 의미를 건드리지 않습니다: Chronicle 이벤트 없음, semantic/lifecycle generation bump 없음,
-  attempt ledger reset 없음, taxonomy epoch bump 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+  attempt ledger reset 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+- 다만 0.6.3부터 둘 다 자기 트랜잭션 안에서 **taxonomy epoch을 올립니다**(#73). candidate 이름이 바뀌기
+  때문입니다 — 예전에는 진행 중 분류가 병합으로 삭제된 카테고리 이름을 새 id로 되살려 병합이 조용히
+  되돌려졌습니다. 이제 그 결과는 폐기되고(시도도 소모하지 않음) 다음 패스에서 새 taxonomy로
+  재분류됩니다. `--dry-run`은 epoch를 올리지 않습니다.
 
 0.6.1부터 domain 이름과 domain 내 category 이름에 unique index가 생기고, 기존 대소문자 중복은 DB를
 열 때 자동 병합됩니다(가장 오래된 행 유지). 무비용 결정론적 재사용 레인은 `MEMEX_ONTOLOGY_DET_GATE`를

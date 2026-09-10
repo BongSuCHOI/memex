@@ -53,7 +53,9 @@ memex ontology rename <category-id> "<new name>"
 - `merge`: `from`의 모든 fact를 `to`로 재지정하고 `from` 행과 그 vector를 삭제합니다(`deleteCategoryEmbedding`이 드디어 호출자를 얻었습니다).
 - `rename`: label만 바꾸고 fact 할당은 유지합니다. 임베딩 텍스트가 `"name: description"`이므로 vector는 무효화(`embedding_version = 0`)되고 bounded self-heal / `memex backfill embeddings`가 다시 만듭니다. 같은 domain에 이미 있는 이름으로의 rename은 거부되고 merge를 안내합니다.
 
-둘 다 Chronicle 이벤트도, generation bump도, attempt ledger reset도, taxonomy epoch bump도 만들지 않습니다. `logs/ui-audit.jsonl`에 metadata 한 줄만 남깁니다.
+둘 다 Chronicle 이벤트도, generation bump도, attempt ledger reset도 만들지 않습니다(fact의 **의미**는 바뀌지 않습니다). `logs/ui-audit.jsonl`에 metadata 한 줄만 남깁니다.
+
+0.6.3(#73)부터 둘 다 **taxonomy epoch을 자기 트랜잭션 안에서 올립니다**. candidate identity는 바뀌기 때문입니다: `applyClassification`의 resolve-or-create는 **이름 기반**이라, 병합으로 사라진 이름을 candidate로 들고 있던 진행 중 분류가 epoch CAS를 통과하면 그 이름을 **새 id로 되살렸습니다**(실측: `Cache`를 `Storage`로 병합한 뒤 `epochUnchanged: true`, `sameId: false` — 사용자의 병합이 조용히 되돌려짐). 이제 그런 결과는 `StaleFactMutationError`로 폐기되고(시도 ledger도 태우지 않습니다) 다음 패스에서 새 taxonomy로 재분류됩니다. `--dry-run`은 epoch를 올리지 않습니다.
 
 ## 4. Category 분류
 
@@ -78,9 +80,10 @@ classifier는 fact의 `semantic_generation`을 캡처합니다. LLM/embedding aw
 privacy purge는 taxonomy 전체를 invalidate하므로 fact generation만으로는 stale classifier를 막을 수 없습니다. `taxonomy_state`의 global epoch을 별도로 사용합니다.
 
 ```text
-classification start → capture epoch N
-privacy purge         → wipe taxonomy + epoch N+1
-old result returns    → epoch mismatch, discard
+classification start       → capture epoch N
+privacy purge              → wipe taxonomy + epoch N+1
+ontology merge / rename    → candidate identity 변경 + epoch N+1   (0.6.3, #73)
+old result returns         → epoch mismatch, discard
 ```
 
 새 domain/category 생성과 fact assignment는 stale 결과가 taxonomy residue를 남기지 않도록 같은 commit 경계에서 처리합니다.
