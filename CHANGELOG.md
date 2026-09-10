@@ -2,6 +2,26 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.8 - 2026-09-10
+
+Hotfix for a warning Codex printed at the end of every session since 0.6.1.
+
+### Hooks
+
+- The SessionEnd cross-device export hook is no longer declared `async`. Codex
+  cannot run an asynchronous hook at SessionEnd — the process is exiting — so it
+  ran the entry synchronously and printed `running async SessionEnd hook
+  synchronously in …/hooks.json` on every session end. The entry is now an
+  ordinary command hook with a 10 s timeout; when sync is off (the default) or
+  nothing durable changed since the last export it still exits in well under a
+  second, and a publish interrupted by the timeout is harmless because the
+  generation protocol only moves `CURRENT` after the files are complete. The
+  hook inventory stays at 13 entries. (#110)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.6.7 - 2026-09-10
 
 Hotfix release for the three findings of the external post-release review of
