@@ -2,7 +2,7 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-## 0.6.7 - unreleased
+## 0.6.7 - 2026-09-10
 
 Hotfix release for the three findings of the external post-release review of
 0.6.6 (#105–#107), each one a residue of a fix that went in with 0.6.6 and each
