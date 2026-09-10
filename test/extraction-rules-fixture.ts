@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import { patternSourceSha8 } from "../src/overlay-regex.js";
 
 /** The scripted provider. Mutable so each test can decide what the model says. */
 export const script: {
@@ -20,12 +21,19 @@ export const script: {
   systemPrompts: string[];
   /** Raw candidate objects returned by the extraction stage. */
   candidates: unknown[];
+  /**
+   * Runs inside the provider call, i.e. while the claim is live and the model is
+   * "thinking". Editing the overlay here is the only honest way to test a rule
+   * change that lands between the claim and the commit.
+   */
+  onCall?: (stage: "extract" | "verify") => void;
 } = { calls: 0, systemPrompts: [], candidates: [] };
 
 export function resetScript(candidates: unknown[] = []): void {
   script.calls = 0;
   script.systemPrompts = [];
   script.candidates = candidates;
+  script.onCall = undefined;
 }
 
 interface CodexModule {
@@ -59,7 +67,11 @@ export function codexMock(actual: CodexModule): {
         model: selection.model,
         reasoning_effort: selection.reasoningEffort,
       });
-      if (opts.systemPrompt?.includes("authoritative-entailment-v3")) {
+      const stage = opts.systemPrompt?.includes("authoritative-entailment-v3")
+        ? "verify"
+        : "extract";
+      script.onCall?.(stage);
+      if (stage === "verify") {
         const envelope = JSON.parse(opts.userMessage ?? "{}") as {
           candidates?: Array<{
             selected_context_dependencies?: Array<{ context_id: string; relation: string }>;
@@ -77,6 +89,105 @@ export function codexMock(actual: CodexModule): {
       return JSON.stringify(script.candidates);
     },
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Matcher double                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How the matcher behaves for the EXTRACTOR's calls.
+ *
+ * `pre-claim` probe calls always succeed: the three failures under test are the
+ * realistic ones where the worker was fine when the work was claimed and then
+ * timed out, failed to start or died during the run. Failing the probe too would
+ * only ever exercise the pre-claim gate.
+ */
+export type MatcherMode = "ok" | "execution-timeout" | "startup-timeout" | "worker-dead";
+
+export const matcherScript: {
+  mode: MatcherMode;
+  /** When true the worker cannot be created at all, so even the probe fails. */
+  failPreClaim: boolean;
+  calls: number;
+  disposed: number;
+} = { mode: "ok", failPreClaim: false, calls: 0, disposed: 0 };
+
+export function resetMatcherScript(mode: MatcherMode = "ok", failPreClaim = false): void {
+  matcherScript.mode = mode;
+  matcherScript.failPreClaim = failPreClaim;
+  matcherScript.calls = 0;
+  matcherScript.disposed = 0;
+}
+
+type MatcherModule = typeof import("../src/overlay-matcher.js");
+
+/**
+ * Replace only the two handle factories. `readQuarantine`, `quarantinePattern`
+ * and the memory generation stay REAL, so an execution timeout really writes the
+ * quarantine row the next load has to find.
+ */
+export function matcherMock(actual: MatcherModule): Partial<MatcherModule> {
+  const handle = (): ReturnType<MatcherModule["oneShotMatcher"]> => ({
+    state: () => (matcherScript.mode === "worker-dead" ? "dead" : "ready"),
+    dispose: () => {
+      matcherScript.disposed++;
+    },
+    match: async (input) => {
+      const base = {
+        intents: {},
+        matched: [] as string[],
+        timedOut: false,
+        quarantined: [] as string[],
+        unavailable: false,
+        elapsedMs: 1,
+        compiledPatterns: input.patterns.length,
+      };
+      if (input.surface === "pre-claim" && matcherScript.failPreClaim) {
+        matcherScript.calls++;
+        return { ...base, unavailable: true, elapsedMs: 0 };
+      }
+      // Otherwise the probe is answered: see the note above.
+      if (input.surface === "pre-claim" || matcherScript.mode === "ok") {
+        matcherScript.calls++;
+        return {
+          ...base,
+          matched: input.patterns
+            .filter((pattern) => {
+              try {
+                return new RegExp(pattern.source, pattern.flags).test(input.text);
+              } catch {
+                return false;
+              }
+            })
+            .map((pattern) => pattern.id),
+        };
+      }
+      matcherScript.calls++;
+      if (matcherScript.mode === "execution-timeout") {
+        // A timeout the worker attributed to ONE pattern: the real matcher
+        // quarantines it and terminates, so do exactly that.
+        const victim = input.patterns[0];
+        actual.quarantinePattern({
+          overlay: input.overlay ?? "extraction-rules",
+          pattern_id: victim.id,
+          source_sha8: patternSourceSha8(victim.source, victim.flags),
+          at: new Date().toISOString(),
+          elapsed_ms: actual.MATCH_WALL_MS,
+          input_chars: input.text.length,
+          surface: input.surface ?? "extractor",
+        });
+        return { ...base, timedOut: true, quarantined: [victim.id], elapsedMs: actual.MATCH_WALL_MS };
+      }
+      if (matcherScript.mode === "startup-timeout") {
+        // Queue wait / startup budget: NOTHING is quarantined, because no pattern
+        // can be shown to have been running.
+        return { ...base, timedOut: true, unavailable: true, elapsedMs: 0 };
+      }
+      return { ...base, unavailable: true, elapsedMs: 0 };
+    },
+  });
+  return { persistentMatcher: handle, oneShotMatcher: handle };
 }
 
 export const PROJECT = "/tmp/extraction-rules-project";
