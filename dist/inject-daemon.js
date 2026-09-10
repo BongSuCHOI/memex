@@ -311,7 +311,9 @@ function registerProcessCleanup(cleanup) {
         process.on(signal, handler);
     }
     // The MCP server's stdin closing is how a host says "you are done" without a
-    // signal (the stdio transport ends on the same event).
+    // signal (the stdio transport ends on the same event). Listening only — the
+    // sidecar must never `resume()` stdin, which would steal bytes from the
+    // transport; it relies on the transport's own reading to make 'end' fire.
     try {
         process.stdin.once('close', runProcessCleanups);
         process.stdin.once('end', runProcessCleanups);
