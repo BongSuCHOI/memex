@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-10T08:16:12+00:00",
+  "recordedAt": "2026-09-10T09:36:03+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
@@ -10,36 +10,36 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "release/0.6.7",
-    "codeSha": "efcbd3bcd40d59186d65343b75b8188cd868ae80",
-    "packageVersion": "0.6.7",
+    "branch": "fix/session-end-hook-sync",
+    "codeSha": "85f6a6720591407580e0b08e11dc5ebb1a6c0c46",
+    "packageVersion": "0.6.8",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
     "sameHead": true,
-    "note": "v0.6.7 hotfix candidate: one worktree branch fixing the three residues (#105 #106 #107) the post-release Codex review of v0.6.5..v0.6.6 found, plus version bump, bundle and changelog. Fifteen gates run sequentially on the main checkout, bracketed by the read-only real-root check; every gate passed on its first attempt."
+    "note": "v0.6.8 hotfix candidate for #110 (the SessionEnd sync-export hook entry declared `async`, which Codex warns about and runs synchronously anyway): hooks.json entry → `timeout: 10`, lifecycle inventory mirror, three contract tests, docs wording, changelog, version bump. Fifteen gates on the main checkout with no Codex session running; every gate passed on this run."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
     {
       "name": "real-root-snapshot",
-      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-067.json",
+      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-068.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:12:01+00:00",
+      "startedAt": "2026-09-10T09:31:51+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.6.7-gates/real-root-snapshot.log",
-      "logSha256": "51a4c08385cafdae9c9888bff85b8c4db167b3a0333ef4c60e33b827eae4f64e",
-      "observed": "read-only baseline of the real data root: 139 files under ~/.config/memex, written outside the root."
+      "logPath": "/private/tmp/memex-0.6.8-gates/real-root-snapshot.log",
+      "logSha256": "c098bd694229e331b1607eb91ea73e6c83d7e59b27256f35e96ab339a87b2f10",
+      "observed": "read-only baseline: 142 files under ~/.config/memex. (A first gate run was discarded: its real-root compare failed because a live `codex exec` session — the 0.7.0 plan review — legitimately wrote a journal and hook events during the run; re-run with no Codex session.)"
     },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:12:01+00:00",
+      "startedAt": "2026-09-10T09:31:51+00:00",
       "durationSeconds": 3,
-      "logPath": "/private/tmp/memex-0.6.7-gates/typecheck.log",
-      "logSha256": "4ebfc43e58ac95a30540ad567ce564763a3f663e5ac9e0cd2074fa340ac6ee91",
+      "logPath": "/private/tmp/memex-0.6.8-gates/typecheck.log",
+      "logSha256": "4d8c42cdf9e1ac658faf519b336665d192789fe3bd88ce0e55252f405ed6dba2",
       "observed": "tsc --noEmit clean"
     },
     {
@@ -47,76 +47,76 @@
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:12:04+00:00",
+      "startedAt": "2026-09-10T09:31:54+00:00",
       "durationSeconds": 4,
-      "logPath": "/private/tmp/memex-0.6.7-gates/build.log",
-      "logSha256": "35ccc5b4e9f3cc24550b86d320d63e22c7c2fff58f7961637c9f4550f98eb44b",
-      "observed": "build reproduced the tracked dist/ (git status clean after the gate apart from the plugin-validation receipt)."
+      "logPath": "/private/tmp/memex-0.6.8-gates/build.log",
+      "logSha256": "42777f9bef45b7b0953d8b27fa26b7571fcbda10b6b03372e806b98b7544399e",
+      "observed": "build reproduced the tracked dist/."
     },
     {
       "name": "tests",
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:12:08+00:00",
-      "durationSeconds": 26,
-      "logPath": "/private/tmp/memex-0.6.7-gates/vitest.log",
-      "logSha256": "8449ae312d0580285c6770927d3b11beb6d8d89047037bcbb2b3963cc13336ff",
-      "observed": "119 files / 1251 Vitest tests passed (1250 → 1251: #105 containment regression on a not-yet-created data root)."
+      "startedAt": "2026-09-10T09:31:58+00:00",
+      "durationSeconds": 41,
+      "logPath": "/private/tmp/memex-0.6.8-gates/vitest.log",
+      "logSha256": "a35337f5e0ae3d2f6ab0e5ca6e2dd250f584c14af10515ea788280b8a7dca459",
+      "observed": "119 files / 1251 Vitest tests passed. Three hook-contract tests were updated from `async: true` to `timeout: 10` for the SessionEnd export entry (#110); the first run showed exactly those three failing against the new manifest."
     },
     {
       "name": "mjs-tests",
       "command": "node --test test/*.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:12:34+00:00",
+      "startedAt": "2026-09-10T09:32:39+00:00",
       "durationSeconds": 46,
-      "logPath": "/private/tmp/memex-0.6.7-gates/node-test-mjs.log",
-      "logSha256": "1f416565bfdfefaf6ea63ab5a021dae8679427d3655cddb643dc7e4f4e6aecaf",
-      "observed": "215 tests, 0 failures (214 → 215: #107 release-during-pending-yield-probe case, socket not recreated)."
+      "logPath": "/private/tmp/memex-0.6.8-gates/node-test-mjs.log",
+      "logSha256": "8effecdac8aaff2626891879f55839c6c03275a50a83e170ce59e8ecdb48dfd4",
+      "observed": "215 tests, 0 failures; hook inventory still 13 entries."
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:13:21+00:00",
+      "startedAt": "2026-09-10T09:33:25+00:00",
       "durationSeconds": 7,
-      "logPath": "/private/tmp/memex-0.6.7-gates/install-e2e.log",
-      "logSha256": "52aca27ba3f74444debbbe82368f1af7e035f01e6a4a86e72f5af693124579c4",
-      "observed": "installer dry-run, real install, idempotent rerun, removal and isolation all PASS."
+      "logPath": "/private/tmp/memex-0.6.8-gates/install-e2e.log",
+      "logSha256": "bcd2ca53d0a1787ad9bbc3645add1ae82396701cdf0d23cca22614f5b5ca8e53",
+      "observed": "installer dry-run, real install, idempotent rerun, removal and isolation PASS."
     },
     {
       "name": "marketplace-e2e",
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:13:28+00:00",
-      "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.6.7-gates/marketplace-e2e.log",
-      "logSha256": "894fedfd1f2517d95c20c305361732d6248acfef0ad44adff824ec04ccb8f322",
-      "observed": "marketplace install/removal PASS, cleanup PASS."
+      "startedAt": "2026-09-10T09:33:32+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.8-gates/marketplace-e2e.log",
+      "logSha256": "b86ad81e61f3c3b545d4aba1ffa5b66369430d13110ba647e490049bfbf13909",
+      "observed": "PASS, cleanup PASS."
     },
     {
       "name": "package-runtime-e2e",
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:13:29+00:00",
-      "durationSeconds": 82,
-      "logPath": "/private/tmp/memex-0.6.7-gates/package-runtime-e2e.log",
-      "logSha256": "b61ad17126a98dc4654ae68c4c9e62d410d1c4a04118e2a0b771c55d6ddc7ebf",
-      "observed": "memex-0.6.7.tgz, 332 files, 9 MCP tools."
+      "startedAt": "2026-09-10T09:33:32+00:00",
+      "durationSeconds": 81,
+      "logPath": "/private/tmp/memex-0.6.8-gates/package-runtime-e2e.log",
+      "logSha256": "be132036f7396b6725a3de2a5ecd6ca2fe8b830d3f22f9174f880f6335116a9b",
+      "observed": "memex-0.6.8.tgz, 332 files, 9 MCP tools."
     },
     {
       "name": "lifecycle-e2e",
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:14:51+00:00",
-      "durationSeconds": 6,
-      "logPath": "/private/tmp/memex-0.6.7-gates/lifecycle-e2e.log",
-      "logSha256": "8e148bd22dd6e4c3fbdf19951eb37c53de86df287f79e41c1aea72da274b59da",
+      "startedAt": "2026-09-10T09:34:53+00:00",
+      "durationSeconds": 7,
+      "logPath": "/private/tmp/memex-0.6.8-gates/lifecycle-e2e.log",
+      "logSha256": "39e6d4e86842de78dfe0a88794d81a27f91a4adb81b1c31179292c7e9f4bf419",
       "observed": "9/9 steps passed; cleanup surfaces all absent/zero."
     },
     {
@@ -124,70 +124,70 @@
       "command": "node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:14:57+00:00",
-      "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.6.7-gates/ui-tests.log",
-      "logSha256": "4e376033f5ffca4d0313d102cbb33c2e0dde75d8576b3fd3947c573629e9c199",
-      "observed": "151 Workspace unit tests passed (150 → 151: #106 sync arriving during mutate() connect await is refused)."
+      "startedAt": "2026-09-10T09:35:00+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.8-gates/ui-tests.log",
+      "logSha256": "1148a0ea6911bbc851c0398957b3feced82c0fc7428c729ea2fcc07cbe2e6e10",
+      "observed": "151 Workspace unit tests passed."
     },
     {
       "name": "web-ui-browser-e2e",
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:14:58+00:00",
+      "startedAt": "2026-09-10T09:35:00+00:00",
       "durationSeconds": 13,
-      "logPath": "/private/tmp/memex-0.6.7-gates/web-ui-browser-e2e.log",
-      "logSha256": "c998cb14ea90957dc7e7ee85c3f6ceda38be8854fcda0712a48e777fa9744835",
-      "observed": "22 real-Chrome probes PASS with 0 runtime errors."
+      "logPath": "/private/tmp/memex-0.6.8-gates/web-ui-browser-e2e.log",
+      "logSha256": "30c70774fbee308e3256eaf9079d9b3b4d482c30c555b4e5bb0e11e0abdf9641",
+      "observed": "22 real-Chrome probes PASS, 0 runtime errors."
     },
     {
       "name": "plugin-validation",
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:15:11+00:00",
+      "startedAt": "2026-09-10T09:35:13+00:00",
       "durationSeconds": 5,
-      "logPath": "/private/tmp/memex-0.6.7-gates/validate-plugin.log",
-      "logSha256": "f657c76c3472c2141533dc7f056ab5673fa25f4f16fcde15ada37a7499422aa7",
-      "observed": "isolated substitute checks PASS; formal validator still unavailable in codex-cli 0.153.4."
+      "logPath": "/private/tmp/memex-0.6.8-gates/validate-plugin.log",
+      "logSha256": "2322e790c796cbcc567c3d927fc84256d13e705557db062ec74d068161245cfd",
+      "observed": "isolated substitute checks PASS (hooks.json with the timed SessionEnd entry)."
     },
     {
       "name": "benchmark-contract",
       "command": "node scripts/benchmark-contract.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:15:16+00:00",
+      "startedAt": "2026-09-10T09:35:18+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.6.7-gates/benchmark-contract.log",
+      "logPath": "/private/tmp/memex-0.6.8-gates/benchmark-contract.log",
       "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "observed": "contract satisfied against the carried-forward v0.6.0 record; no scoring path changed."
+      "observed": "contract satisfied against the carried-forward v0.6.0 record."
     },
     {
       "name": "pack-dry-run",
       "command": "npm pack --dry-run",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:15:16+00:00",
+      "startedAt": "2026-09-10T09:35:18+00:00",
       "durationSeconds": 1,
-      "logPath": "/private/tmp/memex-0.6.7-gates/pack-dry-run.log",
-      "logSha256": "dc836b32d49caa654713980c776985cec4af42abf66bab123868105c0c87a2c5",
-      "observed": "332 files; archived receipts excluded."
+      "logPath": "/private/tmp/memex-0.6.8-gates/pack-dry-run.log",
+      "logSha256": "99b077dc1bbefc39d59c7350bd565d82b310ca5e2f48bd58fb64d07f69ae0981",
+      "observed": "332 files."
     },
     {
       "name": "real-root-compare",
-      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-067.json",
+      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-068.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T08:15:17+00:00",
+      "startedAt": "2026-09-10T09:35:19+00:00",
       "durationSeconds": 0,
-      "logPath": "/private/tmp/memex-0.6.7-gates/real-root-compare.log",
-      "logSha256": "d2e1f670c7aaa62c1b291efd057c379ec19321ea8e8332939288c7b94f5bf9c0",
-      "observed": "OK — 139 files identical under ~/.config/memex."
+      "logPath": "/private/tmp/memex-0.6.8-gates/real-root-compare.log",
+      "logSha256": "3c08733abde9c7de753594070d6fe3a73bdc90d5ddc188b69d2e034aa4b8e315",
+      "observed": "OK — 142 files identical."
     }
   ],
   "packageRuntime": {
-    "artifact": "memex-0.6.7.tgz",
+    "artifact": "memex-0.6.8.tgz",
     "files": 332,
     "mcpTools": 9
   },
@@ -211,17 +211,15 @@
     "stabilityRunsNote": "The 20-run stability series was measured when the readback fix landed. It was not repeated for v0.5.1, which changes no UI or gate-script code; this candidate contributes one further clean run, with the same mapFrames 2 and mapBackground 521550 of 521550."
   },
   "reviewRemediation": {
-    "source": "post-release Codex review (gpt-6-astra, low) of git diff v0.6.5..v0.6.6 — 3 findings, verified by an Opus agent: #105 CONFIRMED (zip written outside a not-yet-created root), #106 CONFIRMED for mutate() / REFUTED for tier(), #107 CONFIRMED including the socket being recreated after shutdown cleanup",
+    "source": "user report from a second Mac after updating to 0.6.7: `warning: running async SessionEnd hook synchronously in …/hooks.json` on every session end; reproduced in this Mac's own `codex exec` logs",
     "fixed": {
-      "#105": "deepestRealPath keeps the non-existent remainder; containment re-checked after mkdir of root/staging/output parent",
-      "#106": "mutate() takes the per-fact lock before its first await (rule #77)",
-      "#107": "yield probe carries a token; releaseOwnership() cancels/invalidates an in-flight probe"
-    },
-    "regressionEvidence": "all three new tests confirmed failing on the pre-fix code."
+      "#110": "SessionEnd export entry is a timed (10 s) synchronous hook; sub-second no-op when sync is off or nothing changed"
+    }
   },
   "realRootIsolation": {
-    "snapshotFiles": 139,
-    "compareResult": "139 files identical"
+    "snapshotFiles": 142,
+    "compareResult": "142 files identical",
+    "note": "first attempt invalidated by a concurrent live Codex session; re-run clean"
   },
   "priorEvidence": "Receipts for 0.5.0–0.6.5 are archived as docs/verification/merge-gate-pre-<version>.json; their live proofs (tier migration, daemon takeover, re-acquisition, warm start) are not repeated here.",
   "priorLiveEvidence": {
@@ -237,8 +235,9 @@
     "liveUserData": "NOT_PROVEN: gates ran on isolated fixtures and temporary homes.",
     "authenticatedCodexTier": "NOT_PROVEN: offline lifecycle tier only.",
     "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` absent in codex-cli 0.153.4.",
+    "liveWarningGone": "NOT_PROVEN until post-release: a `codex exec` session end on the installed 0.6.8 root must print no `running async SessionEnd hook` warning.",
     "liveTwoDeviceRoundTrip": "NOT_PROVEN: user-run two-Mac archive round trip (#48).",
-    "benchmarkRefresh": "NOT_PROVEN: benchmark carried forward from v0.6.0; no scoring path changed."
+    "benchmarkRefresh": "NOT_PROVEN: benchmark carried forward from v0.6.0."
   },
-  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 passes on the clean v0.6.7 candidate efcbd3bc on its first attempt: real-root snapshot (139 files), typecheck, reproducible build, 119 files / 1251 Vitest tests, 215 mjs tests, installer, marketplace, packaged runtime (memex-0.6.7.tgz, 332 files, 9 MCP tools), lifecycle 9/9, 151 Workspace unit tests, 22 browser probes with 0 runtime errors, isolated plugin validation, benchmark contract, pack dry-run and the closing real-root compare (139 files identical). #105–#107 are fixed with regression tests that fail on 0.6.6."
+  "releaseConclusion": "Every gate in docs/VERIFICATION.md §2/§4 passes on the clean v0.6.8 candidate 85f6a672: real-root snapshot (142 files), typecheck, reproducible build, 119 files / 1251 Vitest tests, 215 mjs tests, installer, marketplace, packaged runtime (memex-0.6.8.tgz, 332 files, 9 MCP tools), lifecycle 9/9, 151 Workspace unit tests, 22 browser probes with 0 runtime errors, isolated plugin validation, benchmark contract, pack dry-run and the closing real-root compare (142 files identical). #110 is fixed; the absence of the Codex warning is verified after release on the installed root."
 }
