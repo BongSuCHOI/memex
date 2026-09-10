@@ -99,9 +99,18 @@ export interface GenerationArchive {
  * shared folder, while this is an explicit user action whose whole point is
  * having no shared folder. The generation is written through the normal
  * exporter, so the file a user carries is the same set-atomic, hash-pinned
- * generation a peer would have read from a shared folder. `export-status.json`
- * is deliberately NOT updated: it records what reached the shared DESTINATION,
- * and a hand-carried file proves nothing about that.
+ * generation a peer would have read from a shared folder.
+ *
+ * Issue #95 — it publishes into a PRIVATE staging directory inside the data
+ * root, never into the shared folder. Before this it called the exporter with no
+ * destination, so the exporter resolved the shared folder and `getSyncDir()`
+ * CREATED it: with the switch off, and even after the user had deleted the
+ * folder, one `--archive` re-created an iCloud/Dropbox folder and published
+ * plaintext memories into it — while `memex sync status` still said `Sync: OFF`.
+ * A hand-carried file has nothing to do with the shared destination, so it now
+ * touches neither the folder nor what a peer would read from it. That also makes
+ * the deliberate absence of an `export-status.json` update consistent: that
+ * record states what reached the shared DESTINATION, and nothing does here.
  */
 export declare function exportGenerationArchive(options?: {
     outPath?: string;

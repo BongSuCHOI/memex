@@ -63,6 +63,67 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
   that caught another's lock inside the old open-then-write window deleted a
   LIVE holder's lock and entered the serialized section beside it. (#102)
 
+Cross-device sync hotfixes found by re-auditing the 0.6.3 (#48) manual-file and
+preview paths against their own contracts. The headline is a privacy-contract
+break: with the switch OFF, one `memex sync export --archive` still published
+memories into the shared folder.
+
+### Cross-device sync
+
+- `memex sync export --archive` (and the Web UI `archive-export` action) no
+  longer touches the shared folder. It used to call the exporter with no
+  destination, so the exporter resolved the configured iCloud/Dropbox/Syncthing
+  folder and CREATED it: with sync disabled — and even after the user had
+  deleted the folder — the folder came back and a full generation of plaintext
+  memories went into it, while `memex sync status` still printed `Sync: OFF` and
+  listed a device. The archive is now built in a private staging directory
+  inside the data root, zipped, and the staging directory removed, so nothing
+  reaches the shared folder, no peer gets an extra generation to import, and the
+  deliberate absence of an `export-status.json` update is finally consistent.
+  `exportForSync({ syncDir })` is the new seam. (#95)
+- `memex sync import --archive --dry-run` no longer creates or migrates a
+  database. Both the device-identity check and the preview itself opened the DB
+  with `initDatabase()`, which created the file and ran every
+  `CREATE TABLE`/`ALTER TABLE` migration plus a normalizing `UPDATE` *before*
+  the rollback-only transaction opened, so none of it could be undone: a
+  dry-run on a machine with no index left an empty 880 KB database behind, and a
+  dry-run on an older schema migrated it irreversibly. The identity check is now
+  read-only, and a preview with no local index is rejected with
+  "no local index yet — run `memex sync` once before previewing an import"
+  instead of building one. (#97)
+- An import preview now reflects the incoming tombstones before it plans the
+  facts, the order an apply uses. The two plans used to be computed
+  independently against the untouched database, and the fact plan reads only the
+  LOCAL `fact_tombstones` table, so a fact the apply would skip could be
+  announced as `+1`/`~1` with a conflict the apply never records. Both run
+  inside the same always-rolled-back transaction. A single export still never
+  carries a fact row and a tombstone for the same id — that invariant is now
+  pinned by a test. (#103)
+- The archive output path is confined by REAL location, not by a path string. A
+  `path.resolve()` prefix test does not resolve symlinks, so one link inside the
+  data root carried a write outside it, and the default destination was not
+  checked at all. The deepest existing ancestor is now resolved with `realpath`
+  on both sides, a final component that is itself a symlink is refused rather
+  than followed, and the default `<data root>/sync/exports/…` path is held to
+  the same rule. Resolving the root too fixes the mirror image: a data root
+  reached through a link (macOS `/var` → `/private/var`) no longer rejects
+  legitimate absolute paths naming its own files. (#101)
+- `memex sync alias <name>` is propagated by the next automatic export. The name
+  travels in every generation's `meta.json` as `device_alias`, but the export
+  gate's fingerprint only read the database, so renaming (or un-naming) this
+  device reported `skipped: "unchanged"` forever and the other Mac kept showing
+  the old name or a UUID until some unrelated durable change happened or the
+  user passed `--force`. This device's own alias is now part of
+  `durableStateFingerprint()`; a name this machine gives a PEER is a local
+  override that never travels and still triggers nothing. (#98)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change. One behaviour change to
+know about: on a machine that has never built an index, `memex sync import
+--archive … --dry-run` now refuses with "no local index yet" instead of creating
+one — run `memex sync` once first (the apply path is unchanged).
+
 ## 0.6.5 - 2026-09-10
 
 Hotfix for the embedding-model cache location (#92), found while validating
