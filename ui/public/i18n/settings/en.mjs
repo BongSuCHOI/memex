@@ -10,7 +10,7 @@ export default {
   'settings.tabs.sync': 'Sync',
   'settings.tabs.interface': 'Display',
   'settings.tabs.diagnostics': 'Diagnostics',
-  'settings.tabs.overlays': 'Extraction rules',
+  'settings.tabs.overlays': 'Overlays',
   'settings.tabs.models': 'Models',
   'settings.interface.language.title': 'Display language',
   'settings.interface.language.body': 'Applies to this browser only. Changing it reloads the page.',
