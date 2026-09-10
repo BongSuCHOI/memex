@@ -909,8 +909,9 @@ export function applyScopeDirective(db, id, directive, options = {}) {
  *                          workstream (another branch, or a project-common
  *                          session with no branch signal).
  *   project → global     : the same fact text is confirmed in ≥2 projects.
- *   demotion             : the upper evidence an automatic promotion cited is
- *                          gone — every cited fact is inactive or deleted.
+ *   demotion             : the upper evidence an automatic promotion cited no
+ *                          longer confirms it — every cited fact is inactive,
+ *                          deleted, or corrected away from the promoted text.
  */
 export function reconcileFactTiers(db, options = {}) {
     const result = { promoted: [], demoted: [], skipped: [] };
@@ -1032,9 +1033,32 @@ export function reconcileFactTiers(db, options = {}) {
         }
         if (cited.length === 0)
             continue;
-        const alive = db.prepare(`SELECT COUNT(*) AS n FROM facts WHERE is_active = 1 AND id IN (${cited.map(() => '?').join(',')})`).get(...cited).n;
-        if (alive > 0)
+        // #62 — `is_active = 1` alone is not "the evidence is still there".
+        //
+        // Both automatic promotions are content judgements: step 1 needs the same
+        // `LOWER(TRIM(fact))` in another workstream, step 2 the same
+        // `LOWER(TRIM(fact))` in another project (`docs/FACT-LIFECYCLE.md`). A
+        // witness corrected to the opposite sentence keeps `is_active = 1`, so the
+        // old check read it as a live re-confirmation and the fact stayed global on
+        // evidence that now says something else. A witness still supports the
+        // promotion only while it is active AND still carries the same normalized
+        // text as the fact it lifted — so a correction demotes in the same pass a
+        // deactivation does, while a restatement that normalizes equal does not.
+        const placeholders = cited.map(() => '?').join(',');
+        const support = db.prepare(`
+      SELECT
+        COUNT(*) AS active,
+        SUM(CASE WHEN LOWER(TRIM(w.fact)) = LOWER(TRIM(t.fact)) THEN 1 ELSE 0 END) AS confirming
+      FROM facts w JOIN facts t ON t.id = ?
+      WHERE w.is_active = 1 AND w.id IN (${placeholders})
+    `).get(factId, ...cited);
+        if (Number(support.confirming ?? 0) > 0)
             continue;
+        // Nothing confirms it any more. Name which of the two it was, so the reason
+        // a fact came down is readable in the Chronicle event.
+        const demotionReason = Number(support.active) > 0
+            ? 'upper evidence no longer confirms the same fact'
+            : 'upper evidence is no longer active';
         const latest = latestTierEvent.get(factId);
         if (!latest || latest.eventId !== promotion.eventId) {
             result.skipped.push({
@@ -1049,7 +1073,7 @@ export function reconcileFactTiers(db, options = {}) {
             result.skipped.push({ id: factId, reason: 'recorded promotion no longer matches the current tier' });
             continue;
         }
-        step(factId, -1, 'upper evidence is no longer active', cited, fromTier);
+        step(factId, -1, demotionReason, cited, fromTier);
     }
     return result;
 }

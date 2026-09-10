@@ -231,7 +231,8 @@ Phase 4는 `fact_revisions`를 단일 append-only Chronicle로 확장합니다. 
 Phase 5는 `UserPromptSubmit`에 cheap gate를 둡니다. ack/continuation과 topic-coherent follow-up은 embedding 0회로 skip되고, memory intent·epoch/Capsule/project revision·incident match·drift·coverage·safety refresh에서만 retrieval이 실행됩니다. 결과는 CORRECTION/WORK NOW/CURRENT TRUTH/WATCH/TRACE/RECENT EVIDENCE/ASSISTANT CONTEXT-ONLY 순서의 Memory Bundle(hard 1,000자)로 렌더링되며 MCP deep path는 그대로입니다.
 
 0.6.0은 그 위에 **기억 계층**을 올립니다. 세션 시작의 `inspectWorkspaceLocation`이 브랜치와 저장소 기본
-브랜치(`origin/HEAD` → `packed-refs` → `init.defaultBranch`)를 함께 캡처해 세션을 `no-branch-signal` /
+브랜치(`origin/HEAD` → `packed-refs` → 저장소 config의 `init.defaultBranch` → 전역/시스템 config의
+`init.defaultBranch`)를 함께 캡처해 세션을 `no-branch-signal` /
 `default-branch` / `branch:<name>` 셋 중 하나로 분류하고, workstream id는 `(project_id, branch)`(신호가
 없으면 `project_id`만)로 결정론적으로 파생됩니다. `no-branch-signal`과 `default-branch` 세션의 새 fact는 바로 프로젝트 공용
 (`project-current`), `branch:<name>` 세션의 fact만 브랜치 tier(`workstream`)로 들어가며 근거는
@@ -335,9 +336,16 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
 
 0.6.1부터 "설치된 plugin root"를 해석하는 곳은 `src/plugin-root.ts` 하나이고, `memex doctor`의
 `dependencies` 판정과 `cli/runtime-exec.js`의 폴백 메시지, `memex deps materialize`가 같은 값을 씁니다
-(#53). 해석 순서는 `MEMEX_PLUGIN_ROOT` → `$CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest
-version>` → `codex plugin list --json`의 `installedPath` → 실행 중인 launcher의 루트입니다. cache
-후보는 `cli/memex.js`와 `.codex-plugin/plugin.json`이 **둘 다** 있는 디렉터리만 인정합니다. 예전에는
+(#53). 해석 순서는 `MEMEX_PLUGIN_ROOT` → (`probeCodex`일 때) `codex plugin list --json`의 `installedPath`
+→ `$CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest version>` → 실행 중인 launcher의
+루트입니다. cache 후보는 `cli/memex.js`와 `.codex-plugin/plugin.json`이 **둘 다** 있는 디렉터리만
+인정합니다. 0.6.3(#69)에서 조회와 cache 스캔의 순서가 바뀌었습니다: cache 스캔은 "실행 중인 복사본의
+버전과 가장 잘 맞는 cache 디렉터리"를 답하므로 cache에 버전이 하나일 때만 "Codex가 적재한 plugin"과
+같은 답입니다. 둘 이상이면 적재되지 않은 root를 가리킬 수 있어 진단 오보와 엉뚱한 `deps materialize`로
+이어졌습니다. 그래서 spawn을 허용한 호출자(`doctor`, `deps materialize`)는 권위 있는 조회를 먼저 하고
+cache 스캔을 폴백으로 두며, `probeCodex: false`인 훅·핫패스는 여전히 파일 읽기만 합니다. 조회 결과는
+부재까지 프로세스 단위로 캐시하고 2초 타임아웃을 둡니다. cache 후보가 2개 이상인데 cache 스캔으로
+해석됐다면 `doctor`가 그 사실(`N cached versions … not a confirmed load`)을 함께 출력합니다. 예전에는
 `~/.local/bin/memex` shim의 npx cache가 설치본으로 오인되어, 실제 설치본과 다른 판정이 나왔습니다.
 `memex update`는 재설치 뒤 새 root에 의존성을 자동으로 materialize하고(`--no-materialize`면 명령만
 안내), `memex install`은 source checkout에 production closure가 없으면 preflight를 실패시키는 대신

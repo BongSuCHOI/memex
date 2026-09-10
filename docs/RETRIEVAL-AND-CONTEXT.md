@@ -86,6 +86,57 @@ sequenceDiagram
 
 warm sidecar와 cold fallback은 transport만 다르고 selection logic은 같습니다.
 
+### Warm daemon identity (0.6.3, #84)
+
+Fast path의 warm daemon은 실행 중인 **어느** MCP 서버 안의 sidecar이고 socket 경로는 데이터 루트
+하나뿐이라, 예전에는 **먼저 bind한 프로세스**가 모든 프롬프트를 처리했습니다. 실측(2026-09-10): 다른
+호스트가 개발 체크아웃의 `Documents/memex/dist/mcp-server.js`(0.6.0 이전 dist)를 02:18에 띄워 socket을
+잡고 있었고, Codex의 0.6.2 훅이 보낸 프롬프트 4개가 전부 그 구버전 코드로 처리됐습니다 —
+`status:"injected", injected:0, via:"daemon"`(#32의 `context-only` 분리가 없는 빌드),
+`baseline_margin_gap` 0행, 구버전 tier 읽기 규칙. 플러그인을 올리고 Codex를 재시작해도 그 프로세스가
+socket을 쥐고 있는 동안은 그대로였고, `doctor`·`status` 어디에도 드러나지 않았습니다.
+
+두 가지로 닫습니다.
+
+1. **핸드셰이크가 계산보다 먼저.** 훅은 프롬프트와 **같은 연결에** 자기 정체를 실어 보냅니다:
+   `{type:"inject", protocol:1, version, buildId, pluginRoot, dbPath, prompt, cwd, sessionId}`.
+   daemon은 다섯 필드가 **모두** 일치할 때만 계산하고 `{type:"ok", …identity, pid, instanceId,
+   startedAt, context, receiptId}`로 답합니다. 하나라도 다르면 **아무 계산도, 아무 receipt 부작용도
+   없이** `{type:"mismatch", …identity}`를 답합니다. `pluginRoot`는 `import.meta.url`에서 얻은 **실행 중인
+   코드의** realpath이며 설치본 해석기(#69)의 답이 아닙니다 — 둘이 다른 것이 바로 이 결함이니까요.
+   `buildId`는 `dist/mcp-server.js`의 SHA-256(시작 시 1회; 번들이 없으면 `version+mtime`)이라 같은
+   버전의 체크아웃과 설치본을 구분합니다. `dbPath`까지 보는 이유는 코드가 같아도 데이터 루트가 다른
+   daemon은 남의 기억을 답하기 때문입니다.
+2. **개발 체크아웃은 socket을 열지 않습니다.** listener는 `realpath(실행 루트) ===
+   realpath(설치 루트)`(`probeCodex:false`로 해석, source가 `launcher`가 아닐 때)에서만 열리고, 그 외에는
+   한 줄 로그만 남기고 닫힌 채입니다. `MEMEX_INJECT_DAEMON=1`은 강제 on, `=0`은 강제 off입니다.
+
+훅 쪽에서 `type:"ok"`가 아닌 응답(구버전 daemon, 불일치, 타임아웃, 낯선 listener)은 전부 거절이고
+in-process fallback으로 갑니다. `type:"ok"`여도 **되돌려준 정체 5필드가 요청한 것과 같아야** 사용합니다 —
+socket 경로는 예측 가능하고 같은 사용자의 아무 프로세스나 선점할 수 있으므로, `ok`라고 말하는 것 자체는
+아무것도 증명하지 않습니다. 요청에는 0.6.2의 `session_id` 필드를 **싣지 않습니다**: 핸드셰이크를 못 하는
+daemon의 응답은 어차피 쓸 수 없는데, 세션을 주면 그 daemon이 `computeInjectContext`를 끝까지 돌려
+bundle 트랜잭션(prepared receipt, resident fact revision, gate 상태)을 **커밋**해 버리고, 그러면
+in-process fallback이 모든 fact를 "이미 resident"로 보고 전부 dedup해 **아무것도 주입하지 못한 채**
+prompt마다 `prepared` receipt만 남깁니다. 필드를 빼면 구버전 daemon은 자기 `if (!sessionId)` 가드에서
+DB를 건드리기 전에 돌아갑니다. 그 줄은 `via:"fallback"`과 함께
+`daemon:{expected:{version,buildId,pluginRoot,dbPath}, got:<identity|null>, reason}`을 남기므로
+"구버전이 전부 답하고 있었다"가 더 이상 보이지 않는 상태가 아닙니다(`got:null`은 정체를 밝히지 않은
+응답, 즉 0.6.3 이전 daemon이거나 남의 listener입니다). 아무도 listen하지 않는 평시 cold start는 충돌이
+아니므로 `daemon` 필드를 남기지 않습니다. 성공한 fast path 줄에는 답한 daemon의
+`daemon:{version,buildId,pid}`가 붙어 주입 한 줄이 **빌드 단위로** 귀속됩니다. 왕복은 여전히 1회라 기존
+3초 응답 예산은 그대로입니다.
+
+**소유권은 협조적으로** 넘깁니다. listener를 열 때 `inject-daemon.lock`을 `O_EXCL`로 잡고(죽은 pid의
+lock은 교체) 그 안에서 probe→bind를 합니다. probe는 **읽기 전용** `{type:"identify"}`이므로 진단이 남의
+계산이나 receipt를 유발하지 않습니다. ENOENT/ECONNREFUSED/ENOTSOCK은 살아 있는 소유자일 수 없으므로
+unlink하고 bind합니다. EACCES 등은 살아 있는 소유자일 수 있어 **unlink도 bind도 하지 않고** 로그만
+남깁니다. 정체를 밝힌 소유자가 **같은** 정체면 bind하지 않고(중복), **다르면** `{type:"retire",
+protocol:1, from:<identity>}`를 보냅니다. 0.6.3+ daemon은 그 caller의 `pluginRoot`가 설치 루트일 때만
+listener를 닫고 자기 socket을 unlink한 뒤 `{type:"retired"}`로 답합니다(아니면 `refused`). 핸드셰이크를
+모르는 구버전 daemon은 건드리지 않습니다 — 훅이 fallback하므로 그 프로세스가 종료될 때까지도 정확성은
+유지되고, 그 상태는 로그와 `doctor`에 남습니다.
+
 정확한 경로·심볼·오류 코드가 active scoped fact에서 누락됐을 때는 검증된 사용자 원문을
 제한적으로 조회합니다. Fact 요약은 원문의 모든 식별자를 보존하는 색인이 아니므로, 누락을
 고치기 위해 검증된 fact 본문에 문자열을 덧붙이거나 extraction을 다시 실행하지 않습니다.
@@ -306,6 +357,8 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 `injected`/`context-only` 로그는 `gate: retrieve:<triggers>`, `embedding_calls`, `sections`, `lexical_lane`을 함께 기록합니다. `lexical_lane: unavailable`은 리터럴 매칭 레인이 예외로 죽었다는 뜻이며 `lexical_lane_unavailable` 텔레메트리로도 남습니다.
 
 관련성 게이트(`similarity - baseline >= margin`)의 마진은 기본 `0.045`이고 `MEMEX_INJECT_BASELINE_MARGIN`으로 조정합니다. 후보가 임계값에서 얼마나 떨어져 있었는지는 retrieval당 1행씩 `continuity_telemetry`의 `baseline_margin_gap`에 기록됩니다(`value` = 가장 근접한 gap, `dims.gaps`/`margin`/`baseline`/`passed`/`rejected`). 마진 조정은 이 측정값을 근거로 하십시오.
+
+`passed`/`rejected`는 **반올림 전 gap**으로 셉니다(0.6.3, #75). `dims.gaps`와 `value`는 소수 4자리 표시값이지만, 게이트의 판단은 원값이므로 집계를 표시값으로 다시 계산하면 경계에서 어긋납니다 — 기본 마진 `0.045`에서 gap `0.04496`은 게이트가 **거부**하지만 반올림하면 `0.045`로 "통과"해, 일어나지 않은 주입이 telemetry에 남았습니다. 이제 `passed`는 주입된 semantic 후보 수와 항상 일치합니다.
 
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 

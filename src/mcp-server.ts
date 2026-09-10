@@ -1841,6 +1841,10 @@ async function main() {
   // unix socket (~150ms warm vs ~2.3s cold). Starting it first means it is
   // available immediately and is never gated on server.connect() completing
   // (best-effort, unref'd — adds no lifecycle and never blocks MCP traffic).
+  //
+  // Issue #84: it returns null and logs one line when this process must not own
+  // the socket — a development checkout opened by another host serves nobody,
+  // because its code is not the code Codex's hooks belong to.
   startInjectDaemon();
   const transport = new StdioServerTransport();
   await server.connect(transport);

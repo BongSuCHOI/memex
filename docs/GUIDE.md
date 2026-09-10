@@ -147,7 +147,11 @@ memex ontology rename <category-id> "Authentication"                # label만 �
   다음 분류의 self-heal)가 새 label로 다시 임베딩합니다. 같은 domain에 이미 있는 이름으로는 거부되며
   merge를 안내합니다.
 - 둘 다 fact 의미를 건드리지 않습니다: Chronicle 이벤트 없음, semantic/lifecycle generation bump 없음,
-  attempt ledger reset 없음, taxonomy epoch bump 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+  attempt ledger reset 없음. `logs/ui-audit.jsonl`에 metadata 한 줄만 남습니다.
+- 다만 0.6.3부터 둘 다 자기 트랜잭션 안에서 **taxonomy epoch을 올립니다**(#73). candidate 이름이 바뀌기
+  때문입니다 — 예전에는 진행 중 분류가 병합으로 삭제된 카테고리 이름을 새 id로 되살려 병합이 조용히
+  되돌려졌습니다. 이제 그 결과는 폐기되고(시도도 소모하지 않음) 다음 패스에서 새 taxonomy로
+  재분류됩니다. `--dry-run`은 epoch를 올리지 않습니다.
 
 0.6.1부터 domain 이름과 domain 내 category 이름에 unique index가 생기고, 기존 대소문자 중복은 DB를
 열 때 자동 병합됩니다(가장 오래된 행 유지). 무비용 결정론적 재사용 레인은 `MEMEX_ONTOLOGY_DET_GATE`를
@@ -316,6 +320,7 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   ├── db.sqlite                       # (+ -wal, -shm)
 │   ├── exclude.txt
 │   ├── inject-daemon.sock
+│   ├── inject-daemon.lock              # bind 직렬화용, 시도 후 삭제 (0.6.3)
 │   ├── logs/
 │   │   └── inject-context.jsonl        # (+ .old, 5 MB에서 회전)
 │   ├── state/
@@ -339,7 +344,7 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 
 `logs/ui-audit.jsonl`은 Web UI와 코어의 변경·복구·관리 실행 감사 메타데이터이고(`memex facts promote/demote`, `memex recover`, `memex jobs retry`, `memex jobs dismiss`도 여기에 한 줄씩 남깁니다), `ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터입니다. 둘 다 원문·출력이 아니라 메타데이터만 남깁니다. `logs/hook-events.jsonl`은 관측된 lifecycle hook의 이벤트 이름·시각만, `conversation-index/logs/inject-context.jsonl`은 retrieval 1건당 상태·건수·소요 시간만 기록합니다.
 
-`conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있습니다. `run-locks/`, `*.lock`, `inject-daemon.sock`은 실행 중 파일이며 백업 대상이 아닙니다.
+`conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있습니다. `run-locks/`, `*.lock`, `inject-daemon.sock`, `inject-daemon.lock`은 실행 중 파일이며 백업 대상이 아닙니다.
 
 우선순위:
 
@@ -507,6 +512,7 @@ marker가 있을 때만 추가되어 최대 12개입니다. 하나라도 `FAIL`�
 | `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
+| `inject-daemon` (0.6.3) | fast-path socket의 소유자 정체. 아무도 listen하지 않으면 ok(`no daemon`), 소유자가 **설치본**(훅이 실행되는 루트, npx shim으로 doctor가 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아님)과 같은 빌드면 ok, 다른 빌드면 warn(소유자 version/buildId/root/db/pid/startedAt 표시), 정체를 밝히지 않거나 말을 걸 수 없으면 warn. 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록) |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
 | `ontology-index` (0.6.1, 조건부) | `ontology_index_repair_state`에 marker가 있을 때만 나타납니다. category vector index 수리가 `blocked`면 fail(분류가 멈춘 상태 — `memex backfill embeddings`로 벡터 재생성), 화해되었으면 ok |
@@ -517,15 +523,21 @@ marker가 있을 때만 추가되어 최대 12개입니다. 하나라도 `FAIL`�
 
 ```text
 MEMEX_PLUGIN_ROOT
+→ codex plugin list --json 의 installedPath   (doctor/deps materialize처럼 spawn을 허용할 때만)
 → $CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest version>
-→ codex plugin list --json 의 installedPath
 → 실행 중인 launcher의 루트
 ```
+
+0.6.3부터 조회가 cache 스캔보다 먼저입니다(#69). cache 스캔은 실행 중인 복사본의 버전에 맞추는
+추정이므로 cache에 버전이 2개 이상이면 적재되지 않은 root를 고를 수 있습니다. `codex`가 답하지 못하면
+cache 스캔으로 내려가고, 그때 후보가 2개 이상이면 `dependencies` 판정이
+`2 cached versions (…) — not a confirmed load`를 함께 적어 추정임을 밝힙니다. 훅과 핫패스는
+`probeCodex: false`라 프로세스를 띄우지 않습니다.
 
 `~/.local/bin/memex` shim은 `npx --package=github:BongSuCHOI/memex#main`이라 CLI가 npx cache에서
 실행됩니다. 예전에는 그 npx cache를 "설치된 plugin root"로 착각해 실제 설치본과 다른 판정을 냈습니다.
 
-`dependencies`, `inject-output` / `recall-provenance`, `injection-yield`의 원인과 복구 명령은
+`dependencies`, `inject-output` / `recall-provenance`, `injection-yield`, `inject-daemon`의 원인과 복구 명령은
 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)이 단일 출처입니다. 여기서는 §20이 다루지 않는 항목만
 적습니다.
 
@@ -696,11 +708,13 @@ memex facts explain --subject state.runtime.session_store --project-id <project_
 
 MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가 current → Chronicle → source → other session을 보여 줍니다. `grounded cause (source-cited)`와 `classifier note (…NOT authoritative)`는 항상 분리 표시됩니다.
 
-Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다.
+Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다. 리스트 항목 수 상한(8개)도 같습니다(0.6.3): 앞 8개만 남기고 버린 개수를 `truncated_fields_json`의 `itemCaps`에 기록합니다. 0.6.3부터 절단은 `finalChars <= maxChars`를 보장하며(제어문자 이스케이프까지 고려한 마지막 수단 루프), 그래도 넘는 드문 경우에는 `overBudget: true`로 그 사실을 밝힙니다.
 
 ```sql
 -- sqlite3 "$(memex home)/conversation-index/db.sqlite"
-SELECT workstream_id, generation, truncated, original_chars, truncated_fields_json
+SELECT workstream_id, generation, truncated, original_chars,
+       json_extract(truncated_fields_json, '$.fields')   AS fields,
+       json_extract(truncated_fields_json, '$.itemCaps') AS item_caps
 FROM work_capsules WHERE truncated = 1;
 ```
 
@@ -917,6 +931,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성 (테스트/진단) |
 | `MEMEX_CAPSULE_MAX_CHARS` | `12000` (하한 `2000`) | Work Capsule 한 세대의 bounded storage size. 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 `work_capsules.truncated`에 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | `0.045` (허용 `0`–`1`) | 주입 관련성 게이트가 요구하는 baseline 대비 마진. 범위를 벗어난 값은 기본값으로 되돌아갑니다. **`baseline_margin_gap`으로 측정한 뒤에 조정하십시오** |
+| `MEMEX_INJECT_DAEMON` (0.6.3) | 미설정 | 주입 fast-path listener를 강제합니다: `1`이면 on, `0`이면 off. 미설정이면 **설치된 플러그인 루트에서만** 열립니다(`realpath(실행 루트) === realpath(설치 루트)`, 해석 source가 `launcher`가 아닐 때) — 개발 체크아웃의 MCP 서버가 socket을 잡아 다른 버전 코드로 주입을 처리하는 것을 막습니다(#84) |
 | `MEMEX_AUTO_ONTOLOGY` | unset (= on) | 자동 ontology 분류와 후속 관계 작업 스위치. **on으로 인정하는 값은 미설정·빈 문자열·`1` 뿐**이고 그 밖의 값(`0`은 물론 `true`·`yes`도)은 끕니다. 수동 `memex backfill ontology`는 유지 |
 | `MEMEX_ONTOLOGY_DET_GATE` | unset (= `+Infinity`, 꺼짐) | 무비용 결정론적 category 재사용 레인의 유사도 임계값. 설정하지 않으면 어떤 후보도 통과하지 못합니다(0.6.1 #47). 켤 때는 현재 taxonomy에서 `facts.ontology_similarity`로 **측정한** `(0,1)` 값을 쓰십시오 |
 | `MEMEX_MAX_EXTRACT_WINDOWS` | `12` | 세션당 extraction generator window 예산. 미설정이면 `MEMEX_MAX_EXTRACT_CALLS`를 봅니다 |
@@ -957,7 +972,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 
 ```bash
 memex status          # Needs attention / terminal state / Quarantined projects
-memex doctor          # dependencies / inject-output / recall-provenance / injection-yield ...
+memex doctor          # dependencies / inject-output / recall-provenance / injection-yield / inject-daemon ...
 ```
 
 | 실패 클래스 | 어디에 보이나 | 원인 | 복구 명령 |
@@ -977,6 +992,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 격리된 프로젝트 | `Quarantined projects: N (…)` | `/`처럼 프로젝트를 지목할 수 없는 cwd에서 만들어진 프로젝트. fact는 보존하고 주입·조회에서만 제외 | 복구 명령 없음(사람이 판단). 정상 cwd에서 다시 작업하면 올바른 프로젝트로 기록되고, 이전 fact가 필요하면 `memex facts list --scope all`로 확인 후 `memex facts promote/demote`로 옮깁니다 |
 | 런타임 의존성 없음 | `doctor`의 `dependencies: fail`, stderr `[memex] runtime deps missing at <ROOT>; installed plugin root: <설치본>; falling back to npx …` | 설치된 플러그인 루트에 `better-sqlite3` / `@xenova/transformers` / `sqlite-vec` 중 하나라도 없어 모든 hook이 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)으로 폴백 | `memex deps materialize` (해석된 설치본에서 `npm install --omit=dev --no-audit --no-fund` 실행). 루트를 직접 지정하려면 `--root <path>`. `memex install`도 같은 단계를 수행합니다 |
 | 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
+| 주입이 엉뚱한 버전으로 처리됨 | `doctor`의 `inject-daemon: warn` (`owned by a DIFFERENT build`) | 다른 호스트(개발 체크아웃, 옛 프로세스)의 MCP 서버가 fast-path socket을 쥐고 있음. 0.6.3부터 훅이 그 daemon을 거절하므로 **주입 내용은 정확하지만** 매 프롬프트가 느린 in-process 경로를 탑니다 (그 줄의 `daemon.reason`으로 확인) | 보고된 `root`/`version`으로 소유자를 확인한 뒤 그 호스트를 종료하십시오. pid는 **MCP 서버 전체**이므로 그 호스트의 Memex 도구도 함께 멈추고, pid는 재사용될 수 있으니 빌드로 확인하십시오. 0.6.3+ 소유자라면 설치본 MCP 서버가 다시 시작될 때 협조적으로 물려줍니다(`retire`) |
 | 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
 | ontology 분류 보류(parked) | `memex status`의 `Ontology: … (N classified, P parked, Q pending)`에서 `P > 0` | 분류 시도를 소진해 `General`/`Misc`에 보관된 fact. **classified가 아닙니다** | `memex backfill ontology`. 재시도는 분류 정책/embedding 세대당 정확히 1회이므로, 세대가 그대로면 다시 돌려도 같은 fact를 재시도하지 않습니다 |
@@ -997,6 +1013,10 @@ SELECT recorded_at, value AS closest_gap, dims_json
 FROM continuity_telemetry WHERE metric = 'baseline_margin_gap'
 ORDER BY recorded_at DESC LIMIT 20;
 ```
+
+`dims_json`의 `gaps`와 `value`는 소수 4자리 **표시값**이고, `passed`/`rejected`는 반올림 전 원값으로
+센 수입니다(0.6.3, #75). 따라서 `passed`는 주입된 semantic 후보 수와 항상 일치하며, `gaps`를 직접
+마진과 비교해 다시 세면 경계(예: 마진 `0.045`, gap `0.04496`)에서 다른 답이 나올 수 있습니다.
 
 복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker` 또는 `memex backfill extract`).
 `memex recover`와 `memex jobs retry`는 **아무것도 삭제하지 않습니다**: 지워진 `last_error`는

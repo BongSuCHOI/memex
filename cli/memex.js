@@ -410,7 +410,7 @@ async function main() {
 
       case "doctor": {
         const { doctor } = await import(join(distDir, "lifecycle.js"));
-        const report = doctor();
+        const report = await doctor();
         if (args.includes("--json")) {
           console.log(
             JSON.stringify(

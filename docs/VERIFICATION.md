@@ -83,8 +83,11 @@ node scripts/web-ui-browser-e2e.mjs
 | 기억 계층 0.6.0 | 브랜치 신호 분류, 결정론적 workstream id, 기본 tier, 사다리 한 칸 제약, 자동 재조정, workspace 전이, untrusted cwd 격리 |
 | terminal 상태 복구 0.6.0 | 여덟 terminal 상태 카운트, `recover`/`jobs retry\|dismiss`의 단일 트랜잭션 리셋, `retry_history` 보존 |
 | 주입 관측 0.6.0 | `injected`/`context-only` 구분, `receipt-failed`, `baseline_margin_gap`, `lexical_lane_unavailable`, doctor 판정 |
+| 주입 fast path 정체 0.6.3 (#84) | 훅↔daemon 핸드셰이크(계산 전 5필드 일치), 불일치·구버전·타임아웃의 in-process fallback과 `daemon.reason`/`got` 기록, socket 소유권(O_EXCL lock, 죽은 socket 회수, EACCES 비개입, `retire` 인계/거절), 설치 루트 전용 listener와 `MEMEX_INJECT_DAEMON` 강제, `doctor`의 `inject-daemon` 보고(설치 루트 기준 판정, probe 부산물이 `inject-output`을 오염시키지 않음), `ok` 응답의 정체 echo 검증, 구버전 daemon에 session 미전달 |
 | 크로스디바이스 스위치 0.6.1 | 기본 off, 공유 폴더 해석 순서, 원자적 세대 publish, 변경 없을 때 export 생략, off일 때 두 훅의 no-op, `doctor`의 `skipped(off)`→warn→ok |
 | 설치본 해석 0.6.1 | `MEMEX_PLUGIN_ROOT`→codex cache→`codex plugin list --json`→launcher 순서를 `doctor`·`deps materialize`·`runtime-exec`가 공유 |
+| 설치본 해석 0.6.3 (#69) | `probeCodex`일 때 `codex plugin list --json`이 cache 스캔보다 먼저, cache 버전 2개 중 조회가 가리킨 쪽 채택, 조회 불가·비정상 출력이면 cache 폴백, `probeCodex: false`는 spawn 없음, 모호한 cache 선택의 `doctor` 표시 (`test/plugin-root-slice.test.mjs`) |
+| Ontology 0.6.3 (#73) | `ontology merge`/`rename`이 자기 트랜잭션에서 taxonomy epoch을 올려 진행 중 분류가 삭제된 카테고리를 되살리지 못함(`StaleFactMutationError`, 새 행 없음, attempt 미소모), `--dry-run`은 epoch 불변 |
 | Ontology 0.6.1 | parked 상태와 세대당 1회 재시도, `classified` 제외, 대소문자 UNIQUE와 중복 병합 마이그레이션, `ontology list\|merge\|rename`, index repair 상태의 status/doctor 노출 |
 | 유지보수 계보·기아 0.6.1 | wave 계보의 컬럼화와 기존 중첩 id 정규화, derived lane 연속 skip 카운터와 3회 뒤 강제 통과 |
 | 근거 영수증 0.6.1 | `backfill receipts`의 재구성 범위, `recordLocalMeaningEvidence` 실패 보고, sync-import의 `peer-authority` 강등 |
@@ -119,14 +122,16 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 
 | Suite | 고정하는 회귀 |
 | --- | --- |
+| `test/continuity-identity.test.ts` | 전역/시스템 `init.defaultBranch` 감지 순서(`origin/HEAD` → 저장소 config → `~/.gitconfig` → XDG → 시스템), `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` 존중, 섹션 경계와 파일 부재 내성 (#65) |
 | `test/scope-tier-identity.test.ts` | 브랜치·기본 브랜치 감지, `no-branch-signal`/`default-branch`/`branch:<name>` 분류, `(project_id, branch)` 결정론적 workstream id, 워크트리 공유, workspace 전이와 `WORKSPACE_LOCATION_CHANGED`, 승인 없는 병합 거부, untrusted cwd 거절과 quarantine |
-| `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply |
+| `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply, 근거가 정정된 auto 승격의 강등과 정규화 동일 재표현의 tier 유지 (#62) |
 | `test/fixtures/fact-scope-directive-cases.json` | 세션 내 한국어·영어 범위 지시문 인식 fixture |
 | `test/job-recovery.test.ts` | `recover`/`jobs retry\|dismiss`의 한 트랜잭션 리셋 범위, `retry_history` 보존, dry-run 무변경, `dismiss`의 `superseded`, 실행 중 lease를 가진 소유 job의 target 경로 거부와 CAS 경쟁 시 부분 리셋 없음 (#70) |
-| `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록 |
+| `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록, 리스트 항목 수 상한 절단(`itemCaps` kept/dropped, 12개 `touchedAreas`가 retry 없이 completed, 절단 후 evidence source 재검증, 0.6.3 이전 배열 형태 읽기) (#85), 제어문자 scalar에서도 `finalChars <= maxChars` 보장과 `overBudget` 보고, 일반 텍스트의 기존 우선순위 불변 (#74) |
 | `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
 | `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
-| `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱 |
+| `test/inject-daemon-slice.test.mjs` | 핸드셰이크 없는/필드별로 다른 정체의 daemon 거절과 `via:"fallback"`+`daemon.reason`, 일치 시 fast path 제공과 빌드 귀속, 실제 daemon↔실제 훅 왕복(두 파일의 정체 계산이 어긋나면 fallback으로 드러남), SIGKILL이 남긴 socket·비-socket 파일 회수, EACCES 비개입, live/stale bind lock, `retire` 인계와 비설치 루트 거절, 설치 루트 정책과 `MEMEX_INJECT_DAEMON`, `doctor`의 세 판정 (#84) |
+| `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱, 경계 gap에서 `passed`/`rejected`가 원값 기준이고 주입 결과와 일치하며 `dims.gaps`는 소수 4자리 유지 (#75) |
 | `test/recall-receipt-observability.test.ts` | `receipt-failed` 로그 기록과 `recall-provenance`/`inject-output` doctor 판정 |
 | `test/cli-help-guard-slice.test.mjs` | 모든 서브커맨드의 `--help`가 부작용 없이 exit 0 (`update`, `setup-hooks`, `remove-hooks`, `migrate-projects` 포함) |
 | `test/runtime-exec-slice.test.mjs` | 설치본 의존성 부재 시 stderr 1줄 경고 후 npx 폴백(조용한 폴백 금지) |

@@ -11,16 +11,29 @@
  * Both operations are LOCAL-DERIVED edits:
  *  - no Chronicle event: fact MEANING does not change, only the overlay it is
  *    filed under, and Chronicle is the meaning ledger;
- *  - no semantic/lifecycle generation bump, no attempt-ledger reset, no
- *    taxonomy-epoch bump: nothing in flight becomes stale, because no fact's
- *    meaning and no candidate's identity was invalidated;
+ *  - no semantic/lifecycle generation bump and no attempt-ledger reset: no
+ *    fact's meaning was invalidated;
+ *  - they DO bump the taxonomy epoch (issue #73, see below), because a
+ *    classification already holding the old candidate set is now stale;
  *  - one metadata-only line in logs/ui-audit.jsonl, matching the shape the
  *    fact tier ladder and job recovery already write.
+ *
+ * Issue #73 — "nothing in flight becomes stale" was wrong for candidate
+ * identity. `applyClassification` captures the taxonomy epoch before its LLM
+ * round trip and CAS-checks it at commit, but merge and rename left the epoch
+ * alone, so a classification that had resolved the merged-away name as its
+ * candidate passed the check and its name-based resolve-or-create RE-CREATED the
+ * deleted category under a fresh id. Observed: merging `Cache` into `Storage`
+ * left `epochUnchanged: true` and `Cache` back in `ontology_categories` with a
+ * different id — the operator's merge silently undone. Both operations now
+ * advance the epoch inside their own transaction, so such a result is discarded
+ * with `StaleFactMutationError` (which spends no attempt) and re-classified
+ * against the new taxonomy on the next pass.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { getMemexHome } from './paths.js';
-import { deleteCategoryEmbedding, getCategory } from './ontology-db.js';
+import { bumpTaxonomyEpoch, deleteCategoryEmbedding, getCategory } from './ontology-db.js';
 /** Metadata-only audit line; never fact text, category description or prompts. */
 function appendOntologyAudit(action, detail) {
     try {
@@ -79,6 +92,10 @@ export function mergeCategories(db, input) {
             .prepare('UPDATE facts SET ontology_category_id = ? WHERE ontology_category_id = ?')
             .run(to.id, from.id);
         db.prepare('DELETE FROM ontology_categories WHERE id = ?').run(from.id);
+        // Issue #73: in the same transaction as the delete, so a classifier can
+        // never see the category gone without the epoch move — which is what let an
+        // in-flight classification re-create it under a new id.
+        bumpTaxonomyEpoch(db);
         return moved.changes;
     });
     plan.factsMoved = apply.immediate();
@@ -118,6 +135,10 @@ export function renameCategory(db, input) {
         }
         db.prepare('UPDATE ontology_categories SET name = ?, embedding_version = 0 WHERE id = ?')
             .run(name, category.id);
+        // Issue #73: the old name is a candidate identity, and resolve-or-create is
+        // name-based — without the epoch move an in-flight classification holding
+        // the old label would create a second category under it.
+        bumpTaxonomyEpoch(db);
     });
     rename.immediate();
     // Drop the stale vector so the next classification's bounded self-heal (or

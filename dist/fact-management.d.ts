@@ -305,8 +305,9 @@ export interface TierReconcileResult {
  *                          workstream (another branch, or a project-common
  *                          session with no branch signal).
  *   project → global     : the same fact text is confirmed in ≥2 projects.
- *   demotion             : the upper evidence an automatic promotion cited is
- *                          gone — every cited fact is inactive or deleted.
+ *   demotion             : the upper evidence an automatic promotion cited no
+ *                          longer confirms it — every cited fact is inactive,
+ *                          deleted, or corrected away from the promoted text.
  */
 export declare function reconcileFactTiers(db: Database.Database, options?: {
     now?: string;

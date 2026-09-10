@@ -34,6 +34,10 @@ P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec
 
 Capsule 한 세대의 bounded storage size는 기본 **12,000자**이며 `MEMEX_CAPSULE_MAX_CHARS`로 조정합니다(하한 2,000자). 초과한 patch는 버리지 않고 우선순위대로 줄여 저장합니다 — objective·current_state·verified_progress를 마지막까지 보존하고, touched_areas/open_questions/next_actions/hypotheses 항목 수 → carry revision(64→16→8) → blockers → evidence별 source 목록 → 텍스트 길이 → verified 항목 수 → 최상위 source 목록 순으로 줄입니다. 절단이 일어나면 `work_capsules.truncated` / `truncated_fields_json` / `original_chars`에 무엇이 줄었는지 그대로 기록하고 worker 로그에 WARN 1줄을 남깁니다(미수집을 수집으로 위장하지 않습니다). 이 상한은 Capsule projection에만 적용되며, 사용자 프롬프트 원문은 `exchanges`에 그대로 보관되고 추출은 `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS`(120,000자) 창으로 분할됩니다.
 
+절단은 **직렬화 크기 상한을 실제로 보장합니다**(0.6.3, 이슈 #74). 위 우선순위는 모두 *필드* 상한이고 필드 상한은 직렬화 크기 상한이 아닙니다 — 제어문자 1자는 JSON에서 6자가 되므로 240자로 줄인 scalar 2개도 상한을 넘을 수 있었습니다(실측: `MEMEX_CAPSULE_MAX_CHARS=2000`에 `finalChars: 3067`). 마지막 수단으로 `objective`/`current_state`를 60자 하한까지 **반씩** 더 줄이고(매 패스마다 최소 하나가 확실히 짧아지므로 종료합니다), 그래도 넘으면 행은 그대로 저장하되 `truncation.overBudget = true`를 실어 `truncated_fields_json`과 worker WARN(`overBudget=true`)에 남깁니다. 넘은 예산을 지킨 것처럼 보고하지 않습니다.
+
+**항목 수 상한도 같은 원칙입니다**(0.6.3, 이슈 #85). 리스트 하나가 8개를 넘으면 앞 8개만 남기고 버린 개수를 기록합니다 — 예전에는 `touchedAreas exceeds 8 items`로 throw해 `capsule_update` attempt와 continuity 예산을 한 번씩 태웠고, 모델이 같은 개수를 계속 돌려주면 5회 만에 job이 `dead`가 됐습니다. 절단된 리스트는 `truncated_fields_json`의 `itemCaps`에 `{"touchedAreas":{"kept":8,"dropped":4}}` 형태로 남고, WARN 1줄에 같은 수치가 실립니다. `verifiedProgress`/`hypotheses`처럼 evidence를 가진 리스트는 절단 **후** 남은 항목의 `sourceExchangeIds`만 선언 집합 포함 여부를 검사하므로, 사라진 항목의 source가 검증을 깨뜨리지 않고 저장된 항목의 source는 여전히 모두 선언돼 있어야 합니다. 항목별 유효성(빈 문자열, 500자 초과)은 **남는** 항목에만 적용합니다. 생성 프롬프트의 "every list at eight items" 지시는 그대로 두되, 위반은 실패가 아니라 절단입니다.
+
 실패한 Capsule 시도는 다음 page를 절반으로 줄입니다(`capsule_checkpoint_state.page_items_hint` / `page_chars_hint`). `max_attempts`를 소진해 `dead`가 되면 **조건부로만** head fragment를 건너뛰고 frontier를 전진시킵니다(0.6.2): 이미 최소 page(조각 1개)였고, 실패가 `src/llm-error-class.ts` 기준 일시적 분류가 **아닐** 때만입니다. 일시적 모델·네트워크 실패는 그 조각의 내용에 대해 아무것도 말해주지 않으므로 frontier를 그대로 두고 `failed-visible`로 남기며, `memex recover`가 같은 조각을 다시 큐에 넣습니다. 건너뛴 경우에는 전진 전 위치를 `skipped_seq` / `frontier_before_skip`에 기록하고, `memex recover`가 frontier를 그 위치로 되돌려 복구된 작업이 그 조각을 다시 포함하게 합니다(frontier가 그 사이 성공 commit으로 더 전진했다면 되돌리지 않습니다).
 
 Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·list 수·정확한 revision tuple·출처 선언을 검사하고, commit 시 page authority·scope·generation/lease CAS를 다시 확인합니다. Schema 미지원·잘못된 응답은 기존 bounded retry/dead 경로로 남으며 schema 없는 호출로 fallback하지 않습니다. `--json`은 이벤트 전송 형식이므로 final 응답의 구조 제약을 대신하지 않습니다. CLI의 [native schema 계약](https://learn.chatgpt.com/docs/non-interactive-mode#create-structured-outputs-with-a-schema)을 사용합니다.
@@ -44,7 +48,8 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 **디렉터리 = 프로젝트, 브랜치 = workstream (0.6.0).** 세션 시작마다 `inspectWorkspaceLocation(cwd)`이
 `location_kind`/`git_common_dir`/`remote_fingerprint`/`branch`/`default_branch`(= `origin/HEAD`, 없으면
-`init.defaultBranch`, 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
+`packed-refs`, 없으면 저장소 config의 `init.defaultBranch`, 없으면 **사용자 전역/시스템 config**의
+`init.defaultBranch`(0.6.3, #65), 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
 `git_branch`와 workstream `branch_hint`로 전파됩니다. 세션의 **브랜치 신호**는 셋 중 하나입니다.
 
 | 신호 | 조건 | workstream |

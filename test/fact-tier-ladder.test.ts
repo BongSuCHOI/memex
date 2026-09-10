@@ -531,3 +531,130 @@ describe("evidence-based automatic ladder (#19)", () => {
     }
   });
 });
+
+/**
+ * #62 — the documented automatic demotion condition is "the upper evidence was
+ * deactivated *or corrected* away" (`docs/FACT-LIFECYCLE.md`), but the pass read
+ * the cited witnesses' `is_active` alone.
+ *
+ * Observed: two projects asserting "Always run lint before tests" promote one
+ * row to `global`; correcting the surviving witness to "Never run lint before
+ * tests" (still `is_active = 1`, `semantic_generation` bumped) left
+ * `demoted: []` and `tier: "global"`. The fact stayed global on evidence that
+ * had come to say the opposite.
+ */
+describe("automatic promotions survive only while their evidence still confirms them (#62)", () => {
+  /** Two projects asserting `text`; returns the promoted row and its witness. */
+  async function crossProjectGlobal(
+    slug: string,
+    text: string,
+  ): Promise<{ promoted: string; witness: string }> {
+    const ids: string[] = [];
+    for (const suffix of ["one", "two"] as const) {
+      const project = path.join(root, `${slug}-${suffix}`);
+      fs.mkdirSync(project, { recursive: true });
+      const name = `${slug}_${suffix}`;
+      const state = ensureSessionMemoryState(db, { sessionId: name, project });
+      await insertExchange(db, exchange(`ex-${name}`, name, project, text), emb);
+      ids.push(insertFact(db, {
+        fact: text, category: "pattern", scope_type: "project", scope_project: project,
+        source_exchange_ids: [`ex-${name}`], embedding: emb,
+        subject_key: `pattern.ci.${name}`, project_id: state.projectId,
+      }));
+    }
+    const pass = reconcileFactTiers(db, { now: "2026-09-10T00:00:00.000Z" });
+    const promoted = pass.promoted.find((row) => row.to === "global");
+    expect(promoted).toBeDefined();
+    const witness = ids.find((id) => id !== promoted?.id);
+    expect(witness).toBeDefined();
+    return { promoted: promoted!.id, witness: witness! };
+  }
+
+  it("demotes when the surviving witness is corrected to the opposite sentence", async () => {
+    const { promoted, witness } = await crossProjectGlobal("corrected", "Always run lint before tests");
+    expect(readFactTier(db, promoted).tier).toBe("global");
+
+    // The witness is corrected, not removed: it stays active, as a correction does.
+    db.prepare("UPDATE facts SET fact = ?, semantic_generation = semantic_generation + 1 WHERE id = ?")
+      .run("Never run lint before tests", witness);
+    expect(db.prepare("SELECT is_active FROM facts WHERE id = ?").get(witness))
+      .toEqual({ is_active: 1 });
+
+    const after = reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" });
+    expect(after.demoted).toEqual([{
+      id: promoted, from: "global", to: "project",
+      reason: "upper evidence no longer confirms the same fact",
+    }]);
+    expect(readFactTier(db, promoted).tier).toBe("project");
+
+    // The reason a fact came down is readable in the Chronicle event, alongside
+    // the witness it no longer trusts.
+    const event = db.prepare(
+      "SELECT actor, outcome_json FROM fact_revisions WHERE fact_id = ? AND event_kind = 'DEMOTED'",
+    ).get(promoted) as { actor: string; outcome_json: string };
+    expect(event.actor).toBe("auto");
+    expect(JSON.parse(event.outcome_json)).toMatchObject({
+      from_tier: "global",
+      to_tier: "project",
+      reason: "upper evidence no longer confirms the same fact",
+      evidence_fact_ids: [witness],
+    });
+
+    // #61 still holds: one rung, and repeating the pass never digs deeper.
+    const again = reconcileFactTiers(db, { now: "2026-09-10T02:00:00.000Z" });
+    expect(again.demoted).toEqual([]);
+    expect(readFactTier(db, promoted).tier).toBe("project");
+  });
+
+  it("keeps the tier when the witness is only restated and normalizes equal", async () => {
+    const { promoted, witness } = await crossProjectGlobal("restated", "Always run lint before tests");
+    expect(readFactTier(db, promoted).tier).toBe("global");
+
+    // Same sentence, different casing and padding: `LOWER(TRIM(fact))` — the
+    // normalization both promotions use — still reads it as the same truth.
+    db.prepare("UPDATE facts SET fact = ?, semantic_generation = semantic_generation + 1 WHERE id = ?")
+      .run("  ALWAYS RUN LINT BEFORE TESTS  ", witness);
+
+    const after = reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" });
+    expect(after.demoted).toEqual([]);
+    expect(readFactTier(db, promoted).tier).toBe("global");
+  });
+
+  it("still demotes on deactivation, and names that reason instead", async () => {
+    const { promoted, witness } = await crossProjectGlobal("deactivated", "Always run lint before tests");
+    db.prepare("UPDATE facts SET is_active = 0 WHERE id = ?").run(witness);
+
+    const after = reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" });
+    expect(after.demoted).toEqual([{
+      id: promoted, from: "global", to: "project",
+      reason: "upper evidence is no longer active",
+    }]);
+    expect(readFactTier(db, promoted).tier).toBe("project");
+  });
+
+  it("demotes a workstream promotion whose branch witness was corrected", async () => {
+    const project = path.join(root, "branch-corrected");
+    gitClone(project, "feature/a");
+    const target = await branchFact("bc-a", project, "state.runtime.shared", "Shared truth");
+    const second = ensureSessionMemoryState(db, { sessionId: "bc-b", project, branch: "feature/b" });
+    await insertExchange(db, exchange("ex-bc-b", "bc-b", project, "Shared truth"), emb);
+    const witness = insertFact(db, {
+      fact: "Shared truth", category: "knowledge", scope_type: "project", scope_project: project,
+      source_exchange_ids: ["ex-bc-b"], embedding: emb, subject_key: "state.runtime.shared",
+      project_id: second.projectId, workspace_id: second.workspaceId,
+      workstream_id: second.workstreamId, promotion_state: "workstream",
+      promotion_evidence: "experimental",
+    });
+    reconcileFactTiers(db, { now: "2026-09-10T00:00:00.000Z" });
+    expect(readFactTier(db, target).tier).toBe("project");
+
+    db.prepare("UPDATE facts SET fact = ?, semantic_generation = semantic_generation + 1 WHERE id = ?")
+      .run("Contradicting truth", witness);
+    const after = reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" });
+    expect(after.demoted).toEqual([{
+      id: target, from: "project", to: "workstream",
+      reason: "upper evidence no longer confirms the same fact",
+    }]);
+    expect(readFactTier(db, target).tier).toBe("workstream");
+  });
+});

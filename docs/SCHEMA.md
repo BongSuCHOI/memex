@@ -159,7 +159,7 @@ hardening이지 전제가 아니므로 마이그레이션 트랜잭션 밖에서
 `memex status`가 프로젝트 ID·표시 이름·fact 수를 나열합니다. cwd를 신뢰할 수 없는 세션은 프로젝트에
 붙지 않고 글로벌 전용 읽기로 degrade합니다(`readScopeForSession` → `{ type: 'global' }`).
 
-`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `packed-refs` → 저장소 config의 `init.defaultBranch` → 사용자 전역/시스템 config의 `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
 
 `workspace_location_events`(0.6.0 additive, device-local, sync 미대상)는 workspace 전이를 기록합니다.
 세션 시작마다 경로가 실제로 존재하면 fresh inspection이 권위이며 workspace 행의 git 메타데이터를
@@ -178,6 +178,13 @@ event_id는 시계가 아니라 전이의 모양에서 파생되므로 같은 �
 (TEXT NOT NULL DEFAULT `'[]'`), `original_chars`(nullable INTEGER)를 additive로 갖습니다. 한 세대의
 bounded storage size는 `MEMEX_CAPSULE_MAX_CHARS`(기본 12,000자, 하한 2,000자)이며, 초과한 patch는 job을
 죽이지 않고 우선순위대로 절단해 저장한 뒤 무엇이 줄었는지를 이 세 컬럼에 그대로 남깁니다.
+`truncated_fields_json`은 0.6.3에서 항목 수 상한(#85)과 예산 초과 사실(#74)까지 담도록 넓어졌습니다:
+절단이 없으면 컬럼 기본값 `'[]'`을 유지하고, 절단이 있으면
+`{"fields":["touchedAreas"],"itemCaps":{"touchedAreas":{"kept":8,"dropped":4}},"overBudget":false}`
+형태의 객체를 씁니다. `overBudget`은 마지막 수단까지 적용한 뒤에도 `finalChars > maxChars`인 드문
+경우에만 참이며, 그때도 행은 저장합니다(초과한 projection이 projection 부재보다 낫습니다).
+컬럼 타입·기본값은 그대로이므로 마이그레이션은 없고, 0.6.3 이전에 쓰인 필드명 배열도 읽을 수
+있습니다(그 행은 `itemCaps`가 빈 객체입니다).
 `capsule_checkpoint_state`의 `page_items_hint`/`page_chars_hint`(0.6.0 additive, nullable)는 실패한 시도가
 다음 evidence page를 절반으로 줄이도록 하는 힌트입니다. 최소 page에서도 실패하면 그 head fragment를
 건너뛰고 frontier를 전진시키므로 한 workstream이 영원히 멈추지 않습니다.

@@ -15,12 +15,21 @@
  *
  * Resolution order:
  *   1. `MEMEX_PLUGIN_ROOT` — an explicit operator/harness override always wins.
- *   2. The Codex cache identity derived from `$CODEX_HOME/plugins/cache`.
- *   3. `codex plugin list --json` → `installedPath` (only when asked; it spawns).
+ *   2. `codex plugin list --json` → `installedPath`, but only with
+ *      `probeCodex: true` (it spawns a process).
+ *   3. The Codex cache identity derived from `$CODEX_HOME/plugins/cache`.
  *   4. The launcher's own root (the historical `PLUGIN_ROOT` behaviour).
  *
- * (2) is tried before (3) because it is a pure filesystem read with the same
- * answer, and because a diagnostic must not spawn a process on every run.
+ * Issue #69 swapped (2) and (3). The cache scan answers "which cached version
+ * directory best matches the version of the copy that is running", which is only
+ * the same question as "which plugin did Codex load" while the cache holds a
+ * single version. With two version directories it can name a root Codex is not
+ * using — a diagnostic misreport, and `deps materialize` pointed at the wrong
+ * tree. So a caller that has said it may spawn asks the authority first, and the
+ * cache scan is the fallback; `probeCodex: false` (hooks, hot paths) keeps the
+ * pure filesystem read as its first step and never spawns. The probe result —
+ * including its absence — is cached for the process, so repeated doctor checks
+ * cost one spawn at most.
  *
  * Dependencies: node builtins only. `cli/runtime-exec.js` loads this module on
  * the path where the runtime dependency closure is known to be missing.
@@ -126,12 +135,33 @@ function fromCodexCache(wantedVersion, codexHome) {
     const chosen = exact ?? candidates[0];
     return { root: chosen.root, version: chosen.version };
 }
+/**
+ * Memoized `codex plugin list --json`, including a memoized absence.
+ *
+ * Issue #69 moved this ahead of the cache scan, so a single `memex doctor` run
+ * can reach it from several checks. The key is what the answer actually depends
+ * on — which `codex` is on `PATH`, and which `$CODEX_HOME` it reads — so a
+ * harness that points either somewhere else gets a fresh probe rather than a
+ * stale one.
+ */
+const codexPluginListCache = new Map();
 function fromCodexPluginList() {
+    const key = `${process.env.PATH ?? ""}\0${process.env.CODEX_HOME ?? ""}`;
+    if (codexPluginListCache.has(key))
+        return codexPluginListCache.get(key) ?? null;
+    const resolved = probeCodexPluginList();
+    codexPluginListCache.set(key, resolved);
+    return resolved;
+}
+function probeCodexPluginList() {
     let listed;
     try {
         const result = spawnSync("codex", ["plugin", "list", "--json"], {
             encoding: "utf8",
-            timeout: 10_000,
+            // Short on purpose: this now runs before the filesystem fallback, so a
+            // hung or missing `codex` must not hold a diagnostic open. An absent
+            // binary surfaces as `result.error` and is simply "no answer".
+            timeout: 2_000,
         });
         if (result.error || result.status !== 0 || !result.stdout)
             return null;
@@ -165,18 +195,19 @@ function fromCodexPluginList() {
  */
 export function resolveInstalledPluginRoot(options = {}) {
     const fallbackRoot = path.resolve(options.fallbackRoot ?? path.join(HERE, ".."));
+    const cacheVersions = codexCacheCandidates(options.codexHome).map((entry) => entry.version);
     if (options.explicitRoot) {
         const root = path.resolve(options.explicitRoot);
-        return { root, source: "env", version: readManifestVersion(root) };
+        return { root, source: "env", version: readManifestVersion(root), cacheVersions };
     }
     if (process.env.MEMEX_PLUGIN_ROOT) {
         const root = path.resolve(process.env.MEMEX_PLUGIN_ROOT);
-        return { root, source: "env", version: readManifestVersion(root) };
+        return { root, source: "env", version: readManifestVersion(root), cacheVersions };
     }
-    const localVersion = readManifestVersion(fallbackRoot);
-    const cached = fromCodexCache(localVersion, options.codexHome);
-    if (cached)
-        return { root: cached.root, source: "codex-cache", version: cached.version };
+    // Issue #69: when the caller allows a spawn, ask what Codex actually loaded
+    // before guessing from the cache. The cache scan keys on the RUNNING copy's
+    // version, which stops being the same answer the moment two versions are
+    // cached.
     if (options.probeCodex) {
         const listed = fromCodexPluginList();
         if (listed) {
@@ -184,10 +215,16 @@ export function resolveInstalledPluginRoot(options = {}) {
                 root: listed.root,
                 source: "codex-plugin-list",
                 version: listed.version ?? readManifestVersion(listed.root),
+                cacheVersions,
             };
         }
     }
-    return { root: fallbackRoot, source: "launcher", version: localVersion };
+    const localVersion = readManifestVersion(fallbackRoot);
+    const cached = fromCodexCache(localVersion, options.codexHome);
+    if (cached) {
+        return { root: cached.root, source: "codex-cache", version: cached.version, cacheVersions };
+    }
+    return { root: fallbackRoot, source: "launcher", version: localVersion, cacheVersions };
 }
 /** Runtime packages absent from `<root>/node_modules`. */
 export function missingRuntimeDependencies(root) {

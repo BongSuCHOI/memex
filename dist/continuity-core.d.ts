@@ -178,6 +178,10 @@ export interface WorkCapsule extends WorkCapsulePatch {
     /** Issue #17: this generation was shortened to fit `MEMEX_CAPSULE_MAX_CHARS`. */
     truncated: boolean;
     truncatedFields: string[];
+    /** Issue #85: per-field item counts a bound removed (`{kept, dropped}`). */
+    itemCaps: Record<string, CapsuleItemCap>;
+    /** Issue #74: the stored projection is still above `MEMEX_CAPSULE_MAX_CHARS`. */
+    overBudget: boolean;
     /** Character length of the model's patch before priority truncation. */
     originalChars: number | null;
 }
@@ -261,6 +265,15 @@ export interface ResidentRevisionCorrection {
  */
 export declare function readResidentRevisionCorrections(db: Database.Database, sessionId: string): ResidentRevisionCorrection[];
 /**
+ * How many items of one bounded list survived a cap, and how many were dropped
+ * (issue #85). Recorded per field so a shortened list is never read as the
+ * model's whole answer.
+ */
+export interface CapsuleItemCap {
+    kept: number;
+    dropped: number;
+}
+/**
  * What a size-driven priority truncation removed (issue #17). Recorded on the
  * Capsule row so a shortened projection is never mistaken for the model's whole
  * answer: nothing is silently dropped, and nothing is invented to fill it.
@@ -268,9 +281,22 @@ export declare function readResidentRevisionCorrections(db: Database.Database, s
 export interface CapsuleTruncation {
     truncated: boolean;
     truncatedFields: string[];
+    /**
+     * Issue #85: `{field: {kept, dropped}}` for every list a bound shortened,
+     * whether the bound was the item cap applied while validating or the later
+     * size-driven pass.
+     */
+    itemCaps: Record<string, CapsuleItemCap>;
     originalChars: number;
     finalChars: number;
     maxChars: number;
+    /**
+     * Issue #74: `finalChars` is still above `maxChars` after every step,
+     * including the last-resort scalar halving. The row is stored anyway (an
+     * oversized projection beats no projection) but the caller logs the fact
+     * instead of reporting a budget that was not met.
+     */
+    overBudget: boolean;
 }
 export declare function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch;
 export declare function validateWorkCapsulePatchWithTruncation(value: unknown): {

@@ -8,6 +8,13 @@ export interface InstalledPluginRoot {
     source: PluginRootSource;
     /** Manifest version the resolution was keyed on, when one was readable. */
     version: string | null;
+    /**
+     * Every version directory the Codex cache holds, newest first (issue #69).
+     *
+     * More than one means the cache scan is a guess rather than a fact, so doctor
+     * says so instead of presenting its pick as the loaded plugin.
+     */
+    cacheVersions: string[];
 }
 export declare function codexHomeDir(codexHome?: string): string;
 /** Version declared by a checkout/installation, manifest first, package second. */

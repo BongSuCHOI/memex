@@ -179,8 +179,11 @@ describe('issue #47 — taxonomy uniqueness, merge and rename', () => {
           }).n,
         ),
       ).toBe(3);
-      // Nothing else is invalidated: no attempt reset, no taxonomy epoch bump.
-      expect(getTaxonomyEpoch(db)).toBe(1);
+      // #73: the candidate set changed, so the epoch moves — a classification
+      // that resolved the merged-away name before this must be discarded, not
+      // allowed to re-create it. Dry run above changed nothing, including this.
+      expect(getTaxonomyEpoch(db)).toBe(2);
+      // No fact's MEANING changed: still no Chronicle event, no attempt reset.
       expect(
         Number((db.prepare('SELECT COUNT(*) AS n FROM fact_revisions').get() as { n: number }).n),
       ).toBe(0);

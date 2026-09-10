@@ -167,12 +167,14 @@ function truncateFact(text, cap = NORMAL_BUNDLE_BUDGET.lineChars) {
 export async function computeInjectContext(userPrompt, project, via, sessionId, options = {}) {
     const t0 = Date.now();
     const now = options.now ?? new Date().toISOString();
+    const daemonNote = options.daemon ? { daemon: options.daemon } : {};
     if (!sessionId) {
         appendInjectLog({
             status: "no-session-provenance",
             project,
             prompt_len: userPrompt.length,
             via,
+            ...daemonNote,
         });
         return "";
     }
@@ -324,6 +326,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                 embedding_calls: calls,
                 duration_ms: Date.now() - t0,
                 via,
+                ...daemonNote,
             });
             return "";
         }
@@ -426,26 +429,38 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
         // showed "5 candidates, 0 injected" with no way to tell a correct rejection
         // from a threshold set too high.
         const margin = resolveBaselineMargin();
-        const gaps = [];
+        // Issue #75: the gate decides on the raw gap, so the counts must be derived
+        // from the raw gaps too. Recomputing `passed` from the rounded display array
+        // disagreed with the gate at the boundary — with the default margin of
+        // 0.045, a gap of 0.04496 is rejected but rounds to 0.045 and "passes" — so
+        // telemetry could report an injection that never happened. Raw values decide
+        // and count; the rounded copy is only for the log.
+        const rawGaps = [];
         const results = orderedCandidates.filter((r) => {
             if (r.lexicalScore !== null)
                 return true;
             const similarity = r.semanticSimilarity ?? l2DistanceToSimilarity(r.distance);
             const gap = similarity - baseline;
-            gaps.push(Math.round(gap * 1e4) / 1e4);
+            rawGaps.push(gap);
             return gap >= margin;
         });
-        if (gaps.length > 0) {
-            const passed = gaps.filter((gap) => gap >= margin).length;
+        if (rawGaps.length > 0) {
+            const passed = rawGaps.filter((gap) => gap >= margin).length;
             sampleTelemetry(db, {
                 // The closest miss is the decision-relevant number; `dims.gaps` keeps
                 // the whole bounded distribution (at most TOP_K entries).
                 metric: "baseline_margin_gap",
-                value: Math.max(...gaps),
+                value: Math.round(Math.max(...rawGaps) * 1e4) / 1e4,
                 unit: "similarity",
                 projectId: sessionScope.projectId,
                 sessionId,
-                dims: { margin, gaps, passed, rejected: gaps.length - passed, baseline: Math.round(baseline * 1e4) / 1e4 },
+                dims: {
+                    margin,
+                    gaps: rawGaps.map((gap) => Math.round(gap * 1e4) / 1e4),
+                    passed,
+                    rejected: rawGaps.length - passed,
+                    baseline: Math.round(baseline * 1e4) / 1e4,
+                },
             });
         }
         let rawEvidence = [];
@@ -719,6 +734,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
                 lexical_lane: lexicalLane,
                 duration_ms: Date.now() - t0,
                 via,
+                ...daemonNote,
             });
             if (dedupedCount > 0) {
                 sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -762,6 +778,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             lexical_lane: lexicalLane,
             duration_ms: Date.now() - t0,
             via,
+            ...daemonNote,
         });
         return block;
     }
@@ -774,6 +791,7 @@ export async function computeInjectContext(userPrompt, project, via, sessionId, 
             duration_ms: Date.now() - t0,
             error: message.slice(0, 300),
             via,
+            ...daemonNote,
         });
         return ""; // non-fatal: never disrupt the user's prompt
     }

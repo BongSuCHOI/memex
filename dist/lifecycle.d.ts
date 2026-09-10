@@ -86,4 +86,4 @@ export interface DoctorReport {
     overall: "PASS" | "PARTIAL" | "FAIL";
 }
 /** Read-only diagnosis. Distinguishes configured vs observed. */
-export declare function doctor(): DoctorReport;
+export declare function doctor(): Promise<DoctorReport>;

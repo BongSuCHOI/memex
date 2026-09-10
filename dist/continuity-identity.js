@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { assertMutationPolicy, captureMutationPolicy } from './fact-policy.js';
 import { canonicalizeProjectPath, isUntrustedProjectPath, UntrustedProjectPathError, } from "./project-identity.js";
@@ -70,7 +71,112 @@ function readGitFile(file) {
         return null;
     }
 }
-/** Repository default branch: `origin/HEAD` first, then `init.defaultBranch`. */
+/** Drop an unquoted `#`/`;` comment, the way git's config parser does. */
+function stripConfigComment(line) {
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        if (char === "\\") {
+            index += 1;
+            continue;
+        }
+        if (char === '"') {
+            quoted = !quoted;
+            continue;
+        }
+        if (!quoted && (char === "#" || char === ";"))
+            return line.slice(0, index);
+    }
+    return line;
+}
+/**
+ * `init.defaultBranch` from one git config file's text.
+ *
+ * Section-aware on purpose: the earlier `/\[init\][\s\S]*?defaultBranch/` regex
+ * could cross a section boundary and read some other section's key. Git keeps
+ * the LAST value a file declares, so this does too.
+ */
+function initDefaultBranchIn(config) {
+    let inInit = false;
+    let value = null;
+    const readEntry = (text) => {
+        const entry = text.trim().match(/^defaultBranch\s*=\s*(.*)$/i);
+        if (!entry)
+            return;
+        const raw = entry[1].trim().replace(/^"(.*)"$/s, "$1").trim();
+        if (raw)
+            value = raw;
+    };
+    for (const rawLine of config.split(/\r?\n/)) {
+        const line = stripConfigComment(rawLine).trim();
+        if (!line)
+            continue;
+        // Git also accepts `[section] key = value` on one line.
+        const section = line.match(/^\[\s*([A-Za-z0-9.\-]+)\s*(?:"(?:[^"\\]|\\.)*")?\s*\](.*)$/);
+        if (section) {
+            inInit = section[1].toLowerCase() === "init";
+            if (inInit && section[2].trim())
+                readEntry(section[2]);
+            continue;
+        }
+        if (inInit)
+            readEntry(line);
+    }
+    return value;
+}
+/**
+ * The config files `git config --global` and `--system` write to, in the order
+ * git resolves them (global overrides system).
+ *
+ * Issue #65: these are read as files rather than through `git config`, so no
+ * process is spawned on the session-binding path and an absent file is simply
+ * absent. Within the global tier git reads the XDG file first and `~/.gitconfig`
+ * second, so `~/.gitconfig` wins; `GIT_CONFIG_GLOBAL` replaces both, and
+ * `GIT_CONFIG_SYSTEM` / `GIT_CONFIG_NOSYSTEM` override the system tier the same
+ * way git itself honours them.
+ */
+function userGitConfigFiles() {
+    const files = [];
+    const globalOverride = process.env.GIT_CONFIG_GLOBAL;
+    if (globalOverride) {
+        // `/dev/null` is git's documented way to say "no global config".
+        if (globalOverride !== "/dev/null")
+            files.push(globalOverride);
+    }
+    else {
+        const home = process.env.HOME || os.homedir();
+        if (home)
+            files.push(path.join(home, ".gitconfig"));
+        const xdg = process.env.XDG_CONFIG_HOME
+            ? path.join(process.env.XDG_CONFIG_HOME, "git", "config")
+            : home ? path.join(home, ".config", "git", "config") : null;
+        if (xdg)
+            files.push(xdg);
+    }
+    if (process.env.GIT_CONFIG_NOSYSTEM === "1")
+        return files;
+    const systemOverride = process.env.GIT_CONFIG_SYSTEM;
+    if (systemOverride) {
+        if (systemOverride !== "/dev/null")
+            files.push(systemOverride);
+        return files;
+    }
+    // Compiled-in location differs per install; probe the usual prefixes.
+    files.push("/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig");
+    return files;
+}
+/**
+ * Repository default branch: `origin/HEAD`, then the repository's own
+ * `init.defaultBranch`, then the user's global/system `init.defaultBranch`.
+ *
+ * Issue #65: stopping at the repository config classified a perfectly ordinary
+ * default branch as a feature branch. A clone with no `origin/HEAD` and no
+ * `[init]` of its own, checked out on `trunk` with `init.defaultBranch = trunk`
+ * set globally, reported `defaultBranch: null`, so `branchSignalFor` returned
+ * `{kind: 'branch', tierReason: 'branch:trunk'}` and every new fact stayed on
+ * the `workstream` tier — where `listTierMigrationCandidates` also skips it,
+ * putting it out of reach of `memex facts migrate-tiers` too.
+ */
 function detectDefaultBranch(commonDir, config) {
     const originHead = readGitFile(path.join(commonDir, "refs", "remotes", "origin", "HEAD"));
     const symbolic = originHead?.match(/^ref:\s+refs\/remotes\/origin\/(.+)$/)?.[1]?.trim();
@@ -80,8 +186,18 @@ function detectDefaultBranch(commonDir, config) {
     const packedHead = packed.match(/^\s*ref:\s+refs\/remotes\/origin\/(.+)$/m)?.[1]?.trim();
     if (packedHead)
         return packedHead;
-    const init = config.match(/\[init\][\s\S]*?\n\s*defaultBranch\s*=\s*([^\n]+)/i)?.[1]?.trim();
-    return init || null;
+    const repoInit = initDefaultBranchIn(config);
+    if (repoInit)
+        return repoInit;
+    for (const file of userGitConfigFiles()) {
+        const text = readGitFile(file);
+        if (text === null)
+            continue;
+        const init = initDefaultBranchIn(text);
+        if (init)
+            return init;
+    }
+    return null;
 }
 export function inspectWorkspaceLocation(cwd) {
     const canonical = canonicalizeProjectPath(cwd);

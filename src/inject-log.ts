@@ -61,6 +61,36 @@ export interface InjectLogEntry {
  sections?: string[];
  /** Issue #32: 'unavailable' means the literal-match lane threw for this prompt. */
  lexical_lane?: "ok" | "unavailable";
+ /**
+  * Issue #84: which build served the fast path, or why it was refused.
+  *
+  * On `via: "daemon"` this is the answering daemon's own identity, so a line can
+  * be attributed to a build rather than to "some MCP server". On
+  * `via: "fallback"` after a daemon was reachable it records the identity the
+  * hook required, what the socket's owner actually reported, and the reason —
+  * the state that used to be invisible while a stale process answered every
+  * prompt with pre-0.6.0 code.
+  */
+ daemon?: {
+  version?: string | null;
+  buildId?: string | null;
+  pid?: number | null;
+  expected?: {
+   version?: string | null;
+   buildId?: string | null;
+   pluginRoot?: string | null;
+   dbPath?: string | null;
+  };
+  got?: {
+   protocol?: number | null;
+   version?: string | null;
+   buildId?: string | null;
+   pluginRoot?: string | null;
+   dbPath?: string | null;
+   pid?: number | null;
+  } | null;
+  reason?: string;
+ };
 }
 
 export function getInjectLogPath(): string {

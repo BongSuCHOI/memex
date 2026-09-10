@@ -1171,6 +1171,8 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
   let db: Database.Database;
   let tmpDir: string;
   let dbPath: string;
+  let previousHome: string | undefined;
+  let previousXdg: string | undefined;
 
   const insertExcludedConversation = (exchangeId: string, archivePath: string): void => {
     db.prepare(
@@ -1183,12 +1185,27 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-epoch-'));
     dbPath = path.join(tmpDir, 'test.db');
     process.env.TEST_DB_PATH = dbPath;
+    // The data ROOT, not only the database: `ontology merge|rename` append one
+    // metadata line to `<getMemexHome()>/logs/ui-audit.jsonl`, and a suite that
+    // sets only `TEST_DB_PATH` writes that line into the user's REAL root —
+    // observed as eight `ontology-merge`/`ontology-rename` rows in
+    // `~/.config/memex/logs/ui-audit.jsonl`. `MEMEX_HOME` alone decides
+    // `getMemexHome()`, but `XDG_CONFIG_HOME` is pinned too so the fallback
+    // cannot reach a real directory if that precedence ever changes.
+    previousHome = process.env.MEMEX_HOME;
+    previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.MEMEX_HOME = tmpDir;
+    process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'xdg');
     db = initDatabase();
   });
 
   afterEach(() => {
     db.close();
     delete process.env.TEST_DB_PATH;
+    if (previousHome === undefined) delete process.env.MEMEX_HOME;
+    else process.env.MEMEX_HOME = previousHome;
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -1268,5 +1285,88 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
     expect(parkExhaustedFacts(db)).toBe(0);
     const parked = db.prepare('SELECT ontology_category_id FROM facts WHERE id = ?').get(survivorId) as { ontology_category_id: string | null };
     expect(parked.ontology_category_id).toBeNull();
+  });
+
+  /**
+   * #73 — an operator's merge was silently undone.
+   *
+   * `mergeCategories` deleted the category but left the taxonomy epoch alone, so
+   * a classification that had resolved the merged-away name as its candidate
+   * passed `applyClassification`'s epoch CAS and its name-based
+   * resolve-or-create brought the name back under a NEW id. Observed:
+   * `{"epochUnchanged":true,"mergedAwayId":"c5dc4a64…","resurrectedId":"e9626838…",
+   * "sameId":false}` with `Cache` listed again beside `Storage`.
+   */
+  it('discards an in-flight classification whose candidate category was merged away (#73)', async () => {
+    const { insertFact } = await import('../src/fact-db.js');
+    const { mergeCategories } = await import('../src/ontology-admin.js');
+    const { createDomain: makeDomain, createCategory: makeCategory } =
+      await import('../src/ontology-db.js');
+
+    const domain = makeDomain(db, 'runtime', 'runtime things');
+    const cache = makeCategory(db, domain.id, 'Cache', 'caching');
+    const storage = makeCategory(db, domain.id, 'Storage', 'storage');
+    const factId = insertFact(db, {
+      fact: 'the loader caches parsed manifests', category: 'knowledge', scope_type: 'global',
+      scope_project: null, source_exchange_ids: [], embedding: new Array(384).fill(0.1),
+    });
+
+    const epochBefore = getTaxonomyEpoch(db);
+
+    // The classification is in flight and has already chosen `Cache`.
+    let release!: (value: string) => void;
+    const gated = new Promise<string>((resolve) => { release = resolve; });
+    (callMemoryModel as ReturnType<typeof vi.fn>).mockImplementationOnce(() => gated);
+    (parseJsonResponse as ReturnType<typeof vi.fn>).mockReturnValue([{
+      index: 0, domain: 'runtime', category: 'Cache',
+    }]);
+
+    const run = backfillClassifyBatch(db, [factId]);
+    for (let i = 0; i < 1000 && (callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length === 0; i++) {
+      await Promise.resolve();
+      if (i % 32 === 31) await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect((callMemoryModel as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+
+    // The operator's merge lands while the classification is suspended.
+    const merged = mergeCategories(db, { fromCategoryId: cache.id, toCategoryId: storage.id });
+    expect(merged.factsMoved).toBe(0);
+    expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+    // The merge's audit line belongs to THIS temp root, never the user's.
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'ui-audit.jsonl'), 'utf8'))
+      .toContain('"action":"ontology-merge"');
+
+    release('{"batch":true}');
+    const totals = await run;
+
+    // The stale result is discarded, and `Cache` is NOT back under a new id.
+    expect(totals.classified).toBe(0);
+    const categories = db.prepare('SELECT id, name FROM ontology_categories ORDER BY name')
+      .all() as Array<{ id: string; name: string }>;
+    expect(categories).toEqual([{ id: storage.id, name: 'Storage' }]);
+    const row = db.prepare(
+      'SELECT ontology_category_id, COALESCE(ontology_attempts, 0) AS attempts FROM facts WHERE id = ?',
+    ).get(factId) as { ontology_category_id: string | null; attempts: number };
+    // Pending for a fresh pass against the new taxonomy, with no attempt spent:
+    // a stale result is not the fact's fault.
+    expect(row).toEqual({ ontology_category_id: null, attempts: 0 });
+    expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+  });
+
+  it('renaming a category also moves the epoch, so the old label cannot be re-created (#73)', async () => {
+    const { renameCategory } = await import('../src/ontology-admin.js');
+    const { createDomain: makeDomain, createCategory: makeCategory } =
+      await import('../src/ontology-db.js');
+    const domain = makeDomain(db, 'security', 'security things');
+    const category = makeCategory(db, domain.id, 'AuthN', 'authentication');
+
+    const epochBefore = getTaxonomyEpoch(db);
+    renameCategory(db, { categoryId: category.id, name: 'Authentication' });
+    expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'ui-audit.jsonl'), 'utf8'))
+      .toContain('"action":"ontology-rename"');
+    // A label change, not a re-classification: the row and its id survive.
+    expect(db.prepare('SELECT name FROM ontology_categories WHERE id = ?').get(category.id))
+      .toEqual({ name: 'Authentication' });
   });
 });
