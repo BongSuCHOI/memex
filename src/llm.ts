@@ -46,8 +46,17 @@ export function llmWorkdir(): string {
 }
 
 
-/** 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지. */
-function retryBudget(): number {
+/**
+ * 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지.
+ *
+ * 호출별 `maxRetries` 가 환경 변수보다 **먼저** 온다: "1회 테스트"처럼 호출 횟수 자체가
+ * 사용자와의 계약인 호출은 공통 기본값(2회 재시도)에 좌우되면 안 된다.
+ */
+function retryBudget(options: MemoryModelOptions = {}): number {
+  const requested = options.maxRetries;
+  if (typeof requested === 'number' && Number.isInteger(requested) && requested >= 0) {
+    return Math.min(5, requested);
+  }
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
   return 2; // 기본 총 3회 시도
@@ -81,6 +90,14 @@ export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema
   /** Issue #31: the ONLY way past an active config hold. The settings probe
    *  sets it, because otherwise the user could never verify a fix. */
   bypassConfigHold?: boolean;
+  /**
+   * Retries for THIS call, overriding `MEMEX_LLM_RETRIES`. `0` means exactly one
+   * provider call. The settings probe sets it: "test this model once" must spend
+   * one call, one timeout and one ledger attempt, which is what its CLI help and
+   * the UI confirmation promise — the shared default of 2 retries turned that
+   * into three calls and up to three timeouts.
+   */
+  maxRetries?: number;
 }
 
 /**
@@ -329,7 +346,7 @@ async function callMemoryModelInternal(
     );
   }
 
-  const retries = retryBudget();
+  const retries = retryBudget(options);
   let lastError: unknown;
   const observations: CodexExecObservation[] = [];
   const started = performance.now();
