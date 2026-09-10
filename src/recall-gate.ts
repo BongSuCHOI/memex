@@ -389,7 +389,7 @@ const COMPOSED_CACHE_MAX = 8;
 
 export function composeGatePatterns(disabledIds: readonly string[] = []): ComposedGatePatterns {
   if (disabledIds.length === 0) return DEFAULT_COMPOSED;
-  const key = [...new Set(disabledIds)].sort().join(" ");
+  const key = [...new Set(disabledIds)].sort().join("\u0000");
   const cached = composedCache.get(key);
   if (cached) return cached;
   const built = buildComposed(new Set(disabledIds));
