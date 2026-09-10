@@ -1321,6 +1321,80 @@ try {
     throw new Error("peer archive seed failed: " + JSON.stringify(peerArchive));
   }
 
+  // #31: the model tab reads the model catalog from the Codex installation. A temp
+  // CODEX_HOME makes the dropdown deterministic AND keeps the gate away from the
+  // developer's real ~/.codex — startServer() spreads process.env into the child.
+  const CODEX_HOME_DIR = path.join(TEMP, "codex");
+  fs.mkdirSync(CODEX_HOME_DIR, { recursive: true });
+  fs.writeFileSync(
+    path.join(CODEX_HOME_DIR, "models_cache.json"),
+    JSON.stringify({
+      fetched_at: "2026-09-09T00:00:00.000Z",
+      etag: "web-ui-e2e",
+      client_version: "0.153.4",
+      models: [
+        {
+          slug: "gpt-6-astra",
+          display_name: "GPT-6-Astra",
+          description: "fixture",
+          default_reasoning_level: "low",
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
+          visibility: "list",
+          supported_in_api: true,
+          priority: 1,
+        },
+        {
+          slug: "gpt-5.6-luna",
+          display_name: "GPT-5.6-Luna",
+          description: "fixture",
+          default_reasoning_level: null,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
+          visibility: "list",
+          supported_in_api: true,
+          priority: 2,
+        },
+        {
+          slug: "gpt-reserve",
+          display_name: "Reserve",
+          description: "fixture",
+          default_reasoning_level: null,
+          supported_reasoning_levels: [{ effort: "low" }],
+          visibility: "hide",
+          supported_in_api: true,
+          priority: 9,
+        },
+      ],
+    }),
+  );
+  process.env.CODEX_HOME = CODEX_HOME_DIR;
+  // #31: one durable config hold plus one job parked on it. The hold is keyed on the
+  // fingerprint THIS process resolves (no models.json yet, so the built-in default),
+  // which is the same selection the server resolves from the same MEMEX_HOME — that is
+  // what makes the banner say "this one is blocking you" instead of listing someone
+  // else's. No provider call is involved: the row is the durable record of one.
+  const { llmSelectionFingerprint } = await import(path.join(ROOT, "dist", "model-settings.js"));
+  const holdFingerprint = llmSelectionFingerprint();
+  // Observed just now: a hold nobody has seen for 30 days is closed by TTL inside
+  // ensureModelBudgetSchema(), and several probes below open a writable core.
+  const HELD_AT = new Date().toISOString();
+  const modelDb = initDatabase();
+  try {
+    modelDb.prepare(
+      `INSERT INTO model_config_holds (selection_fingerprint, held_at, model, reasoning_effort,
+         provider_status, provider_type, provider_message, observed_count, last_observed_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(holdFingerprint, HELD_AT, "gpt-6-astraX", "max", 400, "invalid_request_error",
+      "The 'gpt-6-astraX' model is not supported when using Codex with a ChatGPT account.", 3, HELD_AT);
+    modelDb.prepare(
+      `INSERT INTO memory_jobs (job_id, kind, partition_key, policy_version, priority, state,
+         available_at, attempts, max_attempts, idempotency_key, created_at, updated_at, hold_reason)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run("web-ui-held-job", "fact_extract", "session:web-ui-tier-session", "facts-v4", 100,
+      "pending", TIER_AT, 0, 5, "e2e-held-job", TIER_AT, TIER_AT, "model_config_rejected");
+  } finally {
+    modelDb.close();
+  }
+
   const port = await freePort();
   ui = startServer(port);
   const readyLines = await ui.ready;
@@ -1863,6 +1937,75 @@ try {
     false,
   );
 
+  // #31: the model tab drives the real dist/model-settings.js. Saving writes models.json
+  // inside this run's temp MEMEX_HOME, and the catalog comes from the temp CODEX_HOME —
+  // no real data root and no real ~/.codex is touched. The one-call test button is NOT
+  // clicked: it would make a real provider call, which a gate must never do.
+  const modelTab = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=models",
+    probe(`
+      const tabText=()=>document.querySelector('#main')?.textContent||'';
+      await until('model tab',()=>document.querySelector('#model-llm form#model-llm-form'));
+      const modelSelect=document.querySelector('#model-llm select[name="model"]');
+      const reasoningSelect=document.querySelector('#model-llm select[name="reasoning"]');
+      const before={
+        models:[...modelSelect.options].map(o=>o.value),
+        reasoning:[...reasoningSelect.options].map(o=>o.value),
+        selected:modelSelect.value,
+        holdBanner:Boolean(document.querySelector('#main .banner.error')),
+        holdResumes:tabText().includes('자동으로 재개'),
+        heldCard:Boolean(document.querySelector('#model-held-jobs')),
+        heldBadge:document.querySelector('#model-held-jobs .tag')?.textContent?.trim()||'',
+        embeddingReadOnly:Boolean(document.querySelector('#model-embedding')),
+        testButton:Boolean(document.querySelector('[data-model="test"]')),
+      };
+      // 'high' is in the catalog for BOTH the default model and the one being saved, so
+      // the save is a real selection change rather than an accidental "no flag".
+      modelSelect.value='gpt-6-astra';
+      reasoningSelect.value='high';
+      document.querySelector('#model-llm-form').requestSubmit();
+      // Any toast, not only the expected one: a refused save must fail with the
+      // server's own sentence in the receipt rather than as a bare timeout.
+      const toast=await until('save toast',
+        ()=>document.querySelector('#toast.show')?.textContent?.trim()||null,60000);
+      // The re-render replaces the node, so a NEW select element is the proof.
+      const fresh=await until('re-rendered',()=>{
+        const next=document.querySelector('#model-llm select[name="model"]');
+        return next&&next!==modelSelect?next:null;
+      },60000);
+      const after={
+        selected:fresh.value,
+        reasoning:document.querySelector('#model-llm select[name="reasoning"]').value,
+        source:tabText().includes('models.json'),
+      };
+      return {before,after,toast};
+    `),
+    "settings-model.png",
+    false,
+  );
+
+  // #31: the same tab in English. `?lang=en` wins over every stored preference, so this
+  // costs one navigation and answers the question a ko-only gate cannot: does the longer
+  // English prose overflow the existing card/kv/select tokens (= does this tab need CSS)?
+  const modelTabEn = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=models&lang=en",
+    probe(`
+      await until('model tab en',()=>document.querySelector('#model-llm form#model-llm-form'));
+      const body=document.querySelector('#main').textContent;
+      return {
+        english:body.includes('The model that makes memories'),
+        bodyOverflow:document.documentElement.scrollWidth>document.documentElement.clientWidth+1,
+        mainOverflow:overflows('#main'),
+        cardOverflow:overflows('#model-llm')||overflows('#model-embedding'),
+        tableOverflow:overflows('#model-held-jobs .table-wrap'),
+      };
+    `),
+    "settings-model-en.png",
+    false,
+  );
+
   // #22: the project screen must admit the branch-tier memory exists and be able to include it.
   const tierBanner = await pageProbe(
     cdp,
@@ -2324,6 +2467,42 @@ try {
           JSON.stringify(result.keyboardFocus),
       );
   }
+  // #31: the tab must offer the catalog (hidden entries excluded), say which hold is
+  // blocking this selection, admit the parked job, and actually persist a save.
+  if (
+    !modelTab.before.models.includes("gpt-6-astra") ||
+    !modelTab.before.models.includes("gpt-5.6-luna") ||
+    modelTab.before.models.includes("gpt-reserve") ||
+    !modelTab.before.reasoning.includes("unset") ||
+    !modelTab.before.reasoning.includes("high") ||
+    modelTab.before.reasoning.includes("ultra") ||
+    !modelTab.before.holdBanner ||
+    !modelTab.before.holdResumes ||
+    !modelTab.before.heldCard ||
+    modelTab.before.heldBadge !== "모델 설정 대기" ||
+    !modelTab.before.embeddingReadOnly ||
+    !modelTab.before.testButton ||
+    modelTab.after.selected !== "gpt-6-astra" ||
+    modelTab.after.reasoning !== "high" ||
+    !modelTab.after.source ||
+    !modelTab.toast.includes("gpt-6-astra")
+  ) {
+    throw new Error("Model tab assertion failed: " + JSON.stringify(modelTab));
+  }
+  if (
+    !modelTabEn.english ||
+    modelTabEn.bodyOverflow ||
+    modelTabEn.mainOverflow ||
+    modelTabEn.cardOverflow ||
+    modelTabEn.tableOverflow
+  ) {
+    throw new Error("Model tab (en) assertion failed: " + JSON.stringify(modelTabEn));
+  }
+  const savedSelection = JSON.parse(
+    fs.readFileSync(path.join(MEMEX_HOME, "models.json"), "utf8"),
+  );
+  if (savedSelection.llm.model !== "gpt-6-astra" || savedSelection.llm.reasoning !== "high")
+    throw new Error("models.json was not written by the UI: " + JSON.stringify(savedSelection));
   if (cdp.runtimeErrors.length)
     throw new Error("browser runtime errors: " + cdp.runtimeErrors.join("; "));
   console.log(
@@ -2349,6 +2528,8 @@ try {
           attention,
           syncTab,
           syncArchive,
+          modelTab,
+          modelTabEn,
           importedFact,
           facts,
           factDetail,
