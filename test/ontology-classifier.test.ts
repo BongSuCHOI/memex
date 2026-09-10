@@ -1171,6 +1171,8 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
   let db: Database.Database;
   let tmpDir: string;
   let dbPath: string;
+  let previousHome: string | undefined;
+  let previousXdg: string | undefined;
 
   const insertExcludedConversation = (exchangeId: string, archivePath: string): void => {
     db.prepare(
@@ -1183,12 +1185,27 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-epoch-'));
     dbPath = path.join(tmpDir, 'test.db');
     process.env.TEST_DB_PATH = dbPath;
+    // The data ROOT, not only the database: `ontology merge|rename` append one
+    // metadata line to `<getMemexHome()>/logs/ui-audit.jsonl`, and a suite that
+    // sets only `TEST_DB_PATH` writes that line into the user's REAL root —
+    // observed as eight `ontology-merge`/`ontology-rename` rows in
+    // `~/.config/memex/logs/ui-audit.jsonl`. `MEMEX_HOME` alone decides
+    // `getMemexHome()`, but `XDG_CONFIG_HOME` is pinned too so the fallback
+    // cannot reach a real directory if that precedence ever changes.
+    previousHome = process.env.MEMEX_HOME;
+    previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.MEMEX_HOME = tmpDir;
+    process.env.XDG_CONFIG_HOME = path.join(tmpDir, 'xdg');
     db = initDatabase();
   });
 
   afterEach(() => {
     db.close();
     delete process.env.TEST_DB_PATH;
+    if (previousHome === undefined) delete process.env.MEMEX_HOME;
+    else process.env.MEMEX_HOME = previousHome;
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -1315,6 +1332,9 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
     const merged = mergeCategories(db, { fromCategoryId: cache.id, toCategoryId: storage.id });
     expect(merged.factsMoved).toBe(0);
     expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+    // The merge's audit line belongs to THIS temp root, never the user's.
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'ui-audit.jsonl'), 'utf8'))
+      .toContain('"action":"ontology-merge"');
 
     release('{"batch":true}');
     const totals = await run;
@@ -1343,6 +1363,8 @@ describe('taxonomy epoch vs privacy purge (P1/P2 v4)', () => {
     const epochBefore = getTaxonomyEpoch(db);
     renameCategory(db, { categoryId: category.id, name: 'Authentication' });
     expect(getTaxonomyEpoch(db)).toBe(epochBefore + 1);
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'ui-audit.jsonl'), 'utf8'))
+      .toContain('"action":"ontology-rename"');
     // A label change, not a re-classification: the row and its id survive.
     expect(db.prepare('SELECT name FROM ontology_categories WHERE id = ?').get(category.id))
       .toEqual({ name: 'Authentication' });
