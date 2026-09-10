@@ -20,6 +20,10 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 process.env.MEMEX_EMBEDDING_STUB = process.env.MEMEX_EMBEDDING_STUB ?? "1";
+// The calibrated thresholds (BASELINE_MARGIN and the gate cut-offs) are a
+// property of the BUILT-IN gate patterns. A user overlay in the operator's data
+// root would silently recalibrate against their regexes (overlays §6).
+process.env.MEMEX_DISABLE_OVERLAYS = "1";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-recall-bench-"));
 process.env.MEMEX_HOME = path.join(root, "home");
 

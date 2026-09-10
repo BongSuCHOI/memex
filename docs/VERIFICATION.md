@@ -201,6 +201,56 @@ receipt의 `gates[]`에 반드시 들어가야 하는 0.6.1 항목:
 
 receipt-only commit 뒤에는 runtime, tests, generated artifacts, scripts, owner docs를 변경하지 않습니다. 이후 코드가 바뀌면 기존 receipt는 현재 merge evidence가 아닙니다.
 
+### 4.1 성능 receipt의 모델 식별자·오버레이 계약 (0.7.0)
+
+`docs/verification/benchmark.json`의 수치는 **출하 기본값**에서만 의미를 갖습니다. 다른 기억 모델,
+다른 추론 강도, 다른 임베딩 모델, 다른 벡터 차원, 또는 사용자 오버레이가 적재된 실행은 다른
+시스템의 측정값입니다. 그래서 0.7.0부터 receipt의 `environment`에 두 블록이 **필수**입니다.
+
+| 블록 | 필드 | 어디서 왔는가 |
+| --- | --- | --- |
+| `environment.models` | `llm_model`, `llm_model_source`, `llm_reasoning`, `llm_reasoning_source`, `embedding_model`, `embedding_model_source`, `embedding_version`, `embedding_dims`, `embedding_source`, `embedding_stub` | `resolveLlmSelection()`(`src/model-settings.ts`) + `EMBEDDING_MODEL`/`EMBEDDING_VERSION`/`embeddingStubEnabled()`(`src/embeddings.ts`). `embedding_dims`는 선언이 아니라 **실제 생성한 벡터의 길이**입니다 |
+| `environment.overlays` | `recall_gate`, `extraction_rules`, `quarantine`, `disabled_by_env` | `observeOverlayBenchmarkEnvironment()`(`src/extraction-rules.ts`) — env 변수를 되읊는 것이 아니라 **벤치마크 루트의 파일시스템을 관측**합니다. 오염된 루트가 "깨끗했다"는 주장만으로 통과할 수 없습니다 |
+
+`scripts/benchmark-contract.mjs`의 `validateBenchmarkReport()`는 두 블록과 **모든 하위 필드**를
+요구합니다. **블록 누락도, 하위 필드 1개 누락도 실패**입니다 — "있을 때만 검사한다"는 규칙은 마음에
+들지 않는 식별자를 지워서 통과하는 경로를 남깁니다. 기본값이 아닌 모델·강도·임베딩 모델·차원·버전,
+임베딩 stub, `present`인 오버레이, `disabled_by_env !== true`는 각각 **어느 필드가 왜 실패했는지**를
+이름으로 보고합니다. `node scripts/benchmark-contract.mjs`는 0.7.0부터 실제로 committed record를
+판정하고 실패 시 exit 1입니다(그 전에는 validator만 export하고 아무것도 실행하지 않았습니다).
+
+**receipt는 손으로 고치지 않습니다**(`AGENTS.md:146`). 계약을 느슨하게 만드는 것도 금지입니다 —
+계약을 만족시키는 유일한 방법은 **재생성**입니다.
+
+```bash
+# 격리: 실 data root·오버레이·모델 설정이 실행에 끼어들면 안 됩니다.
+env -u MEMEX_HOME -u MEMEX_OVERLAY_DIR -u MEMEX_CODEX_MODEL -u MEMEX_CODEX_REASONING \
+    -u MEMEX_EMBEDDING_MODEL -u MEMEX_EMBEDDING_STUB -u MEMEX_EMBEDDING_DIMS \
+  node scripts/benchmark.mjs
+```
+
+`scripts/benchmark.mjs`는 실행마다 `/tmp/mb-bench-*` 아래 새 `MEMEX_HOME`을 만들고 모든 자식
+프로세스에 `MEMEX_DISABLE_OVERLAYS=1`을 전달하므로, 위 변수들을 비워 두면 오버레이 3개는 자연히
+`absent`이고 `models.json`은 없어 기본값으로 해석됩니다. `MEMEX_OVERLAY_DIR`가 설정되어 있으면
+임시 루트 안이 아니라 **그 디렉터리**를 관측하므로 계약이 실패합니다(의도된 동작 — 변수를 지우고
+다시 돌리십시오). 이 벤치마크는 `codex exec`를 **호출하지 않습니다**(`dist/sync.js`·`dist/analyze.js`·
+hook/daemon transport·Chrome 프로브만 씁니다). 따라서 `llm_*`는 "관측된 호출"이 아니라 "이 실행에
+적용돼 있던 선택"이고, `_source`가 receipt에 그 구분을 남깁니다. `embedding_*`는 AC_PERF_01/02가
+실제 벡터 검색을 측정하므로 관측값에 직접 영향을 줍니다.
+
+**pre-0.7.0 record는 역사적 증거입니다.** 0.6.0에서 만들어 이월해 온 record는
+`docs/verification/benchmark-pre-0.7.0.json`으로 **원본 그대로** 보관합니다. 두 블록이 없으므로
+**현재 record로는 절대 검증되지 않으며**, `scripts/benchmark-contract.mjs`는
+`benchmark-pre-*.json`을 현재 record로 판정하지 않고 exit 2로 거부합니다. 그 당시 빌드에 대해서는
+여전히 참이지만 오늘의 계약을 만족한다고 주장하지 않습니다. 0.7.0 릴리스는 위 명령으로
+`docs/verification/benchmark.json`을 **재생성**해야 하며, 그때까지
+`test/benchmark-contract.test.mjs`의 "published record satisfies the contract"와
+`benchmark-contract` gate는 **의도적으로 FAIL**입니다. 코퍼스·Chrome 실행이 불가능하면 계약을
+고치지 말고 릴리스 receipt에 현재 성능을 `NOT_PROVEN`으로 기록하십시오.
+
+`benchmark-pre-*.json`은 `package.json`의 `files` 안 `!docs/verification/benchmark-pre-*.json`이
+tarball에서 제외합니다(§4의 `npm pack --dry-run` 관측값으로 확인).
+
 ## 5. 현재 검증 baseline
 
 최신 검증 baseline의 commit과 관측 결과는
