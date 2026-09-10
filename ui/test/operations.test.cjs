@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const {Operations}=require('../lib/operations.cjs');
 function setup(script){const root=fs.mkdtempSync(path.join(os.tmpdir(),'memex-cli-stub-'));fs.mkdirSync(path.join(root,'cli'));fs.writeFileSync(path.join(root,'cli/memex.js'),script);const core={root,home:root,dbPath:path.join(root,'db.sqlite'),busy:new Set()},logs={audit(){}};const ops=new Operations(core,logs);return {root,core,ops,clean(){ops.close();fs.rmSync(root,{recursive:true,force:true});}};}
 const until=async check=>{for(let n=0;n<150;n++){if(check())return;await new Promise(r=>setTimeout(r,20));}throw new Error('Timed out waiting for fixture child');};

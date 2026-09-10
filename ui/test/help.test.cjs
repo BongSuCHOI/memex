@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /**
  * 도움말 카탈로그 커버리지 (#28).
  *

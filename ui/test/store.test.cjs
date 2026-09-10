@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 const {test,before,after}=require('node:test');const assert=require('node:assert/strict');const {fixture,uid,PROJECT,OTHER}=require('./fixture.cjs');const {Logs}=require('../lib/logs.cjs');const fs=require('node:fs');const path=require('node:path');
 let f,store;const q=x=>new URLSearchParams(x),scope=(x={})=>store.scope(q(x));
 before(()=>{f=fixture();store=f.store;});after(()=>{f.close();fs.rmSync(f.home,{recursive:true,force:true});});
