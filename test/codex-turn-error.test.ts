@@ -202,6 +202,11 @@ describe('input-too-large 400 stays deterministic from the provider stream to th
   });
 
   it('runCodex rejects instead of returning an empty body, and the class is deterministic', async () => {
+    // Pinned so the developer's real `<data root>/models.json` cannot decide which
+    // model this case resolves; nothing here writes to a data root either way.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-turn-error-root-'));
+    roots.push(home);
+    process.env.MEMEX_HOME = home;
     const bin = fakeCodex(INPUT_TOO_LARGE_STREAM);
     const error = await runCodex({ codexBin: bin, userMessage: 'x', timeoutMs: 15_000 }).then(
       (text) => ({ returned: text }) as unknown,
