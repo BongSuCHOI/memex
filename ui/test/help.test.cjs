@@ -8,7 +8,8 @@ require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 k
  */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 const help=require('../public/help.mjs');
-const {label,badge,th,header}=require('../public/ui.mjs');
+const {badge,th,header}=require('../public/ui.mjs');
+const {ko}=require('./helpers/locale.cjs');
 const {COMMANDS}=require('../lib/operations.cjs');
 const ROOT=path.resolve(__dirname,'../..');
 const APP=fs.readFileSync(path.join(__dirname,'../public/app.mjs'),'utf8');
@@ -38,19 +39,24 @@ function anchorsOf(file){
 }
 
 test('메뉴 7개에 모두 도움말 항목이 있다',()=>{
- const nav=[...APP.matchAll(/\['(\/[a-z]*)','[a-z]+','[^']+'\]/g)].map(m=>m[1]);
+ // #109: 라벨은 사전 키가 됐다 — `['/facts','memory',t('shell.nav.facts')]`.
+ const nav=[...APP.matchAll(/\['(\/[a-z]*)','[a-z]+',t\('shell\.nav\.[a-z]+'\)\]/g)].map(m=>m[1]);
  assert.equal(nav.length,7,'app.mjs navigation 추출 실패: '+JSON.stringify(nav));
  for(const route of nav)assert(help.PAGES[route],'도움말 없는 메뉴: '+route);
  assert.equal(Object.keys(help.PAGES).length,nav.length,'navigation에 없는 도움말 항목이 있습니다');
 });
 
 test('배지 종류 전종에 한 줄 설명이 있다',()=>{
- const kinds=Object.keys(label);
+ // #109: ui.mjs의 label 테이블과 help.mjs의 BADGES가 badge/{en,ko}.mjs 한 파일로 합쳐졌다 —
+ // 짝(.label ↔ .help)은 이제 사전 안에서 검사한다(설계 §12.3 X1).
+ const pick=suffix=>Object.keys(ko).filter(k=>k.startsWith('badge.')&&k.endsWith(suffix)).map(k=>k.slice(6,-suffix.length));
+ const kinds=pick('.label');
  assert(kinds.length>60,'배지 라벨 추출 실패: '+kinds.length);
- const missing=kinds.filter(k=>!help.BADGES[k]);
+ const missing=kinds.filter(k=>!ko[`badge.${k}.help`]);
  assert.deepEqual(missing,[],'설명 없는 배지: '+missing.join(', '));
- const extra=Object.keys(help.BADGES).filter(k=>!(k in label));
+ const extra=pick('.help').filter(k=>!ko[`badge.${k}.label`]);
  assert.deepEqual(extra,[],'라벨이 없는 배지 설명: '+extra.join(', '));
+ for(const kind of kinds)assert(help.badgeHelp(kind),'한 줄 설명을 돌려주지 않는 배지: '+kind);
  assert(badge('dead').includes('title="'),'배지가 툴팁을 싣지 않습니다');
 });
 

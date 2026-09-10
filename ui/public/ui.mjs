@@ -1,5 +1,5 @@
 import {badgeHelp,helpFor} from './help.mjs';
-import {t} from './i18n/index.mjs';
+import {t,tHtml,tn,intlTag,localeTag} from './i18n/index.mjs';
 export const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={
  grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -30,42 +30,86 @@ const paths={
  code:'M8 5L2 12l6 7 M16 5l6 7-6 7 M14 3l-4 18',external:'M14 3h7v7 M21 3L10 14 M10 3H3v18h18v-7',
 };
 export const icon=(name,cls='')=>`<svg class="icon ${esc(cls)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]||paths.info}"/></svg>`;
-export const label={ASSERTED:'기억 확정',RETIRED:'비활성화',RELATION_CREATED:'관계 생성',RELATION_REMOVED:'관계 제거',active:'활성',inactive:'비활성',running:'실행 중',pending:'대기',processing:'처리 중',processed:'처리 완료',completed:'완료',failed:'실패',dead:'실패 · 종료',retry:'재시도 대기',superseded:'새 버전으로 대체',reserved:'시도 예약',unknown:'상태 미확인',cancelled:'중단됨',cancelling:'중단 요청 중','timed-out':'시간 제한 종료','failed-visible':'실패 · 확인 필요',injected:'기억 제공',emitted:'컨텍스트 제공',prepared:'제공 준비',deduped:'중복 제공 생략','no-match':'관련 기억 없음',skipped:'정책상 생략',error:'오류',observed:'관측됨',partial:'부분 관측',NOT_PROVEN:'미수집',decision:'결정',preference:'선호',constraint:'제약',pattern:'패턴',knowledge:'지식',CREATED:'기억 생성',CHANGED:'기억 변경',DEACTIVATED:'비활성화',REACTIVATED:'다시 활성화',RESTORED:'복원',PROMOTED:'계층 승격',DEMOTED:'계층 강등',SYNC_IMPORTED:'동기화 가져옴',CONSOLIDATED:'통합',CONTRADICTED:'충돌 감지',INCIDENT:'문제 발생',VALIDATED:'검증',REVERTED:'되돌림',REVERT_REQUESTED:'되돌림 요청',LEGACY:'이전 버전 기록',SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충',fact_extract:'기억 추출',capture_index:'대화 인덱싱',capsule_update:'작업 맥락 갱신',ontology:'온톨로지 분류',extract:'기억 추출',user:'사용자',extractor:'추출기',consolidator:'통합기',sync:'기기 동기화',project:'프로젝트',global:'공통 기억',workspace:'워크스페이스',workstream:'작업 흐름','legacy-project':'이전 방식 배치','project-current':'프로젝트 현행','no-inject':'제공 없음'};
-export const name=v=>label[v]||v||'미수집';
+/**
+ * 상태·이벤트·액터·작업 종류의 표시 이름 (#109 · 설계 §2.6 · §12.3 X1).
+ *
+ * 0.6.x의 `export const label={…}` 71항목 테이블을 없애고 `badge/` 네임스페이스의
+ * `badge.<value>.label`을 조회한다. 사전에 없는 값은 **코어 원문을 그대로** 돌려준다 —
+ * 이 화면의 규율은 "모르는 값의 이름을 지어내지 않는다"다.
+ */
+export const name=v=>{
+ if(v===null||v===undefined||v==='')return t('common.unknown');
+ const key=`badge.${v}.label`;const out=t(key);
+ return out===key?String(v):out;
+};
 // 계층은 src/fact-management.ts factTierOf()와 같은 순서로 읽는다: scope_type이 먼저, 그다음 promotion_state.
 export function tierOf(f){if(!f)return null;if(f.scope_type==='global')return 'global';const state=f.promotion_state||'legacy-project';return state==='workstream'||state==='workspace'?state:'project';}
 // 브랜치 이름은 facts.tier_reason('branch:<name>')이 우선이고, 없으면 작업 흐름의 branch_hint를 쓴다. 추정하지 않는다.
 export function tierBranch(f){const reason=String(f?.tier_reason||'');if(reason.startsWith('branch:'))return reason.slice(7)||null;return f?.workstream_branch||null;}
-export function tierLabel(f){const tier=tierOf(f),branch=tierBranch(f);if(tier==='global')return '글로벌 공용';if(tier==='workstream')return branch?`브랜치: ${branch}`:'브랜치';if(tier==='workspace')return '워크스페이스';return '프로젝트 공용';}
+export function tierLabel(f){const tier=tierOf(f),branch=tierBranch(f);
+ if(tier==='global')return t('tier.global.label');
+ if(tier==='workstream')return branch?t('tier.workstream.branch',{branch}):t('tier.workstream.label');
+ if(tier==='workspace')return t('tier.workspace.label');
+ return t('tier.project.label');}
 export function tierExplain(f,project){const tier=tierOf(f),branch=tierBranch(f);
- if(tier==='global')return '모든 프로젝트의 세션에 주입 후보로 올라갑니다.';
- if(tier==='workstream')return branch?`브랜치 ${branch} 세션에만 주입됩니다.`:'이 기억을 만든 작업 흐름의 세션에만 주입됩니다.';
- if(tier==='workspace')return '이 체크아웃(워크스페이스)의 세션에만 주입됩니다.';
- return `프로젝트 ${project||'전체'}의 모든 세션에 주입됩니다.`;}
+ if(tier==='global')return t('tier.global.explain');
+ if(tier==='workstream')return branch?t('tier.workstream.explain.branch',{branch}):t('tier.workstream.explain');
+ if(tier==='workspace')return t('tier.workspace.explain');
+ return t('tier.project.explain',{project:project||t('common.allProjects')});}
 export const tierBadge=(f,project)=>`<span class="tag outline" data-tier="${esc(tierOf(f))}" title="${esc(tierExplain(f,project))}">${esc(tierLabel(f))}</span>`;
 export const tierHiddenTotal=hidden=>hidden?Number(hidden.workstream||0)+Number(hidden.workspace||0):0;
 export function badge(v,override){const color=override||(/^(active|completed|processed|injected|emitted|observed|CREATED|VALIDATED)$/.test(v)?'green':/^(failed|dead|error|failed-visible|CONTRADICTED|INCIDENT)$/.test(v)?'red':/^(running|processing|retry|reserved|pending|partial|prepared|cancelling|timed-out)$/.test(v)?'amber':/^(CHANGED|decision)$/.test(v)?'blue':v==='preference'?'purple':'');// 배지는 상태의 한국어 이름과, 그 상태가 무엇을 뜻하는지의 한 줄 설명(#28)을 함께 싣는다.
 const tip=badgeHelp(v);return `<span class="tag ${esc(color)}"${tip?` title="${esc(tip)}"`:''}>${esc(name(v))}</span>`;}
-export const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('ko-KR');
+export const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString(intlTag());
 export const short=id=>id?String(id).slice(0,8):'—';
-export const basename=p=>p?p.split('/').filter(Boolean).pop()||'/':'공통 기억';
+export const basename=p=>p?p.split('/').filter(Boolean).pop()||'/':t('common.commonMemory');
 function parseDate(value){if(!value)return null;const normalized=/^\d{4}-\d\d-\d\d \d\d:\d\d/.test(value)?value.replace(' ','T')+'Z':value;const d=new Date(normalized);return Number.isNaN(d.valueOf())?null:d;}
-export function date(value,mode='full'){const d=parseDate(value);if(!d)return '미수집';return new Intl.DateTimeFormat('ko-KR',mode==='day'?{month:'short',day:'numeric'}:mode==='time'?{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}:{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}
-export function relative(value){const d=parseDate(value);if(!d)return '미수집';const delta=(Date.now()-d)/1000;if(delta<0)return date(value);if(delta<60)return '방금 전';if(delta<3600)return `${Math.floor(delta/60)}분 전`;if(delta<86400)return `${Math.floor(delta/3600)}시간 전`;if(delta<86400*7)return `${Math.floor(delta/86400)}일 전`;return date(value,'day');}
-export const duration=ms=>ms===null||ms===undefined?'미수집':ms<1000?`${number(ms)} ms`:ms<60000?`${(ms/1000).toFixed(1)} s`:`${Math.floor(ms/60000)}분 ${Math.round(ms%60000/1000)}초`;
-export const bytes=b=>b===null||b===undefined?'미수집':b<1024?`${b} B`:b<1024**2?`${(b/1024).toFixed(1)} KB`:`${(b/1024**2).toFixed(1)} MB`;
+// 24시간제를 유지한다 — en-US 기본은 12시간제인데 이 화면은 로그·작업 시각을 읽는 운영 화면이고
+// 열 폭이 ko 화면과 같아야 한다. 타임존은 건드리지 않는다(브라우저 로컬, 설계 §4).
+export function date(value,mode='full'){const d=parseDate(value);if(!d)return t('common.unknown');return new Intl.DateTimeFormat(intlTag(),mode==='day'?{month:'short',day:'numeric'}:mode==='time'?{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}:{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}
+/** 상대 시간은 사전에서 빼고 Intl에 맡긴다 — 영어 복수형이 공짜로 해결된다(설계 §4). */
+export function relative(value){const d=parseDate(value);if(!d)return t('common.unknown');const delta=(Date.now()-d)/1000;if(delta<0)return date(value);
+ const rtf=new Intl.RelativeTimeFormat(intlTag(),{numeric:'auto'});
+ if(delta<60)return rtf.format(-Math.floor(delta),'second');
+ if(delta<3600)return rtf.format(-Math.floor(delta/60),'minute');
+ if(delta<86400)return rtf.format(-Math.floor(delta/3600),'hour');
+ if(delta<86400*7)return rtf.format(-Math.floor(delta/86400),'day');
+ return date(value,'day');}
+export const duration=ms=>ms===null||ms===undefined?t('common.unknown')
+ :ms<1000?t('unit.duration.ms',{value:number(ms)})
+ :ms<60000?t('unit.duration.sec',{value:(ms/1000).toFixed(1)})
+ :t('unit.duration.minsec',{m:Math.floor(ms/60000),s:Math.round(ms%60000/1000)});
+export const bytes=b=>b===null||b===undefined?t('common.unknown')
+ :b<1024?t('unit.bytes.b',{value:b})
+ :b<1024**2?t('unit.bytes.kb',{value:(b/1024).toFixed(1)})
+ :t('unit.bytes.mb',{value:(b/1024**2).toFixed(1)});
 /** 표 머리글의 한 줄 툴팁(#28). 설명이 없는 열은 그대로 둔다. */
 export function th(label,key){const entry=helpFor('header:'+key);return entry?`<span title="${esc(entry.body)}">${esc(label)}</span>`:esc(label);}
 export function header(title,subtitle,actions='',eyebrow='WORKSPACE',help=null){
  const entry=help?helpFor('page:'+help):null;
- const button=entry?`<button class="icon-btn help-toggle" data-help="page:${esc(help)}" aria-label="${esc(entry.title)} 도움말" title="${esc(entry.title)} 도움말">${icon('info')}</button>`:'';
+ // 문장 조립 금지 — 영어는 "<title> help"가 아니라 "Help for <title>"이 자연스럽다(설계 §2.3).
+ const aria=entry?t('a11y.pageHelp',{title:entry.title}):'';
+ const button=entry?`<button class="icon-btn help-toggle" data-help="page:${esc(help)}" aria-label="${esc(aria)}" title="${esc(aria)}">${icon('info')}</button>`:'';
  return `<div class="page-header"><div><div class="eyebrow">${esc(eyebrow)}</div><div class="row"><h1>${esc(title)}</h1>${button}</div><p>${esc(subtitle)}</p></div><div class="page-actions">${actions}</div></div>`;}
 export const btn=(title,ico,attrs='',cls='')=>`<button class="btn ${esc(cls)}" ${attrs}>${ico?icon(ico):''}${esc(title)}</button>`;
 export const linkBtn=(title,ico,href,cls='')=>`<a class="btn ${esc(cls)}" href="${esc(href)}" data-nav>${ico?icon(ico):''}${esc(title)}</a>`;
 export const empty=(title,description,action='',ico='memory')=>`<div class="empty"><div class="empty-icon">${icon(ico)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p>${action}</div>`;
 export const banner=(description,type='neutral',ico='info')=>`<div class="banner ${esc(type)}">${icon(ico)}<div>${description}</div></div>`;
-export const raw=(data,title='원시 데이터')=>`<details class="json-details"><summary>${esc(title)}</summary><pre>${esc(JSON.stringify(data,null,2))}</pre></details>`;
-export function errorCard(error){return `<div class="card">${empty('데이터를 불러오지 못했습니다',error.message,btn('다시 시도','refresh','data-action="refresh"'),'warning')}<div class="error-code right" style="padding:0 20px 15px">${esc(error.code||'REQUEST_FAILED')}</div></div>`;}
+// 기본 제목은 **호출 시점에** 평가해야 한다 — 기본 인자는 모듈 평가 시점이 아니라 호출마다
+// 계산되므로 사전이 꽂힌 뒤의 언어를 쓴다(설계 §2.6).
+export const raw=(data,title)=>`<details class="json-details"><summary>${esc(title??t('common.rawData'))}</summary><pre>${esc(JSON.stringify(data,null,2))}</pre></details>`;
+/**
+ * 오류 카드. `key===null`(코어·런타임 원문)이면 "코어가 보고한 내용" 캡션을 덧붙인다 —
+ * 번역 누락이 아니라는 것을 화면이 알려야 한다(설계 §5.2). 행별 오류는 renderIssues()가 그린다.
+ */
+export function errorCard(error){
+ const e=error||{};
+ const fromCore=(e.key??null)===null&&!!e.message;
+ const issues=Array.isArray(e.issues)?e.issues:(Array.isArray(e.details?.issues)?e.details.issues:[]);
+ return `<div class="card">${empty(t('error.card.title'),e.message||t('error.client.unknown'),btn(t('action.retry'),'refresh','data-action="refresh"'),'warning')}`
+  +(fromCore?`<p class="caption" style="padding:0 20px">${esc(t('error.fromCore'))}</p>`:'')
+  +(issues.length?`<div style="padding:0 20px">${renderIssues(issues)}</div>`:'')
+  +`<div class="error-code right" style="padding:0 20px 15px">${esc(e.code||'REQUEST_FAILED')}</div></div>`;}
 /**
  * 행별 검증 오류 (#109 · 설계 §5.2 F2). 422 응답의 `details.issues`를 목록으로 그린다.
  * 오버레이·모델 설정 레인이 그대로 호출한다 — 새 CSS 컴포넌트는 만들지 않는다.
@@ -92,19 +136,43 @@ export function renderIssues(issues){
  }).join('')}</ul>`;
 }
 export const skeleton=()=>`<div class="page-header"><div class="skeleton" style="width:180px;height:28px"></div></div><div class="loading-grid">${Array(4).fill('<div class="skeleton card"></div>').join('')}</div><div class="skeleton card mt" style="height:300px"></div>`;
-export function pagination(page,ctx,keys={}){if(page.total===null||page.total===undefined)return '';const {offset,limit,total}=page;const prev=Math.max(0,offset-limit),next=offset+limit;return `<div class="pagination"><span>총 ${number(total)}개${total?` · ${number(offset+1)}–${number(Math.min(offset+limit,total))} 표시`:''}</span><div class="pages"><button class="btn" data-page="${prev}" ${keys.attr||''} ${offset===0?'disabled':''}>${icon('left')}이전</button><span>${Math.floor(offset/limit)+1} / ${Math.max(1,Math.ceil(total/limit))}</span><button class="btn" data-page="${next}" ${keys.attr||''} ${next>=total?'disabled':''}>다음${icon('chevron')}</button></div></div>`;}
+export function pagination(page,ctx,keys={}){if(page.total===null||page.total===undefined)return '';const {offset,limit,total}=page;const prev=Math.max(0,offset-limit),next=offset+limit;
+ const count=tn('pagination.total',total,{total:number(total)});
+ const range=total?` · ${t('pagination.range',{from:number(offset+1),to:number(Math.min(offset+limit,total))})}`:'';
+ const pages=t('pagination.page',{page:Math.floor(offset/limit)+1,pages:Math.max(1,Math.ceil(total/limit))});
+ return `<div class="pagination"><span>${esc(count)}${esc(range)}</span><div class="pages"><button class="btn" data-page="${prev}" ${keys.attr||''} ${offset===0?'disabled':''}>${icon('left')}${esc(t('action.previous'))}</button><span>${esc(pages)}</span><button class="btn" data-page="${next}" ${keys.attr||''} ${next>=total?'disabled':''}>${esc(t('action.next'))}${icon('chevron')}</button></div></div>`;}
 export const table=(heads,rows)=>`<div class="table-wrap"><table class="data-table"><thead><tr>${heads.map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
 export const options=(items,current)=>items.map(([value,title])=>`<option value="${esc(value)}" ${String(value)===String(current??'')?'selected':''}>${esc(title)}</option>`).join('');
-export const searchField=(value='',placeholder='검색',field='q')=>`<label class="search-field">${icon('search')}<input type="search" name="${esc(field)}" value="${esc(value)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}" maxlength="500"></label>`;
+export const searchField=(value='',placeholder,field='q')=>{const label=placeholder??t('common.search');
+ return `<label class="search-field">${icon('search')}<input type="search" name="${esc(field)}" value="${esc(value)}" placeholder="${esc(label)}" aria-label="${esc(label)}" maxlength="500"></label>`;};
 export const kv=rows=>`<dl class="kv">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
-export const factLink=f=>`<button class="text-link" data-fact="${esc(f.id)}">${esc(f.fact_kr||f.fact||f.id)}</button>`;
+/**
+ * 기억 본문의 저장된 한국어 번역(`fact_kr`) 우선 표시 여부 (#109 · 설계 §14.5).
+ *
+ * 0.6.x의 `factLink`는 `fact_kr`를 **무조건** 먼저 썼고, 그래서 en 화면·en 스크린샷의 관계
+ * 링크와 연결된 기억 버튼에 한국어가 그대로 남았다. app.mjs가 `prefs.preferTranslatedFacts`를
+ * 여기에 꽂는다 — 호출부 시그니처를 바꾸지 않으려고 모듈 상태로 둔다. 꽂히기 전의 기본값은
+ * 화면 언어를 따른다.
+ */
+let preferTranslatedFacts=null;
+export const setPreferTranslatedFacts=value=>{preferTranslatedFacts=value===null||value===undefined?null:!!value;};
+export const translatesFacts=()=>preferTranslatedFacts??(localeTag()==='ko');
+export const factText=f=>String((translatesFacts()&&f?.fact_kr)||f?.fact||f?.id||'');
+export const factLink=f=>`<button class="text-link" data-fact="${esc(f.id)}">${esc(factText(f))}</button>`;
 /**
  * 동기화 가져오기 충돌 이벤트의 출처 (#48, 0.6.3).
  *
  * `SYNC_IMPORTED`의 `outcome_json`에 들어 있는 것만 읽는다: 어느 기기(별칭 또는 id 앞 8자)의 어느
  * 세대에서 왔고, 의미가 달랐을 때 누가 남았는지. 값이 없으면 null을 돌려주고 **지어내지 않는다.**
  */
-const SYNC_REASON={'peer-newer':'가져온 쪽의 의미 수정 시각이 더 최근입니다.','local-newer':'이 기기의 의미 수정 시각이 더 최근입니다.','tie-broken-by-key':'수정 시각이 같아 결정적 규칙(정규화된 내용 키)으로 정했습니다.'};
+// 사유 문구는 조회 시점에 사전에서 읽는다 — 값 테이블을 두면 import 시점에 평가돼 사전보다 먼저
+// 굳는다(설계 §2.6). 키는 리터럴로 적어 사전 완전성 검사가 3개를 실제로 볼 수 있게 한다.
+const SYNC_REASON={
+ 'peer-newer':()=>t('sync.reason.peer-newer'),
+ 'local-newer':()=>t('sync.reason.local-newer'),
+ 'tie-broken-by-key':()=>t('sync.reason.tie-broken-by-key'),
+};
+const syncReasonText=reason=>(Object.hasOwn(SYNC_REASON,reason??'')?SYNC_REASON[reason]():null);
 export function syncOrigin(e){
  if(!e||e.event_kind!=='SYNC_IMPORTED')return null;
  let outcome=e.outcome??e.outcome_json;
@@ -113,23 +181,26 @@ export function syncOrigin(e){
  const device=outcome.source_device_alias||(outcome.source_device_id?short(outcome.source_device_id):null);
  return {device,alias:outcome.source_device_alias||null,deviceId:outcome.source_device_id||null,
   generation:outcome.generation||null,winner:['peer','local'].includes(outcome.winner)?outcome.winner:null,
-  reason:outcome.reason||null,reasonText:SYNC_REASON[outcome.reason]||null};
+  reason:outcome.reason||null,reasonText:syncReasonText(outcome.reason)};
 }
 export function syncOriginTag(e){
  const o=syncOrigin(e);if(!o)return '';
- const label=o.device?`기기 ${o.device}에서 가져옴`:'다른 기기에서 가져옴';
- const winner=o.winner==='local'?'이 기기의 값이 남음':o.winner==='peer'?'가져온 값으로 대체됨':'';
+ const label=o.device?t('sync.origin.fromDevice',{device:o.device}):t('sync.origin.fromOtherDevice');
+ const winner=o.winner==='local'?t('sync.winner.local'):o.winner==='peer'?t('sync.winner.peer'):'';
  return `<span class="tag outline"${o.reasonText?` title="${esc(o.reasonText)}"`:''}>${esc(label)}</span>${winner?`<span class="tag ${o.winner==='peer'?'blue':''}">${esc(winner)}</span>`:''}`;
 }
-export function eventRow(e){return `<div class="timeline-item"><div class="timeline-icon">${icon(e.event_kind==='CREATED'?'memory':e.event_kind==='INCIDENT'?'warning':e.event_kind==='SYNC_IMPORTED'?'layers':'refresh')}</div><div class="grow"><div class="row wrap">${badge(e.event_kind||'LEGACY')}<span class="meta">${esc(name(e.actor))}</span>${syncOriginTag(e)}</div>${e.fact_id?`<button class="title" data-fact="${esc(e.fact_id)}">${esc(e.new_fact||e.previous_fact||e.reason||e.subject_key||'기억 상태 변경')}</button>`:`<div class="title">${esc(e.problem||e.reason||e.subject_key||'지식 이벤트')}</div>`}<div class="meta"><span title="기록한 시각">${esc(date(e.recorded_at||e.created_at))}</span>${e.effective_at?`<span>발생 ${esc(date(e.effective_at,'day'))}</span>`:''}${e.projection_applied===0?'<span>현재 기억 변경 없음</span>':''}</div></div><button class="icon-btn" data-event='${esc(JSON.stringify(e))}' aria-label="이벤트 상세">${icon('chevron')}</button></div>`;}
+export function eventRow(e){return `<div class="timeline-item"><div class="timeline-icon">${icon(e.event_kind==='CREATED'?'memory':e.event_kind==='INCIDENT'?'warning':e.event_kind==='SYNC_IMPORTED'?'layers':'refresh')}</div><div class="grow"><div class="row wrap">${badge(e.event_kind||'LEGACY')}<span class="meta">${esc(name(e.actor))}</span>${syncOriginTag(e)}</div>${e.fact_id?`<button class="title" data-fact="${esc(e.fact_id)}">${esc(e.new_fact||e.previous_fact||e.reason||e.subject_key||t('event.fact.defaultTitle'))}</button>`:`<div class="title">${esc(e.problem||e.reason||e.subject_key||t('event.knowledge.defaultTitle'))}</div>`}<div class="meta"><span title="${esc(t('a11y.recordedAt'))}">${esc(date(e.recorded_at||e.created_at))}</span>${e.effective_at?`<span>${esc(t('event.occurredAt',{date:date(e.effective_at,'day')}))}</span>`:''}${e.projection_applied===0?`<span>${esc(t('event.noFactChange'))}</span>`:''}</div></div><button class="icon-btn" data-event='${esc(JSON.stringify(e))}' aria-label="${esc(t('a11y.eventDetail'))}">${icon('chevron')}</button></div>`;}
+/** 브라우저 표시 한도. 문구에 보간되므로 상수로 둔다. */
+const MARKDOWN_LIMIT=250000;
 export function markdown(input){
   // Deliberately small, safe Markdown subset. Raw HTML and remote images never execute/load.
-  const source=String(input??'').slice(0,250000);const chunks=source.split(/```/);
-  const inline=t=>esc(t).replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
+  const source=String(input??'').slice(0,MARKDOWN_LIMIT);const chunks=source.split(/```/);
+  // 이름을 `inline`으로 둔다 — 0.6.x의 `t=>…`는 번역 함수 t를 가렸다.
+  const inline=text=>esc(text).replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
   const rendered=chunks.map((chunk,i)=>i%2?`<pre><code>${esc(chunk.replace(/^[a-zA-Z0-9_-]*\n/,''))}</code></pre>`:chunk.split(/\n\s*\n/).map(block=>{
     if(/^#{1,4} /.test(block))return '<h3>'+inline(block.replace(/^#{1,4} /,''))+'</h3>';
     return '<p>'+inline(block).replaceAll('\n','<br>')+'</p>';
-  }).join('')).join('');return `<div class="markdown">${rendered}${source.length<String(input??'').length?'<p class="muted">브라우저 표시 한도 250,000자를 초과했습니다.</p>':''}</div>`;
+  }).join('')).join('');return `<div class="markdown">${rendered}${source.length<String(input??'').length?`<p class="muted">${esc(t('common.markdownTruncated',{max:number(MARKDOWN_LIMIT)}))}</p>`:''}</div>`;
 }
 export function download(data,name,type='application/json'){const blob=new Blob([typeof data==='string'?data:JSON.stringify(data,null,2)],{type});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-export async function copy(text){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);const el=document.createElement('textarea');el.value=text;document.body.append(el);el.select();const ok=document.execCommand('copy');el.remove();if(!ok)throw new Error('클립보드에 접근할 수 없습니다.');}
+export async function copy(text){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);const el=document.createElement('textarea');el.value=text;document.body.append(el);el.select();const ok=document.execCommand('copy');el.remove();if(!ok)throw new Error(t('error.client.clipboardUnavailable'));}
