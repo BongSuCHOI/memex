@@ -586,6 +586,48 @@ describe('cross-device sync control (#35/#48)', () => {
       expect(fs.readdirSync(outside).sort()).toEqual(['precious.zip']);
     });
 
+    /**
+     * Issue #105 (0.6.7) — #101's realpath comparison dropped the part of a path
+     * that does not exist yet, so a data root that had never been created
+     * collapsed to its deepest EXISTING ancestor and the boundary widened to that
+     * ancestor: with `MEMEX_HOME=<temp>/never-created/root`, all of `<temp>` read
+     * as "inside the data root" and `<temp>/escape.zip` was written.
+     *
+     * A pointed `MEMEX_DB_PATH` makes that the ordinary case rather than a corner
+     * one: the index is real, so the export succeeds, and the only thing missing
+     * is the root the boundary is supposed to be drawn around.
+     */
+    it('keeps the boundary at the data root when the root does not exist yet (#105)', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-unborn', text: 'no escape before mkdir', subject: 'shared.unborn.rule' });
+      const dbPath = path.join(rootA, 'conversation-index', 'db.sqlite');
+      expect(fs.existsSync(dbPath)).toBe(true);
+
+      const unborn = path.join(temp, 'never-created', 'root');
+      standalone(unborn);
+      process.env.MEMEX_DB_PATH = dbPath;
+      expect(fs.existsSync(unborn)).toBe(false);
+
+      const escape = path.join(temp, 'escape-105.zip');
+      expect(() => control.exportGenerationArchive({ outPath: escape }))
+        .toThrow(/must stay inside the data root/);
+      expect(fs.existsSync(escape)).toBe(false);
+      // A refusal costs no generation and leaves no staging behind.
+      expect(fs.existsSync(unborn)).toBe(false);
+
+      // The deepest existing ancestor itself is not inside the root either.
+      expect(() => control.exportGenerationArchive({ outPath: path.join(temp, 'never-created', 'sibling.zip') }))
+        .toThrow(/must stay inside the data root/);
+
+      // The default destination inside the not-yet-created root still works.
+      const made = control.exportGenerationArchive();
+      expect(made.path.startsWith(path.join(unborn, 'sync', 'exports') + path.sep)).toBe(true);
+      expect(fs.existsSync(made.path)).toBe(true);
+      // ...and so does an explicit path inside it, created on the way.
+      const named = control.exportGenerationArchive({ outPath: path.join(unborn, 'carry', 'named.zip') });
+      expect(fs.existsSync(named.path)).toBe(true);
+    });
+
     it('names devices locally, and only this device name travels', async () => {
       const control = await import('../src/sync-control.js');
       await seed(rootA, { id: 'fact-alias', text: 'aliases are local state', subject: 'shared.alias.rule' });

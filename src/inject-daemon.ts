@@ -729,26 +729,47 @@ export function startInjectDaemon(): net.Server | null {
    * through the ordinary `armReacquire()` path when it was not. One-shot and
    * `unref()`ed, so a handover that did complete costs exactly one probe and the
    * timer can never hold the MCP server open.
+   *
+   * Issue #107 — a shutdown must be able to cancel the check while the PROBE is
+   * in flight, not only while the timer is pending. The callback nulls
+   * `yieldWatch` before awaiting, so once it has fired `releaseOwnership()` has
+   * no timer left to clear; `yieldProbePending` is the rest of that token. The
+   * continuation runs only while the token it started with is still the live one,
+   * so a server that has already run its one-shot shutdown cleanup cannot
+   * re-enter the race, re-create the socket it just gave up, and then never be
+   * cleaned up again.
    */
   let yieldWatch: NodeJS.Timeout | null = null;
+  let yieldProbePending = false;
   function armYieldWatch(): void {
-    if (yieldWatch) return;
+    if (yieldWatch || yieldProbePending || releasedOwnership) return;
     yieldWatch = setTimeout(() => {
       yieldWatch = null;
-      if (owning || !retired) return;
+      if (owning || !retired || releasedOwnership) return;
+      yieldProbePending = true;
       void probeInjectDaemon(sockPath)
         .then((probe) => {
+          // Cancelled by a shutdown that landed while this probe was open.
+          if (!yieldProbePending) return;
+          yieldProbePending = false;
           // Somebody is there: the promise was kept, and stepping back in would
           // only fight the owner we deliberately made way for.
-          if (probe.listening || owning || !retired) return;
+          if (probe.listening || owning || !retired || releasedOwnership) return;
           note('the caller that asked us to retire never bound — re-entering the race');
           retired = false;
           armReacquire();
           tryReclaim('retire handover did not complete');
         })
-        .catch(() => { /* best-effort sidecar */ });
+        .catch(() => { yieldProbePending = false; });
     }, injectDaemonReacquireIntervalMs());
     yieldWatch.unref();
+  }
+  function cancelYieldWatch(): void {
+    yieldProbePending = false;
+    if (yieldWatch) {
+      clearTimeout(yieldWatch);
+      yieldWatch = null;
+    }
   }
 
   /**
@@ -838,11 +859,9 @@ export function startInjectDaemon(): net.Server | null {
   function releaseOwnership(): void {
     if (releasedOwnership) return;
     releasedOwnership = true;
-    // A pending yield check must not bring a shut-down sidecar back (#99).
-    if (yieldWatch) {
-      clearTimeout(yieldWatch);
-      yieldWatch = null;
-    }
+    // A pending yield check must not bring a shut-down sidecar back (#99) —
+    // whether it is still a timer or already an in-flight probe (#107).
+    cancelYieldWatch();
     dropCandidate();
     if (!owning) return;
     owning = false;

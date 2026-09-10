@@ -27182,21 +27182,33 @@ function startInjectDaemon() {
     return { type: "retired", ...current };
   }
   let yieldWatch = null;
+  let yieldProbePending = false;
   function armYieldWatch() {
-    if (yieldWatch) return;
+    if (yieldWatch || yieldProbePending || releasedOwnership) return;
     yieldWatch = setTimeout(() => {
       yieldWatch = null;
-      if (owning || !retired) return;
+      if (owning || !retired || releasedOwnership) return;
+      yieldProbePending = true;
       void probeInjectDaemon(sockPath).then((probe) => {
-        if (probe.listening || owning || !retired) return;
+        if (!yieldProbePending) return;
+        yieldProbePending = false;
+        if (probe.listening || owning || !retired || releasedOwnership) return;
         note("the caller that asked us to retire never bound \u2014 re-entering the race");
         retired = false;
         armReacquire();
         tryReclaim("retire handover did not complete");
       }).catch(() => {
+        yieldProbePending = false;
       });
     }, injectDaemonReacquireIntervalMs());
     yieldWatch.unref();
+  }
+  function cancelYieldWatch() {
+    yieldProbePending = false;
+    if (yieldWatch) {
+      clearTimeout(yieldWatch);
+      yieldWatch = null;
+    }
   }
   const warmUp = () => {
     if (warmState !== "cold") return;
@@ -27250,10 +27262,7 @@ function startInjectDaemon() {
   function releaseOwnership() {
     if (releasedOwnership) return;
     releasedOwnership = true;
-    if (yieldWatch) {
-      clearTimeout(yieldWatch);
-      yieldWatch = null;
-    }
+    cancelYieldWatch();
     dropCandidate();
     if (!owning) return;
     owning = false;

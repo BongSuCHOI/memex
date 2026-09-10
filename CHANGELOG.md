@@ -2,6 +2,53 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.7 - unreleased
+
+Hotfix release for the three findings of the external post-release review of
+0.6.6 (#105–#107), each one a residue of a fix that went in with 0.6.6 and each
+verified and reproduced before it was fixed. The headline is that #101's new
+containment rule lost its boundary entirely on a data root that did not exist
+yet; the other two are an exclusion window in the Web UI and a shutting-down
+inject daemon that took its socket back.
+
+### Cross-device sync
+
+- The archive output path stays inside the data root even when the data root has
+  not been created yet. #101 compared the real location of the deepest EXISTING
+  ancestor of each path and dropped the components that did not exist, so a root
+  like `/tmp/new/root` collapsed onto `/tmp` and made all of `/tmp` "inside the
+  data root": with a fresh `MEMEX_HOME` and an explicitly pointed
+  `MEMEX_DB_PATH` — one `memex sync export --archive` on a machine whose root
+  the CLI had not written yet — a generation of plaintext memories could be
+  published anywhere under that ancestor. The comparison now keeps the
+  non-existent remainder on both sides (`realpath(existing prefix)` joined with
+  the rest), and the containment check runs again after the data root, the
+  staging directory and the output's own parent have actually been created, so
+  the path that is judged is the path the bytes reach. (#105)
+
+### Web UI
+
+- A memory change takes its per-fact lock synchronously, before the first
+  `await`, so a sync and a mutation exclude each other in both orders. #96 added
+  the `syncBusy` check to the mutation side, but `mutate()` then yielded on
+  `await this.connect()` and only added the lock afterwards: a `sync()` arriving
+  in that window saw an empty `busy` set, started, and the resumed mutation —
+  which never re-checks `syncBusy` — ran its core write while the sync was still
+  in flight. This is the rule #77 established for `tier()`, which already took
+  its lock before yielding. (#106)
+
+### Injection fast path
+
+- A shutting-down server cancels #99's yield check while its PROBE is in flight,
+  not only while the timer is pending. The timer callback cleared `yieldWatch`
+  before awaiting the probe, so `releaseOwnership()` landing in that window had
+  no timer left to cancel and the probe's continuation never looked at
+  `releasedOwnership`: a server that had already run its one-shot shutdown
+  cleanup re-entered the race, re-created the socket it had just given up, and —
+  the cleanup guard being one-shot — was never cleaned up again, leaving the
+  session served by a process on its way out. The probe now carries a
+  cancellation token that `releaseOwnership()` invalidates. (#107)
+
 ## 0.6.6 - 2026-09-10
 
 Hotfix release for the nine findings of the external post-release review of
