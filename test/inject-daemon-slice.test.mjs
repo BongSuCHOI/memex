@@ -166,7 +166,7 @@ async function orphanSocketFile(sockPath) {
  */
 function spawnDaemon(t, root, extraEnv = {}) {
   const child = spawn(process.execPath, ['--input-type=module', '-e', `
-    import { startInjectDaemon } from './dist/inject-daemon.js';
+    import { startInjectDaemon, injectDaemonReacquireNow } from './dist/inject-daemon.js';
     // The real sidecar lives inside an MCP server whose stdio transport READS
     // stdin, which is what makes 'end' fire when the host closes it. The sidecar
     // must never resume stdin itself — it would steal bytes from the transport —
@@ -177,6 +177,9 @@ function spawnDaemon(t, root, extraEnv = {}) {
     const announce = () => console.log('bound ' + process.pid);
     if (server.listening) announce(); else server.once('listening', announce);
     console.log('started ' + process.pid);
+    // A line on stdin stands in for an MCP tool request: src/mcp-server.ts calls
+    // exactly this from its CallToolRequest handler.
+    process.stdin.on('data', () => { console.log('request'); injectDaemonReacquireNow(); });
     setInterval(() => {}, 200);
   `], {
     cwd: REPO,
@@ -890,6 +893,31 @@ test('a duplicate server reclaims the socket after the owner dies', async (t) =>
   assert.deepEqual(
     fs.existsSync(candidateDir) ? fs.readdirSync(candidateDir) : [],
     [], 'an owner is no longer a candidate');
+});
+
+test('an MCP request reclaims the socket without waiting for the timer', async (t) => {
+  const root = tempRoot(t, 'opp');
+  // The timer is pushed out to ten minutes, so ONLY the opportunistic probe can
+  // reclaim here: a host that is actively working must not have to sit out an
+  // interval, and the trigger is named in the log line that proves which fired.
+  const owner = spawnDaemon(t, root);
+  await owner.waitFor(/bound (\d+)/);
+  const duplicate = spawnDaemon(t, root, { MEMEX_INJECT_DAEMON_REACQUIRE_MS: '600000' });
+  const duplicatePid = Number((await duplicate.waitFor(/started (\d+)/))[1]);
+  await duplicate.waitFor(/same build \(pid \d+\)/);
+
+  owner.child.kill('SIGKILL');
+  await owner.exited;
+  assert.ok(fs.existsSync(socketIn(root)), 'the SIGKILLed owner leaves its socket behind');
+  // Past the 2s rate limit that keeps the per-request probe cheap; a busy host
+  // calls it many times a second and all but one call returns immediately.
+  await new Promise((resolve) => setTimeout(resolve, 2_200));
+
+  duplicate.child.stdin.write('tool\n');
+  await duplicate.waitFor(/reclaiming the socket \(mcp request; ECONNREFUSED\)/, 5_000);
+  await duplicate.waitFor(/bound (\d+)/, 5_000);
+  const answer = await identify(socketIn(root));
+  assert.equal(answer?.pid, duplicatePid, duplicate.output);
 });
 
 test('the hook falls back immediately on a stale socket, leaving no prepared receipt', async (t) => {
