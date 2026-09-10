@@ -178,10 +178,18 @@ async function readDbFacts(fingerprint) {
             oldestHeldAt: row.oldestHeldAt,
         }));
         let lastProbe = null;
+        // Read-only path on a database that may predate 0.7.0: the ledger table
+        // exists since 0.5.x but `model` / `reasoning_effort` are 0.7.0 columns
+        // added by the next `initDatabase()` (the MCP server or any write verb).
+        // `show` must describe an unmigrated root instead of failing on it.
         const tableExists = db
             .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_work_attempts'")
             .get() !== undefined;
-        if (tableExists) {
+        const ledgerColumns = tableExists
+            ? new Set(db.prepare('PRAGMA table_info(model_work_attempts)').all().map((c) => c.name))
+            : new Set();
+        const ledgerMigrated = ['model', 'reasoning_effort', 'error_class', 'duration_ms'].every((c) => ledgerColumns.has(c));
+        if (tableExists && ledgerMigrated) {
             const row = db.prepare(`
         SELECT state, started_at, finished_at, duration_ms, model, reasoning_effort, error_class
         FROM model_work_attempts
