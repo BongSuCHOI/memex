@@ -25035,7 +25035,7 @@ function readResidentRevisionCorrections(db, sessionId) {
   return corrections;
 }
 function parseTruncationRecord(raw) {
-  const empty = { fields: [], itemCaps: {} };
+  const empty = { fields: [], itemCaps: {}, overBudget: false };
   if (typeof raw !== "string" || !raw.trim()) return empty;
   let parsed;
   try {
@@ -25058,7 +25058,7 @@ function parseTruncationRecord(raw) {
       itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
     }
   }
-  return { fields, itemCaps };
+  return { fields, itemCaps, overBudget: record2.overBudget === true };
 }
 function readWorkCapsule(db, workstreamId) {
   const row = db.prepare(`
@@ -25089,6 +25089,7 @@ function readWorkCapsule(db, workstreamId) {
     truncated: Number(row.truncated ?? 0) === 1,
     truncatedFields: truncationRecord.fields,
     itemCaps: truncationRecord.itemCaps,
+    overBudget: truncationRecord.overBudget,
     originalChars: row.original_chars == null ? null : Number(row.original_chars)
   };
 }

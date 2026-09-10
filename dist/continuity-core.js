@@ -32,6 +32,8 @@ const SOURCE_PREFIX_GUARD_BYTES = 4 * 1024;
 export const DEFAULT_MAX_CAPSULE_CHARS = 12_000;
 const MIN_MAX_CAPSULE_CHARS = 2_000;
 const MAX_ARRAY_ITEMS = 8;
+/** Floor for the last-resort scalar halving in `fitCapsulePatch` (issue #74). */
+const SCALAR_TRUNCATION_FLOOR = 60;
 /** `MEMEX_CAPSULE_MAX_CHARS` override, parsed like the model-budget env caps. */
 export function capsuleMaxChars() {
     const raw = process.env.MEMEX_CAPSULE_MAX_CHARS;
@@ -935,7 +937,7 @@ function cleanEvidence(values, field, ledger) {
 function fitCapsulePatch(patch, max, ledger) {
     const originalChars = JSON.stringify(patch).length;
     const size = () => JSON.stringify(patch).length;
-    const done = (finalChars) => ({
+    const done = (finalChars, overBudget) => ({
         // Issue #85: an item cap applied while validating is a truncation too, even
         // when the serialized patch was always inside the size budget.
         truncated: ledger.fields.length > 0,
@@ -944,9 +946,10 @@ function fitCapsulePatch(patch, max, ledger) {
         originalChars,
         finalChars,
         maxChars: max,
+        overBudget,
     });
     if (originalChars <= max)
-        return done(originalChars);
+        return done(originalChars, false);
     const note = (field) => noteTruncated(ledger, field);
     const shrinkList = (field, limit) => {
         if (size() <= max)
@@ -1015,7 +1018,24 @@ function fitCapsulePatch(patch, max, ledger) {
             patch.sourceExchangeIds = kept;
         }
     }
-    return done(size());
+    // Issue #74: every step above is a *field* bound, and a field bound is not a
+    // serialized-size bound — one control character costs six JSON characters, so
+    // two 240-character scalars can still serialize past `max`. Halve the two
+    // surviving scalars down to a 60-character floor until the budget is met.
+    // Each pass strictly shortens at least one scalar, so the loop terminates.
+    while (size() > max && (patch.objective.length > SCALAR_TRUNCATION_FLOOR ||
+        patch.currentState.length > SCALAR_TRUNCATION_FLOOR)) {
+        for (const field of ["currentState", "objective"]) {
+            if (patch[field].length <= SCALAR_TRUNCATION_FLOOR)
+                continue;
+            patch[field] = patch[field].slice(0, Math.max(SCALAR_TRUNCATION_FLOOR, Math.ceil(patch[field].length / 2)));
+            note(field);
+        }
+    }
+    const finalChars = size();
+    // Nothing is left to shorten without inventing content: store the row, report
+    // the overrun, and let the caller's WARN line say the budget was not met.
+    return done(finalChars, finalChars > max);
 }
 function serializeTruncationRecord(truncation) {
     if (!truncation.truncated)
@@ -1023,11 +1043,12 @@ function serializeTruncationRecord(truncation) {
     const record = {
         fields: truncation.truncatedFields,
         itemCaps: truncation.itemCaps,
+        overBudget: truncation.overBudget,
     };
     return JSON.stringify(record);
 }
 function parseTruncationRecord(raw) {
-    const empty = { fields: [], itemCaps: {} };
+    const empty = { fields: [], itemCaps: {}, overBudget: false };
     if (typeof raw !== "string" || !raw.trim())
         return empty;
     let parsed;
@@ -1058,7 +1079,7 @@ function parseTruncationRecord(raw) {
             itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
         }
     }
-    return { fields, itemCaps };
+    return { fields, itemCaps, overBudget: record.overBudget === true };
 }
 export function validateWorkCapsulePatch(value) {
     return validateWorkCapsulePatchWithTruncation(value).patch;
@@ -1172,14 +1193,16 @@ export function applyWorkCapsulePatch(db, input) {
     if (truncation.truncated) {
         // Issue #17: one WARN line so a shortened projection is visible in the
         // worker's log, not only in the Capsule row that records it durably.
-        // Issue #85 adds the per-field item counts a bound removed.
+        // Issue #85 adds the per-field item counts a bound removed, and issue #74
+        // says so plainly when the result is still above the declared budget.
         const caps = Object.entries(truncation.itemCaps)
             .map(([field, cap]) => `${field}(kept=${cap.kept},dropped=${cap.dropped})`)
             .join(",");
         console.warn(`[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
             `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
             `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}` +
-            (caps ? ` items=${caps}` : ""));
+            (caps ? ` items=${caps}` : "") +
+            (truncation.overBudget ? " overBudget=true" : ""));
     }
     const now = input.now ?? new Date().toISOString();
     const tx = db.transaction(() => {
@@ -1343,6 +1366,7 @@ export function readWorkCapsule(db, workstreamId) {
         truncated: Number(row.truncated ?? 0) === 1,
         truncatedFields: truncationRecord.fields,
         itemCaps: truncationRecord.itemCaps,
+        overBudget: truncationRecord.overBudget,
         originalChars: row.original_chars == null ? null : Number(row.original_chars),
     };
 }

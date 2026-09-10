@@ -180,6 +180,8 @@ export interface WorkCapsule extends WorkCapsulePatch {
     truncatedFields: string[];
     /** Issue #85: per-field item counts a bound removed (`{kept, dropped}`). */
     itemCaps: Record<string, CapsuleItemCap>;
+    /** Issue #74: the stored projection is still above `MEMEX_CAPSULE_MAX_CHARS`. */
+    overBudget: boolean;
     /** Character length of the model's patch before priority truncation. */
     originalChars: number | null;
 }
@@ -288,6 +290,13 @@ export interface CapsuleTruncation {
     originalChars: number;
     finalChars: number;
     maxChars: number;
+    /**
+     * Issue #74: `finalChars` is still above `maxChars` after every step,
+     * including the last-resort scalar halving. The row is stored anyway (an
+     * oversized projection beats no projection) but the caller logs the fact
+     * instead of reporting a budget that was not met.
+     */
+    overBudget: boolean;
 }
 export declare function validateWorkCapsulePatch(value: unknown): WorkCapsulePatch;
 export declare function validateWorkCapsulePatchWithTruncation(value: unknown): {

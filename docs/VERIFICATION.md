@@ -126,7 +126,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply, 근거가 정정된 auto 승격의 강등과 정규화 동일 재표현의 tier 유지 (#62) |
 | `test/fixtures/fact-scope-directive-cases.json` | 세션 내 한국어·영어 범위 지시문 인식 fixture |
 | `test/job-recovery.test.ts` | `recover`/`jobs retry\|dismiss`의 한 트랜잭션 리셋 범위, `retry_history` 보존, dry-run 무변경, `dismiss`의 `superseded`, 실행 중 lease를 가진 소유 job의 target 경로 거부와 CAS 경쟁 시 부분 리셋 없음 (#70) |
-| `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록, 리스트 항목 수 상한 절단(`itemCaps` kept/dropped, 12개 `touchedAreas`가 retry 없이 completed, 절단 후 evidence source 재검증, 0.6.3 이전 배열 형태 읽기) (#85) |
+| `test/capsule-size-truncation.test.ts` | `MEMEX_CAPSULE_MAX_CHARS` 상한·하한, 우선순위 절단, `truncated`/`truncated_fields_json`/`original_chars` 기록, 리스트 항목 수 상한 절단(`itemCaps` kept/dropped, 12개 `touchedAreas`가 retry 없이 completed, 절단 후 evidence source 재검증, 0.6.3 이전 배열 형태 읽기) (#85), 제어문자 scalar에서도 `finalChars <= maxChars` 보장과 `overBudget` 보고, 일반 텍스트의 기존 우선순위 불변 (#74) |
 | `test/capsule-retry-convergence.test.ts` | 실패 시 page 힌트 절반 축소, 최소 page에서 head fragment skip 후 frontier 전진, dead job 재생성 방지 |
 | `test/capsule-terminal-state.test.ts` | terminal `failed-visible`을 `retry`로 덮어쓰지 않음, `failMemoryJob`의 실제 전이 반환, 1회성 상태 repair 마이그레이션 |
 | `test/injection-gate-observability.test.ts` | `injected` vs `context-only`, `baseline_margin_gap` 텔레메트리, `lexical_lane_unavailable`, `MEMEX_INJECT_BASELINE_MARGIN` 파싱 |
