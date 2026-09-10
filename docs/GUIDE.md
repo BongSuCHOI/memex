@@ -520,6 +520,12 @@ Git marketplace에서는 marketplace snapshot을 갱신하고 plugin cache를 �
 폴백으로 돌아갑니다. 그래서 `memex update`는 재설치 성공 직후 새 plugin root에서
 `memex deps materialize`를 자동 수행합니다(`--no-materialize`면 실행 대신 명령만 출력).
 
+같은 이유로 **embedding model 캐시**도 업데이트마다 비어 있었습니다(0.6.4까지는 설치본
+`node_modules` 안에 있었습니다). 이제 캐시는 data root에 있으므로([§10](#embedding-model-캐시-065-92))
+살아남고, `memex deps materialize`는 캐시가 비어 있을 때만 `memex deps warm` 단계를 추가로
+수행합니다 — 약 129 MB, 진행 표시 있음, 실패는 경고이며 의존성 materialize 자체는 성공입니다.
+`--no-warm`으로 생략할 수 있습니다(`memex update --no-warm`도 그대로 전달됩니다).
+
 ## 13. 진단
 
 ```bash
@@ -924,9 +930,10 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | --- | --- | --- |
 | `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 | [§3](#3-cli-shim과-codex-memory-충돌-점검) |
 | `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent). `--marketplace`·`--plugin-root`·`--root`·`--dry-run` | [§13](#13-진단) |
-| `memex deps materialize` | 설치된 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`). `--root`·`--dry-run`·`--force`·`--json` | [§13](#13-진단) |
+| `memex deps materialize` | 설치된 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`) 후 embedding model 캐시 워밍. `--root`·`--dry-run`·`--force`·`--no-warm`·`--json` | [§13](#13-진단) |
+| `memex deps warm` | embedding model을 안정 캐시(`<data root>/models`)에 미리 내려받습니다(#92). `--force`·`--json` | [§10](#embedding-model-캐시-065-92) |
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) | [§5](#5-lifecycle-hooks), [§14](#14-제거와-데이터-보존) |
-| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize`·`--no-warm` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
 | `memex sync export --archive [<path.zip>]` | 세대 하나를 zip으로 저장(동기화가 꺼져 있어도 동작, 기본 위치 `<data root>/sync/exports/`) | [§10](#공유-폴더가-없을-때--세대-파일을-손으로-옮기기-063) |

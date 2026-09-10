@@ -84,6 +84,10 @@ export function embeddingCacheDir() {
 export function embeddingModelCacheDir(model = EMBEDDING_MODEL, cacheDir = embeddingCacheDir()) {
     return path.join(cacheDir, ...model.split("/"));
 }
+/** `=1` only — see `EmbeddingCacheStatus.stub`. */
+export function embeddingStubReplacesModel() {
+    return process.env.MEMEX_EMBEDDING_STUB === "1";
+}
 function walk(dir, onFile) {
     let entries;
     try {
@@ -146,7 +150,7 @@ export function embeddingCacheStatus(model = EMBEDDING_MODEL) {
         present,
         files,
         bytes,
-        stub: Boolean(process.env.MEMEX_EMBEDDING_STUB),
+        stub: embeddingStubReplacesModel(),
     };
 }
 /**

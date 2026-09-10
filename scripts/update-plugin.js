@@ -78,8 +78,15 @@ try {
   // `npx github:BongSuCHOI/memex#main` fallback right after an update — exactly
   // what was observed after moving to 0.6.0. Materialize the runtime closure
   // here, and when that is not possible print the one command that fixes it.
+  //
+  // Issue #92: materialize also warms the embedding model cache, because the
+  // OTHER thing a fresh root used to start without was the 129 MB of model
+  // weights — `--no-warm` travels with the rest of the flags.
   const materializeScript = path.join(HERE, 'materialize-deps.mjs');
-  const rootArgs = installedRoot ? ['--root', installedRoot] : [];
+  const rootArgs = [
+    ...(installedRoot ? ['--root', installedRoot] : []),
+    ...(args.includes('--no-warm') ? ['--no-warm'] : []),
+  ];
   const suggestion = `memex deps materialize${installedRoot ? ` --root "${installedRoot}"` : ''}`;
   if (skipMaterialize) {
     console.log(`Runtime dependencies were NOT materialized (--no-materialize). Run: ${suggestion}`);

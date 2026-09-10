@@ -270,9 +270,10 @@ memex status
 | --- | --- |
 | `memex setup` | Codex built-in Memory 충돌 점검. `--install-cli` / `--uninstall-cli`로 `~/.local/bin/memex` shim 관리 |
 | `memex install` | 플러그인 등록과 runtime 의존성 materialize (idempotent). `--root`로 설치본 루트 직접 지정 |
-| `memex deps materialize` | 해석된 설치 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`). `--root`, `--dry-run`, `--force`, `--json` |
+| `memex deps materialize` | 해석된 설치 plugin root에 runtime 의존성 설치(`npm install --omit=dev --no-audit --no-fund`) 후 embedding model 캐시가 비어 있으면 워밍. `--root`, `--dry-run`, `--force`, `--no-warm`, `--json` |
+| `memex deps warm` | embedding model을 안정 캐시(`<data root>/models`)에 미리 내려받아 첫 프롬프트가 129 MB를 내지 않게 합니다. `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Memex 소유 lifecycle hook 등록·제거 (명시적 fallback 호스트 전용) |
-| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize` |
+| `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize`, `--no-warm` |
 | `memex sync` | 새 Codex rollout archive/index. `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` |
 | `memex sync export --archive [<path.zip>]` | 세대 하나를 zip으로 저장해 손으로 옮기기(동기화가 꺼져 있어도 동작) |

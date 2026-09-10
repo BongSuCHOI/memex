@@ -54,9 +54,18 @@ export interface EmbeddingCacheStatus {
     present: boolean;
     files: number;
     bytes: number;
-    /** `MEMEX_EMBEDDING_STUB` is set: no model is loaded, so nothing is needed. */
+    /**
+     * `MEMEX_EMBEDDING_STUB=1`: a deterministic hashed vector replaces the model,
+     * so no cache is needed and `present: false` is not a problem to report.
+     *
+     * Deliberately NOT true for `MEMEX_EMBEDDING_STUB=fail`, which means "the model
+     * is unavailable" — a caller asking "do I need to warm?" must get `yes`, and
+     * then watch the warm fail, rather than be told there is nothing to do.
+     */
     stub: boolean;
 }
+/** `=1` only — see `EmbeddingCacheStatus.stub`. */
+export declare function embeddingStubReplacesModel(): boolean;
 /**
  * Is a model present in `modelDir`, and how big is it?
  *

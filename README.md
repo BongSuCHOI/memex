@@ -270,9 +270,10 @@ memex status
 | --- | --- |
 | `memex setup` | Check for a conflict with Codex built-in Memory; `--install-cli` / `--uninstall-cli` manage the `~/.local/bin/memex` shim |
 | `memex install` | Register the plugin and materialize its runtime dependencies (idempotent); `--root` targets an explicit installed plugin root |
-| `memex deps materialize` | Install the runtime dependencies into the resolved installed plugin root (`npm install --omit=dev --no-audit --no-fund`); `--root`, `--dry-run`, `--force`, `--json` |
+| `memex deps materialize` | Install the runtime dependencies into the resolved installed plugin root (`npm install --omit=dev --no-audit --no-fund`), then warm the embedding model cache when it is empty; `--root`, `--dry-run`, `--force`, `--no-warm`, `--json` |
+| `memex deps warm` | Download the embedding model into the stable cache (`<data root>/models`) so the first prompt does not pay the 129 MB; `--force`, `--json` |
 | `memex setup-hooks` / `memex remove-hooks` | Register or remove Memex-owned lifecycle hooks (explicit fallback hosts only) |
-| `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
+| `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize`, `--no-warm` |
 | `memex sync` | Archive and index new Codex rollouts; `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | Cross-device sync switch (OFF by default), shared folder (`--dir`), status, manual export (`--force`) / import; `--json` |
 | `memex sync export --archive [<path.zip>]` | Write one generation as a zip to carry by hand (works with sync off) |
