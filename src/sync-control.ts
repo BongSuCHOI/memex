@@ -468,8 +468,13 @@ export function exportGenerationArchive(options: { outPath?: string } = {}): Gen
     }
 
     const target = requested ?? path.join(archiveExportDir(), `${deviceId}-${generation}.zip`);
-    if (!requested) assertArchiveTargetAllowed(target);
     fs.mkdirSync(path.dirname(target), { recursive: true });
+    // Issue #105 — re-check with every component really on disk. At entry the
+    // data root may not have existed yet, so `requested` was judged against a
+    // root that was only as real as its deepest existing ancestor; the root and
+    // the output's own parent exist by now, so this is the check that sees what
+    // the write will actually reach.
+    assertArchiveTargetAllowed(target);
     const body = createZip(entries);
     // Same publish discipline as a generation: write beside, then rename, so a
     // reader (or a cloud folder watcher) never sees a half-written archive.
@@ -496,17 +501,30 @@ export function exportGenerationArchive(options: { outPath?: string } = {}): Gen
 }
 
 /**
- * Real location of the deepest part of `target` that exists, including `target`
- * itself. Symlinks are resolved, so this is the path a write would truly reach.
+ * Where `target` would really land: the real location of its deepest EXISTING
+ * ancestor, with the components that do not exist yet kept on the end.
+ *
+ * Symlinks in the existing prefix are resolved, so this is the path a write
+ * would truly reach. Issue #105 — keeping the non-existent remainder is the
+ * whole point: 0.6.6 returned only the existing prefix, which made every path
+ * under a data root that had not been created yet collapse onto that root's
+ * deepest existing ancestor, and containment then compared two unrelated paths
+ * that had both collapsed to `/tmp`.
  */
 function deepestRealPath(target: string): string {
   let probe = path.resolve(target);
-  while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
-  try {
-    return fs.realpathSync(probe);
-  } catch {
-    return probe;
+  const missing: string[] = [];
+  while (!fs.existsSync(probe) && path.dirname(probe) !== probe) {
+    missing.unshift(path.basename(probe));
+    probe = path.dirname(probe);
   }
+  let real: string;
+  try {
+    real = fs.realpathSync(probe);
+  } catch {
+    real = probe;
+  }
+  return missing.length ? path.join(real, ...missing) : real;
 }
 
 /**

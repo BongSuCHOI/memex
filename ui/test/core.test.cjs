@@ -120,6 +120,50 @@ test('동기화가 진행 중이면 기억 변경과 계층 이동을 409로 거
   assert(x.calls.some(c=>c[0]==='deactivate'));
  }finally{x.clean();}
 });
+/**
+ * #106 — 0.6.6의 #96 수정은 변경 쪽에 `syncBusy` 검사를 더했지만, `mutate()`는 그 검사 뒤에
+ * `await this.connect()`로 양보한 다음에야 `busy.add(id)`로 잠금을 잡았다. 그 창에 들어온
+ * `sync()`는 빈 `busy`를 보고 통과하고, 재개된 변경은 `syncBusy`를 다시 보지 않으므로 동기화와
+ * 변경이 실제로 겹쳤다. #77이 `tier()`에 세운 규칙 — 잠금은 첫 `await` 앞에서 동기적으로 —
+ * 을 변경에도 적용해야 두 순서 모두에서 배타적이다. 기존 테스트는 처음부터 `syncBusy=true`인
+ * 경우만 다뤄 이 창을 지나쳤다.
+ */
+test('연결 await 창에 들어온 동기화는 진행 중인 기억 변경과 겹치지 않는다 (#106)',async()=>{
+ const x=syncSetup();
+ const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));};
+ try{
+  // 주입된 지연 연결: 검사와 잠금 사이에 실제 양보 지점을 만든다.
+  let openConnect;const connecting=new Promise(r=>{openConnect=r;});
+  const realConnect=x.c.connect.bind(x.c);
+  x.c.connect=async()=>{await connecting;return realConnect();};
+  let syncBusyAtWrite=null;
+  x.c.modules.get('fact-management').deactivateFactTransactional=(db,id)=>{
+   syncBusyAtWrite=x.c.syncBusy===true;return {deactivated:true};
+  };
+  const mutation=x.c.mutate({id:uid(1),action:'deactivate'},x.scope);
+  await settle();
+  assert.equal(x.calls.length,0,'변경이 연결 await에서 멈춰 있지 않습니다');
+  assert.equal(x.c.busy.has(uid(1)),true,'첫 await 앞에서 변경 잠금을 잡지 않았습니다');
+  await assert.rejects(x.c.sync('export'),{status:409,code:'MUTATION_BUSY'});
+  openConnect();
+  await mutation;
+  assert.equal(syncBusyAtWrite,false,'동기화가 진행 중인데 코어 쓰기가 실행됐습니다');
+  assert.equal(x.syncCalls.filter(c=>c[0]==='export').length,0,'거절된 동기화가 코어 export를 실행했습니다');
+  assert.equal(x.c.busy.size,0);assert.equal(!!x.c.syncBusy,false);
+
+  // 반대 순서도 배타적이다: 동기화가 먼저 잠금을 잡으면 변경이 SYNC_BUSY로 거절된다.
+  let openModule;const loading=new Promise(r=>{openModule=r;});
+  const realModule=x.c.module.bind(x.c);
+  x.c.module=async name=>{await loading;return realModule(name);};
+  const sync=x.c.sync('export');
+  await settle();
+  assert.equal(x.c.syncBusy,true,'동기화가 첫 await 앞에서 잠금을 잡지 않았습니다');
+  await assert.rejects(x.c.mutate({id:uid(1),action:'deactivate'},x.scope),{status:409,code:'SYNC_BUSY'});
+  assert.equal(x.c.busy.size,0,'거절된 변경이 잠금을 남겼습니다');
+  openModule();await sync;
+  assert.equal(x.c.syncBusy,false);
+ }finally{x.clean();}
+});
 function syncSetup(){
  const x=setup();const calls=[];
  x.c.modules.set('sync-control',{

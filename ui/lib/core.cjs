@@ -219,13 +219,17 @@ class Core {
     if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
     if(this.syncBusy)throw new HttpError(409,'동기화 작업이 진행 중입니다. 완료 후 실행하세요.','SYNC_BUSY');
-    const store=await this.connect();const current=store.visibleFact(id,scope);
-    if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
-    if(body.expectedText!==undefined&&current.fact!==body.expectedText)throw new HttpError(409,'기억 내용이 변경됐습니다. 새로고침하세요.','STALE_FACT');
-    if(action==='edit'&&(typeof body.text!=='string'||body.text.trim().length<4||body.text.length>20000))throw new HttpError(400,'기억 내용은 4–20,000자로 입력하세요.');
-    if(action==='delete'&&(!body.confirm||body.confirmId!==id||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))throw new HttpError(400,'영향을 확인한 뒤 전체 UUID를 정확히 입력하세요.','CONFIRMATION_REQUIRED');
+    // #106 — 잠금은 첫 await 앞에서 동기적으로 잡는다(#77이 tier()에 세운 규칙과 같다). 0.6.6은
+    // syncBusy를 검사한 뒤 `await this.connect()`로 양보하고 나서야 busy.add(id)를 했고, 그 창에
+    // 들어온 sync()는 빈 busy를 보고 통과했다. 재개된 변경은 syncBusy를 다시 보지 않으므로 동기화와
+    // 변경이 겹쳤다. 양쪽 잠금이 모두 첫 await 앞에서 잡히면 어느 순서로 들어와도 배타적이다.
     this.busy.add(id);let writer;
     try{
+      const store=await this.connect();const current=store.visibleFact(id,scope);
+      if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
+      if(body.expectedText!==undefined&&current.fact!==body.expectedText)throw new HttpError(409,'기억 내용이 변경됐습니다. 새로고침하세요.','STALE_FACT');
+      if(action==='edit'&&(typeof body.text!=='string'||body.text.trim().length<4||body.text.length>20000))throw new HttpError(400,'기억 내용은 4–20,000자로 입력하세요.');
+      if(action==='delete'&&(!body.confirm||body.confirmId!==id||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))throw new HttpError(400,'영향을 확인한 뒤 전체 UUID를 정확히 입력하세요.','CONFIRMATION_REQUIRED');
       // #78 — 코어의 감사 줄도 이 서버의 home에 남아야 하므로 코어 호출을 pinned() 안에서 한다.
       return await this.pinned(async()=>{
         const fm=await this.module('fact-management');const factories=await this.module('db');writer=factories.openWriteDb(this.dbPath);

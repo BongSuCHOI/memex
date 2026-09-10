@@ -809,6 +809,86 @@ test('a retire nobody follows up on is a yield: the owner comes back and serves 
   assert.match(result.stderr, /back=true/, 'the owner that yielded must serve again');
 });
 
+test('a shutdown during the pending yield probe cancels it instead of re-acquiring', async (t) => {
+  const root = tempRoot(t, 'yieldrelease');
+  // Issue #107, the other end of #99's yield watch. The timer callback nulled
+  // `yieldWatch` BEFORE awaiting the probe, so a `releaseOwnership()` landing in
+  // that window had no timer to clear, and the probe's `.then()` never looked at
+  // `releasedOwnership`: a server that had already run its one-shot shutdown
+  // cleanup re-entered the race, re-created the socket it had just given up, and
+  // — the guard being one-shot — was never cleaned up again. The session was then
+  // served by a process on its way out.
+  //
+  // The window is made deterministic by wrapping `net.connect` in the CHILD (test
+  // harness only, production code untouched): the shutdown runs at the instant
+  // the probe opens its connection, which is exactly the state the bug needs —
+  // `yieldWatch` already null, the probe not yet resolved — and the real connect
+  // then fails ENOENT, so the probe completes with `listening: false`.
+  const code = `
+    import net from 'node:net';
+    import fs from 'node:fs';
+    import { startInjectDaemon, injectSocketPath, injectDaemonIdentity, injectDaemonPolicy } from './dist/inject-daemon.js';
+    const realConnect = net.connect;
+    const sockPath = injectSocketPath();
+    let armed = false, releasedDuringProbe = false;
+    net.connect = (...args) => {
+      if (armed && !releasedDuringProbe && args[0] === sockPath) {
+        releasedDuringProbe = true;
+        console.error('release-during-probe');
+        // How a host says "you are done" without a signal — registerProcessCleanup()
+        // hangs releaseOwnership() off exactly this event.
+        process.stdin.emit('end');
+      }
+      return realConnect(...args);
+    };
+    const ask = (request) => new Promise((resolve) => {
+      const conn = realConnect(sockPath);
+      let buf = '';
+      const finish = (value) => { try { conn.destroy(); } catch {} resolve(value); };
+      setTimeout(() => finish(null), 2000);
+      conn.on('connect', () => conn.write(JSON.stringify(request) + '\\n'));
+      conn.on('data', (c) => {
+        buf += String(c);
+        const nl = buf.indexOf('\\n');
+        if (nl < 0) return;
+        try { finish(JSON.parse(buf.slice(0, nl))); } catch { finish(null); }
+      });
+      conn.on('error', () => finish(null));
+    });
+    const server = startInjectDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (!server || !server.listening) { console.error('listener did not open'); process.exit(2); }
+    const forged = {
+      ...injectDaemonIdentity(), pluginRoot: injectDaemonPolicy().installedRoot,
+      buildId: 'sha256:' + '0'.repeat(64), pid: 999999, instanceId: 'forged', startedAt: 'now',
+    };
+    console.error('retire=' + String((await ask({ type: 'retire', protocol: 1, from: forged }) || {}).type));
+    armed = true;
+    // Long enough for the yield watch to fire, the probe to resolve, and any
+    // re-acquired bind to land.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    console.error('released=' + releasedDuringProbe);
+    console.error('socket=' + fs.existsSync(sockPath));
+    console.error('listening=' + Boolean(server && server.listening));
+    process.exit(0);
+  `;
+  const result = await runModule(code, {
+    MEMEX_HOME: root,
+    TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+    MEMEX_INJECT_DAEMON: '1',
+    MEMEX_INJECT_DAEMON_REACQUIRE_MS: '300',
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stderr, /retire=retired/);
+  assert.match(result.stderr, /release-during-probe/, 'the shutdown never landed inside the probe window');
+  assert.match(result.stderr, /released=true/);
+  assert.doesNotMatch(result.stderr, /never bound — re-entering the race/, 'a released owner re-entered the race');
+  assert.doesNotMatch(result.stderr, /reclaiming the socket/, 'a released owner reclaimed the socket');
+  assert.doesNotMatch(result.stderr, /not serving — re-probing/, 'a released owner armed the re-probe timer');
+  assert.match(result.stderr, /socket=false/, 'a released owner re-created the socket it had given up');
+  assert.match(result.stderr, /listening=false/);
+});
+
 test('a bind that cannot succeed is named in the log, the event file and doctor', async (t) => {
   const root = tempRoot(t, 'toolong');
   // Issue #99, the comment thread: `sockaddr_un.sun_path` is a fixed 104-byte
