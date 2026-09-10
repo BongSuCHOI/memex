@@ -60,11 +60,15 @@ export const EMPTY_USER_PATTERN_HITS = Object.freeze({
     timedOut: false,
     quarantined: Object.freeze([]),
     unavailable: false,
+    truncated: false,
     elapsedMs: 0,
     compiledPatterns: 0,
 });
 function unavailableHits(elapsedMs, timedOut = false) {
-    return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs, compiledPatterns: 0 };
+    return {
+        intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, truncated: false,
+        elapsedMs, compiledPatterns: 0,
+    };
 }
 function workerEntry() {
     return new URL("./overlay-matcher-worker.mjs", import.meta.url);
@@ -249,7 +253,8 @@ class TimeBoxedMatcher {
         // and the 50 ms cap is stated against exactly this clock.
         const started = Date.now();
         const generation = ++this.generation;
-        const text = input.text.length > MATCH_INPUT_CHARS ? input.text.slice(0, MATCH_INPUT_CHARS) : input.text;
+        const truncated = input.text.length > MATCH_INPUT_CHARS;
+        const text = truncated ? input.text.slice(0, MATCH_INPUT_CHARS) : input.text;
         const patterns = input.patterns;
         const reply = new Promise((resolve) => {
             this.pending = resolve;
@@ -282,7 +287,7 @@ class TimeBoxedMatcher {
         if (timer)
             clearTimeout(timer);
         if (outcome !== "timeout" && outcome !== null) {
-            return this.collect(outcome, patterns, Date.now() - started);
+            return this.collect(outcome, patterns, Date.now() - started, truncated);
         }
         if (outcome === null) {
             // Worker died under us. Nothing is attributable: no quarantine.
@@ -319,11 +324,12 @@ class TimeBoxedMatcher {
             timedOut: true,
             quarantined: [culprit.id],
             unavailable: false,
+            truncated,
             elapsedMs,
             compiledPatterns: 0,
         };
     }
-    collect(reply, patterns, elapsedMs) {
+    collect(reply, patterns, elapsedMs, truncated) {
         const intents = {};
         const matched = [];
         const byIndex = new Map(patterns.map((pattern, index) => [index, pattern]));
@@ -337,7 +343,7 @@ class TimeBoxedMatcher {
             (intents[intent] ??= []).push(entry.id);
         });
         return {
-            intents, matched, timedOut: false, quarantined: [], unavailable: false, elapsedMs,
+            intents, matched, timedOut: false, quarantined: [], unavailable: false, truncated, elapsedMs,
             compiledPatterns: Number(reply.compiled ?? 0),
         };
     }
@@ -423,7 +429,27 @@ export function isQuarantinedPattern(entries, patternId, source, flags) {
     const sha8 = patternSourceSha8(source, flags ?? "");
     return entries.some((entry) => entry.pattern_id === patternId && entry.source_sha8 === sha8);
 }
-function writeQuarantineAtomic(entries) {
+/** Attempts a single `quarantinePattern` makes when the file moves under it. */
+const QUARANTINE_WRITE_ATTEMPTS = 3;
+/** File identity at one instant: inode, mtime, size. `null` when absent. */
+function quarantineFileStamp() {
+    try {
+        const stat = fs.statSync(overlayQuarantinePath());
+        return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Replace the file with `entries`.
+ *
+ * `expectedStamp` is a compare-and-swap on the file's identity: the caller read
+ * the file to build `entries`, and the rename must not land if someone else has
+ * written since that read. `undefined` skips the check (the admin replace path,
+ * where the operator's intent IS to overwrite).
+ */
+function writeQuarantineAtomic(entries, expectedStamp) {
     const target = overlayQuarantinePath();
     const body = `${JSON.stringify({ schema: QUARANTINE_SCHEMA, version: QUARANTINE_VERSION, entries }, null, 2)}\n`;
     const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
@@ -433,6 +459,15 @@ function writeQuarantineAtomic(entries) {
         if (stat?.isSymbolicLink())
             return false;
         fs.writeFileSync(tmp, body, { mode: 0o600 });
+        if (expectedStamp !== undefined && quarantineFileStamp() !== expectedStamp) {
+            // Someone wrote between our read and here. Our `entries` no longer contain
+            // their rows, so renaming would DROP them. Caller retries from a fresh read.
+            try {
+                fs.unlinkSync(tmp);
+            }
+            catch { /* already gone */ }
+            return false;
+        }
         // tmp+rename changes the inode, which is what makes the load caches'
         // `mtimeMs:size:ino` key a reliable invalidation signal (§1.1).
         fs.renameSync(tmp, target);
@@ -449,31 +484,40 @@ function writeQuarantineAtomic(entries) {
     }
 }
 /**
- * Record a quarantined pattern. Merge is a SET UNION keyed on
- * (pattern_id, source_sha8), so concurrent writers cannot lose an entry and no
- * lock, revision or CAS is involved.
+ * Record a quarantined pattern.
+ *
+ * The merge is a set union keyed on (pattern_id, source_sha8), but a union built
+ * in local memory is NOT enough on its own: two processes that read the same
+ * previous file and then both rename lose whichever entry the later rename did not
+ * know about. So the write is read-merge-write with a compare-and-swap on the
+ * file's identity and a retry when it moved.
+ *
+ * The in-memory row is also kept after a successful write, not dropped. It is this
+ * process's own guarantee that the pattern stays excluded here even if a later
+ * writer elsewhere overwrites the file — losing the row would silently re-enable a
+ * pattern that already burned its budget.
  */
 export function quarantinePattern(entry) {
     const key = quarantineKey(entry.pattern_id, entry.source_sha8);
-    const merged = new Map();
-    for (const existing of readQuarantineFile()) {
-        merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+    if (!memoryQuarantine.has(key)) {
+        memoryQuarantine.set(key, entry);
+        memoryGeneration++;
     }
-    for (const [memoryEntryKey, memoryEntry] of memoryQuarantine)
-        merged.set(memoryEntryKey, memoryEntry);
-    if (!merged.has(key))
-        merged.set(key, entry);
-    let entries = [...merged.values()];
-    if (entries.length > QUARANTINE_MAX_ENTRIES) {
-        entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+    for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+        const stamp = quarantineFileStamp();
+        const merged = new Map();
+        for (const existing of readQuarantineFile()) {
+            merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+        }
+        for (const [memoryEntryKey, memoryEntry] of memoryQuarantine)
+            merged.set(memoryEntryKey, memoryEntry);
+        let entries = [...merged.values()];
+        if (entries.length > QUARANTINE_MAX_ENTRIES) {
+            entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+        }
+        if (writeQuarantineAtomic(entries, stamp))
+            return;
     }
-    if (writeQuarantineAtomic(entries)) {
-        // Persisted: later loads read it from the file and the memory copy can go.
-        memoryQuarantine.delete(key);
-        return;
-    }
-    memoryQuarantine.set(key, entry);
-    memoryGeneration++;
 }
 /**
  * Replace the persisted set. Owned by src/overlay-admin.ts (`clearQuarantine`,
@@ -487,7 +531,7 @@ export function replaceQuarantine(entries) {
             memoryGeneration++;
         }
     }
-    return writeQuarantineAtomic(entries);
+    return writeQuarantineAtomic(entries, undefined);
 }
 /** Test-only: forget the in-memory fallback rows of this process. */
 export function resetQuarantineMemory() {

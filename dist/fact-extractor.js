@@ -2010,13 +2010,39 @@ const NO_FORBIDDEN = {
     hash: null,
     staleRead: false,
 };
-/** Every field of a fact that reaches durable storage, split by match scope. */
+/**
+ * THE enumeration of every text column the commit persists from a fact candidate.
+ *
+ * One place on purpose. The first version listed `fact`, `fact_kr` and the plain
+ * evidence spans — and then the same transaction wrote `subject_key`,
+ * `classifier_notes` and all three `change_context` fields, each of which is its
+ * own durable column. A forbid rule that the operator wrote to keep a secret out
+ * of their memory was therefore satisfied by the check and defeated by the insert.
+ *
+ * Column by column, and nothing here may be dropped without removing the write:
+ *   fact                      → facts.fact, Chronicle new_value / previous_value
+ *   fact_kr                   → facts.fact_kr
+ *   subject_key               → facts.subject_key, Chronicle subject_key
+ *   classifier_notes          → fact_revisions.classifier_note
+ *   change_context.*.text     → fact_revisions.problem / grounded_cause / rationale
+ *   evidence[].supporting_span + change_context.*.supporting_span
+ *                             → the evidence receipts' stored spans
+ */
 function factBlockCandidate(fact) {
+    const context = fact.change_context;
+    const grounded = [context?.problem, context?.cause, context?.rationale];
     return {
-        // `.fact` is also the Chronicle `new_value` on every ASSERTED / CHANGED /
-        // CONTRADICTED event, so covering it covers that column too.
-        factText: [fact.fact, fact.fact_kr ?? ""],
-        evidence: (fact.evidence ?? []).map((item) => item.supporting_span ?? ""),
+        factText: [
+            fact.fact,
+            fact.fact_kr ?? "",
+            fact.subject_key ?? "",
+            ...(fact.classifier_notes ?? []),
+            ...grounded.map((ref) => ref?.text ?? ""),
+        ],
+        evidence: [
+            ...(fact.evidence ?? []).map((item) => item.supporting_span ?? ""),
+            ...grounded.map((ref) => ref?.supporting_span ?? ""),
+        ],
     };
 }
 /** Every observation field that reaches durable storage (§3.3's list). */

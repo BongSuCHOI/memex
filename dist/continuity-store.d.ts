@@ -207,6 +207,29 @@ export declare function supersedeStaleExtractionTarget(db: Database.Database, in
     leaseGeneration: number;
     now?: string;
 }): boolean;
+/**
+ * Put ONE completed extraction target back in the queue (`extract rules reextract`).
+ *
+ * All of the progress state has to go back, not just `state`. `cursor_ordinal` is
+ * the one that bites: a completed target's cursor equals `item_count`, the next
+ * claim reads the page AFTER the cursor, and so a re-queued target handed the
+ * worker an empty page — which `runFactExtraction` records as
+ * `target has no pending page despite incomplete state`. Re-queueing has to mean
+ * "start again from the first ordinal", so the cursor is reset with everything else.
+ *
+ * `rules_hash` is cleared because the next run will stamp the hash it actually ran
+ * under; `lease_generation` is NOT touched, because it is monotonic fencing and
+ * rewinding it would let a stale lease look current again.
+ *
+ * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
+ * returned map is empty for it.
+ */
+export declare function requeueCompletedExtractionTarget(db: Database.Database, input: {
+    targetId: string;
+    jobId?: string | null;
+    checkpointId?: string | null;
+    now?: string;
+}): Record<string, number>;
 export declare function commitExtractionPage(db: Database.Database, input: {
     target: ExtractionTarget;
     items: ExtractionTargetItem[];

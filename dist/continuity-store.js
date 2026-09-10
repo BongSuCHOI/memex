@@ -1807,6 +1807,60 @@ export function supersedeStaleExtractionTarget(db, input) {
         throw error;
     }
 }
+/**
+ * Put ONE completed extraction target back in the queue (`extract rules reextract`).
+ *
+ * All of the progress state has to go back, not just `state`. `cursor_ordinal` is
+ * the one that bites: a completed target's cursor equals `item_count`, the next
+ * claim reads the page AFTER the cursor, and so a re-queued target handed the
+ * worker an empty page — which `runFactExtraction` records as
+ * `target has no pending page despite incomplete state`. Re-queueing has to mean
+ * "start again from the first ordinal", so the cursor is reset with everything else.
+ *
+ * `rules_hash` is cleared because the next run will stamp the hash it actually ran
+ * under; `lease_generation` is NOT touched, because it is monotonic fencing and
+ * rewinding it would let a stale lease look current again.
+ *
+ * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
+ * returned map is empty for it.
+ */
+export function requeueCompletedExtractionTarget(db, input) {
+    const now = input.now ?? new Date().toISOString();
+    const changed = {};
+    const bump = (table, changes) => {
+        if (changes > 0)
+            changed[table] = (changed[table] ?? 0) + changes;
+    };
+    const target = db.prepare(`
+    UPDATE extraction_targets
+       SET state = 'pending', attempts = 0, cursor_ordinal = 0, lease_owner = NULL,
+           lease_until = NULL, last_error = NULL, rules_hash = NULL, updated_at = ?
+     WHERE target_id = ? AND state = 'completed'
+  `).run(now, input.targetId).changes;
+    if (target === 0)
+        return changed;
+    bump("extraction_targets", target);
+    if (input.jobId) {
+        bump("memory_jobs", db.prepare(`
+      UPDATE memory_jobs
+         SET state = 'pending', attempts = 0, available_at = ?, lease_owner = NULL,
+             lease_until = NULL, last_error = NULL, hold_reason = NULL, updated_at = ?
+       WHERE job_id = ? AND state IN ('completed','superseded')
+    `).run(now, now, input.jobId).changes);
+    }
+    if (input.checkpointId) {
+        bump("checkpoints", db.prepare("UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processed'").run(input.checkpointId).changes);
+    }
+    bump("extraction_target_items", db.prepare("UPDATE extraction_target_items SET state = 'pending' WHERE target_id = ? AND state <> 'pending'").run(input.targetId).changes);
+    // This is what makes the work claimable again: `ensureExtractionTarget` treats
+    // an exact `processed` row as the only completion authority.
+    bump("exchange_extraction_state", db.prepare(`
+    UPDATE exchange_extraction_state
+       SET state = 'pending', processed_at = NULL
+     WHERE target_id = ? AND state <> 'pending'
+  `).run(input.targetId).changes);
+    return changed;
+}
 export function commitExtractionPage(db, input) {
     if (input.items.length === 0)
         return false;

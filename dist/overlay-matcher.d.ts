@@ -79,6 +79,16 @@ export interface UserPatternHits {
     quarantined: string[];
     /** True when the worker could not be used at all (startup, death, queue drain). */
     unavailable: boolean;
+    /**
+     * True when the request's text was longer than the input cap and only the
+     * prefix was evaluated.
+     *
+     * The cap is a COST bound for the recall path, where a prefix answer is the
+     * right trade. It is not a safety property, so the storage boundary — which
+     * must never let unexamined text through — reads this field and treats a
+     * truncated answer as a check that did not finish (§3.4, G1).
+     */
+    truncated: boolean;
     /** EXECUTION window only — queue wait and worker startup are excluded. */
     elapsedMs: number;
     /**
@@ -133,9 +143,18 @@ export declare function quarantineMemoryGeneration(): number;
 export declare function readQuarantine(): QuarantineEntry[];
 export declare function isQuarantinedPattern(entries: readonly QuarantineEntry[], patternId: string, source: string, flags: string): boolean;
 /**
- * Record a quarantined pattern. Merge is a SET UNION keyed on
- * (pattern_id, source_sha8), so concurrent writers cannot lose an entry and no
- * lock, revision or CAS is involved.
+ * Record a quarantined pattern.
+ *
+ * The merge is a set union keyed on (pattern_id, source_sha8), but a union built
+ * in local memory is NOT enough on its own: two processes that read the same
+ * previous file and then both rename lose whichever entry the later rename did not
+ * know about. So the write is read-merge-write with a compare-and-swap on the
+ * file's identity and a retry when it moved.
+ *
+ * The in-memory row is also kept after a successful write, not dropped. It is this
+ * process's own guarantee that the pattern stays excluded here even if a later
+ * writer elsewhere overwrites the file — losing the row would silently re-enable a
+ * pattern that already burned its budget.
  */
 export declare function quarantinePattern(entry: QuarantineEntry): void;
 /**
