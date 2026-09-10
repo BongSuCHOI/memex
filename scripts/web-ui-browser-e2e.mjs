@@ -1270,8 +1270,9 @@ try {
   // Kept older than the hostile fact so every existing "first row" assertion still
   // reads the row it was written for.
   db.prepare("UPDATE facts SET created_at = ?, updated_at = ? WHERE id = ?").run(TIER_AT, TIER_AT, branchFactId);
-  // #23: one dead capsule job. Its stored error is the class the catalogue must call
-  // harmless-to-memory, and it is what `memex recover --all-dead` has to clear.
+  // #23/#79: one dead capsule job carrying the historical bound error. The catalogue must
+  // classify it by its terminal STATE (recovery required), keep the stored error text visible,
+  // and `memex recover --all-dead` has to clear it.
   db.prepare(
     "INSERT INTO memory_jobs (job_id, kind, partition_key, policy_version, priority, state, available_at, attempts, max_attempts, last_error, idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run(DEAD_JOB_ID, "capsule_update", "session:web-ui-tier-session", "capsule-v1", 100, "dead", TIER_AT, 5, 5, DEAD_JOB_ERROR, "e2e-dead-job", TIER_AT, TIER_AT);
@@ -1590,6 +1591,7 @@ try {
       const guidance=cells[cells.length-2];
       return {
         heads:[...document.querySelectorAll('#main .data-table thead th')].map(x=>x.textContent.trim()),
+        rowText:row.textContent,
         guidanceText:guidance.textContent,
         ignorable:guidance.querySelector('.tag')?.textContent.trim(),
         copyCommands:[...guidance.querySelectorAll('[data-copy-command]')].map(x=>x.dataset.copyCommand),
@@ -2084,9 +2086,14 @@ try {
   }
   if (
     !jobGuidance.heads.includes("다음 행동") ||
-    !jobGuidance.guidanceText.includes("작업 맥락 Capsule이 잘림") ||
-    jobGuidance.ignorable !== "무시해도 됩니다" ||
-    !jobGuidance.guidanceText.includes("MEMEX_CAPSULE_MAX_CHARS")
+    // #79: a dead job is classified by its STATE, so the historical capsule bound
+    // error can no longer present a terminal job as harmless.
+    !jobGuidance.guidanceText.includes("실패로 종료된 작업") ||
+    jobGuidance.ignorable !== "조치가 필요합니다" ||
+    !jobGuidance.operationButtons.includes("recover") ||
+    !jobGuidance.copyCommands.some((c) => c.includes("memex recover")) ||
+    // The stored error text stays on the row: nothing is hidden, only reclassified.
+    !jobGuidance.rowText.includes(DEAD_JOB_ERROR)
   ) {
     throw new Error(
       "Job guidance assertion failed: " + JSON.stringify(jobGuidance),

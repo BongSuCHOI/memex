@@ -171,13 +171,33 @@ test('진행 중이거나 정상인 기록에는 안내를 붙이지 않는다',
  assert.equal(guidance.jobGuidance({state:'completed',last_error:null}),null);
  assert.equal(guidance.jobGuidance({state:'running',last_error:null,lease_until:new Date(Date.now()+60000).toISOString()}),null);
  assert.equal(guidance.jobGuidance({state:'running',last_error:null,lease_until:new Date(Date.now()-60000).toISOString()}).id,'lease-expired');
- assert.equal(guidance.jobGuidance({state:'dead',last_error:'capsule patch exceeds bounded storage size'}).id,'capsule-truncated');
+ // #79: terminal·대기 상태가 오류 문자열보다 먼저다. 문자열이 무시 가능한 클래스에 걸려도
+ // 그 상태에 필요한 복구·대기 안내가 사라지지 않는다.
+ const dead=guidance.jobGuidance({state:'dead',last_error:'capsule patch exceeds bounded storage size'});
+ assert.equal(dead.id,'job-dead');
+ assert.equal(dead.ignorable,false);
+ assert(dead.actions.some(a=>a.kind==='command'&&a.text.includes('memex recover'))||dead.actions.some(a=>a.kind==='operation'&&a.command==='recover'),'복구 액션이 없음');
  assert.equal(guidance.jobGuidance({state:'dead',last_error:null}).id,'job-dead');
- assert.equal(guidance.jobGuidance({state:'retry',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'budget-exhausted');
+ assert.equal(guidance.jobGuidance({state:'retry',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'job-retry');
+ // 상태가 terminal이 아닌 기록에서는 문자열 분류가 그대로 이긴다.
+ assert.equal(guidance.jobGuidance({state:'completed',last_error:'capsule patch truncated: dropped 2 items'}).id,'capsule-truncated');
+ assert.equal(guidance.jobGuidance({state:'completed',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'budget-exhausted');
  assert.equal(guidance.attemptGuidance({state:'completed',error_message:null,error_class:null}),null);
  assert.equal(guidance.attemptGuidance({state:'failed',error_class:'deadline_exceeded',error_message:'Model work deadline exceeded'}).id,'budget-exhausted');
  assert.equal(guidance.operationGuidance({status:'completed',exit_code:0}),null);
  assert.equal(guidance.operationGuidance({status:'failed',exit_code:2}).id,'operation-incomplete');
+});
+
+test('과거 Capsule 상한 실패는 정상 잘림과 다른 클래스다 (#79)',()=>{
+ const legacy=guidance.classify('capsule patch exceeds bounded storage size');
+ assert.equal(legacy.id,'capsule-bound-exceeded');
+ assert.equal(legacy.ignorable,false,'복구가 필요한 과거 실패를 무시 가능으로 단정함');
+ assert(legacy.next.includes('memex recover'),'복구 명령을 안내하지 않음');
+ assert(legacy.cause.includes('0.6.1'),'언제부터 잘라서 저장하는지 밝히지 않음');
+ const truncated=guidance.classify('capsule patch truncated: dropped 2 low-priority items');
+ assert.equal(truncated.id,'capsule-truncated');
+ assert.equal(truncated.ignorable,true);
+ assert(!guidance.guidanceFor('capsule-truncated').match.some(r=>String(r).includes('exceeds bounded storage size')),'정상 잘림 클래스가 과거 실패 문자열을 계속 매칭함');
 });
 
 test('개요 경고 카드는 클래스별로 묶고 0은 만들지 않는다',()=>{

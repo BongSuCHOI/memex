@@ -32,8 +32,19 @@ export const CLASSES=[
   ignorable:false,actions:[{kind:'command',text:'memex deps materialize'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
   source:GUIDE},
 
+ // 0.6.3 (#79): 과거 실패 문자열은 "정상 잘림"과 다른 클래스다. 0.6.1 이전 코어는 같은 상한에서
+ // 작업을 terminal 상태로 죽였고, 업그레이드만으로는 재개되지 않으므로 복구가 필요하다.
+ // capsule-truncated보다 먼저 와야 그 문자열이 무시 가능으로 떨어지지 않는다.
+ {id:'capsule-bound-exceeded',title:'0.6.0 이전 상한으로 죽은 Capsule 작업',
+  match:['capsule patch exceeds bounded storage size'],
+  cause:'0.6.1 이전 코어는 Capsule 패치가 저장 한도(MEMEX_CAPSULE_MAX_CHARS)를 넘으면 작업을 실패시켰습니다. 이 오류를 남긴 작업은 그때 terminal 상태로 끝난 작업입니다 — 0.6.1부터는 실패시키지 않고 잘라서 저장합니다.',
+  impact:'그 작업 흐름의 연속성 요약이 갱신되지 않은 채 남아 있습니다. 기억(fact)은 잃지 않았습니다.',
+  next:'업그레이드만으로는 재개되지 않습니다(worker는 pending·retry만 가져갑니다). memex recover로 다시 대기 상태로 되돌리세요 — 복구는 아무것도 삭제하지 않습니다.',
+  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},label:'실패 작업 보기'}],
+  source:'docs/GUIDE.md#작업이-실패했을-때-terminal-상태-복구'},
+
  {id:'capsule-truncated',title:'작업 맥락 Capsule이 잘림',
-  match:['capsule patch exceeds bounded storage size','capsule patch truncated','capsule evidence fragment exceeds page budget','memex_capsule_max_chars'],
+  match:['capsule patch truncated','capsule evidence fragment exceeds page budget','memex_capsule_max_chars'],
   cause:'Capsule 패치가 저장 한도(MEMEX_CAPSULE_MAX_CHARS, 기본 12,000자)를 넘어 우선순위가 낮은 항목부터 잘렸습니다. 0.6.1부터 코어는 작업을 실패시키지 않고 잘라서 저장합니다.',
   impact:'기억(fact)에는 영향이 없습니다 — Capsule은 해석용 맥락이며 직접 근거가 아닙니다. 연속성 요약의 일부 항목만 보존되지 않습니다.',
   next:'무시해도 됩니다. 잘린 항목이 계속 필요하면 MEMEX_CAPSULE_MAX_CHARS를 올린 뒤 해당 작업 흐름을 다시 처리하세요.',
@@ -332,11 +343,22 @@ export function attentionFromPipeline(p){
  return out.filter(x=>x.cls);
 }
 
-// 진행 중이거나 정상 완료한 작업에는 안내를 붙이지 않는다. 임대 시각이 지난 running은 그 자체가 신호다.
+/**
+ * 진행 중이거나 정상 완료한 작업에는 안내를 붙이지 않는다. 임대 시각이 지난 running은 그 자체가
+ * 신호다.
+ *
+ * 0.6.3 (#79): **작업의 상태가 오류 문자열보다 먼저다.** 이전에는 문자열 매칭이 먼저라서, 저장된
+ * 오류가 무시 가능한 클래스에 걸리면 terminal 상태(`dead`)인 작업에 "무시해도 됩니다"가 붙고 그
+ * 상태에 필요한 복구 액션이 사라졌다. `dead`는 재시도 상한을 소진해 끝난 작업이고 `retry`는 다음
+ * 재시도를 기다리는 작업이다 — 어느 쪽이든 다음 행동은 그 상태가 정한다. 저장된 오류 원문은 표의
+ * 같은 행과 작업 상세에 그대로 남으므로 아무것도 숨기지 않는다.
+ */
 export function jobGuidance(j){
  if(!j)return null;
  if(j.state==='running'&&j.lease_until&&Date.parse(j.lease_until)<Date.now())return guidanceFor('lease-expired');
  if(!j.last_error&&['completed','processed','superseded','pending','running'].includes(j.state))return null;
+ if(j.state==='dead')return guidanceFor('job-dead');
+ if(j.state==='retry')return guidanceFor('job-retry');
  return classify({error:j.last_error,state:j.state});
 }
 export function attemptGuidance(a){
