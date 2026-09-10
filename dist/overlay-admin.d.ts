@@ -31,6 +31,8 @@ export type Surface = "cli" | "web-ui";
 export declare const HISTORY_SNAPSHOT_LIMIT = 20;
 /** Second look at an unreadable lock, in the same call (D3). */
 export declare const SECOND_LOOK_MS = 250;
+/** Extra wait for a caller that joins an existing unreadable-lock observation (see withOverlayLock). */
+export declare const FOLLOWER_GRACE_MS = 25;
 /** Wall clock for the write-path measuring probe (§2.3.2). */
 export declare const PROBE_WALL_MS = 300;
 export declare class OverlayLockedError extends Error {

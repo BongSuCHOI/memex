@@ -44,6 +44,8 @@ export const HISTORY_SNAPSHOT_LIMIT = 20;
 const HISTORY_INDEX_MAX_BYTES = 1024 * 1024;
 /** Second look at an unreadable lock, in the same call (D3). */
 export const SECOND_LOOK_MS = 250;
+/** Extra wait for a caller that joins an existing unreadable-lock observation (see withOverlayLock). */
+export const FOLLOWER_GRACE_MS = 25;
 /** Wall clock for the write-path measuring probe (§2.3.2). */
 export const PROBE_WALL_MS = 300;
 export class OverlayLockedError extends Error {
@@ -219,8 +221,13 @@ export async function withOverlayLock(file, body) {
                     continue;
                 }
                 const waited = Date.now() - first;
-                if (waited < SECOND_LOOK_MS)
-                    await delay(SECOND_LOOK_MS - waited);
+                // A follower shares the observer's window but yields a short grace
+                // AFTER it: with `Date.now()` granularity both timers can otherwise
+                // expire in the same tick in either order, and the observer that made
+                // the observation should be the one that recovers. The re-stat below
+                // then sees the observer's live lock and this call refuses cleanly.
+                const follower = looks === 0; // this call did not make the observation
+                await delay(Math.max(0, SECOND_LOOK_MS - waited) + (follower ? FOLLOWER_GRACE_MS : 0));
                 // Same stamp after the wait: nothing is behind this lock.
             }
             // Re-stat and re-read before removing, never on the observation from
