@@ -43,8 +43,12 @@ import { initDatabase } from "../src/db.js";
 import { runFactExtraction } from "../src/fact-extractor.js";
 import {
   extractionRulesChecks,
+  loadExtractionRules,
   releaseExtractionRulesHold,
+  resetExtractionRules,
   resetExtractionRulesCache,
+  rollbackExtractionRules,
+  setExtractionRules,
 } from "../src/extraction-rules.js";
 import { heldJobSummary } from "../src/model-budget.js";
 import { resetQuarantineMemory } from "../src/overlay-matcher.js";
@@ -250,5 +254,85 @@ describe("resume", () => {
     const result = await runFactExtraction(db, SESSION, PROJECT);
     expect(result.skipped).toBe("extraction_rules_invalid");
     expect(claimSnapshot(db).jobAttempts).toBe(0);
+  });
+});
+
+describe("the write path releases the hold it can fix", () => {
+  it("validates, writes a revision, invalidates the cache and resumes the queue", async () => {
+    breakOverlay();
+    await runFactExtraction(db, SESSION, PROJECT);
+    expect(claimSnapshot(db).jobHoldReason).toBe("extraction_rules_invalid");
+
+    const result = await setExtractionRules(
+      {
+        schema: "memex.extraction-rules-overlay",
+        version: 1,
+        never_extract_patterns: [{ id: "user.secret", source: PATTERN, flags: "", scope: "both" }],
+      },
+      { surface: "cli", probe: false, db },
+    );
+
+    expect(result.revision).toBe(1);
+    expect(result.hash).toMatch(/^rules:[0-9a-f]{8}$/);
+    // The release is part of the write, not a thing an operator has to remember.
+    expect(result.released).toBe(1);
+    expect(claimSnapshot(db).jobHoldReason).toBeNull();
+    // The loader sees it immediately: the write is tmp+rename, so the
+    // mtime/size/ino cache key moved.
+    expect(loadExtractionRules().global.neverExtract.map((p) => p.id)).toEqual(["user.secret"]);
+
+    makeClaimable();
+    const run = await runFactExtraction(db, SESSION, PROJECT);
+    expect(run.skipped).toBeUndefined();
+    expect(run.saved).toBe(1);
+  });
+
+  it("refuses an invalid document and changes nothing", async () => {
+    const { OverlayInvalidError } = await import("../src/overlay-admin.js");
+    await expect(
+      setExtractionRules(
+        {
+          schema: "memex.extraction-rules-overlay",
+          version: 1,
+          // A quantified group: rejected by the shared grammar.
+          never_extract_patterns: [{ id: "bad", source: "(a+)+$", flags: "" }],
+        },
+        { surface: "cli", probe: false, db },
+      ),
+    ).rejects.toThrow(OverlayInvalidError);
+    expect(fs.existsSync(path.join(root, "overlays", "extraction-rules.json"))).toBe(false);
+  });
+
+  it("resets to the empty document and rolls back to a previous revision", async () => {
+    await setExtractionRules(
+      {
+        schema: "memex.extraction-rules-overlay",
+        version: 1,
+        never_extract_patterns: [{ id: "user.secret", source: PATTERN, flags: "", scope: "both" }],
+      },
+      { surface: "cli", probe: false, db },
+    );
+    const applied = loadExtractionRules().hash;
+
+    const reset = await resetExtractionRules({ surface: "cli", expectedRevision: 1, db });
+    expect(reset.revision).toBe(2);
+    expect(loadExtractionRules().global.neverExtract).toEqual([]);
+    // The file is still there with a revision and a snapshot, so the reset is a
+    // change that can be undone rather than a disappearance.
+    expect(fs.existsSync(path.join(root, "overlays", "extraction-rules.json"))).toBe(true);
+
+    const back = await rollbackExtractionRules(1, { surface: "cli", expectedRevision: 2, db });
+    expect(back.revision).toBe(3);
+    expect(back.hash).toBe(applied);
+    expect(loadExtractionRules().global.neverExtract.map((p) => p.id)).toEqual(["user.secret"]);
+  });
+
+  it("still writes when there is no database, and the backoff covers the rest", async () => {
+    const result = await setExtractionRules(
+      { schema: "memex.extraction-rules-overlay", version: 1, exclude_topics: ["급여"] },
+      { surface: "cli", probe: false },
+    );
+    expect(result.revision).toBe(1);
+    expect(result.released).toBe(0);
   });
 });
