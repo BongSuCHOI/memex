@@ -598,6 +598,12 @@ slot의 active current fact와 deterministic하게 비교합니다.
 | incoming effective_at < existing | historical `ASSERTED`(projection_applied=0), current 유지 |
 | 같은 effective_at 또는 낮은 authority | `CONTRADICTED` candidate(projection_applied=0, `outcome.resolution=unresolved`), current 유지 |
 
+0.6.2(#64)부터 candidate의 `scope_directive`는 **위 다섯 경로 모두**에서 적용됩니다. 지시는 내용 판정과
+독립한 배치 명령이므로, 이미 가진 사실을 같은 문장으로 재확인하면서 "이건 프로젝트 공용으로 기억하자"고
+말해도(merge 경로) 그 slot을 차지한 fact가 지시한 tier로 움직이고 `PROMOTED`(actor `user-directive`)
+한 건을 남깁니다. `historical`/`CONTRADICTED` 판정에서도 같습니다. 예전에는 신규 insert와 내용 변경
+적용(`CHANGED`) 경로에만 쌓여 지시가 조용히 사라졌습니다.
+
 authority rank: `human-decision`(decision/correction) 3 > `human` 2 = `trusted-tool` 2 > `unknown` 1.
 existing의 effective time을 알 수 없으면(event도 source도 없음) 순서 판정 불가로 보고 incoming을 적용합니다.
 worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.

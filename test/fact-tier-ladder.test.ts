@@ -25,6 +25,7 @@ import { ensureSessionMemoryState } from "../src/continuity-core.js";
 import {
   EXTRACTION_SYSTEM_PROMPT,
   saveExtractedFacts,
+  saveExtractedFactsDetailed,
   validateExtractedFactCandidate,
 } from "../src/fact-extractor.js";
 import {
@@ -301,6 +302,34 @@ describe("in-session scope directive (#19)", () => {
     expect((db.prepare(
       "SELECT actor FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
     ).get(saved[0]) as { actor: string }).actor).toBe("user-directive");
+  });
+
+  it("applies a directive when the same sentence is merely restated (#64)", async () => {
+    const project = path.join(root, "r64-merge");
+    gitClone(project, "feature/r64");
+    ensureSessionMemoryState(db, { sessionId: "r64", project });
+    await insertExchange(db, exchange("ex-r64-a", "r64", project, "로더는 단일 진입점만 쓴다."), emb);
+    await insertExchange(db, exchange("ex-r64-b", "r64", project,
+      "로더는 단일 진입점만 쓴다. 이건 프로젝트 공용으로 기억하자."), emb);
+    const candidate = {
+      fact: "The loader uses a single entry point", category: "decision", scope_type: "project",
+      subject_key: "decision.loader.entry_point", evidence: ["human_assertion"],
+    };
+
+    const first = await saveExtractedFacts(db, [candidate] as never, project, ["ex-r64-a"]);
+    expect(readFactTier(db, first[0]).tier).toBe("workstream");
+
+    // The second save restates the SAME normalized text and names where it belongs.
+    const again = await saveExtractedFactsDetailed(
+      db, [{ ...candidate, scope_directive: "project" }] as never, project, ["ex-r64-b"],
+    );
+    expect(again.merged).toBe(1);
+    expect(again.savedIds).toEqual([]);
+    expect(readFactTier(db, first[0]).tier).toBe("project");
+    const promotions = db.prepare(
+      "SELECT actor FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
+    ).all(first[0]) as Array<{ actor: string }>;
+    expect(promotions).toEqual([{ actor: "user-directive" }]);
   });
 });
 

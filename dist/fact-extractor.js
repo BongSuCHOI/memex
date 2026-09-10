@@ -2008,6 +2008,12 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                 }
                 catch { /* keep new evidence side */ }
                 updateFact(db, existing.id, { consolidated_count_increment: true, source_exchange_ids: liveSources });
+                // #64 — a directive is a placement instruction, independent of the
+                // content verdict. Restating a fact you already hold and saying where it
+                // belongs must still move it.
+                if (p.fact.scope_directive) {
+                    directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+                }
                 outcome.merged++;
                 continue;
             }
@@ -2069,6 +2075,12 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
                 recordedAt: now,
                 projectionApplied: false,
             });
+            // #64 — same reason as the merge path: the placement instruction survives a
+            // `historical`/`contradicted` verdict about the incoming sentence, and it
+            // moves the fact that actually occupies the slot.
+            if (p.fact.scope_directive) {
+                directiveMoves.push({ factId: existing.id, directive: p.fact.scope_directive, sources: factSources });
+            }
             if (judgement.verdict === "historical")
                 outcome.historical++;
             else
