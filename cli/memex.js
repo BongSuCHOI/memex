@@ -1048,6 +1048,8 @@ async function main() {
               completed: 0,
               failed: 0,
               unknown: 0,
+              // #31: refused request envelopes, reported apart from failures.
+              configRejected: 0,
               pending: 0,
               durationMs: null,
               inputChars: null,

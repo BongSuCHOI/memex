@@ -219,7 +219,10 @@ export function ensureContinuitySchema(
         updated_at TEXT NOT NULL,
         -- Issue #20: memex jobs retry clears last_error; the failure it
         -- cleared is preserved here as a JSON array, never deleted.
-        retry_history TEXT
+        retry_history TEXT,
+        -- Issue #31: which unusable configuration this pending job waits on.
+        -- NULL for every ordinary job. Values: see HOLD_REASONS.
+        hold_reason TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -901,8 +904,18 @@ export function ensureContinuitySchema(
       db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
     }
     // Issue #20: operator retry preserves the failure it clears.
-    if (!columnNames(db, "memory_jobs").has("retry_history")) {
+    const memoryJobColumns = columnNames(db, "memory_jobs");
+    if (!memoryJobColumns.has("retry_history")) {
       db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
+    }
+    // Issue #31 — HOLD. A job whose model selection or extraction rules are
+    // unusable is NOT a failure: it stays `pending` with attempts refunded and
+    // this column names what it is waiting for. No CHECK constraint: the value
+    // set is owned by `HOLD_REASONS` in model-budget.ts (the two transitions
+    // validate against it), and an ALTER-added CHECK would have to be dropped
+    // by a table rewrite to add the next reason.
+    if (!memoryJobColumns.has("hold_reason")) {
+      db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
 
