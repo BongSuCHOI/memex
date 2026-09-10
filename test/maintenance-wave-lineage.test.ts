@@ -62,6 +62,45 @@ function legacyDb(): Database.Database {
   return db;
 }
 
+/** The v0.5.2 table shape: no root_wave_id / run_seq columns at all. */
+function v052Db(): Database.Database {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE model_work_budgets (
+      budget_id TEXT PRIMARY KEY,
+      parent_wave_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active'
+        CHECK(state IN ('active','exhausted','completed','cancelled')),
+      max_attempts INTEGER NOT NULL CHECK(max_attempts >= 0),
+      reserved_attempts INTEGER NOT NULL DEFAULT 0
+        CHECK(reserved_attempts >= 0 AND reserved_attempts <= max_attempts),
+      max_input_chars INTEGER NOT NULL CHECK(max_input_chars >= 0),
+      max_output_chars INTEGER NOT NULL CHECK(max_output_chars >= 0),
+      deadline_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(parent_wave_id)
+    );
+  `);
+  return db;
+}
+
+function insertWave(db: Database.Database, budgetId: string, parentWaveId: string, at: string): void {
+  db.prepare(`
+    INSERT INTO model_work_budgets
+      (budget_id, parent_wave_id, max_attempts, max_input_chars, max_output_chars, created_at, updated_at)
+    VALUES (?, ?, 6, 1000, 1000, ?, ?)
+  `).run(budgetId, parentWaveId, at, at);
+}
+
+function lineageIndexExists(db: Database.Database): boolean {
+  return (
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get('idx_model_work_budgets_run') !== undefined
+  );
+}
+
 function waves(db: Database.Database): Array<{ parent: string; root: string; seq: number }> {
   return (
     db
@@ -164,6 +203,92 @@ describe('issue #42 — maintenance wave lineage lives in columns', () => {
       // What the hook exports to detached children is the ROOT, so the next
       // worker cannot deepen the chain.
       expect(rootWaveIdOf(second.parentWaveId)).toBe('maintenance');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * Issue #72 — observed on a v0.5.2-shaped table holding both names:
+ *
+ *   A (both names present before the migration):
+ *     MIGRATION FAILED -> UNIQUE constraint failed:
+ *       model_work_budgets.root_wave_id, model_work_budgets.run_seq
+ *   C (0.6.1-migrated, then an old worker appends `:run:` to `maintenance#2`):
+ *     MIGRATION FAILED -> UNIQUE constraint failed: ...
+ *
+ * `ensureModelBudgetSchema` runs unguarded from `initDatabase()` (src/db.ts),
+ * so the rolled-back migration threw on every DB open: CLI, hooks and UI.
+ */
+describe('issue #72 — mixed-version wave names cannot wedge the migration', () => {
+  const MIXED_RUN = '7344dd28-0819-4a0a-98ae-c31cd2e84b10';
+
+  it('splits `maintenance#2` and `maintenance#2:run:<uuid>` onto distinct run numbers', () => {
+    const db = v052Db();
+    try {
+      insertWave(db, 'b-0', 'maintenance#2', '2026-01-01T00:00:00.000Z');
+      insertWave(db, 'b-1', `maintenance#2:run:${MIXED_RUN}`, '2026-01-02T00:00:00.000Z');
+
+      expect(() => ensureModelBudgetSchema(db)).not.toThrow();
+      expect(waves(db)).toEqual([
+        { parent: 'maintenance#2', root: ROOT, seq: 2 },
+        { parent: 'maintenance#3', root: ROOT, seq: 3 },
+      ]);
+      // Same lineage, so the rolling attempt cap still covers both runs.
+      expect(lineageIndexExists(db)).toBe(true);
+
+      // Idempotent.
+      expect(() => ensureModelBudgetSchema(db)).not.toThrow();
+      expect(waves(db).map((w) => w.seq)).toEqual([2, 3]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('accepts a `:run:` row appended to an already-migrated compact name', () => {
+    const db = v052Db();
+    try {
+      insertWave(db, 'b-0', ROOT, '2026-01-01T00:00:00.000Z');
+      ensureModelBudgetSchema(db); // first upgrade: maintenance -> (maintenance, 1)
+      insertWave(db, 'b-1', 'maintenance#2', '2026-01-02T00:00:00.000Z');
+      db.prepare("UPDATE model_work_budgets SET root_wave_id = ?, run_seq = 2 WHERE budget_id = 'b-1'").run(ROOT);
+      // A v0.5.2 copy still on PATH rolls over from the compact name.
+      insertWave(db, 'b-2', `maintenance#2:run:${MIXED_RUN}`, '2026-01-03T00:00:00.000Z');
+
+      expect(() => ensureModelBudgetSchema(db)).not.toThrow();
+      expect(waves(db)).toEqual([
+        { parent: 'maintenance', root: ROOT, seq: 1 },
+        { parent: 'maintenance#2', root: ROOT, seq: 2 },
+        { parent: 'maintenance#3', root: ROOT, seq: 3 },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the DB openable when the lineage index cannot be created', () => {
+    const db = v052Db();
+    try {
+      insertWave(db, 'b-0', 'wave-a', '2026-01-01T00:00:00.000Z');
+      insertWave(db, 'b-1', 'wave-b', '2026-01-02T00:00:00.000Z');
+      ensureModelBudgetSchema(db);
+      // Force a pair the index can never accept, the way a mixed-version
+      // rollover used to: the migration leaves these rows alone (both lineage
+      // columns are already filled and neither name carries `:run:`).
+      db.exec('DROP INDEX idx_model_work_budgets_run');
+      db.prepare("UPDATE model_work_budgets SET root_wave_id = 'wave', run_seq = 9").run();
+
+      expect(() => ensureModelBudgetSchema(db)).not.toThrow();
+      expect(lineageIndexExists(db)).toBe(false);
+      // The lineage columns survive, so the rolling cap still reads.
+      expect(
+        Number(
+          (db.prepare('SELECT COUNT(*) AS n FROM model_work_budgets WHERE root_wave_id = ?').get('wave') as {
+            n: number;
+          }).n,
+        ),
+      ).toBe(2);
     } finally {
       db.close();
     }

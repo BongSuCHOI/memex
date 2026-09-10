@@ -135,6 +135,13 @@ wave에 1을 기록합니다. 해당 budget의 append-only 예약 시각으로 �
 `CREATE UNIQUE INDEX IF NOT EXISTS idx_model_work_budgets_run ON model_work_budgets(root_wave_id, run_seq)`로
 표현합니다(테이블 재작성 없이 additive). 마이그레이션은 기존 중첩 id를 `<root>#<n>`으로 정규화하고
 `memory_jobs.maintenance_wave_id`의 같은 문자열도 함께 갱신합니다.
+run 번호는 **bare compact 이름만** 자기 번호를 주장합니다(0.6.2). `<root>#<n>:run:<uuid>`는
+`<root>#<n>`의 rollover이므로 같은 `(root, n)`이 아니라 그 root의 다음 빈 `run_seq`를 받습니다.
+`(root_wave_id, run_seq)`가 다른 budget에 점유돼 있으면 빈 번호까지 올라갑니다. 이 UNIQUE 인덱스는
+hardening이지 전제가 아니므로 마이그레이션 트랜잭션 밖에서 생성하며, 데이터가 아직 인덱스를
+만족하지 못하면 경고 한 줄을 남기고 계보 컬럼만 기록한 채 다음 실행으로 미룹니다 —
+`ensureModelBudgetSchema`는 `initDatabase()`가 가드 없이 호출하므로 인덱스 실패가 DB 열기를
+막으면 CLI·훅·UI가 전부 멈춥니다.
 `model_maintenance_wake`의 단일 local row는 다음 wake 허용 시각을 저장합니다.
 원자적 UPSERT로 여러 세션의 시작·메시지 이벤트를 묶으며 모델 호출 예산과 별개입니다.
 이 상태와 ledger는 protocol v5에 export하지 않습니다.
