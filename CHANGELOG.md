@@ -2,7 +2,16 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
-## 0.6.6 - unreleased
+## 0.6.6 - 2026-09-10
+
+Hotfix release for the nine findings of the external post-release review of
+0.6.2–0.6.5 (#95–#103), every one verified and reproduced before it was fixed.
+The headline is a privacy-contract break: with sync OFF, one
+`memex sync export --archive` still published memories into the shared folder
+(#95). The rest close a Web UI data-root pinning race, a dry-run that migrated
+the database, an inject-daemon handover that could leave a session with no warm
+daemon, a lock window, a symlink escape, a stale device alias and a git config
+parser that disagreed with git.
 
 ### Web UI
 
@@ -62,11 +71,6 @@ All notable changes to Memex are documented here. Dates use Asia/Seoul.
   a lock still byte-for-byte unreadable on the next cycle is cleared. A starter
   that caught another's lock inside the old open-then-write window deleted a
   LIVE holder's lock and entered the serialized section beside it. (#102)
-
-Cross-device sync hotfixes found by re-auditing the 0.6.3 (#48) manual-file and
-preview paths against their own contracts. The headline is a privacy-contract
-break: with the switch OFF, one `memex sync export --archive` still published
-memories into the shared folder.
 
 ### Cross-device sync
 
