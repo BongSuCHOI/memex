@@ -88,9 +88,9 @@ test('graph and facts surfaces render fact text as text, never as markup', async
   // 0.7.0 (#109): prefs.korean은 prefs.preferTranslatedFacts로 개명됐다(UI 언어와 다른 축).
   assert.match(pub('pages/facts.mjs'), /\$\{esc\((?:ctx\.prefs\.(?:korean|preferTranslatedFacts)&&)?f\.fact_kr\?f\.fact_kr:f\.fact\)\}/, 'facts table must escape fact text');
   assert.match(pub('details.mjs'), /\$\{esc\(translated\?f\.fact_kr:f\.fact\)\}/, 'fact drawer must escape fact text');
-  assert.match(pub('pages/graph.mjs'), /\$\{esc\(n\.fact_kr\|\|n\.fact\)\}/, 'graph node list must escape fact text');
+  assert.match(pub('pages/graph.mjs'), /\$\{esc\((?:n\.fact_kr\|\|n\.fact|nodeLabel\(n\))\)\}/, 'graph node list must escape fact text');
   // Graph tooltip is DOM text, never markup.
-  assert.match(pub('graph-engine.mjs'), /tooltip\.textContent=n\.fact_kr\|\|n\.fact/, 'graph tooltip must use textContent');
+  assert.match(pub('graph-engine.mjs'), /tooltip\.textContent=(?:n\.fact_kr\|\|n\.fact|this\.nodeLabel\(n\))/, 'graph tooltip must use textContent');
   // No raw fact interpolation anywhere in the frontend.
   const dir = path.join(REPO, 'ui', 'public');
   const files = [];

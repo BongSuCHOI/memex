@@ -85,6 +85,7 @@ COMMANDS:
   backfill    Run extract/ontology/embeddings/receipts backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
   ontology    Inspect and repair the local taxonomy: list|merge|rename
+  gate        Your own recall-gate rules: show|patterns|words|test|replay|validate|history|quarantine|reset|rollback
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -146,6 +147,9 @@ const HELP_DELEGATES = {
   // Issue #31: `memex models` owns a long help text (resolution order, the
   // reasoning-level set, what `test` actually spends), so the script prints it.
   models: (dist) => join(dist, "models-cli.js"),
+  // Issue #29 — `memex gate` (recall-gate overlay). One source for the verb
+  // list: dist/gate-cli.js prints it and refuses to do work under --help.
+  gate: (dist) => join(dist, "gate-cli.js"),
 };
 
 /**
@@ -325,6 +329,30 @@ time; a skipped rung is refused. promote/demote by a user are recorded as
 Chronicle PROMOTED/DEMOTED plus one metadata line in logs/ui-audit.jsonl.
 migrate-tiers needs --dry-run or --apply explicitly: it lists (or moves) the
 pre-0.6.0 workstream facts that the branch-signal rule makes project-common.`,
+
+  // ---- issue #29: recall-gate overlay (`memex gate`) -----------------------
+  // HELP_DELEGATES.gate above forwards `--help` to dist/gate-cli.js, which owns
+  // the full text; this entry keeps the command in KNOWN_COMMANDS and answers
+  // when the build is missing.
+  gate: `Usage:
+  memex gate show [--json]
+  memex gate patterns list|add|disable|enable [...] [--dry-run] [--json]
+  memex gate words list|add|remove <ack|continue|filler> <word> [--json]
+  memex gate test "<prompt>" [--session <id>] [--compare-builtin] [--json]
+  memex gate replay [--limit <n>] [--project <path>] [--json]
+  memex gate validate [--file <path>] [--json]
+  memex gate history [--limit <n>] [--json]
+  memex gate quarantine list|clear [<pattern-id>|--all] [--json]
+  memex gate reset [--intent <intent>] --yes [--json]
+  memex gate rollback --to <revision> [--json]
+
+Your own regexes and words on top of the built-in recall gate. Built-ins are
+disabled by id, never deleted. show/patterns list/words list/test/replay/
+validate/history/quarantine list are read-only and call no model. Writes take
+the overlay lock, bump 'revision' and keep a rollback snapshot; --dry-run
+prints the command to re-run and writes nothing.
+Run 'memex gate --help' for the full option list.`,
+  // ---- end issue #29 -------------------------------------------------------
 };
 
 const KNOWN_COMMANDS = new Set([
@@ -438,6 +466,13 @@ async function main() {
       case "models":
         await runScript(join(distDir, "models-cli.js"), args);
         break;
+
+      // ---- issue #29: recall-gate overlay ------------------------------
+      case "gate":
+        await runScript(join(distDir, "gate-cli.js"), args);
+        break;
+      // ---- end issue #29 ------------------------------------------------
+
       case "update":
         await runScript(
           join(__dirname, "..", "scripts", "update-plugin.js"),
