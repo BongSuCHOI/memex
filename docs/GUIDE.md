@@ -335,6 +335,8 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   ├── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
 │   ├── devices.json                    # 기기 id → 사람이 읽는 이름 (로컬, 공유되지 않음)
 │   └── exports/<device>-<generation>.zip   # 수동으로 옮기는 세대 파일
+├── models/                             # embedding model 캐시 (0.6.5, #92)
+│   └── Xenova/multilingual-e5-small/   # config·tokenizer + onnx/ 가중치 (~129 MB)
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
@@ -364,6 +366,36 @@ DB path는 별도로 `MEMEX_DB_PATH`가 우선할 수 있습니다.
 memex home
 memex home --json
 ```
+
+### embedding model 캐시 (0.6.5, #92)
+
+embedding model 가중치(약 129 MB)는 **data root 안의 `models/`** 에 캐시됩니다.
+
+```text
+<data root>/models/<org>/<model>/
+├── config.json
+├── tokenizer.json
+├── tokenizer_config.json
+└── onnx/model_quantized.onnx      # 가중치
+```
+
+우선순위는 위의 data root 규칙과 같고, `MEMEX_MODEL_CACHE_DIR`만 그보다 우선합니다:
+
+```text
+MEMEX_MODEL_CACHE_DIR
+→ <MEMEX_HOME | $XDG_CONFIG_HOME/memex | ~/.config/memex>/models
+```
+
+0.6.4까지는 `@xenova/transformers`의 기본값(`node_modules/@xenova/transformers/.cache`,
+**패키지 루트 상대**)을 썼습니다. 설치본 루트는 버전마다 바뀌므로(`~/.codex/plugins/cache/<market>/memex/<version>`)
+업데이트마다 129 MB를 다시 내려받았고, 새 루트의 첫 프롬프트는 68–74초가 걸렸습니다(실측). data root는
+업데이트에서 살아남으므로 캐시가 한 번만 채워집니다.
+
+- **1회 이관**: 안정 캐시에 모델이 없고 레거시 per-root 캐시(지금 실행 중인 루트 → Codex plugin
+  cache의 다른 버전 루트 → launcher 루트 순)에 **완전한** 모델이 있으면 **복사**합니다. 원본은
+  옮기지도 지우지도 않으며(다른 버전이 지금 실행 중일 수 있습니다), stderr에 한 줄 남습니다.
+- 상태 확인은 `memex doctor`의 `embedding-cache` 체크, 미리 내려받기는 `memex deps warm`입니다.
+- `MEMEX_EMBEDDING_STUB`이 설정되어 있으면 모델을 전혀 쓰지 않으므로 캐시도 필요 없습니다.
 
 ### 두 번째 맥 설정 절차 (크로스디바이스 동기화)
 
@@ -966,6 +998,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_LLM_RETRY_BASE_MS` | `500` (상한 `5000`) | 지수 백오프 기준값. 실제 대기는 최대 30초 |
 | `MEMEX_EMBEDDING_MODEL` | `Xenova/multilingual-e5-small` | embedding model. 바꾸면 embedding version이 함께 바뀝니다 |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용 |
+| `MEMEX_MODEL_CACHE_DIR` (0.6.5) | `<home>/models` | embedding model 가중치 캐시 위치([§10](#10-저장-위치와-sync)). data root 규칙보다 우선합니다. 0.6.4까지의 `node_modules/@xenova/transformers/.cache`는 설치본 루트 상대여서 업데이트마다 129 MB를 다시 받았습니다(#92) |
 
 ### 모델 작업 예산 ([§17](#17-모델-작업-예산과-대기-진단))
 

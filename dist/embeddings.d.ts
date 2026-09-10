@@ -1,7 +1,39 @@
-export declare const EMBEDDING_MODEL: string;
+import { EMBEDDING_MODEL } from './model-cache.js';
+/**
+ * The model id and the cache layout live in `./model-cache.js` — see its header
+ * for the 2026-06-12 model selection and for issue #92 (why the weights must not
+ * live under `node_modules`). They are re-exported here because every consumer
+ * has always asked this module for them.
+ */
+export { EMBEDDING_MODEL };
+export { embeddingCacheDir, embeddingCacheStatus, embeddingModelCacheDir, } from './model-cache.js';
 export declare const EMBEDDING_VERSION: number;
 export type EmbeddingMode = 'query' | 'passage';
 export declare function stubEmbedding(text: string, dimensions?: number): number[];
+/**
+ * Point `@xenova/transformers` at the stable cache (issue #92).
+ *
+ * Assignment only — no filesystem work — so it is safe at module scope, which is
+ * what guarantees it happens BEFORE any `pipeline()` call however this module is
+ * reached. `initEmbeddings` re-applies it because a test harness (and the MCP
+ * server's own fixtures) can move `MEMEX_HOME` / `MEMEX_MODEL_CACHE_DIR` after
+ * import, and the value must follow the data root rather than the import order.
+ *
+ * `env.allowRemoteModels` is deliberately left at its default `true`: the model
+ * is fetched from the Hub on a cold cache, and that is the behaviour being made
+ * cheap here, not removed. `env.localModelPath` is left alone as well — Memex
+ * ships no local model directory, so the only thing pointing it at the cache
+ * would change is which empty directory transformers stats first.
+ */
+export declare function applyEmbeddingCacheDir(): string;
+/**
+ * Make the stable cache usable: create it, and adopt a legacy per-root cache
+ * once if this data root has never held the model.
+ *
+ * Called on the model-load path only, so a stub run and the hook's fast path pay
+ * nothing and touch no filesystem.
+ */
+export declare function prepareEmbeddingCache(): void;
 export declare function initEmbeddings(): Promise<void>;
 /** Cumulative counts for this process; sample the delta around a unit of work. */
 export declare function embeddingCallStats(): {
