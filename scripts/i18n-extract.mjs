@@ -65,7 +65,6 @@ export const PENDING_MIGRATION = [
   'ui/public/pages/facts.mjs',
   'ui/public/pages/graph.mjs',
   'ui/public/pages/overview.mjs',
-  'ui/public/pages/settings.mjs',
   'ui/public/pages/taxonomy.mjs',
 ];
 
