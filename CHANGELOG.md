@@ -2,6 +2,47 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.5 - 2026-09-10
+
+Hotfix for the embedding-model cache location (#92), found while validating
+0.6.4 on a live data root: the cache lived inside each plugin root's
+`node_modules`, so every update re-downloaded the 129 MB model, the first
+prompts after an update took about 68 seconds, and a fresh per-session daemon
+exceeded its compute budget on its first request while the hook's fallback
+downloaded the same model concurrently.
+
+### Embedding model cache
+
+- The model cache now lives in the data root (`<data root>/models`,
+  `MEMEX_MODEL_CACHE_DIR` overrides) and survives plugin updates and execution
+  roots. On first use a legacy per-root cache (the running root, other versions
+  under the Codex plugin cache, or the launcher root) is copied once — never
+  moved — and the copy is logged. `src/model-cache.ts` answers "is the model
+  here?" without loading the runtime. (#92)
+- A daemon that is still warming its model answers `{type:"warming"}` instead
+  of spending the 10 s compute budget; the hook records `reason:"warming"` and
+  falls back at once. Socket owners preload the model in the background right
+  after binding. (#92)
+- `memex deps warm` downloads and exercises the model once; `memex update` and
+  `memex deps materialize` run it automatically when the cache is empty
+  (`--no-warm` skips it, `MEMEX_WARM_TIMEOUT_MS` bounds it, failure is a
+  warning). (#92)
+- `memex doctor` gains `embedding-cache`: location, resolution source, model
+  id, file count and size; a missing cache warns with `Run: memex deps warm`,
+  and an interrupted download is told apart from a complete one. (#92)
+
+### Tests
+
+- Vitest and the `.mjs` suites pin the model cache to the checkout's
+  transformers cache, so no test downloads a model or writes to a real data
+  root; the rule is recorded in `docs/VERIFICATION.md` §2.
+
+### Upgrade
+
+Run `memex update` (it now warms the model cache once — expect a single
+download of about 129 MB into `<data root>/models`, or a copy from a legacy
+cache) and restart Codex. No schema change.
+
 ## 0.6.4 - 2026-09-10
 
 Hotfix for the inject-daemon ownership gap found while validating 0.6.3 on a
