@@ -198,7 +198,7 @@ it("the worker stores an oversized Capsule and records truncated / truncated_fie
   const row = db.prepare("SELECT truncated, truncated_fields_json, original_chars FROM work_capsules WHERE workstream_id = ?")
     .get(workstream) as { truncated: number; truncated_fields_json: string; original_chars: number };
   expect(row.truncated).toBe(1);
-  expect(JSON.parse(row.truncated_fields_json).length).toBeGreaterThan(0);
+  expect(JSON.parse(row.truncated_fields_json).fields.length).toBeGreaterThan(0);
   expect(row.original_chars).toBe(originalChars);
 
   // One WARN line, naming the env var that controls the budget.
@@ -233,4 +233,145 @@ it("even the old 2,000-character budget now truncates instead of killing the job
     nextActions: capsule?.nextActions, touchedAreas: capsule?.touchedAreas,
     carryFactRevisions: capsule?.carryFactRevisions, sourceExchangeIds: capsule?.sourceExchangeIds,
   }).length).toBeLessThanOrEqual(2_000);
+});
+
+/**
+ * Issue #85 — the *item count* bound still killed jobs after #17 fixed the
+ * character bound.
+ *
+ * Observed on the real data root: one `memory_jobs` `capsule_update` row with
+ * `state='retry', attempts=1, last_error='touchedAreas exceeds 8 items'`. A
+ * model answer with nine or more items burned an attempt and a slice of the
+ * continuity budget on every pass, so five such answers killed the job over a
+ * bound the patch could simply be made to satisfy. These tests start from that
+ * shape — twelve items — and assert the job converges with the bound recorded.
+ */
+
+/** The observed failing shape: twelve `touchedAreas`, everything else valid. */
+function overItemCountPatch(items = 12): Record<string, unknown> {
+  return {
+    objective: "ship 0.6.3",
+    currentState: "reviewing the capsule bounds",
+    verifiedProgress: [{ text: "bounds reviewed", sourceExchangeIds: ["source"] }],
+    hypotheses: [],
+    blockers: [],
+    openQuestions: [],
+    nextActions: [],
+    touchedAreas: Array.from({ length: items }, (_, i) => `src/area-${i}.ts`),
+    carryFactRevisions: [],
+    sourceExchangeIds: ["source"],
+  };
+}
+
+it("twelve touchedAreas are cut to eight and recorded instead of throwing", () => {
+  const { patch, truncation } = validateWorkCapsulePatchWithTruncation(overItemCountPatch());
+  expect(patch.touchedAreas).toEqual([
+    "src/area-0.ts", "src/area-1.ts", "src/area-2.ts", "src/area-3.ts",
+    "src/area-4.ts", "src/area-5.ts", "src/area-6.ts", "src/area-7.ts",
+  ]);
+  expect(truncation.truncated).toBe(true);
+  expect(truncation.truncatedFields).toEqual(["touchedAreas"]);
+  expect(truncation.itemCaps).toEqual({ touchedAreas: { kept: 8, dropped: 4 } });
+  // This patch was always inside the character budget; only the item cap fired.
+  expect(truncation.finalChars).toBeLessThanOrEqual(truncation.maxChars);
+});
+
+it("exactly eight items are not reported as truncated", () => {
+  const { patch, truncation } = validateWorkCapsulePatchWithTruncation(overItemCountPatch(8));
+  expect(patch.touchedAreas.length).toBe(8);
+  expect(truncation.truncated).toBe(false);
+  expect(truncation.itemCaps).toEqual({});
+});
+
+it("per-item validity is still enforced on the items that survive the cap", () => {
+  const raw = overItemCountPatch();
+  (raw.touchedAreas as string[])[2] = "";
+  expect(() => validateWorkCapsulePatchWithTruncation(raw))
+    .toThrow(/touchedAreas contains invalid text/);
+  // An invalid item beyond the cap is dropped with the rest, not reported.
+  const tail = overItemCountPatch();
+  (tail.touchedAreas as string[])[9] = "";
+  expect(() => validateWorkCapsulePatchWithTruncation(tail)).not.toThrow();
+});
+
+it("an evidence list over the cap re-validates the sources of what survived", () => {
+  const raw = {
+    ...overItemCountPatch(0),
+    verifiedProgress: Array.from({ length: 12 }, (_, i) => ({
+      text: `verified ${i}`, sourceExchangeIds: [`source-${i}`],
+    })),
+    sourceExchangeIds: Array.from({ length: 8 }, (_, i) => `source-${i}`),
+  };
+  const { patch, truncation } = validateWorkCapsulePatchWithTruncation(raw);
+  expect(patch.verifiedProgress.length).toBe(8);
+  expect(truncation.itemCaps).toEqual({ verifiedProgress: { kept: 8, dropped: 4 } });
+  // Only what is stored has to be declared: the dropped items' `source-8..11`
+  // are gone, so the invariant is re-checked against the surviving sources.
+  expect(patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds)).toEqual([
+    "source-0", "source-1", "source-2", "source-3",
+    "source-4", "source-5", "source-6", "source-7",
+  ]);
+  // A *surviving* item whose source is undeclared still fails.
+  expect(() => validateWorkCapsulePatchWithTruncation({ ...raw, sourceExchangeIds: ["source-0"] }))
+    .toThrow(/capsule evidence sources must be declared/);
+});
+
+it("the worker completes a twelve-item answer without spending an attempt", async () => {
+  put("session-A", "source");
+  capture("session-A");
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+  let result;
+  try {
+    result = await runContinuityWorker(db, {
+      maxJobs: 1, model: async () => JSON.stringify(overItemCountPatch()),
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  // The observed failure mode is gone: the single claim converges instead of
+  // landing in `retry` with `last_error='touchedAreas exceeds 8 items'`, so no
+  // further attempt — and no further slice of the continuity budget — is spent.
+  expect(result[0].state).toBe("completed");
+  expect(result[0].detail ?? "").not.toContain("exceeds 8 items");
+  const job = db.prepare(
+    "SELECT state, attempts, last_error FROM memory_jobs WHERE kind = 'capsule_update'",
+  ).get() as { state: string; attempts: number; last_error: string | null };
+  expect(job.state).toBe("completed");
+  expect(job.attempts).toBe(1);
+  expect(job.last_error).toBe(null);
+  expect(
+    db.prepare(
+      "SELECT COUNT(*) AS c FROM memory_jobs WHERE kind='capsule_update' AND state IN ('retry','dead')",
+    ).get(),
+  ).toEqual({ c: 0 });
+
+  const capsule = readWorkCapsule(db, workstream);
+  expect(capsule?.generation).toBe(1);
+  expect(capsule?.touchedAreas.length).toBe(8);
+  expect(capsule?.truncated).toBe(true);
+  expect(capsule?.itemCaps).toEqual({ touchedAreas: { kept: 8, dropped: 4 } });
+
+  // The row records the bound durably, not only the log line.
+  const row = db.prepare("SELECT truncated_fields_json FROM work_capsules WHERE workstream_id = ?")
+    .get(workstream) as { truncated_fields_json: string };
+  expect(JSON.parse(row.truncated_fields_json)).toEqual({
+    fields: ["touchedAreas"],
+    itemCaps: { touchedAreas: { kept: 8, dropped: 4 } },
+  });
+
+  // Exactly one WARN line, naming what the bound removed.
+  const warned = warnings.filter((line) => line.includes("capsule patch truncated"));
+  expect(warned.length).toBe(1);
+  expect(warned[0]).toContain("items=touchedAreas(kept=8,dropped=4)");
+
+  // A row written before 0.6.3 holds a bare array of field names; it still reads.
+  db.prepare("UPDATE work_capsules SET truncated_fields_json = ? WHERE workstream_id = ?")
+    .run(JSON.stringify(["touchedAreas"]), workstream);
+  const legacy = readWorkCapsule(db, workstream);
+  expect(legacy?.truncated).toBe(true);
+  expect(legacy?.truncatedFields).toEqual(["touchedAreas"]);
+  expect(legacy?.itemCaps).toEqual({});
 });

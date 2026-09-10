@@ -848,12 +848,46 @@ export function readResidentRevisionCorrections(db, sessionId) {
     corrections.sort((a, b) => a.id.localeCompare(b.id));
     return corrections;
 }
-function cleanList(values, field) {
+function newTruncationLedger() {
+    return { fields: [], itemCaps: {} };
+}
+function noteTruncated(ledger, field) {
+    if (!ledger.fields.includes(field))
+        ledger.fields.push(field);
+}
+/**
+ * Record that `field` now holds `kept` items and lost `dropped` more.
+ *
+ * Called once per shortening step, so a list capped at validation and shortened
+ * again for size reports the surviving count with the total it lost.
+ */
+function noteItemCap(ledger, field, kept, dropped) {
+    if (dropped <= 0)
+        return;
+    noteTruncated(ledger, field);
+    const prior = ledger.itemCaps[field];
+    ledger.itemCaps[field] = { kept, dropped: (prior?.dropped ?? 0) + dropped };
+}
+/**
+ * Issue #85: a list longer than `MAX_ARRAY_ITEMS` is cut to the first items,
+ * never thrown away.
+ *
+ * Throwing here cost a `capsule_update` attempt and a slice of the continuity
+ * budget every time the model answered with nine or more items
+ * (`touchedAreas exceeds 8 items`, observed with `state=retry, attempts=1`), so
+ * five such answers killed the job for a bound the patch could simply satisfy.
+ * Per-item validity is still enforced — on the items that are kept.
+ */
+function capItems(values, field, ledger) {
+    if (values.length <= MAX_ARRAY_ITEMS)
+        return values;
+    noteItemCap(ledger, field, MAX_ARRAY_ITEMS, values.length - MAX_ARRAY_ITEMS);
+    return values.slice(0, MAX_ARRAY_ITEMS);
+}
+function cleanList(values, field, ledger) {
     if (!Array.isArray(values))
         throw new Error(`${field} must be an array`);
-    if (values.length > MAX_ARRAY_ITEMS)
-        throw new Error(`${field} exceeds ${MAX_ARRAY_ITEMS} items`);
-    return values.map((value) => {
+    return capItems(values, field, ledger).map((value) => {
         if (typeof value !== "string" || !value.trim())
             throw new Error(`${field} contains invalid text`);
         const text = value.trim();
@@ -862,12 +896,10 @@ function cleanList(values, field) {
         return text;
     });
 }
-function cleanEvidence(values, field) {
+function cleanEvidence(values, field, ledger) {
     if (!Array.isArray(values))
         throw new Error(`${field} must be an array`);
-    if (values.length > MAX_ARRAY_ITEMS)
-        throw new Error(`${field} exceeds ${MAX_ARRAY_ITEMS} items`);
-    return values.map((value) => {
+    return capItems(values, field, ledger).map((value) => {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             throw new Error(`${field} contains invalid item`);
         }
@@ -900,24 +932,29 @@ function cleanEvidence(values, field) {
  * source list. Every step strictly reduces `JSON.stringify(patch).length`, so
  * the loop terminates at or below `MIN_MAX_CAPSULE_CHARS`.
  */
-function fitCapsulePatch(patch, max) {
+function fitCapsulePatch(patch, max, ledger) {
     const originalChars = JSON.stringify(patch).length;
-    const truncatedFields = [];
     const size = () => JSON.stringify(patch).length;
-    if (originalChars <= max) {
-        return { truncated: false, truncatedFields, originalChars, finalChars: originalChars, maxChars: max };
-    }
-    const note = (field) => {
-        if (!truncatedFields.includes(field))
-            truncatedFields.push(field);
-    };
+    const done = (finalChars) => ({
+        // Issue #85: an item cap applied while validating is a truncation too, even
+        // when the serialized patch was always inside the size budget.
+        truncated: ledger.fields.length > 0,
+        truncatedFields: ledger.fields,
+        itemCaps: ledger.itemCaps,
+        originalChars,
+        finalChars,
+        maxChars: max,
+    });
+    if (originalChars <= max)
+        return done(originalChars);
+    const note = (field) => noteTruncated(ledger, field);
     const shrinkList = (field, limit) => {
         if (size() <= max)
             return;
         const list = patch[field];
         if (list.length > limit) {
+            noteItemCap(ledger, field, limit, list.length - limit);
             list.length = limit;
-            note(field);
         }
     };
     for (const limit of [4, 2, 1, 0]) {
@@ -929,8 +966,8 @@ function fitCapsulePatch(patch, max) {
         if (size() <= max)
             break;
         if (patch.carryFactRevisions.length > limit) {
+            noteItemCap(ledger, "carryFactRevisions", limit, patch.carryFactRevisions.length - limit);
             patch.carryFactRevisions.length = limit;
-            note("carryFactRevisions");
         }
     }
     for (const limit of [4, 2, 1, 0])
@@ -940,6 +977,8 @@ function fitCapsulePatch(patch, max) {
             break;
         for (const item of patch.verifiedProgress) {
             if (item.sourceExchangeIds.length > limit) {
+                // Per-item nesting: `itemCaps` stays a top-level-list record, so this
+                // step only names the field it shortened.
                 item.sourceExchangeIds.length = limit;
                 note("verifiedProgress.sourceExchangeIds");
             }
@@ -972,11 +1011,54 @@ function fitCapsulePatch(patch, max) {
         const referenced = new Set(patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds));
         const kept = patch.sourceExchangeIds.filter((id) => referenced.has(id));
         if (kept.length !== patch.sourceExchangeIds.length) {
+            noteItemCap(ledger, "sourceExchangeIds", kept.length, patch.sourceExchangeIds.length - kept.length);
             patch.sourceExchangeIds = kept;
-            note("sourceExchangeIds");
         }
     }
-    return { truncated: true, truncatedFields, originalChars, finalChars: size(), maxChars: max };
+    return done(size());
+}
+function serializeTruncationRecord(truncation) {
+    if (!truncation.truncated)
+        return "[]";
+    const record = {
+        fields: truncation.truncatedFields,
+        itemCaps: truncation.itemCaps,
+    };
+    return JSON.stringify(record);
+}
+function parseTruncationRecord(raw) {
+    const empty = { fields: [], itemCaps: {} };
+    if (typeof raw !== "string" || !raw.trim())
+        return empty;
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return empty;
+    }
+    // Pre-0.6.3 rows: a bare array of field names, with no per-field detail.
+    if (Array.isArray(parsed)) {
+        return { ...empty, fields: parsed.filter((field) => typeof field === "string") };
+    }
+    if (!parsed || typeof parsed !== "object")
+        return empty;
+    const record = parsed;
+    const fields = Array.isArray(record.fields)
+        ? record.fields.filter((field) => typeof field === "string")
+        : [];
+    const itemCaps = {};
+    if (record.itemCaps && typeof record.itemCaps === "object" && !Array.isArray(record.itemCaps)) {
+        for (const [field, value] of Object.entries(record.itemCaps)) {
+            if (!value || typeof value !== "object" || Array.isArray(value))
+                continue;
+            const cap = value;
+            if (typeof cap.kept !== "number" || typeof cap.dropped !== "number")
+                continue;
+            itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
+        }
+    }
+    return { fields, itemCaps };
 }
 export function validateWorkCapsulePatch(value) {
     return validateWorkCapsulePatchWithTruncation(value).patch;
@@ -1012,18 +1094,24 @@ export function validateWorkCapsulePatchWithTruncation(value) {
         }
         return raw.trim();
     };
+    const ledger = newTruncationLedger();
     const patch = {
         objective: strictScalar("objective"),
         currentState: strictScalar("currentState"),
-        verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress"),
-        hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses"),
-        blockers: cleanList(input.blockers ?? [], "blockers"),
-        openQuestions: cleanList(input.openQuestions ?? [], "openQuestions"),
-        nextActions: cleanList(input.nextActions ?? [], "nextActions"),
-        touchedAreas: cleanList(input.touchedAreas ?? [], "touchedAreas"),
+        verifiedProgress: cleanEvidence(input.verifiedProgress ?? [], "verifiedProgress", ledger),
+        hypotheses: cleanEvidence(input.hypotheses ?? [], "hypotheses", ledger),
+        blockers: cleanList(input.blockers ?? [], "blockers", ledger),
+        openQuestions: cleanList(input.openQuestions ?? [], "openQuestions", ledger),
+        nextActions: cleanList(input.nextActions ?? [], "nextActions", ledger),
+        touchedAreas: cleanList(input.touchedAreas ?? [], "touchedAreas", ledger),
         carryFactRevisions: carry.slice(0, 64),
         sourceExchangeIds: sources,
     };
+    // Issue #85: the evidence lists may have lost items to the item cap above, so
+    // the declared-sources invariant is checked against what survived — never
+    // against the sources of an item that is no longer in the patch. The subset
+    // direction means a cap can only ever satisfy this check, not break it, and
+    // the surviving ids must still all be declared.
     const evidenceSources = new Set([
         ...patch.verifiedProgress.flatMap((item) => item.sourceExchangeIds),
         ...patch.hypotheses.flatMap((item) => item.sourceExchangeIds),
@@ -1037,7 +1125,7 @@ export function validateWorkCapsulePatchWithTruncation(value) {
     }
     // Issue #17: an oversized patch is shortened by priority, never thrown away.
     // Truncation is reported to the caller so the Capsule row can record it.
-    const truncation = fitCapsulePatch(patch, capsuleMaxChars());
+    const truncation = fitCapsulePatch(patch, capsuleMaxChars(), ledger);
     return { patch, truncation };
 }
 function assertVerifiedSources(db, verified, page) {
@@ -1084,9 +1172,14 @@ export function applyWorkCapsulePatch(db, input) {
     if (truncation.truncated) {
         // Issue #17: one WARN line so a shortened projection is visible in the
         // worker's log, not only in the Capsule row that records it durably.
+        // Issue #85 adds the per-field item counts a bound removed.
+        const caps = Object.entries(truncation.itemCaps)
+            .map(([field, cap]) => `${field}(kept=${cap.kept},dropped=${cap.dropped})`)
+            .join(",");
         console.warn(`[memex] WARN capsule patch truncated for workstream ${input.workstreamId}: ` +
             `${truncation.originalChars} -> ${truncation.finalChars} chars ` +
-            `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}`);
+            `(max=${truncation.maxChars}, MEMEX_CAPSULE_MAX_CHARS) fields=${truncation.truncatedFields.join(",") || "none"}` +
+            (caps ? ` items=${caps}` : ""));
     }
     const now = input.now ?? new Date().toISOString();
     const tx = db.transaction(() => {
@@ -1157,7 +1250,7 @@ export function applyWorkCapsulePatch(db, input) {
         truncated_fields_json = excluded.truncated_fields_json,
         original_chars = excluded.original_chars
       WHERE work_capsules.generation = ?
-    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, truncation.truncated ? 1 : 0, JSON.stringify(truncation.truncatedFields), truncation.originalChars, input.expectedGeneration);
+    `).run(input.workstreamId, next, patch.objective, patch.currentState, JSON.stringify(patch.verifiedProgress), JSON.stringify(patch.hypotheses), JSON.stringify(patch.blockers), JSON.stringify(patch.openQuestions), JSON.stringify(patch.nextActions), JSON.stringify(patch.touchedAreas), JSON.stringify(patch.carryFactRevisions), JSON.stringify(patch.sourceExchangeIds), input.throughCheckpointId, checkpoint.workspace_id, checkpoint.session_id, now, truncation.truncated ? 1 : 0, serializeTruncationRecord(truncation), truncation.originalChars, input.expectedGeneration);
         if (result.changes !== 1)
             return null;
         if (input.evidencePage && !commitCapsulePage(db, input.workstreamId, input.evidencePage)) {
@@ -1227,6 +1320,7 @@ export function readWorkCapsule(db, workstreamId) {
   `).get(workstreamId);
     if (!row)
         return null;
+    const truncationRecord = parseTruncationRecord(row.truncated_fields_json);
     return {
         workstreamId,
         generation: Number(row.generation),
@@ -1247,7 +1341,8 @@ export function readWorkCapsule(db, workstreamId) {
         sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
         updatedAt: String(row.updated_at),
         truncated: Number(row.truncated ?? 0) === 1,
-        truncatedFields: parseJsonArray(row.truncated_fields_json),
+        truncatedFields: truncationRecord.fields,
+        itemCaps: truncationRecord.itemCaps,
         originalChars: row.original_chars == null ? null : Number(row.original_chars),
     };
 }

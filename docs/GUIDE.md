@@ -696,11 +696,13 @@ memex facts explain --subject state.runtime.session_store --project-id <project_
 
 MCP에서는 `trace_fact`(`subject_key`/`fact_id`/`query`, `timeline_cursor`)가 current → Chronicle → source → other session을 보여 줍니다. `grounded cause (source-cited)`와 `classifier note (…NOT authoritative)`는 항상 분리 표시됩니다.
 
-Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다.
+Capsule 한 세대의 bounded storage size는 기본 12,000자입니다(`MEMEX_CAPSULE_MAX_CHARS`, 하한 2,000자). 초과분은 job을 죽이지 않고 우선순위대로 절단해 저장하며, 무엇이 줄었는지 남깁니다. 리스트 항목 수 상한(8개)도 같습니다(0.6.3): 앞 8개만 남기고 버린 개수를 `truncated_fields_json`의 `itemCaps`에 기록합니다.
 
 ```sql
 -- sqlite3 "$(memex home)/conversation-index/db.sqlite"
-SELECT workstream_id, generation, truncated, original_chars, truncated_fields_json
+SELECT workstream_id, generation, truncated, original_chars,
+       json_extract(truncated_fields_json, '$.fields')   AS fields,
+       json_extract(truncated_fields_json, '$.itemCaps') AS item_caps
 FROM work_capsules WHERE truncated = 1;
 ```
 

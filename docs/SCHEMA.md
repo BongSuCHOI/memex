@@ -178,6 +178,11 @@ event_id는 시계가 아니라 전이의 모양에서 파생되므로 같은 �
 (TEXT NOT NULL DEFAULT `'[]'`), `original_chars`(nullable INTEGER)를 additive로 갖습니다. 한 세대의
 bounded storage size는 `MEMEX_CAPSULE_MAX_CHARS`(기본 12,000자, 하한 2,000자)이며, 초과한 patch는 job을
 죽이지 않고 우선순위대로 절단해 저장한 뒤 무엇이 줄었는지를 이 세 컬럼에 그대로 남깁니다.
+`truncated_fields_json`은 0.6.3에서 항목 수 상한까지 담도록 넓어졌습니다(이슈 #85): 절단이 없으면
+컬럼 기본값 `'[]'`을 유지하고, 절단이 있으면
+`{"fields":["touchedAreas"],"itemCaps":{"touchedAreas":{"kept":8,"dropped":4}}}` 형태의 객체를 씁니다.
+컬럼 타입·기본값은 그대로이므로 마이그레이션은 없고, 0.6.3 이전에 쓰인 필드명 배열도 읽을 수
+있습니다(그 행은 `itemCaps`가 빈 객체입니다).
 `capsule_checkpoint_state`의 `page_items_hint`/`page_chars_hint`(0.6.0 additive, nullable)는 실패한 시도가
 다음 evidence page를 절반으로 줄이도록 하는 힌트입니다. 최소 page에서도 실패하면 그 head fragment를
 건너뛰고 frontier를 전진시키므로 한 workstream이 영원히 멈추지 않습니다.

@@ -24968,12 +24968,39 @@ function readResidentRevisionCorrections(db, sessionId) {
   corrections.sort((a, b2) => a.id.localeCompare(b2.id));
   return corrections;
 }
+function parseTruncationRecord(raw) {
+  const empty = { fields: [], itemCaps: {} };
+  if (typeof raw !== "string" || !raw.trim()) return empty;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (Array.isArray(parsed)) {
+    return { ...empty, fields: parsed.filter((field) => typeof field === "string") };
+  }
+  if (!parsed || typeof parsed !== "object") return empty;
+  const record2 = parsed;
+  const fields = Array.isArray(record2.fields) ? record2.fields.filter((field) => typeof field === "string") : [];
+  const itemCaps = {};
+  if (record2.itemCaps && typeof record2.itemCaps === "object" && !Array.isArray(record2.itemCaps)) {
+    for (const [field, value] of Object.entries(record2.itemCaps)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const cap = value;
+      if (typeof cap.kept !== "number" || typeof cap.dropped !== "number") continue;
+      itemCaps[field] = { kept: cap.kept, dropped: cap.dropped };
+    }
+  }
+  return { fields, itemCaps };
+}
 function readWorkCapsule(db, workstreamId) {
   const row = db.prepare(`
     SELECT w.*, COALESCE(f.through_seq, 0) AS through_seq
     FROM work_capsules w LEFT JOIN capsule_frontiers f USING(workstream_id) WHERE w.workstream_id = ?
   `).get(workstreamId);
   if (!row) return null;
+  const truncationRecord = parseTruncationRecord(row.truncated_fields_json);
   return {
     workstreamId,
     generation: Number(row.generation),
@@ -24994,7 +25021,8 @@ function readWorkCapsule(db, workstreamId) {
     sourceSessionId: row.source_session_id ? String(row.source_session_id) : null,
     updatedAt: String(row.updated_at),
     truncated: Number(row.truncated ?? 0) === 1,
-    truncatedFields: parseJsonArray(row.truncated_fields_json),
+    truncatedFields: truncationRecord.fields,
+    itemCaps: truncationRecord.itemCaps,
     originalChars: row.original_chars == null ? null : Number(row.original_chars)
   };
 }
