@@ -134,6 +134,44 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** Identity of the lock FILE, not of its contents: inode, mtime and size. */
+function lockStamp(stat: fs.Stats): string {
+  return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+}
+
+/**
+ * Is this still the same abandoned lock we decided to remove?
+ *
+ * Called IMMEDIATELY before the `unlink`, and it is the difference between
+ * reclaiming an abandoned lock and stealing a live one. Two processes can observe
+ * the same corrupt stamp; if A recovers first and re-acquires for real, B's wait
+ * has elapsed against a file that is now A's live lock — and removing it would put
+ * two writers inside the same critical section, which is precisely what the
+ * revision CAS and the async validation window cannot survive.
+ *
+ * False means "do not remove": the inode, mtime or size moved, the holder pid
+ * changed, the holder is alive after all, or the file is already gone.
+ */
+function lockStillAbandoned(lockPath: string, stamp: string, holder: number): boolean {
+  try {
+    const text = fs.readFileSync(lockPath, "utf8");
+    if (lockStamp(fs.statSync(lockPath)) !== stamp) return false;
+    let pid = -1;
+    try {
+      pid = Number((JSON.parse(text) as { pid?: unknown }).pid);
+    } catch {
+      pid = -1;
+    }
+    const current = Number.isInteger(pid) && pid > 0 ? pid : -1;
+    if (current !== holder) return false;
+    if (current > 0 && pidAlive(current)) return false;
+    return true;
+  } catch {
+    // Vanished or unreadable right now: there is nothing of ours to remove.
+    return false;
+  }
+}
+
 /** Test-only: forget this process's unreadable-lock observations. */
 export function resetOverlayLockObservations(): void {
   unreadableSeen.clear();
@@ -169,8 +207,7 @@ export async function withOverlayLock<T>(file: string, body: () => Promise<T>): 
       let stamp = "";
       try {
         text = fs.readFileSync(lockPath, "utf8");
-        const stat = fs.statSync(lockPath);
-        stamp = `${stat.mtimeMs}:${stat.size}`;
+        stamp = lockStamp(fs.statSync(lockPath));
       } catch {
         /* it vanished between the EEXIST and the read */
       }
@@ -201,6 +238,9 @@ export async function withOverlayLock<T>(file: string, body: () => Promise<T>): 
         if (waited < SECOND_LOOK_MS) await delay(SECOND_LOOK_MS - waited);
         // Same stamp after the wait: nothing is behind this lock.
       }
+      // Re-stat and re-read before removing, never on the observation from
+      // before the wait: see `lockStillAbandoned`.
+      if (!lockStillAbandoned(lockPath, stamp, attributable ? holder : -1)) continue;
       try {
         fs.unlinkSync(lockPath);
       } catch {

@@ -199,6 +199,45 @@ describe("G4 — a corrupt lock is recovered AND the write happens in the same c
     expect(fs.existsSync(lockFile)).toBe(false);
   });
 
+  it("does NOT remove the live lock the first recoverer took during the wait", async () => {
+    // The race the second look opens, with both halves real. A and B observe the
+    // SAME corrupt stamp — B's wait is the remainder of A's, because the
+    // observation set is shared — and A recovers first. B then wakes against a
+    // file that is now A's LIVE lock, and removing it on the strength of the
+    // pre-wait observation puts two writers inside the same critical section,
+    // which the revision CAS and the async validation cannot survive.
+    plantLock("corrupt, no pid here");
+    let releaseA: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { releaseA = resolve; });
+    let bEnteredBody = false;
+    const a = withOverlayLock(overlayFile, async () => {
+      await gate;
+      return "A";
+    });
+    await delay(10); // A observes the corrupt stamp and starts its wait
+    const b = withOverlayLock(overlayFile, async () => {
+      bEnteredBody = true;
+      return "B";
+    });
+
+    await expect(b).rejects.toThrow(OverlayLockedError);
+    expect(bEnteredBody).toBe(false);
+    // A is still inside its body and its lock is exactly where it left it.
+    expect(JSON.parse(fs.readFileSync(lockFile, "utf8")).pid).toBe(process.pid);
+
+    releaseA!();
+    await expect(a).resolves.toBe("A");
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it("still recovers when the corrupt lock is genuinely abandoned", async () => {
+    // The other half of the same check: nothing changed under us, so the removal
+    // must still happen and the call must still perform its write.
+    plantLock("corrupt, no pid here");
+    await expect(withOverlayLock(overlayFile, async () => "recovered")).resolves.toBe("recovered");
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
   it("still refuses when the corrupt lock keeps changing under it", async () => {
     plantLock("corrupt");
     const mutate = setInterval(() => plantLock(`corrupt-${Date.now()}`), 40);
