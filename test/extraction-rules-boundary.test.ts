@@ -69,12 +69,6 @@ function auditLines(): Array<Record<string, unknown>> {
   }
 }
 
-/** Wait for the post-commit audit line, which is written best-effort and async. */
-async function settleAudit(): Promise<void> {
-  for (let i = 0; i < 20 && auditLines().length === 0; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
 
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-rules-boundary-"));
@@ -144,7 +138,6 @@ describe("tightening a rule during the model call blocks at the commit", () => {
     resetScript([factCandidate(`The deploy key is ${SECRET}`, SECRET)]);
 
     await runFactExtraction(db, SESSION, PROJECT);
-    await settleAudit();
 
     const blocked = auditLines().filter((line) => line.action === "rules.blocked");
     expect(blocked).toHaveLength(1);
@@ -210,7 +203,6 @@ describe("a broken overlay file at the storage boundary", () => {
     expect(result.skipped).toBeUndefined();
     expect(result.saved).toBe(1);
     expect(scanWholeDatabase(db, SECRET)).toEqual([]);
-    await settleAudit();
     expect(auditLines().map((line) => line.action)).toContain("rules.stale-read");
   });
 });

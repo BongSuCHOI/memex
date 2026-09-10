@@ -2740,33 +2740,34 @@ async function resolveForbiddenCandidates(
  * the forbidden text must not be written to a log by the code that refused to
  * store it.
  */
-function auditBlockedCandidates(
+async function auditBlockedCandidates(
   forbidden: ForbiddenCandidates,
   extras: SaveExtractedFactsExtras,
   outcome: SaveExtractedFactsOutcome,
-): void {
+): Promise<void> {
   if (outcome.blockedByRules === 0 && !forbidden.staleRead) return;
-  void (async () => {
-    try {
-      const { appendUiAuditLine } = await import("./ontology-admin.js");
-      if (outcome.blockedByRules > 0) {
-        appendUiAuditLine("rules.blocked", {
-          id: extras.targetId ?? "unknown",
-          to_hash: forbidden.hash,
-          patterns: forbidden.patternIds.join(","),
-          blocked: outcome.blockedByRules,
-        });
-      }
-      if (forbidden.staleRead) {
-        appendUiAuditLine("rules.stale-read", {
-          id: extras.targetId ?? "unknown",
-          to_hash: forbidden.hash,
-        });
-      }
-    } catch {
-      /* the audit line must never be able to undo a commit that already happened */
+  try {
+    // Awaited, not floating: a one-shot worker process can exit before a detached
+    // promise resolves, and then the only record that a rule dropped something
+    // would be missing exactly when someone goes looking for it.
+    const { appendUiAuditLine } = await import("./ontology-admin.js");
+    if (outcome.blockedByRules > 0) {
+      appendUiAuditLine("rules.blocked", {
+        id: extras.targetId ?? "unknown",
+        to_hash: forbidden.hash,
+        patterns: forbidden.patternIds.join(","),
+        blocked: outcome.blockedByRules,
+      });
     }
-  })();
+    if (forbidden.staleRead) {
+      appendUiAuditLine("rules.stale-read", {
+        id: extras.targetId ?? "unknown",
+        to_hash: forbidden.hash,
+      });
+    }
+  } catch {
+    /* the audit line must never be able to undo a commit that already happened */
+  }
 }
 
 export async function saveExtractedFactsDetailed(
@@ -3074,7 +3075,7 @@ export async function saveExtractedFactsDetailed(
     savedIds.length = 0; // 롤백됐으므로 호출자에게 저장 0건으로 보고
     throw e;
   }
-  auditBlockedCandidates(forbidden, extras, outcome);
+  await auditBlockedCandidates(forbidden, extras, outcome);
 
   // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
   // MEMEX_AUTO_ONTOLOGY=0 is an intentional experiment/operations switch:
