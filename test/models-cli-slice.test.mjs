@@ -24,6 +24,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 
 const REPO = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const CLI = path.join(REPO, 'cli', 'memex.js');
@@ -554,4 +556,31 @@ test('memex models test does not read stdin', (t) => {
   const result = run(fixture.env, ['models', 'test']);
   assert.equal(result.signal, null, 'the command must finish on its own');
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('models show describes a pre-0.7.0 database instead of failing on its missing ledger columns', (t) => {
+  // Live defect found after the 0.7.0 release: a root whose database predates the
+  // 0.7.0 migration (nothing has run `initDatabase()` yet — Codex not restarted)
+  // has `model_work_attempts` without `model`/`reasoning_effort`, and the
+  // read-only `show` path queried them → "no such column: model", exit 1.
+  const ctx = isolated(t);
+  const home = ctx.env.MEMEX_HOME;
+  const dir = path.join(home, 'conversation-index');
+  fs.mkdirSync(dir, { recursive: true });
+  const dbPath = path.join(dir, 'db.sqlite');
+  const Database = require('better-sqlite3');
+  const db = new Database(dbPath);
+  db.exec(`CREATE TABLE model_work_attempts (
+    attempt_id TEXT PRIMARY KEY, stage TEXT NOT NULL, state TEXT NOT NULL,
+    started_at TEXT NOT NULL, finished_at TEXT
+  )`);
+  db.exec(`INSERT INTO model_work_attempts VALUES ('a1','model_probe','completed','2026-09-01T00:00:00Z','2026-09-01T00:00:01Z')`);
+  db.close();
+  const before = fs.statSync(dbPath).size;
+  const r = run(ctx.env, ['models', 'show']);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.doesNotMatch(r.stdout + r.stderr, /no such column/);
+  assert.match(r.stdout, /gpt-5\.6-luna/);
+  // Still read-only: `show` neither migrates nor grows the database.
+  assert.equal(fs.statSync(dbPath).size, before);
 });
