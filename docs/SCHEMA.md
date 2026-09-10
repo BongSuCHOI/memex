@@ -181,6 +181,13 @@ bounded storage size는 `MEMEX_CAPSULE_MAX_CHARS`(기본 12,000자, 하한 2,000
 `capsule_checkpoint_state`의 `page_items_hint`/`page_chars_hint`(0.6.0 additive, nullable)는 실패한 시도가
 다음 evidence page를 절반으로 줄이도록 하는 힌트입니다. 최소 page에서도 실패하면 그 head fragment를
 건너뛰고 frontier를 전진시키므로 한 workstream이 영원히 멈추지 않습니다.
+건너뛰기 조건은 0.6.2에서 좁혀졌습니다: **이미 최소 page였고**(hint가 바닥) **실패가 일시적
+분류가 아닐 때만** 전진합니다(`src/llm-error-class.ts`). 일시적 모델·네트워크 실패는 그 조각에 대해
+아무것도 말해주지 않으므로 frontier를 그대로 두고 `failed-visible`로 남겨 `memex recover`가 재시도합니다.
+건너뛸 때는 `capsule_checkpoint_state.skipped_seq` / `frontier_before_skip`(0.6.2 additive, nullable
+INTEGER)에 전진 전 위치를 기록하므로 복구가 되돌릴 수 있습니다. `memex recover`는 frontier가 여전히
+`skipped_seq`일 때만(CAS) `frontier_before_skip`으로 되돌리고 두 컬럼을 비웁니다 — 그 뒤 성공한
+commit이 frontier를 더 밀었다면 되돌리지 않습니다.
 `memory_jobs.retry_history`(0.6.0 additive, nullable TEXT)는 `recover`/`retry`가 지운 `last_error`를 JSON
 배열로 보존합니다 — 복구는 아무것도 삭제하지 않습니다. `failMemoryJob`은 실제 전이(`retry` | `dead`)를
 반환하고, worker는 terminal `failed-visible`을 `retry`로 덮어쓰지 않습니다(guarded `UPDATE` + 1회성

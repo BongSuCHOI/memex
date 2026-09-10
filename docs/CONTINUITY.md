@@ -34,6 +34,8 @@ P1 생성은 `continuity-core.ts`의 `WORK_CAPSULE_OUTPUT_SCHEMA`를 `codex exec
 
 Capsule 한 세대의 bounded storage size는 기본 **12,000자**이며 `MEMEX_CAPSULE_MAX_CHARS`로 조정합니다(하한 2,000자). 초과한 patch는 버리지 않고 우선순위대로 줄여 저장합니다 — objective·current_state·verified_progress를 마지막까지 보존하고, touched_areas/open_questions/next_actions/hypotheses 항목 수 → carry revision(64→16→8) → blockers → evidence별 source 목록 → 텍스트 길이 → verified 항목 수 → 최상위 source 목록 순으로 줄입니다. 절단이 일어나면 `work_capsules.truncated` / `truncated_fields_json` / `original_chars`에 무엇이 줄었는지 그대로 기록하고 worker 로그에 WARN 1줄을 남깁니다(미수집을 수집으로 위장하지 않습니다). 이 상한은 Capsule projection에만 적용되며, 사용자 프롬프트 원문은 `exchanges`에 그대로 보관되고 추출은 `MEMEX_MODEL_BUDGET_MAX_INPUT_CHARS`(120,000자) 창으로 분할됩니다.
 
+실패한 Capsule 시도는 다음 page를 절반으로 줄입니다(`capsule_checkpoint_state.page_items_hint` / `page_chars_hint`). `max_attempts`를 소진해 `dead`가 되면 **조건부로만** head fragment를 건너뛰고 frontier를 전진시킵니다(0.6.2): 이미 최소 page(조각 1개)였고, 실패가 `src/llm-error-class.ts` 기준 일시적 분류가 **아닐** 때만입니다. 일시적 모델·네트워크 실패는 그 조각의 내용에 대해 아무것도 말해주지 않으므로 frontier를 그대로 두고 `failed-visible`로 남기며, `memex recover`가 같은 조각을 다시 큐에 넣습니다. 건너뛴 경우에는 전진 전 위치를 `skipped_seq` / `frontier_before_skip`에 기록하고, `memex recover`가 frontier를 그 위치로 되돌려 복구된 작업이 그 조각을 다시 포함하게 합니다(frontier가 그 사이 성공 commit으로 더 전진했다면 되돌리지 않습니다).
+
 Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·list 수·정확한 revision tuple·출처 선언을 검사하고, commit 시 page authority·scope·generation/lease CAS를 다시 확인합니다. Schema 미지원·잘못된 응답은 기존 bounded retry/dead 경로로 남으며 schema 없는 호출로 fallback하지 않습니다. `--json`은 이벤트 전송 형식이므로 final 응답의 구조 제약을 대신하지 않습니다. CLI의 [native schema 계약](https://learn.chatgpt.com/docs/non-interactive-mode#create-structured-outputs-with-a-schema)을 사용합니다.
 
 ## 5. Project · workspace · workstream · session (§10)

@@ -21425,7 +21425,12 @@ function ensureContinuitySchema(db, options = {}) {
         -- Issue #33: retry feedback. A failed attempt halves the next page so
         -- the retry reads strictly less than the attempt that failed.
         page_items_hint INTEGER,
-        page_chars_hint INTEGER
+        page_chars_hint INTEGER,
+        -- Issue #71: a terminal skip of one undistillable fragment records WHERE
+        -- the frontier stood before it stepped, so memex recover can put the
+        -- fragment back into the recovered job's input instead of losing it.
+        skipped_seq INTEGER,
+        frontier_before_skip INTEGER
       );
 
     `);
@@ -21876,7 +21881,14 @@ function ensureContinuitySchema(db, options = {}) {
       INSERT OR IGNORE INTO capsule_frontiers(workstream_id) SELECT workstream_id FROM minimal_workstreams;
     `);
     const capsuleCheckpointColumns = columnNames(db, "capsule_checkpoint_state");
-    for (const name of ["target_seq", "target_revision", "page_items_hint", "page_chars_hint"]) {
+    for (const name of [
+      "target_seq",
+      "target_revision",
+      "page_items_hint",
+      "page_chars_hint",
+      "skipped_seq",
+      "frontier_before_skip"
+    ]) {
       if (!capsuleCheckpointColumns.has(name)) db.exec(`ALTER TABLE capsule_checkpoint_state ADD COLUMN ${name} INTEGER`);
     }
     const capsuleColumns = columnNames(db, "work_capsules");

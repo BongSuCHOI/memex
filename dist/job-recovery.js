@@ -251,6 +251,27 @@ export function recoverTerminalWork(db, input) {
               WHERE checkpoint_id = ? AND state IN ('dead-letter','failed-visible','retry')`)
                         .run(unit.checkpointId).changes);
                 if (tableExists(db, "capsule_checkpoint_state")) {
+                    // Issue #71: a terminal skip stepped the frontier over one fragment.
+                    // Recovery has to put that fragment back in the recovered job's input
+                    // — clearing the page hint alone re-read everything AFTER the skip, so
+                    // the fragment stayed lost however often the operator recovered. The
+                    // pre-skip position is read from the checkpoint row and restored under
+                    // a CAS on the skipped seq, so a frontier that has since moved on
+                    // under a later successful commit is never rewound.
+                    const hasSkipColumns = columnExists(db, "capsule_checkpoint_state", "frontier_before_skip");
+                    const skip = hasSkipColumns
+                        ? db.prepare(`SELECT workstream_id, skipped_seq, frontier_before_skip
+                FROM capsule_checkpoint_state WHERE checkpoint_id = ?`)
+                            .get(unit.checkpointId)
+                        : undefined;
+                    if (skip && skip.skipped_seq !== null && skip.frontier_before_skip !== null) {
+                        bump("capsule_frontiers", dryRun
+                            ? Number(!!db.prepare("SELECT 1 FROM capsule_frontiers WHERE workstream_id = ? AND through_seq = ?")
+                                .get(skip.workstream_id, skip.skipped_seq))
+                            : db.prepare(`UPDATE capsule_frontiers SET through_seq = ?
+                  WHERE workstream_id = ? AND through_seq = ?`)
+                                .run(skip.frontier_before_skip, skip.workstream_id, skip.skipped_seq).changes);
+                    }
                     // Also clears the #33 page-shrink hint and the frozen target so the
                     // recovered job re-reads a full page against the current frontier.
                     bump("capsule_checkpoint_state", dryRun
@@ -259,7 +280,7 @@ export function recoverTerminalWork(db, input) {
                         : db.prepare(`UPDATE capsule_checkpoint_state
                 SET state = 'pending', last_error = NULL, updated_at = ?,
                     target_seq = NULL, target_revision = NULL,
-                    page_items_hint = NULL, page_chars_hint = NULL
+                    page_items_hint = NULL, page_chars_hint = NULL${hasSkipColumns ? ", skipped_seq = NULL, frontier_before_skip = NULL" : ""}
                 WHERE checkpoint_id = ? AND state <> 'processed'`)
                             .run(nowIso, unit.checkpointId).changes);
                 }

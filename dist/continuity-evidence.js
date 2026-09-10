@@ -169,6 +169,21 @@ export function shrinkCapsulePageHint(db, checkpointId) {
         atFloor: items === CAPSULE_MIN_PAGE_ITEMS && chars === CAPSULE_MIN_PAGE_CHARS,
     };
 }
+/**
+ * Has shrinking already reached one fragment (issue #71)?
+ *
+ * The terminal skip below is only defensible once the page cannot get any
+ * smaller: until then the failure may still be about the page, not about the
+ * head fragment, and stepping over that fragment throws away evidence that a
+ * smaller page would have distilled. The dead path never shrinks, so the hint
+ * this reads is the budget the failed attempt actually used.
+ */
+export function capsulePageHintAtFloor(db, checkpointId) {
+    const row = db.prepare("SELECT page_items_hint, page_chars_hint FROM capsule_checkpoint_state WHERE checkpoint_id = ?").get(checkpointId);
+    if (!row || row.page_items_hint === null || row.page_chars_hint === null)
+        return false;
+    return row.page_items_hint <= CAPSULE_MIN_PAGE_ITEMS && row.page_chars_hint <= CAPSULE_MIN_PAGE_CHARS;
+}
 /** A drained or successfully committed page restores the full page budget. */
 export function clearCapsulePageHint(db, checkpointId) {
     db.prepare("UPDATE capsule_checkpoint_state SET page_items_hint = NULL, page_chars_hint = NULL WHERE checkpoint_id = ?").run(checkpointId);
