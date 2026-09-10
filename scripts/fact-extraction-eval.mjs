@@ -29,6 +29,20 @@ import {
   resolveReasoningEffort,
 } from "../dist/model-settings.js";
 import { EMBEDDING_MODEL } from "../dist/model-cache.js";
+import {
+  EXTRACTION_POLICY_VERSION,
+  FACT_ENTAILMENT_POLICY_VERSION,
+} from "../dist/fact-extractor.js";
+import {
+  composeEffectivePolicyVersion,
+  emptyLoadedExtractionRules,
+  extractionRulesDocHash,
+  isEmptyExtractionRules,
+  loadExtractionRules,
+  renderExtractionConstraintClause,
+  resolveExtractionRules,
+  validateExtractionRulesDoc,
+} from "../dist/extraction-rules.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_FIXTURE = path.join(
@@ -57,6 +71,12 @@ Archive shadow mode:
   --db <path>         Memex SQLite path (default: resolved Memex DB)
 
 Shared:
+  --rules <path>      Evaluate with a CANDIDATE extraction-rules overlay instead
+                      of the applied one (issue #30 §3.7). Nothing is written:
+                      the file is validated, its constraint clause is appended to
+                      the extraction system prompt for this run only, and the
+                      report records it under 'rules_overlay'. Pass
+                      '--rules none' to evaluate with NO overlay at all.
   --model <id>        Codex model override (default: the resolved selection —
                       MEMEX_CODEX_MODEL, then models.json, then ${DEFAULT_CODEX_MODEL})
   --reasoning <level> Reasoning effort override: ${ALLOWED_REASONING_EFFORTS.join("|")}
@@ -77,6 +97,8 @@ function parseArgs(argv) {
     cases: [],
     fixture: null,
     fixtureExplicit: false,
+    rules: null,
+    rulesExplicit: false,
     baseline: null,
     db: null,
     model: null,
@@ -90,6 +112,7 @@ function parseArgs(argv) {
     "--session",
     "--case",
     "--fixture",
+    "--rules",
     "--baseline",
     "--db",
     "--model",
@@ -120,6 +143,9 @@ function parseArgs(argv) {
     else if (arg === "--fixture") {
       options.fixture = value;
       options.fixtureExplicit = true;
+    } else if (arg === "--rules") {
+      options.rules = value;
+      options.rulesExplicit = true;
     } else if (arg === "--baseline") options.baseline = value;
     else if (arg === "--db") options.db = value;
     else if (arg === "--model") options.model = value;
@@ -235,17 +261,132 @@ function gitRunContext(databaseMode, selection) {
  * interpretation point now, so handing it the pair directly is both narrower and
  * the only way to name a reasoning effort at all.
  */
-function makeInvokeModel(selection) {
+function makeInvokeModel(selection, overlay) {
   return async function invokeModel({ systemPrompt, userMessage }) {
-    const result = await callMemoryModelObserved(systemPrompt, userMessage, 2048, {
-      model: selection.model,
-      reasoningEffort: selection.reasoning,
-    });
+    const result = await callMemoryModelObserved(
+      applyRulesClause(systemPrompt, overlay),
+      userMessage,
+      2048,
+      {
+        model: selection.model,
+        reasoningEffort: selection.reasoning,
+      },
+    );
     return {
       text: result.text,
       tokenUsage: result.observation.token_usage,
     };
   };
+}
+
+/**
+ * Issue #30 §3.7 — the rules overlay this run evaluates under.
+ *
+ * The APPLIED overlay by default, so `memex extract eval` answers the question a
+ * user actually has ("what do my rules do to extraction quality?"). `--rules
+ * <path>` substitutes a candidate that has NOT been applied — nothing is written
+ * anywhere — and `--rules none` removes the overlay for a clean baseline.
+ */
+function resolveRulesOverlay(options) {
+  const none = {
+    source: "none",
+    present: false,
+    hash: null,
+    revision: 0,
+    clause: "",
+    counts: { exclude_topics: 0, never_extract: 0, decision_hints: 0 },
+    preferred_language: null,
+  };
+  const describe = (source, resolved) => ({
+    source,
+    present: !isEmptyExtractionRules(resolved),
+    hash: resolved.hash,
+    revision: resolved.revision,
+    clause: renderExtractionConstraintClause(resolved),
+    counts: {
+      exclude_topics: resolved.excludeTopics.length,
+      never_extract: resolved.neverExtract.length,
+      decision_hints: resolved.decisionHints.length,
+    },
+    preferred_language: resolved.preferredLanguage,
+  });
+
+  if (options.rulesExplicit) {
+    if (options.rules === "none") return none;
+    const file = path.resolve(ROOT, options.rules);
+    const text = fs.readFileSync(file, "utf8");
+    const validation = validateExtractionRulesDoc(
+      readJson(file, "rules overlay"),
+      { bytes: Buffer.byteLength(text, "utf8") },
+    );
+    const errors = validation.issues.filter((issue) => issue.severity === "error");
+    if (errors.length > 0 || !validation.doc) {
+      throw new Error(
+        `--rules ${options.rules} is not a valid extraction-rules overlay: ` +
+          errors
+            .map((issue) => `${issue.code}${issue.path ? ` at ${issue.path}` : ""}`)
+            .join(", "),
+      );
+    }
+    const doc = validation.doc;
+    // The project-override merge is the core module's rule, never re-implemented
+    // here: asking for a project id no override can carry makes the merge a no-op
+    // and leaves exactly the global rule set.
+    const resolved = resolveExtractionRules(" no-such-project", {
+      ...emptyLoadedExtractionRules(),
+      present: true,
+      hash: extractionRulesDocHash(doc),
+      revision: doc.revision,
+      doc,
+    });
+    return describe(file, { ...resolved, projectId: null });
+  }
+
+  const loaded = loadExtractionRules();
+  if (!loaded.doc) return none;
+  return describe("applied", resolveExtractionRules(null, loaded));
+}
+
+/**
+ * `base` + `\n\n` + clause, for the EXTRACTION call only.
+ *
+ * The entailment verifier's prompt must stay byte-identical whether or not an
+ * overlay exists (§3.2), so it is excluded by its own policy identifier rather
+ * than by call order.
+ */
+function applyRulesClause(systemPrompt, overlay) {
+  if (!overlay || overlay.clause === "") return systemPrompt;
+  if (!systemPrompt.includes(EXTRACTION_POLICY_VERSION)) return systemPrompt;
+  if (systemPrompt.includes(FACT_ENTAILMENT_POLICY_VERSION)) return systemPrompt;
+  return `${systemPrompt}\n\n${overlay.clause}`;
+}
+
+/**
+ * The two fields the receipt needs to be reproducible under an overlay.
+ *
+ * `effective_policy_version` is REPORTING only — it is not the scheduling key,
+ * and folding the rule hash into that key would re-extract the whole corpus on
+ * one edited character.
+ */
+function stampRulesOverlay(report, overlay) {
+  report.effective_policy_version = composeEffectivePolicyVersion(
+    EXTRACTION_POLICY_VERSION,
+    overlay.hash,
+  );
+  report.rules_overlay = {
+    source: overlay.source,
+    present: overlay.present,
+    hash: overlay.hash,
+    revision: overlay.revision,
+    clause_chars: overlay.clause.length,
+    counts: overlay.counts,
+    preferred_language: overlay.preferred_language,
+    applied_to: overlay.clause === "" ? null : "extraction_system_prompt",
+    // Said out loud because it is not obvious: the per-call digests below are
+    // computed by the harness over the prompt BEFORE the clause is appended.
+    prompt_sha256_excludes_clause: overlay.clause !== "",
+  };
+  return report;
 }
 
 function defaultOutput(mode) {
@@ -298,7 +439,8 @@ async function main() {
   };
   const model = selection.model;
   const reasoning = selection.reasoning ?? "unset";
-  const invokeModel = makeInvokeModel(selection);
+  const rulesOverlay = resolveRulesOverlay(options);
+  const invokeModel = makeInvokeModel(selection, rulesOverlay);
 
   if (options.sessions.length === 0) {
     const fixturePath = path.resolve(ROOT, options.fixture || DEFAULT_FIXTURE);
@@ -326,6 +468,7 @@ async function main() {
       invokeModel,
     });
     report.reasoning = reasoning;
+    stampRulesOverlay(report, rulesOverlay);
     report.run_context = gitRunContext("not-opened", selection);
     if (options.baseline) {
       const baselinePath = path.resolve(ROOT, options.baseline);
@@ -358,6 +501,7 @@ async function main() {
       { model, invokeModel },
     );
     report.reasoning = reasoning;
+    stampRulesOverlay(report, rulesOverlay);
     report.run_context = gitRunContext("read-only", selection);
     const output = writeReport(options.out || defaultOutput("shadow"), report);
     process.stdout.write(`${JSON.stringify(report.summary, null, 2)}\n`);
