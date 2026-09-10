@@ -19,7 +19,9 @@ Memex turns local Codex session history into a searchable conversation archive, 
 - **Distills durable facts** — reusable decisions, preferences, patterns, knowledge, and constraints, each bound to the exchange that proves it.
 - **Tracks how facts evolve** — duplicate consolidation, contradictions, revisions, deactivation, restoration, and provenance.
 - **Connects and recalls** — classifies facts into domains/categories with typed relations, and injects small, relevance-gated memory blocks into later Codex prompts.
-- **Shows its work** — a loopback Web UI, nine MCP tools, and durable multi-device sync of fact state only.
+- **Takes your rules** — a local overlay adds your own regexes and words to the recall gate, and your own restrictions to extraction: topics to stay away from and patterns that must never be stored, enforced at the storage boundary rather than suggested in a prompt.
+- **Lets you choose the model** — pick the model and reasoning effort Memex uses for its own work; a selection the provider refuses pauses that work instead of failing it, and resumes when you fix it.
+- **Shows its work** — a loopback Web UI in English or Korean, nine MCP tools, and durable multi-device sync of fact state only.
 
 ---
 
@@ -92,10 +94,12 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/facts` memory & facts | facts, revisions, authoritative provenance, interpretive context, guarded edit/deactivate/restore/delete, and one-rung tier promote/demote; a tier badge on every row and a banner for branch-tier memory the project scope hides |
 | `/taxonomy` classification | ontology domains and categories |
 | `/graph` knowledge map | WebGL 2D/3D relation graph with a Canvas2D fallback |
-| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "다음 행동" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) |
-| `/settings` administration | runtime, admin commands, cross-device sync (off by default), display preferences, diagnostics |
+| `/activity` chronicle | jobs, model attempts, recalls, logs, admin runs — each with a "Next action" column derived from the failure-class table in [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구) (Korean) |
+| `/settings` administration | runtime, admin commands, cross-device sync (off by default), display preferences, diagnostics, and two 0.7.0 tabs: **Overlays** (your own recall-gate regexes and extraction restrictions — validate, test against a prompt, simulate the impact, roll back) and **Models** (which model and reasoning effort Memex uses, and any configuration hold pausing model work) |
 
-Every page carries its own help: an ⓘ next to the title linking the matching section of the docs at this release tag, one-line tooltips on controls, badges and table headers, and a searchable glossary on `?`. Turn it down or off in 관리 › 화면 설정.
+The workspace ships in **English** and can switch to Korean: `?lang=ko` in the address, the `EN`/`KO` button in the header, or Administration › Display, each remembered in that browser. `memex-ui --lang ko` (or `MEMEX_UI_LANG=ko`) sets the server default. The documents under `docs/` are Korean only, and the English UI links to the same Korean sections.
+
+Every page carries its own help: an ⓘ next to the title linking the matching section of the docs at this release tag, one-line tooltips on controls, badges and table headers, and a searchable glossary on `?`. Turn it down or off in Administration › Display.
 
 Every page takes an explicit scope: one project, common (global) memory, or all projects. All projects is the default view and is read-only breadth — injection always uses the current project plus common memory, and the scope selector says so permanently. Opening a page never starts model work.
 
@@ -293,6 +297,9 @@ memex status
 | `memex jobs` | Inspect and recover memory jobs: `list\|show\|retry\|dismiss` |
 | `memex recover` | Reset terminal (dead) work back to claimable in one transaction; `--all-dead`, `--dry-run` |
 | `memex model-work` | Inspect a model-work budget or explicitly resume one; [bounded resume](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
+| `memex models` | Choose the model and reasoning effort for Memex's own model work: `show\|set\|reset\|test`. `set --model <id> [--reasoning <level>]` (`unset` removes the flag); `test` makes exactly one real call and clears the configuration hold for that selection |
+| `memex gate` | Your own recall-gate rules: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. Built-ins are disabled by id, never deleted; writes take `--dry-run` and `--expect-revision <n>` |
+| `memex extract` | Your own extraction restrictions — this command does not extract: `rules show\|validate\|set\|test\|history\|reset\|rollback\|reextract`, plus `eval`, the only verb that spends model calls |
 | `memex doctor` | Diagnose dependencies, build, hooks, injection output, and recall provenance |
 | `memex home` | Print the resolved Memex data root |
 | `memex migrate-projects` | Re-derive project identity from cwd evidence (CX-02); `--dry-run` prints the plan and writes nothing |
@@ -391,9 +398,14 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 | `MEMEX_STRICT_CAPTURE` | `1` makes a capture hook fail instead of recording a capture gap |
 | `MEMEX_CAPSULE_MAX_CHARS` | Bounded storage size for one Work Capsule generation (default `12000`, floor `2000`); an oversized patch is truncated by priority and recorded, never dropped |
 | `MEMEX_INJECT_BASELINE_MARGIN` | Relevance margin a fact must clear over the prompt's background baseline to be injected (default `0.045`, 0-1); measure first with the `baseline_margin_gap` telemetry metric |
+| `MEMEX_CODEX_MODEL` / `MEMEX_CODEX_REASONING` | The model and reasoning effort for Memex's own model work; both win over `<data root>/models.json`, which wins over the built-in default (`gpt-5.6-luna`, no reasoning flag). An unknown reasoning level is warned about and ignored; a model id is not shape-checked here, so a typo surfaces as a provider refusal |
+| `MEMEX_OVERLAY_DIR` / `MEMEX_DISABLE_OVERLAYS` | Where the user overlays live (default `<data root>/overlays`) and a switch that reads none of them (`1` only) |
+| `MEMEX_UI_LANG` | Server default language for the Web UI, `en` (default) or `ko`; `memex-ui --lang` wins over it and an unknown value fails startup |
 | `PORT` | Web UI port (default `3847`) |
 
 Automatic ontology stays available through manual `memex backfill ontology`, and existing derived data and core embeddings remain in place when it is disabled.
+
+The model selection and the user overlays are **local to one machine** and never enter a sync generation, because the set of usable models and the rules you want differ per device. Sharing overlays between machines, switching the embedding model, and overriding the gate thresholds are all deferred to 0.7.1.
 
 Model work is budgeted per run ([GUIDE §17](docs/GUIDE.md#17-모델-작업-예산과-대기-진단)):
 
