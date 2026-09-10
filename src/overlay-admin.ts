@@ -645,20 +645,49 @@ function mergeGateDelta(current: RecallGateOverlayDoc, delta: GateDelta): Recall
 }
 
 /**
- * Clear quarantine rows whose pattern no longer exists, or whose source changed.
+ * Every user pattern the just-written document still declares, as quarantine keys.
  *
- * The quarantine key is (pattern_id, source_sha8), so EDITING a regex clears it
- * automatically; this also reaps rows for patterns that were removed outright.
+ * Both overlays have to be read here. Passing `null` for `extraction-rules` — which
+ * is what the first version did — made the live set EMPTY, so saving the rules file
+ * cleared every quarantine row the overlay owned: re-saving the same regex, or
+ * editing only `preferred_language`, un-quarantined a pattern that still blows its
+ * budget and then released the extraction hold behind it.
+ *
+ * The key is (pattern_id, source_sha8), so EDITING a regex drops its row here
+ * automatically while an untouched one is kept.
+ */
+function livePatternKeys(overlay: OverlayName, applied: Record<string, unknown>): Set<string> {
+  const keys = new Set<string>();
+  const add = (id: unknown, source: unknown, flags: unknown): void => {
+    if (typeof id !== "string" || typeof source !== "string") return;
+    keys.add(quarantineKey(id, patternSourceSha8(source, typeof flags === "string" ? flags : "")));
+  };
+  if (overlay === "recall-gate") {
+    const doc = applied as unknown as RecallGateOverlayDoc;
+    for (const pattern of doc.patterns?.add ?? []) add(pattern.id, pattern.source, pattern.flags);
+    return keys;
+  }
+  // extraction-rules: both pattern lists the validator accepts are user regexes
+  // that the matcher can quarantine.
+  for (const field of ["never_extract_patterns", "always_treat_as_decision_patterns"]) {
+    const list = applied[field];
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      if (!raw || typeof raw !== "object") continue;
+      const pattern = raw as Record<string, unknown>;
+      add(pattern.id, pattern.source, pattern.flags);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Clear quarantine rows whose pattern no longer exists, or whose source changed.
  */
 function clearQuarantineForChangedPatterns(
   overlay: OverlayName,
-  doc: RecallGateOverlayDoc | null,
+  live: ReadonlySet<string>,
 ): string[] {
-  const live = new Set(
-    (doc?.patterns?.add ?? []).map((pattern) =>
-      quarantineKey(pattern.id, patternSourceSha8(pattern.source, pattern.flags ?? "")),
-    ),
-  );
   const entries = readQuarantine();
   const keep: QuarantineEntry[] = [];
   const cleared: string[] = [];
@@ -737,10 +766,7 @@ export async function applyOverlayChange(
     applied.updated_by = next.updated_by;
 
     writeAtomic(file, applied);
-    const cleared = clearQuarantineForChangedPatterns(
-      overlay,
-      overlay === "recall-gate" ? (applied as unknown as RecallGateOverlayDoc) : null,
-    );
+    const cleared = clearQuarantineForChangedPatterns(overlay, livePatternKeys(overlay, applied));
     const toHash = overlay === "recall-gate" ? gateHashOrNull(applied) : null;
     writeSnapshot(overlay, Number(applied.revision), applied);
     appendHistoryIndex({
