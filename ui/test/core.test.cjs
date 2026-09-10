@@ -148,6 +148,52 @@ test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()
   assert.equal(x.c.syncBusy,false);
  }finally{x.clean();}
 });
+/**
+ * #78 — 코어가 남기는 감사 줄은 이 UI의 home에만 있어야 한다.
+ *
+ * 스텁은 코어의 경로 해석(`src/paths.ts` getMemexHome: MEMEX_HOME → XDG_CONFIG_HOME/memex →
+ * ~/.config/memex)을 그대로 흉내내 `logs/ui-audit.jsonl`에 한 줄을 쓴다. 고정이 없으면 그 줄은
+ * XDG 기본 루트로 가고, 고정이 있으면 UI가 유도한 home으로 간다.
+ */
+function auditSetup(action){
+ const temp=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'memex-ui-audit-'));
+ const xdg=path.join(temp,'xdg');const altRoot=path.join(temp,'alt-root');
+ const saved={};for(const k of ['MEMEX_HOME','MEMEX_DB_PATH','TEST_DB_PATH','XDG_CONFIG_HOME'])saved[k]=process.env[k];
+ delete process.env.MEMEX_HOME;delete process.env.TEST_DB_PATH;
+ process.env.XDG_CONFIG_HOME=xdg;process.env.MEMEX_DB_PATH=path.join(altRoot,'db.sqlite');
+ const x=setup();
+ const core=new Core({root:'/fixture/core'});
+ core.db=x.f.db;core.store=x.f.store;core.modules=x.c.modules;
+ const coreHome=()=>process.env.MEMEX_HOME||path.join(process.env.XDG_CONFIG_HOME,'memex');
+ const audit=()=>{const home=coreHome();fs.mkdirSync(path.join(home,'logs'),{recursive:true});
+  fs.appendFileSync(path.join(home,'logs','ui-audit.jsonl'),JSON.stringify({source:'memex-core',action,at:new Date().toISOString()})+'\n');};
+ const fm=core.modules.get('fact-management');
+ const wrap=(name,value)=>{const original=fm[name];fm[name]=(...args)=>{audit();return original?.(...args)??value;};};
+ wrap('promoteFact',{id:uid(1),steps:[]});wrap('mutateFactMeaning',{id:uid(1)});
+ const lines=root=>{try{return fs.readFileSync(path.join(root,'logs','ui-audit.jsonl'),'utf8').trim().split('\n').filter(Boolean);}catch{return [];}};
+ return {x,core,xdgHome:path.join(xdg,'memex'),altRoot,lines,scope:x.scope,
+  clean(){x.clean();for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}fs.rmSync(temp,{recursive:true,force:true});}};
+}
+test('계층 변경의 코어 감사 줄은 UI가 유도한 home에만 남는다 (#78)',async()=>{
+ const t=auditSetup('fact.promote');
+ try{
+  assert.equal(t.core.home,t.altRoot,'명시된 DB에서 home을 유도하지 않았습니다');
+  await t.core.tier({id:uid(1),action:'promote'},t.scope);
+  assert.equal(t.lines(t.altRoot).length,1,'UI의 home에 감사 줄이 없습니다');
+  assert.deepEqual(t.lines(t.xdgHome),[],'기본 데이터 루트에 감사 줄이 새어 나갔습니다');
+  assert.equal('MEMEX_HOME' in process.env,false,'호출 뒤에도 MEMEX_HOME이 정의돼 있습니다');
+  assert.equal(process.env.MEMEX_DB_PATH,path.join(t.altRoot,'db.sqlite'),'MEMEX_DB_PATH를 되돌리지 않았습니다');
+  assert.equal(t.core.busy.size,0);
+ }finally{t.clean();}
+});
+test('기억 수정의 코어 감사 줄도 같은 home에만 남는다 (#78)',async()=>{
+ const t=auditSetup('fact.edit');
+ try{
+  await t.core.mutate({id:uid(1),action:'edit',text:'Updated factual content'},t.scope);
+  assert.equal(t.lines(t.altRoot).length,1,'UI의 home에 감사 줄이 없습니다');
+  assert.deepEqual(t.lines(t.xdgHome),[],'기본 데이터 루트에 감사 줄이 새어 나갔습니다');
+ }finally{t.clean();}
+});
 test('no DB file is created when the initial read fails',async()=>{const f=fixture(),filename=path.join(f.home,'missing','never.sqlite');const c=new Core({root:f.home,dbPath:filename,home:f.home});try{await assert.rejects(c.connect(),{status:503});assert.equal(fs.existsSync(filename),false);}finally{f.close();fs.rmSync(f.home,{recursive:true,force:true});}});
 test('API helper sends POST plus token when a body exists',async()=>{const mod=await import('../public/api.mjs');const saved={fetch:global.fetch,location:global.location};try{global.location={origin:'http://127.0.0.1:3847'};let captured;global.fetch=async(url,opts)=>{captured={url:String(url),opts};return new Response('{"ok":true}',{status:200,headers:{'content-type':'application/json'}});};mod.setToken('test-token');assert.deepEqual(await mod.request('facts/mutate',{scope:'global'},{body:{action:'edit'}}),{ok:true});assert.equal(captured.opts.method,'POST');assert.equal(captured.opts.headers['X-Memex-CSRF'],'test-token');await mod.request('facts');assert.equal(captured.opts.method,'GET');assert.equal(captured.opts.body,undefined);}finally{global.fetch=saved.fetch;global.location=saved.location;}});
 test('safe Markdown escapes scripts, event attributes and remote image syntax',async()=>{const {markdown,esc}=await import('../public/ui.mjs');const html=markdown('<img src=x onerror=alert(1)>\n\n<script>alert(2)</script>\n\n![remote](https://invalid/x)');assert(!html.includes('<img'));assert(!html.includes('<script'));assert(html.includes('&lt;script&gt;'));assert.equal(esc('"\'<>&'),'&quot;&#39;&lt;&gt;&amp;');});
