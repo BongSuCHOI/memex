@@ -1,4 +1,5 @@
 'use strict';
+require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
 const {name,badge,eventRow,syncOrigin,syncOriginTag}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
@@ -15,7 +16,7 @@ const row=extra=>({id:'11111111-1111-4111-8111-111111111111',fact:'Local first s
 const factsPage=(items,extra={})=>({available:true,items,total:items.length,limit:50,offset:0,scopeTotal:items.length,...extra});
 function ctx(params,data,extra={}){
  const p=new URLSearchParams(params);
- return {p,prefs:{korean:true,density:'comfortable',live:false},scope:{scope:'all'},bootstrap:{environment:{mutable:true}},...extra,
+ return {p,prefs:{preferTranslatedFacts:true,density:'comfortable',live:false},scope:{scope:'all'},bootstrap:{environment:{mutable:true}},...extra,
   href:(pathname,query={})=>{const u=new URL(pathname,'http://127.0.0.1');for(const [k,v] of Object.entries(query))if(v!==null&&v!==undefined&&v!=='')u.searchParams.set(k,String(v));return u.pathname+u.search;},
   api:async key=>{if(!(key in data))throw new Error('unexpected api call: '+key);return data[key];},
   update(){},open(){},toast(){}};

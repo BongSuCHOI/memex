@@ -161,6 +161,10 @@ function startServer(port, home = MEMEX_HOME, xdg = XDG_CONFIG_HOME) {
       XDG_CONFIG_HOME: xdg,
       MEMEX_PLUGIN_ROOT: ROOT,
       PORT: String(port),
+      // #109 lane-0: 제품 기본 언어는 en이지만 이 게이트의 probe는 아직 한국어 화면을
+      // 단정한다. 문자열 이관이 끝날 때까지 서버 기본 언어를 ko로 고정한다 — i18n L5가
+      // `--lang en|ko` 파라미터화와 함께 이 줄을 가져간다.
+      MEMEX_UI_LANG: process.env.MEMEX_UI_LANG || "ko",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
