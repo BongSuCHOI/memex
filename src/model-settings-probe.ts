@@ -27,6 +27,7 @@ import {
   withResolvedModelWorkContext,
   type ModelConfigHold,
 } from "./model-budget.js";
+import { appendUiAuditLine } from "./ontology-admin.js";
 import {
   llmSelectionFingerprint,
   normalizeReasoningEffort,
@@ -147,18 +148,15 @@ function auditProbe(input: {
   latencyMs: number;
   rejectionType: string | null;
 }): void {
-  void (async () => {
-    try {
-      const { appendUiAuditLine } = await import("./ontology-admin.js");
-      appendUiAuditLine("models.llm.probe", {
-        model: input.model,
-        reasoning: input.reasoning,
-        ok: input.ok,
-        latency_ms: input.latencyMs,
-        rejection_type: input.rejectionType,
-      });
-    } catch {
-      /* the attempt ledger is the durable record */
-    }
-  })();
+  try {
+    appendUiAuditLine("models.llm.probe", {
+      model: input.model,
+      reasoning: input.reasoning,
+      ok: input.ok,
+      latency_ms: input.latencyMs,
+      rejection_type: input.rejectionType,
+    });
+  } catch {
+    /* the attempt ledger is the durable record */
+  }
 }

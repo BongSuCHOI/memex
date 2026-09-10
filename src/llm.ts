@@ -29,6 +29,7 @@ import {
   type ModelAttemptReservation,
 } from './model-budget.js';
 import { resolveLlmSelection } from './model-settings.js';
+import { appendUiAuditLine } from './ontology-admin.js';
 
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
@@ -225,23 +226,21 @@ function recordConfigHold(
       `model "${selection.model}"${selection.reasoning ? ` at reasoning effort "${selection.reasoning}"` : ''}. ` +
       'No job failed and no attempt was consumed. Fix the selection and it resumes automatically: memex models show',
   );
-  // Audit is best-effort by construction: a missing log must not turn a held
-  // call into a crashed one.
-  void (async () => {
-    try {
-      const { appendUiAuditLine } = await import('./ontology-admin.js');
-      appendUiAuditLine('models.llm.hold', {
-        model: selection.model,
-        reasoning: selection.reasoning,
-        provider_status: detail?.status ?? held?.status ?? null,
-        provider_type: detail?.providerType ?? held?.providerType ?? null,
-        stage: context.stage ?? null,
-        fingerprint_prefix: selection.fingerprint.slice(0, 12),
-      });
-    } catch {
-      /* the hold itself is the durable record */
-    }
-  })();
+  // Audit is best-effort by construction: a missing or unwritable log must not
+  // turn a held call into a crashed one. Only the fingerprint PREFIX goes in the
+  // line — the whole value is in the database.
+  try {
+    appendUiAuditLine('models.llm.hold', {
+      model: selection.model,
+      reasoning: selection.reasoning,
+      provider_status: detail?.status ?? held?.status ?? null,
+      provider_type: detail?.providerType ?? held?.providerType ?? null,
+      stage: context.stage ?? null,
+      fingerprint_prefix: selection.fingerprint.slice(0, 12),
+    });
+  } catch {
+    /* the hold row itself is the durable record */
+  }
 }
 
 function summarizeObservations(

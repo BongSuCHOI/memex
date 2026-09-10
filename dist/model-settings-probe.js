@@ -2,6 +2,7 @@ import { sanitizeProviderMessage } from "./codex-exec.js";
 import { classifyLlmError } from "./llm-error-class.js";
 import { callMemoryModelObserved } from "./llm.js";
 import { clearModelConfigHoldsForSelection, releaseHeldJobs, withResolvedModelWorkContext, } from "./model-budget.js";
+import { appendUiAuditLine } from "./ontology-admin.js";
 import { llmSelectionFingerprint, normalizeReasoningEffort, } from "./model-settings.js";
 /** Fixed, tiny, and schema-free: the probe proves reachability, not quality. */
 const PROBE_SYSTEM_PROMPT = "Answer with exactly the requested token and nothing else.";
@@ -85,19 +86,16 @@ export async function probeModel(db, opts) {
 }
 /** Metadata only — never the probe's answer text. Best-effort by construction. */
 function auditProbe(input) {
-    void (async () => {
-        try {
-            const { appendUiAuditLine } = await import("./ontology-admin.js");
-            appendUiAuditLine("models.llm.probe", {
-                model: input.model,
-                reasoning: input.reasoning,
-                ok: input.ok,
-                latency_ms: input.latencyMs,
-                rejection_type: input.rejectionType,
-            });
-        }
-        catch {
-            /* the attempt ledger is the durable record */
-        }
-    })();
+    try {
+        appendUiAuditLine("models.llm.probe", {
+            model: input.model,
+            reasoning: input.reasoning,
+            ok: input.ok,
+            latency_ms: input.latencyMs,
+            rejection_type: input.rejectionType,
+        });
+    }
+    catch {
+        /* the attempt ledger is the durable record */
+    }
 }

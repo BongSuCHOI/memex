@@ -469,3 +469,28 @@ describe("doctor llm-model", () => {
     expect(check.detail).toContain("someone-elses-model");
   });
 });
+
+it("writes one metadata-only audit line per hold and per probe", async () => {
+  const { runFactExtraction } = await import("../src/fact-extractor.js");
+  const { probeModel } = await import("../src/model-settings-probe.js");
+
+  await expect(runFactExtraction(db, "S1", "/tmp/p")).rejects.toThrow();
+  rejectEnvelope = false;
+  await probeModel(db, { model: "broken-model" });
+
+  const lines = fs.readFileSync(path.join(root, "logs", "ui-audit.jsonl"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+  const hold = lines.find((line) => line.action === "models.llm.hold");
+  const probe = lines.find((line) => line.action === "models.llm.probe");
+  expect(hold).toMatchObject({
+    model: "broken-model",
+    provider_status: 400,
+    provider_type: "invalid_request_error",
+    stage: "fact_extract",
+  });
+  // Only the fingerprint PREFIX — the whole value lives in the database.
+  expect(String(hold.fingerprint_prefix)).toHaveLength(12);
+  expect(probe).toMatchObject({ model: "broken-model", ok: true });
+  // The probe's answer text is never logged.
+  expect(JSON.stringify(probe)).not.toContain("MEMEX_OK");
+});
