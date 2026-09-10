@@ -32,12 +32,12 @@ class Store {
   }
   scope(q) {
     const type = q.get('scope') || (q.get('project') ? 'project' : 'global');
-    if (!['project','global','all'].includes(type)) throw new HttpError(400, 'scope: project | global | all', 'INVALID_SCOPE');
+    if (!['project','global','all'].includes(type)) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.unknownType', message:'scope: project | global | all'});
     if (type !== 'project' && q.get('project')) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.projectOnlyInProjectScope', message:'project is allowed only in the project scope.'});
     // tiers=all drops the promotion-state predicate so a project screen can show its branch and
     // workspace tier memories too. It never widens the project identity itself.
     const tiers = q.get('tiers') || 'default';
-    if (!['default','all'].includes(tiers)) throw new HttpError(400, 'tiers: default | all', 'INVALID_SCOPE');
+    if (!['default','all'].includes(tiers)) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.unknownTiers', message:'tiers: default | all'});
     const s = { type, tiers, includeGlobal: q.get('includeGlobal') !== '0', project: null, projectId: null, workspaceId: q.get('workspace') || null, workstreamId: q.get('workstream') || null };
     if (type !== 'project' && (s.workspaceId || s.workstreamId)) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.workScopeNeedsProject', message:'A work scope needs a project.'});
     if (type === 'project') {

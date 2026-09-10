@@ -16,6 +16,8 @@ export default {
   'error.validate.idRequired': '유효한 ID가 필요합니다.',
   // ── 범위 (util.cjs · store.cjs) ────────────────────────────────────────────
   'error.scope.projectPathAbsolute': '프로젝트는 정규화 가능한 절대 경로여야 합니다.',
+  'error.scope.unknownType': '조회 범위는 project, global, all 중 하나여야 합니다.',
+  'error.scope.unknownTiers': 'tiers 필터는 default 또는 all이어야 합니다.',
   'error.scope.projectOnlyInProjectScope': 'project는 project 범위에서만 허용됩니다.',
   'error.scope.workScopeNeedsProject': '작업 범위에는 프로젝트가 필요합니다.',
   'error.scope.ambiguousProject': '동일 경로에 여러 프로젝트 ID가 있습니다. CLI에서 프로젝트 식별자를 확인하세요.',

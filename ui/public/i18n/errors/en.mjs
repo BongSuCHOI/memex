@@ -19,6 +19,8 @@ export default {
   'error.validate.idRequired': 'A valid ID is required.',
   // ── 범위 (util.cjs · store.cjs) ────────────────────────────────────────────
   'error.scope.projectPathAbsolute': 'A project must be an absolute path that can be normalised.',
+  'error.scope.unknownType': 'Read scope must be project, global or all.',
+  'error.scope.unknownTiers': 'The tiers filter must be default or all.',
   'error.scope.projectOnlyInProjectScope': 'project is allowed only in the project scope.',
   'error.scope.workScopeNeedsProject': 'A work scope needs a project.',
   'error.scope.ambiguousProject': 'Several project IDs share this path. Confirm the project identifier from the CLI.',
