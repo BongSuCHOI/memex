@@ -141,12 +141,16 @@ test('commands with their own richer help still print it, without doing work', (
     ['search', /Usage: memex search/],
     ['show', /Usage: memex show/],
     ['sync', /Usage: memex sync/],
+    // Issue #29: `gate` is in KNOWN_COMMANDS via HELP_DELEGATES, so the guard
+    // intercepts every `memex gate … --help` before a write verb can run.
+    ['gate', /Usage:\n {2}memex gate show/],
   ]) {
     const result = run(fixture.env, [command, '--help']);
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
     assert.match(result.stdout, usage, command);
   }
   assert.ok(!fs.existsSync(path.join(fixture.memexHome, 'conversation-index')));
+  assert.ok(!fs.existsSync(path.join(fixture.memexHome, 'overlays')), 'gate --help must not create the overlay dir');
 });
 
 test('an unknown command with --help is still an unknown command', (t) => {
