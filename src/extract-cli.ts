@@ -1416,64 +1416,24 @@ async function cmdReextract(): Promise<void> {
 
     const now = new Date().toISOString();
     const changed: Record<string, number> = {};
-    const bump = (table: string, changes: number) => {
-      if (changes > 0) changed[table] = (changed[table] ?? 0) + changes;
-    };
     const requeued: string[] = [];
+    // One shared implementation with the store that owns these tables, so the
+    // progress fields a re-queue has to rewind cannot drift apart from the ones
+    // the claim path reads.
+    const { requeueCompletedExtractionTarget } = await import("./continuity-store.js");
     db.transaction(() => {
       for (const candidate of rows) {
-        // CAS on `completed`: a target a worker has since re-claimed must not be
-        // pulled out from under it.
-        const target = db
-          .prepare(
-            `UPDATE extraction_targets
-                SET state = 'pending', attempts = 0, lease_owner = NULL, lease_until = NULL,
-                    last_error = NULL, rules_hash = NULL, updated_at = ?
-              WHERE target_id = ? AND state = 'completed'`,
-          )
-          .run(now, candidate.targetId).changes;
-        if (target === 0) continue;
-        bump("extraction_targets", target);
+        const counts = requeueCompletedExtractionTarget(db, {
+          targetId: candidate.targetId,
+          jobId: candidate.jobId,
+          checkpointId: candidate.checkpointId,
+          now,
+        });
+        if (Object.keys(counts).length === 0) continue;
         requeued.push(candidate.targetId);
-        if (candidate.jobId !== null) {
-          bump(
-            "memory_jobs",
-            db
-              .prepare(
-                `UPDATE memory_jobs
-                    SET state = 'pending', attempts = 0, available_at = ?, lease_owner = NULL,
-                        lease_until = NULL, last_error = NULL, hold_reason = NULL, updated_at = ?
-                  WHERE job_id = ? AND state IN ('completed','superseded')`,
-              )
-              .run(now, now, candidate.jobId).changes,
-          );
+        for (const [table, value] of Object.entries(counts)) {
+          changed[table] = (changed[table] ?? 0) + value;
         }
-        if (candidate.checkpointId !== null) {
-          bump(
-            "checkpoints",
-            db
-              .prepare("UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processed'")
-              .run(candidate.checkpointId).changes,
-          );
-        }
-        bump(
-          "extraction_target_items",
-          db
-            .prepare("UPDATE extraction_target_items SET state = 'pending' WHERE target_id = ? AND state <> 'pending'")
-            .run(candidate.targetId).changes,
-        );
-        // This is what makes the work claimable again: `ensureExtractionTarget`
-        // treats an exact `processed` row as the only completion authority.
-        bump(
-          "exchange_extraction_state",
-          db
-            .prepare(
-              `UPDATE exchange_extraction_state
-                  SET state = 'pending', processed_at = NULL
-                WHERE target_id = ? AND state <> 'pending'`,
-            )
-            .run(candidate.targetId).changes,
-        );
       }
     }).immediate();
 
