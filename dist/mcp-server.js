@@ -25560,6 +25560,8 @@ var MAX_CONTEXT_FACTS = 8;
 var REPEAT_ELAPSED_BUDGET_MS = 700;
 var WATCH_TTL_PROMPTS = 5;
 var TOPIC_FINGERPRINT_MAX = 64;
+var UndeliverableInjection = class extends Error {
+};
 function commitInjectionState(db, input) {
   let receiptId = null;
   const write = () => {
@@ -26036,6 +26038,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
     let preparedReceiptId = null;
     const commitBundle = () => {
+      const undeliverable = options.deliverable?.();
+      if (undeliverable) throw new UndeliverableInjection(undeliverable);
       if (canQuery(db)) {
         const emittedRaw = rendered.sections.find((section) => section.kind === "RAW EVIDENCE")?.emitted.length ?? 0;
         for (const evidence of rawEvidence.slice(0, emittedRaw)) {
@@ -26162,6 +26166,18 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
     return block;
   } catch (error2) {
     const message = error2 instanceof Error ? error2.message : String(error2);
+    if (error2 instanceof UndeliverableInjection) {
+      appendInjectLog({
+        status: "abandoned",
+        project,
+        prompt_len: userPrompt.length,
+        duration_ms: Date.now() - t0,
+        error: message.slice(0, 300),
+        via,
+        ...daemonNote
+      });
+      return "";
+    }
     appendInjectLog({
       status: "error",
       project,
@@ -26606,6 +26622,11 @@ function startInjectDaemon() {
           if (!injectDaemonIdentityMatches(asked, current)) {
             return reply({ type: "mismatch", ...current, reason: "identity mismatch" });
           }
+          try {
+            conn.write(`${JSON.stringify({ type: "ack", ...current })}
+`);
+          } catch {
+          }
           let receiptId = null;
           const context = await computeInjectContext(
             String(req.prompt ?? ""),
@@ -26616,11 +26637,17 @@ function startInjectDaemon() {
               onPreparedReceipt: (id) => {
                 receiptId = id;
               },
+              // The receipt may not outlive the delivery it accounts for. If the
+              // hook has fallen back by the time the bundle is ready, the whole
+              // transaction rolls back and the fallback gets a clean run instead
+              // of a `prepared` receipt and a fully deduped bundle.
+              deliverable: () => conn.destroyed || conn.writableEnded ? "the hook disconnected before the context was ready" : null,
               daemon: { version: current.version, buildId: current.buildId, pid: current.pid }
             }
           );
           reply({ type: "ok", ...current, ok: true, context, receiptId });
-        } catch {
+        } catch (error2) {
+          note(`request failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
           try {
             conn.end(`${JSON.stringify({ type: "error", ok: false })}
 `);

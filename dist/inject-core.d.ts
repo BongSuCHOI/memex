@@ -21,6 +21,19 @@ export interface InjectOptions {
     /** Receives the exact prepared receipt only after its transaction commits. */
     onPreparedReceipt?: (id: string) => void;
     /**
+     * Last gate before the bundle transaction: return a reason and NOTHING is
+     * written — no prepared receipt, no fact residency, no gate state, no cursor.
+     *
+     * Issue #89. The transaction accounts for a delivery that happens afterwards
+     * over a transport which may already be gone: the daemon computed for 74s
+     * while the hook gave up at 3s, committed a `prepared` receipt nobody could
+     * ever mark emitted (#44's provenance failure), and left the in-process
+     * fallback to find every fact already resident, dedup them all, and emit
+     * nothing. Called INSIDE the transaction, so there is no window between the
+     * check and the commit.
+     */
+    deliverable?: () => string | null;
+    /**
      * Issue #84: daemon attribution for this run's log line — the answering
      * daemon's identity on the fast path, or the identity mismatch that sent the
      * hook in-process. Recorded on whichever line this call writes, so the

@@ -27,7 +27,38 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const SOCKET_CONNECT_TIMEOUT_MS = 300;
-const SOCKET_RESPONSE_TIMEOUT_MS = 3000;
+/**
+ * Connect + handshake ONLY (issue #89 split it out of the old response budget).
+ *
+ * Everything this window has to cover is local and cheap: a unix-socket connect
+ * and the daemon's `ack`, which it writes after comparing five identity fields
+ * and before any computation. Nothing listening, a stale socket file, a squatter
+ * or a pre-0.6.4 daemon all resolve inside it, so a prompt never waits longer
+ * than this to learn that it must compute in-process.
+ */
+const SOCKET_HANDSHAKE_TIMEOUT_MS = 3000;
+/**
+ * Post-ack compute budget — the effective limit, read rather than invented.
+ *
+ * The plugin declares NO timeout for UserPromptSubmit (`LIFECYCLE_COMMANDS` in
+ * src/lifecycle.ts, and hooks.json alongside it), and nothing in this script
+ * caps the in-process fallback either: a 69.8s fallback run completed and logged
+ * on the observed data root. The host's own hook timeout is therefore the only
+ * ceiling on the slow path, and it is not ours to read.
+ *
+ * The one limit the plugin does own is the daemon's per-connection budget
+ * (`INJECT_DAEMON_REQUEST_TIMEOUT_MS`, 10s, src/inject-daemon.ts) — waiting
+ * longer than that means waiting on a connection the daemon has already
+ * destroyed — so the two sides share that number instead of each inventing one.
+ * It bites only while a daemon's embedding model is still loading (~1.1s) or a
+ * request is queued behind that load; a warm answer is ~150ms. That is exactly
+ * the case the old 3s window turned into a 70s in-process run plus a dangling
+ * `prepared` receipt. `MEMEX_INJECT_COMPUTE_TIMEOUT_MS` shortens it for tests.
+ */
+const SOCKET_COMPUTE_TIMEOUT_MS = (() => {
+  const override = Number(process.env.MEMEX_INJECT_COMPUTE_TIMEOUT_MS);
+  return Number.isFinite(override) && override >= 20 ? override : 10_000;
+})();
 /** Must equal INJECT_DAEMON_PROTOCOL in src/inject-daemon.ts. */
 const INJECT_DAEMON_PROTOCOL = 1;
 
@@ -221,6 +252,23 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fal
   }
 }
 /**
+ * Why the fast path could not be used. One of these lands in the log line as
+ * `daemon.reason`, so the set is the vocabulary an operator reads (issue #89 —
+ * "no daemon" and "the daemon is slow" used to be the same `response timeout`).
+ *
+ * `absent`  — ENOENT: no socket file. The ordinary cold state.
+ * `refused` — ECONNREFUSED: a socket file whose owner has exited. A live MCP
+ *             server should be re-acquiring it; `memex doctor` says which.
+ * Both resolve in microseconds and fall back immediately.
+ */
+function connectRefusal(error) {
+  const code = error && error.code ? error.code : "unknown";
+  if (code === "ENOENT") return "absent";
+  if (code === "ECONNREFUSED") return "refused";
+  return `socket error ${code}`;
+}
+
+/**
  * Ask the warm daemon. Never rejects: every failure resolves to a refusal so the
  * caller falls back — the hook must never break a user prompt.
  *
@@ -229,37 +277,112 @@ async function markRecallEmitted(sessionId, prompt, receiptId = null, via = "fal
  * identity mismatch, a pre-0.6.3 daemon that cannot handshake, a foreign
  * listener, a timeout — is refused here, with the reason and the owner's
  * reported identity so the log can name the build that was holding the socket.
- * Still one round trip, so the 3s response budget is unchanged.
  *
- * Returns `{served}` on success, or `{refused: {reason, got}}`; `null` means
- * nothing was listening at all (the ordinary cold-start state, not a conflict).
+ * Issue #89: the exchange is now two messages, not one. The daemon writes
+ * `{type:"ack", …identity}` the moment the handshake passes and before it
+ * computes, which splits one ambiguous budget into two honest ones — 3s to
+ * connect and be acknowledged, then the daemon's own per-request budget for the
+ * compute. A single 3s window made a cold daemon (embedding model still loading)
+ * indistinguishable from a dead socket, so the hook fell back while the daemon
+ * carried on for 74s and committed a receipt nobody could emit.
+ *
+ * Returns `{served}` on success, or `{refused: {reason, got}}`.
  */
 function askDaemon(prompt, cwd, sessionId, identity) {
   return new Promise((resolve) => {
     let settled = false;
+    let acked = false;
+    const timers = new Set();
+    const arm = (ms, fn) => {
+      const timer = setTimeout(fn, ms);
+      timers.add(timer);
+      return timer;
+    };
     const done = (v) => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
+      if (settled) return;
+      settled = true;
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      resolve(v);
     };
     const refuse = (reason, got = null) => done({ refused: { reason, got } });
+    const giveUp = (reason, got = null) => {
+      if (settled) return;
+      try {
+        conn.destroy();
+      } catch {
+        /* already gone */
+      }
+      refuse(reason, got);
+    };
+    /** The five identity fields a reply must carry back, verbatim. */
+    const echoesIdentity = (res) =>
+      ["protocol", "version", "buildId", "pluginRoot", "dbPath"].every(
+        (field) => res[field] === identity[field],
+      );
+
     let conn;
     try {
       conn = net.connect(injectSocketPath());
-    } catch {
-      return done(null);
+    } catch (error) {
+      return refuse(connectRefusal(error));
     }
-    const connectTimer = setTimeout(() => {
-      conn.destroy();
-      refuse("connect timeout");
-    }, SOCKET_CONNECT_TIMEOUT_MS);
+    const connectTimer = arm(SOCKET_CONNECT_TIMEOUT_MS, () => giveUp("connect timeout"));
+    // One deadline over connect AND handshake: the ack ends it, nothing else.
+    arm(SOCKET_HANDSHAKE_TIMEOUT_MS, () => giveUp("handshake timeout"));
+
+    /** Returns true once the exchange is settled. */
+    const handle = (res) => {
+      if (res && res.type === "ack") {
+        // An ack is not a free pass: the socket path is predictable and any
+        // same-user process can squat it, so a daemon that claims the handshake
+        // passed must still prove it is the build we asked for — before we hand
+        // it the rest of the budget.
+        if (!echoesIdentity(res)) {
+          giveUp("identity mismatch", reportedIdentity(res));
+          return true;
+        }
+        acked = true;
+        for (const timer of timers) clearTimeout(timer);
+        timers.clear();
+        arm(SOCKET_COMPUTE_TIMEOUT_MS, () => giveUp("compute timeout", reportedIdentity(res)));
+        return false; // the context is still coming
+      }
+      if (res && res.type === "ok") {
+        // The reply must carry back the identity we asked for. Saying `ok` is
+        // not proof of anything either, for the same reason as the ack.
+        if (!echoesIdentity(res)) {
+          giveUp("ok reply carried a different identity", reportedIdentity(res));
+          return true;
+        }
+        try {
+          conn.destroy();
+        } catch {
+          /* already gone */
+        }
+        done({
+          served: {
+            context: String(res.context ?? ""),
+            receiptId: res.receiptId ? String(res.receiptId) : null,
+            version: typeof res.version === "string" ? res.version : null,
+            buildId: typeof res.buildId === "string" ? res.buildId : null,
+            pid: typeof res.pid === "number" ? res.pid : null,
+          },
+        });
+        return true;
+      }
+      const reason =
+        res && typeof res.reason === "string"
+          ? res.reason
+          : res && res.type
+            ? `daemon replied ${String(res.type)}`
+            : "no handshake in reply (pre-0.6.3 daemon or foreign listener)";
+      giveUp(reason, reportedIdentity(res));
+      return true;
+    };
+
     conn.on("connect", () => {
       clearTimeout(connectTimer);
-      conn.setTimeout(SOCKET_RESPONSE_TIMEOUT_MS, () => {
-        conn.destroy();
-        refuse("response timeout");
-      });
       // Deliberately WITHOUT the pre-0.6.3 `session_id` field. A daemon that
       // cannot handshake can never serve this prompt — its reply is refused
       // below — so handing it the session only makes it do harm: it would run
@@ -274,53 +397,31 @@ function askDaemon(prompt, cwd, sessionId, identity) {
       let buf = "";
       conn.on("data", (c) => {
         buf += c.toString("utf8");
-        const nl = buf.indexOf("\n");
-        if (nl < 0) return;
-        let res = null;
-        try {
-          res = JSON.parse(buf.slice(0, nl));
-        } catch {
-          conn.destroy();
-          return refuse("unparseable reply");
-        }
-        conn.destroy();
-        if (res && res.type === "ok") {
-          // The reply must carry back the identity we asked for. Saying `ok` is
-          // not proof of anything: the socket path is predictable and any
-          // same-user process can squat it, so without this the handshake would
-          // gate the daemon's willingness to answer and nothing at all on the
-          // hook's willingness to inject what came back.
-          const echoed = ["protocol", "version", "buildId", "pluginRoot", "dbPath"]
-            .every((field) => res[field] === identity[field]);
-          if (!echoed) {
-            return refuse("ok reply carried a different identity", reportedIdentity(res));
+        // Two messages now arrive on this connection, and a single read can
+        // carry both, so every complete line is drained rather than the first.
+        for (;;) {
+          const nl = buf.indexOf("\n");
+          if (nl < 0) return;
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          let res = null;
+          try {
+            res = JSON.parse(line);
+          } catch {
+            return giveUp("unparseable reply");
           }
-          return done({
-            served: {
-              context: String(res.context ?? ""),
-              receiptId: res.receiptId ? String(res.receiptId) : null,
-              version: typeof res.version === "string" ? res.version : null,
-              buildId: typeof res.buildId === "string" ? res.buildId : null,
-              pid: typeof res.pid === "number" ? res.pid : null,
-            },
-          });
+          if (handle(res)) return;
         }
-        const reason =
-          res && typeof res.reason === "string"
-            ? res.reason
-            : res && res.type
-              ? `daemon replied ${String(res.type)}`
-              : "no handshake in reply (pre-0.6.3 daemon or foreign listener)";
-        refuse(reason, reportedIdentity(res));
       });
+    });
+    // A daemon that hangs up mid-compute (its own per-request budget expired, or
+    // its MCP server died) is the same outcome for this prompt as a stall.
+    conn.on("close", () => {
+      if (!settled) refuse(acked ? "compute timeout" : "handshake timeout");
     });
     conn.on("error", (error) => {
       clearTimeout(connectTimer);
-      // No socket / nobody listening is the ordinary state, not a conflict.
-      if (error && (error.code === "ENOENT" || error.code === "ECONNREFUSED")) {
-        return done(null);
-      }
-      refuse(`socket error ${error && error.code ? error.code : "unknown"}`);
+      giveUp(connectRefusal(error));
     });
   });
 }
@@ -373,8 +474,13 @@ async function main() {
   }
 
   // COLD FALLBACK — compute locally (heavy imports load only here).
-  // A refusal is carried into the log line so "a stale build answered every
-  // prompt" stops being invisible; nothing listening at all logs no daemon note.
+  //
+  // The refusal is carried into the log line so "a stale build answered every
+  // prompt" stops being invisible. Issue #89 made that unconditional: a cold
+  // start used to log no daemon note at all, which meant the state this bug
+  // actually produced — a socket file nobody listens on, every prompt paying the
+  // 70s in-process path for ever — was indistinguishable from a healthy first
+  // prompt. `reason` now names it (`absent` / `refused`).
   const daemonNote = daemonResult && daemonResult.refused
     ? {
         daemon: {

@@ -288,14 +288,19 @@ test('a matching identity is served on the fast path and attributed in the log',
   assert.ok(lines.some((line) => line.via === 'daemon' || line.status === 'receipt-failed'), JSON.stringify(lines));
 });
 
-test('nothing listening logs no daemon note at all', async (t) => {
+test('no socket file at all is logged as reason "absent"', async (t) => {
+  // Issue #89 changed this from "no daemon note at all". A cold start and "the
+  // socket has been dead for an hour and every prompt pays 70s" produced the
+  // same silence, so the state this bug actually created was invisible in the
+  // one surface `doctor` reads. ENOENT now names itself.
   const root = tempRoot(t, 'empty');
   const run = await runHook(root, { prompt: 'why did we choose SQLite?', cwd: root, session_id: 's-empty' });
   assert.equal(run.exitCode, 0, run.stderr);
   const last = readLog(root).at(-1);
   assert.ok(last, 'the fallback must still write its line');
   assert.equal(last.via, 'fallback');
-  assert.equal(last.daemon, undefined, 'a cold start is not a conflict');
+  assert.equal(last.daemon.reason, 'absent', JSON.stringify(last.daemon));
+  assert.equal(last.daemon.got, null, 'there was nobody to report an identity');
 });
 
 // ---------------------------------------------------------------------------

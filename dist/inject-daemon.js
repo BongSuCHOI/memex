@@ -507,14 +507,34 @@ export function startInjectDaemon() {
                         // No computation, no receipt, no log line: nothing happened here.
                         return reply({ type: 'mismatch', ...current, reason: 'identity mismatch' });
                     }
+                    // Issue #89: say "handshake accepted, computing" BEFORE computing.
+                    // Silence on this socket used to mean two different things the hook
+                    // could not tell apart — nobody home, or your answer is on its way —
+                    // and it guessed wrong on every cold daemon: it gave up at 3s while
+                    // the daemon took 74s (measured) to load the embedding model and then
+                    // committed a receipt nobody would ever emit. With the ack the hook
+                    // closes its 3s connect+handshake window and opens the longer compute
+                    // window, which is the same budget this connection already enforces.
+                    try {
+                        conn.write(`${JSON.stringify({ type: 'ack', ...current })}\n`);
+                    }
+                    catch { /* gone */ }
                     let receiptId = null;
                     const context = await computeInjectContext(String(req.prompt ?? ''), String(req.cwd ?? process.cwd()), 'daemon', req.sessionId ? String(req.sessionId) : undefined, {
                         onPreparedReceipt: (id) => { receiptId = id; },
+                        // The receipt may not outlive the delivery it accounts for. If the
+                        // hook has fallen back by the time the bundle is ready, the whole
+                        // transaction rolls back and the fallback gets a clean run instead
+                        // of a `prepared` receipt and a fully deduped bundle.
+                        deliverable: () => (conn.destroyed || conn.writableEnded
+                            ? 'the hook disconnected before the context was ready'
+                            : null),
                         daemon: { version: current.version, buildId: current.buildId, pid: current.pid },
                     });
                     reply({ type: 'ok', ...current, ok: true, context, receiptId });
                 }
-                catch {
+                catch (error) {
+                    note(`request failed: ${error instanceof Error ? error.message : String(error)}`);
                     try {
                         conn.end(`${JSON.stringify({ type: 'error', ok: false })}\n`);
                     }

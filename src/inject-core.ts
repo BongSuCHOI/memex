@@ -108,6 +108,15 @@ const REPEAT_ELAPSED_BUDGET_MS = 700;
 const WATCH_TTL_PROMPTS = 5;
 const TOPIC_FINGERPRINT_MAX = 64;
 
+/**
+ * The bundle transaction refused itself because its client is gone (#89).
+ *
+ * A distinct type, not a message convention: it has to be separable from a real
+ * failure inside the same transaction (a fact whose generation moved, a scope
+ * change) so the log can call one `abandoned` and the other `error`.
+ */
+class UndeliverableInjection extends Error {}
+
 export interface InjectOptions {
   /** Disable the cheap gate (calibration baseline only). */
   gate?: boolean;
@@ -115,6 +124,19 @@ export interface InjectOptions {
   now?: string;
   /** Receives the exact prepared receipt only after its transaction commits. */
   onPreparedReceipt?: (id: string) => void;
+  /**
+   * Last gate before the bundle transaction: return a reason and NOTHING is
+   * written — no prepared receipt, no fact residency, no gate state, no cursor.
+   *
+   * Issue #89. The transaction accounts for a delivery that happens afterwards
+   * over a transport which may already be gone: the daemon computed for 74s
+   * while the hook gave up at 3s, committed a `prepared` receipt nobody could
+   * ever mark emitted (#44's provenance failure), and left the in-process
+   * fallback to find every fact already resident, dedup them all, and emit
+   * nothing. Called INSIDE the transaction, so there is no window between the
+   * check and the commit.
+   */
+  deliverable?: () => string | null;
   /**
    * Issue #84: daemon attribution for this run's log line — the answering
    * daemon's identity on the fast path, or the identity mismatch that sent the
@@ -769,6 +791,8 @@ export async function computeInjectContext(
     const injectedIds = [...new Set(emittedRevisions.map(([id]) => id))];
     let preparedReceiptId: string | null = null;
     const commitBundle = () => {
+      const undeliverable = options.deliverable?.();
+      if (undeliverable) throw new UndeliverableInjection(undeliverable);
       if (canQuery(db)) {
         const emittedRaw = rendered.sections.find(section => section.kind === "RAW EVIDENCE")?.emitted.length ?? 0;
         for (const evidence of rawEvidence.slice(0, emittedRaw)) {
@@ -888,6 +912,21 @@ export async function computeInjectContext(
     return block;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof UndeliverableInjection) {
+      // Rolled back on purpose: a client that is gone must not leave durable
+      // state behind. `abandoned`, not `error`, so `doctor` does not report a
+      // correct refusal as a broken injection path.
+      appendInjectLog({
+        status: "abandoned",
+        project,
+        prompt_len: userPrompt.length,
+        duration_ms: Date.now() - t0,
+        error: message.slice(0, 300),
+        via,
+        ...daemonNote,
+      });
+      return "";
+    }
     appendInjectLog({
       status: "error",
       project,
