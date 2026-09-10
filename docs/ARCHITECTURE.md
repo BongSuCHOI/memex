@@ -336,9 +336,16 @@ schema-invalid generation을 명시적으로 거절하며 silent path merge나 p
 
 0.6.1부터 "설치된 plugin root"를 해석하는 곳은 `src/plugin-root.ts` 하나이고, `memex doctor`의
 `dependencies` 판정과 `cli/runtime-exec.js`의 폴백 메시지, `memex deps materialize`가 같은 값을 씁니다
-(#53). 해석 순서는 `MEMEX_PLUGIN_ROOT` → `$CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest
-version>` → `codex plugin list --json`의 `installedPath` → 실행 중인 launcher의 루트입니다. cache
-후보는 `cli/memex.js`와 `.codex-plugin/plugin.json`이 **둘 다** 있는 디렉터리만 인정합니다. 예전에는
+(#53). 해석 순서는 `MEMEX_PLUGIN_ROOT` → (`probeCodex`일 때) `codex plugin list --json`의 `installedPath`
+→ `$CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest version>` → 실행 중인 launcher의
+루트입니다. cache 후보는 `cli/memex.js`와 `.codex-plugin/plugin.json`이 **둘 다** 있는 디렉터리만
+인정합니다. 0.6.3(#69)에서 조회와 cache 스캔의 순서가 바뀌었습니다: cache 스캔은 "실행 중인 복사본의
+버전과 가장 잘 맞는 cache 디렉터리"를 답하므로 cache에 버전이 하나일 때만 "Codex가 적재한 plugin"과
+같은 답입니다. 둘 이상이면 적재되지 않은 root를 가리킬 수 있어 진단 오보와 엉뚱한 `deps materialize`로
+이어졌습니다. 그래서 spawn을 허용한 호출자(`doctor`, `deps materialize`)는 권위 있는 조회를 먼저 하고
+cache 스캔을 폴백으로 두며, `probeCodex: false`인 훅·핫패스는 여전히 파일 읽기만 합니다. 조회 결과는
+부재까지 프로세스 단위로 캐시하고 2초 타임아웃을 둡니다. cache 후보가 2개 이상인데 cache 스캔으로
+해석됐다면 `doctor`가 그 사실(`N cached versions … not a confirmed load`)을 함께 출력합니다. 예전에는
 `~/.local/bin/memex` shim의 npx cache가 설치본으로 오인되어, 실제 설치본과 다른 판정이 나왔습니다.
 `memex update`는 재설치 뒤 새 root에 의존성을 자동으로 materialize하고(`--no-materialize`면 명령만
 안내), `memex install`은 source checkout에 production closure가 없으면 preflight를 실패시키는 대신

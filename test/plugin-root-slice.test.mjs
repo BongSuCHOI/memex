@@ -70,6 +70,50 @@ function withoutPluginRootEnv(t) {
   });
 }
 
+/** One more materialized installation in the same temp `$CODEX_HOME`. */
+function installVersion(f, version) {
+  const root = path.join(f.codexHome, 'plugins', 'cache', 'memex', 'memex', version);
+  fs.mkdirSync(path.join(root, '.codex-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'cli'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, '.codex-plugin', 'plugin.json'),
+    JSON.stringify({ version, name: 'memex' }),
+  );
+  fs.writeFileSync(path.join(root, 'cli', 'memex.js'), '#!/usr/bin/env node\n');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'memex', version }));
+  for (const dependency of RUNTIME_DEPS) {
+    const dir = path.join(root, 'node_modules', dependency);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: dependency }));
+  }
+  return root;
+}
+
+/**
+ * Put a `codex` of our own first on `PATH`.
+ *
+ * Issue #69 made `codex plugin list --json` the FIRST step of a probing
+ * resolution, so a real `codex` on the developer's PATH would otherwise decide
+ * these tests. `stdout === null` stubs a host with no usable Codex (exit 1); a
+ * string is printed verbatim as the command's JSON. The resolver memoizes the
+ * probe per `PATH` + `$CODEX_HOME`, and each fixture has its own temp bin
+ * directory, so no test reads another's answer.
+ */
+function stubCodex(t, f, stdout = null) {
+  const bin = fs.mkdtempSync(path.join(f.tmp, 'bin-'));
+  const script = stdout === null
+    ? '#!/bin/sh\nexit 1\n'
+    : `#!/bin/sh\ncat <<'JSON'\n${stdout}\nJSON\n`;
+  fs.writeFileSync(path.join(bin, 'codex'), script, { mode: 0o755 });
+  const previous = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previous ?? ''}`;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+  });
+  return bin;
+}
+
 test('the npx shim root and the plugin root resolve to the same installed root', (t) => {
   const f = fixture(t);
   withoutPluginRootEnv(t);
@@ -137,6 +181,9 @@ test('doctor judges the installed plugin root, not the copy that is running', as
   const memexHome = path.join(f.tmp, 'memex-home');
   fs.mkdirSync(memexHome, { recursive: true });
   fs.rmSync(path.join(f.installed, 'node_modules'), { recursive: true, force: true });
+  // #69: doctor probes `codex plugin list --json` first now, so the host's real
+  // Codex must not get to answer for this fixture.
+  stubCodex(t, f, null);
 
   const previous = {
     plugin: process.env.MEMEX_PLUGIN_ROOT,
@@ -167,9 +214,118 @@ test('doctor judges the installed plugin root, not the copy that is running', as
   assert.match(dependencies.detail, /run: memex install/);
 });
 
+/**
+ * Issue #69 — the cache scan answers the wrong question once the cache holds
+ * more than one version.
+ *
+ * `fromCodexCache` picks the directory matching the RUNNING copy's version (and
+ * otherwise the highest), which is only the same as "the plugin Codex loaded"
+ * while there is exactly one. With two, a probing caller used to stop at that
+ * guess and never ask the authority: doctor could name a root Codex is not
+ * using, and `deps materialize` would install into it.
+ */
+test('codex plugin list --json decides the root over two cached versions (#69)', (t) => {
+  const f = fixture(t);
+  withoutPluginRootEnv(t);
+  const old = installVersion(f, '0.5.2');
+  const current = installVersion(f, '0.6.1');
+  // Codex says it loaded 0.6.1; the copy that is running is the OLD one, so the
+  // cache scan's version-match would have chosen 0.5.2.
+  stubCodex(t, f, JSON.stringify({
+    installed: [{ name: 'memex', version: '0.6.1', installedPath: current }],
+  }));
+
+  const resolved = resolveInstalledPluginRoot({
+    fallbackRoot: old,
+    codexHome: f.codexHome,
+    probeCodex: true,
+  });
+  assert.equal(resolved.source, 'codex-plugin-list');
+  assert.equal(resolved.root, current);
+  assert.equal(resolved.version, '0.6.1');
+  assert.ok(resolved.cacheVersions.length >= 2, resolved.cacheVersions.join(','));
+
+  // Without permission to spawn, the cache scan still answers — and, keyed on
+  // the running copy, it answers 0.5.2. That is the behaviour hooks rely on.
+  const hot = resolveInstalledPluginRoot({ fallbackRoot: old, codexHome: f.codexHome });
+  assert.equal(hot.source, 'codex-cache');
+  assert.equal(hot.root, old);
+});
+
+test('a single cached version still resolves via the cache when codex cannot answer (#69)', (t) => {
+  const f = fixture(t);
+  withoutPluginRootEnv(t);
+  stubCodex(t, f, null);
+
+  const resolved = resolveInstalledPluginRoot({
+    fallbackRoot: f.npxRoot,
+    codexHome: f.codexHome,
+    probeCodex: true,
+  });
+  assert.equal(resolved.source, 'codex-cache');
+  assert.equal(resolved.root, f.installed);
+  assert.deepEqual(resolved.cacheVersions, [VERSION]);
+});
+
+test('a malformed or empty plugin list falls through to the cache (#69)', (t) => {
+  const f = fixture(t);
+  withoutPluginRootEnv(t);
+  stubCodex(t, f, 'not json at all');
+  assert.equal(
+    resolveInstalledPluginRoot({
+      fallbackRoot: f.npxRoot, codexHome: f.codexHome, probeCodex: true,
+    }).root,
+    f.installed,
+  );
+
+  const other = fixture(t);
+  stubCodex(t, other, JSON.stringify({ installed: [{ name: 'other-plugin', installedPath: '/nope' }] }));
+  assert.equal(
+    resolveInstalledPluginRoot({
+      fallbackRoot: other.npxRoot, codexHome: other.codexHome, probeCodex: true,
+    }).root,
+    other.installed,
+  );
+});
+
+test('doctor reports an ambiguous cache pick instead of presenting it as loaded (#69)', async (t) => {
+  const f = fixture(t);
+  const memexHome = path.join(f.tmp, 'memex-home-ambiguous');
+  fs.mkdirSync(memexHome, { recursive: true });
+  installVersion(f, '0.5.2');
+  stubCodex(t, f, null);
+
+  const previous = {
+    plugin: process.env.MEMEX_PLUGIN_ROOT,
+    codex: process.env.CODEX_HOME,
+    home: process.env.MEMEX_HOME,
+  };
+  delete process.env.MEMEX_PLUGIN_ROOT;
+  process.env.CODEX_HOME = f.codexHome;
+  process.env.MEMEX_HOME = memexHome;
+  t.after(() => {
+    for (const [key, value] of [
+      ['MEMEX_PLUGIN_ROOT', previous.plugin],
+      ['CODEX_HOME', previous.codex],
+      ['MEMEX_HOME', previous.home],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  const { doctor } = await import(path.join(REPO, 'dist/lifecycle.js'));
+  const dependencies = doctor().json.find((check) => check.name === 'dependencies');
+  assert.match(dependencies.detail, /via codex-cache/);
+  assert.match(dependencies.detail, /2 cached versions \(9\.9\.9, 0\.5\.2\)/);
+  assert.match(dependencies.detail, /not a confirmed load/);
+});
+
 test('memex deps materialize --dry-run names the resolved root and changes nothing', (t) => {
   const f = fixture(t);
   fs.rmSync(path.join(f.installed, 'node_modules'), { recursive: true, force: true });
+  // #69: `deps materialize` probes too, so the child process gets our `codex`.
+  stubCodex(t, f, null);
   const env = { ...process.env, CODEX_HOME: f.codexHome };
   delete env.MEMEX_PLUGIN_ROOT;
   const result = spawnSync(

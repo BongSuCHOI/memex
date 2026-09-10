@@ -606,8 +606,16 @@ export function doctor() {
             return false;
         }
     });
+    // Issue #69: say when the root came from the cache scan while the cache held
+    // more than one version — that pick is keyed on the running copy's version,
+    // not on what Codex loaded, so the operator has to see the ambiguity.
+    const ambiguousCache = installed.source === "codex-cache" && installed.cacheVersions.length > 1
+        ? `, ${installed.cacheVersions.length} cached versions (${installed.cacheVersions.join(", ")})` +
+            " — codex plugin list --json did not answer, so this root is the closest match, not a confirmed load"
+        : "";
     const rootNote = `installed plugin root ${dependencyRoot} (via ${installed.source}` +
         (installed.version ? `, version ${installed.version}` : "") +
+        ambiguousCache +
         ")";
     checks.push({
         name: "dependencies",

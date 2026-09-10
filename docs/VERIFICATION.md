@@ -85,6 +85,7 @@ node scripts/web-ui-browser-e2e.mjs
 | 주입 관측 0.6.0 | `injected`/`context-only` 구분, `receipt-failed`, `baseline_margin_gap`, `lexical_lane_unavailable`, doctor 판정 |
 | 크로스디바이스 스위치 0.6.1 | 기본 off, 공유 폴더 해석 순서, 원자적 세대 publish, 변경 없을 때 export 생략, off일 때 두 훅의 no-op, `doctor`의 `skipped(off)`→warn→ok |
 | 설치본 해석 0.6.1 | `MEMEX_PLUGIN_ROOT`→codex cache→`codex plugin list --json`→launcher 순서를 `doctor`·`deps materialize`·`runtime-exec`가 공유 |
+| 설치본 해석 0.6.3 (#69) | `probeCodex`일 때 `codex plugin list --json`이 cache 스캔보다 먼저, cache 버전 2개 중 조회가 가리킨 쪽 채택, 조회 불가·비정상 출력이면 cache 폴백, `probeCodex: false`는 spawn 없음, 모호한 cache 선택의 `doctor` 표시 (`test/plugin-root-slice.test.mjs`) |
 | Ontology 0.6.1 | parked 상태와 세대당 1회 재시도, `classified` 제외, 대소문자 UNIQUE와 중복 병합 마이그레이션, `ontology list\|merge\|rename`, index repair 상태의 status/doctor 노출 |
 | 유지보수 계보·기아 0.6.1 | wave 계보의 컬럼화와 기존 중첩 id 정규화, derived lane 연속 skip 카운터와 3회 뒤 강제 통과 |
 | 근거 영수증 0.6.1 | `backfill receipts`의 재구성 범위, `recordLocalMeaningEvidence` 실패 보고, sync-import의 `peer-authority` 강등 |

@@ -517,10 +517,16 @@ marker가 있을 때만 추가되어 최대 12개입니다. 하나라도 `FAIL`�
 
 ```text
 MEMEX_PLUGIN_ROOT
+→ codex plugin list --json 의 installedPath   (doctor/deps materialize처럼 spawn을 허용할 때만)
 → $CODEX_HOME/plugins/cache/<marketplace>/memex/<manifest version>
-→ codex plugin list --json 의 installedPath
 → 실행 중인 launcher의 루트
 ```
+
+0.6.3부터 조회가 cache 스캔보다 먼저입니다(#69). cache 스캔은 실행 중인 복사본의 버전에 맞추는
+추정이므로 cache에 버전이 2개 이상이면 적재되지 않은 root를 고를 수 있습니다. `codex`가 답하지 못하면
+cache 스캔으로 내려가고, 그때 후보가 2개 이상이면 `dependencies` 판정이
+`2 cached versions (…) — not a confirmed load`를 함께 적어 추정임을 밝힙니다. 훅과 핫패스는
+`probeCodex: false`라 프로세스를 띄우지 않습니다.
 
 `~/.local/bin/memex` shim은 `npx --package=github:BongSuCHOI/memex#main`이라 CLI가 npx cache에서
 실행됩니다. 예전에는 그 npx cache를 "설치된 plugin root"로 착각해 실제 설치본과 다른 판정을 냈습니다.
