@@ -733,7 +733,7 @@ export async function resetOverlay(overlay, opts) {
             expectedRevision: opts.expectedRevision,
             probe: false,
             auditAction: "rules.reset",
-            validator: undefined,
+            validator: opts.validator,
         });
     }
     if (opts.intent) {

@@ -10119,10 +10119,6 @@ function readQuarantine() {
   for (const [key, entry] of memoryQuarantine) merged.set(key, entry);
   return [...merged.values()];
 }
-function isQuarantinedPattern(entries, patternId, source, flags) {
-  const sha82 = patternSourceSha8(source, flags ?? "");
-  return entries.some((entry) => entry.pattern_id === patternId && entry.source_sha8 === sha82);
-}
 function writeQuarantineAtomic(entries) {
   const target = overlayQuarantinePath();
   const body = `${JSON.stringify(
@@ -27675,20 +27671,20 @@ function readValidateCompile(file) {
   const patterns = [];
   const quarantined = [];
   for (const pattern of doc.patterns?.add ?? []) {
-    if (isQuarantinedPattern(quarantine, pattern.id, pattern.source, pattern.flags)) {
+    const sha82 = patternSourceSha8(pattern.source, pattern.flags ?? "");
+    const row = quarantine.find(
+      (entry) => entry.pattern_id === pattern.id && entry.source_sha8 === sha82
+    );
+    if (row) {
       issues.push(
         overlayIssue(
           "error",
           "PATTERN_QUARANTINED",
-          `pattern ${pattern.id} exceeded the ${50} ms match budget and is NOT applied`,
-          { path: `patterns.add`, params: { id: pattern.id } }
+          `pattern ${pattern.id} exceeded the ${MATCH_WALL_MS} ms match budget and is NOT applied`,
+          { path: "patterns.add", params: { id: pattern.id, limitMs: MATCH_WALL_MS } }
         )
       );
-      quarantined.push(
-        quarantine.find(
-          (entry) => entry.pattern_id === pattern.id
-        )
-      );
+      quarantined.push(row);
       continue;
     }
     patterns.push({

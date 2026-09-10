@@ -194,7 +194,9 @@ export declare function resetOverlay(overlay: OverlayName, opts: {
     surface: Surface;
     intent?: GateIntent;
     expectedRevision?: number;
+    /** The extraction-rules overlay's "nothing applied" document — lane C owns it. */
     emptyDoc?: unknown;
+    validator?: OverlayValidator;
 }): Promise<WriteResult>;
 export declare function rollbackOverlay(overlay: OverlayName, revision: number, opts: {
     surface: Surface;

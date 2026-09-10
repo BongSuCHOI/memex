@@ -190,6 +190,26 @@ describe("reset", () => {
     expect(loadRecallGateOverlay().patterns).toHaveLength(1);
   });
 
+  it("resets the extraction-rules overlay with the validator its lane owns", async () => {
+    // overlay-admin.ts has no idea what a valid extraction-rules document is —
+    // lane C owns that. The reset path has to carry the validator through, or it
+    // throws "pass it as opts.validator" on a document it was handed.
+    await writeRules({ exclude_topics: ["급여"] });
+    const reset = await resetOverlay("extraction-rules", {
+      surface: "cli",
+      emptyDoc: { schema: "memex.extraction-rules-overlay", version: 1, exclude_topics: [] },
+      validator: rulesValidator,
+    });
+    expect(reset.revision).toBe(2);
+    const written = JSON.parse(fs.readFileSync(path.join(root, "overlays", "extraction-rules.json"), "utf8"));
+    expect(written.exclude_topics).toEqual([]);
+    expect(listOverlayHistory("extraction-rules")[0].action).toBe("rules.reset");
+  });
+
+  it("refuses an extraction-rules reset with no empty document to write", async () => {
+    await expect(resetOverlay("extraction-rules", { surface: "cli" })).rejects.toThrow(/emptyDoc/);
+  });
+
   it("scoped to one intent, leaves the other intents alone", async () => {
     await addGatePattern({ intent: "memory", source: "배포" }, { surface: "cli", probe: false });
     await addGatePattern({ intent: "trace", source: "추적" }, { surface: "cli", probe: false });

@@ -858,7 +858,14 @@ export async function setGateWords(
  */
 export async function resetOverlay(
   overlay: OverlayName,
-  opts: { surface: Surface; intent?: GateIntent; expectedRevision?: number; emptyDoc?: unknown },
+  opts: {
+    surface: Surface;
+    intent?: GateIntent;
+    expectedRevision?: number;
+    /** The extraction-rules overlay's "nothing applied" document — lane C owns it. */
+    emptyDoc?: unknown;
+    validator?: OverlayValidator;
+  },
 ): Promise<WriteResult> {
   if (overlay === "extraction-rules") {
     if (opts.emptyDoc === undefined) {
@@ -869,7 +876,7 @@ export async function resetOverlay(
       expectedRevision: opts.expectedRevision,
       probe: false,
       auditAction: "rules.reset",
-      validator: undefined,
+      validator: opts.validator,
     });
   }
   if (opts.intent) {
