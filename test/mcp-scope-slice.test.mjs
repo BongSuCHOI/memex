@@ -3,6 +3,10 @@
 // structured validation error naming the required field; (2) a project call
 // never sees another project's facts; (3) explicit scope:"global" returns
 // global facts only; (4) no tool resolves to process.cwd() (= plugin root).
+// Issue #92: pin the model cache before anything can load the model — this
+// suite isolates TEST_DB_PATH but not MEMEX_HOME, so the real data root would
+// otherwise collect 129 MB of weights.
+import './model-cache-pin.mjs';
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

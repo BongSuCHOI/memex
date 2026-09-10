@@ -2,6 +2,10 @@
 // AC-FACT-05: edit creates revision + fresh embedding consistently;
 // deactivate removes from vector index; restore recovers it; hard delete is
 // exact-ID + confirm gated; failures produce zero partial mutations.
+// Issue #92: pin the model cache before anything can load the model — this
+// suite isolates TEST_DB_PATH but not MEMEX_HOME, so the real data root would
+// otherwise collect 129 MB of weights.
+import './model-cache-pin.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
