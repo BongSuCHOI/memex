@@ -538,6 +538,52 @@ test('a live lock held by another starter stops the bind, and a dead one is repl
   assert.ok(!fs.existsSync(lockPath), 'a stale lock is released after the attempt');
 });
 
+test('a lock with no readable holder is not deleted on sight, and does not shut the fast path for good', async (t) => {
+  const root = tempRoot(t, 'lockwin');
+  const lockPath = path.join(root, 'conversation-index', 'inject-daemon.lock');
+  // Issue #102. `writeFileSync(path, data, {flag:'wx'})` is an
+  // `open(O_CREAT|O_EXCL)` followed by a separate `write()`, so a LIVE holder's
+  // lock is visible — and empty — between the two syscalls. Scheduling those
+  // microseconds is not a test; the observable state that window exposes is, and
+  // it is just an empty lock file. 0.6.5 parsed nothing there, took `pid = -1`
+  // (`pidAlive(-1) === false`), deleted the lock and bound anyway, which put two
+  // starters inside the section the lock exists to serialize.
+  fs.writeFileSync(lockPath, '');
+  // The non-socket file is what drives the starter into the LOCKED reclaim cycle
+  // at all: the first `listen()` answers EADDRINUSE.
+  fs.writeFileSync(socketIn(root), 'not a socket');
+  const code = `
+    import fs from 'node:fs';
+    import { startInjectDaemon, injectDaemonLockPath } from './dist/inject-daemon.js';
+    const server = startInjectDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    console.error('bound=' + Boolean(server && server.listening));
+    console.error('lock=' + (fs.existsSync(injectDaemonLockPath()) ? 'kept' : 'deleted'));
+    process.exit(0);
+  `;
+  const env = {
+    MEMEX_HOME: root,
+    TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+    MEMEX_INJECT_DAEMON: '1',
+  };
+
+  // One look only — the re-probe timer is pushed past the life of the child.
+  const first = await runModule(code, { ...env, MEMEX_INJECT_DAEMON_REACQUIRE_MS: '600000' });
+  assert.equal(first.exitCode, 0, first.stderr);
+  assert.match(first.stderr, /no readable holder yet — presuming a starter mid-write/);
+  assert.match(first.stderr, /bound=false/);
+  assert.match(first.stderr, /lock=kept/);
+  assert.ok(fs.existsSync(lockPath), 'the lock this starter could not attribute must survive');
+
+  // …and the patience is bounded: a lock still byte-for-byte unreadable on the
+  // next cycle had no writer behind it, so the fast path opens rather than
+  // staying shut for the life of the host.
+  const again = await runModule(code, { ...env, MEMEX_INJECT_DAEMON_REACQUIRE_MS: '300' });
+  assert.equal(again.exitCode, 0, again.stderr);
+  assert.match(again.stderr, /still unreadable on a second look/);
+  assert.match(again.stderr, /bound=true/);
+});
+
 test('the real daemon and the real hook agree on the handshake', async (t) => {
   const root = tempRoot(t, 'e2e');
   // The identity is computed twice from two files — src/inject-daemon.ts and
@@ -704,6 +750,114 @@ test('a retire request from a root that is not the installed one is refused', as
   assert.match(result.stderr, /foreign="refused":"caller is not the installed plugin root"/);
   assert.match(result.stderr, /same="duplicate"/);
   assert.match(result.stderr, /identity="identity":true/);
+});
+
+test('a retire nobody follows up on is a yield: the owner comes back and serves again', async (t) => {
+  const root = tempRoot(t, 'yield');
+  // Issue #99. `retire` is decided on the caller's SELF-REPORTED `pluginRoot`,
+  // which is fine under this module's threat model (socket mode 600, same-user
+  // only: such a process could simply unlink the socket). What was not fine is
+  // that 0.6.5 made the yield permanent — `retired = true` also disarmed the
+  // re-probe — so the owner never came back and a caller whose own `bind()` then
+  // failed left the session with no warm daemon at all. The forged request below
+  // pins BOTH halves: the handover is still granted on the claim alone, and the
+  // claim no longer costs the session its fast path.
+  const code = `
+    import net from 'node:net';
+    import { startInjectDaemon, injectSocketPath, injectDaemonIdentity, injectDaemonPolicy } from './dist/inject-daemon.js';
+    const ask = (request) => new Promise((resolve) => {
+      const conn = net.connect(injectSocketPath());
+      let buf = '';
+      const finish = (value) => { try { conn.destroy(); } catch {} resolve(value); };
+      setTimeout(() => finish(null), 2000);
+      conn.on('connect', () => conn.write(JSON.stringify(request) + '\\n'));
+      conn.on('data', (c) => {
+        buf += String(c);
+        const nl = buf.indexOf('\\n');
+        if (nl < 0) return;
+        try { finish(JSON.parse(buf.slice(0, nl))); } catch { finish(null); }
+      });
+      conn.on('error', () => finish(null));
+    });
+    const server = startInjectDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (!server || !server.listening) { console.error('listener did not open'); process.exit(2); }
+    // Claims the installed root (a fixed, public path) and differs in exactly one
+    // field, which is all it takes to miss the \`duplicate\` check.
+    const forged = {
+      ...injectDaemonIdentity(), pluginRoot: injectDaemonPolicy().installedRoot,
+      buildId: 'sha256:' + '0'.repeat(64), pid: 999999, instanceId: 'forged', startedAt: 'now',
+    };
+    console.error('retire=' + String((await ask({ type: 'retire', protocol: 1, from: forged }) || {}).type));
+    console.error('closed=' + !server.listening);
+    // The forger never binds. One re-acquire interval later the owner must be back.
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const back = await ask({ type: 'identify', protocol: 1 });
+    console.error('back=' + Boolean(back && back.type === 'identity' && back.pid === process.pid));
+    process.exit(0);
+  `;
+  const result = await runModule(code, {
+    MEMEX_HOME: root,
+    TEST_DB_PATH: path.join(root, 'conversation-index', 'db.sqlite'),
+    MEMEX_INJECT_DAEMON: '1',
+    MEMEX_INJECT_DAEMON_REACQUIRE_MS: '300',
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stderr, /retire=retired/);
+  assert.match(result.stderr, /closed=true/, 'a granted retire still releases the socket at once');
+  assert.match(result.stderr, /never bound — re-entering the race/);
+  assert.match(result.stderr, /back=true/, 'the owner that yielded must serve again');
+});
+
+test('a bind that cannot succeed is named in the log, the event file and doctor', async (t) => {
+  const root = tempRoot(t, 'toolong');
+  // Issue #99, the comment thread: `sockaddr_un.sun_path` is a fixed 104-byte
+  // array on macOS (108 on Linux), so a long data root alone makes bind(2) fail
+  // for every starter — and 0.6.5 dropped every errno that was not EADDRINUSE
+  // without a word, so the daemon "just never came up": no log line, no event,
+  // and a `doctor` that could only say the socket file was absent.
+  const home = path.join(root, 'x'.repeat(40), 'y'.repeat(30));
+  fs.mkdirSync(path.join(home, 'conversation-index'), { recursive: true });
+  const env = {
+    MEMEX_HOME: home,
+    TEST_DB_PATH: path.join(home, 'conversation-index', 'db.sqlite'),
+    MEMEX_PLUGIN_ROOT: REPO,
+    CODEX_HOME: path.join(root, 'codex'),
+    MEMEX_INJECT_DAEMON: '1',
+  };
+  const started = await runModule(`
+    import { startInjectDaemon, injectSocketPathTooLong } from './dist/inject-daemon.js';
+    console.error('measured=' + JSON.stringify(injectSocketPathTooLong()));
+    const server = startInjectDaemon();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    console.error('listening=' + Boolean(server && server.listening));
+    process.exit(0);
+  `, env);
+  assert.equal(started.exitCode, 0, started.stderr);
+  assert.match(started.stderr, /measured=\{"bytes":\d+,"limit":\d+\}/);
+  assert.match(started.stderr, /listening=false/);
+  // The errno itself is EINVAL on macOS and ENAMETOOLONG elsewhere, so the line
+  // has to name the CAUSE rather than echo the code.
+  assert.match(started.stderr, /could not bind .* socket path too long \(\d+ bytes; this platform allows \d+\)/);
+
+  // An MCP server's stderr is routinely discarded by its host, so the reason also
+  // has to outlive the process.
+  const events = fs.readFileSync(path.join(home, 'logs', 'hook-events.jsonl'), 'utf8')
+    .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const failure = events.find((event) => event.event === 'InjectDaemonBindFailed');
+  assert.ok(failure, JSON.stringify(events));
+  assert.match(failure.detail, /socket path too long/);
+  assert.equal(failure.session_id, '', 'a bind failure is not a session event');
+
+  // And doctor says which of the four states this is, instead of `absent`.
+  const check = JSON.parse((await runModule(`
+    const { doctor } = await import('./dist/lifecycle.js');
+    const report = await doctor();
+    console.log(JSON.stringify(report.json.find((c) => c.name === 'inject-daemon')));
+  `, env)).stdout.trim());
+  assert.equal(check.status, 'warn', check.detail);
+  assert.match(check.detail, /^socket path too long \(\d+ bytes; this platform allows \d+\)/);
+  assert.match(check.detail, /Shorten the data root/);
 });
 
 // ---------------------------------------------------------------------------
