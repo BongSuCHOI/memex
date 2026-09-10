@@ -124,8 +124,8 @@ DB를 건드리기 전에 돌아갑니다. 그 줄은 `via:"fallback"`과 함께
 "구버전이 전부 답하고 있었다"가 더 이상 보이지 않는 상태가 아닙니다(`got:null`은 정체를 밝히지 않은
 응답, 즉 0.6.3 이전 daemon이거나 남의 listener입니다). 아무도 listen하지 않는 평시 cold start는 충돌이
 아니므로 `daemon` 필드를 남기지 않습니다. 성공한 fast path 줄에는 답한 daemon의
-`daemon:{version,buildId,pid}`가 붙어 주입 한 줄이 **빌드 단위로** 귀속됩니다. 왕복은 여전히 1회라 기존
-3초 응답 예산은 그대로입니다.
+`daemon:{version,buildId,pid}`가 붙어 주입 한 줄이 **빌드 단위로** 귀속됩니다. 0.6.4부터 이 교환은
+`ack`를 포함해 2개 메시지이고 예산도 둘로 나뉩니다(아래 fast-path 상태 표).
 
 **소유권은 협조적으로** 넘깁니다. listener를 열 때 `inject-daemon.lock`을 `O_EXCL`로 잡고(죽은 pid의
 lock은 교체) 그 안에서 probe→bind를 합니다. probe는 **읽기 전용** `{type:"identify"}`이므로 진단이 남의
@@ -136,6 +136,61 @@ protocol:1, from:<identity>}`를 보냅니다. 0.6.3+ daemon은 그 caller의 `p
 listener를 닫고 자기 socket을 unlink한 뒤 `{type:"retired"}`로 답합니다(아니면 `refused`). 핸드셰이크를
 모르는 구버전 daemon은 건드리지 않습니다 — 훅이 fallback하므로 그 프로세스가 종료될 때까지도 정확성은
 유지되고, 그 상태는 로그와 `doctor`에 남습니다.
+
+### Fast-path 상태와 재획득 (0.6.4, #89)
+
+0.6.3에서는 bind하지 못한 서버가 **다시는 보지 않았습니다.** Codex는 세션/스레드마다 MCP 서버를
+띄우므로, 소유자가 종료한 순간부터 daemon이 영구 부재가 됩니다. 실측(2026-09-10, 실제 데이터 루트):
+소유자 pid 75485가 13:56에 종료했고 socket 파일만 남아 `connect → ECONNREFUSED`, 같은 루트에서 살아 있던
+pid 76963·77394는 시작 시 "duplicate"로 물러난 뒤 아무것도 하지 않았으며, 13:57 프롬프트는
+`via:"fallback", reason:"response timeout", duration_ms: 69792`였고 `doctor`는 `no daemon`(ok)로 보고했습니다.
+
+**소유자는 종료할 때 socket을 내놓습니다.** SIGTERM/SIGINT/stdin close/정상 exit에서 socket을 unlink하고
+bind lock이 아직 자기 것이면 지웁니다(idempotent, best-effort). 그래서 평범한 종료는 ENOENT(깨끗한 cold
+start)를 남기고, ECONNREFUSED는 SIGKILL/크래시에만 남습니다. signal handler는 정리 뒤 **자기 listener를
+떼고 다시 raise**합니다 — sidecar가 MCP 서버의 SIGTERM을 무력화하면 안 되기 때문입니다.
+
+**bind하지 못한 서버는 계속 지켜봅니다.** 20초 주기 타이머(`MEMEX_INJECT_DAEMON_REACQUIRE_MS`로 변경,
+테스트용)와 **자기 MCP 도구 요청마다**(2초 rate limit, await하지 않음) 재probe하고, 판단은 시작 시와
+동일합니다: 아무도 listen하지 않으면 기존 dead-socket 경로로 회수, 같은 빌드의 살아 있는 소유자는
+그대로 두고, 정체를 밝히지 않는 listener는 손대지 않고, 살아 있는 **다른** 빌드에는 기존 `retire`
+규칙을 적용합니다. 타이머는 `unref()`이므로 MCP 서버를 살려 두지 않습니다. 재probe 결과는 로그를
+남기지 않습니다(상태가 바뀔 때만). 대기 중인 서버는 `conversation-index/inject-daemon.candidates/<pid>.json`에
+자기를 표시하고 bind·retire·종료 시 지우며, `doctor`가 이 목록(살아 있는 pid만)으로 "재획득 예정"을
+판단합니다. `retire`로 물러난 서버는 다시 가져오지 않습니다 — 설치본에 넘긴 소유권을 되찾는 것은
+정책 위반입니다.
+
+**예산은 두 개입니다.** 훅은 더 이상 daemon의 침묵을 추측하지 않습니다.
+
+| 구간 | 예산 | 근거 |
+| --- | --- | --- |
+| connect | 300ms (`SOCKET_CONNECT_TIMEOUT_MS`) | 로컬 unix socket |
+| connect + handshake | 3s (`SOCKET_HANDSHAKE_TIMEOUT_MS`) | daemon은 5개 정체 필드를 비교한 직후, **계산 전에** `{type:"ack", protocol, …identity}`를 씁니다. 이 창이 커버하는 모든 일(연결, 비교, ack 1줄)은 로컬·상수시간입니다 |
+| ack 이후 계산 | 10s (`SOCKET_COMPUTE_TIMEOUT_MS` = daemon의 `INJECT_DAEMON_REQUEST_TIMEOUT_MS`. `MEMEX_INJECT_COMPUTE_TIMEOUT_MS`로 변경, 테스트용) | **새로 만든 값이 아니라 기존 실효 한계**입니다. 플러그인은 UserPromptSubmit에 timeout을 선언하지 않고(`LIFECYCLE_COMMANDS`, `hooks.json`) 훅 스크립트도 in-process fallback에 상한이 없습니다(실측 69.8초 완주). 즉 느린 경로의 유일한 천장은 **호스트의 hook timeout**이고 그 값은 플러그인이 읽을 수 없습니다. 플러그인이 실제로 소유한 한계는 daemon의 연결당 idle 예산 하나뿐이고, 그보다 오래 기다리는 것은 daemon이 **이미 destroy한** 연결을 기다리는 것이므로 양쪽이 같은 숫자를 씁니다. warm 응답은 ~150ms이니 이 예산은 embedding 모델 적재(~1.1s)나 그 뒤에 줄 선 요청에만 걸립니다 — 옛 3초 창이 70초 in-process 실행으로 바꿔 버렸던 바로 그 경우입니다 |
+
+훅이 기록하는 `daemon.reason` 어휘:
+
+| reason | 뜻 | 대기 |
+| --- | --- | --- |
+| `absent` | ENOENT — socket 파일 없음. 평시 cold start | 없음(즉시 fallback) |
+| `refused` | ECONNREFUSED — 파일은 있는데 소유자가 종료함. #89의 상태 | 없음(즉시 fallback) |
+| `handshake timeout` | 3초 안에 ack도 종료 응답도 없음 | 3s |
+| `compute timeout` | ack는 받았으나 계산 예산 안에 context가 오지 않음(또는 daemon이 중간에 끊음) | 10s |
+| `identity mismatch` | ack 또는 `mismatch` 응답의 정체 5필드가 요청과 다름. ack도 `ok`와 똑같이 증명해야 합니다 | 없음 |
+
+`absent`도 **기록합니다**(0.6.3까지는 cold start에 `daemon` 필드를 아예 남기지 않았습니다). 침묵으로는
+"첫 프롬프트"와 "한 시간째 socket이 죽어 매 프롬프트가 70초를 낸다"를 구분할 수 없었고, 그 구분이
+#89의 전부입니다.
+
+**영수증은 자기가 설명하는 전달보다 오래 살지 못합니다.** bundle 트랜잭션(prepared receipt, fact
+residency, gate 상태, hot-evidence cursor)은 `deliverable()` 게이트를 트랜잭션 **안에서** 호출하고,
+daemon은 이미 연결이 끊긴 훅을 위해 commit하지 않습니다. 롤백된 실행은 `status:"abandoned"`로 기록되며
+(`error`가 아닙니다 — 정상 거절이고 `doctor` 판정을 건드리지 않습니다) in-process fallback은
+"전부 이미 resident라 dedup, 아무것도 주입 못 함 + `prepared` 영수증 영구 잔존" 대신 깨끗한 실행을
+받습니다. 실측된 `via:daemon, duration_ms:74010`(0.6.2)이 바로 그 잔존 영수증을 만든 실행입니다.
+
+`doctor`의 `inject-daemon` 4상태(`absent`/`stale`/`hung`/`ok`·`mismatch`)는
+[GUIDE §13](GUIDE.md#13-진단)이 단일 출처입니다.
 
 정확한 경로·심볼·오류 코드가 active scoped fact에서 누락됐을 때는 검증된 사용자 원문을
 제한적으로 조회합니다. Fact 요약은 원문의 모든 식별자를 보존하는 색인이 아니므로, 누락을

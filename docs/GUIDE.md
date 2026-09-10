@@ -319,8 +319,10 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 ├── conversation-index/
 │   ├── db.sqlite                       # (+ -wal, -shm)
 │   ├── exclude.txt
-│   ├── inject-daemon.sock
+│   ├── inject-daemon.sock              # 소유자가 정상 종료하면 unlink (0.6.4)
 │   ├── inject-daemon.lock              # bind 직렬화용, 시도 후 삭제 (0.6.3)
+│   ├── inject-daemon.candidates/       # bind 못 한 서버의 재획득 대기 표식 (0.6.4)
+│   │   └── <pid>.json                  # bind·retire·종료 시 삭제
 │   ├── logs/
 │   │   └── inject-context.jsonl        # (+ .old, 5 MB에서 회전)
 │   ├── state/
@@ -344,7 +346,7 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 
 `logs/ui-audit.jsonl`은 Web UI와 코어의 변경·복구·관리 실행 감사 메타데이터이고(`memex facts promote/demote`, `memex recover`, `memex jobs retry`, `memex jobs dismiss`도 여기에 한 줄씩 남깁니다), `ui/operations.json`은 Web UI가 실행한 관리 명령의 메타데이터입니다. 둘 다 원문·출력이 아니라 메타데이터만 남깁니다. `logs/hook-events.jsonl`은 관측된 lifecycle hook의 이벤트 이름·시각만, `conversation-index/logs/inject-context.jsonl`은 retrieval 1건당 상태·건수·소요 시간만 기록합니다.
 
-`conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있습니다. `run-locks/`, `*.lock`, `inject-daemon.sock`, `inject-daemon.lock`은 실행 중 파일이며 백업 대상이 아닙니다.
+`conversation-archive/`와 `journals/`에는 실제 대화 원문이 들어 있습니다. `run-locks/`, `*.lock`, `inject-daemon.sock`, `inject-daemon.lock`, `inject-daemon.candidates/`는 실행 중 파일이며 백업 대상이 아닙니다.
 
 우선순위:
 
@@ -512,11 +514,25 @@ marker가 있을 때만 추가되어 최대 12개입니다. 하나라도 `FAIL`�
 | `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
-| `inject-daemon` (0.6.3) | fast-path socket의 소유자 정체. 아무도 listen하지 않으면 ok(`no daemon`), 소유자가 **설치본**(훅이 실행되는 루트, npx shim으로 doctor가 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아님)과 같은 빌드면 ok, 다른 빌드면 warn(소유자 version/buildId/root/db/pid/startedAt 표시), 정체를 밝히지 않거나 말을 걸 수 없으면 warn. 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록) |
+| `inject-daemon` (0.6.3, 상태 세분화 0.6.4) | fast-path socket의 상태와 소유자 정체. 아래 4상태로 보고하며 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록). 판정 기준이 되는 "같은 빌드"는 **설치본**(훅이 실행되는 루트)입니다 — npx shim 때문에 doctor 자신이 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아닙니다 |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
 | `ontology-index` (0.6.1, 조건부) | `ontology_index_repair_state`에 marker가 있을 때만 나타납니다. category vector index 수리가 `blocked`면 fail(분류가 멈춘 상태 — `memex backfill embeddings`로 벡터 재생성), 화해되었으면 ok |
 | `sync-export` | 동기화가 꺼져 있으면 `skipped(off)`로 ok(경고 아님). 켜져 있는데 export 훅이 어느 hook에도 등록되지 않았거나 한 번도 내보낸 적이 없으면 warn. 마지막 export가 실패면 fail, 성공이면 ok |
+
+`inject-daemon`의 4상태(0.6.4, #89). 0.6.3까지는 앞의 두 상태가 모두 `no daemon — …`(ok) 한 줄로
+합쳐져 있었고, 그래서 "소유자가 종료해 매 프롬프트가 70초를 내고 있다"가 "아직 아무도 안 떴다"와
+구분되지 않았습니다.
+
+| 상태 | 뜻 | 판정 |
+| --- | --- | --- |
+| `absent` | socket 파일이 없음(ENOENT) — 평시 cold start | ok. 매 프롬프트가 in-process 경로(~2.3s) |
+| `stale` | socket 파일은 있는데 아무도 listen하지 않음(ECONNREFUSED/ENOTSOCK) — 소유자가 종료함 | 살아 있는 **재획득 후보**(`inject-daemon.candidates/`)가 있으면 **ok** + 어떤 서버(pid/version/root)가 몇 ms 주기로 재probe 중인지 안내. 후보가 하나도 없으면 **warn** — 아무도 고치지 않으므로 호스트를 새로 띄우거나 재시작해야 합니다 |
+| `hung` | 연결은 되는데 3초(`INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS`) 안에 정체를 밝히지 않음 | warn. 훅은 in-process로 내려가므로 주입은 정확하지만 느립니다 |
+| `ok` / `mismatch` | 소유자가 정체를 밝힘 — 설치본과 같은 빌드면 `ok`, 다른 빌드면 `mismatch` | 같으면 ok, 다르면 warn(소유자 version/buildId/root/db/pid/startedAt 표시) |
+
+후보 목록은 **살아 있는 pid만** 셉니다. 종료된 프로세스가 남긴 표식으로 "곧 재획득됩니다"라고
+말하지 않기 위해서입니다(표식 삭제는 런타임이 하고 진단은 읽기 전용입니다).
 
 `dependencies`가 검사하는 **설치된 plugin root**는 다음 순서로 해석하며, `memex install`,
 `memex deps materialize`, `cli/runtime-exec.js`의 폴백 메시지가 모두 같은 값을 씁니다.
@@ -543,8 +559,10 @@ cache 스캔으로 내려가고, 그때 후보가 2개 이상이면 `dependencie
 
 - runtime 준비 실패 — Node/npm network, cache permission
 - MCP 시작 실패 — `runtime-exec`, isolated cache, packaged wrapper
-- injection 로그 상태 8종 — `injected`(fact ≥ 1), `context-only`(fact = 0, Capsule/assistant context만
-  발행), `no-match`, `deduped`, `skipped`, `no-session-provenance`, `receipt-failed`, `error`
+- injection 로그 상태 9종 — `injected`(fact ≥ 1), `context-only`(fact = 0, Capsule/assistant context만
+  발행), `no-match`, `deduped`, `skipped`, `no-session-provenance`, `receipt-failed`,
+  `abandoned`(0.6.4 — 번들이 준비됐지만 요청한 훅이 이미 fallback해서 트랜잭션을 **롤백**함. 오류가
+  아니라 `prepared` 영수증을 남기지 않으려는 정상 거절이며 `doctor` 판정에 영향을 주지 않습니다), `error`
 - stale socket — Memex-owned orphan socket만 정리
 - repair 실패 — 실패 file을 보고하고 non-zero 종료; 원인 수정 뒤 재실행
 
@@ -993,6 +1011,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | 런타임 의존성 없음 | `doctor`의 `dependencies: fail`, stderr `[memex] runtime deps missing at <ROOT>; installed plugin root: <설치본>; falling back to npx …` | 설치된 플러그인 루트에 `better-sqlite3` / `@xenova/transformers` / `sqlite-vec` 중 하나라도 없어 모든 hook이 `npx github:BongSuCHOI/memex#main`(고정 버전 아님)으로 폴백 | `memex deps materialize` (해석된 설치본에서 `npm install --omit=dev --no-audit --no-fund` 실행). 루트를 직접 지정하려면 `--root <path>`. `memex install`도 같은 단계를 수행합니다 |
 | 영수증 없는 컨텍스트 발행 | `doctor`의 `inject-output: fail` / `recall-provenance: fail`, `inject-context.jsonl`의 `status: "receipt-failed"` | 컨텍스트는 나갔는데 durable recall 영수증이 `prepared`에 머무름(provenance 계약 위반) | `memex doctor --json`으로 확인. DB 쓰기 가능 여부·디스크·권한을 점검. 이 상태에서는 "어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능합니다 |
 | 주입이 엉뚱한 버전으로 처리됨 | `doctor`의 `inject-daemon: warn` (`owned by a DIFFERENT build`) | 다른 호스트(개발 체크아웃, 옛 프로세스)의 MCP 서버가 fast-path socket을 쥐고 있음. 0.6.3부터 훅이 그 daemon을 거절하므로 **주입 내용은 정확하지만** 매 프롬프트가 느린 in-process 경로를 탑니다 (그 줄의 `daemon.reason`으로 확인) | 보고된 `root`/`version`으로 소유자를 확인한 뒤 그 호스트를 종료하십시오. pid는 **MCP 서버 전체**이므로 그 호스트의 Memex 도구도 함께 멈추고, pid는 재사용될 수 있으니 빌드로 확인하십시오. 0.6.3+ 소유자라면 설치본 MCP 서버가 다시 시작될 때 협조적으로 물려줍니다(`retire`) |
+| fast path가 영구 부재 (0.6.4, #89) | `doctor`의 `inject-daemon: warn` (`stale — a socket file exists but nothing listens on it … NO live MCP server is waiting to reclaim it`), 로그의 `daemon.reason: "refused"` | socket을 쥐고 있던 MCP 서버가 종료하면서 socket 파일만 남김(Codex는 세션/스레드마다 MCP 서버를 회전시킵니다). 0.6.4부터 bind하지 못한 서버가 20초 주기 + 자기 MCP 요청마다 재probe해 회수하고, 소유자는 SIGTERM/SIGINT/stdin close에 socket을 unlink합니다 — 이 warn은 **재획득할 살아 있는 후보가 하나도 없을 때만** 납니다 | 이 플러그인을 쓰는 호스트를 새로 띄우거나(또는 살아 있는 호스트를 재시작) 하십시오. 후보가 있으면 판정이 ok이고 detail이 어느 pid가 몇 ms 주기로 재probe 중인지 알려 주므로 기다리면 됩니다. 기다리는 동안에도 주입은 in-process 경로로 **정확**하고, 느릴 뿐입니다 |
 | 기억이 계속 0개 주입 | `doctor`의 `injection-yield: warn` | 로그의 최근 20건 안에서 fact 0개 retrieval이 8회 이상 연속이고 그 창의 주입 fact 합이 0. 관련성 게이트에서 전부 탈락한 상태 | `continuity_telemetry`의 `baseline_margin_gap`을 먼저 **측정**한 뒤 `MEMEX_INJECT_BASELINE_MARGIN` 조정 |
 | 리터럴 매칭 레인 정지 | 로그의 `lexical_lane: unavailable`, `lexical_lane_unavailable` 텔레메트리 | 리터럴 매칭 레인이 예외로 죽음(이전에는 빈 `catch`가 삼켰음) | 텔레메트리의 `dims.reason` 확인 후 원인 수정. semantic 레인은 계속 동작합니다 |
 | ontology 분류 보류(parked) | `memex status`의 `Ontology: … (N classified, P parked, Q pending)`에서 `P > 0` | 분류 시도를 소진해 `General`/`Misc`에 보관된 fact. **classified가 아닙니다** | `memex backfill ontology`. 재시도는 분류 정책/embedding 세대당 정확히 1회이므로, 세대가 그대로면 다시 돌려도 같은 fact를 재시도하지 않습니다 |
