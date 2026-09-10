@@ -1270,12 +1270,52 @@ try {
   // Kept older than the hostile fact so every existing "first row" assertion still
   // reads the row it was written for.
   db.prepare("UPDATE facts SET created_at = ?, updated_at = ? WHERE id = ?").run(TIER_AT, TIER_AT, branchFactId);
-  // #23: one dead capsule job. Its stored error is the class the catalogue must call
-  // harmless-to-memory, and it is what `memex recover --all-dead` has to clear.
+  // #23/#79: one dead capsule job carrying the historical bound error. The catalogue must
+  // classify it by its terminal STATE (recovery required), keep the stored error text visible,
+  // and `memex recover --all-dead` has to clear it.
   db.prepare(
     "INSERT INTO memory_jobs (job_id, kind, partition_key, policy_version, priority, state, available_at, attempts, max_attempts, last_error, idempotency_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run(DEAD_JOB_ID, "capsule_update", "session:web-ui-tier-session", "capsule-v1", 100, "dead", TIER_AT, 5, 5, DEAD_JOB_ERROR, "e2e-dead-job", TIER_AT, TIER_AT);
   db.close();
+
+  // #48 (0.6.3): a SECOND data root stands in for the other Mac. It exports one
+  // generation as a zip with the real core (sync switched off, no shared folder),
+  // and the browser then drives this server's 수동 파일 가져오기 against that file —
+  // a genuine two-root round trip through the UI, without touching a real home.
+  const PEER_HOME = path.join(TEMP, "peer-home");
+  const PEER_FACT = "두 번째 맥에서 만든 기억은 세대 파일로 넘어온다.";
+  const PEER_ALIAS = "두 번째 맥";
+  const peerArchive = await (async () => {
+    process.env.MEMEX_HOME = PEER_HOME;
+    delete process.env.MEMEX_SYNC_DIR;
+    try {
+      const peerDb = initDatabase();
+      try {
+        insertFact(peerDb, {
+          fact: PEER_FACT,
+          category: "knowledge",
+          scope_type: "global",
+          scope_project: null,
+          source_exchange_ids: [],
+          embedding: new Array(384).fill(0.3),
+          embedding_version: 1,
+        });
+      } finally {
+        peerDb.close();
+      }
+      const control = await import(path.join(ROOT, "dist", "sync-control.js"));
+      // The device id only exists after an export, so name it and export again:
+      // the alias has to reach the importing device inside the manifest.
+      const first = control.exportGenerationArchive();
+      control.setDeviceAlias(first.deviceId, PEER_ALIAS);
+      return control.exportGenerationArchive();
+    } finally {
+      process.env.MEMEX_HOME = MEMEX_HOME;
+    }
+  })();
+  if (!fs.existsSync(peerArchive.path) || peerArchive.deviceAlias !== PEER_ALIAS) {
+    throw new Error("peer archive seed failed: " + JSON.stringify(peerArchive));
+  }
 
   const port = await freePort();
   ui = startServer(port);
@@ -1590,6 +1630,7 @@ try {
       const guidance=cells[cells.length-2];
       return {
         heads:[...document.querySelectorAll('#main .data-table thead th')].map(x=>x.textContent.trim()),
+        rowText:row.textContent,
         guidanceText:guidance.textContent,
         ignorable:guidance.querySelector('.tag')?.textContent.trim(),
         copyCommands:[...guidance.querySelectorAll('[data-copy-command]')].map(x=>x.dataset.copyCommand),
@@ -1903,6 +1944,90 @@ try {
     false,
   );
 
+  // #48 runs LAST on purpose: importing the other root's generation adds a
+  // memory, and every probe above asserts exact row and node counts.
+  // #48 (0.6.3): the manual file path, end to end in the browser — write a zip of
+  // this device, name a device, then validate → preview → import the OTHER root's
+  // generation and read the imported memory back.
+  const syncArchive = await pageProbe(
+    cdp,
+    base + "/settings?scope=all&tab=sync",
+    probe(`
+      const submit=async(label)=>{
+        const form=await until(label+' modal',()=>document.querySelector('#modal[open] #modal-form'));
+        form.requestSubmit();
+        await until(label+' committed',()=>{
+          const error=document.querySelector('#modal[open] .modal-error')?.textContent?.trim();
+          if(error)throw new Error(label+' rejected: '+error);
+          return !document.querySelector('#modal[open]');
+        },180000);
+      };
+      const tabText=()=>document.querySelector('#main')?.textContent||'';
+      await until('archive card',()=>document.querySelector('#sync-archive'));
+      const before={
+        importLocked:document.querySelector('[data-archive="import"]').disabled,
+        defaultDir:/sync\\/exports/.test(tabText()),
+        plaintext:tabText().includes('평문 JSONL'),
+      };
+
+      // (1) 이 기기 이름 지정 — 상태 블록의 별칭 편집
+      document.querySelector('[data-alias]').click();
+      const aliasField=await until('alias modal',()=>document.querySelector('#modal[open] input[name="alias"]'));
+      aliasField.value=${JSON.stringify("이 맥")};
+      await submit('alias');
+      await until('alias shown',()=>tabText().includes(${JSON.stringify("이 맥")}));
+
+      // (2) 세대 파일로 내보내기 — 서버가 데이터 루트 안에 쓰고 경로를 보여준다
+      document.querySelector('[data-archive="export"]').click();
+      (await until('export confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'))).checked=true;
+      await submit('archive export');
+      const exportedPath=(await until('archive path',()=>{
+        const node=[...document.querySelectorAll('#sync-archive code')].find(c=>/\\.zip$/.test(c.textContent.trim()));
+        return node?node.textContent.trim():null;
+      },180000));
+      const exported={
+        path:exportedPath,
+        hasCopy:Boolean(document.querySelector('#sync-archive [data-copy-command]')),
+        finderHint:document.querySelector('#sync-archive').textContent.includes('⇧⌘G'),
+      };
+
+      // (3) 다른 루트의 세대 파일 검증 → 미리보기
+      const form=await until('import form',()=>document.querySelector('#archive-import-form'));
+      form.querySelector('input[name="path"]').value=${JSON.stringify(peerArchive.path)};
+      form.requestSubmit();
+      await until('preview rendered',()=>document.querySelector('#sync-archive').textContent.includes('가져오기 미리보기'),120000);
+      const previewText=document.querySelector('#sync-archive').textContent;
+      const preview={
+        summary:(previewText.match(/기억 \\+\\d+ \\/ ~\\d+ \\/ -\\d+/)||[''])[0],
+        peerAlias:previewText.includes(${JSON.stringify(PEER_ALIAS)}),
+        importOpen:!document.querySelector('[data-archive="import"]').disabled,
+      };
+
+      // (4) 확인하고 가져오기 — 미리보기에서 확인한 그 파일만 적용한다
+      document.querySelector('[data-archive="import"]').click();
+      const confirmBox=await until('import confirm',()=>document.querySelector('#modal[open] input[name="confirm"]'));
+      const modalText=document.querySelector('#modal[open]').textContent;
+      confirmBox.checked=true;
+      await submit('archive import');
+      await until('import applied',()=>tabText().includes('마지막 가져오기'),180000);
+      return {before,exported,preview,modalText,applied:tabText()};
+    `),
+    "settings-sync-archive.png",
+    false,
+  );
+
+  // #48: the imported memory must be a real memory on this device afterwards.
+  const importedFact = await pageProbe(
+    cdp,
+    base + "/facts?scope=global&q=" + encodeURIComponent("세대 파일"),
+    probe(`
+      const row=await until('imported fact row',()=>[...document.querySelectorAll('#main .data-table .fact-text')].find(x=>x.textContent.includes(${JSON.stringify(PEER_FACT)})));
+      return {text:row.textContent.trim()};
+    `),
+    "facts-imported.png",
+    false,
+  );
+
   if (
     scopeDefaults.urlScope !== "all" ||
     scopeDefaults.selected !== "all" ||
@@ -2040,7 +2165,7 @@ try {
     syncTab.before.checked ||
     !syncTab.before.exportDisabled ||
     !syncTab.before.importDisabled ||
-    !syncTab.before.footnote.includes("0.6.2") ||
+    !syncTab.before.footnote.includes("liveTwoDeviceRoundTrip: NOT_PROVEN") ||
     !syncTab.on.folder ||
     syncTab.on.exportDisabled ||
     !syncTab.deviceAssigned ||
@@ -2049,6 +2174,30 @@ try {
     !syncTab.rejected
   ) {
     throw new Error("Sync tab assertion failed: " + JSON.stringify(syncTab));
+  }
+  if (
+    // Import stays locked until a file has been validated and previewed.
+    !syncArchive.before.importLocked ||
+    !syncArchive.before.defaultDir ||
+    !syncArchive.before.plaintext ||
+    // The zip the server wrote is inside this run's data root, never downloaded.
+    !syncArchive.exported.path.startsWith(path.join(MEMEX_HOME, "sync", "exports")) ||
+    !fs.existsSync(syncArchive.exported.path) ||
+    !syncArchive.exported.hasCopy ||
+    !syncArchive.exported.finderHint ||
+    // The other root's generation previews as one new memory, named by its alias.
+    syncArchive.preview.summary !== "기억 +1 / ~0 / -0" ||
+    !syncArchive.preview.peerAlias ||
+    !syncArchive.preview.importOpen ||
+    !syncArchive.modalText.includes("변경 이력에 기록") ||
+    !syncArchive.applied.includes("기억 +1") ||
+    !syncArchive.applied.includes("이 맥") ||
+    importedFact.text !== PEER_FACT
+  ) {
+    throw new Error(
+      "Sync archive assertion failed: " +
+        JSON.stringify({ syncArchive, importedFact }),
+    );
   }
   if (
     !tierBanner.bannerText.includes("브랜치/작업 흐름 범위 기억 1건이 더 있습니다") ||
@@ -2084,9 +2233,14 @@ try {
   }
   if (
     !jobGuidance.heads.includes("다음 행동") ||
-    !jobGuidance.guidanceText.includes("작업 맥락 Capsule이 잘림") ||
-    jobGuidance.ignorable !== "무시해도 됩니다" ||
-    !jobGuidance.guidanceText.includes("MEMEX_CAPSULE_MAX_CHARS")
+    // #79: a dead job is classified by its STATE, so the historical capsule bound
+    // error can no longer present a terminal job as harmless.
+    !jobGuidance.guidanceText.includes("실패로 종료된 작업") ||
+    jobGuidance.ignorable !== "조치가 필요합니다" ||
+    !jobGuidance.operationButtons.includes("recover") ||
+    !jobGuidance.copyCommands.some((c) => c.includes("memex recover")) ||
+    // The stored error text stays on the row: nothing is hidden, only reclassified.
+    !jobGuidance.rowText.includes(DEAD_JOB_ERROR)
   ) {
     throw new Error(
       "Job guidance assertion failed: " + JSON.stringify(jobGuidance),
@@ -2190,6 +2344,8 @@ try {
           jobGuidance,
           attention,
           syncTab,
+          syncArchive,
+          importedFact,
           facts,
           factDetail,
           factsTaxonomy,

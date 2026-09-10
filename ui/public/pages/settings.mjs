@@ -1,16 +1,27 @@
-import {esc,icon,header,btn,linkBtn,banner,kv,badge,name,options,table,number,date,short} from '../ui.mjs';
+import {esc,icon,header,btn,linkBtn,banner,kv,badge,name,options,table,number,date,short,bytes} from '../ui.mjs';
 const tabs=[['runtime','런타임'],['actions','관리 작업'],['sync','동기화'],['interface','화면 설정'],['diagnostics','진단']];
 const DIR_SOURCE={env:'MEMEX_SYNC_DIR 환경 변수',configured:'이 화면에서 지정',default:'기본 로컬 경로 · 공유되지 않음'};
 /** 이 서버 실행 중 마지막으로 누른 내보내기·가져오기의 결과. 서버는 이 값을 보관하지 않는다. */
-let lastSyncRun=null;
+let lastSyncRun=null,lastArchive=null,lastPreview=null;
 export const setLastSyncRun=value=>{lastSyncRun=value;};
+/** 마지막으로 만든 세대 파일(zip)과 마지막 가져오기 미리보기. 둘 다 이 브라우저 세션용이다. */
+export const setLastArchive=value=>{lastArchive=value;};
+export const setLastPreview=value=>{lastPreview=value;};
 const importCounts=r=>`기억 +${number(r.newFacts)} / ~${number(r.updatedFacts)} / -${number(r.deletedFacts)} · 변경 이력 +${number(r.newRevisions)} · tombstone +${number(r.newTombstones)} · 제공 기록 +${number(r.newRecallEvents)} / ~${number(r.updatedRecallEvents)}`;
 const SKIP={disabled:'동기화가 꺼져 있어 아무것도 하지 않았습니다.',unchanged:'마지막 내보내기 이후 durable 변경이 없습니다.',locked:'다른 내보내기가 진행 중이라 이번 요청은 건너뛰었습니다.'};
+const WINNER={peer:'가져온 기기의 값',local:'이 기기의 값'};
+const deviceName=(alias,id)=>alias?`${esc(alias)} <code class="subtle">${esc(short(id))}</code>`:`<code>${esc(id||'미수집')}</code>`;
+/** 거부 사유 표 — 세대는 하나라도 깨지면 통째로 거부되고, 그 사유를 코어 원문 그대로 싣는다. */
+const rejectedTable=issues=>issues.length
+ ?table(['위치','줄','사유'],issues.map(i=>`<tr><td class="mono subtle">${esc(i.file)}</td><td>${number(i.line)}</td><td class="wrap">${esc(i.error)}</td></tr>`))
+ :'<p class="caption">거부된 세대가 없습니다. 세대는 하나라도 깨지면 통째로 거부되며, 그 사유가 여기에 그대로 나옵니다.</p>';
 /**
- * 관리 › 동기화 (#48 UI 절반).
- * 상태·켜기/끄기·수동 실행만 다룬다. 수동 파일 내보내기/가져오기, 기기 별칭, 충돌 이력은 0.6.2다.
+ * 관리 › 동기화 (#48).
+ *
+ * 0.6.1에서 스위치·상태·공유 폴더 실행까지, 0.6.3에서 **수동 세대 파일(zip) 내보내기·가져오기,
+ * 기기 별칭, 충돌 이력**이 들어왔다. 모두 `/api/v2/sync` 한 엔드포인트의 action이다.
  */
-export function syncTab(ctx,env,data,error,run=lastSyncRun){
+export function syncTab(ctx,env,data,error,run=lastSyncRun,archive=lastArchive,preview=lastPreview){
  if(!env.sync)return banner('설치된 코어에 <code>dist/sync-control.js</code>가 없습니다. 레포 루트에서 코어를 빌드한 뒤 서버를 다시 시작하세요.','error');
  if(!data)return banner(esc(error||'동기화 상태를 읽지 못했습니다.'),'error');
  const s=data.status||{};const on=!!s.enabled;
@@ -25,6 +36,8 @@ export function syncTab(ctx,env,data,error,run=lastSyncRun){
   ['설정 파일',`<code>${esc(s.configPath||'미수집')}</code>`],
   ['설정 변경 시각',esc(date(s.updatedAt))],
   ['이 기기 ID',s.deviceId?`<code>${esc(s.deviceId)}</code>`:'<span class="muted">아직 없음 · 첫 내보내기에서 부여됩니다</span>'],
+  // 별칭은 로컬 sync/devices.json에 저장되고, 이 기기의 별칭만 세대 manifest에 실려 피어에 보인다.
+  ['이 기기 이름',`<div class="row wrap">${s.deviceAlias?`<strong>${esc(s.deviceAlias)}</strong>`:'<span class="muted">지정 없음 · 다른 맥에서 UUID로 보입니다</span>'}${btn(s.deviceAlias?'이름 바꾸기':'이름 지정','edit',`data-alias="${esc(s.deviceId||'')}" data-alias-name="${esc(s.deviceAlias||'')}" ${s.deviceId?'':'disabled'}`,'small ghost')}</div>${s.deviceId?'':'<p class="caption">기기 ID가 부여된 뒤에 이름을 지을 수 있습니다.</p>'}`],
  ];
  const exportRows=last?[
   ['마지막 내보내기',esc(date(last.at))],
@@ -39,14 +52,48 @@ export function syncTab(ctx,env,data,error,run=lastSyncRun){
  <div class="row wrap mt">${btn('지금 내보내기','download',`data-sync="export" ${off}`,'primary')}${btn('지금 가져오기','refresh',`data-sync="import" ${off}`)}</div>
  ${on?'':'<p class="caption mt">동기화가 꺼져 있어 수동 실행 버튼을 쓸 수 없습니다. 위 스위치로 먼저 켜세요.</p>'}</section>
  <section class="card pad"><h2>마지막 내보내기</h2>${exportRows?kv(exportRows):banner(on?'아직 한 번도 내보내지 않았습니다. 지금 내보내기로 첫 세대를 만드세요.':'내보내기 기록이 없습니다.','neutral')}
- <h2 class="mt">감지된 다른 기기</h2>${peers.length?table(['기기','호스트','마지막 세대','시각','행 수'],peers.map(p=>`<tr><td><code>${esc(p.deviceId)}</code></td><td>${esc(p.hostname||'미수집')}</td><td class="mono subtle">${esc(short(p.generation))}</td><td class="nowrap">${esc(date(p.exportedAt))}</td><td>${p.counts?esc(`${number(p.counts.facts)} / ${number(p.counts.revisions)} / ${number(p.counts.tombstones)} / ${number(p.counts.recallEvents)}`):'<span class="muted">manifest를 읽지 못했습니다</span>'}</td></tr>`)):`<p class="caption">${esc(s.dirExists?'공유 폴더에서 다른 기기의 세대를 찾지 못했습니다.':'공유 폴더가 아직 없습니다.')}</p>`}</section></div>
+ <h2 class="mt">감지된 다른 기기</h2>${peers.length?table(['기기 이름','기기 ID','호스트','마지막 세대','시각','행 수'],peers.map(p=>`<tr><td><div class="row wrap">${p.alias?`<strong>${esc(p.alias)}</strong>`:'<span class="muted">이름 없음</span>'}${btn('이름','edit',`data-alias="${esc(p.deviceId)}" data-alias-name="${esc(p.alias||'')}"`,'small ghost')}</div>${p.alias&&!p.aliasIsLocal?'<p class="caption">상대 기기가 보낸 이름입니다.</p>':''}</td><td class="mono subtle">${esc(short(p.deviceId))}</td><td>${esc(p.hostname||'미수집')}</td><td class="mono subtle">${esc(short(p.generation))}</td><td class="nowrap">${esc(date(p.exportedAt))}</td><td>${p.counts?esc(`${number(p.counts.facts)} / ${number(p.counts.revisions)} / ${number(p.counts.tombstones)} / ${number(p.counts.recallEvents)}`):'<span class="muted">manifest를 읽지 못했습니다</span>'}</td></tr>`)):`<p class="caption">${esc(s.dirExists?'공유 폴더에서 다른 기기의 세대를 찾지 못했습니다.':'공유 폴더가 아직 없습니다.')}</p>`}</section></div>
+ ${archiveCard(s,archive,preview)}
  ${run?`<section class="card pad mt"><h2>이 서버 실행 중 마지막 ${esc(run.action==='export'?'내보내기':'가져오기')}</h2>
  ${run.outcome?.skipped?banner(esc(SKIP[run.outcome.skipped]||run.outcome.skipped),'neutral'):''}
  ${run.outcome?.error?banner(esc(run.outcome.error),'error'):''}
- ${run.outcome?.result&&run.action==='import'?kv([['적용 결과',esc(importCounts(run.outcome.result))],['실행 시각',esc(date(run.at))]]):''}
+ ${run.outcome?.result&&run.action==='import'?kv([['적용 결과',esc(importCounts(run.outcome.result))],...(run.source?[['가져온 파일',`<code>${esc(run.source)}</code>`]]:[]),['실행 시각',esc(date(run.at))]]):''}
  ${run.outcome?.result&&run.action==='export'?kv([['내보낸 행 수',esc(`기억 ${number(run.outcome.result.facts)} · 변경 이력 ${number(run.outcome.result.revisions)} · tombstone ${number(run.outcome.result.tombstones)} · 제공 기록 ${number(run.outcome.result.recallEvents)}`)],['실행 시각',esc(date(run.at))]]):''}
- <h2 class="mt">거부된 세대와 사유</h2>${issues.length?table(['위치','줄','사유'],issues.map(i=>`<tr><td class="mono subtle">${esc(i.file)}</td><td>${number(i.line)}</td><td class="wrap">${esc(i.error)}</td></tr>`)):'<p class="caption">거부된 세대가 없습니다. 세대는 하나라도 깨지면 통째로 거부되며, 그 사유가 여기에 그대로 나옵니다.</p>'}</section>`:''}
- <div class="footer-note"><span>수동 파일 내보내기·가져오기, 기기 별칭, 충돌 이력 화면은 0.6.2에서 들어옵니다. 지금은 공유 폴더 경로가 유일한 교환 방법입니다.</span><span>가져오기 결과는 이 서버가 실행되는 동안만 이 화면에 남습니다.</span></div>`;
+ <h2 class="mt">거부된 세대와 사유</h2>${rejectedTable(issues)}</section>`:''}
+ <div class="footer-note"><span>실제 두 대의 맥 사이 라운드트립은 아직 <strong>검증되지 않았습니다</strong>(liveTwoDeviceRoundTrip: NOT_PROVEN) — 기능은 모두 들어와 있고, 두 기기에서의 실제 확인만 남았습니다.</span><span>가져오기 결과·미리보기는 이 서버가 실행되는 동안만 이 화면에 남습니다.</span></div>`;
+}
+/**
+ * 수동 파일 교환 (#48, 0.6.3).
+ *
+ * 브라우저 다운로드·업로드는 이 UI의 샌드박스(CSP·loopback 전용)에서 쓰지 않는다. 그래서 서버가
+ * **데이터 루트 안**에 zip을 쓰고 그 경로를 보여주고(복사 → Finder에서 열기), 가져오기는 사용자가
+ * 받아 둔 파일 경로를 받는다. 가져오기는 항상 **검증 → 미리보기 → 확인** 순서이고, 미리보기는
+ * 아무것도 바꾸지 않는다.
+ */
+export function archiveCard(s,archive,preview){
+ const ready=!!archive;
+ return `<section class="card pad mt" id="sync-archive"><div class="spread"><h2>수동 파일로 주고받기</h2><span class="tag outline">공유 폴더가 없어도 됩니다</span></div>
+ <p class="caption mt">세대 하나를 <strong>zip 파일</strong>로 만들어 다른 맥으로 옮깁니다(AirDrop · 메일 · USB). 브라우저 다운로드는 이 UI에서 막혀 있으므로 서버가 <strong>데이터 루트 안</strong>에 파일을 쓰고 경로를 알려줍니다. 받은 파일은 아래에 경로를 넣어 <strong>검증 → 미리보기 → 확인</strong> 순서로 가져옵니다. 모델을 호출하지 않습니다. 파일에는 기억 원문이 <strong>평문 JSONL</strong>로 들어 있으니 본인 기기끼리만 주고받으세요.</p>
+ <div class="two-col mt">
+  <div><h3>세대 파일로 내보내기</h3>
+  <p class="caption mt">지금 상태로 새 세대를 만들고 그 세대를 zip으로 저장합니다. 동기화가 꺼져 있어도 동작합니다.</p>
+  <div class="row wrap mt">${btn('세대 파일로 내보내기','download','data-archive="export"','primary')}${ready?btn('경로 복사','copy',`data-copy-command="${esc(archive.path)}"`,'small ghost'):''}</div>
+  ${ready?kv([['만든 파일',`<code>${esc(archive.path)}</code>`],['크기',esc(bytes(archive.bytes))],['기기 · 세대',`${deviceName(archive.deviceAlias,archive.deviceId)} · <code class="subtle">${esc(short(archive.generation))}</code>`],['담긴 행 수',esc(`기억 ${number(archive.counts.facts)} · 변경 이력 ${number(archive.counts.revisions)} · tombstone ${number(archive.counts.tombstones)} · 제공 기록 ${number(archive.counts.recallEvents)}`)]])+`<p class="caption mt">Finder에서 열기: 경로를 복사한 뒤 Finder에서 <strong>⇧⌘G</strong>로 붙여 넣으세요. 기억 원문이 <strong>평문 JSONL</strong>로 들어 있으므로 본인 기기끼리만 주고받으세요.</p>`:`<p class="caption mt">기본 저장 위치: <code>${esc(s.archiveDir||'미수집')}</code></p>`}
+  </div>
+  <div><h3>세대 파일 가져오기</h3>
+  <p class="caption mt">다른 맥에서 만든 zip(또는 풀어 둔 세대 디렉터리)의 절대 경로를 넣으세요.</p>
+  <form class="stack-sm mt" id="archive-import-form"><label class="field">받은 파일 경로<input name="path" autocomplete="off" spellcheck="false" placeholder="/Users/me/Downloads/&lt;device&gt;-&lt;generation&gt;.zip" value="${esc(preview?.path||'')}" required></label>
+  <!-- 가져오기는 form 안에 있지만 submit이 아니다: 기본 type이면 클릭이 미리보기까지 다시 보낸다. -->
+  <div class="row wrap">${btn('검증하고 미리보기','search','type="submit"')}${btn('확인하고 가져오기','check',`type="button" data-archive="import" ${preview?.preview?.generations?.length?'':'disabled'}`,'primary')}</div></form>
+  ${preview?'':'<p class="caption mt">미리보기는 세대의 해시·스키마를 검증하고 적용 결과만 계산합니다. 이 기기의 기억은 바뀌지 않습니다.</p>'}
+  </div>
+ </div>
+ ${preview?`<div class="divider"></div><div class="spread"><h3>가져오기 미리보기</h3><span class="caption">${esc(date(preview.at))}</span></div>
+ ${preview.error?banner(esc(preview.error),'error'):''}
+ ${preview.preview?kv([['파일',`<code>${esc(preview.preview.source||preview.path)}</code>`],['보낸 기기',deviceName(preview.preview.deviceAlias,preview.preview.deviceId)],['세대',`<code class="subtle">${esc(short(preview.preview.generation))}</code>`],['적용하면',esc(`기억 +${number(preview.preview.newFacts)} / ~${number(preview.preview.updatedFacts)} / -${number(preview.preview.deletedFacts)}`)],['충돌',preview.preview.conflicts.length?esc(`${number(preview.preview.conflicts.length)}건`):'<span class="muted">없음</span>']]):''}
+ ${preview.preview?`<p class="caption mt">미리보기의 <code>~N</code>은 <strong>기억 개수</strong>이고, 적용 결과의 <code>~N</code>은 의미·근거·활성 상태를 축별로 세므로 더 클 수 있습니다. 변경 이력·제공 기록 수는 미리 세지 않습니다.</p>`:''}
+ ${preview.preview?.conflicts?.length?table(['기억','보낸 기기','남는 값','판정'],preview.preview.conflicts.map(c=>`<tr><td class="mono subtle">${esc(short(c.factId))}</td><td>${deviceName(c.deviceAlias,c.deviceId)}</td><td>${esc(WINNER[c.winner]||'미수집')}</td><td class="wrap">${esc(c.reason)}</td></tr>`)):''}
+ <h3 class="mt">거부된 세대와 사유</h3>${rejectedTable(preview.preview?.rejected||[])}`:''}</section>`;
 }
 const descriptions={doctor:'설치, 실행 환경, 데이터베이스 준비 상태를 코어 CLI로 검사합니다.',status:'전체 데이터의 파이프라인 처리 상태를 확인합니다.',sync:'보관된 대화를 인덱스에 동기화합니다. 코어의 동기화 로직을 그대로 사용합니다.',extract:'미처리 대화의 기억 추출을 백필합니다. 모델 호출이 발생할 수 있습니다.',ontology:'미분류 기억의 온톨로지 분류와 관련 후속 처리를 요청합니다.',embeddings:'누락된 임베딩을 백필합니다. 코어에 설정된 임베딩 런타임이 필요합니다.',all:'추출·분류·임베딩 백필을 코어가 정의한 순서로 수행합니다.',recover:'실패로 종료된 작업을 전부 다시 대기 상태로 되돌립니다. 삭제하지 않으며 오류 원문은 보존됩니다.'};
 /**
@@ -82,6 +129,20 @@ export async function render(ctx){
  // 스위치는 낙관적으로 되돌리고 서버 상태가 다시 그리게 둔다 — 모달을 닫기만 해도 어긋나지 않는다.
  el.querySelector('#sync-switch')?.addEventListener('change',event=>{const wanted=event.target.checked;event.target.checked=!wanted;wanted?enableSync(ctx):disableSync(ctx);});
  el.querySelectorAll('[data-sync]').forEach(b=>b.addEventListener('click',()=>runSync(ctx,b.dataset.sync)));
+ el.querySelectorAll('[data-alias]').forEach(b=>b.addEventListener('click',()=>renameDevice(ctx,b.dataset.alias,b.dataset.aliasName)));
+ el.querySelector('[data-archive="export"]')?.addEventListener('click',()=>exportArchive(ctx));
+ el.querySelector('[data-archive="import"]')?.addEventListener('click',()=>importArchive(ctx));
+ el.querySelector('#archive-import-form')?.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const path=String(new FormData(event.currentTarget).get('path')||'').trim();
+  if(!path)return ctx.toast('받은 파일의 절대 경로를 입력하세요.');
+  try{
+   const result=await postSync(ctx,{action:'archive-preview',path});
+   setLastPreview({path,preview:result.preview,at:new Date().toISOString()});
+   ctx.toast(result.preview.rejected.length?'검증에서 거부된 항목이 있습니다. 사유를 확인하세요.':'미리보기를 만들었습니다. 내용을 확인한 뒤 가져오세요.');
+  }catch(e){setLastPreview({path,error:e.message,at:new Date().toISOString()});ctx.toast(e.message);}
+  ctx.invalidate();
+ });
  }};
 }
 async function postSync(ctx,body){const result=await ctx.api('sync',{},{body:{...body,confirm:true},timeout:180000});return result;}
@@ -100,6 +161,49 @@ function disableSync(ctx){
  ctx.confirm('다기기 동기화 끄기','끄면 내보내기 훅·유지보수 내보내기·SessionStart 가져오기가 모두 아무 일도 하지 않습니다. 이미 공유 폴더에 있는 세대는 지우지 않습니다.',async()=>{
   await postSync(ctx,{action:'disable'});ctx.toast('동기화를 껐습니다.');ctx.invalidate();
  });
+}
+/** 기기 이름(별칭). 로컬 sync/devices.json에만 쓰고, 이 기기의 이름만 세대 manifest로 나간다. */
+function renameDevice(ctx,deviceId,current){
+ if(!deviceId)return ctx.toast('이 기기에는 아직 동기화 ID가 없습니다. 먼저 한 번 내보내세요.');
+ ctx.modal('기기 이름 지정',
+  banner('이름은 이 기기의 <code>sync/config.json</code> 옆 <code>sync/devices.json</code>에 저장됩니다. <strong>이 기기의 이름만</strong> 세대 파일의 <code>meta.json</code>에 실려 다른 맥에도 보이고, 다른 기기에 붙인 이름은 이 기기에만 남습니다.','neutral')
+  +kv([['기기 ID',`<code>${esc(deviceId)}</code>`]])
+  +`<label class="field mt">기기 이름<input name="alias" maxlength="60" autocomplete="off" placeholder="예: 집 맥미니" value="${esc(current||'')}"><small>비우고 저장하면 이름을 지웁니다. 최대 60자.</small></label>`,
+  '이름 저장',async fd=>{
+   const result=await postSync(ctx,{action:'alias',deviceId,alias:String(fd.get('alias')||'').trim()});
+   setLastSyncRun(lastSyncRun?{...lastSyncRun,status:result.status}:null);
+   ctx.toast('기기 이름을 저장했습니다.');ctx.invalidate();
+  });
+}
+/** 세대 파일 내보내기: 새 세대를 만들고 데이터 루트 안에 zip으로 저장한 뒤 경로를 보여준다. */
+function exportArchive(ctx){
+ ctx.modal('세대 파일로 내보내기',
+  banner('지금 상태로 <strong>새 세대 하나</strong>를 만들고, 그 세대를 zip 파일로 <strong>데이터 루트 안에</strong> 저장합니다. 브라우저로 내려받지 않고 경로를 알려줍니다. 동기화가 꺼져 있어도 동작하며 모델을 호출하지 않습니다.','warning')
+  +banner('파일에는 기억 원문이 <strong>평문 JSONL</strong>로 들어 있습니다. 본인 기기끼리만 주고받으세요.','neutral')
+  +'<label class="check-row mt"><input type="checkbox" name="confirm" required> 전체 기억 상태가 이 파일에 담긴다는 것을 확인했습니다.</label>',
+  '내보내기',async fd=>{
+   if(!fd.has('confirm'))throw new Error('확인란을 체크하세요.');
+   const result=await postSync(ctx,{action:'archive-export'});
+   setLastArchive(result.archive);
+   ctx.toast(`세대 파일을 만들었습니다: ${result.archive.path}`);ctx.invalidate();
+  });
+}
+/** 미리보기에서 확인한 그 파일만 적용한다. 경로는 미리보기가 검증한 값을 그대로 쓴다. */
+function importArchive(ctx){
+ const staged=lastPreview;
+ if(!staged?.preview?.generations?.length)return ctx.toast('먼저 파일 경로를 검증하고 미리보기를 확인하세요.');
+ const p=staged.preview;
+ ctx.modal('세대 파일 가져오기',
+  banner('아래 미리보기에서 확인한 세대를 <strong>이 기기의 기억에 적용</strong>합니다. 세대는 하나라도 깨지면 통째로 거부되며, 충돌은 이벤트 시각으로 판정해 <strong>변경 이력에 기록</strong>됩니다. 모델을 호출하지 않습니다.','warning')
+  +kv([['파일',`<code>${esc(p.source||staged.path)}</code>`],['보낸 기기',deviceName(p.deviceAlias,p.deviceId)],['적용하면',esc(`기억 +${number(p.newFacts)} / ~${number(p.updatedFacts)} / -${number(p.deletedFacts)}`)],['충돌',p.conflicts.length?esc(`${number(p.conflicts.length)}건`):'없음']])
+  +'<label class="check-row mt"><input type="checkbox" name="confirm" required> 위 내용을 확인했습니다.</label>',
+  '가져오기',async fd=>{
+   if(!fd.has('confirm'))throw new Error('확인란을 체크하세요.');
+   const result=await postSync(ctx,{action:'archive-import',path:staged.path});
+   setLastSyncRun({action:'import',source:result.outcome.source,outcome:{skipped:null,error:null,result:result.outcome.result},status:result.status,at:new Date().toISOString()});
+   setLastPreview(null);
+   ctx.toast('세대 파일을 적용했습니다.');ctx.invalidate();
+  });
 }
 function runSync(ctx,action){
  const isExport=action==='export';

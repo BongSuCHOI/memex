@@ -1,5 +1,10 @@
 import type Database from 'better-sqlite3';
 import { getSyncDir } from './sync-paths.js';
+/** Layout of a device's published generations. Exported so the manual-file
+ * helpers in sync-control.ts stage an archive in exactly this shape instead of
+ * re-deriving the names (#48). */
+export declare const GENERATIONS_DIR_NAME = "generations";
+export declare const CURRENT_MANIFEST = "CURRENT";
 /** Thrown when another process is mid-export. The SessionEnd hook records it
  * to export-status (visible to doctor) and the next session retries. */
 export declare class ExportLockedError extends Error {
@@ -32,6 +37,17 @@ export declare const EXPORTED_PROMOTION_STATES: readonly ["legacy-project", "dec
  * an older peer rejects the whole generation and says why.
  */
 export declare const SYNC_PROTOCOL_VERSION = 5;
+/**
+ * The one Chronicle kind that never travels (#48, 0.6.3).
+ *
+ * `SYNC_IMPORTED` records what THIS device decided while importing a peer's
+ * generation — which peer won a conflict, and why. It is local provenance, not
+ * shared truth: exporting it would bounce each device's import decisions back at
+ * the device that caused them, and a 0.6.2 peer (whose `CHRONICLE_EVENT_KINDS`
+ * predates the kind) would reject the whole generation over a row that tells it
+ * nothing. Keeping it local is what makes the kind purely additive.
+ */
+export declare const LOCAL_ONLY_EVENT_KIND = "SYNC_IMPORTED";
 /** The payload files a committed generation must carry (meta.json excluded —
  * it is the integrity manifest OF these files). Protocol v5: ontology
  * domains/categories/relations and the KR translation are LOCAL DERIVED state

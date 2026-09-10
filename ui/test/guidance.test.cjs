@@ -75,6 +75,7 @@ const EXEMPT_FILES={
  'fact-extractor.ts':'추출기 내부 계약. 사용자에게는 skip 사유와 작업 상태로 도달한다.',
  'continuity-store.ts':'큐 멱등성 불변식. 위반은 코어 버그다.',
  'sync-cli.ts':'sync CLI 인자 검증. Web UI는 같은 값을 폼에서 검증한다.',
+ 'zip.ts':'zip 컨테이너 레코드 계약. 사용자에게는 sync-control이 감싼 "sync archive …" 거부 사유로 도달한다.',
 };
 /** 대장 B — 위 면제에 들지 않는 파일에서, 개별적으로 매핑하지 않기로 한 리터럴. */
 const EXEMPT_LITERALS=[
@@ -110,6 +111,7 @@ const EXEMPT_LITERALS=[
  ['job-recovery.ts','no memory job or extraction target with id'],
  ['ontology-classifier.ts','ontology classify: fact not found'],
  ['embeddings.ts','embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)'],
+ ['sync-paths.ts','device id is not a sync device identifier'],
 ];
 
 const exemptLiteral=(file,literal)=>EXEMPT_LITERALS.some(([f,prefix])=>f===file&&literal.toLowerCase().includes(prefix.toLowerCase()));
@@ -171,13 +173,62 @@ test('진행 중이거나 정상인 기록에는 안내를 붙이지 않는다',
  assert.equal(guidance.jobGuidance({state:'completed',last_error:null}),null);
  assert.equal(guidance.jobGuidance({state:'running',last_error:null,lease_until:new Date(Date.now()+60000).toISOString()}),null);
  assert.equal(guidance.jobGuidance({state:'running',last_error:null,lease_until:new Date(Date.now()-60000).toISOString()}).id,'lease-expired');
- assert.equal(guidance.jobGuidance({state:'dead',last_error:'capsule patch exceeds bounded storage size'}).id,'capsule-truncated');
+ // #79: terminal·대기 상태가 오류 문자열보다 먼저다. 문자열이 무시 가능한 클래스에 걸려도
+ // 그 상태에 필요한 복구·대기 안내가 사라지지 않는다.
+ const dead=guidance.jobGuidance({state:'dead',last_error:'capsule patch exceeds bounded storage size'});
+ assert.equal(dead.id,'job-dead');
+ assert.equal(dead.ignorable,false);
+ assert(dead.actions.some(a=>a.kind==='command'&&a.text.includes('memex recover'))||dead.actions.some(a=>a.kind==='operation'&&a.command==='recover'),'복구 액션이 없음');
  assert.equal(guidance.jobGuidance({state:'dead',last_error:null}).id,'job-dead');
- assert.equal(guidance.jobGuidance({state:'retry',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'budget-exhausted');
+ assert.equal(guidance.jobGuidance({state:'retry',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'job-retry');
+ // 상태가 terminal이 아닌 기록에서는 문자열 분류가 그대로 이긴다.
+ assert.equal(guidance.jobGuidance({state:'completed',last_error:'capsule patch truncated: dropped 2 items'}).id,'capsule-truncated');
+ assert.equal(guidance.jobGuidance({state:'completed',last_error:'MODEL_BUDGET_EXHAUSTED: deadline reached'}).id,'budget-exhausted');
  assert.equal(guidance.attemptGuidance({state:'completed',error_message:null,error_class:null}),null);
  assert.equal(guidance.attemptGuidance({state:'failed',error_class:'deadline_exceeded',error_message:'Model work deadline exceeded'}).id,'budget-exhausted');
  assert.equal(guidance.operationGuidance({status:'completed',exit_code:0}),null);
  assert.equal(guidance.operationGuidance({status:'failed',exit_code:2}).id,'operation-incomplete');
+});
+
+test('짧은 열거값은 단어 경계로만 매칭한다 (#80)',()=>{
+ // 자유 텍스트 안의 broadcast·case·casing은 claim 사유가 아니다. 원인을 지어내지 않고 unknown으로 둔다.
+ for(const raw of ['broadcast failed','unsupported case in patch builder','casing mismatch','exit 25: unknown'])
+  assert.equal(guidance.classify(raw).id,'unknown','부분 문자열로 원인을 단정함: '+raw);
+ // 진짜 열거값은 계속 매칭한다.
+ assert.equal(guidance.classify('cas conflict').id,'claim-handoff');
+ assert.equal(guidance.classify('claim lost to a concurrent writer').id,'claim-handoff');
+ assert.equal(guidance.classify('exit 2').id,'operation-incomplete');
+ assert.equal(guidance.classify('backoff until 2026-09-10T00:00:00Z').id,'claim-backoff');
+ // 카탈로그 불변식: 4자 이하의 짧은 영문 열거값을 문자열로 남겨 두지 않는다.
+ const short=[];
+ for(const cls of guidance.CLASSES)for(const rule of cls.match)
+  if(typeof rule==='string'&&/^[a-z0-9 ]{1,6}$/.test(rule))short.push(cls.id+': '+rule);
+ assert.deepEqual(short,[],'짧은 열거값은 /\\b…\\b/ 정규식으로 써야 합니다: '+short.join(', '));
+});
+
+test('모델 호출 실패와 응답 형식 오류를 분리한다 (#80)',()=>{
+ const call=guidance.classify('LLM call failed: authentication expired');
+ assert.equal(call.id,'model-call-failed');
+ assert(call.cause.includes('네트워크'),'호출 경로 문제라고 말하지 않음');
+ assert(!call.cause.includes('JSON'),'응답 형식 문제로 설명함');
+ assert.equal(guidance.classify('TransientLlmError: fetch failed').id,'model-call-failed');
+ assert.equal(guidance.classify('spawn codex ENOENT').id,'model-call-failed');
+ assert.equal(guidance.classify('ontology classify: unparseable LLM response').id,'model-invalid-json');
+ assert.equal(guidance.classify('model returned invalid json').id,'model-invalid-json');
+ assert(!guidance.guidanceFor('model-invalid-json').match.some(r=>String(r).includes('llm call failed')),'응답 형식 클래스가 호출 실패 문자열을 계속 매칭함');
+ assert(guidance.CLASSES.findIndex(c=>c.id==='model-call-failed')<guidance.CLASSES.findIndex(c=>c.id==='model-invalid-json'),'호출 실패 클래스가 더 뒤에 있어 이기지 못함');
+});
+
+test('과거 Capsule 상한 실패는 정상 잘림과 다른 클래스다 (#79)',()=>{
+ const legacy=guidance.classify('capsule patch exceeds bounded storage size');
+ assert.equal(legacy.id,'capsule-bound-exceeded');
+ assert.equal(legacy.ignorable,false,'복구가 필요한 과거 실패를 무시 가능으로 단정함');
+ assert(legacy.next.includes('memex recover'),'복구 명령을 안내하지 않음');
+ assert(legacy.cause.includes('0.6.1'),'언제부터 잘라서 저장하는지 밝히지 않음');
+ const truncated=guidance.classify('capsule patch truncated: dropped 2 low-priority items');
+ assert.equal(truncated.id,'capsule-truncated');
+ assert.equal(truncated.ignorable,true);
+ assert(!guidance.guidanceFor('capsule-truncated').match.some(r=>String(r).includes('exceeds bounded storage size')),'정상 잘림 클래스가 과거 실패 문자열을 계속 매칭함');
 });
 
 test('개요 경고 카드는 클래스별로 묶고 0은 만들지 않는다',()=>{

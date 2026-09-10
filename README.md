@@ -184,7 +184,7 @@ Sync protocol v5 separates fact state into independent axes:
 | **Lineage** | source exchange IDs, consolidated count | monotonic union / max |
 | **Derived overlay** | KR text, ontology, relations, vectors | local-only, rebuildable |
 
-This separation matters because editing a fact and deactivating it are different events. A newer semantic edit must not accidentally undo a newer deactivation, and provenance must never disappear just because another device has an older snapshot.
+This separation matters because editing a fact and deactivating it are different events. A newer semantic edit must not accidentally undo a newer deactivation, and provenance must never disappear just because another device has an older snapshot. When the semantic axis has to choose between two different meanings, the decision is not silent: the importer appends a local `SYNC_IMPORTED` Chronicle event naming the source device, the generation, and which side won.
 
 ### Scope and memory tiers
 
@@ -225,9 +225,20 @@ Cross-device sync is **off by default** and nothing leaves the machine until it 
 memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
 memex sync export      # publish this device's first generation
 memex sync status      # shared folder, this device, last export, devices seen
+memex sync alias "home mini"   # name this device; the name travels in the manifest
 ```
 
 Afterwards the export runs by itself: an async SessionEnd hook and the automatic maintenance wake publish a generation whenever the durable state changed since the last one, and SessionStart imports the peers'. `MEMEX_SYNC_DIR` overrides the configured folder; the on/off switch is local state in `<data root>/sync/config.json` and never travels. `memex sync disable` turns every one of those paths back into a one-line no-op. Memories in the shared folder are plaintext JSONL — encryption is out of scope, so use a cloud folder that is yours.
+
+**No shared folder?** Hand one generation over as a file. It is the same protocol-v5 generation in a zip, so it gets the same validation:
+
+```bash
+memex sync export --archive          # writes <data root>/sync/exports/<device>-<generation>.zip
+memex sync import --archive ~/Downloads/<device>-<generation>.zip --dry-run   # validate + preview
+memex sync import --archive ~/Downloads/<device>-<generation>.zip
+```
+
+The Web UI sync tab does the same thing (it shows the written path instead of downloading, since the loopback UI does not serve browser downloads) and always runs validate → preview → confirm. A device's own archive is refused rather than replayed onto itself. When an import finds the same memory with a different meaning on both sides, the decision is recorded as a local Chronicle `SYNC_IMPORTED` event — which device's generation it came from and which side won — visible in the UI's knowledge-change timeline and in the memory's own history. That event is local provenance and is never exported.
 
 Protocol v5 exports one committed generation per local device, containing `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`, and a `meta.json` recording the protocol version, device/generation identity, row counts, and SHA-256 integrity for each payload file. Imports pin and validate an entire generation before mutating SQLite: missing files, hash mismatches, invalid JSON, or schema-invalid rows reject that device generation as a whole. Local exporters are serialized with SQLite's process-owned `BEGIN IMMEDIATE` transaction, so a slower export cannot move `CURRENT` back to an older snapshot and no cloud-synced lockfile is required. KR translations, ontology categories, relations, and vector indexes are rebuilt locally instead.
 
@@ -264,6 +275,9 @@ memex status
 | `memex update` | Refresh the marketplace/plugin while preserving data; `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | Archive and index new Codex rollouts; `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | Cross-device sync switch (OFF by default), shared folder (`--dir`), status, manual export (`--force`) / import; `--json` |
+| `memex sync export --archive [<path.zip>]` | Write one generation as a zip to carry by hand (works with sync off) |
+| `memex sync import --archive <path> [--dry-run]` | Import a received generation zip or directory; `--dry-run` validates and previews |
+| `memex sync alias <name\|--clear> [--device <id>]` | Name a device; this device's name travels in every generation manifest |
 | `memex index` | Index, verify, repair, or rebuild the conversation index: `--cleanup`, `--session <id>`, `--verify`, `--repair`, `--rebuild`, `--concurrency N`, `--no-summaries` |
 | `memex search` | Semantic, text, or hybrid conversation search |
 | `memex show` | Read one archived conversation |
@@ -347,7 +361,9 @@ Resolution order is `MEMEX_HOME`, then `$XDG_CONFIG_HOME/memex`, then `~/.config
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed workers
 ├── sync/
-│   └── config.json                     # cross-device sync switch + shared folder (off by default)
+│   ├── config.json                     # cross-device sync switch + shared folder (off by default)
+│   ├── devices.json                    # device id → human name (local, never shared)
+│   └── exports/<device>-<generation>.zip   # generations written for hand-carrying
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript journal
 ├── run-locks/
 ├── ui/

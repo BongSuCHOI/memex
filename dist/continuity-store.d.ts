@@ -26,7 +26,7 @@ export declare function ensureContinuitySchema(db: Database.Database, options?: 
     afterStructuralDdl?: () => void;
     afterMigrationStage?: (stage: ContinuityMigrationStage) => void;
 }): void;
-export declare const CHRONICLE_EVENT_KINDS: readonly ["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "VALIDATED", "INCIDENT", "CONTRADICTED", "PROMOTED", "DEMOTED"];
+export declare const CHRONICLE_EVENT_KINDS: readonly ["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "VALIDATED", "INCIDENT", "CONTRADICTED", "PROMOTED", "DEMOTED", "SYNC_IMPORTED"];
 /** Backfill rows inserted by legacy readers or direct migration fixtures. */
 export declare function refreshExchangeMetadata(db: Database.Database, sessionId?: string): void;
 export interface CheckpointJobInput {

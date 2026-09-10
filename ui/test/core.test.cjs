@@ -139,6 +139,41 @@ test('동시 sync 요청은 하나만 통과하고 환경을 호출 전 값으�
   x.clean();
  }
 });
+test('수동 세대 파일 action은 절대 경로만 받고 코어 서비스를 그대로 호출한다 (#48)',async()=>{
+ const x=syncSetup();const calls=x.syncCalls;
+ x.c.modules.get('sync-control').exportGenerationArchive=()=>{calls.push(['archive-export']);return {path:'/tmp/root/sync/exports/d-g.zip',bytes:12,deviceId:'d',deviceAlias:null,generation:'g',counts:{facts:1,revisions:0,tombstones:0,recallEvents:0}};};
+ x.c.modules.get('sync-control').previewImportArchive=source=>{calls.push(['archive-preview',source]);return {source,deviceId:'peer',deviceAlias:null,generation:'g9',newFacts:2,updatedFacts:1,deletedFacts:0,conflicts:[],generations:[{deviceId:'peer'}],rejected:[]};};
+ x.c.modules.get('sync-control').importArchive=async source=>{calls.push(['archive-import',source]);return {source,deviceId:'peer',deviceAlias:null,generation:'g9',result:{newFacts:2,malformedRows:[]}};};
+ x.c.modules.get('sync-control').setDeviceAlias=(deviceId,alias)=>{calls.push(['alias',deviceId,alias]);return {[deviceId]:alias};};
+ try{
+  await assert.rejects(x.c.sync('archive-preview',{path:'relative/g.zip'}),{status:400,code:'INVALID_ARCHIVE_PATH'});
+  await assert.rejects(x.c.sync('archive-import',{path:'   '}),{status:400});
+  const exported=await x.c.sync('archive-export');
+  assert.equal(exported.archive.path,'/tmp/root/sync/exports/d-g.zip');
+  assert(exported.status,'내보낸 뒤 상태를 함께 돌려주지 않았습니다');
+  const preview=await x.c.sync('archive-preview',{path:'/tmp/Downloads//g.zip'});
+  assert.equal(preview.preview.newFacts,2);
+  assert.equal(calls.find(c=>c[0]==='archive-preview')[1],'/tmp/Downloads/g.zip','경로를 정규화하지 않았습니다');
+  const imported=await x.c.sync('archive-import',{path:'/tmp/Downloads/g.zip'});
+  assert.equal(imported.outcome.result.newFacts,2);
+  await x.c.sync('alias',{deviceId:'peer',alias:'  회사 맥북  '});
+  assert.deepEqual(calls.find(c=>c[0]==='alias').slice(1),['peer','회사 맥북']);
+  // 빈 이름은 삭제 신호로 null을 넘긴다.
+  await x.c.sync('alias',{deviceId:'peer',alias:'   '});
+  assert.equal(calls.filter(c=>c[0]==='alias')[1][2],null);
+  // 코어의 거부 사유는 원문 그대로 400으로 전달한다.
+  x.c.modules.get('sync-control').importArchive=async()=>{throw new Error('sync archive is not a readable zip: zip central directory not found');};
+  await assert.rejects(x.c.sync('archive-import',{path:'/tmp/not-a.zip'}),{status:400,code:'INVALID_ARCHIVE',message:/not a readable zip/});
+  assert.equal(x.c.syncBusy,false);
+ }finally{x.clean();}
+});
+test('세대 파일·별칭 서비스가 없는 코어에서는 503으로 끝난다 (#48)',async()=>{
+ const x=syncSetup();
+ try{
+  for(const action of ['archive-export','archive-preview','archive-import','alias'])
+   await assert.rejects(x.c.sync(action,{path:'/tmp/g.zip',deviceId:'peer'}),{status:503,code:'CORE_UNAVAILABLE'});
+ }finally{x.clean();}
+});
 test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()=>{
  const x=setup();
  try{
@@ -147,6 +182,52 @@ test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()
   // #76: 잠금은 첫 await 앞에서 잡히므로 503 경로도 finally가 풀어 false로 끝난다.
   assert.equal(x.c.syncBusy,false);
  }finally{x.clean();}
+});
+/**
+ * #78 — 코어가 남기는 감사 줄은 이 UI의 home에만 있어야 한다.
+ *
+ * 스텁은 코어의 경로 해석(`src/paths.ts` getMemexHome: MEMEX_HOME → XDG_CONFIG_HOME/memex →
+ * ~/.config/memex)을 그대로 흉내내 `logs/ui-audit.jsonl`에 한 줄을 쓴다. 고정이 없으면 그 줄은
+ * XDG 기본 루트로 가고, 고정이 있으면 UI가 유도한 home으로 간다.
+ */
+function auditSetup(action){
+ const temp=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'memex-ui-audit-'));
+ const xdg=path.join(temp,'xdg');const altRoot=path.join(temp,'alt-root');
+ const saved={};for(const k of ['MEMEX_HOME','MEMEX_DB_PATH','TEST_DB_PATH','XDG_CONFIG_HOME'])saved[k]=process.env[k];
+ delete process.env.MEMEX_HOME;delete process.env.TEST_DB_PATH;
+ process.env.XDG_CONFIG_HOME=xdg;process.env.MEMEX_DB_PATH=path.join(altRoot,'db.sqlite');
+ const x=setup();
+ const core=new Core({root:'/fixture/core'});
+ core.db=x.f.db;core.store=x.f.store;core.modules=x.c.modules;
+ const coreHome=()=>process.env.MEMEX_HOME||path.join(process.env.XDG_CONFIG_HOME,'memex');
+ const audit=()=>{const home=coreHome();fs.mkdirSync(path.join(home,'logs'),{recursive:true});
+  fs.appendFileSync(path.join(home,'logs','ui-audit.jsonl'),JSON.stringify({source:'memex-core',action,at:new Date().toISOString()})+'\n');};
+ const fm=core.modules.get('fact-management');
+ const wrap=(name,value)=>{const original=fm[name];fm[name]=(...args)=>{audit();return original?.(...args)??value;};};
+ wrap('promoteFact',{id:uid(1),steps:[]});wrap('mutateFactMeaning',{id:uid(1)});
+ const lines=root=>{try{return fs.readFileSync(path.join(root,'logs','ui-audit.jsonl'),'utf8').trim().split('\n').filter(Boolean);}catch{return [];}};
+ return {x,core,xdgHome:path.join(xdg,'memex'),altRoot,lines,scope:x.scope,
+  clean(){x.clean();for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}fs.rmSync(temp,{recursive:true,force:true});}};
+}
+test('계층 변경의 코어 감사 줄은 UI가 유도한 home에만 남는다 (#78)',async()=>{
+ const t=auditSetup('fact.promote');
+ try{
+  assert.equal(t.core.home,t.altRoot,'명시된 DB에서 home을 유도하지 않았습니다');
+  await t.core.tier({id:uid(1),action:'promote'},t.scope);
+  assert.equal(t.lines(t.altRoot).length,1,'UI의 home에 감사 줄이 없습니다');
+  assert.deepEqual(t.lines(t.xdgHome),[],'기본 데이터 루트에 감사 줄이 새어 나갔습니다');
+  assert.equal('MEMEX_HOME' in process.env,false,'호출 뒤에도 MEMEX_HOME이 정의돼 있습니다');
+  assert.equal(process.env.MEMEX_DB_PATH,path.join(t.altRoot,'db.sqlite'),'MEMEX_DB_PATH를 되돌리지 않았습니다');
+  assert.equal(t.core.busy.size,0);
+ }finally{t.clean();}
+});
+test('기억 수정의 코어 감사 줄도 같은 home에만 남는다 (#78)',async()=>{
+ const t=auditSetup('fact.edit');
+ try{
+  await t.core.mutate({id:uid(1),action:'edit',text:'Updated factual content'},t.scope);
+  assert.equal(t.lines(t.altRoot).length,1,'UI의 home에 감사 줄이 없습니다');
+  assert.deepEqual(t.lines(t.xdgHome),[],'기본 데이터 루트에 감사 줄이 새어 나갔습니다');
+ }finally{t.clean();}
 });
 test('no DB file is created when the initial read fails',async()=>{const f=fixture(),filename=path.join(f.home,'missing','never.sqlite');const c=new Core({root:f.home,dbPath:filename,home:f.home});try{await assert.rejects(c.connect(),{status:503});assert.equal(fs.existsSync(filename),false);}finally{f.close();fs.rmSync(f.home,{recursive:true,force:true});}});
 test('API helper sends POST plus token when a body exists',async()=>{const mod=await import('../public/api.mjs');const saved={fetch:global.fetch,location:global.location};try{global.location={origin:'http://127.0.0.1:3847'};let captured;global.fetch=async(url,opts)=>{captured={url:String(url),opts};return new Response('{"ok":true}',{status:200,headers:{'content-type':'application/json'}});};mod.setToken('test-token');assert.deepEqual(await mod.request('facts/mutate',{scope:'global'},{body:{action:'edit'}}),{ok:true});assert.equal(captured.opts.method,'POST');assert.equal(captured.opts.headers['X-Memex-CSRF'],'test-token');await mod.request('facts');assert.equal(captured.opts.method,'GET');assert.equal(captured.opts.body,undefined);}finally{global.fetch=saved.fetch;global.location=saved.location;}});

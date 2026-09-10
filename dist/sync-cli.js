@@ -12,7 +12,10 @@ Usage: memex sync [--background]
        memex sync disable
        memex sync status [--json]
        memex sync export [--force] [--json]
+       memex sync export --archive [<path.zip>] [--json]
        memex sync import [--json]
+       memex sync import --archive <path> [--dry-run] [--json]
+       memex sync alias <name|--clear> [--device <id>] [--json]
 
 Without a subcommand: sync conversations from Codex session rollouts to archive
 and index them.
@@ -36,8 +39,15 @@ CROSS-DEVICE SUBCOMMANDS (durable memory state between your own machines):
   disable         Turn it off; every hook becomes a one-line no-op
   status          Shared folder, this device, last export, devices seen
   export          Publish one generation now (--force publishes even when the
-                  durable state has not changed since the last export)
-  import          Reconcile every peer generation now
+                  durable state has not changed since the last export).
+                  --archive also writes it as one zip you can carry by hand
+                  (default: <data root>/sync/exports/<device>-<generation>.zip)
+  import          Reconcile every peer generation now. --archive <path> imports
+                  one zip (or unpacked generation directory) from the other Mac
+                  instead; add --dry-run to validate and preview first
+  alias           Name a device so screens stop showing a UUID. Without
+                  --device it names THIS device, and that name travels in every
+                  generation manifest
 
 EXAMPLES:
   # Sync all new conversations
@@ -50,12 +60,18 @@ EXAMPLES:
   memex sync enable --dir ~/Library/Mobile\\ Documents/com~apple~CloudDocs/memex-sync
   memex sync export
   memex sync status
+
+  # No shared folder: carry one generation by hand
+  memex sync alias "집 맥미니"
+  memex sync export --archive            # prints the zip path; AirDrop it
+  memex sync import --archive ~/Downloads/<device>-<generation>.zip --dry-run
+  memex sync import --archive ~/Downloads/<device>-<generation>.zip
 `);
     process.exit(0);
 }
 // #35/#48 — cross-device sync subcommands. The rollout archive sync above takes
 // no positional argument, so a leading non-flag token can only be one of these.
-const SYNC_SUBCOMMANDS = new Set(['enable', 'disable', 'status', 'export', 'import']);
+const SYNC_SUBCOMMANDS = new Set(['enable', 'disable', 'status', 'export', 'import', 'alias']);
 const subcommand = args[0] && !args[0].startsWith('-') ? args[0] : null;
 if (subcommand !== null) {
     if (!SYNC_SUBCOMMANDS.has(subcommand)) {
@@ -64,15 +80,36 @@ if (subcommand !== null) {
         process.exit(1);
     }
     const json = args.includes('--json');
-    const { formatSyncStatus, getSyncStatus, runSyncExport, runSyncImport, setSyncEnabled, } = await import('./sync-control.js');
+    const { exportGenerationArchive, formatSyncStatus, getSyncStatus, importArchive, previewImportArchive, runSyncExport, runSyncImport, setDeviceAlias, setSyncEnabled, } = await import('./sync-control.js');
     const emit = (payload, text) => {
         if (json)
             console.log(JSON.stringify(payload, null, 2));
         else
             console.log(text);
     };
+    /** Value after a flag, when the flag was given with one. */
+    const valueAfter = (flag) => {
+        const index = args.indexOf(flag);
+        if (index < 0)
+            return undefined;
+        const next = args[index + 1];
+        return next && !next.startsWith('-') ? next : undefined;
+    };
     try {
-        if (subcommand === 'enable' || subcommand === 'disable') {
+        if (subcommand === 'alias') {
+            // `memex sync alias "집 맥미니"` / `memex sync alias --clear --device <id>`
+            const deviceId = valueAfter('--device') ?? getSyncStatus().deviceId;
+            if (!deviceId) {
+                throw new Error('this device has no sync id yet — run `memex sync export` once, or pass --device <id>');
+            }
+            const name = args.slice(1).find((arg) => !arg.startsWith('-') && arg !== valueAfter('--device'));
+            if (!name && !args.includes('--clear'))
+                throw new Error('alias needs a name (or --clear)');
+            setDeviceAlias(deviceId, args.includes('--clear') ? null : name);
+            const status = getSyncStatus();
+            emit(status, formatSyncStatus(status));
+        }
+        else if (subcommand === 'enable' || subcommand === 'disable') {
             const dirIndex = args.indexOf('--dir');
             const dir = dirIndex >= 0 ? args[dirIndex + 1] : undefined;
             if (dirIndex >= 0 && !dir)
@@ -83,6 +120,44 @@ if (subcommand !== null) {
         else if (subcommand === 'status') {
             const status = getSyncStatus();
             emit(status, formatSyncStatus(status));
+        }
+        else if (subcommand === 'export' && args.includes('--archive')) {
+            // Works with sync off: a zip is for the case where there is no shared folder.
+            const archive = exportGenerationArchive({ outPath: valueAfter('--archive') });
+            emit(archive, `sync archive written: ${archive.path}\n` +
+                `  device ${archive.deviceId}${archive.deviceAlias ? ` "${archive.deviceAlias}"` : ''} generation ${archive.generation}\n` +
+                `  ${archive.counts.facts} facts, ${archive.counts.revisions} revisions, ` +
+                `${archive.counts.tombstones} tombstones, ${archive.counts.recallEvents} recall events (${archive.bytes} bytes)\n` +
+                '  Copy it to the other Mac and run: memex sync import --archive <path>');
+        }
+        else if (subcommand === 'import' && args.includes('--archive')) {
+            const source = valueAfter('--archive');
+            if (!source)
+                throw new Error('--archive needs the path of a generation zip or directory');
+            if (args.includes('--dry-run')) {
+                const preview = previewImportArchive(source);
+                emit(preview, `sync archive preview: device ${preview.deviceId}${preview.deviceAlias ? ` "${preview.deviceAlias}"` : ''} ` +
+                    `generation ${preview.generation}\n` +
+                    `  facts +${preview.newFacts}/~${preview.updatedFacts}/-${preview.deletedFacts}` +
+                    (preview.conflicts.length
+                        ? `\n  conflicts: ${preview.conflicts.map((c) => `${c.factId} → ${c.winner} (${c.reason})`).join(', ')}`
+                        : '') +
+                    (preview.rejected.length
+                        ? `\n${preview.rejected.map((issue) => `  rejected ${issue.file}:${issue.line} — ${issue.error}`).join('\n')}`
+                        : ''));
+            }
+            else {
+                const outcome = await importArchive(source);
+                const r = outcome.result;
+                emit(outcome, `sync archive imported: device ${outcome.deviceId}${outcome.deviceAlias ? ` "${outcome.deviceAlias}"` : ''} ` +
+                    `generation ${outcome.generation}\n` +
+                    `  facts +${r.newFacts}/~${r.updatedFacts}/-${r.deletedFacts}, ` +
+                    `+${r.newRevisions} revisions, +${r.newTombstones} tombstones, ` +
+                    `+${r.newRecallEvents}/~${r.updatedRecallEvents} recall events` +
+                    (r.malformedRows.length
+                        ? `\n${r.malformedRows.map((issue) => `  rejected ${issue.file}:${issue.line} — ${issue.error}`).join('\n')}`
+                        : ''));
+            }
         }
         else if (subcommand === 'export') {
             const outcome = runSyncExport({ force: args.includes('--force') });

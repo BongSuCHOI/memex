@@ -1028,6 +1028,12 @@ export const CHRONICLE_EVENT_KINDS = [
   // carrying these kinds visibly, exactly as it does any unknown kind today.
   "PROMOTED",
   "DEMOTED",
+  // 0.6.3 cross-device conflict history (#48). Event-only: it records which
+  // device's version of a fact won an import and why. Unlike the kinds above it
+  // is LOCAL — src/sync-export.ts never puts it in a generation — so an older
+  // peer never sees it and nothing about this kind is a protocol change
+  // (src/sync-export.ts LOCAL_ONLY_EVENT_KIND).
+  "SYNC_IMPORTED",
 ] as const;
 
 const CHRONICLE_COLUMNS: Array<[string, string]> = [

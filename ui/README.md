@@ -6,7 +6,7 @@
 
 - `lib/server.cjs`: loopback HTTP, API v2, CSRF, SSE, 정적 파일
 - `lib/store.cjs`: 읽기 전용 조회와 프로젝트/워크스페이스/작업 흐름 범위
-- `lib/core.cjs`: 기존 `dist/db.js`, `fact-management.js`, `pipeline-status.js`, `sync-control.js` 연결 — 의미 수정과 계층 승격/강등(`promoteFact`/`demoteFact`, `actor: 'user'`), 크로스디바이스 동기화(`getSyncStatus`/`setSyncEnabled`/`runSyncExport`/`runSyncImport`) 모두 코어 서비스를 통과합니다
+- `lib/core.cjs`: 기존 `dist/db.js`, `fact-management.js`, `pipeline-status.js`, `sync-control.js` 연결 — 의미 수정과 계층 승격/강등(`promoteFact`/`demoteFact`, `actor: 'user'`), 크로스디바이스 동기화(`getSyncStatus`/`setSyncEnabled`/`runSyncExport`/`runSyncImport`), 수동 세대 파일과 기기 별칭(`exportGenerationArchive`/`previewImportArchive`/`importArchive`/`setDeviceAlias`) 모두 코어 서비스를 통과합니다. 코어가 남기는 기록(`logs/ui-audit.jsonl`)이 이 서버의 home에 남도록 모든 변경 호출은 `pinned()`로 `MEMEX_HOME`/`MEMEX_DB_PATH`를 고정합니다(#78)
 - `lib/logs.cjs`: 제한된 로그 tail, UI 감사 메타데이터
 - `lib/operations.cjs`: 기존 CLI allowlist 실행, 취소, 출력 제한 (`doctor` · `status` · `sync` · `backfill extract|ontology|embeddings|all` · `recover --all-dead` · `facts migrate-tiers --dry-run|--apply`). argv는 항상 고정이므로 인자를 받는 명령(`backfill receipts`, `ontology merge|rename`, `recover <job-id>`)은 allowlist에 없습니다
 - `public/pages/`: 개요, 대화 원장, 기억·사실, 분류, 지도, 활동, 관리(런타임·관리 작업·동기화·화면 설정·진단)

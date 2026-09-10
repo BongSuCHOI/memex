@@ -451,11 +451,11 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 | `fact_id` | projection fact(nullable — VALIDATED/INCIDENT 같은 event-only row) |
 | `previous_fact` / `new_fact` | previous/new value |
 | `project_id`, `subject_key` | stable slot |
-| `event_kind` | `ASSERTED\|CHANGED\|RETIRED\|RESTORED\|VALIDATED\|INCIDENT\|CONTRADICTED\|PROMOTED\|DEMOTED`(뒤 둘은 0.6.0 additive) |
+| `event_kind` | `ASSERTED\|CHANGED\|RETIRED\|RESTORED\|VALIDATED\|INCIDENT\|CONTRADICTED\|PROMOTED\|DEMOTED\|SYNC_IMPORTED`(`PROMOTED`/`DEMOTED`는 0.6.0, `SYNC_IMPORTED`는 0.6.3 additive) |
 | `from/to_semantic_generation`, `lifecycle_generation` | device-local generation(export 시 제거) |
 | `problem`, `grounded_cause`, `rationale` | source에 명시된 문장만. 검증 실패는 기록하지 않음 |
 | `classifier_note` | model/consolidator 추정. 절대 authoritative cause가 아님 |
-| `outcome_json` | validation/incident/temporal 판정 결과. `PROMOTED`/`DEMOTED`는 `from_tier`, `to_tier`, `actor`, `reason`, `evidence_ids`(+근거 fact가 있으면 `evidence_fact_ids`)를 담습니다 |
+| `outcome_json` | validation/incident/temporal 판정 결과. `PROMOTED`/`DEMOTED`는 `from_tier`, `to_tier`, `actor`, `reason`, `evidence_ids`(+근거 fact가 있으면 `evidence_fact_ids`)를, `SYNC_IMPORTED`는 `source_device_id`, `source_device_alias`, `generation`, `winner`(`peer`/`local`), `reason`을 담습니다 |
 | `source_exchange_ids`, `source_evidence_ids` | authoritative exchange / trusted tool_calls id |
 | `reverts_event_id`, `related_event_ids` | rollback/관계 |
 | `actor` | `extractor\|consolidator\|user\|sync\|legacy\|auto\|user-directive\|migration`(뒤 셋은 0.6.0 additive) |
@@ -471,6 +471,13 @@ nullable, id·값 보존). Current Fact(`facts`)는 빠른 projection이고, Chr
 `outcome.to_tier`에 tier 이름(`workstream|project|global`)을 쓰지만 `facts migrate-tiers`의 일회성
 back-fill만 `promotion_state` 이름인 `project-current`를 씁니다 — 두 문자열이 실제 데이터에 함께
 존재하므로 `outcome_json`을 읽는 쪽은 둘 다 처리해야 합니다.
+
+`SYNC_IMPORTED`(0.6.3, #48)은 event-only입니다: `projection_applied = 0`, `actor = sync`,
+`effective_at_source = peer`(피어의 의미 수정 시각), `previous_fact`는 밀린 값, `new_fact`는 남은 값.
+가져오기에서 **의미가 실제로 달랐을 때만** 기록하며(새 fact나 같은 문장은 충돌이 아님) 양방향
+(`winner: peer`와 `winner: local`) 모두 남습니다. 이 kind는 **export되지 않습니다**
+(`src/sync-export.ts` `LOCAL_ONLY_EVENT_KIND`) — 이 기기가 내린 판정이므로 로컬 provenance이고, 그래서
+구버전 피어에게는 보이지 않습니다.
 
 Timeline 정렬은 항상 `effective_at, recorded_at, chronicle_seq`이며 worker 완료 순서나 generation 번호로
 정렬하지 않습니다. Legacy row backfill: `event_kind=CHANGED`, `actor=legacy`, `reason → classifier_note`,

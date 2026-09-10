@@ -34,7 +34,7 @@ export declare const CHRONICLE_LANE_LABELS: {
     readonly telemetry: "TELEMETRY — MEASURED, NOT A FACT";
 };
 /** Tier moves change placement, never meaning: they never touch the fact text. */
-export declare const TIER_EVENT_KINDS: Set<"ASSERTED" | "CHANGED" | "RETIRED" | "RESTORED" | "VALIDATED" | "INCIDENT" | "CONTRADICTED" | "PROMOTED" | "DEMOTED">;
+export declare const TIER_EVENT_KINDS: Set<"ASSERTED" | "CHANGED" | "RETIRED" | "RESTORED" | "VALIDATED" | "INCIDENT" | "CONTRADICTED" | "PROMOTED" | "DEMOTED" | "SYNC_IMPORTED">;
 export declare class ChronicleGroundingError extends Error {
     constructor(message: string);
 }

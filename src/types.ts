@@ -180,7 +180,7 @@ export interface FactRevision {
   source_exchange_id: string | null;
   created_at: string;
   /** Chronicle (Phase 4) view fields; absent on rows read by legacy tooling. */
-  event_kind?: 'ASSERTED' | 'CHANGED' | 'RETIRED' | 'RESTORED' | 'VALIDATED' | 'INCIDENT' | 'CONTRADICTED' | 'PROMOTED' | 'DEMOTED';
+  event_kind?: 'ASSERTED' | 'CHANGED' | 'RETIRED' | 'RESTORED' | 'VALIDATED' | 'INCIDENT' | 'CONTRADICTED' | 'PROMOTED' | 'DEMOTED' | 'SYNC_IMPORTED';
   effective_at?: string;
   projection_applied?: boolean;
 }

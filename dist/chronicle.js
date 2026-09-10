@@ -19,7 +19,10 @@ const KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
 const PROJECTION_KINDS = new Set(["ASSERTED", "CHANGED", "RETIRED", "RESTORED", "PROMOTED", "DEMOTED"]);
 /** Tier moves change placement, never meaning: they never touch the fact text. */
 export const TIER_EVENT_KINDS = new Set(["PROMOTED", "DEMOTED"]);
-const EVENT_ONLY_KINDS = new Set(["VALIDATED", "INCIDENT", "CONTRADICTED"]);
+// SYNC_IMPORTED (0.6.3 #48) is event-only by construction: it records WHICH
+// device's version of a fact survived an import, while the projection change it
+// describes is already carried by the replicated CHANGED event.
+const EVENT_ONLY_KINDS = new Set(["VALIDATED", "INCIDENT", "CONTRADICTED", "SYNC_IMPORTED"]);
 export class ChronicleGroundingError extends Error {
     constructor(message) {
         super(message);

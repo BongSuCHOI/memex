@@ -132,6 +132,7 @@ export const BADGES={
  RESTORED:'기억을 복원한 이벤트입니다.',
  PROMOTED:'계층을 한 칸 위로 올린 이벤트입니다.',
  DEMOTED:'계층을 한 칸 아래로 내린 이벤트입니다.',
+ SYNC_IMPORTED:'다른 기기의 세대를 가져올 때 같은 기억의 의미가 달라, 어느 쪽이 남았는지 기록한 이벤트입니다.',
  CONSOLIDATED:'중복된 기억을 하나로 합친 이벤트입니다.',
  CONTRADICTED:'서로 어긋나는 기억이 발견된 이벤트입니다.',
  INCIDENT:'처리 중 문제가 기록된 이벤트입니다.',

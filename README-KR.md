@@ -184,7 +184,7 @@ sync protocol v5는 fact 상태를 서로 독립적인 축으로 나눕니다.
 | **Lineage** | source exchange IDs, consolidated count | monotonic union / max |
 | **Derived overlay** | KR text, ontology, relations, vectors | local-only, 재생성 가능 |
 
-이 분리가 중요한 이유는 fact의 의미를 편집하는 것과 비활성화하는 것이 서로 다른 사건이기 때문입니다. 더 최신 semantic edit가 더 최신 deactivate를 되돌려서는 안 되고, 오래된 peer snapshot 때문에 provenance가 사라져서도 안 됩니다.
+이 분리가 중요한 이유는 fact의 의미를 편집하는 것과 비활성화하는 것이 서로 다른 사건이기 때문입니다. 더 최신 semantic edit가 더 최신 deactivate를 되돌려서는 안 되고, 오래된 peer snapshot 때문에 provenance가 사라져서도 안 됩니다. semantic axis가 서로 다른 두 의미 중 하나를 골라야 했다면 그 판정을 조용히 넘기지 않고, 어느 기기의 어느 세대에서 왔고 어느 쪽이 이겼는지를 로컬 `SYNC_IMPORTED` Chronicle 이벤트로 남깁니다.
 
 ### 범위와 기억 계층
 
@@ -225,9 +225,20 @@ user-role message의 `DO NOT INDEX` marker는 해당 conversation 전체를 Meme
 memex sync enable --dir ~/Library/Mobile\ Documents/com~apple~CloudDocs/memex-sync
 memex sync export      # 이 기기의 첫 세대 내보내기
 memex sync status      # 공유 폴더·이 기기·마지막 export·감지된 다른 기기
+memex sync alias "집 맥미니"   # 기기 이름 — 세대 manifest에 실려 상대에게도 보입니다
 ```
 
 이후 export는 자동입니다. SessionEnd의 async 훅과 자동 유지보수 wake가 "마지막 export 이후 durable 변경이 있을 때만" 세대를 만들고, SessionStart가 다른 기기의 세대를 가져옵니다. `MEMEX_SYNC_DIR`은 저장된 공유 폴더보다 우선하며, on/off 스위치는 `<data root>/sync/config.json`의 기기 로컬 상태라 전송되지 않습니다. `memex sync disable`이면 이 경로 전부가 stderr 한 줄짜리 no-op이 됩니다. 공유 폴더의 기억은 평문 JSONL이고 암호화는 범위 밖이므로 **본인 계정의** 클라우드만 사용하십시오.
+
+**공유 폴더가 없으면** 세대 하나를 파일로 옮길 수 있습니다. 같은 protocol v5 generation을 zip에 담을 뿐이므로 검증도 똑같습니다.
+
+```bash
+memex sync export --archive          # <data root>/sync/exports/<device>-<generation>.zip 생성
+memex sync import --archive ~/Downloads/<device>-<generation>.zip --dry-run   # 검증 + 미리보기
+memex sync import --archive ~/Downloads/<device>-<generation>.zip
+```
+
+Web UI 동기화 탭도 같은 일을 하며(loopback UI는 브라우저 다운로드를 쓰지 않으므로 만들어진 경로를 알려줍니다) 항상 **검증 → 미리보기 → 확인** 순서입니다. 자기 기기가 만든 파일은 되돌려 적용하지 않고 거부합니다. 가져오기에서 같은 기억의 의미가 양쪽에서 달랐다면 그 판정이 로컬 Chronicle `SYNC_IMPORTED` 이벤트로 남아(어느 기기의 세대에서 왔고 어느 쪽이 이겼는지) 활동·추적의 지식 변경과 그 기억의 변경 이력에 보입니다. 이 이벤트는 로컬 기록이며 export되지 않습니다.
 
 protocol v5는 기기별로 하나의 committed generation을 export하며, 각 generation은 `facts.jsonl`, `fact-revisions.jsonl`, `fact-tombstones.jsonl`, `recall-events.jsonl`과 protocol version·device/generation identity·row count·payload별 SHA-256을 담은 `meta.json`으로 구성됩니다. Importer는 SQLite를 변경하기 전에 generation 전체를 pin하고 검증하며, 필수 파일 누락·hash 불일치·JSON 오류·row schema 오류가 하나라도 있으면 해당 device generation 전체를 reject합니다. 같은 local device의 exporter는 SQLite `BEGIN IMMEDIATE` transaction으로 직렬화되므로 늦게 끝난 오래된 export가 `CURRENT`를 되돌릴 수 없고 cloud-sync되는 lockfile도 필요하지 않습니다. KR 번역, ontology category, relation, vector index는 각 기기에서 로컬로 다시 만듭니다.
 
@@ -264,6 +275,9 @@ memex status
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--marketplace <name>`, `--no-materialize` |
 | `memex sync` | 새 Codex rollout archive/index. `--background` |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` |
+| `memex sync export --archive [<path.zip>]` | 세대 하나를 zip으로 저장해 손으로 옮기기(동기화가 꺼져 있어도 동작) |
+| `memex sync import --archive <path> [--dry-run]` | 받은 세대 파일 적용. `--dry-run`은 검증·미리보기만 |
+| `memex sync alias <name\|--clear> [--device <id>]` | 기기 이름. 이 기기의 이름은 모든 세대 manifest에 실려 나갑니다 |
 | `memex index` | conversation index 생성·검증·복구·재구축: `--cleanup`, `--session <id>`, `--verify`, `--repair`, `--rebuild`, `--concurrency N`, `--no-summaries` |
 | `memex search` | semantic / text / hybrid conversation search |
 | `memex show` | archive conversation 읽기 |
@@ -347,7 +361,9 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
 ├── sync/
-│   └── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
+│   ├── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
+│   ├── devices.json                    # 기기 id → 사람이 읽는 이름 (로컬, 공유되지 않음)
+│   └── exports/<device>-<generation>.zip   # 손으로 옮기는 세대 파일
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
