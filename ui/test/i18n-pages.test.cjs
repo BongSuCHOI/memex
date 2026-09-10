@@ -579,3 +579,197 @@ test('L2 · 관리 화면은 en에서도 마크업 강조와 endonym을 유지�
   assert.ok(display.includes('English') && display.includes('한국어'), 'endonym이 사라졌다');
   assert.match(display, /data-endonym/);
 });
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ E · 관리 › 모델 (pages/model.mjs · namespace `models`) — #31 lane E       │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// 독립 섹션이다: 자기 로케일을 직접 꽂고, 자기 fixture만 쓰고, 위 섹션을 수정하지 않는다.
+// 단정 3개 — (a) `models.*` 키가 화면 문구로 새지 않는다, (b) en 랜드마크가 사전 값과 같다,
+// (c) ko에서 같은 화면이 한국어 사전 값으로 나온다. 상태(보류·대기 작업·환경 고정·capability
+// 없음·카탈로그 없음)는 render() 한 번으로 다 나오지 않으므로 modelTab()을 직접 그린다.
+const modelPage = require('../public/pages/model.mjs');
+
+/** 점이 2개 이상인 `models.` 토큰 = 렌더된 사전 키. `models.json`(1개)은 화면 문구다. */
+const MODEL_KEYISH = /\bmodels(?:\.[a-zA-Z0-9]+){2,}\b/g;
+function assertNoModelKeys(label, html) {
+  const text = html.replace(/<[^>]*>/g, ' ');
+  const leaked = [...new Set([...text.matchAll(MODEL_KEYISH)].map(m => m[0]))];
+  assert.deepEqual(leaked, [], `${label}: 미번역 키가 화면에 렌더됐다`);
+}
+
+const MODEL_STATUS = (llm = {}, extra = {}) => ({
+  settingsPath: '/home/me/models.json', fileExists: true, version: 1, updatedAt: '2026-09-10T00:00:00.000Z',
+  llm: {
+    effective: {model: {value: 'gpt-6-astra', source: 'file'}, reasoning: {value: 'high', source: 'file'}},
+    saved: {model: 'gpt-6-astra', reasoning: 'high'},
+    defaults: {model: 'gpt-5.6-luna', reasoning: null},
+    allowedReasoning: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    catalogReasoning: ['low', 'medium', 'high'],
+    catalog: {source: 'models_cache', path: '/codex/models_cache.json', fetchedAt: '2026-09-09T00:00:00.000Z',
+      codexHome: '/codex', models: [
+        {slug: 'gpt-6-astra', displayName: 'GPT-6-Astra', visible: true, defaultReasoning: 'low', reasoningEfforts: ['low', 'medium', 'high']},
+        {slug: 'gpt-5.6-luna', displayName: 'GPT-5.6-Luna', visible: true, defaultReasoning: null, reasoningEfforts: ['low', 'high']},
+        {slug: 'gpt-reserve', displayName: 'Reserve', visible: false, defaultReasoning: null, reasoningEfforts: ['low']}]},
+    fingerprint: 'abcdef0123456789',
+    hold: null, holds: [], heldJobs: [],
+    lastProbe: {ok: true, at: '2026-09-10T02:00:00.000Z', latencyMs: 1234, model: 'gpt-6-astra', reasoning: 'high', errorClass: null},
+    ...llm,
+  },
+  embedding: {readOnly: true, model: 'Xenova/multilingual-e5-small', source: 'default',
+    cache: {present: true, files: 4, bytes: 2048, modelDir: '/home/me/models/Xenova/multilingual-e5-small', stub: false}},
+  env: {MEMEX_CODEX_MODEL: null, MEMEX_CODEX_REASONING: null, MEMEX_EMBEDDING_MODEL: null, MEMEX_EMBEDDING_DIMS: null},
+  db: {path: '/home/me/db.sqlite', exists: true},
+  ...extra,
+});
+const HOLD = {fingerprint: 'abcdef0123456789', heldAt: '2026-09-10T01:00:00.000Z', model: 'gpt-6-astraX',
+  reasoningEffort: 'max', status: 400, providerType: 'invalid_request_error',
+  providerMessage: "The 'gpt-6-astraX' model is not supported when using Codex with a ChatGPT account.",
+  observedCount: 3, lastObservedAt: '2026-09-10T02:00:00.000Z', current: true};
+const MODEL_ENV = {...ENV, models: true};
+/** 이 탭이 그리는 모든 상태. 한 번에 다 보이지 않으므로 조합마다 이름을 붙인다. */
+const modelVariants = () => [
+  ['models/normal', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS(), null)],
+  ['models/held', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    hold: HOLD, holds: [HOLD, {...HOLD, fingerprint: 'other', current: false}],
+    heldJobs: [{reason: 'model_config_rejected', jobs: 2, oldestHeldAt: '2026-09-10T01:00:00.000Z'}],
+    lastProbe: {ok: false, at: '2026-09-10T02:00:00.000Z', latencyMs: 900, model: 'gpt-6-astraX', reasoning: 'max', errorClass: 'config'},
+  }), null)],
+  ['models/envPinned', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    effective: {model: {value: 'env-model', source: 'env'}, reasoning: {value: null, source: 'env'}},
+  }, {env: {MEMEX_CODEX_MODEL: 'env-model', MEMEX_CODEX_REASONING: 'low', MEMEX_EMBEDDING_MODEL: null, MEMEX_EMBEDDING_DIMS: null}}), null)],
+  ['models/noCatalog', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    catalogReasoning: null, saved: {model: null, reasoning: null},
+    catalog: {source: 'none', path: null, fetchedAt: null, codexHome: '/codex', models: []},
+    lastProbe: null,
+  }, {fileExists: false, updatedAt: null}), null)],
+  ['models/stubCache', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({}, {
+    embedding: {readOnly: true, model: 'Xenova/multilingual-e5-small', source: 'env',
+      cache: {present: false, files: 0, bytes: 0, modelDir: '/home/me/models/x', stub: true}},
+  }), null)],
+  ['models/absentCache', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({}, {
+    embedding: {readOnly: true, model: 'Xenova/multilingual-e5-small', source: 'default',
+      cache: {present: false, files: 0, bytes: 0, modelDir: '/home/me/models/x', stub: false}},
+  }), null)],
+  ['models/noCapability', modelPage.modelTab(l2ctx('tab=models'), {...ENV, models: false}, null, null)],
+  ['models/readFailed', modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, null, 'EACCES: permission denied')],
+];
+
+test('E en: 모델 탭의 모든 상태가 en으로 렌더되고 한글·키 누출이 없다', () => {
+  locale.useEn();
+  for (const [label, html] of modelVariants()) {
+    assertEnglishOnly(label, html);
+    assertNoModelKeys(label, html);
+  }
+});
+
+test('E en: 두 셀렉트가 카탈로그에서 채워지고 현재 값이 사라지지 않는다', () => {
+  locale.useEn();
+  const html = modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS(), null);
+  assert.match(html, /<select name="model"/);
+  assert.match(html, /<select name="reasoning"/);
+  assert.match(html, /<option value="gpt-6-astra" selected>/, '현재 모델이 선택돼 있다');
+  assert.match(html, /<option value="gpt-5.6-luna" /);
+  assert.ok(!html.includes('value="gpt-reserve"'), '숨은 카탈로그 항목은 목록에 넣지 않는다');
+  assert.match(html, /<option value="high" selected>/, '현재 강도가 선택돼 있다');
+  assert.ok(html.includes(locale.en['models.reasoning.unsetOption']), '플래그 해제 선택지가 있다');
+  assert.ok(!html.includes('value="ultra"'), '카탈로그가 말한 강도만 제시한다');
+  // 카탈로그에 없는 현재 값도 항상 한 항목으로 들어간다 — 그러지 않으면 선택이 사라진다.
+  const unknown = modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    effective: {model: {value: 'totally-bogus-model-xyz', source: 'file'}, reasoning: {value: 'ultra', source: 'file'}},
+  }), null);
+  assert.match(unknown, /<option value="totally-bogus-model-xyz" selected>/);
+  assert.match(unknown, /<option value="ultra" selected>/);
+  // 카탈로그 밖 강도는 거절이 아니라 경고다(§3.3 규칙 2).
+  assert.ok(unknown.includes('Saved anyway'), '지원 목록 밖 강도에 경고가 붙는다');
+});
+
+test('E en: 랜드마크 문구가 en 사전 값과 같다', () => {
+  locale.useEn();
+  const html = modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    hold: HOLD, heldJobs: [{reason: 'model_config_rejected', jobs: 2, oldestHeldAt: '2026-09-10T01:00:00.000Z'}],
+  }), null);
+  for (const key of ['models.llm.title', 'models.llm.row.model', 'models.llm.row.reasoning', 'models.llm.save',
+    'models.llm.test', 'models.llm.reset', 'models.row.effectiveModel', 'models.row.lastTest',
+    'models.hold.title', 'models.hold.noDamage', 'models.held.title', 'models.embedding.title',
+    'models.embedding.readOnly', 'models.source.file']) {
+    assert.ok(html.includes(locale.en[key]), `${key} 값이 화면에 없다: ${locale.en[key]}`);
+  }
+  // 보류 배지는 lane-0의 공용 키를 쓴다 — 두 문서가 같은 배지를 공유한다(decisions-v3 H2).
+  assert.ok(html.includes(locale.en['common.job.hold.model_config_rejected']));
+  // 제공자 원문은 번역하지 않고 그대로 보여준다.
+  assert.ok(html.includes('The &#39;gpt-6-astraX&#39; model is not supported'), '제공자 문장이 원문으로 실린다');
+  assert.match(html, /<strong>local to this machine<\/strong>/, 'tHtml의 강조가 이스케이프됐다');
+});
+
+test('E en: 환경 변수로 고정된 값은 비활성 컨트롤로 정직하게 보인다', () => {
+  locale.useEn();
+  const [, pinned] = modelVariants().find(([label]) => label === 'models/envPinned');
+  assert.match(pinned, /<select name="model" [^>]*disabled>/);
+  assert.match(pinned, /<select name="reasoning" [^>]*disabled>/);
+  assert.ok(pinned.includes(locale.en['models.envPinned']), '고정 태그가 없다');
+  assert.ok(pinned.includes('MEMEX_CODEX_MODEL=env-model'), '어떤 변수가 이기는지 말해야 한다');
+  assert.ok(pinned.includes(locale.en['models.saveDisabledByEnv']));
+  assert.match(pinned, /type="submit" disabled/, '저장할 것이 없으면 버튼도 비활성이다');
+  // capability가 없으면 탭을 비우지 않고 이유를 말한다.
+  const [, missing] = modelVariants().find(([label]) => label === 'models/noCapability');
+  assert.match(missing, /<div class="banner error">/);
+  assert.match(missing, /<code>dist\/model-settings\.js<\/code>/);
+  const [, failed] = modelVariants().find(([label]) => label === 'models/readFailed');
+  assert.ok(failed.includes('EACCES: permission denied'), '조회 실패 사유를 그대로 싣는다');
+});
+
+test('E: 탭 레지스트리가 모델 탭을 그리고, 조회 실패도 화면으로 설명한다', async () => {
+  locale.useEn();
+  const ctx = l2ctx('tab=models', {operations: {items: []}}, {
+    bootstrap: {uiVersion: '1.2.3', environment: MODEL_ENV, db: {available: true, error: null},
+      capabilities: {}, commands: COMMANDS},
+    savePrefs() {},
+  });
+  const {html} = await settingsPage.render(ctx);
+  assert.ok(html.includes(locale.en['settings.tabs.models']), '탭 레이블은 lane-0의 settings 사전에서 온다');
+  assert.match(html, /class="tab active" href="[^"]*tab=models"/, '모델 탭이 활성 탭이다');
+  // l2ctx는 등록하지 않은 api 호출에 throw한다 — 그 사유가 화면에 남아야 한다.
+  assert.match(html, /<div class="banner error">/);
+  assert.ok(html.includes('unexpected api call: models'));
+  const served = l2ctx('tab=models', {models: MODEL_STATUS(), operations: {items: []}}, {
+    bootstrap: {uiVersion: '1.2.3', environment: MODEL_ENV, db: {available: true, error: null},
+      capabilities: {}, commands: COMMANDS},
+    savePrefs() {},
+  });
+  const ok = await settingsPage.render(served);
+  assert.ok(ok.html.includes(locale.en['models.llm.title']), '레지스트리 render가 본문을 그린다');
+  assertNoModelKeys('settings:tab=models', ok.html);
+});
+
+test('E ko: 같은 상태가 ko 사전 값으로 렌더된다', () => {
+  locale.useKo();
+  for (const [label, html] of modelVariants()) assertNoModelKeys(label, html);
+  const html = modelPage.modelTab(l2ctx('tab=models'), MODEL_ENV, MODEL_STATUS({
+    hold: HOLD, heldJobs: [{reason: 'model_config_rejected', jobs: 2, oldestHeldAt: '2026-09-10T01:00:00.000Z'}],
+  }), null);
+  for (const key of ['models.llm.title', 'models.llm.test', 'models.hold.title', 'models.held.title',
+    'models.embedding.title', 'models.row.effectiveModel', 'common.job.hold.model_config_rejected']) {
+    assert.ok(html.includes(locale.ko[key]), `${key} 의 ko 값이 화면에 없다: ${locale.ko[key]}`);
+  }
+  assert.ok(!html.includes(locale.en['models.llm.title']), 'ko 화면에 en 문구가 섞였다');
+  assert.match(html, /<strong>이 기기 전용<\/strong>/, 'ko tHtml의 강조가 이스케이프됐다');
+});
+
+test('E: 경고 코드는 사전 문장으로 바뀌고, 모르는 코드는 코드 그대로 보인다', () => {
+  locale.useEn();
+  const lines = modelPage.warningLines([
+    {code: 'MODEL_NOT_IN_CATALOG', params: {model: 'x', path: '/codex/catalog.json'}},
+    {code: 'REASONING_UNSUPPORTED', params: {model: 'x', levels: 'low / high'}},
+    {code: 'ENV_OVERRIDES_MODEL', params: {name: 'MEMEX_CODEX_MODEL', value: 'y', model: 'x'}},
+    {code: 'HOLD_CLEARED', params: {holds: 1, jobs: 2}},
+    {code: 'SOMETHING_NEW_FROM_A_LATER_RELEASE'},
+  ]);
+  assert.equal(lines.length, 5);
+  assert.ok(lines[0].includes('/codex/catalog.json'));
+  assert.ok(lines[1].includes('low / high'));
+  assert.ok(lines[2].includes('MEMEX_CODEX_MODEL'));
+  assert.ok(lines[3].includes('1') && lines[3].includes('2'));
+  assert.equal(lines[4], 'SOMETHING_NEW_FROM_A_LATER_RELEASE', '모르는 코드를 빈 문장으로 숨기지 않는다');
+  assert.deepEqual(modelPage.warningLines(undefined), []);
+});

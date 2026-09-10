@@ -81,6 +81,7 @@ const EXEMPT_FILES={
  'fact-extractor.ts':'추출기 내부 계약. 사용자에게는 skip 사유와 작업 상태로 도달한다.',
  'continuity-store.ts':'큐 멱등성 불변식. 위반은 코어 버그다.',
  'sync-cli.ts':'sync CLI 인자 검증. Web UI는 같은 값을 폼에서 검증한다.',
+ 'models-cli.ts':'models CLI 인자 검증(플래그에 값이 없다). Web UI는 같은 값을 폼과 422 issues로 먼저 검증한다 (#31).',
  'zip.ts':'zip 컨테이너 레코드 계약. 사용자에게는 sync-control이 감싼 "sync archive …" 거부 사유로 도달한다.',
 };
 /** 대장 B — 위 면제에 들지 않는 파일에서, 개별적으로 매핑하지 않기로 한 리터럴. */
@@ -385,7 +386,12 @@ const UI_CODE_EXEMPT={
  HOST_REJECTED:'루프백이 아닌 Host 헤더 거부. 서버 바인딩 정책이며 데이터 상태가 아니다.',
  INVALID_COMMAND:'allowlist에 없는 관리 명령. 버튼으로만 실행되므로 사용자 경로에서 발생하지 않는다.',
  INVALID_ID:'UUID 형식 검증. 다음 행동이 입력 수정이다.',
+ INVALID_MODEL_ID:'모델 id 형식 검증(#31). 422 issues가 어느 필드인지 말하고 다음 행동이 입력 수정이다.',
  INVALID_NUMBER:'정수·범위 검증. 다음 행동이 입력 수정이다.',
+ INVALID_REASONING:'추론 강도 허용 집합 검증(#31). 다음 행동이 목록에서 다시 고르는 것이다.',
+ METHOD_NOT_ALLOWED:'허용되지 않은 HTTP 메서드. 화면이 만드는 요청이 아니라 직접 호출한 경우다.',
+ MODELS_BUSY:'모델 설정 작업이 이미 진행 중이다(#31). 잠시 뒤 다시 시도하는 것이 전부다.',
+ NOTHING_TO_SAVE:'모델·추론 강도를 하나도 고르지 않았다(#31). 다음 행동이 폼 입력이다.',
  INVALID_SCOPE:'조회 범위 인자 검증. 상단 컨트롤이 값을 만들므로 사용자 경로에서 발생하지 않는다.',
  MUTATION_BUSY:'같은 기억에 변경이 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
  NOT_FOUND:'없는 리소스. 실패 클래스가 아니라 404다.',
@@ -395,6 +401,7 @@ const UI_CODE_EXEMPT={
  SCOPE_MISMATCH:'범위와 대상이 어긋난 요청. 상단 범위를 맞추면 해소된다.',
  SYNC_BUSY:'동기화 작업이 진행 중이다. 잠시 뒤 다시 시도하는 것이 전부다.',
  TIER_TARGET_REQUIRED:'계층 이동의 대상 범위를 먼저 골라야 한다. 다음 행동이 상단 범위 선택이다.',
+ UNKNOWN_ACTION:'지원하지 않는 action 이름(#31). 화면의 버튼이 만드는 요청이 아니다.',
 };
 
 test('ui/lib이 던지는 오류 코드는 모두 클래스가 있거나 대장에 올라 있다 (#109)',()=>{
