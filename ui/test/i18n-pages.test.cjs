@@ -332,3 +332,248 @@ test('L4: en에서는 문서가 한국어라는 고지를 붙이고 ko에서는 
   assert.equal(help.PAGES['/facts'].title, locale.ko['help.page.facts.title']);
   assert.equal(guidance.guidanceFor('job-dead').next, locale.ko['guidance.job-dead.next']);
 });
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ L2 · details + settings (details.mjs, pages/settings.mjs) — 공용 헬퍼      │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// L3의 `assertEnglish`는 "이관한 한국어 목록"을 호출자가 손으로 적는다. L2는 그 목록을
+// **자동으로 구한다**: `PENDING_MIGRATION`에 남은 파일의 리터럴에서 수확한 낱말만 관용하고
+// 나머지 한글은 전부 실패로 본다. 레인이 파일을 끝내고 목록에서 지우면 관용 집합이 저절로
+// 줄어, 마지막 레인이 끝나는 순간 "en 렌더 한글 0건"이 절대 조건이 된다.
+const path = require('node:path');
+const extract = require('../../scripts/i18n-extract.mjs');
+
+/** `details.fact.tab.summary` 처럼 점이 2개 이상인 소문자 토큰 = 렌더된 사전 키. */
+const L2_KEYISH = /\b[a-z][a-z0-9]*(?:\.[a-zA-Z0-9]+){2,}\b/g;
+/** `data-endonym` 서브트리는 언어 이름(English / 한국어)을 번역하지 않으므로 면제한다(설계 §7.1). */
+const stripEndonyms = html => html.replace(/<select[^>]*\sdata-endonym[\s>][\s\S]*?<\/select>/g, '');
+
+const PENDING_KOREAN = (() => {
+  const words = new Set();
+  for (const file of extract.PENDING_MIGRATION) {
+    for (const hit of extract.literals(path.join(extract.ROOT, file))) {
+      for (const word of hit.text.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]+/g) || []) words.add(word);
+    }
+  }
+  return words;
+})();
+
+function assertEnglishOnly(label, html) {
+  // 문서 앵커(href)는 한국어 문서의 제목 조각이라 언어와 무관하게 한글을 담는다 — L4와 같은 예외.
+  const withoutAnchors = stripEndonyms(html).replace(/\shref="[^"]*"/g, '');
+  const hangul = [...new Set([...withoutAnchors.matchAll(/[가-힣ㄱ-ㅎㅏ-ㅣ]+/g)].map(m => m[0]))]
+    .filter(word => !PENDING_KOREAN.has(word));
+  assert.deepEqual(hangul, [], `${label}: en 렌더에 (이관 대기 모듈의 것이 아닌) 한글이 남았다`);
+}
+
+/** 사전 키가 화면 문구로 새는 것만 본다 — 속성·JSON 덤프는 제외한다. */
+function assertNoRenderedKeys(label, html) {
+  const text = stripEndonyms(html)
+    .replace(/<details class="json-details">[\s\S]*?<\/details>/g, '')  // raw() 원시 데이터 덤프
+    .replace(/<[^>]*>/g, ' ');                                     // 태그·속성 제거
+  const leaked = [...new Set([...text.matchAll(L2_KEYISH)].map(m => m[0]))]
+    .filter(token => token.startsWith('details.') || token.startsWith('settings.')
+      || token.startsWith('common.') || token.startsWith('error.') || token.startsWith('unit.'));
+  assert.deepEqual(leaked, [], `${label}: 미번역 키가 화면에 렌더됐다`);
+}
+
+const l2ctx = (params, data = {}, extra = {}) => ({
+  p: new URLSearchParams(params),
+  prefs: {theme: 'light', density: 'comfortable', preferTranslatedFacts: false, live: false, help: 'always'},
+  scope: {scope: 'all'},
+  bootstrap: {environment: {mutable: true}, commands: {}},
+  href: (pathname, query = {}) => {
+    const u = new URL(pathname, 'http://127.0.0.1');
+    for (const [k, v] of Object.entries(query)) if (v !== null && v !== undefined && v !== '') u.searchParams.set(k, String(v));
+    return u.pathname + u.search;
+  },
+  api: async key => { if (!(key in data)) throw new Error('unexpected api call: ' + key); return data[key]; },
+  update() {}, open() {}, toast() {}, modal() {}, confirm() {}, invalidate() {}, refreshDetail() {}, closeDetail() {},
+  ...extra,
+});
+
+// ══ L2 · 상세 패널 (ui/public/details.mjs · namespace `details`) ══════════════
+const details = require('../public/details.mjs');
+
+const L2_FACT = {
+  id: '11111111-1111-4111-8111-111111111111', fact: 'Local first storage stays on the device.', fact_kr: null,
+  category: 'decision', scope_type: 'project', scope_project: '/workspace/memex', promotion_state: 'project-current',
+  is_active: 1, source_total: 2, semantic_generation: 2, lifecycle_generation: 1, subject_key: null, tier_reason: null,
+  workspace_id: null, workstream_id: null, provenance_parse_valid: false,
+  created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-02T00:00:00.000Z',
+  sources: [{exchange_id: 'x-1', timestamp: '2026-09-01T00:00:00.000Z', user_message: 'Where does data live?', content_generation: 1},
+            {exchange_id: 'x-2', timestamp: '2026-09-01T01:00:00.000Z', unavailable: true, reason: 'transcript pruned'}],
+  context_dependencies: [{exchange_id: 'x-3', timestamp: '2026-09-01T00:00:00.000Z', user_message: 'context', dependency_kind: 'context-only'}],
+  relations: [{relation_type: 'SUPPORTS', source_fact_id: '11111111-1111-4111-8111-111111111111', other_id: 'f-2', other_fact: 'Other memory', reasoning: 'shared evidence'}],
+  receipt: {method: 'hash', verified_at: '2026-09-02T00:00:00.000Z', semantic_generation: 2, fact_hash: 'abc123'},
+  recalls: [{status: 'emitted', emitted_at: '2026-09-02T00:00:00.000Z', session_id: 'session-1'}],
+  revisions: [{event_kind: 'CHANGED', actor: 'user', recorded_at: '2026-09-02T00:00:00.000Z',
+    effective_at: '2026-09-01T00:00:00.000Z', previous_fact: 'before', new_fact: 'after', rationale: 'clarified'}],
+  limits: {sources: 500, revisions: 200, relations: 200, recalls: 100},
+};
+const EXCHANGE = {exchange: {timestamp: '2026-09-01T00:00:00.000Z', project: '/workspace/memex', content_generation: 1,
+    content_hash: null, closure_state: null, session_id: 'session-1', user_message: 'user says', assistant_message: null},
+  tools: [{tool_name: 'Bash', is_error: 0, timestamp: '2026-09-01T00:00:00.000Z', source_type: null, learnable: null, tool_input: 'ls', tool_result: 'ok'}],
+  extraction: [{state: 'processed', content_generation: 1, policy_version: 'v1', processed_at: null, target_id: null}],
+  targets: [{state: 'processed', target_id: 'target-1', item_count: 1, attempts: 1, last_error: null}],
+  facts: [{id: 'f-1', fact: 'A memory'}]};
+const JOB = {job: {state: 'failed', kind: 'fact_extract', created_at: '2026-09-01T00:00:00.000Z', updated_at: null,
+    attempts: 1, max_attempts: 3, available_at: null, lease_until: null, last_error: 'model call failed', session_id: 'session-1'},
+  checkpoint: null, target: {target_id: 'target-1', state: 'processed', item_count: 1, from_rowid: 1, through_rowid: 9, policy_version: 'v1'},
+  items: [{state: 'processed', exchange_id: 'x-1', content_generation: 1, ordinal: 1, content_hash: null}], itemsTruncated: true,
+  attempts: [{state: 'failed', stage: 'extract', started_at: null, duration_ms: 1200, input_chars: 1, error_message: 'boom'}],
+  failures: [{state: 'failed', error_message: 'boom', from_ordinal: 1, through_ordinal: 2, attempts: 1}],
+  relatedFactsBasis: 'Same transcript as evidence', relatedFacts: [{id: 'f-1', fact: 'A memory'}],
+  budget: {state: 'active', reserved_attempts: 1, max_attempts: 3, max_input_chars: 10, max_output_chars: 10, deadline_at: null}};
+const OPERATION = {id: 'op-1', label: 'Run doctor', command: 'doctor', status: 'running', started_at: '2026-09-01T00:00:00.000Z',
+  finished_at: null, exit_code: null, timeoutSeconds: 1, output: '', truncated: true, outputLost: true};
+const IMPORTED_EVENT = {id: 'event-1', event_kind: 'SYNC_IMPORTED', actor: 'sync', fact_id: 'f-1',
+  previous_fact: 'before', new_fact: 'after', projection_applied: 0, effective_at: '2026-09-09T00:00:00.000Z',
+  effective_at_source: 'peer', recorded_at: '2026-09-10T00:00:00.000Z', created_at: '2026-09-10T00:00:00.000Z',
+  source_exchange_ids: '["x-1"]',
+  outcome_json: JSON.stringify({source_device_id: 'device-bbb', source_device_alias: 'Work MacBook', generation: 'gen-9', winner: 'peer', reason: 'peer-newer'})};
+const ATTEMPT = {state: 'failed', token_usage_status: null, stage: 'extract', attempt_no: 1, started_at: null,
+  finished_at: null, duration_ms: 1200, input_chars: 1, output_chars: 0, error_class: null, error_message: null,
+  budget_id: null, job_id: 'job-1', token_usage_json: null};
+
+test('L2 · 상세 패널 6종이 en에서 한글 0건 · 미번역 키 0건으로 렌더된다', async () => {
+  locale.useEn();
+  const panels = [];
+  for (const tab of ['summary', 'evidence', 'history', 'reuse']) {
+    const {html} = await details.renderDetail(l2ctx('panelTab=' + tab, {fact: L2_FACT}), 'fact', L2_FACT.id);
+    panels.push([`fact/${tab}`, html]);
+  }
+  panels.push(['exchange', (await details.renderDetail(l2ctx('', {exchange: EXCHANGE}), 'exchange', 'x-1')).html]);
+  panels.push(['job', (await details.renderDetail(l2ctx('', {job: JOB}), 'job', 'job-1')).html]);
+  panels.push(['operation', (await details.renderDetail(l2ctx('', {operation: OPERATION}), 'operation', 'op-1')).html]);
+  panels.push(['event', (await details.renderDetail(l2ctx('', {}), 'event', 'event-1', IMPORTED_EVENT)).html]);
+  panels.push(['attempt', (await details.renderDetail(l2ctx('', {}), 'attempt', 'attempt-1', ATTEMPT)).html]);
+  for (const [label, html] of panels) {
+    assertEnglishOnly('details:' + label, html);
+    assertNoRenderedKeys('details:' + label, html);
+  }
+});
+
+test('L2 · 상세 패널의 랜드마크 문구가 en 사전 값과 같다', async () => {
+  locale.useEn();
+  const summary = (await details.renderDetail(l2ctx('panelTab=summary', {fact: L2_FACT}), 'fact', L2_FACT.id)).html;
+  for (const key of ['details.fact.title', 'details.fact.tab.summary', 'details.fact.meta.title',
+    'details.fact.relations.title', 'details.fact.action.delete', 'details.fact.meta.generations']) {
+    assert.ok(summary.includes(locale.en[key]), `summary에 ${key} 값이 없다: ${locale.en[key]}`);
+  }
+  // 복수형은 Intl.PluralRules가 고르므로 단수 형태가 실제로 쓰인다.
+  const evidence = (await details.renderDetail(l2ctx('panelTab=evidence', {fact: L2_FACT}), 'fact', L2_FACT.id)).html;
+  assert.ok(evidence.includes('Direct evidence · 2 sources'), '복수형 .other가 쓰이지 않았다');
+  assert.ok(evidence.includes(locale.en['details.fact.evidence.parseWarning']));
+  const job = (await details.renderDetail(l2ctx('', {job: JOB}), 'job', 'job-1')).html;
+  assert.ok(job.includes('1 input char') && !job.includes('1 input chars'), '단수형 .one이 쓰이지 않았다');
+  assert.ok(job.includes('· 1 attempt<'), '실패 구간의 단수형이 쓰이지 않았다');
+  const operation = (await details.renderDetail(l2ctx('', {operation: OPERATION}), 'operation', 'op-1')).html;
+  assert.ok(operation.includes('1 second') && !operation.includes('1 seconds'));
+});
+
+test('L2 · 상세 패널은 en에서도 마크업 강조를 유지한다', async () => {
+  locale.useEn();
+  const summary = (await details.renderDetail(l2ctx('panelTab=summary', {fact: L2_FACT}), 'fact', L2_FACT.id)).html;
+  assert.match(summary, /<strong>one step at a time<\/strong>/, 'tHtml의 <strong>이 이스케이프됐다');
+  const reuse = (await details.renderDetail(l2ctx('panelTab=reuse', {fact: L2_FACT}), 'fact', L2_FACT.id)).html;
+  assert.match(reuse, /<strong>actually delivered<\/strong>/);
+});
+
+// ══ L2 · 관리 화면 (ui/public/pages/settings.mjs · namespace `settings`) ══════
+const settingsPage = require('../public/pages/settings.mjs');
+
+// 런타임 탭이 location.origin을 읽는다 — 브라우저 밖에서는 이 스텁이 그 자리를 채운다.
+if (typeof globalThis.location === 'undefined') globalThis.location = {origin: 'http://127.0.0.1:7777'};
+
+const ENV = {version: '0.7.0', node: 'v22.0.0', platform: 'darwin', pid: 4242, root: '/repo', home: '/home/me',
+  dbPath: '/home/me/db.sqlite', values: {MEMEX_HOME: null, MEMEX_SYNC_DIR: '/shared'},
+  note: 'Read from this process only.', commands: true, sync: true, mutable: true};
+const COMMANDS = {
+  doctor: {label: 'Doctor', args: ['doctor'], mutates: false, model: false},
+  extract: {label: 'Backfill extraction', args: ['facts', 'backfill'], mutates: true, model: true},
+  recover: {label: 'Recover failed jobs', args: ['jobs', 'recover'], mutates: true, model: false},
+};
+const SYNC_STATUS = extra => ({status: {enabled: true, dir: '/shared/memex-sync', dirSource: 'configured', dirExists: true,
+  dirWritable: true, configPath: '/home/me/sync/config.json', updatedAt: '2026-09-10T00:00:00.000Z',
+  deviceId: 'device-aaa', deviceAlias: 'Home Mac mini', archiveDir: '/home/me/sync/exports',
+  lastExport: {ok: true, at: '2026-09-10T01:00:00.000Z', counts: {facts: 12, revisions: 4, tombstones: 1, recallEvents: 9}},
+  peers: [{deviceId: 'device-bbb', alias: 'Work MacBook', aliasIsLocal: false, isSelf: false, generation: 'gen-2',
+    exportedAt: '2026-09-09T00:00:00.000Z', hostname: 'other-mac', counts: {facts: 7, revisions: 2, tombstones: 0, recallEvents: 3}}],
+  ...extra}});
+const ARCHIVE = {path: '/home/me/sync/exports/device-aaa-gen-1.zip', bytes: 2048, deviceId: 'device-aaa',
+  deviceAlias: 'Home Mac mini', generation: 'gen-1', counts: {facts: 12, revisions: 3, tombstones: 0, recallEvents: 5}};
+const PREVIEW = {path: '/Users/me/Downloads/g.zip', at: '2026-09-10T03:00:00.000Z', preview: {
+  source: '/Users/me/Downloads/g.zip', deviceId: 'device-bbb', deviceAlias: 'Work MacBook', generation: 'gen-9',
+  newFacts: 4, updatedFacts: 2, deletedFacts: 1,
+  conflicts: [{factId: 'f-1', deviceId: 'device-bbb', deviceAlias: 'Work MacBook', winner: 'peer', reason: 'peer-newer'}],
+  generations: [{deviceId: 'device-bbb', generation: 'gen-9'}],
+  rejected: [{file: 'devices/device-bbb/CURRENT', line: 0, error: 'generation gen-8 integrity check failed'}]}};
+const RUN = {action: 'import', at: '2026-09-10T02:00:00.000Z', outcome: {skipped: null, error: null,
+  result: {newFacts: 5, updatedFacts: 2, deletedFacts: 1, newRevisions: 3, newTombstones: 1, newRecallEvents: 4,
+    updatedRecallEvents: 0, malformedRows: [{file: 'devices/device-bbb/CURRENT', line: 1, error: 'integrity check failed'}]}}};
+
+const settingsCtx = params => l2ctx(params, {sync: SYNC_STATUS(), operations: {items: []}}, {
+  bootstrap: {uiVersion: '1.2.3', environment: ENV, db: {available: true, error: null},
+    capabilities: {memory_jobs: true, recall_events: false}, commands: COMMANDS},
+  savePrefs() {},
+});
+
+test('L2 · 관리 5탭이 en에서 한글 0건 · 미번역 키 0건으로 렌더된다', async () => {
+  locale.useEn();
+  for (const tab of ['runtime', 'actions', 'sync', 'interface', 'diagnostics']) {
+    const {html} = await settingsPage.render(settingsCtx('tab=' + tab));
+    assertEnglishOnly('settings:' + tab, html);
+    assertNoRenderedKeys('settings:' + tab, html);
+  }
+  // 동기화 탭의 상태 조합은 render() 한 번으로 다 나오지 않는다 — 직접 그린다.
+  const variants = [
+    ['sync/off', settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, SYNC_STATUS({enabled: false, deviceId: null, deviceAlias: null, peers: [], lastExport: null, dirExists: false, dirWritable: false}), null, null)],
+    ['sync/noCore', settingsPage.syncTab(settingsCtx('tab=sync'), {sync: false}, null, null, null)],
+    ['sync/error', settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, null, 'permission denied', null)],
+    ['sync/run', settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, SYNC_STATUS(), null, RUN, ARCHIVE, PREVIEW)],
+    ['sync/skipped', settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, SYNC_STATUS(), null, {action: 'export', at: null, outcome: {skipped: 'unchanged', result: null, error: null}})],
+    ['migration/cold', settingsPage.migrationCard(settingsCtx(''), ENV, {})],
+    ['migration/warm', settingsPage.migrationCard(settingsCtx(''), ENV, {preview: {id: 'op-1', command: 'tiers-preview', status: 'completed', started_at: '2026-09-10T00:00:00.000Z', exit_code: 0}, apply: {started_at: '2026-09-10T04:00:00.000Z', status: 'completed'}, previewOutput: '2 fact(s) would move'})],
+  ];
+  for (const [label, html] of variants) {
+    assertEnglishOnly('settings:' + label, html);
+    assertNoRenderedKeys('settings:' + label, html);
+  }
+});
+
+test('L2 · 관리 화면의 랜드마크 문구가 en 사전 값과 같다', async () => {
+  locale.useEn();
+  const runtime = (await settingsPage.render(settingsCtx('tab=runtime'))).html;
+  for (const key of ['settings.page.title', 'settings.page.subtitle', 'settings.tabs.runtime', 'settings.tabs.sync',
+    'settings.runtime.env.title', 'settings.runtime.boundary.title', 'settings.runtime.envVars.unset']) {
+    assert.ok(runtime.includes(locale.en[key]), `runtime에 ${key} 값이 없다: ${locale.en[key]}`);
+  }
+  const actions = (await settingsPage.render(settingsCtx('tab=actions'))).html;
+  assert.ok(actions.includes(locale.en['settings.actions.description.doctor']), '명령 설명이 사전에서 오지 않았다');
+  assert.ok(actions.includes(locale.en['settings.actions.modelTag']));
+  const diagnostics = (await settingsPage.render(settingsCtx('tab=diagnostics'))).html;
+  assert.ok(diagnostics.includes(locale.en['settings.diagnostics.capabilities.present'])
+    && diagnostics.includes(locale.en['settings.diagnostics.capabilities.missing']));
+  const sync = settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, SYNC_STATUS(), null, RUN, ARCHIVE, PREVIEW);
+  assert.ok(sync.includes('memories 12 · revisions 4'), '내보낸 행 수 보간이 en 어순을 따르지 않았다');
+  assert.ok(sync.includes('memories +5 / ~2 / -1'), '가져오기 요약 보간이 없다');
+  assert.ok(sync.includes('memories +4 / ~2 / -1'), '미리보기 요약 보간이 없다');
+  assert.ok(sync.includes('1 conflict') && !sync.includes('1 conflicts'), '충돌 수의 단수형이 쓰이지 않았다');
+  assert.ok(sync.includes(locale.en['settings.sync.dirSource.configured']), '경로 출처가 사전에서 오지 않았다');
+  assert.ok(sync.includes(locale.en['settings.sync.winner.peer']), '충돌 승자 라벨이 사전에서 오지 않았다');
+});
+
+test('L2 · 관리 화면은 en에서도 마크업 강조와 endonym을 유지한다', async () => {
+  locale.useEn();
+  const sync = settingsPage.syncTab(settingsCtx('tab=sync'), {sync: true}, SYNC_STATUS(), null, null, ARCHIVE, null);
+  assert.match(sync, /<strong>plain-text JSONL<\/strong>/, 'tHtml의 <strong>이 이스케이프됐다');
+  assert.match(sync, /<strong>⇧⌘G<\/strong>/, 'Finder 안내의 키 조합이 사라졌다');
+  const missing = settingsPage.syncTab(settingsCtx('tab=sync'), {sync: false}, null, null, null);
+  assert.match(missing, /<code>dist\/sync-control\.js<\/code>/, '<code>가 이스케이프됐다');
+  // 언어 이름은 두 언어 모두에서 번역하지 않는다 — (10) 검사와 같은 계약을 en 쪽에서 한 번 더 본다.
+  const display = (await settingsPage.render(settingsCtx('tab=interface'))).html;
+  assert.ok(display.includes('English') && display.includes('한국어'), 'endonym이 사라졌다');
+  assert.match(display, /data-endonym/);
+});
