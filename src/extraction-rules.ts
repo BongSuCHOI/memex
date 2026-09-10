@@ -49,6 +49,7 @@ import {
 import {
   quarantineMemoryGeneration,
   readQuarantine,
+  MATCH_INPUT_CHARS,
   MATCH_WALL_MS,
   type MatcherHandle,
   type QuarantineEntry,
@@ -1053,14 +1054,34 @@ export function unionNeverExtract(
   latest: readonly NeverExtractPattern[],
 ): NeverExtractPattern[] {
   const out: NeverExtractPattern[] = [];
-  const seen = new Set<string>();
+  const at = new Map<string, number>();
   for (const pattern of [...snapshot, ...latest]) {
     const key = `${pattern.id}\u0000${pattern.source}\u0000${pattern.flags ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(pattern);
+    const index = at.get(key);
+    if (index === undefined) {
+      at.set(key, out.length);
+      out.push(pattern);
+      continue;
+    }
+    // Same regex, different scope. The union of two forbid sets is the union of
+    // what they FORBID, so the surviving entry takes the STRICTER (wider) scope:
+    // widening `fact_text` to `both` in the file has to add the evidence check to
+    // a claim already in flight, and dropping the newer entry silently did not.
+    const kept = out[index];
+    const merged = strictestScope(kept.scope, pattern.scope);
+    if (merged !== (kept.scope ?? "both")) out[index] = { ...kept, scope: merged };
   }
   return out;
+}
+
+/** `both` dominates; two different single scopes together are `both`. */
+function strictestScope(
+  a: NeverExtractPattern["scope"],
+  b: NeverExtractPattern["scope"],
+): NonNullable<NeverExtractPattern["scope"]> {
+  const left = a ?? "both";
+  const right = b ?? "both";
+  return left === right ? left : "both";
 }
 
 function specsFor(
@@ -1109,42 +1130,70 @@ export async function buildBlockSet<T>(
   for (const { item, candidate } of candidates) {
     for (const group of groups) {
       if (group.specs.length === 0) continue;
+      if (blocked.has(item)) break; // already dropped: the rest cannot change that
       const fields = candidate[group.key].filter((text) => typeof text === "string" && text.length > 0);
-      if (fields.length === 0) continue;
-      const hits = await matcher.match({
-        // A newline join is safe in the only direction that matters: without the
-        // `m` flag a pattern cannot straddle the boundary in a way that MISSES a
-        // match, and a cross-field false positive over-blocks, which is the safe
-        // side of a fail-closed rule.
-        text: fields.join("\n"),
-        patterns: group.specs,
-        overlay: "extraction-rules",
-        surface,
-      });
-      elapsedMs += hits.elapsedMs;
-      if (hits.quarantined.length > 0) {
-        // An execution timeout attributed to a specific pattern. The pattern is
-        // now quarantined, which means the rule is OFF — so nothing is stored.
-        return {
-          ok: false,
-          reason: "extraction_rules_invalid",
-          detail: `never_extract pattern(s) ${hits.quarantined.join(", ")} exceeded the ${MATCH_WALL_MS} ms budget`,
-          quarantined: hits.quarantined,
-        };
-      }
-      if (hits.unavailable || hits.timedOut) {
-        return {
-          ok: false,
-          reason: "extraction_rules_unavailable",
-          detail: hits.timedOut
-            ? "the matcher did not answer within its window (no pattern could be attributed)"
-            : "the matcher worker could not be used",
-          quarantined: [],
-        };
-      }
-      if (hits.matched.length > 0) {
-        blocked.add(item);
-        for (const id of hits.matched) patternIds.add(id);
+      for (const field of fields) {
+        // ONE FIELD PER REQUEST. A newline join changed what the operator's regex
+        // means: `/^SECRET$/` matches the fact "SECRET" and does NOT match
+        // "SECRET\n<translation>", so joining turned a firing rule into a pass and
+        // stored exactly what it forbids. Anchors have to keep the meaning they
+        // have against the column that actually gets written.
+        if (field.length > MATCH_INPUT_CHARS) {
+          // The matcher caps its input as a COST bound for the recall path. At the
+          // storage boundary a prefix answer is not an answer: the suffix is
+          // unexamined text, so this is a check that did not finish, and G1 says
+          // an unfinished check HOLDS instead of storing (never a silent pass).
+          return {
+            ok: false,
+            reason: "extraction_rules_unavailable",
+            detail:
+              `a candidate field is ${field.length} chars, past the ${MATCH_INPUT_CHARS}-char matcher ` +
+              "input cap — the never_extract check could not cover all of it",
+            quarantined: [],
+          };
+        }
+        const hits = await matcher.match({
+          text: field,
+          patterns: group.specs,
+          overlay: "extraction-rules",
+          surface,
+        });
+        elapsedMs += hits.elapsedMs;
+        if (hits.quarantined.length > 0) {
+          // An execution timeout attributed to a specific pattern. The pattern is
+          // now quarantined, which means the rule is OFF — so nothing is stored.
+          return {
+            ok: false,
+            reason: "extraction_rules_invalid",
+            detail: `never_extract pattern(s) ${hits.quarantined.join(", ")} exceeded the ${MATCH_WALL_MS} ms budget`,
+            quarantined: hits.quarantined,
+          };
+        }
+        if (hits.unavailable || hits.timedOut) {
+          return {
+            ok: false,
+            reason: "extraction_rules_unavailable",
+            detail: hits.timedOut
+              ? "the matcher did not answer within its window (no pattern could be attributed)"
+              : "the matcher worker could not be used",
+            quarantined: [],
+          };
+        }
+        if (hits.truncated) {
+          // Belt and braces with the length guard above: a matcher that caps at
+          // some other length must not become a silent pass either.
+          return {
+            ok: false,
+            reason: "extraction_rules_unavailable",
+            detail: "the matcher evaluated only a prefix of a candidate field — the check is incomplete",
+            quarantined: [],
+          };
+        }
+        if (hits.matched.length > 0) {
+          blocked.add(item);
+          for (const id of hits.matched) patternIds.add(id);
+          break; // dropped — the remaining fields of this candidate are moot
+        }
       }
     }
   }
@@ -1163,9 +1212,16 @@ export async function extractionMatcherAvailable(
   const { oneShotMatcher } = await import("./overlay-matcher.js");
   const matcher = oneShotMatcher();
   try {
+    // EVERY scope, not just `fact_text`: a rule set that is entirely
+    // `scope: "evidence"` produced an empty spec list, so the probe answered
+    // "available" without ever constructing a worker — and the claim, the model
+    // call and the embeddings were all spent before the storage boundary found
+    // out there was no matcher. One spec is enough; which one does not matter.
+    const probeSpecs = [...specsFor(patterns, "factText"), ...specsFor(patterns, "evidence")];
+    if (probeSpecs.length === 0) return true;
     const hits = await matcher.match({
       text: "memex extraction rules matcher probe",
-      patterns: specsFor(patterns, "factText").slice(0, 1),
+      patterns: probeSpecs.slice(0, 1),
       overlay: "extraction-rules",
       surface: "pre-claim",
     });

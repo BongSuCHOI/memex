@@ -197,6 +197,28 @@ describe("no matcher plus a never_extract pattern holds before the claim", () =>
     expect(after.jobHoldReason).toBe("extraction_rules_unavailable");
   });
 
+  it("holds for an EVIDENCE-only rule set too", async () => {
+    // The availability probe used to select `scope: "fact_text"` specs only, so a
+    // rule set that is entirely `scope: "evidence"` produced an empty spec list
+    // and the probe answered "available" without ever trying to build a worker.
+    // The claim, the model call and the embeddings were then all spent before the
+    // storage boundary discovered there was no matcher — which is exactly the
+    // cost this pre-claim gate exists to avoid.
+    writeRules(root, rulesDoc([{ id: "user.secret", source: PATTERN, scope: "evidence" }]));
+    resetExtractionRulesCache();
+    resetMatcherScript("worker-dead", true);
+
+    const result = await runFactExtraction(db, SESSION, PROJECT);
+
+    expect(result.skipped).toBe("extraction_rules_unavailable");
+    expect(script.calls).toBe(0);
+    const after = claimSnapshot(db);
+    expect(after.jobAttempts).toBe(0);
+    expect(after.targetAttempts).toBe(0);
+    expect(after.jobLeaseOwner).toBeNull();
+    expect(after.jobHoldReason).toBe("extraction_rules_unavailable");
+  });
+
   it("does NOT hold when there is no never_extract pattern to run", async () => {
     writeRules(root, rulesDoc([], { exclude_topics: ["급여"] }));
     resetExtractionRulesCache();
