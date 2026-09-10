@@ -1,0 +1,254 @@
+{
+  "kind": "merge-gate-receipt",
+  "recordedAt": "2026-09-10T07:42:46+00:00",
+  "environment": {
+    "codexCli": "codex-cli 0.153.4",
+    "node": "v26.7.0",
+    "platform": "darwin arm64",
+    "chrome": "Google Chrome 152.0.7977.83",
+    "isolation": "Temporary homes for install, marketplace, package, lifecycle, plugin and Workspace browser gates; no user data root was read or mutated."
+  },
+  "candidate": {
+    "repository": "memex",
+    "branch": "release/0.6.6",
+    "codeSha": "7b282bee66b468c4c133acbacd1f4f8282a8cf82",
+    "packageVersion": "0.6.6",
+    "cleanBeforeGate": true,
+    "cleanAfterGate": true,
+    "sameHead": true,
+    "note": "v0.6.6 hotfix candidate: four parallel worktree branches merged into release/0.6.6 — sync (#95 #97 #103 #101 #98), Web UI (#96), inject-daemon (#99 #102), git-config parser (#100) — plus the version bump, a regenerated bundle and the changelog. Gates are the fifteen docs/VERIFICATION.md §2/§4 documents at this SHA, run sequentially on the main checkout (not a worktree), bracketed by the read-only real-root isolation check. Every gate passed on its first attempt."
+  },
+  "verdict": "PASS-WITH-NOTES",
+  "gates": [
+    {
+      "name": "real-root-snapshot",
+      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-066.json",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:38:14+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.6-gates/real-root-snapshot.log",
+      "logSha256": "f0ef0d2034b70838e93bc9c1907c3c204f9ede3a277a74dd6cc8035c9f113774",
+      "observed": "read-only baseline of the real data root: 136 files under ~/.config/memex (models/ now present since 0.6.5), written to /tmp/memex-real-root-before-066.json, outside the root."
+    },
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:38:14+00:00",
+      "durationSeconds": 4,
+      "logPath": "/private/tmp/memex-0.6.6-gates/typecheck.log",
+      "logSha256": "80fe6d03947f7ccebebfb61c88f4582ee808dd82e5ada46c3415a2f4996dcc27",
+      "observed": "tsc --noEmit clean"
+    },
+    {
+      "name": "build",
+      "command": "npm run build",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:38:18+00:00",
+      "durationSeconds": 4,
+      "logPath": "/private/tmp/memex-0.6.6-gates/build.log",
+      "logSha256": "4280aa075870b3867ef5ad747a5b408f9dc4d8c3fa80ab0ed84f06193a62db16",
+      "observed": "esbuild/tsc build reproduced the tracked dist/ byte-for-byte (git status clean after the gate apart from the plugin-validation receipt)."
+    },
+    {
+      "name": "tests",
+      "command": "npm test",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:38:22+00:00",
+      "durationSeconds": 26,
+      "logPath": "/private/tmp/memex-0.6.6-gates/vitest.log",
+      "logSha256": "ec439fb378b703828203cc5603f18ccabd1cfc491daf0522b5aed7f20b635475",
+      "observed": "119 files / 1250 Vitest tests passed (1214 → 1250: +30 continuity-identity git-config oracle cases for #100, +5 sync-control regressions for #95 #97 #101 #98 #103, +1 export invariant)."
+    },
+    {
+      "name": "mjs-tests",
+      "command": "node --test test/*.test.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:38:48+00:00",
+      "durationSeconds": 44,
+      "logPath": "/private/tmp/memex-0.6.6-gates/node-test-mjs.log",
+      "logSha256": "39641bd803fce5fea3fbae9bdb84849360dfacf5fd78cff4b607da4a92a750b1",
+      "observed": "214 tests through the widened glob, 0 failures (211 → 214: three inject-daemon-slice cases for #99 and #102 — unreadable lock kept, retire-as-yield return, bind failure named in log/event/doctor)."
+    },
+    {
+      "name": "install-e2e",
+      "command": "node scripts/install-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:39:32+00:00",
+      "durationSeconds": 7,
+      "logPath": "/private/tmp/memex-0.6.6-gates/install-e2e.log",
+      "logSha256": "eb9b6a7b10d9f91cf64184f85c701b827435c55ccbb223e23fc4f639e62af7e2",
+      "observed": "installer dry-run, real install, idempotent rerun, removal and isolation all PASS (codex-cli 0.153.4)."
+    },
+    {
+      "name": "marketplace-e2e",
+      "command": "node scripts/marketplace-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:39:39+00:00",
+      "durationSeconds": 1,
+      "logPath": "/private/tmp/memex-0.6.6-gates/marketplace-e2e.log",
+      "logSha256": "5cdf2c4e246aaa83a550e8728cda602924b88c03bad6496a4d91ba65da5ea843",
+      "observed": "marketplace install/removal PASS, cleanup PASS."
+    },
+    {
+      "name": "package-runtime-e2e",
+      "command": "node scripts/package-runtime-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:39:40+00:00",
+      "durationSeconds": 82,
+      "logPath": "/private/tmp/memex-0.6.6-gates/package-runtime-e2e.log",
+      "logSha256": "c83e8982ca1549a3a75ddc56463d953718619a310d4d9ef1cdfac550674aa404",
+      "observed": "memex-0.6.6.tgz, 332 files, 9 MCP tools; packaged runtime exercised from a temporary home."
+    },
+    {
+      "name": "lifecycle-e2e",
+      "command": "node scripts/lifecycle-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:02+00:00",
+      "durationSeconds": 7,
+      "logPath": "/private/tmp/memex-0.6.6-gates/lifecycle-e2e.log",
+      "logSha256": "21b3f42034d0f9f8f2bb659bf44b9775c9cbf6db7087be60e96f1aa7eba695e4",
+      "observed": "9/9 steps passed; cleanup JSON: plugin registration, owned hooks, temp data, workers, inject sockets, listeners all absent/zero; user environment isolated."
+    },
+    {
+      "name": "ui-tests",
+      "command": "node --test ui/test/*.test.cjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:09+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.6-gates/ui-tests.log",
+      "logSha256": "540475fd2fe87cf2a19070b8712004a35b7996876331e356e3ed5f83f29b4eca",
+      "observed": "150 Workspace unit tests passed (148 → 150: two #96 regressions — overlapping mutations on different fact ids keep the pinned home, and 409 SYNC_BUSY for tier/mutate during a sync)."
+    },
+    {
+      "name": "web-ui-browser-e2e",
+      "command": "node scripts/web-ui-browser-e2e.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:09+00:00",
+      "durationSeconds": 14,
+      "logPath": "/private/tmp/memex-0.6.6-gates/web-ui-browser-e2e.log",
+      "logSha256": "e2abf96c533c63994ebabe65f0f0d2853227d98d4ba3a1d4e4afb90ef2ef9f19",
+      "observed": "22 real-Chrome probes PASS with 0 runtime errors (21 → 22), including the two-root archive round trip; docHref now points at v0.6.6."
+    },
+    {
+      "name": "plugin-validation",
+      "command": "node scripts/validate-plugin.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:23+00:00",
+      "durationSeconds": 4,
+      "logPath": "/private/tmp/memex-0.6.6-gates/validate-plugin.log",
+      "logSha256": "c55b2b23290f06c686f51a370374a1be70e68cc94e22fe70b8da28d3103bdcc2",
+      "observed": "isolated substitute checks all PASS; the formal validator is still unavailable in codex-cli 0.153.4 (receipt docs/verification/plugin-validation.json rewritten)."
+    },
+    {
+      "name": "benchmark-contract",
+      "command": "node scripts/benchmark-contract.mjs",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:27+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.6-gates/benchmark-contract.log",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "observed": "contract satisfied against the carried-forward v0.6.0 benchmark record; scoring paths did not change in 0.6.6."
+    },
+    {
+      "name": "pack-dry-run",
+      "command": "npm pack --dry-run",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:27+00:00",
+      "durationSeconds": 1,
+      "logPath": "/private/tmp/memex-0.6.6-gates/pack-dry-run.log",
+      "logSha256": "7b71495393d61a0f049e7b4cef2e0d940779358ac4428197ae4f4b9a3b7c329e",
+      "observed": "npm pack --dry-run: 332 files, 1.5 MB packed / 6.0 MB unpacked; docs/verification/merge-gate-pre-*.json excluded by the files negation."
+    },
+    {
+      "name": "real-root-compare",
+      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-066.json",
+      "status": "PASS",
+      "exitCode": 0,
+      "startedAt": "2026-09-10T07:41:28+00:00",
+      "durationSeconds": 0,
+      "logPath": "/private/tmp/memex-0.6.6-gates/real-root-compare.log",
+      "logSha256": "144495107c259e5573514e59d2524ea312a66bc1f416a40dede3e86e3d1cf7cd",
+      "observed": "OK — real data root untouched: 136 files identical under ~/.config/memex after every gate."
+    }
+  ],
+  "packageRuntime": {
+    "artifact": "memex-0.6.6.tgz",
+    "files": 332,
+    "mcpTools": 9
+  },
+  "pluginValidation": {
+    "status": "PASS-WITH-NOTES (version-bound)",
+    "formalValidatorAvailable": false,
+    "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
+    "isolatedSubstitute": "PASS: 11 checks — plugin 0.6.5 in the Codex cache, MCP serverInfo 0.6.5, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
+    "receiptPath": "docs/verification/plugin-validation.json",
+    "receiptSha256": "2b0d723d7f60618ca52c65a5f53f39f74a63a11f7cae90e4ec4da3cf7ac395ef"
+  },
+  "webUi": {
+    "unitTests": 150,
+    "browserProbes": 22,
+    "runtimeErrors": 0,
+    "evidence": "see web-ui-browser-e2e log __WEB_UI_RECEIPT__ (verdict PASS)"
+  },
+  "gateStability": {
+    "gate": "web-ui-browser-e2e",
+    "assertion": "graphEmpty: at least one drawn frame, zero painted pixels, and every pixel equal to the engine clear colour",
+    "stabilityRuns": "inherited from the v0.5.0 candidate 5cd1134d (20/20)",
+    "stabilityRunsNote": "The 20-run stability series was measured when the readback fix landed. It was not repeated for v0.5.1, which changes no UI or gate-script code; this candidate contributes one further clean run, with the same mapFrames 2 and mapBackground 521550 of 521550."
+  },
+  "reviewRemediation": {
+    "source": "external post-release Codex review (gpt-6-astra, low reasoning) of git diff v0.6.2..main, 9 findings, each verified and reproduced on a temporary data root by an Opus verification agent before filing (#95–#103)",
+    "fixed": {
+      "#95": "archive export no longer publishes into the shared folder (private staging in the data root; exportForSync({syncDir}))",
+      "#96": "Core.pinned() reentrant; tier/mutate refuse 409 during sync",
+      "#97": "archive dry-run never creates or migrates the DB; no-index machines are refused",
+      "#98": "own device alias is part of durableStateFingerprint()",
+      "#99": "retire is a yield; bind failures logged (InjectDaemonBindFailed) and armReacquire; doctor reports socket path too long",
+      "#100": "git config parsed as git does (quotes, subsections, include/includeIf, last wins) with a git oracle test table",
+      "#101": "archive output path confined by realpath, symlink final component refused, default path included",
+      "#102": "atomic lock creation via link(2); unreadable lock not deleted on first sight",
+      "#103": "preview applies incoming tombstones before planning facts"
+    },
+    "regressionEvidence": "each fix ships with a test the agents confirmed fails on the pre-fix code (p2: 2 UI tests; p8: 15 of 30 new cases; p1/p7/p9 repro scripts; p6 order revert → updatedFacts 1 vs 0)."
+  },
+  "realRootIsolation": {
+    "snapshotFiles": 136,
+    "compareResult": "136 files identical",
+    "modelsDirectory": "present before and after (0.6.5 cache); byte-for-byte unchanged",
+    "note": "Codex sessions may have been live during the gate; the content-hash comparison still reported no change."
+  },
+  "priorEvidence": "Receipts for 0.5.0–0.6.5 are archived as docs/verification/merge-gate-pre-<version>.json; their live proofs (tier migration, daemon takeover, re-acquisition, warm start) are not repeated here.",
+  "priorLiveEvidence": {
+    "liveInjectionYield": {
+      "status": "PROVEN",
+      "observedOn": "the user's real data root running v0.6.0",
+      "observedAt": "2026-09-09T19:13Z",
+      "observation": "injected=3",
+      "note": "The v0.6.0 receipt recorded liveInjectionYield as NOT_PROVEN and said it would be checked after release. It was, and real sessions injected memory. This is cited as prior live evidence about v0.6.0, not as an observation of these gates: nothing in this run touched the real root, and the isolation check proves it did not. It is also not evidence that 0.6.2 still injects, since the tier code it depends on changed in between."
+    }
+  },
+  "notProven": {
+    "liveUserData": "NOT_PROVEN: gates ran on isolated fixtures and temporary homes; the user data root was only snapshotted/compared.",
+    "authenticatedCodexTier": "NOT_PROVEN: lifecycle-e2e ran its offline tier; no authenticated `codex exec` session was executed.",
+    "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` does not exist in codex-cli 0.153.4; only the isolated substitute was observed.",
+    "liveArchiveExportIsolation": "NOT_PROVEN until post-release: on the user root with sync OFF, `memex sync export --archive` must leave the shared folder absent/unchanged (#95); verified after `memex update`.",
+    "liveTwoDeviceRoundTrip": "NOT_PROVEN: the user will run the two-Mac archive round trip (#48).",
+    "benchmarkRefresh": "NOT_PROVEN: the benchmark record is carried forward from the v0.6.0 candidate; 0.6.6 changes no scoring path."
+  },
+  "releaseConclusion": "Every gate in the list docs/VERIFICATION.md §2/§4 documents at this SHA passes on the clean v0.6.6 candidate 7b282bee, each on its first attempt: the real-root snapshot (136 files), typecheck, a build that reproduced the tracked dist/, 119 files / 1250 Vitest tests, 214 tests through the widened mjs glob, installer, marketplace, packaged runtime (memex-0.6.6.tgz, 332 files, 9 MCP tools), offline lifecycle 9/9, 150 Workspace unit tests, 22 real-Chrome Workspace probes with 0 runtime errors, isolated plugin validation, the benchmark contract, the pack dry-run and the closing real-root compare (136 files identical). The nine review findings #95–#103 are fixed with regression tests that fail on 0.6.5. Not proven here: the live #95 check on the user root (shared folder stays untouched with sync OFF) and the two-Mac round trip, both deferred to post-release validation."
+}
