@@ -1,4 +1,5 @@
 'use strict';
+const {ko}=require('./helpers/locale.cjs');
 require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 const {test,before,after}=require('node:test');const assert=require('node:assert/strict');const {fixture,uid,PROJECT,OTHER}=require('./fixture.cjs');const {Logs}=require('../lib/logs.cjs');const fs=require('node:fs');const path=require('node:path');
 let f,store;const q=x=>new URLSearchParams(x),scope=(x={})=>store.scope(q(x));
@@ -58,7 +59,9 @@ test('global fact never discloses project-bound source text in global scope',()=
 test('direct sources and context dependencies stay separate',()=>{const r=store.fact(uid(1),scope({scope:'project',project:PROJECT}));assert.equal(r.sources[0].id,'exchange-0');assert.equal(r.context_dependencies[0].exchange_id,'exchange-1');assert(r.provenance_parse_valid);});
 test('pagination and exact substring search are bounded and parameterized',()=>{const s=scope({scope:'all'});assert.equal(store.facts(q({limit:'7',offset:'7'}),s).items.length,7);assert.equal(store.facts(q({q:"' OR 1=1 --"}),s).total,0);assert.throws(()=>store.facts(q({limit:'-1'}),s),{status:400});assert.throws(()=>store.facts(q({offset:'1000001'}),s),{status:400});});
 test('session detail has real turn pagination and related records',()=>{const d=store.session('session-0',q({limit:20,offset:20}),scope({scope:'project',project:PROJECT}));assert.equal(d.total,26);assert.equal(d.items.length,6);assert.equal(d.items[0].id,'exchange-20');assert(d.jobs.length&&d.recalls.length&&d.capsule);});
-test('job details link actual IDs and do not call related facts direct outputs',()=>{const d=store.job('job-4',scope({scope:'project',project:PROJECT}));assert.equal(d.items.length,5);assert.equal(d.failures.length,1);assert.equal(d.attempts[0].job_id,'job-4');assert.match(d.relatedFactsBasis,/직접 산출물.*의미하지/);});
+test('job details link actual IDs and do not call related facts direct outputs',()=>{const d=store.job('job-4',scope({scope:'project',project:PROJECT}));assert.equal(d.items.length,5);assert.equal(d.failures.length,1);assert.equal(d.attempts[0].job_id,'job-4');// #109: 서버는 프로즈를 만들지 않고 키만 싣는다(설계 §5.3 분류 c).
+ assert.equal(d.relatedFactsBasisKey,'note.job.relatedFactsBasis');
+ assert.match(ko['note.job.relatedFactsBasis'],/직접 산출물.*의미하지/);});
 test('model attempts without target_id still scope through job.target_id',()=>{assert(store.attempts(q(),scope({scope:'project',project:PROJECT})).items.some(x=>x.attempt_id==='attempt-2'));});
 test('missing token usage remains null, not zero',()=>{const d=store.attempts(q({id:'attempt-0'}),scope({scope:'all'})).items[0];assert.equal(d.duration_ms,null);assert.equal(d.token_usage_json,null);assert.equal(d.token_usage_status,'NOT_PROVEN');});
 test('graph edge endpoints and focus results are scoped',()=>{const s=scope({scope:'project',project:PROJECT});const d=store.graph(q({limit:20}),s);const ids=new Set(d.nodes.map(n=>n.id));assert(d.edges.every(e=>ids.has(e.source_fact_id)&&ids.has(e.target_fact_id)));assert(d.truncated);const focused=store.graph(q({focus:uid(1)}),s);assert(focused.nodes.some(n=>n.id===uid(1)));assert.throws(()=>store.graph(q({types:'INVALID'}),s),{status:400});});

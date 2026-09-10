@@ -1,27 +1,36 @@
 'use strict';
 const fs=require('node:fs');const path=require('node:path');const crypto=require('node:crypto');const {spawn}=require('node:child_process');
 const {HttpError,integer,redact}=require('./util.cjs');
+/**
+ * 관리 명령 allowlist (#109 · 설계 §5.4).
+ *
+ * 라벨·설명은 **프로즈가 아니라 사전 키**다. 0.6.x는 `entry.label`에 한국어 라벨을
+ * `~/.memex/ui/operations.json`에 최대 100건 **영속화**했고, 그 이력은 en 화면에서도 한국어로
+ * 남았다. 이제 저장하는 것은 `entry.command`(= 이 객체의 키)뿐이고 화면이
+ * `t('op.'+command+'.label')`로 렌더한다 — 읽는 시점의 언어가 적용된다.
+ * 레거시 항목에는 `label`이 남아 있으므로 **사전 우선, 없으면 저장된 label**이다.
+ */
 const COMMANDS={
-  doctor:{label:'설치·런타임 진단',args:['doctor'],model:false,mutates:false},
-  status:{label:'파이프라인 상태 확인',args:['status'],model:false,mutates:false},
-  sync:{label:'대화 동기화',args:['sync'],model:false,mutates:true},
-  extract:{label:'기억 추출 백필',args:['backfill','extract'],model:true,mutates:true},
-  ontology:{label:'온톨로지 분류 백필',args:['backfill','ontology'],model:true,mutates:true},
-  embeddings:{label:'임베딩 백필',args:['backfill','embeddings'],model:false,mutates:true},
-  all:{label:'전체 백필',args:['backfill','all'],model:true,mutates:true},
-  recover:{label:'실패 종료 작업 복구',args:['recover','--all-dead'],model:false,mutates:true,note:'실패로 종료된 작업을 다시 대기 상태로 되돌립니다. 아무것도 삭제하지 않으며 지워진 last_error는 retry_history에 보존됩니다. 개별 작업만 다루려면 CLI에서 memex recover <job-id>를 쓰세요.'},
-  // group: rendered by a dedicated card instead of the generic 관리 작업 grid.
-  'tiers-preview':{label:'기억 계층 이관 미리보기',args:['facts','migrate-tiers','--dry-run'],model:false,mutates:false,group:'tiers',note:'브랜치 신호 없이 브랜치 계층에 남아 있는 기억을 나열만 합니다. 아무것도 바꾸지 않습니다.'},
-  'tiers-apply':{label:'기억 계층 이관 적용',args:['facts','migrate-tiers','--apply'],model:false,mutates:true,group:'tiers',note:'미리보기에 나온 기억을 프로젝트 공용으로 올리고 Chronicle에 계층 승격 이벤트를 남깁니다. 실제 브랜치에서 만들어진 기억은 옮기지 않습니다.'},
+  doctor:{labelKey:'op.doctor.label',args:['doctor'],model:false,mutates:false},
+  status:{labelKey:'op.status.label',args:['status'],model:false,mutates:false},
+  sync:{labelKey:'op.sync.label',args:['sync'],model:false,mutates:true},
+  extract:{labelKey:'op.extract.label',args:['backfill','extract'],model:true,mutates:true},
+  ontology:{labelKey:'op.ontology.label',args:['backfill','ontology'],model:true,mutates:true},
+  embeddings:{labelKey:'op.embeddings.label',args:['backfill','embeddings'],model:false,mutates:true},
+  all:{labelKey:'op.all.label',args:['backfill','all'],model:true,mutates:true},
+  recover:{labelKey:'op.recover.label',args:['recover','--all-dead'],model:false,mutates:true,noteKey:'op.recover.note'},
+  // group: rendered by a dedicated card instead of the generic admin-actions grid.
+  'tiers-preview':{labelKey:'op.tiers-preview.label',args:['facts','migrate-tiers','--dry-run'],model:false,mutates:false,group:'tiers',noteKey:'op.tiers-preview.note'},
+  'tiers-apply':{labelKey:'op.tiers-apply.label',args:['facts','migrate-tiers','--apply'],model:false,mutates:true,group:'tiers',noteKey:'op.tiers-apply.note'},
 };
 class Operations {
   constructor(core,logs,options={}){
     this.core=core;this.logs=logs;this.children=new Map();this.entries=[];this.onChange=options.onChange||(()=>{});this.spawn=options.spawn||spawn;
     this.file=path.join(core.home,'ui','operations.json');
-    try{const previous=JSON.parse(fs.readFileSync(this.file,'utf8'));if(Array.isArray(previous))this.entries=previous.slice(0,100).map(x=>({...x,status:['running','cancelling'].includes(x.status)?'unknown':x.status,output:'이전 서버 실행의 출력은 보존하지 않습니다.',outputLost:true}));}catch{}
+    try{const previous=JSON.parse(fs.readFileSync(this.file,'utf8'));if(Array.isArray(previous))this.entries=previous.slice(0,100).map(x=>({...x,status:['running','cancelling'].includes(x.status)?'unknown':x.status,output:'',outputLost:true}));}catch{}
   }
   list(){return this.entries.map(({output,killTimer,...e})=>({...e,outputBytes:Buffer.byteLength(output||'')}));}
-  get(id){const e=this.entries.find(x=>x.id===id);if(!e)throw new HttpError(404,'실행 내역을 찾을 수 없습니다.');return e;}
+  get(id){const e=this.entries.find(x=>x.id===id);if(!e)throw new HttpError(404,{code:'NOT_FOUND',key:'error.operation.notFound',message:'Run history entry not found.'});return e;}
   persist(){
     const dir=path.dirname(this.file);fs.mkdirSync(dir,{recursive:true,mode:0o700});
     if(fs.existsSync(this.file)&&fs.lstatSync(this.file).isSymbolicLink())throw new Error('Refusing operations symlink');
@@ -30,13 +39,13 @@ class Operations {
   }
   changed(){try{this.persist();}catch(e){console.error('[memex-ui] operation metadata:',e.message);}this.onChange();}
   run(body){
-    const command=Object.hasOwn(COMMANDS,body.command)?COMMANDS[body.command]:null;if(!command)throw new HttpError(400,'허용되지 않은 명령입니다.','INVALID_COMMAND');
-    if(body.confirm!==true||body.scope!=='all')throw new HttpError(400,'CLI 작업은 전체 데이터에 적용됩니다. 전체 범위와 실행을 확인하세요.','CONFIRMATION_REQUIRED');
-    if(this.children.size)throw new HttpError(409,'다른 관리 작업이 실행 중입니다. 완료 또는 중단 후 다시 실행하세요.','OPERATION_BUSY');
-    if(this.core.busy?.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
-    const cli=path.join(this.core.root,'cli','memex.js');if(!fs.existsSync(cli))throw new HttpError(503,'코어 CLI가 없습니다. 소스 레포에 적용한 뒤 실행하세요.','CORE_UNAVAILABLE');
+    const command=Object.hasOwn(COMMANDS,body.command)?COMMANDS[body.command]:null;if(!command)throw new HttpError(400,{code:'INVALID_COMMAND',key:'error.operation.commandNotAllowed',message:'That command is not allowed.'});
+    if(body.confirm!==true||body.scope!=='all')throw new HttpError(400,{code:'CONFIRMATION_REQUIRED',key:'error.operation.confirmRequired',message:'CLI actions apply to all data. Confirm the full scope and the run.'});
+    if(this.children.size)throw new HttpError(409,{code:'OPERATION_BUSY',key:'error.operation.busy',message:'Another admin action is running. Let it finish or stop it, then run again.'});
+    if(this.core.busy?.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.operation.blockedByMutation',message:'A memory change is in progress. Run this after it finishes.'});
+    const cli=path.join(this.core.root,'cli','memex.js');if(!fs.existsSync(cli))throw new HttpError(503,{code:'CORE_UNAVAILABLE',key:'error.core.cliMissing',message:'The core CLI is missing. Apply Memex to the source repository, then run it.'});
     const maxAttempts=integer(body.maxAttempts,12,1,1000);const timeoutSeconds=integer(body.timeoutSeconds,600,10,7200);
-    const id=crypto.randomUUID();const entry={id,command:body.command,label:command.label,status:'running',started_at:new Date().toISOString(),finished_at:null,exit_code:null,signal:null,maxAttempts:command.model?maxAttempts:null,timeoutSeconds,scope:'all',output:'',truncated:false};
+    const id=crypto.randomUUID();const entry={id,command:body.command,status:'running',started_at:new Date().toISOString(),finished_at:null,exit_code:null,signal:null,maxAttempts:command.model?maxAttempts:null,timeoutSeconds,scope:'all',output:'',truncated:false};
     const env={...process.env,MEMEX_PLUGIN_ROOT:this.core.root,PLUGIN_ROOT:this.core.root,MEMEX_HOME:this.core.home,MEMEX_DB_PATH:this.core.dbPath,NO_COLOR:'1',FORCE_COLOR:'0'};
     if(command.model)Object.assign(env,{MEMEX_MODEL_BUDGET_MAX_ATTEMPTS:String(maxAttempts),MEMEX_MODEL_BUDGET_DEADLINE_MS:String(timeoutSeconds*1000)});
     this.entries.unshift(entry);this.entries=this.entries.slice(0,100);this.changed();

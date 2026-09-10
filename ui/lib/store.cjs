@@ -21,8 +21,8 @@ class Store {
   one(sql, args = []) { return cleanRow(this.db.prepare(sql).get(...args)); }
   count(sql, args = []) { return Number(this.one(sql, args)?.n ?? 0); }
   select(table, fields, alias = '') { return fields.map(f => this.has(table, f) ? `${alias ? alias + '.' : ''}${sqlName(f)}` : `NULL AS ${sqlName(f)}`).join(','); }
-  require(table) { if (!this.has(table)) throw new HttpError(503, `${table} 테이블이 없습니다. 설치된 코어의 초기화·마이그레이션 상태를 확인하세요.`, 'SCHEMA_UNAVAILABLE'); }
-  missing(table) { return { available: false, reason: `${table} 기록이 이 데이터베이스에 없습니다.`, items: [], total: null, limit: 50, offset: 0 }; }
+  require(table) { if (!this.has(table)) throw new HttpError(503, {code:'SCHEMA_UNAVAILABLE', key:'error.schema.tableMissing', params:{table}, message:`The ${table} table is missing. Check the installed core for its initialisation and migration state.`}); }
+  missing(table) { return { available: false, reasonKey: 'state.schema.tableAbsent', reasonParams: {table}, items: [], total: null, limit: 50, offset: 0 }; }
   paginate(q, fallback = 50, max = 200) { return { limit: integer(q.get('limit'), fallback, 1, max), offset: integer(q.get('offset'), 0, 0, 1_000_000) }; }
   page(from, where, args, order, q, fields = '*') {
     const { limit, offset } = this.paginate(q);
@@ -33,29 +33,29 @@ class Store {
   scope(q) {
     const type = q.get('scope') || (q.get('project') ? 'project' : 'global');
     if (!['project','global','all'].includes(type)) throw new HttpError(400, 'scope: project | global | all', 'INVALID_SCOPE');
-    if (type !== 'project' && q.get('project')) throw new HttpError(400, 'project는 project 범위에서만 허용됩니다.', 'INVALID_SCOPE');
+    if (type !== 'project' && q.get('project')) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.projectOnlyInProjectScope', message:'project is allowed only in the project scope.'});
     // tiers=all drops the promotion-state predicate so a project screen can show its branch and
     // workspace tier memories too. It never widens the project identity itself.
     const tiers = q.get('tiers') || 'default';
     if (!['default','all'].includes(tiers)) throw new HttpError(400, 'tiers: default | all', 'INVALID_SCOPE');
     const s = { type, tiers, includeGlobal: q.get('includeGlobal') !== '0', project: null, projectId: null, workspaceId: q.get('workspace') || null, workstreamId: q.get('workstream') || null };
-    if (type !== 'project' && (s.workspaceId || s.workstreamId)) throw new HttpError(400, '작업 범위에는 프로젝트가 필요합니다.', 'INVALID_SCOPE');
+    if (type !== 'project' && (s.workspaceId || s.workstreamId)) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.workScopeNeedsProject', message:'A work scope needs a project.'});
     if (type === 'project') {
       s.project = canonicalProject(q.get('project'));
       if (this.has('workspaces','project_id')) {
         const identities = this.all('SELECT DISTINCT project_id FROM workspaces WHERE canonical_path = ?', [s.project]);
-        if (identities.length > 1) throw new HttpError(409, '동일 경로에 여러 프로젝트 ID가 있습니다. CLI에서 프로젝트 식별자를 확인하세요.', 'AMBIGUOUS_PROJECT');
+        if (identities.length > 1) throw new HttpError(409, {code:'AMBIGUOUS_PROJECT', key:'error.scope.ambiguousProject', message:'Several project IDs share this path. Confirm the project identifier from the CLI.'});
         s.projectId = identities[0]?.project_id || null;
       }
       for (const [id, table, key] of [[s.workspaceId,'workspaces','workspace_id'],[s.workstreamId,'minimal_workstreams','workstream_id']]) {
         if (!id) continue;
-        if (!s.projectId || !this.has(table,'project_id')) throw new HttpError(400, '이 데이터베이스에서 작업 범위를 확인할 수 없습니다.', 'INVALID_SCOPE');
+        if (!s.projectId || !this.has(table,'project_id')) throw new HttpError(400, {code:'INVALID_SCOPE', key:'error.scope.workScopeUnverifiable', message:'This database cannot confirm the work scope.'});
         const row = this.one(`SELECT project_id FROM ${sqlName(table)} WHERE ${sqlName(key)}=?`, [id]);
-        if (!row || row.project_id !== s.projectId) throw new HttpError(403, '다른 프로젝트의 작업 범위입니다.', 'SCOPE_MISMATCH');
+        if (!row || row.project_id !== s.projectId) throw new HttpError(403, {code:'SCOPE_MISMATCH', key:'error.scope.foreignProject', message:'That work scope belongs to another project.'});
       }
       if (s.workspaceId && s.workstreamId && this.has('minimal_workstreams','workspace_id')) {
         const ws = this.one('SELECT workspace_id FROM minimal_workstreams WHERE workstream_id=?',[s.workstreamId]);
-        if (ws?.workspace_id && ws.workspace_id !== s.workspaceId) throw new HttpError(403,'작업 흐름과 워크스페이스가 다릅니다.','SCOPE_MISMATCH');
+        if (ws?.workspace_id && ws.workspace_id !== s.workspaceId) throw new HttpError(403,{code:'SCOPE_MISMATCH', key:'error.scope.workstreamWorkspaceMismatch', message:'The workstream and the workspace do not match.'});
       }
     }
     return s;
@@ -172,7 +172,7 @@ class Store {
   factFilters(q,s) {
     let [w,p] = this.factWhere(s);
     const active = q.get('state') || 'active';
-    if (!['all','active','inactive'].includes(active)) throw new HttpError(400,'잘못된 기억 상태입니다.');
+    if (!['all','active','inactive'].includes(active)) throw new HttpError(400,{code:'INVALID_FACT_STATE', key:'error.fact.invalidState', message:'Invalid memory state.'});
     if (active !== 'all') { w += ' AND f.is_active=?'; p.push(active === 'active' ? 1 : 0); }
     const search = text(q.get('q'));
     if (search) { w += ` AND (instr(lower(f.fact),lower(?))>0${this.has('facts','fact_kr') ? ' OR instr(lower(COALESCE(f.fact_kr,\'\')),lower(?))>0' : ''})`; p.push(search); if(this.has('facts','fact_kr')) p.push(search); }
@@ -198,7 +198,7 @@ class Store {
   visibleFact(id,s) {
     this.require('facts'); const [w,p] = this.factWhere(s);
     const f = this.one(`SELECT ${this.select('facts',FACT_FIELDS,'f')} FROM facts f WHERE f.id=? AND ${w}`,[identifier(id),...p]);
-    if (!f) throw new HttpError(404,'현재 범위에서 기억을 찾을 수 없습니다.','NOT_FOUND');
+    if (!f) throw new HttpError(404,{code:'NOT_FOUND', key:'error.fact.notFoundInScope', message:'No memory found in the current scope.'});
     return this.withBranches([f])[0];
   }
   fact(id,s) {
@@ -210,7 +210,7 @@ class Store {
     for (const sourceId of ids.slice(0,500)) {
       const row = this.one(`SELECT ${this.select('exchanges',EXCHANGE_FIELDS,'e')} FROM exchanges e WHERE e.id=? AND ${ew}`, [sourceId,...ep]);
       if (row) sources.push({...row, user_message:row.user_message?.slice(0,1000), assistant_message:undefined});
-      else sources.push({id:sourceId,unavailable:true,reason:'현재 범위 밖이거나 원문이 없습니다.'});
+      else sources.push({id:sourceId,unavailable:true,reasonKey:'state.fact.sourceUnavailable'});
     }
     let context = [];
     if(this.has('fact_context_dependencies')) context = this.all(`SELECT d.*, e.project,e.session_id,e.timestamp,substr(e.user_message,1,500) AS user_message FROM fact_context_dependencies d JOIN exchanges e ON e.id=d.exchange_id WHERE d.fact_id=? AND ${ew} ORDER BY d.created_at LIMIT 200`,[id,...ep]);
@@ -240,7 +240,9 @@ class Store {
     const total = this.count(`SELECT COUNT(*) AS n FROM (SELECT 1 ${base})`,args);
     const items = this.all(`SELECT e.session_id,e.project,COUNT(*) AS exchanges,MIN(e.timestamp) AS started_at,MAX(e.timestamp) AS ended_at,MAX(e.git_branch) AS branch ${base} ORDER BY ended_at DESC,e.session_id DESC LIMIT ? OFFSET ?`,[...args,limit,offset]);
     for(const r of items) {
-      r.title = this.one('SELECT substr(user_message,1,200) AS title FROM exchanges WHERE session_id=? AND project=? ORDER BY timestamp, rowid LIMIT 1',[r.session_id,r.project])?.title || '제목 없는 대화';
+      // 제목이 없을 때의 대체 문구는 서버가 만들지 않는다 — 키만 싣고 화면이 번역한다(설계 §5.3 분류 c).
+      r.title = this.one('SELECT substr(user_message,1,200) AS title FROM exchanges WHERE session_id=? AND project=? ORDER BY timestamp, rowid LIMIT 1',[r.session_id,r.project])?.title || null;
+      r.titleKey = 'label.session.untitled';
       r.extraction = this.has('extraction_log') ? this.one('SELECT * FROM extraction_log WHERE session_id=?',[r.session_id]) || null : null;
     }
     return {available:true,items,total,limit,offset,engine};
@@ -255,7 +257,7 @@ class Store {
   session(id,q,s) {
     const [w,p]=this.exchangeWhere(s); const {limit,offset}=this.paginate(q,30,100);
     const args=[identifier(id),...p];const total=this.count(`SELECT COUNT(*) AS n FROM exchanges e WHERE e.session_id=? AND ${w}`,args);
-    if(!total)throw new HttpError(404,'현재 범위에서 대화를 찾을 수 없습니다.','NOT_FOUND');
+    if(!total)throw new HttpError(404,{code:'NOT_FOUND', key:'error.session.notFoundInScope', message:'No conversation found in the current scope.'});
     const items=this.all(`SELECT ${this.select('exchanges',EXCHANGE_FIELDS,'e')} FROM exchanges e WHERE e.session_id=? AND ${w} ORDER BY e.timestamp,e.rowid LIMIT ? OFFSET ?`,[...args,limit,offset]);
     const summary=this.one(`SELECT MIN(e.timestamp) AS started_at, MAX(e.timestamp) AS ended_at,MIN(e.project) AS project,MAX(e.git_branch) AS branch FROM exchanges e WHERE e.session_id=? AND ${w}`,args);
     for(const e of items) e.extraction_state=this.has('exchange_extraction_state') ? this.all('SELECT * FROM exchange_extraction_state WHERE exchange_id=? ORDER BY content_generation DESC LIMIT 10',[e.id]) : [];
@@ -269,7 +271,7 @@ class Store {
   exchange(id,s) {
     const [w,p]=this.exchangeWhere(s);
     const e=this.one(`SELECT ${this.select('exchanges',EXCHANGE_FIELDS,'e')} FROM exchanges e WHERE e.id=? AND ${w}`,[identifier(id),...p]);
-    if(!e)throw new HttpError(404,'현재 범위에서 원문을 찾을 수 없습니다. 범위를 변경해 다시 확인하세요.','NOT_FOUND');
+    if(!e)throw new HttpError(404,{code:'NOT_FOUND', key:'error.exchange.notFoundInScope', message:'No transcript found in the current scope. Change the scope, then check again.'});
     const tools=this.has('tool_calls')?this.all('SELECT * FROM tool_calls WHERE exchange_id=? ORDER BY timestamp,id LIMIT 200',[id]):[];
     const [fw,fp]=this.factWhere(s);
     const facts=this.has('facts')?this.all(`SELECT ${this.select('facts',FACT_FIELDS,'f')} FROM facts f WHERE ${fw} AND EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(f.source_exchange_ids) THEN f.source_exchange_ids ELSE '[]' END) j WHERE j.value=?) ORDER BY f.updated_at DESC LIMIT 100`,[...fp,id]):[];
@@ -288,7 +290,7 @@ class Store {
   graph(q,s) {
     this.require('facts');const [w,p]=this.factWhere(s);const limit=integer(q.get('limit'),1200,1,5000);
     const types=q.get('types')?q.get('types').split(','):TYPES;
-    if(types.some(t=>!TYPES.includes(t)))throw new HttpError(400,'알 수 없는 관계 유형입니다.');
+    if(types.some(t=>!TYPES.includes(t)))throw new HttpError(400,{code:'INVALID_RELATION', key:'error.graph.unknownRelationType', message:'Unknown relation type.'});
     const taxonomy=this.taxonomy(s);let extra='';const args=[...p];
     if(q.get('domain')) { extra+=' AND f.ontology_category_id IN (SELECT id FROM ontology_categories WHERE domain_id=?)';args.push(identifier(q.get('domain'))); }
     if(q.get('q')){ extra+=' AND instr(lower(f.fact),lower(?))>0';args.push(text(q.get('q'))); }
@@ -339,7 +341,7 @@ class Store {
     return this.page(from,w,p,'j.updated_at DESC,j.job_id DESC',q,`j.*,${session} AS session_id,${project} AS project`);
   }
   job(id,s) {
-    const page=this.jobs(new URLSearchParams({id,limit:'1'}),s);const job=page.items[0];if(!job)throw new HttpError(404,'현재 범위에서 작업을 찾을 수 없습니다.','NOT_FOUND');
+    const page=this.jobs(new URLSearchParams({id,limit:'1'}),s);const job=page.items[0];if(!job)throw new HttpError(404,{code:'NOT_FOUND', key:'error.job.notFoundInScope', message:'No job found in the current scope.'});
     const target=job.target_id&&this.has('extraction_targets')?this.one('SELECT * FROM extraction_targets WHERE target_id=?',[job.target_id]):null;
     const items=target&&this.has('extraction_target_items')?this.all('SELECT * FROM extraction_target_items WHERE target_id=? ORDER BY ordinal LIMIT 500',[target.target_id]):[];
     const failures=target&&this.has('extraction_failed_ranges')?this.all('SELECT * FROM extraction_failed_ranges WHERE target_id=? ORDER BY updated_at DESC LIMIT 100',[target.target_id]):[];
@@ -349,7 +351,7 @@ class Store {
     const [fw,fp]=this.factWhere(s);
     const exchangeIds=items.map(x=>x.exchange_id);
     const relatedFacts=exchangeIds.length?this.all(`SELECT ${this.select('facts',FACT_FIELDS,'f')} FROM facts f WHERE ${fw} AND EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(f.source_exchange_ids) THEN f.source_exchange_ids ELSE '[]' END) j WHERE j.value IN(SELECT value FROM json_each(?))) ORDER BY f.updated_at DESC LIMIT 100`,[...fp,JSON.stringify(exchangeIds)]):[];
-    return {job,target,items,failures,attempts,checkpoint,budget,relatedFacts,relatedFactsBasis:'동일한 원문을 근거로 가진 현재 기억입니다. 해당 실행의 직접 산출물임을 의미하지 않습니다.',itemsTruncated:!!target&&target.item_count>500};
+    return {job,target,items,failures,attempts,checkpoint,budget,relatedFacts,relatedFactsBasisKey:'note.job.relatedFactsBasis',itemsTruncated:!!target&&target.item_count>500};
   }
   attempts(q,s) {
     if(!this.has('model_work_attempts'))return this.missing('model_work_attempts');
