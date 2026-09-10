@@ -46,7 +46,8 @@ Native schema는 출력 구조만 제한합니다. 기존 validator가 길이·l
 
 **디렉터리 = 프로젝트, 브랜치 = workstream (0.6.0).** 세션 시작마다 `inspectWorkspaceLocation(cwd)`이
 `location_kind`/`git_common_dir`/`remote_fingerprint`/`branch`/`default_branch`(= `origin/HEAD`, 없으면
-`init.defaultBranch`, 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
+`packed-refs`, 없으면 저장소 config의 `init.defaultBranch`, 없으면 **사용자 전역/시스템 config**의
+`init.defaultBranch`(0.6.3, #65), 그것도 없으면 `main`·`master`)를 캡처해 workspace 행에 기록하고, 그 값이 exchange
 `git_branch`와 workstream `branch_hint`로 전파됩니다. 세션의 **브랜치 신호**는 셋 중 하나입니다.
 
 | 신호 | 조건 | workstream |

@@ -8,7 +8,10 @@ export interface WorkspaceIdentity {
     memoryRevision: number;
     locationKind: WorkspaceLocationKind;
     branch: string | null;
-    /** Repository default branch (origin/HEAD, then init.defaultBranch). */
+    /**
+     * Repository default branch: `origin/HEAD`, then the repository's
+     * `init.defaultBranch`, then the user's global/system `init.defaultBranch`.
+     */
     defaultBranch: string | null;
     reason: "existing-path" | "explicit" | "git-common-dir" | "approved-remote" | "new-isolated";
 }

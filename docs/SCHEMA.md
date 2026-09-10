@@ -159,7 +159,7 @@ hardening이지 전제가 아니므로 마이그레이션 트랜잭션 밖에서
 `memex status`가 프로젝트 ID·표시 이름·fact 수를 나열합니다. cwd를 신뢰할 수 없는 세션은 프로젝트에
 붙지 않고 글로벌 전용 읽기로 degrade합니다(`readScopeForSession` → `{ type: 'global' }`).
 
-`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
+`projects.memory_revision`은 project current/decision/workspace truth의 meaningful semantic/lifecycle/scope mutation에만 증가합니다. `workspaces`는 device ID, canonical path, Git common-dir와 inode identity, remote fingerprint, location kind, branch, `default_branch`(0.6.0 additive; `origin/HEAD` → `packed-refs` → 저장소 config의 `init.defaultBranch` → 사용자 전역/시스템 config의 `init.defaultBranch` 순으로 감지, 없으면 NULL이고 `main`/`master`가 관례 기본값)를 local provenance로 가집니다. `default_branch`는 세션의 브랜치 신호(`no-branch-signal`/`default-branch`/`branch:<name>`)와 workstream 결정론적 ID를 정하는 유일한 근거입니다. `approved_remote_mappings`만 remote fingerprint auto-link를 허용하고 모든 resolve/suggest/link/split/rebind 결정은 `project_identity_audit`에 남습니다.
 
 `workspace_location_events`(0.6.0 additive, device-local, sync 미대상)는 workspace 전이를 기록합니다.
 세션 시작마다 경로가 실제로 존재하면 fresh inspection이 권위이며 workspace 행의 git 메타데이터를

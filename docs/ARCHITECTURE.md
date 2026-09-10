@@ -231,7 +231,8 @@ Phase 4는 `fact_revisions`를 단일 append-only Chronicle로 확장합니다. 
 Phase 5는 `UserPromptSubmit`에 cheap gate를 둡니다. ack/continuation과 topic-coherent follow-up은 embedding 0회로 skip되고, memory intent·epoch/Capsule/project revision·incident match·drift·coverage·safety refresh에서만 retrieval이 실행됩니다. 결과는 CORRECTION/WORK NOW/CURRENT TRUTH/WATCH/TRACE/RECENT EVIDENCE/ASSISTANT CONTEXT-ONLY 순서의 Memory Bundle(hard 1,000자)로 렌더링되며 MCP deep path는 그대로입니다.
 
 0.6.0은 그 위에 **기억 계층**을 올립니다. 세션 시작의 `inspectWorkspaceLocation`이 브랜치와 저장소 기본
-브랜치(`origin/HEAD` → `packed-refs` → `init.defaultBranch`)를 함께 캡처해 세션을 `no-branch-signal` /
+브랜치(`origin/HEAD` → `packed-refs` → 저장소 config의 `init.defaultBranch` → 전역/시스템 config의
+`init.defaultBranch`)를 함께 캡처해 세션을 `no-branch-signal` /
 `default-branch` / `branch:<name>` 셋 중 하나로 분류하고, workstream id는 `(project_id, branch)`(신호가
 없으면 `project_id`만)로 결정론적으로 파생됩니다. `no-branch-signal`과 `default-branch` 세션의 새 fact는 바로 프로젝트 공용
 (`project-current`), `branch:<name>` 세션의 fact만 브랜치 tier(`workstream`)로 들어가며 근거는

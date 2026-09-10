@@ -16,9 +16,11 @@ import {
   approveRemoteProjectMapping,
   assignFactSubject,
   bindSessionWorkstream,
+  branchSignalFor,
   createWorkstream,
   deterministicWorkstreamId,
   indexHotEvidenceForSession,
+  inspectWorkspaceLocation,
   linkWorkspaceToProject,
   markSessionProjectRevisionSeen,
   projectRevision,
@@ -81,6 +83,168 @@ afterEach(() => {
   delete process.env.TEST_DB_PATH;
   delete process.env.MEMEX_HOME;
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+/**
+ * #65 — a perfectly ordinary default branch was classified as a feature branch.
+ *
+ * Observed with no `origin/HEAD`, no `[init]` in the repository config and HEAD
+ * on `trunk` while `init.defaultBranch = trunk` was set globally:
+ * `{"branch":"trunk","defaultBranch":null}` and
+ * `{"kind":"branch","tierReason":"branch:trunk"}`. Every new fact then stayed on
+ * the `workstream` tier, which `listTierMigrationCandidates` also skips — so
+ * `memex facts migrate-tiers` could not reach it either.
+ */
+describe("default branch detection reads the user's git config too (#65)", () => {
+  const savedGlobal = process.env.GIT_CONFIG_GLOBAL;
+  const savedSystem = process.env.GIT_CONFIG_SYSTEM;
+  const savedNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
+  const savedHome = process.env.HOME;
+  const savedXdg = process.env.XDG_CONFIG_HOME;
+
+  /** A clone with no `origin/HEAD` and no `[init]`, checked out on `branch`. */
+  function bareishClone(dir: string, branch: string, config = ""): void {
+    fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
+    fs.writeFileSync(
+      path.join(dir, ".git", "config"),
+      `[remote "origin"]\n\turl = git@example.test:team/repo.git\n${config}`,
+    );
+  }
+
+  afterEach(() => {
+    for (const [key, value] of [
+      ["GIT_CONFIG_GLOBAL", savedGlobal], ["GIT_CONFIG_SYSTEM", savedSystem],
+      ["GIT_CONFIG_NOSYSTEM", savedNoSystem], ["HOME", savedHome],
+      ["XDG_CONFIG_HOME", savedXdg],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("reads init.defaultBranch from ~/.gitconfig and classifies the branch as default", () => {
+    const home = path.join(root, "home-gitconfig");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, ".gitconfig"), "[init]\n\tdefaultBranch = trunk\n");
+    delete process.env.GIT_CONFIG_GLOBAL;
+    process.env.HOME = home;
+    process.env.XDG_CONFIG_HOME = path.join(home, "unused-xdg");
+
+    const repo = path.join(root, "trunk-repo");
+    bareishClone(repo, "trunk");
+    const inspected = inspectWorkspaceLocation(repo);
+    expect(inspected).toMatchObject({ branch: "trunk", defaultBranch: "trunk" });
+    expect(branchSignalFor(inspected)).toEqual({
+      kind: "default", branch: "trunk", tierReason: "default-branch",
+    });
+  });
+
+  it("reads it from the XDG config file as well", () => {
+    const home = path.join(root, "home-xdg");
+    const xdg = path.join(root, "xdg");
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(xdg, "git"), { recursive: true });
+    fs.writeFileSync(path.join(xdg, "git", "config"), "[init]\n\tdefaultBranch = devel\n");
+    delete process.env.GIT_CONFIG_GLOBAL;
+    process.env.HOME = home;
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    const repo = path.join(root, "devel-repo");
+    bareishClone(repo, "devel");
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "devel" });
+  });
+
+  it("lets ~/.gitconfig win over the XDG file, as git does", () => {
+    const home = path.join(root, "home-both");
+    const xdg = path.join(root, "xdg-both");
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(xdg, "git"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".gitconfig"), "[init]\n\tdefaultBranch = trunk\n");
+    fs.writeFileSync(path.join(xdg, "git", "config"), "[init]\n\tdefaultBranch = devel\n");
+    delete process.env.GIT_CONFIG_GLOBAL;
+    process.env.HOME = home;
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    const repo = path.join(root, "both-repo");
+    bareishClone(repo, "trunk");
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "trunk" });
+  });
+
+  it("honours GIT_CONFIG_GLOBAL and the system config, global first", () => {
+    const globalFile = path.join(root, "global.gitconfig");
+    const systemFile = path.join(root, "system.gitconfig");
+    fs.writeFileSync(globalFile, "[init]\n\tdefaultBranch = trunk\n");
+    fs.writeFileSync(systemFile, "[init]\n\tdefaultBranch = mainline\n");
+    const repo = path.join(root, "override-repo");
+    bareishClone(repo, "trunk");
+
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    process.env.GIT_CONFIG_SYSTEM = systemFile;
+    delete process.env.GIT_CONFIG_NOSYSTEM;
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "trunk" });
+
+    // With no global config the system one is still consulted.
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "mainline" });
+
+    // `GIT_CONFIG_NOSYSTEM` turns it off, and nothing else declares a default.
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: null });
+    expect(branchSignalFor(inspectWorkspaceLocation(repo))).toMatchObject({ kind: "branch" });
+  });
+
+  it("lets the repository config win over the user's", () => {
+    const globalFile = path.join(root, "repo-wins-global.gitconfig");
+    fs.writeFileSync(globalFile, "[init]\n\tdefaultBranch = trunk\n");
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+
+    const repo = path.join(root, "repo-wins");
+    bareishClone(repo, "release", "[init]\n\tdefaultBranch = release\n");
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "release" });
+  });
+
+  it("keeps origin/HEAD ahead of every init.defaultBranch", () => {
+    const globalFile = path.join(root, "origin-head-global.gitconfig");
+    fs.writeFileSync(globalFile, "[init]\n\tdefaultBranch = trunk\n");
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+
+    const repo = path.join(root, "origin-head-repo");
+    bareishClone(repo, "trunk", "[init]\n\tdefaultBranch = release\n");
+    fs.mkdirSync(path.join(repo, ".git", "refs", "remotes", "origin"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, ".git", "refs", "remotes", "origin", "HEAD"),
+      "ref: refs/remotes/origin/production\n",
+    );
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "production" });
+  });
+
+  it("does not read another section's defaultBranch, and takes the last value", () => {
+    const globalFile = path.join(root, "sections.gitconfig");
+    fs.writeFileSync(
+      globalFile,
+      "[init]\n\ttemplatedir = /tmp/t\n[push]\n\tdefaultBranch = wrong\n"
+        + "[init]\n\tdefaultBranch = first # comment\n\tdefaultBranch = last\n",
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+
+    const repo = path.join(root, "sections-repo");
+    bareishClone(repo, "last");
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({ defaultBranch: "last" });
+  });
+
+  it("tolerates an absent config file without throwing", () => {
+    process.env.GIT_CONFIG_GLOBAL = path.join(root, "does", "not", "exist");
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    const repo = path.join(root, "absent-repo");
+    bareishClone(repo, "feature/x");
+    expect(inspectWorkspaceLocation(repo)).toMatchObject({
+      branch: "feature/x", defaultBranch: null,
+    });
+  });
 });
 
 describe("stable project/workspace resolver", () => {

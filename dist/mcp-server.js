@@ -20376,6 +20376,7 @@ var UntrustedProjectPathError = class extends Error {
 // src/continuity-identity.ts
 import { createHash as createHash2, randomUUID } from "node:crypto";
 import fs2 from "node:fs";
+import os3 from "node:os";
 import path4 from "node:path";
 
 // src/fact-policy.ts
@@ -20533,6 +20534,64 @@ function readGitFile(file) {
     return null;
   }
 }
+function stripConfigComment(line) {
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (!quoted && (char === "#" || char === ";")) return line.slice(0, index);
+  }
+  return line;
+}
+function initDefaultBranchIn(config2) {
+  let inInit = false;
+  let value = null;
+  const readEntry = (text) => {
+    const entry = text.trim().match(/^defaultBranch\s*=\s*(.*)$/i);
+    if (!entry) return;
+    const raw = entry[1].trim().replace(/^"(.*)"$/s, "$1").trim();
+    if (raw) value = raw;
+  };
+  for (const rawLine of config2.split(/\r?\n/)) {
+    const line = stripConfigComment(rawLine).trim();
+    if (!line) continue;
+    const section = line.match(/^\[\s*([A-Za-z0-9.\-]+)\s*(?:"(?:[^"\\]|\\.)*")?\s*\](.*)$/);
+    if (section) {
+      inInit = section[1].toLowerCase() === "init";
+      if (inInit && section[2].trim()) readEntry(section[2]);
+      continue;
+    }
+    if (inInit) readEntry(line);
+  }
+  return value;
+}
+function userGitConfigFiles() {
+  const files = [];
+  const globalOverride = process.env.GIT_CONFIG_GLOBAL;
+  if (globalOverride) {
+    if (globalOverride !== "/dev/null") files.push(globalOverride);
+  } else {
+    const home = process.env.HOME || os3.homedir();
+    if (home) files.push(path4.join(home, ".gitconfig"));
+    const xdg = process.env.XDG_CONFIG_HOME ? path4.join(process.env.XDG_CONFIG_HOME, "git", "config") : home ? path4.join(home, ".config", "git", "config") : null;
+    if (xdg) files.push(xdg);
+  }
+  if (process.env.GIT_CONFIG_NOSYSTEM === "1") return files;
+  const systemOverride = process.env.GIT_CONFIG_SYSTEM;
+  if (systemOverride) {
+    if (systemOverride !== "/dev/null") files.push(systemOverride);
+    return files;
+  }
+  files.push("/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig");
+  return files;
+}
 function detectDefaultBranch(commonDir, config2) {
   const originHead = readGitFile(path4.join(commonDir, "refs", "remotes", "origin", "HEAD"));
   const symbolic = originHead?.match(/^ref:\s+refs\/remotes\/origin\/(.+)$/)?.[1]?.trim();
@@ -20540,8 +20599,15 @@ function detectDefaultBranch(commonDir, config2) {
   const packed = readGitFile(path4.join(commonDir, "packed-refs")) ?? "";
   const packedHead = packed.match(/^\s*ref:\s+refs\/remotes\/origin\/(.+)$/m)?.[1]?.trim();
   if (packedHead) return packedHead;
-  const init = config2.match(/\[init\][\s\S]*?\n\s*defaultBranch\s*=\s*([^\n]+)/i)?.[1]?.trim();
-  return init || null;
+  const repoInit = initDefaultBranchIn(config2);
+  if (repoInit) return repoInit;
+  for (const file of userGitConfigFiles()) {
+    const text = readGitFile(file);
+    if (text === null) continue;
+    const init = initDefaultBranchIn(text);
+    if (init) return init;
+  }
+  return null;
 }
 function inspectWorkspaceLocation(cwd) {
   const canonical = canonicalizeProjectPath(cwd);
@@ -27645,7 +27711,7 @@ init_embeddings();
 // src/llm.ts
 init_paths();
 import path11 from "node:path";
-import os4 from "node:os";
+import os5 from "node:os";
 
 // src/llm-error-class.ts
 function extractStatus(x2) {
@@ -27705,7 +27771,7 @@ function classifyLlmError(err) {
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
 import fs9 from "node:fs";
-import os3 from "node:os";
+import os4 from "node:os";
 import path10 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
@@ -27910,7 +27976,7 @@ async function runCodex(opts = {}) {
   }
   const maxInputChars = assertLimit(opts.maxInputChars, "maxInputChars");
   const maxOutputChars = assertLimit(opts.maxOutputChars, "maxOutputChars");
-  const workdir = fs9.mkdtempSync(path10.join(os3.tmpdir(), "memex-llm-"));
+  const workdir = fs9.mkdtempSync(path10.join(os4.tmpdir(), "memex-llm-"));
   const outPath = path10.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
@@ -27987,7 +28053,7 @@ async function runCodex(opts = {}) {
 
 // src/llm.ts
 init_model_budget();
-var LLM_WORKDIR = path11.join(os4.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path11.join(os5.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));

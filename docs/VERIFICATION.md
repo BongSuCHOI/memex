@@ -119,6 +119,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 
 | Suite | 고정하는 회귀 |
 | --- | --- |
+| `test/continuity-identity.test.ts` | 전역/시스템 `init.defaultBranch` 감지 순서(`origin/HEAD` → 저장소 config → `~/.gitconfig` → XDG → 시스템), `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` 존중, 섹션 경계와 파일 부재 내성 (#65) |
 | `test/scope-tier-identity.test.ts` | 브랜치·기본 브랜치 감지, `no-branch-signal`/`default-branch`/`branch:<name>` 분류, `(project_id, branch)` 결정론적 workstream id, 워크트리 공유, workspace 전이와 `WORKSPACE_LOCATION_CHANGED`, 승인 없는 병합 거부, untrusted cwd 거절과 quarantine |
 | `test/fact-tier-ladder.test.ts` | 기본 tier 결정, 한 칸 제약(`TierStepError`)과 `user-directive` 2단계, actor별 Chronicle `PROMOTED`/`DEMOTED`, SQL 자동 재조정, `migrate-tiers` dry-run/apply, 근거가 정정된 auto 승격의 강등과 정규화 동일 재표현의 tier 유지 (#62) |
 | `test/fixtures/fact-scope-directive-cases.json` | 세션 내 한국어·영어 범위 지시문 인식 fixture |
