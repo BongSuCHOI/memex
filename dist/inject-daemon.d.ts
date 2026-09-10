@@ -125,8 +125,52 @@ export declare function injectDaemonPolicy(): InjectDaemonPolicy;
 export declare function injectSocketPath(): string;
 /** Serializes probe→bind across starters. Never held across a request. */
 export declare function injectDaemonLockPath(): string;
+/**
+ * Where a server that did NOT bind announces that it is re-probing (issue #89).
+ *
+ * One small file per candidate process, removed when that process binds,
+ * retires or exits. It exists for `doctor`: a stale socket file is a transient
+ * state when some live MCP server is waiting to reclaim it, and a permanent one
+ * when none is, and nothing else on disk can tell those two apart.
+ */
+export declare function injectDaemonCandidateDir(): string;
+/** A live server that is waiting to reclaim the socket. */
+export interface InjectDaemonCandidate extends InjectDaemonOwner {
+    /** Its re-probe interval, so a diagnostic can say when reclaim is due. */
+    reprobeMs: number;
+}
+/**
+ * Every candidate whose process is still alive.
+ *
+ * Read-only and best-effort: a file left by a SIGKILLed process is skipped
+ * rather than deleted, because a diagnostic must not mutate runtime state.
+ */
+export declare function readInjectDaemonCandidates(dir?: string): InjectDaemonCandidate[];
+/**
+ * Per-connection budget on the daemon side, and therefore the hook's post-ack
+ * compute budget too (`SOCKET_COMPUTE_TIMEOUT_MS` in scripts/inject-context.js).
+ *
+ * It is an IDLE timeout, so it bounds the whole compute: the daemon writes its
+ * `ack` and then goes quiet until the context is ready. Waiting longer than this
+ * on the hook side would mean waiting on a connection the daemon has already
+ * destroyed, which is why the two sides share one number instead of each picking
+ * their own.
+ */
+export declare const INJECT_DAEMON_REQUEST_TIMEOUT_MS = 10000;
 /** `doctor`'s budget: long enough to outlast an owner's embedding-model load. */
 export declare const INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS = 3000;
+/**
+ * How often a server that did not bind re-probes the socket (issue #89).
+ *
+ * 20s sits in the middle of the 15–30s the issue asks for: long enough that a
+ * rotating host's servers cost nothing measurable, short enough that a prompt
+ * typed a few seconds after the owner exits is the only one paying the cold
+ * path. `MEMEX_INJECT_DAEMON_REACQUIRE_MS` shortens it for tests, which cannot
+ * sit out 20s per case.
+ */
+export declare function injectDaemonReacquireIntervalMs(): number;
+/** Opportunistic re-probe. Never throws, never blocks the caller. */
+export declare function injectDaemonReacquireNow(): void;
 /**
  * Read-only identity probe — the question `doctor` and a starting server ask.
  *
@@ -148,5 +192,13 @@ timeoutMs?: number): Promise<{
     owner: InjectDaemonOwner | null;
     /** Set when something listens but did not answer a usable identity. */
     problem: string | null;
+    /**
+     * The connect errno, when there was one. Issue #89: "no socket file at all"
+     * (ENOENT, the ordinary cold state) and "a socket file nobody listens on"
+     * (ECONNREFUSED, an owner that exited) are the same decision for a starter
+     * and two different reports for `doctor`, which has to say whether anything
+     * is expected to fix it.
+     */
+    code: string | null;
 }>;
 export declare function startInjectDaemon(): net.Server | null;

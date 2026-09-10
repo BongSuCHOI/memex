@@ -179,10 +179,145 @@ export function injectSocketPath() {
 export function injectDaemonLockPath() {
     return path.join(getIndexDir(), 'inject-daemon.lock');
 }
-const CLIENT_TIMEOUT_MS = 10_000;
+/**
+ * Where a server that did NOT bind announces that it is re-probing (issue #89).
+ *
+ * One small file per candidate process, removed when that process binds,
+ * retires or exits. It exists for `doctor`: a stale socket file is a transient
+ * state when some live MCP server is waiting to reclaim it, and a permanent one
+ * when none is, and nothing else on disk can tell those two apart.
+ */
+export function injectDaemonCandidateDir() {
+    return path.join(getIndexDir(), 'inject-daemon.candidates');
+}
+/**
+ * Every candidate whose process is still alive.
+ *
+ * Read-only and best-effort: a file left by a SIGKILLed process is skipped
+ * rather than deleted, because a diagnostic must not mutate runtime state.
+ */
+export function readInjectDaemonCandidates(dir = injectDaemonCandidateDir()) {
+    let names;
+    try {
+        names = fs.readdirSync(dir);
+    }
+    catch {
+        return [];
+    }
+    const candidates = [];
+    for (const name of names) {
+        if (!name.endsWith('.json'))
+            continue;
+        try {
+            const parsed = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+            const owner = ownerFrom(parsed);
+            if (!owner || !pidAlive(owner.pid))
+                continue;
+            candidates.push({
+                ...owner,
+                reprobeMs: typeof parsed.reprobeMs === 'number' ? parsed.reprobeMs : 0,
+            });
+        }
+        catch { /* unreadable candidate file — skip it */ }
+    }
+    return candidates.sort((a, b) => a.pid - b.pid);
+}
+/**
+ * Per-connection budget on the daemon side, and therefore the hook's post-ack
+ * compute budget too (`SOCKET_COMPUTE_TIMEOUT_MS` in scripts/inject-context.js).
+ *
+ * It is an IDLE timeout, so it bounds the whole compute: the daemon writes its
+ * `ack` and then goes quiet until the context is ready. Waiting longer than this
+ * on the hook side would mean waiting on a connection the daemon has already
+ * destroyed, which is why the two sides share one number instead of each picking
+ * their own.
+ */
+export const INJECT_DAEMON_REQUEST_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 500;
 /** `doctor`'s budget: long enough to outlast an owner's embedding-model load. */
 export const INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS = 3_000;
+const REACQUIRE_INTERVAL_DEFAULT_MS = 20_000;
+/** Trigger label whose outcomes are NOT logged: it repeats for ever. */
+const REPROBE_TRIGGER = 're-probe';
+/**
+ * How often a server that did not bind re-probes the socket (issue #89).
+ *
+ * 20s sits in the middle of the 15–30s the issue asks for: long enough that a
+ * rotating host's servers cost nothing measurable, short enough that a prompt
+ * typed a few seconds after the owner exits is the only one paying the cold
+ * path. `MEMEX_INJECT_DAEMON_REACQUIRE_MS` shortens it for tests, which cannot
+ * sit out 20s per case.
+ */
+export function injectDaemonReacquireIntervalMs() {
+    const raw = Number(process.env.MEMEX_INJECT_DAEMON_REACQUIRE_MS);
+    return Number.isFinite(raw) && raw >= 20 ? raw : REACQUIRE_INTERVAL_DEFAULT_MS;
+}
+/**
+ * Re-probes of every starter in this process that is not currently serving.
+ *
+ * The MCP server calls `injectDaemonReacquireNow()` on each tool request so a
+ * host that is actively working reclaims an orphaned socket without waiting for
+ * the timer. Cheap by construction: rate-limited, never awaited, and a no-op
+ * once this process owns the socket.
+ */
+const reacquireProbes = new Set();
+/** Opportunistic re-probe. Never throws, never blocks the caller. */
+export function injectDaemonReacquireNow() {
+    for (const probe of reacquireProbes) {
+        try {
+            probe();
+        }
+        catch { /* best-effort sidecar */ }
+    }
+}
+/**
+ * Process-exit cleanup, installed once however many starters this process has.
+ *
+ * Registering four listeners per `startInjectDaemon()` call would trip Node's
+ * max-listener warning in a host that starts several, and the work is identical
+ * for all of them.
+ */
+const processCleanups = new Set();
+let processCleanupInstalled = false;
+function runProcessCleanups() {
+    for (const cleanup of processCleanups) {
+        try {
+            cleanup();
+        }
+        catch { /* best-effort */ }
+    }
+}
+function registerProcessCleanup(cleanup) {
+    processCleanups.add(cleanup);
+    if (processCleanupInstalled)
+        return;
+    processCleanupInstalled = true;
+    process.once('exit', runProcessCleanups);
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+        const handler = () => {
+            runProcessCleanups();
+            // Installing a signal listener SUPPRESSES Node's default of terminating
+            // the process, so a sidecar must not silently turn the MCP server's
+            // SIGTERM into a no-op: drop our listener and re-raise, which restores
+            // the default disposition unless the host installed one of its own.
+            process.removeListener(signal, handler);
+            if (process.listenerCount(signal) === 0) {
+                try {
+                    process.kill(process.pid, signal);
+                }
+                catch { /* already dying */ }
+            }
+        };
+        process.on(signal, handler);
+    }
+    // The MCP server's stdin closing is how a host says "you are done" without a
+    // signal (the stdio transport ends on the same event).
+    try {
+        process.stdin.once('close', runProcessCleanups);
+        process.stdin.once('end', runProcessCleanups);
+    }
+    catch { /* no stdin in this shape */ }
+}
 function note(message) {
     // stderr: a hook's stdout is injected into the session as context.
     console.error(`[memex] inject-daemon: ${message}`);
@@ -286,21 +421,22 @@ timeoutMs = PROBE_TIMEOUT_MS) {
         // and the path is safe to reclaim. EACCES and friends are NOT: a socket we
         // are not allowed to speak to may still have a live process behind it.
         if (error.code === 'ENOENT' || error.code === 'ECONNREFUSED' || error.code === 'ENOTSOCK') {
-            return { listening: false, owner: null, problem: null };
+            return { listening: false, owner: null, problem: null, code: error.code };
         }
-        return { listening: true, owner: null, problem: error.code ?? error.message };
+        return { listening: true, owner: null, problem: error.code ?? error.message, code: error.code ?? null };
     }
     const owner = ownerFrom(reply);
     if (!owner) {
         return {
             listening: true,
             owner: null,
+            code: null,
             problem: reply === null
                 ? 'no identity answer (a pre-0.6.3 daemon, or a foreign listener)'
                 : `unexpected reply type ${String(reply.type ?? 'none')}`,
         };
     }
-    return { listening: true, owner, problem: null };
+    return { listening: true, owner, problem: null, code: null };
 }
 export function startInjectDaemon() {
     const policy = injectDaemonPolicy();
@@ -321,9 +457,11 @@ export function startInjectDaemon() {
         startedAt: new Date().toISOString(),
     };
     let retired = false;
+    /** True only between our own `listening` and our own close: "the socket is ours". */
+    let owning = false;
     const server = net.createServer((conn) => {
         let buf = '';
-        conn.setTimeout(CLIENT_TIMEOUT_MS, () => conn.destroy());
+        conn.setTimeout(INJECT_DAEMON_REQUEST_TIMEOUT_MS, () => conn.destroy());
         conn.on('error', () => { });
         conn.on('data', (chunk) => {
             buf += chunk.toString('utf8');
@@ -405,6 +543,8 @@ export function startInjectDaemon() {
             return { type: 'refused', ...current, reason: 'caller is not the installed plugin root' };
         }
         retired = true;
+        disarmReacquire();
+        owning = false;
         try {
             server.close();
         }
@@ -419,6 +559,9 @@ export function startInjectDaemon() {
         return { type: 'retired', ...current };
     }
     const onListen = () => {
+        binding = false;
+        owning = true;
+        disarmReacquire();
         try {
             fs.chmodSync(sockPath, 0o600);
         }
@@ -427,6 +570,75 @@ export function startInjectDaemon() {
         // start gets the fast path (load happens once, off the request path).
         void initEmbeddings().catch(() => { });
     };
+    const candidatePath = () => path.join(injectDaemonCandidateDir(), `${process.pid}.json`);
+    /**
+     * Announce (or withdraw) "this live process is waiting to reclaim the socket".
+     *
+     * Purely for `doctor`: see `injectDaemonCandidateDir`. Every failure is
+     * swallowed — a sidecar that cannot write a diagnostic marker still has to
+     * re-probe.
+     */
+    function publishCandidate() {
+        try {
+            fs.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
+            fs.writeFileSync(candidatePath(), JSON.stringify({ ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt, reprobeMs: injectDaemonReacquireIntervalMs() }));
+        }
+        catch { /* best-effort */ }
+    }
+    function dropCandidate() {
+        try {
+            fs.unlinkSync(candidatePath());
+        }
+        catch { /* never published, or already gone */ }
+    }
+    /**
+     * Give up the socket on the way out (issue #89).
+     *
+     * The observed failure was the other half of this: the owner exited, left its
+     * socket file behind, and every later prompt connected to it and got
+     * ECONNREFUSED. Unlinking here makes the ordinary exit leave ENOENT — a clean
+     * cold start — instead of a corpse that looks like a live daemon. Idempotent,
+     * synchronous (it runs from `process.on('exit')`), and it only ever removes
+     * files this process owns.
+     */
+    let releasedOwnership = false;
+    function releaseOwnership() {
+        if (releasedOwnership)
+            return;
+        releasedOwnership = true;
+        dropCandidate();
+        if (!owning)
+            return;
+        owning = false;
+        try {
+            server.close();
+        }
+        catch { /* already closing */ }
+        try {
+            if (fs.existsSync(sockPath))
+                fs.unlinkSync(sockPath);
+        }
+        catch { /* raced */ }
+        releaseLockIfOurs();
+    }
+    const lockPayload = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
+    function holdsOurLock() {
+        try {
+            return fs.readFileSync(injectDaemonLockPath(), 'utf8') === lockPayload;
+        }
+        catch {
+            return false;
+        }
+    }
+    /** Drop the bind lock, but only while it is still OURS. */
+    function releaseLockIfOurs() {
+        if (!holdsOurLock())
+            return;
+        try {
+            fs.unlinkSync(injectDaemonLockPath());
+        }
+        catch { /* someone reclaimed it */ }
+    }
     /**
      * Claim the socket under an `O_EXCL` lock so two starting servers cannot both
      * decide the socket is dead and both bind. A lock left by a process that is
@@ -435,15 +647,7 @@ export function startInjectDaemon() {
      */
     const withLock = async (claim) => {
         const lockPath = injectDaemonLockPath();
-        const mine = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
-        const holdsOurLock = () => {
-            try {
-                return fs.readFileSync(lockPath, 'utf8') === mine;
-            }
-            catch {
-                return false;
-            }
-        };
+        const mine = lockPayload;
         let held = false;
         for (let attempt = 0; attempt < 2 && !held; attempt++) {
             try {
@@ -490,39 +694,51 @@ export function startInjectDaemon() {
             }
         }
     };
+    /** True from `listen()` until `listening` or the error that answers it. */
+    let binding = false;
     const bind = () => {
-        if (retired)
+        if (retired || owning || binding)
             return;
+        binding = true;
         try {
             server.listen(sockPath, onListen);
             server.unref();
         }
-        catch { /* sidecar is best-effort */ }
-    };
-    // The reclaim ends in another `listen`, which can itself raise EADDRINUSE if a
-    // racer won in between. One attempt only: retrying would loop against whoever
-    // keeps winning, and not serving is always a correct outcome here.
-    let reclaimAttempted = false;
-    server.on('error', (err) => {
-        if (err.code !== 'EADDRINUSE')
-            return; // best-effort sidecar — never crash the MCP server
-        if (reclaimAttempted) {
-            note('socket was claimed by another starter during the handover — not serving');
-            return;
+        catch {
+            binding = false; /* sidecar is best-effort */
         }
-        reclaimAttempted = true;
-        void withLock(async () => {
+    };
+    /**
+     * One probe→decide→maybe-bind cycle, under the bind lock.
+     *
+     * Shared by the initial EADDRINUSE answer and by every later re-probe (issue
+     * #89), because the decision is identical in both: a socket nobody listens on
+     * is reclaimed, a live same-build owner is left to serve, an unidentified
+     * listener is left untouched, and a live FOREIGN owner is asked to retire.
+     * What changed in 0.6.4 is only that the cycle can run again later.
+     */
+    const reclaim = async (trigger) => {
+        await withLock(async () => {
+            if (retired || owning)
+                return;
             const probe = await probeInjectDaemon(sockPath);
             if (!probe.listening) {
-                // Stale socket file (the owner was SIGKILLed): reclaim and bind.
+                // Nothing behind the path: a socket file the owner left when it exited
+                // (ECONNREFUSED — the #89 observation), a SIGKILLed owner's corpse, or
+                // nothing at all. Reclaim and bind.
                 try {
                     fs.unlinkSync(sockPath);
                 }
-                catch { /* raced another reclaimer */ }
+                catch { /* ENOENT, or raced another reclaimer */ }
+                note(`reclaiming the socket (${trigger}; ${probe.code ?? 'absent'})`);
                 return bind();
             }
             if (probe.owner && injectDaemonIdentityMatches(probe.owner, injectDaemonIdentity())) {
-                note(`socket already served by this same build (pid ${probe.owner.pid}) — not serving`);
+                // Quiet on the re-probe path: this is the steady state for every server
+                // a host keeps beside the owner, and it must not print per interval.
+                if (trigger !== REPROBE_TRIGGER) {
+                    note(`socket already served by this same build (pid ${probe.owner.pid}) — not serving`);
+                }
                 return;
             }
             if (!probe.owner) {
@@ -530,7 +746,9 @@ export function startInjectDaemon() {
                 // pre-0.6.3 daemon or another program entirely; unlinking a socket we
                 // cannot attribute would break a live owner, so it is left alone. Hooks
                 // fall back in-process, so correctness holds until it exits.
-                note(`socket held by an unidentified listener (${probe.problem ?? 'no answer'}) — left alone, hooks will use the in-process fallback`);
+                if (trigger !== REPROBE_TRIGGER) {
+                    note(`socket held by an unidentified listener (${probe.problem ?? 'no answer'}) — left alone, hooks will use the in-process fallback`);
+                }
                 return;
             }
             const { reply } = await askSocket(sockPath, {
@@ -545,9 +763,74 @@ export function startInjectDaemon() {
                 catch { /* already gone */ }
                 return bind();
             }
-            note(`owner ${probe.owner.version ?? 'unknown'} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? 'no answer')}) — not serving`);
-        }).catch(() => { });
+            if (trigger !== REPROBE_TRIGGER) {
+                note(`owner ${probe.owner.version ?? 'unknown'} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? 'no answer')}) — not serving`);
+            }
+        });
+    };
+    let attemptInFlight = false;
+    let lastAttemptAt = 0;
+    /**
+     * Rate-limited entry point to `reclaim`. Never awaited, never throws.
+     *
+     * `minGapMs` is what keeps the opportunistic per-MCP-request probe cheap: a
+     * busy host calls it many times a second and all but one call in `minGapMs`
+     * returns after two comparisons.
+     */
+    function tryReclaim(trigger, minGapMs = 0) {
+        if (retired || owning || binding || attemptInFlight)
+            return;
+        const now = Date.now();
+        if (minGapMs > 0 && now - lastAttemptAt < minGapMs)
+            return;
+        lastAttemptAt = now;
+        attemptInFlight = true;
+        void reclaim(trigger)
+            .catch(() => { })
+            .finally(() => { attemptInFlight = false; });
+    }
+    let reacquireTimer = null;
+    const opportunistic = () => tryReclaim('mcp request', Math.min(2_000, injectDaemonReacquireIntervalMs()));
+    /**
+     * Start watching a socket this process does not own (issue #89).
+     *
+     * `unref()` is the whole lifecycle safety story, same as the listener's: the
+     * timer never keeps the MCP server alive, so a server that is otherwise done
+     * exits on schedule and its watch disappears with it.
+     */
+    function armReacquire() {
+        if (retired || owning || reacquireTimer)
+            return;
+        reacquireTimer = setInterval(() => tryReclaim(REPROBE_TRIGGER), injectDaemonReacquireIntervalMs());
+        reacquireTimer.unref();
+        reacquireProbes.add(opportunistic);
+        publishCandidate();
+        note(`not serving — re-probing every ${injectDaemonReacquireIntervalMs()}ms and on each MCP request until the socket is free`);
+    }
+    function disarmReacquire() {
+        if (reacquireTimer) {
+            clearInterval(reacquireTimer);
+            reacquireTimer = null;
+        }
+        reacquireProbes.delete(opportunistic);
+        dropCandidate();
+    }
+    // The reclaim ends in another `listen`, which can itself raise EADDRINUSE if a
+    // racer won in between. At most ONE immediate attempt: retrying inline would
+    // loop against whoever keeps winning. Every later attempt is paced by the
+    // re-probe timer, which is the point of #89.
+    let reclaimAttempted = false;
+    server.on('error', (err) => {
+        binding = false;
+        if (err.code !== 'EADDRINUSE')
+            return; // best-effort sidecar — never crash the MCP server
+        armReacquire();
+        if (reclaimAttempted)
+            return;
+        reclaimAttempted = true;
+        tryReclaim('another server already holds the socket');
     });
+    registerProcessCleanup(releaseOwnership);
     bind();
     return server;
 }
