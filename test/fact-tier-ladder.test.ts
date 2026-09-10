@@ -354,6 +354,34 @@ describe("evidence-based automatic ladder (#19)", () => {
     expect((db.prepare(
       "SELECT actor FROM fact_revisions WHERE fact_id = ? AND event_kind = 'PROMOTED'",
     ).get(first) as { actor: string }).actor).toBe("auto");
+    expect(result.skipped).toEqual([]);
+  });
+
+  it("never promotes a slot whose branches disagree, and reports the conflict (#60)", async () => {
+    const project = path.join(root, "conflict-project");
+    gitClone(project, "feature/a");
+    const sqlite = await branchFact("conf-a", project, "state.runtime.database", "The project uses SQLite");
+    // Same slot, a different branch, the OPPOSITE sentence: not a re-confirmation.
+    const other = ensureSessionMemoryState(db, { sessionId: "conf-b", project, branch: "feature/b" });
+    await insertExchange(db, exchange("ex-conf-b", "conf-b", project, "The project uses PostgreSQL"), emb);
+    const postgres = insertFact(db, {
+      fact: "The project uses PostgreSQL", category: "knowledge", scope_type: "project",
+      scope_project: project, source_exchange_ids: ["ex-conf-b"], embedding: emb,
+      subject_key: "state.runtime.database", project_id: other.projectId,
+      workspace_id: other.workspaceId, workstream_id: other.workstreamId,
+      promotion_state: "workstream", promotion_evidence: "experimental",
+    });
+
+    const result = reconcileFactTiers(db, { now: "2026-09-10T00:00:00.000Z" });
+    expect(result.promoted).toEqual([]);
+    expect(readFactTier(db, sqlite).tier).toBe("workstream");
+    expect(readFactTier(db, postgres).tier).toBe("workstream");
+    expect(result.skipped.map((r) => r.reason)).toEqual([
+      "slot has conflicting branch truths", "slot has conflicting branch truths",
+    ]);
+    expect(result.skipped.map((r) => r.id).sort()).toEqual([sqlite, postgres].sort());
+    // Repeating the pass never erodes into a promotion either.
+    expect(reconcileFactTiers(db, { now: "2026-09-10T01:00:00.000Z" }).promoted).toEqual([]);
   });
 
   it("promotes a fact confirmed in two different projects to global", async () => {

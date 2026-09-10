@@ -1241,15 +1241,40 @@ export function reconcileFactTiers(
     }
   };
 
+  // #60 — a slot whose active branch facts disagree on their text holds two
+  // competing branch truths, not one re-confirmed truth. No SQL fact says which
+  // sentence is right, so nothing is promoted and the slot is reported instead.
+  const conflictingSlots = db.prepare(`
+    SELECT f.project_id AS projectId, f.subject_key AS subjectKey, GROUP_CONCAT(f.id) AS ids
+    FROM facts f
+    WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
+      AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
+    GROUP BY f.project_id, f.subject_key
+    HAVING COUNT(DISTINCT LOWER(TRIM(f.fact))) >= 2
+    ORDER BY f.project_id, f.subject_key
+  `).all() as Array<{ projectId: string; subjectKey: string; ids: string | null }>;
+  const conflictedSlots = new Set<string>();
+  for (const slot of conflictingSlots) {
+    conflictedSlots.add(`${slot.projectId} ${slot.subjectKey}`);
+    for (const id of String(slot.ids ?? '').split(',').filter(Boolean).sort()) {
+      result.skipped.push({ id, reason: 'slot has conflicting branch truths' });
+    }
+  }
+
   // 1. Branch truth re-confirmed outside its own branch becomes project truth.
   //    Only the slot's earliest branch fact moves, so a slot confirmed from two
   //    branches promotes one deterministic row instead of racing for the slot.
+  //    #60 — "re-confirmed" means the SAME normalized text (the normalizer pass
+  //    2 already uses); without it, two branches that disagree on one slot read
+  //    as confirmation and whichever row was created first became the project
+  //    truth.
   const confirmedOutsideBranch = db.prepare(`
-    SELECT f.id AS id, MIN(g.id) AS witness
+    SELECT f.id AS id, f.project_id AS projectId, f.subject_key AS subjectKey, MIN(g.id) AS witness
     FROM facts f
     JOIN facts g ON g.project_id = f.project_id AND g.subject_key = f.subject_key
       AND g.id <> f.id AND g.is_active = 1
       AND COALESCE(g.workstream_id, '') <> COALESCE(f.workstream_id, '')
+      AND LOWER(TRIM(g.fact)) = LOWER(TRIM(f.fact))
     WHERE f.is_active = 1 AND f.promotion_state = 'workstream'
       AND f.project_id IS NOT NULL AND f.subject_key IS NOT NULL
       AND NOT EXISTS (
@@ -1260,12 +1285,15 @@ export function reconcileFactTiers(
       )
     GROUP BY f.id
     ORDER BY f.id
-  `).all() as Array<{ id: string; witness: string }>;
+  `).all() as Array<{ id: string; projectId: string; subjectKey: string; witness: string }>;
   for (const row of confirmedOutsideBranch) {
+    if (conflictedSlots.has(`${row.projectId} ${row.subjectKey}`)) continue;
     step(row.id, 1, 'subject re-confirmed outside this workstream', [row.witness]);
   }
 
   // 2. The same project truth confirmed in two or more projects becomes global.
+  //    The GROUP BY is the content check: every witness in a group shares the
+  //    same LOWER(TRIM(fact)), so #60's conflicting-text case cannot arise here.
   const crossProject = db.prepare(`
     SELECT MIN(f.id) AS id, COUNT(DISTINCT f.project_id) AS projects,
            GROUP_CONCAT(f.id) AS witnesses

@@ -55,9 +55,13 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
 
 | 이동 | 자동(근거 기반) 조건 | 사용자 명시 |
 |---|---|---|
-| workstream → project | 같은 `subject_key` fact가 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
-| project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때 | 동일 |
+| workstream → project | 같은 `subject_key` slot의 fact가 **같은 내용**(`LOWER(TRIM(fact))`)으로 다른 workstream/브랜치 세션에서 재확인되거나, 기본 브랜치 세션에서 재확인될 때 | `memex facts promote <id>` |
+| project → global | 같은 fact가 서로 다른 프로젝트 **2곳 이상**에서 확인될 때(`GROUP BY LOWER(TRIM(fact))`가 내용 동일성을 보장) | 동일 |
 | 강등 | 상위 근거가 비활성화·정정돼 사라질 때 | `memex facts demote <id>` |
+
+0.6.2(#60)부터 "재확인"은 **내용 동일성**을 요구합니다. 같은 slot에 서로 다른 내용의 활성 브랜치 fact가
+2개 이상이면(예: 브랜치 A “SQLite를 쓴다” / 브랜치 B “PostgreSQL을 쓴다”) 어느 쪽도 승격하지 않고
+`reconcileFactTiers`의 `skipped`에 `slot has conflicting branch truths`로 남겨 사람이 보게 합니다.
 
 - `workstream → global` 직행은 불가합니다. 한 칸씩만 움직이며 위반은 `TierStepError`입니다. 예외는
   세션 내 명시 지시뿐이고, 그것도 **한 트랜잭션 안에서 두 단계로 실행되어 이벤트 두 개**를 남깁니다.
