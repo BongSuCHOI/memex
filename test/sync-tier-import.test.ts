@@ -87,7 +87,7 @@ async function readFactRow(root: string, id: string) {
   const db = initDatabase();
   try {
     return db.prepare(`
-      SELECT id, promotion_state, workspace_id, workstream_id, tier_reason, fact
+      SELECT id, promotion_state, workspace_id, workstream_id, tier_reason, fact, is_active
       FROM facts WHERE id = ?
     `).get(id) as
       | {
@@ -97,6 +97,7 @@ async function readFactRow(root: string, id: string) {
           workstream_id: string | null;
           tier_reason: string | null;
           fact: string;
+          is_active: number;
         }
       | undefined;
   } finally {
@@ -322,6 +323,95 @@ describe('sync tier identity (#37)', () => {
     const commonOnB = await readFactRow(rootB, 'fact-common');
     expect(commonOnB?.promotion_state).toBe('project-current');
     expect(commonOnB?.workstream_id).toBeNull();
+  });
+
+  /**
+   * Issue #66 — observed on the repro generation below:
+   *   malformedRows: [{ error: 'stable subject slot has conflicting fact ids
+   *                             fact-a and fact-b' }]
+   *   local facts: []     local tombstones: []
+   * The slot the local UNIQUE index keys on is partial (`WHERE is_active = 1`),
+   * so a superseded predecessor next to its active successor is legal locally —
+   * and inactive rows keep travelling, so the rejection repeated every
+   * generation and carried the generation's tombstones down with it.
+   */
+  describe('inactive history rows never count as a slot conflict (#66)', () => {
+    const SLOT = {
+      category: 'knowledge',
+      scope_type: 'project',
+      scope_project: null,
+      project_id: PROJECT_ID,
+      portable_project_key: PORTABLE_KEY,
+      subject_key: 'alpha.runtime.database',
+      promotion_state: 'workstream',
+      workspace_id: null,
+      workstream_id: 'ws-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      workstream_branch: 'feature/a',
+      source_exchange_ids: '[]',
+      consolidated_count: 1,
+    } as const;
+
+    it('an inactive predecessor plus its active successor imports, tombstones included', async () => {
+      const root = tempRoot('memex-sync-slot-inactive-');
+      await seedRoot(root, []);
+      craftCommittedGeneration('peer-device', {
+        'facts.jsonl':
+          [
+            factRow({
+              ...SLOT,
+              id: 'fact-superseded',
+              fact: 'the project uses SQLite',
+              is_active: 0,
+              lifecycle_updated_at: LATER,
+            }),
+            factRow({
+              ...SLOT,
+              id: 'fact-current',
+              fact: 'the project uses PostgreSQL',
+              is_active: 1,
+              created_at: LATER,
+              updated_at: LATER,
+              semantic_updated_at: LATER,
+              lifecycle_updated_at: LATER,
+            }),
+          ].join('\n') + '\n',
+        'fact-tombstones.jsonl':
+          JSON.stringify({ fact_id: 'fact-deleted-elsewhere', deleted_at: LATER, reason: 'hard_delete' }) + '\n',
+      });
+
+      const { importFromSync } = await import('../src/sync-import.js');
+      const result = await importFromSync();
+      expect(result.malformedRows).toEqual([]);
+      expect(result.newFacts).toBe(2);
+      expect((await readFactRow(root, 'fact-superseded'))?.is_active).toBe(0);
+      expect((await readFactRow(root, 'fact-current'))?.is_active).toBe(1);
+      // The deletion in the same generation reached the device instead of
+      // being dragged down with the rejected slot check.
+      expect(result.newTombstones).toBe(1);
+
+      // Re-importing the same generation still reports nothing malformed.
+      const again = await importFromSync();
+      expect(again.malformedRows).toEqual([]);
+    });
+
+    it('two ACTIVE rows in one slot are still rejected', async () => {
+      const root = tempRoot('memex-sync-slot-active-');
+      await seedRoot(root, []);
+      craftCommittedGeneration('peer-device', {
+        'facts.jsonl':
+          [
+            factRow({ ...SLOT, id: 'fact-one', fact: 'the project uses SQLite', is_active: 1 }),
+            factRow({ ...SLOT, id: 'fact-two', fact: 'the project uses PostgreSQL', is_active: 1 }),
+          ].join('\n') + '\n',
+      });
+
+      const { importFromSync } = await import('../src/sync-import.js');
+      const result = await importFromSync();
+      expect(result.newFacts).toBe(0);
+      expect(result.malformedRows.some((issue) => issue.error.includes('conflicting fact ids'))).toBe(true);
+      expect(await readFactRow(root, 'fact-one')).toBeUndefined();
+      expect(await readFactRow(root, 'fact-two')).toBeUndefined();
+    });
   });
 
   it('a protocol-4 generation still imports; an unsupported version is reported', async () => {

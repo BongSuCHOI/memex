@@ -137,7 +137,7 @@ Materialized 설치 artifact가 moving GitHub runtime보다 우선된다는 proc
 | Suite | 고정하는 회귀 |
 | --- | --- |
 | `test/plugin-root-slice.test.mjs` | npx shim 루트와 plugin 루트가 **같은** 설치본을 해석하는지, `doctor`가 실행 중인 사본이 아니라 설치본을 판정하는지, `memex deps materialize --dry-run`이 해석된 루트를 지목하고 아무것도 바꾸지 않는지 (#53) |
-| `test/sync-tier-import.test.ts` | 피어의 승격이 합법적인 project-wide 행을 만드는지(workspace/workstream NULL 강제), 모르는 `promotion_state`와 불법 tier 조합이 malformed로 보고되는지, 브랜치 tier 기억의 A→B 왕복, protocol 4/5 혼재 동작 (#37/#48) |
+| `test/sync-tier-import.test.ts` | 피어의 승격이 합법적인 project-wide 행을 만드는지(workspace/workstream NULL 강제), 모르는 `promotion_state`와 불법 tier 조합이 malformed로 보고되는지, 브랜치 tier 기억의 A→B 왕복, protocol 4/5 혼재 동작 (#37/#48), 비활성 이력 행이 활성 slot 충돌로 판정되지 않고 같은 세대의 tombstone까지 도달하는지 (#66) |
 | `test/sync-control.test.ts` | 기본 off·`MEMEX_SYNC_DIR` 우선순위·A export→B import(+N)→B 수정→export→A import(~N)·손상된 `meta.json` 세대 거부·disable 시 no-op, `doctor`의 `skipped(off)`→warn→ok 전이, SessionEnd async export 등록 (#35/#48) |
 | `test/async-hook-output-slice.test.mjs` | 동기화 off일 때 두 sync 훅이 stdout을 건드리지 않고 stderr 한 줄로 끝나는지, export 훅의 unchanged/published 보고 (#35) |
 | `test/pipeline-status-slice.test.mjs` | `status --json`의 `jobs`가 `memory_jobs`를 kind × state로 집계하는지, 큐가 없으면 빈 객체인지, `memex index --help`가 존재하는 문서만 가리키는지 (#46) |
