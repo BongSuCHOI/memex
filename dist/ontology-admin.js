@@ -34,8 +34,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getMemexHome } from './paths.js';
 import { bumpTaxonomyEpoch, deleteCategoryEmbedding, getCategory } from './ontology-db.js';
-/** Metadata-only audit line; never fact text, category description or prompts. */
-function appendOntologyAudit(action, detail) {
+/**
+ * Metadata-only audit line; never fact text, category description or prompts.
+ *
+ * Exported under a NEUTRAL name (decisions-v2 C5): `src/` already carried three
+ * private copies of this same writer (here, `fact-management.ts:1068`,
+ * `job-recovery.ts:485`), and 0.7.0's overlays would have made a fourth. New
+ * callers import this one. The two existing ontology call sites below still pass
+ * through it, so their behaviour is unchanged.
+ *
+ * The 1 MB rotation comes from `job-recovery.ts`'s copy, which had it and this
+ * one did not. Folding the other two copies into this function is out of scope
+ * (0.7.1 candidate).
+ *
+ * IMPORTANT for callers: this module pulls in `ontology-db`, so only WRITE-side
+ * modules may import it. The overlay READ path (recall-gate-overlay.ts,
+ * overlay-matcher.ts) must stay free of it — it is loaded on the injection fast
+ * path (§1.4).
+ */
+export function appendUiAuditLine(action, detail) {
     try {
         const dir = path.join(getMemexHome(), 'logs');
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -43,6 +60,12 @@ function appendOntologyAudit(action, detail) {
         const stat = fs.existsSync(file) ? fs.lstatSync(file) : null;
         if (stat?.isSymbolicLink())
             return;
+        if (stat && stat.size > 1024 * 1024) {
+            try {
+                fs.renameSync(file, `${file}.old`);
+            }
+            catch { /* rotation is best-effort */ }
+        }
         fs.appendFileSync(file, `${JSON.stringify({
             ts: new Date().toISOString(),
             source: 'memex-core',
@@ -57,10 +80,7 @@ function appendOntologyAudit(action, detail) {
         /* auditing is best-effort and never blocks the repair */
     }
 }
-/** Neutral name for the writer above, so other core features (model selection,
- *  gate/extraction overlays) reuse it instead of adding a second audit module
- *  (common contract C5). Same line shape, same best-effort semantics. */
-export const appendUiAuditLine = appendOntologyAudit;
+const appendOntologyAudit = appendUiAuditLine;
 /**
  * Fold `fromCategoryId` into `toCategoryId`: every fact filed under the source
  * moves to the target, the source row and its vector are removed.

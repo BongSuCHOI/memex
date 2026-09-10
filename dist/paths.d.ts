@@ -32,6 +32,28 @@ export declare function getExcludeConfigPath(): string;
  */
 export declare function getModelSettingsPath(): string;
 /**
+ * User overlay files (issue #29/#30, 0.7.0).
+ *
+ * `<data root>/overlays/` holds operator-authored rule overlays plus the
+ * system-observed quarantine state and the change history. All pure getters —
+ * the write side (src/overlay-admin.ts) creates the directory, the read side
+ * only ever stats and reads.
+ *
+ * `MEMEX_OVERLAY_DIR` exists for tests and benchmarks so a run can point the
+ * overlays somewhere disposable without moving the whole data root.
+ */
+export type OverlayName = "recall-gate" | "extraction-rules";
+export declare function overlayDir(): string;
+export declare function recallGateOverlayPath(): string;
+export declare function extractionRulesOverlayPath(): string;
+export declare function overlayFilePath(overlay: OverlayName): string;
+export declare function overlayQuarantinePath(): string;
+export declare function overlayHistoryIndexPath(): string;
+export declare function overlaySnapshotDir(overlay: OverlayName): string;
+export declare function overlaySnapshotPath(overlay: OverlayName, revision: number): string;
+/** Write lock beside the overlay file itself (§1.5). */
+export declare function overlayLockPath(file: string): string;
+/**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
  * the optional explicit override; TEST_SESSIONS_DIR is used by tests.

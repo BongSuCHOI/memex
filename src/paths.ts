@@ -92,6 +92,58 @@ export function getModelSettingsPath(): string {
 }
 
 /**
+ * User overlay files (issue #29/#30, 0.7.0).
+ *
+ * `<data root>/overlays/` holds operator-authored rule overlays plus the
+ * system-observed quarantine state and the change history. All pure getters —
+ * the write side (src/overlay-admin.ts) creates the directory, the read side
+ * only ever stats and reads.
+ *
+ * `MEMEX_OVERLAY_DIR` exists for tests and benchmarks so a run can point the
+ * overlays somewhere disposable without moving the whole data root.
+ */
+export type OverlayName = "recall-gate" | "extraction-rules";
+
+export function overlayDir(): string {
+ const override = process.env.MEMEX_OVERLAY_DIR;
+ if (override) return override;
+ return path.join(getMemexHome(), "overlays");
+}
+
+export function recallGateOverlayPath(): string {
+ return path.join(overlayDir(), "recall-gate.json");
+}
+
+export function extractionRulesOverlayPath(): string {
+ return path.join(overlayDir(), "extraction-rules.json");
+}
+
+export function overlayFilePath(overlay: OverlayName): string {
+ return overlay === "recall-gate" ? recallGateOverlayPath() : extractionRulesOverlayPath();
+}
+
+export function overlayQuarantinePath(): string {
+ return path.join(overlayDir(), "quarantine.json");
+}
+
+export function overlayHistoryIndexPath(): string {
+ return path.join(overlayDir(), "history.jsonl");
+}
+
+export function overlaySnapshotDir(overlay: OverlayName): string {
+ return path.join(overlayDir(), "history", overlay);
+}
+
+export function overlaySnapshotPath(overlay: OverlayName, revision: number): string {
+ return path.join(overlaySnapshotDir(overlay), `${revision}.json`);
+}
+
+/** Write lock beside the overlay file itself (§1.5). */
+export function overlayLockPath(file: string): string {
+ return `${file}.lock`;
+}
+
+/**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
  * the optional explicit override; TEST_SESSIONS_DIR is used by tests.

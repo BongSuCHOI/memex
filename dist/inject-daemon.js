@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureIndexDir, getDbPath, getIndexDir } from './paths.js';
 import { computeInjectContext } from './inject-core.js';
+import { persistentMatcher } from './overlay-matcher.js';
 import { embeddingStubEnabled, generateEmbedding, initEmbeddings } from './embeddings.js';
 import { readManifestVersion, resolveInstalledPluginRoot } from './plugin-root.js';
 import { recordHookEvent } from './observe-hook-event.js';
@@ -494,6 +495,22 @@ export function startInjectDaemon() {
     let owning = false;
     /** Embedding-model readiness of THIS owner (issue #92). */
     let warmState = 'cold';
+    /**
+     * Issue #29: ONE resident user-pattern matcher for this owner's lifetime.
+     *
+     * The daemon lives inside the MCP server, so a resident worker means the
+     * overlay's regexes are compiled once for the session instead of per prompt,
+     * and a `postMessage` round trip (0.1-0.5 ms) replaces a 10-40 ms worker spawn.
+     * It is created lazily on the first request that actually has overlay patterns,
+     * so a session with no overlay never constructs one.
+     *
+     * `server.createServer` handles requests CONCURRENTLY, which is why the matcher
+     * serializes them internally and tags each with a generation (G3): without that
+     * one request's timeout could quarantine another request's pattern and kill the
+     * shared worker.
+     */
+    let matcher = null;
+    const sharedMatcher = () => (matcher ??= persistentMatcher());
     const server = net.createServer((conn) => {
         let buf = '';
         conn.setTimeout(INJECT_DAEMON_REQUEST_TIMEOUT_MS, () => conn.destroy());
@@ -578,6 +595,7 @@ export function startInjectDaemon() {
                             ? 'the hook disconnected before the context was ready'
                             : null),
                         daemon: { version: current.version, buildId: current.buildId, pid: current.pid },
+                        matcher: sharedMatcher(),
                     });
                     reply({ type: 'ok', ...current, ok: true, context, receiptId });
                 }
@@ -620,6 +638,7 @@ export function startInjectDaemon() {
         retired = true;
         disarmReacquire();
         owning = false;
+        disposeMatcher();
         try {
             server.close();
         }
@@ -780,6 +799,21 @@ export function startInjectDaemon() {
      * synchronous (it runs from `process.on('exit')`), and it only ever removes
      * files this process owns.
      */
+    /**
+     * Drop the resident matcher worker. Idempotent and safe to call when none was
+     * ever created. `matcher = null` so a re-acquired owner (#99's yield watch) gets
+     * a fresh one rather than a handle whose worker is gone.
+     */
+    function disposeMatcher() {
+        const handle = matcher;
+        matcher = null;
+        if (!handle)
+            return;
+        try {
+            handle.dispose();
+        }
+        catch { /* already gone */ }
+    }
     let releasedOwnership = false;
     function releaseOwnership() {
         if (releasedOwnership)
@@ -789,6 +823,9 @@ export function startInjectDaemon() {
         // whether it is still a timer or already an in-flight probe (#107).
         cancelYieldWatch();
         dropCandidate();
+        // The matcher worker is unref'd, so it never blocked exit; disposing it is
+        // about not leaving a thread behind while the MCP server keeps running.
+        disposeMatcher();
         if (!owning)
             return;
         owning = false;

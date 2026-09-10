@@ -32,9 +32,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../../node_modules/ajv/dist/compile/codegen/code.js
+// node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "../../../node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -186,9 +186,9 @@ var require_code = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/codegen/scope.js
+// node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "../../../node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -331,9 +331,9 @@ var require_scope = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/codegen/index.js
+// node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "../../../node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1051,9 +1051,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/util.js
+// node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "../../../node_modules/ajv/dist/compile/util.js"(exports) {
+  "node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1218,9 +1218,9 @@ var require_util = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/names.js
+// node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "../../../node_modules/ajv/dist/compile/names.js"(exports) {
+  "node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1257,9 +1257,9 @@ var require_names = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/errors.js
+// node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "../../../node_modules/ajv/dist/compile/errors.js"(exports) {
+  "node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1379,9 +1379,9 @@ var require_errors = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/boolSchema.js
+// node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1430,9 +1430,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/rules.js
+// node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "../../../node_modules/ajv/dist/compile/rules.js"(exports) {
+  "node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1461,9 +1461,9 @@ var require_rules = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/applicability.js
+// node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1484,9 +1484,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/dataType.js
+// node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1668,9 +1668,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/defaults.js
+// node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1705,9 +1705,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/code.js
+// node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1838,9 +1838,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/keyword.js
+// node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1956,9 +1956,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/subschema.js
+// node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2039,9 +2039,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// ../../../node_modules/fast-deep-equal/index.js
+// node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "../../../node_modules/fast-deep-equal/index.js"(exports, module) {
+  "node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b2) {
       if (a === b2) return true;
@@ -2074,9 +2074,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// ../../../node_modules/json-schema-traverse/index.js
+// node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "../../../node_modules/json-schema-traverse/index.js"(exports, module) {
+  "node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2162,9 +2162,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/resolve.js
+// node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "../../../node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2318,9 +2318,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/validate/index.js
+// node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "../../../node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2826,9 +2826,9 @@ var require_validate = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/runtime/validation_error.js
+// node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "../../../node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2842,9 +2842,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/ref_error.js
+// node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "../../../node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2859,9 +2859,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/compile/index.js
+// node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "../../../node_modules/ajv/dist/compile/index.js"(exports) {
+  "node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3083,9 +3083,9 @@ var require_compile = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/refs/data.json
+// node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "../../../node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3102,9 +3102,9 @@ var require_data = __commonJS({
   }
 });
 
-// ../../../node_modules/fast-uri/lib/utils.js
+// node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "../../../node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3260,8 +3260,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path17) {
-      let input = path17;
+    function removeDotSegments(path18) {
+      let input = path18;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3599,9 +3599,9 @@ var require_utils = __commonJS({
   }
 });
 
-// ../../../node_modules/fast-uri/lib/schemes.js
+// node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "../../../node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /^([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-./:;=@]|%[\da-f]{2})+)$/iu;
@@ -3666,8 +3666,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path17 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path17 && path17 !== "/" ? path17 : void 0;
+        const path18 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -3810,9 +3810,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// ../../../node_modules/fast-uri/index.js
+// node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "../../../node_modules/fast-uri/index.js"(exports, module) {
+  "node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -4209,9 +4209,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/runtime/uri.js
+// node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "../../../node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -4220,9 +4220,9 @@ var require_uri = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/core.js
+// node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "../../../node_modules/ajv/dist/core.js"(exports) {
+  "node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4831,9 +4831,9 @@ var require_core = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/core/id.js
+// node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4846,9 +4846,9 @@ var require_id = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/core/ref.js
+// node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -4968,9 +4968,9 @@ var require_ref = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/core/index.js
+// node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -4989,9 +4989,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5021,9 +5021,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5049,9 +5049,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/runtime/ucs2length.js
+// node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "../../../node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str) {
@@ -5075,9 +5075,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5107,9 +5107,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/pattern.js
+// node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5144,9 +5144,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5173,9 +5173,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/required.js
+// node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5255,9 +5255,9 @@ var require_required = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5284,9 +5284,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/runtime/equal.js
+// node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "../../../node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5295,9 +5295,9 @@ var require_equal = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5362,9 +5362,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/const.js
+// node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5391,9 +5391,9 @@ var require_const = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/enum.js
+// node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5440,9 +5440,9 @@ var require_enum = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/validation/index.js
+// node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5478,9 +5478,9 @@ var require_validation = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5531,9 +5531,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/items.js
+// node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5588,9 +5588,9 @@ var require_items = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5605,9 +5605,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5640,9 +5640,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/contains.js
+// node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5734,9 +5734,9 @@ var require_contains = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5828,9 +5828,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5871,9 +5871,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5977,9 +5977,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/properties.js
+// node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -6035,9 +6035,9 @@ var require_properties = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6109,9 +6109,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/not.js
+// node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6140,9 +6140,9 @@ var require_not = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -6157,9 +6157,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6215,9 +6215,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6242,9 +6242,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/if.js
+// node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6311,9 +6311,9 @@ var require_if = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6329,9 +6329,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/applicator/index.js
+// node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6377,9 +6377,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/format/format.js
+// node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6467,9 +6467,9 @@ var require_format = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/format/index.js
+// node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6478,9 +6478,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/metadata.js
+// node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6501,9 +6501,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/draft7.js
+// node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6523,9 +6523,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/discriminator/types.js
+// node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6537,9 +6537,9 @@ var require_types = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/vocabularies/discriminator/index.js
+// node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "../../../node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6642,9 +6642,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/refs/json-schema-draft-07.json
+// node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "../../../node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6799,9 +6799,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv/dist/ajv.js
+// node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "../../../node_modules/ajv/dist/ajv.js"(exports, module) {
+  "node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6869,9 +6869,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv-formats/dist/formats.js
+// node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "../../../node_modules/ajv-formats/dist/formats.js"(exports) {
+  "node_modules/ajv-formats/dist/formats.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatNames = exports.fastFormats = exports.fullFormats = void 0;
@@ -7072,9 +7072,9 @@ var require_formats = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv-formats/dist/limit.js
+// node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "../../../node_modules/ajv-formats/dist/limit.js"(exports) {
+  "node_modules/ajv-formats/dist/limit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatLimitDefinition = void 0;
@@ -7144,9 +7144,9 @@ var require_limit = __commonJS({
   }
 });
 
-// ../../../node_modules/ajv-formats/dist/index.js
+// node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "../../../node_modules/ajv-formats/dist/index.js"(exports, module) {
+  "node_modules/ajv-formats/dist/index.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -7173,12 +7173,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs15, exportName) {
+    function addFormats(ajv, list, fs17, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs15[f]);
+        ajv.addFormat(f, fs17[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7249,6 +7249,17 @@ function ensureDbDir() {
 }
 function getModelSettingsPath() {
   return path2.join(getMemexHome(), "models.json");
+}
+function overlayDir() {
+  const override = process.env.MEMEX_OVERLAY_DIR;
+  if (override) return override;
+  return path2.join(getMemexHome(), "overlays");
+}
+function recallGateOverlayPath() {
+  return path2.join(overlayDir(), "recall-gate.json");
+}
+function overlayQuarantinePath() {
+  return path2.join(overlayDir(), "quarantine.json");
 }
 var MEMEX_DEFAULT_BASENAME, LLM_WORKDIR_BASENAME;
 var init_paths = __esm({
@@ -10240,7 +10251,875 @@ var init_model_budget = __esm({
   }
 });
 
-// ../../../node_modules/zod/v3/external.js
+// src/overlay-regex.ts
+import { createHash as createHash7 } from "node:crypto";
+function camelCode(code) {
+  return code.toLowerCase().split("_").map((part, index) => index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)).join("");
+}
+function overlayIssue(severity, code, message, extra = {}) {
+  return {
+    severity,
+    code,
+    key: `overlays.issue.${camelCode(code)}`,
+    message,
+    ...extra.path === void 0 ? {} : { path: extra.path },
+    ...extra.params === void 0 ? {} : { params: extra.params },
+    ...extra.row === void 0 ? {} : { row: extra.row },
+    ...extra.field === void 0 ? {} : { field: extra.field }
+  };
+}
+function setFrom(predicate) {
+  return SAMPLE_ALPHABET.map(predicate);
+}
+function unionSets(a, b2) {
+  return a.map((value, index) => value || b2[index]);
+}
+function intersects(a, b2) {
+  for (let i = 0; i < a.length; i++) if (a[i] && b2[i]) return true;
+  return false;
+}
+function checkOverlayRegex(source, flags) {
+  const problems = [];
+  if (typeof source !== "string" || source.length === 0) {
+    return {
+      ok: false,
+      problems: [{ code: "REGEX_UNSUPPORTED_SYNTAX", message: "pattern source is empty" }],
+      quantifiers: 0,
+      depth: 0,
+      branches: 0
+    };
+  }
+  if (source.length > OVERLAY_REGEX_LIMITS.sourceChars) {
+    problems.push({
+      code: "PATTERN_TOO_LONG",
+      message: `pattern is ${source.length} characters (limit ${OVERLAY_REGEX_LIMITS.sourceChars})`,
+      params: { length: source.length, limit: OVERLAY_REGEX_LIMITS.sourceChars }
+    });
+  }
+  const badFlags = [...new Set(flags ?? "")].filter((flag) => !OVERLAY_REGEX_LIMITS.flags.includes(flag));
+  if (badFlags.length > 0) {
+    problems.push({
+      code: "PATTERN_FLAGS_REJECTED",
+      message: `flags "${badFlags.join("")}" are not allowed (only i, s, u). g/y make .test() stateful through lastIndex, so the same prompt would be judged differently each time; m changes what ^ and $ mean, which misreads multi-line prompts against the anchored built-in acknowledgement patterns.`,
+      params: { flags: badFlags.join("") }
+    });
+  }
+  if (badFlags.length === 0) {
+    try {
+      new RegExp(source, flags ?? "");
+    } catch (error2) {
+      problems.push({
+        code: "PATTERN_UNCOMPILABLE",
+        message: `the pattern does not compile: ${error2 instanceof Error ? error2.message : String(error2)}`
+      });
+    }
+  }
+  const parser = new SubsetParser(source, flags ?? "");
+  try {
+    parser.parse();
+  } catch (error2) {
+    if (error2 instanceof RejectedRegex) problems.push(error2.problem);
+    else throw error2;
+  }
+  return {
+    ok: problems.length === 0,
+    problems,
+    quantifiers: parser.quantifiers,
+    depth: parser.maxDepth,
+    branches: parser.branches
+  };
+}
+function userPatternId(intent, source, flags) {
+  return `user.${sha8(`${intent}\0${source}\0${flags}`)}`;
+}
+function sha8(text) {
+  return createHash7("sha256").update(text, "utf8").digest("hex").slice(0, 8);
+}
+function patternSourceSha8(source, flags) {
+  return sha8(`${source}\0${flags}`);
+}
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value).filter(([, item]) => item !== void 0).sort(([a], [b2]) => a < b2 ? -1 : a > b2 ? 1 : 0);
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+var OVERLAY_REGEX_LIMITS, SAMPLE_ALPHABET, EMPTY_SET, ANY_SET, IS_WORD, IS_DIGIT, IS_SPACE, IS_LETTER, RejectedRegex, ESCAPE_LITERALS, SubsetParser;
+var init_overlay_regex = __esm({
+  "src/overlay-regex.ts"() {
+    "use strict";
+    OVERLAY_REGEX_LIMITS = Object.freeze({
+      /** `source` characters (§1.3). */
+      sourceChars: 200,
+      /** Total quantifiers anywhere in the pattern (§1.3, lowered from 20 in v2). */
+      quantifiers: 8,
+      /** Group nesting depth. */
+      depth: 5,
+      /** Alternation branches, summed over the whole pattern. */
+      branches: 32,
+      /** Upper bound of `{n,m}`. */
+      repeatMax: 100,
+      /** Flags an overlay pattern may carry. */
+      flags: "isu"
+    });
+    SAMPLE_ALPHABET = (() => {
+      const chars = [];
+      for (let code = 32; code <= 126; code++) chars.push(String.fromCharCode(code));
+      chars.push("	", "\n", "\r", "\xE9", "\u0430", "\uAC00", "\uD7A3", "\u3131", "\u4E00");
+      return Object.freeze(chars);
+    })();
+    EMPTY_SET = SAMPLE_ALPHABET.map(() => false);
+    ANY_SET = SAMPLE_ALPHABET.map(() => true);
+    IS_WORD = (ch) => /[A-Za-z0-9_]/.test(ch);
+    IS_DIGIT = (ch) => ch >= "0" && ch <= "9";
+    IS_SPACE = (ch) => /\s/.test(ch);
+    IS_LETTER = (ch) => /\p{L}/u.test(ch);
+    RejectedRegex = class extends Error {
+      constructor(problem) {
+        super(problem.message);
+        this.problem = problem;
+      }
+    };
+    ESCAPE_LITERALS = {
+      t: "	",
+      n: "\n",
+      r: "\r",
+      f: "\f",
+      v: "\v",
+      "0": "\0"
+    };
+    SubsetParser = class {
+      constructor(src, flags) {
+        this.src = src;
+        this.caseInsensitive = flags.includes("i");
+        this.dotAll = flags.includes("s");
+      }
+      i = 0;
+      quantifiers = 0;
+      branches = 0;
+      maxDepth = 0;
+      depth = 0;
+      caseInsensitive;
+      dotAll;
+      parse() {
+        this.alternation();
+        if (this.i < this.src.length) {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", `unexpected "${this.src[this.i]}"`, this.i);
+        }
+      }
+      reject(code, detail, at, params) {
+        throw new RejectedRegex({
+          code,
+          message: `${detail}${at === void 0 ? "" : ` at offset ${at}`}`,
+          ...at === void 0 ? {} : { at },
+          ...params ? { params } : {}
+        });
+      }
+      peek(offset = 0) {
+        return this.src[this.i + offset];
+      }
+      /** alternation := concat ('|' concat)* */
+      alternation() {
+        let first = this.concat();
+        let seen = 1;
+        while (this.peek() === "|") {
+          this.i++;
+          seen++;
+          this.branches++;
+          if (this.branches > OVERLAY_REGEX_LIMITS.branches) {
+            this.reject(
+              "REGEX_QUANTIFIER_BUDGET",
+              `too many alternation branches (limit ${OVERLAY_REGEX_LIMITS.branches})`,
+              this.i,
+              { limit: OVERLAY_REGEX_LIMITS.branches }
+            );
+          }
+          first = { first: unionSets(first.first, this.concat().first), composite: true };
+        }
+        return seen > 1 ? { first: first.first, composite: true } : first;
+      }
+      /** concat := quantified* — returns the FIRST-character set, and enforces adjacency. */
+      concat() {
+        let head = EMPTY_SET;
+        let previous = null;
+        let headOpen = true;
+        while (this.i < this.src.length && this.peek() !== "|" && this.peek() !== ")") {
+          const current = this.quantified();
+          if (headOpen) {
+            head = unionSets(head, current.atom.first);
+            if (!current.nullable) headOpen = false;
+          }
+          if (previous && previous.quantified && current.quantified && previous.max > 1 && current.max > 1 && intersects(previous.atom.first, current.atom.first)) {
+            this.reject(
+              "REGEX_ADJACENT_OVERLAP",
+              "two adjacent repeated atoms can start on the same character (e.g. a+a+, \\w+\\d+, .*.*)",
+              this.i
+            );
+          }
+          previous = current;
+        }
+        return { first: head, composite: false };
+      }
+      /** quantified := atom quantifier? */
+      quantified() {
+        const start = this.i;
+        const atom = this.atom();
+        const quantifier = this.quantifier();
+        if (!quantifier) {
+          return { atom, max: 1, quantified: false, nullable: atom.zeroWidth === true };
+        }
+        this.quantifiers++;
+        if (this.quantifiers > OVERLAY_REGEX_LIMITS.quantifiers) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `too many quantifiers (limit ${OVERLAY_REGEX_LIMITS.quantifiers})`,
+            start,
+            { limit: OVERLAY_REGEX_LIMITS.quantifiers, seen: this.quantifiers }
+          );
+        }
+        if (atom.composite && quantifier.max > 1) {
+          this.reject(
+            "REGEX_QUANTIFIED_GROUP",
+            "a group or alternation may not be repeated more than once (use ? or {0,1})",
+            start
+          );
+        }
+        return {
+          atom,
+          max: quantifier.max,
+          quantified: true,
+          nullable: quantifier.min === 0 || atom.zeroWidth === true
+        };
+      }
+      quantifier() {
+        const ch = this.peek();
+        if (ch === "?") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 0, max: 1 };
+        }
+        if (ch === "*") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 0, max: Infinity };
+        }
+        if (ch === "+") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 1, max: Infinity };
+        }
+        if (ch !== "{") return null;
+        const close = this.src.indexOf("}", this.i);
+        const body = close < 0 ? null : this.src.slice(this.i + 1, close);
+        if (body === null || !/^\d+(,\d*)?$/.test(body)) {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", 'a literal "{" must be escaped as \\{', this.i);
+        }
+        const [rawMin, rawMax] = body.split(",");
+        const min = Number(rawMin);
+        const max = rawMax === void 0 ? min : rawMax === "" ? Infinity : Number(rawMax);
+        this.i = close + 1;
+        this.lazyOrPossessive();
+        if (max < min) {
+          this.reject("REGEX_QUANTIFIER_BUDGET", `{n,m} with m < n (${body})`, this.i, { body });
+        }
+        if (Number.isFinite(max) && max > OVERLAY_REGEX_LIMITS.repeatMax) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `{n,m} upper bound above ${OVERLAY_REGEX_LIMITS.repeatMax} (${body})`,
+            this.i,
+            { limit: OVERLAY_REGEX_LIMITS.repeatMax, body }
+          );
+        }
+        return { min, max };
+      }
+      /** `??`/`*?`/`+?` are allowed (lazy); `*+` etc. are not JS syntax. */
+      lazyOrPossessive() {
+        if (this.peek() === "?") this.i++;
+      }
+      atom() {
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "pattern ends mid-atom", this.i);
+        if (ch === "(") return this.group();
+        if (ch === "[") return this.charClass();
+        if (ch === "\\") return this.escape();
+        if (ch === ".") {
+          this.i++;
+          return { first: this.dotAll ? ANY_SET : setFrom((c) => c !== "\n"), composite: false };
+        }
+        if (ch === "^" || ch === "$") {
+          this.i++;
+          return { first: EMPTY_SET, composite: false, zeroWidth: true };
+        }
+        if (ch === "*" || ch === "+" || ch === "?") {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", `quantifier "${ch}" with nothing to repeat`, this.i);
+        }
+        this.i++;
+        return { first: this.literal(ch), composite: false };
+      }
+      literal(ch) {
+        if (!this.caseInsensitive) return setFrom((c) => c === ch);
+        const lower = ch.toLowerCase();
+        const upper = ch.toUpperCase();
+        return setFrom((c) => c === lower || c === upper);
+      }
+      group() {
+        const open = this.i;
+        this.i++;
+        if (this.peek() === "?") {
+          const next = this.peek(1);
+          if (next === ":") {
+            this.i += 2;
+          } else if (next === "=" || next === "!" || next === "<") {
+            this.reject("REGEX_LOOKAROUND", "lookahead and lookbehind are not allowed", open);
+          } else {
+            this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported group "(?${next ?? ""}"`, open);
+          }
+        }
+        this.depth++;
+        this.maxDepth = Math.max(this.maxDepth, this.depth);
+        if (this.depth > OVERLAY_REGEX_LIMITS.depth) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `group nesting deeper than ${OVERLAY_REGEX_LIMITS.depth}`,
+            open,
+            { limit: OVERLAY_REGEX_LIMITS.depth }
+          );
+        }
+        const inner = this.alternation();
+        this.depth--;
+        if (this.peek() !== ")") this.reject("REGEX_UNSUPPORTED_SYNTAX", "unbalanced (", open);
+        this.i++;
+        return { first: inner.first, composite: true };
+      }
+      escape() {
+        const at = this.i;
+        this.i++;
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "pattern ends with a backslash", at);
+        if (ch >= "1" && ch <= "9") {
+          this.reject("REGEX_BACKREFERENCE", "numeric backreferences are not allowed", at);
+        }
+        if (ch === "k") this.reject("REGEX_BACKREFERENCE", "named backreferences are not allowed", at);
+        this.i++;
+        switch (ch) {
+          case "w":
+            return { first: setFrom(IS_WORD), composite: false };
+          case "W":
+            return { first: setFrom((c) => !IS_WORD(c)), composite: false };
+          case "d":
+            return { first: setFrom(IS_DIGIT), composite: false };
+          case "D":
+            return { first: setFrom((c) => !IS_DIGIT(c)), composite: false };
+          case "s":
+            return { first: setFrom(IS_SPACE), composite: false };
+          case "S":
+            return { first: setFrom((c) => !IS_SPACE(c)), composite: false };
+          case "b":
+          case "B":
+            return { first: EMPTY_SET, composite: false, zeroWidth: true };
+          case "p":
+          case "P":
+            return { first: this.unicodeProperty(ch === "P"), composite: false };
+          case "u":
+          case "x":
+            return { first: this.literal(this.numericEscapeChar(ch)), composite: false };
+          default:
+            if (ESCAPE_LITERALS[ch] !== void 0) {
+              return { first: this.literal(ESCAPE_LITERALS[ch]), composite: false };
+            }
+            if (/[A-Za-z]/.test(ch)) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported escape \\${ch}`, at);
+            }
+            return { first: this.literal(ch), composite: false };
+        }
+      }
+      unicodeProperty(negated) {
+        if (this.peek() !== "{") this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\p must be followed by {", this.i);
+        const close = this.src.indexOf("}", this.i);
+        if (close < 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated \\p{\u2026}", this.i);
+        const name = this.src.slice(this.i + 1, close);
+        this.i = close + 1;
+        let base;
+        if (/^(L|Letter|Alphabetic|Alpha)$/.test(name)) base = setFrom(IS_LETTER);
+        else if (/^(N|Nd|Number|Digit)$/.test(name)) base = setFrom(IS_DIGIT);
+        else base = ANY_SET;
+        return negated ? base.map((value) => !value) : base;
+      }
+      /** Consumes the digits of `\xHH`, `\uHHHH` or `\u{…}` and returns the character. */
+      numericEscapeChar(kind) {
+        if (kind === "x") {
+          const hex2 = this.src.slice(this.i, this.i + 2);
+          if (!/^[0-9a-fA-F]{2}$/.test(hex2)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\xHH needs two hex digits", this.i);
+          this.i += 2;
+          return String.fromCharCode(parseInt(hex2, 16));
+        }
+        if (this.peek() === "{") {
+          const close = this.src.indexOf("}", this.i);
+          if (close < 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated \\u{\u2026}", this.i);
+          const hex2 = this.src.slice(this.i + 1, close);
+          if (!/^[0-9a-fA-F]{1,6}$/.test(hex2)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\u{\u2026} needs hex digits", this.i);
+          this.i = close + 1;
+          return String.fromCodePoint(parseInt(hex2, 16));
+        }
+        const hex = this.src.slice(this.i, this.i + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\uHHHH needs four hex digits", this.i);
+        this.i += 4;
+        return String.fromCharCode(parseInt(hex, 16));
+      }
+      charClass() {
+        const open = this.i;
+        this.i++;
+        const negated = this.peek() === "^";
+        if (negated) this.i++;
+        const members = [];
+        let closed = false;
+        while (this.i < this.src.length) {
+          if (this.peek() === "]") {
+            this.i++;
+            closed = true;
+            break;
+          }
+          const item = this.classItem(open);
+          if (this.peek() === "-" && this.peek(1) !== "]" && this.peek(1) !== void 0) {
+            this.i++;
+            const upper = this.classItem(open);
+            if (item.literal === null || upper.literal === null) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", "a character class range needs literal bounds", open);
+            }
+            const lo = item.literal.codePointAt(0);
+            const hi = upper.literal.codePointAt(0);
+            if (hi < lo) this.reject("REGEX_UNSUPPORTED_SYNTAX", "reversed character class range", open);
+            members.push((ch) => {
+              const code = ch.codePointAt(0);
+              if (code >= lo && code <= hi) return true;
+              if (!this.caseInsensitive) return false;
+              const other = ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
+              const otherCode = other.codePointAt(0);
+              return otherCode >= lo && otherCode <= hi;
+            });
+            continue;
+          }
+          members.push(item.test);
+        }
+        if (!closed) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated character class", open);
+        const inside = (ch) => members.some((test) => test(ch));
+        return { first: setFrom(negated ? (ch) => !inside(ch) : inside), composite: false };
+      }
+      classItem(open) {
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated character class", open);
+        if (ch !== "\\") {
+          this.i++;
+          const lower = ch.toLowerCase();
+          const upper = ch.toUpperCase();
+          const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === ch;
+          return { test, literal: ch };
+        }
+        const at = this.i;
+        this.i++;
+        const esc2 = this.peek();
+        if (esc2 === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "class ends with a backslash", at);
+        if (esc2 >= "1" && esc2 <= "9") {
+          this.reject("REGEX_BACKREFERENCE", "numeric backreferences are not allowed", at);
+        }
+        this.i++;
+        switch (esc2) {
+          case "w":
+            return { test: IS_WORD, literal: null };
+          case "W":
+            return { test: (c) => !IS_WORD(c), literal: null };
+          case "d":
+            return { test: IS_DIGIT, literal: null };
+          case "D":
+            return { test: (c) => !IS_DIGIT(c), literal: null };
+          case "s":
+            return { test: IS_SPACE, literal: null };
+          case "S":
+            return { test: (c) => !IS_SPACE(c), literal: null };
+          case "b":
+            return { test: (c) => c === "\b", literal: "\b" };
+          case "p":
+          case "P": {
+            const set = this.unicodeProperty(esc2 === "P");
+            const table = new Map(SAMPLE_ALPHABET.map((sample, index) => [sample, set[index]]));
+            return { test: (c) => table.get(c) === true, literal: null };
+          }
+          case "u":
+          case "x": {
+            const literal2 = this.numericEscapeChar(esc2);
+            const lower = literal2.toLowerCase();
+            const upper = literal2.toUpperCase();
+            const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === literal2;
+            return { test, literal: literal2 };
+          }
+          default: {
+            const literal2 = ESCAPE_LITERALS[esc2] ?? esc2;
+            if (ESCAPE_LITERALS[esc2] === void 0 && /[A-Za-z]/.test(esc2)) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported escape \\${esc2} in a character class`, at);
+            }
+            const lower = literal2.toLowerCase();
+            const upper = literal2.toUpperCase();
+            const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === literal2;
+            return { test, literal: literal2 };
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/overlay-matcher.ts
+import { Worker } from "node:worker_threads";
+import fs11 from "node:fs";
+import path12 from "node:path";
+import { randomUUID as randomUUID6 } from "node:crypto";
+function unavailableHits(elapsedMs, timedOut = false) {
+  return { intents: {}, matched: [], timedOut, quarantined: [], unavailable: true, elapsedMs, compiledPatterns: 0 };
+}
+function workerEntry() {
+  return new URL("./overlay-matcher-worker.mjs", import.meta.url);
+}
+function persistentMatcher(options) {
+  return new TimeBoxedMatcher(true, options);
+}
+function oneShotMatcher(options) {
+  return new TimeBoxedMatcher(false, options);
+}
+function quarantineKey(patternId, sourceSha8) {
+  return `${patternId}|${sourceSha8}`;
+}
+function quarantineMemoryGeneration() {
+  return memoryGeneration;
+}
+function readQuarantineFile() {
+  try {
+    const parsed = JSON.parse(fs11.readFileSync(overlayQuarantinePath(), "utf8"));
+    if (parsed?.schema !== QUARANTINE_SCHEMA) return [];
+    if (Number(parsed.version) !== QUARANTINE_VERSION) return [];
+    if (!Array.isArray(parsed.entries)) return [];
+    return parsed.entries.filter(isQuarantineEntry);
+  } catch {
+    return [];
+  }
+}
+function isQuarantineEntry(value) {
+  if (!value || typeof value !== "object") return false;
+  const entry = value;
+  return (entry.overlay === "recall-gate" || entry.overlay === "extraction-rules") && typeof entry.pattern_id === "string" && entry.pattern_id.length > 0 && typeof entry.source_sha8 === "string";
+}
+function readQuarantine() {
+  const merged = /* @__PURE__ */ new Map();
+  for (const entry of readQuarantineFile()) {
+    merged.set(quarantineKey(entry.pattern_id, entry.source_sha8), entry);
+  }
+  for (const [key, entry] of memoryQuarantine) merged.set(key, entry);
+  return [...merged.values()];
+}
+function writeQuarantineAtomic(entries) {
+  const target = overlayQuarantinePath();
+  const body = `${JSON.stringify(
+    { schema: QUARANTINE_SCHEMA, version: QUARANTINE_VERSION, entries },
+    null,
+    2
+  )}
+`;
+  const tmp = `${target}.${process.pid}.${randomUUID6()}.tmp`;
+  try {
+    fs11.mkdirSync(path12.dirname(target), { recursive: true, mode: 448 });
+    const stat = fs11.existsSync(target) ? fs11.lstatSync(target) : null;
+    if (stat?.isSymbolicLink()) return false;
+    fs11.writeFileSync(tmp, body, { mode: 384 });
+    fs11.renameSync(tmp, target);
+    return true;
+  } catch {
+    try {
+      fs11.unlinkSync(tmp);
+    } catch {
+    }
+    return false;
+  }
+}
+function quarantinePattern(entry) {
+  const key = quarantineKey(entry.pattern_id, entry.source_sha8);
+  const merged = /* @__PURE__ */ new Map();
+  for (const existing of readQuarantineFile()) {
+    merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+  }
+  for (const [memoryEntryKey, memoryEntry] of memoryQuarantine) merged.set(memoryEntryKey, memoryEntry);
+  if (!merged.has(key)) merged.set(key, entry);
+  let entries = [...merged.values()];
+  if (entries.length > QUARANTINE_MAX_ENTRIES) {
+    entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+  }
+  if (writeQuarantineAtomic(entries)) {
+    memoryQuarantine.delete(key);
+    return;
+  }
+  memoryQuarantine.set(key, entry);
+  memoryGeneration++;
+}
+var MATCH_WALL_MS, MATCHER_STARTUP_MS, MATCHER_RESPAWN_MS, MATCH_INPUT_CHARS, QUARANTINE_MAX_ENTRIES, EMPTY_USER_PATTERN_HITS, TimeBoxedMatcher, QUARANTINE_SCHEMA, QUARANTINE_VERSION, memoryQuarantine, memoryGeneration;
+var init_overlay_matcher = __esm({
+  "src/overlay-matcher.ts"() {
+    "use strict";
+    init_paths();
+    init_overlay_regex();
+    MATCH_WALL_MS = 50;
+    MATCHER_STARTUP_MS = 500;
+    MATCHER_RESPAWN_MS = 5e3;
+    MATCH_INPUT_CHARS = 8e3;
+    QUARANTINE_MAX_ENTRIES = 200;
+    EMPTY_USER_PATTERN_HITS = Object.freeze({
+      intents: Object.freeze({}),
+      matched: Object.freeze([]),
+      timedOut: false,
+      quarantined: Object.freeze([]),
+      unavailable: false,
+      elapsedMs: 0,
+      compiledPatterns: 0
+    });
+    TimeBoxedMatcher = class {
+      constructor(persistent, options = {}) {
+        this.persistent = persistent;
+        this.options = options;
+      }
+      worker = null;
+      progress = null;
+      generation = 0;
+      status = "ready";
+      goneAt = 0;
+      disposed = false;
+      /** True only while WE are terminating, so 'exit' is not read as a death. */
+      terminating = false;
+      pending = null;
+      pendingGeneration = 0;
+      /** Resolves true once the current worker is executing, false if it never got there. */
+      online = null;
+      /** Serialization tail: one request per worker at a time (G3). */
+      tail = Promise.resolve();
+      /** Observability for tests: how many workers this handle has constructed. */
+      spawnCount = 0;
+      state() {
+        if (this.disposed) return "unavailable";
+        return this.status;
+      }
+      match(input) {
+        if (input.patterns.length === 0) return Promise.resolve(EMPTY_USER_PATTERN_HITS);
+        if (this.disposed) return Promise.resolve(unavailableHits(0));
+        const run = () => this.runOne(input);
+        const queued = this.tail.then(run, run);
+        this.tail = queued.then(
+          () => void 0,
+          () => void 0
+        );
+        return queued;
+      }
+      dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.killWorker();
+      }
+      /* -------------------------------------------------------------------- */
+      ensureWorker() {
+        if (this.worker && this.status === "ready") return this.worker;
+        if (this.status !== "ready") {
+          if (!this.persistent) return null;
+          if (Date.now() - this.goneAt < (this.options.respawnMs ?? MATCHER_RESPAWN_MS)) return null;
+        }
+        return this.spawn();
+      }
+      spawn() {
+        try {
+          const buffer = new SharedArrayBuffer(8);
+          const progress = new Int32Array(buffer);
+          Atomics.store(progress, 0, 0);
+          Atomics.store(progress, 1, -1);
+          const worker = new Worker(this.options.entry ?? workerEntry(), { workerData: { progress: buffer } });
+          worker.unref();
+          let settleOnline = () => {
+          };
+          this.online = new Promise((resolve) => {
+            settleOnline = resolve;
+          });
+          worker.once("error", () => settleOnline(false));
+          worker.once("exit", () => settleOnline(false));
+          worker.on("message", (message) => {
+            if (message?.ready === true) return settleOnline(true);
+            const resolve = this.pending;
+            if (!resolve) return;
+            if (Number(message?.generation) !== this.pendingGeneration) return;
+            this.pending = null;
+            resolve(message);
+          });
+          worker.on("error", () => this.onWorkerGone());
+          worker.on("exit", () => this.onWorkerGone());
+          this.worker = worker;
+          this.progress = progress;
+          this.status = "ready";
+          this.spawnCount++;
+          return worker;
+        } catch {
+          this.worker = null;
+          this.progress = null;
+          this.online = null;
+          this.status = "unavailable";
+          this.goneAt = Date.now();
+          return null;
+        }
+      }
+      /**
+       * Wait for the worker to be executing, under its OWN budget.
+       *
+       * A startup that never lands is `unavailable` with no quarantine — the
+       * pattern list had nothing to do with it.
+       */
+      async awaitOnline() {
+        const online = this.online;
+        if (!online) return false;
+        let timer;
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(false), MATCHER_STARTUP_MS);
+        });
+        try {
+          return await Promise.race([online, expired]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      /** An unexpected death: the in-flight request and the queue get `unavailable`. */
+      onWorkerGone() {
+        if (this.terminating) return;
+        this.worker = null;
+        this.progress = null;
+        this.online = null;
+        this.status = "dead";
+        this.goneAt = Date.now();
+        const resolve = this.pending;
+        this.pending = null;
+        if (resolve) resolve(null);
+      }
+      killWorker() {
+        const worker = this.worker;
+        this.worker = null;
+        this.progress = null;
+        this.online = null;
+        this.status = "dead";
+        this.goneAt = Date.now();
+        if (!worker) return;
+        this.terminating = true;
+        try {
+          void worker.terminate();
+        } catch {
+        } finally {
+          this.terminating = false;
+        }
+      }
+      async runOne(input) {
+        if (this.disposed) return unavailableHits(0);
+        const worker = this.ensureWorker();
+        if (!worker) return unavailableHits(0);
+        if (!await this.awaitOnline()) {
+          this.killWorker();
+          return unavailableHits(0);
+        }
+        if (this.disposed) return unavailableHits(0);
+        const started = Date.now();
+        const generation = ++this.generation;
+        const text = input.text.length > MATCH_INPUT_CHARS ? input.text.slice(0, MATCH_INPUT_CHARS) : input.text;
+        const patterns = input.patterns;
+        const reply = new Promise((resolve) => {
+          this.pending = resolve;
+          this.pendingGeneration = generation;
+        });
+        let timer;
+        const timeout = new Promise((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), MATCH_WALL_MS);
+        });
+        try {
+          worker.postMessage({
+            generation,
+            text,
+            patterns: patterns.map((pattern) => ({
+              id: pattern.id,
+              source: pattern.source,
+              flags: pattern.flags ?? "",
+              intent: pattern.intent ?? null
+            }))
+          });
+        } catch {
+          if (timer) clearTimeout(timer);
+          this.pending = null;
+          this.killWorker();
+          return unavailableHits(Date.now() - started);
+        }
+        const outcome = await Promise.race([reply, timeout]);
+        if (timer) clearTimeout(timer);
+        if (outcome !== "timeout" && outcome !== null) {
+          return this.collect(outcome, patterns, Date.now() - started);
+        }
+        if (outcome === null) {
+          return unavailableHits(Date.now() - started);
+        }
+        this.pending = null;
+        const progress = this.progress;
+        const runningGeneration = progress ? Atomics.load(progress, 0) : -1;
+        const index = progress ? Atomics.load(progress, 1) : -1;
+        const elapsedMs = Date.now() - started;
+        const attributable = runningGeneration === generation && index >= 0 && index < patterns.length;
+        this.killWorker();
+        if (!attributable) {
+          return unavailableHits(elapsedMs, true);
+        }
+        const culprit = patterns[index];
+        quarantinePattern({
+          overlay: culprit.overlay ?? input.overlay ?? "recall-gate",
+          pattern_id: culprit.id,
+          source_sha8: patternSourceSha8(culprit.source, culprit.flags ?? ""),
+          at: (/* @__PURE__ */ new Date()).toISOString(),
+          elapsed_ms: MATCH_WALL_MS,
+          input_chars: text.length,
+          surface: input.surface ?? "unknown"
+        });
+        return {
+          intents: {},
+          matched: [],
+          timedOut: true,
+          quarantined: [culprit.id],
+          unavailable: false,
+          elapsedMs,
+          compiledPatterns: 0
+        };
+      }
+      collect(reply, patterns, elapsedMs) {
+        const intents = {};
+        const matched = [];
+        const byIndex = new Map(patterns.map((pattern, index) => [index, pattern]));
+        reply.hits.byPattern.forEach((entry, index) => {
+          if (!entry.matched) return;
+          matched.push(entry.id);
+          const intent = entry.intent ?? byIndex.get(index)?.intent ?? null;
+          if (!intent) return;
+          (intents[intent] ??= []).push(entry.id);
+        });
+        return {
+          intents,
+          matched,
+          timedOut: false,
+          quarantined: [],
+          unavailable: false,
+          elapsedMs,
+          compiledPatterns: Number(reply.compiled ?? 0)
+        };
+      }
+    };
+    QUARANTINE_SCHEMA = "memex.overlay-quarantine";
+    QUARANTINE_VERSION = 1;
+    memoryQuarantine = /* @__PURE__ */ new Map();
+    memoryGeneration = 0;
+  }
+});
+
+// node_modules/zod/v3/external.js
 var external_exports = {};
 __export(external_exports, {
   BRAND: () => BRAND,
@@ -10352,7 +11231,7 @@ __export(external_exports, {
   void: () => voidType
 });
 
-// ../../../node_modules/zod/v3/helpers/util.js
+// node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
   util2.assertEqual = (_2) => {
@@ -10486,7 +11365,7 @@ var getParsedType = (data) => {
   }
 };
 
-// ../../../node_modules/zod/v3/ZodError.js
+// node_modules/zod/v3/ZodError.js
 var ZodIssueCode = util.arrayToEnum([
   "invalid_type",
   "invalid_literal",
@@ -10604,7 +11483,7 @@ ZodError.create = (issues) => {
   return error2;
 };
 
-// ../../../node_modules/zod/v3/locales/en.js
+// node_modules/zod/v3/locales/en.js
 var errorMap = (issue2, _ctx) => {
   let message;
   switch (issue2.code) {
@@ -10707,7 +11586,7 @@ var errorMap = (issue2, _ctx) => {
 };
 var en_default = errorMap;
 
-// ../../../node_modules/zod/v3/errors.js
+// node_modules/zod/v3/errors.js
 var overrideErrorMap = en_default;
 function setErrorMap(map) {
   overrideErrorMap = map;
@@ -10716,10 +11595,10 @@ function getErrorMap() {
   return overrideErrorMap;
 }
 
-// ../../../node_modules/zod/v3/helpers/parseUtil.js
+// node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path17, errorMaps, issueData } = params;
-  const fullPath = [...path17, ...issueData.path || []];
+  const { data, path: path18, errorMaps, issueData } = params;
+  const fullPath = [...path18, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -10826,20 +11705,20 @@ var isDirty = (x2) => x2.status === "dirty";
 var isValid = (x2) => x2.status === "valid";
 var isAsync = (x2) => typeof Promise !== "undefined" && x2 instanceof Promise;
 
-// ../../../node_modules/zod/v3/helpers/errorUtil.js
+// node_modules/zod/v3/helpers/errorUtil.js
 var errorUtil;
 (function(errorUtil2) {
   errorUtil2.errToObj = (message) => typeof message === "string" ? { message } : message || {};
   errorUtil2.toString = (message) => typeof message === "string" ? message : message?.message;
 })(errorUtil || (errorUtil = {}));
 
-// ../../../node_modules/zod/v3/types.js
+// node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path17, key) {
+  constructor(parent, value, path18, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path17;
+    this._path = path18;
     this._key = key;
   }
   get path() {
@@ -14281,7 +15160,7 @@ var coerce = {
 };
 var NEVER = INVALID;
 
-// ../../../node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -14341,7 +15220,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// ../../../node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -14477,10 +15356,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path17) {
-  if (!path17)
+function getElementAtPath(obj, path18) {
+  if (!path18)
     return obj;
-  return path17.reduce((acc, key) => acc?.[key], obj);
+  return path18.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -14800,11 +15679,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path17, issues) {
+function prefixIssues(path18, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path17);
+    iss.path.unshift(path18);
     return iss;
   });
 }
@@ -14862,7 +15741,7 @@ var Class = class {
   }
 };
 
-// ../../../node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -14937,7 +15816,7 @@ function formatError(error2, _mapper) {
   return fieldErrors;
 }
 
-// ../../../node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -14987,7 +15866,7 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
 };
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 
-// ../../../node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][^\s-]{8,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/;
@@ -15045,7 +15924,7 @@ var _null = /null/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// ../../../node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -15430,7 +16309,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// ../../../node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = []) {
     this.content = [];
@@ -15466,14 +16345,14 @@ var Doc = class {
   }
 };
 
-// ../../../node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 0,
   patch: 0
 };
 
-// ../../../node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -16711,7 +17590,7 @@ function handleRefineResult(result, payload, input, inst) {
   }
 }
 
-// ../../../node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var parsedType = (data) => {
   const t = typeof data;
   switch (t) {
@@ -16829,7 +17708,7 @@ function en_default2() {
   };
 }
 
-// ../../../node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var $output = Symbol("ZodOutput");
 var $input = Symbol("ZodInput");
 var $ZodRegistry = class {
@@ -16879,7 +17758,7 @@ function registry() {
 }
 var globalRegistry = /* @__PURE__ */ registry();
 
-// ../../../node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 function _string(Class2, params) {
   return new Class2({
     type: "string",
@@ -17318,7 +18197,7 @@ function _refine(Class2, fn, _params) {
   return schema;
 }
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -17381,7 +18260,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// ../../../node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -17422,7 +18301,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// ../../../node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
@@ -17456,13 +18335,13 @@ var ZodRealError = $constructor("ZodError", initializer2, {
   Parent: Error
 });
 
-// ../../../node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
 
-// ../../../node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   $ZodType.init(inst, def);
   inst.def = def;
@@ -18073,10 +18952,10 @@ function preprocess(fn, schema) {
   return pipe(transform(fn), schema);
 }
 
-// ../../../node_modules/zod/v4/classic/external.js
+// node_modules/zod/v4/classic/external.js
 config(en_default2());
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -19595,18 +20474,18 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// ../../../node_modules/zod-to-json-schema/dist/esm/Options.js
+// node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
 
-// ../../../node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -19627,7 +20506,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -20581,7 +21460,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -20649,7 +21528,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -20862,7 +21741,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -20897,7 +21776,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -21268,10 +22147,10 @@ var Server = class extends Protocol {
   }
 };
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process2 from "node:process";
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -21308,7 +22187,7 @@ function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
 }
 
-// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
@@ -21377,10 +22256,10 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 init_paths();
-import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
 import net from "node:net";
-import fs11 from "node:fs";
-import path12 from "node:path";
+import fs13 from "node:fs";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/db.ts
@@ -23783,6 +24662,9 @@ function initDatabase(options = {}) {
   if (!recallColumns.has("emitted_at")) {
     db.exec("ALTER TABLE recall_events ADD COLUMN emitted_at TEXT");
   }
+  if (!recallColumns.has("gate_overlay_hash")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN gate_overlay_hash TEXT");
+  }
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)"
   );
@@ -24290,8 +25172,9 @@ function recordRecallEvent(db, event) {
   db.prepare(`
     INSERT INTO recall_events
       (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
-       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at,
+       gate_overlay_hash)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
@@ -24303,7 +25186,8 @@ function recordRecallEvent(db, event) {
     event.workstreamId ?? null,
     event.contextEpoch ?? 0,
     event.projectMemoryRevision ?? 0,
-    (/* @__PURE__ */ new Date()).toISOString()
+    (/* @__PURE__ */ new Date()).toISOString(),
+    event.gateOverlayHash ?? null
   );
   return id;
 }
@@ -26495,22 +27379,181 @@ var STOPWORDS = /* @__PURE__ */ new Set([
   "\uB610",
   "\uADF8\uB7FC"
 ]);
-var ACK_PATTERNS = [
-  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$/i,
-  /^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$/
+var MEMORY_TERMS = [
+  ["memory.en.why", "\\bwhy\\b"],
+  ["memory.en.when", "\\bwhen\\b"],
+  ["memory.en.history", "\\bhistory\\b"],
+  ["memory.en.source", "\\bsource\\b"],
+  ["memory.en.previous", "\\bprevious(ly)?\\b"],
+  ["memory.en.before", "\\bbefore\\b"],
+  ["memory.en.earlier", "\\bearlier\\b"],
+  ["memory.en.repeat", "\\brepeat(ed|ing)?\\b"],
+  ["memory.en.again", "\\bagain\\b"],
+  ["memory.en.remember", "\\bremember\\b"],
+  ["memory.en.recall", "\\brecall\\b"],
+  ["memory.en.what-did-we", "\\bwhat did we\\b"],
+  ["memory.en.what-was", "\\bwhat was\\b"],
+  ["memory.en.how-did", "\\bhow did\\b"],
+  ["memory.en.where-did", "\\bwhere did\\b"],
+  ["memory.en.origin", "\\borigin\\b"],
+  ["memory.en.decided", "\\bdecided\\b"],
+  ["memory.kr.\uC65C", "\uC65C"],
+  ["memory.kr.\uC5B8\uC81C", "\uC5B8\uC81C"],
+  ["memory.kr.\uC774\uC804", "\uC774\uC804"],
+  ["memory.kr.\uC608\uC804", "\uC608\uC804"],
+  ["memory.kr.\uACFC\uAC70", "\uACFC\uAC70"],
+  ["memory.kr.\uC804\uC5D0", "\uC804\uC5D0"],
+  ["memory.kr.\uAE30\uB85D", "\uAE30\uB85D"],
+  ["memory.kr.\uCD9C\uCC98", "\uCD9C\uCC98"],
+  ["memory.kr.\uADFC\uAC70", "\uADFC\uAC70"],
+  ["memory.kr.\uC774\uC720", "\uC774\uC720"],
+  ["memory.kr.\uD788\uC2A4\uD1A0\uB9AC", "\uD788\uC2A4\uD1A0\uB9AC"],
+  ["memory.en.history-plain", "history"],
+  ["memory.kr.\uBC18\uBCF5", "\uBC18\uBCF5"],
+  ["memory.kr.\uB610", "\uB610\\s*(\uADF8|\uC774)"],
+  ["memory.kr.\uAE30\uC5B5", "\uAE30\uC5B5"],
+  ["memory.kr.\uB2E4\uC2DC", "\uB2E4\uC2DC"],
+  ["memory.kr.\uD588\uC5C8", "\uD588\uC5C8"],
+  ["memory.kr.\uC600\uC5C8", "\uC600\uC5C8"],
+  ["memory.kr.\uACB0\uC815\uD588", "\uACB0\uC815\uD588"],
+  ["memory.kr.\uC815\uD588", "\uC815\uD588"],
+  ["memory.kr.\uBC14\uAFE8", "\uBC14\uAFE8"],
+  ["memory.kr.\uBCC0\uACBD\uD588", "\uBCC0\uACBD\uD588"],
+  ["memory.kr.\uC5B4\uB514\uC11C", "\uC5B4\uB514\uC11C"]
 ];
-var CONTINUE_PATTERNS = [
-  /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
-  /^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$/,
-  /^(가자|고|해줘|해봐|ㄱ)[.! ~]*$/
+var TRACE_TERMS = [
+  ["trace.en.why", "\\bwhy\\b"],
+  ["trace.en.rationale", "\\brationale\\b"],
+  ["trace.en.reason", "\\breason\\b"],
+  ["trace.en.related", "\\brelated\\b"],
+  ["trace.en.depend", "\\bdepend"],
+  ["trace.en.contradict", "\\bcontradict"],
+  ["trace.en.conflict", "\\bconflict"],
+  ["trace.en.architecture", "\\barchitecture\\b"],
+  ["trace.en.trace", "\\btrace\\b"],
+  ["trace.en.history", "\\bhistory\\b"],
+  ["trace.en.source", "\\bsource\\b"],
+  ["trace.kr.\uC65C", "\uC65C"],
+  ["trace.kr.\uC774\uC720", "\uC774\uC720"],
+  ["trace.kr.\uADFC\uAC70", "\uADFC\uAC70"],
+  ["trace.kr.\uAD00\uB828", "\uAD00\uB828"],
+  ["trace.kr.\uC758\uC874", "\uC758\uC874"],
+  ["trace.kr.\uBAA8\uC21C", "\uBAA8\uC21C"],
+  ["trace.kr.\uCDA9\uB3CC", "\uCDA9\uB3CC"],
+  ["trace.kr.\uC544\uD0A4\uD14D\uCC98", "\uC544\uD0A4\uD14D\uCC98"],
+  ["trace.kr.\uCD94\uC801", "\uCD94\uC801"],
+  ["trace.kr.\uCD9C\uCC98", "\uCD9C\uCC98"],
+  ["trace.kr.\uD788\uC2A4\uD1A0\uB9AC", "\uD788\uC2A4\uD1A0\uB9AC"],
+  ["trace.en.history-plain", "history"]
 ];
-var MINOR_CORRECTION_PATTERNS = [
-  /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
-  /^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)/
+var HIGH_IMPACT_TERMS = [
+  ["high.en.decide", "\\bdecide\\b"],
+  ["high.en.decision", "\\bdecision\\b"],
+  ["high.en.switch", "\\bswitch(ing)?\\b"],
+  ["high.en.migrate", "\\bmigrat(e|ion)\\b"],
+  ["high.en.rollback", "\\brollback\\b"],
+  ["high.en.roll-back", "\\broll back\\b"],
+  ["high.en.revert", "\\brevert\\b"],
+  ["high.en.replace", "\\breplace\\b"],
+  ["high.en.drop", "\\bdrop\\b"],
+  ["high.en.remove", "\\bremove\\b"],
+  ["high.en.deprecate", "\\bdeprecate\\b"],
+  ["high.en.change-the", "\\bchange the\\b"],
+  ["high.en.adopt", "\\badopt\\b"],
+  ["high.en.move-to", "\\bmove to\\b"],
+  ["high.kr.\uACB0\uC815", "\uACB0\uC815"],
+  ["high.kr.\uC804\uD658", "\uC804\uD658"],
+  ["high.kr.\uB9C8\uC774\uADF8\uB808\uC774\uC158", "\uB9C8\uC774\uADF8\uB808\uC774\uC158"],
+  ["high.kr.\uB864\uBC31", "\uB864\uBC31"],
+  ["high.kr.\uB418\uB3CC", "\uB418\uB3CC"],
+  ["high.kr.\uAD50\uCCB4", "\uAD50\uCCB4"],
+  ["high.kr.\uC81C\uAC70", "\uC81C\uAC70"],
+  ["high.kr.\uC0AD\uC81C", "\uC0AD\uC81C"],
+  ["high.kr.\uBC14\uAFB8", "\uBC14\uAFB8"],
+  ["high.kr.\uBCC0\uACBD", "\uBCC0\uACBD"],
+  ["high.kr.\uB3C4\uC785", "\uB3C4\uC785"],
+  ["high.kr.\uCC44\uD0DD", "\uCC44\uD0DD"],
+  ["high.kr.\uC62E\uAE30", "\uC62E\uAE30"]
 ];
-var MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\b|\bbefore\b|\bearlier\b|\brepeat(ed|ing)?\b|\bagain\b|\bremember\b|\brecall\b|\bwhat did we\b|\bwhat was\b|\bhow did\b|\bwhere did\b|\borigin\b|\bdecided\b|왜|언제|이전|예전|과거|전에|기록|출처|근거|이유|히스토리|history|반복|또\s*(그|이)|기억|다시|했었|였었|결정했|정했|바꿨|변경했|어디서)/i;
-var TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
-var HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
+var WHOLE_PATTERNS = [
+  [
+    "ack.en.1",
+    "acknowledgement",
+    "^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$",
+    "i"
+  ],
+  [
+    "ack.kr.1",
+    "acknowledgement",
+    "^(\uC751|\uB124|\uB135|\uB139|\uC608|\uC544\uB2C8|\uC544\uB2C8\uC694|\uACE0\uB9C8\uC6CC|\uACE0\uB9C8\uC6CC\uC694|\uACE0\uB9D9\uC2B5\uB2C8\uB2E4|\uAC10\uC0AC|\uAC10\uC0AC\uD569\uB2C8\uB2E4|\uAC10\uC0AC\uD574\uC694|\uC88B\uC544|\uC88B\uC544\uC694|\uC88B\uB124|\uC88B\uC2B5\uB2C8\uB2E4|\uC54C\uACA0\uC5B4|\uC54C\uACA0\uC5B4\uC694|\uC54C\uACA0\uC2B5\uB2C8\uB2E4|\uC624\uCF00\uC774|\u3147\u314B|\u3147\u3147|\u3131\u3131|\uAD7F|\uB9DE\uC544|\uB9DE\uC544\uC694|\uADF8\uB798|\uADF8\uB798\uC694|\uD655\uC778)[.! ~]*$",
+    ""
+  ],
+  [
+    "continue.en.1",
+    "continuation",
+    "^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$",
+    "i"
+  ],
+  [
+    "continue.kr.1",
+    "continuation",
+    "^(\uACC4\uC18D|\uC9C4\uD589|\uB2E4\uC74C|\uC774\uC5B4\uC11C|\uC774\uC5B4)(\uD574|\uD558\uC790|\uD574\uC918|\uD574\uC918\uC694|\uD574\uC8FC\uC138\uC694|\uD558\uC138\uC694|\uD560\uAC8C|\uD560\uAC8C\uC694|\uD574\uC694|\uD574\uBD10|\uD569\uC2DC\uB2E4|\uAC00\uC790|\uC73C\uB85C \uB118\uC5B4\uAC00\uC790|\uC73C\uB85C \uB118\uC5B4\uAC00\uC694)?[.! ~]*$",
+    ""
+  ],
+  ["continue.kr.2", "continuation", "^(\uAC00\uC790|\uACE0|\uD574\uC918|\uD574\uBD10|\u3131)[.! ~]*$", ""],
+  [
+    "minor.en.1",
+    "minorCorrection",
+    "^(no|not that|the other one|wrong one|other|instead|actually|rather)\\b",
+    "i"
+  ],
+  ["minor.kr.1", "minorCorrection", "^(\uC544\uB2C8|\uADF8\uAC70 \uB9D0\uACE0|\uB2E4\uB978 \uAC70|\uB2E4\uB978\uAC70|\uB9D0\uACE0|\uB300\uC2E0|\uADF8\uAC8C \uC544\uB2C8\uB77C)", ""]
+];
+function alternativeTerms(intent, terms) {
+  return terms.map(([id, source]) => ({ id, intent, source, flags: "i", form: "alternative" }));
+}
+var BUILTIN_GATE_PATTERNS = Object.freeze([
+  ...alternativeTerms("memory", MEMORY_TERMS),
+  ...alternativeTerms("trace", TRACE_TERMS),
+  ...alternativeTerms("highImpact", HIGH_IMPACT_TERMS),
+  ...WHOLE_PATTERNS.map(([id, intent, source, flags]) => ({
+    id,
+    intent,
+    source,
+    flags,
+    form: "whole"
+  }))
+]);
+function composeAlternation(terms) {
+  if (terms.length === 0) return null;
+  return new RegExp(`(${terms.map((term) => term.source).join("|")})`, "i");
+}
+function buildComposed(disabled) {
+  const active = BUILTIN_GATE_PATTERNS.filter((pattern) => !disabled.has(pattern.id));
+  const alternatives = (intent) => active.filter((pattern) => pattern.intent === intent && pattern.form === "alternative");
+  const wholes = (intent) => active.filter((pattern) => pattern.intent === intent && pattern.form === "whole").map((pattern) => ({ id: pattern.id, re: new RegExp(pattern.source, pattern.flags) }));
+  return {
+    memory: composeAlternation(alternatives("memory")),
+    trace: composeAlternation(alternatives("trace")),
+    highImpact: composeAlternation(alternatives("highImpact")),
+    acknowledgement: wholes("acknowledgement"),
+    continuation: wholes("continuation"),
+    minorCorrection: wholes("minorCorrection")
+  };
+}
+var DEFAULT_COMPOSED = buildComposed(/* @__PURE__ */ new Set());
+var composedCache = /* @__PURE__ */ new Map();
+var COMPOSED_CACHE_MAX = 8;
+function composeGatePatterns(disabledIds = []) {
+  if (disabledIds.length === 0) return DEFAULT_COMPOSED;
+  const key = [...new Set(disabledIds)].sort().join("\0");
+  const cached2 = composedCache.get(key);
+  if (cached2) return cached2;
+  const built = buildComposed(new Set(disabledIds));
+  if (composedCache.size >= COMPOSED_CACHE_MAX) composedCache.clear();
+  composedCache.set(key, built);
+  return built;
+}
 var KR_SUFFIX = /(해주세요|해줘요|합니다|하세요|했어요|해요|해줘|해봐|하자|할까|했어|했다|한다|해서|에서|에게|한테|으로|까지|부터|처럼|이랑|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$/u;
 function normalizeToken(token) {
   if (!/[\u3131-\uD79D]/u.test(token)) return token;
@@ -26529,149 +27572,234 @@ function jaccard2(a, b2) {
   for (const token of left) if (right.has(token)) overlap++;
   return overlap / (left.size + right.size - overlap);
 }
-var ACK_WORDS = /* @__PURE__ */ new Set([
-  "ok",
-  "okay",
-  "k",
-  "yes",
-  "yep",
-  "yeah",
-  "no",
-  "nope",
-  "sure",
-  "thanks",
-  "thank",
-  "thx",
-  "ty",
-  "cool",
-  "great",
-  "nice",
-  "good",
-  "got",
-  "understood",
-  "done",
-  "fine",
-  "alright",
-  "perfect",
-  "right",
-  "awesome",
-  "\uC751",
-  "\uB124",
-  "\uB135",
-  "\uB139",
-  "\uC608",
-  "\uC544\uB2C8",
-  "\uC544\uB2C8\uC694",
-  "\uACE0\uB9C8\uC6CC",
-  "\uACE0\uB9C8\uC6CC\uC694",
-  "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
-  "\uAC10\uC0AC",
-  "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
-  "\uAC10\uC0AC\uD574\uC694",
-  "\uC88B\uC544",
-  "\uC88B\uC544\uC694",
-  "\uC88B\uB124",
-  "\uC88B\uC2B5\uB2C8\uB2E4",
-  "\uC54C\uACA0\uC5B4",
-  "\uC54C\uACA0\uC5B4\uC694",
-  "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
-  "\uC624\uCF00\uC774",
-  "\u3147\u314B",
-  "\u3147\u3147",
-  "\uAD7F",
-  "\uB9DE\uC544",
-  "\uB9DE\uC544\uC694",
-  "\uADF8\uB798",
-  "\uADF8\uB798\uC694",
-  "\uD655\uC778"
-]);
-var CONTINUE_WORDS = /* @__PURE__ */ new Set([
-  "continue",
-  "go",
-  "on",
-  "keep",
-  "going",
-  "next",
-  "proceed",
-  "carry",
-  "ahead",
-  "resume",
-  "\uACC4\uC18D",
-  "\uACC4\uC18D\uD574",
-  "\uACC4\uC18D\uD574\uC918",
-  "\uACC4\uC18D\uD574\uC918\uC694",
-  "\uACC4\uC18D\uD574\uC8FC\uC138\uC694",
-  "\uACC4\uC18D\uD558\uC790",
-  "\uC9C4\uD589",
-  "\uC9C4\uD589\uD574",
-  "\uC9C4\uD589\uD574\uC918",
-  "\uC9C4\uD589\uD574\uC8FC\uC138\uC694",
-  "\uC9C4\uD589\uD560\uAC8C",
-  "\uC9C4\uD589\uD560\uAC8C\uC694",
-  "\uB2E4\uC74C",
-  "\uB2E4\uC74C\uC73C\uB85C",
-  "\uB118\uC5B4\uAC00\uC790",
-  "\uB118\uC5B4\uAC00\uC694",
-  "\uB118\uC5B4\uAC00",
-  "\uC774\uC5B4\uC11C",
-  "\uC774\uC5B4",
-  "\uAC00\uC790",
-  "\uD574\uC918",
-  "\uD574\uC8FC\uC138\uC694",
-  "\uD574\uBD10",
-  "\u3131\u3131"
-]);
-var FILLER_WORDS = /* @__PURE__ */ new Set([
-  "you",
-  "it",
-  "that",
-  "this",
-  "the",
-  "and",
-  "then",
-  "now",
-  "please",
-  "let",
-  "lets",
-  "s",
-  "do",
-  "for",
-  "with",
-  "sounds",
-  "looks",
-  "work",
-  "job",
-  "well",
-  "really",
-  "very",
-  "much",
-  "so",
-  "all",
-  "too",
-  "\uC800",
-  "\uADF8",
-  "\uC880",
-  "\uC694",
-  "\uB124\uC694",
-  "\uC785\uB2C8\uB2E4",
-  "\uC774\uC81C",
-  "\uADF8\uB7FC",
-  "\uADF8\uB7EC\uBA74",
-  "\uC77C\uB2E8"
-]);
-function detectPromptIntents(prompt) {
-  const trimmed = prompt.trim();
-  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
-  const allAck = rawTokens.length > 0 && rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || FILLER_WORDS.has(token));
-  const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && rawTokens.some((token) => ACK_WORDS.has(token));
-  const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && !acknowledgement && rawTokens.some((token) => CONTINUE_WORDS.has(token));
-  return {
-    memory: MEMORY_INTENT.test(trimmed),
-    trace: TRACE_INTENT.test(trimmed),
-    highImpact: HIGH_IMPACT_INTENT.test(trimmed),
-    acknowledgement,
-    continuation
+var BUILTIN_GATE_WORDS = Object.freeze({
+  ack: Object.freeze([
+    "ok",
+    "okay",
+    "k",
+    "yes",
+    "yep",
+    "yeah",
+    "no",
+    "nope",
+    "sure",
+    "thanks",
+    "thank",
+    "thx",
+    "ty",
+    "cool",
+    "great",
+    "nice",
+    "good",
+    "got",
+    "understood",
+    "done",
+    "fine",
+    "alright",
+    "perfect",
+    "right",
+    "awesome",
+    "\uC751",
+    "\uB124",
+    "\uB135",
+    "\uB139",
+    "\uC608",
+    "\uC544\uB2C8",
+    "\uC544\uB2C8\uC694",
+    "\uACE0\uB9C8\uC6CC",
+    "\uACE0\uB9C8\uC6CC\uC694",
+    "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
+    "\uAC10\uC0AC",
+    "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
+    "\uAC10\uC0AC\uD574\uC694",
+    "\uC88B\uC544",
+    "\uC88B\uC544\uC694",
+    "\uC88B\uB124",
+    "\uC88B\uC2B5\uB2C8\uB2E4",
+    "\uC54C\uACA0\uC5B4",
+    "\uC54C\uACA0\uC5B4\uC694",
+    "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
+    "\uC624\uCF00\uC774",
+    "\u3147\u314B",
+    "\u3147\u3147",
+    "\uAD7F",
+    "\uB9DE\uC544",
+    "\uB9DE\uC544\uC694",
+    "\uADF8\uB798",
+    "\uADF8\uB798\uC694",
+    "\uD655\uC778"
+  ]),
+  continue: Object.freeze([
+    "continue",
+    "go",
+    "on",
+    "keep",
+    "going",
+    "next",
+    "proceed",
+    "carry",
+    "ahead",
+    "resume",
+    "\uACC4\uC18D",
+    "\uACC4\uC18D\uD574",
+    "\uACC4\uC18D\uD574\uC918",
+    "\uACC4\uC18D\uD574\uC918\uC694",
+    "\uACC4\uC18D\uD574\uC8FC\uC138\uC694",
+    "\uACC4\uC18D\uD558\uC790",
+    "\uC9C4\uD589",
+    "\uC9C4\uD589\uD574",
+    "\uC9C4\uD589\uD574\uC918",
+    "\uC9C4\uD589\uD574\uC8FC\uC138\uC694",
+    "\uC9C4\uD589\uD560\uAC8C",
+    "\uC9C4\uD589\uD560\uAC8C\uC694",
+    "\uB2E4\uC74C",
+    "\uB2E4\uC74C\uC73C\uB85C",
+    "\uB118\uC5B4\uAC00\uC790",
+    "\uB118\uC5B4\uAC00\uC694",
+    "\uB118\uC5B4\uAC00",
+    "\uC774\uC5B4\uC11C",
+    "\uC774\uC5B4",
+    "\uAC00\uC790",
+    "\uD574\uC918",
+    "\uD574\uC8FC\uC138\uC694",
+    "\uD574\uBD10",
+    "\u3131\u3131"
+  ]),
+  /** Words that carry no topic on their own; they never make a prompt substantive. */
+  filler: Object.freeze([
+    "you",
+    "it",
+    "that",
+    "this",
+    "the",
+    "and",
+    "then",
+    "now",
+    "please",
+    "let",
+    "lets",
+    "s",
+    "do",
+    "for",
+    "with",
+    "sounds",
+    "looks",
+    "work",
+    "job",
+    "well",
+    "really",
+    "very",
+    "much",
+    "so",
+    "all",
+    "too",
+    "\uC800",
+    "\uADF8",
+    "\uC880",
+    "\uC694",
+    "\uB124\uC694",
+    "\uC785\uB2C8\uB2E4",
+    "\uC774\uC81C",
+    "\uADF8\uB7FC",
+    "\uADF8\uB7EC\uBA74",
+    "\uC77C\uB2E8"
+  ])
+});
+var ACK_WORDS = new Set(BUILTIN_GATE_WORDS.ack);
+var CONTINUE_WORDS = new Set(BUILTIN_GATE_WORDS.continue);
+var FILLER_WORDS = new Set(BUILTIN_GATE_WORDS.filler);
+var DEFAULT_WORD_SETS = Object.freeze({
+  ack: ACK_WORDS,
+  continue: CONTINUE_WORDS,
+  filler: FILLER_WORDS
+});
+function effectiveWords(hits) {
+  const words = hits?.words;
+  if (!words) return DEFAULT_WORD_SETS;
+  const resolve = (lexicon) => {
+    const add = words.add?.[lexicon] ?? [];
+    const disable = words.disable?.[lexicon] ?? [];
+    if (add.length === 0 && disable.length === 0) return DEFAULT_WORD_SETS[lexicon];
+    const next = new Set(DEFAULT_WORD_SETS[lexicon]);
+    for (const word of disable) next.delete(word);
+    for (const word of add) next.add(word);
+    return next;
   };
+  return { ack: resolve("ack"), continue: resolve("continue"), filler: resolve("filler") };
+}
+function emptyMatched() {
+  return {
+    memory: [],
+    trace: [],
+    highImpact: [],
+    acknowledgement: [],
+    continuation: [],
+    minorCorrection: []
+  };
+}
+function explain(prompt, hits) {
+  const trimmed = prompt.trim();
+  const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+  const disabled = new Set(hits?.disabledPatterns ?? []);
+  const words = effectiveWords(hits);
+  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+  const allAck = rawTokens.length > 0 && rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+  const matched = emptyMatched();
+  const userIds = (intent) => hits?.intents?.[intent] ?? [];
+  for (const intent of ["memory", "trace", "highImpact", "acknowledgement", "continuation", "minorCorrection"]) {
+    for (const id of userIds(intent)) matched[intent].push({ id, origin: "user" });
+  }
+  const ackPatternHit = composed.acknowledgement.filter(({ re: re2 }) => re2.test(trimmed));
+  const continuePatternHit = composed.continuation.filter(({ re: re2 }) => re2.test(trimmed));
+  for (const hit of ackPatternHit) matched.acknowledgement.unshift({ id: hit.id, origin: "builtin" });
+  for (const hit of continuePatternHit) matched.continuation.unshift({ id: hit.id, origin: "builtin" });
+  const acknowledgement = ackPatternHit.length > 0 || userIds("acknowledgement").length > 0 || allAck && rawTokens.some((token) => words.ack.has(token));
+  const continuation = continuePatternHit.length > 0 || userIds("continuation").length > 0 || allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token));
+  for (const intent of ["memory", "trace", "highImpact"]) {
+    const composedRe = composed[intent];
+    if (!composedRe || !composedRe.test(trimmed)) continue;
+    for (const term of BUILTIN_GATE_PATTERNS) {
+      if (term.intent !== intent || term.form !== "alternative" || disabled.has(term.id)) continue;
+      if (new RegExp(term.source, term.flags).test(trimmed)) {
+        matched[intent].unshift({ id: term.id, origin: "builtin" });
+      }
+    }
+  }
+  return {
+    intents: {
+      memory: matched.memory.length > 0,
+      trace: matched.trace.length > 0,
+      highImpact: matched.highImpact.length > 0,
+      acknowledgement,
+      continuation
+    },
+    matched
+  };
+}
+function detectPromptIntents(prompt, hits) {
+  const trimmed = prompt.trim();
+  if (!hits || (hits.disabledPatterns?.length ?? 0) === 0) {
+    const composed = DEFAULT_COMPOSED;
+    const words = effectiveWords(hits);
+    const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+    const allAck = rawTokens.length > 0 && rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+    const userAck = hits?.intents?.acknowledgement?.length ?? 0;
+    const userContinue = hits?.intents?.continuation?.length ?? 0;
+    const acknowledgement = composed.acknowledgement.some(({ re: re2 }) => re2.test(trimmed)) || userAck > 0 || allAck && rawTokens.some((token) => words.ack.has(token));
+    const continuation = composed.continuation.some(({ re: re2 }) => re2.test(trimmed)) || userContinue > 0 || allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token));
+    return {
+      memory: (composed.memory?.test(trimmed) ?? false) || (hits?.intents?.memory?.length ?? 0) > 0,
+      trace: (composed.trace?.test(trimmed) ?? false) || (hits?.intents?.trace?.length ?? 0) > 0,
+      highImpact: (composed.highImpact?.test(trimmed) ?? false) || (hits?.intents?.highImpact?.length ?? 0) > 0,
+      acknowledgement,
+      continuation
+    };
+  }
+  return explain(prompt, hits).intents;
+}
+function minorCorrectionHit(prompt, hits) {
+  const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+  return composed.minorCorrection.some(({ re: re2 }) => re2.test(prompt)) || (hits?.intents?.minorCorrection?.length ?? 0) > 0;
 }
 function cosineSimilarity(a, b2) {
   let dot = 0;
@@ -26689,7 +27817,7 @@ function cosineSimilarity(a, b2) {
 function decideRecall(input) {
   const config2 = { ...DEFAULT_RECALL_GATE_CONFIG, ...input.config ?? {} };
   const tokens2 = tokenizePrompt(input.prompt);
-  const intents = detectPromptIntents(input.prompt);
+  const intents = detectPromptIntents(input.prompt, input.userHits);
   const triggers = [];
   const fingerprint = input.state.topicFingerprint;
   const topicOverlap = fingerprint.length > 0 ? jaccard2(tokens2, fingerprint) : null;
@@ -26717,7 +27845,7 @@ function decideRecall(input) {
   if ((intents.acknowledgement || intents.continuation) && tokens2.length <= config2.ackMaxTokens) {
     return base("skip", intents.acknowledgement ? "acknowledgement" : "continuation");
   }
-  if (!substantive && MINOR_CORRECTION_PATTERNS.some((pattern) => pattern.test(input.prompt.trim())) && tokens2.length <= config2.ackMaxTokens + 2) {
+  if (!substantive && minorCorrectionHit(input.prompt.trim(), input.userHits) && tokens2.length <= config2.ackMaxTokens + 2) {
     return base("skip", "minor_correction");
   }
   if (intents.highImpact) triggers.push("high_impact_intent");
@@ -26866,7 +27994,449 @@ ${accepted.join("\n")}`;
   };
 }
 
+// src/recall-gate-overlay.ts
+init_paths();
+init_overlay_regex();
+init_overlay_matcher();
+import fs12 from "node:fs";
+var RECALL_GATE_OVERLAY_SCHEMA = "memex.recall-gate-overlay";
+var RECALL_GATE_OVERLAY_VERSION = 1;
+var OVERLAY_LIMITS = Object.freeze({
+  fileBytes: 32768,
+  patternSource: OVERLAY_REGEX_LIMITS.sourceChars,
+  quantifiers: OVERLAY_REGEX_LIMITS.quantifiers,
+  groupDepth: OVERLAY_REGEX_LIMITS.depth,
+  alternationBranches: OVERLAY_REGEX_LIMITS.branches,
+  noteChars: 200,
+  counts: Object.freeze({
+    patternsAdd: 64,
+    patternsAddPerIntent: 32,
+    patternsDisable: 256,
+    wordsAddPerLexicon: 128,
+    wordsDisablePerLexicon: 256,
+    wordChars: 32
+  })
+});
+var INTENTS = [
+  "memory",
+  "trace",
+  "highImpact",
+  "acknowledgement",
+  "continuation",
+  "minorCorrection"
+];
+var LEXICONS = ["ack", "continue", "filler"];
+function emptyWords() {
+  return { add: { ack: [], continue: [], filler: [] }, disable: { ack: [], continue: [], filler: [] } };
+}
+var EMPTY_OVERLAY = Object.freeze({
+  present: false,
+  hash: null,
+  revision: 0,
+  patterns: Object.freeze([]),
+  disabled: Object.freeze([]),
+  words: Object.freeze(emptyWords()),
+  quarantined: Object.freeze([]),
+  issues: Object.freeze([]),
+  doc: null
+});
+function recallGateOverlayHash(doc) {
+  const rules = {
+    patterns: {
+      add: (doc.patterns?.add ?? []).map((pattern) => ({
+        id: pattern.id,
+        intent: pattern.intent,
+        source: pattern.source,
+        flags: pattern.flags ?? ""
+      })),
+      disable: [...doc.patterns?.disable ?? []].sort()
+    },
+    words: {
+      add: Object.fromEntries(LEXICONS.map((lexicon) => [lexicon, [...doc.words?.add?.[lexicon] ?? []].sort()])),
+      disable: Object.fromEntries(LEXICONS.map((lexicon) => [lexicon, [...doc.words?.disable?.[lexicon] ?? []].sort()]))
+    }
+  };
+  return `gate:${sha8(canonicalJson(rules))}`;
+}
+var CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+var KNOWN_TOP_LEVEL = /* @__PURE__ */ new Set([
+  "schema",
+  "version",
+  "revision",
+  "updated_at",
+  "updated_by",
+  "patterns",
+  "words"
+]);
+var BUILTIN_IDS = new Set(BUILTIN_GATE_PATTERNS.map((pattern) => pattern.id));
+var BUILTIN_SOURCES = new Set(
+  BUILTIN_GATE_PATTERNS.map((pattern) => `${pattern.source}\0${pattern.flags}`)
+);
+function validateRecallGateOverlayDoc(raw, opts = {}) {
+  const issues = [];
+  const error2 = (code, message, extra) => {
+    issues.push(overlayIssue("error", code, message, extra));
+  };
+  const warn = (code, message, extra) => {
+    issues.push(overlayIssue("warning", code, message, extra));
+  };
+  if (opts.bytes !== void 0 && opts.bytes > OVERLAY_LIMITS.fileBytes) {
+    error2(
+      "OVERLAY_TOO_LARGE",
+      `the overlay file is ${opts.bytes} bytes (limit ${OVERLAY_LIMITS.fileBytes})`,
+      { params: { bytes: opts.bytes, limit: OVERLAY_LIMITS.fileBytes } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    error2("OVERLAY_NOT_OBJECT", "the overlay must be a JSON object");
+    return { ok: false, issues, doc: null };
+  }
+  const doc = raw;
+  if (doc.schema !== RECALL_GATE_OVERLAY_SCHEMA) {
+    error2(
+      "OVERLAY_SCHEMA_MISMATCH",
+      `schema must be "${RECALL_GATE_OVERLAY_SCHEMA}" (found ${JSON.stringify(doc.schema ?? null)})`,
+      { path: "schema", params: { expected: RECALL_GATE_OVERLAY_SCHEMA } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  if (Number(doc.version) !== RECALL_GATE_OVERLAY_VERSION) {
+    error2(
+      "OVERLAY_VERSION_UNSUPPORTED",
+      `version ${String(doc.version)} is not supported by this build (expected ${RECALL_GATE_OVERLAY_VERSION})`,
+      { path: "version", params: { version: doc.version, expected: RECALL_GATE_OVERLAY_VERSION } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  for (const key of Object.keys(doc)) {
+    if (!KNOWN_TOP_LEVEL.has(key)) {
+      warn("OVERLAY_UNKNOWN_FIELD", `unknown field "${key}" is ignored by this build`, {
+        path: key,
+        params: { field: key }
+      });
+    }
+  }
+  const revision = Number.isInteger(doc.revision) && Number(doc.revision) >= 0 ? Number(doc.revision) : 0;
+  const patternsRaw = doc.patterns;
+  const add = [];
+  const disable = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  const perIntent = /* @__PURE__ */ new Map();
+  if (patternsRaw !== void 0 && (typeof patternsRaw !== "object" || patternsRaw === null || Array.isArray(patternsRaw))) {
+    error2("OVERLAY_NOT_OBJECT", "`patterns` must be an object with `add` and `disable`", { path: "patterns" });
+  } else {
+    const section = patternsRaw ?? {};
+    const rawAdd = section.add;
+    if (rawAdd !== void 0 && !Array.isArray(rawAdd)) {
+      error2("OVERLAY_NOT_OBJECT", "`patterns.add` must be an array", { path: "patterns.add" });
+    } else {
+      const list = rawAdd ?? [];
+      if (list.length > OVERLAY_LIMITS.counts.patternsAdd) {
+        error2(
+          "PATTERN_COUNT_EXCEEDED",
+          `${list.length} added patterns (limit ${OVERLAY_LIMITS.counts.patternsAdd})`,
+          { path: "patterns.add", params: { count: list.length, limit: OVERLAY_LIMITS.counts.patternsAdd } }
+        );
+      }
+      list.forEach((entry, index) => {
+        const at = `patterns.add[${index}]`;
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          error2("OVERLAY_NOT_OBJECT", "each added pattern must be an object", { path: at, row: index });
+          return;
+        }
+        const item = entry;
+        const intent = item.intent;
+        if (!INTENTS.includes(intent)) {
+          error2("INTENT_UNKNOWN", `unknown intent ${JSON.stringify(item.intent ?? null)}`, {
+            path: `${at}.intent`,
+            row: index,
+            field: "intent",
+            params: { intent: item.intent }
+          });
+          return;
+        }
+        const source = typeof item.source === "string" ? item.source : "";
+        const flags = typeof item.flags === "string" ? item.flags : "";
+        if (source.length === 0) {
+          error2("PATTERN_TOO_LONG", "a pattern source may not be empty", {
+            path: `${at}.source`,
+            row: index,
+            field: "source"
+          });
+          return;
+        }
+        const check2 = checkOverlayRegex(source, flags);
+        for (const problem of check2.problems) {
+          error2(problem.code, problem.message, {
+            path: `${at}.source`,
+            row: index,
+            field: "source",
+            params: problem.params
+          });
+        }
+        const id = typeof item.id === "string" && item.id.length > 0 ? item.id : userPatternId(intent, source, flags);
+        if (seenIds.has(id)) {
+          error2("PATTERN_DUPLICATE_ID", `duplicate pattern id ${id}`, {
+            path: `${at}.id`,
+            row: index,
+            field: "id",
+            params: { id }
+          });
+          return;
+        }
+        seenIds.add(id);
+        const count = (perIntent.get(intent) ?? 0) + 1;
+        perIntent.set(intent, count);
+        if (count > OVERLAY_LIMITS.counts.patternsAddPerIntent) {
+          error2(
+            "PATTERN_COUNT_EXCEEDED",
+            `intent ${intent} has ${count} added patterns (limit ${OVERLAY_LIMITS.counts.patternsAddPerIntent})`,
+            { path: at, row: index, params: { intent, count, limit: OVERLAY_LIMITS.counts.patternsAddPerIntent } }
+          );
+        }
+        const note2 = typeof item.note === "string" ? item.note : void 0;
+        if (note2 !== void 0) {
+          if (note2.length > OVERLAY_LIMITS.noteChars || CONTROL_CHARS.test(note2) || note2.includes("\n")) {
+            error2(
+              "WORD_INVALID",
+              `a note must be a single line of at most ${OVERLAY_LIMITS.noteChars} characters`,
+              { path: `${at}.note`, row: index, field: "note", params: { limit: OVERLAY_LIMITS.noteChars } }
+            );
+          }
+        }
+        if (opts.forWrite && BUILTIN_SOURCES.has(`${source}\0${flags}`)) {
+          warn("PATTERN_SHADOWED", "this regex is identical to a built-in pattern", {
+            path: `${at}.source`,
+            row: index,
+            field: "source"
+          });
+        }
+        add.push({
+          id,
+          intent,
+          source,
+          flags,
+          ...note2 === void 0 ? {} : { note: note2 },
+          ...typeof item.created_at === "string" ? { created_at: item.created_at } : {}
+        });
+      });
+    }
+    const rawDisable = section.disable;
+    if (rawDisable !== void 0 && !Array.isArray(rawDisable)) {
+      error2("OVERLAY_NOT_OBJECT", "`patterns.disable` must be an array of ids", { path: "patterns.disable" });
+    } else {
+      const list = rawDisable ?? [];
+      if (list.length > OVERLAY_LIMITS.counts.patternsDisable) {
+        error2(
+          "PATTERN_COUNT_EXCEEDED",
+          `${list.length} disabled ids (limit ${OVERLAY_LIMITS.counts.patternsDisable})`,
+          { path: "patterns.disable", params: { count: list.length, limit: OVERLAY_LIMITS.counts.patternsDisable } }
+        );
+      }
+      list.forEach((entry, index) => {
+        if (typeof entry !== "string" || entry.length === 0) {
+          error2("WORD_INVALID", "a disabled id must be a non-empty string", {
+            path: `patterns.disable[${index}]`,
+            row: index
+          });
+          return;
+        }
+        if (!BUILTIN_IDS.has(entry) && !seenIds.has(entry)) {
+          warn("DISABLE_ID_UNKNOWN", `no pattern with id ${entry} exists in this build's catalogue`, {
+            path: `patterns.disable[${index}]`,
+            row: index,
+            params: { id: entry }
+          });
+        }
+        disable.push(entry);
+      });
+    }
+  }
+  const words = emptyWords();
+  const wordsRaw = doc.words;
+  if (wordsRaw !== void 0 && (typeof wordsRaw !== "object" || wordsRaw === null || Array.isArray(wordsRaw))) {
+    error2("OVERLAY_NOT_OBJECT", "`words` must be an object", { path: "words" });
+  } else {
+    const section = wordsRaw ?? {};
+    for (const side of ["add", "disable"]) {
+      const sideRaw = section[side];
+      if (sideRaw === void 0) continue;
+      if (typeof sideRaw !== "object" || sideRaw === null || Array.isArray(sideRaw)) {
+        error2("OVERLAY_NOT_OBJECT", `\`words.${side}\` must be an object`, { path: `words.${side}` });
+        continue;
+      }
+      const limit = side === "add" ? OVERLAY_LIMITS.counts.wordsAddPerLexicon : OVERLAY_LIMITS.counts.wordsDisablePerLexicon;
+      for (const [lexicon, value] of Object.entries(sideRaw)) {
+        if (!LEXICONS.includes(lexicon)) {
+          error2("LEXICON_UNKNOWN", `unknown lexicon ${JSON.stringify(lexicon)}`, {
+            path: `words.${side}.${lexicon}`,
+            params: { lexicon }
+          });
+          continue;
+        }
+        if (!Array.isArray(value)) {
+          error2("OVERLAY_NOT_OBJECT", `\`words.${side}.${lexicon}\` must be an array`, {
+            path: `words.${side}.${lexicon}`
+          });
+          continue;
+        }
+        if (value.length > limit) {
+          error2("PATTERN_COUNT_EXCEEDED", `${value.length} words (limit ${limit})`, {
+            path: `words.${side}.${lexicon}`,
+            params: { count: value.length, limit }
+          });
+        }
+        value.forEach((word, index) => {
+          const at = `words.${side}.${lexicon}[${index}]`;
+          if (typeof word !== "string" || word.length === 0 || word.length > OVERLAY_LIMITS.counts.wordChars || /\s/.test(word) || CONTROL_CHARS.test(word)) {
+            error2(
+              "WORD_INVALID",
+              `a word must be 1-${OVERLAY_LIMITS.counts.wordChars} characters with no whitespace or control characters`,
+              { path: at, row: index, params: { word: typeof word === "string" ? word.slice(0, 40) : null } }
+            );
+            return;
+          }
+          words[side][lexicon].push(word);
+        });
+      }
+    }
+  }
+  const ok = !issues.some((issue2) => issue2.severity === "error");
+  return {
+    ok,
+    issues,
+    doc: ok ? {
+      schema: RECALL_GATE_OVERLAY_SCHEMA,
+      version: RECALL_GATE_OVERLAY_VERSION,
+      revision,
+      ...typeof doc.updated_at === "string" ? { updated_at: doc.updated_at } : {},
+      ...doc.updated_by && typeof doc.updated_by === "object" ? { updated_by: doc.updated_by } : {},
+      patterns: { add, disable },
+      words: { add: words.add, disable: words.disable }
+    } : null
+  };
+}
+function statKey(file) {
+  try {
+    const stat = fs12.statSync(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return "absent";
+  }
+}
+var cache = null;
+function overlaysDisabled() {
+  return process.env.MEMEX_DISABLE_OVERLAYS === "1";
+}
+function readRecallGateOverlayFile(file = recallGateOverlayPath()) {
+  let text;
+  try {
+    const stat = fs12.lstatSync(file);
+    if (stat.isSymbolicLink()) {
+      return { raw: null, bytes: 0, present: true, readError: "the overlay path is a symbolic link" };
+    }
+    text = fs12.readFileSync(file, "utf8");
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return { raw: null, bytes: 0, present: false, readError: null };
+    return { raw: null, bytes: 0, present: true, readError: err.message };
+  }
+  const bytes = Buffer.byteLength(text, "utf8");
+  try {
+    return { raw: JSON.parse(text), bytes, present: true, readError: null };
+  } catch (err) {
+    return { raw: null, bytes, present: true, readError: err.message };
+  }
+}
+function readValidateCompile(file) {
+  const { raw, bytes, present, readError } = readRecallGateOverlayFile(file);
+  if (!present) return EMPTY_OVERLAY;
+  if (readError !== null) {
+    return {
+      ...EMPTY_OVERLAY,
+      present: true,
+      words: emptyWords(),
+      issues: [
+        overlayIssue("error", "OVERLAY_UNREADABLE", `the overlay file could not be read: ${readError}`, {
+          params: { reason: readError }
+        })
+      ]
+    };
+  }
+  const result = validateRecallGateOverlayDoc(raw, { bytes });
+  if (!result.ok || !result.doc) {
+    return { ...EMPTY_OVERLAY, present: true, words: emptyWords(), issues: result.issues };
+  }
+  const doc = result.doc;
+  const quarantine = readQuarantine().filter((entry) => entry.overlay === "recall-gate");
+  const issues = [...result.issues];
+  const patterns = [];
+  const quarantined = [];
+  for (const pattern of doc.patterns?.add ?? []) {
+    const sha82 = patternSourceSha8(pattern.source, pattern.flags ?? "");
+    const row = quarantine.find(
+      (entry) => entry.pattern_id === pattern.id && entry.source_sha8 === sha82
+    );
+    if (row) {
+      issues.push(
+        overlayIssue(
+          "error",
+          "PATTERN_QUARANTINED",
+          `pattern ${pattern.id} exceeded the ${MATCH_WALL_MS} ms match budget and is NOT applied`,
+          { path: "patterns.add", params: { id: pattern.id, limitMs: MATCH_WALL_MS } }
+        )
+      );
+      quarantined.push(row);
+      continue;
+    }
+    patterns.push({
+      id: pattern.id,
+      intent: pattern.intent,
+      source: pattern.source,
+      flags: pattern.flags,
+      overlay: "recall-gate"
+    });
+  }
+  return {
+    present: true,
+    hash: recallGateOverlayHash(doc),
+    revision: doc.revision,
+    patterns,
+    disabled: doc.patterns?.disable ?? [],
+    words: {
+      add: doc.words?.add,
+      disable: doc.words?.disable
+    },
+    quarantined: quarantined.filter(Boolean),
+    issues,
+    doc
+  };
+}
+function loadRecallGateOverlay() {
+  if (overlaysDisabled()) return EMPTY_OVERLAY;
+  const file = recallGateOverlayPath();
+  const key = `${statKey(file)}|${statKey(overlayQuarantinePath())}|${quarantineMemoryGeneration()}`;
+  if (cache && cache.key === key) return cache.loaded;
+  const loaded = readValidateCompile(file);
+  cache = { key, loaded };
+  return loaded;
+}
+function toUserIntentHits(overlay, hits) {
+  const hasWords = LEXICONS.some(
+    (lexicon) => (overlay.words.add?.[lexicon]?.length ?? 0) > 0 || (overlay.words.disable?.[lexicon]?.length ?? 0) > 0
+  );
+  const hasIntents = Object.values(hits.intents).some((ids) => (ids?.length ?? 0) > 0);
+  if (!hasWords && !hasIntents && overlay.disabled.length === 0) return void 0;
+  return {
+    intents: hits.intents,
+    ...overlay.disabled.length > 0 ? { disabledPatterns: overlay.disabled } : {},
+    ...hasWords ? { words: { add: overlay.words.add, disable: overlay.words.disable } } : {}
+  };
+}
+
 // src/inject-core.ts
+init_overlay_matcher();
 function sampleTelemetry(db, input) {
   try {
     recordTelemetrySample(db, input);
@@ -27023,12 +28593,28 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const current = embeddingCallStats();
       return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
     };
-    const sampleEmbeddingMetrics = (path17, unavailable) => {
+    const sampleEmbeddingMetrics = (path18, unavailable) => {
       const { calls: calls2, hits } = embeddingMetrics();
-      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path17, unavailable } });
-      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path17 } });
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path18, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path18 } });
       return calls2;
     };
+    const gateOverlay = loadRecallGateOverlay();
+    let userPatternHits = EMPTY_USER_PATTERN_HITS;
+    if (gateOverlay.patterns.length > 0) {
+      const ownMatcher = options.matcher ? null : oneShotMatcher();
+      try {
+        userPatternHits = await (options.matcher ?? ownMatcher).match({
+          text: userPrompt,
+          patterns: gateOverlay.patterns,
+          overlay: "recall-gate",
+          surface: via
+        });
+      } finally {
+        ownMatcher?.dispose();
+      }
+    }
+    const userHits = toUserIntentHits(gateOverlay, userPatternHits);
     let embedding = null;
     let decision = decideRecall({
       prompt: userPrompt,
@@ -27048,7 +28634,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       incidentMatched: incidents.length > 0,
       residentRevisionStale: revisionCorrections.length > 0,
       hotEvidencePending: hot.length > 0,
-      config: options.gateConfig
+      config: options.gateConfig,
+      userHits
     });
     if (options.gate === false) {
       decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
@@ -27081,6 +28668,14 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
       }
     }
+    const overlaySuffix = gateOverlay.hash ? `@${gateOverlay.hash}` : "";
+    const workerSuffix = userPatternHits.unavailable ? "+overlay_unavailable" : userPatternHits.timedOut ? "+overlay_timeout" : "";
+    const overlayNote = gateOverlay.patterns.length === 0 && !gateOverlay.hash ? {} : {
+      ...gateOverlay.hash ? { gate_overlay: gateOverlay.hash } : {},
+      ...gateOverlay.patterns.length > 0 ? {
+        gate_overlay_worker: userPatternHits.timedOut && !userPatternHits.unavailable ? "timeout" : userPatternHits.unavailable ? "unavailable" : "ok"
+      } : {}
+    };
     if (decision.action === "skip") {
       noteSkippedPrompt(db, sessionId, decision.substantive, now);
       sampleTelemetry(db, {
@@ -27095,17 +28690,18 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         status: "skipped",
         project,
         prompt_len: userPrompt.length,
-        gate: `skip:${decision.skipReason}`,
+        gate: `skip:${decision.skipReason}${workerSuffix}${overlaySuffix}`,
         embedding_calls: calls2,
         duration_ms: Date.now() - t0,
         via,
-        ...daemonNote
+        ...daemonNote,
+        ...overlayNote
       });
       return "";
     }
     const needsVector = options.gate === false || decision.intents.memory || !(decision.intents.acknowledgement || decision.intents.continuation);
     if (needsVector && !embedding && !embeddingUnavailable) embedding = await embedOnce();
-    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}${workerSuffix}${overlaySuffix}`;
     sampleTelemetry(db, {
       metric: "retrieval_execute_count",
       value: 1,
@@ -27394,7 +28990,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
           projectMemoryRevision: currentProjectRevision,
           revisions: emittedRevisions,
           context: rendered.text,
-          markProjectRevision: !staleProjectMemory || correctionsComplete
+          markProjectRevision: !staleProjectMemory || correctionsComplete,
+          gateOverlayHash: gateOverlay.hash
         });
       } else if (staleProjectMemory && correctionsComplete && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
         throw new Error("project memory revision changed before injection commit");
@@ -27445,7 +29042,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         lexical_lane: lexicalLane,
         duration_ms: Date.now() - t0,
         via,
-        ...daemonNote
+        ...daemonNote,
+        ...overlayNote
       });
       if (dedupedCount > 0) {
         sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -27487,7 +29085,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       lexical_lane: lexicalLane,
       duration_ms: Date.now() - t0,
       via,
-      ...daemonNote
+      ...daemonNote,
+      ...overlayNote
     });
     return block;
   } catch (error2) {
@@ -27518,30 +29117,31 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
 }
 
 // src/inject-daemon.ts
+init_overlay_matcher();
 init_embeddings();
 init_plugin_root();
 var INJECT_DAEMON_PROTOCOL = 1;
 var INJECT_DAEMON_WARMING = "warming";
-var HERE2 = path12.dirname(fileURLToPath4(import.meta.url));
+var HERE2 = path13.dirname(fileURLToPath4(import.meta.url));
 function realpathOrSelf(target) {
   try {
-    return fs11.realpathSync(target);
+    return fs13.realpathSync(target);
   } catch {
-    return path12.resolve(target);
+    return path13.resolve(target);
   }
 }
 function injectDaemonExecutionRoot() {
-  return realpathOrSelf(path12.resolve(HERE2, ".."));
+  return realpathOrSelf(path13.resolve(HERE2, ".."));
 }
 function injectDaemonBuildId(root = injectDaemonExecutionRoot()) {
-  const bundle = path12.join(root, "dist", "mcp-server.js");
+  const bundle = path13.join(root, "dist", "mcp-server.js");
   try {
-    return `sha256:${createHash7("sha256").update(fs11.readFileSync(bundle)).digest("hex")}`;
+    return `sha256:${createHash8("sha256").update(fs13.readFileSync(bundle)).digest("hex")}`;
   } catch {
   }
-  for (const entry of [path12.join(root, "dist", "inject-daemon.js"), path12.join(root, "src", "inject-daemon.ts")]) {
+  for (const entry of [path13.join(root, "dist", "inject-daemon.js"), path13.join(root, "src", "inject-daemon.ts")]) {
     try {
-      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs11.statSync(entry).mtimeMs)}`;
+      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs13.statSync(entry).mtimeMs)}`;
     } catch {
     }
   }
@@ -27560,7 +29160,7 @@ function injectDaemonIdentityFor(root) {
     };
     identityCache.set(pluginRoot, code);
   }
-  return { ...code, dbPath: path12.resolve(getDbPath()) };
+  return { ...code, dbPath: path13.resolve(getDbPath()) };
 }
 function injectDaemonIdentity() {
   return injectDaemonIdentityFor(injectDaemonExecutionRoot());
@@ -27592,7 +29192,7 @@ function injectDaemonPolicy() {
   return { ...base, open: true, reason: `execution root is the installed root (${installedSource})` };
 }
 function injectSocketPath() {
-  return path12.join(getIndexDir(), "inject-daemon.sock");
+  return path13.join(getIndexDir(), "inject-daemon.sock");
 }
 function injectSocketPathLimitBytes() {
   return process.platform === "linux" ? 107 : 103;
@@ -27603,10 +29203,10 @@ function injectSocketPathTooLong(sockPath = injectSocketPath()) {
   return bytes > limit ? { bytes, limit } : null;
 }
 function injectDaemonLockPath() {
-  return path12.join(getIndexDir(), "inject-daemon.lock");
+  return path13.join(getIndexDir(), "inject-daemon.lock");
 }
 function injectDaemonCandidateDir() {
-  return path12.join(getIndexDir(), "inject-daemon.candidates");
+  return path13.join(getIndexDir(), "inject-daemon.candidates");
 }
 var INJECT_DAEMON_REQUEST_TIMEOUT_MS = 1e4;
 var PROBE_TIMEOUT_MS = 500;
@@ -27765,12 +29365,14 @@ function startInjectDaemon() {
   const self = {
     ...identity,
     pid: process.pid,
-    instanceId: randomUUID6(),
+    instanceId: randomUUID7(),
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   let retired = false;
   let owning = false;
   let warmState = "cold";
+  let matcher = null;
+  const sharedMatcher = () => matcher ??= persistentMatcher();
   const server2 = net.createServer((conn) => {
     let buf = "";
     conn.setTimeout(INJECT_DAEMON_REQUEST_TIMEOUT_MS, () => conn.destroy());
@@ -27840,7 +29442,8 @@ function startInjectDaemon() {
               // transaction rolls back and the fallback gets a clean run instead
               // of a `prepared` receipt and a fully deduped bundle.
               deliverable: () => conn.destroyed || conn.writableEnded ? "the hook disconnected before the context was ready" : null,
-              daemon: { version: current.version, buildId: current.buildId, pid: current.pid }
+              daemon: { version: current.version, buildId: current.buildId, pid: current.pid },
+              matcher: sharedMatcher()
             }
           );
           reply({ type: "ok", ...current, ok: true, context, receiptId });
@@ -27872,12 +29475,13 @@ function startInjectDaemon() {
     retired = true;
     disarmReacquire();
     owning = false;
+    disposeMatcher();
     try {
       server2.close();
     } catch {
     }
     try {
-      if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
+      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
@@ -27939,16 +29543,16 @@ function startInjectDaemon() {
     owning = true;
     disarmReacquire();
     try {
-      fs11.chmodSync(sockPath, 384);
+      fs13.chmodSync(sockPath, 384);
     } catch {
     }
     warmUp();
   };
-  const candidatePath = () => path12.join(injectDaemonCandidateDir(), `${process.pid}.json`);
+  const candidatePath = () => path13.join(injectDaemonCandidateDir(), `${process.pid}.json`);
   function publishCandidate() {
     try {
-      fs11.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
-      fs11.writeFileSync(
+      fs13.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
+      fs13.writeFileSync(
         candidatePath(),
         JSON.stringify({ ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt, reprobeMs: injectDaemonReacquireIntervalMs() })
       );
@@ -27957,7 +29561,16 @@ function startInjectDaemon() {
   }
   function dropCandidate() {
     try {
-      fs11.unlinkSync(candidatePath());
+      fs13.unlinkSync(candidatePath());
+    } catch {
+    }
+  }
+  function disposeMatcher() {
+    const handle = matcher;
+    matcher = null;
+    if (!handle) return;
+    try {
+      handle.dispose();
     } catch {
     }
   }
@@ -27967,6 +29580,7 @@ function startInjectDaemon() {
     releasedOwnership = true;
     cancelYieldWatch();
     dropCandidate();
+    disposeMatcher();
     if (!owning) return;
     owning = false;
     try {
@@ -27974,7 +29588,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
+      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
     } catch {
     }
     releaseLockIfOurs();
@@ -27982,7 +29596,7 @@ function startInjectDaemon() {
   const lockPayload = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
   function holdsOurLock() {
     try {
-      return fs11.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
+      return fs13.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
     } catch {
       return false;
     }
@@ -27990,7 +29604,7 @@ function startInjectDaemon() {
   function releaseLockIfOurs() {
     if (!holdsOurLock()) return;
     try {
-      fs11.unlinkSync(injectDaemonLockPath());
+      fs13.unlinkSync(injectDaemonLockPath());
     } catch {
     }
   }
@@ -28001,14 +29615,14 @@ function startInjectDaemon() {
     let held = false;
     for (let attempt = 0; attempt < 2 && !held; attempt++) {
       try {
-        const staging = `${lockPath}.${process.pid}.${randomUUID6()}.tmp`;
+        const staging = `${lockPath}.${process.pid}.${randomUUID7()}.tmp`;
         try {
-          fs11.writeFileSync(staging, mine);
-          fs11.linkSync(staging, lockPath);
+          fs13.writeFileSync(staging, mine);
+          fs13.linkSync(staging, lockPath);
           held = true;
         } finally {
           try {
-            fs11.unlinkSync(staging);
+            fs13.unlinkSync(staging);
           } catch {
           }
         }
@@ -28017,8 +29631,8 @@ function startInjectDaemon() {
         let text = null;
         let stamp = "";
         try {
-          text = fs11.readFileSync(lockPath, "utf8");
-          const stat = fs11.statSync(lockPath);
+          text = fs13.readFileSync(lockPath, "utf8");
+          const stat = fs13.statSync(lockPath);
           stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
@@ -28042,7 +29656,7 @@ function startInjectDaemon() {
           note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
-          fs11.unlinkSync(lockPath);
+          fs13.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -28056,7 +29670,7 @@ function startInjectDaemon() {
     } finally {
       if (holdsOurLock()) {
         try {
-          fs11.unlinkSync(lockPath);
+          fs13.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -28091,7 +29705,7 @@ function startInjectDaemon() {
       const probe = await probeInjectDaemon(sockPath);
       if (!probe.listening) {
         try {
-          fs11.unlinkSync(sockPath);
+          fs13.unlinkSync(sockPath);
         } catch {
         }
         note(`reclaiming the socket (${trigger}; ${probe.code ?? "absent"})`);
@@ -28117,7 +29731,7 @@ function startInjectDaemon() {
       if (reply?.type === "retired") {
         note(`took over from ${String(reply.version ?? "unknown")} at ${String(reply.pluginRoot ?? "?")} (pid ${String(reply.pid ?? "?")})`);
         try {
-          if (fs11.existsSync(sockPath)) fs11.unlinkSync(sockPath);
+          if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
         } catch {
         }
         bind();
@@ -28178,7 +29792,7 @@ function startInjectDaemon() {
   return server2;
 }
 
-// ../../../node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function L() {
   return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
 }
@@ -29655,7 +31269,7 @@ init_embeddings();
 
 // src/llm.ts
 init_paths();
-import path15 from "node:path";
+import path16 from "node:path";
 import os6 from "node:os";
 
 // src/llm-error-class.ts
@@ -29722,9 +31336,9 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs12 from "node:fs";
+import fs14 from "node:fs";
 import os5 from "node:os";
-import path13 from "node:path";
+import path14 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
 var CodexRequestRejectedError = class extends Error {
@@ -29985,7 +31599,7 @@ async function modelBudgetLimitError(kind, observed, limit) {
 function readOutputFile(filePath, maxOutputChars) {
   let stat;
   try {
-    stat = fs12.statSync(filePath);
+    stat = fs14.statSync(filePath);
   } catch {
     return { text: "", exceeded: false };
   }
@@ -29995,17 +31609,17 @@ function readOutputFile(filePath, maxOutputChars) {
     Math.max(1, charCap * 4 + 4)
   );
   const bytesToRead = Math.min(stat.size, byteCap + 1);
-  const fd = fs12.openSync(filePath, "r");
+  const fd = fs14.openSync(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const read = fs12.readSync(fd, buffer, 0, bytesToRead, 0);
+    const read = fs14.readSync(fd, buffer, 0, bytesToRead, 0);
     const text = buffer.subarray(0, read).toString("utf8").trim();
     return {
       text,
       exceeded: stat.size > byteCap || text.length > charCap
     };
   } finally {
-    fs12.closeSync(fd);
+    fs14.closeSync(fd);
   }
 }
 async function runCodex(opts = {}) {
@@ -30025,8 +31639,8 @@ async function runCodex(opts = {}) {
     model: opts.model,
     reasoningEffort: opts.reasoningEffort
   });
-  const workdir = fs12.mkdtempSync(path13.join(os5.tmpdir(), "memex-llm-"));
-  const outPath = path13.join(workdir, "last-message.txt");
+  const workdir = fs14.mkdtempSync(path14.join(os5.tmpdir(), "memex-llm-"));
+  const outPath = path14.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
   const observe = (token_usage) => {
@@ -30057,8 +31671,8 @@ async function runCodex(opts = {}) {
       1,
       Math.min(timeoutMs, remaining === null ? timeoutMs : remaining)
     );
-    const schemaPath = opts.outputSchema ? path13.join(workdir, "output-schema.json") : void 0;
-    if (schemaPath) fs12.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const schemaPath = opts.outputSchema ? path14.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs14.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
     const args = buildCodexExecArgs({
       model: selection.model,
       reasoningEffort: selection.reasoningEffort,
@@ -30114,7 +31728,7 @@ async function runCodex(opts = {}) {
     throw error2;
   } finally {
     try {
-      fs12.rmSync(workdir, { recursive: true, force: true });
+      fs14.rmSync(workdir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -30126,16 +31740,22 @@ init_model_settings();
 
 // src/ontology-admin.ts
 init_paths();
-import fs13 from "node:fs";
-import path14 from "node:path";
-function appendOntologyAudit(action, detail) {
+import fs15 from "node:fs";
+import path15 from "node:path";
+function appendUiAuditLine(action, detail) {
   try {
-    const dir = path14.join(getMemexHome(), "logs");
-    fs13.mkdirSync(dir, { recursive: true, mode: 448 });
-    const file = path14.join(dir, "ui-audit.jsonl");
-    const stat = fs13.existsSync(file) ? fs13.lstatSync(file) : null;
+    const dir = path15.join(getMemexHome(), "logs");
+    fs15.mkdirSync(dir, { recursive: true, mode: 448 });
+    const file = path15.join(dir, "ui-audit.jsonl");
+    const stat = fs15.existsSync(file) ? fs15.lstatSync(file) : null;
     if (stat?.isSymbolicLink()) return;
-    fs13.appendFileSync(
+    if (stat && stat.size > 1024 * 1024) {
+      try {
+        fs15.renameSync(file, `${file}.old`);
+      } catch {
+      }
+    }
+    fs15.appendFileSync(
       file,
       `${JSON.stringify({
         ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -30152,10 +31772,9 @@ function appendOntologyAudit(action, detail) {
   } catch {
   }
 }
-var appendUiAuditLine = appendOntologyAudit;
 
 // src/llm.ts
-var LLM_WORKDIR = path15.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
+var LLM_WORKDIR = path16.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
 function retryBudget() {
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
@@ -30577,8 +32196,8 @@ async function askAvatar(db, question, project, scope, identityScope) {
 }
 
 // src/mcp-server.ts
-import path16 from "path";
-import fs14 from "fs";
+import path17 from "path";
+import fs16 from "fs";
 init_paths();
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
@@ -31312,7 +32931,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path16.resolve(params.path);
+      const resolvedPath = path17.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -31320,16 +32939,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs14.realpathSync(resolvedFile);
+      const realFile = fs16.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs14.realpathSync(root);
+          return fs16.realpathSync(root);
         } catch {
-          return path16.resolve(root);
+          return path17.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path16.sep)
+        (root) => realFile === root || realFile.startsWith(root + path17.sep)
       );
       if (!isAllowed) {
         throw new Error(

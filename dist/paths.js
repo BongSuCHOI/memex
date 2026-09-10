@@ -86,6 +86,37 @@ export function getExcludeConfigPath() {
 export function getModelSettingsPath() {
     return path.join(getMemexHome(), "models.json");
 }
+export function overlayDir() {
+    const override = process.env.MEMEX_OVERLAY_DIR;
+    if (override)
+        return override;
+    return path.join(getMemexHome(), "overlays");
+}
+export function recallGateOverlayPath() {
+    return path.join(overlayDir(), "recall-gate.json");
+}
+export function extractionRulesOverlayPath() {
+    return path.join(overlayDir(), "extraction-rules.json");
+}
+export function overlayFilePath(overlay) {
+    return overlay === "recall-gate" ? recallGateOverlayPath() : extractionRulesOverlayPath();
+}
+export function overlayQuarantinePath() {
+    return path.join(overlayDir(), "quarantine.json");
+}
+export function overlayHistoryIndexPath() {
+    return path.join(overlayDir(), "history.jsonl");
+}
+export function overlaySnapshotDir(overlay) {
+    return path.join(overlayDir(), "history", overlay);
+}
+export function overlaySnapshotPath(overlay, revision) {
+    return path.join(overlaySnapshotDir(overlay), `${revision}.json`);
+}
+/** Write lock beside the overlay file itself (§1.5). */
+export function overlayLockPath(file) {
+    return `${file}.lock`;
+}
 /**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
