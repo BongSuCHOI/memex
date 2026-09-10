@@ -494,3 +494,19 @@ it("writes one metadata-only audit line per hold and per probe", async () => {
   // The probe's answer text is never logged.
   expect(JSON.stringify(probe)).not.toContain("MEMEX_OK");
 });
+
+it("memex jobs list reports the held job as waiting on a configuration", async () => {
+  const { runFactExtraction } = await import("../src/fact-extractor.js");
+  const { listMemoryJobs } = await import("../src/job-recovery.js");
+
+  await expect(runFactExtraction(db, "S1", "/tmp/p")).rejects.toThrow();
+
+  const held = listMemoryJobs(db, { kind: "fact_extract" }).find(
+    (job) => job.holdReason !== null,
+  );
+  expect(held).toBeDefined();
+  expect(held!.holdReason).toBe("model_config_rejected");
+  // Not dead and not in retry: the surface must not read as a failure.
+  expect(held!.state).toBe("pending");
+  expect(held!.attempts).toBe(0);
+});

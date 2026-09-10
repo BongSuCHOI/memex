@@ -881,6 +881,16 @@ async function main() {
                   `${row.state.padEnd(10)} ${row.kind.padEnd(14)} ${row.jobId}  attempts=${row.attempts}/${row.maxAttempts}  ${row.partitionKey}` +
                     (row.leaseExpired && row.state === "running" ? "  [lease expired]" : ""),
                 );
+                // #31: a held job is neither failed nor dead — say what it is
+                // waiting for, and what lifts it.
+                if (row.holdReason) {
+                  console.log(
+                    `    waiting on configuration: ${row.holdReason}` +
+                      (row.holdReason === "model_config_rejected"
+                        ? " — no attempt consumed; run: memex models show"
+                        : ""),
+                  );
+                }
                 if (row.lastError) console.log(`    last_error: ${row.lastError.slice(0, 160)}`);
               }
               console.log(`(${rows.length} job${rows.length === 1 ? "" : "s"}${state === "all" ? "" : `, state=${state}`})`);
