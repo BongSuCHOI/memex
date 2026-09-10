@@ -4,7 +4,7 @@
 
 ## 화면
 
-`/` 개요, `/conversations` 대화 원장, `/facts` 기억·사실, `/taxonomy` 분류, `/graph` WebGL/Canvas 지도, `/activity` Chronicle·작업·모델 시도·주입·로그·관리 실행, `/settings` 런타임·관리 작업·동기화·화면 설정·진단.
+`/` 개요, `/conversations` 대화 원장, `/facts` 기억·사실, `/taxonomy` 분류, `/graph` WebGL/Canvas 지도, `/activity` Chronicle·작업·모델 시도·주입·로그·관리 실행, `/settings` 런타임·관리 작업·동기화·화면 설정·진단·오버레이·모델([관리 탭 레지스트리](#관리-탭-레지스트리)).
 
 범위는 상단에서 명시적으로 선택하며 선택 순서는 **전체 프로젝트 (조회) → 공통 기억 → 프로젝트 목록**이고, 각 항목에 그 범위의 활성 기억 수를 함께 보여준다. 화면의 기본값은 **전체 프로젝트 (조회)** 다(0.6.1, #24). 프로젝트 범위는 공통 기억 포함 여부와 승격 상태(`promotion_state`)를 구분한다. 상세 패널과 검색에도 같은 범위를 적용한다.
 
@@ -56,6 +56,174 @@
 관리 › 관리 작업의 **기억 계층 이관** 카드는 `memex facts migrate-tiers --dry-run` 출력을 그대로
 보여주고, 미리보기를 실행한 뒤에만 `--apply` 버튼이 열린다. 두 실행 모두 기존 관리 명령 경로
 (`lib/operations.cjs` allowlist · 확인 모달 · 감사 로그)를 그대로 쓴다.
+
+## 언어 (0.7.0 #109)
+
+화면의 **기본 언어는 영어**다. 사전이 붙은 언어는 `en`·`ko` 둘이고, 한 요청의 언어는 다음 순서로
+정해진다.
+
+```text
+주소의 ?lang=en|ko
+→ 이 브라우저에 저장된 선택          (localStorage 키 `memex.workspace.language`)
+→ 서버 기본값                        (memex-ui --lang / MEMEX_UI_LANG → <html data-lang> · <meta name="memex-ui-lang">)
+→ en
+```
+
+- `navigator.language`는 **보지 않는다.** 브라우저 로캘을 따라가면 같은 링크가 사람마다 다른 화면이
+  되고, 화면 설정에서 고른 값과 조용히 어긋난다.
+- 서버는 **HTML만 치환한다.** `--lang`/`MEMEX_UI_LANG`은 `<html lang data-lang>`과
+  `<meta name="memex-ui-lang">`에 실리고, 클라이언트가 그 값을 3순위로 읽는다. API 응답에는 언어가
+  실리지 않는다(번역은 전부 클라이언트가 한다).
+- `?lang`은 **저장하지 않는다.** 대신 내부 링크에 그대로 전파되므로 그 탭 안에서는 유지되고, 새로
+  열면 사라진다. 화면 설정에 `주소의 ?lang 적용 중` 태그가 떠서 선택 상자와 화면이 달라 보이는
+  이유를 말한다.
+- 서버 기본값은 **플래그가 환경 변수를 이기고**, `en`/`ko`로 정규화되지 않는 값(`--lang fr`)은
+  기동 실패다 — `PORT` 검증과 같은 방식이다. `ko-KR`·`KO`·`en_US`처럼 앞 서브태그만 맞으면 받는다.
+- 전환 지점은 둘뿐이고 **둘 다 이 브라우저에 저장한다**: 상단 `EN`/`KO` 버튼(지금 **활성인** 언어를
+  표시한다)과 관리 › 화면 설정의 **표시 언어** 선택. 둘 다 저장 버튼을 기다리지 않고 즉시 적용하며,
+  `?lang`을 주소에서 떼고 화면을 **다시 불러온다**(부분 재렌더는 하지 않는다).
+- 언어 선택 상자의 라벨은 번역하지 않는다 — `English` / `한국어`(endonym)로 고정이다.
+
+`docs/`의 owner 문서는 **한국어만** 있고 영문판이 없다. 앵커를 언어별로 가르면 바로 드리프트하거나
+404가 되므로 영어 화면도 **같은 문서의 같은 앵커**로 보낸다. 문서 앵커는
+`ui/public/i18n/doc-anchors.mjs` 하나가 들고 있고(사전 값에 `docs/`가 들어가면 게이트가 실패한다),
+`ui/test/help.test.cjs`가 그 앵커가 실제 헤딩으로 존재하는지 검사한다.
+
+**`prefs.korean` → `prefs.preferTranslatedFacts`** (0.7.0 #109). 기억 본문의 저장된 한국어 번역
+(`fact_kr`)을 우선 표시하는 설정이고 **화면 언어와 다른 축**이다. 기본값은 해석된 화면 언어를
+따르지만(`ko`면 켜짐) 사용자가 명시적으로 바꾸면 그 값이 이긴다. 0.6.x가 저장해 둔 `korean` 키는
+새 키가 없을 때 한 번 읽어 이어받는다. 이 설정은 번역을 **새로 만들지 않는다**([FACT-LIFECYCLE.md
+§10](FACT-LIFECYCLE.md#10-kr-translation)).
+
+스크린샷은 0.7.0부터 언어별로 둔다 — `assets/readme/en/`은 `README.md`, `assets/readme/ko/`는
+`README-KR.md`가 쓴다. 같은 화면을 두 언어로 찍는 것은 e2e 레인의 산출물이다.
+
+## 메시지 키 규약 (0.7.0 #109)
+
+서버는 **영어 한 줄과 번역 키를 같이** 보낸다. 실패 분류는 한국어 산문이 아니라 `code`로 한다.
+
+```json
+{ "error": { "code": "TIER_STEP", "key": "error.tier.oneRungOnly",
+             "params": { "min": 1, "max": 20 },
+             "message": "A memory moves one rung at a time.",
+             "details": { "issues": [{ "field": "model", "key": "models.error.nothingToSave" }] } } }
+```
+
+| 필드 | 규약 |
+| --- | --- |
+| `code` | 기계 판별용 안정 코드. 항상 있고 기본값은 `INTERNAL_ERROR`. **기존 코드는 바꾸지 않는다** |
+| `key` | i18n 키, 또는 **`null` = 코어·런타임 원문 패스스루**. `key===null`이 "번역 누락이 아니라 상류 원문"이라는 유일한 신호다 |
+| `params` | `key` 보간 값. 없으면 **필드 자체가 빠진다**. 유한한 수·boolean·null은 타입을 보존한다(복수형 선택과 숫자 포맷이 흔들리지 않게) |
+| `message` | **영어 한 줄, 필수.** 로그·curl·비브라우저 호출자용이며 서버가 만든다 |
+| `details` | 선택. 허용 형태는 `{issues:[…]}` 하나. 행별 폼 오류용이고 경계에서 200행·필드 화이트리스트(`row`/`field`/`path`/`key`/`params`/`message`/`severity`)로 모양을 고정한다. 없으면 필드가 빠진다 |
+
+키 이름은 `error.<영역>.<조건>`이고 `errors` 네임스페이스가 소유한다(`error.db.indexMissing`,
+`error.security.csrfMissing`, `error.validate.rangeExceeded`, `error.tier.oneRungOnly` …).
+**서버는 `key`를 검증하지 않는다** — 사전 조회를 하지 않으므로 `ui/lib`이 `ui/public`에 의존하지
+않는다. 그 대신 `node scripts/i18n-extract.mjs --keys`가 소스에서 키를 수확해 양쪽 사전과 대조한다.
+
+성공(HTTP 200) 본문의 산문도 같은 원칙을 쓴다: 서버가 문장 대신 `<field>Key`(+ `<field>Params`)를
+보내고 클라이언트가 번역하며, 사용자·코어가 만든 실제 값이 있으면 그것이 이긴다.
+
+하위 호환은 두 겹이다. 모든 봉투가 여전히 영어 `message`를 들고 있어 비브라우저 호출자는 바꿀 것이
+없고, 위치 인자 생성자(`new HttpError(404, 'Not found', 'NOT_FOUND')`)도 어댑터가 흡수해
+`{code:'NOT_FOUND', key:null, message:'Not found'}`로 직렬화된다.
+
+사전은 `ui/public/i18n/<ns>/{en,ko}.mjs`의 **13개 네임스페이스**(`common` `shell` `ui` `badge`
+`errors` `pages` `activity` `details` `settings` `help` `guidance` `overlays` `models`)이고 키는
+평평한 점 표기다. 네임스페이스 사이에 **같은 키가 두 번 나오면 적재 시점에 예외**가 된다.
+조회는 `t` / `tHtml`(마크업은 신뢰하고 보간 값은 이스케이프) / `tn`(복수형)이며 보간은 `{name}`이다.
+**누락 키는 en으로 폴백하지 않는다** — 키 문자열을 그대로 화면에 내보내고 `console.error`를 키마다
+한 번 찍는다. en 폴백을 두면 "영어 누출 0" 게이트가 통과해 버려 회귀가 숨는다.
+
+## 관리 탭 레지스트리
+
+관리 화면의 탭 순서·id·라벨 키는 `ui/public/pages/settings-tabs.mjs`가 **유일한 진원지**다.
+기존 id 5개는 개명하지 않았고 alias도 URL 정규화도 없다 — `?tab=actions`·`?tab=interface`가 예전처럼
+동작한다. 기능 레인은 **자기 항목의 `enabled`·`render` 두 필드만** 바꾼다(항목을 추가하면 중복
+탭이 된다).
+
+| id | 라벨 (en / ko) | 0.7.0 |
+| --- | --- | --- |
+| `runtime` | Runtime / 런타임 | 기본 탭 |
+| `actions` | Admin actions / 관리 작업 | |
+| `sync` | Sync / 동기화 | |
+| `interface` | Display / 화면 설정 | **표시 언어** 추가(#109) |
+| `diagnostics` | Diagnostics / 진단 | |
+| `overlays` | Overlays / 오버레이 | **신규**(#29 #30) |
+| `models` | Models / 모델 | **신규**(#31) |
+
+`?tab=`에 모르는 값이나 꺼진 탭을 주면 `runtime`으로 떨어진다. 사전 키만 있고 화면이 없는 탭은
+노출하지 않는다.
+
+## 관리 › 오버레이 (0.7.0 #29 #30)
+
+하위 내비 `?overlay=gate|rules`가 두 질문을 가른다 — **무엇을 다시 꺼내오는가**(회수 게이트)와
+**무엇을 저장하지 않는가**(추출 규칙). 단일 출처는
+[GUIDE §22](GUIDE.md#22-사용자-오버레이--회수-게이트와-추출-규칙-070-29-30)이고, 이 절은 화면 표현만
+적는다.
+
+화면을 정한 결정 세 가지.
+
+- **실패 방향이 두 오버레이에서 반대다.** 게이트가 깨지면 내장 규칙으로 계속 가므로(fail-safe)
+  배너는 **경고**다. 추출 규칙이 깨지면 아무것도 저장되지 않으므로(fail-closed) 배너는 **오류**이고
+  대기 작업 수가 headline이다.
+- **격리는 "내 규칙이 조용히 꺼진 상태"다.** 실행 상한을 넘긴 패턴을 표에 남기고 배너로 말하고
+  다시 시도 버튼을 준다 — 사라지게 두지 않는다.
+- **dry-run은 아무것도 기록하지 않는다.** 프롬프트 테스트와 영향 시뮬레이션은 모델을 부르지 않고
+  감사·히스토리 어디에도 쓰지 않으며, 화면이 그 사실을 캡션으로 말한다.
+
+회수 게이트 화면: **적용 중인 규칙**(해시·revision·패턴 수), **의도별 패턴**(내장 · 사용자 ·
+비활성 · 격리를 한 표에 상태 배지로), **사용자 패턴 추가**, **어휘**(확인 · 이어하기 · 간투사),
+**이 프롬프트로 테스트**, 격리 목록, 변경 이력.
+
+추출 규칙 화면: **이 규칙이 건드리는 것과 못 건드리는 것**, **규칙 편집기**(선호 언어 · 저장 금지
+패턴 · 결정으로 우대할 패턴 · 제외 주제), **제약 절 미리보기**(프롬프트에 실제로 덧붙는 텍스트),
+**영향 시뮬레이션**, **추출이 이 규칙 때문에 대기 중입니다**, **다른 규칙으로 추출된 것**(드리프트 →
+`memex extract rules reextract --dry-run`), 격리 목록, 변경 이력.
+
+시뮬레이션은 이미 저장된 기억과 최근 교환에 금지 패턴을 추출기와 **같은 시간 상자 matcher로** 돌려
+무엇이 차단될지 미리 보여 준다. 두 가지를 반드시 함께 말한다: **이미 저장된 기억은 바뀌지 않는다**
+(금지 규칙은 앞으로 쓰이는 것에 적용된다), 그리고 **로컬에서 판정할 수 없는 규칙은 숫자를 지어내지
+않는다** — 제외 주제·결정 힌트·선호 언어는 모델에게 주는 지시이고 효과는 모델 평가로만 확인된다.
+검사를 끝내지 못하면 "무엇이 차단될지 단정하지 않는다"고 적는다.
+
+`/api/v2/overlays`:
+
+| 메서드 | 동작 |
+| --- | --- |
+| `GET` | `status` — 두 오버레이의 적용 상태, 내장+사용자 패턴, 어휘, 격리, 이력, 대기 작업 수 |
+| `POST` | `{action, …}`. 읽기 action `validate`·`test`·`simulate`는 **`confirm`을 요구하지 않고 감사 줄도 남기지 않는다**(dry-run은 어떤 기록에도 쓰지 않는다는 계약). 쓰기 action `patch`·`set`·`reset`·`rollback`·`quarantine-clear`는 `confirm: true`가 필수이고, 관리 명령이 실행 중이면 409로 거절하며 성공·실패 모두 감사 1줄을 남긴다 |
+
+CLI와 같은 코어 경로를 쓰므로 `revision` CAS(`OVERLAY_STALE`)·쓰기 lock(`OVERLAY_LOCKED`)·rollback
+스냅숏·`overlays/history.jsonl` 한 줄이 모두 동일하게 적용된다. 422는 `details.issues`로 행별
+사유를 실어 편집기 안에 표시한다.
+
+## 관리 › 모델 (0.7.0 #31)
+
+단일 출처는 [GUIDE §21](GUIDE.md#21-모델-선택-070-31)이다.
+
+화면은 위에서부터 **설정 대기 배너**(활성 HOLD가 있을 때만, provider 원문을 그대로 보여 주고
+"실패로 기록된 작업도, 소모된 시도도 없다"를 명시한다) → **설정을 기다리는 작업** 표(대기 사유 ·
+작업 수 · 보류 시작) → **기억을 만드는 모델(LLM)** 카드 → **검색을 만드는 모델(임베딩)** 카드
+순서다.
+
+LLM 카드의 조작은 모델 선택 상자(카탈로그 목록), 직접 입력 칸, 추론 강도 선택 상자(첫 항목은
+"플래그를 보내지 않음"), 그리고 **저장** · **이 모델로 1회 테스트** · **기본값으로 되돌리기** 세
+버튼이다. 해당 값이 환경 변수에서 오면 그 컨트롤을 **비활성화**하고 배지로 이유를 말한다(둘 다
+환경 변수면 저장 버튼도 잠그고, 바꿀 곳은 셸 프로필·런치 에이전트·Memex를 띄운 훅이라고 적는다).
+임베딩 카드는 **읽기 전용**이고 0.7.1에서 변경을 제공한다고 밝힌다.
+
+`/api/v2/models`: `GET`이 상태를, `POST`가 `{action: 'status'|'set-llm'|'test'|'reset', confirm:true}`를
+받는다. 한 번에 하나만 허용하고(`MODELS_BUSY` 409) 기억 변경·동기화와도 배타적이며
+(`MUTATION_BUSY` 409), 모델 id·추론 강도 거절은 422 + `details.issues`다. 테스트 버튼은 인덱스 DB가
+없으면 503(`DB_INDEX_MISSING`)으로 거절한다 — CLI `memex models test`는 반대로 DB를 만든다.
+
+`environment.models` / `environment.overlays` capability가 없으면(코어가 빌드되지 않은 설치) 탭은
+**남기고** 화면이 이유를 배너로 설명한다. "탭이 사라졌다"보다 "왜 못 쓰는지"가 고칠 수 있는 화면이다.
+
+⚠️ 개요의 "확인이 필요한 상태" 카드와 활동 › 추적의 처리 작업 표는 아직 `hold_reason`을 표시하지
+않는다. Web UI에서 설정 대기를 볼 수 있는 곳은 이 두 탭이다.
 
 ## 동기화 탭 (0.6.1 · 0.6.3 #48)
 
@@ -187,6 +355,8 @@ committed generation의 다섯 파일(`meta.json` + 4개 JSONL)이 그대로 들
 **단일 출처**로 삼는다. `public/guidance.mjs`는 거기서 파생한 UI 표현이고, 코어의 `last_error` ·
 `error_class` · skip 사유 · 상태 줄을 실패 클래스로 옮긴 뒤 클래스마다
 **원인 · 영향 · 다음 행동 · 액션 · 무시 가능 여부**를 보여준다(0.6.1 #23).
+0.7.0부터 분류 기준은 한국어 산문이 아니라 봉투의 `code`다([메시지 키 규약](#메시지-키-규약-070-109)) —
+영어 화면에서도 같은 실패가 같은 클래스로 떨어져야 하기 때문이다.
 
 - 개요의 "확인이 필요한 상태" 카드는 파이프라인 상태를 클래스별로 묶는다. 수집되지 않은 값은 0으로
   세지 않고, 0인 클래스는 카드를 만들지 않는다.
@@ -210,6 +380,11 @@ MEMEX_PLUGIN_ROOT="$PWD" node ui/server.cjs
 ```
 
 `http://127.0.0.1:3847`. `PORT`로 포트 변경. 별도 프런트엔드 빌드는 없다. 사용자 홈/DB 환경 변수는 기존 값을 상속한다.
+
+서버 기본 언어는 `--lang en|ko`(또는 `--lang=ko`)와 `MEMEX_UI_LANG`으로 정하고 **플래그가 환경
+변수를 이긴다**. 알 수 없는 값은 `[memex-ui] --lang must be one of en, ko`로 **기동에 실패**한다.
+기동 배너에 `Language:` 줄이 있다. 브라우저에 저장된 선택과 `?lang`이 이 기본값보다 우선한다
+([언어](#언어-070-109)).
 
 `MEMEX_HOME`이 없고 `MEMEX_DB_PATH`만 있으면 home을 그 DB 경로에서 유도하고, 감사 로그(`logs/ui-audit.jsonl`)와 관리 실행 메타데이터(`ui/operations.json`)를 그 home 아래에 쓴다. 정확한 우선순위는 [`ui/README.md`](../ui/README.md)에 있다.
 
@@ -259,3 +434,12 @@ privacy purge 뒤에는 재분류 때문에 다시 대기로 보일 수 있다. 
 새 UI의 API namespace는 `/api/v2/`. `/bootstrap`에서 CSRF 토큰·코어 정보·스키마 가용성을 조회한다. DB가 없을 때는 실제 부재 상태를 표시한다. 없음/빈 결과/오류를 구분한다. 일부 기존 URL 별칭만 유지하므로 외부 비공개 API 소비자의 전체 호환은 별도 점검한다.
 
 `node --test ui/test/*.test.cjs`로 fixture/HTTP/서비스 호출 계약을 점검한다. 실제 embedding/core 트랜잭션과 브라우저 GPU는 별도로 종단 검증해야 한다.
+
+0.7.0의 새 스위트: `ui/test/i18n.test.cjs`(사전·해석기·탭 레지스트리), `i18n-errors.test.cjs`
+(오류 봉투), `i18n-pages.test.cjs`(en/ko 렌더), `models.test.cjs`, `overlays.test.cjs`.
+사전 게이트 두 줄은 테스트 밖에서도 돌려야 한다 — [VERIFICATION.md §2](VERIFICATION.md#2-기본-gate).
+
+```bash
+node scripts/i18n-extract.mjs --lint    # ko 사전 밖의 한글 리터럴 0건이어야 한다
+node scripts/i18n-extract.mjs --keys    # t()/tHtml()/tn()/HttpError key ↔ 두 사전 대조
+```
