@@ -51,7 +51,7 @@ describe('Continuity lifecycle hooks contract', () => {
         expect(extra).toHaveLength(1);
         expect(extra[0].command).toContain('memex-hook-sync-export');
         expect(extra[0].async).toBeUndefined();
-        expect(extra[0].timeout).toBe(10);
+        expect(extra[0].timeout).toBe(3);
       } else {
         expect(extra).toHaveLength(0);
       }
@@ -65,6 +65,6 @@ describe('Continuity lifecycle hooks contract', () => {
     // The legacy chain ran extraction/consolidation/export in the foreground.
     // The export is a separate timed entry gated on the sync switch (#110).
     expect(entries[1].async).toBeUndefined();
-    expect(entries[1].timeout).toBe(10);
+    expect(entries[1].timeout).toBe(3);
   });
 });

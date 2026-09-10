@@ -63,9 +63,10 @@ export const LIFECYCLE_COMMANDS = {
     // last export, so the common case costs one process that exits immediately.
     SessionEnd: [
         { script: "scripts/continuity-hook.js", timeout: 3 },
-        // #110: a synchronous timed entry — Codex runs SessionEnd hooks synchronously
-        // regardless and warned on every session end when this was `async`.
-        { script: "scripts/sync-export-hook.js", timeout: 10 },
+        // #110/#112: a synchronous timed entry — Codex runs SessionEnd hooks synchronously
+        // regardless (warned when this was `async`) and clamps SessionEnd timeouts to 3 s
+        // (warned when this said 10).
+        { script: "scripts/sync-export-hook.js", timeout: 3 },
     ],
 };
 /** Hook scripts that must be registered for cross-device sync to work at all. */
