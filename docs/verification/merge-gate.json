@@ -205,7 +205,7 @@
       "durationSeconds": 0,
       "logPath": "/private/tmp/memex-0.7.0-gates/pack-dry-run.log",
       "logSha256": "e24e4cb8101687936dc26326e03b6635a02dc0837fecd3ffe64ed0fbdcd12c1b",
-      "observed": "398 files; archived receipts and benchmark-pre-0.7.0.json excluded by the files negation? — see note."
+      "observed": "398 files; archived receipts (merge-gate-pre-*.json, benchmark-pre-0.7.0.json) are excluded by the package files negation."
     },
     {
       "name": "real-root-compare",
