@@ -68,6 +68,58 @@ test('같은 버전으로 동시에 들어온 승격 두 개는 한 칸만 움�
  assert.deepEqual(moves,[{from:'workstream',to:'project'}]);
  assert.equal(tier,'project');assert.equal(x.c.busy.size,0);
 }finally{x.clean();}});
+test('서로 다른 기억의 변경이 겹쳐도 코어 경로 고정이 풀리지 않는다 (#96)',async()=>{
+ const x=setup();const saved={home:process.env.MEMEX_HOME,db:process.env.MEMEX_DB_PATH};
+ // 잠금은 fact ID별이므로 서로 다른 두 기억의 변경은 실제로 겹친다. 겹치는 동안에도 두 코어 호출이
+ // 모두 이 서버의 home을 봐야 하고(#78), 끝난 뒤에는 상속한 환경이 그대로 남아야 한다.
+ try{
+  process.env.MEMEX_HOME='/original/home';process.env.MEMEX_DB_PATH='/original/home/conversation-index/db.sqlite';
+  const gate=new Map();const seen=[];
+  x.c.modules.get('fact-management').deactivateFactTransactional=(db,id)=>new Promise(resolve=>{
+   gate.set(id,()=>{seen.push([id,process.env.MEMEX_HOME,process.env.MEMEX_DB_PATH]);resolve({deactivated:true});});
+  });
+  const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));};
+  const a=x.c.mutate({id:uid(1),action:'deactivate'},x.scope);
+  await settle();assert(gate.has(uid(1)),'첫 변경이 코어 호출까지 가지 못했습니다');
+  const b=x.c.mutate({id:uid(2),action:'deactivate'},x.scope);
+  await settle();assert(gate.has(uid(2)),'두 번째 변경이 코어 호출까지 가지 못했습니다');
+  assert.equal(x.c.busy.size,2,'서로 다른 두 기억의 변경이 겹치지 않았습니다');
+  gate.get(uid(1))();await a;  // A가 먼저 끝난다 — B는 아직 코어 안이다.
+  assert.equal(process.env.MEMEX_HOME,x.c.home,'먼저 끝난 변경이 아직 실행 중인 변경의 home을 되돌렸습니다');
+  assert.equal(process.env.MEMEX_DB_PATH,x.c.dbPath,'먼저 끝난 변경이 아직 실행 중인 변경의 DB 경로를 되돌렸습니다');
+  gate.get(uid(2))();await b;
+  assert.equal(seen.length,2);
+  for(const [id,home,db] of seen){
+   assert.equal(home,x.c.home,id+' 의 코어 호출이 고정된 home을 보지 못했습니다');
+   assert.equal(db,x.c.dbPath,id+' 의 코어 호출이 고정된 DB 경로를 보지 못했습니다');
+  }
+  // 마지막으로 빠져나간 호출만 되돌리므로 UI의 home이 프로세스에 남지 않는다.
+  assert.equal(process.env.MEMEX_HOME,'/original/home');
+  assert.equal(process.env.MEMEX_DB_PATH,'/original/home/conversation-index/db.sqlite');
+  assert.equal(x.c.busy.size,0);assert.equal(x.c.pinDepth,0);
+  // 원래 정의되지 않았던 변수는 변경 뒤에도 정의되지 않는다.
+  delete process.env.MEMEX_HOME;delete process.env.MEMEX_DB_PATH;
+  const c=x.c.mutate({id:uid(3),action:'deactivate'},x.scope);
+  await settle();gate.get(uid(3))();await c;
+  assert.equal('MEMEX_HOME' in process.env,false);
+  assert.equal('MEMEX_DB_PATH' in process.env,false);
+ }finally{
+  for(const [k,v] of [['MEMEX_HOME',saved.home],['MEMEX_DB_PATH',saved.db]]){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+  x.clean();
+ }
+});
+test('동기화가 진행 중이면 기억 변경과 계층 이동을 409로 거절한다 (#96)',async()=>{
+ const x=setup();
+ try{
+  x.c.syncBusy=true;
+  await assert.rejects(x.c.mutate({id:uid(1),action:'deactivate'},x.scope),{status:409,code:'SYNC_BUSY'});
+  await assert.rejects(x.c.tier({id:uid(1),action:'promote'},x.scope),{status:409,code:'SYNC_BUSY'});
+  assert.equal(x.calls.length,0,'동기화 중에 코어 쓰기를 열었습니다');
+  x.c.syncBusy=false;
+  await x.c.mutate({id:uid(1),action:'deactivate'},x.scope);
+  assert(x.calls.some(c=>c[0]==='deactivate'));
+ }finally{x.clean();}
+});
 function syncSetup(){
  const x=setup();const calls=[];
  x.c.modules.set('sync-control',{

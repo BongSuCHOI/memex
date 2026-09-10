@@ -2,6 +2,22 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.6 - unreleased
+
+### Web UI
+
+- `Core.pinned()` is now reentrant, so overlapping core calls no longer unpin
+  each other's `MEMEX_HOME` / `MEMEX_DB_PATH`. The mutation lock is per fact ID,
+  so two changes to different memories really do overlap: the old per-call
+  save/restore let the one that finished first put the inherited environment
+  back while the other was still inside the core — that call's
+  `logs/ui-audit.jsonl` line went to the default data root instead of this
+  server's home, breaking the #78 contract — and then let the last one out leave
+  the UI's own home in the process environment permanently. Only the outermost
+  call saves and sets, only the last one out restores. A tier move or memory
+  change is also refused with 409 `SYNC_BUSY` while a sync is running, mirroring
+  the refusal `sync` already gives a mutation. (#96)
+
 ## 0.6.5 - 2026-09-10
 
 Hotfix for the embedding-model cache location (#92), found while validating

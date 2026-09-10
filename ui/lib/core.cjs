@@ -15,6 +15,8 @@ class Core {
     this.home=options.home||process.env.MEMEX_HOME||(pointedDb?homeForDb(path.resolve(pointedDb)):path.join(process.env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config'),'memex'));
     this.dbPath=pointedDb||path.join(this.home,'conversation-index','db.sqlite');
     this.version=null;this.db=null;this.modules=new Map();this.lastConnect=0;this.error=null;this.busy=new Set();
+    // pinned() 중첩 깊이와 가장 바깥 호출이 저장한 환경 (#96).
+    this.pinDepth=0;this.pinSaved=null;
     try{this.version=JSON.parse(fs.readFileSync(path.join(this.root,'package.json'),'utf8')).version;}catch{}
   }
   async module(name){
@@ -73,12 +75,28 @@ class Core {
    * 환경 저장·설정은 **첫 `await` 이전에** 동기적으로 끝난다(#76). 호출자가 잠금을 잡은 직후 이
    * 함수를 부르면 검사와 설정 사이에 양보 지점이 없으므로, 두 번째 요청이 끼어들어 남의 환경을
    * 저장하거나 복원하는 일이 없다.
+   *
+   * #96 — 겹침은 **깊이 카운터**로 견딘다. 변경 잠금은 fact ID별(`busy`)이므로 서로 다른 기억의
+   * 변경 둘은 실제로 겹치는데, 호출마다 저장·복원하면 (1) 나중 호출이 이미 고정된 값을 "원래 값"으로
+   * 저장하고 (2) 먼저 끝난 호출이 아직 실행 중인 호출의 환경을 되돌려 코어가 기본 데이터 루트에
+   * 기록하고 (3) 마지막 호출이 이 UI의 home을 프로세스에 영구히 남겼다. `this.home`/`this.dbPath`는
+   * 인스턴스 수명 동안 불변이므로 중첩 호출이 요구하는 값은 늘 같다 — 가장 바깥(깊이 0→1) 호출만
+   * 저장·설정하고 마지막으로 빠져나가는(1→0) 호출만 되돌리면 충분하다.
    */
   async pinned(fn){
-    const saved={MEMEX_HOME:process.env.MEMEX_HOME,MEMEX_DB_PATH:process.env.MEMEX_DB_PATH};
-    process.env.MEMEX_HOME=this.home;process.env.MEMEX_DB_PATH=this.dbPath;
+    if(this.pinDepth===0){
+      this.pinSaved={MEMEX_HOME:process.env.MEMEX_HOME,MEMEX_DB_PATH:process.env.MEMEX_DB_PATH};
+      process.env.MEMEX_HOME=this.home;process.env.MEMEX_DB_PATH=this.dbPath;
+    }
+    this.pinDepth++;
     try{return await fn();}
-    finally{for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
+    finally{
+      this.pinDepth--;
+      if(this.pinDepth===0){
+        const saved=this.pinSaved;this.pinSaved=null;
+        for(const [k,v] of Object.entries(saved)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+      }
+    }
   }
   /**
    * Cross-device sync through dist/sync-control.js (#48).
@@ -164,6 +182,8 @@ class Core {
     const id=identifier(body.id);const action=body.action;
     if(!['promote','demote'].includes(action))throw new HttpError(400,'지원하지 않는 계층 이동입니다.');
     if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
+    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 진행 중입니다. 완료 후 실행하세요.','SYNC_BUSY');
     this.busy.add(id);let writer;
     try{
       return await this.pinned(async()=>{
@@ -197,6 +217,8 @@ class Core {
     const id=identifier(body.id);const action=body.action;
     if(!['edit','deactivate','restore','delete'].includes(action))throw new HttpError(400,'지원하지 않는 기억 변경 작업입니다.');
     if(this.busy.has(id))throw new HttpError(409,'이 기억에 대한 변경이 이미 진행 중입니다.','MUTATION_BUSY');
+    // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
+    if(this.syncBusy)throw new HttpError(409,'동기화 작업이 진행 중입니다. 완료 후 실행하세요.','SYNC_BUSY');
     const store=await this.connect();const current=store.visibleFact(id,scope);
     if(body.expectedUpdatedAt&&current.updated_at!==body.expectedUpdatedAt)throw new HttpError(409,'기억이 다른 작업에서 변경됐습니다. 새로고침한 뒤 다시 확인하세요.','STALE_FACT');
     if(body.expectedText!==undefined&&current.fact!==body.expectedText)throw new HttpError(409,'기억 내용이 변경됐습니다. 새로고침하세요.','STALE_FACT');
