@@ -1454,3 +1454,97 @@ test('H: 문서 링크 옆 고지는 en에서만 렌더되고 ko에서는 빈 �
   assert.ok(/shell\.help\.docsLink[\s\S]{0,80}?docsNoticeTag\(\)/.test(appSrc), '도움말 패널 링크 옆에 고지가 없다');
   assert.ok(/docUrl\(g\.source,version\)[\s\S]{0,200}?docsNoticeTag\(\)/.test(appSrc), '용어집 링크 옆에 고지가 없다');
 });
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ 0.7.0 사전 릴리스 리뷰 · 서버 페이로드 프로즈의 소비자 (독립 섹션)       │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// 서버는 문장을 만들지 않고 `<field>Key`(+`<field>Params`)만 싣는다(설계 v4 §5.2·§5.3).
+// `.message`·`.note`·`.label`을 그대로 읽는 화면은 그래서 **두 언어에서 모두** 틀린다:
+// 영어 원문이 한국어 화면에 나오거나, 문장이 빈 문자열로 사라진다. 프로즈를 들고 있는 픽스처로는
+// 이 결함이 보이지 않으므로, 이 섹션은 **실제 서버 값**(`Core.environment()`)과 **실제 오류 봉투
+// 모양**(`errorBody()`)을 쓴다.
+const {Core: PayloadCore} = require('../lib/core.cjs');
+const payloadFs = require('node:fs');
+const payloadOs = require('node:os');
+
+/** Core가 실제로 싣는 환경 페이로드 — `note` 없이 `noteKey`만 있다. */
+function serverEnvironment() {
+  const home = payloadFs.mkdtempSync(nodePath.join(payloadOs.tmpdir(), 'memex-i18n-payload-'));
+  try {
+    return new PayloadCore({
+      root: nodePath.join(__dirname, '../..'),
+      home,
+      dbPath: nodePath.join(home, 'conversation-index', 'db.sqlite'),
+    }).environment();
+  } finally {
+    payloadFs.rmSync(home, {recursive: true, force: true});
+  }
+}
+
+const payloadBootstrap = extra => ({
+  uiVersion: '1.2.3', environment: serverEnvironment(), db: {available: true, error: null},
+  capabilities: {memory_jobs: true}, commands: {}, ...extra,
+});
+const payloadCtx = (params, bootstrap) =>
+  l2ctx(params, {sync: SYNC_STATUS(), operations: {items: []}}, {bootstrap, savePrefs() {}});
+
+test('리뷰: 런타임 탭의 환경 경계 설명이 서버의 noteKey에서 온다 (두 로케일)', async () => {
+  const environment = serverEnvironment();
+  assert.equal(environment.note, undefined, '서버가 프로즈를 다시 싣는다 — 이 단정을 먼저 고쳐라');
+  assert.equal(environment.noteKey, 'note.environment.inherited');
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const {html} = await settingsPage.render(payloadCtx('tab=runtime', payloadBootstrap({environment})));
+    assert.ok(
+      html.includes(locale[tag]['note.environment.inherited']),
+      `${tag}: 환경 경계 설명이 빈 문자열로 사라졌다`,
+    );
+  }
+});
+
+test('리뷰: 진단 탭의 부트스트랩 DB 오류가 errorText를 지난다 (두 로케일)', async () => {
+  // `errorBody()`가 만드는 실제 모양 — code + key + 영어 원문.
+  const message = 'the index database is missing, so a probe has nowhere to record its attempt';
+  const envelope = {code: 'DB_INDEX_MISSING', key: 'models.error.db_missing', message};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const {html} = await settingsPage.render(
+      payloadCtx('tab=diagnostics', payloadBootstrap({db: {available: false, error: envelope}})),
+    );
+    assert.ok(html.includes(locale[tag]['models.error.db_missing']), `${tag}: 키 문구가 쓰이지 않았다`);
+    assert.ok(!html.includes(message), `${tag}: 서버의 영어 원문이 그대로 나왔다`);
+  }
+  // `key === null`은 "코어 원문 패스스루"의 유일한 신호다 — 그때는 원문을 보여준다.
+  locale.useKo();
+  const raw = await settingsPage.render(
+    payloadCtx('tab=diagnostics', payloadBootstrap({
+      db: {available: false, error: {code: 'INTERNAL_ERROR', key: null, message: 'SQLITE_CANTOPEN: unable to open'}},
+    })),
+  );
+  assert.ok(raw.html.includes('SQLITE_CANTOPEN'), '코어 원문 패스스루가 사라졌다');
+  // 오류가 아예 없는 경우에도 배너 자리는 비지 않는다.
+  const none = await settingsPage.render(payloadCtx('tab=diagnostics', payloadBootstrap({db: {available: false, error: null}})));
+  assert.ok(none.html.includes(locale.ko['settings.diagnostics.dbUnavailable']), '대체 문구가 없다');
+});
+
+test('리뷰: 운영 이력의 명령 이름이 서버의 labelKey에서 온다 (두 로케일)', async () => {
+  const operations = {items: [{id: 'op-1', command: 'tiers-preview', status: 'completed',
+    started_at: '2026-09-10T00:00:00.000Z', exit_code: 0}]};
+  const commands = {'tiers-preview': {labelKey: 'op.tiers-preview.label',
+    args: ['facts', 'migrate-tiers', '--dry-run'], mutates: false, model: false}};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const {html} = await activity.render(ctx('tab=operations', {operations},
+      {bootstrap: {environment: {mutable: true, autoOntology: true}, commands}}));
+    assert.ok(html.includes(locale[tag]['op.tiers-preview.label']), `${tag}: 명령 이름이 사전에서 오지 않았다`);
+    assert.ok(!html.includes('>tiers-preview<'), `${tag}: 명령 슬러그가 이름 자리에 그려졌다`);
+  }
+  // 0.6.x가 operations.json에 저장해 둔 프로즈 label은 카탈로그에 없는 명령에만 쓰인다.
+  locale.useEn();
+  const legacy = await activity.render(ctx('tab=operations',
+    {operations: {items: [{id: 'op-2', command: 'legacy-thing', label: 'Legacy label',
+      status: 'completed', started_at: '2026-09-10T00:00:00.000Z', exit_code: 0}]}},
+    {bootstrap: {environment: {mutable: true}, commands: {}}}));
+  assert.ok(legacy.html.includes('Legacy label'), '저장된 레거시 label이 무시됐다');
+});
