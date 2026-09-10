@@ -203,6 +203,23 @@ export declare class TierStepError extends Error {
     readonly to: FactTier;
     constructor(from: FactTier, to: FactTier);
 }
+/**
+ * #77 — the fact moved (or its row changed) between the caller's read and this
+ * write. A caller that names the tier and row version it saw gets the move
+ * refused instead of a second rung applied on top of a concurrent winner.
+ */
+export declare class TierStaleError extends Error {
+    readonly id: string;
+    readonly expectedTier: FactTier | null;
+    readonly actualTier: FactTier;
+    constructor(id: string, expected: {
+        tier?: FactTier;
+        updatedAt?: string;
+    }, actual: {
+        tier: FactTier;
+        updatedAt: string | null;
+    });
+}
 export interface FactTierState {
     id: string;
     tier: FactTier;
@@ -233,6 +250,15 @@ export interface TierMoveOptions {
     projectId?: string | null;
     /** Required to push a project fact onto a branch when it cannot be derived. */
     workstreamId?: string | null;
+    /**
+     * #77 — optimistic concurrency. The tier and/or `facts.updated_at` the caller
+     * read before deciding this move; a mismatch raises `TierStaleError` and
+     * nothing is written.
+     */
+    expected?: {
+        tier?: FactTier;
+        updatedAt?: string;
+    };
     now?: string;
 }
 export interface TierMoveResult {

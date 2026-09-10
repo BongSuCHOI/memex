@@ -28,9 +28,11 @@ import {
   validateExtractedFactCandidate,
 } from "../src/fact-extractor.js";
 import {
+  TierStaleError,
   TierStepError,
   applyScopeDirective,
   demoteFact,
+  factTierOf,
   promoteFact,
   readFactTier,
   reconcileFactTiers,
@@ -164,6 +166,48 @@ describe("user promotion and demotion (#19)", () => {
     const id = await branchFact("auto-audit", project, "state.runtime.auto");
     promoteFact(db, id, { actor: "auto", reason: "evidence" });
     expect(fs.existsSync(path.join(root, "home", "logs", "ui-audit.jsonl"))).toBe(false);
+  });
+});
+
+describe("a duplicate request cannot double-promote (#77)", () => {
+  it("refuses a named rung the fact has already reached", async () => {
+    const project = path.join(root, "r77-step");
+    gitClone(project, "feature/r77");
+    const id = await branchFact("r77-step", project, "state.runtime.step");
+    promoteFact(db, id, { actor: "user", to: "project" });
+    expect(readFactTier(db, id).tier).toBe("project");
+    // The losing half of a double click asks for the same rung a second time.
+    expect(() => promoteFact(db, id, { actor: "user", to: "project" })).toThrow(TierStepError);
+    expect(readFactTier(db, id).tier).toBe("project");
+  });
+
+  it("refuses a move whose expected tier or row version is stale, writing nothing", async () => {
+    const project = path.join(root, "r77-stale");
+    gitClone(project, "feature/r77");
+    const id = await branchFact("r77-stale", project, "state.runtime.stale");
+    const before = db.prepare("SELECT scope_type, promotion_state, updated_at FROM facts WHERE id = ?")
+      .get(id) as { scope_type: string; promotion_state: string | null; updated_at: string };
+    expect(factTierOf(before)).toBe("workstream");
+
+    // A concurrent winner already moved it; this request still holds the old read.
+    promoteFact(db, id, { actor: "user", to: "project" });
+    expect(() => promoteFact(db, id, {
+      actor: "user", to: "project",
+      expected: { tier: "workstream", updatedAt: before.updated_at },
+    })).toThrow(TierStaleError);
+    expect(readFactTier(db, id).tier).toBe("project");
+
+    // A matching expectation still moves, and only one rung.
+    const fresh = db.prepare("SELECT updated_at FROM facts WHERE id = ?").get(id) as { updated_at: string };
+    const move = promoteFact(db, id, {
+      actor: "user", to: "global", expected: { tier: "project", updatedAt: fresh.updated_at },
+    });
+    expect(move).toMatchObject({ from: "project", to: "global" });
+    // A stale row version alone (right tier) is refused too.
+    expect(() => demoteFact(db, id, {
+      actor: "user", to: "project", expected: { tier: "global", updatedAt: fresh.updated_at },
+    })).toThrow(TierStaleError);
+    expect(readFactTier(db, id).tier).toBe("global");
   });
 });
 

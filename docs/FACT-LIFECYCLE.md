@@ -77,6 +77,11 @@ workstream(브랜치/워크트리)  ⇄  project(프로젝트 공용)  ⇄  글�
   `user-directive`/`human-decision` 권한을 얻지 못하므로 두 칸 점프도 일어나지 않습니다.
 - 구현: `promoteFact` / `demoteFact`(`src/fact-management.ts`), actor `user` | `auto` | `user-directive`.
   자동 판정은 모델 호출 없이 SQL로만 하며 유지보수 단계(`reconcileFactTiers`)에서 실행됩니다.
+- 0.6.2(#77)부터 두 함수는 선택 인자 `expected: { tier?, updatedAt? }`를 받습니다. 호출자가 읽은
+  tier나 `facts.updated_at`과 실제가 다르면 **아무것도 쓰지 않고** `TierStaleError`를 던집니다
+  (Web UI는 409 `STALE_FACT`로 매핑). 목표 칸을 `to`로 명시하고 이 기대값을 함께 넘기면 중복 요청이
+  경쟁에서 이긴 이동 위에 한 칸을 더 얹을 수 없습니다. 같은 칸을 다시 요청하면 기존대로
+  `TierStepError`입니다.
 - Chronicle `PROMOTED` / `DEMOTED`의 `outcome`에 `from_tier`, `to_tier`, `actor`, `reason`,
   `evidence_ids`가 들어갑니다. actor가 `user`이면 `logs/ui-audit.jsonl`에 메타데이터 한 줄이 남습니다
   (0.6.1의 Web UI 승격/강등 버튼도 `/api/v2/facts/promote|demote`를 통해 같은 함수를 호출합니다).

@@ -658,6 +658,25 @@ export class TierStepError extends Error {
         this.to = to;
     }
 }
+/**
+ * #77 — the fact moved (or its row changed) between the caller's read and this
+ * write. A caller that names the tier and row version it saw gets the move
+ * refused instead of a second rung applied on top of a concurrent winner.
+ */
+export class TierStaleError extends Error {
+    id;
+    expectedTier;
+    actualTier;
+    constructor(id, expected, actual) {
+        super(`fact ${id} changed before the tier move: expected `
+            + `${expected.tier ?? actual.tier}@${expected.updatedAt ?? 'any'}, `
+            + `found ${actual.tier}@${actual.updatedAt ?? 'unknown'}`);
+        this.name = 'TierStaleError';
+        this.id = id;
+        this.expectedTier = expected.tier ?? null;
+        this.actualTier = actual.tier;
+    }
+}
 export function factTierOf(row) {
     if (row.scope_type === 'global')
         return 'global';
@@ -816,6 +835,15 @@ function applyTierStep(db, state, to, options, recordedAt) {
 function moveFactTier(db, id, direction, options) {
     const recordedAt = options.now ?? new Date().toISOString();
     const start = readFactTier(db, id);
+    // #77 — refuse before any write when the caller's read is already stale, so a
+    // duplicate request cannot stack a second rung on a concurrent winner's move.
+    if (options.expected?.tier || options.expected?.updatedAt) {
+        const updatedAt = db.prepare('SELECT updated_at FROM facts WHERE id = ?').get(id)?.updated_at ?? null;
+        if ((options.expected.tier && options.expected.tier !== start.tier)
+            || (options.expected.updatedAt && options.expected.updatedAt !== updatedAt)) {
+            throw new TierStaleError(id, options.expected, { tier: start.tier, updatedAt });
+        }
+    }
     const fromIndex = TIER_ORDER.indexOf(start.tier);
     const target = options.to ?? TIER_ORDER[fromIndex + direction];
     if (!target)

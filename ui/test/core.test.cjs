@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test');const assert=require('node:assert/strict');const {Core}=require('../lib/core.cjs');const {fixture,uid,PROJECT}=require('./fixture.cjs');const fs=require('node:fs');const path=require('node:path');
-function setup(){const f=fixture();const c=new Core({root:'/fixture/core',home:f.home,dbPath:'/fixture/db.sqlite'});c.db=f.db;c.store=f.store;let calls=[],closed=0;const writer={close(){closed++;}};c.modules.set('db',{openWriteDb(p){calls.push(['writer',p]);return writer;}});c.modules.set('fact-management',{async mutateFactMeaning(db,opts){calls.push(['edit',db,opts]);return {id:opts.factId,revisionId:'mock-revision',embeddingRefreshed:true};},deactivateFactTransactional(db,id){calls.push(['deactivate',db,id]);return {deactivated:true};},async restoreFact(db,id){calls.push(['restore',db,id]);return {restored:true};},async hardDeleteFact(db,id,opts){calls.push(['delete',db,id,opts]);return {deleted:true};},hardDeleteImpact(db,id){return {exists:true,revisions:2};},promoteFact(db,id,options){calls.push(['promote',db,id,options]);return {id,from:'workstream',to:'project',steps:[{from:'workstream',to:'project',eventId:'mock-event'}]};},demoteFact(db,id,options){calls.push(['demote',db,id,options]);return {id,from:'project',to:'workstream',steps:[{from:'project',to:'workstream',eventId:'mock-event'}]};}});return {f,c,calls,closed:()=>closed,scope:f.store.scope(new URLSearchParams({scope:'project',project:PROJECT})),clean(){c.close();fs.rmSync(f.home,{recursive:true,force:true});}};}
+function setup(){const f=fixture();const c=new Core({root:'/fixture/core',home:f.home,dbPath:'/fixture/db.sqlite'});c.db=f.db;c.store=f.store;let calls=[],closed=0;const writer={close(){closed++;}};c.modules.set('db',{openWriteDb(p){calls.push(['writer',p]);return writer;}});c.modules.set('fact-management',{async mutateFactMeaning(db,opts){calls.push(['edit',db,opts]);return {id:opts.factId,revisionId:'mock-revision',embeddingRefreshed:true};},deactivateFactTransactional(db,id){calls.push(['deactivate',db,id]);return {deactivated:true};},async restoreFact(db,id){calls.push(['restore',db,id]);return {restored:true};},async hardDeleteFact(db,id,opts){calls.push(['delete',db,id,opts]);return {deleted:true};},hardDeleteImpact(db,id){return {exists:true,revisions:2};},factTierOf(row){return row.scope_type==='global'?'global':(row.promotion_state==='workstream'||row.promotion_state==='workspace'?'workstream':'project');},promoteFact(db,id,options){calls.push(['promote',db,id,options]);return {id,from:'workstream',to:'project',steps:[{from:'workstream',to:'project',eventId:'mock-event'}]};},demoteFact(db,id,options){calls.push(['demote',db,id,options]);return {id,from:'project',to:'workstream',steps:[{from:'project',to:'workstream',eventId:'mock-event'}]};}});return {f,c,calls,closed:()=>closed,scope:f.store.scope(new URLSearchParams({scope:'project',project:PROJECT})),clean(){c.close();fs.rmSync(f.home,{recursive:true,force:true});}};}
 test('root resolution points at the repository containing ui, not its parent',()=>{const c=new Core({home:'/tmp/unused'});if(!process.env.MEMEX_PLUGIN_ROOT&&!process.env.PLUGIN_ROOT)assert.equal(c.root,path.resolve(__dirname,'../..'));});
 test('explicit user edit uses shared service, both CAS generations and human rationale',async()=>{const x=setup();try{const old=x.f.store.visibleFact(uid(1),x.scope);await x.c.mutate({id:uid(1),action:'edit',text:'Updated factual content',reason:'A user correction',expectedText:old.fact,expectedUpdatedAt:old.updated_at},x.scope);const [,writer,o]=x.calls.find(c=>c[0]==='edit');assert.equal(o.expectedPreviousFact,old.fact);assert.equal(o.expectedSemanticGeneration,old.semantic_generation);assert.equal(o.expectedLifecycleGeneration,old.lifecycle_generation);assert.equal(o.chronicle.actor,'user');assert.equal(o.chronicle.evidenceAuthority,'human');assert.equal(o.chronicle.userStatedRationale,'A user correction');assert.equal(x.closed(),1);assert.equal(x.c.busy.size,0);}finally{x.clean();}});
 test('stale edits and cross-scope changes never open a writer',async()=>{const x=setup();try{await assert.rejects(x.c.mutate({id:uid(1),action:'edit',text:'Updated text',expectedText:'stale'},x.scope),{status:409});await assert.rejects(x.c.mutate({id:uid(73),action:'deactivate'},x.scope),{status:404});assert.equal(x.calls.length,0);}finally{x.clean();}});
@@ -31,6 +31,42 @@ test('계층 이동 서비스가 없는 코어에서는 쓰기를 열지 않는�
  delete x.c.modules.get('fact-management').promoteFact;
  await assert.rejects(x.c.tier({id:uid(1),action:'promote'},x.scope),{status:503,code:'CORE_UNAVAILABLE'});
  assert.equal(x.closed(),0);assert.equal(x.calls.length,0);
+}finally{x.clean();}});
+test('계층 이동은 읽은 tier에서 한 칸만 지정하고 기대 버전을 코어에 넘긴다 (#77)',async()=>{const x=setup();try{
+ // uid(66) = promotion_state 'workstream'. tiers=all 범위에서만 보이므로 그 범위로 읽는다.
+ const scope=x.f.store.scope(new URLSearchParams({scope:'project',project:PROJECT,tiers:'all'}));
+ const branchFact=x.f.store.visibleFact(uid(66),scope);
+ assert.equal(branchFact.promotion_state,'workstream');
+ await x.c.tier({id:uid(66),action:'promote',expectedUpdatedAt:branchFact.updated_at},scope);
+ const [,,,options]=x.calls.find(c=>c[0]==='promote');
+ assert.equal(options.to,'project','한 칸 목표를 코어에 넘기지 않았습니다');
+ assert.deepEqual(options.expected,{tier:'workstream',updatedAt:branchFact.updated_at});
+ // 브랜치 아래 칸은 없으므로 쓰기를 열기 전에 거절한다.
+ await assert.rejects(x.c.tier({id:uid(66),action:'demote'},scope),{status:409,code:'TIER_STEP'});
+ assert.equal(x.calls.some(c=>c[0]==='demote'),false);
+}finally{x.clean();}});
+test('같은 버전으로 동시에 들어온 승격 두 개는 한 칸만 움직인다 (#77)',async()=>{const x=setup();try{
+ const scope=x.f.store.scope(new URLSearchParams({scope:'project',project:PROJECT,tiers:'all'}));
+ const LADDER=['workstream','project','global'];let tier='workstream';const moves=[];
+ x.c.modules.set('fact-management',{
+  factTierOf:row=>row.scope_type==='global'?'global':(row.promotion_state==='workstream'||row.promotion_state==='workspace'?'workstream':'project'),
+  // 코어 가드를 그대로 흉내낸다: 기대 tier 불일치는 TierStaleError, 같은 칸은 TierStepError.
+  promoteFact(_w,id,options){
+   if(options.expected&&options.expected.tier&&options.expected.tier!==tier){const e=new Error('stale');e.name='TierStaleError';throw e;}
+   const to=options.to??LADDER[LADDER.indexOf(tier)+1];
+   if(to===tier){const e=new Error('not adjacent');e.name='TierStepError';throw e;}
+   const from=tier;tier=to;moves.push({from,to});return {id,from,to,steps:[{from,to,eventId:'mock-event'}]};
+  },
+  demoteFact(){throw new Error('unused');},
+ });
+ const body={id:uid(66),action:'promote',expectedUpdatedAt:x.f.store.visibleFact(uid(66),scope).updated_at};
+ const results=await Promise.allSettled([x.c.tier({...body},scope),x.c.tier({...body},scope)]);
+ assert.equal(results.filter(r=>r.status==='fulfilled').length,1,'두 요청이 모두 통과했습니다');
+ const refused=results.find(r=>r.status==='rejected').reason;
+ assert.equal(refused.status,409);
+ assert(['MUTATION_BUSY','TIER_STEP','STALE_FACT'].includes(refused.code),'예상치 못한 거절 코드: '+refused.code);
+ assert.deepEqual(moves,[{from:'workstream',to:'project'}]);
+ assert.equal(tier,'project');assert.equal(x.c.busy.size,0);
 }finally{x.clean();}});
 function syncSetup(){
  const x=setup();const calls=[];
@@ -72,12 +108,44 @@ test('동기화 켜기는 절대 경로만 받고, 수동 내보내기는 변경
   assert(imported.status,'실행 뒤 상태를 함께 돌려주지 않았습니다');
  }finally{x.clean();}
 });
+test('동시 sync 요청은 하나만 통과하고 환경을 호출 전 값으로 되돌린다 (#76)',async()=>{
+ const x=syncSetup();const saved={home:process.env.MEMEX_HOME,db:process.env.MEMEX_DB_PATH};
+ try{
+  process.env.MEMEX_HOME='/original/home';process.env.MEMEX_DB_PATH='/original/home/conversation-index/db.sqlite';
+  // module() 해소를 한 틱 늦춰, 검사와 설정 사이의 양보 지점을 실제로 만든다.
+  const real=x.c.module.bind(x.c);
+  x.c.module=async name=>{await new Promise(r=>setImmediate(r));return real(name);};
+  let inFlight=0,maxInFlight=0;
+  x.c.modules.get('sync-control').runSyncImport=async()=>{
+   inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);
+   await new Promise(r=>setImmediate(r));inFlight--;
+   return {skipped:null,result:{newFacts:2,malformedRows:[]},error:null};
+  };
+  const results=await Promise.allSettled([x.c.sync('import'),x.c.sync('import')]);
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,1,'두 import가 모두 통과했습니다');
+  const refused=results.find(r=>r.status==='rejected').reason;
+  assert.equal(refused.status,409);assert.equal(refused.code,'SYNC_BUSY');
+  assert.equal(maxInFlight,1,'두 import가 동시에 실행됐습니다');
+  assert.equal(x.c.syncBusy,false);
+  assert.equal(process.env.MEMEX_HOME,'/original/home');
+  assert.equal(process.env.MEMEX_DB_PATH,'/original/home/conversation-index/db.sqlite');
+  // 원래 정의되지 않았던 변수는 호출 뒤에도 정의되지 않는다.
+  delete process.env.MEMEX_HOME;delete process.env.MEMEX_DB_PATH;
+  await x.c.sync('status');
+  assert.equal('MEMEX_HOME' in process.env,false);
+  assert.equal('MEMEX_DB_PATH' in process.env,false);
+ }finally{
+  for(const [k,v] of [['MEMEX_HOME',saved.home],['MEMEX_DB_PATH',saved.db]]){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+  x.clean();
+ }
+});
 test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()=>{
  const x=setup();
  try{
   x.c.modules.set('sync-control',{getSyncStatus(){return {};}});
   await assert.rejects(x.c.sync('status'),{status:503,code:'CORE_UNAVAILABLE'});
-  assert.equal(x.c.syncBusy,undefined);
+  // #76: 잠금은 첫 await 앞에서 잡히므로 503 경로도 finally가 풀어 false로 끝난다.
+  assert.equal(x.c.syncBusy,false);
  }finally{x.clean();}
 });
 test('no DB file is created when the initial read fails',async()=>{const f=fixture(),filename=path.join(f.home,'missing','never.sqlite');const c=new Core({root:f.home,dbPath:filename,home:f.home});try{await assert.rejects(c.connect(),{status:503});assert.equal(fs.existsSync(filename),false);}finally{f.close();fs.rmSync(f.home,{recursive:true,force:true});}});

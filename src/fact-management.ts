@@ -929,6 +929,32 @@ export class TierStepError extends Error {
   }
 }
 
+/**
+ * #77 — the fact moved (or its row changed) between the caller's read and this
+ * write. A caller that names the tier and row version it saw gets the move
+ * refused instead of a second rung applied on top of a concurrent winner.
+ */
+export class TierStaleError extends Error {
+  readonly id: string;
+  readonly expectedTier: FactTier | null;
+  readonly actualTier: FactTier;
+  constructor(
+    id: string,
+    expected: { tier?: FactTier; updatedAt?: string },
+    actual: { tier: FactTier; updatedAt: string | null },
+  ) {
+    super(
+      `fact ${id} changed before the tier move: expected `
+      + `${expected.tier ?? actual.tier}@${expected.updatedAt ?? 'any'}, `
+      + `found ${actual.tier}@${actual.updatedAt ?? 'unknown'}`,
+    );
+    this.name = 'TierStaleError';
+    this.id = id;
+    this.expectedTier = expected.tier ?? null;
+    this.actualTier = actual.tier;
+  }
+}
+
 export interface FactTierState {
   id: string;
   tier: FactTier;
@@ -982,6 +1008,12 @@ export interface TierMoveOptions {
   projectId?: string | null;
   /** Required to push a project fact onto a branch when it cannot be derived. */
   workstreamId?: string | null;
+  /**
+   * #77 — optimistic concurrency. The tier and/or `facts.updated_at` the caller
+   * read before deciding this move; a mismatch raises `TierStaleError` and
+   * nothing is written.
+   */
+  expected?: { tier?: FactTier; updatedAt?: string };
   now?: string;
 }
 
@@ -1136,6 +1168,18 @@ function moveFactTier(
 ): TierMoveResult {
   const recordedAt = options.now ?? new Date().toISOString();
   const start = readFactTier(db, id);
+  // #77 — refuse before any write when the caller's read is already stale, so a
+  // duplicate request cannot stack a second rung on a concurrent winner's move.
+  if (options.expected?.tier || options.expected?.updatedAt) {
+    const updatedAt = (db.prepare('SELECT updated_at FROM facts WHERE id = ?').get(id) as
+      { updated_at: string | null } | undefined)?.updated_at ?? null;
+    if (
+      (options.expected.tier && options.expected.tier !== start.tier)
+      || (options.expected.updatedAt && options.expected.updatedAt !== updatedAt)
+    ) {
+      throw new TierStaleError(id, options.expected, { tier: start.tier, updatedAt });
+    }
+  }
   const fromIndex = TIER_ORDER.indexOf(start.tier);
   const target = options.to ?? TIER_ORDER[fromIndex + direction];
   if (!target) throw new TierStepError(start.tier, direction > 0 ? 'global' : 'workstream');
