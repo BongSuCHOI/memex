@@ -2,6 +2,95 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.3 - 2026-09-10
+
+Closes the remaining findings of the external code review of 0.6.0–0.6.1
+(#59–#80), completes the cross-device sync surface (#48), and fixes the
+inject-daemon ownership defect found while validating 0.6.2 (#84).
+
+### Injection fast path
+
+- The warm inject daemon is verified in both directions before it computes
+  or injects: the hook sends its version, build id, plugin root and DB path,
+  the daemon answers with its own identity and computes only on a full match,
+  and the hook accepts a result only when the echoed identity matches. Any
+  other daemon — an older build, a development checkout, a different DB — is
+  bypassed with an in-process fallback and logged as `daemon_mismatch`. A
+  development checkout no longer opens the socket unless
+  `MEMEX_INJECT_DAEMON=1`; socket ownership is serialized through
+  `inject-daemon.lock`, dead sockets are reclaimed, live foreign owners are
+  asked to retire cooperatively, and `memex doctor` reports the owner against
+  the installed plugin root (`inject-daemon`). (#84)
+- Injection-gate telemetry counts `passed` / `rejected` from the raw margin
+  gaps; `dims.gaps` keeps the rounded display values. (#75)
+
+### Memory tiers
+
+- An automatic promotion survives only while its cited witnesses are active
+  and still carry the same normalized text; a corrected witness demotes the
+  fact in the same pass a deactivation would. (#62)
+- Default-branch detection reads the user's global and system
+  `init.defaultBranch` after the repository config, in git's precedence order,
+  so a `trunk`-style default branch is not classified as a feature branch. (#65)
+
+### Work Capsule
+
+- List bounds truncate instead of failing the job: a list over eight items
+  keeps the first eight and records `itemCaps` `{kept, dropped}` in the
+  truncation ledger; evidence-bearing lists re-check their declared sources
+  after truncation. (#85)
+- Truncation guarantees `finalChars <= maxChars` with a last-resort scalar
+  loop and reports `overBudget` when it still cannot. (#74)
+
+### Ontology
+
+- `memex ontology merge` and `rename` bump the taxonomy epoch inside their
+  transaction, so an in-flight classification built on the old candidate set
+  is discarded instead of re-creating the merged category. (#73)
+
+### Cross-device sync
+
+- A generation can be handed over as a file: `memex sync export --archive
+  [path.zip]` and `memex sync import --archive <path> [--dry-run]`, and in
+  관리 › 동기화 export → validate → preview `+N / ~N / -N` (computed by the real
+  import planner inside a rolled-back transaction) → confirm → import. The zip
+  reader/writer is dependency-free and rejects zip-slip paths. (#48)
+- Devices can be named (`sync/devices.json`, `memex sync alias`); the alias
+  travels in `meta.json` so peers show it. (#48)
+- Every import decision where a peer overrode local memory, or local won, is
+  recorded as a local-only Chronicle `SYNC_IMPORTED` event and shown in
+  지식 변경 and the fact's 변경 이력 as "기기 <alias>에서 가져옴". (#48)
+
+### Installed-root resolution
+
+- A probing resolution asks `codex plugin list --json` before scanning the
+  Codex plugin cache, caches the answer per process, and `memex doctor` says
+  when a cache pick was a guess. (#69)
+
+### Web UI
+
+- Every core mutation the UI performs runs with `MEMEX_HOME` / `MEMEX_DB_PATH`
+  pinned, so the core's audit line lands under the UI's own data root. (#78)
+- A dead or retrying job is classified by its state before its error text, the
+  pre-0.6.0 Capsule bound failure is its own non-ignorable class, short
+  failure enums match on word boundaries, and `LLM call failed` maps to a new
+  `model-call-failed` class instead of `model-invalid-json`. (#79, #80)
+
+### Tests
+
+- Test suites that call the ontology admin commands now pin `MEMEX_HOME` and
+  `XDG_CONFIG_HOME` to their temp root and assert where the audit line landed;
+  Vitest runs with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`.
+
+### Upgrade
+
+Run `memex update` and restart Codex — restarting is required this time so the
+installed 0.6.3 MCP server takes over the inject socket from any older daemon;
+until then hooks fall back to in-process injection and log the mismatch. Schema
+version stays 7; `work_capsules.truncated_fields_json` may now hold an object
+(older array values are still read). A new transient file
+`conversation-index/inject-daemon.lock` appears during daemon start-up.
+
 ## 0.6.2 - 2026-09-10
 
 Hotfix release for the defects an external code review of 0.6.0–0.6.1 found
