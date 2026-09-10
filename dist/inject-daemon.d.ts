@@ -63,7 +63,26 @@ export interface InjectDaemonOwner extends InjectDaemonIdentity {
     pid: number;
     instanceId: string;
     startedAt: string;
+    /**
+     * Issue #92: is this owner still loading the embedding model?
+     *
+     * Absent from a pre-0.6.5 owner's reply, which is why it is optional and why
+     * `undefined` must read as "it did not say" rather than as `false`.
+     */
+    warming?: boolean;
 }
+/**
+ * The owner's embedding-model readiness (issue #92).
+ *
+ * `cold` is the window between `listen()` and the warm-up actually starting;
+ * `warming` is the one that matters — on a cold model cache it lasted 68-74s on
+ * the observed data root, and every `inject` request that arrived inside it used
+ * to queue behind the download, blow the 10s compute budget, and leave the hook
+ * to fall back into a SECOND concurrent download of the same 129 MB.
+ */
+export type InjectDaemonWarmState = 'cold' | 'warming' | 'ready' | 'failed';
+/** Reply type and `daemon.reason` for a request that arrived mid-warm-up. */
+export declare const INJECT_DAEMON_WARMING = "warming";
 /** Why the listener was or was not opened — one log line, and doctor's note. */
 export interface InjectDaemonPolicy {
     open: boolean;

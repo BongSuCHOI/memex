@@ -58,7 +58,7 @@ let embeddingPipeline: FeatureExtractionPipeline | null = null;
  * calibration benchmark and no-model test environments use it so gate
  * behaviour can be measured without network or model downloads.
  */
-function embeddingStubEnabled(): boolean {
+export function embeddingStubEnabled(): boolean {
   return process.env.MEMEX_EMBEDDING_STUB === '1' || process.env.MEMEX_EMBEDDING_STUB === 'fail';
 }
 

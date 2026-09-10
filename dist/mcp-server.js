@@ -26547,6 +26547,7 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
 init_embeddings();
 init_plugin_root();
 var INJECT_DAEMON_PROTOCOL = 1;
+var INJECT_DAEMON_WARMING = "warming";
 var HERE2 = path11.dirname(fileURLToPath4(import.meta.url));
 function realpathOrSelf(target) {
   try {
@@ -26743,7 +26744,9 @@ function ownerFrom(reply) {
     dbPath: reply.dbPath,
     pid: typeof reply.pid === "number" ? reply.pid : -1,
     instanceId: typeof reply.instanceId === "string" ? reply.instanceId : "",
-    startedAt: typeof reply.startedAt === "string" ? reply.startedAt : ""
+    startedAt: typeof reply.startedAt === "string" ? reply.startedAt : "",
+    // Left undefined by a pre-0.6.5 owner: "it did not say", not "it is ready".
+    ...typeof reply.warming === "boolean" ? { warming: reply.warming } : {}
   };
 }
 async function probeInjectDaemon(sockPath = injectSocketPath(), timeoutMs = PROBE_TIMEOUT_MS) {
@@ -26785,6 +26788,7 @@ function startInjectDaemon() {
   };
   let retired = false;
   let owning = false;
+  let warmState = "cold";
   const server2 = net.createServer((conn) => {
     let buf = "";
     conn.setTimeout(INJECT_DAEMON_REQUEST_TIMEOUT_MS, () => conn.destroy());
@@ -26810,7 +26814,8 @@ function startInjectDaemon() {
           ...injectDaemonIdentity(),
           pid: self.pid,
           instanceId: self.instanceId,
-          startedAt: self.startedAt
+          startedAt: self.startedAt,
+          warming: warmState === "warming"
         });
         try {
           const req = JSON.parse(line);
@@ -26829,6 +26834,9 @@ function startInjectDaemon() {
           const current = mine();
           if (!injectDaemonIdentityMatches(asked, current)) {
             return reply({ type: "mismatch", ...current, reason: "identity mismatch" });
+          }
+          if (warmState === "warming") {
+            return reply({ type: INJECT_DAEMON_WARMING, ...current, reason: INJECT_DAEMON_WARMING });
           }
           try {
             conn.write(`${JSON.stringify({ type: "ack", ...current })}
@@ -26893,6 +26901,27 @@ function startInjectDaemon() {
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
     return { type: "retired", ...current };
   }
+  const warmUp = () => {
+    if (warmState !== "cold") return;
+    if (embeddingStubEnabled()) {
+      warmState = "ready";
+      return;
+    }
+    warmState = "warming";
+    const startedAt = Date.now();
+    void (async () => {
+      try {
+        await initEmbeddings();
+        await generateEmbedding("memex embedding warm-up probe", "passage");
+        warmState = "ready";
+        const elapsed = Date.now() - startedAt;
+        if (elapsed >= 3e3) note(`embedding model warm after ${elapsed}ms`);
+      } catch (error2) {
+        warmState = "failed";
+        note(`embedding warm-up failed (requests will load the model themselves): ${error2 instanceof Error ? error2.message : String(error2)}`);
+      }
+    })();
+  };
   const onListen = () => {
     binding = false;
     owning = true;
@@ -26901,8 +26930,7 @@ function startInjectDaemon() {
       fs10.chmodSync(sockPath, 384);
     } catch {
     }
-    void initEmbeddings().catch(() => {
-    });
+    warmUp();
   };
   const candidatePath = () => path11.join(injectDaemonCandidateDir(), `${process.pid}.json`);
   function publishCandidate() {

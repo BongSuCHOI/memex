@@ -9,6 +9,13 @@ export { EMBEDDING_MODEL };
 export { embeddingCacheDir, embeddingCacheStatus, embeddingModelCacheDir, } from './model-cache.js';
 export declare const EMBEDDING_VERSION: number;
 export type EmbeddingMode = 'query' | 'passage';
+/**
+ * Reproducible-harness seam: `MEMEX_EMBEDDING_STUB=1` replaces the model with a
+ * deterministic hashed bag-of-words vector. Never enabled by default; the
+ * calibration benchmark and no-model test environments use it so gate
+ * behaviour can be measured without network or model downloads.
+ */
+export declare function embeddingStubEnabled(): boolean;
 export declare function stubEmbedding(text: string, dimensions?: number): number[];
 /**
  * Point `@xenova/transformers` at the stable cache (issue #92).

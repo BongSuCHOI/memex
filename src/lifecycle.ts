@@ -828,6 +828,19 @@ async function injectDaemonCheck(): Promise<Check> {
     `owner pid ${owner.pid} version ${owner.version ?? "unknown"} build ${owner.buildId ?? "unknown"} ` +
     `root ${owner.pluginRoot} db ${owner.dbPath} started ${owner.startedAt || "unknown"}`;
   if (daemon.injectDaemonIdentityMatches(expected, owner)) {
+    // Issue #92: a 0.6.5+ owner says whether it is still loading the embedding
+    // model. That is a transient start-up state of a CORRECT owner — prompts
+    // that arrive inside it are answered `warming` in microseconds and fall back
+    // in-process — so it is reported, never counted as a daemon problem.
+    if (owner.warming) {
+      return {
+        name, status: "ok",
+        detail:
+          `ok — served by this installation, still warming its embedding model: prompts fall back ` +
+          `in-process (logged daemon.reason=warming) until it finishes. On a cold model cache this ` +
+          `is the 129 MB download — run: memex deps warm — ${ownerNote}. ${where}`,
+      };
+    }
     return { name, status: "ok", detail: `ok — served by this installation — ${ownerNote}. ${where}` };
   }
   return {

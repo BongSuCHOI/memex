@@ -174,6 +174,7 @@ start)를 남기고, ECONNREFUSED는 SIGKILL/크래시에만 남습니다. signa
 | --- | --- | --- |
 | `absent` | ENOENT — socket 파일 없음. 평시 cold start | 없음(즉시 fallback) |
 | `refused` | ECONNREFUSED — 파일은 있는데 소유자가 종료함. #89의 상태 | 없음(즉시 fallback) |
+| `warming` (0.6.5, #92) | 정체는 일치하지만 소유자가 아직 embedding model을 적재 중이라 `ack` 대신 `{type:"warming", …identity}`를 답함. **고장이 아니며** `doctor`도 daemon 실패로 세지 않습니다 | 없음(즉시 fallback) |
 | `handshake timeout` | 3초 안에 ack도 종료 응답도 없음 | 3s |
 | `compute timeout` | ack는 받았으나 계산 예산 안에 context가 오지 않음(또는 daemon이 중간에 끊음) | 10s |
 | `identity mismatch` | ack 또는 `mismatch` 응답의 정체 5필드가 요청과 다름. ack도 `ok`와 똑같이 증명해야 합니다 | 없음 |
@@ -188,6 +189,22 @@ daemon은 이미 연결이 끊긴 훅을 위해 commit하지 않습니다. 롤�
 (`error`가 아닙니다 — 정상 거절이고 `doctor` 판정을 건드리지 않습니다) in-process fallback은
 "전부 이미 resident라 dedup, 아무것도 주입 못 함 + `prepared` 영수증 영구 잔존" 대신 깨끗한 실행을
 받습니다. 실측된 `via:daemon, duration_ms:74010`(0.6.2)이 바로 그 잔존 영수증을 만든 실행입니다.
+
+### 소유자 워밍 (0.6.5, #92)
+
+소유자는 bind 직후 **백그라운드로** embedding model을 적재합니다(`initEmbeddings` + 짧은 probe 1회,
+실패는 삼킵니다). bind하지 못한 서버는 워밍하지 않습니다 — 답할 요청이 없는 프로세스마다 129 MB를
+내려받게 하면 고치려던 비용이 배가 됩니다.
+
+워밍 중에 온 `inject`는 정체 비교까지는 그대로 하고, **`ack` 대신** `{type:"warming", …identity}`를
+즉시 답합니다. 0.6.4까지는 여기서 `ack`를 보냈고, cold model cache에서는 적재가 68–74초(실측)라 그
+`ack`가 사는 것은 10초 뒤의 `compute timeout` 하나뿐이었습니다 — 게다가 훅의 fallback이 **같은 129 MB를
+동시에** 다시 내려받았습니다(실측 `daemon 68,647 ms` + `fallback 67,941 ms`). 이제 프롬프트는 10초가
+아니라 마이크로초를 쓰고 곧바로 fallback합니다. 10초 계산 예산(`INJECT_DAEMON_REQUEST_TIMEOUT_MS`)은
+그대로입니다.
+
+`{type:"identify"}` 응답에도 `warming` 필드가 실려 `doctor`가 "정상 소유자가 워밍 중"을 `ok`로
+보고합니다. `MEMEX_EMBEDDING_STUB`에서는 적재할 모델이 없으므로 워밍 단계를 건너뜁니다.
 
 `doctor`의 `inject-daemon` 4상태(`absent`/`stale`/`hung`/`ok`·`mismatch`)는
 [GUIDE §13](GUIDE.md#13-진단)이 단일 출처입니다.

@@ -41,7 +41,7 @@ let embeddingPipeline = null;
  * calibration benchmark and no-model test environments use it so gate
  * behaviour can be measured without network or model downloads.
  */
-function embeddingStubEnabled() {
+export function embeddingStubEnabled() {
     return process.env.MEMEX_EMBEDDING_STUB === '1' || process.env.MEMEX_EMBEDDING_STUB === 'fail';
 }
 /** Harness seam: `MEMEX_EMBEDDING_STUB=fail` simulates an unavailable model. */
