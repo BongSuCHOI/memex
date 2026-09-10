@@ -9,10 +9,26 @@ import { isLlmWorkdirPath } from "./paths.js";
 import { classifyAndLinkFact } from "./ontology-classifier.js";
 import { createHash } from "node:crypto";
 import { freshClaimPredicate, getExtractionConfig, } from "./pending-extraction.js";
-import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, supersedeStaleExtractionTarget, } from "./continuity-store.js";
-import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, withResolvedModelWorkContext, } from "./model-budget.js";
+import { claimExtractionTargetWithReason, commitExtractionPage, ensureExtractionTarget, FACT_EXTRACTION_POLICY_VERSION, readExtractionTargetItems, recordExtractionFailure, renewMemoryJobLease, setExtractionTargetRulesHash, supersedeStaleExtractionTarget, } from "./continuity-store.js";
+import { deferMemoryJobForModelBudget, findExhaustedModelBudgetForClaim, isAutomaticOntologyEnabled, isModelBudgetExhausted, releaseExtractionClaimOnHold, withResolvedModelWorkContext, HOLD_REASONS, } from "./model-budget.js";
+import { buildBlockSet, composeEffectivePolicyVersion, composeExtractionSystemPrompt, extractionMatcherAvailable, extractionRulesPreClaimBlock, loadExtractionRules, reloadExtractionRulesIfChanged, resolveExtractionRules, unionNeverExtract, } from "./extraction-rules.js";
+import { oneShotMatcher } from "./overlay-matcher.js";
 export const EXTRACTION_POLICY_VERSION = "precision-durability-v4";
 export const FACT_ENTAILMENT_POLICY_VERSION = "authoritative-entailment-v3";
+/**
+ * Issue #30 §3.5.1 — the extraction policy AS APPLIED, for reports and screens.
+ *
+ * `precision-durability-v4` / `precision-durability-v4+rules:9c1e4d07`.
+ *
+ * It is NOT `FACT_EXTRACTION_POLICY_VERSION`, and the two must never be merged:
+ * that constant is part of the `exchange_extraction_state` primary key which
+ * decides what counts as processed, so folding a rule hash into it would make one
+ * edited character re-extract the entire corpus.
+ * `test/extraction-policy-keying.test.ts` is the guard.
+ */
+export function effectiveExtractionPolicyVersion() {
+    return composeEffectivePolicyVersion(EXTRACTION_POLICY_VERSION, loadExtractionRules().hash);
+}
 export const EXTRACTION_SYSTEM_PROMPT = `You are an expert at extracting long-term facts from conversations.
 
 policy_version: ${EXTRACTION_POLICY_VERSION}
@@ -436,6 +452,27 @@ export class ClaimLostError extends Error {
     constructor(message) {
         super(message);
         this.name = "ClaimLostError";
+    }
+}
+/**
+ * Issue #30 (G1) — the `never_extract` check did not finish, so NOTHING is saved.
+ *
+ * Thrown from the storage boundary BEFORE the transaction opens, which is the
+ * whole point: `commitMarker` is never reached, so the watermark is not advanced
+ * and the same input is claimed and checked again. `runFactExtraction` catches
+ * this specific type and returns the claim with `releaseExtractionClaimOnHold`
+ * instead of `recordExtractionFailure` — no attempt, no failed range, no
+ * completion. v3's "store what the surviving patterns allow" and "block
+ * everything and mark it done" paths are both gone.
+ */
+export class ExtractionRulesCheckIncompleteError extends Error {
+    holdReason;
+    quarantined;
+    constructor(holdReason, detail, quarantined = []) {
+        super(`never_extract check did not complete: ${detail}`);
+        this.name = "ExtractionRulesCheckIncompleteError";
+        this.holdReason = holdReason;
+        this.quarantined = quarantined;
     }
 }
 const MAX_EXCHANGES_PER_WINDOW = 5; // configurable-ok
@@ -1716,12 +1753,23 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     const modelCall = options?.modelCall ?? ((systemPrompt, userMessage) => callMemoryModel(systemPrompt, userMessage, 2_048, {
         modelContext: options?.modelContext,
     }));
+    // Issue #30 §3.2 — the operator's constraint clause goes AFTER the policy, once
+    // per call, from the claim-time snapshot. With no overlay this is the same
+    // string object as before, so an installation with no rules sends a
+    // byte-identical prompt.
+    const extractionSystemPrompt = composeExtractionSystemPrompt(EXTRACTION_SYSTEM_PROMPT, options?.extractionRules);
     const allFacts = [];
     const factIndexByKey = new Map();
     // transient(공급자 장애·빈 응답)로 실패한 window. >0 이면 이 세션은 "처리 완료"가 아니다.
     const transientFailures = [];
     const windowQueue = [...selectedWindows];
+    // Issue #31: a rejected request envelope stops the WHOLE loop at once. The
+    // selection is wrong for every window, so splitting or continuing would just
+    // buy more refusals and, worse, record this conversation's ranges as failed.
+    let configRejection = null;
     for (let b = 0; b < windowQueue.length; b++) {
+        if (configRejection)
+            break;
         if (allFacts.length >= MAX_FACTS_PER_SESSION) {
             if (options?.progress)
                 options.progress.budgetExhausted = true;
@@ -1737,7 +1785,7 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
         const prompt = buildExtractionPrompt(window, referentCandidates);
         renewLease?.(); // window 직전 갱신 — LLM 왕복이 리스를 넘겨도 회수되지 않는다
         try {
-            const response = await modelCall(EXTRACTION_SYSTEM_PROMPT, prompt);
+            const response = await modelCall(extractionSystemPrompt, prompt);
             const extracted = parseJsonResponse(response);
             if (Array.isArray(extracted)) {
                 const structurallyAccepted = [];
@@ -1832,6 +1880,16 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
             // (Codex 적대 리뷰 2026-07-17: 'API Error: 500 …' 이 unknown 으로 떨어져
             //  배치 폐기 → 세션 완료 기록 = 원 결함 재현. 분류기 보강 + 이 이연이 이중 방어.)
             const cls = classifyLlmError(error);
+            if (cls === "config") {
+                // BEFORE the deterministic branch on purpose: an envelope rejection
+                // carries a 400 and invalid-request wording, so reaching the splitter
+                // would mean log2(n) identical refusals and a permanent failed range
+                // for a conversation that did nothing wrong.
+                configRejection = error;
+                console.error("Window extraction held: the provider rejected the request envelope " +
+                    "(no split, no failed range, no attempt consumed):", error instanceof Error ? error.message : String(error));
+                break;
+            }
             if (cls === "deterministic") {
                 if (window.length > 1) {
                     const middle = Math.ceil(window.length / 2);
@@ -1868,6 +1926,13 @@ export async function extractFactsFromExchanges(db, sessionId, stats, renewLease
     }
     // 공급자 장애가 하나라도 있었으면 이 세션을 완료로 기록하면 안 된다. 호출자
     // (extractAndSaveFacts)가 extraction_log 기록을 건너뛰도록 throw 로 표면화한다.
+    //
+    // Issue #31: a config rejection is surfaced FIRST and the same way — nothing
+    // is written, so the session stays pending and the next run retries it once
+    // the selection is fixed.
+    if (configRejection) {
+        throw new LlmCallError(configRejection);
+    }
     if (transientFailures.length > 0) {
         throw new LlmCallError(transientFailures[0]);
     }
@@ -1903,6 +1968,179 @@ function maxExchangeTimestamp(db, exchangeIds) {
 export async function saveExtractedFacts(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
     return (await saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras)).savedIds;
 }
+/**
+ * Issue #30 §3.5.2 — mark an UNCLAIMED job as waiting on a configuration.
+ *
+ * Lane B owns `memory_jobs.hold_reason`, `holdMemoryJob` and
+ * `releaseExtractionClaimOnHold`, and this lane imports them. Both of those are
+ * post-claim transitions guarded by a lease CAS, which is exactly right for
+ * returning a claim and exactly wrong here: nothing has been claimed, so there
+ * is no lease to compare and no attempt to refund. This is the pre-claim marker
+ * — `state` stays `pending`/`retry`, `attempts` is not touched, and the reason
+ * value is validated against lane B's `HOLD_REASONS` so the two can never drift.
+ *
+ * A one-hour `available_at` is the safety net for the case where the fix happens
+ * somewhere this process cannot see (an editor, another machine's CLI): a rules
+ * write calls `releaseExtractionRulesHold` and resumes it at once, and if that
+ * never happens the backoff makes the next pass re-evaluate anyway.
+ */
+const RULES_HOLD_BACKOFF_MS = 60 * 60_000;
+function holdExtractionJobBeforeClaim(db, input) {
+    if (!HOLD_REASONS.includes(input.reason)) {
+        throw new Error(`unknown hold reason ${JSON.stringify(input.reason)}`);
+    }
+    const now = input.now ?? new Date();
+    try {
+        return db.prepare(`
+      UPDATE memory_jobs
+      SET hold_reason = ?, last_error = ?, available_at = ?, updated_at = ?
+      WHERE job_id = ? AND state IN ('pending','retry')
+    `).run(input.reason, `held (${input.reason}): ${input.detail}`.replace(/\s+/g, " ").trim().slice(0, 1_000), new Date(now.getTime() + RULES_HOLD_BACKOFF_MS).toISOString(), now.toISOString(), input.jobId).changes === 1;
+    }
+    catch {
+        // A minimal fixture without the column must still be able to run: the gate
+        // above already refused to claim, which is the part that protects the data.
+        return false;
+    }
+}
+const NO_FORBIDDEN = {
+    facts: new Set(),
+    observations: new Set(),
+    patternIds: [],
+    hash: null,
+    staleRead: false,
+};
+/**
+ * THE enumeration of every text column the commit persists from a fact candidate.
+ *
+ * One place on purpose. The first version listed `fact`, `fact_kr` and the plain
+ * evidence spans — and then the same transaction wrote `subject_key`,
+ * `classifier_notes` and all three `change_context` fields, each of which is its
+ * own durable column. A forbid rule that the operator wrote to keep a secret out
+ * of their memory was therefore satisfied by the check and defeated by the insert.
+ *
+ * Column by column, and nothing here may be dropped without removing the write:
+ *   fact                      → facts.fact, Chronicle new_value / previous_value
+ *   fact_kr                   → facts.fact_kr
+ *   subject_key               → facts.subject_key, Chronicle subject_key
+ *   classifier_notes          → fact_revisions.classifier_note
+ *   change_context.*.text     → fact_revisions.problem / grounded_cause / rationale
+ *   evidence[].supporting_span + change_context.*.supporting_span
+ *                             → the evidence receipts' stored spans
+ */
+function factBlockCandidate(fact) {
+    const context = fact.change_context;
+    const grounded = [context?.problem, context?.cause, context?.rationale];
+    return {
+        factText: [
+            fact.fact,
+            fact.fact_kr ?? "",
+            fact.subject_key ?? "",
+            ...(fact.classifier_notes ?? []),
+            ...grounded.map((ref) => ref?.text ?? ""),
+        ],
+        evidence: [
+            ...(fact.evidence ?? []).map((item) => item.supporting_span ?? ""),
+            ...grounded.map((ref) => ref?.supporting_span ?? ""),
+        ],
+    };
+}
+/** Every observation field that reaches durable storage (§3.3's list). */
+function observationBlockCandidate(observation) {
+    return {
+        factText: [
+            observation.summary,
+            observation.signature_text ?? "",
+            observation.subject_key ?? "",
+            observation.remediates_signature_key ?? "",
+        ],
+        evidence: (observation.evidence ?? []).map((item) => item.supporting_span ?? ""),
+    };
+}
+/**
+ * Build the block set for this commit (§3.4, G1/G2).
+ *
+ * The forbid set is `claim snapshot ∪ the latest valid rules read right here`.
+ * Tightening therefore takes effect from this read; relaxation takes effect from
+ * the next claim, because the snapshot stays in the union for the whole claim.
+ * No claim in flight is ever aborted.
+ *
+ * Throws `ExtractionRulesCheckIncompleteError` when the check could not finish —
+ * the caller returns the claim unsaved. It does NOT throw for a blocked
+ * candidate: that is a drop.
+ */
+async function resolveForbiddenCandidates(prepared, observations, extras) {
+    const snapshot = extras.rulesSnapshot ?? null;
+    const latest = reloadExtractionRulesIfChanged();
+    const now = latest.doc
+        ? resolveExtractionRules(snapshot?.projectId ?? null, latest)
+        : null;
+    const forbid = unionNeverExtract(snapshot?.neverExtract ?? [], now?.neverExtract ?? []);
+    if (forbid.length === 0)
+        return NO_FORBIDDEN;
+    const matcher = extras.matcher ?? oneShotMatcher();
+    try {
+        const factEntries = prepared.map((p) => ({
+            item: p.fact,
+            candidate: factBlockCandidate(p.fact),
+        }));
+        const factResult = await buildBlockSet(matcher, forbid, factEntries);
+        if (!factResult.ok) {
+            throw new ExtractionRulesCheckIncompleteError(factResult.reason, factResult.detail, factResult.quarantined);
+        }
+        const observationEntries = observations.map((observation) => ({
+            item: observation,
+            candidate: observationBlockCandidate(observation),
+        }));
+        const observationResult = await buildBlockSet(matcher, forbid, observationEntries);
+        if (!observationResult.ok) {
+            throw new ExtractionRulesCheckIncompleteError(observationResult.reason, observationResult.detail, observationResult.quarantined);
+        }
+        return {
+            facts: factResult.blocked,
+            observations: observationResult.blocked,
+            patternIds: [...new Set([...factResult.patternIds, ...observationResult.patternIds])],
+            hash: now?.hash ?? snapshot?.hash ?? null,
+            staleRead: latest.staleRead,
+        };
+    }
+    finally {
+        if (!extras.matcher)
+            matcher.dispose();
+    }
+}
+/**
+ * One audit line per commit, never per candidate, and ids/counts/hashes only —
+ * the forbidden text must not be written to a log by the code that refused to
+ * store it.
+ */
+async function auditBlockedCandidates(forbidden, extras, outcome) {
+    if (outcome.blockedByRules === 0 && !forbidden.staleRead)
+        return;
+    try {
+        // Awaited, not floating: a one-shot worker process can exit before a detached
+        // promise resolves, and then the only record that a rule dropped something
+        // would be missing exactly when someone goes looking for it.
+        const { appendUiAuditLine } = await import("./ontology-admin.js");
+        if (outcome.blockedByRules > 0) {
+            appendUiAuditLine("rules.blocked", {
+                id: extras.targetId ?? "unknown",
+                to_hash: forbidden.hash,
+                patterns: forbidden.patternIds.join(","),
+                blocked: outcome.blockedByRules,
+            });
+        }
+        if (forbidden.staleRead) {
+            appendUiAuditLine("rules.stale-read", {
+                id: extras.targetId ?? "unknown",
+                to_hash: forbidden.hash,
+            });
+        }
+    }
+    catch {
+        /* the audit line must never be able to undo a commit that already happened */
+    }
+}
 export async function saveExtractedFactsDetailed(db, facts, project, sourceExchangeIds, renewLease, commitMarker, extras = {}) {
     const sources = captureSourceSnapshot(db, [...sourceExchangeIds, ...facts.flatMap(fact => fact.source_exchange_ids ?? []),
         ...(extras.observations ?? []).flatMap(observation => observation.source_exchange_ids)]);
@@ -1925,8 +2163,19 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
     const savedVectors = new Map();
     const outcome = {
         savedIds, asserted: 0, changed: 0, merged: 0, historical: 0, contradicted: 0, incidents: 0, validations: 0,
+        blockedByRules: 0,
     };
     const observations = extras.observations ?? [];
+    // 🚨 Issue #30 §3.3/§3.4 — THE storage boundary.
+    //
+    // The prompt clause is advisory; the candidate validator cannot see the
+    // observation path at all (an `observation` response is `continue`d well before
+    // it and lands in recordIncidentOccurrence / recordIncidentRemediation /
+    // recordChronicleEvent). This is the only place that is a guarantee, and it
+    // runs HERE — after the embeddings, before `db.transaction` — because the
+    // transaction is synchronous and cannot await the matcher worker.
+    const forbidden = await resolveForbiddenCandidates(prepared, observations, extras);
+    outcome.blockedByRules = forbidden.facts.size + forbidden.observations.size;
     // #19 — in-session scope directives are applied after the slot resolution
     // above, inside the same transaction, so the placement and its PROMOTED /
     // DEMOTED events commit with the fact they describe.
@@ -1936,6 +2185,9 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
             throw new StaleFactMutationError('extraction source evidence changed during embedding');
         const now = new Date().toISOString();
         for (const p of prepared) {
+            // A SET LOOKUP, nothing else. No regex ever runs inside the transaction.
+            if (forbidden.facts.has(p.fact))
+                continue;
             const factSources = p.fact.source_exchange_ids ?? sourceExchangeIds;
             const insertParams = {
                 fact: p.fact.fact,
@@ -2099,6 +2351,12 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
             catch { /* placement stays as extracted */ }
         }
         for (const observation of observations) {
+            // Before ALL THREE record* paths — incident occurrence, remediation and the
+            // VALIDATED Chronicle event — so `summary`, `signature_text`, `subject_key`,
+            // `remediates_signature_key` and the Chronicle `new_value` are covered by
+            // one decision instead of three near-copies.
+            if (forbidden.observations.has(observation))
+                continue;
             const identity = resolveFactInsertIdentity(db, {
                 scope_type: "project",
                 scope_project: project,
@@ -2175,6 +2433,7 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
         savedIds.length = 0; // 롤백됐으므로 호출자에게 저장 0건으로 보고
         throw e;
     }
+    await auditBlockedCandidates(forbidden, extras, outcome);
     // 3단계(비동기, 커밋 이후): 온톨로지 분류. 파생 작업이라 실패해도 fact 는 유효하다.
     // MEMEX_AUTO_ONTOLOGY=0 is an intentional experiment/operations switch:
     // extraction remains durable while the explicit ontology backfill command
@@ -2204,6 +2463,11 @@ export async function saveExtractedFactsDetailed(db, facts, project, sourceExcha
 export function classifyExtractionFailure(err) {
     if (err instanceof ClaimLostError)
         return "handoff";
+    // 설정 거절은 래핑 여부와 무관하게 같은 판정이어야 한다 — 래핑되지 않은
+    // CodexRequestRejectedError 가 "internal"(= 예산 소모 + 운영 경보)로 집계되면
+    // 보류 계약이 소비자 보고에서만 조용히 깨진다.
+    if (classifyLlmError(err) === "config")
+        return "config";
     if (err instanceof LlmCallError) {
         return classifyLlmError(err) === "deterministic"
             ? "provider_deterministic"
@@ -2233,6 +2497,15 @@ export const FAILURE_REPORT = {
         note: "공급자 일시 실패 — 예산 미소모, 다음 run 재시도",
         bucket: "transient",
         consumesBudget: false,
+        escalate: false,
+    },
+    config: {
+        label: "HELD",
+        note: "모델 설정 거절 — 예산 미소모, 설정을 고치면 자동 재개(memex models show)",
+        bucket: "held",
+        consumesBudget: false,
+        // 운영자가 손을 대야 하지만 **런타임 점검 대상은 아니다**: 고치는 곳이
+        // 코드나 DB 가 아니라 설정 한 줄이고, doctor 의 llm-model 체크가 안내한다.
         escalate: false,
     },
     provider_deterministic: {
@@ -2373,6 +2646,35 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             budgetId: spentBudget.budgetId,
         };
     }
+    // 🚨 Issue #30 §3.5.2 — the extraction-rules gate, before the claim.
+    //
+    // Same principle as the budget check above ("settle before you preempt"): a
+    // claim is an irreversible attempts+1 on two tables, and holding AFTER it would
+    // walk a job that did nothing wrong towards `dead`. Two conditions block:
+    //   (1) the overlay is present and errors — including a quarantined
+    //       `never_extract` pattern, which means an operator's forbid rule is OFF;
+    //   (2) there are forbid patterns but no matcher to run them in, so the check
+    //       could not possibly complete later.
+    // Neither touches `attempts`, so `max_attempts` can never terminate this.
+    const rulesSnapshotLoad = loadExtractionRules();
+    const rulesForProject = resolveExtractionRules(project, rulesSnapshotLoad);
+    const preClaim = extractionRulesPreClaimBlock(rulesSnapshotLoad);
+    const matcherReady = preClaim !== null || (await extractionMatcherAvailable(rulesForProject.neverExtract));
+    if (preClaim || !matcherReady) {
+        const reason = preClaim ? preClaim.reason : "extraction_rules_unavailable";
+        const detail = preClaim
+            ? preClaim.detail
+            : "no pattern matcher worker is available to run never_extract — run: memex doctor";
+        holdExtractionJobBeforeClaim(db, { jobId: target.jobId, reason, detail });
+        console.error(`extraction: session ${sessionId} held on the extraction rules (${reason}) — ` +
+            "nothing claimed, no attempt consumed (memex extract rules validate)");
+        return {
+            extracted: 0,
+            saved: 0,
+            skipped: reason,
+            rulesIssue: rulesSnapshotLoad.issues.find((issue) => issue.severity === "error")?.code ?? "matcher",
+        };
+    }
     const claimOutcome = claimExtractionTargetWithReason(db, target, undefined, claimedAt);
     const claimed = claimOutcome.claim;
     if (!claimed) {
@@ -2403,6 +2705,10 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
         });
         return { extracted: 0, saved: 0, skipped: "failed_visible" };
     }
+    // Issue #30 §3.4(1) — the claim-time snapshot, stamped once. Every window of
+    // this target composes its prompt from it and the storage boundary keeps it as
+    // one half of the union, so a rule edit mid-target cannot split this claim.
+    setExtractionTargetRulesHash(db, target.targetId, rulesForProject.hash);
     const renewLease = () => {
         if (!renewMemoryJobLease(db, {
             jobId: target.jobId,
@@ -2445,6 +2751,7 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             throughRowid: page[page.length - 1].exchange_rowid,
             modelContext,
             progress,
+            extractionRules: rulesForProject,
         });
     }
     catch (error) {
@@ -2472,6 +2779,26 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
             };
         }
         const kind = classifyLlmError(error);
+        // 🚨 이슈 #31 — 여기가 claim 회계를 되돌리는 지점이다.
+        //
+        // claimExtractionTargetWithReason 는 이미 memory_jobs(running·lease·attempts+1)
+        // ·extraction_targets(동일)·checkpoints(processing) 세 가지를 썼다. 설정 거절에
+        // recordExtractionFailure 를 쓰면 이 대화의 범위가 **실패로 확정**되고 job 은
+        // running + 소모된 attempt 로 남아 결국 dead 가 된다 — 대화의 잘못이 아닌 이유로.
+        // 그래서 실패를 기록하지 않고 claim 자체를 반환한다.
+        if (kind === "config") {
+            releaseExtractionClaimOnHold(db, {
+                targetId: target.targetId,
+                jobId: target.jobId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+                reason: "model_config_rejected",
+                detail: error instanceof Error ? error.message : String(error),
+            });
+            console.error(`extraction: session ${sessionId} held on a model setting — claim returned, ` +
+                "no attempt consumed, no failed range recorded (memex models show)");
+            throw error;
+        }
         if (!(error instanceof ClaimLostError)) {
             recordExtractionFailure(db, {
                 targetId: target.targetId,
@@ -2539,7 +2866,13 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
     try {
         renewLease();
         if (facts.length > 0 || observations.length > 0) {
-            saved = (await withResolvedModelWorkContext(modelContext, () => saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, { observations, sessionId, modelContext }))).length;
+            saved = (await withResolvedModelWorkContext(modelContext, () => saveExtractedFacts(db, facts, project, [], renewLease, commitMarker, {
+                observations,
+                sessionId,
+                modelContext,
+                rulesSnapshot: rulesForProject,
+                targetId: target.targetId,
+            }))).length;
         }
         else {
             const commitZero = db.transaction(() => {
@@ -2551,6 +2884,30 @@ export async function runFactExtraction(db, sessionId, project, _opts) {
         }
     }
     catch (error) {
+        // 🚨 Issue #30 §3.4(6) / G1 — the check did not finish, so this claim is
+        // RETURNED rather than completed. `commitMarker` was never reached, so the
+        // watermark did not move and the same input comes back on the next claim and
+        // is checked again. v3 finalised unchecked input as "processed"; that is the
+        // bug this branch exists to make impossible.
+        if (error instanceof ExtractionRulesCheckIncompleteError) {
+            releaseExtractionClaimOnHold(db, {
+                targetId: target.targetId,
+                jobId: target.jobId,
+                owner: claimed.owner,
+                leaseGeneration: claimed.leaseGeneration,
+                reason: error.holdReason,
+                detail: error.message,
+            });
+            console.error(`extraction: session ${sessionId} held on the extraction rules (${error.holdReason}) — ` +
+                "claim returned, nothing stored, no attempt consumed and no failed range recorded " +
+                "(memex extract rules validate)");
+            return {
+                extracted: facts.length,
+                saved: 0,
+                skipped: error.holdReason,
+                rulesIssue: error.quarantined[0] ?? error.holdReason,
+            };
+        }
         if (error instanceof ClaimLostError) {
             supersedeStaleExtractionTarget(db, {
                 targetId: target.targetId,

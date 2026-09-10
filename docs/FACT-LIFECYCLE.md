@@ -246,6 +246,51 @@ Tier-C `inferred` grounding은 현재 같은 session의 현재 authoritative ext
 recall text는 authority가 아니며 cardinality에도 포함하지 않습니다. Original authoritative lineage를
 직접 조회하는 별도 cross-session path는 현재 범위 밖입니다.
 
+### 추출 규칙 오버레이 (0.7.0 #30)
+
+사용자가 `<data root>/overlays/extraction-rules.json`에 얹는 로컬 제한입니다. 오버레이가 할 수 있는
+일은 **억제뿐**입니다 — 증거 기준을 낮추거나 authority 범위를 넓히거나 위 정밀도 게이트가 거절한
+후보를 살려 내는 방향으로는 아무것도 하지 못합니다. 제약 절은 내장 프롬프트를 **고치지 않고
+덧붙이기만** 하므로 `policy_version`(`precision-durability-v4`)의 뜻이 그대로이고, 의미 검증기
+프롬프트(`authoritative-entailment-v3`)는 오버레이가 있든 없든 **바이트 단위로 동일**합니다.
+
+네 항목 중 **집행되는 것은 하나뿐**입니다.
+
+| 항목 | 성격 |
+| --- | --- |
+| `never_extract_patterns` | **저장 경계의 결정론적 차단.** 집행 지점 4곳: `fact_insert` · `incident` · `remediation` · `chronicle` |
+| `exclude_topics` · `always_treat_as_decision_patterns` · `preferred_language` | 추출 프롬프트에 실리는 **모델 지시**. 강제력이 없으므로 효과는 모델 평가로만 확인됩니다(`memex extract eval`) |
+
+프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 제약은 전역과 합집합**입니다. 다른 곳에
+한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+
+**금지 후보는 탈락이지 실패가 아닙니다.** 예외도, `extraction_failed_ranges` 행도, 소모된 attempt도
+없고 같은 배치의 다른 후보는 정상 저장됩니다. 대화 archive는 그대로입니다 — 규칙이 금지하는 것은
+**기억**이고 **이력**이 아닙니다. 감사는 후보마다가 아니라 커밋당 1줄이고 id·개수·해시만 남깁니다.
+
+**적용 시점 계약**은 `claim 스냅숏 ∪ 저장 직전에 다시 읽은 최신 유효 규칙`의 합집합입니다.
+그래서 **강화는 다시 읽은 시점부터 즉시**, **완화는 다음 claim부터** 적용됩니다 — claim 당시 있던
+금지 패턴은 그 작업이 끝날 때까지 유효하며, 진행 중인 claim에 규칙 삭제가 즉시 먹으면 "금지했는데
+저장됐다"가 됩니다. 파일과 DB 사이의 원자성은 필요하지 않습니다. 다시 읽은 파일이 깨져 있으면
+마지막으로 적용에 성공한 문서를 쓰고 감사 1줄(`rules.stale-read`)을 남기며 커밋을 계속합니다.
+검사는 트랜잭션 **밖**에서 돌고 트랜잭션 안에는 집합 조회만 남습니다.
+
+**설정 대기(HOLD)와 재개.** 규칙 문서가 유효하지 않거나(`extraction_rules_invalid`) 금지 검사를
+완료하지 못하면(`extraction_rules_unavailable`) claim을 **저장하지 않고 반환**합니다. 금지한 문자열이
+"그 문자열을 금지한 규칙이 느렸다"는 이유로 저장되게 두지 않는 fail-closed 규칙입니다. 보류는
+`memory_jobs.hold_reason` + `pending`이고 **attempts를 소모하지 않으므로**(환불합니다) 규칙 오류가
+작업을 terminal로 보내는 경로가 없습니다. 규칙을 고치면(`memex extract rules set|rollback|reset`)
+그 오버레이가 잡아 둔 작업이 **함께 풀리고**, 그러지 않아도 다음 pass의 claim이 표식을 지웁니다.
+회수 게이트 오버레이는 반대로 **fail-open**입니다 — 깨지면 통째로 무시하고 내장 규칙으로 계속합니다.
+
+적용된 규칙의 지문은 `extraction_targets.rules_hash`에 **보고용으로만** 남고 스케줄 키에 섞이지
+않습니다. 규칙이 바뀌었다고 자동 재추출이 일어나지 않으며, 다시 돌리려면
+`memex extract rules reextract`로 범위를 정해 명시적으로 요청합니다. `effective_policy_version`
+(`precision-durability-v4+rules:<sha8>`)은 평가 receipt의 보고 필드입니다.
+
+운영 절차와 복구는 [운영 가이드 §22](GUIDE.md#22-사용자-오버레이--회수-게이트와-추출-규칙-070-29-30)와
+[§20](GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)에 있습니다.
+
 ### Precision과 durability policy
 
 `precision-durability-v4` extraction policy는 evidence binding을 먼저 적용한 뒤 candidate를 다음
@@ -557,6 +602,11 @@ fact text unchanged
 또한 모델 응답은 요청 batch와 **항목 수가 정확히 같고 모든 항목이 non-empty string**일 때만 batch 전체를 적용합니다. 중간 항목 누락으로 번역이 한 칸씩 밀리는 상황을 허용하지 않습니다.
 
 스크립트는 `fact_kr`를 채웁니다. `vec_facts_kr`는 이후 reembed maintenance 또는 다음 SessionStart의 reembed worker가 생성합니다.
+
+Web UI에서 `fact_kr`를 우선 표시하는 설정은 0.7.0부터 `prefs.preferTranslatedFacts`입니다
+(0.6.x의 `prefs.korean`을 개명했고, 저장된 옛 키는 한 번 읽어 이어받습니다). **화면 언어와 다른
+축**이며 번역을 새로 만들지 않습니다 —
+[WEBUI-WORKSPACE.md의 언어 절](WEBUI-WORKSPACE.md#언어-070-109)을 참고하십시오.
 
 ## 11. Privacy purge와 taxonomy rebuild
 

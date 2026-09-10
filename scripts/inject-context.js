@@ -507,17 +507,37 @@ async function main() {
         },
       }
     : {};
+  let matcher = null;
   try {
     const { computeInjectContext } = await import(
       path.join(__dirname, "../dist/inject-core.js")
     );
+    // Issue #29: a one-shot user-pattern matcher for this single cold run.
+    //
+    // Creating the HANDLE costs nothing — the worker is constructed only if the
+    // overlay actually has patterns — so a machine with no overlay pays exactly
+    // the 0.6.9 cold path. Handing it in (rather than letting inject-core make its
+    // own) keeps the lifetime owned by the process that will exit.
+    try {
+      const { oneShotMatcher } = await import(
+        path.join(__dirname, "../dist/overlay-matcher.js")
+      );
+      matcher = oneShotMatcher();
+    } catch {
+      // No matcher module: the gate runs on built-ins. Fail-safe, and
+      // `doctor`'s overlay-matcher check reports it.
+    }
     let receiptId = null;
     const context = await computeInjectContext(
       prompt,
       cwd,
       "fallback",
       sessionId || undefined,
-      { onPreparedReceipt: (id) => { receiptId = id; }, ...daemonNote },
+      {
+        onPreparedReceipt: (id) => { receiptId = id; },
+        ...daemonNote,
+        ...(matcher ? { matcher } : {}),
+      },
     );
     if (context) {
       await emitContext(context);
@@ -532,6 +552,10 @@ async function main() {
         "inject-context: runtime dependencies are missing. Run manually:\n" +
           `  cd "${path.join(__dirname, "..")}" && npm install && npm run build\n`,
       );
+    }
+  } finally {
+    if (matcher) {
+      try { matcher.dispose(); } catch { /* the worker is already gone */ }
     }
   }
 }

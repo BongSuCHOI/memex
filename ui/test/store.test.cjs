@@ -1,4 +1,6 @@
 'use strict';
+const {ko}=require('./helpers/locale.cjs');
+require('./helpers/locale.cjs').useKo();   // #109: 기존 한국어 단정은 ko 로케일에서 그대로 통과한다.
 const {test,before,after}=require('node:test');const assert=require('node:assert/strict');const {fixture,uid,PROJECT,OTHER}=require('./fixture.cjs');const {Logs}=require('../lib/logs.cjs');const fs=require('node:fs');const path=require('node:path');
 let f,store;const q=x=>new URLSearchParams(x),scope=(x={})=>store.scope(q(x));
 before(()=>{f=fixture();store=f.store;});after(()=>{f.close();fs.rmSync(f.home,{recursive:true,force:true});});
@@ -57,7 +59,9 @@ test('global fact never discloses project-bound source text in global scope',()=
 test('direct sources and context dependencies stay separate',()=>{const r=store.fact(uid(1),scope({scope:'project',project:PROJECT}));assert.equal(r.sources[0].id,'exchange-0');assert.equal(r.context_dependencies[0].exchange_id,'exchange-1');assert(r.provenance_parse_valid);});
 test('pagination and exact substring search are bounded and parameterized',()=>{const s=scope({scope:'all'});assert.equal(store.facts(q({limit:'7',offset:'7'}),s).items.length,7);assert.equal(store.facts(q({q:"' OR 1=1 --"}),s).total,0);assert.throws(()=>store.facts(q({limit:'-1'}),s),{status:400});assert.throws(()=>store.facts(q({offset:'1000001'}),s),{status:400});});
 test('session detail has real turn pagination and related records',()=>{const d=store.session('session-0',q({limit:20,offset:20}),scope({scope:'project',project:PROJECT}));assert.equal(d.total,26);assert.equal(d.items.length,6);assert.equal(d.items[0].id,'exchange-20');assert(d.jobs.length&&d.recalls.length&&d.capsule);});
-test('job details link actual IDs and do not call related facts direct outputs',()=>{const d=store.job('job-4',scope({scope:'project',project:PROJECT}));assert.equal(d.items.length,5);assert.equal(d.failures.length,1);assert.equal(d.attempts[0].job_id,'job-4');assert.match(d.relatedFactsBasis,/직접 산출물.*의미하지/);});
+test('job details link actual IDs and do not call related facts direct outputs',()=>{const d=store.job('job-4',scope({scope:'project',project:PROJECT}));assert.equal(d.items.length,5);assert.equal(d.failures.length,1);assert.equal(d.attempts[0].job_id,'job-4');// #109: 서버는 프로즈를 만들지 않고 키만 싣는다(설계 §5.3 분류 c).
+ assert.equal(d.relatedFactsBasisKey,'note.job.relatedFactsBasis');
+ assert.match(ko['note.job.relatedFactsBasis'],/직접 산출물.*의미하지/);});
 test('model attempts without target_id still scope through job.target_id',()=>{assert(store.attempts(q(),scope({scope:'project',project:PROJECT})).items.some(x=>x.attempt_id==='attempt-2'));});
 test('missing token usage remains null, not zero',()=>{const d=store.attempts(q({id:'attempt-0'}),scope({scope:'all'})).items[0];assert.equal(d.duration_ms,null);assert.equal(d.token_usage_json,null);assert.equal(d.token_usage_status,'NOT_PROVEN');});
 test('graph edge endpoints and focus results are scoped',()=>{const s=scope({scope:'project',project:PROJECT});const d=store.graph(q({limit:20}),s);const ids=new Set(d.nodes.map(n=>n.id));assert(d.edges.every(e=>ids.has(e.source_fact_id)&&ids.has(e.target_fact_id)));assert(d.truncated);const focused=store.graph(q({focus:uid(1)}),s);assert(focused.nodes.some(n=>n.id===uid(1)));assert.throws(()=>store.graph(q({types:'INVALID'}),s),{status:400});});
@@ -68,3 +72,17 @@ test('symbolic-link logs are not exposed',()=>{fs.symlinkSync('/etc/passwd',path
 test('stable project ID overrides an obsolete matching path',()=>{const existing=store.visibleFact(uid(73),scope({scope:'all'}));f.db.prepare('UPDATE facts SET scope_project=? WHERE id=?').run(PROJECT,existing.id);assert.throws(()=>store.visibleFact(existing.id,scope({scope:'project',project:PROJECT})),{status:404});f.db.prepare('UPDATE facts SET scope_project=? WHERE id=?').run(OTHER,existing.id);});
 test('missing optional telemetry table reports unavailable rather than zero',()=>{f.db.exec('DROP TABLE recall_events');store.refreshSchema();const d=store.recalls(q(),scope({scope:'all'}));assert.equal(d.available,false);assert.equal(d.total,null);});
 test('FTS only activates when readiness flag is set; tokens are quoted',()=>{f.db.exec("CREATE TABLE fts_meta(key TEXT PRIMARY KEY,value TEXT);CREATE VIRTUAL TABLE exchanges_fts USING fts5(user_message,assistant_message,content='exchanges',content_rowid='rowid',detail=column);INSERT INTO exchanges_fts(exchanges_fts) VALUES('rebuild');INSERT INTO fts_meta VALUES('exchanges_fts_built','0');");store.refreshSchema();assert.equal(store.searchClause(q({q:'SQLite'}))[2],'contains');f.db.exec("UPDATE fts_meta SET value='1'");assert.equal(store.searchClause(q({q:'SQLite OR'}))[2],'fts');assert(store.exchanges(q({q:'SQLite'}),scope({scope:'all'})).total>0);});
+// #31/#30: `hold_reason`은 0.7.0에 추가된 nullable 컬럼이다. 화면은 "보류 아님"과 "컬럼 없음"을
+// 구분할 수 없어야 한다 — 둘 다 null이어야 보류 배지가 0.6.x DB에서 거짓 양성이 되지 않는다.
+test('보류 사유는 컬럼이 없는 DB에서도 행에 null로 실린다',()=>{
+ const before=store.jobs(q({limit:'100'}),scope({scope:'all'}));
+ assert(before.items.length,'작업 행이 없어 단정할 수 없습니다');
+ assert(before.items.every(j=>'hold_reason' in j&&j.hold_reason===null),'컬럼이 없는 DB에서 hold_reason이 행에 없습니다');
+ f.db.exec('ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT');
+ f.db.prepare("UPDATE memory_jobs SET hold_reason='model_config_rejected' WHERE job_id='job-1'").run();
+ store.refreshSchema();
+ const after=store.jobs(q({limit:'100'}),scope({scope:'all'}));
+ assert.equal(after.items.find(j=>j.job_id==='job-1').hold_reason,'model_config_rejected');
+ assert(after.items.filter(j=>j.job_id!=='job-1').every(j=>j.hold_reason===null),'보류가 아닌 작업에 사유가 생겼습니다');
+ assert.equal(store.job('job-1',scope({scope:'all'})).job.hold_reason,'model_config_rejected','작업 상세에 사유가 없습니다');
+});

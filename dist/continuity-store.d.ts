@@ -164,6 +164,8 @@ export interface ExtractionTarget {
     itemCount: number;
     policyVersion: string;
     state: MemoryJobState;
+    /** Issue #30: the rule overlay hash recorded at claim time, if any. */
+    rulesHash?: string | null;
 }
 /** Create one immutable target from a claim-time snapshot, never live completion MAX. */
 export declare function ensureExtractionTarget(db: Database.Database, input: {
@@ -172,6 +174,16 @@ export declare function ensureExtractionTarget(db: Database.Database, input: {
     policyVersion?: string;
     now?: string;
 }): ExtractionTarget | null;
+/**
+ * Issue #30 — stamp the rule overlay hash a claim is running under.
+ *
+ * Reporting only: `extraction-rules-drift` reads it to say which sessions were
+ * extracted under a different rule set, and `memex extract rules reextract`
+ * scopes an EXPLICIT re-run by it. Nothing schedules on it. Idempotent, and a
+ * no-op when the value is already what it should be, so the claim path can call
+ * it unconditionally.
+ */
+export declare function setExtractionTargetRulesHash(db: Database.Database, targetId: string, rulesHash: string | null): boolean;
 export declare function readExtractionTargetItems(db: Database.Database, targetId: string, afterOrdinal: number, limit: number): ExtractionTargetItem[];
 export declare function recordExtractionFailure(db: Database.Database, input: {
     targetId: string;
@@ -195,6 +207,29 @@ export declare function supersedeStaleExtractionTarget(db: Database.Database, in
     leaseGeneration: number;
     now?: string;
 }): boolean;
+/**
+ * Put ONE completed extraction target back in the queue (`extract rules reextract`).
+ *
+ * All of the progress state has to go back, not just `state`. `cursor_ordinal` is
+ * the one that bites: a completed target's cursor equals `item_count`, the next
+ * claim reads the page AFTER the cursor, and so a re-queued target handed the
+ * worker an empty page — which `runFactExtraction` records as
+ * `target has no pending page despite incomplete state`. Re-queueing has to mean
+ * "start again from the first ordinal", so the cursor is reset with everything else.
+ *
+ * `rules_hash` is cleared because the next run will stamp the hash it actually ran
+ * under; `lease_generation` is NOT touched, because it is monotonic fencing and
+ * rewinding it would let a stale lease look current again.
+ *
+ * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
+ * returned map is empty for it.
+ */
+export declare function requeueCompletedExtractionTarget(db: Database.Database, input: {
+    targetId: string;
+    jobId?: string | null;
+    checkpointId?: string | null;
+    now?: string;
+}): Record<string, number>;
 export declare function commitExtractionPage(db: Database.Database, input: {
     target: ExtractionTarget;
     items: ExtractionTargetItem[];

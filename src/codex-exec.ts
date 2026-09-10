@@ -13,8 +13,12 @@
 //   --skip-git-repo-check  allows running inside the throwaway workdir
 //   -C <mktemp workdir>    never touches the caller's repository
 //   -o <file>              capture final agent message deterministically
-// Model selection precedence: explicit option > MEMEX_CODEX_MODEL env >
-// DEFAULT_CODEX_MODEL (gpt-5.6-luna). Never hardcode other ids here.
+//   -c model_reasoning_effort=<effort>   Memex's own reasoning level (#31)
+// Selection precedence (model AND reasoning effort): explicit option >
+// MEMEX_CODEX_MODEL / MEMEX_CODEX_REASONING env > <data root>/models.json >
+// core default (DEFAULT_CODEX_MODEL / no flag). This module is the SINGLE
+// interpretation point, so the callers that bypass llm.ts (summarizer.ts,
+// scripts/translate-facts.mjs) follow automatically. Never hardcode other ids.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,7 +27,14 @@ import path from 'node:path';
 /** Set to '1' inside any codex exec child we spawn. Nested calls refuse. */
 export const INNER_GUARD_ENV = 'MEMEX_CODEX_EXEC_INNER';
 
-/** Official default memory-model id used when no override is provided. */
+/**
+ * Official default memory-model id used when no override is provided.
+ *
+ * The constant itself lives in `./model-settings.ts` so the resolver chain has
+ * exactly one bottom; this name is kept for existing callers and tests.
+ * Duplicated as a literal rather than imported for the reason explained at
+ * `loadSelectionResolvers` below: this module must stay loadable from source.
+ */
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
 
 export interface CodexExecOptions {
@@ -32,8 +43,11 @@ export interface CodexExecOptions {
   timeoutMs?: number;
   codexBin?: string;
   /** Explicit model override; when absent, MEMEX_CODEX_MODEL then
-   *  DEFAULT_CODEX_MODEL applies. */
+   *  models.json then DEFAULT_CODEX_MODEL applies. */
   model?: string | null;
+  /** Explicit reasoning effort; when absent, MEMEX_CODEX_REASONING then
+   *  models.json then "no flag at all" applies. */
+  reasoningEffort?: string | null;
   /** Opt-in native response structure; callers still validate domain semantics. */
   outputSchema?: Record<string, unknown>;
   /** Durable model-work input bound, measured in UTF-16 code units. */
@@ -58,6 +72,83 @@ export interface CodexTokenUsage {
 export interface CodexExecObservation {
   duration_ms: number;
   token_usage: CodexTokenUsage | null;
+  /** The model id this call ACTUALLY forwarded (#31 §5): the attempt ledger
+   *  records the intention at reservation and this value at completion.
+   *  Optional so existing provider stubs stay valid. */
+  model?: string;
+  reasoning_effort?: string | null;
+}
+
+/**
+ * A provider rejection of the request ENVELOPE — the model id or the reasoning
+ * level, not the content. Measured 2026-09-11: codex-cli answers such a request
+ * with exit 0, an EMPTY `-o` file, and a 400 inside the `--json` stream, which
+ * is indistinguishable from "the model said nothing" unless the stream is read.
+ *
+ * This is its own error class because no consumer should treat it like a bad
+ * request: the conversation did nothing wrong, so its extraction must not be
+ * split, failed, parked, or dead-lettered. See llm-error-class's `'config'`.
+ */
+export class CodexRequestRejectedError extends Error {
+  readonly name = 'CodexRequestRejectedError';
+  readonly code = 'MEMEX_MODEL_CONFIG';
+  readonly detail: {
+    status: number | null;
+    providerType: string | null;
+    providerMessage: string;
+    model: string;
+    reasoningEffort: string | null;
+  };
+
+  constructor(detail: CodexRequestRejectedError['detail']) {
+    super(
+      `codex exec rejected the request envelope for model "${detail.model}"` +
+        (detail.reasoningEffort ? ` at reasoning effort "${detail.reasoningEffort}"` : '') +
+        ` (${detail.status ?? '?'} ${detail.providerType ?? 'provider error'}): ${detail.providerMessage}`,
+    );
+    this.detail = detail;
+  }
+}
+
+/** Design-document name for the class above; both refer to one identity. */
+export { CodexRequestRejectedError as MemexModelConfigError };
+
+/**
+ * The turn failed and the CLI still exited 0 with no final message.
+ *
+ * Measured: the Codex CLI reports a provider rejection inside the JSONL stream
+ * and exits 0, so WITHOUT this class the only thing left to return was `''` —
+ * which `llm.ts` turns into `EmptyLlmResponseError`, i.e. 'transient'. That is
+ * the wrong verdict for the whole deterministic family: an input-too-large 400
+ * must stay 'deterministic' so the extractor halves its window and recovers the
+ * conversation instead of retrying the identical oversized request three times
+ * and then holding it forever (design §3.2).
+ *
+ * It is deliberately NOT `CodexRequestRejectedError`: the envelope predicate
+ * stays narrow, and everything it refuses is classified from the provider's own
+ * status and sentence by `classifyLlmError`, which is the single classifier.
+ */
+export class CodexTurnFailedError extends Error {
+  readonly name = 'CodexTurnFailedError';
+  /** Read by `extractStatus` in llm-error-class, so 400/413/429/5xx decide. */
+  readonly status: number | null;
+  readonly providerType: string | null;
+
+  constructor(turnError: CodexTurnError) {
+    super(
+      `codex exec turn failed` +
+        (turnError.status === null ? '' : ` (status ${turnError.status})`) +
+        `: ${sanitizeProviderMessage(turnError.message)}`,
+    );
+    this.status = turnError.status;
+    this.providerType = turnError.type;
+  }
+}
+
+export interface CodexTurnError {
+  message: string;
+  status: number | null;
+  type: string | null;
 }
 
 interface ExecResult {
@@ -86,9 +177,70 @@ export function buildCodexPrompt(systemPrompt: string, userMessage: string): str
     : userMessage;
 }
 
+/**
+ * The settings-file layer, loaded lazily.
+ *
+ * A STATIC `import './model-settings.js'` would make this module unloadable
+ * from source: Node's type stripping cannot resolve a source-side `.js`
+ * specifier, and `test/codex-slice.test.mjs` executes `src/codex-exec.ts`
+ * directly with plain `node --test`. Same constraint as
+ * `modelBudgetLimitError()` below, same remedy — dynamic import, cached, with a
+ * graceful env-only fallback when it cannot resolve.
+ *
+ * `runCodex` awaits this before building args, so in every compiled path the
+ * file layer IS consulted. `buildCodexExecArgs` stays synchronous and reads the
+ * cache, so a pure arg test keeps working either way.
+ */
+type SelectionResolvers = {
+  resolveLlmModel: () => { value: string };
+  resolveReasoningEffort: () => { value: string | null };
+};
+let selectionResolvers: SelectionResolvers | null = null;
+let selectionResolversUnavailable = false;
+
+export async function loadSelectionResolvers(): Promise<void> {
+  if (selectionResolvers || selectionResolversUnavailable) return;
+  try {
+    const mod = await import('./model-settings.js');
+    selectionResolvers = {
+      resolveLlmModel: () => mod.resolveLlmModel(),
+      resolveReasoningEffort: () => mod.resolveReasoningEffort(),
+    };
+  } catch {
+    selectionResolversUnavailable = true;
+  }
+}
+
+/** Resolved selection this process would use right now, for the arg builder and
+ *  for the attempt ledger's "what did we actually send" record. */
+export async function resolveCodexSelection(
+  opts: { model?: string | null; reasoningEffort?: string | null } = {},
+): Promise<{ model: string; reasoningEffort: string | null }> {
+  await loadSelectionResolvers();
+  return currentSelection(opts);
+}
+
+function currentSelection(
+  opts: { model?: string | null; reasoningEffort?: string | null },
+): { model: string; reasoningEffort: string | null } {
+  const model = opts.model != null && String(opts.model).trim()
+    ? String(opts.model).trim()
+    : selectionResolvers
+      ? selectionResolvers.resolveLlmModel().value
+      : process.env.MEMEX_CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
+  const reasoningEffort =
+    opts.reasoningEffort !== undefined
+      ? (opts.reasoningEffort == null ? null : String(opts.reasoningEffort).trim() || null)
+      : selectionResolvers
+        ? selectionResolvers.resolveReasoningEffort().value
+        : process.env.MEMEX_CODEX_REASONING?.trim() || null;
+  return { model, reasoningEffort };
+}
+
 /** Pure arg builder — unit-tested without spawning anything. */
 export function buildCodexExecArgs(opts: {
   model?: string | null;
+  reasoningEffort?: string | null;
   workdir: string;
   outputLast?: string;
   outputSchemaPath?: string;
@@ -105,16 +257,124 @@ export function buildCodexExecArgs(opts: {
     '--skip-git-repo-check',
     '-C', opts.workdir,
   ];
-  const model = opts.model != null
-    ? opts.model
-    : process.env.MEMEX_CODEX_MODEL || DEFAULT_CODEX_MODEL;
-  const trimmed = model ? String(model).trim() : '';
-  if (trimmed) args.push('-m', trimmed);
+  const selection = currentSelection(opts);
+  if (selection.model) args.push('-m', selection.model);
+  // `--ignore-user-config` and `-c` coexist (measured): `-c` is the CLI override
+  // layer, not the user's config.toml. So the user's own
+  // `model_reasoning_effort` still cannot reach Memex — that isolation is
+  // intentional — and this gives Memex its own setting instead.
+  //
+  // The value is parsed as TOML by the CLI. Anything outside `[a-z]+` would be
+  // a syntax hazard rather than a level, so the flag is omitted and the call
+  // proceeds: a malformed setting must not kill the model call.
+  if (selection.reasoningEffort) {
+    if (/^[a-z]+$/.test(selection.reasoningEffort)) {
+      args.push('-c', `model_reasoning_effort=${selection.reasoningEffort}`);
+    } else {
+      console.error(
+        `[memex] ignoring reasoning effort ${JSON.stringify(selection.reasoningEffort)} — ` +
+          'expected lowercase letters only',
+      );
+    }
+  }
   if (opts.outputLast) args.push('-o', opts.outputLast);
   if (opts.outputSchemaPath) args.push('--output-schema', opts.outputSchemaPath);
   args.push('--json', '-'); // prompt via stdin
   return args;
 }
+
+/**
+ * Pull the provider's turn-level failure out of a `--json` stream.
+ *
+ * Measured shapes: `{"type":"error","message":"<provider body>"}` followed by
+ * `{"type":"turn.failed","error":{...}}`. The status and the error type live
+ * INSIDE the message text (the CLI passes the provider body through), so they
+ * are sniffed rather than read from a field. Last failure wins.
+ */
+export function turnErrorFromEvents(stdout: string): CodexTurnError | null {
+  // An `error` event carries the provider's own body; the `turn.failed` that
+  // follows it usually says only "the turn failed". Ranking them keeps the
+  // specific diagnosis from being overwritten by the generic epitaph.
+  let fromErrorEvent: string | null = null;
+  let fromTurnFailed: string | null = null;
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    let event: { type?: unknown; message?: unknown; error?: unknown };
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== 'object') continue;
+    let raw: unknown;
+    if (event.type === 'error') {
+      raw = event.message;
+    } else if (event.type === 'turn.failed') {
+      const inner = event.error;
+      raw = inner && typeof inner === 'object' && !Array.isArray(inner)
+        ? (inner as { message?: unknown }).message ?? JSON.stringify(inner)
+        : inner;
+    } else {
+      continue;
+    }
+    const text = typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw);
+    if (!text.trim()) continue;
+    if (event.type === 'error') fromErrorEvent = text;
+    else fromTurnFailed = text;
+  }
+  const message = fromErrorEvent ?? fromTurnFailed;
+  if (message === null) return null;
+  return { message, status: statusFromText(message), type: errorTypeFromText(message) };
+}
+
+/** Status numbers are read only where they are LABELLED. A bare number in a
+ *  provider sentence ("retry after 400 ms") is never a status — the same rule
+ *  llm-error-class.ts applies, for the same reason. */
+function statusFromText(text: string): number | null {
+  const labelled = text.match(
+    /(?:"?status(?:_code)?"?\s*[:=]\s*|status\s+|error\s+code:?\s*|\bhttp\s+)(\d{3})\b/i,
+  );
+  if (labelled) return Number.parseInt(labelled[1], 10);
+  return null;
+}
+
+function errorTypeFromText(text: string): string | null {
+  const match = text.match(/"type"\s*:\s*"([a-z_]+)"/i) ?? text.match(/\b(invalid_request_error)\b/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Narrow, deliberately conservative: is this turn error a rejection of the
+ * request ENVELOPE rather than of the request's content?
+ *
+ * Risk R2 runs the other way. Widening this predicate would route a real
+ * input-too-large 400 into the config lane, where the extraction window is
+ * never split — so a long conversation would be held forever instead of
+ * recovered. When in doubt, leave it `deterministic`.
+ */
+const ENVELOPE_REJECTION_RE =
+  /\[reasoning\.effort\]|reasoning_effort|model is not supported|unknown model|model_not_found|model is not available/i;
+
+export function isEnvelopeRejection(error: CodexTurnError | null): boolean {
+  if (!error) return false;
+  if (error.status !== 400) return false;
+  // `invalid_request_error` when the provider names a type; a measured model-id
+  // rejection carries no type at all, so an absent one is allowed — the regex
+  // below is what keeps the predicate narrow.
+  if (error.type !== null && error.type !== 'invalid_request_error') return false;
+  return ENVELOPE_REJECTION_RE.test(error.message);
+}
+
+/** Strip control characters and bound the provider's own sentence before it
+ *  reaches a durable row or a terminal line. */
+export function sanitizeProviderMessage(message: string, limit = 400): string {
+  return message
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
 
 /** Pull the last agent answer out of --json JSONL events (fallback path). */
 export function lastAgentMessageFromEvents(stdout: string): string {
@@ -351,6 +611,14 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
   const maxInputChars = assertLimit(opts.maxInputChars, 'maxInputChars');
   const maxOutputChars = assertLimit(opts.maxOutputChars, 'maxOutputChars');
 
+  // Resolve the selection ONCE per call, before anything can observe or fail:
+  // the arg builder, the telemetry line and a possible envelope rejection must
+  // all name the same model and effort.
+  const selection = await resolveCodexSelection({
+    model: opts.model,
+    reasoningEffort: opts.reasoningEffort,
+  });
+
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'memex-llm-'));
   const outPath = path.join(workdir, 'last-message.txt');
   const started = performance.now();
@@ -362,6 +630,8 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
       opts.onObservation?.({
         duration_ms: performance.now() - started,
         token_usage,
+        model: selection.model,
+        reasoning_effort: selection.reasoningEffort,
       });
     } catch {
       // Telemetry is optional and must never change model-call behavior.
@@ -384,7 +654,13 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
     );
     const schemaPath = opts.outputSchema ? path.join(workdir, 'output-schema.json') : undefined;
     if (schemaPath) fs.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 0o600 });
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
+    const args = buildCodexExecArgs({
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
+      workdir,
+      outputLast: outPath,
+      outputSchemaPath: schemaPath,
+    });
     const res = await runChild(bin, args, workdir, prompt, effectiveTimeoutMs);
     const tokenUsage = tokenUsageFromEvents(res.stdout);
     observe(tokenUsage);
@@ -416,6 +692,25 @@ export async function runCodex(opts: CodexExecOptions = {}): Promise<string> {
     if (!text) text = lastAgentMessageFromEvents(res.stdout);
     if (maxOutputChars !== undefined && text.length > maxOutputChars) {
       throw await modelBudgetLimitError('output', text.length, maxOutputChars);
+    }
+    // #31: an envelope rejection arrives here as exit 0 + no body. Without this
+    // branch it became an empty response — "transient" — and the same bad model
+    // id was retried three times per call, forever.
+    if (!text) {
+      const turnError = turnErrorFromEvents(res.stdout);
+      if (isEnvelopeRejection(turnError)) {
+        throw new CodexRequestRejectedError({
+          status: turnError!.status,
+          providerType: turnError!.type,
+          providerMessage: sanitizeProviderMessage(turnError!.message),
+          model: selection.model,
+          reasoningEffort: selection.reasoningEffort,
+        });
+      }
+      // Every OTHER turn error is surfaced too. Dropping it returned `''`, which
+      // `llm.ts` reads as an empty response — 'transient' — so a context-length
+      // 400 was retried unchanged and then held, instead of halving the window.
+      if (turnError) throw new CodexTurnFailedError(turnError);
     }
     if (!text && res.code !== 0) {
       throw new Error(

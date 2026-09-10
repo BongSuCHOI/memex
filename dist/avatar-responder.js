@@ -97,6 +97,18 @@ export async function askAvatar(db, question, project, scope, identityScope) {
         // 원문 provider 에러는 엔드포인트·토큰 조각 등을 담을 수 있어 사용자 대면 응답에
         // 그대로 싣지 않는다 — 분류만 노출하고 상세는 서버 로그로 (Codex 리뷰 MEDIUM).
         console.error('ask_avatar: LLM call failed after retries:', error);
+        // 이슈 #31: 설정 거절은 "잠시 후 다시 시도"가 틀린 안내다 — 기다려도 같은
+        // 거절이고, 사용자가 할 일은 설정을 고치는 것이다. 분류만 노출하는 원칙은
+        // 유지하되 행동 가능한 문장을 준다.
+        if (classifyLlmError(error) === 'config') {
+            return {
+                answer: '⚠️ 모델 설정이 거절됐습니다. `memex models show` 로 현재 선택을 확인하고 ' +
+                    '`memex models test` 로 검증해 주세요. 설정을 고치면 자동으로 재개됩니다.',
+                sources: [],
+                confidence: 0,
+                relatedDecisions,
+            };
+        }
         return {
             answer: `⚠️ LLM 호출이 재시도 후에도 실패해 답변을 생성하지 못했습니다 (${classifyLlmError(error)}). 잠시 후 다시 시도해 주세요.`,
             sources: [],

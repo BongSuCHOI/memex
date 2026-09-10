@@ -11,6 +11,7 @@ import { openReadDb } from "./db.js";
 import { describeDerivedLaneSkipReason, readDerivedLaneSkips, } from "./derived-lane-skip.js";
 import { EMBEDDING_VERSION } from "./embeddings.js";
 import { countFactsWithoutLocalEvidence, hasEvidenceSchema, } from "./evidence-backfill.js";
+import { heldJobSummary } from "./model-budget.js";
 import { buildOntologyParkedClause, buildOntologyParkedRetryClause, } from "./ontology-selector.js";
 import { getDbPath, getArchiveDir, getMemexHome, llmWorkdirCwdSql, } from "./paths.js";
 import { EXTRACTION_STATE, freshClaimPredicate, getExtractionConfig, pendingExtractionCoreQuery, } from "./pending-extraction.js";
@@ -18,6 +19,10 @@ function tableExists(db, name) {
     return (db
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
         .get(name) !== undefined);
+}
+function columnNames(db, table) {
+    return new Set(db.prepare(`PRAGMA table_info(${table})`).all()
+        .map((row) => row.name));
 }
 function count(db, sql, ...params) {
     const row = db.prepare(sql).get(...params);
@@ -475,6 +480,9 @@ export function emptyAttention() {
         memoryJobsDead: 0,
         memoryJobsRetry: 0,
         memoryJobsBackoff: 0,
+        held: 0,
+        heldByReason: [],
+        modelConfigHeld: 0,
         terminal: {
             checkpointsDeadLetter: 0,
             checkpointsFailedVisible: 0,
@@ -500,6 +508,14 @@ function readAttention(db) {
     attention.memoryJobsRetry = stateCount("memory_jobs", "state = 'retry'");
     attention.memoryJobsBackoff = stateCount("memory_jobs", "state = 'retry' AND available_at > ?", nowIso);
     attention.total = attention.memoryJobsDead + attention.memoryJobsRetry;
+    // Issues #31/#30. `heldJobSummary` owns the predicate and the reason whitelist,
+    // so a new hold family appears here the moment it is added to HOLD_REASONS
+    // instead of being silently uncounted. Guarded inside: a pre-0.7.0 database has
+    // no `hold_reason` column and returns an empty list.
+    attention.heldByReason = heldJobSummary(db);
+    attention.held = attention.heldByReason.reduce((sum, row) => sum + row.jobs, 0);
+    attention.modelConfigHeld =
+        attention.heldByReason.find((row) => row.reason === "model_config_rejected")?.jobs ?? 0;
     attention.terminal = {
         checkpointsDeadLetter: stateCount("checkpoints", "state = 'dead-letter'"),
         checkpointsFailedVisible: stateCount("checkpoints", "state = 'failed-visible'"),
@@ -634,6 +650,23 @@ export function formatPipelineStatus(s) {
         ")");
     if (a.total > 0) {
         lines.push("  inspect: memex jobs list --state dead   recover: memex recover --all-dead   retire: memex jobs dismiss <id> --reason \"...\"");
+    }
+    // Issues #31/#30: a held job is not a failure, so it gets its own line and its
+    // own remedy rather than being folded into the dead/retry count. EVERY hold
+    // family is named — an extraction-rules hold stops the entire extraction queue,
+    // and reporting only the model family made that look like an idle pipeline.
+    if (a.held > 0) {
+        const reasons = a.heldByReason.map((row) => `${row.reason}=${row.jobs}`).join(", ");
+        const remedies = [
+            ...(a.heldByReason.some((row) => row.reason === "model_config_rejected")
+                ? ["memex models show"]
+                : []),
+            ...(a.heldByReason.some((row) => row.reason.startsWith("extraction_rules_"))
+                ? ["memex extract rules validate"]
+                : []),
+        ];
+        lines.push(`  config held: ${a.held} job(s) waiting on a configuration (${reasons}) — ` +
+            `no attempt was consumed; fix it and they resume automatically: ${remedies.join("  ")}`);
     }
     const terminal = Object.entries(a.terminal).filter(([, count]) => count > 0);
     if (terminal.length > 0) {

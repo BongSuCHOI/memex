@@ -59,7 +59,8 @@ describe("워커 ↔ dist 계약", () => {
   it("dist 의 보고 표가 필드까지 완전하다 (키만 있는 구버전 표 탐지)", async () => {
     const { FAILURE_REPORT } = await import("../dist/fact-extractor.js");
     const kinds = Object.keys(FAILURE_REPORT);
-    expect(kinds.length, "분류 수").toBe(4);
+    // 이슈 #31 이 `config`(held) 를 추가해 5 가 됐다.
+    expect(kinds.length, "분류 수").toBe(5);
     for (const k of kinds) {
       const rep = (FAILURE_REPORT as Record<string, Record<string, unknown>>)[
         k
@@ -67,7 +68,7 @@ describe("워커 ↔ dist 계약", () => {
       // 키 존재만으로는 부족하다 — 워커가 읽는 필드가 실제로 있어야 집계·경보가 산다
       expect(typeof rep.label, `${k}.label`).toBe("string");
       expect(typeof rep.note, `${k}.note`).toBe("string");
-      expect(["handoff", "transient", "budget"], `${k}.bucket`).toContain(
+      expect(["handoff", "transient", "budget", "held"], `${k}.bucket`).toContain(
         rep.bucket,
       );
       expect(typeof rep.consumesBudget, `${k}.consumesBudget`).toBe("boolean");

@@ -85,5 +85,19 @@ export interface DoctorReport {
     json: unknown[];
     overall: "PASS" | "PARTIAL" | "FAIL";
 }
-/** Read-only diagnosis. Distinguishes configured vs observed. */
+export interface Check {
+    name: string;
+    status: "ok" | "warn" | "fail";
+    detail: string;
+}
+/**
+ * Issue #31 — which model is Memex using, and is anything waiting on it?
+ *
+ * Two things were invisible before. Which model and reasoning level this
+ * installation resolves (and from WHERE — env, models.json, or the built-in
+ * default), and whether a rejected selection has quietly paused model work. The
+ * second matters most: a hold fails no job and consumes no attempt, so without
+ * this check the only symptom is "nothing is being extracted any more".
+ */
+export declare function llmModelCheck(): Check;
 export declare function doctor(): Promise<DoctorReport>;

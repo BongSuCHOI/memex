@@ -5,6 +5,22 @@ export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema
     /** Durable model-work context. Existing callers may omit this; a stable
      * standalone budget is created for the enclosing call. */
     modelContext?: Partial<ModelWorkContext>;
+    /** Issue #31: per-call model override, so the evaluation harness and the
+     *  settings probe can name a model without mutating process env globally. */
+    model?: string | null;
+    /** Per-call reasoning effort. `null` means "send no flag". */
+    reasoningEffort?: string | null;
+    /** Issue #31: the ONLY way past an active config hold. The settings probe
+     *  sets it, because otherwise the user could never verify a fix. */
+    bypassConfigHold?: boolean;
+    /**
+     * Retries for THIS call, overriding `MEMEX_LLM_RETRIES`. `0` means exactly one
+     * provider call. The settings probe sets it: "test this model once" must spend
+     * one call, one timeout and one ledger attempt, which is what its CLI help and
+     * the UI confirmation promise — the shared default of 2 retries turned that
+     * into three calls and up to three timeouts.
+     */
+    maxRetries?: number;
 }
 export interface MemoryModelObservation {
     attempts: number;

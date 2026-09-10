@@ -48,6 +48,22 @@ export interface InjectLogEntry {
     /** Issue #32: 'unavailable' means the literal-match lane threw for this prompt. */
     lexical_lane?: "ok" | "unavailable";
     /**
+     * Issue #29: the recall-gate overlay applied to this prompt, as `gate:<sha8>`.
+     * Absent means no overlay — the line is then byte-identical to a 0.6.9 line.
+     */
+    gate_overlay?: string;
+    /**
+     * Issue #29: how the user-pattern matcher worker fared.
+     *
+     * A quarantine or a dead worker silently drops the operator's own rules, which
+     * is exactly the class of failure this log exists to make measurable:
+     *  - `ok`          — patterns ran inside the 50 ms budget
+     *  - `timeout`     — a pattern burned the budget and was QUARANTINED
+     *  - `unavailable` — queue/startup timeout, or the worker could not be used
+     *  - `dead`        — the worker died under us
+     */
+    gate_overlay_worker?: "ok" | "timeout" | "dead" | "unavailable";
+    /**
      * Issue #84: which build served the fast path, or why it was refused.
      *
      * On `via: "daemon"` this is the answering daemon's own identity, so a line can

@@ -122,6 +122,9 @@ test('read-only commands answer --help with exit 0 instead of an error', (t) => 
     ['recover', /Usage: memex recover/],
     ['doctor', /Usage: memex doctor/],
     ['model-work', /memex model-work status/],
+    // Issue #31: the guard is KNOWN_COMMANDS membership, so a command missing
+    // from the table is simply unguarded — `models set --help` would have saved.
+    ['models', /memex models show \[--json\]/],
   ]) {
     const result = run(fixture.env, [command, '--help']);
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
@@ -141,12 +144,24 @@ test('commands with their own richer help still print it, without doing work', (
     ['search', /Usage: memex search/],
     ['show', /Usage: memex show/],
     ['sync', /Usage: memex sync/],
+    // Delegated to src/models-cli.ts so the long text has a single source.
+    ['models', /memex models test \[--model <id>\]/],
+    // Issue #29: `gate` is in KNOWN_COMMANDS via HELP_DELEGATES, so the guard
+    // intercepts every `memex gate … --help` before a write verb can run.
+    ['gate', /Usage:\n {2}memex gate show/],
+    // Issue #30: same for `extract`, whose write verbs (set, reset, rollback,
+    // reextract --apply) all change state the moment they actually run.
+    ['extract', /Usage:\n {2}memex extract rules show/],
   ]) {
     const result = run(fixture.env, [command, '--help']);
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
     assert.match(result.stdout, usage, command);
   }
   assert.ok(!fs.existsSync(path.join(fixture.memexHome, 'conversation-index')));
+  assert.ok(
+    !fs.existsSync(path.join(fixture.memexHome, 'overlays')),
+    'gate/extract --help must not create the overlay dir',
+  );
 });
 
 test('an unknown command with --help is still an unknown command', (t) => {

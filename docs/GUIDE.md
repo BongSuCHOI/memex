@@ -286,7 +286,15 @@ graph_stats
 ```bash
 npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 # http://127.0.0.1:3847  (PORT로 변경)
+
+memex-ui --lang ko          # 서버 기본 언어 (MEMEX_UI_LANG=ko와 같고, 플래그가 이깁니다)
 ```
+
+화면 기본 언어는 **영어**입니다(0.7.0, #109). 언어는 주소의 `?lang=ko` > 이 브라우저에 저장된 선택 >
+`memex-ui --lang` / `MEMEX_UI_LANG` > `en` 순으로 정해지고, 상단 `EN`/`KO` 버튼과 관리 › 화면 설정의
+**표시 언어**가 이 브라우저에 저장합니다. `--lang`에 `en`·`ko`가 아닌 값을 주면 **기동에 실패**합니다.
+문서(`docs/`)는 한국어만 있고 영어 화면도 같은 문서를 가리킵니다. 자세한 내용은
+[WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#언어-070-109).
 
 | URL | 역할 |
 | --- | --- |
@@ -296,7 +304,7 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/taxonomy` | 분류: ontology domain/category |
 | `/graph` | 지식 지도: WebGL 2D/3D 관계 그래프 (Canvas2D fallback) |
 | `/activity` | 활동·추적: Chronicle, 작업, 모델 시도, 주입, 로그, 관리 실행 |
-| `/settings` | 관리: 런타임, 관리 명령, 화면 설정, 진단 |
+| `/settings` | 관리: 런타임, 관리 작업, 동기화, 화면 설정, 진단, **오버레이**·**모델**(0.7.0) |
 
 범위는 화면 상단에서 명시적으로 선택하며 query에도 그대로 반영됩니다:
 `scope=global`, `scope=project&project=/abs/path`, `scope=all`.
@@ -335,8 +343,15 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   ├── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
 │   ├── devices.json                    # 기기 id → 사람이 읽는 이름 (로컬, 공유되지 않음)
 │   └── exports/<device>-<generation>.zip   # 수동으로 옮기는 세대 파일
+├── models.json                         # 모델·추론 강도 선택 (0.7.0, #31). 로컬 전용, 동기화되지 않습니다
 ├── models/                             # embedding model 캐시 (0.6.5, #92)
 │   └── Xenova/multilingual-e5-small/   # config·tokenizer + onnx/ 가중치 (~129 MB)
+├── overlays/                           # 사용자 오버레이 (0.7.0, #29 #30). 기기 간 공유는 0.7.1
+│   ├── recall-gate.json                # 내 회수 게이트 정규식·단어
+│   ├── extraction-rules.json           # 내 추출 제한
+│   ├── quarantine.json                 # 실행 상한을 넘겨 격리된 패턴 (두 오버레이가 공유)
+│   ├── history.jsonl                   # 변경 1건 = 메타데이터 1줄
+│   └── history/<overlay>/<revision>.json   # rollback 스냅숏 (오버레이별 20개)
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
@@ -541,6 +556,11 @@ Git marketplace에서는 marketplace snapshot을 갱신하고 plugin cache를 �
 수행합니다 — 약 129 MB, 진행 표시 있음, 실패는 경고이며 의존성 materialize 자체는 성공입니다.
 `--no-warm`으로 생략할 수 있습니다(`memex update --no-warm`도 그대로 전달됩니다).
 
+0.7.0 이후 **0.6.x로 내려가면** 사용자 오버레이가 조용히 꺼집니다 — 0.6.x 코어는
+`overlays/`를 읽지 않으므로 내 게이트 규칙과 추출 제한이 적용되지 않고, `hold_reason`이 남은 작업은
+그냥 `pending`으로 보입니다(무해). 파일은 지워지지 않으므로 다시 올라오면 그대로 되살아납니다.
+자세한 내용은 [§22.3](#223-06x로-내려갈-때).
+
 ## 13. 진단
 
 ```bash
@@ -553,9 +573,13 @@ node scripts/package-runtime-e2e.mjs
 node scripts/lifecycle-e2e.mjs
 ```
 
-`memex doctor`가 출력하는 점검 항목은 다음 순서로 **항상 12개**이고, `ontology-index`는 repair
-marker가 있을 때만 추가되어 최대 13개입니다. 하나라도 `FAIL`이면 전체가 `FAIL`이고 exit code는 `1`,
-전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
+`memex doctor`가 출력하는 점검 항목은 다음 순서로 **항상 19개**이고(0.7.0에서 `llm-model` 1개와
+오버레이 5개가 추가됐습니다), `ontology-index`는 repair marker가 있을 때만 추가되어 최대 20개입니다.
+하나라도 `FAIL`이면 전체가 `FAIL`이고 exit code는 `1`, 전부 `ok`면 `PASS`, 그 밖에는 `PARTIAL`입니다.
+
+0.7.0부터 **사용자 오버레이가 없는 기본 설치의 판정은 `PASS`가 아니라 `PARTIAL`** 입니다 —
+`overlay-matcher`가 "돌릴 사용자 패턴이 없다"를 `warn`으로 보고하기 때문입니다(증명할 것이 없다는
+뜻이며 고장이 아닙니다). 아래 표의 해당 줄을 보십시오.
 
 | 점검 | ok / warn / fail |
 | --- | --- |
@@ -567,12 +591,18 @@ marker가 있을 때만 추가되어 최대 13개입니다. 하나라도 `FAIL`�
 | `inject-output` | 최근 20줄의 마지막 상태. `error`/`receipt-failed`면 fail, 창 안에 `receipt-failed`가 섞이면 warn |
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
+| `llm-model` (0.7.0, #31) | 해석된 모델·추론 강도와 **그 출처**(`env`/`file`/`default`/`explicit`). 내 설정 지문에 활성 HOLD가 있으면 warn + provider 원문·최초 관측·관측 횟수와 `memex models show → set → test` 안내. 다른 선택의 HOLD만 있으면 ok(막지 않음을 명시). HOLD가 없는데 다른 사유로 대기 중인 작업이 있으면 warn. 자세한 내용은 [§21](#21-모델-선택-070-31) |
 | `embedding-cache` (0.6.5, #92) | 안정 캐시(`<data root>/models`, `MEMEX_MODEL_CACHE_DIR`로 변경)에 embedding model이 있는지. 있으면 ok(크기·파일 수·경로), `MEMEX_EMBEDDING_STUB=1`이면 모델이 필요 없으니 ok, 없으면 **warn** + "첫 프롬프트가 느립니다 — `memex deps warm`". 가중치 없이 파일만 있으면 중단된 다운로드로 구분해 말하고, 레거시 per-root 캐시가 남아 있으면 "복사되므로 몇 초면 됩니다"를 덧붙입니다. `@xenova/transformers`를 적재하지 않는 순수 파일 점검이라 runtime 의존성이 없는 호스트에서도 답합니다 |
 | `inject-daemon` (0.6.3, 상태 세분화 0.6.4·0.6.6) | fast-path socket의 상태와 소유자 정체. 아래 표의 상태로 보고하며 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록). 판정 기준이 되는 "같은 빌드"는 **설치본**(훅이 실행되는 루트)입니다 — npx shim 때문에 doctor 자신이 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아닙니다 |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
 | `ontology-index` (0.6.1, 조건부) | `ontology_index_repair_state`에 marker가 있을 때만 나타납니다. category vector index 수리가 `blocked`면 fail(분류가 멈춘 상태 — `memex backfill embeddings`로 벡터 재생성), 화해되었으면 ok |
 | `sync-export` | 동기화가 꺼져 있으면 `skipped(off)`로 ok(경고 아님). 켜져 있는데 export 훅이 어느 hook에도 등록되지 않았거나 한 번도 내보낸 적이 없으면 warn. 마지막 export가 실패면 fail, 성공이면 ok |
+| `recall-gate-overlay` (0.7.0, #29) | `overlays/recall-gate.json`의 상태. 없으면 `absent — built-in defaults only`로 ok, `MEMEX_DISABLE_OVERLAYS=1`도 ok, 읽을 수 없거나 유효하지 않으면 **fail**(내장 기본값으로 동작 중임을 밝히고 `memex gate validate` 안내), 경고만 있으면 warn, 정상이면 해시·revision·패턴 수를 적고 ok |
+| `overlay-pattern-quarantine` (0.7.0, #29) | 격리된 패턴이 있으면 **fail** — 사용자가 쓴 규칙이 조용히 꺼진 상태이므로 경고로 끝내지 않습니다. 50 ms 상한을 넘겨 적용되지 않는 패턴 id를 적고 `memex gate quarantine list`를 안내 |
+| `overlay-matcher` (0.7.0, #29) | 패턴 매칭 worker를 실제로 띄워 확인합니다. 쓸 수 없으면 **fail**(게이트 패턴은 fail-safe로 미적용, 추출은 fail-closed로 HOLD). `MEMEX_DISABLE_OVERLAYS=1`이면 ok. **사용자 패턴이 하나도 없으면 `warn`**(`no user pattern to run` — 증명할 것이 없다는 뜻) |
+| `extraction-rules-overlay` (0.7.0, #30) | `overlays/extraction-rules.json`의 상태. 없으면 ok, 유효하지 않으면 **fail**(`EXTRACTION IS HELD (no attempts consumed)` + `memex extract rules validate` 안내), 경고만 있으면 warn, 정상이면 해시·revision·규칙 수로 ok |
+| `extraction-rules-hold` (0.7.0, #30) | `hold_reason`이 `extraction_rules_*`인 작업 수. 1건이라도 있으면 **fail** — 보류된 작업은 `dead`도 `retry`도 아니어서 다른 화면이 평범한 대기 작업으로 보고하는 동안 아무것도 저장되지 않습니다 |
 
 `inject-daemon`의 상태(0.6.4 #89의 4상태 + 0.6.6 #99의 경로 길이). 0.6.3까지는 앞의 두 상태가 모두 `no daemon — …`(ok) 한 줄로
 합쳐져 있었고, 그래서 "소유자가 종료해 매 프롬프트가 70초를 내고 있다"가 "아직 아무도 안 떴다"와
@@ -975,6 +1005,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
+| `memex models` (0.7.0 #31) | 모델 작업에 쓸 모델·추론 강도 선택: `show\|set\|reset\|test`. `set`은 `--model`·`--reasoning`(`unset`으로 플래그 제거), `test`는 `--timeout-ms`(기본 `60000`). 모두 `--json` | [§21](#21-모델-선택-070-31) |
+| `memex gate` (0.7.0 #29) | 회수 게이트 오버레이: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 쓰기 동사는 `--dry-run`·`--expect-revision` | [§22](#221-회수-게이트-오버레이-memex-gate) |
+| `memex extract` (0.7.0 #30) | 추출 규칙 오버레이(추출 자체는 하지 않습니다): `rules show\|validate\|set\|test\|history\|reset\|rollback\|reextract`, 그리고 모델을 쓰는 `eval` | [§22](#222-추출-규칙-오버레이-memex-extract) |
 | `memex doctor` | 의존성·빌드·Codex home·hook 등록/관측·주입 출력·recall provenance·sync export 진단 (`--json`) | [§13](#13-진단) |
 | `memex home` | 해석된 Memex data root 출력 (`--json`) | [§10](#10-저장-위치와-sync) |
 | `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02). `--dry-run` | — |
@@ -1001,6 +1034,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `MEMEX_RUNTIME_FORCE_REMOTE` | unset | `runtime-exec`가 설치본 대신 `npx` 경로를 쓰게 강제 (진단용) |
 | `MEMEX_MCP_AUTOSTART` | unset | MCP wrapper가 서버를 자동 기동 (진단용) |
 | `PORT` | `3847` | Web UI 포트 |
+| `MEMEX_UI_LANG` (0.7.0 #109) | `en` | Web UI의 **서버 기본 언어**(`en`\|`ko`). `memex-ui --lang`이 이 변수를 이기고, 둘 다 알 수 없는 값이면 **기동에 실패**합니다. 브라우저에 저장된 선택과 주소의 `?lang`이 이 값보다 우선합니다([§9](#9-web-ui)) |
+| `MEMEX_OVERLAY_DIR` (0.7.0 #29 #30) | `<home>/overlays` | 사용자 오버레이 디렉터리. 데이터 루트 전체를 옮기지 않고 오버레이만 임시 위치로 보내기 위한 **테스트·벤치마크용**입니다([§22](#22-사용자-오버레이--회수-게이트와-추출-규칙-070-29-30)) |
+| `MEMEX_DISABLE_OVERLAYS` (0.7.0 #29 #30) | unset | `1`이면 오버레이를 **읽지 않습니다**(게이트는 내장 규칙만, 추출은 0.6.9와 동일, HOLD 아님). **문자열 `1`만 인정**하며 `true`·`yes`는 동작하지 않습니다 |
 
 ### 수집과 기억 계층
 
@@ -1021,7 +1057,8 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | 변수 | 기본 | 의미 |
 | --- | --- | --- |
 | `MEMEX_CODEX_BIN` | `codex` | worker가 실행할 Codex CLI 경로 |
-| `MEMEX_CODEX_MODEL` | `gpt-5.6-luna` | worker 모델. 명시적 호출 옵션 > 이 변수 > 기본값 |
+| `MEMEX_CODEX_MODEL` | `gpt-5.6-luna` | worker 모델. 명시적 호출 옵션 > 이 변수 > `<data root>/models.json` > 기본값([§21](#21-모델-선택-070-31)). **형식 검사를 하지 않습니다** — 오타는 provider 거절(설정 대기)로 드러납니다 |
+| `MEMEX_CODEX_REASONING` (0.7.0 #31) | unset (= 플래그 없음) | 추론 강도. `none`·`minimal`·`low`·`medium`·`high`·`xhigh`·`max`·`ultra`만 인정하고, 그 밖의 값은 경고 1줄 후 **무시**하고 `models.json`·기본값으로 내려갑니다 |
 | `MEMEX_CODEX_EXEC_TIMEOUT_MS` | `180000` | 호출 timeout. 남은 run 시간보다 길게 실행하지 않습니다 |
 | `MEMEX_LLM_RETRIES` | `2` (상한 `5`) | 재시도 횟수(총 시도 − 1) |
 | `MEMEX_LLM_RETRY_BASE_MS` | `500` (상한 `5000`) | 지수 백오프 기준값. 실제 대기는 최대 30초 |
@@ -1067,6 +1104,11 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | extraction failed range | `terminal state: extractionFailedRanges=…`, `N failed-visible` | 정확히 어떤 구간이 실패했는지 기록된 terminal range | `memex recover …` (CHECK 제약상 `retry`로 되돌아가며 오류 원문은 보존) |
 | capture gap open | `terminal state: captureGapsOpen=…` | capture가 fail-open으로 넘어간 구간 | **`recover` 대상 아님.** 같은 세션의 다음 성공 capture가 닫습니다. 실패를 즉시 드러내려면 `MEMEX_STRICT_CAPTURE=1` |
 | model-work budget exhausted | `terminal state: modelWorkBudgetsExhausted=…` | run 예산(시도·deadline) 소진 | `memex model-work status` → `memex model-work resume <budget-id> --new-run` |
+| 모델 설정 대기 (0.7.0, #31) | `memex status`의 `model config held: N job(s) waiting on a model setting`(`Needs attention` 합계에는 **포함되지 않습니다**), `memex jobs list`의 `waiting on configuration: model_config_rejected`, `doctor`의 `llm-model: warn`, 관리 › 모델 탭 | provider가 **요청 봉투 자체를 거절**했습니다(없는 모델 id, 그 계정이 쓸 수 없는 모델, 그 모델이 받지 않는 추론 강도). 일시적 장애도, 입력이 나쁜 것도 아닙니다 | **`recover` 대상이 아닙니다**(작업은 `dead`가 아니라 `pending`이고 `attempts`는 소모되지 않았습니다). `memex models show`로 거절 원문을 읽고 → `memex models set --model <id> [--reasoning <level>]` → `memex models test`. 설정을 고치면 지문이 바뀌어 다음 유지보수 wake에서 **자동 재개**됩니다. 자세한 내용은 [§21](#21-모델-선택-070-31) |
+| 추출 규칙이 유효하지 않음 (0.7.0, #30) | `doctor`의 `extraction-rules-overlay: fail` + `extraction-rules-hold: fail`, `memex jobs list`의 `waiting on configuration: extraction_rules_invalid`. **`memex status`는 이 보류를 세지 않습니다** | `overlays/extraction-rules.json`이 읽히지 않거나 스키마·version·상한·문법 검증에 실패했거나, `never_extract` 패턴이 격리됐습니다. 금지 검사를 못 했으므로 **아무것도 저장하지 않습니다**(fail-closed) | `memex extract rules validate`로 사유를 읽고 고칩니다(`memex extract rules set <file>`·`rollback <revision>`·`reset --yes`). 규칙 쓰기가 성공하면 이 오버레이가 잡아 둔 작업을 **함께 풀어 줍니다**. 패턴 격리가 원인이면 `memex gate quarantine clear <pattern-id>`. 급하면 `MEMEX_DISABLE_OVERLAYS=1`로 0.6.9 동작으로 되돌릴 수 있습니다 |
+| 금지 검사를 할 수 없음 (0.7.0, #30) | `doctor`의 `overlay-matcher: fail` + `extraction-rules-hold: fail`, `waiting on configuration: extraction_rules_unavailable` | 패턴 매칭 worker를 띄울 수 없어 `never_extract` 검사를 끝내지 못했습니다. 금지한 문자열이 "규칙이 느렸다"는 이유로 저장되게 두지 않습니다 | worker를 쓸 수 없는 원인(런타임·리소스)을 고치면 다음 pass에서 자동 재개됩니다. `never_extract` 패턴을 쓰지 않기로 하면 그 항목을 비우십시오 — 나머지 규칙은 모델 지시라서 matcher를 요구하지 않습니다 |
+| 내 게이트 규칙이 조용히 꺼짐 (0.7.0, #29) | `doctor`의 `overlay-pattern-quarantine: fail`, `memex gate quarantine list`, 주입 로그 라벨의 `+overlay_timeout` | 사용자 정규식이 프롬프트당 50 ms 실행 상한을 넘겨 **격리**됐습니다. 회수는 내장 규칙으로 계속되므로(fail-open) 증상이 "기억이 예전처럼 안 나온다"뿐입니다 | 정규식을 고치면 **자동으로 풀립니다**(격리 키에 소스 해시가 들어갑니다). 그대로 한 번 더 시도하려면 `memex gate quarantine clear <pattern-id>`(또는 `--all`). 같은 명령이 추출 규칙 패턴의 격리도 풉니다 |
+| 내 게이트 규칙 파일이 깨짐 (0.7.0, #29) | `doctor`의 `recall-gate-overlay: fail` (`running on BUILT-IN DEFAULTS`), `memex gate show`의 `무시됨` | `overlays/recall-gate.json`이 유효하지 않습니다. 절반만 적용하지 않고 **통째로 무시**하며 프롬프트는 정상 처리됩니다 | `memex gate validate`로 줄별 사유를 보고 고치거나, `memex gate history` → `memex gate rollback --to <revision>`. `memex gate reset --yes`는 파일을 지우지 않고 빈 문서를 다음 revision으로 쓰므로 그 자체를 되돌릴 수 있습니다 |
 | 모델 호출 자체가 실패 | `model_work_attempts.error_message`의 `LLM call failed …` / `TransientLlmError` / `fetch failed` / `spawn …`, Web UI 모델 시도 탭 | 호출 경로(네트워크·실행기 기동·인증)의 일시적 실패. `TransientLlmError`는 시도를 소모하지 않습니다 | 재시도. 반복되면 `memex doctor`로 실행기·인증 상태를 확인하십시오. 응답 형식 오류(`unparseable LLM response`)와 **원인이 반대**이므로 프롬프트·입력 길이를 고칠 문제가 아닙니다(0.6.3 #80) |
 | 되살릴 가치가 없는 작업 | 위 어느 줄이든 | 원인이 사라졌거나 다른 방식으로 처리함 | `memex jobs dismiss <job-id> --reason "왜 포기하는가"` — `superseded`로 정리, 삭제 없음, 감사 1줄 |
 | 격리된 프로젝트 | `Quarantined projects: N (…)` | `/`처럼 프로젝트를 지목할 수 없는 cwd에서 만들어진 프로젝트. fact는 보존하고 주입·조회에서만 제외 | 복구 명령 없음(사람이 판단). 정상 cwd에서 다시 작업하면 올바른 프로젝트로 기록되고, 이전 fact가 필요하면 `memex facts list --scope all`로 확인 후 `memex facts promote/demote`로 옮깁니다 |
@@ -1103,3 +1145,379 @@ ORDER BY recorded_at DESC LIMIT 20;
 복구 뒤에는 worker를 실행해야 실제로 처리됩니다(`memex-continuity-worker` 또는 `memex backfill extract`).
 `memex recover`와 `memex jobs retry`는 **아무것도 삭제하지 않습니다**: 지워진 `last_error`는
 `memory_jobs.retry_history` JSON 배열에 보존되고, `dismiss`는 사유를 `last_error`에 남깁니다.
+
+## 21. 모델 선택 (0.7.0, #31)
+
+Memex가 **자기 모델 작업**(추출·통합·ontology 분류·Capsule patch·검증)에 쓸 모델과 추론 강도를
+고릅니다. 이 선택은 **이 기기에만** 적용되고 동기화되지 않습니다 — 기기마다 쓸 수 있는 모델이
+다르기 때문입니다.
+
+```bash
+memex models show                                   # 읽기 전용
+memex models set --model gpt-5.6-luna --reasoning high
+memex models set --reasoning medium                 # 모델은 그대로, 강도만
+memex models set --reasoning unset                  # 강도 플래그를 아예 보내지 않음
+memex models reset                                  # models.json 삭제
+memex models test                                   # 실제 호출 1회
+memex models test --model gpt-6-astra --reasoning max --timeout-ms 90000
+```
+
+`--reasoning none`과 `--reasoning unset`은 **다릅니다**. `none`은 제공자가 실제로 받는 강도(플래그를
+`none`으로 보냄)이고, `unset`은 플래그를 **보내지 않는다**는 뜻입니다.
+
+### 해석 순서
+
+```text
+명시적 호출 옵션        (코어 내부 호출이 직접 지정한 값)
+→ MEMEX_CODEX_MODEL / MEMEX_CODEX_REASONING
+→ <data root>/models.json
+→ 내장 기본값 (gpt-5.6-luna, 추론 강도 플래그 없음)
+```
+
+`memex models show`는 고른 값과 **어디서 왔는지**(`explicit` / `env` / `file` / `default`)를 함께
+출력합니다. 출처는 설정 지문(fingerprint)의 일부이므로 **같은 모델 id라도 파일에서 오던 것이 환경
+변수에서 오면 다른 선택**입니다 — 아래 HOLD가 "이 모델"이 아니라 **"이 해석 결과"** 단위로 걸리고,
+출처를 옮기는 것만으로 새 시도가 허용됩니다.
+
+계층마다 잘못된 값의 처리가 **다릅니다**. 기억해 둘 만한 비대칭입니다.
+
+| 계층 | 모델 id | 추론 강도 |
+| --- | --- | --- |
+| `MEMEX_CODEX_MODEL` / `MEMEX_CODEX_REASONING` | **형식 검사를 하지 않습니다.** 오타가 그대로 제공자에게 가고 거절은 HOLD가 됩니다 | 허용 목록 밖이면 경고 1줄(`… is not one of none, minimal, … — ignored`) 후 **무시**하고 파일 계층으로 내려갑니다 |
+| `models.json` | 형식이 틀리면 **조용히 미선택**으로 떨어집니다 | 같음. 대소문자·공백은 정규화합니다(`HIGH` → `high`) |
+| `memex models set` / Web UI | **거절**(exit 1 / HTTP 422). 아무것도 저장하지 않습니다 | **거절** |
+
+`--reasoning`이 받는 값은 `none`·`minimal`·`low`·`medium`·`high`·`xhigh`·`max`·`ultra` 8개이고,
+모델 id는 길이(1–256)와 문자 집합(`[\w./:@+-]`)만 검사합니다. Codex 카탈로그가 그 모델에 그 강도를
+나열하지 않는 경우는 **경고만** 하고 저장합니다 — 카탈로그는 묵을 수 있고, 그때 거절하면 실제로
+되는 조합을 막습니다.
+
+### 카탈로그
+
+쓸 수 있는 모델과 강도 목록은 Codex 설치본에서 읽습니다.
+
+```text
+$CODEX_HOME/config.toml 의 model_catalog_json 이 가리키는 파일
+→ $CODEX_HOME/models_cache.json        (Codex가 마지막으로 받아 둔 서버 목록)
+→ 없음
+```
+
+Memex는 이 파일을 **읽기만** 하고 갱신하지 않으며 **신선도도 검사하지 않습니다**(`fetched_at`은
+표시용입니다). 카탈로그가 없으면 어떤 id든 받아들이고, 그 id의 유일한 증명은 실제 호출 1회
+(`memex models test`)입니다. 카탈로그에서 숨김으로 표시된 항목은 목록에 안 나오지만 직접
+입력하면 선택할 수 있습니다.
+
+### models.json
+
+`<data root>/models.json`. `memex models set`이 만들고 `memex models reset`이 지웁니다.
+**읽기는 파일을 만들지 않습니다.**
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-09-10T01:23:45.000Z",
+  "llm": { "model": "gpt-5.6-luna", "reasoning": "high", "stages": {} }
+}
+```
+
+- `version`이 `1`이 아니면 **파일 전체를 무시**하고 경고 1줄을 적으며, 파일은 **그대로 둡니다**.
+  JSON이 깨진 경우도 기본값으로 동작하고 파일을 고치지 않습니다.
+- `llm.stages`는 단계별 프로파일 **예약 자리**입니다. 비어 있지 않으면 경고 1회를 받고 무시됩니다.
+- `embedding` 블록(`desired_model`·`desired_dims`·`desired_protocol`)은 **0.7.1 예약**이고 0.7.0은
+  읽지도 쓰지도 않습니다. 평범한 `set`은 이 키를 만들지 않습니다.
+- 이 빌드가 모르는 키는 **보존**됩니다. 쓰기는 `tmp` + `rename`이고 파일 권한은 `0600`입니다.
+- ⚠️ `<data root>/models.json`(설정 파일)과 `<data root>/models/`(embedding 가중치 캐시,
+  [§10](#embedding-model-캐시-065-92))은 **다른 것**입니다.
+
+**`reset`은 실효 embedding model을 건드리지 않습니다.** embedding model과 벡터 공간은 DB가
+소유하며 여전히 `MEMEX_EMBEDDING_MODEL`과 embedding 세대가 정합니다([§19](#모델과-임베딩)).
+**embedding model 전환은 0.7.1입니다.**
+
+### 적용 시점
+
+재시작이 필요하지 않습니다. 설정 파일은 변경 후 **약 1초** 안에 다시 읽히며, 실행 중인 MCP 서버는
+**다음 모델 호출부터**, 백그라운드 워커는 **다음 Codex 세션부터** 새 값을 씁니다. 변하지 않은 파일은
+재검증마다 `statSync` 1회만 냅니다. (`MEMEX_EMBEDDING_MODEL`은 모듈 적재 시점에 굳으므로 그쪽은
+호스트 재시작이 필요합니다.)
+
+### 설정 대기(HOLD) — 거절된 설정은 작업을 죽이지 않습니다
+
+provider가 **요청 봉투 자체를 거절**하면(예: "the 'X' model is not supported when using Codex with a
+ChatGPT account") 그것은 일시적 장애도, 입력이 나쁜 것도 아닙니다. 재시도해도 같은 답이 오고,
+`deterministic`으로 분류하면 추출기가 window를 쪼개며 헛돕니다. 그래서 0.7.0은 LLM 오류 클래스에
+`config`를 **네 번째**로 추가했습니다(`transient` · `deterministic` · `unknown` · `config`).
+판정은 상태코드·문구보다 먼저 오류 코드로 합니다 — 봉투 거절은 `CodexRequestRejectedError`
+(`MEMEX_MODEL_CONFIG`), 이미 걸린 HOLD가 호출을 막은 경우는 `MEMEX_MODEL_CONFIG_HELD`입니다.
+
+`config`으로 분류되면 코어는 다음을 합니다.
+
+| 하는 일 | 안 하는 일 |
+| --- | --- |
+| `memory_jobs.hold_reason = 'model_config_rejected'`로 표시하고 작업을 `pending` + `available_at`=지금으로 되돌립니다 | 작업을 `dead`로 만들지 않습니다. 실패 범위·체크포인트 전진·파킹도 없습니다 |
+| `model_config_holds`에 설정 지문별로 1행(provider 상태·유형·원문 400자, 최초 관측, 관측 횟수)을 남깁니다 | `attempts`를 **소모하지 않습니다** — 오히려 환불합니다 |
+| 시도를 `model_work_attempts.outcome = 'config_rejected'`로 기록합니다 | 그 시도를 예산 집계(reserved/used/exhausted, 24시간 공통 한도)에 **세지 않습니다** |
+
+`attempts`가 늘지 않으므로 설정 오류로 작업이 재시도 상한을 소진해 terminal이 되는 경로가
+**구조적으로 없습니다**. 잘못된 설정이 유발할 수 있는 제공자 호출 수의 상한은 "HOLD가 기록되는
+순간 이미 진행 중이던 호출 수"이고 그 이후는 0입니다 — 두 번째 실행부터는 예약 전에 막힙니다.
+
+대화 **캡처는 멈추지 않습니다**. continuity worker는 모델을 쓰는 레인(`capsule_update` 등)만
+양보하고 P0 capture-index는 계속 돕니다.
+
+설정을 고치면 지문이 바뀌어 더 이상 맞는 HOLD 행이 없고, 작업은 다음 유지보수 wake에서
+**자동으로 재개**됩니다. 사람이 `recover`를 칠 필요가 없습니다. `memex models set`/`reset`은 추가로
+이전 지문의 HOLD를 닫고 그 사유로 대기 중이던 작업의 표식을 지웁니다. HOLD 행은 **삭제되지 않고**
+`cleared_by`(`probe-ok` / `manual` / `ttl`)로 닫히며, 30일 동안 다시 관측되지 않으면 TTL이 닫습니다.
+
+`memex models test`는 실제 호출을 **정확히 1회**만 하고(`"Reply with exactly: MEMEX_OK"`) 모델 작업
+원장에 stage `model_probe`로 남깁니다. 성공하면 **모델·강도가 같은 모든 HOLD**를 출처와 무관하게
+닫고 기다리던 작업을 풀어 줍니다. 기본 타임아웃은 **60초**(일반 모델 호출의 기본은 180초)이고
+호출이 성공하지 않으면 exit code가 0이 아닙니다. 실패 원인을 사용량 한도·타임아웃·실행기 부재·
+제공자 장애로 나눠 설명하며, 그중 어느 것도 "모델 id가 틀렸다"는 증거가 아님을 명시합니다.
+CLI `test`는 인덱스 DB가 없으면 만들고, Web UI의 테스트 버튼은 반대로 503으로 거절합니다 —
+먼저 `memex sync`를 돌리라는 뜻입니다.
+
+어디에 보이는가:
+
+```text
+memex status    →  model config held: N job(s) waiting on a model setting — …: memex models show
+memex jobs list →      waiting on configuration: model_config_rejected — no attempt consumed; run: memex models show
+memex doctor    →  llm-model: warn  held — the provider rejected the request envelope for model "…"
+```
+
+`memex status`의 이 줄은 `Needs attention` 합계에 **포함되지 않습니다**(고장이 아니라 설정 대기이고,
+해야 할 일이 큐 조작이 아니라 설정 하나이기 때문입니다). Web UI에서 이 상태를 볼 수 있는 곳은
+**관리 › 모델 탭뿐**입니다 — 개요의 "확인이 필요한 상태" 카드와 활동 › 처리 작업 표에는 아직
+나타나지 않습니다([WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#관리-탭-레지스트리)).
+
+### 0.7.0이 다루지 않는 것
+
+- **embedding model 전환은 0.7.1입니다.** `models.json`의 `embedding` 블록은 예약 자리이고,
+  0.7.0에서 embedding을 바꾸는 방법은 여전히 `MEMEX_EMBEDDING_MODEL` + 벡터 재생성뿐입니다.
+- 단계(stage)별 모델 프로파일도 예약 자리입니다.
+
+## 22. 사용자 오버레이 — 회수 게이트와 추출 규칙 (0.7.0, #29 #30)
+
+내장 규칙 위에 **자기 규칙**을 얹습니다. 파일이 없으면 0.6.9와 **바이트 단위로 같은** 동작입니다 —
+"파일 없음"이 곧 내장 동작입니다.
+
+```text
+<data root>/overlays/                       # 디렉터리 0700, 파일 0600, 심볼릭 링크는 거절
+├── recall-gate.json                        # #29 회수 게이트 오버레이
+├── extraction-rules.json                   # #30 추출 규칙 오버레이
+├── quarantine.json                         # 시스템이 관측해 기록하는 격리 상태 (lock 없는 합집합 병합)
+├── history.jsonl                           # 변경 1건 = 메타데이터 1줄 (1 MiB에서 .old로 회전)
+└── history/<recall-gate|extraction-rules>/<revision>.json   # rollback 스냅숏 (오버레이별 20개 보관)
+```
+
+두 규칙 파일 모두 **32 KiB** 상한이고 `schema`·`version`·`revision`을 갖습니다
+(`memex.recall-gate-overlay` / `memex.extraction-rules-overlay`, 둘 다 version `1`).
+**모르는 `version`은 부분 적용하지 않습니다** — 문서 전체를 거절합니다. 모든 쓰기는 `tmp` + `rename`
+이고, 쓰기 동사는 `<파일>.lock`을 잡습니다(살아 있는 소유자에게서 빼앗지 않고 `OVERLAY_LOCKED`로
+거절합니다).
+
+`MEMEX_OVERLAY_DIR`로 디렉터리를 옮길 수 있고(테스트·벤치마크용), `MEMEX_DISABLE_OVERLAYS=1`이면
+어떤 오버레이도 **읽지 않습니다**. 값은 문자열 `1`만 인정하며 `true`·`yes`는 동작하지 않습니다.
+후자는 "오버레이 없음"이지 HOLD가 아닙니다.
+
+**기기 간 공유는 0.7.1입니다.** 오버레이는 sync 프로토콜에 들어가지 않으므로 기기마다 따로 써야
+하고, `memex gate show`도 그 사실을 한 줄로 알립니다.
+
+두 오버레이는 **실패 방향이 반대**입니다. 같은 파일 형식인데 결과가 정반대이므로 혼동하지 마십시오.
+
+| | 규칙이 깨졌을 때 |
+| --- | --- |
+| 회수 게이트(#29) | **fail-open** — 오버레이를 통째로 무시하고 내장 규칙으로 프롬프트를 계속 처리합니다. 절반만 적용하는 것이 아예 적용하지 않는 것보다 나쁘기 때문입니다 |
+| 추출 규칙(#30) | **fail-closed** — 검사하지 못한 입력을 저장하지 않고 추출을 **보류(HOLD)** 합니다 |
+
+### 22.1 회수 게이트 오버레이 (`memex gate`)
+
+프롬프트가 기억을 회수할지 정하는 내장 게이트에 **자기 정규식과 단어**를 더합니다.
+내장 규칙은 **지우지 않고 id로 끕니다**.
+
+```bash
+memex gate show
+memex gate patterns list [--intent <intent>] [--source builtin|user|disabled|quarantined|all]
+memex gate patterns add <intent> <regex> [--flags <isu>] [--note "<왜>"] [--expect-revision <n>] [--dry-run]
+memex gate patterns disable <id|regex>        # 'patterns remove'는 같은 뜻의 별칭
+memex gate patterns enable <id>
+memex gate words list
+memex gate words add|remove <ack|continue|filler> <word>
+memex gate test "<prompt>" [--session <id>] [--compare-builtin]
+memex gate replay [--limit <n>] [--project <path>]
+memex gate validate [--file <path>]
+memex gate history [--limit <n>]
+memex gate quarantine list
+memex gate quarantine clear [<pattern-id>|--all]
+memex gate reset [--intent <intent>] --yes
+memex gate rollback --to <revision>
+```
+
+`intent`는 `memory`·`trace`·`highImpact`·`acknowledgement`·`continuation`·`minorCorrection` 6개,
+단어 사전은 `ack`·`continue`·`filler` 3개입니다. 모든 서브커맨드가 `--json`을 받고,
+`--limit`의 기본값은 `20`, `--flags`의 기본값은 `i`입니다.
+
+오버레이가 할 수 있는 일은 **어떤 intent가 발동하는가**를 바꾸는 것뿐입니다. 패턴에 우선순위가
+없고 allow/deny도 없으며, 게이트 **임계값**이나 embedding·bundle 경로에는 손댈 수 없습니다
+(임계값 조정은 0.7.1입니다). 한 intent의 모든 분기를 끄면 그 intent는 발동하지 않습니다.
+
+**읽기 전용 동사**: `show`, `patterns list`, `words list`, `test`, `replay`, `validate`, `history`,
+`quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
+영수증·세션 상태를 **쓰지 않습니다**.
+
+**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`,
+`quarantine clear`)는 오버레이 쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고
+`logs/ui-audit.jsonl`과 `overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지
+않습니다). `--dry-run`은 검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을
+출력합니다. `--expect-revision <n>`은 그 사이 오버레이가 다른 곳에서 바뀌었으면 쓰기를 거절합니다
+(exit `1`, `OVERLAY_STALE`). `reset`은 파일을 지우지 않고 **빈 문서를 다음 revision으로** 쓰므로
+그 자체를 되돌릴 수 있습니다.
+
+#### 실행 시간 상자와 격리
+
+사용자 정규식은 **worker thread 안에서만** 돌고 프롬프트당 **50 ms** 예산을 받습니다(프롬프트는
+앞 8,000자로 절단해 넘깁니다). 예산을 넘긴 패턴은 **격리(quarantine)** 되어 적용이 멈춥니다.
+문법 제한과 쓰기 시점 **300 ms** probe는 **방어 심도이지 안전 증명이 아닙니다** — 코드 주석이
+통과하는 반례를 직접 들고 있습니다. 보장은 "느린 패턴이 없다"가 아니라 **"느린 패턴이 훅 스레드를
+멈추지 못한다"** 입니다. 그래서 저장에 성공한 패턴도 첫 실제 프롬프트에서 격리될 수 있습니다.
+
+허용 문법: flags는 `i`·`s`·`u`만(`g`/`y`는 `.test()`를 상태 있게 만들고 `m`은 `^`/`$`의 뜻을 바꿉니다),
+소스 200자, 수량자 총 8개, 그룹 깊이 5, 분기 32개, `{n,m}`의 `m`은 100까지. 역참조와 lookaround,
+수량자가 붙은 그룹, 첫 글자 집합이 겹치는 인접 반복(`a+a+`, `\w+\d+`)은 거절합니다.
+
+격리 키는 `(pattern_id, source_sha8)`이므로 **정규식을 고치면 자동으로 풀립니다**(쓰기 영수증이
+`격리 해제`로 알려 줍니다). 그대로 다시 시도해 보려면 `memex gate quarantine clear <pattern-id>`
+(또는 `--all`)를 씁니다. 격리 파일은 최대 200개를 보관하고 오래된 것부터 버립니다.
+
+⚠️ 격리 파일은 두 오버레이가 **공유**합니다. `memex gate quarantine list`는 **회수 게이트의 행만**,
+`memex extract rules show`는 **추출 규칙의 행만** 보여 줍니다. 반대로 해제 명령은 하나뿐이고
+오버레이를 가리지 않습니다 — `memex gate quarantine clear <pattern-id>`(또는 `--all`)가 추출 규칙
+패턴의 격리도 풉니다. `memex extract rules show`도 그 명령을 그대로 안내합니다.
+
+#### 주입 로그에 남는 것
+
+게이트 판정 라벨에 오버레이 해시가 `@gate:<sha8>`로 붙고, worker가 예산을 넘겨 특정 패턴을
+격리했으면 `+overlay_timeout`, worker를 아예 쓸 수 없으면 `+overlay_unavailable`이 붙습니다
+(`unavailable`을 먼저 판정하므로 `+overlay_timeout`은 "패턴 하나가 예산을 태웠다" 한 가지만
+뜻합니다). 오버레이가 없으면 두 접미사 모두 빈 문자열이라 라벨이 0.6.9와 동일합니다. 영수증 쪽은
+`recall_events.gate_overlay_hash`(nullable, **sync 대상 아님**)에 남습니다.
+
+실행 중인 주입 데몬은 요청마다 파일을 다시 확인하므로 **재시작이 필요 없습니다**.
+
+### 22.2 추출 규칙 오버레이 (`memex extract`)
+
+어떤 대화를 fact로 만들지에 대한 자기 규칙입니다. 네 가지를 전역 또는 프로젝트별
+(`project_overrides`, 32개까지)로 지정합니다.
+
+| 항목 | 집행 | 상한 |
+| --- | --- | --- |
+| `preferred_language` (`ko`/`en`/미지정) | 프롬프트 절 | — |
+| `exclude_topics` | **프롬프트 절뿐 — 아무것도 강제하지 않습니다** | 24개, 항목당 2–80자 |
+| `never_extract_patterns` | **저장 경계에서 결정론적 차단** | 32개 |
+| `always_treat_as_decision_patterns` | **프롬프트 절뿐** | 16개 |
+
+`never_extract_patterns`의 각 항목은 `{ id, source, flags, scope, note? }`이고 `scope`는
+`fact_text`·`evidence`·`both`(기본)입니다. 정규식 제한은 게이트 오버레이와 같고 note는 200자입니다.
+프로젝트 override는 `preferred_language`만 덮어쓰고 **나머지 세 제약은 전역과 합집합**입니다 —
+다른 곳에 한 줄을 더해 전역 금지를 느슨하게 만드는 경로를 두지 않기 위해서입니다.
+
+프롬프트 절은 내장 프롬프트를 **고치지 않고 덧붙이기만** 하며(`policy_version`은 그대로), 의미
+검증기 프롬프트는 오버레이가 있든 없든 바이트 단위로 동일합니다.
+
+#### CLI
+
+```bash
+memex extract rules show
+memex extract rules validate [<file>]
+memex extract rules set <file> [--expect-revision <n>] [--dry-run]
+memex extract rules test [--exchange <id>] [--recent <n>] [--project <p>] [--limit <n>]
+memex extract rules history [--limit <n>]
+memex extract rules reset --yes
+memex extract rules rollback <revision>
+memex extract rules reextract (--dry-run | --apply --yes) [--project <id>] [--session <id>]
+memex extract eval [--rules <path>] [--fixture <path>] [--session <id>] [--baseline <path>] [--out <path>]
+```
+
+**이 명령은 추출하지 않습니다.** 추출 자체는 여전히 `memex backfill extract`와 두 개의 백그라운드
+워커가 합니다 — `memex extract rules`는 추출이 따르는 로컬 규칙을 읽고 쓸 뿐입니다.
+
+게이트 오버레이와 같은 계약입니다. **읽기 전용 동사**는 `show`·`validate`·`test`·`history`와 모든
+`--dry-run`(`reextract --dry-run` 포함)이고, 모델도 embedding도 호출하지 않으며 오버레이도 DB도
+쓰지 않습니다. **쓰기 동사**(`set`·`reset`·`rollback`·`reextract --apply`)는 쓰기 lock을 잡고
+`revision`을 올리며 rollback 스냅숏과 감사 1줄을 남깁니다. `set`은 파일이 **이미 있으면
+`--expect-revision <n>`을 요구**합니다(없으면 `OVERLAY_STALE`로 exit 1). 규칙 쓰기가 성공하면 이
+오버레이가 보류시켜 둔 추출 작업을 **함께 풀어 줍니다**.
+
+`rules test`는 프롬프트가 아니라 **지금 규칙이 무엇을 차단할지**를 이미 저장된 기억과 최근 교환에
+대해 추출기와 같은 시간 상자 matcher로 돌려 보여 줍니다. 로컬에서 판정할 수 없는 항목
+(제외 주제·결정 힌트·선호 언어)은 숫자를 지어내지 않고 "모델 평가로만 확인 가능"이라고 말합니다.
+
+`rules reextract`는 **규칙이 바뀌어도 자동 재추출이 일어나지 않기 때문에** 존재하는 명시적·범위
+한정 재실행입니다. 이미 있는 immutable target과 item 스냅숏을 **다시 열 뿐**이고(`memex recover`와
+같은 모양 — 한 트랜잭션, CAS, 삭제 없음) `policy_version`은 **절대 건드리지 않습니다**.
+`--dry-run`으로 먼저 어떤 세션·대상이 되돌려지는지 보고 `--apply --yes`로 적용합니다. 둘 중
+하나를 반드시 명시해야 하며(`CONFIRMATION_REQUIRED`), `--project`/`--session`으로 범위를 좁힙니다.
+
+`memex extract eval`은 **모델 호출을 쓰는 유일한 동사**입니다. 후보 규칙 파일을 적용은 하지 않고
+평가만 하려면 `--rules <path>`(오버레이 없이 비교하려면 `--rules none`)를 씁니다 — 파일을 검증해
+이 실행에만 제약 절을 덧붙이고, receipt에 `effective_policy_version`과 `rules_overlay`를 적습니다.
+`--model`/`--reasoning`은 **호출마다만** 전달되고 환경이나 `models.json`에 쓰이지 않으므로,
+평가 실행이 이 기기의 나머지가 쓰는 설정을 바꿀 수 없습니다.
+
+Web UI에서는 관리 › 오버레이 › 추출 규칙이 같은 일을 합니다
+([WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#관리--오버레이-070-29-30)).
+
+#### never_extract는 저장 경계에서 집행됩니다
+
+프롬프트 절은 **정밀도 보조**일 뿐이고, 실제 차단은 **저장 경계**에서 결정론적으로 일어납니다.
+집행 지점은 4곳입니다.
+
+```text
+fact_insert · incident · remediation · chronicle
+```
+
+차단된 후보는 **탈락이지 실패가 아닙니다** — 예외도, `extraction_failed_ranges` 행도, 소모된
+attempt도 없고, 같은 배치의 다른 후보는 정상 저장됩니다. 대화 archive는 건드리지 않습니다:
+규칙이 금지하는 것은 **기억**이고 **이력**이 아닙니다. 감사는 후보마다가 아니라 **커밋당 1줄**이고
+id·개수·해시만 남깁니다 — 저장을 거부한 코드가 그 본문을 로그에 쓰지는 않습니다.
+
+적용 시점 계약은 **claim 스냅숏 ∪ 저장 직전에 다시 읽은 최신 유효 규칙**의 합집합입니다.
+그래서 **강화는 즉시**(다시 읽은 시점부터), **완화는 다음 claim부터** 적용됩니다. claim 당시
+존재했던 금지 패턴은 그 작업이 끝날 때까지 유효합니다 — 진행 중인 claim에 규칙 삭제(또는 파일
+삭제)가 즉시 먹으면 "금지했는데 저장됐다"가 됩니다. 다시 읽은 파일이 깨져 있으면 마지막으로
+적용에 성공한 문서를 쓰고 `rules.stale-read` 감사 1줄을 남기며 커밋을 계속합니다(보류하지 않습니다).
+
+금지 검사는 **트랜잭션 밖에서** 돕니다(better-sqlite3 트랜잭션은 동기라 worker를 await할 수
+없고, 쓰기 lock을 쥔 채 시간 상자 없는 정규식을 돌리는 것이 최악입니다). 트랜잭션 안에는 집합
+조회만 남습니다.
+
+#### 검사하지 못했으면 저장하지 않습니다 (HOLD)
+
+규칙 파일이 **깨졌거나**(error severity) 금지 검사를 **끝내지 못하면**, 코어는 claim을 저장하지 않고
+반환하며 작업에 hold를 표시합니다.
+
+| `memory_jobs.hold_reason` | 언제 |
+| --- | --- |
+| `extraction_rules_invalid` | 규칙 문서가 유효하지 않거나 `never_extract` 패턴이 격리됨 |
+| `extraction_rules_unavailable` | matcher worker를 쓸 수 없어 금지 검사를 완료하지 못함 |
+| `model_config_rejected` | provider가 요청 봉투를 거절([§21](#21-모델-선택-070-31)) |
+
+세 경우 모두 **attempt를 소모하지 않고**(오히려 환불합니다), 작업은 `dead`도 `retry`도 아닌
+**`pending` + `hold_reason`** 상태입니다. 그래서 기존 상태 화면이 "평범한 대기 작업"으로 보고하는
+동안 아무것도 저장되지 않습니다. 복구 경로는 [§20](#20-문제가-생겼을-때--실패-클래스별-복구)의
+해당 줄이 단일 출처입니다.
+
+금지 패턴의 격리는 **fail-closed**(오버레이 전체를 오류로 보고 추출을 보류)이고, decision hint의
+격리는 **fail-safe**(그 패턴만 경고와 함께 떨어지고 추출은 계속)입니다. `never_extract` 패턴이
+하나도 없으면 matcher를 못 써도 보류하지 않습니다 — 나머지는 모두 조언이기 때문입니다.
+
+적용된 규칙의 지문은 `extraction_targets.rules_hash`(nullable, 로컬 전용, sync 대상 아님)에
+**보고용으로만** 남습니다. 이 해시는 추출 스케줄 키에 **섞이지 않습니다** — 섞으면 규칙 한 글자를
+바꿀 때마다 전량 재추출이 됩니다.
+
+### 22.3 0.6.x로 내려갈 때
+
+0.6.x 코어는 오버레이 파일을 읽지 않습니다. 사용자 규칙이 조용히 꺼지고, `hold_reason`이 남은
+작업은 그냥 `pending`으로 보입니다(무해). 컬럼 3개(`memory_jobs.hold_reason`,
+`extraction_targets.rules_hash`, `recall_events.gate_overlay_hash`)는 nullable 추가이므로 기존 행은
+`NULL`입니다.

@@ -135,7 +135,10 @@ export function ensureContinuitySchema(db, options = {}) {
         updated_at TEXT NOT NULL,
         -- Issue #20: memex jobs retry clears last_error; the failure it
         -- cleared is preserved here as a JSON array, never deleted.
-        retry_history TEXT
+        retry_history TEXT,
+        -- Issue #31: which unusable configuration this pending job waits on.
+        -- NULL for every ordinary job. Values: see HOLD_REASONS.
+        hold_reason TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -156,7 +159,14 @@ export function ensureContinuitySchema(db, options = {}) {
         last_error TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #30: the extraction-rules overlay hash this target was claimed
+        -- under (rules:sha8), or NULL when no overlay applied. LOCAL and
+        -- never synced: a hash is only interpretable against this machine's
+        -- overlay history. It is REPORTING only — the scheduling key is
+        -- policy_version, and mixing the rule hash into it would turn one
+        -- edited character into a full-corpus re-extraction.
+        rules_hash TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_target_items (
@@ -807,8 +817,24 @@ export function ensureContinuitySchema(db, options = {}) {
             db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
         }
         // Issue #20: operator retry preserves the failure it clears.
-        if (!columnNames(db, "memory_jobs").has("retry_history")) {
+        const memoryJobColumns = columnNames(db, "memory_jobs");
+        if (!memoryJobColumns.has("retry_history")) {
             db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
+        }
+        // Issue #31 — HOLD. A job whose model selection or extraction rules are
+        // unusable is NOT a failure: it stays `pending` with attempts refunded and
+        // this column names what it is waiting for. No CHECK constraint: the value
+        // set is owned by `HOLD_REASONS` in model-budget.ts (the two transitions
+        // validate against it), and an ALTER-added CHECK would have to be dropped
+        // by a table rewrite to add the next reason.
+        if (!memoryJobColumns.has("hold_reason")) {
+            db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+        }
+        // Issue #30 — the rule-overlay hash a target was claimed under. Additive,
+        // nullable, local (never in a sync generation) and reporting-only.
+        const extractionTargetColumns = columnNames(db, "extraction_targets");
+        if (!extractionTargetColumns.has("rules_hash")) {
+            db.exec("ALTER TABLE extraction_targets ADD COLUMN rules_hash TEXT");
         }
         options.afterMigrationStage?.("evidence-sequence");
         // Issue #34 repair: continuity-worker used to overwrite the terminal
@@ -1367,6 +1393,14 @@ export function claimMemoryJobByIdWithReason(db, input) {
     `).run(input.owner, leaseUntil, generation, nowIso, row.job_id, row.lease_generation, row.state).changes;
         if (changed !== 1)
             return refuse("cas");
+        // Issue #31: a claim that actually proceeds is, by definition, no longer
+        // waiting on a configuration — so the hold marker is lifted here rather
+        // than by whoever fixed the setting, which would have to know which jobs.
+        // If the same configuration refuses this attempt too, the HOLD transition
+        // writes the marker back.
+        if (columnNames(db, "memory_jobs").has("hold_reason")) {
+            db.prepare("UPDATE memory_jobs SET hold_reason = NULL WHERE job_id = ? AND hold_reason IS NOT NULL").run(row.job_id);
+        }
         return {
             job: db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?")
                 .get(row.job_id),
@@ -1578,7 +1612,22 @@ function targetFromRow(row) {
         itemCount: Number(row.item_count),
         policyVersion: String(row.policy_version),
         state: row.state,
+        rulesHash: typeof row.rules_hash === "string" ? row.rules_hash : null,
     };
+}
+/**
+ * Issue #30 — stamp the rule overlay hash a claim is running under.
+ *
+ * Reporting only: `extraction-rules-drift` reads it to say which sessions were
+ * extracted under a different rule set, and `memex extract rules reextract`
+ * scopes an EXPLICIT re-run by it. Nothing schedules on it. Idempotent, and a
+ * no-op when the value is already what it should be, so the claim path can call
+ * it unconditionally.
+ */
+export function setExtractionTargetRulesHash(db, targetId, rulesHash) {
+    if (!columnNames(db, "extraction_targets").has("rules_hash"))
+        return false;
+    return db.prepare("UPDATE extraction_targets SET rules_hash = ? WHERE target_id = ? AND IFNULL(rules_hash, '') IS NOT ?").run(rulesHash, targetId, rulesHash ?? "").changes === 1;
 }
 export function readExtractionTargetItems(db, targetId, afterOrdinal, limit) {
     return db.prepare(`
@@ -1757,6 +1806,60 @@ export function supersedeStaleExtractionTarget(db, input) {
             return false;
         throw error;
     }
+}
+/**
+ * Put ONE completed extraction target back in the queue (`extract rules reextract`).
+ *
+ * All of the progress state has to go back, not just `state`. `cursor_ordinal` is
+ * the one that bites: a completed target's cursor equals `item_count`, the next
+ * claim reads the page AFTER the cursor, and so a re-queued target handed the
+ * worker an empty page — which `runFactExtraction` records as
+ * `target has no pending page despite incomplete state`. Re-queueing has to mean
+ * "start again from the first ordinal", so the cursor is reset with everything else.
+ *
+ * `rules_hash` is cleared because the next run will stamp the hash it actually ran
+ * under; `lease_generation` is NOT touched, because it is monotonic fencing and
+ * rewinding it would let a stale lease look current again.
+ *
+ * CAS on `completed`: a target a worker has since re-claimed is left alone, and the
+ * returned map is empty for it.
+ */
+export function requeueCompletedExtractionTarget(db, input) {
+    const now = input.now ?? new Date().toISOString();
+    const changed = {};
+    const bump = (table, changes) => {
+        if (changes > 0)
+            changed[table] = (changed[table] ?? 0) + changes;
+    };
+    const target = db.prepare(`
+    UPDATE extraction_targets
+       SET state = 'pending', attempts = 0, cursor_ordinal = 0, lease_owner = NULL,
+           lease_until = NULL, last_error = NULL, rules_hash = NULL, updated_at = ?
+     WHERE target_id = ? AND state = 'completed'
+  `).run(now, input.targetId).changes;
+    if (target === 0)
+        return changed;
+    bump("extraction_targets", target);
+    if (input.jobId) {
+        bump("memory_jobs", db.prepare(`
+      UPDATE memory_jobs
+         SET state = 'pending', attempts = 0, available_at = ?, lease_owner = NULL,
+             lease_until = NULL, last_error = NULL, hold_reason = NULL, updated_at = ?
+       WHERE job_id = ? AND state IN ('completed','superseded')
+    `).run(now, now, input.jobId).changes);
+    }
+    if (input.checkpointId) {
+        bump("checkpoints", db.prepare("UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processed'").run(input.checkpointId).changes);
+    }
+    bump("extraction_target_items", db.prepare("UPDATE extraction_target_items SET state = 'pending' WHERE target_id = ? AND state <> 'pending'").run(input.targetId).changes);
+    // This is what makes the work claimable again: `ensureExtractionTarget` treats
+    // an exact `processed` row as the only completion authority.
+    bump("exchange_extraction_state", db.prepare(`
+    UPDATE exchange_extraction_state
+       SET state = 'pending', processed_at = NULL
+     WHERE target_id = ? AND state <> 'pending'
+  `).run(input.targetId).changes);
+    return changed;
 }
 export function commitExtractionPage(db, input) {
     if (input.items.length === 0)

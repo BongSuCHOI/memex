@@ -1,4 +1,4 @@
-// 실패 클래스 카탈로그 (#23).
+// 실패 클래스 카탈로그 (#23, i18n #109).
 //
 // 단일 출처는 docs/GUIDE.md §20 "문제가 생겼을 때 — 실패 클래스별 복구"이고 이 파일은 거기서
 // 파생한 UI 표현이다. 코어가 남긴 last_error / error_class / skip 사유 / 상태 줄을 클래스로
@@ -6,10 +6,31 @@
 //
 // 규칙 하나: **매핑되지 않은 오류의 원인을 지어내지 않는다.** 모르는 문자열은 원문 그대로
 // 보여주고 진단 내보내기로 안내한다(unknown 클래스).
+//
+// 0.7.0 (#109): 산문은 전부 `i18n/guidance/{en,ko}.mjs`로 내려갔고, 이 모듈에는 **구조와
+// 로직만** 남는다 — `CLASSES`의 순서(= classify의 우선순위), `id`, `match`, `ignorable`,
+// 액션 서술자, `source` 앵커. `title`/`cause`/`impact`/`next`는 접근 시점에 `t()`로 읽는
+// 게터다(모듈 최상위에서 평가하면 사전이 꽂히기 전에 키가 굳는다 — 설계 §2.6).
+//
+// **`match`는 사전으로 내리지 않는다**(설계 §6.1): 로케일마다 분류 결과가 달라지면
+// `guidance.test.cjs`가 코어 오류 리터럴 200+개로 강제하는 커버리지가 로케일별로 포크되고,
+// #80의 단어 경계 불변식도 언어별로 갈라진다. 규칙은 **코드·키·영어 원문만** 쓴다.
 import {esc,icon,btn,linkBtn,kv,number} from './ui.mjs';
+import {t} from './i18n/index.mjs';
+import {DOC_ANCHORS as A} from './i18n/doc-anchors.mjs';
 
-const GUIDE='docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구';
-const RECOVER=[{kind:'operation',command:'recover',label:'실패 종료 작업 복구'},{kind:'command',text:'memex recover --all-dead --dry-run'}];
+const GUIDE=A.GUIDE_FAIL;
+const RECOVER=[{kind:'operation',command:'recover',labelKey:'guidance.action.recoverDeadWork'},{kind:'command',text:'memex recover --all-dead --dry-run'}];
+// 0.7.0 (#109): `--reason "왜 포기하는가"`는 **버튼 텍스트이자 복사되는 CLI 명령**이었다.
+// 명령 문자열은 번역 대상이 아니므로 한국어를 중립 플레이스홀더로 바꾼다.
+const DISMISS={kind:'command',text:'memex jobs dismiss <job-id> --reason "<reason>"'};
+
+/** 산문 4필드를 사전에서 지연 조회한다. 구조 필드는 그대로 둔다. */
+const failure=(id,spec)=>({id,...spec,
+ get title(){return t(`guidance.${id}.title`);},
+ get cause(){return t(`guidance.${id}.cause`);},
+ get impact(){return t(`guidance.${id}.impact`);},
+ get next(){return t(`guidance.${id}.next`);}});
 
 /**
  * 클래스 목록. `match`의 문자열은 소문자 비교로 부분 일치, 정규식은 그대로 시험한다.
@@ -19,300 +40,221 @@ const RECOVER=[{kind:'operation',command:'recover',label:'실패 종료 작업 �
  * `cas`가 `broadcast`·`case`·`casing`에, `exit 2`가 `exit 25`에 걸려서, 원인을 모르는 오류를
  * "무시해도 되는 원인"으로 단정한다 — 이 카탈로그가 금지하는 바로 그 날조다. 여러 단어로 된
  * 문장이나 코어의 긴 오류 원문만 부분 일치로 둔다.
+ *
+ * 규칙 (0.7.0 #109): **한국어 `match`를 두지 않는다.** 서버 메시지가 en 한 줄 + 안정적 코드로
+ * 바뀌었으므로 한국어 원문에 의존한 규칙은 에러 없이 조용히 죽는다(설계 §14.4). 규칙은 코드
+ * (`db_index_missing`), 영어 원문, 단어 경계 정규식 중 하나여야 한다.
  */
 export const CLASSES=[
- {id:'db-unavailable',title:'로컬 데이터베이스에 연결할 수 없음',
-  match:['db_unavailable','인덱스 db가 없습니다','database is locked','unable to open database','sqlite_cantopen'],
-  cause:'인덱스 DB 파일이 없거나 열 수 없습니다. 아직 한 번도 동기화하지 않았거나 경로·권한이 바뀐 상태입니다.',
-  impact:'조회·주입·기억 변경이 모두 멈춥니다. 저장된 기억이 사라진 것은 아닙니다.',
-  next:'관리 › 런타임에서 DB 경로를 확인하고, 진단을 실행한 뒤 대화 동기화로 인덱스를 만드세요.',
-  ignorable:false,actions:[{kind:'operation',command:'doctor',label:'코어 진단 실행'},{kind:'operation',command:'sync',label:'대화 동기화'},{kind:'view',to:'/settings',query:{tab:'runtime'},label:'런타임 정보'}],
-  source:'docs/GUIDE.md#13-진단'},
+ failure('db-unavailable',{
+  // 0.7.0 (#109): 인덱스 DB 누락에 DB_INDEX_MISSING 코드가 붙었고 서버 메시지는 영어 한 줄이
+  // 됐다. 한국어 원문 매칭('인덱스 db가 없습니다')은 삭제하고 코드·영어 원문만 남긴다.
+  match:['db_unavailable','db_index_missing','index database is missing','database is locked','unable to open database','sqlite_cantopen'],
+  ignorable:false,actions:[{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'},{kind:'operation',command:'sync',labelKey:'guidance.action.syncConversations'},{kind:'view',to:'/settings',query:{tab:'runtime'},labelKey:'guidance.action.viewRuntime'}],
+  source:A.GUIDE_DIAG}),
 
- {id:'deps-missing',title:'런타임 의존성이 설치되지 않음',
+ failure('deps-missing',{
   match:['runtime deps missing','better-sqlite3','@xenova/transformers','sqlite-vec','memex deps materialize'],
-  cause:'설치된 플러그인 루트에 네이티브 의존성이 없어 모든 훅이 고정되지 않은 npx 폴백으로 실행됩니다.',
-  impact:'훅이 느려지고 버전이 고정되지 않습니다. 기억 데이터 자체는 손상되지 않습니다.',
-  next:'설치본 루트에서 의존성을 실체화한 뒤 진단으로 dependencies가 ok인지 확인하세요.',
-  ignorable:false,actions:[{kind:'command',text:'memex deps materialize'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
-  source:GUIDE},
+  ignorable:false,actions:[{kind:'command',text:'memex deps materialize'},{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'}],
+  source:GUIDE}),
 
  // 0.6.3 (#79): 과거 실패 문자열은 "정상 잘림"과 다른 클래스다. 0.6.1 이전 코어는 같은 상한에서
  // 작업을 terminal 상태로 죽였고, 업그레이드만으로는 재개되지 않으므로 복구가 필요하다.
  // capsule-truncated보다 먼저 와야 그 문자열이 무시 가능으로 떨어지지 않는다.
- {id:'capsule-bound-exceeded',title:'0.6.0 이전 상한으로 죽은 Capsule 작업',
+ failure('capsule-bound-exceeded',{
   match:['capsule patch exceeds bounded storage size'],
-  cause:'0.6.1 이전 코어는 Capsule 패치가 저장 한도(MEMEX_CAPSULE_MAX_CHARS)를 넘으면 작업을 실패시켰습니다. 이 오류를 남긴 작업은 그때 terminal 상태로 끝난 작업입니다 — 0.6.1부터는 실패시키지 않고 잘라서 저장합니다.',
-  impact:'그 작업 흐름의 연속성 요약이 갱신되지 않은 채 남아 있습니다. 기억(fact)은 잃지 않았습니다.',
-  next:'업그레이드만으로는 재개되지 않습니다(worker는 pending·retry만 가져갑니다). memex recover로 다시 대기 상태로 되돌리세요 — 복구는 아무것도 삭제하지 않습니다.',
-  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},label:'실패 작업 보기'}],
-  source:'docs/GUIDE.md#작업이-실패했을-때-terminal-상태-복구'},
+  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},labelKey:'guidance.action.viewDeadJobs'}],
+  source:A.GUIDE_RECOVER}),
 
- {id:'capsule-truncated',title:'작업 맥락 Capsule이 잘림',
+ failure('capsule-truncated',{
   match:['capsule patch truncated','capsule evidence fragment exceeds page budget','memex_capsule_max_chars'],
-  cause:'Capsule 패치가 저장 한도(MEMEX_CAPSULE_MAX_CHARS, 기본 12,000자)를 넘어 우선순위가 낮은 항목부터 잘렸습니다. 0.6.1부터 코어는 작업을 실패시키지 않고 잘라서 저장합니다.',
-  impact:'기억(fact)에는 영향이 없습니다 — Capsule은 해석용 맥락이며 직접 근거가 아닙니다. 연속성 요약의 일부 항목만 보존되지 않습니다.',
-  next:'무시해도 됩니다. 잘린 항목이 계속 필요하면 MEMEX_CAPSULE_MAX_CHARS를 올린 뒤 해당 작업 흐름을 다시 처리하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'runtime'},label:'환경 변수 확인'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'runtime'},labelKey:'guidance.action.viewEnvVars'}],
+  source:GUIDE}),
 
- {id:'budget-exhausted',title:'모델 작업 예산 소진',
+ failure('budget-exhausted',{
   match:['budget_exhausted','model_budget_exhausted','model work deadline exceeded','deadline_exceeded','modelworkbudgetsexhausted',/budget.*(deadline|window|attempts)/i],
-  cause:'이번 실행(run)의 예산을 다 썼습니다 — 기한(deadline), 호출 창(window), 시도 수(attempts) 중 하나입니다.',
-  impact:'남은 대상은 처리되지 않고 대기 상태로 남습니다. 이미 저장된 기억은 그대로입니다.',
-  next:'예산 상태를 확인한 뒤 새 실행으로 이어서 진행하세요. 예산 ID는 작업 상세의 "예산 ID"에 있습니다.',
-  ignorable:false,actions:[{kind:'command',text:'memex model-work status'},{kind:'command',text:'memex model-work resume <id> --new-run'},{kind:'view',to:'/activity',query:{tab:'attempts'},label:'모델 시도 보기'}],
-  source:'docs/GUIDE.md#17-모델-작업-예산과-대기-진단'},
+  ignorable:false,actions:[{kind:'command',text:'memex model-work status'},{kind:'command',text:'memex model-work resume <id> --new-run'},{kind:'view',to:'/activity',query:{tab:'attempts'},labelKey:'guidance.action.viewAttempts'}],
+  source:A.GUIDE_BUDGET}),
 
- {id:'claim-handoff',title:'다른 실행기가 먼저 가져감',
+ failure('claim-handoff',{
   match:['lease_held','claim lost to a concurrent writer','claim lost',/\bcas\b/],
-  cause:'같은 작업을 다른 worker가 이미 임대(lease)했거나, 동시 쓰기 경합에서 이번 실행이 졌습니다.',
-  impact:'없습니다. 작업은 이긴 실행기가 처리합니다.',
-  next:'무시해도 됩니다. 같은 작업이 계속 넘겨지기만 한다면 임대가 만료된 실행기가 남아 있는지 확인하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'jobs',state:'running'},label:'실행 중 작업 보기'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'jobs',state:'running'},labelKey:'guidance.action.viewRunningJobs'}],
+  source:GUIDE}),
 
- {id:'claim-backoff',title:'재시도 대기 중(backoff)',
+ failure('claim-backoff',{
   match:[/\bbackoff\b/,'retry backoff','memoryjobsbackoff'],
-  cause:'실패 후의 재시도 시각이 아직 되지 않았습니다. 고장이 아닙니다.',
-  impact:'해당 작업만 잠시 미뤄집니다.',
-  next:'기다리거나 worker를 실행하세요. 즉시 되돌리려면 해당 작업만 재시도하세요.',
   ignorable:true,actions:[{kind:'command',text:'memex jobs list --state retry'},{kind:'command',text:'memex jobs retry <job-id>'}],
-  source:GUIDE},
+  source:GUIDE}),
 
- {id:'claim-attempts',title:'시도 상한 도달',
+ failure('claim-attempts',{
   match:['attempts_exhausted','attempt cap reached'],
-  cause:'이 작업이 허용된 시도 수를 모두 썼습니다.',
-  impact:'해당 범위는 자동으로 다시 처리되지 않습니다.',
-  next:'저장된 오류를 확인해 원인을 고친 뒤 복구하거나, 되살릴 가치가 없으면 사유를 남기고 정리하세요.',
-  ignorable:false,actions:[...RECOVER,{kind:'command',text:'memex jobs dismiss <job-id> --reason "왜 포기하는가"'}],
-  source:GUIDE},
+  ignorable:false,actions:[...RECOVER,DISMISS],
+  source:GUIDE}),
 
- {id:'claim-error',title:'작업 확보 중 오류',
+ failure('claim-error',{
   match:['claim_not_acquired','claim_error'],
-  cause:'작업을 확보하는 단계에서 오류가 났습니다. 처리 자체는 시작되지 않았습니다.',
-  impact:'이번 회차만 건너뜁니다.',
-  next:'같은 작업에서 반복되면 시스템 로그의 원문을 확인하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'logs',level:'error'},label:'오류 로그 보기'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'logs',level:'error'},labelKey:'guidance.action.viewErrorLogs'}],
+  source:GUIDE}),
 
- {id:'excluded-project',title:'정책상 제외된 프로젝트',
+ failure('excluded-project',{
   match:['excluded_project','excluded_project_unmarked'],
-  cause:'설정에서 제외한 프로젝트라 수집·추출 대상이 아닙니다. 실패가 아니라 정상 동작입니다.',
-  impact:'이 프로젝트의 대화는 기억이 되지 않습니다.',
-  next:'의도한 것이면 무시하세요. 아니라면 제외 설정을 확인하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'runtime'},label:'환경 확인'}],
-  source:'docs/GUIDE.md#11-do-not-index와-재분류-비용'},
+  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'runtime'},labelKey:'guidance.action.viewEnvironment'}],
+  source:A.GUIDE_DO_NOT_INDEX}),
 
- {id:'failed-visible',title:'결정론적으로 실패해 표시된 구간',
+ failure('failed-visible',{
   match:['failed_visible','failed-visible','extractiontargetitemsfailedvisible','checkpointsfailedvisible','capsulecheckpointfailedvisible'],
-  cause:'재시도해도 같은 결과가 나오는 실패라서, 숨기지 않고 그대로 표시한 상태입니다.',
-  impact:'해당 구간의 기억만 만들어지지 않습니다. 다른 구간은 정상 처리됩니다.',
-  next:'작업 상세에서 저장된 오류 원문과 실패 구간을 확인한 뒤 복구하세요.',
-  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs'},label:'처리 작업 보기'}],
-  source:'docs/GUIDE.md#작업이-실패했을-때-terminal-상태-복구'},
+  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs'},labelKey:'guidance.action.viewJobs'}],
+  source:A.GUIDE_RECOVER}),
 
- {id:'job-dead',title:'실패로 종료된 작업',
+ // 0.7.0 (#31/#30): `memory_jobs.hold_reason`이 붙은 작업은 상태가 `pending`이지만 **설정이
+ // 고쳐질 때까지 한 번도 시도하지 않는다.** 재시도 대기(job-retry)와 같은 줄에 두면 "기다리면
+ // 풀린다"로 읽히지만, 사람이 모델 선택이나 추출 규칙을 고치지 않는 한 영원히 풀리지 않는다 —
+ // 그래서 무시 가능이 아니다. job-dead/job-retry보다 먼저 와서 상태 규칙에 가려지지 않는다.
+ failure('job-held',{
+  match:['model_config_rejected','extraction_rules_invalid','extraction_rules_unavailable','waiting on configuration'],
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'models'},labelKey:'guidance.action.viewModelSettings'},
+   {kind:'view',to:'/settings',query:{tab:'overlays',overlay:'rules'},labelKey:'guidance.action.viewExtractionRules'},
+   {kind:'command',text:'memex jobs list --state pending'}],
+  source:GUIDE}),
+
+ failure('job-dead',{
   match:[/\bdead-letter\b/,/\bdead\b/,'checkpointsdeadletter','extractiontargetsdead','memoryjobsdead'],
-  cause:'재시도 상한을 소진해 terminal 상태가 된 작업입니다.',
-  impact:'그 작업이 담당하던 대화 구간은 기억으로 추출되지 않습니다.',
-  next:'작업 상세에서 원인을 확인한 뒤 복구하거나, 되살릴 가치가 없으면 사유를 남기고 정리하세요. 복구는 아무것도 삭제하지 않습니다.',
-  ignorable:false,actions:[...RECOVER,{kind:'command',text:'memex jobs dismiss <job-id> --reason "왜 포기하는가"'},{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},label:'실패 작업 보기'}],
-  source:GUIDE},
+  ignorable:false,actions:[...RECOVER,DISMISS,{kind:'view',to:'/activity',query:{tab:'jobs',state:'dead'},labelKey:'guidance.action.viewDeadJobs'}],
+  source:GUIDE}),
 
- {id:'job-retry',title:'재시도를 기다리는 작업',
+ failure('job-retry',{
   match:[/\bretry\b/,'memoryjobsretry'],
-  cause:'실패한 뒤 다음 재시도 시각을 기다리는 중입니다.',
-  impact:'처리가 늦어질 뿐, 손실은 아닙니다.',
-  next:'worker가 돌면 자동으로 처리됩니다. 대기가 길어지면 저장된 오류를 확인하세요.',
-  ignorable:true,actions:[{kind:'command',text:'memex jobs list --state retry'},{kind:'view',to:'/activity',query:{tab:'jobs',state:'retry'},label:'재시도 대기 보기'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'command',text:'memex jobs list --state retry'},{kind:'view',to:'/activity',query:{tab:'jobs',state:'retry'},labelKey:'guidance.action.viewRetryJobs'}],
+  source:GUIDE}),
 
- {id:'extraction-failed-range',title:'추출 실패 구간이 기록됨',
+ failure('extraction-failed-range',{
   match:['extractionfailedranges','extraction_failed_ranges'],
-  cause:'어떤 입력 구간이 실패했는지까지 기록된 terminal 범위입니다.',
-  impact:'그 구간의 기억만 비어 있습니다.',
-  next:'같은 단위로 복구하세요. 오류 원문은 보존됩니다.',
-  ignorable:false,actions:RECOVER,source:GUIDE},
+  ignorable:false,actions:RECOVER,source:GUIDE}),
 
- {id:'capture-gap',title:'capture 공백이 열려 있음',
+ failure('capture-gap',{
   match:['capturegapsopen','capture gap'],
-  cause:'capture가 fail-open으로 넘어간 구간입니다. 코어가 의도적으로 허용한 상태입니다.',
-  impact:'그 구간의 대화가 인덱스에 없습니다.',
-  next:'복구 명령의 대상이 아닙니다. 같은 세션의 다음 성공 capture가 닫습니다. 실패를 즉시 드러내려면 MEMEX_STRICT_CAPTURE=1로 실행하세요.',
-  ignorable:true,actions:[{kind:'command',text:'memex status'}],source:GUIDE},
+  ignorable:true,actions:[{kind:'command',text:'memex status'}],source:GUIDE}),
 
- {id:'lease-expired',title:'임대가 만료된 실행 중 작업',
-  match:['lease expired','lease_expired','임대 만료'],
-  cause:'실행 중으로 표시돼 있지만 임대 시각이 이미 지났습니다. 실행기가 중간에 사라진 상태입니다.',
-  impact:'다른 worker가 다시 가져갈 때까지 진행되지 않습니다.',
-  next:'worker를 실행하면 임대가 회수됩니다. 계속 남아 있으면 복구하세요.',
-  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'running'},label:'실행 중 작업 보기'}],
-  source:GUIDE},
+ failure('lease-expired',{
+  // 0.7.0 (#109): '임대 만료'는 details.mjs의 kv 라벨에서 온 실질 데드 규칙이라 삭제했다.
+  match:['lease expired','lease_expired'],
+  ignorable:false,actions:[...RECOVER,{kind:'view',to:'/activity',query:{tab:'jobs',state:'running'},labelKey:'guidance.action.viewRunningJobs'}],
+  source:GUIDE}),
 
  // 0.6.3 (#80): 호출 자체가 실패한 것과 응답 형식이 틀린 것은 원인이 반대다. 이 클래스가
  // model-invalid-json보다 먼저 와야 TransientLlmError가 "응답 형식 문제"로 뒤바뀌지 않는다.
- {id:'model-call-failed',title:'모델 호출 자체가 실패',
+ failure('model-call-failed',{
   match:['llm call failed','transientllmerror','fetch failed',/\bspawn\b/,/\beconnrefused\b/,/\betimedout\b/],
-  cause:'모델을 호출하는 단계에서 실패했습니다 — 네트워크, 실행기(codex) 기동, 인증 같은 호출 경로의 문제이며 응답 내용의 문제가 아닙니다.',
-  impact:'그 호출의 산출물이 없습니다. 코어는 이 실패를 일시적 오류로 보고 시도를 소모하지 않으므로 예산은 그대로입니다.',
-  next:'대개 재시도로 해결됩니다. 반복되면 모델 시도 탭의 오류 원문으로 실행기·인증 상태를 먼저 확인하세요 — 프롬프트나 입력 길이를 고칠 문제가 아닙니다.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'attempts',state:'failed'},label:'모델 시도 보기'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'attempts',state:'failed'},labelKey:'guidance.action.viewAttempts'},{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'}],
+  source:GUIDE}),
 
- {id:'model-invalid-json',title:'모델이 형식에 맞지 않는 응답을 반환',
+ failure('model-invalid-json',{
   match:['unparseable llm response','invalid json','model returned invalid json','unusable domain/category name','empty llm response'],
-  cause:'모델 응답이 요구한 JSON 스키마를 만족하지 않아 코어가 저장을 거부했습니다.',
-  impact:'그 시도의 산출물만 버려집니다. 잘못된 내용이 기억으로 저장되지는 않습니다.',
-  next:'대개 재시도로 해결됩니다. 반복되면 모델 시도 탭에서 오류 원문과 입력 길이를 확인하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'attempts',state:'failed'},label:'모델 시도 보기'}],
-  source:GUIDE},
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'attempts',state:'failed'},labelKey:'guidance.action.viewAttempts'}],
+  source:GUIDE}),
 
- {id:'embedding-unavailable',title:'임베딩 런타임을 준비하지 못함',
-  match:['embedding model unavailable','candidate embedding unavailable','embedding not available','embedder','vec_facts',/\bvec0\b/,'임베딩'],
-  cause:'로컬 임베딩 모델을 적재하지 못했습니다. 모델 파일이 없거나 런타임 의존성이 준비되지 않은 상태입니다.',
-  impact:'의미 검색과 분류가 멈추고, 의미 수정 저장도 실패합니다. 저장된 기억은 그대로입니다.',
-  next:'의존성을 실체화하고 진단을 실행한 뒤, 누락된 임베딩을 백필하세요.',
-  ignorable:false,actions:[{kind:'operation',command:'doctor',label:'코어 진단 실행'},{kind:'operation',command:'embeddings',label:'임베딩 백필'},{kind:'command',text:'memex deps materialize'}],
-  source:'docs/GUIDE.md#13-진단'},
+ failure('embedding-unavailable',{
+  // 0.7.0 (#109): '임베딩'은 **2글자 한국어 부분 일치**였다 — #80이 금지한 "짧은 열거값"의
+  // 한국어 버전이다. 단어 경계 정규식으로 바꿨다.
+  match:[/\bembedding\b/,'candidate embedding unavailable','embedder','vec_facts',/\bvec0\b/],
+  ignorable:false,actions:[{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'},{kind:'operation',command:'embeddings',labelKey:'guidance.action.backfillEmbeddings'},{kind:'command',text:'memex deps materialize'}],
+  source:A.GUIDE_DIAG}),
 
- {id:'ontology-parked',title:'분류가 보류(parked)된 기억',
+ failure('ontology-parked',{
   match:[/\bparked\b/,'ontology_state','ontology park'],
-  cause:'분류를 정해진 횟수만큼 시도했지만 실패해 General/Misc에 보류된 기억입니다. 분류 완료로 세지 않습니다.',
-  impact:'분류·지도에서 제 자리를 찾지 못합니다. 기억 자체와 주입에는 영향이 없습니다.',
-  next:'정책·임베딩 토큰이 바뀐 보류 건은 한 번의 재시도를 받을 수 있습니다. 온톨로지 백필을 실행하세요.',
-  ignorable:true,actions:[{kind:'operation',command:'ontology',label:'온톨로지 분류 백필'},{kind:'view',to:'/taxonomy',label:'분류 보기'}],
-  source:'docs/GUIDE.md#ontology-taxonomy-수리-061-47'},
+  ignorable:true,actions:[{kind:'operation',command:'ontology',labelKey:'guidance.action.backfillOntology'},{kind:'view',to:'/taxonomy',labelKey:'guidance.action.viewTaxonomy'}],
+  source:A.GUIDE_ONTOLOGY_REPAIR}),
 
- {id:'ontology-index-repair',title:'온톨로지 카테고리 인덱스 수리 필요',
+ failure('ontology-index-repair',{
   match:['index repair','indexrepairerror','category index repair failed','category index unavailable','category index incomplete'],
-  cause:'카테고리 벡터 인덱스가 자가 치유로 복구되지 않는 상태입니다. 기억의 문제가 아니라 인덱스의 문제입니다.',
-  impact:'분류가 차단됩니다. 새 기억은 계속 저장되지만 분류 대기로 쌓입니다.',
-  next:'임베딩을 백필해 벡터를 다시 만드세요. 그래도 남으면 진단 결과와 함께 확인하세요.',
-  ignorable:false,actions:[{kind:'operation',command:'embeddings',label:'임베딩 백필'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
-  source:'docs/GUIDE.md#ontology-taxonomy-수리-061-47'},
+  ignorable:false,actions:[{kind:'operation',command:'embeddings',labelKey:'guidance.action.backfillEmbeddings'},{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'}],
+  source:A.GUIDE_ONTOLOGY_REPAIR}),
 
- {id:'derived-lane-skip',title:'파생 레인이 밀림',
+ failure('derived-lane-skip',{
   match:['continuity_backlog','derived lane','derived_lane'],
-  cause:'우선순위가 높은 capture·capsule 작업이 밀려 있어 통합·재임베딩·분류·추출 백필이 순번을 양보했습니다.',
-  impact:'"대기가 줄지 않는다"처럼 보이지만 원인은 다른 레인에 있습니다. 데이터 손실은 아닙니다.',
-  next:'밀린 백로그를 먼저 비우세요. 연속으로 밀리면 코어가 강제로 한 번 통과시킵니다.',
-  ignorable:true,actions:[{kind:'command',text:'memex jobs list --state retry'},{kind:'view',to:'/activity',query:{tab:'jobs'},label:'처리 작업 보기'}],
-  source:'docs/GUIDE.md#15-continuity-운영'},
+  ignorable:true,actions:[{kind:'command',text:'memex jobs list --state retry'},{kind:'view',to:'/activity',query:{tab:'jobs'},labelKey:'guidance.action.viewJobs'}],
+  source:A.GUIDE_CONTINUITY}),
 
- {id:'evidence-missing',title:'로컬 검증 영수증이 없는 기억',
+ failure('evidence-missing',{
   match:['local meaning evidence not recorded','factswithoutlocalevidence','backfill receipts','source evidence changed or is unresolvable'],
-  cause:'현재 의미 버전에 대한 로컬 검증 영수증이 없습니다. 원문이 아직 있으면 다시 만들 수 있습니다.',
-  impact:'자동 통합에서 제외되고 동기화 충돌에서 밀립니다 — "중복 기억이 계속 쌓인다"의 실제 원인입니다.',
-  next:'영수증 백필로 다시 만드세요. 원문이 사라진 기억은 복구되지 않습니다.',
-  ignorable:false,actions:[{kind:'command',text:'memex backfill receipts'},{kind:'view',to:'/facts',label:'기억 목록 보기'}],
-  source:'docs/GUIDE.md#7-fact-관리'},
+  ignorable:false,actions:[{kind:'command',text:'memex backfill receipts'},{kind:'view',to:'/facts',labelKey:'guidance.action.viewFacts'}],
+  source:A.GUIDE_FACTS}),
 
- {id:'evidence-unresolved',title:'근거 원문을 다시 찾지 못함',
-  match:['evidence_unresolved','invalid evidence references','근거로 지목된 원문'],
-  cause:'기억이 가리키는 원문 exchange를 현재 인덱스에서 찾지 못했습니다.',
-  impact:'그 작업은 기억을 저장하지 않고 종료합니다. 잘못된 근거로 저장하지는 않습니다.',
-  next:'대화 동기화로 인덱스를 채운 뒤 복구하세요.',
-  ignorable:false,actions:[{kind:'operation',command:'sync',label:'대화 동기화'},...RECOVER],
-  source:GUIDE},
+ failure('evidence-unresolved',{
+  // 0.7.0 (#109): '근거로 지목된 원문'은 e2e 픽스처의 한국어 문장에만 걸렸고 `evidence_unresolved`
+  // 코드가 같은 것을 이미 잡는다 — 중복이므로 삭제했다.
+  match:['evidence_unresolved','invalid evidence references'],
+  ignorable:false,actions:[{kind:'operation',command:'sync',labelKey:'guidance.action.syncConversations'},...RECOVER],
+  source:GUIDE}),
 
- {id:'stale-fact',title:'변경 중에 기억이 바뀜',
+ failure('stale-fact',{
   match:['stale_fact','stalefactmutationerror','changed during','changed before semantic mutation','discarded: fact'],
-  cause:'저장을 시도하는 사이에 같은 기억이 다른 경로에서 바뀌어, 코어가 덮어쓰기를 거부했습니다.',
-  impact:'없습니다 — 이전 값이 그대로 유지됩니다. 안전장치가 동작한 것입니다.',
-  next:'화면을 새로고침해 현재 값을 확인한 뒤 다시 시도하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'chronicle'},label:'변경 이력 보기'}],
-  source:'docs/GUIDE.md#7-fact-관리'},
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'chronicle'},labelKey:'guidance.action.viewChronicle'}],
+  source:A.GUIDE_FACTS}),
 
- {id:'tier-step',title:'계층은 한 칸씩만 움직임',
+ failure('tier-step',{
   match:['tier_step','tierstepError','tier ladder moves one step at a time','not adjacent'],
-  cause:'브랜치 ⇄ 프로젝트 공용 ⇄ 글로벌 사다리에서 두 칸을 한 번에 옮기려 했거나 이미 끝에 있습니다.',
-  impact:'없습니다. 아무것도 바뀌지 않았습니다.',
-  next:'한 칸씩 옮기세요. 글로벌로 보내려면 먼저 프로젝트 공용으로 승격합니다.',
-  ignorable:true,actions:[{kind:'view',to:'/facts',label:'기억 목록 보기'}],
-  source:'docs/GUIDE.md#7-fact-관리'},
+  ignorable:true,actions:[{kind:'view',to:'/facts',labelKey:'guidance.action.viewFacts'}],
+  source:A.GUIDE_FACTS}),
 
- {id:'receipt-failed',title:'컨텍스트는 나갔는데 영수증이 남지 않음',
+ failure('receipt-failed',{
   match:['receipt-failed','failed to persist prepared recall receipt','recall-provenance'],
-  cause:'기억을 컨텍스트로 내보냈지만 durable recall 영수증이 준비 상태에 머물렀습니다.',
-  impact:'"어떤 기억이 언제 어느 세션에 들어갔는가"의 사후 감사가 불가능해집니다.',
-  next:'진단을 실행하고 DB 쓰기 가능 여부·디스크·권한을 점검하세요.',
-  ignorable:false,actions:[{kind:'operation',command:'doctor',label:'코어 진단 실행'},{kind:'view',to:'/activity',query:{tab:'recalls'},label:'컨텍스트 제공 보기'}],
-  source:'docs/GUIDE.md#13-진단'},
+  ignorable:false,actions:[{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'},{kind:'view',to:'/activity',query:{tab:'recalls'},labelKey:'guidance.action.viewRecalls'}],
+  source:A.GUIDE_DIAG}),
 
- {id:'no-match',title:'관련 기억을 찾지 못함',
-  match:['no-match','no_match','관련 기억 없음'],
-  cause:'후보가 없었거나 관련성 게이트에서 전부 탈락했습니다. 오류가 아닙니다.',
-  impact:'그 요청에는 기억이 제공되지 않았습니다.',
-  next:'이 프로젝트에 저장된 기억 수를 확인하세요. 브랜치 계층에 가려진 기억이 있으면 포함해서 볼 수 있습니다.',
-  ignorable:true,actions:[{kind:'view',to:'/facts',query:{tiers:'all'},label:'계층 포함해 기억 보기'}],
-  source:'docs/GUIDE.md#9-web-ui'},
+ failure('no-match',{
+  // 0.7.0 (#109): '관련 기억 없음'은 **UI 표시 라벨**(badge.no-match.label)을 오류로 재분류하던
+  // 규칙이었다. `no-match`/`no_match` 코드가 같은 것을 잡으므로 삭제했다.
+  match:['no-match','no_match'],
+  ignorable:true,actions:[{kind:'view',to:'/facts',query:{tiers:'all'},labelKey:'guidance.action.viewFactsAllTiers'}],
+  source:A.GUIDE_UI}),
 
- {id:'quarantined-project',title:'격리된 프로젝트',
+ failure('quarantined-project',{
   match:['quarantined','untrusted cwd','untrustedprojectpatherror'],
-  cause:'`/`처럼 프로젝트를 지목할 수 없는 cwd에서 만들어진 프로젝트입니다. 기억은 보존하고 주입·조회에서만 제외합니다.',
-  impact:'그 프로젝트의 기억은 주입되지 않습니다. 삭제되지는 않았습니다.',
-  next:'자동 복구 명령이 없습니다. 정상 cwd에서 다시 작업하고, 이전 기억이 필요하면 계층 이동으로 옮기세요.',
-  ignorable:false,actions:[{kind:'command',text:'memex facts list --scope all'},{kind:'view',to:'/facts',query:{scope:'all'},label:'전체 기억 보기'}],
-  source:GUIDE},
+  ignorable:false,actions:[{kind:'command',text:'memex facts list --scope all'},{kind:'view',to:'/facts',query:{scope:'all'},labelKey:'guidance.action.viewAllFacts'}],
+  source:GUIDE}),
 
- {id:'sync-disabled',title:'동기화가 꺼져 있음',
+ failure('sync-disabled',{
   match:['cross-device sync is off','sync disabled','skipped(off)',/^\s*disabled\s*$/],
-  cause:'기본값입니다. 고장이 아닙니다.',
-  impact:'다른 기기와 기억 상태를 주고받지 않습니다.',
-  next:'쓰려면 관리 › 동기화에서 공유 폴더를 지정해 켜세요.',
-  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncSettings'}],
+  source:A.GUIDE_SYNC}),
 
- {id:'sync-never-exported',title:'동기화가 켜져 있는데 한 번도 내보내지 않음',
+ failure('sync-never-exported',{
   match:['never exported','sync-export: warn'],
-  cause:'스위치는 켜져 있는데 export 기록이 없습니다.',
-  impact:'다른 기기에서 이 기기의 기억을 볼 수 없습니다.',
-  next:'관리 › 동기화에서 지금 내보내기로 첫 세대를 만드세요.',
-  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncSettings'}],
+  source:A.GUIDE_SYNC}),
 
- {id:'sync-locked',title:'다른 내보내기가 진행 중',
+ failure('sync-locked',{
   match:['another export is in progress','export locked',/^\s*locked\s*$/],
-  cause:'같은 데이터 루트에서 export가 이미 실행 중입니다.',
-  impact:'없습니다. 이번 요청만 건너뜁니다.',
-  next:'무시해도 됩니다. 잠시 뒤 다시 시도하세요.',
-  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 상태'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncStatus'}],
+  source:A.GUIDE_SYNC}),
 
- {id:'sync-unchanged',title:'내보낼 변경이 없음',
+ failure('sync-unchanged',{
   match:['no durable change since the last export',/\bunchanged\b/],
-  cause:'마지막 export 이후 durable 기억이 바뀌지 않았습니다. 빈 세대를 만들지 않기 위한 정상 동작입니다.',
-  impact:'없습니다. 다른 기기가 이미 마지막 세대를 받았다면 받을 것도 없습니다.',
-  next:'무시해도 됩니다. 그래도 새 세대를 만들려면 CLI에서 --force로 내보내세요.',
-  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 상태'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+  ignorable:true,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncStatus'}],
+  source:A.GUIDE_SYNC}),
 
- {id:'sync-export-failed',title:'동기화 내보내기 실패',
-  match:['shared sync folder is not writable','sync export failed','sync-export: fail','공유 폴더'],
-  cause:'대개 공유 폴더에 쓸 수 없는 상태입니다(경로 없음, 권한, 클라우드 동기화 중단).',
-  impact:'이 기기의 변경이 다른 기기로 나가지 않습니다. 로컬 기억은 그대로입니다.',
-  next:'관리 › 동기화에서 공유 폴더 경로와 쓰기 가능 여부를 확인한 뒤 다시 내보내세요.',
-  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+ failure('sync-export-failed',{
+  // 0.7.0 (#109): '공유 폴더'는 `ui/lib/core.cjs`가 던지던 한국어 원문에 의존했다. 서버 메시지가
+  // en 한 줄로 바뀌므로 **오류 코드 3개**로 승격한다(설계 §6.1). SYNC_DIR_REQUIRED는 L1이 지금
+  // code 없이 던지는 "shared sync folder path is required"에 부여한다.
+  match:['shared sync folder is not writable','sync export failed','sync-export: fail','sync_dir_required','invalid_sync_dir','sync_dir_unwritable'],
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncSettings'}],
+  source:A.GUIDE_SYNC}),
 
  // 0.6.3 (#48): 수동 세대 파일(zip/디렉터리) 가져오기·내보내기의 거부. 코어의 모든 사유가
- // "sync archive …"로 시작하므로 한 클래스로 모인다.
- {id:'sync-archive-invalid',title:'세대 파일을 쓰거나 읽을 수 없음',
-  match:['sync archive'],
-  cause:'지목한 경로가 Memex 세대 파일이 아니거나(zip 안에 meta.json과 4개 JSONL이 모두 있어야 합니다), 이 기기가 만든 파일이거나, 내보내기 경로가 데이터 루트 밖입니다.',
-  impact:'아무것도 적용되지 않았습니다. 기존 기억은 그대로입니다.',
-  next:'다른 맥의 관리 › 동기화에서 만든 zip 경로를 그대로 입력하세요. 오류 원문에 어느 조건이 깨졌는지 그대로 적혀 있습니다.',
-  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'},{kind:'command',text:'memex sync import --archive <path> --dry-run'}],
-  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+ // "sync archive …"로 시작하므로 한 클래스로 모인다. 0.7.0: UI 계층의 INVALID_ARCHIVE(_PATH)
+ // 코드도 같은 클래스다.
+ failure('sync-archive-invalid',{
+  match:['sync archive','invalid_archive'],
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},labelKey:'guidance.action.syncSettings'},{kind:'command',text:'memex sync import --archive <path> --dry-run'}],
+  source:A.GUIDE_SYNC}),
 
- {id:'operation-incomplete',title:'관리 실행이 남은 작업을 두고 끝남',
-  match:[/\bexit 2\b/,'남은 작업'],
-  cause:'백필이 전경에서 끝났지만 처리할 작업이 남아 종료 코드 2로 끝났습니다. 실패가 아닙니다.',
-  impact:'남은 대상은 다음 실행이나 worker가 처리합니다.',
-  next:'같은 명령을 다시 실행하거나 worker를 돌리세요.',
-  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'operations'},label:'관리 실행 내역'}],
-  source:'docs/GUIDE.md#15-continuity-운영'},
+ failure('operation-incomplete',{
+  // 0.7.0 (#109): '남은 작업'은 생산자가 없었다(docs의 산문뿐) — 삭제했다.
+  match:[/\bexit 2\b/],
+  ignorable:true,actions:[{kind:'view',to:'/activity',query:{tab:'operations'},labelKey:'guidance.action.viewOperations'}],
+  source:A.GUIDE_CONTINUITY}),
 ];
 
 const BY_ID=new Map(CLASSES.map(c=>[c.id,c]));
@@ -320,19 +262,23 @@ export const guidanceFor=id=>BY_ID.get(id)||null;
 
 /** 매핑되지 않은 오류. 원인을 추측하지 않고 원문과 진단 안내만 남긴다. */
 export function unknownClass(raw){
- return {id:'unknown',title:'알 수 없는 오류',raw:raw||null,
-  cause:'이 오류 문자열에 대응하는 안내가 아직 없습니다. 원인을 추측하지 않습니다.',
-  impact:'영향 범위를 단정할 수 없습니다. 아래 원문과 작업 상세를 함께 확인하세요.',
-  next:'진단 JSON을 내보내 원문과 함께 보고하세요. 진단에는 대화·기억 원문과 절대 경로가 들어가지 않습니다.',
-  ignorable:null,actions:[{kind:'diagnostics',label:'진단 내보내기'},{kind:'operation',command:'doctor',label:'코어 진단 실행'}],
-  source:GUIDE};
+ return failure('unknown',{raw:raw||null,ignorable:null,
+  actions:[{kind:'diagnostics',labelKey:'guidance.action.exportDiagnostics'},{kind:'operation',command:'doctor',labelKey:'guidance.action.runDoctor'}],
+  source:GUIDE});
 }
 
+/**
+ * 분류 대상 문자열. 레코드의 여러 필드를 한 건초더미로 합친다.
+ *
+ * 0.7.0 (#109): **`code`와 `error_code`를 포함한다.** 서버 오류 메시지가 en 한 줄 + 안정적
+ * 코드로 바뀌었으므로(설계 §5) 분류는 코드를 봐야 한다. `code`를 보지 않으면
+ * `DB_INDEX_MISSING`·`SYNC_DIR_UNWRITABLE` 같은 승격된 코드가 분류기에 도달하지 않는다.
+ */
 const haystack=input=>{
  if(!input)return '';
  if(typeof input==='string')return input.toLowerCase();
- return [input.error,input.errorClass,input.error_class,input.error_message,input.last_error,input.reason,input.state,input.status,input.kind]
-  .filter(x=>typeof x==='string').join('   ').toLowerCase();
+ return [input.code,input.error_code,input.error,input.errorClass,input.error_class,input.error_message,input.last_error,input.hold_reason,input.reason,input.state,input.status,input.kind]
+  .filter(x=>typeof x==='string').join('   ').toLowerCase();
 };
 
 /** 문자열 또는 레코드를 실패 클래스로 옮긴다. 모르면 unknown을 돌려준다. */
@@ -347,24 +293,36 @@ export function classify(input){
  return unknownClass(typeof input==='string'?input:input?.error||input?.last_error||input?.error_message||null);
 }
 
-/** 파이프라인 상태에서 주목이 필요한 클래스를 수량과 함께 뽑는다. 0은 만들지 않는다. */
+/**
+ * 파이프라인 상태에서 주목이 필요한 클래스를 수량과 함께 뽑는다. 0은 만들지 않는다.
+ *
+ * `detail`은 **이미 번역된 한 줄**이다. 0.6.x는 `${number(count)} · ${라벨}`로 타이포그래피를
+ * 이어붙여 어순을 표현할 수 없었다 — 수량 슬롯을 사전 안으로 옮겼다(설계 §6.0).
+ */
 export function attentionFromPipeline(p){
  if(!p)return [];
- const t=p.attention?.terminal||{};
+ const terminal=p.attention?.terminal||{};
+ const detail=(id,count)=>t(`guidance.attention.${id}.detail`,{count:number(count)});
  const rows=[
-  ['job-dead',(p.attention?.memoryJobsDead||0)+(t.checkpointsDeadLetter||0)+(t.extractionTargetsDead||0),'실패로 종료된 작업'],
-  ['job-retry',p.attention?.memoryJobsRetry||0,'재시도를 기다리는 작업'],
-  ['failed-visible',(t.checkpointsFailedVisible||0)+(t.extractionTargetItemsFailedVisible||0)+(t.capsuleCheckpointFailedVisible||0),'결정론적 실패로 표시된 구간'],
-  ['extraction-failed-range',t.extractionFailedRanges||0,'기록된 추출 실패 구간'],
-  ['capture-gap',t.captureGapsOpen||0,'열려 있는 capture 공백'],
-  ['budget-exhausted',t.modelWorkBudgetsExhausted||0,'소진된 모델 작업 예산'],
-  ['ontology-parked',p.ontology?.parkedFacts||0,'분류가 보류된 기억'],
-  ['evidence-missing',p.evidence?.factsWithoutLocalEvidence||0,'검증 영수증이 없는 기억'],
-  ['quarantined-project',(p.quarantinedProjects||[]).length,'격리된 프로젝트'],
+  // 보류는 큐가 아니라 **사람의 설정**을 기다린다 — 가장 위에 둔다. 사유별 집계를 합치므로
+  // `pipeline-status`가 세지 않는 추출 규칙 보류 2종도 빠지지 않는다(ui/lib/core.cjs pipeline()).
+  ['job-held',(p.heldJobs||[]).reduce((sum,row)=>sum+Number(row.jobs||0),0)],
+  ['job-dead',(p.attention?.memoryJobsDead||0)+(terminal.checkpointsDeadLetter||0)+(terminal.extractionTargetsDead||0)],
+  ['job-retry',p.attention?.memoryJobsRetry||0],
+  ['failed-visible',(terminal.checkpointsFailedVisible||0)+(terminal.extractionTargetItemsFailedVisible||0)+(terminal.capsuleCheckpointFailedVisible||0)],
+  ['extraction-failed-range',terminal.extractionFailedRanges||0],
+  ['capture-gap',terminal.captureGapsOpen||0],
+  ['budget-exhausted',terminal.modelWorkBudgetsExhausted||0],
+  ['ontology-parked',p.ontology?.parkedFacts||0],
+  ['evidence-missing',p.evidence?.factsWithoutLocalEvidence||0],
+  ['quarantined-project',(p.quarantinedProjects||[]).length],
  ];
- const out=rows.filter(([,count])=>count>0).map(([id,count,detail])=>({cls:guidanceFor(id),count,detail}));
- if(p.ontology?.indexRepair?.blocked)out.unshift({cls:guidanceFor('ontology-index-repair'),count:1,detail:p.ontology.indexRepair.reason||'차단됨'});
- if(p.derivedLaneSkips?.consecutive)out.push({cls:guidanceFor('derived-lane-skip'),count:p.derivedLaneSkips.consecutive,detail:'연속 양보 횟수'});
+ const out=rows.filter(([,count])=>count>0).map(([id,count])=>({cls:guidanceFor(id),count,detail:detail(id,count)}));
+ // 인덱스 수리는 수량이 아니라 코어가 남긴 차단 사유가 정보다. 사유가 없으면 지어내지 않는다.
+ if(p.ontology?.indexRepair?.blocked)out.unshift({cls:guidanceFor('ontology-index-repair'),count:1,
+  detail:t('guidance.attention.ontology-index-repair.detail',{reason:p.ontology.indexRepair.reason||t('common.unknown')})});
+ if(p.derivedLaneSkips?.consecutive)out.push({cls:guidanceFor('derived-lane-skip'),count:p.derivedLaneSkips.consecutive,
+  detail:detail('derived-lane-skip',p.derivedLaneSkips.consecutive)});
  return out.filter(x=>x.cls);
 }
 
@@ -380,6 +338,9 @@ export function attentionFromPipeline(p){
  */
 export function jobGuidance(j){
  if(!j)return null;
+ // 0.7.0 (#31/#30): **보류가 상태보다 먼저다.** 보류된 작업은 `pending`이므로 아래의 "정상 대기"
+ // 단축 경로에 걸려 안내가 사라진다 — 그러면 설정을 고쳐야 풀리는 작업이 화면에서 사라진다.
+ if(j.hold_reason)return guidanceFor('job-held');
  if(j.state==='running'&&j.lease_until&&Date.parse(j.lease_until)<Date.now())return guidanceFor('lease-expired');
  if(!j.last_error&&['completed','processed','superseded','pending','running'].includes(j.state))return null;
  if(j.state==='dead')return guidanceFor('job-dead');
@@ -399,15 +360,18 @@ export function operationGuidance(o){
  return classify({state:o.status});
 }
 
-const IGNORABLE={true:'무시해도 됩니다',false:'조치가 필요합니다'};
-export const ignorableTag=cls=>cls.ignorable===null?'<span class="tag outline">영향 미확인</span>':`<span class="tag ${cls.ignorable?'':'amber'}">${IGNORABLE[String(cls.ignorable)]}</span>`;
+export const ignorableTag=cls=>cls.ignorable===null
+ ?`<span class="tag outline">${esc(t('guidance.ignorable.unknown'))}</span>`
+ :`<span class="tag ${cls.ignorable?'':'amber'}">${esc(t('guidance.ignorable.'+String(cls.ignorable)))}</span>`;
 
 /** 액션 하나를 기존 버튼·링크 컴포넌트로 그린다. 새 컴포넌트를 만들지 않는다. */
 export function actionButton(action,ctx){
- if(action.kind==='operation')return btn(action.label,'play',`data-command="${esc(action.command)}" ${ctx?.bootstrap?.environment?.commands?'':'disabled'}`,'small');
+ // `text`(복사되는 CLI 명령)는 버튼 텍스트 자체이고 번역 대상이 아니다. 나머지는 사전이 갖는다.
+ const label=action.labelKey?t(action.labelKey):'';
+ if(action.kind==='operation')return btn(label,'play',`data-command="${esc(action.command)}" ${ctx?.bootstrap?.environment?.commands?'':'disabled'}`,'small');
  if(action.kind==='command')return btn(action.text,'copy',`data-copy-command="${esc(action.text)}"`,'small ghost');
- if(action.kind==='diagnostics')return btn(action.label,'download','data-action="diagnostics-download"','small ghost');
- if(action.kind==='view'&&ctx?.href)return linkBtn(action.label,'arrow',ctx.href(action.to,action.query||{}),'small ghost');
+ if(action.kind==='diagnostics')return btn(label,'download','data-action="diagnostics-download"','small ghost');
+ if(action.kind==='view'&&ctx?.href)return linkBtn(label,'arrow',ctx.href(action.to,action.query||{}),'small ghost');
  return '';
 }
 export const actionRow=(cls,ctx)=>`<div class="row wrap">${(cls.actions||[]).map(a=>actionButton(a,ctx)).join('')}</div>`;
@@ -423,15 +387,15 @@ export function guidancePanel(cls,ctx,extra=''){
  if(!cls)return '';
  return `<section class="card pad"><div class="row wrap mb">${icon('warning')}<strong>${esc(cls.title)}</strong>${ignorableTag(cls)}</div>
  ${cls.raw?`<pre class="terminal">${esc(cls.raw)}</pre>`:''}
- ${kv([['원인',esc(cls.cause)],['영향',esc(cls.impact)],['다음 행동',esc(cls.next)]])}
+ ${kv([[t('guidance.kv.cause'),esc(cls.cause)],[t('guidance.kv.impact'),esc(cls.impact)],[t('guidance.kv.next'),esc(cls.next)]])}
  ${extra}
  <div class="mt">${actionRow(cls,ctx)}</div>
- <p class="caption mt">단일 출처: <code>${esc(cls.source)}</code></p></section>`;
+ <p class="caption mt">${esc(t('guidance.source.label'))}: <code>${esc(cls.source)}</code></p></section>`;
 }
 
 /** 개요의 "확인이 필요한 작업" 카드. 클래스별로 묶고 0은 만들지 않는다. */
 export function attentionCard(groups,ctx){
  if(!groups.length)return '';
- return `<section class="card"><div class="card-head"><div><h2>확인이 필요한 상태</h2><p>실패 클래스별로 묶었습니다. 수집되지 않은 값은 0으로 세지 않습니다.</p></div>${linkBtn('활동 · 추적','activity',ctx.href('/activity',{tab:'jobs'}),'small ghost')}</div>
- <div class="card-body stack">${groups.map(({cls,count,detail})=>`<div class="source-item"><div class="spread"><div class="row wrap">${ignorableTag(cls)}<strong>${esc(cls.title)}</strong><span class="tag outline">${number(count)}${esc(detail?' · '+detail:'')}</span></div></div><p class="caption mt">${esc(cls.impact)}</p><p class="caption">${esc(cls.next)}</p><div class="mt">${actionRow(cls,ctx)}</div></div>`).join('')}</div></section>`;
+ return `<section class="card"><div class="card-head"><div><h2>${esc(t('guidance.attention.heading'))}</h2><p>${esc(t('guidance.attention.subtitle'))}</p></div>${linkBtn(t('guidance.attention.link'),'activity',ctx.href('/activity',{tab:'jobs'}),'small ghost')}</div>
+ <div class="card-body stack">${groups.map(({cls,count,detail})=>`<div class="source-item"><div class="spread"><div class="row wrap">${ignorableTag(cls)}<strong>${esc(cls.title)}</strong><span class="tag outline">${esc(detail||number(count))}</span></div></div><p class="caption mt">${esc(cls.impact)}</p><p class="caption">${esc(cls.next)}</p><div class="mt">${actionRow(cls,ctx)}</div></div>`).join('')}</div></section>`;
 }

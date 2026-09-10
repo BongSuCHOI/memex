@@ -3260,8 +3260,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input = path15;
+    function removeDotSegments(path18) {
+      let input = path18;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3666,8 +3666,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path15 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const path18 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7173,12 +7173,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs13, exportName) {
+    function addFormats(ajv, list, fs17, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs13[f]);
+        ajv.addFormat(f, fs17[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7246,6 +7246,20 @@ function ensureDbDir() {
   const dbDir = path2.dirname(getDbPath());
   if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
   return dbDir;
+}
+function getModelSettingsPath() {
+  return path2.join(getMemexHome(), "models.json");
+}
+function overlayDir() {
+  const override = process.env.MEMEX_OVERLAY_DIR;
+  if (override) return override;
+  return path2.join(getMemexHome(), "overlays");
+}
+function recallGateOverlayPath() {
+  return path2.join(overlayDir(), "recall-gate.json");
+}
+function overlayQuarantinePath() {
+  return path2.join(overlayDir(), "quarantine.json");
 }
 var MEMEX_DEFAULT_BASENAME, LLM_WORKDIR_BASENAME;
 var init_paths = __esm({
@@ -7763,15 +7777,330 @@ var init_ontology_selector = __esm({
   }
 });
 
+// src/model-settings.ts
+var model_settings_exports = {};
+__export(model_settings_exports, {
+  ALLOWED_REASONING_EFFORTS: () => ALLOWED_REASONING_EFFORTS,
+  DEFAULT_LLM_MODEL: () => DEFAULT_LLM_MODEL,
+  LLM_MODEL_ENV: () => LLM_MODEL_ENV,
+  LLM_REASONING_ENV: () => LLM_REASONING_ENV,
+  MODEL_SETTINGS_VERSION: () => MODEL_SETTINGS_VERSION,
+  defaultModelSettings: () => defaultModelSettings,
+  invalidateModelSettingsCache: () => invalidateModelSettingsCache,
+  isReasoningEffort: () => isReasoningEffort,
+  isValidModelId: () => isValidModelId,
+  llmSelectionFingerprint: () => llmSelectionFingerprint,
+  modelSettingsPath: () => modelSettingsPath,
+  normalizeReasoningEffort: () => normalizeReasoningEffort,
+  readModelSettings: () => readModelSettings,
+  resetModelSettings: () => resetModelSettings,
+  resolveLlmModel: () => resolveLlmModel,
+  resolveLlmSelection: () => resolveLlmSelection,
+  resolveReasoningEffort: () => resolveReasoningEffort,
+  writeModelSettings: () => writeModelSettings
+});
+import { createHash as createHash4 } from "node:crypto";
+import fs5 from "node:fs";
+import path8 from "node:path";
+function defaultModelSettings() {
+  return {
+    version: MODEL_SETTINGS_VERSION,
+    updatedAt: null,
+    llm: { model: null, reasoning: null, stages: {} },
+    embedding: { desiredModel: null, desiredDims: null, desiredProtocol: null }
+  };
+}
+function modelSettingsPath() {
+  return getModelSettingsPath();
+}
+function isValidModelId(id) {
+  if (typeof id !== "string") return false;
+  const trimmed = id.trim();
+  if (!trimmed || trimmed.length > 256) return false;
+  return /^[\w./:@+-]+$/.test(trimmed);
+}
+function isReasoningEffort(value) {
+  return typeof value === "string" && ALLOWED_REASONING_EFFORTS.includes(value);
+}
+function normalizeReasoningEffort(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  return isReasoningEffort(trimmed) ? trimmed : null;
+}
+function invalidateModelSettingsCache() {
+  memo = null;
+}
+function statStamp(target) {
+  try {
+    const stat = fs5.statSync(target);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "absent";
+  }
+}
+function parseSettings(raw) {
+  const fallback = { value: defaultModelSettings(), raw: null };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fallback;
+  const object3 = raw;
+  if (object3.version !== MODEL_SETTINGS_VERSION) {
+    if (!warnedUnsupportedVersion) {
+      warnedUnsupportedVersion = true;
+      console.error(
+        `[memex] ${modelSettingsPath()}: unsupported version ${String(object3.version)} (this build understands ${MODEL_SETTINGS_VERSION}) \u2014 using core defaults; the file is left unchanged`
+      );
+    }
+    return fallback;
+  }
+  const llmRaw = object3.llm && typeof object3.llm === "object" && !Array.isArray(object3.llm) ? object3.llm : {};
+  const embeddingRaw = object3.embedding && typeof object3.embedding === "object" && !Array.isArray(object3.embedding) ? object3.embedding : {};
+  const stagesRaw = llmRaw.stages && typeof llmRaw.stages === "object" && !Array.isArray(llmRaw.stages) ? llmRaw.stages : {};
+  if (Object.keys(stagesRaw).length > 0 && !warnedStages) {
+    warnedStages = true;
+    console.error(
+      `[memex] ${modelSettingsPath()}: llm.stages is reserved and ignored in this release`
+    );
+  }
+  const dims = typeof embeddingRaw.desired_dims === "number" && Number.isSafeInteger(embeddingRaw.desired_dims) && embeddingRaw.desired_dims > 0 ? embeddingRaw.desired_dims : null;
+  const protocol = embeddingRaw.desired_protocol === "e5" || embeddingRaw.desired_protocol === "plain" ? embeddingRaw.desired_protocol : null;
+  return {
+    value: {
+      version: MODEL_SETTINGS_VERSION,
+      updatedAt: typeof object3.updated_at === "string" ? object3.updated_at : null,
+      llm: {
+        model: isValidModelId(llmRaw.model) ? String(llmRaw.model).trim() : null,
+        reasoning: normalizeReasoningEffort(llmRaw.reasoning),
+        stages: {}
+      },
+      embedding: {
+        desiredModel: typeof embeddingRaw.desired_model === "string" && embeddingRaw.desired_model.trim() ? embeddingRaw.desired_model.trim() : null,
+        desiredDims: dims,
+        desiredProtocol: protocol
+      }
+    },
+    raw: object3
+  };
+}
+function readModelSettings(options) {
+  const target = modelSettingsPath();
+  const now = options?.now ?? Date.now();
+  if (memo && memo.path === target && now - memo.revalidatedAt < REVALIDATE_MS) {
+    return memo.value;
+  }
+  const stamp = statStamp(target);
+  if (memo && memo.path === target && memo.stamp === stamp) {
+    memo.revalidatedAt = now;
+    return memo.value;
+  }
+  let parsed;
+  if (stamp === "absent") {
+    parsed = { value: defaultModelSettings(), raw: null };
+  } else {
+    try {
+      parsed = parseSettings(JSON.parse(fs5.readFileSync(target, "utf8")));
+    } catch {
+      parsed = { value: defaultModelSettings(), raw: null };
+    }
+  }
+  memo = { path: target, stamp, revalidatedAt: now, value: parsed.value, raw: parsed.raw };
+  return parsed.value;
+}
+function readRawSettings() {
+  try {
+    const parsed = JSON.parse(fs5.readFileSync(modelSettingsPath(), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...parsed };
+    }
+  } catch {
+  }
+  return {};
+}
+function writeModelSettings(patch, now = /* @__PURE__ */ new Date()) {
+  const raw = readRawSettings();
+  const rawUnsupported = raw.version !== void 0 && raw.version !== MODEL_SETTINGS_VERSION;
+  const llmRaw = raw.llm && typeof raw.llm === "object" && !Array.isArray(raw.llm) && !rawUnsupported ? { ...raw.llm } : {};
+  const embeddingRaw = raw.embedding && typeof raw.embedding === "object" && !Array.isArray(raw.embedding) && !rawUnsupported ? { ...raw.embedding } : {};
+  if (patch.llm && "model" in patch.llm) {
+    const model = patch.llm.model;
+    if (model === null || model === void 0) {
+      llmRaw.model = null;
+    } else {
+      if (!isValidModelId(model)) {
+        throw new Error(
+          `invalid model id ${JSON.stringify(String(model))} \u2014 expected 1-256 characters matching [\\w./:@+-]`
+        );
+      }
+      llmRaw.model = model.trim();
+    }
+  }
+  if (patch.llm && "reasoning" in patch.llm) {
+    const reasoning = patch.llm.reasoning;
+    if (reasoning === null || reasoning === void 0) {
+      llmRaw.reasoning = null;
+    } else {
+      const normalized = normalizeReasoningEffort(reasoning);
+      if (!normalized) {
+        throw new Error(
+          `invalid reasoning effort ${JSON.stringify(String(reasoning))} \u2014 expected one of ${ALLOWED_REASONING_EFFORTS.join(", ")}`
+        );
+      }
+      llmRaw.reasoning = normalized;
+    }
+  }
+  if (patch.embedding && "desiredModel" in patch.embedding) {
+    embeddingRaw.desired_model = patch.embedding.desiredModel ?? null;
+  }
+  if (patch.embedding && "desiredDims" in patch.embedding) {
+    embeddingRaw.desired_dims = patch.embedding.desiredDims ?? null;
+  }
+  if (patch.embedding && "desiredProtocol" in patch.embedding) {
+    embeddingRaw.desired_protocol = patch.embedding.desiredProtocol ?? null;
+  }
+  const document = {
+    ...rawUnsupported ? {} : raw,
+    version: MODEL_SETTINGS_VERSION,
+    updated_at: now.toISOString(),
+    llm: llmRaw,
+    ...Object.keys(embeddingRaw).length > 0 ? { embedding: embeddingRaw } : {}
+  };
+  const target = modelSettingsPath();
+  fs5.mkdirSync(path8.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs5.writeFileSync(tmp, `${JSON.stringify(document, null, 2)}
+`, { mode: 384 });
+  try {
+    fs5.renameSync(tmp, target);
+  } catch (error2) {
+    try {
+      fs5.rmSync(tmp, { force: true });
+    } catch {
+    }
+    throw error2;
+  }
+  try {
+    fs5.chmodSync(target, 384);
+  } catch {
+  }
+  invalidateModelSettingsCache();
+  return readModelSettings();
+}
+function resetModelSettings() {
+  try {
+    fs5.rmSync(modelSettingsPath(), { force: true });
+  } catch {
+  }
+  invalidateModelSettingsCache();
+  return readModelSettings();
+}
+function envModel() {
+  const raw = process.env[LLM_MODEL_ENV];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+function envReasoning() {
+  const raw = process.env[LLM_REASONING_ENV];
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const normalized = normalizeReasoningEffort(raw);
+  if (!normalized) {
+    if (warnedEnvReasoning !== raw) {
+      warnedEnvReasoning = raw;
+      console.error(
+        `[memex] ${LLM_REASONING_ENV}=${raw} is not one of ${ALLOWED_REASONING_EFFORTS.join(", ")} \u2014 ignored`
+      );
+    }
+    return null;
+  }
+  return normalized;
+}
+function resolveLlmModel(options) {
+  const fromEnv = envModel();
+  if (fromEnv) return { value: fromEnv, source: "env" };
+  const fromFile = readModelSettings(options).llm.model;
+  if (fromFile) return { value: fromFile, source: "file" };
+  return { value: DEFAULT_LLM_MODEL, source: "default" };
+}
+function resolveReasoningEffort(options) {
+  const fromEnv = envReasoning();
+  if (fromEnv) return { value: fromEnv, source: "env" };
+  const fromFile = readModelSettings(options).llm.reasoning;
+  if (fromFile) return { value: fromFile, source: "file" };
+  return { value: null, source: "default" };
+}
+function resolveLlmSelection(overrides, options) {
+  let model;
+  let modelSource;
+  const overrideModel = typeof overrides?.model === "string" ? overrides.model.trim() : "";
+  if (overrideModel) {
+    model = overrideModel;
+    modelSource = "explicit";
+  } else {
+    const resolved = resolveLlmModel(options);
+    model = resolved.value;
+    modelSource = resolved.source;
+  }
+  let reasoning;
+  let reasoningSource;
+  if (overrides && "reasoningEffort" in overrides && overrides.reasoningEffort !== void 0) {
+    reasoning = normalizeReasoningEffort(overrides.reasoningEffort);
+    reasoningSource = "explicit";
+  } else {
+    const resolved = resolveReasoningEffort(options);
+    reasoning = resolved.value;
+    reasoningSource = resolved.source;
+  }
+  return {
+    model,
+    reasoning,
+    modelSource,
+    reasoningSource,
+    fingerprint: fingerprintOf(model, reasoning, modelSource, reasoningSource)
+  };
+}
+function fingerprintOf(model, reasoning, modelSource, reasoningSource) {
+  return createHash4("sha256").update(`${model}|${reasoning ?? ""}|${modelSource}|${reasoningSource}`).digest("hex");
+}
+function llmSelectionFingerprint(overrides, options) {
+  return resolveLlmSelection(overrides, options).fingerprint;
+}
+var MODEL_SETTINGS_VERSION, DEFAULT_LLM_MODEL, ALLOWED_REASONING_EFFORTS, LLM_MODEL_ENV, LLM_REASONING_ENV, REVALIDATE_MS, memo, warnedUnsupportedVersion, warnedStages, warnedEnvReasoning;
+var init_model_settings = __esm({
+  "src/model-settings.ts"() {
+    "use strict";
+    init_paths();
+    MODEL_SETTINGS_VERSION = 1;
+    DEFAULT_LLM_MODEL = "gpt-5.6-luna";
+    ALLOWED_REASONING_EFFORTS = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ];
+    LLM_MODEL_ENV = "MEMEX_CODEX_MODEL";
+    LLM_REASONING_ENV = "MEMEX_CODEX_REASONING";
+    REVALIDATE_MS = 1e3;
+    memo = null;
+    warnedUnsupportedVersion = false;
+    warnedStages = false;
+    warnedEnvReasoning = null;
+  }
+});
+
 // src/model-budget.ts
 var model_budget_exports = {};
 __export(model_budget_exports, {
   AUTOMATIC_MAINTENANCE_COOLDOWN_MS: () => AUTOMATIC_MAINTENANCE_COOLDOWN_MS,
   AUTOMATIC_MAINTENANCE_WINDOW_MS: () => AUTOMATIC_MAINTENANCE_WINDOW_MS,
+  BUDGET_FREE_OUTCOMES: () => BUDGET_FREE_OUTCOMES,
+  HOLD_REASONS: () => HOLD_REASONS,
   MAINTENANCE_WAKE_INTERVAL_MS: () => MAINTENANCE_WAKE_INTERVAL_MS,
   MODEL_ATTEMPT_TABLE: () => MODEL_ATTEMPT_TABLE,
   MODEL_BUDGET_SCHEMA_VERSION: () => MODEL_BUDGET_SCHEMA_VERSION,
   MODEL_BUDGET_TABLE: () => MODEL_BUDGET_TABLE,
+  MODEL_CONFIG_HOLD_TTL_MS: () => MODEL_CONFIG_HOLD_TTL_MS,
   MODEL_TARGET_TABLE: () => MODEL_TARGET_TABLE,
   ModelBudgetAffinityError: () => ModelBudgetAffinityError,
   ModelBudgetError: () => ModelBudgetError,
@@ -7780,9 +8109,15 @@ __export(model_budget_exports, {
   ModelBudgetNotFoundError: () => ModelBudgetNotFoundError,
   ModelBudgetOutputLimitError: () => ModelBudgetOutputLimitError,
   ModelBudgetOutputSchemaError: () => ModelBudgetOutputSchemaError,
+  ModelConfigHeldError: () => ModelConfigHeldError,
+  activeModelConfigHold: () => activeModelConfigHold,
   automaticMaintenanceWindow: () => automaticMaintenanceWindow,
   bindMemoryJobToBudget: () => bindMemoryJobToBudget,
   claimMaintenanceWake: () => claimMaintenanceWake,
+  clearJobHold: () => clearJobHold,
+  clearModelConfigHold: () => clearModelConfigHold,
+  clearModelConfigHoldsForSelection: () => clearModelConfigHoldsForSelection,
+  currentModelConfigHold: () => currentModelConfigHold,
   deferMemoryJobForModelBudget: () => deferMemoryJobForModelBudget,
   ensureModelBudgetSchema: () => ensureModelBudgetSchema,
   exhaustModelBudget: () => exhaustModelBudget,
@@ -7797,24 +8132,36 @@ __export(model_budget_exports, {
   getOrCreateMaintenanceModelBudget: () => getOrCreateMaintenanceModelBudget,
   getOrCreateModelWorkBudget: () => getOrCreateModelWorkBudget,
   getOrCreateWorkerModelBudget: () => getOrCreateWorkerModelBudget,
+  heldJobSummary: () => heldJobSummary,
+  holdMemoryJob: () => holdMemoryJob,
   isAutomaticOntologyEnabled: () => isAutomaticOntologyEnabled,
   isModelBudgetExhausted: () => isModelBudgetExhausted,
+  listModelConfigHolds: () => listModelConfigHolds,
   modelBudgetErrorFromUnknown: () => modelBudgetErrorFromUnknown,
   modelBudgetLimitsFromEnv: () => modelBudgetLimitsFromEnv,
   rebindMemoryJobToBudget: () => rebindMemoryJobToBudget,
+  recordModelConfigHold: () => recordModelConfigHold,
   registerModelWorkTargets: () => registerModelWorkTargets,
+  releaseExtractionClaimOnHold: () => releaseExtractionClaimOnHold,
+  releaseHeldJobs: () => releaseHeldJobs,
   reserveModelAttempt: () => reserveModelAttempt,
   rootWaveIdOf: () => rootWaveIdOf,
+  settleConfigRejectedAttempt: () => settleConfigRejectedAttempt,
   settleModelWorkTargets: () => settleModelWorkTargets,
   startNewModelWorkRun: () => startNewModelWorkRun,
   startNewModelWorkRunForBudget: () => startNewModelWorkRunForBudget,
   startNewModelWorkRunForJob: () => startNewModelWorkRunForJob,
+  touchModelConfigHold: () => touchModelConfigHold,
   withModelWorkContext: () => withModelWorkContext,
   withResolvedModelWorkContext: () => withResolvedModelWorkContext
 });
 import { AsyncLocalStorage } from "node:async_hooks";
 import Database from "better-sqlite3";
 import { randomUUID as randomUUID3 } from "node:crypto";
+function budgetRelevantOutcomeSql(alias) {
+  const list = BUDGET_FREE_OUTCOMES.map((value) => `'${value}'`).join(",");
+  return `COALESCE(${alias}.outcome,'') NOT IN (${list})`;
+}
 function getModelWorkContext() {
   return modelWorkStorage.getStore();
 }
@@ -7896,7 +8243,15 @@ function ensureModelBudgetSchema(db) {
         token_usage_status TEXT
           CHECK(token_usage_status IN ('observed','partial','NOT_PROVEN')),
         error_class TEXT,
-        error_message TEXT
+        error_message TEXT,
+        -- Issue #31: which selection this attempt intended and actually used.
+        model TEXT,
+        reasoning_effort TEXT,
+        -- Issue #31: NULL for an ordinary attempt; 'config_rejected' for one the
+        -- provider refused before any model work started. No CHECK: the value
+        -- set can grow (other "cost nothing" outcomes) and every existing row
+        -- must stay NULL, so the restriction is application-level only.
+        outcome TEXT
       );
 
       CREATE TABLE IF NOT EXISTS model_work_targets (
@@ -7931,7 +8286,57 @@ function ensureModelBudgetSchema(db) {
         id INTEGER PRIMARY KEY CHECK(id = 1),
         wake_after TEXT NOT NULL
       );
+
+      /*
+       * Issue #31 \u2014 durable "this model selection is unusable" state.
+       *
+       * Keyed on the SELECTION FINGERPRINT, one row per selection, NOT a single
+       * id=1 row. v2 of the design used a single row that a lookup deleted on a
+       * fingerprint mismatch, so in one data root a process with different env
+       * erased another process's valid hold (2nd review (b)5). With the
+       * fingerprint as the key, every process reads and writes only its OWN
+       * row \u2014 so there is no delete race to lose, and fixing the setting simply
+       * means no active row matches any more.
+       *
+       * Clearing does not delete: cleared_at / cleared_by are written so the
+       * history stays auditable. "Active" means cleared_at IS NULL.
+       */
+      CREATE TABLE IF NOT EXISTS model_config_holds (
+        selection_fingerprint TEXT PRIMARY KEY,
+        held_at TEXT NOT NULL,
+        model TEXT NOT NULL,
+        reasoning_effort TEXT,
+        provider_status INTEGER,
+        provider_type TEXT,
+        provider_message TEXT,
+        first_stage TEXT,
+        first_job_id TEXT,
+        observed_count INTEGER NOT NULL DEFAULT 1,
+        last_observed_at TEXT NOT NULL,
+        cleared_at TEXT,
+        cleared_by TEXT
+          CHECK(cleared_by IS NULL OR cleared_by IN ('probe-ok','manual','ttl'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_config_holds_live
+        ON model_config_holds(cleared_at, last_observed_at);
     `);
+    const attemptColumns = columnNames2(db, MODEL_ATTEMPT_TABLE);
+    for (const column of ["model", "reasoning_effort", "outcome"]) {
+      if (!attemptColumns.has(column)) {
+        db.exec(`ALTER TABLE ${MODEL_ATTEMPT_TABLE} ADD COLUMN ${column} TEXT`);
+      }
+    }
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_model_work_attempts_outcome
+         ON ${MODEL_ATTEMPT_TABLE}(budget_id, outcome)`
+    );
+    db.prepare(
+      `UPDATE model_config_holds SET cleared_at = ?, cleared_by = 'ttl'
+       WHERE cleared_at IS NULL AND last_observed_at < ?`
+    ).run(
+      (/* @__PURE__ */ new Date()).toISOString(),
+      new Date(Date.now() - MODEL_CONFIG_HOLD_TTL_MS).toISOString()
+    );
     if (!columnNames2(db, MODEL_BUDGET_TABLE).has("automatic")) {
       db.exec("ALTER TABLE model_work_budgets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0 CHECK(automatic IN (0,1))");
     }
@@ -7995,6 +8400,9 @@ function ensureModelBudgetSchema(db) {
       }
       if (!columns.has("maintenance_wave_id")) {
         db.exec("ALTER TABLE memory_jobs ADD COLUMN maintenance_wave_id TEXT");
+      }
+      if (!columns.has("hold_reason")) {
+        db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
       }
       db.exec(
         "CREATE INDEX IF NOT EXISTS idx_memory_jobs_budget ON memory_jobs(budget_id, state, updated_at)"
@@ -8523,9 +8931,12 @@ function findExhaustedModelBudgetForClaim(db, input) {
   return { budgetId: budget.budgetId, parentWaveId: budget.parentWaveId, reason };
 }
 function hasModelAttemptSince(db, jobId, since) {
+  const outcomeAware = columnNames2(db, MODEL_ATTEMPT_TABLE).has("outcome");
   return db.prepare(`
-    SELECT 1 FROM model_work_attempts
-    WHERE job_id = ? AND started_at >= ? LIMIT 1
+    SELECT 1 FROM model_work_attempts a
+    WHERE a.job_id = ? AND a.started_at >= ?
+      ${outcomeAware ? `AND ${budgetRelevantOutcomeSql("a")}` : ""}
+    LIMIT 1
   `).get(jobId, since.toISOString()) !== void 0;
 }
 function deferMemoryJobForModelBudget(db, input) {
@@ -8605,6 +9016,252 @@ function deferMemoryJobForModelBudget(db, input) {
   });
   return defer.immediate();
 }
+function assertHoldReason(reason) {
+  if (!HOLD_REASONS.includes(reason)) {
+    throw new Error(
+      `unknown hold reason ${JSON.stringify(reason)}; expected one of ${HOLD_REASONS.join(", ")}`
+    );
+  }
+  return reason;
+}
+function ensureHoldReasonColumn(db) {
+  if (!tableExists2(db, "memory_jobs")) return false;
+  if (columnNames2(db, "memory_jobs").has("hold_reason")) return true;
+  db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+  return true;
+}
+function holdDetail(reason, detail) {
+  return `held (${reason}): ${detail}`.replace(/\s+/g, " ").trim().slice(0, 1e3);
+}
+function holdJobStatement(db) {
+  return db.prepare(`
+    UPDATE memory_jobs
+    SET state = 'pending', available_at = ?, lease_owner = NULL, lease_until = NULL,
+        attempts = MAX(attempts - 1, 0), hold_reason = ?, last_error = ?, updated_at = ?
+    WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+      AND lease_generation = ? AND lease_until > ?
+  `);
+}
+function holdMemoryJob(db, input) {
+  const reason = assertHoldReason(input.reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const detail = holdDetail(reason, input.detail);
+  const hold = db.transaction(
+    () => holdJobStatement(db).run(
+      nowIso2,
+      reason,
+      detail,
+      nowIso2,
+      input.jobId,
+      input.owner,
+      input.leaseGeneration,
+      nowIso2
+    ).changes === 1
+  );
+  return db.inTransaction ? hold() : hold.immediate();
+}
+function releaseExtractionClaimOnHold(db, input) {
+  const reason = assertHoldReason(input.reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const detail = holdDetail(reason, input.detail);
+  const release = db.transaction(() => {
+    const row = db.prepare(`
+      SELECT target_id, checkpoint_id, kind FROM memory_jobs
+      WHERE job_id = ? AND state = 'running' AND lease_owner = ?
+        AND lease_generation = ? AND lease_until > ?
+    `).get(input.jobId, input.owner, input.leaseGeneration, nowIso2);
+    if (!row) return false;
+    const changed = holdJobStatement(db).run(
+      nowIso2,
+      reason,
+      detail,
+      nowIso2,
+      input.jobId,
+      input.owner,
+      input.leaseGeneration,
+      nowIso2
+    ).changes;
+    if (changed !== 1) return false;
+    const targetId = input.targetId || row.target_id;
+    if (targetId && tableExists2(db, "extraction_targets")) {
+      const refundTargetAttempt = columnNames2(db, "extraction_targets").has("attempts");
+      db.prepare(`
+        UPDATE extraction_targets
+        SET state = 'pending', lease_owner = NULL, lease_until = NULL,
+            last_error = ?, updated_at = ?
+            ${refundTargetAttempt ? ", attempts = MAX(attempts - 1, 0)" : ""}
+        WHERE target_id = ? AND state = 'running' AND lease_owner = ?
+          AND lease_generation = ?
+      `).run(detail, nowIso2, targetId, input.owner, input.leaseGeneration);
+    }
+    if (row.checkpoint_id && tableExists2(db, "checkpoints")) {
+      db.prepare(
+        "UPDATE checkpoints SET state = 'pending' WHERE checkpoint_id = ? AND state = 'processing'"
+      ).run(row.checkpoint_id);
+    }
+    return true;
+  });
+  return db.inTransaction ? release() : release.immediate();
+}
+function clearJobHold(db, jobId) {
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return false;
+  return db.prepare(
+    "UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE job_id = ? AND hold_reason IS NOT NULL"
+  ).run((/* @__PURE__ */ new Date()).toISOString(), jobId).changes === 1;
+}
+function releaseHeldJobs(db, reason) {
+  assertHoldReason(reason);
+  ensureModelBudgetSchema(db);
+  if (!ensureHoldReasonColumn(db)) return 0;
+  return db.prepare(
+    "UPDATE memory_jobs SET hold_reason = NULL, updated_at = ? WHERE hold_reason = ?"
+  ).run((/* @__PURE__ */ new Date()).toISOString(), reason).changes;
+}
+function heldJobSummary(db) {
+  if (!tableExists2(db, "memory_jobs")) return [];
+  if (!columnNames2(db, "memory_jobs").has("hold_reason")) return [];
+  const rows = db.prepare(`
+    SELECT hold_reason AS reason, COUNT(*) AS jobs, MIN(updated_at) AS oldest
+    FROM memory_jobs
+    WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+    GROUP BY hold_reason
+    ORDER BY hold_reason
+  `).all();
+  return rows.filter((row) => HOLD_REASONS.includes(row.reason)).map((row) => ({ reason: row.reason, jobs: Number(row.jobs), oldestHeldAt: row.oldest ?? null }));
+}
+function holdFromRow(row) {
+  return {
+    fingerprint: String(row.selection_fingerprint),
+    heldAt: String(row.held_at),
+    model: String(row.model),
+    reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+    status: row.provider_status == null ? null : Number(row.provider_status),
+    providerType: row.provider_type == null ? null : String(row.provider_type),
+    providerMessage: row.provider_message == null ? "" : String(row.provider_message),
+    observedCount: Number(row.observed_count ?? 1),
+    lastObservedAt: String(row.last_observed_at)
+  };
+}
+function recordModelConfigHold(db, input) {
+  ensureModelBudgetSchema(db);
+  const nowIso2 = (input.now ?? /* @__PURE__ */ new Date()).toISOString();
+  db.prepare(`
+    INSERT INTO model_config_holds
+      (selection_fingerprint, held_at, model, reasoning_effort, provider_status,
+       provider_type, provider_message, first_stage, first_job_id,
+       observed_count, last_observed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(selection_fingerprint) DO UPDATE SET
+      observed_count = model_config_holds.observed_count + 1,
+      last_observed_at = excluded.last_observed_at,
+      provider_status = excluded.provider_status,
+      provider_type = excluded.provider_type,
+      provider_message = excluded.provider_message,
+      -- A re-observation revives a cleared row: the selection is still broken.
+      cleared_at = NULL,
+      cleared_by = NULL
+  `).run(
+    input.fingerprint,
+    nowIso2,
+    input.model,
+    input.reasoningEffort,
+    input.status,
+    input.providerType,
+    input.providerMessage.slice(0, 400),
+    input.stage ?? null,
+    input.jobId ?? null,
+    nowIso2
+  );
+}
+function touchModelConfigHold(db, fingerprint, now = /* @__PURE__ */ new Date()) {
+  if (!tableExists2(db, "model_config_holds")) return;
+  db.prepare(
+    `UPDATE model_config_holds
+     SET observed_count = observed_count + 1, last_observed_at = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`
+  ).run(now.toISOString(), fingerprint);
+}
+function activeModelConfigHold(db, fingerprint) {
+  if (!tableExists2(db, "model_config_holds")) return null;
+  const row = db.prepare(
+    "SELECT * FROM model_config_holds WHERE selection_fingerprint = ? AND cleared_at IS NULL"
+  ).get(fingerprint);
+  return row ? holdFromRow(row) : null;
+}
+function clearModelConfigHold(db, fingerprint, reason, now = /* @__PURE__ */ new Date()) {
+  ensureModelBudgetSchema(db);
+  return db.prepare(
+    `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`
+  ).run(now.toISOString(), reason, fingerprint).changes === 1;
+}
+function clearModelConfigHoldsForSelection(db, selection, reason, now = /* @__PURE__ */ new Date()) {
+  ensureModelBudgetSchema(db);
+  return db.prepare(
+    `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE cleared_at IS NULL AND model = ?
+       AND COALESCE(reasoning_effort,'') = COALESCE(?,'')`
+  ).run(now.toISOString(), reason, selection.model, selection.reasoningEffort).changes;
+}
+function listModelConfigHolds(db, currentFingerprint) {
+  if (!tableExists2(db, "model_config_holds")) return [];
+  const rows = db.prepare(
+    "SELECT * FROM model_config_holds WHERE cleared_at IS NULL ORDER BY held_at, selection_fingerprint"
+  ).all();
+  return rows.map((row) => {
+    const hold = holdFromRow(row);
+    return { ...hold, current: currentFingerprint === hold.fingerprint };
+  });
+}
+function currentModelConfigHold(db, overrides) {
+  return activeModelConfigHold(db, llmSelectionFingerprint(overrides));
+}
+function settleConfigRejectedAttempt(db, input) {
+  ensureModelBudgetSchema(db);
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const nowIso2 = now.toISOString();
+  const settle = db.transaction(() => {
+    const changed = db.prepare(`
+      UPDATE ${MODEL_ATTEMPT_TABLE}
+      SET state = 'failed', outcome = 'config_rejected', error_class = ?,
+          finished_at = ?, duration_ms = ?
+      WHERE attempt_id = ? AND state = 'reserved'
+    `).run(
+      (input.errorClass ?? "CodexRequestRejectedError").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 120),
+      nowIso2,
+      input.durationMs == null ? null : Math.max(0, Math.trunc(input.durationMs)),
+      input.attemptId
+    ).changes;
+    if (changed !== 1) return false;
+    const row = db.prepare(
+      `SELECT budget_id FROM ${MODEL_ATTEMPT_TABLE} WHERE attempt_id = ?`
+    ).get(input.attemptId);
+    if (!row) return false;
+    db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE}
+      SET reserved_attempts = MAX(reserved_attempts - 1, 0), updated_at = ?
+      WHERE budget_id = ?
+    `).run(nowIso2, row.budget_id);
+    db.prepare(`
+      UPDATE ${MODEL_BUDGET_TABLE} SET state = 'active', updated_at = ?
+      WHERE budget_id = ? AND state = 'exhausted'
+        AND reserved_attempts < max_attempts
+        AND (SELECT COUNT(*) FROM ${MODEL_ATTEMPT_TABLE} a
+              WHERE a.budget_id = ${MODEL_BUDGET_TABLE}.budget_id
+                AND ${budgetRelevantOutcomeSql("a")}) < max_attempts
+        AND (deadline_at IS NULL OR deadline_at > ?)
+    `).run(nowIso2, row.budget_id, nowIso2);
+    return true;
+  });
+  return db.inTransaction ? settle() : settle.immediate();
+}
 function remainingDeadlineMs(deadlineAt, now = Date.now()) {
   if (!deadlineAt) return null;
   return Math.max(0, Date.parse(deadlineAt) - now);
@@ -8632,6 +9289,8 @@ function reserveModelAttempt(db, input) {
   const now = input.now ?? /* @__PURE__ */ new Date();
   const nowIso2 = now.toISOString();
   const stage = input.stage?.trim() || "standalone";
+  const intendedModel = input.model?.trim() || resolveLlmModel().value;
+  const intendedEffort = input.reasoningEffort !== void 0 ? input.reasoningEffort : resolveReasoningEffort().value;
   const reserve = db.transaction(() => {
     const row = db.prepare("SELECT * FROM model_work_budgets WHERE budget_id = ?").get(input.budgetId);
     if (!row) throw new ModelBudgetNotFoundError(input.budgetId);
@@ -8648,13 +9307,18 @@ function reserveModelAttempt(db, input) {
         reason
       );
     }
-    const attemptNo = budget.reservedAttempts + 1;
+    const attemptNo = Number(
+      db.prepare(
+        `SELECT COALESCE(MAX(attempt_no), 0) + 1 AS n FROM ${MODEL_ATTEMPT_TABLE} WHERE budget_id = ?`
+      ).get(budget.budgetId).n
+    );
+    const nextReserved = budget.reservedAttempts + 1;
     const attemptId = randomUUID3();
     db.prepare(`
       INSERT INTO model_work_attempts
         (attempt_id, budget_id, attempt_no, stage, job_id, target_id,
-         state, started_at, input_chars, token_usage_status)
-      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN')
+         state, started_at, input_chars, token_usage_status, model, reasoning_effort)
+      VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'NOT_PROVEN', ?, ?)
     `).run(
       attemptId,
       budget.budgetId,
@@ -8663,14 +9327,16 @@ function reserveModelAttempt(db, input) {
       input.jobId ?? null,
       input.targetId ?? null,
       nowIso2,
-      input.inputChars
+      input.inputChars,
+      intendedModel,
+      intendedEffort
     );
-    const nextState = attemptNo >= budget.maxAttempts || budget.deadlineAt != null && Date.parse(budget.deadlineAt) <= now.getTime() ? "exhausted" : "active";
+    const nextState = nextReserved >= budget.maxAttempts || budget.deadlineAt != null && Date.parse(budget.deadlineAt) <= now.getTime() ? "exhausted" : "active";
     db.prepare(`
       UPDATE model_work_budgets
       SET reserved_attempts = ?, state = ?, updated_at = ?
       WHERE budget_id = ? AND reserved_attempts = ?
-    `).run(attemptNo, nextState, nowIso2, budget.budgetId, budget.reservedAttempts);
+    `).run(nextReserved, nextState, nowIso2, budget.budgetId, budget.reservedAttempts);
     if (input.jobId) {
       const job = db.prepare("SELECT budget_id FROM memory_jobs WHERE job_id = ?").get(input.jobId);
       if (job?.budget_id && job.budget_id !== input.budgetId) {
@@ -8691,7 +9357,7 @@ function reserveModelAttempt(db, input) {
       deadlineAt: budget.deadlineAt,
       maxInputChars: budget.maxInputChars,
       maxOutputChars: budget.maxOutputChars,
-      remainingAttempts: Math.max(0, budget.maxAttempts - attemptNo),
+      remainingAttempts: Math.max(0, budget.maxAttempts - nextReserved),
       remainingDeadlineMs: remainingDeadlineMs(budget.deadlineAt, now.getTime())
     };
   });
@@ -8713,7 +9379,9 @@ function finishModelAttempt(db, input) {
       UPDATE model_work_attempts
       SET state = ?, finished_at = ?, duration_ms = ?, output_chars = ?,
           token_usage_json = ?, token_usage_status = ?, error_class = ?,
-          error_message = ?
+          error_message = ?,
+          model = COALESCE(?, model),
+          reasoning_effort = CASE WHEN ? THEN ? ELSE reasoning_effort END
       WHERE attempt_id = ? AND state = 'reserved'
     `).run(
     input.state,
@@ -8724,6 +9392,11 @@ function finishModelAttempt(db, input) {
     durableTokenUsageStatus,
     durableErrorClass,
     null,
+    input.model ?? null,
+    // `reasoningEffort: null` is a real observation ("no flag was sent"), so
+    // it must be distinguishable from "the caller said nothing".
+    input.reasoningEffort !== void 0 ? 1 : 0,
+    input.reasoningEffort ?? null,
     input.attemptId
   ).changes;
   return changed === 1;
@@ -8896,15 +9569,16 @@ function latestMaintenanceBudget(db, parentWaveId) {
 function automaticMaintenanceWindow(db, now = /* @__PURE__ */ new Date()) {
   const maxAttempts = envInt(["MEMEX_AUTO_MODEL_MAX_ATTEMPTS"], DEFAULT_AUTOMATIC_MAX_ATTEMPTS, 1e5);
   const cutoff = new Date(now.getTime() - AUTOMATIC_MAINTENANCE_WINDOW_MS).toISOString();
+  const budgetRelevant = columnNames2(db, MODEL_ATTEMPT_TABLE).has("outcome") ? `AND ${budgetRelevantOutcomeSql("a")}` : "";
   const { used } = db.prepare(`
     SELECT COUNT(*) AS used FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
   `).get(cutoff);
   const oldest = maxAttempts > 0 && used >= maxAttempts ? db.prepare(`
     SELECT a.started_at FROM model_work_attempts a
     JOIN model_work_budgets b ON b.budget_id = a.budget_id
-    WHERE b.automatic = 1 AND a.started_at > ?
+    WHERE b.automatic = 1 AND a.started_at > ? ${budgetRelevant}
     ORDER BY a.started_at, a.attempt_id LIMIT 1 OFFSET ?
   `).get(cutoff, used - maxAttempts) : void 0;
   return {
@@ -9052,6 +9726,7 @@ function getModelWorkDiagnostics(db, filter = {}) {
         completed: 0,
         failed: 0,
         unknown: 0,
+        configRejected: 0,
         pending: 0,
         durationMs: null,
         inputChars: null,
@@ -9120,7 +9795,10 @@ function getModelWorkDiagnostics(db, filter = {}) {
         cachedInputTokens: integerOrNull(usage?.cached_input_tokens),
         tokenUsageStatus: row.token_usage_status == null ? null : String(row.token_usage_status),
         errorClass: row.error_class == null ? null : String(row.error_class),
-        errorMessage: row.error_message == null ? null : String(row.error_message)
+        errorMessage: row.error_message == null ? null : String(row.error_message),
+        model: row.model == null ? null : String(row.model),
+        reasoningEffort: row.reasoning_effort == null ? null : String(row.reasoning_effort),
+        outcome: row.outcome == null ? null : String(row.outcome)
       });
     }
   }
@@ -9256,11 +9934,16 @@ function getModelWorkDiagnostics(db, filter = {}) {
       });
     }
   }
+  const isConfigRejected = (attempt) => attempt.outcome != null && BUDGET_FREE_OUTCOMES.includes(attempt.outcome);
   const totals = {
     reserved: attempts.length,
     completed: attempts.filter((attempt) => attempt.state === "completed").length,
-    failed: attempts.filter((attempt) => attempt.state === "failed").length,
+    // A refused envelope is `state='failed'` in the ledger but is NOT a failed
+    // model call: reporting it as one is what made "the budget is burning"
+    // indistinguishable from "the setting is wrong".
+    failed: attempts.filter((attempt) => attempt.state === "failed" && !isConfigRejected(attempt)).length,
     unknown: attempts.filter((attempt) => attempt.state === "unknown" || attempt.state === "reserved").length,
+    configRejected: attempts.filter(isConfigRejected).length,
     pending: pending.length,
     durationMs: null,
     inputChars: null,
@@ -9295,6 +9978,7 @@ function getModelWorkDiagnostics(db, filter = {}) {
         completed: 0,
         failed: 0,
         unknown: 0,
+        configRejected: 0,
         durationMs: null,
         inputChars: null,
         outputChars: null,
@@ -9309,7 +9993,8 @@ function getModelWorkDiagnostics(db, filter = {}) {
     }
     stage.reserved++;
     if (attempt.state === "completed") stage.completed++;
-    if (attempt.state === "failed") stage.failed++;
+    if (attempt.state === "failed" && !isConfigRejected(attempt)) stage.failed++;
+    if (isConfigRejected(attempt)) stage.configRejected++;
     if (attempt.state === "unknown" || attempt.state === "reserved") stage.unknown++;
     stage.durationMs = sumKnown(
       attempts.filter((item) => item.stage === attempt.stage).map((item) => item.durationMs)
@@ -9363,12 +10048,12 @@ function formatModelWorkDiagnostics(diagnostics) {
   }
   for (const attempt of diagnostics.attempts) {
     lines.push(
-      `  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`
+      `  stage=${attempt.stage} job=${attempt.jobId ?? "-"} target=${attempt.targetId ?? "-"} attempt=${attempt.attemptNo} state=${attempt.state} model=${attempt.model ?? "?"} effort=${attempt.reasoningEffort ?? "-"} outcome=${attempt.outcome ?? "-"} input_chars=${attempt.inputChars ?? "?"} output_chars=${attempt.outputChars ?? "?"} input_tokens=${attempt.inputTokens ?? "?"} output_tokens=${attempt.outputTokens ?? "?"} cached_input_tokens=${attempt.cachedInputTokens ?? "?"} usage=${attempt.tokenUsageStatus ?? "NOT_PROVEN"}`
     );
   }
   for (const stage of diagnostics.stages) {
     lines.push(
-      `stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`
+      `stage-total=${stage.stage} attempts=${stage.reserved} completed=${stage.completed} failed=${stage.failed} config_rejected=${stage.configRejected} unknown=${stage.unknown} duration_ms=${stage.durationMs ?? "?"} input_chars=${stage.inputChars ?? "?"} output_chars=${stage.outputChars ?? "?"} usage=${stage.tokenUsageObserved}/${stage.tokenUsagePartial}/${stage.tokenUsageUnknown}`
     );
   }
   for (const pending of diagnostics.pending) {
@@ -9382,7 +10067,7 @@ function formatModelWorkDiagnostics(diagnostics) {
     );
   }
   lines.push(
-    `totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`
+    `totals reserved=${diagnostics.totals.reserved} completed=${diagnostics.totals.completed} failed=${diagnostics.totals.failed} config_rejected=${diagnostics.totals.configRejected} unknown=${diagnostics.totals.unknown} pending=${diagnostics.totals.pending} unassigned=${diagnostics.totals.unassigned} duration_ms=${diagnostics.totals.durationMs ?? "?"} input_chars=${diagnostics.totals.inputChars ?? "?"} output_chars=${diagnostics.totals.outputChars ?? "?"} input_tokens=${diagnostics.totals.inputTokens ?? "?"} output_tokens=${diagnostics.totals.outputTokens ?? "?"} cached_input_tokens=${diagnostics.totals.cachedInputTokens ?? "?"} usage_observed=${diagnostics.totals.tokenUsageObserved} usage_partial=${diagnostics.totals.tokenUsagePartial} usage_unknown=${diagnostics.totals.tokenUsageUnknown}`
   );
   return lines.join("\n");
 }
@@ -9454,13 +10139,14 @@ async function withResolvedModelWorkContext(requested, fn) {
     if (ownsDb) db.close();
   }
 }
-var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, modelWorkStorage;
+var MODEL_BUDGET_SCHEMA_VERSION, MODEL_BUDGET_TABLE, MODEL_ATTEMPT_TABLE, MODEL_TARGET_TABLE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_INPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS, AUTOMATIC_MAINTENANCE_WINDOW_MS, AUTOMATIC_MAINTENANCE_COOLDOWN_MS, DEFAULT_AUTOMATIC_MAX_ATTEMPTS, MAINTENANCE_WAKE_INTERVAL_MS, MODEL_CONFIG_HOLD_TTL_MS, HOLD_REASONS, BUDGET_FREE_OUTCOMES, ModelBudgetError, ModelBudgetExhaustedError, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelBudgetNotFoundError, ModelBudgetAffinityError, ModelConfigHeldError, modelWorkStorage;
 var init_model_budget = __esm({
   "src/model-budget.ts"() {
     "use strict";
     init_paths();
     init_embeddings();
     init_ontology_selector();
+    init_model_settings();
     MODEL_BUDGET_SCHEMA_VERSION = 1;
     MODEL_BUDGET_TABLE = "model_work_budgets";
     MODEL_ATTEMPT_TABLE = "model_work_attempts";
@@ -9474,6 +10160,16 @@ var init_model_budget = __esm({
     AUTOMATIC_MAINTENANCE_COOLDOWN_MS = 60 * 6e4;
     DEFAULT_AUTOMATIC_MAX_ATTEMPTS = 256;
     MAINTENANCE_WAKE_INTERVAL_MS = 3 * 6e4;
+    MODEL_CONFIG_HOLD_TTL_MS = 30 * 24 * 60 * 6e4;
+    HOLD_REASONS = [
+      "model_config_rejected",
+      // the provider refused the request envelope
+      "extraction_rules_invalid",
+      // a never_extract pattern was quarantined
+      "extraction_rules_unavailable"
+      // the never_extract check could not finish
+    ];
+    BUDGET_FREE_OUTCOMES = ["config_rejected"];
     ModelBudgetError = class extends Error {
       code = "MEMEX_MODEL_BUDGET";
       budgetId;
@@ -9540,7 +10236,916 @@ var init_model_budget = __esm({
         this.name = "ModelBudgetAffinityError";
       }
     };
+    ModelConfigHeldError = class extends Error {
+      code = "MEMEX_MODEL_CONFIG_HELD";
+      hold;
+      constructor(hold) {
+        super(
+          `model work is held: the provider rejected the request envelope for model "${hold.model}"${hold.reasoningEffort ? ` at reasoning effort "${hold.reasoningEffort}"` : ""} (${hold.status ?? "?"} ${hold.providerType ?? "provider error"}). Fix the selection and it resumes automatically: memex models show`
+        );
+        this.name = "ModelConfigHeldError";
+        this.hold = hold;
+      }
+    };
     modelWorkStorage = new AsyncLocalStorage();
+  }
+});
+
+// src/overlay-regex.ts
+import { createHash as createHash7 } from "node:crypto";
+function camelCode(code) {
+  return code.toLowerCase().split("_").map((part, index) => index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1)).join("");
+}
+function overlayIssue(severity, code, message, extra = {}) {
+  return {
+    severity,
+    code,
+    key: `overlays.issue.${camelCode(code)}`,
+    message,
+    ...extra.path === void 0 ? {} : { path: extra.path },
+    ...extra.params === void 0 ? {} : { params: extra.params },
+    ...extra.row === void 0 ? {} : { row: extra.row },
+    ...extra.field === void 0 ? {} : { field: extra.field }
+  };
+}
+function setFrom(predicate) {
+  return SAMPLE_ALPHABET.map(predicate);
+}
+function unionSets(a, b2) {
+  return a.map((value, index) => value || b2[index]);
+}
+function intersects(a, b2) {
+  for (let i = 0; i < a.length; i++) if (a[i] && b2[i]) return true;
+  return false;
+}
+function checkOverlayRegex(source, flags) {
+  const problems = [];
+  if (typeof source !== "string" || source.length === 0) {
+    return {
+      ok: false,
+      problems: [{ code: "REGEX_UNSUPPORTED_SYNTAX", message: "pattern source is empty" }],
+      quantifiers: 0,
+      depth: 0,
+      branches: 0
+    };
+  }
+  if (source.length > OVERLAY_REGEX_LIMITS.sourceChars) {
+    problems.push({
+      code: "PATTERN_TOO_LONG",
+      message: `pattern is ${source.length} characters (limit ${OVERLAY_REGEX_LIMITS.sourceChars})`,
+      params: { length: source.length, limit: OVERLAY_REGEX_LIMITS.sourceChars }
+    });
+  }
+  const badFlags = [...new Set(flags ?? "")].filter((flag) => !OVERLAY_REGEX_LIMITS.flags.includes(flag));
+  if (badFlags.length > 0) {
+    problems.push({
+      code: "PATTERN_FLAGS_REJECTED",
+      message: `flags "${badFlags.join("")}" are not allowed (only i, s, u). g/y make .test() stateful through lastIndex, so the same prompt would be judged differently each time; m changes what ^ and $ mean, which misreads multi-line prompts against the anchored built-in acknowledgement patterns.`,
+      params: { flags: badFlags.join("") }
+    });
+  }
+  if (badFlags.length === 0) {
+    try {
+      new RegExp(source, flags ?? "");
+    } catch (error2) {
+      problems.push({
+        code: "PATTERN_UNCOMPILABLE",
+        message: `the pattern does not compile: ${error2 instanceof Error ? error2.message : String(error2)}`
+      });
+    }
+  }
+  const parser = new SubsetParser(source, flags ?? "");
+  try {
+    parser.parse();
+  } catch (error2) {
+    if (error2 instanceof RejectedRegex) problems.push(error2.problem);
+    else throw error2;
+  }
+  return {
+    ok: problems.length === 0,
+    problems,
+    quantifiers: parser.quantifiers,
+    depth: parser.maxDepth,
+    branches: parser.branches
+  };
+}
+function userPatternId(intent, source, flags) {
+  return `user.${sha8(`${intent}\0${source}\0${flags}`)}`;
+}
+function sha8(text) {
+  return createHash7("sha256").update(text, "utf8").digest("hex").slice(0, 8);
+}
+function patternSourceSha8(source, flags) {
+  return sha8(`${source}\0${flags}`);
+}
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value).filter(([, item]) => item !== void 0).sort(([a], [b2]) => a < b2 ? -1 : a > b2 ? 1 : 0);
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+var OVERLAY_REGEX_LIMITS, SAMPLE_ALPHABET, EMPTY_SET, ANY_SET, IS_WORD, IS_DIGIT, IS_SPACE, IS_LETTER, RejectedRegex, ESCAPE_LITERALS, SubsetParser;
+var init_overlay_regex = __esm({
+  "src/overlay-regex.ts"() {
+    "use strict";
+    OVERLAY_REGEX_LIMITS = Object.freeze({
+      /** `source` characters (§1.3). */
+      sourceChars: 200,
+      /** Total quantifiers anywhere in the pattern (§1.3, lowered from 20 in v2). */
+      quantifiers: 8,
+      /** Group nesting depth. */
+      depth: 5,
+      /** Alternation branches, summed over the whole pattern. */
+      branches: 32,
+      /** Upper bound of `{n,m}`. */
+      repeatMax: 100,
+      /** Flags an overlay pattern may carry. */
+      flags: "isu"
+    });
+    SAMPLE_ALPHABET = (() => {
+      const chars = [];
+      for (let code = 32; code <= 126; code++) chars.push(String.fromCharCode(code));
+      chars.push("	", "\n", "\r", "\xE9", "\u0430", "\uAC00", "\uD7A3", "\u3131", "\u4E00");
+      return Object.freeze(chars);
+    })();
+    EMPTY_SET = SAMPLE_ALPHABET.map(() => false);
+    ANY_SET = SAMPLE_ALPHABET.map(() => true);
+    IS_WORD = (ch) => /[A-Za-z0-9_]/.test(ch);
+    IS_DIGIT = (ch) => ch >= "0" && ch <= "9";
+    IS_SPACE = (ch) => /\s/.test(ch);
+    IS_LETTER = (ch) => /\p{L}/u.test(ch);
+    RejectedRegex = class extends Error {
+      constructor(problem) {
+        super(problem.message);
+        this.problem = problem;
+      }
+    };
+    ESCAPE_LITERALS = {
+      t: "	",
+      n: "\n",
+      r: "\r",
+      f: "\f",
+      v: "\v",
+      "0": "\0"
+    };
+    SubsetParser = class {
+      constructor(src, flags) {
+        this.src = src;
+        this.caseInsensitive = flags.includes("i");
+        this.dotAll = flags.includes("s");
+      }
+      i = 0;
+      quantifiers = 0;
+      branches = 0;
+      maxDepth = 0;
+      depth = 0;
+      caseInsensitive;
+      dotAll;
+      parse() {
+        this.alternation();
+        if (this.i < this.src.length) {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", `unexpected "${this.src[this.i]}"`, this.i);
+        }
+      }
+      reject(code, detail, at, params) {
+        throw new RejectedRegex({
+          code,
+          message: `${detail}${at === void 0 ? "" : ` at offset ${at}`}`,
+          ...at === void 0 ? {} : { at },
+          ...params ? { params } : {}
+        });
+      }
+      peek(offset = 0) {
+        return this.src[this.i + offset];
+      }
+      /** alternation := concat ('|' concat)* */
+      alternation() {
+        let first = this.concat();
+        let seen = 1;
+        while (this.peek() === "|") {
+          this.i++;
+          seen++;
+          this.branches++;
+          if (this.branches > OVERLAY_REGEX_LIMITS.branches) {
+            this.reject(
+              "REGEX_QUANTIFIER_BUDGET",
+              `too many alternation branches (limit ${OVERLAY_REGEX_LIMITS.branches})`,
+              this.i,
+              { limit: OVERLAY_REGEX_LIMITS.branches }
+            );
+          }
+          first = { first: unionSets(first.first, this.concat().first), composite: true };
+        }
+        return seen > 1 ? { first: first.first, composite: true } : first;
+      }
+      /** concat := quantified* — returns the FIRST-character set, and enforces adjacency. */
+      concat() {
+        let head = EMPTY_SET;
+        let previous = null;
+        let headOpen = true;
+        while (this.i < this.src.length && this.peek() !== "|" && this.peek() !== ")") {
+          const current = this.quantified();
+          if (headOpen) {
+            head = unionSets(head, current.atom.first);
+            if (!current.nullable) headOpen = false;
+          }
+          if (previous && previous.quantified && current.quantified && previous.max > 1 && current.max > 1 && intersects(previous.atom.first, current.atom.first)) {
+            this.reject(
+              "REGEX_ADJACENT_OVERLAP",
+              "two adjacent repeated atoms can start on the same character (e.g. a+a+, \\w+\\d+, .*.*)",
+              this.i
+            );
+          }
+          previous = current;
+        }
+        return { first: head, composite: false };
+      }
+      /** quantified := atom quantifier? */
+      quantified() {
+        const start = this.i;
+        const atom = this.atom();
+        const quantifier = this.quantifier();
+        if (!quantifier) {
+          return { atom, max: 1, quantified: false, nullable: atom.zeroWidth === true };
+        }
+        this.quantifiers++;
+        if (this.quantifiers > OVERLAY_REGEX_LIMITS.quantifiers) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `too many quantifiers (limit ${OVERLAY_REGEX_LIMITS.quantifiers})`,
+            start,
+            { limit: OVERLAY_REGEX_LIMITS.quantifiers, seen: this.quantifiers }
+          );
+        }
+        if (atom.composite && quantifier.max > 1) {
+          this.reject(
+            "REGEX_QUANTIFIED_GROUP",
+            "a group or alternation may not be repeated more than once (use ? or {0,1})",
+            start
+          );
+        }
+        return {
+          atom,
+          max: quantifier.max,
+          quantified: true,
+          nullable: quantifier.min === 0 || atom.zeroWidth === true
+        };
+      }
+      quantifier() {
+        const ch = this.peek();
+        if (ch === "?") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 0, max: 1 };
+        }
+        if (ch === "*") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 0, max: Infinity };
+        }
+        if (ch === "+") {
+          this.i++;
+          this.lazyOrPossessive();
+          return { min: 1, max: Infinity };
+        }
+        if (ch !== "{") return null;
+        const close = this.src.indexOf("}", this.i);
+        const body = close < 0 ? null : this.src.slice(this.i + 1, close);
+        if (body === null || !/^\d+(,\d*)?$/.test(body)) {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", 'a literal "{" must be escaped as \\{', this.i);
+        }
+        const [rawMin, rawMax] = body.split(",");
+        const min = Number(rawMin);
+        const max = rawMax === void 0 ? min : rawMax === "" ? Infinity : Number(rawMax);
+        this.i = close + 1;
+        this.lazyOrPossessive();
+        if (max < min) {
+          this.reject("REGEX_QUANTIFIER_BUDGET", `{n,m} with m < n (${body})`, this.i, { body });
+        }
+        if (Number.isFinite(max) && max > OVERLAY_REGEX_LIMITS.repeatMax) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `{n,m} upper bound above ${OVERLAY_REGEX_LIMITS.repeatMax} (${body})`,
+            this.i,
+            { limit: OVERLAY_REGEX_LIMITS.repeatMax, body }
+          );
+        }
+        return { min, max };
+      }
+      /** `??`/`*?`/`+?` are allowed (lazy); `*+` etc. are not JS syntax. */
+      lazyOrPossessive() {
+        if (this.peek() === "?") this.i++;
+      }
+      atom() {
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "pattern ends mid-atom", this.i);
+        if (ch === "(") return this.group();
+        if (ch === "[") return this.charClass();
+        if (ch === "\\") return this.escape();
+        if (ch === ".") {
+          this.i++;
+          return { first: this.dotAll ? ANY_SET : setFrom((c) => c !== "\n"), composite: false };
+        }
+        if (ch === "^" || ch === "$") {
+          this.i++;
+          return { first: EMPTY_SET, composite: false, zeroWidth: true };
+        }
+        if (ch === "*" || ch === "+" || ch === "?") {
+          this.reject("REGEX_UNSUPPORTED_SYNTAX", `quantifier "${ch}" with nothing to repeat`, this.i);
+        }
+        this.i++;
+        return { first: this.literal(ch), composite: false };
+      }
+      literal(ch) {
+        if (!this.caseInsensitive) return setFrom((c) => c === ch);
+        const lower = ch.toLowerCase();
+        const upper = ch.toUpperCase();
+        return setFrom((c) => c === lower || c === upper);
+      }
+      group() {
+        const open = this.i;
+        this.i++;
+        if (this.peek() === "?") {
+          const next = this.peek(1);
+          if (next === ":") {
+            this.i += 2;
+          } else if (next === "=" || next === "!" || next === "<") {
+            this.reject("REGEX_LOOKAROUND", "lookahead and lookbehind are not allowed", open);
+          } else {
+            this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported group "(?${next ?? ""}"`, open);
+          }
+        }
+        this.depth++;
+        this.maxDepth = Math.max(this.maxDepth, this.depth);
+        if (this.depth > OVERLAY_REGEX_LIMITS.depth) {
+          this.reject(
+            "REGEX_QUANTIFIER_BUDGET",
+            `group nesting deeper than ${OVERLAY_REGEX_LIMITS.depth}`,
+            open,
+            { limit: OVERLAY_REGEX_LIMITS.depth }
+          );
+        }
+        const inner = this.alternation();
+        this.depth--;
+        if (this.peek() !== ")") this.reject("REGEX_UNSUPPORTED_SYNTAX", "unbalanced (", open);
+        this.i++;
+        return { first: inner.first, composite: true };
+      }
+      escape() {
+        const at = this.i;
+        this.i++;
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "pattern ends with a backslash", at);
+        if (ch >= "1" && ch <= "9") {
+          this.reject("REGEX_BACKREFERENCE", "numeric backreferences are not allowed", at);
+        }
+        if (ch === "k") this.reject("REGEX_BACKREFERENCE", "named backreferences are not allowed", at);
+        this.i++;
+        switch (ch) {
+          case "w":
+            return { first: setFrom(IS_WORD), composite: false };
+          case "W":
+            return { first: setFrom((c) => !IS_WORD(c)), composite: false };
+          case "d":
+            return { first: setFrom(IS_DIGIT), composite: false };
+          case "D":
+            return { first: setFrom((c) => !IS_DIGIT(c)), composite: false };
+          case "s":
+            return { first: setFrom(IS_SPACE), composite: false };
+          case "S":
+            return { first: setFrom((c) => !IS_SPACE(c)), composite: false };
+          case "b":
+          case "B":
+            return { first: EMPTY_SET, composite: false, zeroWidth: true };
+          case "p":
+          case "P":
+            return { first: this.unicodeProperty(ch === "P"), composite: false };
+          case "u":
+          case "x":
+            return { first: this.literal(this.numericEscapeChar(ch)), composite: false };
+          default:
+            if (ESCAPE_LITERALS[ch] !== void 0) {
+              return { first: this.literal(ESCAPE_LITERALS[ch]), composite: false };
+            }
+            if (/[A-Za-z]/.test(ch)) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported escape \\${ch}`, at);
+            }
+            return { first: this.literal(ch), composite: false };
+        }
+      }
+      unicodeProperty(negated) {
+        if (this.peek() !== "{") this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\p must be followed by {", this.i);
+        const close = this.src.indexOf("}", this.i);
+        if (close < 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated \\p{\u2026}", this.i);
+        const name = this.src.slice(this.i + 1, close);
+        this.i = close + 1;
+        let base;
+        if (/^(L|Letter|Alphabetic|Alpha)$/.test(name)) base = setFrom(IS_LETTER);
+        else if (/^(N|Nd|Number|Digit)$/.test(name)) base = setFrom(IS_DIGIT);
+        else base = ANY_SET;
+        return negated ? base.map((value) => !value) : base;
+      }
+      /** Consumes the digits of `\xHH`, `\uHHHH` or `\u{…}` and returns the character. */
+      numericEscapeChar(kind) {
+        if (kind === "x") {
+          const hex2 = this.src.slice(this.i, this.i + 2);
+          if (!/^[0-9a-fA-F]{2}$/.test(hex2)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\xHH needs two hex digits", this.i);
+          this.i += 2;
+          return String.fromCharCode(parseInt(hex2, 16));
+        }
+        if (this.peek() === "{") {
+          const close = this.src.indexOf("}", this.i);
+          if (close < 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated \\u{\u2026}", this.i);
+          const hex2 = this.src.slice(this.i + 1, close);
+          if (!/^[0-9a-fA-F]{1,6}$/.test(hex2)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\u{\u2026} needs hex digits", this.i);
+          this.i = close + 1;
+          return String.fromCodePoint(parseInt(hex2, 16));
+        }
+        const hex = this.src.slice(this.i, this.i + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.reject("REGEX_UNSUPPORTED_SYNTAX", "\\uHHHH needs four hex digits", this.i);
+        this.i += 4;
+        return String.fromCharCode(parseInt(hex, 16));
+      }
+      charClass() {
+        const open = this.i;
+        this.i++;
+        const negated = this.peek() === "^";
+        if (negated) this.i++;
+        const members = [];
+        let closed = false;
+        while (this.i < this.src.length) {
+          if (this.peek() === "]") {
+            this.i++;
+            closed = true;
+            break;
+          }
+          const item = this.classItem(open);
+          if (this.peek() === "-" && this.peek(1) !== "]" && this.peek(1) !== void 0) {
+            this.i++;
+            const upper = this.classItem(open);
+            if (item.literal === null || upper.literal === null) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", "a character class range needs literal bounds", open);
+            }
+            const lo = item.literal.codePointAt(0);
+            const hi = upper.literal.codePointAt(0);
+            if (hi < lo) this.reject("REGEX_UNSUPPORTED_SYNTAX", "reversed character class range", open);
+            members.push((ch) => {
+              const code = ch.codePointAt(0);
+              if (code >= lo && code <= hi) return true;
+              if (!this.caseInsensitive) return false;
+              const other = ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase();
+              const otherCode = other.codePointAt(0);
+              return otherCode >= lo && otherCode <= hi;
+            });
+            continue;
+          }
+          members.push(item.test);
+        }
+        if (!closed) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated character class", open);
+        const inside = (ch) => members.some((test) => test(ch));
+        return { first: setFrom(negated ? (ch) => !inside(ch) : inside), composite: false };
+      }
+      classItem(open) {
+        const ch = this.peek();
+        if (ch === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "unterminated character class", open);
+        if (ch !== "\\") {
+          this.i++;
+          const lower = ch.toLowerCase();
+          const upper = ch.toUpperCase();
+          const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === ch;
+          return { test, literal: ch };
+        }
+        const at = this.i;
+        this.i++;
+        const esc2 = this.peek();
+        if (esc2 === void 0) this.reject("REGEX_UNSUPPORTED_SYNTAX", "class ends with a backslash", at);
+        if (esc2 >= "1" && esc2 <= "9") {
+          this.reject("REGEX_BACKREFERENCE", "numeric backreferences are not allowed", at);
+        }
+        this.i++;
+        switch (esc2) {
+          case "w":
+            return { test: IS_WORD, literal: null };
+          case "W":
+            return { test: (c) => !IS_WORD(c), literal: null };
+          case "d":
+            return { test: IS_DIGIT, literal: null };
+          case "D":
+            return { test: (c) => !IS_DIGIT(c), literal: null };
+          case "s":
+            return { test: IS_SPACE, literal: null };
+          case "S":
+            return { test: (c) => !IS_SPACE(c), literal: null };
+          case "b":
+            return { test: (c) => c === "\b", literal: "\b" };
+          case "p":
+          case "P": {
+            const set = this.unicodeProperty(esc2 === "P");
+            const table = new Map(SAMPLE_ALPHABET.map((sample, index) => [sample, set[index]]));
+            return { test: (c) => table.get(c) === true, literal: null };
+          }
+          case "u":
+          case "x": {
+            const literal2 = this.numericEscapeChar(esc2);
+            const lower = literal2.toLowerCase();
+            const upper = literal2.toUpperCase();
+            const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === literal2;
+            return { test, literal: literal2 };
+          }
+          default: {
+            const literal2 = ESCAPE_LITERALS[esc2] ?? esc2;
+            if (ESCAPE_LITERALS[esc2] === void 0 && /[A-Za-z]/.test(esc2)) {
+              this.reject("REGEX_UNSUPPORTED_SYNTAX", `unsupported escape \\${esc2} in a character class`, at);
+            }
+            const lower = literal2.toLowerCase();
+            const upper = literal2.toUpperCase();
+            const test = this.caseInsensitive ? (c) => c === lower || c === upper : (c) => c === literal2;
+            return { test, literal: literal2 };
+          }
+        }
+      }
+    };
+  }
+});
+
+// src/overlay-matcher.ts
+import { Worker } from "node:worker_threads";
+import fs11 from "node:fs";
+import path12 from "node:path";
+import { randomUUID as randomUUID6 } from "node:crypto";
+function unavailableHits(elapsedMs, timedOut = false) {
+  return {
+    intents: {},
+    matched: [],
+    timedOut,
+    quarantined: [],
+    unavailable: true,
+    truncated: false,
+    elapsedMs,
+    compiledPatterns: 0
+  };
+}
+function workerEntry() {
+  return new URL("./overlay-matcher-worker.mjs", import.meta.url);
+}
+function persistentMatcher(options) {
+  return new TimeBoxedMatcher(true, options);
+}
+function oneShotMatcher(options) {
+  return new TimeBoxedMatcher(false, options);
+}
+function quarantineKey(patternId, sourceSha8) {
+  return `${patternId}|${sourceSha8}`;
+}
+function quarantineMemoryGeneration() {
+  return memoryGeneration;
+}
+function readQuarantineFile() {
+  try {
+    const parsed = JSON.parse(fs11.readFileSync(overlayQuarantinePath(), "utf8"));
+    if (parsed?.schema !== QUARANTINE_SCHEMA) return [];
+    if (Number(parsed.version) !== QUARANTINE_VERSION) return [];
+    if (!Array.isArray(parsed.entries)) return [];
+    return parsed.entries.filter(isQuarantineEntry);
+  } catch {
+    return [];
+  }
+}
+function isQuarantineEntry(value) {
+  if (!value || typeof value !== "object") return false;
+  const entry = value;
+  return (entry.overlay === "recall-gate" || entry.overlay === "extraction-rules") && typeof entry.pattern_id === "string" && entry.pattern_id.length > 0 && typeof entry.source_sha8 === "string";
+}
+function readQuarantine() {
+  const merged = /* @__PURE__ */ new Map();
+  for (const entry of readQuarantineFile()) {
+    merged.set(quarantineKey(entry.pattern_id, entry.source_sha8), entry);
+  }
+  for (const [key, entry] of memoryQuarantine) merged.set(key, entry);
+  return [...merged.values()];
+}
+function quarantineFileStamp() {
+  try {
+    const stat = fs11.statSync(overlayQuarantinePath());
+    return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+function writeQuarantineAtomic(entries, expectedStamp) {
+  const target = overlayQuarantinePath();
+  const body = `${JSON.stringify(
+    { schema: QUARANTINE_SCHEMA, version: QUARANTINE_VERSION, entries },
+    null,
+    2
+  )}
+`;
+  const tmp = `${target}.${process.pid}.${randomUUID6()}.tmp`;
+  try {
+    fs11.mkdirSync(path12.dirname(target), { recursive: true, mode: 448 });
+    const stat = fs11.existsSync(target) ? fs11.lstatSync(target) : null;
+    if (stat?.isSymbolicLink()) return false;
+    fs11.writeFileSync(tmp, body, { mode: 384 });
+    if (expectedStamp !== void 0 && quarantineFileStamp() !== expectedStamp) {
+      try {
+        fs11.unlinkSync(tmp);
+      } catch {
+      }
+      return false;
+    }
+    fs11.renameSync(tmp, target);
+    return true;
+  } catch {
+    try {
+      fs11.unlinkSync(tmp);
+    } catch {
+    }
+    return false;
+  }
+}
+function quarantinePattern(entry) {
+  const key = quarantineKey(entry.pattern_id, entry.source_sha8);
+  if (!memoryQuarantine.has(key)) {
+    memoryQuarantine.set(key, entry);
+    memoryGeneration++;
+  }
+  for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+    const stamp = quarantineFileStamp();
+    const merged = /* @__PURE__ */ new Map();
+    for (const existing of readQuarantineFile()) {
+      merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+    }
+    for (const [memoryEntryKey, memoryEntry] of memoryQuarantine) merged.set(memoryEntryKey, memoryEntry);
+    let entries = [...merged.values()];
+    if (entries.length > QUARANTINE_MAX_ENTRIES) {
+      entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+    }
+    if (writeQuarantineAtomic(entries, stamp)) return;
+  }
+}
+var MATCH_WALL_MS, MATCHER_STARTUP_MS, MATCHER_RESPAWN_MS, MATCH_INPUT_CHARS, QUARANTINE_MAX_ENTRIES, EMPTY_USER_PATTERN_HITS, TimeBoxedMatcher, QUARANTINE_SCHEMA, QUARANTINE_VERSION, memoryQuarantine, memoryGeneration, QUARANTINE_WRITE_ATTEMPTS;
+var init_overlay_matcher = __esm({
+  "src/overlay-matcher.ts"() {
+    "use strict";
+    init_paths();
+    init_overlay_regex();
+    MATCH_WALL_MS = 50;
+    MATCHER_STARTUP_MS = 500;
+    MATCHER_RESPAWN_MS = 5e3;
+    MATCH_INPUT_CHARS = 8e3;
+    QUARANTINE_MAX_ENTRIES = 200;
+    EMPTY_USER_PATTERN_HITS = Object.freeze({
+      intents: Object.freeze({}),
+      matched: Object.freeze([]),
+      timedOut: false,
+      quarantined: Object.freeze([]),
+      unavailable: false,
+      truncated: false,
+      elapsedMs: 0,
+      compiledPatterns: 0
+    });
+    TimeBoxedMatcher = class {
+      constructor(persistent, options = {}) {
+        this.persistent = persistent;
+        this.options = options;
+      }
+      worker = null;
+      progress = null;
+      generation = 0;
+      status = "ready";
+      goneAt = 0;
+      disposed = false;
+      /** True only while WE are terminating, so 'exit' is not read as a death. */
+      terminating = false;
+      pending = null;
+      pendingGeneration = 0;
+      /** Resolves true once the current worker is executing, false if it never got there. */
+      online = null;
+      /** Serialization tail: one request per worker at a time (G3). */
+      tail = Promise.resolve();
+      /** Observability for tests: how many workers this handle has constructed. */
+      spawnCount = 0;
+      state() {
+        if (this.disposed) return "unavailable";
+        return this.status;
+      }
+      match(input) {
+        if (input.patterns.length === 0) return Promise.resolve(EMPTY_USER_PATTERN_HITS);
+        if (this.disposed) return Promise.resolve(unavailableHits(0));
+        const run = () => this.runOne(input);
+        const queued = this.tail.then(run, run);
+        this.tail = queued.then(
+          () => void 0,
+          () => void 0
+        );
+        return queued;
+      }
+      dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.killWorker();
+      }
+      /* -------------------------------------------------------------------- */
+      ensureWorker() {
+        if (this.worker && this.status === "ready") return this.worker;
+        if (this.status !== "ready") {
+          if (!this.persistent) return null;
+          if (Date.now() - this.goneAt < (this.options.respawnMs ?? MATCHER_RESPAWN_MS)) return null;
+        }
+        return this.spawn();
+      }
+      spawn() {
+        try {
+          const buffer = new SharedArrayBuffer(8);
+          const progress = new Int32Array(buffer);
+          Atomics.store(progress, 0, 0);
+          Atomics.store(progress, 1, -1);
+          const worker = new Worker(this.options.entry ?? workerEntry(), { workerData: { progress: buffer } });
+          worker.unref();
+          let settleOnline = () => {
+          };
+          this.online = new Promise((resolve) => {
+            settleOnline = resolve;
+          });
+          worker.once("error", () => settleOnline(false));
+          worker.once("exit", () => settleOnline(false));
+          worker.on("message", (message) => {
+            if (message?.ready === true) return settleOnline(true);
+            const resolve = this.pending;
+            if (!resolve) return;
+            if (Number(message?.generation) !== this.pendingGeneration) return;
+            this.pending = null;
+            resolve(message);
+          });
+          worker.on("error", () => this.onWorkerGone());
+          worker.on("exit", () => this.onWorkerGone());
+          this.worker = worker;
+          this.progress = progress;
+          this.status = "ready";
+          this.spawnCount++;
+          return worker;
+        } catch {
+          this.worker = null;
+          this.progress = null;
+          this.online = null;
+          this.status = "unavailable";
+          this.goneAt = Date.now();
+          return null;
+        }
+      }
+      /**
+       * Wait for the worker to be executing, under its OWN budget.
+       *
+       * A startup that never lands is `unavailable` with no quarantine — the
+       * pattern list had nothing to do with it.
+       */
+      async awaitOnline() {
+        const online = this.online;
+        if (!online) return false;
+        let timer;
+        const expired = new Promise((resolve) => {
+          timer = setTimeout(() => resolve(false), MATCHER_STARTUP_MS);
+        });
+        try {
+          return await Promise.race([online, expired]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      /** An unexpected death: the in-flight request and the queue get `unavailable`. */
+      onWorkerGone() {
+        if (this.terminating) return;
+        this.worker = null;
+        this.progress = null;
+        this.online = null;
+        this.status = "dead";
+        this.goneAt = Date.now();
+        const resolve = this.pending;
+        this.pending = null;
+        if (resolve) resolve(null);
+      }
+      killWorker() {
+        const worker = this.worker;
+        this.worker = null;
+        this.progress = null;
+        this.online = null;
+        this.status = "dead";
+        this.goneAt = Date.now();
+        if (!worker) return;
+        this.terminating = true;
+        try {
+          void worker.terminate();
+        } catch {
+        } finally {
+          this.terminating = false;
+        }
+      }
+      async runOne(input) {
+        if (this.disposed) return unavailableHits(0);
+        const worker = this.ensureWorker();
+        if (!worker) return unavailableHits(0);
+        if (!await this.awaitOnline()) {
+          this.killWorker();
+          return unavailableHits(0);
+        }
+        if (this.disposed) return unavailableHits(0);
+        const started = Date.now();
+        const generation = ++this.generation;
+        const truncated = input.text.length > MATCH_INPUT_CHARS;
+        const text = truncated ? input.text.slice(0, MATCH_INPUT_CHARS) : input.text;
+        const patterns = input.patterns;
+        const reply = new Promise((resolve) => {
+          this.pending = resolve;
+          this.pendingGeneration = generation;
+        });
+        let timer;
+        const timeout = new Promise((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), MATCH_WALL_MS);
+        });
+        try {
+          worker.postMessage({
+            generation,
+            text,
+            patterns: patterns.map((pattern) => ({
+              id: pattern.id,
+              source: pattern.source,
+              flags: pattern.flags ?? "",
+              intent: pattern.intent ?? null
+            }))
+          });
+        } catch {
+          if (timer) clearTimeout(timer);
+          this.pending = null;
+          this.killWorker();
+          return unavailableHits(Date.now() - started);
+        }
+        const outcome = await Promise.race([reply, timeout]);
+        if (timer) clearTimeout(timer);
+        if (outcome !== "timeout" && outcome !== null) {
+          return this.collect(outcome, patterns, Date.now() - started, truncated);
+        }
+        if (outcome === null) {
+          return unavailableHits(Date.now() - started);
+        }
+        this.pending = null;
+        const progress = this.progress;
+        const runningGeneration = progress ? Atomics.load(progress, 0) : -1;
+        const index = progress ? Atomics.load(progress, 1) : -1;
+        const elapsedMs = Date.now() - started;
+        const attributable = runningGeneration === generation && index >= 0 && index < patterns.length;
+        this.killWorker();
+        if (!attributable) {
+          return unavailableHits(elapsedMs, true);
+        }
+        const culprit = patterns[index];
+        quarantinePattern({
+          overlay: culprit.overlay ?? input.overlay ?? "recall-gate",
+          pattern_id: culprit.id,
+          source_sha8: patternSourceSha8(culprit.source, culprit.flags ?? ""),
+          at: (/* @__PURE__ */ new Date()).toISOString(),
+          elapsed_ms: MATCH_WALL_MS,
+          input_chars: text.length,
+          surface: input.surface ?? "unknown"
+        });
+        return {
+          intents: {},
+          matched: [],
+          timedOut: true,
+          quarantined: [culprit.id],
+          unavailable: false,
+          truncated,
+          elapsedMs,
+          compiledPatterns: 0
+        };
+      }
+      collect(reply, patterns, elapsedMs, truncated) {
+        const intents = {};
+        const matched = [];
+        const byIndex = new Map(patterns.map((pattern, index) => [index, pattern]));
+        reply.hits.byPattern.forEach((entry, index) => {
+          if (!entry.matched) return;
+          matched.push(entry.id);
+          const intent = entry.intent ?? byIndex.get(index)?.intent ?? null;
+          if (!intent) return;
+          (intents[intent] ??= []).push(entry.id);
+        });
+        return {
+          intents,
+          matched,
+          timedOut: false,
+          quarantined: [],
+          unavailable: false,
+          truncated,
+          elapsedMs,
+          compiledPatterns: Number(reply.compiled ?? 0)
+        };
+      }
+    };
+    QUARANTINE_SCHEMA = "memex.overlay-quarantine";
+    QUARANTINE_VERSION = 1;
+    memoryQuarantine = /* @__PURE__ */ new Map();
+    memoryGeneration = 0;
+    QUARANTINE_WRITE_ATTEMPTS = 3;
   }
 });
 
@@ -10022,8 +11627,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path15, errorMaps, issueData } = params;
-  const fullPath = [...path15, ...issueData.path || []];
+  const { data, path: path18, errorMaps, issueData } = params;
+  const fullPath = [...path18, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -10139,11 +11744,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path15, key) {
+  constructor(parent, value, path18, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path15;
+    this._path = path18;
     this._key = key;
   }
   get path() {
@@ -13781,10 +15386,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path15) {
-  if (!path15)
+function getElementAtPath(obj, path18) {
+  if (!path18)
     return obj;
-  return path15.reduce((acc, key) => acc?.[key], obj);
+  return path18.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -14104,11 +15709,11 @@ function aborted(x2, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path15, issues) {
+function prefixIssues(path18, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path15);
+    iss.path.unshift(path18);
     return iss;
   });
 }
@@ -20681,19 +22286,19 @@ var StdioServerTransport = class {
 
 // src/inject-daemon.ts
 init_paths();
-import { createHash as createHash6, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
 import net from "node:net";
-import fs10 from "node:fs";
-import path11 from "node:path";
+import fs13 from "node:fs";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/db.ts
 init_paths();
 init_codex_rollout();
 import Database2 from "better-sqlite3";
-import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
-import fs5 from "node:fs";
-import path8 from "path";
+import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
+import fs6 from "node:fs";
+import path9 from "path";
 import * as sqliteVec from "sqlite-vec";
 init_embeddings();
 
@@ -21923,7 +23528,10 @@ function ensureContinuitySchema(db, options = {}) {
         updated_at TEXT NOT NULL,
         -- Issue #20: memex jobs retry clears last_error; the failure it
         -- cleared is preserved here as a JSON array, never deleted.
-        retry_history TEXT
+        retry_history TEXT,
+        -- Issue #31: which unusable configuration this pending job waits on.
+        -- NULL for every ordinary job. Values: see HOLD_REASONS.
+        hold_reason TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_targets (
@@ -21944,7 +23552,14 @@ function ensureContinuitySchema(db, options = {}) {
         last_error TEXT,
         idempotency_key TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        -- Issue #30: the extraction-rules overlay hash this target was claimed
+        -- under (rules:sha8), or NULL when no overlay applied. LOCAL and
+        -- never synced: a hash is only interpretable against this machine's
+        -- overlay history. It is REPORTING only \u2014 the scheduling key is
+        -- policy_version, and mixing the rule hash into it would turn one
+        -- edited character into a full-corpus re-extraction.
+        rules_hash TEXT
       );
 
       CREATE TABLE IF NOT EXISTS extraction_target_items (
@@ -22590,8 +24205,16 @@ function ensureContinuitySchema(db, options = {}) {
     if (!capsuleColumns.has("original_chars")) {
       db.exec("ALTER TABLE work_capsules ADD COLUMN original_chars INTEGER");
     }
-    if (!columnNames(db, "memory_jobs").has("retry_history")) {
+    const memoryJobColumns = columnNames(db, "memory_jobs");
+    if (!memoryJobColumns.has("retry_history")) {
       db.exec("ALTER TABLE memory_jobs ADD COLUMN retry_history TEXT");
+    }
+    if (!memoryJobColumns.has("hold_reason")) {
+      db.exec("ALTER TABLE memory_jobs ADD COLUMN hold_reason TEXT");
+    }
+    const extractionTargetColumns = columnNames(db, "extraction_targets");
+    if (!extractionTargetColumns.has("rules_hash")) {
+      db.exec("ALTER TABLE extraction_targets ADD COLUMN rules_hash TEXT");
     }
     options.afterMigrationStage?.("evidence-sequence");
     const repaired = db.prepare(`
@@ -22994,12 +24617,12 @@ function initializeConnection(db, mode) {
   }
 }
 function openWriteDb(dbPath = getDbPath()) {
-  fs5.mkdirSync(path8.dirname(dbPath), { recursive: true });
+  fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   return initializeConnection(new Database2(dbPath), "write");
 }
 function initDatabase(options = {}) {
   const dbPath = options.dbPath ?? getDbPath();
-  if (options.dbPath) fs5.mkdirSync(path8.dirname(dbPath), { recursive: true });
+  if (options.dbPath) fs6.mkdirSync(path9.dirname(dbPath), { recursive: true });
   else ensureDbDir();
   const db = openWriteDb(dbPath);
   if (options.busyTimeoutMs !== void 0) {
@@ -23079,6 +24702,9 @@ function initDatabase(options = {}) {
   }
   if (!recallColumns.has("emitted_at")) {
     db.exec("ALTER TABLE recall_events ADD COLUMN emitted_at TEXT");
+  }
+  if (!recallColumns.has("gate_overlay_hash")) {
+    db.exec("ALTER TABLE recall_events ADD COLUMN gate_overlay_hash TEXT");
   }
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_recall_events_session_prompt ON recall_events(session_id, prompt_hash)"
@@ -23579,7 +25205,7 @@ function initDatabase(options = {}) {
   return db;
 }
 function hashRecallPrompt(prompt) {
-  return createHash4("sha256").update(prompt, "utf8").digest("hex");
+  return createHash5("sha256").update(prompt, "utf8").digest("hex");
 }
 function recordRecallEvent(db, event) {
   if (!event.sessionId || event.factIds.length === 0 && !event.context?.trim()) return null;
@@ -23587,8 +25213,9 @@ function recordRecallEvent(db, event) {
   db.prepare(`
     INSERT INTO recall_events
       (id, session_id, project, prompt_hash, fact_ids, source_type, learnable, status,
-       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at)
-    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?)
+       project_id, workspace_id, workstream_id, context_epoch, project_memory_revision, created_at,
+       gate_overlay_hash)
+    VALUES (?, ?, ?, ?, ?, 'memex_recall', 0, 'prepared', ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     event.sessionId,
@@ -23600,7 +25227,8 @@ function recordRecallEvent(db, event) {
     event.workstreamId ?? null,
     event.contextEpoch ?? 0,
     event.projectMemoryRevision ?? 0,
-    (/* @__PURE__ */ new Date()).toISOString()
+    (/* @__PURE__ */ new Date()).toISOString(),
+    event.gateOverlayHash ?? null
   );
   return id;
 }
@@ -23675,7 +25303,7 @@ function assertReadScope(db, scope) {
 init_embeddings();
 
 // src/chronicle.ts
-import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
 var INCIDENT_COALESCE_WINDOW_MS = 30 * 60 * 1e3;
 var CHRONICLE_TIMELINE_MAX_LIMIT = 100;
 var CHRONICLE_LANE_LABELS = {
@@ -23688,7 +25316,7 @@ var CHRONICLE_LANE_LABELS = {
 };
 var KIND_SET = new Set(CHRONICLE_EVENT_KINDS);
 function sha2562(value) {
-  return createHash5("sha256").update(value, "utf8").digest("hex");
+  return createHash6("sha256").update(value, "utf8").digest("hex");
 }
 function parseStringArray(raw) {
   if (typeof raw !== "string" || raw === "") return [];
@@ -24639,11 +26267,11 @@ function rowToRelation(row) {
 }
 
 // src/search.ts
-import fs7 from "fs";
+import fs8 from "fs";
 import readline from "readline";
 
 // src/archive-io.ts
-import fs6 from "fs";
+import fs7 from "fs";
 import { Readable, Transform, pipeline as pipeline2 } from "stream";
 import * as zlib from "node:zlib";
 var ZST_SUFFIX = ".zst";
@@ -24663,7 +26291,7 @@ function resolveArchiveFile(filePath) {
   const variant = filePath.endsWith(ZST_SUFFIX) ? filePath.slice(0, -ZST_SUFFIX.length) : filePath + ZST_SUFFIX;
   const statOrNull = (p) => {
     try {
-      return fs6.statSync(p);
+      return fs7.statSync(p);
     } catch {
       return null;
     }
@@ -24712,7 +26340,7 @@ function readArchiveFile(filePath) {
       code: "ENOENT"
     });
   }
-  const buf = fs6.readFileSync(resolved);
+  const buf = fs7.readFileSync(resolved);
   if (resolved.endsWith(ZST_SUFFIX)) {
     return requireZstdSync()(buf).toString("utf-8");
   }
@@ -24721,27 +26349,27 @@ function readArchiveFile(filePath) {
 function createArchiveReadStream(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) {
-    return fs6.createReadStream(filePath);
+    return fs7.createReadStream(filePath);
   }
   if (resolved.endsWith(ZST_SUFFIX)) {
     if (zstd.createZstdDecompress) {
-      const source = fs6.createReadStream(resolved);
+      const source = fs7.createReadStream(resolved);
       const decompress = zstd.createZstdDecompress();
       const limiter = createByteLimit(maxDecompressedBytes());
       pipeline2(source, decompress, limiter, () => {
       });
       return limiter;
     }
-    const content = requireZstdSync()(fs6.readFileSync(resolved));
+    const content = requireZstdSync()(fs7.readFileSync(resolved));
     return Readable.from([content]);
   }
-  return fs6.createReadStream(resolved);
+  return fs7.createReadStream(resolved);
 }
 function statArchiveFile(filePath) {
   const resolved = resolveArchiveFile(filePath);
   if (!resolved) return null;
   try {
-    return fs6.statSync(resolved);
+    return fs7.statSync(resolved);
   } catch {
     return null;
   }
@@ -24753,7 +26381,7 @@ var cachedSearchDbPath = null;
 var cachedSearchDbIdent = null;
 function fileIdent(p) {
   try {
-    const st = fs7.statSync(p);
+    const st = fs8.statSync(p);
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -25366,28 +26994,28 @@ async function detectRepeat(prompt, project, limit = 3, threshold = 0.82, opts =
 
 // src/inject-log.ts
 init_paths();
-import fs8 from "fs";
-import path9 from "path";
+import fs9 from "fs";
+import path10 from "path";
 var MAX_LOG_BYTES = 5 * 1024 * 1024;
 function getInjectLogPath() {
-  const dir = path9.join(getIndexDir(), "logs");
-  if (!fs8.existsSync(dir)) {
-    fs8.mkdirSync(dir, { recursive: true });
+  const dir = path10.join(getIndexDir(), "logs");
+  if (!fs9.existsSync(dir)) {
+    fs9.mkdirSync(dir, { recursive: true });
   }
-  return path9.join(dir, "inject-context.jsonl");
+  return path10.join(dir, "inject-context.jsonl");
 }
 function appendInjectLog(entry) {
   try {
     const logPath = getInjectLogPath();
     try {
-      const stat = fs8.statSync(logPath);
+      const stat = fs9.statSync(logPath);
       if (stat.size > MAX_LOG_BYTES) {
-        fs8.renameSync(logPath, `${logPath}.old`);
+        fs9.renameSync(logPath, `${logPath}.old`);
       }
     } catch {
     }
     const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...entry });
-    fs8.appendFileSync(logPath, line + "\n");
+    fs9.appendFileSync(logPath, line + "\n");
   } catch {
   }
 }
@@ -25431,14 +27059,14 @@ init_paths();
 
 // src/observe-hook-event.ts
 init_paths();
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function dataRoot() {
   return getMemexHome();
 }
 function observationLogPath() {
-  return path10.join(dataRoot(), "logs", "hook-events.jsonl");
+  return path11.join(dataRoot(), "logs", "hook-events.jsonl");
 }
 function recordHookEvent(event, info) {
   const name = typeof event === "string" ? event.trim() : "";
@@ -25453,14 +27081,14 @@ function recordHookEvent(event, info) {
       ...detail ? { detail } : {}
     }) + "\n";
     const file = observationLogPath();
-    fs9.mkdirSync(path10.dirname(file), { recursive: true });
-    fs9.appendFileSync(file, line);
+    fs10.mkdirSync(path11.dirname(file), { recursive: true });
+    fs10.appendFileSync(file, line);
     return true;
   } catch {
     return false;
   }
 }
-if (process.argv[1] && path10.basename(process.argv[1]) === "observe-hook-event.js" && path10.resolve(process.argv[1]) === fileURLToPath3(import.meta.url)) {
+if (process.argv[1] && path11.basename(process.argv[1]) === "observe-hook-event.js" && path11.resolve(process.argv[1]) === fileURLToPath3(import.meta.url)) {
   const [event, sessionId, cwd] = process.argv.slice(2);
   if (!recordHookEvent(event ?? "", { sessionId, cwd })) {
     process.stderr.write(
@@ -25792,22 +27420,181 @@ var STOPWORDS = /* @__PURE__ */ new Set([
   "\uB610",
   "\uADF8\uB7FC"
 ]);
-var ACK_PATTERNS = [
-  /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$/i,
-  /^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$/
+var MEMORY_TERMS = [
+  ["memory.en.why", "\\bwhy\\b"],
+  ["memory.en.when", "\\bwhen\\b"],
+  ["memory.en.history", "\\bhistory\\b"],
+  ["memory.en.source", "\\bsource\\b"],
+  ["memory.en.previous", "\\bprevious(ly)?\\b"],
+  ["memory.en.before", "\\bbefore\\b"],
+  ["memory.en.earlier", "\\bearlier\\b"],
+  ["memory.en.repeat", "\\brepeat(ed|ing)?\\b"],
+  ["memory.en.again", "\\bagain\\b"],
+  ["memory.en.remember", "\\bremember\\b"],
+  ["memory.en.recall", "\\brecall\\b"],
+  ["memory.en.what-did-we", "\\bwhat did we\\b"],
+  ["memory.en.what-was", "\\bwhat was\\b"],
+  ["memory.en.how-did", "\\bhow did\\b"],
+  ["memory.en.where-did", "\\bwhere did\\b"],
+  ["memory.en.origin", "\\borigin\\b"],
+  ["memory.en.decided", "\\bdecided\\b"],
+  ["memory.kr.\uC65C", "\uC65C"],
+  ["memory.kr.\uC5B8\uC81C", "\uC5B8\uC81C"],
+  ["memory.kr.\uC774\uC804", "\uC774\uC804"],
+  ["memory.kr.\uC608\uC804", "\uC608\uC804"],
+  ["memory.kr.\uACFC\uAC70", "\uACFC\uAC70"],
+  ["memory.kr.\uC804\uC5D0", "\uC804\uC5D0"],
+  ["memory.kr.\uAE30\uB85D", "\uAE30\uB85D"],
+  ["memory.kr.\uCD9C\uCC98", "\uCD9C\uCC98"],
+  ["memory.kr.\uADFC\uAC70", "\uADFC\uAC70"],
+  ["memory.kr.\uC774\uC720", "\uC774\uC720"],
+  ["memory.kr.\uD788\uC2A4\uD1A0\uB9AC", "\uD788\uC2A4\uD1A0\uB9AC"],
+  ["memory.en.history-plain", "history"],
+  ["memory.kr.\uBC18\uBCF5", "\uBC18\uBCF5"],
+  ["memory.kr.\uB610", "\uB610\\s*(\uADF8|\uC774)"],
+  ["memory.kr.\uAE30\uC5B5", "\uAE30\uC5B5"],
+  ["memory.kr.\uB2E4\uC2DC", "\uB2E4\uC2DC"],
+  ["memory.kr.\uD588\uC5C8", "\uD588\uC5C8"],
+  ["memory.kr.\uC600\uC5C8", "\uC600\uC5C8"],
+  ["memory.kr.\uACB0\uC815\uD588", "\uACB0\uC815\uD588"],
+  ["memory.kr.\uC815\uD588", "\uC815\uD588"],
+  ["memory.kr.\uBC14\uAFE8", "\uBC14\uAFE8"],
+  ["memory.kr.\uBCC0\uACBD\uD588", "\uBCC0\uACBD\uD588"],
+  ["memory.kr.\uC5B4\uB514\uC11C", "\uC5B4\uB514\uC11C"]
 ];
-var CONTINUE_PATTERNS = [
-  /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
-  /^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$/,
-  /^(가자|고|해줘|해봐|ㄱ)[.! ~]*$/
+var TRACE_TERMS = [
+  ["trace.en.why", "\\bwhy\\b"],
+  ["trace.en.rationale", "\\brationale\\b"],
+  ["trace.en.reason", "\\breason\\b"],
+  ["trace.en.related", "\\brelated\\b"],
+  ["trace.en.depend", "\\bdepend"],
+  ["trace.en.contradict", "\\bcontradict"],
+  ["trace.en.conflict", "\\bconflict"],
+  ["trace.en.architecture", "\\barchitecture\\b"],
+  ["trace.en.trace", "\\btrace\\b"],
+  ["trace.en.history", "\\bhistory\\b"],
+  ["trace.en.source", "\\bsource\\b"],
+  ["trace.kr.\uC65C", "\uC65C"],
+  ["trace.kr.\uC774\uC720", "\uC774\uC720"],
+  ["trace.kr.\uADFC\uAC70", "\uADFC\uAC70"],
+  ["trace.kr.\uAD00\uB828", "\uAD00\uB828"],
+  ["trace.kr.\uC758\uC874", "\uC758\uC874"],
+  ["trace.kr.\uBAA8\uC21C", "\uBAA8\uC21C"],
+  ["trace.kr.\uCDA9\uB3CC", "\uCDA9\uB3CC"],
+  ["trace.kr.\uC544\uD0A4\uD14D\uCC98", "\uC544\uD0A4\uD14D\uCC98"],
+  ["trace.kr.\uCD94\uC801", "\uCD94\uC801"],
+  ["trace.kr.\uCD9C\uCC98", "\uCD9C\uCC98"],
+  ["trace.kr.\uD788\uC2A4\uD1A0\uB9AC", "\uD788\uC2A4\uD1A0\uB9AC"],
+  ["trace.en.history-plain", "history"]
 ];
-var MINOR_CORRECTION_PATTERNS = [
-  /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
-  /^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)/
+var HIGH_IMPACT_TERMS = [
+  ["high.en.decide", "\\bdecide\\b"],
+  ["high.en.decision", "\\bdecision\\b"],
+  ["high.en.switch", "\\bswitch(ing)?\\b"],
+  ["high.en.migrate", "\\bmigrat(e|ion)\\b"],
+  ["high.en.rollback", "\\brollback\\b"],
+  ["high.en.roll-back", "\\broll back\\b"],
+  ["high.en.revert", "\\brevert\\b"],
+  ["high.en.replace", "\\breplace\\b"],
+  ["high.en.drop", "\\bdrop\\b"],
+  ["high.en.remove", "\\bremove\\b"],
+  ["high.en.deprecate", "\\bdeprecate\\b"],
+  ["high.en.change-the", "\\bchange the\\b"],
+  ["high.en.adopt", "\\badopt\\b"],
+  ["high.en.move-to", "\\bmove to\\b"],
+  ["high.kr.\uACB0\uC815", "\uACB0\uC815"],
+  ["high.kr.\uC804\uD658", "\uC804\uD658"],
+  ["high.kr.\uB9C8\uC774\uADF8\uB808\uC774\uC158", "\uB9C8\uC774\uADF8\uB808\uC774\uC158"],
+  ["high.kr.\uB864\uBC31", "\uB864\uBC31"],
+  ["high.kr.\uB418\uB3CC", "\uB418\uB3CC"],
+  ["high.kr.\uAD50\uCCB4", "\uAD50\uCCB4"],
+  ["high.kr.\uC81C\uAC70", "\uC81C\uAC70"],
+  ["high.kr.\uC0AD\uC81C", "\uC0AD\uC81C"],
+  ["high.kr.\uBC14\uAFB8", "\uBC14\uAFB8"],
+  ["high.kr.\uBCC0\uACBD", "\uBCC0\uACBD"],
+  ["high.kr.\uB3C4\uC785", "\uB3C4\uC785"],
+  ["high.kr.\uCC44\uD0DD", "\uCC44\uD0DD"],
+  ["high.kr.\uC62E\uAE30", "\uC62E\uAE30"]
 ];
-var MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\b|\bbefore\b|\bearlier\b|\brepeat(ed|ing)?\b|\bagain\b|\bremember\b|\brecall\b|\bwhat did we\b|\bwhat was\b|\bhow did\b|\bwhere did\b|\borigin\b|\bdecided\b|왜|언제|이전|예전|과거|전에|기록|출처|근거|이유|히스토리|history|반복|또\s*(그|이)|기억|다시|했었|였었|결정했|정했|바꿨|변경했|어디서)/i;
-var TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
-var HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
+var WHOLE_PATTERNS = [
+  [
+    "ack.en.1",
+    "acknowledgement",
+    "^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$",
+    "i"
+  ],
+  [
+    "ack.kr.1",
+    "acknowledgement",
+    "^(\uC751|\uB124|\uB135|\uB139|\uC608|\uC544\uB2C8|\uC544\uB2C8\uC694|\uACE0\uB9C8\uC6CC|\uACE0\uB9C8\uC6CC\uC694|\uACE0\uB9D9\uC2B5\uB2C8\uB2E4|\uAC10\uC0AC|\uAC10\uC0AC\uD569\uB2C8\uB2E4|\uAC10\uC0AC\uD574\uC694|\uC88B\uC544|\uC88B\uC544\uC694|\uC88B\uB124|\uC88B\uC2B5\uB2C8\uB2E4|\uC54C\uACA0\uC5B4|\uC54C\uACA0\uC5B4\uC694|\uC54C\uACA0\uC2B5\uB2C8\uB2E4|\uC624\uCF00\uC774|\u3147\u314B|\u3147\u3147|\u3131\u3131|\uAD7F|\uB9DE\uC544|\uB9DE\uC544\uC694|\uADF8\uB798|\uADF8\uB798\uC694|\uD655\uC778)[.! ~]*$",
+    ""
+  ],
+  [
+    "continue.en.1",
+    "continuation",
+    "^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$",
+    "i"
+  ],
+  [
+    "continue.kr.1",
+    "continuation",
+    "^(\uACC4\uC18D|\uC9C4\uD589|\uB2E4\uC74C|\uC774\uC5B4\uC11C|\uC774\uC5B4)(\uD574|\uD558\uC790|\uD574\uC918|\uD574\uC918\uC694|\uD574\uC8FC\uC138\uC694|\uD558\uC138\uC694|\uD560\uAC8C|\uD560\uAC8C\uC694|\uD574\uC694|\uD574\uBD10|\uD569\uC2DC\uB2E4|\uAC00\uC790|\uC73C\uB85C \uB118\uC5B4\uAC00\uC790|\uC73C\uB85C \uB118\uC5B4\uAC00\uC694)?[.! ~]*$",
+    ""
+  ],
+  ["continue.kr.2", "continuation", "^(\uAC00\uC790|\uACE0|\uD574\uC918|\uD574\uBD10|\u3131)[.! ~]*$", ""],
+  [
+    "minor.en.1",
+    "minorCorrection",
+    "^(no|not that|the other one|wrong one|other|instead|actually|rather)\\b",
+    "i"
+  ],
+  ["minor.kr.1", "minorCorrection", "^(\uC544\uB2C8|\uADF8\uAC70 \uB9D0\uACE0|\uB2E4\uB978 \uAC70|\uB2E4\uB978\uAC70|\uB9D0\uACE0|\uB300\uC2E0|\uADF8\uAC8C \uC544\uB2C8\uB77C)", ""]
+];
+function alternativeTerms(intent, terms) {
+  return terms.map(([id, source]) => ({ id, intent, source, flags: "i", form: "alternative" }));
+}
+var BUILTIN_GATE_PATTERNS = Object.freeze([
+  ...alternativeTerms("memory", MEMORY_TERMS),
+  ...alternativeTerms("trace", TRACE_TERMS),
+  ...alternativeTerms("highImpact", HIGH_IMPACT_TERMS),
+  ...WHOLE_PATTERNS.map(([id, intent, source, flags]) => ({
+    id,
+    intent,
+    source,
+    flags,
+    form: "whole"
+  }))
+]);
+function composeAlternation(terms) {
+  if (terms.length === 0) return null;
+  return new RegExp(`(${terms.map((term) => term.source).join("|")})`, "i");
+}
+function buildComposed(disabled) {
+  const active = BUILTIN_GATE_PATTERNS.filter((pattern) => !disabled.has(pattern.id));
+  const alternatives = (intent) => active.filter((pattern) => pattern.intent === intent && pattern.form === "alternative");
+  const wholes = (intent) => active.filter((pattern) => pattern.intent === intent && pattern.form === "whole").map((pattern) => ({ id: pattern.id, re: new RegExp(pattern.source, pattern.flags) }));
+  return {
+    memory: composeAlternation(alternatives("memory")),
+    trace: composeAlternation(alternatives("trace")),
+    highImpact: composeAlternation(alternatives("highImpact")),
+    acknowledgement: wholes("acknowledgement"),
+    continuation: wholes("continuation"),
+    minorCorrection: wholes("minorCorrection")
+  };
+}
+var DEFAULT_COMPOSED = buildComposed(/* @__PURE__ */ new Set());
+var composedCache = /* @__PURE__ */ new Map();
+var COMPOSED_CACHE_MAX = 8;
+function composeGatePatterns(disabledIds = []) {
+  if (disabledIds.length === 0) return DEFAULT_COMPOSED;
+  const key = [...new Set(disabledIds)].sort().join("\0");
+  const cached2 = composedCache.get(key);
+  if (cached2) return cached2;
+  const built = buildComposed(new Set(disabledIds));
+  if (composedCache.size >= COMPOSED_CACHE_MAX) composedCache.clear();
+  composedCache.set(key, built);
+  return built;
+}
 var KR_SUFFIX = /(해주세요|해줘요|합니다|하세요|했어요|해요|해줘|해봐|하자|할까|했어|했다|한다|해서|에서|에게|한테|으로|까지|부터|처럼|이랑|은|는|이|가|을|를|의|에|로|와|과|도|만|랑)$/u;
 function normalizeToken(token) {
   if (!/[\u3131-\uD79D]/u.test(token)) return token;
@@ -25826,149 +27613,234 @@ function jaccard2(a, b2) {
   for (const token of left) if (right.has(token)) overlap++;
   return overlap / (left.size + right.size - overlap);
 }
-var ACK_WORDS = /* @__PURE__ */ new Set([
-  "ok",
-  "okay",
-  "k",
-  "yes",
-  "yep",
-  "yeah",
-  "no",
-  "nope",
-  "sure",
-  "thanks",
-  "thank",
-  "thx",
-  "ty",
-  "cool",
-  "great",
-  "nice",
-  "good",
-  "got",
-  "understood",
-  "done",
-  "fine",
-  "alright",
-  "perfect",
-  "right",
-  "awesome",
-  "\uC751",
-  "\uB124",
-  "\uB135",
-  "\uB139",
-  "\uC608",
-  "\uC544\uB2C8",
-  "\uC544\uB2C8\uC694",
-  "\uACE0\uB9C8\uC6CC",
-  "\uACE0\uB9C8\uC6CC\uC694",
-  "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
-  "\uAC10\uC0AC",
-  "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
-  "\uAC10\uC0AC\uD574\uC694",
-  "\uC88B\uC544",
-  "\uC88B\uC544\uC694",
-  "\uC88B\uB124",
-  "\uC88B\uC2B5\uB2C8\uB2E4",
-  "\uC54C\uACA0\uC5B4",
-  "\uC54C\uACA0\uC5B4\uC694",
-  "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
-  "\uC624\uCF00\uC774",
-  "\u3147\u314B",
-  "\u3147\u3147",
-  "\uAD7F",
-  "\uB9DE\uC544",
-  "\uB9DE\uC544\uC694",
-  "\uADF8\uB798",
-  "\uADF8\uB798\uC694",
-  "\uD655\uC778"
-]);
-var CONTINUE_WORDS = /* @__PURE__ */ new Set([
-  "continue",
-  "go",
-  "on",
-  "keep",
-  "going",
-  "next",
-  "proceed",
-  "carry",
-  "ahead",
-  "resume",
-  "\uACC4\uC18D",
-  "\uACC4\uC18D\uD574",
-  "\uACC4\uC18D\uD574\uC918",
-  "\uACC4\uC18D\uD574\uC918\uC694",
-  "\uACC4\uC18D\uD574\uC8FC\uC138\uC694",
-  "\uACC4\uC18D\uD558\uC790",
-  "\uC9C4\uD589",
-  "\uC9C4\uD589\uD574",
-  "\uC9C4\uD589\uD574\uC918",
-  "\uC9C4\uD589\uD574\uC8FC\uC138\uC694",
-  "\uC9C4\uD589\uD560\uAC8C",
-  "\uC9C4\uD589\uD560\uAC8C\uC694",
-  "\uB2E4\uC74C",
-  "\uB2E4\uC74C\uC73C\uB85C",
-  "\uB118\uC5B4\uAC00\uC790",
-  "\uB118\uC5B4\uAC00\uC694",
-  "\uB118\uC5B4\uAC00",
-  "\uC774\uC5B4\uC11C",
-  "\uC774\uC5B4",
-  "\uAC00\uC790",
-  "\uD574\uC918",
-  "\uD574\uC8FC\uC138\uC694",
-  "\uD574\uBD10",
-  "\u3131\u3131"
-]);
-var FILLER_WORDS = /* @__PURE__ */ new Set([
-  "you",
-  "it",
-  "that",
-  "this",
-  "the",
-  "and",
-  "then",
-  "now",
-  "please",
-  "let",
-  "lets",
-  "s",
-  "do",
-  "for",
-  "with",
-  "sounds",
-  "looks",
-  "work",
-  "job",
-  "well",
-  "really",
-  "very",
-  "much",
-  "so",
-  "all",
-  "too",
-  "\uC800",
-  "\uADF8",
-  "\uC880",
-  "\uC694",
-  "\uB124\uC694",
-  "\uC785\uB2C8\uB2E4",
-  "\uC774\uC81C",
-  "\uADF8\uB7FC",
-  "\uADF8\uB7EC\uBA74",
-  "\uC77C\uB2E8"
-]);
-function detectPromptIntents(prompt) {
-  const trimmed = prompt.trim();
-  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
-  const allAck = rawTokens.length > 0 && rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || FILLER_WORDS.has(token));
-  const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && rawTokens.some((token) => ACK_WORDS.has(token));
-  const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) || allAck && !acknowledgement && rawTokens.some((token) => CONTINUE_WORDS.has(token));
-  return {
-    memory: MEMORY_INTENT.test(trimmed),
-    trace: TRACE_INTENT.test(trimmed),
-    highImpact: HIGH_IMPACT_INTENT.test(trimmed),
-    acknowledgement,
-    continuation
+var BUILTIN_GATE_WORDS = Object.freeze({
+  ack: Object.freeze([
+    "ok",
+    "okay",
+    "k",
+    "yes",
+    "yep",
+    "yeah",
+    "no",
+    "nope",
+    "sure",
+    "thanks",
+    "thank",
+    "thx",
+    "ty",
+    "cool",
+    "great",
+    "nice",
+    "good",
+    "got",
+    "understood",
+    "done",
+    "fine",
+    "alright",
+    "perfect",
+    "right",
+    "awesome",
+    "\uC751",
+    "\uB124",
+    "\uB135",
+    "\uB139",
+    "\uC608",
+    "\uC544\uB2C8",
+    "\uC544\uB2C8\uC694",
+    "\uACE0\uB9C8\uC6CC",
+    "\uACE0\uB9C8\uC6CC\uC694",
+    "\uACE0\uB9D9\uC2B5\uB2C8\uB2E4",
+    "\uAC10\uC0AC",
+    "\uAC10\uC0AC\uD569\uB2C8\uB2E4",
+    "\uAC10\uC0AC\uD574\uC694",
+    "\uC88B\uC544",
+    "\uC88B\uC544\uC694",
+    "\uC88B\uB124",
+    "\uC88B\uC2B5\uB2C8\uB2E4",
+    "\uC54C\uACA0\uC5B4",
+    "\uC54C\uACA0\uC5B4\uC694",
+    "\uC54C\uACA0\uC2B5\uB2C8\uB2E4",
+    "\uC624\uCF00\uC774",
+    "\u3147\u314B",
+    "\u3147\u3147",
+    "\uAD7F",
+    "\uB9DE\uC544",
+    "\uB9DE\uC544\uC694",
+    "\uADF8\uB798",
+    "\uADF8\uB798\uC694",
+    "\uD655\uC778"
+  ]),
+  continue: Object.freeze([
+    "continue",
+    "go",
+    "on",
+    "keep",
+    "going",
+    "next",
+    "proceed",
+    "carry",
+    "ahead",
+    "resume",
+    "\uACC4\uC18D",
+    "\uACC4\uC18D\uD574",
+    "\uACC4\uC18D\uD574\uC918",
+    "\uACC4\uC18D\uD574\uC918\uC694",
+    "\uACC4\uC18D\uD574\uC8FC\uC138\uC694",
+    "\uACC4\uC18D\uD558\uC790",
+    "\uC9C4\uD589",
+    "\uC9C4\uD589\uD574",
+    "\uC9C4\uD589\uD574\uC918",
+    "\uC9C4\uD589\uD574\uC8FC\uC138\uC694",
+    "\uC9C4\uD589\uD560\uAC8C",
+    "\uC9C4\uD589\uD560\uAC8C\uC694",
+    "\uB2E4\uC74C",
+    "\uB2E4\uC74C\uC73C\uB85C",
+    "\uB118\uC5B4\uAC00\uC790",
+    "\uB118\uC5B4\uAC00\uC694",
+    "\uB118\uC5B4\uAC00",
+    "\uC774\uC5B4\uC11C",
+    "\uC774\uC5B4",
+    "\uAC00\uC790",
+    "\uD574\uC918",
+    "\uD574\uC8FC\uC138\uC694",
+    "\uD574\uBD10",
+    "\u3131\u3131"
+  ]),
+  /** Words that carry no topic on their own; they never make a prompt substantive. */
+  filler: Object.freeze([
+    "you",
+    "it",
+    "that",
+    "this",
+    "the",
+    "and",
+    "then",
+    "now",
+    "please",
+    "let",
+    "lets",
+    "s",
+    "do",
+    "for",
+    "with",
+    "sounds",
+    "looks",
+    "work",
+    "job",
+    "well",
+    "really",
+    "very",
+    "much",
+    "so",
+    "all",
+    "too",
+    "\uC800",
+    "\uADF8",
+    "\uC880",
+    "\uC694",
+    "\uB124\uC694",
+    "\uC785\uB2C8\uB2E4",
+    "\uC774\uC81C",
+    "\uADF8\uB7FC",
+    "\uADF8\uB7EC\uBA74",
+    "\uC77C\uB2E8"
+  ])
+});
+var ACK_WORDS = new Set(BUILTIN_GATE_WORDS.ack);
+var CONTINUE_WORDS = new Set(BUILTIN_GATE_WORDS.continue);
+var FILLER_WORDS = new Set(BUILTIN_GATE_WORDS.filler);
+var DEFAULT_WORD_SETS = Object.freeze({
+  ack: ACK_WORDS,
+  continue: CONTINUE_WORDS,
+  filler: FILLER_WORDS
+});
+function effectiveWords(hits) {
+  const words = hits?.words;
+  if (!words) return DEFAULT_WORD_SETS;
+  const resolve = (lexicon) => {
+    const add = words.add?.[lexicon] ?? [];
+    const disable = words.disable?.[lexicon] ?? [];
+    if (add.length === 0 && disable.length === 0) return DEFAULT_WORD_SETS[lexicon];
+    const next = new Set(DEFAULT_WORD_SETS[lexicon]);
+    for (const word of disable) next.delete(word);
+    for (const word of add) next.add(word);
+    return next;
   };
+  return { ack: resolve("ack"), continue: resolve("continue"), filler: resolve("filler") };
+}
+function emptyMatched() {
+  return {
+    memory: [],
+    trace: [],
+    highImpact: [],
+    acknowledgement: [],
+    continuation: [],
+    minorCorrection: []
+  };
+}
+function explain(prompt, hits) {
+  const trimmed = prompt.trim();
+  const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+  const disabled = new Set(hits?.disabledPatterns ?? []);
+  const words = effectiveWords(hits);
+  const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+  const allAck = rawTokens.length > 0 && rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+  const matched = emptyMatched();
+  const userIds = (intent) => hits?.intents?.[intent] ?? [];
+  for (const intent of ["memory", "trace", "highImpact", "acknowledgement", "continuation", "minorCorrection"]) {
+    for (const id of userIds(intent)) matched[intent].push({ id, origin: "user" });
+  }
+  const ackPatternHit = composed.acknowledgement.filter(({ re: re2 }) => re2.test(trimmed));
+  const continuePatternHit = composed.continuation.filter(({ re: re2 }) => re2.test(trimmed));
+  for (const hit of ackPatternHit) matched.acknowledgement.unshift({ id: hit.id, origin: "builtin" });
+  for (const hit of continuePatternHit) matched.continuation.unshift({ id: hit.id, origin: "builtin" });
+  const acknowledgement = ackPatternHit.length > 0 || userIds("acknowledgement").length > 0 || allAck && rawTokens.some((token) => words.ack.has(token));
+  const continuation = continuePatternHit.length > 0 || userIds("continuation").length > 0 || allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token));
+  for (const intent of ["memory", "trace", "highImpact"]) {
+    const composedRe = composed[intent];
+    if (!composedRe || !composedRe.test(trimmed)) continue;
+    for (const term of BUILTIN_GATE_PATTERNS) {
+      if (term.intent !== intent || term.form !== "alternative" || disabled.has(term.id)) continue;
+      if (new RegExp(term.source, term.flags).test(trimmed)) {
+        matched[intent].unshift({ id: term.id, origin: "builtin" });
+      }
+    }
+  }
+  return {
+    intents: {
+      memory: matched.memory.length > 0,
+      trace: matched.trace.length > 0,
+      highImpact: matched.highImpact.length > 0,
+      acknowledgement,
+      continuation
+    },
+    matched
+  };
+}
+function detectPromptIntents(prompt, hits) {
+  const trimmed = prompt.trim();
+  if (!hits || (hits.disabledPatterns?.length ?? 0) === 0) {
+    const composed = DEFAULT_COMPOSED;
+    const words = effectiveWords(hits);
+    const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+    const allAck = rawTokens.length > 0 && rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+    const userAck = hits?.intents?.acknowledgement?.length ?? 0;
+    const userContinue = hits?.intents?.continuation?.length ?? 0;
+    const acknowledgement = composed.acknowledgement.some(({ re: re2 }) => re2.test(trimmed)) || userAck > 0 || allAck && rawTokens.some((token) => words.ack.has(token));
+    const continuation = composed.continuation.some(({ re: re2 }) => re2.test(trimmed)) || userContinue > 0 || allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token));
+    return {
+      memory: (composed.memory?.test(trimmed) ?? false) || (hits?.intents?.memory?.length ?? 0) > 0,
+      trace: (composed.trace?.test(trimmed) ?? false) || (hits?.intents?.trace?.length ?? 0) > 0,
+      highImpact: (composed.highImpact?.test(trimmed) ?? false) || (hits?.intents?.highImpact?.length ?? 0) > 0,
+      acknowledgement,
+      continuation
+    };
+  }
+  return explain(prompt, hits).intents;
+}
+function minorCorrectionHit(prompt, hits) {
+  const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+  return composed.minorCorrection.some(({ re: re2 }) => re2.test(prompt)) || (hits?.intents?.minorCorrection?.length ?? 0) > 0;
 }
 function cosineSimilarity(a, b2) {
   let dot = 0;
@@ -25986,7 +27858,7 @@ function cosineSimilarity(a, b2) {
 function decideRecall(input) {
   const config2 = { ...DEFAULT_RECALL_GATE_CONFIG, ...input.config ?? {} };
   const tokens2 = tokenizePrompt(input.prompt);
-  const intents = detectPromptIntents(input.prompt);
+  const intents = detectPromptIntents(input.prompt, input.userHits);
   const triggers = [];
   const fingerprint = input.state.topicFingerprint;
   const topicOverlap = fingerprint.length > 0 ? jaccard2(tokens2, fingerprint) : null;
@@ -26014,7 +27886,7 @@ function decideRecall(input) {
   if ((intents.acknowledgement || intents.continuation) && tokens2.length <= config2.ackMaxTokens) {
     return base("skip", intents.acknowledgement ? "acknowledgement" : "continuation");
   }
-  if (!substantive && MINOR_CORRECTION_PATTERNS.some((pattern) => pattern.test(input.prompt.trim())) && tokens2.length <= config2.ackMaxTokens + 2) {
+  if (!substantive && minorCorrectionHit(input.prompt.trim(), input.userHits) && tokens2.length <= config2.ackMaxTokens + 2) {
     return base("skip", "minor_correction");
   }
   if (intents.highImpact) triggers.push("high_impact_intent");
@@ -26163,7 +28035,449 @@ ${accepted.join("\n")}`;
   };
 }
 
+// src/recall-gate-overlay.ts
+init_paths();
+init_overlay_regex();
+init_overlay_matcher();
+import fs12 from "node:fs";
+var RECALL_GATE_OVERLAY_SCHEMA = "memex.recall-gate-overlay";
+var RECALL_GATE_OVERLAY_VERSION = 1;
+var OVERLAY_LIMITS = Object.freeze({
+  fileBytes: 32768,
+  patternSource: OVERLAY_REGEX_LIMITS.sourceChars,
+  quantifiers: OVERLAY_REGEX_LIMITS.quantifiers,
+  groupDepth: OVERLAY_REGEX_LIMITS.depth,
+  alternationBranches: OVERLAY_REGEX_LIMITS.branches,
+  noteChars: 200,
+  counts: Object.freeze({
+    patternsAdd: 64,
+    patternsAddPerIntent: 32,
+    patternsDisable: 256,
+    wordsAddPerLexicon: 128,
+    wordsDisablePerLexicon: 256,
+    wordChars: 32
+  })
+});
+var INTENTS = [
+  "memory",
+  "trace",
+  "highImpact",
+  "acknowledgement",
+  "continuation",
+  "minorCorrection"
+];
+var LEXICONS = ["ack", "continue", "filler"];
+function emptyWords() {
+  return { add: { ack: [], continue: [], filler: [] }, disable: { ack: [], continue: [], filler: [] } };
+}
+var EMPTY_OVERLAY = Object.freeze({
+  present: false,
+  hash: null,
+  revision: 0,
+  patterns: Object.freeze([]),
+  disabled: Object.freeze([]),
+  words: Object.freeze(emptyWords()),
+  quarantined: Object.freeze([]),
+  issues: Object.freeze([]),
+  doc: null
+});
+function recallGateOverlayHash(doc) {
+  const rules = {
+    patterns: {
+      add: (doc.patterns?.add ?? []).map((pattern) => ({
+        id: pattern.id,
+        intent: pattern.intent,
+        source: pattern.source,
+        flags: pattern.flags ?? ""
+      })),
+      disable: [...doc.patterns?.disable ?? []].sort()
+    },
+    words: {
+      add: Object.fromEntries(LEXICONS.map((lexicon) => [lexicon, [...doc.words?.add?.[lexicon] ?? []].sort()])),
+      disable: Object.fromEntries(LEXICONS.map((lexicon) => [lexicon, [...doc.words?.disable?.[lexicon] ?? []].sort()]))
+    }
+  };
+  return `gate:${sha8(canonicalJson(rules))}`;
+}
+var CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+var KNOWN_TOP_LEVEL = /* @__PURE__ */ new Set([
+  "schema",
+  "version",
+  "revision",
+  "updated_at",
+  "updated_by",
+  "patterns",
+  "words"
+]);
+var BUILTIN_IDS = new Set(BUILTIN_GATE_PATTERNS.map((pattern) => pattern.id));
+var BUILTIN_SOURCES = new Set(
+  BUILTIN_GATE_PATTERNS.map((pattern) => `${pattern.source}\0${pattern.flags}`)
+);
+function validateRecallGateOverlayDoc(raw, opts = {}) {
+  const issues = [];
+  const error2 = (code, message, extra) => {
+    issues.push(overlayIssue("error", code, message, extra));
+  };
+  const warn = (code, message, extra) => {
+    issues.push(overlayIssue("warning", code, message, extra));
+  };
+  if (opts.bytes !== void 0 && opts.bytes > OVERLAY_LIMITS.fileBytes) {
+    error2(
+      "OVERLAY_TOO_LARGE",
+      `the overlay file is ${opts.bytes} bytes (limit ${OVERLAY_LIMITS.fileBytes})`,
+      { params: { bytes: opts.bytes, limit: OVERLAY_LIMITS.fileBytes } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    error2("OVERLAY_NOT_OBJECT", "the overlay must be a JSON object");
+    return { ok: false, issues, doc: null };
+  }
+  const doc = raw;
+  if (doc.schema !== RECALL_GATE_OVERLAY_SCHEMA) {
+    error2(
+      "OVERLAY_SCHEMA_MISMATCH",
+      `schema must be "${RECALL_GATE_OVERLAY_SCHEMA}" (found ${JSON.stringify(doc.schema ?? null)})`,
+      { path: "schema", params: { expected: RECALL_GATE_OVERLAY_SCHEMA } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  if (Number(doc.version) !== RECALL_GATE_OVERLAY_VERSION) {
+    error2(
+      "OVERLAY_VERSION_UNSUPPORTED",
+      `version ${String(doc.version)} is not supported by this build (expected ${RECALL_GATE_OVERLAY_VERSION})`,
+      { path: "version", params: { version: doc.version, expected: RECALL_GATE_OVERLAY_VERSION } }
+    );
+    return { ok: false, issues, doc: null };
+  }
+  for (const key of Object.keys(doc)) {
+    if (!KNOWN_TOP_LEVEL.has(key)) {
+      warn("OVERLAY_UNKNOWN_FIELD", `unknown field "${key}" is ignored by this build`, {
+        path: key,
+        params: { field: key }
+      });
+    }
+  }
+  const revision = Number.isInteger(doc.revision) && Number(doc.revision) >= 0 ? Number(doc.revision) : 0;
+  const patternsRaw = doc.patterns;
+  const add = [];
+  const disable = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  const perIntent = /* @__PURE__ */ new Map();
+  if (patternsRaw !== void 0 && (typeof patternsRaw !== "object" || patternsRaw === null || Array.isArray(patternsRaw))) {
+    error2("OVERLAY_NOT_OBJECT", "`patterns` must be an object with `add` and `disable`", { path: "patterns" });
+  } else {
+    const section = patternsRaw ?? {};
+    const rawAdd = section.add;
+    if (rawAdd !== void 0 && !Array.isArray(rawAdd)) {
+      error2("OVERLAY_NOT_OBJECT", "`patterns.add` must be an array", { path: "patterns.add" });
+    } else {
+      const list = rawAdd ?? [];
+      if (list.length > OVERLAY_LIMITS.counts.patternsAdd) {
+        error2(
+          "PATTERN_COUNT_EXCEEDED",
+          `${list.length} added patterns (limit ${OVERLAY_LIMITS.counts.patternsAdd})`,
+          { path: "patterns.add", params: { count: list.length, limit: OVERLAY_LIMITS.counts.patternsAdd } }
+        );
+      }
+      list.forEach((entry, index) => {
+        const at = `patterns.add[${index}]`;
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          error2("OVERLAY_NOT_OBJECT", "each added pattern must be an object", { path: at, row: index });
+          return;
+        }
+        const item = entry;
+        const intent = item.intent;
+        if (!INTENTS.includes(intent)) {
+          error2("INTENT_UNKNOWN", `unknown intent ${JSON.stringify(item.intent ?? null)}`, {
+            path: `${at}.intent`,
+            row: index,
+            field: "intent",
+            params: { intent: item.intent }
+          });
+          return;
+        }
+        const source = typeof item.source === "string" ? item.source : "";
+        const flags = typeof item.flags === "string" ? item.flags : "";
+        if (source.length === 0) {
+          error2("PATTERN_TOO_LONG", "a pattern source may not be empty", {
+            path: `${at}.source`,
+            row: index,
+            field: "source"
+          });
+          return;
+        }
+        const check2 = checkOverlayRegex(source, flags);
+        for (const problem of check2.problems) {
+          error2(problem.code, problem.message, {
+            path: `${at}.source`,
+            row: index,
+            field: "source",
+            params: problem.params
+          });
+        }
+        const id = typeof item.id === "string" && item.id.length > 0 ? item.id : userPatternId(intent, source, flags);
+        if (seenIds.has(id)) {
+          error2("PATTERN_DUPLICATE_ID", `duplicate pattern id ${id}`, {
+            path: `${at}.id`,
+            row: index,
+            field: "id",
+            params: { id }
+          });
+          return;
+        }
+        seenIds.add(id);
+        const count = (perIntent.get(intent) ?? 0) + 1;
+        perIntent.set(intent, count);
+        if (count > OVERLAY_LIMITS.counts.patternsAddPerIntent) {
+          error2(
+            "PATTERN_COUNT_EXCEEDED",
+            `intent ${intent} has ${count} added patterns (limit ${OVERLAY_LIMITS.counts.patternsAddPerIntent})`,
+            { path: at, row: index, params: { intent, count, limit: OVERLAY_LIMITS.counts.patternsAddPerIntent } }
+          );
+        }
+        const note2 = typeof item.note === "string" ? item.note : void 0;
+        if (note2 !== void 0) {
+          if (note2.length > OVERLAY_LIMITS.noteChars || CONTROL_CHARS.test(note2) || note2.includes("\n")) {
+            error2(
+              "WORD_INVALID",
+              `a note must be a single line of at most ${OVERLAY_LIMITS.noteChars} characters`,
+              { path: `${at}.note`, row: index, field: "note", params: { limit: OVERLAY_LIMITS.noteChars } }
+            );
+          }
+        }
+        if (opts.forWrite && BUILTIN_SOURCES.has(`${source}\0${flags}`)) {
+          warn("PATTERN_SHADOWED", "this regex is identical to a built-in pattern", {
+            path: `${at}.source`,
+            row: index,
+            field: "source"
+          });
+        }
+        add.push({
+          id,
+          intent,
+          source,
+          flags,
+          ...note2 === void 0 ? {} : { note: note2 },
+          ...typeof item.created_at === "string" ? { created_at: item.created_at } : {}
+        });
+      });
+    }
+    const rawDisable = section.disable;
+    if (rawDisable !== void 0 && !Array.isArray(rawDisable)) {
+      error2("OVERLAY_NOT_OBJECT", "`patterns.disable` must be an array of ids", { path: "patterns.disable" });
+    } else {
+      const list = rawDisable ?? [];
+      if (list.length > OVERLAY_LIMITS.counts.patternsDisable) {
+        error2(
+          "PATTERN_COUNT_EXCEEDED",
+          `${list.length} disabled ids (limit ${OVERLAY_LIMITS.counts.patternsDisable})`,
+          { path: "patterns.disable", params: { count: list.length, limit: OVERLAY_LIMITS.counts.patternsDisable } }
+        );
+      }
+      list.forEach((entry, index) => {
+        if (typeof entry !== "string" || entry.length === 0) {
+          error2("WORD_INVALID", "a disabled id must be a non-empty string", {
+            path: `patterns.disable[${index}]`,
+            row: index
+          });
+          return;
+        }
+        if (!BUILTIN_IDS.has(entry) && !seenIds.has(entry)) {
+          warn("DISABLE_ID_UNKNOWN", `no pattern with id ${entry} exists in this build's catalogue`, {
+            path: `patterns.disable[${index}]`,
+            row: index,
+            params: { id: entry }
+          });
+        }
+        disable.push(entry);
+      });
+    }
+  }
+  const words = emptyWords();
+  const wordsRaw = doc.words;
+  if (wordsRaw !== void 0 && (typeof wordsRaw !== "object" || wordsRaw === null || Array.isArray(wordsRaw))) {
+    error2("OVERLAY_NOT_OBJECT", "`words` must be an object", { path: "words" });
+  } else {
+    const section = wordsRaw ?? {};
+    for (const side of ["add", "disable"]) {
+      const sideRaw = section[side];
+      if (sideRaw === void 0) continue;
+      if (typeof sideRaw !== "object" || sideRaw === null || Array.isArray(sideRaw)) {
+        error2("OVERLAY_NOT_OBJECT", `\`words.${side}\` must be an object`, { path: `words.${side}` });
+        continue;
+      }
+      const limit = side === "add" ? OVERLAY_LIMITS.counts.wordsAddPerLexicon : OVERLAY_LIMITS.counts.wordsDisablePerLexicon;
+      for (const [lexicon, value] of Object.entries(sideRaw)) {
+        if (!LEXICONS.includes(lexicon)) {
+          error2("LEXICON_UNKNOWN", `unknown lexicon ${JSON.stringify(lexicon)}`, {
+            path: `words.${side}.${lexicon}`,
+            params: { lexicon }
+          });
+          continue;
+        }
+        if (!Array.isArray(value)) {
+          error2("OVERLAY_NOT_OBJECT", `\`words.${side}.${lexicon}\` must be an array`, {
+            path: `words.${side}.${lexicon}`
+          });
+          continue;
+        }
+        if (value.length > limit) {
+          error2("PATTERN_COUNT_EXCEEDED", `${value.length} words (limit ${limit})`, {
+            path: `words.${side}.${lexicon}`,
+            params: { count: value.length, limit }
+          });
+        }
+        value.forEach((word, index) => {
+          const at = `words.${side}.${lexicon}[${index}]`;
+          if (typeof word !== "string" || word.length === 0 || word.length > OVERLAY_LIMITS.counts.wordChars || /\s/.test(word) || CONTROL_CHARS.test(word)) {
+            error2(
+              "WORD_INVALID",
+              `a word must be 1-${OVERLAY_LIMITS.counts.wordChars} characters with no whitespace or control characters`,
+              { path: at, row: index, params: { word: typeof word === "string" ? word.slice(0, 40) : null } }
+            );
+            return;
+          }
+          words[side][lexicon].push(word);
+        });
+      }
+    }
+  }
+  const ok = !issues.some((issue2) => issue2.severity === "error");
+  return {
+    ok,
+    issues,
+    doc: ok ? {
+      schema: RECALL_GATE_OVERLAY_SCHEMA,
+      version: RECALL_GATE_OVERLAY_VERSION,
+      revision,
+      ...typeof doc.updated_at === "string" ? { updated_at: doc.updated_at } : {},
+      ...doc.updated_by && typeof doc.updated_by === "object" ? { updated_by: doc.updated_by } : {},
+      patterns: { add, disable },
+      words: { add: words.add, disable: words.disable }
+    } : null
+  };
+}
+function statKey(file) {
+  try {
+    const stat = fs12.statSync(file);
+    return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+  } catch {
+    return "absent";
+  }
+}
+var cache = null;
+function overlaysDisabled() {
+  return process.env.MEMEX_DISABLE_OVERLAYS === "1";
+}
+function readRecallGateOverlayFile(file = recallGateOverlayPath()) {
+  let text;
+  try {
+    const stat = fs12.lstatSync(file);
+    if (stat.isSymbolicLink()) {
+      return { raw: null, bytes: 0, present: true, readError: "the overlay path is a symbolic link" };
+    }
+    text = fs12.readFileSync(file, "utf8");
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT") return { raw: null, bytes: 0, present: false, readError: null };
+    return { raw: null, bytes: 0, present: true, readError: err.message };
+  }
+  const bytes = Buffer.byteLength(text, "utf8");
+  try {
+    return { raw: JSON.parse(text), bytes, present: true, readError: null };
+  } catch (err) {
+    return { raw: null, bytes, present: true, readError: err.message };
+  }
+}
+function readValidateCompile(file) {
+  const { raw, bytes, present, readError } = readRecallGateOverlayFile(file);
+  if (!present) return EMPTY_OVERLAY;
+  if (readError !== null) {
+    return {
+      ...EMPTY_OVERLAY,
+      present: true,
+      words: emptyWords(),
+      issues: [
+        overlayIssue("error", "OVERLAY_UNREADABLE", `the overlay file could not be read: ${readError}`, {
+          params: { reason: readError }
+        })
+      ]
+    };
+  }
+  const result = validateRecallGateOverlayDoc(raw, { bytes });
+  if (!result.ok || !result.doc) {
+    return { ...EMPTY_OVERLAY, present: true, words: emptyWords(), issues: result.issues };
+  }
+  const doc = result.doc;
+  const quarantine = readQuarantine().filter((entry) => entry.overlay === "recall-gate");
+  const issues = [...result.issues];
+  const patterns = [];
+  const quarantined = [];
+  for (const pattern of doc.patterns?.add ?? []) {
+    const sha82 = patternSourceSha8(pattern.source, pattern.flags ?? "");
+    const row = quarantine.find(
+      (entry) => entry.pattern_id === pattern.id && entry.source_sha8 === sha82
+    );
+    if (row) {
+      issues.push(
+        overlayIssue(
+          "error",
+          "PATTERN_QUARANTINED",
+          `pattern ${pattern.id} exceeded the ${MATCH_WALL_MS} ms match budget and is NOT applied`,
+          { path: "patterns.add", params: { id: pattern.id, limitMs: MATCH_WALL_MS } }
+        )
+      );
+      quarantined.push(row);
+      continue;
+    }
+    patterns.push({
+      id: pattern.id,
+      intent: pattern.intent,
+      source: pattern.source,
+      flags: pattern.flags,
+      overlay: "recall-gate"
+    });
+  }
+  return {
+    present: true,
+    hash: recallGateOverlayHash(doc),
+    revision: doc.revision,
+    patterns,
+    disabled: doc.patterns?.disable ?? [],
+    words: {
+      add: doc.words?.add,
+      disable: doc.words?.disable
+    },
+    quarantined: quarantined.filter(Boolean),
+    issues,
+    doc
+  };
+}
+function loadRecallGateOverlay() {
+  if (overlaysDisabled()) return EMPTY_OVERLAY;
+  const file = recallGateOverlayPath();
+  const key = `${statKey(file)}|${statKey(overlayQuarantinePath())}|${quarantineMemoryGeneration()}`;
+  if (cache && cache.key === key) return cache.loaded;
+  const loaded = readValidateCompile(file);
+  cache = { key, loaded };
+  return loaded;
+}
+function toUserIntentHits(overlay, hits) {
+  const hasWords = LEXICONS.some(
+    (lexicon) => (overlay.words.add?.[lexicon]?.length ?? 0) > 0 || (overlay.words.disable?.[lexicon]?.length ?? 0) > 0
+  );
+  const hasIntents = Object.values(hits.intents).some((ids) => (ids?.length ?? 0) > 0);
+  if (!hasWords && !hasIntents && overlay.disabled.length === 0) return void 0;
+  return {
+    intents: hits.intents,
+    ...overlay.disabled.length > 0 ? { disabledPatterns: overlay.disabled } : {},
+    ...hasWords ? { words: { add: overlay.words.add, disable: overlay.words.disable } } : {}
+  };
+}
+
 // src/inject-core.ts
+init_overlay_matcher();
 function sampleTelemetry(db, input) {
   try {
     recordTelemetrySample(db, input);
@@ -26320,12 +28634,28 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       const current = embeddingCallStats();
       return { calls: current.modelCalls - statsBefore.modelCalls, hits: current.cacheHits - statsBefore.cacheHits };
     };
-    const sampleEmbeddingMetrics = (path15, unavailable) => {
+    const sampleEmbeddingMetrics = (path18, unavailable) => {
       const { calls: calls2, hits } = embeddingMetrics();
-      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path15, unavailable } });
-      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path15 } });
+      sampleTelemetry(db, { metric: "embedding_calls", value: calls2, projectId: sessionScope.projectId, sessionId, dims: { path: path18, unavailable } });
+      sampleTelemetry(db, { metric: "embedding_cache_hits", value: hits, projectId: sessionScope.projectId, sessionId, dims: { path: path18 } });
       return calls2;
     };
+    const gateOverlay = loadRecallGateOverlay();
+    let userPatternHits = EMPTY_USER_PATTERN_HITS;
+    if (gateOverlay.patterns.length > 0) {
+      const ownMatcher = options.matcher ? null : oneShotMatcher();
+      try {
+        userPatternHits = await (options.matcher ?? ownMatcher).match({
+          text: userPrompt,
+          patterns: gateOverlay.patterns,
+          overlay: "recall-gate",
+          surface: via
+        });
+      } finally {
+        ownMatcher?.dispose();
+      }
+    }
+    const userHits = toUserIntentHits(gateOverlay, userPatternHits);
     let embedding = null;
     let decision = decideRecall({
       prompt: userPrompt,
@@ -26345,7 +28675,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       incidentMatched: incidents.length > 0,
       residentRevisionStale: revisionCorrections.length > 0,
       hotEvidencePending: hot.length > 0,
-      config: options.gateConfig
+      config: options.gateConfig,
+      userHits
     });
     if (options.gate === false) {
       decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
@@ -26378,6 +28709,14 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
       }
     }
+    const overlaySuffix = gateOverlay.hash ? `@${gateOverlay.hash}` : "";
+    const workerSuffix = userPatternHits.unavailable ? "+overlay_unavailable" : userPatternHits.timedOut ? "+overlay_timeout" : "";
+    const overlayNote = gateOverlay.patterns.length === 0 && !gateOverlay.hash ? {} : {
+      ...gateOverlay.hash ? { gate_overlay: gateOverlay.hash } : {},
+      ...gateOverlay.patterns.length > 0 ? {
+        gate_overlay_worker: userPatternHits.timedOut && !userPatternHits.unavailable ? "timeout" : userPatternHits.unavailable ? "unavailable" : "ok"
+      } : {}
+    };
     if (decision.action === "skip") {
       noteSkippedPrompt(db, sessionId, decision.substantive, now);
       sampleTelemetry(db, {
@@ -26392,17 +28731,18 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         status: "skipped",
         project,
         prompt_len: userPrompt.length,
-        gate: `skip:${decision.skipReason}`,
+        gate: `skip:${decision.skipReason}${workerSuffix}${overlaySuffix}`,
         embedding_calls: calls2,
         duration_ms: Date.now() - t0,
         via,
-        ...daemonNote
+        ...daemonNote,
+        ...overlayNote
       });
       return "";
     }
     const needsVector = options.gate === false || decision.intents.memory || !(decision.intents.acknowledgement || decision.intents.continuation);
     if (needsVector && !embedding && !embeddingUnavailable) embedding = await embedOnce();
-    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}${workerSuffix}${overlaySuffix}`;
     sampleTelemetry(db, {
       metric: "retrieval_execute_count",
       value: 1,
@@ -26691,7 +29031,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
           projectMemoryRevision: currentProjectRevision,
           revisions: emittedRevisions,
           context: rendered.text,
-          markProjectRevision: !staleProjectMemory || correctionsComplete
+          markProjectRevision: !staleProjectMemory || correctionsComplete,
+          gateOverlayHash: gateOverlay.hash
         });
       } else if (staleProjectMemory && correctionsComplete && !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
         throw new Error("project memory revision changed before injection commit");
@@ -26742,7 +29083,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
         lexical_lane: lexicalLane,
         duration_ms: Date.now() - t0,
         via,
-        ...daemonNote
+        ...daemonNote,
+        ...overlayNote
       });
       if (dedupedCount > 0) {
         sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -26784,7 +29126,8 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
       lexical_lane: lexicalLane,
       duration_ms: Date.now() - t0,
       via,
-      ...daemonNote
+      ...daemonNote,
+      ...overlayNote
     });
     return block;
   } catch (error2) {
@@ -26815,30 +29158,31 @@ async function computeInjectContext(userPrompt, project, via, sessionId, options
 }
 
 // src/inject-daemon.ts
+init_overlay_matcher();
 init_embeddings();
 init_plugin_root();
 var INJECT_DAEMON_PROTOCOL = 1;
 var INJECT_DAEMON_WARMING = "warming";
-var HERE2 = path11.dirname(fileURLToPath4(import.meta.url));
+var HERE2 = path13.dirname(fileURLToPath4(import.meta.url));
 function realpathOrSelf(target) {
   try {
-    return fs10.realpathSync(target);
+    return fs13.realpathSync(target);
   } catch {
-    return path11.resolve(target);
+    return path13.resolve(target);
   }
 }
 function injectDaemonExecutionRoot() {
-  return realpathOrSelf(path11.resolve(HERE2, ".."));
+  return realpathOrSelf(path13.resolve(HERE2, ".."));
 }
 function injectDaemonBuildId(root = injectDaemonExecutionRoot()) {
-  const bundle = path11.join(root, "dist", "mcp-server.js");
+  const bundle = path13.join(root, "dist", "mcp-server.js");
   try {
-    return `sha256:${createHash6("sha256").update(fs10.readFileSync(bundle)).digest("hex")}`;
+    return `sha256:${createHash8("sha256").update(fs13.readFileSync(bundle)).digest("hex")}`;
   } catch {
   }
-  for (const entry of [path11.join(root, "dist", "inject-daemon.js"), path11.join(root, "src", "inject-daemon.ts")]) {
+  for (const entry of [path13.join(root, "dist", "inject-daemon.js"), path13.join(root, "src", "inject-daemon.ts")]) {
     try {
-      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs10.statSync(entry).mtimeMs)}`;
+      return `mtime:${readManifestVersion(root) ?? "unknown"}:${Math.trunc(fs13.statSync(entry).mtimeMs)}`;
     } catch {
     }
   }
@@ -26857,7 +29201,7 @@ function injectDaemonIdentityFor(root) {
     };
     identityCache.set(pluginRoot, code);
   }
-  return { ...code, dbPath: path11.resolve(getDbPath()) };
+  return { ...code, dbPath: path13.resolve(getDbPath()) };
 }
 function injectDaemonIdentity() {
   return injectDaemonIdentityFor(injectDaemonExecutionRoot());
@@ -26889,7 +29233,7 @@ function injectDaemonPolicy() {
   return { ...base, open: true, reason: `execution root is the installed root (${installedSource})` };
 }
 function injectSocketPath() {
-  return path11.join(getIndexDir(), "inject-daemon.sock");
+  return path13.join(getIndexDir(), "inject-daemon.sock");
 }
 function injectSocketPathLimitBytes() {
   return process.platform === "linux" ? 107 : 103;
@@ -26900,10 +29244,10 @@ function injectSocketPathTooLong(sockPath = injectSocketPath()) {
   return bytes > limit ? { bytes, limit } : null;
 }
 function injectDaemonLockPath() {
-  return path11.join(getIndexDir(), "inject-daemon.lock");
+  return path13.join(getIndexDir(), "inject-daemon.lock");
 }
 function injectDaemonCandidateDir() {
-  return path11.join(getIndexDir(), "inject-daemon.candidates");
+  return path13.join(getIndexDir(), "inject-daemon.candidates");
 }
 var INJECT_DAEMON_REQUEST_TIMEOUT_MS = 1e4;
 var PROBE_TIMEOUT_MS = 500;
@@ -27062,12 +29406,14 @@ function startInjectDaemon() {
   const self = {
     ...identity,
     pid: process.pid,
-    instanceId: randomUUID6(),
+    instanceId: randomUUID7(),
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   let retired = false;
   let owning = false;
   let warmState = "cold";
+  let matcher = null;
+  const sharedMatcher = () => matcher ??= persistentMatcher();
   const server2 = net.createServer((conn) => {
     let buf = "";
     conn.setTimeout(INJECT_DAEMON_REQUEST_TIMEOUT_MS, () => conn.destroy());
@@ -27137,7 +29483,8 @@ function startInjectDaemon() {
               // transaction rolls back and the fallback gets a clean run instead
               // of a `prepared` receipt and a fully deduped bundle.
               deliverable: () => conn.destroyed || conn.writableEnded ? "the hook disconnected before the context was ready" : null,
-              daemon: { version: current.version, buildId: current.buildId, pid: current.pid }
+              daemon: { version: current.version, buildId: current.buildId, pid: current.pid },
+              matcher: sharedMatcher()
             }
           );
           reply({ type: "ok", ...current, ok: true, context, receiptId });
@@ -27169,12 +29516,13 @@ function startInjectDaemon() {
     retired = true;
     disarmReacquire();
     owning = false;
+    disposeMatcher();
     try {
       server2.close();
     } catch {
     }
     try {
-      if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
@@ -27236,16 +29584,16 @@ function startInjectDaemon() {
     owning = true;
     disarmReacquire();
     try {
-      fs10.chmodSync(sockPath, 384);
+      fs13.chmodSync(sockPath, 384);
     } catch {
     }
     warmUp();
   };
-  const candidatePath = () => path11.join(injectDaemonCandidateDir(), `${process.pid}.json`);
+  const candidatePath = () => path13.join(injectDaemonCandidateDir(), `${process.pid}.json`);
   function publishCandidate() {
     try {
-      fs10.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
-      fs10.writeFileSync(
+      fs13.mkdirSync(injectDaemonCandidateDir(), { recursive: true });
+      fs13.writeFileSync(
         candidatePath(),
         JSON.stringify({ ...injectDaemonIdentity(), pid: self.pid, instanceId: self.instanceId, startedAt: self.startedAt, reprobeMs: injectDaemonReacquireIntervalMs() })
       );
@@ -27254,7 +29602,16 @@ function startInjectDaemon() {
   }
   function dropCandidate() {
     try {
-      fs10.unlinkSync(candidatePath());
+      fs13.unlinkSync(candidatePath());
+    } catch {
+    }
+  }
+  function disposeMatcher() {
+    const handle = matcher;
+    matcher = null;
+    if (!handle) return;
+    try {
+      handle.dispose();
     } catch {
     }
   }
@@ -27264,6 +29621,7 @@ function startInjectDaemon() {
     releasedOwnership = true;
     cancelYieldWatch();
     dropCandidate();
+    disposeMatcher();
     if (!owning) return;
     owning = false;
     try {
@@ -27271,7 +29629,7 @@ function startInjectDaemon() {
     } catch {
     }
     try {
-      if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+      if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
     } catch {
     }
     releaseLockIfOurs();
@@ -27279,7 +29637,7 @@ function startInjectDaemon() {
   const lockPayload = JSON.stringify({ pid: process.pid, startedAt: self.startedAt });
   function holdsOurLock() {
     try {
-      return fs10.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
+      return fs13.readFileSync(injectDaemonLockPath(), "utf8") === lockPayload;
     } catch {
       return false;
     }
@@ -27287,7 +29645,7 @@ function startInjectDaemon() {
   function releaseLockIfOurs() {
     if (!holdsOurLock()) return;
     try {
-      fs10.unlinkSync(injectDaemonLockPath());
+      fs13.unlinkSync(injectDaemonLockPath());
     } catch {
     }
   }
@@ -27298,14 +29656,14 @@ function startInjectDaemon() {
     let held = false;
     for (let attempt = 0; attempt < 2 && !held; attempt++) {
       try {
-        const staging = `${lockPath}.${process.pid}.${randomUUID6()}.tmp`;
+        const staging = `${lockPath}.${process.pid}.${randomUUID7()}.tmp`;
         try {
-          fs10.writeFileSync(staging, mine);
-          fs10.linkSync(staging, lockPath);
+          fs13.writeFileSync(staging, mine);
+          fs13.linkSync(staging, lockPath);
           held = true;
         } finally {
           try {
-            fs10.unlinkSync(staging);
+            fs13.unlinkSync(staging);
           } catch {
           }
         }
@@ -27314,8 +29672,8 @@ function startInjectDaemon() {
         let text = null;
         let stamp = "";
         try {
-          text = fs10.readFileSync(lockPath, "utf8");
-          const stat = fs10.statSync(lockPath);
+          text = fs13.readFileSync(lockPath, "utf8");
+          const stat = fs13.statSync(lockPath);
           stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
@@ -27339,7 +29697,7 @@ function startInjectDaemon() {
           note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
-          fs10.unlinkSync(lockPath);
+          fs13.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -27353,7 +29711,7 @@ function startInjectDaemon() {
     } finally {
       if (holdsOurLock()) {
         try {
-          fs10.unlinkSync(lockPath);
+          fs13.unlinkSync(lockPath);
         } catch {
         }
       }
@@ -27388,7 +29746,7 @@ function startInjectDaemon() {
       const probe = await probeInjectDaemon(sockPath);
       if (!probe.listening) {
         try {
-          fs10.unlinkSync(sockPath);
+          fs13.unlinkSync(sockPath);
         } catch {
         }
         note(`reclaiming the socket (${trigger}; ${probe.code ?? "absent"})`);
@@ -27414,7 +29772,7 @@ function startInjectDaemon() {
       if (reply?.type === "retired") {
         note(`took over from ${String(reply.version ?? "unknown")} at ${String(reply.pluginRoot ?? "?")} (pid ${String(reply.pid ?? "?")})`);
         try {
-          if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
+          if (fs13.existsSync(sockPath)) fs13.unlinkSync(sockPath);
         } catch {
         }
         bind();
@@ -28952,10 +31310,16 @@ init_embeddings();
 
 // src/llm.ts
 init_paths();
-import path13 from "node:path";
+import path16 from "node:path";
 import os6 from "node:os";
 
 // src/llm-error-class.ts
+var CONFIG_ERROR_CODES = /* @__PURE__ */ new Set([
+  "MEMEX_MODEL_CONFIG",
+  // CodexRequestRejectedError — provider refused the envelope
+  "MEMEX_MODEL_CONFIG_HELD"
+  // ModelConfigHeldError — a durable hold refused the call
+]);
 function extractStatus(x2) {
   const o = x2;
   for (const c of [o?.status, o?.statusCode, o?.response?.status, o?.response?.statusCode]) {
@@ -28985,6 +31349,7 @@ function classifyLlmError(err) {
   if (unwrapped instanceof EmptyLlmResponseError) return "transient";
   const e = unwrapped;
   const localCode = unwrapped?.code;
+  if (typeof localCode === "string" && CONFIG_ERROR_CODES.has(localCode)) return "config";
   if (localCode === "MEMEX_MODEL_OUTPUT_LIMIT" || localCode === "MEMEX_MODEL_OUTPUT_SCHEMA") {
     return "deterministic";
   }
@@ -29012,11 +31377,35 @@ function classifyLlmError(err) {
 
 // src/codex-exec.ts
 import { spawn } from "node:child_process";
-import fs11 from "node:fs";
+import fs14 from "node:fs";
 import os5 from "node:os";
-import path12 from "node:path";
+import path14 from "node:path";
 var INNER_GUARD_ENV = "MEMEX_CODEX_EXEC_INNER";
 var DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
+var CodexRequestRejectedError = class extends Error {
+  name = "CodexRequestRejectedError";
+  code = "MEMEX_MODEL_CONFIG";
+  detail;
+  constructor(detail) {
+    super(
+      `codex exec rejected the request envelope for model "${detail.model}"` + (detail.reasoningEffort ? ` at reasoning effort "${detail.reasoningEffort}"` : "") + ` (${detail.status ?? "?"} ${detail.providerType ?? "provider error"}): ${detail.providerMessage}`
+    );
+    this.detail = detail;
+  }
+};
+var CodexTurnFailedError = class extends Error {
+  name = "CodexTurnFailedError";
+  /** Read by `extractStatus` in llm-error-class, so 400/413/429/5xx decide. */
+  status;
+  providerType;
+  constructor(turnError) {
+    super(
+      `codex exec turn failed` + (turnError.status === null ? "" : ` (status ${turnError.status})`) + `: ${sanitizeProviderMessage(turnError.message)}`
+    );
+    this.status = turnError.status;
+    this.providerType = turnError.type;
+  }
+};
 var MAX_EVENT_CAPTURE_CHARS = 4 * 1024 * 1024;
 var MAX_STDERR_CAPTURE_CHARS = 64 * 1024;
 function appendBounded(current, chunk, limit) {
@@ -29029,6 +31418,29 @@ function buildCodexPrompt(systemPrompt, userMessage) {
 ---
 
 ${userMessage}` : userMessage;
+}
+var selectionResolvers = null;
+var selectionResolversUnavailable = false;
+async function loadSelectionResolvers() {
+  if (selectionResolvers || selectionResolversUnavailable) return;
+  try {
+    const mod = await Promise.resolve().then(() => (init_model_settings(), model_settings_exports));
+    selectionResolvers = {
+      resolveLlmModel: () => mod.resolveLlmModel(),
+      resolveReasoningEffort: () => mod.resolveReasoningEffort()
+    };
+  } catch {
+    selectionResolversUnavailable = true;
+  }
+}
+async function resolveCodexSelection(opts = {}) {
+  await loadSelectionResolvers();
+  return currentSelection(opts);
+}
+function currentSelection(opts) {
+  const model = opts.model != null && String(opts.model).trim() ? String(opts.model).trim() : selectionResolvers ? selectionResolvers.resolveLlmModel().value : process.env.MEMEX_CODEX_MODEL?.trim() || DEFAULT_CODEX_MODEL;
+  const reasoningEffort = opts.reasoningEffort !== void 0 ? opts.reasoningEffort == null ? null : String(opts.reasoningEffort).trim() || null : selectionResolvers ? selectionResolvers.resolveReasoningEffort().value : process.env.MEMEX_CODEX_REASONING?.trim() || null;
+  return { model, reasoningEffort };
 }
 function buildCodexExecArgs(opts) {
   const args = [
@@ -29048,13 +31460,72 @@ function buildCodexExecArgs(opts) {
     "-C",
     opts.workdir
   ];
-  const model = opts.model != null ? opts.model : process.env.MEMEX_CODEX_MODEL || DEFAULT_CODEX_MODEL;
-  const trimmed = model ? String(model).trim() : "";
-  if (trimmed) args.push("-m", trimmed);
+  const selection = currentSelection(opts);
+  if (selection.model) args.push("-m", selection.model);
+  if (selection.reasoningEffort) {
+    if (/^[a-z]+$/.test(selection.reasoningEffort)) {
+      args.push("-c", `model_reasoning_effort=${selection.reasoningEffort}`);
+    } else {
+      console.error(
+        `[memex] ignoring reasoning effort ${JSON.stringify(selection.reasoningEffort)} \u2014 expected lowercase letters only`
+      );
+    }
+  }
   if (opts.outputLast) args.push("-o", opts.outputLast);
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   args.push("--json", "-");
   return args;
+}
+function turnErrorFromEvents(stdout) {
+  let fromErrorEvent = null;
+  let fromTurnFailed = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    let raw;
+    if (event.type === "error") {
+      raw = event.message;
+    } else if (event.type === "turn.failed") {
+      const inner = event.error;
+      raw = inner && typeof inner === "object" && !Array.isArray(inner) ? inner.message ?? JSON.stringify(inner) : inner;
+    } else {
+      continue;
+    }
+    const text = typeof raw === "string" ? raw : raw == null ? "" : JSON.stringify(raw);
+    if (!text.trim()) continue;
+    if (event.type === "error") fromErrorEvent = text;
+    else fromTurnFailed = text;
+  }
+  const message = fromErrorEvent ?? fromTurnFailed;
+  if (message === null) return null;
+  return { message, status: statusFromText(message), type: errorTypeFromText(message) };
+}
+function statusFromText(text) {
+  const labelled = text.match(
+    /(?:"?status(?:_code)?"?\s*[:=]\s*|status\s+|error\s+code:?\s*|\bhttp\s+)(\d{3})\b/i
+  );
+  if (labelled) return Number.parseInt(labelled[1], 10);
+  return null;
+}
+function errorTypeFromText(text) {
+  const match = text.match(/"type"\s*:\s*"([a-z_]+)"/i) ?? text.match(/\b(invalid_request_error)\b/i);
+  return match ? match[1] : null;
+}
+var ENVELOPE_REJECTION_RE = /\[reasoning\.effort\]|reasoning_effort|model is not supported|unknown model|model_not_found|model is not available/i;
+function isEnvelopeRejection(error2) {
+  if (!error2) return false;
+  if (error2.status !== 400) return false;
+  if (error2.type !== null && error2.type !== "invalid_request_error") return false;
+  return ENVELOPE_REJECTION_RE.test(error2.message);
+}
+function sanitizeProviderMessage(message, limit = 400) {
+  return message.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
 }
 function lastAgentMessageFromEvents(stdout) {
   let last = "";
@@ -29182,7 +31653,7 @@ async function modelBudgetLimitError(kind, observed, limit) {
 function readOutputFile(filePath, maxOutputChars) {
   let stat;
   try {
-    stat = fs11.statSync(filePath);
+    stat = fs14.statSync(filePath);
   } catch {
     return { text: "", exceeded: false };
   }
@@ -29192,17 +31663,17 @@ function readOutputFile(filePath, maxOutputChars) {
     Math.max(1, charCap * 4 + 4)
   );
   const bytesToRead = Math.min(stat.size, byteCap + 1);
-  const fd = fs11.openSync(filePath, "r");
+  const fd = fs14.openSync(filePath, "r");
   try {
     const buffer = Buffer.alloc(bytesToRead);
-    const read = fs11.readSync(fd, buffer, 0, bytesToRead, 0);
+    const read = fs14.readSync(fd, buffer, 0, bytesToRead, 0);
     const text = buffer.subarray(0, read).toString("utf8").trim();
     return {
       text,
       exceeded: stat.size > byteCap || text.length > charCap
     };
   } finally {
-    fs11.closeSync(fd);
+    fs14.closeSync(fd);
   }
 }
 async function runCodex(opts = {}) {
@@ -29218,8 +31689,12 @@ async function runCodex(opts = {}) {
   }
   const maxInputChars = assertLimit(opts.maxInputChars, "maxInputChars");
   const maxOutputChars = assertLimit(opts.maxOutputChars, "maxOutputChars");
-  const workdir = fs11.mkdtempSync(path12.join(os5.tmpdir(), "memex-llm-"));
-  const outPath = path12.join(workdir, "last-message.txt");
+  const selection = await resolveCodexSelection({
+    model: opts.model,
+    reasoningEffort: opts.reasoningEffort
+  });
+  const workdir = fs14.mkdtempSync(path14.join(os5.tmpdir(), "memex-llm-"));
+  const outPath = path14.join(workdir, "last-message.txt");
   const started = performance.now();
   let observed = false;
   const observe = (token_usage) => {
@@ -29228,7 +31703,9 @@ async function runCodex(opts = {}) {
     try {
       opts.onObservation?.({
         duration_ms: performance.now() - started,
-        token_usage
+        token_usage,
+        model: selection.model,
+        reasoning_effort: selection.reasoningEffort
       });
     } catch {
     }
@@ -29248,9 +31725,15 @@ async function runCodex(opts = {}) {
       1,
       Math.min(timeoutMs, remaining === null ? timeoutMs : remaining)
     );
-    const schemaPath = opts.outputSchema ? path12.join(workdir, "output-schema.json") : void 0;
-    if (schemaPath) fs11.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
-    const args = buildCodexExecArgs({ model: opts.model, workdir, outputLast: outPath, outputSchemaPath: schemaPath });
+    const schemaPath = opts.outputSchema ? path14.join(workdir, "output-schema.json") : void 0;
+    if (schemaPath) fs14.writeFileSync(schemaPath, JSON.stringify(opts.outputSchema), { mode: 384 });
+    const args = buildCodexExecArgs({
+      model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
+      workdir,
+      outputLast: outPath,
+      outputSchemaPath: schemaPath
+    });
     const res = await runChild(bin, args, workdir, prompt, effectiveTimeoutMs);
     const tokenUsage = tokenUsageFromEvents(res.stdout);
     observe(tokenUsage);
@@ -29276,6 +31759,19 @@ async function runCodex(opts = {}) {
     if (maxOutputChars !== void 0 && text.length > maxOutputChars) {
       throw await modelBudgetLimitError("output", text.length, maxOutputChars);
     }
+    if (!text) {
+      const turnError = turnErrorFromEvents(res.stdout);
+      if (isEnvelopeRejection(turnError)) {
+        throw new CodexRequestRejectedError({
+          status: turnError.status,
+          providerType: turnError.type,
+          providerMessage: sanitizeProviderMessage(turnError.message),
+          model: selection.model,
+          reasoningEffort: selection.reasoningEffort
+        });
+      }
+      if (turnError) throw new CodexTurnFailedError(turnError);
+    }
     if (!text && res.code !== 0) {
       throw new Error(
         `codex exec failed (code=${res.code}${res.signal ? ` signal=${res.signal}` : ""}): ${res.stderr.slice(-400)}`
@@ -29287,7 +31783,7 @@ async function runCodex(opts = {}) {
     throw error2;
   } finally {
     try {
-      fs11.rmSync(workdir, { recursive: true, force: true });
+      fs14.rmSync(workdir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -29295,8 +31791,50 @@ async function runCodex(opts = {}) {
 
 // src/llm.ts
 init_model_budget();
-var LLM_WORKDIR = path13.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
-function retryBudget() {
+init_model_settings();
+
+// src/ontology-admin.ts
+init_paths();
+import fs15 from "node:fs";
+import path15 from "node:path";
+function appendUiAuditLine(action, detail) {
+  try {
+    const dir = path15.join(getMemexHome(), "logs");
+    fs15.mkdirSync(dir, { recursive: true, mode: 448 });
+    const file = path15.join(dir, "ui-audit.jsonl");
+    const stat = fs15.existsSync(file) ? fs15.lstatSync(file) : null;
+    if (stat?.isSymbolicLink()) return;
+    if (stat && stat.size > 1024 * 1024) {
+      try {
+        fs15.renameSync(file, `${file}.old`);
+      } catch {
+      }
+    }
+    fs15.appendFileSync(
+      file,
+      `${JSON.stringify({
+        ts: (/* @__PURE__ */ new Date()).toISOString(),
+        source: "memex-core",
+        action,
+        status: "ok",
+        operation: null,
+        error_code: null,
+        ...detail
+      })}
+`,
+      { mode: 384 }
+    );
+  } catch {
+  }
+}
+
+// src/llm.ts
+var LLM_WORKDIR = path16.join(os6.tmpdir(), LLM_WORKDIR_BASENAME);
+function retryBudget(options = {}) {
+  const requested = options.maxRetries;
+  if (typeof requested === "number" && Number.isInteger(requested) && requested >= 0) {
+    return Math.min(5, requested);
+  }
   const raw = process.env.MEMEX_LLM_RETRIES;
   if (raw != null && /^\d+$/.test(raw.trim())) return Math.min(5, parseInt(raw.trim(), 10));
   return 2;
@@ -29310,14 +31848,16 @@ function backoffMs(attempt) {
   return Math.min(base * Math.pow(3, attempt), MAX_BACKOFF_MS);
 }
 var sleep = (ms) => ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}, reservation) {
-  const model = process.env.MEMEX_CODEX_MODEL || null;
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options, reservation, selection) {
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 18e4;
   return runCodex({
     systemPrompt,
     userMessage,
-    model,
+    // Both are always sent, `null` reasoning included: `reasoningEffort:
+    // undefined` would hand the decision back to the file/env layer.
+    model: selection.model,
+    reasoningEffort: selection.reasoning,
     timeoutMs,
     deadlineAt: reservation?.deadlineAt,
     maxInputChars: reservation?.maxInputChars,
@@ -29384,6 +31924,34 @@ function errorClassFor(error2) {
   }
   return "unknown";
 }
+function recordConfigHold(db, selection, error2, context) {
+  const detail = error2?.detail;
+  const held = error2?.hold;
+  recordModelConfigHold(db, {
+    fingerprint: selection.fingerprint,
+    model: selection.model,
+    reasoningEffort: selection.reasoning,
+    status: detail?.status ?? held?.status ?? null,
+    providerType: detail?.providerType ?? held?.providerType ?? null,
+    providerMessage: detail?.providerMessage ?? held?.providerMessage ?? (error2 instanceof Error ? sanitizeProviderMessage(error2.message) : String(error2)),
+    stage: context.stage ?? null,
+    jobId: context.jobId ?? null
+  });
+  console.error(
+    `callMemoryModel: model work held \u2014 the provider rejected the request envelope for model "${selection.model}"${selection.reasoning ? ` at reasoning effort "${selection.reasoning}"` : ""}. No job failed and no attempt was consumed. Fix the selection and it resumes automatically: memex models show`
+  );
+  try {
+    appendUiAuditLine("models.llm.hold", {
+      model: selection.model,
+      reasoning: selection.reasoning,
+      provider_status: detail?.status ?? held?.status ?? null,
+      provider_type: detail?.providerType ?? held?.providerType ?? null,
+      stage: context.stage ?? null,
+      fingerprint_prefix: selection.fingerprint.slice(0, 12)
+    });
+  } catch {
+  }
+}
 function summarizeObservations(attempts, started, observations) {
   const withUsage = observations.filter(
     (observation) => observation.token_usage !== null
@@ -29422,7 +31990,7 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
       () => callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options)
     );
   }
-  const retries = retryBudget();
+  const retries = retryBudget(options);
   let lastError;
   const observations = [];
   const started = performance.now();
@@ -29434,6 +32002,17 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
 ---
 
 ${userMessage}` : userMessage).length;
+  const selection = resolveLlmSelection({
+    model: options.model,
+    ..."reasoningEffort" in options ? { reasoningEffort: options.reasoningEffort } : {}
+  });
+  if (!options.bypassConfigHold) {
+    const hold = activeModelConfigHold(db, selection.fingerprint);
+    if (hold) {
+      touchModelConfigHold(db, selection.fingerprint);
+      throw new ModelConfigHeldError(hold);
+    }
+  }
   for (let attempt = 0; attempt <= retries; attempt++) {
     const attemptStarted = performance.now();
     const reservation = reserveModelAttempt(db, {
@@ -29441,7 +32020,9 @@ ${userMessage}` : userMessage).length;
       stage: context.stage ?? "model",
       jobId: context.jobId ?? null,
       targetId: context.targetId ?? null,
-      inputChars
+      inputChars,
+      model: selection.model,
+      reasoningEffort: selection.reasoning
     });
     let attemptObservation;
     try {
@@ -29454,7 +32035,8 @@ ${userMessage}` : userMessage).length;
           observations.push(observation);
         },
         options,
-        reservation
+        reservation,
+        selection
       );
       if (!text || text.trim() === "") {
         throw new EmptyLlmResponseError(
@@ -29473,7 +32055,9 @@ ${userMessage}` : userMessage).length;
         durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
         outputChars: text.length,
         tokenUsage: attemptObservation?.token_usage ?? null,
-        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN"
+        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
+        model: attemptObservation?.model ?? null,
+        ...attemptObservation && "reasoning_effort" in attemptObservation ? { reasoningEffort: attemptObservation.reasoning_effort } : {}
       });
       return {
         text,
@@ -29485,17 +32069,30 @@ ${userMessage}` : userMessage).length;
       };
     } catch (error2) {
       const localDeterministic = error2 instanceof ModelBudgetOutputLimitError || error2 instanceof ModelBudgetOutputSchemaError || error2 instanceof ModelBudgetInputLimitError;
-      finishModelAttempt(db, {
-        attemptId: reservation.attemptId,
-        state: localDeterministic ? "failed" : "unknown",
-        durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
-        outputChars: attemptObservation ? void 0 : null,
-        tokenUsage: attemptObservation?.token_usage ?? null,
-        tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
-        errorClass: errorClassFor(error2)
-      });
+      const errorClass = classifyLlmError(error2);
+      if (errorClass === "config") {
+        settleConfigRejectedAttempt(db, {
+          attemptId: reservation.attemptId,
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          errorClass: errorClassFor(error2)
+        });
+        recordConfigHold(db, selection, error2, context);
+      } else {
+        finishModelAttempt(db, {
+          attemptId: reservation.attemptId,
+          state: localDeterministic ? "failed" : "unknown",
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          outputChars: attemptObservation ? void 0 : null,
+          tokenUsage: attemptObservation?.token_usage ?? null,
+          tokenUsageStatus: attemptObservation?.token_usage ? "observed" : "NOT_PROVEN",
+          errorClass: errorClassFor(error2),
+          model: attemptObservation?.model ?? null
+        });
+      }
       lastError = error2;
-      if (localDeterministic || classifyLlmError(error2) === "deterministic") throw error2;
+      if (localDeterministic || errorClass === "deterministic" || errorClass === "config") {
+        throw error2;
+      }
     }
     if (attempt < retries) {
       const remaining = reservation.deadlineAt ? Math.max(0, Date.parse(reservation.deadlineAt) - Date.now()) : null;
@@ -29615,6 +32212,14 @@ async function askAvatar(db, question, project, scope, identityScope) {
     response = await callMemoryModel(AVATAR_SYSTEM_PROMPT, prompt, 1024);
   } catch (error2) {
     console.error("ask_avatar: LLM call failed after retries:", error2);
+    if (classifyLlmError(error2) === "config") {
+      return {
+        answer: "\u26A0\uFE0F \uBAA8\uB378 \uC124\uC815\uC774 \uAC70\uC808\uB410\uC2B5\uB2C8\uB2E4. `memex models show` \uB85C \uD604\uC7AC \uC120\uD0DD\uC744 \uD655\uC778\uD558\uACE0 `memex models test` \uB85C \uAC80\uC99D\uD574 \uC8FC\uC138\uC694. \uC124\uC815\uC744 \uACE0\uCE58\uBA74 \uC790\uB3D9\uC73C\uB85C \uC7AC\uAC1C\uB429\uB2C8\uB2E4.",
+        sources: [],
+        confidence: 0,
+        relatedDecisions
+      };
+    }
     return {
       answer: `\u26A0\uFE0F LLM \uD638\uCD9C\uC774 \uC7AC\uC2DC\uB3C4 \uD6C4\uC5D0\uB3C4 \uC2E4\uD328\uD574 \uB2F5\uBCC0\uC744 \uC0DD\uC131\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (${classifyLlmError(error2)}). \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.`,
       sources: [],
@@ -29653,8 +32258,8 @@ async function askAvatar(db, question, project, scope, identityScope) {
 }
 
 // src/mcp-server.ts
-import path14 from "path";
-import fs12 from "fs";
+import path17 from "path";
+import fs16 from "fs";
 init_paths();
 var SearchModeEnum = external_exports.enum(["vector", "text", "both"]);
 var ResponseFormatEnum = external_exports.enum(["markdown", "json"]);
@@ -29859,7 +32464,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.6.9"
+    version: "0.7.0"
   },
   {
     capabilities: {
@@ -30388,7 +32993,7 @@ async function handleToolCall(name, args) {
     }
     if (name === "read") {
       const params = ShowConversationInputSchema.parse(args);
-      const resolvedPath = path14.resolve(params.path);
+      const resolvedPath = path17.resolve(params.path);
       if (!resolvedPath.endsWith(".jsonl") && !resolvedPath.endsWith(".jsonl.zst")) {
         throw new Error(`Invalid file type: only .jsonl files are supported`);
       }
@@ -30396,16 +33001,16 @@ async function handleToolCall(name, args) {
       if (!resolvedFile) {
         throw new Error(`File not found: ${resolvedPath}`);
       }
-      const realFile = fs12.realpathSync(resolvedFile);
+      const realFile = fs16.realpathSync(resolvedFile);
       const allowedRoots = [getArchiveDir(), sessionsRoot()].map((root) => {
         try {
-          return fs12.realpathSync(root);
+          return fs16.realpathSync(root);
         } catch {
-          return path14.resolve(root);
+          return path17.resolve(root);
         }
       });
       const isAllowed = allowedRoots.some(
-        (root) => realFile === root || realFile.startsWith(root + path14.sep)
+        (root) => realFile === root || realFile.startsWith(root + path17.sep)
       );
       if (!isAllowed) {
         throw new Error(

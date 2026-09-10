@@ -21,10 +21,13 @@
 - `checkpoints` + `memory_jobs`: 한 SQLite immediate transaction에서 checkpoint와 `capture_index`(P0)/`capsule_update`(P1) job을 함께 씁니다. lease/generation CAS, retry/dead-visible, `superseded` 상태(D-008). partition claim은 priority lane을 먼저 적용하며 Capsule job은 삽입 순서, 나머지는 session checkpoint ordinal로 정렬합니다(D-034, D-038).
 - `scripts/continuity-worker.js`: P0 hash 검증 + monotonic prefix ingest → P1 typed Capsule patch(strict JSON, generation CAS) → P2 exact extraction. expired lease는 startup/resume에서 회수됩니다.
 - `capture_gaps`: capture 실패는 gap row + warning으로 남기고(`MEMEX_STRICT_CAPTURE=1`일 때만 block) 다음 hook이 복구합니다.
+- `memory_jobs.hold_reason` (0.7.0, nullable): **설정 대기**는 독립된 축입니다. 값은 `model_config_rejected`·`extraction_rules_invalid`·`extraction_rules_unavailable` 셋뿐이고, 이 전이는 job을 `retry`가 아니라 **`pending` + `available_at`=지금**으로 되돌리며 `attempts`를 **환불**하고 lease를 비웁니다. `checkpoints`/`capsule_checkpoint_state`는 건드리지 않습니다. 따라서 보류된 job은 `dead`도 `retry`도 아니고, 재시도 상한을 소진해 terminal이 되는 경로가 구조적으로 없습니다. 표식은 **실제로 진행되는 claim이 스스로 지우고**(진행됐다면 정의상 더는 설정을 기다리지 않습니다), 같은 설정이 또 거절하면 HOLD 전이가 다시 씁니다 — 자동 재개이고 `memex recover` 대상이 아닙니다. 운영 관점은 [운영 가이드 §21](GUIDE.md#21-모델-선택-070-31)·[§22](GUIDE.md#22-사용자-오버레이--회수-게이트와-추출-규칙-070-29-30)에 있습니다.
 
 ## 3. Extraction correctness spine (§8)
 
 `extraction_targets`/`extraction_target_items`/`exchange_extraction_state`: closed generation의 immutable ordered target, contiguous cursor, policy version, exact failed range. legacy `SEED`/`PERMANENT`/watermark는 completion authority가 아닙니다(D-007). 성장한 exchange는 새 content generation으로 재처리됩니다(OPEN TURN).
+
+`extraction_targets.rules_hash` (0.7.0, nullable): claim 시점에 적용된 추출 규칙 오버레이의 지문입니다. **보고용이고 로컬 전용**(sync 대상 아님)이며 스케줄 키(`policy_version`)에 **섞이지 않습니다** — 섞으면 규칙 한 글자가 전량 재추출이 됩니다. 규칙이 달라진 완료 대상을 다시 열려면 `memex extract rules reextract`를 명시적으로 호출하고, 그때도 `policy_version`은 그대로입니다. 규칙의 적용 시점 계약(claim 스냅숏 ∪ 저장 직전 최신 유효 규칙)은 [FACT-LIFECYCLE.md §3](FACT-LIFECYCLE.md#추출-규칙-오버레이-070-30)에 있습니다.
 
 ## 4. Work Capsule과 tail baton (§4.2, §14)
 
@@ -111,7 +114,8 @@ Continuity schema `7` (`PRAGMA user_version`, `continuity_schema_meta`): v1 corr
 | `MEMEX_CONTINUITY_NO_WAKE` | unset | detached worker wake 비활성(테스트/진단) |
 | `MEMEX_ALLOWED_TRANSCRIPT_ROOTS` | Codex sessions root | hook이 읽을 수 있는 transcript root |
 | `MEMEX_MAX_EXTRACT_WINDOWS`, `MEMEX_MAX_EXTRACT_CALLS` | policy default | run당 extraction budget(미처리 suffix는 pending) |
-| `MEMEX_CODEX_BIN`, `MEMEX_CODEX_MODEL`, `MEMEX_CODEX_EXEC_TIMEOUT_MS`, `MEMEX_LLM_RETRIES`, `MEMEX_LLM_RETRY_BASE_MS` | 설치 기본 | worker model 호출 |
+| `MEMEX_CODEX_BIN`, `MEMEX_CODEX_MODEL`, `MEMEX_CODEX_REASONING`, `MEMEX_CODEX_EXEC_TIMEOUT_MS`, `MEMEX_LLM_RETRIES`, `MEMEX_LLM_RETRY_BASE_MS` | 설치 기본 | worker model 호출. 모델·추론 강도는 env > `<data root>/models.json` > 내장 기본값 순입니다(0.7.0, #31) |
+| `MEMEX_OVERLAY_DIR`, `MEMEX_DISABLE_OVERLAYS` | `<home>/overlays`, unset | 사용자 오버레이 위치와 전면 비활성(`1`만 인정). 비활성은 "오버레이 없음"이고 HOLD가 아닙니다(0.7.0, #29 #30) |
 | `MEMEX_EMBEDDING_MODEL` | e5 | embedding model |
 | `MEMEX_EMBEDDING_STUB` | unset | `1` deterministic stub, `fail` 모델 부재 시뮬레이션 — harness/test 전용(D-025) |
 | `MEMEX_AUTO_ONTOLOGY` | unset (on) | fact 저장 후와 SessionStart의 자동 ontology 분류 스위치. on은 미설정·빈 문자열·`1`뿐이고 그 밖의 값은 모두 off입니다. 수동 실행은 유지. 자동 재개 한도는 [운영 가이드](GUIDE.md#17-모델-작업-예산과-대기-진단) 참고 |

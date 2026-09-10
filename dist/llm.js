@@ -3,8 +3,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { LLM_WORKDIR_BASENAME } from './paths.js';
 import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
-import { runCodex, } from './codex-exec.js';
-import { finishModelAttempt, exhaustModelBudget, getModelWorkContext, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, reserveModelAttempt, withResolvedModelWorkContext, } from './model-budget.js';
+import { runCodex, sanitizeProviderMessage, } from './codex-exec.js';
+import { activeModelConfigHold, finishModelAttempt, exhaustModelBudget, getModelWorkContext, ModelBudgetInputLimitError, ModelBudgetOutputLimitError, ModelBudgetOutputSchemaError, ModelConfigHeldError, recordModelConfigHold, touchModelConfigHold, reserveModelAttempt, settleConfigRejectedAttempt, withResolvedModelWorkContext, } from './model-budget.js';
+import { resolveLlmSelection } from './model-settings.js';
+import { appendUiAuditLine } from './ontology-admin.js';
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
 // --ignore-user-config, so the child persists no session rollout and nothing
@@ -19,8 +21,17 @@ export function llmWorkdir() {
     }
     return LLM_WORKDIR;
 }
-/** 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지. */
-function retryBudget() {
+/**
+ * 재시도 횟수(= 총 시도 - 1). 0 이면 재시도 없음. 상한 5 — 무한 폭주 방지.
+ *
+ * 호출별 `maxRetries` 가 환경 변수보다 **먼저** 온다: "1회 테스트"처럼 호출 횟수 자체가
+ * 사용자와의 계약인 호출은 공통 기본값(2회 재시도)에 좌우되면 안 된다.
+ */
+function retryBudget(options = {}) {
+    const requested = options.maxRetries;
+    if (typeof requested === 'number' && Number.isInteger(requested) && requested >= 0) {
+        return Math.min(5, requested);
+    }
     const raw = process.env.MEMEX_LLM_RETRIES;
     if (raw != null && /^\d+$/.test(raw.trim()))
         return Math.min(5, parseInt(raw.trim(), 10));
@@ -43,18 +54,26 @@ const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
- * Model resolution: MEMEX_CODEX_MODEL, then codex-exec's central default
- * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
- * The resolved id is always forwarded via -m.
+ *
+ * Issue #31: this function no longer resolves the model — and, since the
+ * pre-release review of 0.7.0, it no longer lets anything else resolve it
+ * either. The ALREADY RESOLVED selection of the enclosing call is passed in and
+ * forwarded verbatim, so the model named in the ledger row, in a HOLD
+ * fingerprint and in the provider's argv is the same one on every attempt of
+ * that call. Re-deriving it here (from `options` plus env/models.json) made a
+ * mid-retry configuration change record B's rejection against A's fingerprint:
+ * A was blocked and B was not.
  */
-async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options = {}, reservation) {
-    const model = process.env.MEMEX_CODEX_MODEL || null;
+async function callOnce(systemPrompt, userMessage, _maxTokens, onObservation, options, reservation, selection) {
     const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
     const timeoutMs = timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
     return runCodex({
         systemPrompt,
         userMessage,
-        model,
+        // Both are always sent, `null` reasoning included: `reasoningEffort:
+        // undefined` would hand the decision back to the file/env layer.
+        model: selection.model,
+        reasoningEffort: selection.reasoning,
         timeoutMs,
         deadlineAt: reservation?.deadlineAt,
         maxInputChars: reservation?.maxInputChars,
@@ -123,6 +142,49 @@ function errorClassFor(error) {
     }
     return 'unknown';
 }
+/**
+ * Write the durable hold for the selection this call used, and one audit line.
+ *
+ * The provider's own sentence is the most useful thing a user can be shown
+ * here ("the 'X' model is not supported when using Codex with a ChatGPT
+ * account"), so it is stored — bounded and control-character stripped by
+ * `sanitizeProviderMessage` before it ever reaches a row.
+ */
+function recordConfigHold(db, selection, error, context) {
+    const detail = error?.detail;
+    const held = error?.hold;
+    recordModelConfigHold(db, {
+        fingerprint: selection.fingerprint,
+        model: selection.model,
+        reasoningEffort: selection.reasoning,
+        status: detail?.status ?? held?.status ?? null,
+        providerType: detail?.providerType ?? held?.providerType ?? null,
+        providerMessage: detail?.providerMessage ??
+            held?.providerMessage ??
+            (error instanceof Error ? sanitizeProviderMessage(error.message) : String(error)),
+        stage: context.stage ?? null,
+        jobId: context.jobId ?? null,
+    });
+    console.error(`callMemoryModel: model work held — the provider rejected the request envelope for ` +
+        `model "${selection.model}"${selection.reasoning ? ` at reasoning effort "${selection.reasoning}"` : ''}. ` +
+        'No job failed and no attempt was consumed. Fix the selection and it resumes automatically: memex models show');
+    // Audit is best-effort by construction: a missing or unwritable log must not
+    // turn a held call into a crashed one. Only the fingerprint PREFIX goes in the
+    // line — the whole value is in the database.
+    try {
+        appendUiAuditLine('models.llm.hold', {
+            model: selection.model,
+            reasoning: selection.reasoning,
+            provider_status: detail?.status ?? held?.status ?? null,
+            provider_type: detail?.providerType ?? held?.providerType ?? null,
+            stage: context.stage ?? null,
+            fingerprint_prefix: selection.fingerprint.slice(0, 12),
+        });
+    }
+    catch {
+        /* the hold row itself is the durable record */
+    }
+}
 function summarizeObservations(attempts, started, observations) {
     const withUsage = observations.filter((observation) => observation.token_usage !== null);
     const withCachedUsage = withUsage.filter((observation) => observation.token_usage.cached_input_tokens !== undefined);
@@ -171,7 +233,7 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
     if (!existingContext?.db || !existingContext.budgetId) {
         return withResolvedModelWorkContext(options.modelContext ?? {}, () => callMemoryModelInternal(systemPrompt, userMessage, maxTokens, options));
     }
-    const retries = retryBudget();
+    const retries = retryBudget(options);
     let lastError;
     const observations = [];
     const started = performance.now();
@@ -181,6 +243,33 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
     const inputChars = (systemPrompt
         ? `${systemPrompt}\n\n---\n\n${userMessage}`
         : userMessage).length;
+    // Issue #31 — the config-hold gate, placed BEFORE the first reservation.
+    //
+    // The fingerprint covers a per-call override, so an evaluation harness's
+    // one-off model is gated on its own selection and cannot be blocked by (or
+    // block) the default one. Past this point a held selection costs nothing at
+    // all: no reservation, no provider call.
+    //
+    // This snapshot is also the ONLY selection this call uses: it is forwarded to
+    // every attempt's provider invocation (see `callOnce`), so the model the
+    // ledger row and a HOLD fingerprint name is the model the provider was asked
+    // for, even if the configuration changes mid-retry.
+    const selection = resolveLlmSelection({
+        model: options.model,
+        ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
+    });
+    //
+    // `bypassConfigHold` only skips the REFUSAL. Lifting the hold and releasing the
+    // jobs behind it belongs to the probe, after it knows the call succeeded —
+    // releasing here would free work on the strength of a call that may be about
+    // to be refused again.
+    if (!options.bypassConfigHold) {
+        const hold = activeModelConfigHold(db, selection.fingerprint);
+        if (hold) {
+            touchModelConfigHold(db, selection.fingerprint);
+            throw new ModelConfigHeldError(hold);
+        }
+    }
     for (let attempt = 0; attempt <= retries; attempt++) {
         const attemptStarted = performance.now();
         // Reservation is deliberately outside the provider catch. Exhaustion is
@@ -192,13 +281,15 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
             jobId: context.jobId ?? null,
             targetId: context.targetId ?? null,
             inputChars,
+            model: selection.model,
+            reasoningEffort: selection.reasoning,
         });
         let attemptObservation;
         try {
             const text = await callOnce(systemPrompt, userMessage, maxTokens, (observation) => {
                 attemptObservation = observation;
                 observations.push(observation);
-            }, options, reservation);
+            }, options, reservation, selection);
             if (!text || text.trim() === '') {
                 throw new EmptyLlmResponseError(`LLM returned an empty response (attempt ${attempt + 1}/${retries + 1})`);
             }
@@ -215,6 +306,10 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
                 outputChars: text.length,
                 tokenUsage: attemptObservation?.token_usage ?? null,
                 tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+                model: attemptObservation?.model ?? null,
+                ...(attemptObservation && 'reasoning_effort' in attemptObservation
+                    ? { reasoningEffort: attemptObservation.reasoning_effort }
+                    : {}),
             });
             return {
                 text,
@@ -225,20 +320,39 @@ async function callMemoryModelInternal(systemPrompt, userMessage, maxTokens = 20
             const localDeterministic = error instanceof ModelBudgetOutputLimitError ||
                 error instanceof ModelBudgetOutputSchemaError ||
                 error instanceof ModelBudgetInputLimitError;
-            finishModelAttempt(db, {
-                attemptId: reservation.attemptId,
-                state: localDeterministic ? 'failed' : 'unknown',
-                durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
-                outputChars: attemptObservation ? undefined : null,
-                tokenUsage: attemptObservation?.token_usage ?? null,
-                tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
-                errorClass: errorClassFor(error),
-            });
+            const errorClass = classifyLlmError(error);
+            if (errorClass === 'config') {
+                // Issue #31: the provider refused the ENVELOPE, so this reservation
+                // bought nothing. Keep the row as evidence, return the reservation to
+                // the budget (and lift the exhaustion it may have caused), and record
+                // the hold so the next call does not pay for the same mistake.
+                settleConfigRejectedAttempt(db, {
+                    attemptId: reservation.attemptId,
+                    durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+                    errorClass: errorClassFor(error),
+                });
+                recordConfigHold(db, selection, error, context);
+            }
+            else {
+                finishModelAttempt(db, {
+                    attemptId: reservation.attemptId,
+                    state: localDeterministic ? 'failed' : 'unknown',
+                    durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+                    outputChars: attemptObservation ? undefined : null,
+                    tokenUsage: attemptObservation?.token_usage ?? null,
+                    tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+                    errorClass: errorClassFor(error),
+                    model: attemptObservation?.model ?? null,
+                });
+            }
             lastError = error;
             // This request cannot succeed by retrying: local output/input/schema
-            // bounds and recognized deterministic provider rejections stop here.
-            if (localDeterministic || classifyLlmError(error) === 'deterministic')
+            // bounds, recognized deterministic provider rejections, and a rejected
+            // request envelope all stop here. Retrying a 'config' error would just
+            // buy three identical refusals per call.
+            if (localDeterministic || errorClass === 'deterministic' || errorClass === 'config') {
                 throw error;
+            }
         }
         if (attempt < retries) {
             const remaining = reservation.deadlineAt

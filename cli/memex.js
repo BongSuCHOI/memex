@@ -80,10 +80,13 @@ COMMANDS:
   status      Show pipeline readiness per stage (read-only)
   jobs        Inspect and recover memory jobs: list|show|retry|dismiss
   recover     Reset terminal (dead) work back to claimable in one transaction
+  models      Choose the model and reasoning effort: show|set|reset|test
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings/receipts backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
   ontology    Inspect and repair the local taxonomy: list|merge|rename
+  gate        Your own recall-gate rules: show|patterns|words|test|replay|validate|history|quarantine|reset|rollback
+  extract     Your own extraction rules: rules show|validate|set|test|history|reset|rollback|reextract, and eval
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -142,6 +145,18 @@ const HELP_DELEGATES = {
   stats: (dist) => join(dist, "stats-cli.js"),
   analyze: (dist) => join(dist, "analyze-cli.js"),
   sync: (dist) => join(dist, "sync-cli.js"),
+  // Issue #31: `memex models` owns a long help text (resolution order, the
+  // reasoning-level set, what `test` actually spends), so the script prints it.
+  models: (dist) => join(dist, "models-cli.js"),
+  // Issue #29 — `memex gate` (recall-gate overlay). One source for the verb
+  // list: dist/gate-cli.js prints it and refuses to do work under --help.
+  gate: (dist) => join(dist, "gate-cli.js"),
+
+  // ---- issue #30: extraction-rules overlay (`memex extract`) ---------------
+  // Same contract as `gate`: dist/extract-cli.js owns the verb list and refuses
+  // to do work under --help, so the two texts cannot drift apart.
+  extract: (dist) => join(dist, "extract-cli.js"),
+  // ---- end issue #30 -------------------------------------------------------
 };
 
 /**
@@ -255,6 +270,25 @@ in ONE transaction — the same unit that was made terminal together.
 
 --dry-run reports exactly what would be reset and writes nothing.
 Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
+  // Issue #31 — the full text lives in src/models-cli.ts (HELP_DELEGATES sends
+  // `--help` there). This entry is what puts `models` in KNOWN_COMMANDS, which
+  // is what makes the #36 guard cover it.
+  models: `Usage:
+  memex models show [--json]
+  memex models set --model <id> [--reasoning <level>] [--json]
+  memex models reset [--json]
+  memex models test [--model <id>] [--reasoning <level>] [--json]
+
+Choose the model and reasoning effort Memex uses for its own model work.
+The selection is local to this machine ('<data root>/models.json', never synced).
+Resolution order: MEMEX_CODEX_MODEL / MEMEX_CODEX_REASONING > models.json >
+the built-in default.
+
+show is read-only. set refuses an unknown reasoning level and warns (without
+refusing) when the Codex catalog disagrees. reset deletes the file and never
+touches the effective embedding model. test makes exactly ONE real model call,
+records it in the model-work ledger as stage 'model_probe', and on success
+clears the configuration hold for that selection.`,
   "model-work": MODEL_WORK_USAGE,
   backfill: `Usage: memex backfill <all|extract|ontology|embeddings|receipts> [--background]
 
@@ -302,6 +336,55 @@ time; a skipped rung is refused. promote/demote by a user are recorded as
 Chronicle PROMOTED/DEMOTED plus one metadata line in logs/ui-audit.jsonl.
 migrate-tiers needs --dry-run or --apply explicitly: it lists (or moves) the
 pre-0.6.0 workstream facts that the branch-signal rule makes project-common.`,
+
+  // ---- issue #29: recall-gate overlay (`memex gate`) -----------------------
+  // HELP_DELEGATES.gate above forwards `--help` to dist/gate-cli.js, which owns
+  // the full text; this entry keeps the command in KNOWN_COMMANDS and answers
+  // when the build is missing.
+  gate: `Usage:
+  memex gate show [--json]
+  memex gate patterns list|add|disable|enable [...] [--dry-run] [--json]
+  memex gate words list|add|remove <ack|continue|filler> <word> [--json]
+  memex gate test "<prompt>" [--session <id>] [--compare-builtin] [--json]
+  memex gate replay [--limit <n>] [--project <path>] [--json]
+  memex gate validate [--file <path>] [--json]
+  memex gate history [--limit <n>] [--json]
+  memex gate quarantine list|clear [<pattern-id>|--all] [--json]
+  memex gate reset [--intent <intent>] --yes [--json]
+  memex gate rollback --to <revision> [--json]
+
+Your own regexes and words on top of the built-in recall gate. Built-ins are
+disabled by id, never deleted. show/patterns list/words list/test/replay/
+validate/history/quarantine list are read-only and call no model. Writes take
+the overlay lock, bump 'revision' and keep a rollback snapshot; --dry-run
+prints the command to re-run and writes nothing.
+Run 'memex gate --help' for the full option list.`,
+  // ---- end issue #29 -------------------------------------------------------
+
+  // ---- issue #30: extraction-rules overlay (`memex extract`) ---------------
+  // HELP_DELEGATES.extract above forwards `--help` to dist/extract-cli.js, which
+  // owns the full text; this entry keeps the command in KNOWN_COMMANDS and
+  // answers when the build is missing.
+  extract: `Usage:
+  memex extract rules show [--json]
+  memex extract rules validate [<file>] [--json]
+  memex extract rules set <file> [--expect-revision <n>] [--dry-run] [--json]
+  memex extract rules test [--exchange <id>] [--recent <n>] [--json]
+  memex extract rules history [--limit <n>] [--json]
+  memex extract rules reset --yes [--json]
+  memex extract rules rollback <revision> [--json]
+  memex extract rules reextract (--dry-run | --apply --yes) [--project <id>] [--json]
+  memex extract eval [--rules <path>] [--fixture <path>] [--session <id>] [--out <path>]
+
+THIS COMMAND DOES NOT EXTRACT — extraction itself still runs via
+'memex backfill extract'. These verbs read and write the local rules that
+extraction obeys: excluded topics, never_extract regexes, decision hints and a
+preferred language. show/validate/test/history and every --dry-run are read-only
+and call no model. Writes take the overlay lock, bump 'revision', keep a rollback
+snapshot, and release the extraction jobs the rules had put on hold. 'set' needs
+--expect-revision once the overlay file exists. Only 'eval' spends model calls.
+Run 'memex extract --help' for the full option list.`,
+  // ---- end issue #30 -------------------------------------------------------
 };
 
 const KNOWN_COMMANDS = new Set([
@@ -409,6 +492,28 @@ async function main() {
       case "sync":
         await runScript(join(distDir, "sync-cli.js"), args);
         break;
+      // Issue #31 — the model/reasoning selection surface. Delegated like sync:
+      // the verbs need a database and the settings file, neither of which the
+      // launcher should know how to open.
+      case "models":
+        await runScript(join(distDir, "models-cli.js"), args);
+        break;
+
+      // ---- issue #29: recall-gate overlay ------------------------------
+      case "gate":
+        await runScript(join(distDir, "gate-cli.js"), args);
+        break;
+      // ---- end issue #29 ------------------------------------------------
+
+      // ---- issue #30: extraction-rules overlay --------------------------
+      // Delegated, not inlined: the verbs need the overlay lock, the matcher
+      // worker and (for reextract) a write database, none of which the launcher
+      // should know how to open.
+      case "extract":
+        await runScript(join(distDir, "extract-cli.js"), args);
+        break;
+      // ---- end issue #30 ------------------------------------------------
+
       case "update":
         await runScript(
           join(__dirname, "..", "scripts", "update-plugin.js"),
@@ -881,6 +986,16 @@ async function main() {
                   `${row.state.padEnd(10)} ${row.kind.padEnd(14)} ${row.jobId}  attempts=${row.attempts}/${row.maxAttempts}  ${row.partitionKey}` +
                     (row.leaseExpired && row.state === "running" ? "  [lease expired]" : ""),
                 );
+                // #31: a held job is neither failed nor dead — say what it is
+                // waiting for, and what lifts it.
+                if (row.holdReason) {
+                  console.log(
+                    `    waiting on configuration: ${row.holdReason}` +
+                      (row.holdReason === "model_config_rejected"
+                        ? " — no attempt consumed; run: memex models show"
+                        : ""),
+                  );
+                }
                 if (row.lastError) console.log(`    last_error: ${row.lastError.slice(0, 160)}`);
               }
               console.log(`(${rows.length} job${rows.length === 1 ? "" : "s"}${state === "all" ? "" : `, state=${state}`})`);
@@ -1048,6 +1163,8 @@ async function main() {
               completed: 0,
               failed: 0,
               unknown: 0,
+              // #31: refused request envelopes, reported apart from failures.
+              configRejected: 0,
               pending: 0,
               durationMs: null,
               inputChars: null,

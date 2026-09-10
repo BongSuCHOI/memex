@@ -1,13 +1,13 @@
 # Memex
 
-[![Release](https://img.shields.io/badge/release-0.6.9-2563eb)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.7.0-2563eb)](CHANGELOG.md)
 [![Codex](https://img.shields.io/badge/Codex-native-111827)](https://developers.openai.com/codex/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D22.15-339933)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 > Codex를 위한 로컬 우선 장기 기억 계층입니다. 대화를 모으고, 재사용할 지식을 증류하고, 서로 연결한 뒤, 필요한 순간에 다시 꺼내 씁니다.
 
-![Memex Workspace 개요 화면: 파이프라인 준비 상태, 최근 기억의 변화, 범위별 활동 지표](assets/readme/overview.png)
+![Memex Workspace 개요 화면: 파이프라인 준비 상태, 최근 기억의 변화, 범위별 활동 지표](assets/readme/ko/overview.png)
 
 Memex는 로컬 Codex 세션 이력을 검색 가능한 대화 아카이브, 장기 fact, 범위가 분리된 지식 그래프, 그리고 이후 작업에 다시 주입할 수 있는 제한된 컨텍스트로 바꿉니다. Memex는 **두 번째 에이전트가 아니라 기억 시스템**입니다. 실제 작업은 Codex가 계속 수행하고, Memex는 그 주변에서 장기 기억 계층을 제공합니다.
 
@@ -19,7 +19,9 @@ Memex는 로컬 Codex 세션 이력을 검색 가능한 대화 아카이브, 장
 - **장기 fact를 증류합니다** — 재사용할 가치가 있는 decision, preference, pattern, knowledge, constraint를 추출하고 각 fact를 그것을 증명하는 대화 턴에 묶습니다.
 - **fact의 변화를 추적합니다** — duplicate 통합, contradiction, revision, deactivate, restore, provenance를 기록합니다.
 - **연결하고 다시 꺼냅니다** — fact를 domain/category로 분류해 typed relation을 만들고, 관련도와 예산을 통과한 작은 기억 블록만 이후 Codex prompt에 주입합니다.
-- **근거를 보여줍니다** — loopback Web UI, 9개 MCP 도구, 그리고 fact 상태만 주고받는 멀티디바이스 durable sync를 제공합니다.
+- **내 규칙을 받습니다** — 로컬 오버레이로 회수 게이트에 자기 정규식과 단어를 더하고, 추출에 자기 제한을 얹습니다. 멀리할 주제와 **절대 저장하지 않을** 패턴은 프롬프트의 권고가 아니라 저장 경계에서 결정론적으로 집행됩니다.
+- **모델을 고를 수 있습니다** — Memex가 자기 작업에 쓸 모델과 추론 강도를 고릅니다. provider가 거절한 설정은 작업을 실패시키지 않고 **대기**시키며, 설정을 고치면 자동으로 재개됩니다.
+- **근거를 보여줍니다** — 한국어·영어 loopback Web UI, 9개 MCP 도구, 그리고 fact 상태만 주고받는 멀티디바이스 durable sync를 제공합니다.
 
 ---
 
@@ -93,28 +95,30 @@ npx --yes --package=github:BongSuCHOI/memex#main memex-ui
 | `/taxonomy` 분류 | ontology domain과 category |
 | `/graph` 지식 지도 | WebGL 2D/3D 관계 그래프, Canvas2D fallback |
 | `/activity` 활동 · 추적 | Chronicle, 처리 작업, 모델 시도, 컨텍스트 제공, 로그, 관리 실행 — 각 탭에 [GUIDE §20](docs/GUIDE.md#20-문제가-생겼을-때--실패-클래스별-복구)의 실패 클래스 표에서 파생한 "다음 행동" 안내 |
-| `/settings` 관리 | 런타임, 관리 명령, 다기기 동기화(기본 꺼짐), 화면 설정, 진단 |
+| `/settings` 관리 | 런타임, 관리 작업, 다기기 동기화(기본 꺼짐), 화면 설정, 진단, 그리고 0.7.0의 두 탭 — **오버레이**(내 회수 게이트 정규식과 추출 제한을 검증·프롬프트 테스트·영향 시뮬레이션·되돌리기)와 **모델**(Memex가 쓰는 모델·추론 강도와 모델 작업을 멈춘 설정 대기) |
+
+화면 기본 언어는 **영어**이고 한국어로 바꿀 수 있습니다 — 주소의 `?lang=ko`, 상단 `EN`/`KO` 버튼, 관리 › 화면 설정 중 어느 것이든 이 브라우저에 기억됩니다. 서버 기본값은 `memex-ui --lang ko`(또는 `MEMEX_UI_LANG=ko`)로 정합니다. `docs/`의 문서는 한국어만 있고 영어 화면도 같은 문서를 가리킵니다.
 
 모든 화면에 도움말이 붙어 있습니다 — 제목 옆 ⓘ가 한 문단 설명과 이 릴리스 태그의 문서 링크를 주고, 컨트롤·배지·표 머리글에는 한 줄 툴팁이, `?`에는 검색 가능한 용어집이 있습니다. 표시 정도는 관리 › 화면 설정에서 조절합니다.
 
 모든 화면은 프로젝트 / 공통 기억 / 전체 프로젝트 범위를 명시적으로 선택합니다. 기본값은 전체 프로젝트이고 이 범위는 **조회 전용**입니다 — 실제 주입 범위는 언제나 현재 프로젝트 + 공통 기억이며, 범위 선택 옆에 그 사실을 상시 표시합니다. 화면을 여는 것만으로는 모델 작업이 시작되지 않습니다.
 
-![기억 상세 패널의 근거 탭. 직접 근거와 해석에 참고한 맥락이 별도 절로 나뉘어 있다](assets/readme/facts-detail.png)
+![기억 상세 패널의 근거 탭. 직접 근거와 해석에 참고한 맥락이 별도 절로 나뉘어 있다](assets/readme/ko/facts-detail.png)
 
 *기억 상세 · 근거 탭 — 직접 근거와 해석에 참고한 맥락을 분리해 보여주고, 그 아래에 검증 영수증을 남깁니다.*
 
-![2D 지식 지도에서 노드 하나가 선택되고 연결된 관계가 강조된 화면](assets/readme/graph.png)
+![2D 지식 지도에서 노드 하나가 선택되고 연결된 관계가 강조된 화면](assets/readme/ko/graph.png)
 
 *지식 지도 — fact 노드와 typed relation(`SUPPORTS`, `INFLUENCES`, `SUPERSEDES`, `CONTRADICTS`)을 브라우저 네이티브 WebGL로 그립니다. 레이아웃은 도메인 그룹만 인코딩하며, 화면상의 거리는 임베딩 유사도 수치가 **아닙니다**.*
 
-![활동·추적의 처리 작업 탭에서 durable job 하나가 대상·입력 버전·모델 시도까지 펼쳐진 화면](assets/readme/activity-jobs.png)
+![활동·추적의 처리 작업 탭에서 durable job 하나가 대상·입력 버전·모델 시도까지 펼쳐진 화면](assets/readme/ko/activity-jobs.png)
 
 *활동 · 추적 · 처리 작업 — durable job 하나를 추출 대상, 처리한 입력 버전, 모델 실행 시도까지 펼쳐 확인합니다.*
 
 <details>
 <summary>다크 모드</summary>
 
-![같은 개요 화면을 다크 모드로 렌더링한 모습](assets/readme/overview-dark.png)
+![같은 개요 화면을 다크 모드로 렌더링한 모습](assets/readme/ko/overview-dark.png)
 
 </details>
 
@@ -293,6 +297,9 @@ memex status
 | `memex jobs` | memory job 조회·복구: `list\|show\|retry\|dismiss` |
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기; `--all-dead`, `--dry-run` |
 | `memex model-work` | 모델 작업 예산 확인과 명시적 재개; [예산 재개](docs/GUIDE.md#17-모델-작업-예산과-대기-진단) |
+| `memex models` | Memex 자기 모델 작업에 쓸 모델·추론 강도 선택: `show\|set\|reset\|test`. `set --model <id> [--reasoning <level>]`(`unset`은 플래그 제거), `test`는 실제 호출 1회로 그 설정의 대기를 해제 |
+| `memex gate` | 내 회수 게이트 규칙: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 내장 규칙은 지우지 않고 id로 끄며, 쓰기는 `--dry-run`·`--expect-revision <n>`을 받습니다 |
+| `memex extract` | 내 추출 제한 — 이 명령은 추출하지 않습니다: `rules show\|validate\|set\|test\|history\|reset\|rollback\|reextract`, 그리고 모델 호출을 쓰는 유일한 동사 `eval` |
 | `memex doctor` | 의존성·빌드·hook·주입 출력·recall provenance 진단 |
 | `memex home` | 해석된 Memex data root 출력 |
 | `memex migrate-projects` | cwd 근거로 project identity 재도출 (CX-02). `--dry-run`은 계획만 출력하고 아무것도 쓰지 않음 |
@@ -391,9 +398,14 @@ Durable queue는 capture indexing, Work Capsule, fact/derived 순으로 처리�
 | `MEMEX_STRICT_CAPTURE` | `1`이면 capture gap 대신 hook이 실패 |
 | `MEMEX_CAPSULE_MAX_CHARS` | Work Capsule 한 세대의 bounded storage size (기본 `12000`, 하한 `2000`). 초과 patch는 버리지 않고 우선순위대로 절단해 저장하고 기록 |
 | `MEMEX_INJECT_BASELINE_MARGIN` | 주입 관련성 게이트가 요구하는 baseline 대비 마진 (기본 `0.045`, 0~1). 조정 전에 `baseline_margin_gap` 텔레메트리로 측정 |
+| `MEMEX_CODEX_MODEL` / `MEMEX_CODEX_REASONING` | Memex 자기 모델 작업의 모델과 추론 강도. 둘 다 `<data root>/models.json`보다 우선하고, 그 파일이 내장 기본값(`gpt-5.6-luna`, 추론 강도 플래그 없음)보다 우선합니다. 알 수 없는 추론 강도는 경고 후 무시하고, 모델 id는 여기서 형식 검사를 하지 않으므로 오타는 provider 거절로 드러납니다 |
+| `MEMEX_OVERLAY_DIR` / `MEMEX_DISABLE_OVERLAYS` | 사용자 오버레이 위치(기본 `<data root>/overlays`)와 전면 비활성 스위치(`1`만 인정) |
+| `MEMEX_UI_LANG` | Web UI의 서버 기본 언어, `en`(기본) 또는 `ko`. `memex-ui --lang`이 이 값을 이기고 알 수 없는 값은 기동 실패입니다 |
 | `PORT` | Web UI 포트 (기본 `3847`) |
 
 자동 ontology를 꺼도 수동 `memex backfill ontology`와 기존 파생 데이터·core embedding은 그대로 유지됩니다.
+
+모델 선택과 사용자 오버레이는 **이 기기에만** 적용되고 sync 세대에 들어가지 않습니다 — 쓸 수 있는 모델과 원하는 규칙이 기기마다 다르기 때문입니다. 오버레이의 기기 간 공유, embedding model 전환, 게이트 임계값 조정은 모두 0.7.1로 미뤘습니다.
 
 모델 작업은 run 단위로 예산이 정해집니다([GUIDE §17](docs/GUIDE.md#17-모델-작업-예산과-대기-진단)).
 

@@ -311,6 +311,78 @@ test("status --json aggregates memory_jobs by kind x state", async (t) => {
   db.close();
 });
 
+/**
+ * Issues #31/#30 — every hold family is counted and named.
+ *
+ * `attention.modelConfigHeld` counted only `model_config_rejected`, so the two
+ * extraction-rules families — which hold the ENTIRE extraction queue, with no
+ * attempt consumed and therefore no dead/retry row either — were invisible on the
+ * one surface an operator checks when nothing is progressing.
+ */
+test("status counts every hold_reason family, not only the model one", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }, { session: "s1" }]);
+  db.exec(`CREATE TABLE memory_jobs (
+    job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
+    available_at TEXT, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+    hold_reason TEXT, updated_at TEXT)`);
+  const insert = db.prepare(`INSERT INTO memory_jobs
+    (job_id, kind, state, available_at, hold_reason, updated_at)
+    VALUES (?, ?, ?, '2026-08-26T00:00:00Z', ?, '2026-08-26T00:00:00Z')`);
+  insert.run("job-1", "capsule_update", "pending", "model_config_rejected");
+  insert.run("job-2", "extraction", "pending", "extraction_rules_invalid");
+  insert.run("job-3", "extraction", "retry", "extraction_rules_unavailable");
+  insert.run("job-4", "extraction", "pending", "extraction_rules_unavailable");
+  // A finished job keeps its marker but is not waiting on anything.
+  insert.run("job-5", "extraction", "completed", "extraction_rules_invalid");
+  // And an unknown value is not invented into a family.
+  insert.run("job-6", "extraction", "pending", "something_else");
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.attention.held, 4);
+  assert.equal(st.attention.modelConfigHeld, 1);
+  assert.deepEqual(
+    st.attention.heldByReason.map((row) => [row.reason, row.jobs]),
+    [
+      ["extraction_rules_invalid", 1],
+      ["extraction_rules_unavailable", 2],
+      ["model_config_rejected", 1],
+    ],
+  );
+  // A hold is not a failure, so it stays out of the dead/retry count.
+  assert.equal(st.attention.total, 1); // the one `retry` row
+
+  const text = formatPipelineStatus(st);
+  assert.ok(text.includes("config held: 4 job(s)"), text);
+  assert.ok(text.includes("extraction_rules_invalid=1"), text);
+  assert.ok(text.includes("extraction_rules_unavailable=2"), text);
+  assert.ok(text.includes("model_config_rejected=1"), text);
+  assert.ok(text.includes("memex extract rules validate"), text);
+  assert.ok(text.includes("memex models show"), text);
+  db.close();
+});
+
+test("status says nothing about holds on a pre-0.7.0 database", async (t) => {
+  const { db } = await seed(t, [{ session: "s1" }]);
+  db.exec(`CREATE TABLE memory_jobs (
+    job_id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
+    available_at TEXT, lease_until TEXT, attempts INTEGER NOT NULL DEFAULT 0)`);
+  db.prepare(
+    "INSERT INTO memory_jobs (job_id, kind, state) VALUES ('job-1', 'extraction', 'pending')",
+  ).run();
+
+  const { getPipelineStatus, formatPipelineStatus } = await import(
+    path.join(REPO, "dist/pipeline-status.js")
+  );
+  const st = getPipelineStatus();
+  assert.equal(st.attention.held, 0);
+  assert.deepEqual(st.attention.heldByReason, []);
+  assert.ok(!formatPipelineStatus(st).includes("config held"));
+  db.close();
+});
+
 test("a data root with no queue table reports an empty jobs object", async (t) => {
   await seed(t, [{ session: "s1" }, { session: "s1" }]);
   const { getPipelineStatus, formatPipelineStatus } = await import(

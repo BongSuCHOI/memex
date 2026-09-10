@@ -1,5 +1,6 @@
 import { type InjectLogEntry } from "./inject-log.js";
 import { type RecallGateConfig } from "./recall-gate.js";
+import { type MatcherHandle } from "./overlay-matcher.js";
 /**
  * Issue #32 — the margin is now tunable and measurable.
  *
@@ -40,6 +41,15 @@ export interface InjectOptions {
      * fast-path decision and its outcome are one record.
      */
     daemon?: InjectLogEntry["daemon"];
+    /**
+     * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
+     *
+     * The warm daemon owns one resident matcher for its whole lifetime; the cold
+     * fallback hands in a one-shot. When it is absent and an overlay actually has
+     * patterns, a one-shot is created and disposed here. With no overlay patterns
+     * nothing is created at all, so an installation without an overlay pays zero.
+     */
+    matcher?: MatcherHandle;
 }
 /**
  * Compute the UserPromptSubmit context block for a prompt.

@@ -43,6 +43,20 @@ function log(line) {
   console.log(msg);
 }
 
+/**
+ * Issue #31 — pre-claim gate. The session hook already skips spawning us when a
+ * model selection is held, but this worker can be run directly, so the gate
+ * lives here too. Returning is exit 0: a held selection is not a failure.
+ */
+async function modelConfigHeld(db) {
+  try {
+    const { currentModelConfigHold } = await import('../dist/model-budget.js');
+    return currentModelConfigHold(db);
+  } catch {
+    return null; // a pre-0.7.0 database has no hold table
+  }
+}
+
 async function main() {
   const sessionId = process.env.SESSION_ID;
   const project = process.env.CWD || process.cwd();
@@ -66,6 +80,14 @@ async function main() {
   // 마커를 쓰지 않고 이연한다 — sync 가 인덱싱한 뒤 backfill 이 회수한다.
   try {
     db = initDatabase();
+    const held = await modelConfigHeld(db);
+    if (held) {
+      log(
+        `fact-extract: held on a model setting ("${held.model}") — no work claimed, ` +
+          'no attempt consumed; fix it and it resumes automatically (memex models show)',
+      );
+      return;
+    }
 
     // 재감사 P1-1(2026-08-29): SessionEnd 추출 경로도 user-level exclusion 을 존중한다.
     // sync/index/repair 는 getConversationEligibility 로 중앙화됐지만 이 워커만 우회해,

@@ -24,9 +24,12 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { lastObserved } from "./observe-hook-event.js";
 import { getDbPath, getMemexHome } from "./paths.js";
+import { resolveLlmSelection } from "./model-settings.js";
 import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
 import { getInjectLogPath } from "./inject-log.js";
+import { recallGateOverlayChecks } from "./recall-gate-overlay.js";
+import { extractionRulesChecks } from "./extraction-rules.js";
 import { missingRuntimeDependencies, RUNTIME_DEPENDENCIES, resolveInstalledPluginRoot, } from "./plugin-root.js";
 import { embeddingCacheStatus, formatCacheBytes, legacyEmbeddingCacheCandidates, } from "./model-cache.js";
 const runtimeRequire = createRequire(import.meta.url);
@@ -722,6 +725,96 @@ async function injectDaemonCheck() {
     };
 }
 /**
+ * Issue #31 — which model is Memex using, and is anything waiting on it?
+ *
+ * Two things were invisible before. Which model and reasoning level this
+ * installation resolves (and from WHERE — env, models.json, or the built-in
+ * default), and whether a rejected selection has quietly paused model work. The
+ * second matters most: a hold fails no job and consumes no attempt, so without
+ * this check the only symptom is "nothing is being extracted any more".
+ */
+export function llmModelCheck() {
+    const name = "llm-model";
+    let selection;
+    try {
+        selection = resolveLlmSelection();
+    }
+    catch (error) {
+        return {
+            name, status: "warn",
+            detail: `unable to resolve the model selection: ${error instanceof Error ? error.message : String(error)}`,
+        };
+    }
+    const where = `model ${selection.model} (via ${selection.modelSource}), reasoning ` +
+        `${selection.reasoning ?? "unset"} (via ${selection.reasoningSource})`;
+    // Read-only and library-light, the same lightweight connection countRows uses:
+    // doctor must answer here even when the heavy db.js chain cannot load.
+    let holds = [];
+    let heldJobs = [];
+    try {
+        const dbPath = getDbPath();
+        if (fs.existsSync(dbPath)) {
+            const Database = runtimeRequire("better-sqlite3");
+            const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+            try {
+                const has = (table) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(table) !== undefined;
+                if (has("model_config_holds")) {
+                    holds = db.prepare("SELECT * FROM model_config_holds WHERE cleared_at IS NULL ORDER BY held_at").all();
+                }
+                if (has("memory_jobs")) {
+                    const columns = new Set(db.prepare("PRAGMA table_info(memory_jobs)").all()
+                        .map((row) => row.name));
+                    if (columns.has("hold_reason")) {
+                        heldJobs = db.prepare(`
+              SELECT hold_reason, COUNT(*) AS jobs FROM memory_jobs
+              WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+              GROUP BY hold_reason ORDER BY hold_reason
+            `).all();
+                    }
+                }
+            }
+            finally {
+                db.close();
+            }
+        }
+    }
+    catch {
+        return { name, status: "ok", detail: `ok — ${where} (hold state unreadable)` };
+    }
+    const current = holds.find((hold) => hold.selection_fingerprint === selection.fingerprint);
+    const heldSummary = heldJobs.length > 0
+        ? ` Held jobs: ${heldJobs.map((row) => `${row.hold_reason}=${row.jobs}`).join(", ")}.`
+        : "";
+    if (current) {
+        return {
+            name, status: "warn",
+            detail: `held — the provider rejected the request envelope for model "${current.model}"` +
+                (current.reasoning_effort ? ` at reasoning effort "${current.reasoning_effort}"` : "") +
+                ` (${current.provider_status ?? "?"} ${current.provider_type ?? "provider error"}: ` +
+                `"${current.provider_message ?? ""}"), first seen ${current.held_at}, ` +
+                `${current.observed_count} occurrence(s). Model work is paused — no job was failed and ` +
+                `no attempt was consumed. Fix the selection and it resumes automatically. ` +
+                `Run: memex models show -> memex models set --model <id> -> memex models test.` +
+                heldSummary + ` ${where}`,
+        };
+    }
+    if (holds.length > 0) {
+        return {
+            name, status: "ok",
+            detail: `ok — ${where}. ${holds.length} hold(s) recorded for OTHER selections ` +
+                `(${holds.map((hold) => hold.model).join(", ")}); none of them blocks this one.` + heldSummary,
+        };
+    }
+    if (heldJobs.length > 0) {
+        return {
+            name, status: "warn",
+            detail: `ok — ${where}, no model-config hold. But work is held for another reason:` +
+                heldSummary + " See: memex status",
+        };
+    }
+    return { name, status: "ok", detail: `ok — ${where}` };
+}
+/**
  * Issue #92 — is the embedding model on disk, and where?
  *
  * The state this reports was completely invisible. On the observed data root the
@@ -788,6 +881,43 @@ function embeddingCacheCheck() {
     };
 }
 /** Read-only diagnosis. Distinguishes configured vs observed. */
+/**
+ * Per-reason held-job counts, read the same library-light read-only way the rest
+ * of doctor reads the database: doctor has to answer even when the heavy db.js
+ * chain will not load, which is exactly the state a held queue can accompany.
+ */
+function readHeldJobCounts() {
+    try {
+        const dbPath = getDbPath();
+        if (!fs.existsSync(dbPath))
+            return [];
+        const Database = runtimeRequire("better-sqlite3");
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        try {
+            const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'memory_jobs'").get() !==
+                undefined;
+            if (!hasTable)
+                return [];
+            const columns = new Set(db.prepare("PRAGMA table_info(memory_jobs)").all().map((row) => row.name));
+            if (!columns.has("hold_reason"))
+                return [];
+            return db.prepare(`
+        SELECT hold_reason AS reason, COUNT(*) AS jobs FROM memory_jobs
+        WHERE hold_reason IS NOT NULL AND state NOT IN ('completed','superseded','dead')
+        GROUP BY hold_reason ORDER BY hold_reason
+      `).all().map((row) => ({
+                reason: String(row.reason),
+                jobs: Number(row.jobs),
+            }));
+        }
+        finally {
+            db.close();
+        }
+    }
+    catch {
+        return [];
+    }
+}
 export async function doctor() {
     const checks = [];
     // Dependency + build readiness (report-only; never auto-install).
@@ -957,6 +1087,7 @@ export async function doctor() {
     }
     checks.push(recallProvenanceCheck(recent));
     checks.push(injectionYieldCheck(recent));
+    checks.push(llmModelCheck());
     checks.push(embeddingCacheCheck());
     checks.push(await injectDaemonCheck());
     // Persisted hook trust lives in config.toml [hooks.state."<file>:<event>:…"].
@@ -1063,6 +1194,42 @@ export async function doctor() {
             name: "sync-export",
             status: "warn",
             detail: "unable to read sync export status",
+        });
+    }
+    // Issue #29 (0.7.0) — the recall-gate overlay's three checks. The check
+    // FUNCTIONS live in src/recall-gate-overlay.ts so the overlay lane owns their
+    // wording and this file stays the single place that assembles the report.
+    //
+    // A quarantined pattern is a `fail`, not a `warn`: it is the operator's own
+    // rule silently switched off, which is exactly the "stopped quietly" class of
+    // bug doctor exists to surface.
+    try {
+        for (const check of await recallGateOverlayChecks())
+            checks.push(check);
+    }
+    catch {
+        checks.push({
+            name: "recall-gate-overlay",
+            status: "warn",
+            detail: "unable to inspect the recall-gate overlay",
+        });
+    }
+    // Issue #30 (0.7.0) — the extraction-rules overlay's two checks, same shape
+    // and for the same reason: the wording lives with the lane that owns the
+    // overlay, this file only assembles.
+    //
+    // `extraction-rules-hold` is a `fail` because a held job is invisible
+    // otherwise: it is neither `retry` nor `dead`, so every existing status
+    // surface reports it as ordinary pending work while nothing is being stored.
+    try {
+        for (const check of extractionRulesChecks(readHeldJobCounts()))
+            checks.push(check);
+    }
+    catch {
+        checks.push({
+            name: "extraction-rules-overlay",
+            status: "warn",
+            detail: "unable to inspect the extraction-rules overlay",
         });
     }
     const hasFail = checks.some((c) => c.status === "fail");

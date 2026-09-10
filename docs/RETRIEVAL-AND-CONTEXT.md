@@ -434,7 +434,13 @@ production model(multilingual-e5-small) spot check는 `rfc-deviations.md` D-027�
 
 `memex doctor`의 `injection-yield`는 최근 로그에서 fact 0개 주입이 연속되면 `warn`으로 보고합니다.
 
-계획된 후속(0.6.1에는 없음): 회수 시그널을 사용자 규칙으로 덧씌우는 durable 오버레이는 #29,
-추출 규칙의 durable 구조화 오버레이는 #30이며 둘 다 0.6.2 대상입니다. 현재는 내장 규칙만 동작합니다.
+0.7.0부터 회수 게이트 위에 **사용자 오버레이**를 얹을 수 있습니다(#29). 자기 정규식과 단어를
+내장 규칙에 더하거나 내장 규칙을 id로 끄는 것까지이고, 게이트 **임계값**은 여전히 위의 환경 변수만
+정합니다(임계값 오버레이는 0.7.1). 사용자 패턴은 별도 worker thread에서 프롬프트당 50 ms 예산으로
+실행되고 초과하면 격리되어 적용이 멈추며, 판정 라벨에 `@gate:<sha8>`·`+overlay_timeout`·
+`+overlay_unavailable`이, 영수증에는 `recall_events.gate_overlay_hash`가 남습니다. 파일이 없으면
+라벨까지 0.6.9와 동일합니다. 운영은 [운영 가이드
+§22.1](GUIDE.md#221-회수-게이트-오버레이-memex-gate), 추출 쪽 오버레이(#30)는
+[FACT-LIFECYCLE.md §3](FACT-LIFECYCLE.md#추출-규칙-오버레이-070-30)이 단일 출처입니다.
 
 로그에는 prompt/fact 본문보다 길이, candidate/injected count, duration, warm/cold path 같은 운영 메타데이터를 우선 기록합니다.

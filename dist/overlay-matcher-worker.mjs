@@ -1,0 +1,109 @@
+/**
+ * The ONLY place a user-authored overlay regex is ever executed.
+ *
+ * It runs here, in a worker_thread, because that is the one mechanism that can
+ * actually stop a catastrophically backtracking pattern: `worker.terminate()`
+ * kills the isolate mid-match, where nothing on the main thread could. The
+ * grammar subset in src/overlay-regex.ts is an author-mistake filter, not a
+ * safety proof (see its header for the counterexample that passes it).
+ *
+ * Protocol (decisions-v3 G3) — requests are SERIALIZED by the parent, one at a
+ * time per worker, and each carries a monotonically increasing `generation`:
+ *
+ *   workerData : { progress: SharedArrayBuffer(8) }  // Int32Array(2)
+ *                  [0] = generation currently executing
+ *                  [1] = index of the pattern currently executing, or -1
+ *   in         : { generation, text, patterns: [{ id, source, flags, intent }] }
+ *   out        : { generation, hits: { byPattern: [{ id, intent, matched }] }, elapsedMs }
+ *
+ * The parent can only attribute a timeout to a pattern when BOTH slots agree
+ * with the request it is timing out. `-1` is never grounds for quarantine: it
+ * means either "not started yet" (still compiling) or "finished, the reply is in
+ * flight". Compilation deliberately happens while the index is -1, so a slow
+ * start can never blame a pattern for a budget it did not spend.
+ */
+
+import { parentPort, workerData } from 'node:worker_threads';
+
+const progress = new Int32Array(workerData.progress);
+
+/**
+ * Compiled-regex memo. A resident worker in the inject daemon would otherwise
+ * recompile every pattern on every prompt; the key is the exact pattern list so
+ * an overlay edit invalidates it without any explicit signal.
+ */
+let cachedKey = null;
+let cachedRegexes = [];
+/** How many regexes the LAST `compile()` actually built. 0 means the memo hit. */
+let lastCompiled = 0;
+
+function compile(patterns) {
+  let key = '';
+  for (const pattern of patterns) {
+    key += `${pattern.id}\u0000${pattern.source}\u0000${pattern.flags ?? ''}\u0001`;
+  }
+  if (key === cachedKey) {
+    lastCompiled = 0;
+    return cachedRegexes;
+  }
+  const compiled = [];
+  for (const pattern of patterns) {
+    try {
+      compiled.push(new RegExp(pattern.source, pattern.flags ?? ''));
+    } catch {
+      // An uncompilable pattern never reaches here through the normal load path
+      // (validation rejects it first), but a hand-edited file can carry one.
+      // `null` means "no match", never a thrown request.
+      compiled.push(null);
+    }
+  }
+  cachedKey = key;
+  cachedRegexes = compiled;
+  lastCompiled = compiled.length;
+  return compiled;
+}
+
+parentPort.on('message', (request) => {
+  const generation = Number(request?.generation ?? 0);
+  const text = typeof request?.text === 'string' ? request.text : '';
+  const patterns = Array.isArray(request?.patterns) ? request.patterns : [];
+  // Claim the generation BEFORE anything else, and leave the index at -1 for the
+  // whole compile step.
+  Atomics.store(progress, 0, generation);
+  Atomics.store(progress, 1, -1);
+  const started = performance.now();
+  const regexes = compile(patterns);
+  const byPattern = [];
+  for (let i = 0; i < patterns.length; i++) {
+    Atomics.store(progress, 1, i);
+    const regex = regexes[i];
+    let matched = false;
+    if (regex) {
+      try {
+        matched = regex.test(text);
+      } catch {
+        matched = false;
+      }
+    }
+    byPattern.push({
+      id: patterns[i].id,
+      intent: patterns[i].intent ?? null,
+      matched,
+    });
+  }
+  // Finished: from here a timeout is the reply being in flight, not a pattern.
+  Atomics.store(progress, 1, -1);
+  parentPort.postMessage({
+    generation,
+    hits: { byPattern },
+    elapsedMs: performance.now() - started,
+    // 0 on a resident worker's second and later prompts: the memo held.
+    compiled: lastCompiled,
+  });
+});
+
+// `'online'` fires when the worker STARTS executing this file, which is well
+// before the listener above exists — a first request gated on it would spend a
+// chunk of its 50 ms execution budget on module evaluation. This message means
+// "the handler is installed", which is what the parent actually needs.
+parentPort.postMessage({ ready: true });

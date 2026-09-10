@@ -13,6 +13,17 @@ import { validateBenchmarkReport } from "./benchmark-contract.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SELF = fileURLToPath(import.meta.url);
 const argv = process.argv.slice(2);
+
+// Overlays off for this process AND every child: each spawn below merges
+// `...process.env`, so setting it here is what reaches the sync/analyze
+// workers, the MCP daemon, the hook processes and the UI server (overlays §6).
+// The report does NOT echo this variable — it observes the filesystem — so a
+// polluted root cannot pass by merely claiming it was clean.
+process.env.MEMEX_DISABLE_OVERLAYS = "1";
+// The benchmark runs the MCP server from this checkout, which is not an
+// installed plugin root; since 0.6.3 (#84) such a server keeps the inject socket
+// closed unless told otherwise. AC_PERF measures the warm path, so open it.
+process.env.MEMEX_INJECT_DAEMON = "1";
 const numberArg = (name, fallback) => {
   const index = argv.indexOf(name);
   const value = index >= 0 ? Number(argv[index + 1]) : fallback;
@@ -467,14 +478,31 @@ async function main() {
     );
     const { createDomain, createCategory, createRelation, getRelatedFacts } =
       await import(path.join(ROOT, "dist", "ontology-db.js"));
-    const { initEmbeddings, generateEmbedding } = await import(
-      path.join(ROOT, "dist", "embeddings.js")
+    const {
+      initEmbeddings,
+      generateEmbedding,
+      EMBEDDING_MODEL,
+      EMBEDDING_VERSION,
+      embeddingStubEnabled,
+    } = await import(path.join(ROOT, "dist", "embeddings.js"));
+    const { resolveLlmSelection } = await import(
+      path.join(ROOT, "dist", "model-settings.js")
+    );
+    const { observeOverlayBenchmarkEnvironment } = await import(
+      path.join(ROOT, "dist", "extraction-rules.js")
     );
     const { searchConversations } = await import(
       path.join(ROOT, "dist", "search.js")
     );
     const db = initDatabase();
     await initEmbeddings();
+
+    // Vector geometry is MEASURED, not declared. `memex models show` refuses to
+    // print a dimension it has not observed (src/models-cli.ts), and a receipt
+    // has less licence than a CLI to guess: AC_PERF_01/02 measure this exact
+    // vector space.
+    const embeddingDims = (await generateEmbedding("benchmark geometry probe"))
+      .length;
 
     const domain = createDomain(
       db,
@@ -736,6 +764,9 @@ async function main() {
     const syncRss = syncSamples.map((sample) => sample.peak_rss_mb);
     const analyzeTimes = analyzeSamples.map((sample) => sample.runtime_ms);
     const analyzeRss = analyzeSamples.map((sample) => sample.peak_rss_mb);
+    // `MEMEX_HOME` still points at `primary.home`, so both blocks describe the
+    // root this run actually measured.
+    const llm = resolveLlmSelection();
     const report = {
       verdict: "PASS",
       environment: {
@@ -745,6 +776,32 @@ async function main() {
         recorded_at: new Date().toISOString(),
         isolation: temp,
         thresholds_predeclared: THRESHOLDS,
+        // Which system produced these numbers (models §13.1). The benchmark
+        // never calls `codex exec` — it drives dist/sync.js, dist/analyze.js,
+        // the hook/daemon transport and a Chrome probe — so `llm_*` records the
+        // selection that WAS IN EFFECT, not an observed call, and `_source`
+        // keeps that distinction in the receipt. `embedding_*` is different:
+        // AC_PERF_01/02 measure real vector search, so it is observed.
+        models: {
+          llm_model: llm.model,
+          llm_model_source: llm.modelSource,
+          llm_reasoning: llm.reasoning ?? "unset",
+          llm_reasoning_source: llm.reasoningSource,
+          embedding_model: EMBEDDING_MODEL,
+          embedding_model_source: process.env.MEMEX_EMBEDDING_MODEL
+            ? "env"
+            : "default",
+          embedding_version: EMBEDDING_VERSION,
+          embedding_dims: embeddingDims,
+          // 0.7.1 moves authority to the `embedding_identity` row and adds a
+          // generation; until then the honest source is the resolved config.
+          embedding_source: "resolved-config",
+          embedding_generation: null,
+          embedding_stub: embeddingStubEnabled(),
+        },
+        // Observed from the benchmark root's filesystem, not echoed from
+        // MEMEX_DISABLE_OVERLAYS (overlays §6).
+        overlays: observeOverlayBenchmarkEnvironment(),
       },
       corpus: {
         rollouts,
