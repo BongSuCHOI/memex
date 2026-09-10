@@ -1674,6 +1674,16 @@ export function claimMemoryJobByIdWithReason(
       row.state,
     ).changes;
     if (changed !== 1) return refuse("cas");
+    // Issue #31: a claim that actually proceeds is, by definition, no longer
+    // waiting on a configuration — so the hold marker is lifted here rather
+    // than by whoever fixed the setting, which would have to know which jobs.
+    // If the same configuration refuses this attempt too, the HOLD transition
+    // writes the marker back.
+    if (columnNames(db, "memory_jobs").has("hold_reason")) {
+      db.prepare(
+        "UPDATE memory_jobs SET hold_reason = NULL WHERE job_id = ? AND hold_reason IS NOT NULL",
+      ).run(row.job_id);
+    }
     return {
       job: db.prepare("SELECT * FROM memory_jobs WHERE job_id = ?")
         .get(row.job_id) as ClaimedMemoryJob,

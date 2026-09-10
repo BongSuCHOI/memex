@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { l2DistanceToSimilarity } from './db.js';
 import type { Fact, RelationType, OntologyCategory } from './types.js';
 import { callMemoryModel, parseJsonResponse } from './llm.js';
+import { classifyLlmError } from './llm-error-class.js';
 import { EMBEDDING_VERSION, generateEmbedding } from './embeddings.js';
 import { searchFactsInScope } from './fact-db.js';
 import { readScopeForFact } from './read-scope.js';
@@ -923,6 +924,11 @@ async function classifyFactsBatchInternal(
         { modelContext: options.modelContext },
       );
     } catch (error) {
+      // Issue #31: BEFORE the split branch and before `failed.push`. A rejected
+      // model selection says nothing about these facts, so splitting the batch
+      // buys identical refusals and parking them burns classification attempts
+      // that the fix cannot give back.
+      if (classifyLlmError(error) === 'config') throw error;
       const errorCode = (error as { code?: unknown } | null)?.code;
       if (errorCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || errorCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
         if (subset.length > 1) {

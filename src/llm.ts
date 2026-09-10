@@ -5,22 +5,30 @@ import { LLM_WORKDIR_BASENAME } from './paths.js';
 import { classifyLlmError, EmptyLlmResponseError } from './llm-error-class.js';
 import {
   runCodex,
+  sanitizeProviderMessage,
   type CodexExecObservation,
   type CodexExecOptions,
+  type CodexRequestRejectedError,
   type CodexTokenUsage,
 } from './codex-exec.js';
 import {
+  activeModelConfigHold,
   finishModelAttempt,
   exhaustModelBudget,
   getModelWorkContext,
   ModelBudgetInputLimitError,
   ModelBudgetOutputLimitError,
   ModelBudgetOutputSchemaError,
+  ModelConfigHeldError,
+  recordModelConfigHold,
+  touchModelConfigHold,
   reserveModelAttempt,
+  settleConfigRejectedAttempt,
   withResolvedModelWorkContext,
   type ModelWorkContext,
   type ModelAttemptReservation,
 } from './model-budget.js';
+import { resolveLlmSelection } from './model-settings.js';
 
 // Stable containment directory for LLM-side artifacts. CodexExec gives every
 // call its own mkdtemp workdir and runs codex exec with --ephemeral +
@@ -64,14 +72,24 @@ export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema
   /** Durable model-work context. Existing callers may omit this; a stable
    * standalone budget is created for the enclosing call. */
   modelContext?: Partial<ModelWorkContext>;
+  /** Issue #31: per-call model override, so the evaluation harness and the
+   *  settings probe can name a model without mutating process env globally. */
+  model?: string | null;
+  /** Per-call reasoning effort. `null` means "send no flag". */
+  reasoningEffort?: string | null;
+  /** Issue #31: the ONLY way past an active config hold. The settings probe
+   *  sets it, because otherwise the user could never verify a fix. */
+  bypassConfigHold?: boolean;
 }
 
 /**
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
- * Model resolution: MEMEX_CODEX_MODEL, then codex-exec's central default
- * (DEFAULT_CODEX_MODEL = gpt-5.6-luna).
- * The resolved id is always forwarded via -m.
+ *
+ * Issue #31: this function no longer resolves the model. `buildCodexExecArgs`
+ * is the single interpretation point, so a per-call override is forwarded and
+ * everything else (env, models.json, the core default) is decided there — the
+ * callers that bypass this module entirely get the same answer.
  */
 async function callOnce(
   systemPrompt: string,
@@ -81,14 +99,14 @@ async function callOnce(
   options: MemoryModelOptions = {},
   reservation?: ModelAttemptReservation,
 ): Promise<string> {
-  const model = process.env.MEMEX_CODEX_MODEL || null;
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
     timeoutRaw != null && /^\d+$/.test(timeoutRaw.trim()) ? parseInt(timeoutRaw.trim(), 10) : 180_000;
   return runCodex({
     systemPrompt,
     userMessage,
-    model,
+    model: options.model ?? null,
+    ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
     timeoutMs,
     deadlineAt: reservation?.deadlineAt,
     maxInputChars: reservation?.maxInputChars,
@@ -171,6 +189,59 @@ function errorClassFor(error: unknown): string {
     return String((error as { code: string }).code);
   }
   return 'unknown';
+}
+
+/**
+ * Write the durable hold for the selection this call used, and one audit line.
+ *
+ * The provider's own sentence is the most useful thing a user can be shown
+ * here ("the 'X' model is not supported when using Codex with a ChatGPT
+ * account"), so it is stored — bounded and control-character stripped by
+ * `sanitizeProviderMessage` before it ever reaches a row.
+ */
+function recordConfigHold(
+  db: NonNullable<ModelWorkContext['db']>,
+  selection: ReturnType<typeof resolveLlmSelection>,
+  error: unknown,
+  context: ModelWorkContext,
+): void {
+  const detail = (error as { detail?: CodexRequestRejectedError['detail'] })?.detail;
+  const held = (error as { hold?: { status: number | null; providerType: string | null; providerMessage: string } })?.hold;
+  recordModelConfigHold(db, {
+    fingerprint: selection.fingerprint,
+    model: selection.model,
+    reasoningEffort: selection.reasoning,
+    status: detail?.status ?? held?.status ?? null,
+    providerType: detail?.providerType ?? held?.providerType ?? null,
+    providerMessage:
+      detail?.providerMessage ??
+      held?.providerMessage ??
+      (error instanceof Error ? sanitizeProviderMessage(error.message) : String(error)),
+    stage: context.stage ?? null,
+    jobId: context.jobId ?? null,
+  });
+  console.error(
+    `callMemoryModel: model work held — the provider rejected the request envelope for ` +
+      `model "${selection.model}"${selection.reasoning ? ` at reasoning effort "${selection.reasoning}"` : ''}. ` +
+      'No job failed and no attempt was consumed. Fix the selection and it resumes automatically: memex models show',
+  );
+  // Audit is best-effort by construction: a missing log must not turn a held
+  // call into a crashed one.
+  void (async () => {
+    try {
+      const { appendUiAuditLine } = await import('./ontology-admin.js');
+      appendUiAuditLine('models.llm.hold', {
+        model: selection.model,
+        reasoning: selection.reasoning,
+        provider_status: detail?.status ?? held?.status ?? null,
+        provider_type: detail?.providerType ?? held?.providerType ?? null,
+        stage: context.stage ?? null,
+        fingerprint_prefix: selection.fingerprint.slice(0, 12),
+      });
+    } catch {
+      /* the hold itself is the durable record */
+    }
+  })();
 }
 
 function summarizeObservations(
@@ -263,6 +334,29 @@ async function callMemoryModelInternal(
     ? `${systemPrompt}\n\n---\n\n${userMessage}`
     : userMessage).length;
 
+  // Issue #31 — the config-hold gate, placed BEFORE the first reservation.
+  //
+  // The fingerprint covers a per-call override, so an evaluation harness's
+  // one-off model is gated on its own selection and cannot be blocked by (or
+  // block) the default one. Past this point a held selection costs nothing at
+  // all: no reservation, no provider call.
+  const selection = resolveLlmSelection({
+    model: options.model,
+    ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
+  });
+  //
+  // `bypassConfigHold` only skips the REFUSAL. Lifting the hold and releasing the
+  // jobs behind it belongs to the probe, after it knows the call succeeded —
+  // releasing here would free work on the strength of a call that may be about
+  // to be refused again.
+  if (!options.bypassConfigHold) {
+    const hold = activeModelConfigHold(db, selection.fingerprint);
+    if (hold) {
+      touchModelConfigHold(db, selection.fingerprint);
+      throw new ModelConfigHeldError(hold);
+    }
+  }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     const attemptStarted = performance.now();
     // Reservation is deliberately outside the provider catch. Exhaustion is
@@ -274,6 +368,8 @@ async function callMemoryModelInternal(
       jobId: context.jobId ?? null,
       targetId: context.targetId ?? null,
       inputChars,
+      model: selection.model,
+      reasoningEffort: selection.reasoning,
     });
     let attemptObservation: CodexExecObservation | undefined;
     try {
@@ -306,6 +402,10 @@ async function callMemoryModelInternal(
         outputChars: text.length,
         tokenUsage: attemptObservation?.token_usage ?? null,
         tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+        model: attemptObservation?.model ?? null,
+        ...(attemptObservation && 'reasoning_effort' in attemptObservation
+          ? { reasoningEffort: attemptObservation.reasoning_effort }
+          : {}),
       });
       return {
         text,
@@ -320,19 +420,38 @@ async function callMemoryModelInternal(
         error instanceof ModelBudgetOutputLimitError ||
         error instanceof ModelBudgetOutputSchemaError ||
         error instanceof ModelBudgetInputLimitError;
-      finishModelAttempt(db, {
-        attemptId: reservation.attemptId,
-        state: localDeterministic ? 'failed' : 'unknown',
-        durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
-        outputChars: attemptObservation ? undefined : null,
-        tokenUsage: attemptObservation?.token_usage ?? null,
-        tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
-        errorClass: errorClassFor(error),
-      });
+      const errorClass = classifyLlmError(error);
+      if (errorClass === 'config') {
+        // Issue #31: the provider refused the ENVELOPE, so this reservation
+        // bought nothing. Keep the row as evidence, return the reservation to
+        // the budget (and lift the exhaustion it may have caused), and record
+        // the hold so the next call does not pay for the same mistake.
+        settleConfigRejectedAttempt(db, {
+          attemptId: reservation.attemptId,
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          errorClass: errorClassFor(error),
+        });
+        recordConfigHold(db, selection, error, context);
+      } else {
+        finishModelAttempt(db, {
+          attemptId: reservation.attemptId,
+          state: localDeterministic ? 'failed' : 'unknown',
+          durationMs: attemptObservation?.duration_ms ?? performance.now() - attemptStarted,
+          outputChars: attemptObservation ? undefined : null,
+          tokenUsage: attemptObservation?.token_usage ?? null,
+          tokenUsageStatus: attemptObservation?.token_usage ? 'observed' : 'NOT_PROVEN',
+          errorClass: errorClassFor(error),
+          model: attemptObservation?.model ?? null,
+        });
+      }
       lastError = error;
       // This request cannot succeed by retrying: local output/input/schema
-      // bounds and recognized deterministic provider rejections stop here.
-      if (localDeterministic || classifyLlmError(error) === 'deterministic') throw error;
+      // bounds, recognized deterministic provider rejections, and a rejected
+      // request envelope all stop here. Retrying a 'config' error would just
+      // buy three identical refusals per call.
+      if (localDeterministic || errorClass === 'deterministic' || errorClass === 'config') {
+        throw error;
+      }
     }
     if (attempt < retries) {
       const remaining = reservation.deadlineAt

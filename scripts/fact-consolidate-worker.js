@@ -63,6 +63,20 @@ function releaseLock() {
   } catch { /* ignore */ }
 }
 
+/**
+ * Issue #31 — pre-claim gate. The session hook already skips spawning us when a
+ * model selection is held, but this worker can be run directly, so the gate
+ * lives here too. Returning is exit 0: a held selection is not a failure.
+ */
+async function modelConfigHeld(db) {
+  try {
+    const { currentModelConfigHold } = await import('../dist/model-budget.js');
+    return currentModelConfigHold(db);
+  } catch {
+    return null; // a pre-0.7.0 database has no hold table
+  }
+}
+
 async function main() {
   if (!acquireLock()) {
     // Another consolidate worker already holds the GLOBAL lock — exit cleanly.
@@ -77,6 +91,14 @@ async function main() {
   let db;
   try {
     db = initDatabase();
+    const held = await modelConfigHeld(db);
+    if (held) {
+      log(
+        `fact-consolidate: held on a model setting ("${held.model}") — no work claimed, ` +
+          'no attempt consumed; fix it and it resumes automatically (memex models show)',
+      );
+      return;
+    }
     // Queue membership is stored with each fact. Historical created_at never
     // controls local processing order, so late sync imports cannot be skipped.
     const result = await consolidateAllPending(db, {

@@ -34,9 +34,11 @@ import {
 import { classifyLlmError } from "./llm-error-class.js";
 import { indexHotEvidenceForSession } from "./continuity-identity.js";
 import {
+  currentModelConfigHold,
   deferMemoryJobForModelBudget,
   ensureModelBudgetSchema,
   findExhaustedModelBudgetForClaim,
+  holdMemoryJob,
   isModelBudgetExhausted,
   withResolvedModelWorkContext,
 } from "./model-budget.js";
@@ -61,7 +63,7 @@ characters, each text under 500 characters, and every list at eight items.`;
 export interface ContinuityWorkerResult {
   jobId: string;
   kind: "capture_index" | "capsule_update";
-  state: "completed" | "partial" | "retry" | "dead" | "stale" | "deferred";
+  state: "completed" | "partial" | "retry" | "dead" | "stale" | "deferred" | "held";
   detail: string;
 }
 
@@ -523,6 +525,22 @@ async function processCapsule(
         detail: message,
       };
     }
+    // Issue #31: a rejected model selection must not reach failMemoryJob.
+    //
+    // That path makes the LAST attempt `dead`, writes `failed-visible` over the
+    // capsule checkpoint state, and — below — steps the evidence frontier past
+    // the fragment it could not distill. None of that is recoverable, and none
+    // of it is this evidence's fault.
+    if (classifyLlmError(error) === "config") {
+      holdMemoryJob(db, {
+        jobId,
+        owner,
+        leaseGeneration: claim.lease_generation,
+        reason: "model_config_rejected",
+        detail: message,
+      });
+      return { jobId, kind: "capsule_update", state: "held", detail: message };
+    }
     const transition = failMemoryJob(db, {
       jobId,
       owner,
@@ -559,9 +577,14 @@ async function processCapsule(
       // fragment permanently (every later read starts past it and recovery did
       // not roll the frontier back). Anything else stays `failed-visible` at an
       // unchanged frontier, which is exactly what `memex recover` re-queues.
+      //
+      // Issue #31 adds `config` to the same exclusion, as defence in depth: the
+      // branch above returns first, so this should be unreachable — but if it
+      // ever were reached, an evidence fragment would be lost permanently for a
+      // model setting, which is the worst outcome in this file.
       const errorClass = classifyLlmError(error);
       const atFloor = capsulePageHintAtFloor(db, claim.checkpoint_id);
-      const skipped = atFloor && errorClass !== "transient"
+      const skipped = atFloor && errorClass !== "transient" && errorClass !== "config"
         ? skipCapsuleEvidenceHead(db, attemptWorkstreamId, attemptPage)
         : null;
       if (skipped !== null) {
@@ -611,6 +634,18 @@ export async function runContinuityWorker(
     outputSchema: WORK_CAPSULE_OUTPUT_SCHEMA,
   }));
   const results: ContinuityWorkerResult[] = [];
+  // Issue #31 (12b) — gate the CAPSULE lane only.
+  //
+  // This worker drains two kinds: the model-free P0 `capture_index` and the
+  // model-using P1 `capsule_update`. Refusing to spawn it at all while a model
+  // selection is held would stop conversation capture, which is the one thing
+  // that must never stop. So the gate lives here, on one lane.
+  const configHeld = currentModelConfigHold(db) !== null;
+  if (configHeld) {
+    console.error(
+      "continuity-worker: capsule updates held on a model setting; capture continues (memex models show)",
+    );
+  }
   for (let index = 0; index < maxJobs; index++) {
     scheduleCapsuleBacklog(db);
     const now = options.now ?? new Date();
@@ -625,7 +660,7 @@ export async function runContinuityWorker(
       ));
       continue;
     }
-    const capsule = nextJob(db, "capsule_update", now.toISOString());
+    const capsule = configHeld ? null : nextJob(db, "capsule_update", now.toISOString());
     if (capsule) {
       const result = await processCapsule(db, capsule.job_id, owner, now, model, budgeted);
       results.push(result);

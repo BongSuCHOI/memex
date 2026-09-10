@@ -99,6 +99,26 @@ async function main() {
       MEMEX_MODEL_BUDGET_ID: maintenanceBudget.budgetId,
     };
 
+    // Issue #31 — one lookup, used to gate the MODEL lanes only.
+    //
+    // A rejected model selection must stop model work and nothing else. So this
+    // gates the three derived model workers below, and deliberately does NOT
+    // gate sync-export, the re-embed worker, reconcileFactTiers, or the
+    // Continuity worker: none of those spend a model call, and the Continuity
+    // worker also drains P0 conversation capture (it gates its own capsule lane
+    // internally instead).
+    let configHeld = null;
+    try {
+      const { currentModelConfigHold } = await import('../dist/model-budget.js');
+      configHeld = currentModelConfigHold(db);
+    } catch { /* non-fatal: a pre-0.7.0 database has no hold table */ }
+    const skipForConfigHold = (script) => {
+      console.error(
+        `session-start-maintenance: skipping ${script} — model work is held on a model ` +
+          `setting ("${configHeld.model}"). Fix it and it resumes automatically: memex models show`,
+      );
+    };
+
     const spawnDetached = (script) => {
       try {
         const child = spawn(process.execPath, [path.join(HERE, script)], {
@@ -195,7 +215,8 @@ async function main() {
 
     // Derived work begins only when the Continuity queue is currently drained.
     if (maintenanceBudget.state === 'active') {
-      spawnDetached('fact-consolidate-worker.js');
+      if (configHeld) skipForConfigHold('fact-consolidate-worker.js');
+      else spawnDetached('fact-consolidate-worker.js');
     }
 
     // 2. Auto-resume vector upgrades: stale/missing category, fact, Korean,
@@ -248,7 +269,8 @@ async function main() {
         LIMIT 1
       `).get(maintenanceBudget.budgetId);
       if ((pendingOnto || pendingRelation) && isAutomaticOntologyEnabled() && maintenanceBudget.state === 'active') {
-        spawnDetached('backfill-ontology-worker.js');
+        if (configHeld) skipForConfigHold('backfill-ontology-worker.js');
+        else spawnDetached('backfill-ontology-worker.js');
       }
     } catch { /* non-fatal */ }
 
@@ -260,7 +282,10 @@ async function main() {
         'continuity',
       );
       const pendingExtract = db.prepare(`SELECT 1 FROM (${exSql}) LIMIT 1`).get(...exParams);
-      if (pendingExtract && maintenanceBudget.state === 'active') spawnDetached('backfill-extract-worker.js');
+      if (pendingExtract && maintenanceBudget.state === 'active') {
+        if (configHeld) skipForConfigHold('backfill-extract-worker.js');
+        else spawnDetached('backfill-extract-worker.js');
+      }
     } catch { /* non-fatal */ }
 
   } catch (error) {

@@ -1862,6 +1862,27 @@ export function recordModelConfigHold(
   );
 }
 
+/**
+ * Note one more time this hold blocked work.
+ *
+ * The gate refuses a call without reaching the provider, so nothing else would
+ * record it — yet "this selection has stopped work 14 times" is exactly what
+ * doctor should be able to say, and it also keeps the 30-day TTL from closing a
+ * hold that is actively fencing every session.
+ */
+export function touchModelConfigHold(
+  db: Database.Database,
+  fingerprint: string,
+  now = new Date(),
+): void {
+  if (!tableExists(db, "model_config_holds")) return;
+  db.prepare(
+    `UPDATE model_config_holds
+     SET observed_count = observed_count + 1, last_observed_at = ?
+     WHERE selection_fingerprint = ? AND cleared_at IS NULL`,
+  ).run(now.toISOString(), fingerprint);
+}
+
 /** The active hold for THIS fingerprint, or null. Other fingerprints' rows are
  *  never read, updated or deleted here — that is the whole (b)5 fix. */
 export function activeModelConfigHold(
@@ -1887,6 +1908,32 @@ export function clearModelConfigHold(
     `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
      WHERE selection_fingerprint = ? AND cleared_at IS NULL`,
   ).run(now.toISOString(), reason, fingerprint).changes === 1;
+}
+
+/**
+ * Close every active hold for this model + reasoning pair, whatever SOURCE
+ * recorded it, and report how many were closed.
+ *
+ * Lookups are fingerprint-scoped on purpose — that is what stops two processes
+ * with different env from erasing each other's hold. A REPAIR is different: it
+ * is deliberate and user-initiated ("this model works now"), and the user means
+ * the model, not the path the id took to get here. Without this, a probe run as
+ * `memex models test --model X` could never lift the hold that the same X
+ * recorded through env or models.json, and the repair command would be unable to
+ * repair anything.
+ */
+export function clearModelConfigHoldsForSelection(
+  db: Database.Database,
+  selection: { model: string; reasoningEffort: string | null },
+  reason: "probe-ok" | "manual",
+  now = new Date(),
+): number {
+  ensureModelBudgetSchema(db);
+  return db.prepare(
+    `UPDATE model_config_holds SET cleared_at = ?, cleared_by = ?
+     WHERE cleared_at IS NULL AND model = ?
+       AND COALESCE(reasoning_effort,'') = COALESCE(?,'')`,
+  ).run(now.toISOString(), reason, selection.model, selection.reasoningEffort).changes;
 }
 
 /** Every active hold, flagged with whether it is the one blocking this process.
