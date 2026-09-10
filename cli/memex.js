@@ -80,6 +80,7 @@ COMMANDS:
   status      Show pipeline readiness per stage (read-only)
   jobs        Inspect and recover memory jobs: list|show|retry|dismiss
   recover     Reset terminal (dead) work back to claimable in one transaction
+  models      Choose the model and reasoning effort: show|set|reset|test
   model-work  Inspect durable model-work budgets or explicitly resume one
   backfill    Run extract/ontology/embeddings/receipts backlog explicitly ('all' runs each stage in order)
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
@@ -142,6 +143,9 @@ const HELP_DELEGATES = {
   stats: (dist) => join(dist, "stats-cli.js"),
   analyze: (dist) => join(dist, "analyze-cli.js"),
   sync: (dist) => join(dist, "sync-cli.js"),
+  // Issue #31: `memex models` owns a long help text (resolution order, the
+  // reasoning-level set, what `test` actually spends), so the script prints it.
+  models: (dist) => join(dist, "models-cli.js"),
 };
 
 /**
@@ -255,6 +259,25 @@ in ONE transaction — the same unit that was made terminal together.
 
 --dry-run reports exactly what would be reset and writes nothing.
 Run the worker afterwards: memex-continuity-worker / memex backfill extract.`,
+  // Issue #31 — the full text lives in src/models-cli.ts (HELP_DELEGATES sends
+  // `--help` there). This entry is what puts `models` in KNOWN_COMMANDS, which
+  // is what makes the #36 guard cover it.
+  models: `Usage:
+  memex models show [--json]
+  memex models set --model <id> [--reasoning <level>] [--json]
+  memex models reset [--json]
+  memex models test [--model <id>] [--reasoning <level>] [--json]
+
+Choose the model and reasoning effort Memex uses for its own model work.
+The selection is local to this machine ('<data root>/models.json', never synced).
+Resolution order: MEMEX_CODEX_MODEL / MEMEX_CODEX_REASONING > models.json >
+the built-in default.
+
+show is read-only. set refuses an unknown reasoning level and warns (without
+refusing) when the Codex catalog disagrees. reset deletes the file and never
+touches the effective embedding model. test makes exactly ONE real model call,
+records it in the model-work ledger as stage 'model_probe', and on success
+clears the configuration hold for that selection.`,
   "model-work": MODEL_WORK_USAGE,
   backfill: `Usage: memex backfill <all|extract|ontology|embeddings|receipts> [--background]
 
@@ -408,6 +431,12 @@ async function main() {
 
       case "sync":
         await runScript(join(distDir, "sync-cli.js"), args);
+        break;
+      // Issue #31 — the model/reasoning selection surface. Delegated like sync:
+      // the verbs need a database and the settings file, neither of which the
+      // launcher should know how to open.
+      case "models":
+        await runScript(join(distDir, "models-cli.js"), args);
         break;
       case "update":
         await runScript(
