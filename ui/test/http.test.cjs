@@ -32,6 +32,13 @@ test('동기화 상태는 DB 없이도 읽히고, 변경에는 토큰과 명시�
  const confirmed=await fetch(url,{method:'POST',headers,body:JSON.stringify({action:'export',confirm:true})});
  assert.equal((await confirmed.json()).error.code,'FIXTURE_READ_ONLY');
  assert.equal((await fetch(url,{method:'DELETE',headers})).status,405);
+ // 0.6.3 (#48): 수동 세대 파일·별칭도 같은 엔드포인트의 action이고 같은 안전장치를 통과한다.
+ for(const body of [{action:'archive-export'},{action:'archive-preview',path:'/tmp/x.zip'},{action:'archive-import',path:'/tmp/x.zip'},{action:'alias',deviceId:'device-aaa',alias:'집 맥미니'}]){
+  const noConfirm=await fetch(url,{method:'POST',headers,body:JSON.stringify(body)});
+  assert.equal((await noConfirm.json()).error.code,'CONFIRMATION_REQUIRED',JSON.stringify(body));
+  const res=await fetch(url,{method:'POST',headers,body:JSON.stringify({...body,confirm:true})});
+  assert.equal((await res.json()).error.code,'FIXTURE_READ_ONLY',JSON.stringify(body));
+ }
 });
 test('계층 이관 명령은 관리 명령 allowlist에 등록되어 있다',async()=>{
  const boot=(await get('/api/v2/bootstrap')).data;

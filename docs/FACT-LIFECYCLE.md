@@ -619,6 +619,7 @@ worker 완료 순서는 어떤 경우에도 판정 입력이 아닙니다.
 | `INCIDENT` | trusted test failure 또는 human repeated_signal observation | 0 |
 | `CONTRADICTED` | 순서/authority가 모호한 경쟁 evidence, consolidator verdict가 temporal 판정에 실패한 경우 | 0 |
 | `PROMOTED` / `DEMOTED` (0.6.0) | 사다리 한 칸 이동. actor `user`(UI/CLI), `auto`(유지보수의 SQL 판정), `user-directive`(세션 내 명시 지시), `migrate-tiers`의 `migration`. `outcome`에 `from_tier`/`to_tier`/`actor`/`reason`/`evidence_ids` | 1 |
+| `SYNC_IMPORTED` (0.6.3) | 가져오기에서 같은 fact의 **의미가 달랐던** 건의 판정. actor `sync`, `effective_at_source = peer`, `previous_fact`=밀린 값 / `new_fact`=남은 값, `outcome`에 `source_device_id`/`source_device_alias`/`generation`/`winner`(`peer`\|`local`)/`reason`. 새 fact나 같은 문장은 충돌이 아니므로 기록하지 않고, 이 kind는 **export되지 않습니다**(로컬 provenance) | 0 |
 
 기존 consolidation relation mapping: `DUPLICATE` → event 없음(재표현), `EVOLUTION`/`CONTRADICTION` →
 temporal 판정에 따라 `CHANGED` 또는 historical/`CONTRADICTED`, `INDEPENDENT` → 없음. consolidator `reason`은 항상

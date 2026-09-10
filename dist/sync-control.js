@@ -18,12 +18,16 @@
  * one-line no-op and nothing leaves the machine.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { initDatabase } from "./db.js";
-import { ExportLockedError, durableStateFingerprint, exportForSync, readExportStatus, recordExportStatus, } from "./sync-export.js";
-import { importFromSync } from "./sync-import.js";
-import { readSyncConfig, resolveSyncDir, syncConfigPath, syncDirSource, writeSyncConfig, } from "./sync-paths.js";
-export { readSyncConfig, resolveSyncDir, syncConfigPath, syncDirSource, } from "./sync-paths.js";
+import { getMemexHome } from "./paths.js";
+import { createZip, readZip } from "./zip.js";
+import { CURRENT_MANIFEST, ExportLockedError, GENERATIONS_DIR_NAME, SYNC_PAYLOAD_FILE_NAMES, durableStateFingerprint, exportForSync, readExportStatus, recordExportStatus, } from "./sync-export.js";
+import { importFromSync, previewSyncImport, } from "./sync-import.js";
+import { localSyncStateDir, readDeviceAliases, readSyncConfig, resolveSyncDir, syncConfigPath, syncDirSource, writeSyncConfig, } from "./sync-paths.js";
+export { DEVICE_ALIAS_MAX_LENGTH, deviceAliasPath, readDeviceAliases, readSyncConfig, resolveSyncDir, setDeviceAlias, syncConfigPath, syncDirSource, } from "./sync-paths.js";
 function localDeviceId() {
     try {
         const db = initDatabase();
@@ -50,6 +54,7 @@ function directoryWritable(dir) {
 }
 function readPeers(dir, selfDeviceId) {
     const devicesDir = path.join(dir, "devices");
+    const localAliases = readDeviceAliases();
     let entries;
     try {
         entries = fs.readdirSync(devicesDir, { withFileTypes: true });
@@ -73,11 +78,15 @@ function readPeers(dir, selfDeviceId) {
             /* a device with no readable CURRENT has no committed generation */
         }
         let hostname = null;
+        let publishedAlias = null;
         let counts = null;
         if (generation) {
             try {
                 const meta = JSON.parse(fs.readFileSync(path.join(deviceDir, "generations", generation, "meta.json"), "utf8"));
                 hostname = typeof meta.hostname === "string" ? meta.hostname : null;
+                publishedAlias = typeof meta.device_alias === "string" && meta.device_alias.trim()
+                    ? meta.device_alias.trim()
+                    : null;
                 counts = {
                     facts: Number(meta.facts_count ?? 0),
                     revisions: Number(meta.revisions_count ?? 0),
@@ -91,6 +100,8 @@ function readPeers(dir, selfDeviceId) {
         }
         peers.push({
             deviceId: entry.name,
+            alias: localAliases[entry.name] ?? publishedAlias,
+            aliasIsLocal: Object.hasOwn(localAliases, entry.name),
             generation,
             exportedAt,
             hostname,
@@ -115,6 +126,8 @@ export function getSyncStatus() {
         configPath: syncConfigPath(),
         updatedAt: config.updatedAt,
         deviceId,
+        deviceAlias: deviceId ? readDeviceAliases()[deviceId] ?? null : null,
+        archiveDir: archiveExportDir(),
         lastExport: readExportStatus(),
         peers: dirExists ? readPeers(dir, deviceId) : [],
     };
@@ -241,13 +254,249 @@ export async function runSyncImport() {
         };
     }
 }
+// ---------------------------------------------------------------------------
+// Manual file transfer (#48, 0.6.3)
+//
+// The shared folder is the normal path, but it needs a folder both machines can
+// see. A user with no iCloud/Dropbox/Syncthing — or one setting a second Mac up
+// for the first time — needs a file they can AirDrop, mail or carry on a USB
+// stick. These three helpers are that path, and they deliberately reuse the v5
+// generation as-is: one zip holds exactly the files of one committed generation,
+// so the import side runs the same manifest/hash/schema validation as the shared
+// folder instead of a second, weaker format.
+//
+// Every failure message starts with "sync archive" so the Web UI can map the
+// whole family to one guidance class.
+// ---------------------------------------------------------------------------
+/** Generation archives this device wrote, inside the data root. */
+export function archiveExportDir() {
+    return path.join(localSyncStateDir(), "exports");
+}
+/** Upper bound on an archive this device will read (a generation is JSONL). */
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+/** Upper bound on the payload inside it, after decompression. */
+const MAX_ARCHIVE_PAYLOAD_BYTES = 256 * 1024 * 1024;
+const ARCHIVE_FILE_NAMES = [...SYNC_PAYLOAD_FILE_NAMES, "meta.json"];
+function archiveError(message) {
+    return new Error(`sync archive ${message}`);
+}
+/**
+ * Publish one generation and hand back a single zip file.
+ *
+ * Works with sync OFF on purpose: the switch governs the AUTOMATIC paths and the
+ * shared folder, while this is an explicit user action whose whole point is
+ * having no shared folder. The generation is written through the normal
+ * exporter, so the file a user carries is the same set-atomic, hash-pinned
+ * generation a peer would have read from a shared folder. `export-status.json`
+ * is deliberately NOT updated: it records what reached the shared DESTINATION,
+ * and a hand-carried file proves nothing about that.
+ */
+export function exportGenerationArchive(options = {}) {
+    const counts = exportForSync();
+    const dir = resolveSyncDir();
+    const deviceId = localDeviceId();
+    if (!deviceId)
+        throw archiveError("export found no device id after exporting — the local DB is unreadable");
+    const deviceDir = path.join(dir, "devices", deviceId);
+    let generation;
+    try {
+        generation = JSON.parse(fs.readFileSync(path.join(deviceDir, CURRENT_MANIFEST), "utf8")).generation;
+    }
+    catch (error) {
+        throw archiveError(`export could not read the generation it just published: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const generationDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
+    const entries = ARCHIVE_FILE_NAMES.map((name) => ({
+        name,
+        data: fs.readFileSync(path.join(generationDir, name)),
+    }));
+    let exportedAt = null;
+    try {
+        exportedAt = JSON.parse(entries[entries.length - 1].data.toString("utf8"))
+            .exported_at;
+    }
+    catch {
+        /* the manifest was just written by the exporter; treat an unreadable date as absent */
+    }
+    const target = options.outPath
+        ? resolveArchiveTarget(options.outPath)
+        : path.join(archiveExportDir(), `${deviceId}-${generation}.zip`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const body = createZip(entries);
+    // Same publish discipline as a generation: write beside, then rename, so a
+    // reader (or a cloud folder watcher) never sees a half-written archive.
+    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, target);
+    return {
+        path: target,
+        deviceId,
+        deviceAlias: readDeviceAliases()[deviceId] ?? null,
+        generation,
+        exportedAt,
+        bytes: body.length,
+        counts,
+    };
+}
+/**
+ * Keep a server-side write inside the data root.
+ *
+ * The Web UI asks a loopback server to write a file the browser cannot download
+ * (its sandbox blocks that), so the path comes from a text field. Confining it to
+ * the data root means a typo — or a hostile page that got past the CSRF token —
+ * cannot overwrite `~/.ssh/authorized_keys`. Reading is not restricted this way:
+ * an imported file arrives wherever the user's download folder is.
+ */
+function resolveArchiveTarget(outPath) {
+    if (!path.isAbsolute(outPath))
+        throw archiveError("export path must be absolute");
+    const resolved = path.resolve(outPath);
+    const root = path.resolve(getMemexHome());
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+        throw archiveError(`export path must stay inside the data root (${root})`);
+    }
+    if (!resolved.toLowerCase().endsWith(".zip"))
+        throw archiveError("export path must end with .zip");
+    return resolved;
+}
+/**
+ * Materialize one archive (zip file, or an already-unpacked generation
+ * directory) as a one-device shared folder in a temp dir.
+ *
+ * Only the five protocol-v5 file names are taken, matched on their basename, so
+ * a zip made by Finder ("compress this folder", which nests everything under the
+ * folder name and may add `__MACOSX/`) works without the user flattening it. The
+ * manifest's own `device_id`/`generation` decide where the staged copy goes —
+ * the integrity pass then re-checks that agreement, so a renamed file cannot
+ * smuggle a generation in under another device's identity.
+ */
+function stageArchive(source) {
+    if (!path.isAbsolute(source))
+        throw archiveError("path must be absolute");
+    const resolved = path.resolve(source);
+    let stat;
+    try {
+        stat = fs.statSync(resolved);
+    }
+    catch {
+        throw archiveError(`was not found at ${resolved}`);
+    }
+    const files = new Map();
+    if (stat.isDirectory()) {
+        for (const name of ARCHIVE_FILE_NAMES) {
+            try {
+                files.set(name, fs.readFileSync(path.join(resolved, name)));
+            }
+            catch {
+                throw archiveError(`directory is missing ${name} — point at one generation directory or its zip`);
+            }
+        }
+    }
+    else {
+        if (stat.size > MAX_ARCHIVE_BYTES) {
+            throw archiveError(`is larger than the ${MAX_ARCHIVE_BYTES} bytes this device reads`);
+        }
+        let unpacked;
+        try {
+            unpacked = readZip(fs.readFileSync(resolved), { maxTotalBytes: MAX_ARCHIVE_PAYLOAD_BYTES });
+        }
+        catch (error) {
+            throw archiveError(`is not a readable zip: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        for (const [name, data] of unpacked) {
+            const base = path.posix.basename(name);
+            if (ARCHIVE_FILE_NAMES.includes(base) && !files.has(base))
+                files.set(base, data);
+        }
+        const missing = ARCHIVE_FILE_NAMES.filter((name) => !files.has(name));
+        if (missing.length > 0) {
+            throw archiveError(`zip is missing ${missing.join(", ")} — it is not a Memex generation export`);
+        }
+    }
+    let manifest;
+    try {
+        manifest = JSON.parse(files.get("meta.json").toString("utf8"));
+    }
+    catch (error) {
+        throw archiveError(`has an unreadable meta.json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const deviceId = typeof manifest.device_id === "string" ? manifest.device_id : "";
+    const generation = typeof manifest.generation === "string" ? manifest.generation : "";
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(deviceId) || !/^[A-Za-z0-9_.:-]{1,128}$/.test(generation)) {
+        throw archiveError("meta.json does not name a device and a generation");
+    }
+    // Importing this device's own export would replay a snapshot of the local DB
+    // over itself. The clocks make that harmless, but it is always a mistake —
+    // say so instead of reporting a no-op import.
+    if (deviceId === localDeviceId()) {
+        throw archiveError("was exported by THIS device — import a file from the other Mac");
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memex-sync-archive-"));
+    const deviceDir = path.join(dir, "devices", deviceId);
+    const generationDir = path.join(deviceDir, GENERATIONS_DIR_NAME, generation);
+    fs.mkdirSync(generationDir, { recursive: true });
+    for (const name of ARCHIVE_FILE_NAMES)
+        fs.writeFileSync(path.join(generationDir, name), files.get(name));
+    fs.writeFileSync(path.join(deviceDir, CURRENT_MANIFEST), JSON.stringify({ generation }, null, 2));
+    return {
+        dir,
+        deviceId,
+        deviceAlias: readDeviceAliases()[deviceId] ??
+            (typeof manifest.device_alias === "string" && manifest.device_alias.trim()
+                ? manifest.device_alias.trim()
+                : null),
+        generation,
+        source: resolved,
+        cleanup: () => {
+            try {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+            catch {
+                /* a temp directory that refuses to go is not a reason to fail an import */
+            }
+        },
+    };
+}
+/** Validate an archive and report what importing it WOULD do. Changes nothing. */
+export function previewImportArchive(source) {
+    const staged = stageArchive(source);
+    try {
+        return {
+            ...previewSyncImport({ syncDir: staged.dir }),
+            source: staged.source,
+            deviceId: staged.deviceId,
+            deviceAlias: staged.deviceAlias,
+            generation: staged.generation,
+        };
+    }
+    finally {
+        staged.cleanup();
+    }
+}
+/** Apply one archive through the normal importer. */
+export async function importArchive(source) {
+    const staged = stageArchive(source);
+    try {
+        return {
+            source: staged.source,
+            deviceId: staged.deviceId,
+            deviceAlias: staged.deviceAlias,
+            generation: staged.generation,
+            result: await importFromSync({ syncDir: staged.dir }),
+        };
+    }
+    finally {
+        staged.cleanup();
+    }
+}
 /** One-line human summary shared by the CLI and the hook scripts. */
 export function formatSyncStatus(status) {
     const lines = [];
     lines.push(`Sync: ${status.enabled ? "ON" : "OFF"} (config: ${status.configPath})`);
     lines.push(`Shared folder: ${status.dir} (${status.dirSource})` +
         `${status.dirExists ? (status.dirWritable ? "" : " — NOT WRITABLE") : " — does not exist yet"}`);
-    lines.push(`This device: ${status.deviceId ?? "not assigned yet (assigned on first export)"}`);
+    lines.push(`This device: ${status.deviceId ?? "not assigned yet (assigned on first export)"}` +
+        (status.deviceAlias ? ` "${status.deviceAlias}"` : " (no alias — memex sync alias <name>)"));
     if (!status.lastExport) {
         lines.push(status.enabled
             ? "Last export: never — SessionEnd and the maintenance wake export when durable state changed"
@@ -269,7 +518,7 @@ export function formatSyncStatus(status) {
     else {
         lines.push(`Devices in the shared folder: ${status.peers.length}`);
         for (const peer of status.peers) {
-            lines.push(`  ${peer.deviceId}${peer.isSelf ? " (this device)" : ""}` +
+            lines.push(`  ${peer.alias ? `"${peer.alias}" ` : ""}${peer.deviceId}${peer.isSelf ? " (this device)" : ""}` +
                 ` generation=${peer.generation ?? "none"} exported_at=${peer.exportedAt ?? "-"}` +
                 (peer.hostname ? ` host=${peer.hostname}` : "") +
                 (peer.counts ? ` facts=${peer.counts.facts}` : " manifest=unreadable"));

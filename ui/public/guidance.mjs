@@ -296,6 +296,16 @@ export const CLASSES=[
   ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'}],
   source:'docs/GUIDE.md#10-저장-위치와-sync'},
 
+ // 0.6.3 (#48): 수동 세대 파일(zip/디렉터리) 가져오기·내보내기의 거부. 코어의 모든 사유가
+ // "sync archive …"로 시작하므로 한 클래스로 모인다.
+ {id:'sync-archive-invalid',title:'세대 파일을 쓰거나 읽을 수 없음',
+  match:['sync archive'],
+  cause:'지목한 경로가 Memex 세대 파일이 아니거나(zip 안에 meta.json과 4개 JSONL이 모두 있어야 합니다), 이 기기가 만든 파일이거나, 내보내기 경로가 데이터 루트 밖입니다.',
+  impact:'아무것도 적용되지 않았습니다. 기존 기억은 그대로입니다.',
+  next:'다른 맥의 관리 › 동기화에서 만든 zip 경로를 그대로 입력하세요. 오류 원문에 어느 조건이 깨졌는지 그대로 적혀 있습니다.',
+  ignorable:false,actions:[{kind:'view',to:'/settings',query:{tab:'sync'},label:'동기화 설정'},{kind:'command',text:'memex sync import --archive <path> --dry-run'}],
+  source:'docs/GUIDE.md#10-저장-위치와-sync'},
+
  {id:'operation-incomplete',title:'관리 실행이 남은 작업을 두고 끝남',
   match:[/\bexit 2\b/,'남은 작업'],
   cause:'백필이 전경에서 끝났지만 처리할 작업이 남아 종료 코드 2로 끝났습니다. 실패가 아닙니다.',

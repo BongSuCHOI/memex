@@ -8,7 +8,8 @@ import { canonicalizeProjectPath } from "./project-identity.js";
 import { PRIVACY_TOMBSTONE_REASON } from "./conversation-policy.js";
 import { applyReplicatedLifecycle, compareTimestamps } from "./fact-management.js";
 import { resolveProjectWorkspace } from "./continuity-identity.js";
-import { CHRONICLE_EVENT_KINDS, insertReplicatedChronicleEvent, purgeChronicleForSources, recordChronicleTombstone, } from "./chronicle.js";
+import { CHRONICLE_EVENT_KINDS, insertReplicatedChronicleEvent, purgeChronicleForSources, recordChronicleEvent, recordChronicleTombstone, } from "./chronicle.js";
+import { readDeviceAliases } from "./sync-paths.js";
 /**
  * Every promotion state the local writer accepts. Issue #37 problem 4: the
  * importer used to coerce anything that was not `decision`/`project-current`
@@ -657,11 +658,11 @@ function mergeTombstones(a, b) {
         reason: PRIVACY_TOMBSTONE_REASON,
     };
 }
-function importTombstones(db, generations, result) {
+function planTombstoneImports(db, generations, issues) {
     const byFact = new Map();
     const byEvent = new Map();
     for (const generation of generations) {
-        for (const value of parseFromPinned(generation, "fact-tombstones.jsonl", result.malformedRows)) {
+        for (const value of parseFromPinned(generation, "fact-tombstones.jsonl", issues)) {
             const eventRow = parseEventTombstone(value);
             if (eventRow) {
                 const previous = byEvent.get(eventRow.event_id);
@@ -678,25 +679,11 @@ function importTombstones(db, generations, result) {
             byFact.set(row.fact_id, previous ? mergeTombstones(previous, row) : row);
         }
     }
-    // Chronicle events are immutable, so an event tombstone is terminal: the
-    // local copy is removed (with its incident occurrence) and the id is
-    // remembered so later replays cannot resurrect it.
+    const plan = { events: [], facts: [] };
     for (const tombstone of byEvent.values()) {
         const existing = db.prepare("SELECT deleted_at FROM chronicle_tombstones WHERE event_id = ?")
             .get(tombstone.event_id);
-        const commit = db.transaction(() => {
-            const present = !!db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(tombstone.event_id);
-            if (present) {
-                db.prepare("DELETE FROM incident_occurrences WHERE event_id = ?").run(tombstone.event_id);
-                db.prepare("UPDATE fact_revisions SET reverts_event_id = NULL WHERE reverts_event_id = ?").run(tombstone.event_id);
-                db.prepare("DELETE FROM fact_revisions WHERE id = ?").run(tombstone.event_id);
-            }
-            recordChronicleTombstone(db, tombstone.event_id, tombstone.reason, tombstone.deleted_at);
-            return present;
-        });
-        commit();
-        if (!existing)
-            result.newTombstones++;
+        plan.events.push({ tombstone, alreadyKnown: !!existing });
     }
     for (const tombstone of byFact.values()) {
         const localFact = db.prepare("SELECT COALESCE(NULLIF(semantic_updated_at, ''), updated_at) AS semantic_clock, updated_at FROM facts WHERE id = ?").get(tombstone.fact_id);
@@ -725,6 +712,31 @@ function importTombstones(db, generations, result) {
         // clock이다(P1-3) — 삭제 이후의 메타데이터 touch는 삭제를 되돌리지 못한다.
         if (!privacy && localFact && compareTimestamps(localFact.semantic_clock, tombstone.deleted_at) > 0)
             continue;
+        plan.facts.push({ tombstone, localTombstone, deletesLocalFact: !!localFact });
+    }
+    return plan;
+}
+function importTombstones(db, generations, result) {
+    const plan = planTombstoneImports(db, generations, result.malformedRows);
+    // Chronicle events are immutable, so an event tombstone is terminal: the
+    // local copy is removed (with its incident occurrence) and the id is
+    // remembered so later replays cannot resurrect it.
+    for (const { tombstone, alreadyKnown } of plan.events) {
+        const commit = db.transaction(() => {
+            const present = !!db.prepare("SELECT 1 FROM fact_revisions WHERE id = ?").get(tombstone.event_id);
+            if (present) {
+                db.prepare("DELETE FROM incident_occurrences WHERE event_id = ?").run(tombstone.event_id);
+                db.prepare("UPDATE fact_revisions SET reverts_event_id = NULL WHERE reverts_event_id = ?").run(tombstone.event_id);
+                db.prepare("DELETE FROM fact_revisions WHERE id = ?").run(tombstone.event_id);
+            }
+            recordChronicleTombstone(db, tombstone.event_id, tombstone.reason, tombstone.deleted_at);
+            return present;
+        });
+        commit();
+        if (!alreadyKnown)
+            result.newTombstones++;
+    }
+    for (const { tombstone, localTombstone } of plan.facts) {
         const commit = db.transaction(() => {
             const existed = !!db.prepare("SELECT 1 FROM facts WHERE id = ?").get(tombstone.fact_id);
             deleteFactState(db, tombstone.fact_id);
@@ -915,11 +927,46 @@ function rejectStableIdentityConflicts(db, generations, errors) {
     }
     return rejected;
 }
-async function importFacts(db, generations, result) {
+/**
+ * Device name to show beside an imported conflict: this machine's own
+ * `sync/devices.json` entry wins, else the alias the peer published in its
+ * manifest, else nothing. Never the hostname — that is a different fact.
+ */
+function deviceAliasesFor(generations) {
+    const local = readDeviceAliases();
+    const out = new Map();
+    for (const generation of generations) {
+        let published = null;
+        try {
+            const meta = JSON.parse(generation.files.get("meta.json"));
+            published = typeof meta.device_alias === "string" && meta.device_alias.trim()
+                ? meta.device_alias.trim()
+                : null;
+        }
+        catch {
+            /* the integrity pass already accepted this manifest; an absent alias is normal */
+        }
+        out.set(generation.deviceId, local[generation.deviceId] ?? published);
+    }
+    return out;
+}
+/**
+ * Decide what every remote fact row would do to the local state, WITHOUT
+ * applying anything.
+ *
+ * Split out of `importFacts` (#48, 0.6.3) so the manual "세대 파일 가져오기"
+ * preview counts `+N / ~N` with the rules the apply path actually uses, instead
+ * of a second implementation that could drift from it. The only write this
+ * function can cause is `resolveSyncedFactScope` materializing a project row —
+ * which is why the preview runs it inside a transaction it rolls back.
+ */
+function planFactImports(db, generations, issues) {
     const plans = new Map();
+    const conflicts = [];
+    const aliases = deviceAliasesFor(generations);
     const remoteById = new Map();
     for (const generation of generations) {
-        for (const value of parseFromPinned(generation, "facts.jsonl", result.malformedRows)) {
+        for (const value of parseFromPinned(generation, "facts.jsonl", issues)) {
             const parsed = parseSyncFact(value);
             if (!parsed)
                 continue; // strict validation already rejected this generation
@@ -928,7 +975,7 @@ async function importFacts(db, generations, result) {
                 fact = resolveSyncedFactScope(db, parsed);
             }
             catch (error) {
-                result.malformedRows.push({
+                issues.push({
                     file: path.join(generation.source, "facts.jsonl"),
                     line: 0,
                     error: `project identity conflict: ${error instanceof Error ? error.message : String(error)}`,
@@ -940,6 +987,8 @@ async function importFacts(db, generations, result) {
                 remoteById.set(fact.id, {
                     semanticWinner: fact,
                     lifecycleWinner: fact,
+                    semanticDeviceId: generation.deviceId,
+                    semanticGenerationId: generation.generationId,
                     sources: fact.source_exchange_ids,
                     consolidatedCount: fact.consolidated_count,
                 });
@@ -951,6 +1000,8 @@ async function importFacts(db, generations, result) {
             const time = compareTimestamps(fact.semantic_updated_at, agg.semanticWinner.semantic_updated_at);
             if (time > 0 || (time === 0 && semanticConflictKey(fact) >= semanticConflictKey(agg.semanticWinner))) {
                 agg.semanticWinner = fact;
+                agg.semanticDeviceId = generation.deviceId;
+                agg.semanticGenerationId = generation.generationId;
             }
             // Lifecycle axis: the newest lifecycle clock picks activation; an exact
             // tie between differing states resolves to INACTIVE (the safe default,
@@ -1011,12 +1062,35 @@ async function importFacts(db, generations, result) {
         const semanticTime = compareTimestamps(remote.semantic_updated_at, local.semantic_updated_at);
         const localKey = semanticConflictKey(local);
         const remoteKey = semanticConflictKey(remote);
-        if (semanticTime > 0 || (semanticTime === 0 && remoteKey > localKey)) {
+        const peerWins = semanticTime > 0 || (semanticTime === 0 && remoteKey > localKey);
+        if (peerWins) {
             plan.semantic = { mode: "replace", fact: remote, localGeneration: local.semantic_generation };
             plan.policy = captureMutationPolicy(db, 'replicated', [remote.id]);
         }
         // Same clock AND same semantic content (tie-identical) is not a conflict —
         // the lineage/lifecycle axes below may still have something to converge.
+        // #48 (0.6.3) — conflict history. Recorded for a DISAGREEMENT about meaning
+        // only: identical text is convergence, and a newer clock carrying the same
+        // sentence is nothing a user needs to adjudicate. Both directions are kept —
+        // "peer overrode this device" and "this device's newer edit stood" are
+        // equally invisible without a record.
+        if (remote.fact !== local.fact) {
+            conflicts.push({
+                factId: remote.id,
+                projectId: remote.project_id ?? local.project_id ?? null,
+                subjectKey: remote.subject_key ?? local.subject_key ?? null,
+                deviceId: agg.semanticDeviceId,
+                deviceAlias: aliases.get(agg.semanticDeviceId) ?? null,
+                generationId: agg.semanticGenerationId,
+                winner: peerWins ? "peer" : "local",
+                reason: peerWins
+                    ? (semanticTime > 0 ? "peer-newer" : "tie-broken-by-key")
+                    : (semanticTime < 0 ? "local-newer" : "tie-broken-by-key"),
+                losingText: peerWins ? local.fact : remote.fact,
+                winningText: peerWins ? remote.fact : local.fact,
+                eventAt: remote.semantic_updated_at,
+            });
+        }
         // --- lineage axis: monotone union/max, judged against the CURRENT row ---
         const mergedSources = [
             ...new Set([...parseFactSourceIds(local.source_exchange_ids), ...parseFactSourceIds(agg.sources)]),
@@ -1046,8 +1120,60 @@ async function importFacts(db, generations, result) {
         if (plan.semantic || plan.lineage || plan.lifecycle)
             plans.set(remote.id, plan);
     }
-    if (plans.size === 0)
+    return { plans, conflicts };
+}
+/**
+ * Append one `SYNC_IMPORTED` event per adjudicated conflict (#48, 0.6.3).
+ *
+ * The single hook point for conflict history: it runs after the apply loop, and
+ * a peer win is only recorded when its semantic commit actually landed
+ * (`applied`) — a reconciliation discarded as stale must not leave a record
+ * claiming the peer's value won. Event-only (`projection_applied = 0`): the
+ * projection change itself is already described by the replicated CHANGED event
+ * that travelled with the payload.
+ */
+function recordSyncImportEvents(db, conflicts, applied) {
+    for (const conflict of conflicts) {
+        if (conflict.winner === "peer" && !applied.has(conflict.factId))
+            continue;
+        try {
+            recordChronicleEvent(db, {
+                kind: "SYNC_IMPORTED",
+                actor: "sync",
+                projectionApplied: false,
+                factId: conflict.factId,
+                projectId: conflict.projectId,
+                subjectKey: conflict.subjectKey,
+                previousValue: conflict.losingText,
+                newValue: conflict.winningText,
+                outcome: {
+                    source_device_id: conflict.deviceId,
+                    source_device_alias: conflict.deviceAlias,
+                    generation: conflict.generationId,
+                    winner: conflict.winner,
+                    reason: conflict.reason,
+                },
+                evidenceAuthority: "unknown",
+                effectiveAt: conflict.eventAt,
+                effectiveAtSource: "peer",
+            });
+        }
+        catch (error) {
+            // History must never fail an import that already converged. The same
+            // decision re-imported collapses on the content-derived id, so this only
+            // fires on a genuine id collision with different content.
+            console.error(`sync-import: could not record import history for fact ${conflict.factId}:`, error instanceof Error ? error.message : error);
+        }
+    }
+}
+async function importFacts(db, generations, result) {
+    const { plans, conflicts } = planFactImports(db, generations, result.malformedRows);
+    if (plans.size === 0) {
+        recordSyncImportEvents(db, conflicts, new Set());
         return;
+    }
+    /** Facts whose semantic replace actually committed — see recordSyncImportEvents. */
+    const applied = new Set();
     await initEmbeddings();
     for (const [factId, plan] of plans) {
         try {
@@ -1170,6 +1296,7 @@ async function importFacts(db, generations, result) {
                 }
                 else if (semantic.mode === "replace") {
                     result.updatedFacts++;
+                    applied.add(factId);
                 }
                 else {
                     result.newFacts++;
@@ -1222,6 +1349,7 @@ async function importFacts(db, generations, result) {
             console.error(`sync-import: failed to reconcile fact ${factId}:`, error instanceof Error ? error.message : error);
         }
     }
+    recordSyncImportEvents(db, conflicts, applied);
 }
 function importRevisions(db, generations, result) {
     for (const generation of generations) {
@@ -1498,7 +1626,7 @@ function rejectInvalidRows(generations, issues) {
  * tombstones win exact-time ties. Source-created timestamps remain historical
  * data and are never used as local processing cursors.
  */
-export async function importFromSync() {
+export async function importFromSync(options = {}) {
     const result = {
         newFacts: 0,
         updatedFacts: 0,
@@ -1509,7 +1637,11 @@ export async function importFromSync() {
         updatedRecallEvents: 0,
         malformedRows: [],
     };
-    const syncDir = getSyncDir();
+    // `syncDir` is the shared folder by default. The manual-file path (#48, 0.6.3)
+    // stages ONE generation in a temp directory with the same `devices/<id>/…`
+    // layout and passes it here, so a hand-carried generation goes through exactly
+    // the protocol-v5 validation a shared-folder generation does.
+    const syncDir = options.syncDir ?? getSyncDir();
     const pinned = collectCommittedGenerations(syncDir, result.malformedRows);
     if (pinned.length === 0)
         return result;
@@ -1532,6 +1664,92 @@ export async function importFromSync() {
         importRevisions(db, generations, result);
         importRecallEvents(db, generations, result);
         return result;
+    }
+    finally {
+        db.close();
+    }
+}
+/**
+ * Dry-run one staged generation directory (#48, 0.6.3).
+ *
+ * Runs the REAL validation and the REAL decision rules
+ * (`collectCommittedGenerations` → `rejectInvalidRows` →
+ * `rejectStableIdentityConflicts` → `planFactImports` / `planTombstoneImports`),
+ * then throws the work away: the whole pass happens inside a transaction that is
+ * always rolled back, because the planner may materialize a `projects` row while
+ * resolving identity. Revision and recall-receipt counts are NOT previewed —
+ * they depend on rows the fact pass would insert first, and this must not report
+ * a number it cannot stand behind.
+ */
+export function previewSyncImport(options) {
+    const rejected = [];
+    const preview = {
+        generations: [],
+        newFacts: 0,
+        updatedFacts: 0,
+        deletedFacts: 0,
+        conflicts: [],
+        rejected,
+    };
+    const pinned = collectCommittedGenerations(options.syncDir, rejected);
+    if (pinned.length === 0)
+        return preview;
+    const invalid = rejectInvalidRows(pinned, rejected);
+    let generations = pinned.filter((generation) => !invalid.has(generationKey(generation)));
+    if (generations.length === 0)
+        return preview;
+    const db = initDatabase();
+    try {
+        const identityRejected = rejectStableIdentityConflicts(db, generations, rejected);
+        generations = generations.filter((generation) => !identityRejected.has(generationKey(generation)));
+        if (generations.length === 0)
+            return preview;
+        const aliases = deviceAliasesFor(generations);
+        for (const generation of generations) {
+            let meta = {};
+            try {
+                meta = JSON.parse(generation.files.get("meta.json"));
+            }
+            catch {
+                /* unreachable: the integrity pass parsed this manifest already */
+            }
+            preview.generations.push({
+                deviceId: generation.deviceId,
+                deviceAlias: aliases.get(generation.deviceId) ?? null,
+                generation: generation.generationId,
+                exportedAt: typeof meta.exported_at === "string" ? meta.exported_at : null,
+                hostname: typeof meta.hostname === "string" ? meta.hostname : null,
+                counts: {
+                    facts: Number(meta.facts_count ?? 0),
+                    revisions: Number(meta.revisions_count ?? 0),
+                    tombstones: Number(meta.tombstones_count ?? 0),
+                    recallEvents: Number(meta.recall_events_count ?? 0),
+                },
+            });
+        }
+        db.exec("BEGIN");
+        try {
+            const { plans, conflicts } = planFactImports(db, generations, rejected);
+            for (const plan of plans.values()) {
+                if (plan.semantic?.mode === "insert")
+                    preview.newFacts++;
+                else if (plan.semantic || plan.lineage || plan.lifecycle)
+                    preview.updatedFacts++;
+            }
+            const tombstones = planTombstoneImports(db, generations, rejected);
+            preview.deletedFacts = tombstones.facts.filter((entry) => entry.deletesLocalFact).length;
+            preview.conflicts = conflicts.map((conflict) => ({
+                factId: conflict.factId,
+                deviceId: conflict.deviceId,
+                deviceAlias: conflict.deviceAlias,
+                winner: conflict.winner,
+                reason: conflict.reason,
+            }));
+        }
+        finally {
+            db.exec("ROLLBACK");
+        }
+        return preview;
     }
     finally {
         db.close();

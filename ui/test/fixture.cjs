@@ -66,7 +66,7 @@ class FixtureCore{
  async tier(){throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');}
  async sync(action){
   if(action!=='status')throw new HttpError(403,'검증용 예제에서는 실제 코어 변경을 실행하지 않습니다.','FIXTURE_READ_ONLY');
-  return {status:{enabled:false,dir:path.join(this.home,'conversation-index','sync'),dirSource:'default',dirExists:false,dirWritable:false,configPath:path.join(this.home,'sync','config.json'),updatedAt:null,deviceId:null,lastExport:null,peers:[]}};
+  return {status:{enabled:false,dir:path.join(this.home,'conversation-index','sync'),dirSource:'default',dirExists:false,dirWritable:false,configPath:path.join(this.home,'sync','config.json'),updatedAt:null,deviceId:null,deviceAlias:null,archiveDir:path.join(this.home,'sync','exports'),lastExport:null,peers:[]}};
  }async impact(id,s){this.store.visibleFact(id,s);return {exists:true,revisions:1,relations:2,contextDependencies:1};}close(){this.fixture.close();}
 }
 module.exports={fixture,FixtureCore,uid,PROJECT,OTHER};

@@ -22,6 +22,10 @@ import { randomUUID } from "node:crypto";
 import { getMemexHome } from "./paths.js";
 const SYNC_DIR_NAME = "sync";
 const CONFIG_FILE = "config.json";
+const DEVICES_FILE = "devices.json";
+/** Longest alias a device may carry. Long enough for "회사 맥북 프로", short
+ * enough to stay one line in `memex sync status` and the Web UI tables. */
+export const DEVICE_ALIAS_MAX_LENGTH = 60;
 export const DEFAULT_SYNC_CONFIG = {
     enabled: false,
     dir: null,
@@ -57,6 +61,68 @@ export function writeSyncConfig(config) {
     fs.writeFileSync(tmp, body);
     fs.renameSync(tmp, target);
     return config;
+}
+/**
+ * Human names for device ids (#48, 0.6.3).
+ *
+ * `sync/devices.json` is LOCAL state beside the on/off switch: `{ "<device
+ * id>": "회사 맥북" }`. A device id is a UUID, so without this every sync
+ * screen and `memex sync status` line reads as hex the user cannot place.
+ *
+ * Two halves, deliberately:
+ *  - The entry for THIS device's id travels: the exporter copies it into
+ *    `meta.json` as `device_alias`, so a peer sees the name its owner chose.
+ *  - Entries for OTHER device ids are this machine's private override. A peer's
+ *    own name never overwrites the local map, so renaming a peer here cannot be
+ *    undone by the peer's next export, and nothing this device writes changes a
+ *    peer's configuration.
+ */
+export function deviceAliasPath() {
+    return path.join(localSyncStateDir(), DEVICES_FILE);
+}
+/** Normalize a user-typed alias. `null` means "no alias" (the entry is removed). */
+export function normalizeDeviceAlias(alias) {
+    if (typeof alias !== "string")
+        return null;
+    // Control characters would break one-line status output and table cells.
+    const trimmed = alias.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+    return trimmed ? trimmed.slice(0, DEVICE_ALIAS_MAX_LENGTH) : null;
+}
+export function readDeviceAliases() {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(deviceAliasPath(), "utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return {};
+        const out = {};
+        for (const [deviceId, alias] of Object.entries(parsed)) {
+            const normalized = normalizeDeviceAlias(typeof alias === "string" ? alias : null);
+            if (normalized)
+                out[deviceId] = normalized;
+        }
+        return out;
+    }
+    catch {
+        // An absent or unreadable alias map is simply "no names yet" — never fatal.
+        return {};
+    }
+}
+/** Set (or, with a blank alias, clear) one device's local name. */
+export function setDeviceAlias(deviceId, alias) {
+    if (!deviceId || !/^[A-Za-z0-9_.:-]{1,128}$/.test(deviceId)) {
+        throw new Error(`device id is not a sync device identifier: ${JSON.stringify(deviceId)}`);
+    }
+    const aliases = readDeviceAliases();
+    const normalized = normalizeDeviceAlias(alias);
+    if (normalized)
+        aliases[deviceId] = normalized;
+    else
+        delete aliases[deviceId];
+    const target = deviceAliasPath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(aliases, null, 2) + "\n");
+    fs.renameSync(tmp, target);
+    return aliases;
 }
 /**
  * Resolve the shared generation folder WITHOUT creating it.

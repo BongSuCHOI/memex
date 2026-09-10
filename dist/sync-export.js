@@ -5,10 +5,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { initDatabase } from './db.js';
 import { resolveProjectWorkspace } from './continuity-identity.js';
 import { getMemexHome } from './paths.js';
-import { getSyncDir } from './sync-paths.js';
+import { getSyncDir, readDeviceAliases } from './sync-paths.js';
 const SYNC_DIR_NAME = 'sync';
-const GENERATIONS_DIR_NAME = 'generations';
-const CURRENT_MANIFEST = 'CURRENT';
+/** Layout of a device's published generations. Exported so the manual-file
+ * helpers in sync-control.ts stage an archive in exactly this shape instead of
+ * re-deriving the names (#48). */
+export const GENERATIONS_DIR_NAME = 'generations';
+export const CURRENT_MANIFEST = 'CURRENT';
 /** Committed generations kept per device: current + one previous for
  * readers that resolved CURRENT between two exports. */
 const GENERATIONS_TO_KEEP = 2;
@@ -82,6 +85,17 @@ export const EXPORTED_PROMOTION_STATES = [
  * an older peer rejects the whole generation and says why.
  */
 export const SYNC_PROTOCOL_VERSION = 5;
+/**
+ * The one Chronicle kind that never travels (#48, 0.6.3).
+ *
+ * `SYNC_IMPORTED` records what THIS device decided while importing a peer's
+ * generation — which peer won a conflict, and why. It is local provenance, not
+ * shared truth: exporting it would bounce each device's import decisions back at
+ * the device that caused them, and a 0.6.2 peer (whose `CHRONICLE_EVENT_KINDS`
+ * predates the kind) would reject the whole generation over a row that tells it
+ * nothing. Keeping it local is what makes the kind purely additive.
+ */
+export const LOCAL_ONLY_EVENT_KIND = 'SYNC_IMPORTED';
 /** The payload files a committed generation must carry (meta.json excluded —
  * it is the integrity manifest OF these files). Protocol v5: ontology
  * domains/categories/relations and the KR translation are LOCAL DERIVED state
@@ -140,8 +154,11 @@ export function durableStateFingerprint(db) {
         scalar('SELECT COALESCE(MAX(updated_at), "") AS v FROM facts'),
         scalar('SELECT COALESCE(MAX(semantic_updated_at), "") AS v FROM facts'),
         scalar('SELECT COALESCE(MAX(lifecycle_updated_at), "") AS v FROM facts'),
-        scalar('SELECT COUNT(*) AS v FROM fact_revisions'),
-        scalar('SELECT COALESCE(MAX(created_at), "") AS v FROM fact_revisions'),
+        // 0.6.3 (#48): SYNC_IMPORTED rows are local-only provenance and never reach
+        // the payload, so they must not make an otherwise unchanged device publish a
+        // generation either — the gate measures what would be EXPORTED.
+        scalar(`SELECT COUNT(*) AS v FROM fact_revisions WHERE event_kind <> '${LOCAL_ONLY_EVENT_KIND}'`),
+        scalar(`SELECT COALESCE(MAX(created_at), "") AS v FROM fact_revisions WHERE event_kind <> '${LOCAL_ONLY_EVENT_KIND}'`),
         scalar('SELECT COUNT(*) AS v FROM fact_tombstones'),
         scalar('SELECT COALESCE(MAX(deleted_at), "") AS v FROM fact_tombstones'),
         scalar('SELECT COUNT(*) AS v FROM chronicle_tombstones'),
@@ -357,9 +374,10 @@ export function exportForSync() {
         FROM fact_revisions r
         LEFT JOIN facts f ON f.id = r.fact_id
         LEFT JOIN projects p ON p.project_id = COALESCE(r.project_id, f.project_id)
-        WHERE (f.id IS NOT NULL AND (f.scope_type = 'global'
+        WHERE r.event_kind <> '${LOCAL_ONLY_EVENT_KIND}'
+          AND ((f.id IS NOT NULL AND (f.scope_type = 'global'
                  OR f.promotion_state IN (${EXPORTED_PROMOTION_STATES.map(() => "?").join(",")})))
-           OR (r.fact_id IS NULL AND r.project_id IS NOT NULL)
+           OR (r.fact_id IS NULL AND r.project_id IS NOT NULL))
         ORDER BY r.id
       `).all(...EXPORTED_PROMOTION_STATES).map(({ source_exchange_ids_normalized, ...row }) => ({
                 ...row,
@@ -409,6 +427,11 @@ export function exportForSync() {
             identity_contract: 'stable-project-v1',
             generation: generationId,
             device_id: device.value,
+            // 0.6.3 (#48): the name this device's owner chose, so a peer shows "회사 맥북"
+            // instead of a UUID. Additive and advisory — the manifest's integrity
+            // contract is unchanged, an older peer ignores the field, and the
+            // receiving device's own `sync/devices.json` entry always wins.
+            device_alias: readDeviceAliases()[device.value] ?? null,
             exported_at: new Date().toISOString(),
             hostname: os.hostname(),
             facts_count: facts.length,

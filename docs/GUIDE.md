@@ -325,7 +325,9 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   │   └── devices/<device>/CURRENT, generations/<id>/
 │   └── *.lock, *.log                   # backfill / consolidate / reembed 워커
 ├── sync/
-│   └── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
+│   ├── config.json                     # 크로스디바이스 동기화 on/off + 공유 폴더 (기본 off)
+│   ├── devices.json                    # 기기 id → 사람이 읽는 이름 (로컬, 공유되지 않음)
+│   └── exports/<device>-<generation>.zip   # 수동으로 옮기는 세대 파일
 ├── journals/<session>/<epoch>.jsonl    # rolling transcript 저널
 ├── run-locks/
 ├── ui/
@@ -371,7 +373,46 @@ memex sync export
 # 3) 두 번째 기기: 가져온다 (SessionStart에서도 자동으로 실행됩니다)
 memex sync import
 memex sync status
+
+# 4) 양쪽에 이름을 붙인다 — 이후 모든 화면과 status 줄이 UUID 대신 이름을 씁니다
+memex sync alias "집 맥미니"    # 이 기기 (이름은 세대 manifest에 실려 상대에게도 보입니다)
+memex sync alias "작업실 맥" --device <other-device-id>   # 상대 기기에 내가 붙이는 이름(로컬)
 ```
+
+#### 공유 폴더가 없을 때 — 세대 파일을 손으로 옮기기 (0.6.3)
+
+iCloud/Dropbox/Syncthing 중 아무것도 쓰지 않거나, 두 번째 맥을 처음 세팅하는 중이라면 세대 하나를
+**zip 파일**로 옮길 수 있습니다. 형식은 공유 폴더와 같은 protocol v5 generation이고, 받는 쪽은 **같은
+검증**(manifest 일치 · 행 수 · SHA-256 · 행 스키마)을 통과시킵니다.
+
+```bash
+# 보내는 기기 (동기화가 꺼져 있어도 됩니다)
+memex sync export --archive
+#   sync archive written: ~/.config/memex/sync/exports/<device>-<generation>.zip
+#   → 이 파일을 AirDrop·메일·USB로 다른 맥에 옮깁니다
+
+# 받는 기기: 먼저 검증하고 적용 결과를 미리 봅니다 (아무것도 바뀌지 않습니다)
+memex sync import --archive ~/Downloads/<device>-<generation>.zip --dry-run
+#   facts +12/~3/-0, conflicts: <fact-id> → peer (peer-newer)
+
+# 확인한 뒤 적용합니다
+memex sync import --archive ~/Downloads/<device>-<generation>.zip
+```
+
+- Web UI에서는 관리 › 동기화 › **수동 파일로 주고받기**가 같은 일을 합니다. 브라우저 다운로드는
+  쓰지 않고, 서버가 **데이터 루트 안**에 파일을 쓰고 경로를 알려줍니다(Finder `⇧⌘G`로 이동).
+  가져오기는 항상 **검증 → 미리보기 → 확인** 순서입니다.
+- 자기 기기가 만든 파일, zip이 아닌 파일, 세대 파일이 아닌 zip은 각각 다른 사유로 거부됩니다.
+  세대는 하나라도 깨지면 **통째로** 거부되고 사유가 그대로 나옵니다.
+- 이 파일에도 기억 원문이 **평문 JSONL**로 들어 있습니다. 본인 기기끼리만 주고받으십시오.
+
+#### 가져오기에서 의미가 충돌했을 때 (0.6.3)
+
+같은 기억의 의미가 양쪽에서 다르면, 판정 결과가 Chronicle `SYNC_IMPORTED` 이벤트로 남습니다
+(`actor: sync`, `projection_applied = 0`, `outcome`에 `source_device_id`/`source_device_alias`/
+`generation`/`winner`/`reason`). Web UI의 활동·추적 › 지식 변경과 기억 상세 › 변경 이력에
+`기기 <이름>에서 가져옴`으로 보입니다. 새 기억이 들어온 것은 충돌이 아니므로 이벤트를 만들지
+않습니다. 이 이벤트는 **로컬 기록이라 export에 실리지 않습니다.**
 
 - **공유 폴더 지정 순서**: `MEMEX_SYNC_DIR` → `memex sync enable --dir`로 저장한 값 →
   기존 로컬 기본값 `<data root>/conversation-index/sync`. 지정하지 않으면 0.6.0까지와 같은 경로입니다.
@@ -824,6 +865,9 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex update` | data를 보존하면서 marketplace/plugin 갱신. `--dry-run`·`--marketplace <name>`·`--no-materialize` | [§12](#12-업데이트) |
 | `memex sync` | 새 Codex rollout을 archive/index/search corpus로 반영. `--background` | [§4](#4-최초-onboarding) |
 | `memex sync enable\|disable\|status\|export\|import` | 크로스디바이스 동기화 스위치(기본 off)·공유 폴더(`--dir`)·상태·수동 export(`--force`)/import. `--json` | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
+| `memex sync export --archive [<path.zip>]` | 세대 하나를 zip으로 저장(동기화가 꺼져 있어도 동작, 기본 위치 `<data root>/sync/exports/`) | [§10](#공유-폴더가-없을-때--세대-파일을-손으로-옮기기-063) |
+| `memex sync import --archive <path> [--dry-run]` | 받은 세대 파일(zip 또는 세대 디렉터리) 적용. `--dry-run`은 검증·미리보기만 | [§10](#공유-폴더가-없을-때--세대-파일을-손으로-옮기기-063) |
+| `memex sync alias <name\|--clear> [--device <id>]` | 기기 이름. `--device` 없으면 이 기기(이름이 세대 manifest에 실려 상대에게도 보입니다) | [§10](#두-번째-맥-설정-절차-크로스디바이스-동기화) |
 | `memex index` | conversation index 생성·`--verify`·`--repair`·`--rebuild`·`--cleanup`·`--session`·`--concurrency`·`--no-summaries` | [§4](#4-최초-onboarding), [§15](#대화-인덱스-무결성-memex-index) |
 | `memex search` | semantic / `--text` / `--vector` / hybrid 검색, `--after`·`--before`·`--limit` | [§6](#6-검색과-분석) |
 | `memex show` | archive conversation 읽기 (`--format markdown\|html`) | [§6](#6-검색과-분석) |
@@ -942,6 +986,7 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | sync export 실패 | `doctor`의 `sync-export: fail` | 마지막 export generation이 실패로 끝남(대개 공유 폴더에 쓸 수 없음) | `memex sync status`로 공유 폴더·쓰기 가능 여부 확인 → 원인 수정 → `memex sync export`. 다음 SessionEnd/유지보수 wake에서도 재시도합니다 |
 | 동기화가 켜져 있는데 한 번도 나가지 않음 | `doctor`의 `sync-export: warn` | 스위치는 on인데 export 기록이 없음(또는 export 훅이 어느 hook에도 등록되지 않음) | `memex sync export`로 첫 세대를 만들고 `memex sync status`로 확인 |
 | 동기화가 꺼져 있음 | `doctor`의 `sync-export: ok` + `skipped(off)` | 기본값. 고장이 아님 | 쓰려면 `memex sync enable --dir <공유 폴더>` |
+| 세대 파일을 읽거나 쓸 수 없음 | `sync archive …`로 시작하는 오류(CLI, Web UI 동기화 탭) | 지목한 파일이 Memex 세대 export가 아니거나, 이 기기가 만든 파일이거나, 내보내기 경로가 데이터 루트 밖임 | `memex sync import --archive <path> --dry-run`으로 사유를 먼저 확인. 보낸 기기의 `memex sync export --archive`가 찍은 경로의 파일을 그대로 쓰십시오(0.6.3 #48) |
 | 기억이 브랜치에 갇혀 있음 | `memex facts tier <id>` 또는 `memex facts show --id <id>`가 `workstream`(`memex facts list`는 tier를 출력하지 않습니다) | 0.6.0 이전 fact는 전부 브랜치 tier에 있음 | `memex facts migrate-tiers --dry-run` → `memex facts migrate-tiers --apply` |
 
 탈락한 후보가 임계값에서 얼마나 떨어져 있었는지는 조정 전에 이 질의로 확인하십시오.

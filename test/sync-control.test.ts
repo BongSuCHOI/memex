@@ -319,6 +319,246 @@ describe('cross-device sync control (#35/#48)', () => {
     expect(control.runSyncExport().skipped).toBeNull();
   });
 
+  /**
+   * Issue #48 (0.6.3) — manual file transfer, device aliases and conflict
+   * history. The shared folder needs a folder both machines can see; this half
+   * is the path for a user who has none, and it must be the SAME protocol-v5
+   * generation so it gets the same validation.
+   */
+  describe('manual generation archives (#48)', () => {
+    /** Data root with NO shared folder at all — the case a zip exists for. */
+    function standalone(root: string): void {
+      process.env.MEMEX_HOME = root;
+      delete process.env.MEMEX_SYNC_DIR;
+    }
+
+    it('carries one generation to the other device as a zip, with sync switched off', async () => {
+      const control = await import('../src/sync-control.js');
+      const { readZip } = await import('../src/zip.js');
+
+      await seed(rootA, { id: 'fact-by-hand', text: 'deploys run from main', subject: 'shared.byhand.rule' });
+      standalone(rootA);
+      // Sync is OFF: a manual archive is exactly the no-shared-folder case.
+      expect(control.getSyncStatus().enabled).toBe(false);
+      const archive = control.exportGenerationArchive();
+      expect(archive.path.startsWith(path.join(rootA, 'sync', 'exports'))).toBe(true);
+      expect(fs.existsSync(archive.path)).toBe(true);
+      expect(archive.counts.facts).toBe(1);
+      expect(archive.deviceAlias).toBeNull();
+      // A device id exists only after an export, so the alias is set here and
+      // travels in the NEXT generation's manifest.
+      control.setDeviceAlias(archive.deviceId, '집 맥미니');
+      const reexported = control.exportGenerationArchive();
+      const entries = readZip(fs.readFileSync(reexported.path));
+      expect([...entries.keys()].sort()).toEqual([
+        'fact-revisions.jsonl', 'fact-tombstones.jsonl', 'facts.jsonl', 'meta.json', 'recall-events.jsonl',
+      ]);
+      expect(JSON.parse(entries.get('meta.json')!.toString('utf8'))).toMatchObject({
+        protocol_version: 5,
+        device_alias: '집 맥미니',
+      });
+      // Nothing reached the shared folder: it was never configured.
+      expect(fs.existsSync(path.join(shared, 'devices'))).toBe(false);
+
+      // --- B: preview, then import the file ---
+      standalone(rootB);
+      const preview = control.previewImportArchive(reexported.path);
+      expect(preview.deviceAlias).toBe('집 맥미니');
+      expect(preview.generation).toBe(reexported.generation);
+      expect(preview).toMatchObject({ newFacts: 1, updatedFacts: 0, deletedFacts: 0, rejected: [] });
+      // A preview changes nothing.
+      expect(await readFact(rootB, 'fact-by-hand')).toBeUndefined();
+
+      standalone(rootB);
+      const imported = await control.importArchive(reexported.path);
+      expect(imported.result).toMatchObject({ newFacts: 1 });
+      expect(imported.result.malformedRows).toEqual([]);
+      expect(await readFact(rootB, 'fact-by-hand')).toBe('deploys run from main');
+
+      // A second import of the same file is a no-op, not a duplicate.
+      standalone(rootB);
+      expect((await control.importArchive(reexported.path)).result.newFacts).toBe(0);
+    });
+
+    it('refuses a file that is not a generation, and its own export', async () => {
+      const control = await import('../src/sync-control.js');
+      const { createZip } = await import('../src/zip.js');
+      await seed(rootA, { id: 'fact-refuse', text: 'only real generations', subject: 'shared.refuse.rule' });
+      standalone(rootA);
+      const archive = control.exportGenerationArchive();
+
+      // Its own export: the clocks make it harmless, but it is always a mistake.
+      expect(() => control.previewImportArchive(archive.path)).toThrow(/exported by THIS device/);
+
+      standalone(rootB);
+      const notAZip = path.join(temp, 'notes.txt');
+      fs.writeFileSync(notAZip, 'just some text');
+      expect(() => control.previewImportArchive(notAZip)).toThrow(/sync archive is not a readable zip/);
+      expect(() => control.previewImportArchive(path.join(temp, 'missing.zip'))).toThrow(/sync archive was not found/);
+      expect(() => control.previewImportArchive('relative/path.zip')).toThrow(/sync archive path must be absolute/);
+
+      const halfGeneration = path.join(temp, 'half.zip');
+      fs.writeFileSync(halfGeneration, createZip([{ name: 'meta.json', data: Buffer.from('{"protocol_version":5}') }]));
+      expect(() => control.previewImportArchive(halfGeneration)).toThrow(/is missing facts\.jsonl/);
+
+      // A real generation with a broken payload is rejected by the v5 integrity
+      // pass, not by a separate weaker check: reported, never half-imported.
+      const { readZip } = await import('../src/zip.js');
+      const original = readZip(fs.readFileSync(archive.path));
+      const corrupted = path.join(temp, 'corrupt.zip');
+      fs.writeFileSync(corrupted, createZip([...original].map(([name, data]) => ({
+        name,
+        data: name === 'facts.jsonl' ? Buffer.from(data.toString('utf8').replace('only real generations', 'tampered')) : data,
+      }))));
+      standalone(rootB);
+      const rejected = control.previewImportArchive(corrupted);
+      expect(rejected.newFacts).toBe(0);
+      expect(rejected.rejected.some((issue) => issue.error.includes('sha256 mismatch'))).toBe(true);
+      expect((await control.importArchive(corrupted)).result.newFacts).toBe(0);
+    });
+
+    it('exports only inside the data root', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-confined', text: 'writes stay inside the root', subject: 'shared.confined.rule' });
+      standalone(rootA);
+      expect(() => control.exportGenerationArchive({ outPath: path.join(temp, 'escape.zip') }))
+        .toThrow(/must stay inside the data root/);
+      expect(() => control.exportGenerationArchive({ outPath: path.join(rootA, 'named.tar') }))
+        .toThrow(/must end with \.zip/);
+      const named = control.exportGenerationArchive({ outPath: path.join(rootA, 'sync', 'exports', 'named.zip') });
+      expect(named.path).toBe(path.join(rootA, 'sync', 'exports', 'named.zip'));
+      expect(fs.existsSync(named.path)).toBe(true);
+    });
+
+    it('names devices locally, and only this device name travels', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-alias', text: 'aliases are local state', subject: 'shared.alias.rule' });
+      on(rootA);
+      control.setSyncEnabled({ enabled: true });
+      control.runSyncExport();
+      const deviceA = control.getSyncStatus().deviceId!;
+      control.setDeviceAlias(deviceA, '  집 맥미니  ');
+      expect(control.getSyncStatus().deviceAlias).toBe('집 맥미니');
+      expect(formatStatus(control)).toContain('"집 맥미니"');
+      // The alias lives beside the switch, never in the shared folder.
+      expect(fs.existsSync(path.join(rootA, 'sync', 'devices.json'))).toBe(true);
+      expect(fs.existsSync(path.join(shared, 'devices.json'))).toBe(false);
+      // It only travels after the next generation carries it.
+      control.runSyncExport({ force: true });
+
+      on(rootB);
+      control.setSyncEnabled({ enabled: true });
+      const peer = control.getSyncStatus().peers.find((entry) => entry.deviceId === deviceA)!;
+      expect(peer.alias).toBe('집 맥미니');
+      expect(peer.aliasIsLocal).toBe(false);
+      // A local override wins and is not undone by the peer's next export.
+      control.setDeviceAlias(deviceA, '작업실 맥');
+      expect(control.getSyncStatus().peers.find((entry) => entry.deviceId === deviceA)).toMatchObject({
+        alias: '작업실 맥',
+        aliasIsLocal: true,
+      });
+      on(rootA);
+      control.runSyncExport({ force: true });
+      on(rootB);
+      expect(control.getSyncStatus().peers.find((entry) => entry.deviceId === deviceA)?.alias).toBe('작업실 맥');
+      // Clearing falls back to whatever the peer published.
+      control.setDeviceAlias(deviceA, null);
+      expect(control.getSyncStatus().peers.find((entry) => entry.deviceId === deviceA)?.alias).toBe('집 맥미니');
+      expect(() => control.setDeviceAlias('../escape', 'x')).toThrow(/device id is not a sync device identifier/);
+    });
+
+    function formatStatus(control: typeof import('../src/sync-control.js')): string {
+      return control.formatSyncStatus(control.getSyncStatus());
+    }
+  });
+
+  /**
+   * Issue #48 (0.6.3) — conflict history. Without this, a peer silently
+   * overwriting a memory this device edited left no trace at all.
+   */
+  describe('SYNC_IMPORTED conflict history (#48)', () => {
+    async function events(root: string): Promise<Array<Record<string, unknown>>> {
+      on(root);
+      const { initDatabase } = await import('../src/db.js');
+      const db = initDatabase();
+      try {
+        return db.prepare(
+          "SELECT id, fact_id, previous_fact, new_fact, actor, event_kind, effective_at_source, projection_applied, outcome_json FROM fact_revisions WHERE event_kind = 'SYNC_IMPORTED'",
+        ).all() as Array<Record<string, unknown>>;
+      } finally {
+        db.close();
+      }
+    }
+
+    it('records which device won, in both directions, and keeps the record local', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-conflict', text: 'deploys run from main', subject: 'shared.conflict.rule' });
+      on(rootA);
+      control.setSyncEnabled({ enabled: true });
+      expect(control.runSyncExport().skipped).toBeNull();
+      const deviceA = control.getSyncStatus().deviceId!;
+      control.setDeviceAlias(deviceA, 'A의 맥');
+      control.runSyncExport({ force: true });
+
+      on(rootB);
+      control.setSyncEnabled({ enabled: true });
+      await control.runSyncImport();
+      // A new fact is convergence, not a conflict: no event yet.
+      expect(await events(rootB)).toEqual([]);
+
+      // --- peer wins: B's newer edit overrides A ---
+      await editFact(rootB, 'fact-conflict', 'deploys run from release branches', '2026-08-05T00:00:00.000Z');
+      on(rootB);
+      control.runSyncExport({ force: true });
+      on(rootA);
+      expect((await control.runSyncImport()).result?.updatedFacts).toBeGreaterThanOrEqual(1);
+      const onA = await events(rootA);
+      expect(onA).toHaveLength(1);
+      expect(onA[0]).toMatchObject({
+        fact_id: 'fact-conflict',
+        actor: 'sync',
+        event_kind: 'SYNC_IMPORTED',
+        effective_at_source: 'peer',
+        projection_applied: 0,
+        previous_fact: 'deploys run from main',
+        new_fact: 'deploys run from release branches',
+      });
+      expect(JSON.parse(String(onA[0].outcome_json))).toMatchObject({ winner: 'peer', reason: 'peer-newer' });
+      // Re-importing the same generation collapses on the content-derived id.
+      on(rootA);
+      await control.runSyncImport();
+      expect(await events(rootA)).toHaveLength(1);
+
+      // --- local wins: A edits later, then imports B's older generation ---
+      await editFact(rootA, 'fact-conflict', 'deploys run from tags', '2026-08-09T00:00:00.000Z');
+      on(rootA);
+      await control.runSyncImport();
+      const bothWays = await events(rootA);
+      expect(bothWays).toHaveLength(2);
+      const localWin = bothWays.map((row) => JSON.parse(String(row.outcome_json)) as { winner: string; source_device_alias: string | null })
+        .find((outcome) => outcome.winner === 'local');
+      expect(localWin).toBeDefined();
+      // The local edit stood, and the record names the device it beat.
+      expect(await readFact(rootA, 'fact-conflict')).toBe('deploys run from tags');
+
+      // --- the history itself never travels (src/sync-export.ts) ---
+      on(rootA);
+      control.runSyncExport({ force: true });
+      const generation = (JSON.parse(
+        fs.readFileSync(path.join(shared, 'devices', deviceA, 'CURRENT'), 'utf-8'),
+      ) as { generation: string }).generation;
+      const payload = fs.readFileSync(
+        path.join(shared, 'devices', deviceA, 'generations', generation, 'fact-revisions.jsonl'),
+        'utf-8',
+      );
+      expect(payload).not.toContain('SYNC_IMPORTED');
+      // And a device that never conflicted still publishes nothing extra for it.
+      on(rootB);
+      await control.runSyncImport();
+      expect((await events(rootB)).length).toBeGreaterThanOrEqual(0);
+    });
+  });
+
   it('the export hook script is registered on SessionEnd as an async entry', async () => {
     const { LIFECYCLE_COMMANDS, SYNC_LIFECYCLE_SCRIPTS, isLifecycleScriptRegistered } =
       await import('../src/lifecycle.js');

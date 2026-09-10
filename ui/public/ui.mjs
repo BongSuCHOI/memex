@@ -29,7 +29,7 @@ const paths={
  code:'M8 5L2 12l6 7 M16 5l6 7-6 7 M14 3l-4 18',external:'M14 3h7v7 M21 3L10 14 M10 3H3v18h18v-7',
 };
 export const icon=(name,cls='')=>`<svg class="icon ${esc(cls)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name]||paths.info}"/></svg>`;
-export const label={ASSERTED:'기억 확정',RETIRED:'비활성화',RELATION_CREATED:'관계 생성',RELATION_REMOVED:'관계 제거',active:'활성',inactive:'비활성',running:'실행 중',pending:'대기',processing:'처리 중',processed:'처리 완료',completed:'완료',failed:'실패',dead:'실패 · 종료',retry:'재시도 대기',superseded:'새 버전으로 대체',reserved:'시도 예약',unknown:'상태 미확인',cancelled:'중단됨',cancelling:'중단 요청 중','timed-out':'시간 제한 종료','failed-visible':'실패 · 확인 필요',injected:'기억 제공',emitted:'컨텍스트 제공',prepared:'제공 준비',deduped:'중복 제공 생략','no-match':'관련 기억 없음',skipped:'정책상 생략',error:'오류',observed:'관측됨',partial:'부분 관측',NOT_PROVEN:'미수집',decision:'결정',preference:'선호',constraint:'제약',pattern:'패턴',knowledge:'지식',CREATED:'기억 생성',CHANGED:'기억 변경',DEACTIVATED:'비활성화',REACTIVATED:'다시 활성화',RESTORED:'복원',PROMOTED:'계층 승격',DEMOTED:'계층 강등',CONSOLIDATED:'통합',CONTRADICTED:'충돌 감지',INCIDENT:'문제 발생',VALIDATED:'검증',REVERTED:'되돌림',REVERT_REQUESTED:'되돌림 요청',LEGACY:'이전 버전 기록',SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충',fact_extract:'기억 추출',capture_index:'대화 인덱싱',capsule_update:'작업 맥락 갱신',ontology:'온톨로지 분류',extract:'기억 추출',user:'사용자',extractor:'추출기',consolidator:'통합기',sync:'기기 동기화',project:'프로젝트',global:'공통 기억',workspace:'워크스페이스',workstream:'작업 흐름','legacy-project':'이전 방식 배치','project-current':'프로젝트 현행','no-inject':'제공 없음'};
+export const label={ASSERTED:'기억 확정',RETIRED:'비활성화',RELATION_CREATED:'관계 생성',RELATION_REMOVED:'관계 제거',active:'활성',inactive:'비활성',running:'실행 중',pending:'대기',processing:'처리 중',processed:'처리 완료',completed:'완료',failed:'실패',dead:'실패 · 종료',retry:'재시도 대기',superseded:'새 버전으로 대체',reserved:'시도 예약',unknown:'상태 미확인',cancelled:'중단됨',cancelling:'중단 요청 중','timed-out':'시간 제한 종료','failed-visible':'실패 · 확인 필요',injected:'기억 제공',emitted:'컨텍스트 제공',prepared:'제공 준비',deduped:'중복 제공 생략','no-match':'관련 기억 없음',skipped:'정책상 생략',error:'오류',observed:'관측됨',partial:'부분 관측',NOT_PROVEN:'미수집',decision:'결정',preference:'선호',constraint:'제약',pattern:'패턴',knowledge:'지식',CREATED:'기억 생성',CHANGED:'기억 변경',DEACTIVATED:'비활성화',REACTIVATED:'다시 활성화',RESTORED:'복원',PROMOTED:'계층 승격',DEMOTED:'계층 강등',SYNC_IMPORTED:'동기화 가져옴',CONSOLIDATED:'통합',CONTRADICTED:'충돌 감지',INCIDENT:'문제 발생',VALIDATED:'검증',REVERTED:'되돌림',REVERT_REQUESTED:'되돌림 요청',LEGACY:'이전 버전 기록',SUPPORTS:'뒷받침',INFLUENCES:'영향',SUPERSEDES:'대체',CONTRADICTS:'상충',fact_extract:'기억 추출',capture_index:'대화 인덱싱',capsule_update:'작업 맥락 갱신',ontology:'온톨로지 분류',extract:'기억 추출',user:'사용자',extractor:'추출기',consolidator:'통합기',sync:'기기 동기화',project:'프로젝트',global:'공통 기억',workspace:'워크스페이스',workstream:'작업 흐름','legacy-project':'이전 방식 배치','project-current':'프로젝트 현행','no-inject':'제공 없음'};
 export const name=v=>label[v]||v||'미수집';
 // 계층은 src/fact-management.ts factTierOf()와 같은 순서로 읽는다: scope_type이 먼저, 그다음 promotion_state.
 export function tierOf(f){if(!f)return null;if(f.scope_type==='global')return 'global';const state=f.promotion_state||'legacy-project';return state==='workstream'||state==='workspace'?state:'project';}
@@ -72,7 +72,30 @@ export const options=(items,current)=>items.map(([value,title])=>`<option value=
 export const searchField=(value='',placeholder='검색',field='q')=>`<label class="search-field">${icon('search')}<input type="search" name="${esc(field)}" value="${esc(value)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}" maxlength="500"></label>`;
 export const kv=rows=>`<dl class="kv">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
 export const factLink=f=>`<button class="text-link" data-fact="${esc(f.id)}">${esc(f.fact_kr||f.fact||f.id)}</button>`;
-export function eventRow(e){return `<div class="timeline-item"><div class="timeline-icon">${icon(e.event_kind==='CREATED'?'memory':e.event_kind==='INCIDENT'?'warning':'refresh')}</div><div class="grow"><div class="row wrap">${badge(e.event_kind||'LEGACY')}<span class="meta">${esc(name(e.actor))}</span></div>${e.fact_id?`<button class="title" data-fact="${esc(e.fact_id)}">${esc(e.new_fact||e.previous_fact||e.reason||e.subject_key||'기억 상태 변경')}</button>`:`<div class="title">${esc(e.problem||e.reason||e.subject_key||'지식 이벤트')}</div>`}<div class="meta"><span title="기록한 시각">${esc(date(e.recorded_at||e.created_at))}</span>${e.effective_at?`<span>발생 ${esc(date(e.effective_at,'day'))}</span>`:''}${e.projection_applied===0?'<span>현재 기억 변경 없음</span>':''}</div></div><button class="icon-btn" data-event='${esc(JSON.stringify(e))}' aria-label="이벤트 상세">${icon('chevron')}</button></div>`;}
+/**
+ * 동기화 가져오기 충돌 이벤트의 출처 (#48, 0.6.3).
+ *
+ * `SYNC_IMPORTED`의 `outcome_json`에 들어 있는 것만 읽는다: 어느 기기(별칭 또는 id 앞 8자)의 어느
+ * 세대에서 왔고, 의미가 달랐을 때 누가 남았는지. 값이 없으면 null을 돌려주고 **지어내지 않는다.**
+ */
+const SYNC_REASON={'peer-newer':'가져온 쪽의 의미 수정 시각이 더 최근입니다.','local-newer':'이 기기의 의미 수정 시각이 더 최근입니다.','tie-broken-by-key':'수정 시각이 같아 결정적 규칙(정규화된 내용 키)으로 정했습니다.'};
+export function syncOrigin(e){
+ if(!e||e.event_kind!=='SYNC_IMPORTED')return null;
+ let outcome=e.outcome??e.outcome_json;
+ if(typeof outcome==='string'){try{outcome=JSON.parse(outcome);}catch{return null;}}
+ if(!outcome||typeof outcome!=='object')return null;
+ const device=outcome.source_device_alias||(outcome.source_device_id?short(outcome.source_device_id):null);
+ return {device,alias:outcome.source_device_alias||null,deviceId:outcome.source_device_id||null,
+  generation:outcome.generation||null,winner:['peer','local'].includes(outcome.winner)?outcome.winner:null,
+  reason:outcome.reason||null,reasonText:SYNC_REASON[outcome.reason]||null};
+}
+export function syncOriginTag(e){
+ const o=syncOrigin(e);if(!o)return '';
+ const label=o.device?`기기 ${o.device}에서 가져옴`:'다른 기기에서 가져옴';
+ const winner=o.winner==='local'?'이 기기의 값이 남음':o.winner==='peer'?'가져온 값으로 대체됨':'';
+ return `<span class="tag outline"${o.reasonText?` title="${esc(o.reasonText)}"`:''}>${esc(label)}</span>${winner?`<span class="tag ${o.winner==='peer'?'blue':''}">${esc(winner)}</span>`:''}`;
+}
+export function eventRow(e){return `<div class="timeline-item"><div class="timeline-icon">${icon(e.event_kind==='CREATED'?'memory':e.event_kind==='INCIDENT'?'warning':e.event_kind==='SYNC_IMPORTED'?'layers':'refresh')}</div><div class="grow"><div class="row wrap">${badge(e.event_kind||'LEGACY')}<span class="meta">${esc(name(e.actor))}</span>${syncOriginTag(e)}</div>${e.fact_id?`<button class="title" data-fact="${esc(e.fact_id)}">${esc(e.new_fact||e.previous_fact||e.reason||e.subject_key||'기억 상태 변경')}</button>`:`<div class="title">${esc(e.problem||e.reason||e.subject_key||'지식 이벤트')}</div>`}<div class="meta"><span title="기록한 시각">${esc(date(e.recorded_at||e.created_at))}</span>${e.effective_at?`<span>발생 ${esc(date(e.effective_at,'day'))}</span>`:''}${e.projection_applied===0?'<span>현재 기억 변경 없음</span>':''}</div></div><button class="icon-btn" data-event='${esc(JSON.stringify(e))}' aria-label="이벤트 상세">${icon('chevron')}</button></div>`;}
 export function markdown(input){
   // Deliberately small, safe Markdown subset. Raw HTML and remote images never execute/load.
   const source=String(input??'').slice(0,250000);const chunks=source.split(/```/);

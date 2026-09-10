@@ -75,6 +75,7 @@ const EXEMPT_FILES={
  'fact-extractor.ts':'추출기 내부 계약. 사용자에게는 skip 사유와 작업 상태로 도달한다.',
  'continuity-store.ts':'큐 멱등성 불변식. 위반은 코어 버그다.',
  'sync-cli.ts':'sync CLI 인자 검증. Web UI는 같은 값을 폼에서 검증한다.',
+ 'zip.ts':'zip 컨테이너 레코드 계약. 사용자에게는 sync-control이 감싼 "sync archive …" 거부 사유로 도달한다.',
 };
 /** 대장 B — 위 면제에 들지 않는 파일에서, 개별적으로 매핑하지 않기로 한 리터럴. */
 const EXEMPT_LITERALS=[
@@ -110,6 +111,7 @@ const EXEMPT_LITERALS=[
  ['job-recovery.ts','no memory job or extraction target with id'],
  ['ontology-classifier.ts','ontology classify: fact not found'],
  ['embeddings.ts','embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)'],
+ ['sync-paths.ts','device id is not a sync device identifier'],
 ];
 
 const exemptLiteral=(file,literal)=>EXEMPT_LITERALS.some(([f,prefix])=>f===file&&literal.toLowerCase().includes(prefix.toLowerCase()));

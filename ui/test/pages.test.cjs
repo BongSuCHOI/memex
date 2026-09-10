@@ -1,7 +1,8 @@
 'use strict';
 /** Page modules render to strings, so the browser HTML is checked without a DOM. */
 const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
-const {name,badge}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const {name,badge,eventRow,syncOrigin,syncOriginTag}=require('../public/ui.mjs');const {logStatus}=require('../public/pages/activity.mjs');
+const details=require('../public/details.mjs');
 const activityPage=require('../public/pages/activity.mjs');const conversationsPage=require('../public/pages/conversations.mjs');
 const facts=require('../public/pages/facts.mjs');const taxonomyPage=require('../public/pages/taxonomy.mjs');const settingsPage=require('../public/pages/settings.mjs');
 const ROOT=path.resolve(__dirname,'../..');
@@ -148,7 +149,9 @@ test('보조 텍스트도 11px 아래로 내려가지 않는다',()=>{
 });
 
 // --- #48 관리 › 동기화 탭 ---
-const syncStatus=extra=>({status:{enabled:false,dir:'/shared/memex-sync',dirSource:'configured',dirExists:true,dirWritable:true,configPath:'/home/me/.config/memex/sync/config.json',updatedAt:'2026-09-10T00:00:00.000Z',deviceId:null,lastExport:null,peers:[],...extra}});
+const syncStatus=extra=>({status:{enabled:false,dir:'/shared/memex-sync',dirSource:'configured',dirExists:true,dirWritable:true,configPath:'/home/me/.config/memex/sync/config.json',updatedAt:'2026-09-10T00:00:00.000Z',deviceId:null,deviceAlias:null,archiveDir:'/home/me/.config/memex/sync/exports',lastExport:null,peers:[],...extra}});
+/** 다른 기기 표의 행 텍스트만 — 상태 블록의 기기 ID와 섞이지 않게 한다. */
+const peerRows=html=>[...html.matchAll(/<tbody>([\s\S]*?)<\/tbody>/g)].map(m=>m[1]);
 const syncCtx=ctx('tab=sync',{});
 test('동기화는 기본이 꺼짐이고, 꺼져 있으면 수동 실행 버튼이 잠긴다',()=>{
  const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
@@ -161,14 +164,14 @@ test('켜져 있으면 폴더·기기·마지막 내보내기를 그대로 보�
  const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({
   enabled:true,deviceId:'device-aaa',
   lastExport:{ok:true,at:'2026-09-10T01:00:00.000Z',counts:{facts:12,revisions:4,tombstones:1,recallEvents:9}},
-  peers:[{deviceId:'device-aaa',isSelf:true,generation:'g-self',exportedAt:null,hostname:'mine',counts:null},
-         {deviceId:'device-bbb',isSelf:false,generation:'generation-2222',exportedAt:'2026-09-09T00:00:00.000Z',hostname:'other-mac',counts:{facts:7,revisions:2,tombstones:0,recallEvents:3}}],
+  peers:[{deviceId:'device-aaa',alias:null,aliasIsLocal:false,isSelf:true,generation:'g-self',exportedAt:null,hostname:'mine',counts:null},
+         {deviceId:'device-bbb',alias:null,aliasIsLocal:false,isSelf:false,generation:'generation-2222',exportedAt:'2026-09-09T00:00:00.000Z',hostname:'other-mac',counts:{facts:7,revisions:2,tombstones:0,recallEvents:3}}],
  }),null,null);
  assert(html.includes('/shared/memex-sync')&&html.includes('이 화면에서 지정'));
  assert(html.includes('device-aaa')&&html.includes('device-bbb')&&html.includes('other-mac'));
  assert(!/data-sync="export" disabled/.test(html),'켜짐 상태에서 실행 버튼이 잠김');
  assert(html.includes('기억 12'),'마지막 내보내기 행 수가 없음');
- assert.equal((html.match(/device-aaa/g)||[]).length,1,'자기 기기를 다른 기기 목록에 넣지 않아야 합니다');
+ assert(!peerRows(html).some(rows=>rows.includes('device-aaa')),'자기 기기를 다른 기기 목록에 넣지 않아야 합니다');
 });
 test('가져오기 결과와 거부된 세대 사유를 원문 그대로 보여준다',()=>{
  const run={action:'import',at:'2026-09-10T02:00:00.000Z',outcome:{skipped:null,error:null,result:{newFacts:5,updatedFacts:2,deletedFacts:1,newRevisions:3,newTombstones:1,newRecallEvents:4,updatedRecallEvents:0,
@@ -180,11 +183,96 @@ test('가져오기 결과와 거부된 세대 사유를 원문 그대로 보여�
  const skipped=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true}),null,{action:'export',at:null,outcome:{skipped:'unchanged',result:null,error:null}});
  assert(skipped.includes('durable 변경이 없습니다'),'건너뛴 사유를 설명하지 않음');
 });
-test('0.6.2로 미룬 범위를 각주로 밝힌다',()=>{
+// --- #48 0.6.3: 수동 세대 파일 · 기기 별칭 · 충돌 이력 ---
+test('남은 것은 실제 2기기 검증뿐이라고 각주에 밝힌다',()=>{
  const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
- assert(html.includes('0.6.2'));
- for(const deferred of ['수동 파일','기기 별칭','충돌 이력'])assert(html.includes(deferred),'미룬 범위를 밝히지 않음: '+deferred);
+ assert(html.includes('liveTwoDeviceRoundTrip: NOT_PROVEN'),'검증되지 않은 항목을 이름으로 밝히지 않음');
+ assert(!html.includes('0.6.2에서 들어옵니다'),'이미 들어온 범위를 아직 미뤘다고 말함');
 });
+test('수동 파일 카드는 내보내기 경로와 검증 → 미리보기 → 확인 순서를 노출한다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
+ assert(html.includes('data-archive="export"'),'세대 파일 내보내기 버튼이 없음');
+ assert(html.includes('id="archive-import-form"')&&html.includes('name="path"'),'가져올 파일 경로 입력이 없음');
+ assert(/data-archive="import" disabled/.test(html),'미리보기 전에는 가져오기가 잠겨 있어야 함');
+ // 폼 안의 버튼이 submit이면 클릭이 미리보기를 다시 보내고, 그 재렌더가 진행 중인 가져오기를 끊는다.
+ assert(/type="button" data-archive="import"/.test(html),'가져오기 버튼이 폼을 submit하면 안 됩니다');
+ assert(html.includes('/home/me/.config/memex/sync/exports'),'기본 저장 위치를 알려주지 않음');
+ assert(html.includes('브라우저 다운로드는 이 UI에서 막혀 있으므로'),'왜 경로로 안내하는지 설명이 없음');
+ assert(html.includes('평문 JSONL'),'평문 경고가 없음');
+});
+test('내보낸 세대 파일은 경로·크기·행 수와 Finder 안내를 보여준다',()=>{
+ const archive={path:'/home/me/.config/memex/sync/exports/device-aaa-gen-1.zip',bytes:2048,deviceId:'device-aaa',deviceAlias:'집 맥미니',generation:'gen-1',counts:{facts:12,revisions:3,tombstones:0,recallEvents:5}};
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true,deviceId:'device-aaa',deviceAlias:'집 맥미니'}),null,null,archive,null);
+ assert(html.includes(archive.path)&&html.includes('2.0 KB'));
+ assert(html.includes('집 맥미니'),'별칭을 표시하지 않음');
+ assert(html.includes(`data-copy-command="${archive.path}"`),'경로 복사 버튼이 없음');
+ assert(html.includes('⇧⌘G'),'Finder에서 열기 안내가 없음');
+});
+test('미리보기는 +N/~N/-N·충돌·거부 사유를 보여주고 가져오기를 연다',()=>{
+ const preview={path:'/Users/me/Downloads/g.zip',at:'2026-09-10T03:00:00.000Z',preview:{
+  source:'/Users/me/Downloads/g.zip',deviceId:'device-bbb',deviceAlias:'회사 맥북',generation:'gen-9',
+  newFacts:4,updatedFacts:2,deletedFacts:1,
+  conflicts:[{factId:'11111111-1111-4111-8111-111111111111',deviceId:'device-bbb',deviceAlias:'회사 맥북',winner:'peer',reason:'peer-newer'}],
+  generations:[{deviceId:'device-bbb',generation:'gen-9'}],
+  rejected:[{file:'devices/device-bbb/CURRENT',line:0,error:'generation gen-8 integrity check failed'}]}};
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true}),null,null,null,preview);
+ assert(html.includes('기억 +4 / ~2 / -1'),'미리보기 요약이 없음');
+ assert(html.includes('회사 맥북'),'보낸 기기 이름이 없음');
+ assert(html.includes('가져온 기기의 값'),'충돌 승자를 설명하지 않음');
+ assert(html.includes('integrity check failed'),'거부 사유 원문이 없음');
+ assert(!/data-archive="import" disabled/.test(html),'미리보기 뒤에는 가져오기가 열려야 함');
+ assert(html.includes('축별로 세므로 더 클 수 있습니다'),'미리보기와 적용 결과의 셈 차이를 밝히지 않음');
+ const failed=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true}),null,null,null,{path:'/x.zip',at:null,error:'sync archive is not a readable zip'});
+ assert(failed.includes('sync archive is not a readable zip'),'검증 실패 사유를 그대로 보여주지 않음');
+ assert(/data-archive="import" disabled/.test(failed),'검증이 실패했는데 가져오기가 열려 있음');
+});
+test('기기 이름은 이 기기와 다른 기기 모두에서 지정할 수 있다',()=>{
+ const html=settingsPage.syncTab(syncCtx,{sync:true},syncStatus({enabled:true,deviceId:'device-aaa',deviceAlias:'집 맥미니',
+  peers:[{deviceId:'device-bbb',alias:'회사 맥북',aliasIsLocal:false,isSelf:false,generation:'g2',exportedAt:null,hostname:'other',counts:null}]}),null,null);
+ assert(html.includes('data-alias="device-aaa" data-alias-name="집 맥미니"'),'이 기기 이름 편집 버튼이 없음');
+ assert(html.includes('data-alias="device-bbb" data-alias-name="회사 맥북"'),'다른 기기 이름 편집 버튼이 없음');
+ assert(html.includes('상대 기기가 보낸 이름입니다'),'별칭의 출처를 구분하지 않음');
+ const noId=settingsPage.syncTab(syncCtx,{sync:true},syncStatus(),null,null);
+ assert(/data-alias="" data-alias-name="" disabled/.test(noId),'기기 ID가 없으면 이름 지정을 잠가야 함');
+});
+// --- #48 0.6.3: Chronicle SYNC_IMPORTED 충돌 이력 ---
+const importedEvent=(outcome,extra={})=>({id:'event-sync-1',event_kind:'SYNC_IMPORTED',actor:'sync',fact_id:'11111111-1111-4111-8111-111111111111',
+ previous_fact:'배포는 main에서 한다.',new_fact:'배포는 release 브랜치에서 한다.',projection_applied:0,
+ effective_at:'2026-09-09T00:00:00.000Z',effective_at_source:'peer',recorded_at:'2026-09-10T00:00:00.000Z',created_at:'2026-09-10T00:00:00.000Z',
+ outcome_json:outcome===null?null:JSON.stringify(outcome),...extra});
+test('동기화 가져오기 이벤트는 어느 기기에서 왔고 누가 남았는지 밝힌다',()=>{
+ assert.equal(name('SYNC_IMPORTED'),'동기화 가져옴');
+ const peer=importedEvent({source_device_id:'device-bbb',source_device_alias:'회사 맥북',generation:'gen-9',winner:'peer',reason:'peer-newer'});
+ const row=eventRow(peer);
+ assert(row.includes('기기 회사 맥북에서 가져옴'),'출처 기기 라벨이 없음');
+ assert(row.includes('가져온 값으로 대체됨'),'승자를 밝히지 않음');
+ assert(row.includes('동기화 가져옴'),'이벤트 종류 라벨이 없음');
+ const local=eventRow(importedEvent({source_device_id:'device-bbb',source_device_alias:null,generation:'gen-9',winner:'local',reason:'local-newer'}));
+ assert(local.includes('기기 device-b에서 가져옴'),'별칭이 없으면 기기 ID 앞자리를 쓴다');
+ assert(local.includes('이 기기의 값이 남음'),'로컬이 이긴 경우를 밝히지 않음');
+ // 출처를 모르면 지어내지 않는다.
+ assert.equal(syncOrigin(importedEvent(null)),null);
+ assert.equal(syncOriginTag(importedEvent(null)),'');
+ assert.equal(syncOrigin({event_kind:'CHANGED',outcome_json:'{"winner":"peer"}'}),null);
+});
+test('이벤트 상세는 가져온 기기·세대·판정 근거를 표로 보여준다',()=>{
+ const html=details.eventDetail(ctx('',{}),importedEvent({source_device_id:'device-bbb',source_device_alias:'회사 맥북',generation:'generation-9999',winner:'peer',reason:'tie-broken-by-key'}));
+ assert(html.includes('가져온 기기')&&html.includes('회사 맥북'));
+ assert(html.includes('generati'),'세대 앞자리를 보여주지 않음');
+ assert(html.includes('가져온 기기의 값'),'남은 값을 밝히지 않음');
+ assert(html.includes('결정적 규칙'),'동시각 판정 근거를 설명하지 않음');
+});
+test('기억 상세 변경 이력에 기기 출처 라벨이 붙는다',async()=>{
+ const fact={id:'11111111-1111-4111-8111-111111111111',fact:'배포는 release 브랜치에서 한다.',fact_kr:null,category:'decision',
+  scope_type:'project',scope_project:'/workspace/memex',promotion_state:'project-current',is_active:1,source_total:0,
+  sources:[],context_dependencies:[],relations:[],receipt:null,recalls:[],limits:{sources:500,revisions:200,relations:200,recalls:100},
+  revisions:[importedEvent({source_device_id:'device-bbb',source_device_alias:'회사 맥북',generation:'gen-9',winner:'peer',reason:'peer-newer'})]};
+ const {html}=await details.renderDetail(ctx('panelTab=history',{fact}),'fact',fact.id);
+ assert(html.includes('기기 회사 맥북에서 가져옴'),'변경 이력에 출처 라벨이 없음');
+ assert(html.includes('밀린 값')&&html.includes('남은 값'),'이전/이후를 충돌 의미로 바꿔 적지 않음');
+ assert(html.includes('가져온 쪽의 의미 수정 시각이 더 최근입니다'),'판정 근거를 적지 않음');
+});
+
 test('코어에 동기화 서비스가 없으면 빈 화면 대신 이유를 말한다',()=>{
  const html=settingsPage.syncTab(syncCtx,{sync:false},null,null,null);
  assert(html.includes('dist/sync-control.js'));

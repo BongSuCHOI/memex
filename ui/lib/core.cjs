@@ -1,6 +1,9 @@
 'use strict';
 const fs=require('node:fs');const path=require('node:path');const os=require('node:os');const {pathToFileURL}=require('node:url');
 const {Store}=require('./store.cjs');const {HttpError,text,identifier}=require('./util.cjs');
+/** `/api/v2/sync` 본문의 action. 0.6.3에서 수동 세대 파일과 기기 별칭이 추가됐다 (#48). */
+const SYNC_ACTIONS=['status','enable','disable','export','import','archive-export','archive-preview','archive-import','alias'];
+const ARCHIVE_SERVICES=['exportGenerationArchive','previewImportArchive','importArchive','setDeviceAlias'];
 class Core {
   constructor(options={}) {
     this.root=options.root||process.env.MEMEX_PLUGIN_ROOT||process.env.PLUGIN_ROOT||path.resolve(__dirname,'../..');
@@ -89,9 +92,12 @@ class Core {
    * before its first `await` too. With no yield between the check and the set, a second caller
    * cannot enter, so the saved environment is always the original and no caller releases
    * another's lock.
+   *
+   * 0.6.3 (#48): 수동 세대 파일(zip) 내보내기·미리보기·가져오기와 기기 별칭도 같은 엔드포인트의
+   * action으로 들어온다. 하위 경로(`/api/v2/sync/...`)는 만들지 않는다.
    */
   async sync(action,body={}){
-    if(!['status','enable','disable','export','import'].includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
+    if(!SYNC_ACTIONS.includes(action))throw new HttpError(400,'지원하지 않는 동기화 작업입니다.');
     if(this.syncBusy)throw new HttpError(409,'동기화 작업이 이미 진행 중입니다.','SYNC_BUSY');
     if(action!=='status'&&this.busy.size)throw new HttpError(409,'기억 변경이 진행 중입니다. 완료 후 실행하세요.','MUTATION_BUSY');
     this.syncBusy=true;
@@ -108,6 +114,25 @@ class Core {
           return {status:m.setSyncEnabled({enabled:true,dir:path.normalize(dir)})};
         }
         if(action==='disable')return {status:m.setSyncEnabled({enabled:false})};
+        if(action!=='export'&&action!=='import'){
+          for(const fn of ARCHIVE_SERVICES)
+            if(typeof m[fn]!=='function')throw new HttpError(503,'설치된 코어에 세대 파일·기기 별칭 서비스가 없습니다. 코어를 빌드하세요.','CORE_UNAVAILABLE');
+          if(action==='alias'){
+            // 빈 이름은 별칭 삭제다. 별칭은 로컬 sync/devices.json에만 쓰고 피어 설정은 건드리지 않는다.
+            m.setDeviceAlias(identifier(body.deviceId),text(body.alias,200).trim()||null);
+            return {status:m.getSyncStatus()};
+          }
+          // 세대 파일 내보내기는 동기화가 꺼져 있어도 동작한다 — 공유 폴더가 없을 때를 위한 경로다.
+          if(action==='archive-export')return {archive:m.exportGenerationArchive(),status:m.getSyncStatus()};
+          // 가져오기 경로는 사용자가 다른 맥에서 받아 둔 파일을 지목한다. 경로는 제한하지 않지만
+          // payload는 기존 v5 검증을 그대로 통과해야 하므로 동기화 파일이 아니면 사유와 함께 거부된다.
+          const source=text(body.path,4096).trim();
+          if(!source)throw new HttpError(400,'세대 파일(zip) 또는 세대 디렉터리의 절대 경로를 입력하세요.');
+          if(!path.isAbsolute(source)||/[\x00-\x1f]/.test(source))throw new HttpError(400,'세대 파일 경로는 정규화 가능한 절대 경로여야 합니다.','INVALID_ARCHIVE_PATH');
+          const normalized=path.normalize(source);
+          if(action==='archive-preview')return {preview:m.previewImportArchive(normalized)};
+          return {outcome:await m.importArchive(normalized),status:m.getSyncStatus()};
+        }
         // 사용자가 버튼을 눌렀다면 변경이 없어도 내보낸다(force). 자동 훅만 빈 세대를 피한다.
         const outcome=action==='export'?m.runSyncExport({force:true}):await m.runSyncImport();
         return {outcome,status:m.getSyncStatus()};
@@ -115,6 +140,8 @@ class Core {
     }catch(e){
       if(e.status)throw e;
       if(/not writable/.test(e.message))throw new HttpError(400,'공유 폴더에 쓸 수 없습니다. 경로와 권한을 확인하세요: '+e.message,'SYNC_DIR_UNWRITABLE');
+      // 코어의 세대 파일 거부 사유는 사용자가 고칠 수 있는 입력 문제다. 원문을 그대로 전달한다.
+      if(/^sync archive /.test(e.message))throw new HttpError(400,e.message,'INVALID_ARCHIVE');
       throw e;
     }finally{this.syncBusy=false;}
   }

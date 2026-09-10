@@ -139,6 +139,41 @@ test('동시 sync 요청은 하나만 통과하고 환경을 호출 전 값으�
   x.clean();
  }
 });
+test('수동 세대 파일 action은 절대 경로만 받고 코어 서비스를 그대로 호출한다 (#48)',async()=>{
+ const x=syncSetup();const calls=x.syncCalls;
+ x.c.modules.get('sync-control').exportGenerationArchive=()=>{calls.push(['archive-export']);return {path:'/tmp/root/sync/exports/d-g.zip',bytes:12,deviceId:'d',deviceAlias:null,generation:'g',counts:{facts:1,revisions:0,tombstones:0,recallEvents:0}};};
+ x.c.modules.get('sync-control').previewImportArchive=source=>{calls.push(['archive-preview',source]);return {source,deviceId:'peer',deviceAlias:null,generation:'g9',newFacts:2,updatedFacts:1,deletedFacts:0,conflicts:[],generations:[{deviceId:'peer'}],rejected:[]};};
+ x.c.modules.get('sync-control').importArchive=async source=>{calls.push(['archive-import',source]);return {source,deviceId:'peer',deviceAlias:null,generation:'g9',result:{newFacts:2,malformedRows:[]}};};
+ x.c.modules.get('sync-control').setDeviceAlias=(deviceId,alias)=>{calls.push(['alias',deviceId,alias]);return {[deviceId]:alias};};
+ try{
+  await assert.rejects(x.c.sync('archive-preview',{path:'relative/g.zip'}),{status:400,code:'INVALID_ARCHIVE_PATH'});
+  await assert.rejects(x.c.sync('archive-import',{path:'   '}),{status:400});
+  const exported=await x.c.sync('archive-export');
+  assert.equal(exported.archive.path,'/tmp/root/sync/exports/d-g.zip');
+  assert(exported.status,'내보낸 뒤 상태를 함께 돌려주지 않았습니다');
+  const preview=await x.c.sync('archive-preview',{path:'/tmp/Downloads//g.zip'});
+  assert.equal(preview.preview.newFacts,2);
+  assert.equal(calls.find(c=>c[0]==='archive-preview')[1],'/tmp/Downloads/g.zip','경로를 정규화하지 않았습니다');
+  const imported=await x.c.sync('archive-import',{path:'/tmp/Downloads/g.zip'});
+  assert.equal(imported.outcome.result.newFacts,2);
+  await x.c.sync('alias',{deviceId:'peer',alias:'  회사 맥북  '});
+  assert.deepEqual(calls.find(c=>c[0]==='alias').slice(1),['peer','회사 맥북']);
+  // 빈 이름은 삭제 신호로 null을 넘긴다.
+  await x.c.sync('alias',{deviceId:'peer',alias:'   '});
+  assert.equal(calls.filter(c=>c[0]==='alias')[1][2],null);
+  // 코어의 거부 사유는 원문 그대로 400으로 전달한다.
+  x.c.modules.get('sync-control').importArchive=async()=>{throw new Error('sync archive is not a readable zip: zip central directory not found');};
+  await assert.rejects(x.c.sync('archive-import',{path:'/tmp/not-a.zip'}),{status:400,code:'INVALID_ARCHIVE',message:/not a readable zip/});
+  assert.equal(x.c.syncBusy,false);
+ }finally{x.clean();}
+});
+test('세대 파일·별칭 서비스가 없는 코어에서는 503으로 끝난다 (#48)',async()=>{
+ const x=syncSetup();
+ try{
+  for(const action of ['archive-export','archive-preview','archive-import','alias'])
+   await assert.rejects(x.c.sync(action,{path:'/tmp/g.zip',deviceId:'peer'}),{status:503,code:'CORE_UNAVAILABLE'});
+ }finally{x.clean();}
+});
 test('동기화 서비스가 없는 코어에서는 503으로 끝난다',async()=>{
  const x=setup();
  try{
