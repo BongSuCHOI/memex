@@ -87,18 +87,23 @@ export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema
  * One-shot LLM call through the local Codex CLI (CodexExec provider).
  * maxTokens kept for signature compatibility; the CLI manages its own budget.
  *
- * Issue #31: this function no longer resolves the model. `buildCodexExecArgs`
- * is the single interpretation point, so a per-call override is forwarded and
- * everything else (env, models.json, the core default) is decided there — the
- * callers that bypass this module entirely get the same answer.
+ * Issue #31: this function no longer resolves the model — and, since the
+ * pre-release review of 0.7.0, it no longer lets anything else resolve it
+ * either. The ALREADY RESOLVED selection of the enclosing call is passed in and
+ * forwarded verbatim, so the model named in the ledger row, in a HOLD
+ * fingerprint and in the provider's argv is the same one on every attempt of
+ * that call. Re-deriving it here (from `options` plus env/models.json) made a
+ * mid-retry configuration change record B's rejection against A's fingerprint:
+ * A was blocked and B was not.
  */
 async function callOnce(
   systemPrompt: string,
   userMessage: string,
   _maxTokens: number,
-  onObservation?: (observation: CodexExecObservation) => void,
-  options: MemoryModelOptions = {},
-  reservation?: ModelAttemptReservation,
+  onObservation: ((observation: CodexExecObservation) => void) | undefined,
+  options: MemoryModelOptions,
+  reservation: ModelAttemptReservation | undefined,
+  selection: { model: string; reasoning: string | null },
 ): Promise<string> {
   const timeoutRaw = process.env.MEMEX_CODEX_EXEC_TIMEOUT_MS;
   const timeoutMs =
@@ -106,8 +111,10 @@ async function callOnce(
   return runCodex({
     systemPrompt,
     userMessage,
-    model: options.model ?? null,
-    ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
+    // Both are always sent, `null` reasoning included: `reasoningEffort:
+    // undefined` would hand the decision back to the file/env layer.
+    model: selection.model,
+    reasoningEffort: selection.reasoning,
     timeoutMs,
     deadlineAt: reservation?.deadlineAt,
     maxInputChars: reservation?.maxInputChars,
@@ -339,6 +346,11 @@ async function callMemoryModelInternal(
   // one-off model is gated on its own selection and cannot be blocked by (or
   // block) the default one. Past this point a held selection costs nothing at
   // all: no reservation, no provider call.
+  //
+  // This snapshot is also the ONLY selection this call uses: it is forwarded to
+  // every attempt's provider invocation (see `callOnce`), so the model the
+  // ledger row and a HOLD fingerprint name is the model the provider was asked
+  // for, even if the configuration changes mid-retry.
   const selection = resolveLlmSelection({
     model: options.model,
     ...('reasoningEffort' in options ? { reasoningEffort: options.reasoningEffort } : {}),
@@ -382,6 +394,7 @@ async function callMemoryModelInternal(
         },
         options,
         reservation,
+        selection,
       );
       if (!text || text.trim() === '') {
         throw new EmptyLlmResponseError(
