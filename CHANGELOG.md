@@ -2,6 +2,41 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.4 - 2026-09-10
+
+Hotfix for the inject-daemon ownership gap found while validating 0.6.3 on a
+live data root (#89): Codex runs several MCP servers, and when the one that
+owned the fast-path socket exited, the others never reclaimed it, so every
+prompt paid the cold in-process path and `memex doctor` reported `no daemon`.
+
+### Injection fast path
+
+- A server that could not bind the socket keeps re-probing it — every 20
+  seconds (`MEMEX_INJECT_DAEMON_REACQUIRE_MS`, timer unref'd) and
+  opportunistically on each of its own MCP requests — and reclaims an orphaned
+  socket through the same dead-socket / retire rules the start-up path uses.
+  An owner unlinks its socket and releases the bind lock on SIGTERM, SIGINT,
+  stdin close and normal exit, then re-raises the signal. (#89)
+- The hook classifies a refused fast path as `absent` (no socket), `refused`
+  (stale file), `handshake timeout`, `compute timeout` or `identity mismatch`,
+  falls back immediately on the first two, and applies the 3 s budget to
+  connect + handshake only: the daemon answers the handshake with an `ack`
+  carrying its identity before it computes, and the compute wait shares the
+  daemon's own 10 s per-connection budget (`MEMEX_INJECT_COMPUTE_TIMEOUT_MS`
+  for tests). (#89)
+- A bundle whose requesting hook has already fallen back is rolled back inside
+  the transaction (`status: "abandoned"`), so no `prepared` recall receipt is
+  left behind. (#89)
+- `memex doctor` reports `inject-daemon` as `absent`, `stale` (with the
+  servers waiting to reclaim), `hung`, `ok` or `mismatch`; `stale` is a
+  warning only when no candidate server exists. (#89)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change. A small
+`conversation-index/inject-daemon.candidates/` directory records which MCP
+servers are waiting to reclaim the socket.
+
 ## 0.6.3 - 2026-09-10
 
 Closes the remaining findings of the external code review of 0.6.0–0.6.1
