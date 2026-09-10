@@ -155,6 +155,9 @@ class Core {
     if(action!=='status'&&this.busy.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'error.sync.blockedByMutation',message:'A memory change is in progress. Run this after it finishes.'});
     // #96 대칭 — overlays()가 syncBusy를 보고 거절하는 것의 반대 방향.
     if(action!=='status'&&this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
+    // #31 대칭 — models()가 syncBusy를 보고 거절하는 것의 반대 방향. 한쪽만 막으면 배타성이
+    // **요청 순서**로 결정된다: 1회 테스트가 먼저 들어오면(최대 60초) 그 뒤의 동기화가 그냥 통과했다.
+    if(action!=='status'&&this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',message:'A model settings action is in progress. Run this after it finishes.'});
     this.syncBusy=true;
     try{
       return await this.pinned(async()=>{
@@ -222,6 +225,7 @@ class Core {
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
     if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
     if(this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
+    if(this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',message:'A model settings action is in progress. Run this after it finishes.'});
     this.busy.add(id);let writer;
     try{
       return await this.pinned(async()=>{
@@ -258,6 +262,7 @@ class Core {
     // #96 — sync()가 busy를 보고 거절하는 것과 대칭. 같은 쪽만 막으면 동기화와 변경이 겹친다.
     if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'error.fact.blockedBySync',message:'A sync run is in progress. Run this after it finishes.'});
     if(this.overlayBusy)throw new HttpError(409,{code:'OVERLAY_BUSY',key:'overlays.error.overlayBusy',message:'An overlay change is in progress. Run this after it finishes.'});
+    if(this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',message:'A model settings action is in progress. Run this after it finishes.'});
     // #106 — 잠금은 첫 await 앞에서 동기적으로 잡는다(#77이 tier()에 세운 규칙과 같다). 0.6.6은
     // syncBusy를 검사한 뒤 `await this.connect()`로 양보하고 나서야 busy.add(id)를 했고, 그 창에
     // 들어온 sync()는 빈 busy를 보고 통과했다. 재개된 변경은 syncBusy를 다시 보지 않으므로 동기화와
@@ -375,11 +380,18 @@ class Core {
    */
   modelSelectionInput(settings,body){
     const out={};
-    if(body.model!==undefined&&body.model!==null&&text(body.model,256).trim()!==''){
-      const model=text(body.model,256).trim();
-      if(!settings.isValidModelId(model))throw new HttpError(422,{code:'INVALID_MODEL_ID',key:'models.error.invalid_model_id',
-        params:{value:model},message:`invalid model id ${JSON.stringify(model)} — expected 1-256 characters matching [\\w./:@+-]`,
-        details:{issues:[{field:'model',key:'models.error.invalid_model_id',params:{value:model}}]}});
+    // 검증은 **자르기 전 원문**으로 한다. `text(body.model,256)`를 먼저 통과시키면 257자 id도,
+    // 256자 뒤에 붙은 금지 문자도 검증기에 닿지 못해 422여야 할 요청이 성공하고 사용자가 요청하지
+    // 않은 256자 id가 저장됐다(원문을 보는 CLI와도 결과가 달랐다). 잘린 값은 화면에 되돌려줄
+    // 문구에만 쓴다 — 거대한 입력을 오류 본문에 그대로 싣지 않기 위한 경계다.
+    const model=typeof body.model==='string'?body.model.trim():'';
+    if(body.model!==undefined&&body.model!==null&&model!==''){
+      if(!settings.isValidModelId(model)){
+        const shown=text(model,256);
+        throw new HttpError(422,{code:'INVALID_MODEL_ID',key:'models.error.invalid_model_id',
+          params:{value:shown},message:`invalid model id ${JSON.stringify(shown)} — expected 1-256 characters matching [\\w./:@+-]`,
+          details:{issues:[{field:'model',key:'models.error.invalid_model_id',params:{value:shown}}]}});
+      }
       out.model=model;
     }
     if(body.reasoning!==undefined){
@@ -566,6 +578,8 @@ class Core {
         message:'an overlay change is already in progress'});
       if(this.syncBusy)throw new HttpError(409,{code:'SYNC_BUSY',key:'overlays.error.syncBusy',message:'a sync run is in progress'});
       if(this.busy.size)throw new HttpError(409,{code:'MUTATION_BUSY',key:'overlays.error.mutationBusy',message:'a memory change is in progress'});
+      // #31 대칭 — models()가 overlayBusy를 보고 거절하는 것의 반대 방향.
+      if(this.modelsBusy)throw new HttpError(409,{code:'MODELS_BUSY',key:'models.error.busy',message:'a model settings action is in progress'});
       this.overlayBusy=true;                       // 첫 await 앞에서 동기적으로 (#76/#106 규칙)
     }
     try{

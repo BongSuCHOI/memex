@@ -388,3 +388,52 @@ test('HTTP: 저장은 임시 home의 models.json을 쓰고 상태를 함께 돌�
     assert.ok(auditLines().some(l=>l.action==='models.set-llm'&&l.status==='completed'));
   }finally{app.close();fs.rmSync(settingsFile(),{force:true});}
 });
+
+/* ── 배타성의 대칭 · 원문 검증 (0.7.0 사전 릴리스 리뷰) ─────────────────────── */
+test('모델 작업이 먼저 시작되면 동기화·기억 변경·계층 이동·오버레이 쓰기가 409다',async()=>{
+  const c=core();
+  let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  c.modules.set('model-settings-probe',{
+    MODEL_PROBE_STAGE:'model_probe',
+    async probeModel(db,opts){
+      await gate;
+      return {ok:true,model:opts.model,reasoning:opts.reasoning,latencyMs:1,answer:'MEMEX_OK',
+        rejection:null,error:null,errorClass:null,clearedHold:null};
+    },
+  });
+  const running=c.models('test');
+  await new Promise(resolve=>setImmediate(resolve));
+  try{
+    const id='11111111-2222-3333-4444-555555555555';
+    const scope={scope:'all',projectId:null,workstreamId:null};
+    // 같은 쪽만 막으면 배타성이 요청 순서로 결정된다 — 네 진입점 모두 반대 방향을 본다.
+    await refused(()=>c.sync('export'),409,'MODELS_BUSY');
+    await refused(()=>c.mutate({id,action:'deactivate'},scope),409,'MODELS_BUSY');
+    await refused(()=>c.tier({id,action:'promote'},scope),409,'MODELS_BUSY');
+    await refused(()=>c.overlays('reset',{overlay:'gate'}),409,'MODELS_BUSY');
+    // 읽기는 막지 않는다 — models()가 자기 'status'를 면제하는 것과 같은 등급이다.
+    const readable=await c.sync('status').then(()=>true,e=>e.code!=='MODELS_BUSY');
+    assert.ok(readable,'sync status까지 막혔다');
+  }finally{
+    release();
+    await running;
+    c.close();
+  }
+});
+
+test('모델 id는 자르기 전에 검증한다 — 잘린 id를 저장하지 않는다',async()=>{
+  const c=core();
+  const existed=fs.existsSync(settingsFile());
+  const snapshot=existed?fs.readFileSync(settingsFile(),'utf8'):null;
+  const tooLong=await refused(()=>c.models('set-llm',{model:'x'.repeat(257)}),422,'INVALID_MODEL_ID');
+  assert.equal(tooLong.details.issues[0].field,'model');
+  await refused(()=>c.models('set-llm',{model:'x'.repeat(256)+'!'}),422,'INVALID_MODEL_ID');
+  assert.equal(fs.existsSync(settingsFile()),existed,'거절된 요청이 파일을 만들었다');
+  if(existed)assert.equal(fs.readFileSync(settingsFile(),'utf8'),snapshot,'거절된 요청이 파일을 바꿨다');
+  // 256자까지는 유효하므로 경계가 열린 채로 남는다.
+  const ok=await c.models('set-llm',{model:'x'.repeat(256)});
+  assert.equal(ok.saved.model,'x'.repeat(256));
+  fs.rmSync(settingsFile(),{force:true});
+  c.close();
+});
