@@ -1,6 +1,6 @@
 {
   "kind": "merge-gate-receipt",
-  "recordedAt": "2026-09-10T05:40:59.182+00:00",
+  "recordedAt": "2026-09-10T04:51:54.770+00:00",
   "environment": {
     "codexCli": "codex-cli 0.153.4",
     "node": "v26.7.0",
@@ -10,46 +10,46 @@
   },
   "candidate": {
     "repository": "memex",
-    "branch": "release/0.6.4",
-    "codeSha": "47e4b0d3c7afbd5dd8958a3cc07c1d663b1f6fe3",
-    "packageVersion": "0.6.4",
+    "branch": "release/0.6.3",
+    "codeSha": "a1d8c486fbcff8dbcd5fdefb66ee42299ec795ff",
+    "packageVersion": "0.6.3",
     "cleanBeforeGate": true,
     "cleanAfterGate": true,
     "sameHead": true,
-    "note": "v0.6.4 hotfix candidate: PR #90 alone, closing #89, the inject-daemon re-acquisition gap found while validating 0.6.3 on a live data root, plus the version bump and changelog. No UI, sync, tier or scoring changes. Gates followed the same list docs/VERIFICATION.md §2 documents at this SHA, bracketed by the read-only real-root isolation check §4 requires; the documented gate list is unchanged. `git status --porcelain` was empty before the gates and HEAD was unchanged after, and `npm run build` reproduced the tracked dist/ byte-for-byte. The isolation check reports 121 files identical. The tarball stayed at 329 files and adding merge-gate-pre-0.6.4.json left it there. Only receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
+    "note": "v0.6.3 release candidate: PR #86 pins the UI audit path and guidance classes and completes the cross-device sync file-transfer surface, PR #87 fixes the inject-daemon ownership defect found while validating 0.6.2 and closes the last of the external review findings, plus the version bump and changelog. Gates followed the same list docs/VERIFICATION.md §2 documents at this SHA as v0.6.1 and v0.6.2 did, bracketed by the read-only real-root isolation check §4 requires; the documented gate list is unchanged and only the §3 acceptance-map rows were extended. `git status --porcelain` was empty before the gates and HEAD was unchanged after, and `npm run build` reproduced the tracked dist/ byte-for-byte. The isolation check carried extra weight this release: a test suite had been leaking audit rows into the real data root during 0.6.3 development, and it reports 110 files identical here. The tarball grew from 327 to 329 files on product content, and adding merge-gate-pre-0.6.3.json left it at 329. Only receipt files change afterwards. No push, tag, release or installed-plugin update is performed by this receipt."
   },
   "verdict": "PASS-WITH-NOTES",
   "gates": [
     {
       "name": "real-root-snapshot",
-      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-064.json",
+      "command": "node scripts/check-real-root-untouched.mjs snapshot --out /tmp/memex-real-root-before-063.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:35:15.159+00:00",
-      "durationSeconds": 0.132,
-      "logPath": "/private/tmp/memex-0.6.4-gates/real-root-snapshot.log",
-      "logSha256": "3c3c03b7577c210d0c54768ac9cb9bad4f47f1c513d8a210eae90d374710ce13",
-      "observed": "read-only baseline of the real data root: 121 files under ~/.config/memex, written to /tmp/memex-real-root-before-064.json, outside the root. The root grew from 110 files at the v0.6.3 gate through the user's own normal use, which in this interval included the live validation session that found #89."
+      "startedAt": "2026-09-10T04:45:57.810+00:00",
+      "durationSeconds": 0.108,
+      "logPath": "/private/tmp/memex-0.6.3-gates/real-root-snapshot.log",
+      "logSha256": "0c4f6b8c5ffbdc6d2271e7f601c2cba70e787a8b707d986991cdf98f18e6aebb",
+      "observed": "read-only baseline of the real data root: 110 files under ~/.config/memex, written to /tmp/memex-real-root-before-063.json, outside the root. The root grew from 106 files at the v0.6.2 gate through the user's own normal use between releases."
     },
     {
       "name": "typecheck",
       "command": "npm run typecheck",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:35:15.336+00:00",
-      "durationSeconds": 3.433,
-      "logPath": "/private/tmp/memex-0.6.4-gates/typecheck.log",
-      "logSha256": "af11020fd4d4539e7fbeef451064825fe3c44c0ac7d4aee7fc56c6832fa1a015"
+      "startedAt": "2026-09-10T04:45:57.965+00:00",
+      "durationSeconds": 3.474,
+      "logPath": "/private/tmp/memex-0.6.3-gates/typecheck.log",
+      "logSha256": "d24378e231ddc0becda91676f40485afdf5cca10b61aabd2b54fa56c06c1b865"
     },
     {
       "name": "build",
       "command": "npm run build",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:35:18.815+00:00",
-      "durationSeconds": 3.85,
-      "logPath": "/private/tmp/memex-0.6.4-gates/build.log",
-      "logSha256": "35a71a081cb7d933e8d917c9417143b014ed246c962bbb26c5125025782ac3e0",
+      "startedAt": "2026-09-10T04:46:01.486+00:00",
+      "durationSeconds": 3.846,
+      "logPath": "/private/tmp/memex-0.6.3-gates/build.log",
+      "logSha256": "c74ee0a711054b943e5e164422ab0022237a187fa348796e59da5450a77c76af",
       "observed": "tsc + esbuild bundle reproduced the tracked dist/; `git status --porcelain` empty afterwards"
     },
     {
@@ -57,10 +57,10 @@
       "command": "npm test",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:35:22.741+00:00",
-      "durationSeconds": 41.107,
-      "logPath": "/private/tmp/memex-0.6.4-gates/tests.log",
-      "logSha256": "e0907f3e589613ea1c4992939f7ab5551371024f6ca21d51d2f73e3751aa194f",
+      "startedAt": "2026-09-10T04:46:05.411+00:00",
+      "durationSeconds": 26.377,
+      "logPath": "/private/tmp/memex-0.6.3-gates/tests.log",
+      "logSha256": "991d0ebd19ca5690e7f27438cda429328721f3bd1c8da684fc912995466be7b3",
       "observed": "118 files / 1189 Vitest tests passed"
     },
     {
@@ -68,21 +68,21 @@
       "command": "node --test test/*.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:36:11.131+00:00",
-      "durationSeconds": 36.967,
-      "logPath": "/private/tmp/memex-0.6.4-gates/mjs-tests.log",
-      "logSha256": "d52b3701b39df5952299e3e46f7ef51494009bce45d5553aa1d2a0e103750a2f",
-      "observed": "191 tests / 1 suite passed, 0 failed. This one line replaces the per-slice gate rows used through v0.6.0: the widened glob now also covers web-ui-db-factory, benchmark-contract, plugin-validation-contract, codex-host-compat, codex-memory-comparison and scope-isolation-probe, which the old test/*slice.test.mjs glob left outside the documented gate."
+      "startedAt": "2026-09-10T04:46:38.689+00:00",
+      "durationSeconds": 24.785,
+      "logPath": "/private/tmp/memex-0.6.3-gates/mjs-tests.log",
+      "logSha256": "c9eb976f4d40030884610e4377e54908e36847c665eb128065f5c29803fc800a",
+      "observed": "182 tests / 1 suite passed, 0 failed. This one line replaces the per-slice gate rows used through v0.6.0: the widened glob now also covers web-ui-db-factory, benchmark-contract, plugin-validation-contract, codex-host-compat, codex-memory-comparison and scope-isolation-probe, which the old test/*slice.test.mjs glob left outside the documented gate."
     },
     {
       "name": "install-e2e",
       "command": "node scripts/install-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:36:48.182+00:00",
-      "durationSeconds": 7.382,
-      "logPath": "/private/tmp/memex-0.6.4-gates/install-e2e.log",
-      "logSha256": "b99f97de60bd2e6b99316fb262f98117c2b042603a326f1f458cb7b3b6decf02",
+      "startedAt": "2026-09-10T04:47:03.554+00:00",
+      "durationSeconds": 7.322,
+      "logPath": "/private/tmp/memex-0.6.3-gates/install-e2e.log",
+      "logSha256": "d6c718d61bb5a42f6793aa8a8261ad49281816cf5e39c00c0e3b9bfe917109bc",
       "observed": "dry-run, real install, idempotent re-run, removal and isolation checks all true in an isolated CODEX_HOME/MEMEX_HOME"
     },
     {
@@ -90,10 +90,10 @@
       "command": "node scripts/marketplace-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:36:55.607+00:00",
-      "durationSeconds": 0.402,
-      "logPath": "/private/tmp/memex-0.6.4-gates/marketplace-e2e.log",
-      "logSha256": "93c5447eeea9efdc2038d8cf927db56d81931abd59f14f4c1ae2753973eff966",
+      "startedAt": "2026-09-10T04:47:10.920+00:00",
+      "durationSeconds": 0.396,
+      "logPath": "/private/tmp/memex-0.6.3-gates/marketplace-e2e.log",
+      "logSha256": "7db7958f899a29071b1d389a9a1937162387b3972ec21383d7e3552140c5daeb",
       "observed": "7 lifecycle events registered; cleanup PASS"
     },
     {
@@ -101,10 +101,10 @@
       "command": "node scripts/package-runtime-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:36:56.051+00:00",
-      "durationSeconds": 81.917,
-      "logPath": "/private/tmp/memex-0.6.4-gates/package-runtime-e2e.log",
-      "logSha256": "f853060561ad03da61fa4f760f22ffb0ab786eff9fc80e3b6f8eff2d103dbd67",
+      "startedAt": "2026-09-10T04:47:11.361+00:00",
+      "durationSeconds": 81.94,
+      "logPath": "/private/tmp/memex-0.6.3-gates/package-runtime-e2e.log",
+      "logSha256": "9db8e654703185cf5abbbde2192f3975ea1d510d0f2960ed48725d6e9b641213",
       "observed": "memex-0.6.1.tgz, 327 files, 9 MCP tools"
     },
     {
@@ -112,10 +112,10 @@
       "command": "node scripts/lifecycle-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:18.052+00:00",
-      "durationSeconds": 6.809,
-      "logPath": "/private/tmp/memex-0.6.4-gates/lifecycle-e2e.log",
-      "logSha256": "22bd8f145d45606cbae44fb288c4f466e04af7489de27e56d822425f3b3d4a76",
+      "startedAt": "2026-09-10T04:48:33.383+00:00",
+      "durationSeconds": 6.166,
+      "logPath": "/private/tmp/memex-0.6.3-gates/lifecycle-e2e.log",
+      "logSha256": "017d787f6c793f6c44220e1a366384f3ebbdadae2bad2ad8d427ce2c1109f8e5",
       "observed": "offline tier: 9/9 steps, 13 owned hook entries removed across the 7 events, 7-surface cleanup inventory all true"
     },
     {
@@ -123,10 +123,10 @@
       "command": "node --test ui/test/*.test.cjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:33.750+00:00",
-      "durationSeconds": 0.409,
-      "logPath": "/private/tmp/memex-0.6.4-gates/ui-tests.log",
-      "logSha256": "b11fbfbcd69b694a4aa45dc2b179a3720473fe1885a8a6924676bc37043cb8de",
+      "startedAt": "2026-09-10T04:48:46.848+00:00",
+      "durationSeconds": 0.49,
+      "logPath": "/private/tmp/memex-0.6.3-gates/ui-tests.log",
+      "logSha256": "1f48ed8f4eee3984e8a6a16a70bf0fcebaa0dacbb4d8c84beda6c68c03392c22",
       "observed": "148 Workspace unit tests passed"
     },
     {
@@ -134,10 +134,10 @@
       "command": "node scripts/web-ui-browser-e2e.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:34.217+00:00",
-      "durationSeconds": 13.754,
-      "logPath": "/private/tmp/memex-0.6.4-gates/web-ui-browser-e2e.log",
-      "logSha256": "20c3ad3d016d4f780f75ad3acd2b5076f78d6edb3c3d00223d8243d0886a26ec",
+      "startedAt": "2026-09-10T04:48:47.393+00:00",
+      "durationSeconds": 13.381,
+      "logPath": "/private/tmp/memex-0.6.3-gates/web-ui-browser-e2e.log",
+      "logSha256": "3102e5d7f5c7b98f3293a2e6035cde52c43d44f5f2879375c27012d879eb235d",
       "observed": "real headless Chrome via CDP at 1440x900: 19 probes PASS, runtimeErrors 0. Nine are new in 0.6.1 — scopeDefaults, factDeepLink, scopeSwitch, helpLayer, tierBanner, tierPromote, jobGuidance, attention and syncTab — and they exercise the tier panel and promotion, failure guidance, a real recover that reported \"Recovered: 1 unit(s)\", and the sync tab's default-off state plus an export followed by an import with counts."
     },
     {
@@ -145,10 +145,10 @@
       "command": "node scripts/validate-plugin.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:48.060+00:00",
-      "durationSeconds": 4.604,
-      "logPath": "/private/tmp/memex-0.6.4-gates/plugin-validation.log",
-      "logSha256": "f28b063d0d7aa088338b18b85ea01c3123784cb10f2801dd4d1665b6ccc6611e",
+      "startedAt": "2026-09-10T04:49:00.857+00:00",
+      "durationSeconds": 4.583,
+      "logPath": "/private/tmp/memex-0.6.3-gates/plugin-validation.log",
+      "logSha256": "e1403e17dfc5ff87069a17a082d540021672b225b59c4a62cff5535cd4b424bc",
       "observed": "11 isolated substitute checks PASS; formal `codex plugin validate` unavailable in this CLI"
     },
     {
@@ -156,10 +156,10 @@
       "command": "node --test test/benchmark-contract.test.mjs",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:52.707+00:00",
-      "durationSeconds": 0.107,
-      "logPath": "/private/tmp/memex-0.6.4-gates/benchmark-contract.log",
-      "logSha256": "29e053ceda96a4d0bf2dbcfadf87b560453420af67dbba392524ebf0adf7ffc4",
+      "startedAt": "2026-09-10T04:49:05.485+00:00",
+      "durationSeconds": 0.109,
+      "logPath": "/private/tmp/memex-0.6.3-gates/benchmark-contract.log",
+      "logSha256": "9ae390323ee696192b0402c8ba52ee6d535cc9f5a2ce6288ca83529f477f6754",
       "observed": "1 test passed against the carried-forward report; also covered by the widened mjs glob, and run separately here for an explicit row"
     },
     {
@@ -167,29 +167,29 @@
       "command": "npm pack --dry-run",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:52.860+00:00",
-      "durationSeconds": 0.702,
-      "logPath": "/private/tmp/memex-0.6.4-gates/pack-dry-run.log",
-      "logSha256": "4616a742932b9ed11d4b308233d38f8069df9972bbf139cb14cca665e5183547",
+      "startedAt": "2026-09-10T04:49:05.637+00:00",
+      "durationSeconds": 0.693,
+      "logPath": "/private/tmp/memex-0.6.3-gates/pack-dry-run.log",
+      "logSha256": "a97135a933fe11a18d948c39c25d9eba09917018a9373850c920e96cb83b8692",
       "observed": "total files 327. docs/verification ships the three current receipts — merge-gate.json, plugin-validation.json and benchmark.json — while merge-gate-pre-*.json and benchmark-pre-*.json are excluded: 0 of each in the tarball. Older archives named without the `pre-` convention, such as merge-gate-0.4.2.json and the merge-gate-2026-09-* set, are still packaged, so the negation covers the convention rather than every historical receipt."
     },
     {
       "name": "real-root-compare",
-      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-064.json",
+      "command": "node scripts/check-real-root-untouched.mjs compare --baseline /tmp/memex-real-root-before-063.json",
       "status": "PASS",
       "exitCode": 0,
-      "startedAt": "2026-09-10T05:38:53.616+00:00",
-      "durationSeconds": 0.105,
-      "logPath": "/private/tmp/memex-0.6.4-gates/real-root-compare.log",
-      "logSha256": "3aaa8d592b558e7816e1c9d5f40d5488dd655a0b0292b23a6c10f1bdb8aa55d9",
-      "observed": "OK: 121 files compared, added 0, removed 0, modified 0. The real data root at ~/.config/memex was byte-identical after the whole gate run."
+      "startedAt": "2026-09-10T04:49:11.530+00:00",
+      "durationSeconds": 0.106,
+      "logPath": "/private/tmp/memex-0.6.3-gates/real-root-compare.log",
+      "logSha256": "85413783815192c6ab126f99bfba0a27743d57864cbc36187b050cf11bc9d7eb",
+      "observed": "OK: 110 files compared, added 0, removed 0, modified 0, confirmed again with --json. The real data root at ~/.config/memex was byte-identical after the whole gate run, including the ontology suite that had been leaking into it."
     }
   ],
   "packageRuntime": {
     "status": "PASS",
-    "artifact": "memex-0.6.4.tgz",
-    "packedBytes": 1502988,
-    "unpackedBytes": 5820298,
+    "artifact": "memex-0.6.3.tgz",
+    "packedBytes": 1487978,
+    "unpackedBytes": 5773593,
     "files": 329,
     "mcpTools": 9,
     "onboarding": [
@@ -207,12 +207,12 @@
     "status": "PASS-WITH-NOTES (version-bound)",
     "formalValidatorAvailable": false,
     "formalValidatorObserved": "error: unrecognized subcommand 'validate'",
-    "isolatedSubstitute": "PASS: 11 checks — plugin 0.6.4 in the Codex cache, MCP serverInfo 0.6.4, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
+    "isolatedSubstitute": "PASS: 11 checks — plugin 0.6.3 in the Codex cache, MCP serverInfo 0.6.3, 9 tools, graph_stats tools/call, 3 skills, installed Workspace assets (ui/server.cjs, ui/lib/server.cjs, ui/public/index.html, ui/public/app.mjs) and isolated registration cleanup",
     "receiptPath": "docs/verification/plugin-validation.json",
-    "receiptSha256": "f28b063d0d7aa088338b18b85ea01c3123784cb10f2801dd4d1665b6ccc6611e"
+    "receiptSha256": "e1403e17dfc5ff87069a17a082d540021672b225b59c4a62cff5535cd4b424bc"
   },
   "webUi": {
-    "surface": "Memex Workspace, unchanged in 0.6.4; this hotfix touches only the injection fast path and doctor.",
+    "surface": "Memex Workspace, extended in 0.6.3 with the audit-path pinning (#78) and guidance-class corrections (#79, #80) plus the sync file-transfer surface (#48).",
     "browserE2e": {
       "status": "PASS",
       "command": "node scripts/web-ui-browser-e2e.mjs",
@@ -220,7 +220,10 @@
       "viewport": "1440x900",
       "probes": 21,
       "runtimeErrors": 0,
-      "newProbes": [],
+      "newProbes": [
+        "syncArchive",
+        "importedFact"
+      ],
       "allProbes": [
         "scopeDefaults",
         "factDeepLink",
@@ -251,13 +254,13 @@
       "status": "PASS",
       "command": "node --test ui/test/*.test.cjs",
       "tests": 148,
-      "note": "Unchanged from v0.6.3, as expected for a release with no UI change."
+      "note": "Up from 134 in v0.6.2 across ui/test/core.cjs, guidance.test.cjs, http.test.cjs and pages.test.cjs."
     },
     "uiFollowUpClosed": "The tier promote and demote buttons the v0.6.0 receipt deferred to 0.6.1 (#22) remain present and covered by the tierBanner and tierPromote probes.",
     "benchmark": {
       "status": "PASS",
       "rerunForThisCandidate": false,
-      "reason": "The search and injection scoring paths AC_PERF_01 through AC_PERF_03 measure are unchanged since the v0.6.0 candidate, so the report below is carried forward as prior evidence measured on 6ba3354b, now four releases old, and is not a measurement of this SHA.",
+      "reason": "The search and injection scoring paths AC_PERF_01 through AC_PERF_03 measure are unchanged since the v0.6.0 candidate, so the report below is carried forward as prior evidence measured on 6ba3354b, now three releases old, and is not a measurement of this SHA.",
       "command": "node scripts/benchmark.mjs",
       "measuredOnCodeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
       "recordedAt": "2026-09-09T19:01:47.268Z",
@@ -293,7 +296,7 @@
         "graph_first_interactive": 85.09999990463257,
         "full_history_analyze": 93.34241700000001
       },
-      "knownUnmeasuredCost": "AC_PERF_03's path has now changed twice since the carried-forward number was measured, and neither change is measured by any gate. 0.6.3's #84 handshake adds a per-call SHA-256 of the bundle, documented at roughly 5-10 ms. 0.6.4 adds an ack round trip before compute and re-splits the waits into a 3 s connect-plus-handshake budget and a 10 s compute budget. The carried-forward warm p95 of about 162 ms predates both. Against that, the defect this release fixes was itself a 69.8 s cold path observed live, so the practical direction is almost certainly an improvement — but that is an argument, not a measurement.",
+      "knownUnmeasuredCost": "The #84 handshake adds a SHA-256 of the bundle per hook call to the injection fast path, documented at roughly 5-10 ms. That cost is on AC_PERF_03's path and is NOT measured by this gate: the carried-forward warm p95 of about 162 ms predates it. The figure is the implementation's own estimate, not an observation.",
       "thresholdChecks": "6/6 AC_PERF groups true against the thresholds predeclared in the report; every measured p95 landed at least an order of magnitude inside its budget except incremental sync (11.6s of a 120s budget) and peak sync RSS (931.3MB of 2048MB). No threshold was tuned.",
       "injectionYield": "warm_injected_ratio 1 and cold_injected_ratio 1 with error_ratio 0, over the benchmark's synthetic corpus; conversation search reported error_ratio 0 and no_match_ratio 0.",
       "contractGate": "test/benchmark-contract.test.mjs was re-run after this report was written and validates it against the /api/v2/graph-only transport set; scripts/benchmark.mjs also validates the same contract before writing the file.",
@@ -314,28 +317,14 @@
     "design": "A handshake now settles identity before any computation: the hook and the daemon must agree on five fields, and a SHA-256 of the bundle binds the answer to the build that produced it. The design was reviewed by Codex before implementation, and an implementation review folded six further defects into the same PR.",
     "reviewProvenance": "Both the design review and the implementation review were Codex passes arranged by this project; they are not an outside audit.",
     "behaviour": "A mismatching, older or timing-out daemon falls back in-process and records daemon.reason and daemon.got rather than serving a foreign answer. Socket ownership uses an O_EXCL lock, reclaims dead sockets and non-socket files left by SIGKILL, does not intervene on EACCES, and supports retire handover with refusal from a non-installed root. Only a listener at the installed root is accepted, MEMEX_INJECT_DAEMON can force the path, and doctor reports inject-daemon judged against the installed root without its probe contaminating inject-output.",
-    "reacquisition": {
-      "defect": "#89, found while validating 0.6.3 on the user's live data root, not by any gate. Codex rotates one MCP server per session or thread. A server that found a live owner at start-up stopped looking, so when the owner exited the socket file stayed behind: later prompts connected to it, got ECONNREFUSED, and paid the cold in-process path with no process anywhere intending to repair it.",
-      "liveObservation": "On the real data root the owner pid 75485 was gone at 13:56 with its socket file left behind, and the resulting cold path was measured at 69.8 s. This is a live field observation of v0.6.3, not an observation of these gates — the v0.6.3 receipt's green gates did not and could not surface it, because every daemon case there ran in isolated fixtures within a single process lifetime.",
-      "fix": "A server that did not bind now keeps watching: a re-probe every 20 s (MEMEX_INJECT_DAEMON_REACQUIRE_MS, timer unref'd so the watch never keeps the MCP server alive) plus an opportunistic probe on each of its own MCP requests, rate-limited to one attempt per 2 s and never awaited, so a busy host reclaims in milliseconds instead of waiting out the interval. The reclaim decision itself is unchanged and now shared by both entry points: nothing listening is reclaimed through the existing dead-socket path, a live same-build owner is left to serve, an unidentified listener is left untouched, and a live foreign owner gets the existing retire request. Re-probe outcomes are silent; only a state change logs. An owner now also releases the socket on the way out — SIGTERM, SIGINT, stdin close or a plain exit unlink the socket and drop the bind lock idempotently if it is still ours, then re-raise the signal so installing the handlers cannot swallow the MCP server's SIGTERM. That turns an ordinary exit into ENOENT, a clean cold start, instead of the corpse that made the bug permanent.",
-      "hookClassification": "The hook now names why a fast path was refused — absent (no socket), refused (stale file), handshake timeout, compute timeout or identity mismatch — and falls back immediately on the first two instead of guessing at the daemon's silence.",
-      "budgets": "The 3 s budget now covers connect plus handshake only: the daemon answers the handshake with an ack carrying its identity before it computes, and the compute wait shares the daemon's own 10 s per-connection budget (MEMEX_INJECT_COMPUTE_TIMEOUT_MS for tests).",
-      "abandonedBundle": "A bundle whose requesting hook has already fallen back is rolled back inside the transaction with status \"abandoned\", so no prepared recall receipt is left behind.",
-      "doctorStates": "memex doctor reports inject-daemon as absent, stale (naming the servers waiting to reclaim), hung, ok or mismatch, and stale is a warning only when no candidate server exists. The candidate list counts live pids only, so a report cannot promise a reclaim on behalf of a process that is gone.",
-      "newState": "Non-serving servers publish themselves under conversation-index/inject-daemon.candidates/<pid>.json. No schema change.",
-      "caseGrowth": "test/inject-daemon-slice.test.mjs grew from 17 cases in 0.6.3 to 26 here.",
-      "newCoverage": "The added cases drive real child processes rather than in-process doubles: a duplicate server reclaims the socket after the owner is SIGKILLed, and a separate case pushes the re-probe timer out to ten minutes so that only an MCP request can reclaim, then asserts both that the reclaim happened and that the handshake afterwards answers with the reclaimer's pid. Others cover the hook against a stale socket file returning reason \"refused\" with a fallback inside 3 s, and doctor's four states including a live candidate named with its interval and a candidate whose pid is gone.",
-      "productionDataMutation": false,
-      "liveReacquisition": "NOT_PROVEN: reclaim by timer and by MCP request is proven against real child processes in isolated fixtures, but not against Codex's own server rotation on the user's root. Whether the 69.8 s cold path is actually gone in live use is verified after release."
-    },
-    "regressions": "test/inject-daemon-slice.test.mjs, 26 cases. The original 17 from 0.6.3: rejection of a daemon with no handshake or any single differing field with via \"fallback\" plus daemon.reason, the fast path served and attributed on a match, a real daemon against a real hook so that a disagreement between the two files' identity computations surfaces as fallback, reclaim of sockets and non-socket files left by SIGKILL, EACCES non-intervention, live and stale bind locks, retire handover and non-installed-root refusal, the installed-root policy with MEMEX_INJECT_DAEMON, and doctor's three verdicts. One case asserts the mismatching daemon was never asked to compute at all.",
-    "knownCost": "The per-call SHA-256 of the bundle from 0.6.3 is documented at roughly 5-10 ms on the fast path, and 0.6.4 adds the ack round trip and re-splits the timeouts into a 3 s handshake and a 10 s compute budget. None of it is measured by any gate; see webUi.benchmark.knownUnmeasuredCost.",
+    "regressions": "test/inject-daemon-slice.test.mjs, 17 cases: rejection of a daemon with no handshake or any single differing field with via \"fallback\" plus daemon.reason, the fast path served and attributed on a match, a real daemon against a real hook so that a disagreement between the two files' identity computations surfaces as fallback, reclaim of sockets and non-socket files left by SIGKILL, EACCES non-intervention, live and stale bind locks, retire handover and non-installed-root refusal, the installed-root policy with MEMEX_INJECT_DAEMON, and doctor's three verdicts. One case asserts the mismatching daemon was never asked to compute at all.",
+    "knownCost": "The per-call SHA-256 of the bundle is documented at roughly 5-10 ms on the fast path and is not measured by any gate; see webUi.benchmark.knownUnmeasuredCost.",
     "productionDataMutation": false,
     "liveDaemonTakeover": "NOT_PROVEN: socket handover, reclaim and the installed-root policy were exercised in isolated fixtures. No live daemon on the user's own root was taken over or retired, which is verified after release."
   },
   "reviewRemediation": {
     "source": "The external code review of v0.5.2..v0.6.1 by Codex gpt-6-astra at low reasoning effort, which raised 22 findings numbered #59 to #80.",
-    "status": "All 22 findings remain closed as of 0.6.3; 0.6.4 adds no review-finding work. #89 is a separate defect found after that review, while validating 0.6.3 live.",
+    "status": "All 22 findings are now closed across two releases.",
     "closedInThisRelease": {
       "count": 9,
       "issues": [
@@ -378,17 +367,17 @@
   "crossDeviceSync": {
     "switchDefault": "Cross-device sync still ships OFF, with MEMEX_SYNC_DIR taking precedence over the configured shared folder, and the UI opening with export and import disabled.",
     "protocol": "SYNC_PROTOCOL_VERSION 5, with the importer accepting only the generation manifests that version declares; 0.6.2 corrected four sync and recovery defects inside it.",
-    "completedInThisRelease": "No sync change in 0.6.4. The file-transfer surface completed in 0.6.3 (#48) — zip generation files, device aliases and SYNC_IMPORTED conflict history — is carried forward unchanged and its suites still pass here.",
+    "completedInThisRelease": "0.6.3 completes the file-transfer surface (#48): manual generation files as zip containers, device aliases, and SYNC_IMPORTED conflict history.",
     "regressions": "test/zip.test.ts, 5 cases: store and deflate round trips with deterministic bytes, interoperability with the system zip and unzip, zip-slip name rejection, and failure rather than partial results on a truncated container, a CRC mismatch or an entry/size cap, plus the standard CRC-32 value. test/sync-control.test.ts adds the manual generation-file path with sync off — export to zip, preview reporting no change, import, and re-import idempotency — and refusal of a file from this same device, a non-zip, a non-generation and a corrupted payload, with the export path unable to escape the data root; device aliases stored locally with only this device's name propagated in the manifest and the local name beating a peer's; and SYNC_IMPORTED conflict history recorded in both directions, not duplicated on re-importing the same generation, and never carried in the export payload. The browser probes syncArchive and importedFact cover the same round trip through the UI.",
     "productionDataMutation": false,
     "liveTwoDeviceRoundTrip": "NOT_PROVEN: every sync case ran in isolated fixtures on one host, which proves the container, alias and conflict-history contracts, not a real two-device exchange. The user will test this on two Macs."
   },
   "testIsolationIncident": {
-    "whenFound": "During 0.6.3 development, by the isolation check introduced in 0.6.1. Recorded here as a carried-forward boundary; nothing leaked in this release's run.",
+    "whenFound": "During 0.6.3 development, by the isolation check introduced in 0.6.1.",
     "leak": "The `taxonomy epoch vs privacy purge (P1/P2 v4)` block in test/ontology-classifier.test.ts set only TEST_DB_PATH. The #73 regressions call mergeCategories and renameCategory, which each append a metadata line to <getMemexHome()>/logs/ui-audit.jsonl, so getMemexHome() fell through to the user's real root and eight ontology-merge / ontology-rename rows landed in ~/.config/memex/logs/ui-audit.jsonl.",
     "scope": "That one block was the only leak; test/ontology-taxonomy-repair.test.ts and test/ontology-cli-slice.test.mjs already pinned MEMEX_HOME.",
     "fix": "The block now pins MEMEX_HOME and XDG_CONFIG_HOME to its temp directory and restores both afterwards. MEMEX_HOME alone decides getMemexHome(); XDG_CONFIG_HOME is pinned as well so the fallback cannot reach a real directory if that precedence ever changes. Both tests now also assert the audit line is readable under the temp home, so isolation is proven by the suite itself rather than only by the external check.",
-    "thisGateResult": "PASS again in this release: 121 files compared before and after the full run, 0 added, 0 removed, 0 modified.",
+    "thisGateResult": "PASS: 110 files compared before and after the full run, 0 added, 0 removed, 0 modified.",
     "significance": "This is the second leak of exactly this shape the check has caught; the first, in 0.5.0 QA, put 21 lines into the same file from test/web-ui-db-factory.test.mjs. The pattern is a suite isolating only a database path while a code path resolves the home directory independently.",
     "caveat": "The eight leaked rows were written to the user's real audit log during development and are not removed by this fix; the check proves the gate run is clean now, not that the earlier write was undone."
   },
@@ -396,28 +385,28 @@
     "script": "scripts/check-real-root-untouched.mjs",
     "mode": "read-only; snapshot before the gates, compare after, as docs/VERIFICATION.md §4 now requires",
     "root": "~/.config/memex",
-    "filesCompared": 121,
+    "filesCompared": 110,
     "added": 0,
     "removed": 0,
     "modified": 0,
     "result": "PASS",
-    "baselinePath": "/tmp/memex-real-root-before-064.json (outside the data root)",
+    "baselinePath": "/tmp/memex-real-root-before-063.json (outside the data root)",
     "volatileExclusions": "run-locks/ and unix sockets are excluded by default because they exist only while something is running; --strict was not used.",
     "motivation": "0.5.0 QA found test/web-ui-db-factory.test.mjs isolating only MEMEX_DB_PATH and appending 21 lines to the real logs/ui-audit.jsonl. That suite is now inside the widened mjs gate, and this run leaves the real root byte-identical.",
     "caveat": "This proves the gate run did not write to the root, not that the root is healthy. Judgement is by content hash, so a read-only access that only moves atime is correctly not a failure."
   },
   "priorEvidence": [
     {
-      "receipt": "merge-gate-pre-0.6.4.json",
-      "sha256": "d291aa4b6e671d3a13702c4e2ad981ad21f8692c0d8e1ea01b350af1e9c06f8e",
-      "codeSha": "a1d8c486fbcff8dbcd5fdefb66ee42299ec795ff",
-      "note": "The v0.6.3 gate receipt, archived byte-for-byte from the file this receipt replaces. Its values were not rewritten — including its injectDaemonIdentity section, whose fast path this release had to repair."
+      "receipt": "merge-gate-pre-0.6.3.json",
+      "sha256": "8c60ef3cb80432da62d84f8ed99a8cc135ff4bce879f364015f1fdd6106d73d7",
+      "codeSha": "0f4ccc82003ac72f7cfecd5cda64ca5de7b659c1",
+      "note": "The v0.6.2 gate receipt, archived byte-for-byte from the file this receipt replaces. Its values were not rewritten."
     },
     {
       "receipt": "benchmark.json",
       "sha256": "3a4d12891d37466b30745ae8989db83a9154a4eb5903f888c01ed1d9b3ec0b46",
       "codeSha": "6ba3354ba30c1787b8d7da6b57da1b0d24a17d57",
-      "note": "The full acceptance benchmark, measured on the v0.6.0 candidate and carried forward for a fourth release. It predates both the 0.6.3 handshake and the 0.6.4 ack and split budgets on the injection fast path."
+      "note": "The full acceptance benchmark, measured on the v0.6.0 candidate and carried forward for a third release because the search and injection scoring paths it measures are unchanged. It predates the #84 handshake cost on the injection fast path."
     }
   ],
   "priorLiveEvidence": {
@@ -434,17 +423,15 @@
     "authenticatedCodexTier": "NOT_PROVEN: scripts/lifecycle-e2e.mjs ran its default offline tier; no real authenticated `codex exec` session was executed for this candidate.",
     "formalPluginValidator": "NOT_PROVEN: `codex plugin validate` does not exist in codex-cli 0.153.4, so only the repository-owned isolated substitute was observed.",
     "liveTierMigration": "NOT_PROVEN: the pre-0.6.0 workstream facts on the user's real root were not migrated or inspected here; only the migrate-tiers contract was exercised on fixtures.",
-    "liveInjectionYieldOnThisRelease": "NOT_PROVEN: injection yield was confirmed live under v0.6.0. The tier code changed in 0.6.1 and 0.6.2 and the injection fast path changed in 0.6.3 and again here, so that measurement does not carry to this release and is due a fresh post-release check.",
+    "liveInjectionYieldOnThisRelease": "NOT_PROVEN: injection yield was confirmed live under v0.6.0. The tier code that decides what is readable changed in 0.6.1 and 0.6.2, and the injection fast path itself changed here, so that measurement does not carry to this release and is due a fresh post-release check.",
     "reviewClosure": "NOT_PROVEN: the external reviewer did not re-run the review against 0.6.3, so \"all 22 findings closed\" is this project's own verification; see reviewRemediation.",
-    "liveDaemonTakeover": "NOT_PROVEN: the inject-daemon handover and installed-root policy are proven against real child processes in isolated fixtures only; see injectDaemonIdentity.",
-    "liveReacquisition": "NOT_PROVEN: whether a non-owning server actually reclaims an orphaned socket under Codex's own server rotation on the user's root, and whether the 69.8 s cold path is gone, is verified after release; see injectDaemonIdentity.reacquisition.",
-    "gateBlindSpotForDaemonLifetime": "NOT_PROVEN: #84 and #89 were both found on a live root after a green gate run, not by the gates. Every daemon case runs inside one fixture lifetime, so cross-process ownership over a host's real server rotation is a surface these gates do not cover. 0.6.4 narrows it by driving real child processes, but it is not closed.",
-    "injectionFastPathCost": "NOT_PROVEN: AC_PERF_03's path changed in 0.6.3 (a per-call SHA-256, documented ~5-10 ms) and again here (an ack round trip, a 3 s handshake budget and a 10 s compute budget). The carried-forward benchmark predates both and no gate measured either.",
+    "liveDaemonTakeover": "NOT_PROVEN: the inject-daemon handover and installed-root policy were proven on fixtures only; see injectDaemonIdentity.",
+    "injectionFastPathCost": "NOT_PROVEN: the #84 handshake adds a documented ~5-10 ms SHA-256 per hook call to the path AC_PERF_03 measures, and the carried-forward benchmark predates it. No gate measured the new cost.",
     "benchmarkOnThisSha": "NOT_PROVEN: the acceptance benchmark was measured on the v0.6.0 candidate 6ba3354b and not re-run here. The argument that 0.6.1 leaves the search and injection scoring paths untouched is a reading of the diff, not a measurement of this SHA, and dist/ was rebuilt again.",
     "liveTwoDeviceRoundTrip": "NOT_PROVEN: cross-device sync was never exercised across two machines; see crossDeviceSync.",
     "realWorldPerformance": "NOT_PROVEN: the benchmark was re-measured on this SHA, but from a 200-rollout / 800-exchange synthetic corpus on one Apple-silicon host, not from production history or other hardware. Its fixture carries 50 facts, so it says nothing about tier reads at a real corpus size.",
     "modelQuality": "NOT_PROVEN: extraction and ontology model quality were not re-evaluated for this release; the committed fact-extraction reports remain evidence of their own earlier runs only.",
     "documentationAccuracy": "NOT_PROVEN: no gate reads prose, so the accuracy of the CHANGELOG for this release rests on human review, not on these gates."
   },
-  "releaseConclusion": "Every gate in the list docs/VERIFICATION.md §2 documents at this SHA passes on the clean v0.6.4 candidate 47e4b0d3, each on its first attempt: the real-root snapshot, typecheck, a build that reproduced the tracked dist/, 118 files / 1189 Vitest tests, 191 tests through the widened mjs glob, installer, marketplace, packaged runtime (memex-0.6.4.tgz, 329 files, 9 MCP tools), offline lifecycle 9/9 with 13 owned hook entries, 148 Workspace unit tests unchanged, the same 21 real-Chrome Workspace probes with 0 runtime errors, isolated plugin validation, the benchmark contract, the pack dry-run and the closing real-root comparison, which reports 121 files compared with 0 added, 0 removed and 0 modified. The release is a single hotfix for #89: Codex rotates one MCP server per session, and a server that found a live socket owner at start-up stopped looking, so when the owner exited its socket file stayed behind and every later prompt paid the cold path. The honest framing matters here — that defect was found on the user's live data root, where owner pid 75485 was gone at 13:56 and the cold path measured 69.8 s, and it was not found by the v0.6.3 gates, whose daemon cases all ran inside a single fixture lifetime. #84 in 0.6.3 was found the same way. This release narrows that blind spot by driving real child processes: inject-daemon-slice grows from 17 to 26 cases, including a duplicate server reclaiming the socket after the owner is SIGKILLed and a case that pushes the re-probe timer to ten minutes so only an MCP request can reclaim, then checks the handshake answers with the reclaimer's pid. It does not close the blind spot, which is recorded as gateBlindSpotForDaemonLifetime. Non-owning servers now re-probe every 20 s and opportunistically per MCP request, owners release the socket on SIGTERM, SIGINT, stdin close and plain exit so an ordinary exit becomes a clean ENOENT, the hook names its five refusal reasons instead of guessing, the 3 s budget covers connect plus handshake with compute sharing the daemon's own 10 s budget, an abandoned bundle is rolled back so no prepared receipt is orphaned, and doctor reports four states plus mismatch, counting only live candidate pids. The benchmark was not re-run for a fourth release and is carried forward from the v0.6.0 candidate: benchmarkOnThisSha is NOT_PROVEN, and AC_PERF_03's path has now changed twice since that measurement, so the ack and split budgets are unmeasured — the 69.8 s defect being fixed makes the practical direction almost certainly an improvement, but that is an argument, not a measurement. Live re-acquisition under Codex's real server rotation, a live daemon takeover, a live two-device sync round trip, a fresh live injection-yield check, live tier placement and migration, the reviewer's own re-confirmation of the closed 22 findings, an authenticated Codex tier run, the formal plugin validator, real-world performance at production corpus sizes and model quality all remain NOT_PROVEN."
+  "releaseConclusion": "Every gate in the list docs/VERIFICATION.md §2 documents at this SHA passes on the clean v0.6.3 candidate a1d8c486, each on its first attempt: the real-root snapshot, typecheck, a build that reproduced the tracked dist/, 118 files / 1189 Vitest tests, 182 tests through the widened mjs glob, installer, marketplace, packaged runtime (memex-0.6.3.tgz, 329 files, 9 MCP tools), offline lifecycle 9/9 with 13 owned hook entries, 148 Workspace unit tests, 21 real-Chrome Workspace probes with 0 runtime errors including the new syncArchive round trip and importedFact, isolated plugin validation, the benchmark contract, the pack dry-run and the closing real-root comparison. That comparison is the headline evidence of this release: 110 files compared before and after, 0 added, 0 removed, 0 modified. It matters because during 0.6.3 development the check caught the taxonomy-epoch block in test/ontology-classifier.test.ts pinning only TEST_DB_PATH and writing eight ontology-merge and ontology-rename rows into the user's real ~/.config/memex/logs/ui-audit.jsonl; that block now pins MEMEX_HOME and XDG_CONFIG_HOME and asserts the audit line under its temp home, so the suite proves its own isolation. This is the second leak of that shape the check has caught, and the eight rows already written were not removed by the fix. The release also closes the last nine findings of the external review of 0.6.0-0.6.1, bringing all 22 to closed across two releases, completes the cross-device sync file-transfer surface with zip generation files, device aliases and SYNC_IMPORTED history, and fixes the inject-daemon ownership defect #84 with a five-field handshake and a bundle SHA-256 so a foreign build can never serve the fast path. The benchmark was not re-run for a third release and is carried forward from the v0.6.0 candidate: benchmarkOnThisSha is NOT_PROVEN, and the #84 handshake's documented ~5-10 ms per hook call sits on the AC_PERF_03 path that the carried-forward number predates, so that cost is unmeasured rather than shown to be acceptable. A live two-device sync round trip, which the user will run on two Macs, a live daemon takeover on the user's own root, the reviewer's own re-confirmation that the 22 findings are closed, a fresh live injection-yield check for this release, live tier placement and migration, an authenticated Codex tier run, the formal plugin validator, real-world performance at production corpus sizes and model quality all remain NOT_PROVEN."
 }
