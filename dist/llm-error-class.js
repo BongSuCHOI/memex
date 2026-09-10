@@ -1,11 +1,20 @@
 /**
- * LLM 실패 3분류 — 단일 소스.
+ * LLM 실패 4분류 — 단일 소스.
  *
  * consolidator 의 drain 루프와 llm.ts 의 재시도 루프가 **같은 판정**을 써야 한다:
  * 한쪽만 어떤 에러를 transient 로 보면 재시도는 하는데 커서는 넘어가는(또는 그 반대)
  * 불일치가 생긴다. 그래서 정의를 이 모듈에 두고 양쪽이 import 한다
  * (consolidator 는 기존 importer 를 위해 re-export — coupling drift 차단).
  */
+/**
+ * `code` 로만 판정한다 — 클래스 identity 를 import 하면 이 leaf 모듈이
+ * codex-exec(child_process)·model-budget(better-sqlite3) 에 묶이고, 그 둘은
+ * 여기로 되돌아오는 순환을 만든다. 두 코드 모두 해당 클래스가 소유하는 상수다.
+ */
+const CONFIG_ERROR_CODES = new Set([
+    'MEMEX_MODEL_CONFIG', // CodexRequestRejectedError — provider refused the envelope
+    'MEMEX_MODEL_CONFIG_HELD', // ModelConfigHeldError — a durable hold refused the call
+]);
 /**
  * Extract an HTTP status from common provider-error shapes: a top-level
  * `status`/`statusCode` OR a nested `response.status`/
@@ -88,6 +97,11 @@ export function classifyLlmError(err) {
     // Classify the underlying provider rejection, not the wrapper.
     const e = unwrapped;
     const localCode = unwrapped?.code;
+    // FIRST, before any status or phrase matching: an envelope rejection carries a
+    // 400 and "invalid_request" wording, both of which would otherwise read as
+    // 'deterministic' and send the extractor into window splitting.
+    if (typeof localCode === 'string' && CONFIG_ERROR_CODES.has(localCode))
+        return 'config';
     if (localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
         return 'deterministic';
     }

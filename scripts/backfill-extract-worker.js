@@ -169,6 +169,20 @@ function sessionProject(db, sid) {
   return bySlug ? bySlug.project : null;
 }
 
+/**
+ * Issue #31 — pre-claim gate. The session hook already skips spawning us when a
+ * model selection is held, but this worker can be run directly, so the gate
+ * lives here too. Returning is exit 0: a held selection is not a failure.
+ */
+async function modelConfigHeld(db) {
+  try {
+    const { currentModelConfigHold } = await import('../dist/model-budget.js');
+    return currentModelConfigHold(db);
+  } catch {
+    return null; // a pre-0.7.0 database has no hold table
+  }
+}
+
 async function main() {
   if (!acquireLock()) {
     console.log("backfill-extract: another worker is running, exiting");
@@ -181,6 +195,14 @@ async function main() {
   let db;
   try {
     db = initDatabase();
+    const held = await modelConfigHeld(db);
+    if (held) {
+      log(
+        `backfill-extract: held on a model setting ("${held.model}") — no work claimed, ` +
+          'no attempt consumed; fix it and it resumes automatically (memex models show)',
+      );
+      return;
+    }
 
     const sessions = pendingSessions(db, MAX_SESSIONS);
     log(
@@ -200,6 +222,8 @@ async function main() {
       budget: 0,
       budget_exhausted: 0,
       dead: 0,
+      // 이슈 #31: 모델 설정 거절 — 예산 미소모, 실패 아님, 설정을 고치면 자동 재개.
+      held: 0,
     };
     // backoff 로 막힌 작업 중 **가장 이른** 재시도 시각 — 요약줄이 "언제 다시 되는지"를
     // 말하지 못하면 운영자는 결국 한 시간을 그냥 기다린다(이슈 #11 의 실제 피해).
@@ -433,6 +457,9 @@ async function main() {
           : "") +
         (buckets.dead > 0
           ? `, failed-visible ${buckets.dead} — completed 아님, exact range 점검 필요`
+          : "") +
+        (buckets.held > 0
+          ? `, config-held ${buckets.held} — 모델 설정 대기(예산 미소모), 고치면 자동 재개: memex models show`
           : "") +
         // 운영 에스컬레이션 신호는 별도로 유지한다 — 예산 회계에 섞으면 "손대야 할 실패"가
         // 일반 통계로 묻힌다(R12 수정 중 사라졌던 경보의 복원).

@@ -77,6 +77,16 @@ export function getExcludeConfigPath() {
     return path.join(getIndexDir(), "exclude.txt");
 }
 /**
+ * `<data root>/models.json` — the local model selection (#31, 0.7.0).
+ *
+ * Top level, NOT inside `<data root>/models/`: that directory is the weights
+ * cache and a cleanup tool may remove it whole. Read/write live in
+ * src/model-settings.ts; this is the path getter only.
+ */
+export function getModelSettingsPath() {
+    return path.join(getMemexHome(), "models.json");
+}
+/**
  * Codex rollout transcripts root ($CODEX_HOME/sessions). Recursive layout:
  * sessions/YYYY/MM/DD/rollout-<timestamp>-<thread>.jsonl. MEMEX_SESSIONS_DIR is
  * the optional explicit override; TEST_SESSIONS_DIR is used by tests.

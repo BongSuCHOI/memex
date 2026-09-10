@@ -216,6 +216,12 @@ test('parseConversation stamps project and cwd from meta', async () => {
 
 test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-luna', () => {
   delete process.env.MEMEX_CODEX_MODEL;
+  delete process.env.MEMEX_CODEX_REASONING;
+  // #31 put a settings file between env and the default. This slice runs the
+  // TS source directly, so the file layer is never loaded here — but pin the
+  // data root anyway so the developer's real ~/.config/memex can never decide
+  // whether this assertion passes.
+  process.env.MEMEX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-slice-home-'));
   const args = buildCodexExecArgs({ workdir: '/w' });
   assert.deepEqual(args.slice(0, 9), [
     'exec', '--ephemeral', '--ignore-user-config',
@@ -237,6 +243,12 @@ test('buildCodexExecArgs: safety flags always present; default model is gpt-5.6-
   const envModel = buildCodexExecArgs({ workdir: '/w' });
   assert.equal(envModel[envModel.indexOf('-m') + 1], 'env-model');
   delete process.env.MEMEX_CODEX_MODEL;
+
+  // #31: no reasoning selection means no flag at all.
+  assert.equal(args.includes('-c'), false);
+  const withEffort = buildCodexExecArgs({ workdir: '/w', reasoningEffort: 'high' });
+  assert.equal(withEffort[withEffort.indexOf('-c') + 1], 'model_reasoning_effort=high');
+  delete process.env.MEMEX_HOME;
 });
 
 test('AGY-3: fallback parser handles item.completed agent_message shape', () => {

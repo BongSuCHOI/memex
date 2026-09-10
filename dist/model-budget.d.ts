@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { type LlmSelectionOverride } from "./model-settings.js";
 /**
  * Durable accounting for model work.
  *
@@ -17,6 +18,25 @@ export declare const MODEL_TARGET_TABLE = "model_work_targets";
 export declare const AUTOMATIC_MAINTENANCE_WINDOW_MS: number;
 export declare const AUTOMATIC_MAINTENANCE_COOLDOWN_MS: number;
 export declare const MAINTENANCE_WAKE_INTERVAL_MS: number;
+/** Issue #31: an active hold nobody observes for this long is closed by TTL. */
+export declare const MODEL_CONFIG_HOLD_TTL_MS: number;
+/**
+ * Issue #31 — `memory_jobs.hold_reason`. The value set lives here, in ONE
+ * place, and both HOLD transitions validate against it so the check is not
+ * scattered across the six call sites that use them.
+ */
+export declare const HOLD_REASONS: readonly ["model_config_rejected", "extraction_rules_invalid", "extraction_rules_unavailable"];
+export type HoldReason = (typeof HOLD_REASONS)[number];
+/**
+ * Attempt outcomes that exist as EVIDENCE but are excluded from every budget
+ * aggregate (reserved / used / exhausted, and the 24h automatic window).
+ *
+ * Adding a member here is the whole change needed to make a new "cost nothing"
+ * outcome free: the SQL below is generated from this array rather than
+ * hand-written per query.
+ */
+export declare const BUDGET_FREE_OUTCOMES: readonly ["config_rejected"];
+export type BudgetFreeOutcome = (typeof BUDGET_FREE_OUTCOMES)[number];
 export type ModelBudgetState = "active" | "exhausted" | "completed" | "cancelled";
 export type ModelAttemptState = "reserved" | "completed" | "failed" | "unknown";
 export type ModelBudgetExhaustionReason = "attempts" | "deadline" | "cancelled" | "window";
@@ -103,6 +123,10 @@ export interface FinishModelAttemptInput {
     errorClass?: string | null;
     errorMessage?: string | null;
     finishedAt?: string;
+    /** Issue #31: the selection the provider ACTUALLY received, as observed by
+     *  codex-exec. Absent leaves the reservation's intended values in place. */
+    model?: string | null;
+    reasoningEffort?: string | null;
 }
 export declare class ModelBudgetError extends Error {
     readonly code = "MEMEX_MODEL_BUDGET";
@@ -140,6 +164,18 @@ export declare class ModelBudgetNotFoundError extends Error {
 export declare class ModelBudgetAffinityError extends Error {
     readonly code = "MEMEX_MODEL_BUDGET_AFFINITY";
     constructor(jobId: string, existing: string, requested: string);
+}
+/**
+ * Issue #31 — an active config hold refused this call before it could reserve.
+ *
+ * Classified `'config'` by `classifyLlmError` (via `code`), so the caller takes
+ * the same HOLD path a live provider rejection takes. The difference is cost:
+ * this one spends NOTHING — no reservation, no provider call.
+ */
+export declare class ModelConfigHeldError extends Error {
+    readonly code = "MEMEX_MODEL_CONFIG_HELD";
+    readonly hold: ModelConfigHold;
+    constructor(hold: ModelConfigHold);
 }
 export declare function getModelWorkContext(): ModelWorkContext | undefined;
 /** Run work with context merged into the current async context. */
@@ -326,6 +362,165 @@ export declare function deferMemoryJobForModelBudget(db: Database.Database, inpu
     claimedAt?: Date;
 }): boolean;
 /**
+ * Return one claimed job to "waiting on a configuration".
+ *
+ * Deliberately NOT `failMemoryJob`:
+ *  - state is `'pending'`, not `'retry'` — a hold does not belong on the
+ *    exponential backoff ladder, and `max_attempts` must never terminate it;
+ *  - `available_at` is now, so the session after the fix picks it up at once;
+ *  - attempts are REFUNDED (the claim bought nothing);
+ *  - `checkpoints` and `capsule_checkpoint_state` are untouched — a hold is not
+ *    a failure, and for Capsule work advancing anything here would step the
+ *    evidence frontier and lose a fragment permanently.
+ *
+ * The CAS is byte-for-byte `failMemoryJob`'s, so a stale owner can never
+ * overwrite a live claim. Returns false when it does not match.
+ */
+export declare function holdMemoryJob(db: Database.Database, input: {
+    jobId: string;
+    owner: string;
+    leaseGeneration: number;
+    reason: HoldReason;
+    detail: string;
+    now?: Date;
+}): boolean;
+/**
+ * Return a whole extraction claim — job + target + checkpoint marker.
+ *
+ * Acceptance criterion, asserted by the tests: across this transition
+ * `memory_jobs.attempts` and `extraction_targets.attempts` are unchanged from
+ * before the claim, both states are `pending`, `extraction_failures` and
+ * `extraction_log` gain NO rows, and `checkpoints.state` is back off
+ * `processing`. A hold that leaves a failed range behind is not a hold.
+ */
+export declare function releaseExtractionClaimOnHold(db: Database.Database, input: {
+    targetId: string;
+    jobId: string;
+    owner: string;
+    leaseGeneration: number;
+    reason: HoldReason;
+    detail: string;
+    now?: Date;
+}): boolean;
+/**
+ * Lift the hold marker so the next claim treats the job as ordinary work.
+ *
+ * Touches `hold_reason` and nothing else: the job is already `pending` with its
+ * attempts refunded, and rewriting state/attempts here would undo that.
+ */
+export declare function clearJobHold(db: Database.Database, jobId: string): boolean;
+/**
+ * Lift every hold with THIS reason. Returns how many rows were lifted.
+ *
+ * Reason isolation is the point: a fixed model selection must not release jobs
+ * that are waiting on a quarantined extraction rule, and vice versa. Each owner
+ * releases only its own.
+ */
+export declare function releaseHeldJobs(db: Database.Database, reason: HoldReason): number;
+/** Per-reason held-job counts for `memex status`, doctor and the Web UI. */
+export declare function heldJobSummary(db: Database.Database): Array<{
+    reason: HoldReason;
+    jobs: number;
+    oldestHeldAt: string | null;
+}>;
+export interface ModelConfigHold {
+    fingerprint: string;
+    heldAt: string;
+    model: string;
+    reasoningEffort: string | null;
+    status: number | null;
+    providerType: string | null;
+    providerMessage: string;
+    observedCount: number;
+    lastObservedAt: string;
+}
+/**
+ * Record (or re-observe) a hold for ONE selection fingerprint.
+ *
+ * "Exactly once per data root" is explicitly NOT promised: the hold is written
+ * AFTER a rejection is observed, so calls already in flight each take one
+ * rejection. The guarantee is the bound — the number of provider calls a wrong
+ * setting can cause equals the number of calls already in flight when the hold
+ * commits (measured 1-4 workers), and zero afterwards. Retry and splitting can
+ * never add to it.
+ */
+export declare function recordModelConfigHold(db: Database.Database, input: {
+    fingerprint: string;
+    model: string;
+    reasoningEffort: string | null;
+    status: number | null;
+    providerType: string | null;
+    providerMessage: string;
+    stage?: string | null;
+    jobId?: string | null;
+    now?: Date;
+}): void;
+/**
+ * Note one more time this hold blocked work.
+ *
+ * The gate refuses a call without reaching the provider, so nothing else would
+ * record it — yet "this selection has stopped work 14 times" is exactly what
+ * doctor should be able to say, and it also keeps the 30-day TTL from closing a
+ * hold that is actively fencing every session.
+ */
+export declare function touchModelConfigHold(db: Database.Database, fingerprint: string, now?: Date): void;
+/** The active hold for THIS fingerprint, or null. Other fingerprints' rows are
+ *  never read, updated or deleted here — that is the whole (b)5 fix. */
+export declare function activeModelConfigHold(db: Database.Database, fingerprint: string): ModelConfigHold | null;
+/** Close one fingerprint's hold. The row is kept (audit), never deleted. */
+export declare function clearModelConfigHold(db: Database.Database, fingerprint: string, reason: "probe-ok" | "manual", now?: Date): boolean;
+/**
+ * Close every active hold for this model + reasoning pair, whatever SOURCE
+ * recorded it, and report how many were closed.
+ *
+ * Lookups are fingerprint-scoped on purpose — that is what stops two processes
+ * with different env from erasing each other's hold. A REPAIR is different: it
+ * is deliberate and user-initiated ("this model works now"), and the user means
+ * the model, not the path the id took to get here. Without this, a probe run as
+ * `memex models test --model X` could never lift the hold that the same X
+ * recorded through env or models.json, and the repair command would be unable to
+ * repair anything.
+ */
+export declare function clearModelConfigHoldsForSelection(db: Database.Database, selection: {
+    model: string;
+    reasoningEffort: string | null;
+}, reason: "probe-ok" | "manual", now?: Date): number;
+/** Every active hold, flagged with whether it is the one blocking this process.
+ *  Other selections' holds are visible but inert here. */
+export declare function listModelConfigHolds(db: Database.Database, currentFingerprint?: string): Array<ModelConfigHold & {
+    current: boolean;
+}>;
+/**
+ * The hold (if any) blocking THIS process's current selection.
+ *
+ * A convenience for the pre-claim gates in the detached workers and the session
+ * hook, which otherwise each have to import two modules to ask one question.
+ */
+export declare function currentModelConfigHold(db: Database.Database, overrides?: LlmSelectionOverride): ModelConfigHold | null;
+/**
+ * Settle a reservation the provider refused before any model work began.
+ *
+ * Four things together make a wrong setting cost ZERO budget: no retry (llm.ts),
+ * this refund, exclusion from the 24h automatic window, and the claim refund
+ * above. What remains is one evidence row and one hold row.
+ *
+ * The exhaustion release is the subtle half. `reserveModelAttempt` marks a
+ * budget `exhausted` when it hands out the last attempt, and `budgetExhaustion`
+ * treats that state as STICKY — so decrementing the counter alone does not
+ * unblock anything. The release condition cannot look at the refunded row's own
+ * `attempt_no` either: with `max_attempts=2`, if A reserves #1, B reserves #2
+ * (exhausting it), B then completes and A is rejected, the reservation that
+ * caused exhaustion was B's while the one being refunded is A's — the observed
+ * result was `('exhausted', 1, 2)`. So it counts EFFECTIVE USAGE right now
+ * instead, and deadline/cancelled exhaustion is never revived.
+ */
+export declare function settleConfigRejectedAttempt(db: Database.Database, input: {
+    attemptId: string;
+    durationMs?: number;
+    errorClass?: string;
+    now?: Date;
+}): boolean;
+/**
  * Atomically reserve one provider attempt immediately before runCodex. A
  * reservation is never returned to the pool: a crash after this point still
  * represents a possible provider attempt and must remain counted.
@@ -337,6 +532,11 @@ export declare function reserveModelAttempt(db: Database.Database, input: {
     targetId?: string | null;
     inputChars: number;
     now?: Date;
+    /** Issue #31: the selection this attempt INTENDS to use. Defaults to the
+     *  resolved one; llm.ts passes a per-call override when it has one, and
+     *  overwrites both with the selection actually sent at completion. */
+    model?: string | null;
+    reasoningEffort?: string | null;
 }): ModelAttemptReservation;
 export declare function finishModelAttempt(db: Database.Database, input: FinishModelAttemptInput): boolean;
 /** Mark a known budget exhausted without reserving a synthetic provider call. */
@@ -398,6 +598,11 @@ export interface ModelAttemptDiagnostic {
     tokenUsageStatus: "observed" | "partial" | "NOT_PROVEN" | null;
     errorClass: string | null;
     errorMessage: string | null;
+    /** Issue #31. `null` on rows recorded before this release. */
+    model: string | null;
+    reasoningEffort: string | null;
+    /** `'config_rejected'` for an attempt excluded from budget accounting. */
+    outcome: string | null;
 }
 export interface ModelWorkStageDiagnostics {
     stage: string;
@@ -405,6 +610,8 @@ export interface ModelWorkStageDiagnostics {
     completed: number;
     failed: number;
     unknown: number;
+    /** Issue #31: refused envelopes, reported apart from real failures. */
+    configRejected: number;
     durationMs: number | null;
     inputChars: number | null;
     outputChars: number | null;
@@ -438,6 +645,9 @@ export interface ModelWorkDiagnostics {
         completed: number;
         failed: number;
         unknown: number;
+        /** Issue #31: its own bucket, SUBTRACTED from `failed` — a refused envelope
+         *  is not a failed model call and must not read as one. */
+        configRejected: number;
         pending: number;
         durationMs: number | null;
         inputChars: number | null;
