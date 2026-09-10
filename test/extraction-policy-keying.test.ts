@@ -35,7 +35,15 @@ import {
   extractionRulesHash,
   resetExtractionRulesCache,
 } from "../src/extraction-rules.js";
-import { PROJECT, SESSION, rulesDoc, seedExchanges, writeRules } from "./extraction-rules-fixture.js";
+import {
+  PROJECT,
+  SESSION,
+  pinOverlayEnv,
+  restoreOverlayEnv,
+  rulesDoc,
+  seedExchanges,
+  writeRules,
+} from "./extraction-rules-fixture.js";
 
 let root: string;
 let db: Database.Database;
@@ -72,7 +80,7 @@ function pendingQueryKey(): string {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "memex-policy-keying-"));
-  process.env.MEMEX_HOME = root;
+  pinOverlayEnv(root);
   process.env.MEMEX_DB_PATH = path.join(root, "db.sqlite");
   process.env.MEMEX_EMBEDDING_STUB = "1";
   delete process.env.MEMEX_DISABLE_OVERLAYS;
@@ -83,7 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try { db.close(); } catch { /* already closed */ }
-  delete process.env.MEMEX_HOME;
+  restoreOverlayEnv();
   delete process.env.MEMEX_DB_PATH;
   delete process.env.MEMEX_EMBEDDING_STUB;
   resetExtractionRulesCache();

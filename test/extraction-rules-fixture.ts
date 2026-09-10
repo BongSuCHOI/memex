@@ -13,7 +13,57 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import { overlayDir } from "../src/paths.js";
 import { patternSourceSha8 } from "../src/overlay-regex.js";
+
+/* -------------------------------------------------------------------------- */
+/* Environment isolation — the first thing every suite here must do            */
+/* -------------------------------------------------------------------------- */
+
+const OVERLAY_ENV_KEYS = [
+  "MEMEX_HOME",
+  "MEMEX_OVERLAY_DIR",
+  "XDG_CONFIG_HOME",
+  "MEMEX_DISABLE_OVERLAYS",
+] as const;
+
+let savedOverlayEnv: Partial<Record<(typeof OVERLAY_ENV_KEYS)[number], string | undefined>> | null = null;
+
+/**
+ * Point every overlay path at `root`, and REFUSE to run if it did not take.
+ *
+ * `MEMEX_OVERLAY_DIR` beats `MEMEX_HOME` in src/paths.ts, so a fixture that sets
+ * only `MEMEX_HOME` and inherits that override from the environment writes the
+ * operator's real `overlays/` directory — and these suites call the production
+ * `setExtractionRules` / `resetExtractionRules` with no revision guard, so that is
+ * their live rules file, history index and quarantine being rewritten by a test
+ * run. Setting it is not enough either: the assertion is what makes an inherited
+ * override or a future path change fail loudly instead of quietly.
+ */
+export function pinOverlayEnv(root: string): void {
+  savedOverlayEnv = {};
+  for (const key of OVERLAY_ENV_KEYS) savedOverlayEnv[key] = process.env[key];
+  const overlays = path.join(root, "overlays");
+  process.env.MEMEX_HOME = root;
+  process.env.MEMEX_OVERLAY_DIR = overlays;
+  process.env.XDG_CONFIG_HOME = path.join(root, "xdg");
+  delete process.env.MEMEX_DISABLE_OVERLAYS;
+  const resolved = overlayDir();
+  if (resolved !== overlays) {
+    throw new Error(`overlay isolation failed: overlayDir() resolved to ${resolved}, not ${overlays}`);
+  }
+}
+
+/** Put back exactly what was there, including "was not set". */
+export function restoreOverlayEnv(): void {
+  if (!savedOverlayEnv) return;
+  for (const key of OVERLAY_ENV_KEYS) {
+    const value = savedOverlayEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  savedOverlayEnv = null;
+}
 
 /** The scripted provider. Mutable so each test can decide what the model says. */
 export const script: {
@@ -134,12 +184,17 @@ export function matcherMock(actual: MatcherModule): Partial<MatcherModule> {
       matcherScript.disposed++;
     },
     match: async (input) => {
+      // Production returns here WITHOUT constructing a worker, and the double has
+      // to do the same or it hides the bug where an empty spec list made a failing
+      // probe look available (the `scope: "evidence"`-only rule set).
+      if (input.patterns.length === 0) return actual.EMPTY_USER_PATTERN_HITS;
       const base = {
         intents: {},
         matched: [] as string[],
         timedOut: false,
         quarantined: [] as string[],
         unavailable: false,
+        truncated: false,
         elapsedMs: 1,
         compiledPatterns: input.patterns.length,
       };
