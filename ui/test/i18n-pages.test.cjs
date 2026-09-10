@@ -715,3 +715,168 @@ test('L1 app.mjs·index.html이 쓰는 셸 키가 양쪽 사전에서 해소된�
   assert.ok(html.includes('<meta name="memex-ui-lang" content="en">'));
   assert.equal(HANGUL.test(html), false, 'index.html에 한글이 남아 있습니다');
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 페이로드 프로즈 소비 지점 — 서버가 키만 실을 때 화면이 문장을 만든다 (#109 · 설계 §5.3 분류 c)
+//
+// L1이 서버에서 한국어 프로즈를 걷어내고 `<field>Key`(+`<field>Params`)만 싣도록 바꿨다.
+// 다른 레인이 소유한 소비 지점은 `payloadText()`/`t()`로 읽지 않으면 **빈 칸**이 된다 —
+// 빈 칸은 키 누출 검사에도, 한글 잔존 검사에도 걸리지 않으므로 여기서 따로 못질한다.
+//
+// 단정은 두 갈래다:
+//   (a) **키만 실린** 페이로드가 en/ko에서 각 사전 문장으로 렌더된다.
+//   (b) **원문이 실린** 페이로드는 원문이 이긴다(사용자·코어가 만든 값) — 두 언어 모두.
+// ═════════════════════════════════════════════════════════════════════════════
+const {COMMANDS: SERVER_COMMANDS} = require('../lib/operations.cjs');
+
+/** raw() JSON 덤프와 태그·속성을 걷어낸 "화면에 보이는 글자". */
+const visibleOf = html => String(html)
+  .replace(/<details class="json-details">[\s\S]*?<\/details>/g, '')
+  .replace(/<[^>]*>/g, ' ');
+
+/** 사전 키가 문장 자리에 그대로 나오면 소비 지점이 payloadText()/t()를 안 쓴 것이다. */
+const PAYLOAD_KEYS = ['label.session.untitled', 'state.schema.tableAbsent', 'state.fact.sourceUnavailable',
+  'note.job.relatedFactsBasis', 'op.doctor.label', 'op.recover.label', 'op.recover.note', 'op.output.lostAcrossRestart'];
+function assertNoPayloadKeys(label, html) {
+  const text = visibleOf(html);
+  for (const key of PAYLOAD_KEYS) assert.ok(!text.includes(key), `${label}: 페이로드 키가 화면에 렌더됐다 — ${key}`);
+}
+
+// 제목이 없는 세션: 서버는 `title:null` + `titleKey`만 싣는다(store.cjs sessions()).
+const UNTITLED_SESSION = {session_id: 'session-key', project: '/workspace/memex', exchanges: 1, branch: 'main',
+  started_at: '2026-09-01T00:00:00.000Z', ended_at: '2026-09-01T01:00:00.000Z',
+  title: null, titleKey: 'label.session.untitled', extraction: null};
+const TITLED_SESSION = {...UNTITLED_SESSION, session_id: 'session-text', title: 'Where does data live?'};
+const SESSIONS_PAGE = {available: true, items: [UNTITLED_SESSION, TITLED_SESSION], total: 2, limit: 30, offset: 0, engine: 'fts'};
+
+test('payload: 제목 없는 세션은 목록·개요에서 사전 문구로 채워진다', async () => {
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const list = (await conversations.render(ctx('', {sessions: SESSIONS_PAGE}))).html;
+    assert.ok(list.includes(dict['label.session.untitled']), `${tag} conversations: 대체 제목이 없다`);
+    assert.ok(!list.includes('<h3></h3>'), `${tag} conversations: 제목이 빈 칸으로 렌더됐다`);
+    assert.ok(list.includes('Where does data live?'), `${tag} conversations: 원문 제목이 사라졌다`);
+    assertNoPayloadKeys(`${tag} conversations`, list);
+
+    const over = (await overview.render(ctx('', {overview: {...OVERVIEW, sessionsRecent: [UNTITLED_SESSION, TITLED_SESSION]}, pipeline: PIPELINE}))).html;
+    assert.ok(over.includes(dict['label.session.untitled']), `${tag} overview: 대체 제목이 없다`);
+    assert.ok(!over.includes('<p class="title"></p>'), `${tag} overview: 제목이 빈 칸으로 렌더됐다`);
+    assert.ok(over.includes('Where does data live?'), `${tag} overview: 원문 제목이 사라졌다`);
+    assertNoPayloadKeys(`${tag} overview`, over);
+  }
+  // 두 언어가 실제로 다른 문장을 낸다 — 한쪽 사전만 읽고 있지 않다는 증거.
+  assert.notEqual(locale.en['label.session.untitled'], locale.ko['label.session.untitled']);
+});
+
+test('payload: 상세 패널의 근거 주의·원문 없음 사유가 키에서 온다', async () => {
+  const keyOnlyFact = {...L2_FACT, sources: [{exchange_id: 'x-2', timestamp: '2026-09-01T01:00:00.000Z',
+    unavailable: true, reason: null, reasonKey: 'state.fact.sourceUnavailable'}]};
+  const keyOnlyJob = {...JOB, relatedFactsBasis: null, relatedFactsBasisKey: 'note.job.relatedFactsBasis'};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const evidence = (await details.renderDetail(l2ctx('panelTab=evidence', {fact: keyOnlyFact}), 'fact', keyOnlyFact.id)).html;
+    assert.ok(visibleOf(evidence).includes(dict['state.fact.sourceUnavailable']), `${tag} evidence: 원문 없음 사유가 비었다`);
+    assertNoPayloadKeys(`${tag} evidence`, evidence);
+    // 코어가 실제 사유를 실어 보내면 그 원문이 이긴다.
+    const prose = (await details.renderDetail(l2ctx('panelTab=evidence', {fact: L2_FACT}), 'fact', L2_FACT.id)).html;
+    assert.ok(visibleOf(prose).includes('transcript pruned'), `${tag} evidence: 서버 원문 사유가 사라졌다`);
+
+    const job = (await details.renderDetail(l2ctx('', {job: keyOnlyJob}), 'job', 'job-1')).html;
+    assert.ok(visibleOf(job).includes(dict['note.job.relatedFactsBasis']), `${tag} job: 관련 기억 근거 주의가 비었다`);
+    assertNoPayloadKeys(`${tag} job`, job);
+    const jobProse = (await details.renderDetail(l2ctx('', {job: JOB}), 'job', 'job-1')).html;
+    assert.ok(jobProse.includes('Same transcript as evidence'), `${tag} job: 서버 원문 근거가 사라졌다`);
+  }
+});
+
+test('payload: 관리 실행 상세의 명령 라벨은 사전 우선 · 저장된 label 차선이다', async () => {
+  const fresh = {...OPERATION, label: undefined, command: 'doctor', status: 'completed', finished_at: '2026-09-01T00:01:00.000Z'};
+  const legacy = {...fresh, label: 'Run doctor'};                     // 0.6.x가 영속화한 라벨
+  const retired = {...fresh, command: 'retired-command', label: 'Stored legacy label'};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const html = (await details.renderDetail(l2ctx('', {operation: fresh}), 'operation', 'op-1')).html;
+    assert.ok(html.includes(dict['op.doctor.label']), `${tag} operation: 명령 라벨이 비었다`);
+    assertNoPayloadKeys(`${tag} operation`, html);
+    // 사전이 이긴다 — 읽는 시점의 언어가 적용돼야 한다(operations.cjs COMMANDS 주석).
+    const old = (await details.renderDetail(l2ctx('', {operation: legacy}), 'operation', 'op-1')).html;
+    assert.ok(old.includes(dict['op.doctor.label']) && !old.includes('Run doctor'), `${tag} operation: 저장된 라벨이 사전을 덮었다`);
+    // 카탈로그에서 사라진 명령은 저장된 라벨로 떨어진다 — 빈 칸보다 낫다.
+    const gone = (await details.renderDetail(l2ctx('', {operation: retired}), 'operation', 'op-1')).html;
+    assert.ok(gone.includes('Stored legacy label'), `${tag} operation: 레거시 라벨 폴백이 없다`);
+  }
+});
+
+test('payload: 명령 확인 모달의 제목·주의가 labelKey/noteKey에서 온다', () => {
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const opened = [];
+    const mctx = l2ctx('', {}, {bootstrap: {environment: ENV, commands: SERVER_COMMANDS},
+      modal: (title, body) => opened.push({title, body})});
+    details.commandModal(mctx, 'recover');
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].title, dict['op.recover.label'], `${tag} modal: 제목이 사전에서 오지 않았다`);
+    assert.ok(opened[0].body.includes(dict['op.recover.note']), `${tag} modal: noteKey 주의가 비었다`);
+    assertNoPayloadKeys(`${tag} modal`, opened[0].body);
+    // note가 없는 명령은 주의 단락 자체를 만들지 않는다.
+    const plain = [];
+    const pctx = l2ctx('', {}, {bootstrap: {environment: ENV, commands: SERVER_COMMANDS}, modal: (title, body) => plain.push({title, body})});
+    details.commandModal(pctx, 'doctor');
+    assert.equal(plain[0].title, dict['op.doctor.label']);
+    assert.ok(!plain[0].body.includes('<p class="caption mb">'), `${tag} modal: 빈 주의 단락이 생겼다`);
+  }
+});
+
+test('payload: 관리 작업 카드 라벨과 잃은 출력 안내가 키에서 온다', async () => {
+  const serverCtx = () => l2ctx('tab=actions', {sync: SYNC_STATUS(), operations: {items: []}}, {
+    bootstrap: {uiVersion: '1.2.3', environment: ENV, db: {available: true, error: null},
+      capabilities: {memory_jobs: true, recall_events: false}, commands: SERVER_COMMANDS},
+    savePrefs() {},
+  });
+  // 재기동으로 출력을 잃은 실행: operations.cjs가 output:''·outputLost:true만 남긴다.
+  const lost = {preview: {id: 'op-1', command: 'tiers-preview', status: 'unknown',
+    started_at: '2026-09-10T00:00:00.000Z', exit_code: null, output: '', outputLost: true}};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const actions = (await settingsPage.render(serverCtx())).html;
+    for (const key of ['op.doctor.label', 'op.recover.label']) {
+      assert.ok(actions.includes(dict[key]), `${tag} settings/actions: ${key} 값이 카드에 없다`);
+    }
+    assert.ok(!actions.includes('<h2></h2>'), `${tag} settings/actions: 카드 제목이 빈 칸이다`);
+    // group 명령은 전용 카드가 그리므로 일반 격자에 섞이지 않는다.
+    assert.ok(!actions.includes(dict['op.tiers-apply.label']), `${tag} settings/actions: group 명령이 격자에 섞였다`);
+    assertNoPayloadKeys(`${tag} settings/actions`, actions);
+
+    const card = settingsPage.migrationCard(serverCtx(), ENV, lost);
+    assert.ok(card.includes(dict['op.output.lostAcrossRestart']), `${tag} settings/migration: 잃은 출력 안내가 없다`);
+    assert.ok(!card.includes(dict['settings.migration.noOutput']), `${tag} settings/migration: "출력 없음"으로 잘못 말했다`);
+    assertNoPayloadKeys(`${tag} settings/migration`, card);
+  }
+  locale.useEn();
+  assertEnglishOnly('settings:payload/actions', (await settingsPage.render(serverCtx())).html);
+  assertEnglishOnly('settings:payload/migration', settingsPage.migrationCard(serverCtx(), ENV, lost));
+});
+
+test('payload: 표가 없는 탭의 사용 불가 사유는 표 이름을 지키고 번역된다', async () => {
+  const missing = {available: false, items: [], total: null, limit: 50, offset: 0,
+    reasonKey: 'state.schema.tableAbsent', reasonParams: {table: 'memory_jobs'}};
+  const prose = {available: false, items: [], total: null, limit: 50, offset: 0, reason: 'core reported a closed database'};
+  for (const [tag, use] of [['en', locale.useEn], ['ko', locale.useKo]]) {
+    use();
+    const dict = locale[tag];
+    const html = (await activity.render(ctx('tab=jobs', {jobs: missing}))).html;
+    const expected = dict['state.schema.tableAbsent'].replace('{table}', 'memory_jobs');
+    assert.ok(html.includes(expected), `${tag} activity: 표 이름이 들어간 사유가 없다 — ${expected}`);
+    assert.ok(html.includes('memory_jobs'), `${tag} activity: 표 이름이 사라졌다`);
+    assert.ok(!html.includes(dict['activity.unavailable.body']), `${tag} activity: 구체적 사유가 일반 문구로 덮였다`);
+    assertNoPayloadKeys(`${tag} activity`, html);
+    // 코어 원문 사유가 실려 오면 그대로 보여준다.
+    const fromCore = (await activity.render(ctx('tab=jobs', {jobs: prose}))).html;
+    assert.ok(fromCore.includes('core reported a closed database'), `${tag} activity: 서버 원문 사유가 사라졌다`);
+  }
+});
