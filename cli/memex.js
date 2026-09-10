@@ -86,6 +86,7 @@ COMMANDS:
   facts       Manage extracted facts: list|show|edit|deactivate|restore|history|explain|tier|promote|demote|migrate-tiers|delete
   ontology    Inspect and repair the local taxonomy: list|merge|rename
   gate        Your own recall-gate rules: show|patterns|words|test|replay|validate|history|quarantine|reset|rollback
+  extract     Your own extraction rules: rules show|validate|set|test|history|reset|rollback|reextract, and eval
 
 Run 'memex <command> --help' for command-specific help.
 
@@ -150,6 +151,12 @@ const HELP_DELEGATES = {
   // Issue #29 — `memex gate` (recall-gate overlay). One source for the verb
   // list: dist/gate-cli.js prints it and refuses to do work under --help.
   gate: (dist) => join(dist, "gate-cli.js"),
+
+  // ---- issue #30: extraction-rules overlay (`memex extract`) ---------------
+  // Same contract as `gate`: dist/extract-cli.js owns the verb list and refuses
+  // to do work under --help, so the two texts cannot drift apart.
+  extract: (dist) => join(dist, "extract-cli.js"),
+  // ---- end issue #30 -------------------------------------------------------
 };
 
 /**
@@ -353,6 +360,31 @@ the overlay lock, bump 'revision' and keep a rollback snapshot; --dry-run
 prints the command to re-run and writes nothing.
 Run 'memex gate --help' for the full option list.`,
   // ---- end issue #29 -------------------------------------------------------
+
+  // ---- issue #30: extraction-rules overlay (`memex extract`) ---------------
+  // HELP_DELEGATES.extract above forwards `--help` to dist/extract-cli.js, which
+  // owns the full text; this entry keeps the command in KNOWN_COMMANDS and
+  // answers when the build is missing.
+  extract: `Usage:
+  memex extract rules show [--json]
+  memex extract rules validate [<file>] [--json]
+  memex extract rules set <file> [--expect-revision <n>] [--dry-run] [--json]
+  memex extract rules test [--exchange <id>] [--recent <n>] [--json]
+  memex extract rules history [--limit <n>] [--json]
+  memex extract rules reset --yes [--json]
+  memex extract rules rollback <revision> [--json]
+  memex extract rules reextract (--dry-run | --apply --yes) [--project <id>] [--json]
+  memex extract eval [--rules <path>] [--fixture <path>] [--session <id>] [--out <path>]
+
+THIS COMMAND DOES NOT EXTRACT — extraction itself still runs via
+'memex backfill extract'. These verbs read and write the local rules that
+extraction obeys: excluded topics, never_extract regexes, decision hints and a
+preferred language. show/validate/test/history and every --dry-run are read-only
+and call no model. Writes take the overlay lock, bump 'revision', keep a rollback
+snapshot, and release the extraction jobs the rules had put on hold. 'set' needs
+--expect-revision once the overlay file exists. Only 'eval' spends model calls.
+Run 'memex extract --help' for the full option list.`,
+  // ---- end issue #30 -------------------------------------------------------
 };
 
 const KNOWN_COMMANDS = new Set([
@@ -472,6 +504,15 @@ async function main() {
         await runScript(join(distDir, "gate-cli.js"), args);
         break;
       // ---- end issue #29 ------------------------------------------------
+
+      // ---- issue #30: extraction-rules overlay --------------------------
+      // Delegated, not inlined: the verbs need the overlay lock, the matcher
+      // worker and (for reextract) a write database, none of which the launcher
+      // should know how to open.
+      case "extract":
+        await runScript(join(distDir, "extract-cli.js"), args);
+        break;
+      // ---- end issue #30 ------------------------------------------------
 
       case "update":
         await runScript(
