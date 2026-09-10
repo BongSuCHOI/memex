@@ -20888,80 +20888,348 @@ function readGitFile(file) {
     return null;
   }
 }
-function stripConfigComment(line) {
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
+var MAX_INCLUDE_DEPTH = 10;
+function parseGitConfigText(text) {
+  const entries = [];
+  let section = "";
+  let subsection = null;
+  let index = 0;
+  let atEof = false;
+  const next = () => {
+    if (index >= text.length) {
+      atEof = true;
+      return "\n";
+    }
+    const char = text[index++];
+    if (char === "\r" && text[index] === "\n") {
+      index += 1;
+      return "\n";
+    }
+    return char;
+  };
+  const isSpace = (char) => char === " " || char === "	" || char === "\n" || char === "\r" || char === "\v" || char === "\f";
+  const isKeyChar = (char) => /[A-Za-z0-9-]/.test(char);
+  const readSectionHeader = () => {
+    let name = "";
+    for (; ; ) {
+      const char = next();
+      if (atEof) return false;
+      if (char === "]") {
+        section = name;
+        subsection = null;
+        return name.length > 0;
+      }
+      if (isSpace(char)) {
+        let lead = char;
+        do {
+          if (lead === "\n") return false;
+          lead = next();
+        } while (isSpace(lead));
+        if (lead !== '"') return false;
+        let extension = "";
+        for (; ; ) {
+          let inner = next();
+          if (inner === "\n") return false;
+          if (inner === '"') break;
+          if (inner === "\\") {
+            inner = next();
+            if (inner === "\n") return false;
+          }
+          extension += inner;
+        }
+        if (next() !== "]") return false;
+        section = name;
+        subsection = extension;
+        return name.length > 0;
+      }
+      if (!isKeyChar(char) && char !== ".") return false;
+      name += char.toLowerCase();
+    }
+  };
+  const readValue = () => {
+    let value = "";
+    let quoted = false;
+    let comment2 = false;
+    let pending = 0;
+    for (; ; ) {
+      const char = next();
+      if (char === "\n") return quoted ? null : value;
+      if (comment2) continue;
+      if (isSpace(char) && !quoted) {
+        if (value.length > 0) pending += 1;
+        continue;
+      }
+      if (!quoted && (char === ";" || char === "#")) {
+        comment2 = true;
+        continue;
+      }
+      for (; pending > 0; pending -= 1) value += " ";
+      if (char === "\\") {
+        const escaped = next();
+        if (escaped === "\n") continue;
+        if (escaped === "t") value += "	";
+        else if (escaped === "b") value += "\b";
+        else if (escaped === "n") value += "\n";
+        else if (escaped === "\\" || escaped === '"') value += escaped;
+        else return null;
+        continue;
+      }
+      if (char === '"') {
+        quoted = !quoted;
+        continue;
+      }
+      value += char;
+    }
+  };
+  const readEntry = (first) => {
+    let key = first.toLowerCase();
+    let char = next();
+    while (!atEof && isKeyChar(char)) {
+      key += char.toLowerCase();
+      char = next();
+    }
+    while (char === " " || char === "	") char = next();
+    if (char === "\n") {
+      entries.push({ section, subsection, key, value: null });
+      return true;
+    }
+    if (char !== "=") return false;
+    const value = readValue();
+    if (value === null) return false;
+    entries.push({ section, subsection, key, value });
+    return true;
+  };
+  let comment = false;
+  for (; ; ) {
+    const char = next();
+    if (char === "\n") {
+      if (atEof) return entries;
+      comment = false;
+      continue;
+    }
+    if (comment || isSpace(char)) continue;
+    if (char === "#" || char === ";") {
+      comment = true;
+      continue;
+    }
+    if (char === "[") {
+      if (!readSectionHeader()) return entries;
+      continue;
+    }
+    if (!/[A-Za-z]/.test(char)) return entries;
+    if (!readEntry(char)) return entries;
+  }
+}
+function escapeRegExp(value) {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+function globComponentSource(component) {
+  let source = "";
+  for (let index = 0; index < component.length; index += 1) {
+    const char = component[index];
+    if (char === "*") {
+      source += "[^/]*";
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
     if (char === "\\") {
       index += 1;
+      if (index >= component.length) return null;
+      source += escapeRegExp(component[index]);
       continue;
     }
-    if (char === '"') {
-      quoted = !quoted;
+    if (char === "[") {
+      if (component.startsWith("[[:", index)) return null;
+      let end = index + 1;
+      if (component[end] === "!" || component[end] === "^") end += 1;
+      if (component[end] === "]") end += 1;
+      while (end < component.length && component[end] !== "]") {
+        if (component[end] === "\\") end += 1;
+        end += 1;
+      }
+      if (end >= component.length) return null;
+      const body = component.slice(index + 1, end);
+      source += `(?!/)[${body.startsWith("!") ? `^${body.slice(1)}` : body}]`;
+      index = end;
       continue;
     }
-    if (!quoted && (char === "#" || char === ";")) return line.slice(0, index);
+    source += escapeRegExp(char);
   }
-  return line;
+  return source;
 }
-function initDefaultBranchIn(config2) {
-  let inInit = false;
-  let value = null;
-  const readEntry = (text) => {
-    const entry = text.trim().match(/^defaultBranch\s*=\s*(.*)$/i);
-    if (!entry) return;
-    const raw = entry[1].trim().replace(/^"(.*)"$/s, "$1").trim();
-    if (raw) value = raw;
-  };
-  for (const rawLine of config2.split(/\r?\n/)) {
-    const line = stripConfigComment(rawLine).trim();
-    if (!line) continue;
-    const section = line.match(/^\[\s*([A-Za-z0-9.\-]+)\s*(?:"(?:[^"\\]|\\.)*")?\s*\](.*)$/);
-    if (section) {
-      inInit = section[1].toLowerCase() === "init";
-      if (inInit && section[2].trim()) readEntry(section[2]);
+function pathGlobToRegExp(pattern, icase) {
+  const components = pattern.split("/");
+  let source = "^";
+  for (let index = 0; index < components.length; index += 1) {
+    const last = index === components.length - 1;
+    if (components[index] === "**") {
+      source += last ? ".*" : "(?:[^/]*/)*";
       continue;
     }
-    if (inInit) readEntry(line);
+    const component = globComponentSource(components[index]);
+    if (component === null) return null;
+    source += component;
+    if (!last) source += "/";
   }
+  try {
+    return new RegExp(`${source}$`, icase ? "is" : "s");
+  } catch {
+    return null;
+  }
+}
+function expandTildePath(value) {
+  if (value === "~" || value.startsWith("~/")) {
+    const home = process.env.HOME || os4.homedir();
+    if (!home) return null;
+    return value === "~" ? home : path6.join(home, value.slice(2));
+  }
+  if (value.startsWith("~")) return null;
   return value;
 }
-function userGitConfigFiles() {
+function realpathOrAbsolute(value) {
+  try {
+    return fs4.realpathSync(value);
+  } catch {
+    return path6.resolve(value);
+  }
+}
+function prepareGitdirPattern(pattern, file) {
+  let value = expandTildePath(pattern);
+  if (value === null) return null;
+  let prefix = 0;
+  if (value[0] === "." && (value[1] === "/" || value[1] === path6.sep)) {
+    if (!file) return null;
+    const directory = path6.dirname(realpathOrAbsolute(file));
+    value = `${directory}${value.slice(1)}`;
+    prefix = directory.length + 1;
+  } else if (!path6.isAbsolute(value)) {
+    value = `**/${value}`;
+  }
+  if (value.endsWith("/")) value += "**";
+  return { pattern: value, prefix };
+}
+function matchGitdirPattern(prepared, text, icase) {
+  const { pattern, prefix } = prepared;
+  if (prefix > 0) {
+    if (text.length < prefix) return false;
+    const left = pattern.slice(0, prefix);
+    const right = text.slice(0, prefix);
+    if (icase ? left.toLowerCase() !== right.toLowerCase() : left !== right) return false;
+  }
+  const regex = pathGlobToRegExp(pattern.slice(prefix), icase);
+  return regex ? regex.test(text.slice(prefix)) : false;
+}
+function gitIncludeConditionIsTrue(condition, file, context) {
+  const gitdir = (pattern, icase) => {
+    if (!context.gitDir) return false;
+    const prepared = prepareGitdirPattern(pattern, file);
+    return prepared ? matchGitdirPattern(prepared, context.gitDir, icase) : false;
+  };
+  if (condition.startsWith("gitdir:")) return gitdir(condition.slice("gitdir:".length), false);
+  if (condition.startsWith("gitdir/i:")) return gitdir(condition.slice("gitdir/i:".length), true);
+  if (condition.startsWith("onbranch:")) {
+    if (!context.branch) return false;
+    let pattern = condition.slice("onbranch:".length);
+    if (pattern.endsWith("/")) pattern += "**";
+    const regex = pathGlobToRegExp(pattern, false);
+    return regex ? regex.test(context.branch) : false;
+  }
+  return false;
+}
+function isGitIncludeEntry(entry) {
+  if (entry.key !== "path") return false;
+  if (entry.section === "include") return entry.subsection === null;
+  return entry.section === "includeif" && entry.subsection !== null;
+}
+function resolveIncludePath(value, file) {
+  const expanded = expandTildePath(value);
+  if (expanded === null) return null;
+  if (path6.isAbsolute(expanded)) return expanded;
+  if (!file) return null;
+  return path6.resolve(path6.dirname(file), expanded);
+}
+function gitConfigEntries(text, file, context, stack = []) {
+  const collected = [];
+  for (const entry of parseGitConfigText(text)) {
+    if (!isGitIncludeEntry(entry)) {
+      collected.push(entry);
+      continue;
+    }
+    if (!entry.value) continue;
+    if (entry.section === "includeif" && !gitIncludeConditionIsTrue(entry.subsection, file, context)) continue;
+    if (stack.length > MAX_INCLUDE_DEPTH) continue;
+    const target = resolveIncludePath(entry.value, file);
+    if (!target) continue;
+    const resolved = realpathOrAbsolute(target);
+    if (stack.includes(resolved)) continue;
+    const body = readGitFile(target);
+    if (body === null) continue;
+    collected.push(...gitConfigEntries(body, target, context, [...stack, resolved]));
+  }
+  return collected;
+}
+function lastInitDefaultBranch(entries) {
+  let value = null;
+  for (const entry of entries) {
+    if (entry.section !== "init" || entry.subsection !== null) continue;
+    if (entry.key !== "defaultbranch") continue;
+    value = entry.value;
+  }
+  return value ? value : null;
+}
+var SYSTEM_GIT_CONFIG_CANDIDATES = [
+  "/etc/gitconfig",
+  "/usr/local/etc/gitconfig",
+  "/opt/homebrew/etc/gitconfig"
+];
+function isReadableFile(value) {
+  try {
+    return fs4.statSync(value).isFile();
+  } catch {
+    return false;
+  }
+}
+function gitConfigFilesInReadOrder() {
   const files = [];
+  if (process.env.GIT_CONFIG_NOSYSTEM !== "1") {
+    const systemOverride = process.env.GIT_CONFIG_SYSTEM;
+    if (systemOverride) {
+      if (systemOverride !== "/dev/null") files.push(systemOverride);
+    } else {
+      const system = SYSTEM_GIT_CONFIG_CANDIDATES.find(isReadableFile);
+      if (system) files.push(system);
+    }
+  }
   const globalOverride = process.env.GIT_CONFIG_GLOBAL;
   if (globalOverride) {
     if (globalOverride !== "/dev/null") files.push(globalOverride);
-  } else {
-    const home = process.env.HOME || os4.homedir();
-    if (home) files.push(path6.join(home, ".gitconfig"));
-    const xdg = process.env.XDG_CONFIG_HOME ? path6.join(process.env.XDG_CONFIG_HOME, "git", "config") : home ? path6.join(home, ".config", "git", "config") : null;
-    if (xdg) files.push(xdg);
-  }
-  if (process.env.GIT_CONFIG_NOSYSTEM === "1") return files;
-  const systemOverride = process.env.GIT_CONFIG_SYSTEM;
-  if (systemOverride) {
-    if (systemOverride !== "/dev/null") files.push(systemOverride);
     return files;
   }
-  files.push("/etc/gitconfig", "/usr/local/etc/gitconfig", "/opt/homebrew/etc/gitconfig");
+  const home = process.env.HOME || os4.homedir();
+  const xdg = process.env.XDG_CONFIG_HOME ? path6.join(process.env.XDG_CONFIG_HOME, "git", "config") : home ? path6.join(home, ".config", "git", "config") : null;
+  if (xdg) files.push(xdg);
+  if (home) files.push(path6.join(home, ".gitconfig"));
   return files;
 }
-function detectDefaultBranch(commonDir, config2) {
+function detectDefaultBranch(commonDir, config2, context) {
   const originHead = readGitFile(path6.join(commonDir, "refs", "remotes", "origin", "HEAD"));
   const symbolic = originHead?.match(/^ref:\s+refs\/remotes\/origin\/(.+)$/)?.[1]?.trim();
   if (symbolic) return symbolic;
   const packed = readGitFile(path6.join(commonDir, "packed-refs")) ?? "";
   const packedHead = packed.match(/^\s*ref:\s+refs\/remotes\/origin\/(.+)$/m)?.[1]?.trim();
   if (packedHead) return packedHead;
-  const repoInit = initDefaultBranchIn(config2);
-  if (repoInit) return repoInit;
-  for (const file of userGitConfigFiles()) {
+  const entries = [];
+  for (const file of gitConfigFilesInReadOrder()) {
     const text = readGitFile(file);
     if (text === null) continue;
-    const init = initDefaultBranchIn(text);
-    if (init) return init;
+    entries.push(...gitConfigEntries(text, file, context, [realpathOrAbsolute(file)]));
   }
-  return null;
+  const repoFile = path6.join(commonDir, "config");
+  entries.push(...gitConfigEntries(config2, repoFile, context, [realpathOrAbsolute(repoFile)]));
+  return lastInitDefaultBranch(entries);
 }
 function inspectWorkspaceLocation(cwd) {
   const canonical = canonicalizeProjectPath(cwd);
@@ -20995,6 +21263,7 @@ function inspectWorkspaceLocation(cwd) {
   const config2 = readGitFile(path6.join(common, "config")) ?? "";
   const origin = config2.match(/\[remote\s+"origin"\][\s\S]*?\n\s*url\s*=\s*([^\n]+)/i)?.[1]?.trim();
   const head = readGitFile(path6.join(gitDir, "HEAD"));
+  const branch = head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null;
   const inodeIdentity = (value) => {
     try {
       const stat = fs4.statSync(value);
@@ -21007,8 +21276,8 @@ function inspectWorkspaceLocation(cwd) {
     gitCommonDir: canonicalizeProjectPath(common),
     remoteFingerprint: origin ? hash("remote-v1", origin).slice(0, 40) : null,
     locationKind,
-    branch: head?.match(/^ref:\s+refs\/heads\/(.+)$/)?.[1] ?? null,
-    defaultBranch: detectDefaultBranch(common, config2),
+    branch,
+    defaultBranch: detectDefaultBranch(common, config2, { gitDir, branch }),
     gitCommonIdentity: inodeIdentity(common),
     gitDirIdentity: inodeIdentity(gitDir)
   };
@@ -25175,11 +25444,13 @@ function recordHookEvent(event, info) {
   const name = typeof event === "string" ? event.trim() : "";
   if (!name || name === "Unknown") return false;
   try {
+    const detail = typeof info.detail === "string" ? info.detail.trim() : "";
     const line = JSON.stringify({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       event: name,
       session_id: typeof info.sessionId === "string" ? info.sessionId : "",
-      cwd: typeof info.cwd === "string" ? info.cwd : ""
+      cwd: typeof info.cwd === "string" ? info.cwd : "",
+      ...detail ? { detail } : {}
     }) + "\n";
     const file = observationLogPath();
     fs9.mkdirSync(path10.dirname(file), { recursive: true });
@@ -26620,6 +26891,14 @@ function injectDaemonPolicy() {
 function injectSocketPath() {
   return path11.join(getIndexDir(), "inject-daemon.sock");
 }
+function injectSocketPathLimitBytes() {
+  return process.platform === "linux" ? 107 : 103;
+}
+function injectSocketPathTooLong(sockPath = injectSocketPath()) {
+  const bytes = Buffer.byteLength(sockPath, "utf8");
+  const limit = injectSocketPathLimitBytes();
+  return bytes > limit ? { bytes, limit } : null;
+}
 function injectDaemonLockPath() {
   return path11.join(getIndexDir(), "inject-daemon.lock");
 }
@@ -26899,7 +27178,25 @@ function startInjectDaemon() {
     } catch {
     }
     note(`retired in favour of the installed root ${from.pluginRoot} (version ${from.version ?? "unknown"})`);
+    armYieldWatch();
     return { type: "retired", ...current };
+  }
+  let yieldWatch = null;
+  function armYieldWatch() {
+    if (yieldWatch) return;
+    yieldWatch = setTimeout(() => {
+      yieldWatch = null;
+      if (owning || !retired) return;
+      void probeInjectDaemon(sockPath).then((probe) => {
+        if (probe.listening || owning || !retired) return;
+        note("the caller that asked us to retire never bound \u2014 re-entering the race");
+        retired = false;
+        armReacquire();
+        tryReclaim("retire handover did not complete");
+      }).catch(() => {
+      });
+    }, injectDaemonReacquireIntervalMs());
+    yieldWatch.unref();
   }
   const warmUp = () => {
     if (warmState !== "cold") return;
@@ -26953,6 +27250,10 @@ function startInjectDaemon() {
   function releaseOwnership() {
     if (releasedOwnership) return;
     releasedOwnership = true;
+    if (yieldWatch) {
+      clearTimeout(yieldWatch);
+      yieldWatch = null;
+    }
     dropCandidate();
     if (!owning) return;
     owning = false;
@@ -26981,24 +27282,52 @@ function startInjectDaemon() {
     } catch {
     }
   }
+  const unreadableLocksSeen = /* @__PURE__ */ new Set();
   const withLock = async (claim) => {
     const lockPath = injectDaemonLockPath();
     const mine = lockPayload;
     let held = false;
     for (let attempt = 0; attempt < 2 && !held; attempt++) {
       try {
-        fs10.writeFileSync(lockPath, mine, { flag: "wx" });
-        held = true;
+        const staging = `${lockPath}.${process.pid}.${randomUUID6()}.tmp`;
+        try {
+          fs10.writeFileSync(staging, mine);
+          fs10.linkSync(staging, lockPath);
+          held = true;
+        } finally {
+          try {
+            fs10.unlinkSync(staging);
+          } catch {
+          }
+        }
       } catch (error2) {
         if (error2.code !== "EEXIST") throw error2;
-        let holder = -1;
+        let text = null;
+        let stamp = "";
         try {
-          holder = Number(JSON.parse(fs10.readFileSync(lockPath, "utf8")).pid);
+          text = fs10.readFileSync(lockPath, "utf8");
+          const stat = fs10.statSync(lockPath);
+          stamp = `${stat.mtimeMs}:${stat.size}`;
         } catch {
         }
-        if (pidAlive(holder)) {
+        if (text === null) continue;
+        let holder = -1;
+        try {
+          holder = Number(JSON.parse(text).pid);
+        } catch {
+        }
+        const attributable = Number.isInteger(holder) && holder > 0;
+        if (attributable && pidAlive(holder)) {
           note(`another starter holds ${lockPath} (pid ${holder}) \u2014 not serving`);
           return;
+        }
+        if (!attributable) {
+          if (!unreadableLocksSeen.has(stamp)) {
+            unreadableLocksSeen.add(stamp);
+            note(`${lockPath} has no readable holder yet \u2014 presuming a starter mid-write, not serving`);
+            return;
+          }
+          note(`${lockPath} is still unreadable on a second look \u2014 treating it as abandoned`);
         }
         try {
           fs10.unlinkSync(lockPath);
@@ -27022,14 +27351,26 @@ function startInjectDaemon() {
     }
   };
   let binding = false;
+  function recordBindFailure(error2, when) {
+    const errno = error2?.code ?? null;
+    const tooLong = injectSocketPathTooLong(sockPath);
+    const reason = [
+      errno ?? (error2 instanceof Error ? error2.message : String(error2)),
+      tooLong ? `socket path too long (${tooLong.bytes} bytes; this platform allows ${tooLong.limit})` : null
+    ].filter(Boolean).join(" \u2014 ");
+    note(`could not bind ${sockPath} (${when}): ${reason}`);
+    recordHookEvent("InjectDaemonBindFailed", { detail: `${when}: ${reason}` });
+  }
   const bind = () => {
     if (retired || owning || binding) return;
     binding = true;
     try {
       server2.listen(sockPath, onListen);
       server2.unref();
-    } catch {
+    } catch (error2) {
       binding = false;
+      recordBindFailure(error2, "listen threw");
+      armReacquire();
     }
   };
   const reclaim = async (trigger) => {
@@ -27067,7 +27408,9 @@ function startInjectDaemon() {
           if (fs10.existsSync(sockPath)) fs10.unlinkSync(sockPath);
         } catch {
         }
-        return bind();
+        bind();
+        if (!owning && !binding) armReacquire();
+        return;
       }
       if (trigger !== REPROBE_TRIGGER) {
         note(`owner ${probe.owner.version ?? "unknown"} at ${probe.owner.pluginRoot} (pid ${probe.owner.pid}) refused handover (${String(reply?.reason ?? reply?.type ?? "no answer")}) \u2014 not serving`);
@@ -27108,7 +27451,11 @@ function startInjectDaemon() {
   let reclaimAttempted = false;
   server2.on("error", (err) => {
     binding = false;
-    if (err.code !== "EADDRINUSE") return;
+    if (err.code !== "EADDRINUSE") {
+      recordBindFailure(err, "listen failed");
+      armReacquire();
+      return;
+    }
     armReacquire();
     if (reclaimAttempted) return;
     reclaimAttempted = true;
@@ -29503,7 +29850,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.6.5"
+    version: "0.6.6"
   },
   {
     capabilities: {

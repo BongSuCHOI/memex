@@ -320,7 +320,7 @@ POST JSON과 CSRF 토큰, service-level validation을 통과해야 하며 코어
 │   ├── db.sqlite                       # (+ -wal, -shm)
 │   ├── exclude.txt
 │   ├── inject-daemon.sock              # 소유자가 정상 종료하면 unlink (0.6.4)
-│   ├── inject-daemon.lock              # bind 직렬화용, 시도 후 삭제 (0.6.3)
+│   ├── inject-daemon.lock              # bind 직렬화용, 시도 후 삭제 (0.6.3). 0.6.6부터 `*.tmp` 임시 이름에 쓴 뒤 link(2)로 원자적으로 만듭니다 (#102)
 │   ├── inject-daemon.candidates/       # bind 못 한 서버의 재획득 대기 표식 (0.6.4)
 │   │   └── <pid>.json                  # bind·retire·종료 시 삭제
 │   ├── logs/
@@ -418,6 +418,10 @@ memex sync alias "집 맥미니"    # 이 기기 (이름은 세대 manifest에 �
 memex sync alias "작업실 맥" --device <other-device-id>   # 상대 기기에 내가 붙이는 이름(로컬)
 ```
 
+이 기기의 이름을 바꾸거나 지우면 다음 자동 내보내기가 새 세대를 게시해 상대 기기에 전달합니다
+(0.6.6 #98 — 전에는 `--force` 없이는 `unchanged`로 건너뛰어 상대에는 옛 이름이 그대로 남았습니다).
+상대 기기에 내가 붙인 이름은 이 기기에만 있는 표시이므로 내보내기를 일으키지 않습니다.
+
 #### 공유 폴더가 없을 때 — 세대 파일을 손으로 옮기기 (0.6.3)
 
 iCloud/Dropbox/Syncthing 중 아무것도 쓰지 않거나, 두 번째 맥을 처음 세팅하는 중이라면 세대 하나를
@@ -441,6 +445,17 @@ memex sync import --archive ~/Downloads/<device>-<generation>.zip
 - Web UI에서는 관리 › 동기화 › **수동 파일로 주고받기**가 같은 일을 합니다. 브라우저 다운로드는
   쓰지 않고, 서버가 **데이터 루트 안**에 파일을 쓰고 경로를 알려줍니다(Finder `⇧⌘G`로 이동).
   가져오기는 항상 **검증 → 미리보기 → 확인** 순서입니다.
+- `--archive` 내보내기는 **공유 폴더를 쓰지도, 만들지도 않습니다**(0.6.6 #95). 세대는 데이터 루트 안의
+  전용 staging에서 만들어 zip으로 묶고 staging은 지워집니다. 따라서 동기화가 꺼져 있거나 공유 폴더를
+  지워 둔 상태에서 이 명령을 써도 폴더가 되살아나지 않고, 상대 기기가 가져갈 세대가 새로 생기지도
+  않습니다. `export-status.json`(마지막 내보내기 기록)도 그대로입니다 — 그 기록은 *공유 폴더*에 무엇이
+  도달했는지에 대한 진술이기 때문입니다.
+- 내보내기 경로는 심볼릭 링크를 따라가서도 데이터 루트를 벗어날 수 없습니다(0.6.6 #101). 기본 경로
+  `<data root>/sync/exports/`도 같은 검사를 받으므로, 그 디렉터리를 iCloud 폴더로 링크해 두면 조용히
+  밖으로 쓰지 않고 거부합니다.
+- `--dry-run`은 **로컬 인덱스가 이미 있어야** 합니다(0.6.6 #97). 인덱스가 전혀 없는 기기에서는 DB를
+  새로 만들지 않고 `no local index yet — run \`memex sync\` once before previewing an import`으로
+  거부합니다. 먼저 `memex sync`를 한 번 돌리십시오. 적용(`--dry-run` 없이)은 전과 같습니다.
 - 자기 기기가 만든 파일, zip이 아닌 파일, 세대 파일이 아닌 zip은 각각 다른 사유로 거부됩니다.
   세대는 하나라도 깨지면 **통째로** 거부되고 사유가 그대로 나옵니다.
 - 이 파일에도 기억 원문이 **평문 JSONL**로 들어 있습니다. 본인 기기끼리만 주고받으십시오.
@@ -553,19 +568,20 @@ marker가 있을 때만 추가되어 최대 13개입니다. 하나라도 `FAIL`�
 | `recall-provenance` (0.6.0) | 발행 건수와 `recall_events` 행 수 비교. 발행이 있는데 영수증이 0이면 fail, 모자라면 warn |
 | `injection-yield` (0.6.0) | fact 0개 주입이 8회 이상 연속이고 창의 주입 합이 0이면 warn. 리터럴 레인이 죽어도 warn |
 | `embedding-cache` (0.6.5, #92) | 안정 캐시(`<data root>/models`, `MEMEX_MODEL_CACHE_DIR`로 변경)에 embedding model이 있는지. 있으면 ok(크기·파일 수·경로), `MEMEX_EMBEDDING_STUB=1`이면 모델이 필요 없으니 ok, 없으면 **warn** + "첫 프롬프트가 느립니다 — `memex deps warm`". 가중치 없이 파일만 있으면 중단된 다운로드로 구분해 말하고, 레거시 per-root 캐시가 남아 있으면 "복사되므로 몇 초면 됩니다"를 덧붙입니다. `@xenova/transformers`를 적재하지 않는 순수 파일 점검이라 runtime 의존성이 없는 호스트에서도 답합니다 |
-| `inject-daemon` (0.6.3, 상태 세분화 0.6.4) | fast-path socket의 상태와 소유자 정체. 아래 4상태로 보고하며 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록). 판정 기준이 되는 "같은 빌드"는 **설치본**(훅이 실행되는 루트)입니다 — npx shim 때문에 doctor 자신이 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아닙니다 |
+| `inject-daemon` (0.6.3, 상태 세분화 0.6.4·0.6.6) | fast-path socket의 상태와 소유자 정체. 아래 표의 상태로 보고하며 읽기 전용 `identify` probe만 쓰고 3초 예산을 둡니다(모델 로딩 중인 정상 소유자를 오판하지 않도록). 판정 기준이 되는 "같은 빌드"는 **설치본**(훅이 실행되는 루트)입니다 — npx shim 때문에 doctor 자신이 다른 복사본에서 돌 수 있으므로 doctor 자신의 루트가 아닙니다 |
 | `hook-trust` | 등록된 event 전부가 trust를 가지면 ok, 아니면 warn (fail 없음) |
 | `mcp-manifest` | `.codex-plugin/plugin.json` 존재 여부 |
 | `ontology-index` (0.6.1, 조건부) | `ontology_index_repair_state`에 marker가 있을 때만 나타납니다. category vector index 수리가 `blocked`면 fail(분류가 멈춘 상태 — `memex backfill embeddings`로 벡터 재생성), 화해되었으면 ok |
 | `sync-export` | 동기화가 꺼져 있으면 `skipped(off)`로 ok(경고 아님). 켜져 있는데 export 훅이 어느 hook에도 등록되지 않았거나 한 번도 내보낸 적이 없으면 warn. 마지막 export가 실패면 fail, 성공이면 ok |
 
-`inject-daemon`의 4상태(0.6.4, #89). 0.6.3까지는 앞의 두 상태가 모두 `no daemon — …`(ok) 한 줄로
+`inject-daemon`의 상태(0.6.4 #89의 4상태 + 0.6.6 #99의 경로 길이). 0.6.3까지는 앞의 두 상태가 모두 `no daemon — …`(ok) 한 줄로
 합쳐져 있었고, 그래서 "소유자가 종료해 매 프롬프트가 70초를 내고 있다"가 "아직 아무도 안 떴다"와
 구분되지 않았습니다.
 
 | 상태 | 뜻 | 판정 |
 | --- | --- | --- |
 | `absent` | socket 파일이 없음(ENOENT) — 평시 cold start | ok. 매 프롬프트가 in-process 경로(~2.3s) |
+| `socket path too long` (0.6.6, #99) | 데이터 루트가 길어 socket 경로가 플랫폼의 `sun_path` 한계(macOS 104바이트, Linux 108바이트)를 넘음 — **누구도** bind/connect할 수 없습니다 | warn. `socket path too long (N bytes; this platform allows M)`로 보고하며, daemon도 같은 사유를 `logs/hook-events.jsonl`의 `InjectDaemonBindFailed` 이벤트로 남깁니다. `MEMEX_HOME`(또는 `XDG_CONFIG_HOME`)을 짧은 경로로 바꾸고 호스트를 재시작하십시오 |
 | `stale` | socket 파일은 있는데 아무도 listen하지 않음(ECONNREFUSED/ENOTSOCK) — 소유자가 종료함 | 살아 있는 **재획득 후보**(`inject-daemon.candidates/`)가 있으면 **ok** + 어떤 서버(pid/version/root)가 몇 ms 주기로 재probe 중인지 안내. 후보가 하나도 없으면 **warn** — 아무도 고치지 않으므로 호스트를 새로 띄우거나 재시작해야 합니다 |
 | `hung` | 연결은 되는데 3초(`INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS`) 안에 정체를 밝히지 않음 | warn. 훅은 in-process로 내려가므로 주입은 정확하지만 느립니다 |
 | `ok` / `mismatch` | 소유자가 정체를 밝힘 — 설치본과 같은 빌드면 `ok`, 다른 빌드면 `mismatch` | 같으면 ok, 다르면 warn(소유자 version/buildId/root/db/pid/startedAt 표시) |

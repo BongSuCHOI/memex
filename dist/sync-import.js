@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { assertMutationPolicy, captureMutationPolicy, StaleFactMutationError } from './fact-policy.js';
-import { initDatabase, getVecTableDtype, embeddingToVecBlob, vecParamSql, hashRecallPrompt, } from "./db.js";
+import { initDatabase, openWriteDb, getVecTableDtype, embeddingToVecBlob, vecParamSql, hashRecallPrompt, } from "./db.js";
+import { getDbPath } from "./paths.js";
 import { generateEmbedding, initEmbeddings, EMBEDDING_VERSION, } from "./embeddings.js";
 import { getSyncDir, SYNC_PAYLOAD_FILE_NAMES, SYNC_PROTOCOL_VERSION, countPayloadRows, payloadSha256, } from "./sync-export.js";
 import { canonicalizeProjectPath } from "./project-identity.js";
@@ -1674,12 +1675,21 @@ export async function importFromSync(options = {}) {
  *
  * Runs the REAL validation and the REAL decision rules
  * (`collectCommittedGenerations` → `rejectInvalidRows` →
- * `rejectStableIdentityConflicts` → `planFactImports` / `planTombstoneImports`),
- * then throws the work away: the whole pass happens inside a transaction that is
- * always rolled back, because the planner may materialize a `projects` row while
- * resolving identity. Revision and recall-receipt counts are NOT previewed —
- * they depend on rows the fact pass would insert first, and this must not report
- * a number it cannot stand behind.
+ * `rejectStableIdentityConflicts` → `importTombstones` → `planFactImports`) in
+ * the order an apply runs them, then throws the work away: the whole pass happens
+ * inside a transaction that is always rolled back, because the planner may
+ * materialize a `projects` row while resolving identity. Revision and
+ * recall-receipt counts are NOT previewed — they depend on rows the fact pass
+ * would insert first, and this must not report a number it cannot stand behind.
+ *
+ * Issue #97 — a dry-run must not WRITE. The database is opened without the
+ * schema bootstrap (`initDatabase()` creates the file and runs every
+ * `CREATE TABLE`/`ALTER TABLE` migration plus a normalizing `UPDATE`, all of it
+ * before the rollback-only transaction opens, so none of it could be undone): a
+ * machine with no index yet is told to sync once instead of being handed an empty
+ * 880 KB database, and an old schema is never silently migrated by a preview.
+ * A plain read-only connection is not enough — the fact planner materializes a
+ * `projects` row while resolving identity, which the ROLLBACK takes back.
  */
 export function previewSyncImport(options) {
     const rejected = [];
@@ -1698,7 +1708,18 @@ export function previewSyncImport(options) {
     let generations = pinned.filter((generation) => !invalid.has(generationKey(generation)));
     if (generations.length === 0)
         return preview;
-    const db = initDatabase();
+    const dbPath = getDbPath();
+    if (!fs.existsSync(dbPath)) {
+        // Name the missing index, not the staged payload: the payload is fine, and
+        // the temp staging path an archive preview passes here means nothing to a user.
+        rejected.push({
+            file: dbPath,
+            line: 0,
+            error: "no local index yet — run `memex sync` once before previewing an import",
+        });
+        return preview;
+    }
+    const db = openWriteDb(dbPath);
     try {
         const identityRejected = rejectStableIdentityConflicts(db, generations, rejected);
         generations = generations.filter((generation) => !identityRejected.has(generationKey(generation)));
@@ -1729,6 +1750,29 @@ export function previewSyncImport(options) {
         }
         db.exec("BEGIN");
         try {
+            // Issue #103: an apply reflects the incoming tombstones FIRST and only then
+            // plans the facts, so `planFactImports` sees the deletions arriving in the
+            // same payload (it reads the local `fact_tombstones` table, which the
+            // incoming set is not passed into). Previewing the two plans independently
+            // on the untouched database therefore announced a fact as `+1`/`~1` that
+            // the apply would skip, and could list a conflict the apply never records.
+            // Running the real `importTombstones()` here keeps preview and apply on one
+            // code path — this transaction is ALWAYS rolled back, and better-sqlite3's
+            // nested `db.transaction()` calls inside it are savepoints, so nothing
+            // survives. Its `malformedRows` go straight into the preview's `rejected`;
+            // `newTombstones` has no place in the preview schema and is dropped.
+            const tombstoneProbe = {
+                newFacts: 0,
+                updatedFacts: 0,
+                deletedFacts: 0,
+                newRevisions: 0,
+                newTombstones: 0,
+                newRecallEvents: 0,
+                updatedRecallEvents: 0,
+                malformedRows: rejected,
+            };
+            importTombstones(db, generations, tombstoneProbe);
+            preview.deletedFacts = tombstoneProbe.deletedFacts;
             const { plans, conflicts } = planFactImports(db, generations, rejected);
             for (const plan of plans.values()) {
                 if (plan.semantic?.mode === "insert")
@@ -1736,8 +1780,6 @@ export function previewSyncImport(options) {
                 else if (plan.semantic || plan.lineage || plan.lifecycle)
                     preview.updatedFacts++;
             }
-            const tombstones = planTombstoneImports(db, generations, rejected);
-            preview.deletedFacts = tombstones.facts.filter((entry) => entry.deletesLocalFact).length;
             preview.conflicts = conflicts.map((conflict) => ({
                 factId: conflict.factId,
                 deviceId: conflict.deviceId,

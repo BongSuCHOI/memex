@@ -625,6 +625,22 @@ async function injectDaemonCheck() {
             ? ""
             : `; this diagnostic runs from ${self.pluginRoot}`) +
         `; listener here ${policy.open ? "on" : "off"}: ${policy.reason}`;
+    // Issue #99: an over-long socket path makes bind(2) AND connect(2) fail for
+    // every process, so there is no owner to find and no reclaim that can ever
+    // succeed — `sun_path` is a fixed 104/108-byte array and a long data root is
+    // all it takes. Reported before the probe, because the probe's own
+    // EINVAL/ENAMETOOLONG would otherwise be dressed up as a `hung` listener.
+    const tooLong = daemon.injectSocketPathTooLong();
+    if (tooLong) {
+        return {
+            name, status: "warn",
+            detail: `socket path too long (${tooLong.bytes} bytes; this platform allows ${tooLong.limit}) — ` +
+                `bind() cannot succeed, so no daemon can open the fast path and every prompt pays the cold ` +
+                `in-process path (~2.3s). Shorten the data root (MEMEX_HOME, or XDG_CONFIG_HOME) and restart ` +
+                `the host; the daemon records the same reason in logs/hook-events.jsonl ` +
+                `(event InjectDaemonBindFailed). ${where}`,
+        };
+    }
     let probe;
     try {
         probe = await daemon.probeInjectDaemon(undefined, daemon.INJECT_DAEMON_DIAGNOSTIC_TIMEOUT_MS);

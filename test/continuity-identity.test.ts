@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -244,6 +245,286 @@ describe("default branch detection reads the user's git config too (#65)", () =>
     expect(inspectWorkspaceLocation(repo)).toMatchObject({
       branch: "feature/x", defaultBranch: null,
     });
+  });
+});
+
+/**
+ * #100 — the same detection read quoted values, subsections and `include`
+ * differently from git, and `branchSignalFor` is what places every fact.
+ *
+ * git is the oracle here on purpose: a parser checked only against a table
+ * someone wrote by hand stays wrong in exactly the way its author was. Each case
+ * below asserts what `git config` actually answers first, then that the
+ * file-reading path answers the same. The comparison skips itself when git is
+ * not installed; the memex half still runs.
+ */
+describe("init.defaultBranch is read exactly as git reads it (#100)", () => {
+  const GIT_OK = spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
+  const ENV_KEYS = [
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "HOME", "XDG_CONFIG_HOME",
+  ] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) saved.set(key, process.env[key]);
+    // Never the developer's own config: every test below points
+    // `GIT_CONFIG_GLOBAL` at a file under its temp root.
+    process.env.GIT_CONFIG_NOSYSTEM = "1";
+    delete process.env.GIT_CONFIG_SYSTEM;
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    saved.clear();
+  });
+
+  /** `git config --get init.defaultBranch`; `null` when git reports it unset. */
+  function gitSays(args: string[]): string | null {
+    const result = spawnSync("git", [...args, "--get", "init.defaultBranch"], { encoding: "utf8" });
+    if (result.status !== 0) return null;
+    // Only the newline git appends may go: a value can legitimately end in a space.
+    return result.stdout.replace(/\n$/, "");
+  }
+
+  /** A checkout with no `origin/HEAD` and no `[init]`, parked on `branch`. */
+  function fakeClone(dir: string, branch: string): string {
+    fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
+    fs.writeFileSync(path.join(dir, ".git", "config"), "");
+    return dir;
+  }
+
+  /** A real repository, so git can evaluate `includeIf` against a real gitdir. */
+  function realRepo(dir: string, branch: string, globalFile: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const result = spawnSync("git", ["init", "--quiet", "--initial-branch", branch, dir], {
+      env: { ...process.env, GIT_CONFIG_GLOBAL: globalFile, GIT_CONFIG_NOSYSTEM: "1" },
+      stdio: "ignore",
+    });
+    if (result.status !== 0) throw new Error(`git init failed in ${dir}`);
+    return dir;
+  }
+
+  /**
+   * [name, file body, what git answers]. The DIFF rows of the issue's table:
+   * the old scanner read `tr"unk"` as `tr"unk"`, `"tr" unk` as `"tr" unk`,
+   * `"tr\"unk"` with the backslash still in it, dropped the space git keeps
+   * inside `"trunk "`, and accepted `[init "other"]` as `[init]`.
+   */
+  const VALUE_CASES: Array<[string, string, string | null]> = [
+    ["plain", "[init]\n\tdefaultBranch = trunk\n", "trunk"],
+    ["fully quoted", '[init]\n\tdefaultBranch = "trunk"\n', "trunk"],
+    ["quotes inside the value", '[init]\n\tdefaultBranch = tr"unk"\n', "trunk"],
+    ["a quoted fragment and a bare word", '[init]\n\tdefaultBranch = "tr" unk\n', "tr unk"],
+    ["escaped quote", '[init]\n\tdefaultBranch = "tr\\"unk"\n', 'tr"unk'],
+    ["trailing space kept inside quotes", '[init]\n\tdefaultBranch = "trunk "\n', "trunk "],
+    ["leading space dropped outside quotes", "[init]\n\tdefaultBranch =    trunk\n", "trunk"],
+    ["escaped tab inside quotes", '[init]\n\tdefaultBranch = "tr\\tunk"\n', "tr\tunk"],
+    ["inline # comment", "[init]\n\tdefaultBranch = trunk # not this\n", "trunk"],
+    ["inline ; comment", "[init]\n\tdefaultBranch = trunk ; not this\n", "trunk"],
+    ["comment character inside quotes", '[init]\n\tdefaultBranch = "tr#unk"\n', "tr#unk"],
+    ["continued line", "[init]\n\tdefaultBranch = tr\\\nunk\n", "trunk"],
+    ["a subsection is a different key", '[init "other"]\n\tdefaultBranch = nope\n', null],
+    ["a subsection with an escaped quote", '[init "a\\"b"]\n\tdefaultBranch = nope\n', null],
+    [
+      "a subsection then the real section",
+      '[init "other"]\n\tdefaultBranch = nope\n[init]\n\tdefaultBranch = real\n',
+      "real",
+    ],
+    ["the key on the section line", "[init] defaultBranch = trunk\n", "trunk"],
+    ["the key on a subsection line", '[init "x"] defaultBranch = nope\n', null],
+    ["section and key are case-insensitive", "[INIT]\n\tDefaultBranch = trunk\n", "trunk"],
+    ["another section's key", "[push]\n\tdefaultBranch = wrong\n", null],
+    [
+      "the last declaration wins",
+      "[init]\n\tdefaultBranch = first\n[init]\n\tdefaultBranch = last\n",
+      "last",
+    ],
+    ["a comment line before the section", "; a note\n[init]\n\tdefaultBranch = trunk\n", "trunk"],
+  ];
+
+  it.each(VALUE_CASES)("reads %s the way git does", (name, body, expected) => {
+    const slug = name.replace(/[^a-z0-9]+/gi, "-");
+    const file = path.join(root, `${slug}.gitconfig`);
+    fs.writeFileSync(file, body);
+    if (GIT_OK) expect(gitSays(["config", "--file", file])).toBe(expected);
+
+    process.env.GIT_CONFIG_GLOBAL = file;
+    const repo = fakeClone(path.join(root, `repo-${slug}`), "whatever");
+    expect(inspectWorkspaceLocation(repo).defaultBranch).toBe(expected);
+  });
+
+  /**
+   * Direction (2) of the issue: `[init "anything"]` used to be read as `[init]`,
+   * so a feature branch was classified as the default one and branch-local
+   * memory was promoted into the project-common tier.
+   */
+  it("does not let an [init \"x\"] subsection promote a feature branch", () => {
+    const globalFile = path.join(root, "subsection.gitconfig");
+    fs.writeFileSync(globalFile, '[init "anything"]\n\tdefaultBranch = feature/x\n');
+    if (GIT_OK) expect(gitSays(["config", "--file", globalFile])).toBe(null);
+
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    const inspected = inspectWorkspaceLocation(fakeClone(path.join(root, "sub-repo"), "feature/x"));
+    expect(inspected).toMatchObject({ branch: "feature/x", defaultBranch: null });
+    expect(branchSignalFor(inspected)).toEqual({
+      kind: "branch", branch: "feature/x", tierReason: "branch:feature/x",
+    });
+  });
+
+  /**
+   * Direction (1): `init.defaultBranch` kept in an `include`d file left #65
+   * unfixed — the default branch was still classified as a feature branch and
+   * its facts still stranded on the `workstream` tier.
+   */
+  it("follows include.path, resolved against the including file", () => {
+    fs.writeFileSync(path.join(root, "extra.gitconfig"), "[init]\n\tdefaultBranch = trunk\n");
+    const globalFile = path.join(root, "with-include.gitconfig");
+    fs.writeFileSync(globalFile, "[include]\n\tpath = extra.gitconfig\n");
+    if (GIT_OK) expect(gitSays(["config", "--file", globalFile, "--includes"])).toBe("trunk");
+
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    const inspected = inspectWorkspaceLocation(fakeClone(path.join(root, "inc-repo"), "trunk"));
+    expect(inspected).toMatchObject({ branch: "trunk", defaultBranch: "trunk" });
+    expect(branchSignalFor(inspected)).toEqual({
+      kind: "default", branch: "trunk", tierReason: "default-branch",
+    });
+  });
+
+  it("expands ~ in include.path and keeps the include's position in the file", () => {
+    const home = path.join(root, "include-home");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, "shared.gitconfig"), "[init]\n\tdefaultBranch = included\n");
+    process.env.HOME = home;
+
+    // A value after the include wins; a value before it loses. Same file order
+    // as git, which applies an include where the directive sits.
+    const after = path.join(root, "value-after.gitconfig");
+    fs.writeFileSync(after, "[include]\n\tpath = ~/shared.gitconfig\n[init]\n\tdefaultBranch = late\n");
+    const before = path.join(root, "value-before.gitconfig");
+    fs.writeFileSync(before, "[init]\n\tdefaultBranch = early\n[include]\n\tpath = ~/shared.gitconfig\n");
+    if (GIT_OK) {
+      expect(gitSays(["config", "--file", after, "--includes"])).toBe("late");
+      expect(gitSays(["config", "--file", before, "--includes"])).toBe("included");
+    }
+
+    process.env.GIT_CONFIG_GLOBAL = after;
+    expect(inspectWorkspaceLocation(fakeClone(path.join(root, "late-repo"), "late")).defaultBranch)
+      .toBe("late");
+    process.env.GIT_CONFIG_GLOBAL = before;
+    expect(inspectWorkspaceLocation(fakeClone(path.join(root, "early-repo"), "x")).defaultBranch)
+      .toBe("included");
+  });
+
+  it("ignores an include whose file is absent, as git does", () => {
+    const globalFile = path.join(root, "absent-include.gitconfig");
+    fs.writeFileSync(
+      globalFile,
+      `[include]\n\tpath = ${path.join(root, "not-there.gitconfig")}\n[init]\n\tdefaultBranch = trunk\n`,
+    );
+    if (GIT_OK) expect(gitSays(["config", "--file", globalFile, "--includes"])).toBe("trunk");
+
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    expect(inspectWorkspaceLocation(fakeClone(path.join(root, "absent-inc-repo"), "trunk")).defaultBranch)
+      .toBe("trunk");
+  });
+
+  /**
+   * Not compared against git: git `die`s once the include depth passes 10, so
+   * `git config` answers nothing at all. Refusing to classify the branch is the
+   * worse answer here, so the ring is simply not followed and the rest of the
+   * file still counts.
+   */
+  it("stops at a self-including ring instead of recursing", () => {
+    const globalFile = path.join(root, "ring.gitconfig");
+    fs.writeFileSync(
+      globalFile,
+      `[include]\n\tpath = ${globalFile}\n[init]\n\tdefaultBranch = trunk\n`,
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+    expect(inspectWorkspaceLocation(fakeClone(path.join(root, "ring-repo"), "trunk")).defaultBranch)
+      .toBe("trunk");
+  });
+
+  it.skipIf(!GIT_OK)("applies includeIf gitdir: where git applies it, and nowhere else", () => {
+    const extra = path.join(root, "work.gitconfig");
+    fs.writeFileSync(extra, "[init]\n\tdefaultBranch = trunk\n");
+    const workTree = path.join(root, "work");
+    fs.mkdirSync(workTree, { recursive: true });
+    const globalFile = path.join(root, "gitdir.gitconfig");
+    // git compares the pattern against the gitdir's REALPATH, so the pattern has
+    // to be written in realpath terms — `os.tmpdir()` is symlinked on macOS.
+    fs.writeFileSync(
+      globalFile,
+      `[includeIf "gitdir:${fs.realpathSync(workTree)}/"]\n\tpath = ${extra}\n`,
+    );
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+
+    const inside = realRepo(path.join(workTree, "repo"), "trunk", globalFile);
+    expect(gitSays(["-C", inside, "config"])).toBe("trunk");
+    const inspected = inspectWorkspaceLocation(inside);
+    expect(inspected).toMatchObject({ branch: "trunk", defaultBranch: "trunk" });
+    expect(branchSignalFor(inspected)).toEqual({
+      kind: "default", branch: "trunk", tierReason: "default-branch",
+    });
+
+    // A repository outside that directory never sees the include.
+    const outside = realRepo(path.join(root, "elsewhere", "repo"), "trunk", globalFile);
+    expect(gitSays(["-C", outside, "config"])).toBe(null);
+    const other = inspectWorkspaceLocation(outside);
+    expect(other.defaultBranch).toBe(null);
+    expect(branchSignalFor(other)).toMatchObject({ kind: "branch", tierReason: "branch:trunk" });
+  });
+
+  it.skipIf(!GIT_OK)("matches gitdir/i: case-insensitively, like git", () => {
+    const extra = path.join(root, "ci.gitconfig");
+    fs.writeFileSync(extra, "[init]\n\tdefaultBranch = trunk\n");
+    const workTree = path.join(root, "ci-work");
+    fs.mkdirSync(workTree, { recursive: true });
+    const globalFile = path.join(root, "gitdir-i.gitconfig");
+    // Only the last component's case differs from what is on disk, so the match
+    // depends on `/i` rather than on the filesystem's own case folding.
+    const shouted = path.join(path.dirname(fs.realpathSync(workTree)), "CI-WORK");
+    fs.writeFileSync(globalFile, `[includeIf "gitdir/i:${shouted}/"]\n\tpath = ${extra}\n`);
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+
+    const repo = realRepo(path.join(workTree, "repo"), "trunk", globalFile);
+    expect(gitSays(["-C", repo, "config"])).toBe("trunk");
+    expect(inspectWorkspaceLocation(repo).defaultBranch).toBe("trunk");
+  });
+
+  it.skipIf(!GIT_OK)("applies includeIf onbranch: where git applies it", () => {
+    const extra = path.join(root, "onbranch.gitconfig");
+    fs.writeFileSync(extra, "[init]\n\tdefaultBranch = mainline\n");
+    const globalFile = path.join(root, "onbranch.global.gitconfig");
+    fs.writeFileSync(globalFile, `[includeIf "onbranch:feature/*"]\n\tpath = ${extra}\n`);
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+
+    const onFeature = realRepo(path.join(root, "feature-repo"), "feature/x", globalFile);
+    expect(gitSays(["-C", onFeature, "config"])).toBe("mainline");
+    expect(inspectWorkspaceLocation(onFeature)).toMatchObject({
+      branch: "feature/x", defaultBranch: "mainline",
+    });
+
+    const onMainline = realRepo(path.join(root, "mainline-repo"), "mainline", globalFile);
+    expect(gitSays(["-C", onMainline, "config"])).toBe(null);
+    expect(inspectWorkspaceLocation(onMainline).defaultBranch).toBe(null);
+  });
+
+  it.skipIf(!GIT_OK)("leaves an includeIf condition it cannot evaluate unapplied", () => {
+    const extra = path.join(root, "unknown.gitconfig");
+    fs.writeFileSync(extra, "[init]\n\tdefaultBranch = trunk\n");
+    const globalFile = path.join(root, "unknown-condition.gitconfig");
+    fs.writeFileSync(globalFile, `[includeIf "whenever:always"]\n\tpath = ${extra}\n`);
+    process.env.GIT_CONFIG_GLOBAL = globalFile;
+
+    const repo = realRepo(path.join(root, "unknown-repo"), "trunk", globalFile);
+    expect(gitSays(["-C", repo, "config"])).toBe(null);
+    expect(inspectWorkspaceLocation(repo).defaultBranch).toBe(null);
   });
 });
 

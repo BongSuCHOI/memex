@@ -108,6 +108,42 @@ describe('cross-device sync control (#35/#48)', () => {
     }
   }
 
+  /** What one `memex sync` leaves on a receiving machine: an index, no facts. */
+  async function ensureIndex(root: string): Promise<void> {
+    on(root);
+    const { initDatabase } = await import('../src/db.js');
+    initDatabase().close();
+  }
+
+  /** Hard-delete a fact the way the tombstone-writing paths do: row gone, tombstone in. */
+  async function hardDelete(root: string, id: string, at: string): Promise<void> {
+    on(root);
+    const { initDatabase } = await import('../src/db.js');
+    const db = initDatabase();
+    try {
+      db.prepare('DELETE FROM facts WHERE id = ?').run(id);
+      db.prepare('INSERT INTO fact_tombstones (fact_id, deleted_at, reason) VALUES (?, ?, ?)')
+        .run(id, at, 'hard_delete');
+    } finally {
+      db.close();
+    }
+  }
+
+  /** Whole-schema digest — what a migration would change and a read never does. */
+  async function schemaFingerprint(dbPath: string): Promise<string> {
+    const { createHash } = await import('node:crypto');
+    const { openReadDb } = await import('../src/db.js');
+    const db = openReadDb(dbPath);
+    try {
+      const rows = db
+        .prepare('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name, tbl_name')
+        .all();
+      return createHash('sha256').update(JSON.stringify(rows), 'utf8').digest('hex');
+    } finally {
+      db.close();
+    }
+  }
+
   it('is OFF by default and every automatic path is a no-op', async () => {
     on(rootA);
     const control = await import('../src/sync-control.js');
@@ -362,6 +398,12 @@ describe('cross-device sync control (#35/#48)', () => {
 
       // --- B: preview, then import the file ---
       standalone(rootB);
+      // A machine with no index yet is told to run `memex sync` once; a dry-run
+      // never creates one on the way to answering (#97).
+      expect(control.previewImportArchive(reexported.path).rejected.map((issue) => issue.error).join(' '))
+        .toMatch(/no local index yet/);
+      await ensureIndex(rootB);
+      standalone(rootB);
       const preview = control.previewImportArchive(reexported.path);
       expect(preview.deviceAlias).toBe('집 맥미니');
       expect(preview.generation).toBe(reexported.generation);
@@ -417,6 +459,81 @@ describe('cross-device sync control (#35/#48)', () => {
       expect((await control.importArchive(corrupted)).result.newFacts).toBe(0);
     });
 
+    /**
+     * Issue #95 (0.6.6) — the privacy contract, not a convenience. The archive
+     * path used to call `exportForSync()` with no destination, so the exporter
+     * resolved the SHARED folder and `getSyncDir()` created it: with the switch
+     * off, and even after the user had deleted the folder, one `--archive`
+     * re-created the iCloud/Dropbox folder and published plaintext memories into
+     * it while `memex sync status` still said `Sync: OFF`.
+     *
+     * The shipped test above cannot see this: `standalone()` only ever runs with
+     * a shared folder that was NEVER configured.
+     */
+    it('publishes nothing into a configured shared folder while sync is off (#95)', async () => {
+      const control = await import('../src/sync-control.js');
+      const { readZip } = await import('../src/zip.js');
+      await seed(rootA, { id: 'fact-offline', text: 'stays on this machine', subject: 'shared.offline.rule' });
+      standalone(rootA);
+      control.setSyncEnabled({ enabled: true, dir: shared }); // configured once,
+      control.setSyncEnabled({ enabled: false }); // then switched off,
+      fs.rmSync(shared, { recursive: true, force: true }); // and deleted.
+
+      const archive = control.exportGenerationArchive();
+      // The zip is still a complete protocol-v5 generation…
+      expect(fs.existsSync(archive.path)).toBe(true);
+      expect(archive.counts.facts).toBe(1);
+      expect([...readZip(fs.readFileSync(archive.path)).keys()].sort()).toEqual([
+        'fact-revisions.jsonl', 'fact-tombstones.jsonl', 'facts.jsonl', 'meta.json', 'recall-events.jsonl',
+      ]);
+      // …and nothing reached, or re-created, the shared folder.
+      expect(fs.existsSync(shared)).toBe(false);
+      expect(control.getSyncStatus().enabled).toBe(false);
+      expect(control.getSyncStatus().peers).toEqual([]);
+      // Nor the historical default shared folder, for a root that configured none.
+      expect(fs.existsSync(path.join(rootA, 'conversation-index', 'sync', 'devices'))).toBe(false);
+      // The record of what reached the destination still says "never".
+      expect(control.getSyncStatus().lastExport).toBeNull();
+      // Staging is scratch: it does not survive the call.
+      expect(fs.readdirSync(path.join(rootA, 'sync')).filter((name) => name.startsWith('archive-staging-')))
+        .toEqual([]);
+    });
+
+    /**
+     * Issue #97 (0.6.6) — `--dry-run` promised to change nothing and created a
+     * database, running every `CREATE TABLE`/`ALTER TABLE` migration and a
+     * normalizing `UPDATE` before the rollback-only transaction even opened.
+     * The shipped assertion (`readFact()` is undefined) cannot observe it: that
+     * helper calls `initDatabase()` itself.
+     */
+    it('a dry-run neither creates nor migrates the local database (#97)', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-dry', text: 'dry runs write nothing', subject: 'shared.dry.rule' });
+      standalone(rootA);
+      const archive = control.exportGenerationArchive();
+
+      // B has no index at all — nothing is seeded there.
+      standalone(rootB);
+      const dbPath = path.join(rootB, 'conversation-index', 'db.sqlite');
+      expect(fs.existsSync(dbPath)).toBe(false);
+      const preview = control.previewImportArchive(archive.path);
+      expect(fs.existsSync(dbPath)).toBe(false);
+      expect(fs.existsSync(path.join(rootB, 'conversation-index'))).toBe(false);
+      expect(preview).toMatchObject({ newFacts: 0, updatedFacts: 0, deletedFacts: 0 });
+      expect(preview.rejected.map((issue) => issue.error).join(' ')).toMatch(/no local index yet/);
+      // The file is still identified, so the CLI can name what it refused to read.
+      expect(preview.generation).toBe(archive.generation);
+
+      // With an index present the preview runs for real and leaves the schema alone.
+      await seed(rootB, { id: 'fact-local', text: 'local', subject: 'shared.local.rule' });
+      standalone(rootB);
+      const before = await schemaFingerprint(dbPath);
+      const real = control.previewImportArchive(archive.path);
+      expect(real).toMatchObject({ newFacts: 1, rejected: [] });
+      expect(await schemaFingerprint(dbPath)).toBe(before);
+      expect(await readFact(rootB, 'fact-dry')).toBeUndefined();
+    });
+
     it('exports only inside the data root', async () => {
       const control = await import('../src/sync-control.js');
       await seed(rootA, { id: 'fact-confined', text: 'writes stay inside the root', subject: 'shared.confined.rule' });
@@ -428,6 +545,45 @@ describe('cross-device sync control (#35/#48)', () => {
       const named = control.exportGenerationArchive({ outPath: path.join(rootA, 'sync', 'exports', 'named.zip') });
       expect(named.path).toBe(path.join(rootA, 'sync', 'exports', 'named.zip'));
       expect(fs.existsSync(named.path)).toBe(true);
+    });
+
+    /**
+     * Issue #101 (0.6.6) — containment was a `path.resolve()` string prefix test,
+     * and `path.resolve()` does not resolve symlinks, so one link inside the data
+     * root carried a write outside it. The default destination was not checked at
+     * all.
+     */
+    it('cannot write outside the data root through a symlink (#101)', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-link', text: 'no escape', subject: 'shared.link.rule' });
+      standalone(rootA);
+      const outside = path.join(temp, 'outside');
+      fs.mkdirSync(outside, { recursive: true });
+      fs.writeFileSync(path.join(outside, 'precious.zip'), 'USER DATA');
+      fs.symlinkSync(outside, path.join(rootA, 'link'));
+
+      expect(() => control.exportGenerationArchive({ outPath: path.join(rootA, 'link', 'precious.zip') }))
+        .toThrow(/must stay inside the data root/);
+      expect(fs.readFileSync(path.join(outside, 'precious.zip'), 'utf8')).toBe('USER DATA');
+
+      // The mirror-image misbehaviour: the SAME directory named through its real
+      // path (macOS /var -> /private/var) used to be refused. It is legitimate.
+      const viaReal = control.exportGenerationArchive({
+        outPath: path.join(fs.realpathSync(rootA), 'sync', 'exports', 'real.zip'),
+      });
+      expect(fs.existsSync(viaReal.path)).toBe(true);
+
+      // A final component that is itself a link is refused, not followed.
+      fs.symlinkSync(viaReal.path, path.join(rootA, 'alias-link.zip'));
+      expect(() => control.exportGenerationArchive({ outPath: path.join(rootA, 'alias-link.zip') }))
+        .toThrow(/is a symlink/);
+
+      // The DEFAULT destination is held to the same rule — a user who linked
+      // `<data root>/sync/exports` into iCloud gets a refusal, not a quiet write.
+      fs.rmSync(path.join(rootA, 'sync', 'exports'), { recursive: true, force: true });
+      fs.symlinkSync(outside, path.join(rootA, 'sync', 'exports'));
+      expect(() => control.exportGenerationArchive()).toThrow(/data root/);
+      expect(fs.readdirSync(outside).sort()).toEqual(['precious.zip']);
     });
 
     it('names devices locally, and only this device name travels', async () => {
@@ -467,9 +623,142 @@ describe('cross-device sync control (#35/#48)', () => {
       expect(() => control.setDeviceAlias('../escape', 'x')).toThrow(/device id is not a sync device identifier/);
     });
 
+    /**
+     * Issue #98 (0.6.6) — the alias is a field of every manifest this device
+     * publishes, but the export gate's fingerprint only read the DB, so renaming
+     * a device reported `skipped: "unchanged"` forever and the peer kept showing
+     * the old name (or a UUID) until some unrelated durable change happened. The
+     * test above misses it because it uses `runSyncExport({ force: true })`.
+     */
+    it('publishes a new generation when only this device own alias changed (#98)', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-alias-gate', text: 'alias travels', subject: 'shared.aliasgate.rule' });
+      on(rootA);
+      control.setSyncEnabled({ enabled: true });
+      expect(control.runSyncExport().skipped).toBeNull();
+      // An idle machine still publishes nothing (#48 B).
+      expect(control.runSyncExport().skipped).toBe('unchanged');
+
+      const deviceId = control.getSyncStatus().deviceId!;
+      control.setDeviceAlias(deviceId, '집 맥미니');
+      expect(control.runSyncExport().skipped).toBeNull();
+      expect(publishedAlias(deviceId)).toBe('집 맥미니');
+      expect(control.runSyncExport().skipped).toBe('unchanged');
+
+      // Clearing the name propagates too.
+      control.setDeviceAlias(deviceId, null);
+      expect(control.runSyncExport().skipped).toBeNull();
+      expect(publishedAlias(deviceId)).toBeNull();
+
+      // A name this machine gives a PEER is a local override that never travels,
+      // so it must not make this device publish either.
+      control.setDeviceAlias('some-peer-device-id', '작업실 맥');
+      expect(control.runSyncExport().skipped).toBe('unchanged');
+    });
+
+    /** device_alias of the generation a peer would read for `deviceId`. */
+    function publishedAlias(deviceId: string): string | null {
+      const deviceDir = path.join(shared, 'devices', deviceId);
+      const { generation } = JSON.parse(fs.readFileSync(path.join(deviceDir, 'CURRENT'), 'utf8')) as {
+        generation: string;
+      };
+      const meta = JSON.parse(
+        fs.readFileSync(path.join(deviceDir, 'generations', generation, 'meta.json'), 'utf8'),
+      ) as { device_alias: string | null };
+      return meta.device_alias;
+    }
+
     function formatStatus(control: typeof import('../src/sync-control.js')): string {
       return control.formatSyncStatus(control.getSyncStatus());
     }
+  });
+
+  /**
+   * Issue #103 (0.6.6) — a preview must say what the apply will do.
+   *
+   * An apply reflects the incoming tombstones FIRST and only then plans the
+   * facts, so `planFactImports` sees the deletions arriving in the same payload
+   * (it reads the local `fact_tombstones` table; the incoming set is not passed
+   * in). The preview used to compute both plans independently on the untouched
+   * database, so a fact the apply would skip was announced as `~1`.
+   *
+   * Today's shipped callers stage ONE device's ONE generation, where a fact row
+   * and a tombstone for the same id cannot co-occur — the second test pins that
+   * invariant, so the day one export can carry both, this stays honest.
+   */
+  describe('import preview agrees with apply (#103)', () => {
+    it('reflects incoming tombstones before planning facts', async () => {
+      const control = await import('../src/sync-control.js');
+      const rootC = path.join(temp, 'device-c');
+      fs.mkdirSync(rootC, { recursive: true });
+
+      // A publishes the fact alive, with a newer meaning than C holds.
+      await seed(rootA, { id: 'fact-shared', text: 'deploys run from main', subject: 'shared.preview.rule' });
+      await editFact(rootA, 'fact-shared', 'deploys run from release branches', '2026-08-02T00:00:00.000Z');
+      on(rootA);
+      control.setSyncEnabled({ enabled: true });
+      expect(control.runSyncExport().skipped).toBeNull();
+
+      // B hard-deletes the same fact LATER, and carries one memory of its own.
+      await seed(rootB, { id: 'fact-shared', text: 'deploys run from main', subject: 'shared.preview.rule' });
+      await seed(rootB, { id: 'fact-b-only', text: 'b has its own memory', subject: 'shared.bonly.rule' });
+      await hardDelete(rootB, 'fact-shared', '2026-08-03T00:00:00.000Z');
+      on(rootB);
+      control.setSyncEnabled({ enabled: true });
+      expect(control.runSyncExport().skipped).toBeNull();
+
+      // C holds the older copy and reads both generations at once.
+      await seed(rootC, { id: 'fact-shared', text: 'deploys run from main', subject: 'shared.preview.rule' });
+      on(rootC);
+      const { previewSyncImport, importFromSync } = await import('../src/sync-import.js');
+      const preview = previewSyncImport({ syncDir: shared });
+      // The preview changed nothing, so the apply below starts from the same state.
+      expect(await readFact(rootC, 'fact-shared')).toBe('deploys run from main');
+
+      on(rootC);
+      const applied = await importFromSync({ syncDir: shared });
+      expect(preview.rejected).toEqual([]);
+      expect(applied.malformedRows).toEqual([]);
+      // Before the fix: preview said ~1 for a fact the apply never touched.
+      expect(preview.updatedFacts).toBe(0);
+      expect(preview.updatedFacts).toBe(applied.updatedFacts);
+      expect(preview.newFacts).toBe(applied.newFacts);
+      expect(preview.deletedFacts).toBe(applied.deletedFacts);
+      expect(preview).toMatchObject({ newFacts: 1, deletedFacts: 1, conflicts: [] });
+      // The deletion won on C, and B's own memory arrived.
+      expect(await readFact(rootC, 'fact-shared')).toBeUndefined();
+      expect(await readFact(rootC, 'fact-b-only')).toBe('b has its own memory');
+    });
+
+    it('one export never carries a fact row and a tombstone for the same id', async () => {
+      const control = await import('../src/sync-control.js');
+      await seed(rootA, { id: 'fact-alive', text: 'still here', subject: 'shared.alive.rule' });
+      await seed(rootA, { id: 'fact-gone', text: 'deleted later', subject: 'shared.gone.rule' });
+      await hardDelete(rootA, 'fact-gone', '2026-08-04T00:00:00.000Z');
+      on(rootA);
+      control.setSyncEnabled({ enabled: true });
+      expect(control.runSyncExport().skipped).toBeNull();
+      const deviceA = control.getSyncStatus().deviceId!;
+      const generationDir = path.join(
+        shared,
+        'devices',
+        deviceA,
+        'generations',
+        (JSON.parse(fs.readFileSync(path.join(shared, 'devices', deviceA, 'CURRENT'), 'utf8')) as {
+          generation: string;
+        }).generation,
+      );
+      const ids = (file: string, key: string): string[] =>
+        fs.readFileSync(path.join(generationDir, file), 'utf8')
+          .split('\n')
+          .filter((line) => line.trim())
+          .map((line) => String((JSON.parse(line) as Record<string, unknown>)[key]));
+      const facts = new Set(ids('facts.jsonl', 'id'));
+      const tombstones = new Set(ids('fact-tombstones.jsonl', 'fact_id'));
+      expect([...facts]).toEqual(['fact-alive']);
+      expect([...tombstones]).toEqual(['fact-gone']);
+      expect([...facts].filter((id) => tombstones.has(id))).toEqual([]);
+    });
   });
 
   /**

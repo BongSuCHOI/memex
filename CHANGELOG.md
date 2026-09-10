@@ -2,6 +2,132 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.6.6 - 2026-09-10
+
+Hotfix release for the nine findings of the external post-release review of
+0.6.2–0.6.5 (#95–#103), every one verified and reproduced before it was fixed.
+The headline is a privacy-contract break: with sync OFF, one
+`memex sync export --archive` still published memories into the shared folder
+(#95). The rest close a Web UI data-root pinning race, a dry-run that migrated
+the database, an inject-daemon handover that could leave a session with no warm
+daemon, a lock window, a symlink escape, a stale device alias and a git config
+parser that disagreed with git.
+
+### Web UI
+
+- `Core.pinned()` is now reentrant, so overlapping core calls no longer unpin
+  each other's `MEMEX_HOME` / `MEMEX_DB_PATH`. The mutation lock is per fact ID,
+  so two changes to different memories really do overlap: the old per-call
+  save/restore let the one that finished first put the inherited environment
+  back while the other was still inside the core — that call's
+  `logs/ui-audit.jsonl` line went to the default data root instead of this
+  server's home, breaking the #78 contract — and then let the last one out leave
+  the UI's own home in the process environment permanently. Only the outermost
+  call saves and sets, only the last one out restores. A tier move or memory
+  change is also refused with 409 `SYNC_BUSY` while a sync is running, mirroring
+  the refusal `sync` already gives a mutation. (#96)
+
+### Memory tiers
+
+- Default-branch detection now parses git config the way git does, so the branch
+  signal that places every fact stops disagreeing with `git config`. A quoted
+  value is read with git's own value parser (quote state, `\"`/`\\`/`\n`/`\t`
+  escapes, `#`/`;` comments outside quotes, whitespace kept inside quotes and
+  dropped outside), `[init "x"]` is the separate key `init.x.defaultBranch`
+  rather than `init.defaultBranch`, and `include.path` / `includeIf` are followed
+  — `gitdir:`, `gitdir/i:` and `onbranch:`, with `~` expansion, paths resolved
+  against the including file, git's depth limit of 10, and a condition we cannot
+  evaluate left unapplied. `init.defaultBranch` is resolved across every file git
+  reads, in git's order (system → global → repository, last wins). Before this,
+  the common work/personal gitconfig split left #65 unfixed — a default branch
+  kept in an included file was still classified as a feature branch and its facts
+  still stranded on the `workstream` tier — and `[init "anything"]` could do the
+  reverse, classifying a feature branch as the default and leaking branch-local
+  memory into the project-common tier. (#100)
+
+### Injection fast path
+
+- `retire` is a yield, not a retirement. An owner that steps aside for the
+  installed root now checks, one re-acquire interval later, that somebody
+  actually bound the socket, and re-enters the race through the ordinary
+  re-probe path when nobody did. Until now `retired` was permanent and it
+  disarmed re-acquisition with it, so a handover whose second half failed left
+  the session with no warm daemon at all — every prompt on the ~2.3 s cold path
+  until the host restarted — and `doctor` could only report the socket as
+  absent. (#99)
+- A `listen()` that fails for any reason other than EADDRINUSE is logged with
+  its reason and recorded in `logs/hook-events.jsonl` as
+  `InjectDaemonBindFailed`, and the process keeps re-probing instead of going
+  quiet; a bind that fails right after a successful `retire` arms
+  re-acquisition too. Previously every such error was dropped silently. (#99)
+- `memex doctor`'s `inject-daemon` check reports `socket path too long (N
+  bytes; this platform allows M)` when the data root makes the socket path
+  exceed the platform's `sun_path` (104 bytes on macOS, 108 on Linux). No
+  process can bind or connect to such a path, and the state used to be
+  indistinguishable from an ordinary cold start. (#99)
+- The bind lock is created atomically (write to a private name, then `link(2)`),
+  so it is never observable empty. A lock with no readable holder is no longer
+  deleted on sight: the first look leaves it alone and does not serve, and only
+  a lock still byte-for-byte unreadable on the next cycle is cleared. A starter
+  that caught another's lock inside the old open-then-write window deleted a
+  LIVE holder's lock and entered the serialized section beside it. (#102)
+
+### Cross-device sync
+
+- `memex sync export --archive` (and the Web UI `archive-export` action) no
+  longer touches the shared folder. It used to call the exporter with no
+  destination, so the exporter resolved the configured iCloud/Dropbox/Syncthing
+  folder and CREATED it: with sync disabled — and even after the user had
+  deleted the folder — the folder came back and a full generation of plaintext
+  memories went into it, while `memex sync status` still printed `Sync: OFF` and
+  listed a device. The archive is now built in a private staging directory
+  inside the data root, zipped, and the staging directory removed, so nothing
+  reaches the shared folder, no peer gets an extra generation to import, and the
+  deliberate absence of an `export-status.json` update is finally consistent.
+  `exportForSync({ syncDir })` is the new seam. (#95)
+- `memex sync import --archive --dry-run` no longer creates or migrates a
+  database. Both the device-identity check and the preview itself opened the DB
+  with `initDatabase()`, which created the file and ran every
+  `CREATE TABLE`/`ALTER TABLE` migration plus a normalizing `UPDATE` *before*
+  the rollback-only transaction opened, so none of it could be undone: a
+  dry-run on a machine with no index left an empty 880 KB database behind, and a
+  dry-run on an older schema migrated it irreversibly. The identity check is now
+  read-only, and a preview with no local index is rejected with
+  "no local index yet — run `memex sync` once before previewing an import"
+  instead of building one. (#97)
+- An import preview now reflects the incoming tombstones before it plans the
+  facts, the order an apply uses. The two plans used to be computed
+  independently against the untouched database, and the fact plan reads only the
+  LOCAL `fact_tombstones` table, so a fact the apply would skip could be
+  announced as `+1`/`~1` with a conflict the apply never records. Both run
+  inside the same always-rolled-back transaction. A single export still never
+  carries a fact row and a tombstone for the same id — that invariant is now
+  pinned by a test. (#103)
+- The archive output path is confined by REAL location, not by a path string. A
+  `path.resolve()` prefix test does not resolve symlinks, so one link inside the
+  data root carried a write outside it, and the default destination was not
+  checked at all. The deepest existing ancestor is now resolved with `realpath`
+  on both sides, a final component that is itself a symlink is refused rather
+  than followed, and the default `<data root>/sync/exports/…` path is held to
+  the same rule. Resolving the root too fixes the mirror image: a data root
+  reached through a link (macOS `/var` → `/private/var`) no longer rejects
+  legitimate absolute paths naming its own files. (#101)
+- `memex sync alias <name>` is propagated by the next automatic export. The name
+  travels in every generation's `meta.json` as `device_alias`, but the export
+  gate's fingerprint only read the database, so renaming (or un-naming) this
+  device reported `skipped: "unchanged"` forever and the other Mac kept showing
+  the old name or a UUID until some unrelated durable change happened or the
+  user passed `--force`. This device's own alias is now part of
+  `durableStateFingerprint()`; a name this machine gives a PEER is a local
+  override that never travels and still triggers nothing. (#98)
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change. One behaviour change to
+know about: on a machine that has never built an index, `memex sync import
+--archive … --dry-run` now refuses with "no local index yet" instead of creating
+one — run `memex sync` once first (the apply path is unchanged).
+
 ## 0.6.5 - 2026-09-10
 
 Hotfix for the embedding-model cache location (#92), found while validating
