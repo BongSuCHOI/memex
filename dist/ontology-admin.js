@@ -57,6 +57,10 @@ function appendOntologyAudit(action, detail) {
         /* auditing is best-effort and never blocks the repair */
     }
 }
+/** Neutral name for the writer above, so other core features (model selection,
+ *  gate/extraction overlays) reuse it instead of adding a second audit module
+ *  (common contract C5). Same line shape, same best-effort semantics. */
+export const appendUiAuditLine = appendOntologyAudit;
 /**
  * Fold `fromCategoryId` into `toCategoryId`: every fact filed under the source
  * moves to the target, the source row and its vector are removed.

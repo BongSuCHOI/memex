@@ -18,6 +18,12 @@ export interface CategoryRenameResult {
      * invalidated and healCategoryIndex / the re-embed worker rebuild it. */
     embeddingInvalidated: boolean;
 }
+/** Metadata-only audit line; never fact text, category description or prompts. */
+declare function appendOntologyAudit(action: string, detail: Record<string, unknown>): void;
+/** Neutral name for the writer above, so other core features (model selection,
+ *  gate/extraction overlays) reuse it instead of adding a second audit module
+ *  (common contract C5). Same line shape, same best-effort semantics. */
+export declare const appendUiAuditLine: typeof appendOntologyAudit;
 /**
  * Fold `fromCategoryId` into `toCategoryId`: every fact filed under the source
  * moves to the target, the source row and its vector are removed.
@@ -39,3 +45,4 @@ export declare function renameCategory(db: Database.Database, input: {
     categoryId: string;
     name: string;
 }): CategoryRenameResult;
+export {};

@@ -5,6 +5,14 @@ export interface MemoryModelOptions extends Pick<CodexExecOptions, 'outputSchema
     /** Durable model-work context. Existing callers may omit this; a stable
      * standalone budget is created for the enclosing call. */
     modelContext?: Partial<ModelWorkContext>;
+    /** Issue #31: per-call model override, so the evaluation harness and the
+     *  settings probe can name a model without mutating process env globally. */
+    model?: string | null;
+    /** Per-call reasoning effort. `null` means "send no flag". */
+    reasoningEffort?: string | null;
+    /** Issue #31: the ONLY way past an active config hold. The settings probe
+     *  sets it, because otherwise the user could never verify a fix. */
+    bypassConfigHold?: boolean;
 }
 export interface MemoryModelObservation {
     attempts: number;

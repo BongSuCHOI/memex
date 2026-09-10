@@ -734,11 +734,12 @@ describe('R11: 소비자 분류 단일 소스', () => {
   it('보고 표가 모든 분류를 덮는다 (새 분류 추가 시 누락 방지)', async () => {
     const { FAILURE_REPORT, failureConsumesBudget } = await import('../src/fact-extractor.js');
     const kinds = Object.keys(FAILURE_REPORT) as Array<keyof typeof FAILURE_REPORT>;
-    expect(kinds.length, '표가 분류를 전부 덮어야 한다').toBe(4);
+    // 이슈 #31 이 `config` 를 추가해 5 가 됐다.
+    expect(kinds.length, '표가 분류를 전부 덮어야 한다').toBe(5);
     for (const k of kinds) {
       const rep = FAILURE_REPORT[k];
       expect(rep.note, `${k} 문구 누락`).toBeTruthy();
-      expect(['handoff', 'transient', 'budget'], `${k} 버킷`).toContain(rep.bucket);
+      expect(['handoff', 'transient', 'budget', 'held'], `${k} 버킷`).toContain(rep.bucket);
       // 표와 술어가 어긋나면 "예산은 타는데 카운터는 재시도"가 된다
       expect(failureConsumesBudget(k), `${k} 술어↔표 불일치`).toBe(rep.consumesBudget);
       // budget 버킷 ⇔ 예산 소모 (버킷을 잘못 붙이면 집계가 거짓말한다)
@@ -750,6 +751,12 @@ describe('R11: 소비자 분류 단일 소스', () => {
     expect(FAILURE_REPORT.provider_deterministic.escalate).toBe(false);
     expect(FAILURE_REPORT.provider_transient.escalate).toBe(false);
     expect(FAILURE_REPORT.handoff.escalate).toBe(false);
+    // 이슈 #31: 설정 거절은 예산을 태우지 않고, 고치는 곳이 코드가 아니라 설정이라
+    // 런타임 에스컬레이션도 아니다 — 안내는 doctor 의 llm-model 체크가 한다.
+    expect(FAILURE_REPORT.config.bucket).toBe('held');
+    expect(FAILURE_REPORT.config.consumesBudget).toBe(false);
+    expect(FAILURE_REPORT.config.escalate).toBe(false);
+    expect(FAILURE_REPORT.config.label).toBe('HELD');
   });
 
   it('워커가 카운팅 분기를 자체 구현하지 않는다 (반대로 붙어도 통과하는 테스트 방지)', async () => {

@@ -1,5 +1,5 @@
 /**
- * LLM 실패 3분류 — 단일 소스.
+ * LLM 실패 4분류 — 단일 소스.
  *
  * consolidator 의 drain 루프와 llm.ts 의 재시도 루프가 **같은 판정**을 써야 한다:
  * 한쪽만 어떤 에러를 transient 로 보면 재시도는 하는데 커서는 넘어가는(또는 그 반대)
@@ -7,7 +7,24 @@
  * (consolidator 는 기존 importer 를 위해 re-export — coupling drift 차단).
  */
 
-export type LlmErrorClass = 'transient' | 'deterministic' | 'unknown';
+/**
+ * `'config'`(#31, 0.7.0)는 기존 3분류와 **직교**한다: "이 요청도, 이 입력도 잘못되지
+ * 않았다. 설정이 잘못됐다." 모델 id·추론 강도가 거절된 것은 *그 대화의 잘못이 아니므로*,
+ * 모든 소비자가 공통으로 (a) 재시도 없음, (b) window/batch 분할 없음, (c) 입력에
+ * 책임을 묻는 상태 전이 없음(실패 범위·파킹·dirty clear·frontier 전진 없음),
+ * (d) 이미 선점한 작업은 명시적 HOLD 전이로 반환한다.
+ */
+export type LlmErrorClass = 'transient' | 'deterministic' | 'unknown' | 'config';
+
+/**
+ * `code` 로만 판정한다 — 클래스 identity 를 import 하면 이 leaf 모듈이
+ * codex-exec(child_process)·model-budget(better-sqlite3) 에 묶이고, 그 둘은
+ * 여기로 되돌아오는 순환을 만든다. 두 코드 모두 해당 클래스가 소유하는 상수다.
+ */
+const CONFIG_ERROR_CODES = new Set([
+  'MEMEX_MODEL_CONFIG', // CodexRequestRejectedError — provider refused the envelope
+  'MEMEX_MODEL_CONFIG_HELD', // ModelConfigHeldError — a durable hold refused the call
+]);
 
 /**
  * Extract an HTTP status from common provider-error shapes: a top-level
@@ -96,6 +113,10 @@ export function classifyLlmError(err: unknown): LlmErrorClass {
   // Classify the underlying provider rejection, not the wrapper.
   const e = unwrapped as { message?: string } | undefined;
   const localCode = (unwrapped as { code?: unknown } | undefined)?.code;
+  // FIRST, before any status or phrase matching: an envelope rejection carries a
+  // 400 and "invalid_request" wording, both of which would otherwise read as
+  // 'deterministic' and send the extractor into window splitting.
+  if (typeof localCode === 'string' && CONFIG_ERROR_CODES.has(localCode)) return 'config';
   if (localCode === 'MEMEX_MODEL_OUTPUT_LIMIT' || localCode === 'MEMEX_MODEL_OUTPUT_SCHEMA') {
     return 'deterministic';
   }

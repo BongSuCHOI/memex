@@ -117,6 +117,11 @@ const EXEMPT_LITERALS=[
  ['ontology-classifier.ts','ontology classify: fact not found'],
  ['embeddings.ts','embedding model unavailable (MEMEX_EMBEDDING_STUB=fail)'],
  ['sync-paths.ts','device id is not a sync device identifier'],
+ // #31 모델 선택 저장 경계의 입력 검증. 두 문장은 사용자가 방금 입력한 값을
+ // 그대로 되돌려주는 거부이고, Web UI는 같은 값을 폼에서 먼저 검증한다
+ // (sync-cli.ts 면제와 같은 성격).
+ ['model-settings.ts','invalid model id'],
+ ['model-settings.ts','invalid reasoning effort'],
 ];
 
 const exemptLiteral=(file,literal)=>EXEMPT_LITERALS.some(([f,prefix])=>f===file&&literal.toLowerCase().includes(prefix.toLowerCase()));

@@ -108,6 +108,15 @@ export interface PipelineStatus {
         memoryJobsRetry: number;
         /** Subset of `memoryJobsRetry` whose backoff has not elapsed. */
         memoryJobsBackoff: number;
+        /**
+         * Issue #31 — jobs waiting on a model setting.
+         *
+         * NOT part of `total`: a held job is neither dead nor in retry, nothing is
+         * lost, and the action is one setting rather than a queue operation. It gets
+         * its own line so "extraction is not progressing" is traceable to the
+         * configuration that actually stopped it.
+         */
+        modelConfigHeld: number;
         terminal: {
             checkpointsDeadLetter: number;
             checkpointsFailedVisible: number;

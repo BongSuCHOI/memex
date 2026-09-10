@@ -14,6 +14,13 @@ export interface MemoryJobSummary {
     /** A lease held past its expiry: the row looks `running` but nobody owns it. */
     leaseExpired: boolean;
     lastError: string | null;
+    /**
+     * Issue #31 — which unusable configuration this pending job is waiting on, or
+     * null. A held job is NOT a failure and NOT dead: reading it as either is what
+     * the hold contract exists to prevent, so every job surface has to be able to
+     * say "waiting on a setting". `null` on a pre-0.7.0 database.
+     */
+    holdReason: string | null;
     createdAt: string;
     updatedAt: string;
 }
