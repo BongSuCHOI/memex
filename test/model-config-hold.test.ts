@@ -412,12 +412,20 @@ describe("operator surfaces", () => {
 
     const status = getPipelineStatus(db);
     expect(status.attention.modelConfigHeld).toBe(1);
+    // The line covers every hold family, and this one is the model family.
+    expect(status.attention.held).toBe(1);
+    expect(status.attention.heldByReason).toEqual([
+      { reason: "model_config_rejected", jobs: 1, oldestHeldAt: expect.any(String) },
+    ]);
     // A held job is not dead and not in retry, so the actionable count is
     // untouched — folding it in would read as a failure that needs recovery.
     expect(status.attention.total).toBe(0);
     const text = formatPipelineStatus(status);
-    expect(text).toContain("model config held: 1");
+    expect(text).toContain("config held: 1 job(s)");
+    expect(text).toContain("model_config_rejected=1");
     expect(text).toContain("memex models show");
+    // Only the remedy that applies: there is no extraction-rules hold here.
+    expect(text).not.toContain("memex extract rules validate");
   });
 });
 
