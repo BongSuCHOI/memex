@@ -12,9 +12,9 @@
  *   (b) **en 랜드마크 일치** — 사전 값이 실제로 화면에 꽂혔는지.
  *   (c) **이관한 한국어 0건** — 내가 사전으로 옮긴 문장이 en 화면에 남아 있으면 치환 누락이다.
  *
- * "화면 전체에 한글 0건"은 여기서 단정하지 않는다 — `ui.mjs`(pagination/badge/date)와
- * `guidance.mjs`·`help.mjs`가 아직 PENDING_MIGRATION이라 L1·L4 머지 전에는 성립하지 않는다.
- * 그 단정은 L1의 e2e probe(§9.4 (4))가 맡는다.
+ * "화면 전체에 한글 0건"은 **페이지 섹션에서는** 단정하지 않는다 — `ui.mjs`(pagination/badge/
+ * date)가 아직 PENDING_MIGRATION이라 L1 머지 전에는 성립하지 않는다. 그 단정은 L1의 e2e
+ * probe(§9.4 (4))가 맡는다. 카탈로그만 렌더하는 L4 섹션은 자기 범위에서 직접 단정한다.
  */
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
@@ -232,4 +232,103 @@ test('L3 ko: 같은 페이지가 ko 로케일에서 기존 문구를 그대로 �
   assert.ok(page.html.includes('브랜치 범위 9건 · 워크스페이스 범위 2건'));
   const act = await activity.render(ctx('tab=jobs', {jobs: {available: true, items: [], total: 0, limit: 40, offset: 0}}));
   assert.ok(act.html.includes('활동 · 추적') && act.html.includes('처리 작업이 없습니다'));
+});
+
+// ╭──────────────────────────────────────────────────────────────────────────╮
+// │ L4 · help + guidance (help.mjs / guidance.mjs)                          │
+// ╰──────────────────────────────────────────────────────────────────────────╯
+//
+// 이 두 파일은 페이지가 아니라 **카탈로그**다: 렌더러는 6개뿐이고 내용은 전부 사전에서 온다.
+// 그래서 단정도 두 갈래다 — 카탈로그 항목의 값 자체를 훑고, 렌더러 출력에 한글이 없는지 본다.
+//
+// L3 섹션과 달리 **한글 0건을 직접 단정한다.** help/guidance는 PENDING_MIGRATION에서 빠졌고
+// 두 모듈이 `ui.mjs`에서 쓰는 것은 `esc`·`icon`·`btn`·`kv`·`number`(문구 없음)뿐이다. 예외는
+// 문서 앵커 하나로, `docs/*.md`에 영문판이 없어 en UI도 같은 한국어 앵커로 보내고 대신 한 줄
+// 고지를 붙인다(설계 §6.4). 텍스트 허용 목록이 아니라 `doc-anchors.mjs`의 값을 빼는 **구조적
+// 면제**라서, 다른 곳에 한글이 새면 여전히 잡힌다.
+const help = require('../public/help.mjs');
+const guidance = require('../public/guidance.mjs');
+const {DOC_ANCHORS} = require('../public/i18n/doc-anchors.mjs');
+
+const HANGUL = /[가-힣ㄱ-ㅎㅏ-ㅣ]/;
+/** 누락 키는 en으로 떨어지지 않고 키 문자열 그대로 나온다(§2.2) — 그 모양을 찾는다. */
+const LEAKED_CATALOGUE_KEY = /\b(?:help|guidance|badge|common)\.[a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9_-]+)+/;
+const withoutAnchors = html => Object.values(DOC_ANCHORS).reduce((out, anchor) => out.split(anchor).join(''), String(html));
+const visibleText = html => withoutAnchors(html).replace(/<[^>]*>/g, ' ');
+const guidanceCtx = {href: (p, q = {}) => p + '?' + new URLSearchParams(q), bootstrap: {environment: {commands: true}}};
+
+/** 카탈로그 값 하나를 (a) 비어 있지 않은지 (b) 한글인지 (c) 키가 노출됐는지로 본다. */
+function catalogueProblems(entries) {
+  const problems = [];
+  for (const [where, value] of entries) {
+    if (typeof value !== 'string' || !value) { problems.push(`${where}: 값이 비었다`); continue; }
+    if (HANGUL.test(value)) problems.push(`${where}: 한글이 남았다 — ${value.slice(0, 40)}`);
+    if (LEAKED_CATALOGUE_KEY.test(value)) problems.push(`${where}: 미번역 키가 노출됐다 — ${value.slice(0, 60)}`);
+  }
+  return problems;
+}
+
+test('L4 en: 도움말 카탈로그 36항목과 용어집 17항목이 en으로 읽힌다', () => {
+  locale.useEn();
+  const entries = [];
+  for (const [key, entry] of help.ALL) entries.push([key + '.title', entry.title], [key + '.body', entry.body]);
+  for (const g of help.GLOSSARY) entries.push(['glossary:' + g.id + '.term', g.term], ['glossary:' + g.id + '.body', g.body]);
+  assert.deepEqual(catalogueProblems(entries), []);
+  assert.equal(help.ALL.length, 36, '도움말 항목 수가 바뀌었다');
+  assert.equal(help.GLOSSARY.length, 17);
+  // 모듈이 사전을 실제로 읽는지 — 게터가 아니라 굳은 값이면 여기서 어긋난다.
+  assert.equal(help.PAGES['/facts'].title, locale.en['help.page.facts.title']);
+  assert.equal(help.helpFor('header:nextAction').body, locale.en['help.header.nextAction.body']);
+  assert.equal(help.badgeHelp('dead'), locale.en['badge.dead.help']);
+});
+
+test('L4 en: 실패 분류 37개의 제목·원인·영향·다음 행동이 en으로 읽힌다', () => {
+  locale.useEn();
+  const entries = [];
+  for (const cls of [...guidance.CLASSES, guidance.unknownClass('boom')])
+    for (const field of ['title', 'cause', 'impact', 'next']) entries.push([`${cls.id}.${field}`, cls[field]]);
+  assert.deepEqual(catalogueProblems(entries), []);
+  assert.equal(guidance.CLASSES.length, 36, '실패 클래스 수가 바뀌었다');
+  assert.equal(guidance.guidanceFor('job-dead').title, locale.en['guidance.job-dead.title']);
+});
+
+test('L4 en: 안내 렌더러 출력에는 문서 앵커 말고 한글이 없다', () => {
+  locale.useEn();
+  const groups = guidance.attentionFromPipeline({
+    attention: {memoryJobsDead: 7, memoryJobsRetry: 2, terminal: {modelWorkBudgetsExhausted: 3}},
+    ontology: {parkedFacts: 4, indexRepair: {blocked: true, reason: 'write'}},
+    evidence: {factsWithoutLocalEvidence: 118},
+    derivedLaneSkips: {consecutive: 2},
+    quarantinedProjects: [{projectId: 'p'}],
+  });
+  const html = [
+    guidance.guidancePanel(guidance.guidanceFor('job-dead'), guidanceCtx),
+    guidance.guidancePanel(guidance.unknownClass('LLM boom'), guidanceCtx),
+    guidance.guidanceCell(guidance.guidanceFor('sync-export-failed'), guidanceCtx),
+    guidance.attentionCard(groups, guidanceCtx),
+  ].join('\n');
+  const text = visibleText(html);
+  assert.equal(HANGUL.test(text), false, '한글이 남았다: ' + (text.match(/.{0,30}[가-힣].{0,30}/) || [''])[0]);
+  assert.deepEqual(html.match(LEAKED_CATALOGUE_KEY) ?? [], [], '미번역 키가 화면에 노출됐다');
+  // 수량 라벨은 사전의 1슬롯 패턴이 어순까지 갖는다 — 타이포그래피 이어붙이기를 없앴다(§6.0).
+  assert.equal(groups.find(g => g.cls.id === 'job-dead').detail,
+    locale.en['guidance.attention.job-dead.detail'].replace('{count}', '7'));
+  assert.ok(html.includes(locale.en['guidance.attention.heading']));
+  assert.ok(html.includes(locale.en['guidance.kv.cause']));
+  assert.ok(html.includes(locale.en['guidance.action.recoverDeadWork']), '액션 라벨이 en 사전 값이 아니다');
+  assert.ok(html.includes(locale.en['guidance.ignorable.false']));
+  // 코어가 남긴 원문은 번역하지 않고 그대로 보여준다.
+  assert.ok(html.includes('LLM boom'), '알 수 없는 오류의 원문이 사라졌다');
+});
+
+test('L4: en에서는 문서가 한국어라는 고지를 붙이고 ko에서는 붙이지 않는다', () => {
+  locale.useEn();
+  assert.equal(help.docsNotice(), locale.en['help.docs.koreanOnly']);
+  assert.ok(help.docsNotice().length > 0, 'en 고지가 비었다');
+  assert.equal(HANGUL.test(help.docsNotice()), false);
+  locale.useKo();
+  assert.equal(help.docsNotice(), '', 'ko에서는 고지를 붙이지 않는다');
+  // ko 쪽 산문도 같은 사전에서 온다.
+  assert.equal(help.PAGES['/facts'].title, locale.ko['help.page.facts.title']);
+  assert.equal(guidance.guidanceFor('job-dead').next, locale.ko['guidance.job-dead.next']);
 });

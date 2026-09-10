@@ -57,8 +57,6 @@ export const PENDING_MIGRATION = [
   'ui/public/api.mjs',
   'ui/public/app.mjs',
   'ui/public/details.mjs',
-  'ui/public/guidance.mjs',
-  'ui/public/help.mjs',
   'ui/public/ui.mjs',
   'ui/public/pages/settings.mjs',
 ];
