@@ -27,6 +27,7 @@ import { getDbPath, getMemexHome } from "./paths.js";
 import { readExportStatus } from "./sync-export.js";
 import { readSyncConfig, resolveSyncDir } from "./sync-paths.js";
 import { getInjectLogPath } from "./inject-log.js";
+import { recallGateOverlayChecks } from "./recall-gate-overlay.js";
 import {
   missingRuntimeDependencies,
   RUNTIME_DEPENDENCIES,
@@ -1233,6 +1234,23 @@ export async function doctor(): Promise<DoctorReport> {
       name: "sync-export",
       status: "warn",
       detail: "unable to read sync export status",
+    });
+  }
+
+  // Issue #29 (0.7.0) — the recall-gate overlay's three checks. The check
+  // FUNCTIONS live in src/recall-gate-overlay.ts so the overlay lane owns their
+  // wording and this file stays the single place that assembles the report.
+  //
+  // A quarantined pattern is a `fail`, not a `warn`: it is the operator's own
+  // rule silently switched off, which is exactly the "stopped quietly" class of
+  // bug doctor exists to surface.
+  try {
+    for (const check of await recallGateOverlayChecks()) checks.push(check);
+  } catch {
+    checks.push({
+      name: "recall-gate-overlay",
+      status: "warn",
+      detail: "unable to inspect the recall-gate overlay",
     });
   }
 

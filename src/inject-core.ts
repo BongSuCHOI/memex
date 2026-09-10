@@ -54,6 +54,13 @@ import {
   renderMemoryBundle,
   type BundleSection,
 } from "./memory-bundle.js";
+import { loadRecallGateOverlay, toUserIntentHits } from "./recall-gate-overlay.js";
+import {
+  EMPTY_USER_PATTERN_HITS,
+  oneShotMatcher,
+  type MatcherHandle,
+  type UserPatternHits,
+} from "./overlay-matcher.js";
 
 type SearchDb = ReturnType<typeof getSearchDb>;
 
@@ -144,6 +151,15 @@ export interface InjectOptions {
    * fast-path decision and its outcome are one record.
    */
   daemon?: InjectLogEntry["daemon"];
+  /**
+   * Issue #29: the time-boxed worker that evaluates USER overlay regexes.
+   *
+   * The warm daemon owns one resident matcher for its whole lifetime; the cold
+   * fallback hands in a one-shot. When it is absent and an overlay actually has
+   * patterns, a one-shot is created and disposed here. With no overlay patterns
+   * nothing is created at all, so an installation without an overlay pays zero.
+   */
+  matcher?: MatcherHandle;
 }
 
 function commitInjectionState(
@@ -163,6 +179,8 @@ function commitInjectionState(
     context?: string;
     /** False while stale-revision corrections are still being drained. */
     markProjectRevision: boolean;
+    /** Issue #29: `gate:<sha8>` of the overlay that decided this recall. */
+    gateOverlayHash?: string | null;
   },
 ): string | null {
   let receiptId: string | null = null;
@@ -403,6 +421,29 @@ export async function computeInjectContext(
       return calls;
     };
 
+    // Issue #29 — the USER overlay, evaluated before the gate runs.
+    //
+    // Two statSync calls against a ~150 ms warm budget, and the matcher is only
+    // touched when the overlay actually has patterns: no overlay means no worker,
+    // no postMessage, and a gate label byte-identical to 0.6.9.
+    const gateOverlay = loadRecallGateOverlay();
+    let userPatternHits: UserPatternHits = EMPTY_USER_PATTERN_HITS;
+    if (gateOverlay.patterns.length > 0) {
+      const ownMatcher = options.matcher ? null : oneShotMatcher();
+      try {
+        userPatternHits = await (options.matcher ?? ownMatcher!).match({
+          text: userPrompt,
+          patterns: gateOverlay.patterns,
+          overlay: "recall-gate",
+          surface: via,
+        });
+      } finally {
+        ownMatcher?.dispose();
+      }
+    }
+    // Lexicons are plain words, never regexes: they stay on this thread.
+    const userHits = toUserIntentHits(gateOverlay, userPatternHits);
+
     let embedding: number[] | null = null;
     let decision: RecallGateDecision = decideRecall({
       prompt: userPrompt,
@@ -423,6 +464,7 @@ export async function computeInjectContext(
       residentRevisionStale: revisionCorrections.length > 0,
       hotEvidencePending: hot.length > 0,
       config: options.gateConfig,
+      userHits,
     });
     if (options.gate === false) {
       decision = { ...decision, action: "retrieve", triggers: ["safety_refresh"], skipReason: null };
@@ -466,6 +508,38 @@ export async function computeInjectContext(
         decision = { ...decision, action: "retrieve", triggers: [...decision.triggers, "no_topic_embedding"], skipReason: null };
       }
     }
+    /**
+     * Gate label suffixes (§2.5.4). With no overlay BOTH are empty strings, so
+     * the label is byte-identical to 0.6.9 — `test/inject-core-gate-overlay.test.ts`
+     * guards that.
+     *
+     * `unavailable` is checked FIRST: the design's cost table says a queue or
+     * startup timeout must read `overlay_unavailable`, and that case carries both
+     * flags (it did time out, and nothing ran). A plain `+overlay_timeout` then
+     * means exactly one thing — a pattern burned the budget and was quarantined.
+     */
+    const overlaySuffix = gateOverlay.hash ? `@${gateOverlay.hash}` : "";
+    const workerSuffix = userPatternHits.unavailable
+      ? "+overlay_unavailable"
+      : userPatternHits.timedOut
+        ? "+overlay_timeout"
+        : "";
+    const overlayNote: Pick<InjectLogEntry, "gate_overlay" | "gate_overlay_worker"> =
+      gateOverlay.patterns.length === 0 && !gateOverlay.hash
+        ? {}
+        : {
+            ...(gateOverlay.hash ? { gate_overlay: gateOverlay.hash } : {}),
+            ...(gateOverlay.patterns.length > 0
+              ? {
+                  gate_overlay_worker: userPatternHits.timedOut && !userPatternHits.unavailable
+                    ? ("timeout" as const)
+                    : userPatternHits.unavailable
+                      ? ("unavailable" as const)
+                      : ("ok" as const),
+                }
+              : {}),
+          };
+
     if (decision.action === "skip") {
       noteSkippedPrompt(db, sessionId, decision.substantive, now);
       sampleTelemetry(db, {
@@ -477,11 +551,12 @@ export async function computeInjectContext(
         status: "skipped",
         project,
         prompt_len: userPrompt.length,
-        gate: `skip:${decision.skipReason}`,
+        gate: `skip:${decision.skipReason}${workerSuffix}${overlaySuffix}`,
         embedding_calls: calls,
         duration_ms: Date.now() - t0,
         via,
         ...daemonNote,
+        ...overlayNote,
       });
       return "";
     }
@@ -493,7 +568,7 @@ export async function computeInjectContext(
     const needsVector = options.gate === false || decision.intents.memory ||
       !(decision.intents.acknowledgement || decision.intents.continuation);
     if (needsVector && !embedding && !embeddingUnavailable) embedding = await embedOnce();
-    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}`;
+    const gateLabel = `retrieve:${decision.triggers.join("+") || "forced"}${embeddingUnavailable ? "+embeddings_unavailable" : ""}${workerSuffix}${overlaySuffix}`;
     sampleTelemetry(db, {
       metric: "retrieval_execute_count", value: 1, projectId: sessionScope.projectId, sessionId,
       dims: { triggers: decision.triggers, vector: needsVector },
@@ -817,6 +892,7 @@ export async function computeInjectContext(
           projectMemoryRevision: currentProjectRevision, revisions: emittedRevisions,
           context: rendered.text,
           markProjectRevision: !staleProjectMemory || correctionsComplete,
+          gateOverlayHash: gateOverlay.hash,
         });
       } else if (staleProjectMemory && correctionsComplete &&
           !markSessionProjectRevisionSeen(db, sessionId, currentProjectRevision)) {
@@ -863,6 +939,7 @@ export async function computeInjectContext(
         duration_ms: Date.now() - t0,
         via,
         ...daemonNote,
+        ...overlayNote,
       });
       if (dedupedCount > 0) {
         sampleTelemetry(db, { metric: "repeated_context_turns", value: 1, projectId: sessionScope.projectId, sessionId });
@@ -908,6 +985,7 @@ export async function computeInjectContext(
       duration_ms: Date.now() - t0,
       via,
       ...daemonNote,
+      ...overlayNote,
     });
     return block;
   } catch (error) {

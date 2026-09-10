@@ -23,22 +23,199 @@ const STOPWORDS = new Set([
     "은", "는", "이", "가", "을", "를", "에", "의", "로", "으로", "와", "과", "도", "좀", "그", "저", "것", "수",
     "해", "해줘", "하자", "해요", "합니다", "있어", "없어", "그리고", "또", "그럼",
 ]);
-const ACK_PATTERNS = [
-    /^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$/i,
-    /^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$/,
+const MEMORY_TERMS = [
+    ["memory.en.why", "\\bwhy\\b"],
+    ["memory.en.when", "\\bwhen\\b"],
+    ["memory.en.history", "\\bhistory\\b"],
+    ["memory.en.source", "\\bsource\\b"],
+    ["memory.en.previous", "\\bprevious(ly)?\\b"],
+    ["memory.en.before", "\\bbefore\\b"],
+    ["memory.en.earlier", "\\bearlier\\b"],
+    ["memory.en.repeat", "\\brepeat(ed|ing)?\\b"],
+    ["memory.en.again", "\\bagain\\b"],
+    ["memory.en.remember", "\\bremember\\b"],
+    ["memory.en.recall", "\\brecall\\b"],
+    ["memory.en.what-did-we", "\\bwhat did we\\b"],
+    ["memory.en.what-was", "\\bwhat was\\b"],
+    ["memory.en.how-did", "\\bhow did\\b"],
+    ["memory.en.where-did", "\\bwhere did\\b"],
+    ["memory.en.origin", "\\borigin\\b"],
+    ["memory.en.decided", "\\bdecided\\b"],
+    ["memory.kr.왜", "왜"],
+    ["memory.kr.언제", "언제"],
+    ["memory.kr.이전", "이전"],
+    ["memory.kr.예전", "예전"],
+    ["memory.kr.과거", "과거"],
+    ["memory.kr.전에", "전에"],
+    ["memory.kr.기록", "기록"],
+    ["memory.kr.출처", "출처"],
+    ["memory.kr.근거", "근거"],
+    ["memory.kr.이유", "이유"],
+    ["memory.kr.히스토리", "히스토리"],
+    ["memory.en.history-plain", "history"],
+    ["memory.kr.반복", "반복"],
+    ["memory.kr.또", "또\\s*(그|이)"],
+    ["memory.kr.기억", "기억"],
+    ["memory.kr.다시", "다시"],
+    ["memory.kr.했었", "했었"],
+    ["memory.kr.였었", "였었"],
+    ["memory.kr.결정했", "결정했"],
+    ["memory.kr.정했", "정했"],
+    ["memory.kr.바꿨", "바꿨"],
+    ["memory.kr.변경했", "변경했"],
+    ["memory.kr.어디서", "어디서"],
 ];
-const CONTINUE_PATTERNS = [
-    /^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$/i,
-    /^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$/,
-    /^(가자|고|해줘|해봐|ㄱ)[.! ~]*$/,
+const TRACE_TERMS = [
+    ["trace.en.why", "\\bwhy\\b"],
+    ["trace.en.rationale", "\\brationale\\b"],
+    ["trace.en.reason", "\\breason\\b"],
+    ["trace.en.related", "\\brelated\\b"],
+    ["trace.en.depend", "\\bdepend"],
+    ["trace.en.contradict", "\\bcontradict"],
+    ["trace.en.conflict", "\\bconflict"],
+    ["trace.en.architecture", "\\barchitecture\\b"],
+    ["trace.en.trace", "\\btrace\\b"],
+    ["trace.en.history", "\\bhistory\\b"],
+    ["trace.en.source", "\\bsource\\b"],
+    ["trace.kr.왜", "왜"],
+    ["trace.kr.이유", "이유"],
+    ["trace.kr.근거", "근거"],
+    ["trace.kr.관련", "관련"],
+    ["trace.kr.의존", "의존"],
+    ["trace.kr.모순", "모순"],
+    ["trace.kr.충돌", "충돌"],
+    ["trace.kr.아키텍처", "아키텍처"],
+    ["trace.kr.추적", "추적"],
+    ["trace.kr.출처", "출처"],
+    ["trace.kr.히스토리", "히스토리"],
+    ["trace.en.history-plain", "history"],
 ];
-const MINOR_CORRECTION_PATTERNS = [
-    /^(no|not that|the other one|wrong one|other|instead|actually|rather)\b/i,
-    /^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)/,
+const HIGH_IMPACT_TERMS = [
+    ["high.en.decide", "\\bdecide\\b"],
+    ["high.en.decision", "\\bdecision\\b"],
+    ["high.en.switch", "\\bswitch(ing)?\\b"],
+    ["high.en.migrate", "\\bmigrat(e|ion)\\b"],
+    ["high.en.rollback", "\\brollback\\b"],
+    ["high.en.roll-back", "\\broll back\\b"],
+    ["high.en.revert", "\\brevert\\b"],
+    ["high.en.replace", "\\breplace\\b"],
+    ["high.en.drop", "\\bdrop\\b"],
+    ["high.en.remove", "\\bremove\\b"],
+    ["high.en.deprecate", "\\bdeprecate\\b"],
+    ["high.en.change-the", "\\bchange the\\b"],
+    ["high.en.adopt", "\\badopt\\b"],
+    ["high.en.move-to", "\\bmove to\\b"],
+    ["high.kr.결정", "결정"],
+    ["high.kr.전환", "전환"],
+    ["high.kr.마이그레이션", "마이그레이션"],
+    ["high.kr.롤백", "롤백"],
+    ["high.kr.되돌", "되돌"],
+    ["high.kr.교체", "교체"],
+    ["high.kr.제거", "제거"],
+    ["high.kr.삭제", "삭제"],
+    ["high.kr.바꾸", "바꾸"],
+    ["high.kr.변경", "변경"],
+    ["high.kr.도입", "도입"],
+    ["high.kr.채택", "채택"],
+    ["high.kr.옮기", "옮기"],
 ];
-const MEMORY_INTENT = /(\bwhy\b|\bwhen\b|\bhistory\b|\bsource\b|\bprevious(ly)?\b|\bbefore\b|\bearlier\b|\brepeat(ed|ing)?\b|\bagain\b|\bremember\b|\brecall\b|\bwhat did we\b|\bwhat was\b|\bhow did\b|\bwhere did\b|\borigin\b|\bdecided\b|왜|언제|이전|예전|과거|전에|기록|출처|근거|이유|히스토리|history|반복|또\s*(그|이)|기억|다시|했었|였었|결정했|정했|바꿨|변경했|어디서)/i;
-const TRACE_INTENT = /(\bwhy\b|\brationale\b|\breason\b|\brelated\b|\bdepend|\bcontradict|\bconflict|\barchitecture\b|\btrace\b|\bhistory\b|\bsource\b|왜|이유|근거|관련|의존|모순|충돌|아키텍처|추적|출처|히스토리|history)/i;
-const HIGH_IMPACT_INTENT = /(\bdecide\b|\bdecision\b|\bswitch(ing)?\b|\bmigrat(e|ion)\b|\brollback\b|\broll back\b|\brevert\b|\breplace\b|\bdrop\b|\bremove\b|\bdeprecate\b|\bchange the\b|\badopt\b|\bmove to\b|결정|전환|마이그레이션|롤백|되돌|교체|제거|삭제|바꾸|변경|도입|채택|옮기)/i;
+/** Standalone patterns: `[id, source, flags]`, in their original array order. */
+const WHOLE_PATTERNS = [
+    [
+        "ack.en.1",
+        "acknowledgement",
+        "^(ok|okay|k|yes|yep|yeah|no|nope|sure|thanks|thank you|thx|ty|cool|great|nice|good|got it|understood|done|fine|alright|perfect|sounds good)[.! ]*$",
+        "i",
+    ],
+    [
+        "ack.kr.1",
+        "acknowledgement",
+        "^(응|네|넵|넹|예|아니|아니요|고마워|고마워요|고맙습니다|감사|감사합니다|감사해요|좋아|좋아요|좋네|좋습니다|알겠어|알겠어요|알겠습니다|오케이|ㅇㅋ|ㅇㅇ|ㄱㄱ|굿|맞아|맞아요|그래|그래요|확인)[.! ~]*$",
+        "",
+    ],
+    [
+        "continue.en.1",
+        "continuation",
+        "^(continue|go on|keep going|next|proceed|carry on|go ahead|resume)[.! ]*$",
+        "i",
+    ],
+    [
+        "continue.kr.1",
+        "continuation",
+        "^(계속|진행|다음|이어서|이어)(해|하자|해줘|해줘요|해주세요|하세요|할게|할게요|해요|해봐|합시다|가자|으로 넘어가자|으로 넘어가요)?[.! ~]*$",
+        "",
+    ],
+    ["continue.kr.2", "continuation", "^(가자|고|해줘|해봐|ㄱ)[.! ~]*$", ""],
+    [
+        "minor.en.1",
+        "minorCorrection",
+        "^(no|not that|the other one|wrong one|other|instead|actually|rather)\\b",
+        "i",
+    ],
+    ["minor.kr.1", "minorCorrection", "^(아니|그거 말고|다른 거|다른거|말고|대신|그게 아니라)", ""],
+];
+function alternativeTerms(intent, terms) {
+    return terms.map(([id, source]) => ({ id, intent, source, flags: "i", form: "alternative" }));
+}
+export const BUILTIN_GATE_PATTERNS = Object.freeze([
+    ...alternativeTerms("memory", MEMORY_TERMS),
+    ...alternativeTerms("trace", TRACE_TERMS),
+    ...alternativeTerms("highImpact", HIGH_IMPACT_TERMS),
+    ...WHOLE_PATTERNS.map(([id, intent, source, flags]) => ({
+        id,
+        intent,
+        source,
+        flags,
+        form: "whole",
+    })),
+]);
+/**
+ * Compose one intent's ACTIVE alternation branches back into a single regex.
+ *
+ * The wrapping parentheses are load-bearing: the v0.6.9 literals are
+ * `/(a|b|c)/i`, and the golden test compares `source` byte-for-byte. With every
+ * branch disabled the answer is `null` (never fires) — an empty group `()`
+ * would match the empty string and fire on EVERY prompt.
+ */
+function composeAlternation(terms) {
+    if (terms.length === 0)
+        return null;
+    return new RegExp(`(${terms.map((term) => term.source).join("|")})`, "i");
+}
+function buildComposed(disabled) {
+    const active = BUILTIN_GATE_PATTERNS.filter((pattern) => !disabled.has(pattern.id));
+    const alternatives = (intent) => active.filter((pattern) => pattern.intent === intent && pattern.form === "alternative");
+    const wholes = (intent) => active
+        .filter((pattern) => pattern.intent === intent && pattern.form === "whole")
+        .map((pattern) => ({ id: pattern.id, re: new RegExp(pattern.source, pattern.flags) }));
+    return {
+        memory: composeAlternation(alternatives("memory")),
+        trace: composeAlternation(alternatives("trace")),
+        highImpact: composeAlternation(alternatives("highImpact")),
+        acknowledgement: wholes("acknowledgement"),
+        continuation: wholes("continuation"),
+        minorCorrection: wholes("minorCorrection"),
+    };
+}
+const DEFAULT_COMPOSED = buildComposed(new Set());
+/** Recomposition is only ever over the TRUSTED built-in catalogue, so it is
+ * cheap and safe to cache by the disabled-id set. Bounded to keep a pathological
+ * overlay from growing an unbounded map in the long-lived daemon. */
+const composedCache = new Map();
+const COMPOSED_CACHE_MAX = 8;
+export function composeGatePatterns(disabledIds = []) {
+    if (disabledIds.length === 0)
+        return DEFAULT_COMPOSED;
+    const key = [...new Set(disabledIds)].sort().join(" ");
+    const cached = composedCache.get(key);
+    if (cached)
+        return cached;
+    const built = buildComposed(new Set(disabledIds));
+    if (composedCache.size >= COMPOSED_CACHE_MAX)
+        composedCache.clear();
+    composedCache.set(key, built);
+    return built;
+}
 // Korean particles and common verb endings attached to a stem. Stripping one
 // trailing suffix keeps "클라이언트를"/"클라이언트" and "옵션도"/"옵션" on the
 // same fingerprint token; the stem must keep at least two characters.
@@ -70,40 +247,150 @@ export function jaccard(a, b) {
             overlap++;
     return overlap / (left.size + right.size - overlap);
 }
-const ACK_WORDS = new Set([
-    "ok", "okay", "k", "yes", "yep", "yeah", "no", "nope", "sure", "thanks", "thank", "thx", "ty", "cool",
-    "great", "nice", "good", "got", "understood", "done", "fine", "alright", "perfect", "right", "awesome",
-    "응", "네", "넵", "넹", "예", "아니", "아니요", "고마워", "고마워요", "고맙습니다", "감사", "감사합니다", "감사해요",
-    "좋아", "좋아요", "좋네", "좋습니다", "알겠어", "알겠어요", "알겠습니다", "오케이", "ㅇㅋ", "ㅇㅇ", "굿", "맞아", "맞아요",
-    "그래", "그래요", "확인",
-]);
-const CONTINUE_WORDS = new Set([
-    "continue", "go", "on", "keep", "going", "next", "proceed", "carry", "ahead", "resume",
-    "계속", "계속해", "계속해줘", "계속해줘요", "계속해주세요", "계속하자", "진행", "진행해", "진행해줘", "진행해주세요", "진행할게",
-    "진행할게요", "다음", "다음으로", "넘어가자", "넘어가요", "넘어가", "이어서", "이어", "가자", "해줘", "해주세요", "해봐", "ㄱㄱ",
-]);
-/** Words that carry no topic on their own; they never make a prompt substantive. */
-const FILLER_WORDS = new Set([
-    "you", "it", "that", "this", "the", "and", "then", "now", "please", "let", "lets", "s", "do", "for", "with",
-    "sounds", "looks", "work", "job", "well", "really", "very", "much", "so", "all", "too",
-    "저", "그", "좀", "요", "네요", "입니다", "이제", "그럼", "그러면", "일단",
-]);
-export function detectPromptIntents(prompt) {
+/**
+ * Built-in lexicons. The WORD ITSELF is the id — there is nothing to compose and
+ * nothing to execute, so the overlay's word add/disable is applied on the main
+ * thread (§2.5). `new Set(array)` preserves the literal order, so iteration
+ * order is unchanged from 0.6.9.
+ */
+export const BUILTIN_GATE_WORDS = Object.freeze({
+    ack: Object.freeze([
+        "ok", "okay", "k", "yes", "yep", "yeah", "no", "nope", "sure", "thanks", "thank", "thx", "ty", "cool",
+        "great", "nice", "good", "got", "understood", "done", "fine", "alright", "perfect", "right", "awesome",
+        "응", "네", "넵", "넹", "예", "아니", "아니요", "고마워", "고마워요", "고맙습니다", "감사", "감사합니다", "감사해요",
+        "좋아", "좋아요", "좋네", "좋습니다", "알겠어", "알겠어요", "알겠습니다", "오케이", "ㅇㅋ", "ㅇㅇ", "굿", "맞아", "맞아요",
+        "그래", "그래요", "확인",
+    ]),
+    continue: Object.freeze([
+        "continue", "go", "on", "keep", "going", "next", "proceed", "carry", "ahead", "resume",
+        "계속", "계속해", "계속해줘", "계속해줘요", "계속해주세요", "계속하자", "진행", "진행해", "진행해줘", "진행해주세요", "진행할게",
+        "진행할게요", "다음", "다음으로", "넘어가자", "넘어가요", "넘어가", "이어서", "이어", "가자", "해줘", "해주세요", "해봐", "ㄱㄱ",
+    ]),
+    /** Words that carry no topic on their own; they never make a prompt substantive. */
+    filler: Object.freeze([
+        "you", "it", "that", "this", "the", "and", "then", "now", "please", "let", "lets", "s", "do", "for", "with",
+        "sounds", "looks", "work", "job", "well", "really", "very", "much", "so", "all", "too",
+        "저", "그", "좀", "요", "네요", "입니다", "이제", "그럼", "그러면", "일단",
+    ]),
+});
+const ACK_WORDS = new Set(BUILTIN_GATE_WORDS.ack);
+const CONTINUE_WORDS = new Set(BUILTIN_GATE_WORDS.continue);
+const FILLER_WORDS = new Set(BUILTIN_GATE_WORDS.filler);
+const DEFAULT_WORD_SETS = Object.freeze({
+    ack: ACK_WORDS,
+    continue: CONTINUE_WORDS,
+    filler: FILLER_WORDS,
+});
+function effectiveWords(hits) {
+    const words = hits?.words;
+    if (!words)
+        return DEFAULT_WORD_SETS;
+    const resolve = (lexicon) => {
+        const add = words.add?.[lexicon] ?? [];
+        const disable = words.disable?.[lexicon] ?? [];
+        if (add.length === 0 && disable.length === 0)
+            return DEFAULT_WORD_SETS[lexicon];
+        const next = new Set(DEFAULT_WORD_SETS[lexicon]);
+        for (const word of disable)
+            next.delete(word);
+        for (const word of add)
+            next.add(word);
+        return next;
+    };
+    return { ack: resolve("ack"), continue: resolve("continue"), filler: resolve("filler") };
+}
+function emptyMatched() {
+    return {
+        memory: [], trace: [], highImpact: [], acknowledgement: [], continuation: [], minorCorrection: [],
+    };
+}
+/**
+ * Per-term explanation. Built-in terms are re-tested INDIVIDUALLY here — they
+ * are a trusted, fixed set, so running them on the main thread is the same
+ * trust decision 0.6.9 already made. User patterns are never executed: their
+ * ids arrive precomputed from the matcher worker.
+ */
+function explain(prompt, hits) {
     const trimmed = prompt.trim();
+    const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+    const disabled = new Set(hits?.disabledPatterns ?? []);
+    const words = effectiveWords(hits);
     const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
     const allAck = rawTokens.length > 0 &&
-        rawTokens.every((token) => ACK_WORDS.has(token) || CONTINUE_WORDS.has(token) || FILLER_WORDS.has(token));
-    const acknowledgement = ACK_PATTERNS.some((pattern) => pattern.test(trimmed)) ||
-        (allAck && rawTokens.some((token) => ACK_WORDS.has(token)));
-    const continuation = CONTINUE_PATTERNS.some((pattern) => pattern.test(trimmed)) ||
-        (allAck && !acknowledgement && rawTokens.some((token) => CONTINUE_WORDS.has(token)));
+        rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+    const matched = emptyMatched();
+    const userIds = (intent) => hits?.intents?.[intent] ?? [];
+    for (const intent of ["memory", "trace", "highImpact", "acknowledgement", "continuation", "minorCorrection"]) {
+        for (const id of userIds(intent))
+            matched[intent].push({ id, origin: "user" });
+    }
+    const ackPatternHit = composed.acknowledgement.filter(({ re }) => re.test(trimmed));
+    const continuePatternHit = composed.continuation.filter(({ re }) => re.test(trimmed));
+    for (const hit of ackPatternHit)
+        matched.acknowledgement.unshift({ id: hit.id, origin: "builtin" });
+    for (const hit of continuePatternHit)
+        matched.continuation.unshift({ id: hit.id, origin: "builtin" });
+    const acknowledgement = ackPatternHit.length > 0 || userIds("acknowledgement").length > 0 ||
+        (allAck && rawTokens.some((token) => words.ack.has(token)));
+    const continuation = continuePatternHit.length > 0 || userIds("continuation").length > 0 ||
+        (allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token)));
+    for (const intent of ["memory", "trace", "highImpact"]) {
+        const composedRe = composed[intent];
+        if (!composedRe || !composedRe.test(trimmed))
+            continue;
+        for (const term of BUILTIN_GATE_PATTERNS) {
+            if (term.intent !== intent || term.form !== "alternative" || disabled.has(term.id))
+                continue;
+            if (new RegExp(term.source, term.flags).test(trimmed)) {
+                matched[intent].unshift({ id: term.id, origin: "builtin" });
+            }
+        }
+    }
     return {
-        memory: MEMORY_INTENT.test(trimmed),
-        trace: TRACE_INTENT.test(trimmed),
-        highImpact: HIGH_IMPACT_INTENT.test(trimmed),
-        acknowledgement,
-        continuation,
+        intents: {
+            memory: matched.memory.length > 0,
+            trace: matched.trace.length > 0,
+            highImpact: matched.highImpact.length > 0,
+            acknowledgement,
+            continuation,
+        },
+        matched,
     };
+}
+export function detectPromptIntents(prompt, hits) {
+    const trimmed = prompt.trim();
+    // Fast path — no overlay at all: byte-for-byte the 0.6.9 procedure, with the
+    // composed regexes standing in for the literals and no per-term re-test.
+    if (!hits || (hits.disabledPatterns?.length ?? 0) === 0) {
+        const composed = DEFAULT_COMPOSED;
+        const words = effectiveWords(hits);
+        const rawTokens = trimmed.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
+        const allAck = rawTokens.length > 0 &&
+            rawTokens.every((token) => words.ack.has(token) || words.continue.has(token) || words.filler.has(token));
+        const userAck = hits?.intents?.acknowledgement?.length ?? 0;
+        const userContinue = hits?.intents?.continuation?.length ?? 0;
+        const acknowledgement = composed.acknowledgement.some(({ re }) => re.test(trimmed)) || userAck > 0 ||
+            (allAck && rawTokens.some((token) => words.ack.has(token)));
+        const continuation = composed.continuation.some(({ re }) => re.test(trimmed)) || userContinue > 0 ||
+            (allAck && !acknowledgement && rawTokens.some((token) => words.continue.has(token)));
+        return {
+            memory: (composed.memory?.test(trimmed) ?? false) || (hits?.intents?.memory?.length ?? 0) > 0,
+            trace: (composed.trace?.test(trimmed) ?? false) || (hits?.intents?.trace?.length ?? 0) > 0,
+            highImpact: (composed.highImpact?.test(trimmed) ?? false) || (hits?.intents?.highImpact?.length ?? 0) > 0,
+            acknowledgement,
+            continuation,
+        };
+    }
+    return explain(prompt, hits).intents;
+}
+export function explainPromptIntents(prompt, hits) {
+    return explain(prompt, hits);
+}
+/** Minor-correction patterns, with the overlay's disables applied. */
+function minorCorrectionHit(prompt, hits) {
+    const composed = composeGatePatterns(hits?.disabledPatterns ?? []);
+    return composed.minorCorrection.some(({ re }) => re.test(prompt)) ||
+        (hits?.intents?.minorCorrection?.length ?? 0) > 0;
 }
 export function cosineSimilarity(a, b) {
     let dot = 0;
@@ -132,7 +419,7 @@ export function cosineSimilarity(a, b) {
 export function decideRecall(input) {
     const config = { ...DEFAULT_RECALL_GATE_CONFIG, ...(input.config ?? {}) };
     const tokens = tokenizePrompt(input.prompt);
-    const intents = detectPromptIntents(input.prompt);
+    const intents = detectPromptIntents(input.prompt, input.userHits);
     const triggers = [];
     const fingerprint = input.state.topicFingerprint;
     const topicOverlap = fingerprint.length > 0 ? jaccard(tokens, fingerprint) : null;
@@ -164,7 +451,7 @@ export function decideRecall(input) {
     if ((intents.acknowledgement || intents.continuation) && tokens.length <= config.ackMaxTokens) {
         return base("skip", intents.acknowledgement ? "acknowledgement" : "continuation");
     }
-    if (!substantive && MINOR_CORRECTION_PATTERNS.some((pattern) => pattern.test(input.prompt.trim())) &&
+    if (!substantive && minorCorrectionHit(input.prompt.trim(), input.userHits) &&
         tokens.length <= config.ackMaxTokens + 2) {
         return base("skip", "minor_correction");
     }

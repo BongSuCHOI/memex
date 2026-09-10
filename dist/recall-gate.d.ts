@@ -68,6 +68,12 @@ export interface RecallGateInput {
     residentRevisionStale?: boolean;
     hotEvidencePending?: boolean;
     config?: Partial<RecallGateConfig>;
+    /**
+     * Issue #29: the user overlay's contribution, already evaluated elsewhere.
+     * Absent (the default, and every installation without an overlay file) means
+     * this gate behaves exactly as it did in 0.6.9.
+     */
+    userHits?: UserIntentHits;
 }
 export interface RecallGateDecision {
     action: "retrieve" | "skip" | "ambiguous";
@@ -79,9 +85,89 @@ export interface RecallGateDecision {
     /** Jaccard of the prompt tokens against the topic fingerprint (null when no fingerprint). */
     topicOverlap: number | null;
 }
+/**
+ * Built-in gate catalogue (issue #29, 0.7.0) — a BEHAVIOUR-PRESERVING refactor.
+ *
+ * Until 0.6.9 the three intent detectors were single giant alternations, which
+ * made two things impossible: turning ONE term off, and saying which term made
+ * the gate fire. Both are the whole point of a user overlay, so the literals
+ * are now id-bearing term lists that are COMPOSED back into the same regex.
+ *
+ * `test/recall-gate-catalog.test.ts` holds the v0.6.9 literals verbatim and
+ * asserts the composed `source` is byte-identical to them. That golden is the
+ * only direct evidence that decomposing the alternation did not move a single
+ * gate verdict; keep it passing or the refactor has silently changed recall.
+ *
+ * `form`:
+ *  - `alternative` — one branch of a composed alternation (the intent regexes).
+ *  - `whole`       — a standalone regex that was already its own array element.
+ */
+export type GateIntent = "memory" | "trace" | "highImpact" | "acknowledgement" | "continuation" | "minorCorrection";
+export type GateLexicon = "ack" | "continue" | "filler";
+export interface BuiltinGatePattern {
+    /** Stable, user-facing id: `<prefix>.<lang>.<slug>`. Never renumbered. */
+    id: string;
+    intent: GateIntent;
+    source: string;
+    flags: string;
+    form: "alternative" | "whole";
+}
+/**
+ * Hits the caller precomputed for the USER's overlay patterns.
+ *
+ * `recall-gate.ts` is a pure, synchronous, fs-free module and it NEVER executes
+ * a user-authored regex: user patterns run only inside the time-boxed matcher
+ * worker (src/overlay-matcher.ts), and only the resulting ids arrive here.
+ */
+export interface UserIntentHits {
+    /** Overlay pattern ids that fired, per intent. */
+    intents: Partial<Record<GateIntent, readonly string[]>>;
+    /** Built-in catalogue ids the overlay disabled. */
+    disabledPatterns?: readonly string[];
+    /** Lexicon add/disable from the overlay (plain words — no regex involved). */
+    words?: {
+        add?: Partial<Record<GateLexicon, readonly string[]>>;
+        disable?: Partial<Record<GateLexicon, readonly string[]>>;
+    };
+}
+export declare const BUILTIN_GATE_PATTERNS: readonly BuiltinGatePattern[];
+export interface ComposedGatePatterns {
+    memory: RegExp | null;
+    trace: RegExp | null;
+    highImpact: RegExp | null;
+    acknowledgement: Array<{
+        id: string;
+        re: RegExp;
+    }>;
+    continuation: Array<{
+        id: string;
+        re: RegExp;
+    }>;
+    minorCorrection: Array<{
+        id: string;
+        re: RegExp;
+    }>;
+}
+export declare function composeGatePatterns(disabledIds?: readonly string[]): ComposedGatePatterns;
 export declare function tokenizePrompt(text: string): string[];
 export declare function jaccard(a: Iterable<string>, b: Iterable<string>): number;
-export declare function detectPromptIntents(prompt: string): PromptIntents;
+/**
+ * Built-in lexicons. The WORD ITSELF is the id — there is nothing to compose and
+ * nothing to execute, so the overlay's word add/disable is applied on the main
+ * thread (§2.5). `new Set(array)` preserves the literal order, so iteration
+ * order is unchanged from 0.6.9.
+ */
+export declare const BUILTIN_GATE_WORDS: Readonly<Record<GateLexicon, readonly string[]>>;
+/** Which catalogue/overlay ids fired, per intent — the basis of `memex gate test`. */
+export interface IntentExplanation {
+    intents: PromptIntents;
+    matched: Record<GateIntent, Array<{
+        id: string;
+        origin: "builtin" | "user";
+    }>>;
+}
+export declare function detectPromptIntents(prompt: string, hits?: UserIntentHits): PromptIntents;
+export declare function explainPromptIntents(prompt: string, hits?: UserIntentHits): IntentExplanation;
 export declare function cosineSimilarity(a: number[], b: number[]): number;
 /**
  * Cheap gate decision. Order matters: explicit memory intent is never skipped
