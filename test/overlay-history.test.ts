@@ -305,11 +305,15 @@ describe("quarantine clearing", () => {
       overlay: "recall-gate", pattern_id: "user.b", source_sha8: "bbbbbbbb",
       at: new Date().toISOString(), elapsed_ms: 50, input_chars: 10, surface: "daemon",
     });
-    expect(await clearQuarantine("user.a")).toEqual({ cleared: 1, ids: ["user.a"] });
+    // A dry run names the same rows and changes nothing.
+    expect(await clearQuarantine("user.a", { dryRun: true })).toEqual({ cleared: 1, ids: ["user.a"], dryRun: true });
+    expect(readQuarantine().map((entry) => entry.pattern_id)).toEqual(["user.a", "user.b"]);
+
+    expect(await clearQuarantine("user.a")).toEqual({ cleared: 1, ids: ["user.a"], dryRun: false });
     expect(readQuarantine().map((entry) => entry.pattern_id)).toEqual(["user.b"]);
-    expect(await clearQuarantine()).toEqual({ cleared: 1, ids: ["user.b"] });
+    expect(await clearQuarantine()).toEqual({ cleared: 1, ids: ["user.b"], dryRun: false });
     expect(readQuarantine()).toEqual([]);
-    expect(await clearQuarantine()).toEqual({ cleared: 0, ids: [] });
+    expect(await clearQuarantine()).toEqual({ cleared: 0, ids: [], dryRun: false });
     const audit = fs.readFileSync(path.join(root, "logs", "ui-audit.jsonl"), "utf8");
     expect(audit).toContain("gate.quarantine-clear");
   });
