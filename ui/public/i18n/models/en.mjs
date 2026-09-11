@@ -103,7 +103,7 @@ export default {
   'models.embedding.cache.present': '{size} in {files} file(s) · {dir}',
   'models.embedding.cache.absent': 'Not on this machine yet — run: memex deps warm ({dir})',
   'models.embedding.cache.stub': 'Stubbed (MEMEX_EMBEDDING_STUB=1) — no weights needed.',
-  'models.embedding.readOnly': 'Changing the embedding model rebuilds every vector, so it is read-only in this release and lands in 0.7.1.',
+  'models.embedding.readOnly': 'Changing the embedding model rebuilds every vector, so it is read-only for now. Switching lands in a later 0.7.x release (#118).',
 
   // ── 서버 오류 (`/api/v2/models`) ──────────────────────────────────────────
   'models.error.method_not_allowed': 'This endpoint answers GET and POST only.',

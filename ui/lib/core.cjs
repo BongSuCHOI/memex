@@ -473,7 +473,7 @@ class Core {
         model:row.model??null,reasoning:row.reasoning_effort??null,errorClass:row.error_class??null};
     }catch{return null;}
   }
-  /** 0.7.0의 임베딩은 읽기 전용이다. 측정하지 않은 차원을 주장하지 않는다(0.7.1). */
+  /** 임베딩은 아직 읽기 전용이다(전환은 #118). 측정하지 않은 차원을 주장하지 않는다. */
   async modelEmbeddingReport(){
     try{
       const cacheModule=await this.module('model-cache');
@@ -903,7 +903,7 @@ class Core {
   }
   close(){if(this.db){try{this.db.close();}catch{}this.db=null;}}
 }
-/** `/api/v2/models` 본문의 action. 0.7.1이 preview-embedding·set-embedding을 더한다. */
+/** `/api/v2/models` 본문의 action. preview-embedding·set-embedding은 #118(이후 0.7.x)이다. */
 Core.MODEL_ACTIONS=['status','set-llm','test','reset'];
 /** `/api/v2/overlays` 본문의 action (§4.1). 하위 경로는 만들지 않는다 — sync·models와 같은 규칙. */
 Core.OVERLAY_ACTIONS=['status','validate','test','simulate','patch','set','reset','rollback','quarantine-clear'];

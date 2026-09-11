@@ -102,7 +102,7 @@ export default {
   'models.embedding.cache.present': '{files}개 파일 · {size} · {dir}',
   'models.embedding.cache.absent': '이 기기에 아직 없습니다 — 실행: memex deps warm ({dir})',
   'models.embedding.cache.stub': '스텁 모드(MEMEX_EMBEDDING_STUB=1) — 가중치가 필요 없습니다.',
-  'models.embedding.readOnly': '임베딩 모델을 바꾸면 모든 벡터를 다시 만들어야 하므로 이번 릴리즈에서는 읽기 전용이며, 변경은 0.7.1에서 제공됩니다.',
+  'models.embedding.readOnly': '임베딩 모델을 바꾸면 모든 벡터를 다시 만들어야 하므로 지금은 읽기 전용입니다. 전환은 이후 0.7.x 릴리스(#118) 예정입니다.',
 
   // ── 서버 오류 (`/api/v2/models`) ──────────────────────────────────────────
   'models.error.method_not_allowed': '이 엔드포인트는 GET과 POST만 받습니다.',
