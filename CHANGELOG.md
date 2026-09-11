@@ -2,6 +2,41 @@
 
 All notable changes to Memex are documented here. Dates use Asia/Seoul.
 
+## 0.7.2 - 2026-09-11
+
+Hotfixes for the seven findings of the post-release review of 0.7.1 (b6af142..v0.7.1),
+each verified and reproduced before it was fixed.
+
+### Extraction-rules overlay
+
+- The `never_extract` check now runs on the classifier note exactly as it is
+  persisted — the `join("\n")` of the notes as well as each note — so a pattern
+  that only matches across the note boundary can no longer reach the Chronicle. (#30)
+
+### Overlay locks and quarantine
+
+- Reclaiming an abandoned overlay lock is serialized through a `<lock>.reclaim`
+  mutex (atomic create, pid liveness, 2 s TTL): only its holder re-checks and
+  unlinks, so a writer that acquired the lock between the re-check and the unlink
+  is never stolen from. (#29)
+- The quarantine file's read-merge-rename runs under its own `quarantine.json.lock`
+  with the stamp compare-and-swap kept as a backstop, and in-memory quarantine
+  rows mirror the file once a write succeeds: a `memex gate quarantine clear` from
+  another process is honoured, and a cleared pattern is not written back. (#29)
+- `memex gate quarantine clear` honours `--dry-run` (prints what it would clear
+  and writes nothing). It takes no `--expect-revision` — the quarantine file is
+  system state, not the overlay document — and the docs now say so. (#29)
+
+### Documentation
+
+- GUIDE.md and WEBUI-WORKSPACE.md now say that `memex status`, the overview
+  attention card and the jobs table show every hold family, and that the
+  embedding-model switch is not in 0.7.1 but a later 0.7.x release (#118).
+
+### Upgrade
+
+Run `memex update` and restart Codex. No schema change.
+
 ## 0.7.1 - 2026-09-11
 
 Hotfix found while validating 0.7.0 on a live data root.
