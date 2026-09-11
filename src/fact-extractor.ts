@@ -2662,7 +2662,8 @@ const NO_FORBIDDEN: ForbiddenCandidates = {
  *   fact                      → facts.fact, Chronicle new_value / previous_value
  *   fact_kr                   → facts.fact_kr
  *   subject_key               → facts.subject_key, Chronicle subject_key
- *   classifier_notes          → fact_revisions.classifier_note
+ *   classifier_notes          → fact_revisions.classifier_note, as EACH note and
+ *                               as the `join("\n")` the insert actually writes
  *   change_context.*.text     → fact_revisions.problem / grounded_cause / rationale
  *   evidence[].supporting_span + change_context.*.supporting_span
  *                             → the evidence receipts' stored spans
@@ -2670,12 +2671,20 @@ const NO_FORBIDDEN: ForbiddenCandidates = {
 function factBlockCandidate(fact: ExtractedFact): BlockCandidate {
   const context = fact.change_context;
   const grounded = [context?.problem, context?.cause, context?.rationale];
+  const notes = fact.classifier_notes ?? [];
   return {
     factText: [
       fact.fact,
       fact.fact_kr ?? "",
       fact.subject_key ?? "",
-      ...(fact.classifier_notes ?? []),
+      ...notes,
+      // BOTH forms, because both meanings are real. The elements keep `/^SECRET$/`
+      // firing on a single note (a join alone turns that rule into a pass), and the
+      // join is THE STRING THAT IS PERSISTED: `classifier_note` is one column and
+      // the insert writes `classifier_notes.join("\n")`. A rule written against the
+      // stored text — `sk-live\s+\w+` spanning two notes — is visible nowhere else,
+      // so checking only the elements passed the check and stored what it forbids.
+      ...(notes.length > 1 ? [notes.join("\n")] : []),
       ...grounded.map((ref) => ref?.text ?? ""),
     ],
     evidence: [
