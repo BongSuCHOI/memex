@@ -19,6 +19,11 @@
  *    successful removal the loop gets one more acquisition attempt, so a single
  *    CLI invocation actually performs the write it was asked for. v3 ended the
  *    loop right after the delete and raised `OverlayLockedError` anyway.
+ *  - Reclaimers are serialized by `<lock>.reclaim`. The re-check and the `unlink`
+ *    that reclaims an abandoned lock are two syscalls, and the gap between them
+ *    is cross-process: a competitor that recovered and acquired in there had its
+ *    LIVE lock deleted. Re-checking harder cannot fix a gap between the check and
+ *    the act — only one reclaimer at a time can.
  *
  * A LIVE holder is never stolen from, in any branch.
  */
@@ -179,6 +184,124 @@ export function resetOverlayLockObservations(): void {
   unreadableSeen.clear();
 }
 
+/* -------------------------------------------------------------------------- */
+/* Reclaim mutex                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How long a reclaim mutex may be held before a dead holder's is broken.
+ *
+ * It is held for two syscalls in production, so anything in seconds is already
+ * orders of magnitude of slack; it exists only so a reclaimer killed between the
+ * `link` and the `unlink` cannot wedge the overlay for ever.
+ */
+export const RECLAIM_MUTEX_TTL_MS = 2000;
+/** Wait before re-looking when another reclaimer is inside the mutex. */
+export const RECLAIM_RETRY_MS = 30;
+
+function reclaimMutexPath(lockPath: string): string {
+  return `${lockPath}.reclaim`;
+}
+
+/** Is a reclaim mutex recoverable — its holder gone, and older than the TTL? */
+function reclaimMutexIsDead(mutexPath: string): boolean {
+  let text: string;
+  try {
+    text = fs.readFileSync(mutexPath, "utf8");
+  } catch {
+    return false; // vanished: nothing to break, the caller just retries the link
+  }
+  let pid = -1;
+  let at = 0;
+  try {
+    const parsed = JSON.parse(text) as { pid?: unknown; at?: unknown };
+    pid = Number(parsed.pid);
+    at = Number(parsed.at);
+  } catch {
+    pid = -1;
+    at = 0;
+  }
+  // A live holder is never broken, exactly as for the lock itself.
+  if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return false;
+  if (!Number.isFinite(at) || at <= 0) {
+    // Unreadable timestamp: fall back to the file's own mtime.
+    try {
+      at = fs.statSync(mutexPath).mtimeMs;
+    } catch {
+      return false;
+    }
+  }
+  return Date.now() - at > RECLAIM_MUTEX_TTL_MS;
+}
+
+/**
+ * Serialize the reclaimers of ONE abandoned lock.
+ *
+ * `lockStillAbandoned()` and the `unlink` that follows it are separate syscalls,
+ * and the gap between them is CROSS-PROCESS: another reclaimer can finish the
+ * whole recovery and acquire the lock for real in there, after which our `unlink`
+ * removes a LIVE lock and two writers sit inside the same critical section — the
+ * one thing the revision CAS and the async validation window cannot survive. No
+ * amount of re-checking closes that, because the re-check is itself the first
+ * half of the race. The reclaimers have to be serialized.
+ *
+ * `<lock>.reclaim` is created the way the lock itself is — write a private name,
+ * `link(2)` it into place — so only one reclaimer at a time may re-check and
+ * unlink, and the writer that loses the link is pushed back through acquisition
+ * (where it sees either the recovered lock or the winner's live one).
+ *
+ * Returns the payload to release with, or `null` when another reclaimer holds it.
+ */
+function acquireReclaimMutex(lockPath: string): string | null {
+  const mutexPath = reclaimMutexPath(lockPath);
+  const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const staging = `${mutexPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(staging, payload, { mode: 0o600 });
+    try {
+      fs.linkSync(staging, mutexPath);
+      return payload;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      if (!reclaimMutexIsDead(mutexPath)) return null;
+      try { fs.unlinkSync(mutexPath); } catch { /* another reclaimer broke it first */ }
+      try {
+        fs.linkSync(staging, mutexPath);
+      } catch {
+        return null; // someone else won the re-link
+      }
+      // Only ours counts: a second breaker could have unlinked what we just
+      // linked and put its own there.
+      return holdsOurLock(mutexPath, payload) ? payload : null;
+    }
+  } catch {
+    return null;
+  } finally {
+    try { fs.unlinkSync(staging); } catch { /* never created, or already linked away */ }
+  }
+}
+
+/** Release a reclaim mutex — only ever OUR own. */
+function releaseReclaimMutex(lockPath: string, payload: string): void {
+  const mutexPath = reclaimMutexPath(lockPath);
+  if (!holdsOurLock(mutexPath, payload)) return;
+  try { fs.unlinkSync(mutexPath); } catch { /* already broken */ }
+}
+
+/**
+ * Test-only: run between the `lockStillAbandoned` re-check and the `unlink`.
+ *
+ * The window this mutex exists to close is between two syscalls, so a test that
+ * has to drive another writer into it needs a seam. Production never sets this
+ * and the mutex is then held across no await at all.
+ */
+let reclaimInterleave: (() => Promise<void>) | null = null;
+
+/** Test-only: install (or clear with `null`) the re-check/unlink interleave hook. */
+export function setReclaimInterleaveHook(hook: (() => Promise<void>) | null): void {
+  reclaimInterleave = hook;
+}
+
 /**
  * Run `body` under the overlay's write lock. Read-modify-write AND the whole
  * async validation happen inside.
@@ -246,13 +369,27 @@ export async function withOverlayLock<T>(file: string, body: () => Promise<T>): 
         await delay(Math.max(0, SECOND_LOOK_MS - waited) + (follower ? FOLLOWER_GRACE_MS : 0));
         // Same stamp after the wait: nothing is behind this lock.
       }
-      // Re-stat and re-read before removing, never on the observation from
-      // before the wait: see `lockStillAbandoned`.
-      if (!lockStillAbandoned(lockPath, stamp, attributable ? holder : -1)) continue;
+      // ONE reclaimer at a time past this point. Without the mutex the re-check
+      // and the `unlink` below are a cross-process TOCTOU: a competitor that
+      // recovers and acquires in between has its LIVE lock deleted by us.
+      const mutex = acquireReclaimMutex(lockPath);
+      if (mutex === null) {
+        // Another reclaimer is inside the pair. Whatever it does, our
+        // observation is stale — look again rather than act on it.
+        await delay(RECLAIM_RETRY_MS);
+        continue;
+      }
       try {
+        // Re-stat and re-read before removing, never on the observation from
+        // before the wait: see `lockStillAbandoned`. Inside the mutex this is a
+        // decision and not a guess, because no other reclaimer can act on it.
+        if (!lockStillAbandoned(lockPath, stamp, attributable ? holder : -1)) continue;
+        if (reclaimInterleave) await reclaimInterleave(); // test seam only
         fs.unlinkSync(lockPath);
       } catch {
         /* raced another reclaimer */
+      } finally {
+        releaseReclaimMutex(lockPath, mutex);
       }
       // G4: the removal succeeded, so the next iteration IS the one extra
       // acquisition attempt that makes this call perform its write.

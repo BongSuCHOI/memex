@@ -28,7 +28,9 @@ import {
   SECOND_LOOK_MS,
   addGatePattern,
   disableGatePattern,
+  RECLAIM_MUTEX_TTL_MS,
   resetOverlayLockObservations,
+  setReclaimInterleaveHook,
   setGateWords,
   withOverlayLock,
 } from "../src/overlay-admin.js";
@@ -68,6 +70,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
   resetOverlayLockObservations();
   resetRecallGateOverlayCache();
+  setReclaimInterleaveHook(null);
 });
 
 /** A pid that cannot be alive: the highest pid, plus slack. */
@@ -170,6 +173,71 @@ describe("withOverlayLock", () => {
     await expect(withOverlayLock(overlayFile, async () => "no")).rejects.toThrow(OverlayLockedError);
     const leftovers = fs.readdirSync(path.dirname(overlayFile)).filter((name) => name.endsWith(".tmp"));
     expect(leftovers).toEqual([]);
+  });
+
+  it("serializes reclaimers: a competitor cannot acquire between the re-check and the unlink", async () => {
+    // THE window. `lockStillAbandoned()` and the `unlink` are two syscalls, and a
+    // competitor that recovers the abandoned lock in between holds a LIVE lock
+    // that our `unlink` then deletes — two writers, one critical section. The
+    // reclaim mutex is what makes the competitor lose instead.
+    plantLock({ pid: DEAD_PID, startedAt: new Date().toISOString() });
+    let competitorBodyRan = false;
+    let competitorError: unknown = null;
+    let lockDuringWindow: string | null = null;
+    setReclaimInterleaveHook(async () => {
+      // A real second writer, running the real acquisition path, right here.
+      try {
+        await withOverlayLock(overlayFile, async () => {
+          competitorBodyRan = true;
+          return "competitor";
+        });
+      } catch (caught) {
+        competitorError = caught;
+      }
+      lockDuringWindow = fs.existsSync(lockFile) ? fs.readFileSync(lockFile, "utf8") : null;
+    });
+
+    let ourBodyRan = false;
+    await expect(
+      withOverlayLock(overlayFile, async () => {
+        ourBodyRan = true;
+        // Nobody else is in here: the lock under us is ours.
+        expect(JSON.parse(fs.readFileSync(lockFile, "utf8")).pid).toBe(process.pid);
+        return "ours";
+      }),
+    ).resolves.toBe("ours");
+
+    expect(ourBodyRan).toBe(true);
+    // The competitor never entered the critical section and never removed the
+    // abandoned lock we had already decided to remove.
+    expect(competitorBodyRan).toBe(false);
+    expect(competitorError).toBeInstanceOf(OverlayLockedError);
+    expect(lockDuringWindow).not.toBeNull();
+    expect(JSON.parse(lockDuringWindow!).pid).toBe(DEAD_PID);
+    expect(fs.existsSync(lockFile)).toBe(false);
+    // The mutex is released even though the body ran inside it.
+    expect(fs.existsSync(`${lockFile}.reclaim`)).toBe(false);
+  });
+
+  it("refuses rather than unlink when another reclaimer holds the mutex", async () => {
+    plantLock({ pid: DEAD_PID, startedAt: new Date().toISOString() });
+    // A live reclaimer is mid-flight: only it may re-check and unlink.
+    fs.writeFileSync(`${lockFile}.reclaim`, JSON.stringify({ pid: process.pid, at: Date.now() }));
+    await expect(withOverlayLock(overlayFile, async () => "no")).rejects.toThrow(OverlayLockedError);
+    // Untouched — the abandoned lock is the other reclaimer's to remove.
+    expect(JSON.parse(fs.readFileSync(lockFile, "utf8")).pid).toBe(DEAD_PID);
+    fs.unlinkSync(`${lockFile}.reclaim`);
+  });
+
+  it("breaks a reclaim mutex whose holder died, once the TTL has passed", async () => {
+    plantLock({ pid: DEAD_PID, startedAt: new Date().toISOString() });
+    fs.writeFileSync(
+      `${lockFile}.reclaim`,
+      JSON.stringify({ pid: DEAD_PID, at: Date.now() - RECLAIM_MUTEX_TTL_MS - 1000 }),
+    );
+    await expect(withOverlayLock(overlayFile, async () => "taken")).resolves.toBe("taken");
+    expect(fs.existsSync(lockFile)).toBe(false);
+    expect(fs.existsSync(`${lockFile}.reclaim`)).toBe(false);
   });
 
   it("releases the lock when the body throws", async () => {
