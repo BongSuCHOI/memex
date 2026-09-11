@@ -16,9 +16,9 @@ import {t,tHtml} from '../i18n/index.mjs';
  *  - **The environment wins, so the screen admits it.** A value pinned by `MEMEX_CODEX_MODEL`
  *    is shown as a disabled control with the variable that beats it, not as an editable field
  *    that silently has no effect.
- *  - **The embedding section is read-only in 0.7.0.** Changing it rebuilds every vector, which
- *    lands in 0.7.1 (§7). Showing the resolved model now is honest; offering a select that
- *    cannot work is not.
+ *  - **The embedding section is read-only.** Changing it rebuilds every vector, which lands
+ *    in a later 0.7.x release (#118, §7) — not in 0.7.1. Showing the resolved model now is
+ *    honest; offering a select that cannot work is not.
  *
  * The tab registry calls `render(ctx, env)`; `modelTab()` is exported separately so the unit
  * tests can render every state without a server (the `syncTab` pattern).

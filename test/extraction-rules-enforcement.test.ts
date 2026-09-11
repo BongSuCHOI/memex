@@ -278,6 +278,32 @@ describe("a forbidden string in any of the four routes reaches no table", () => 
     expect(scanWholeDatabase(db, SECRET)).toEqual([]);
   });
 
+  it("blocks on the `classifier_note` string the insert actually writes, not only on each note", async () => {
+    // `classifier_notes` is an array in the candidate and ONE column in the
+    // database: the insert writes `notes.join("\n")`. A rule written against the
+    // stored text therefore matches a string that exists in no single element —
+    // and checking only the elements passed the check and stored the secret.
+    writeRules(
+      path.join(root, "home"),
+      rulesDoc([{ id: "user.joined", source: "sk-live\\s+[A-Za-z0-9]{8,}" }]),
+    );
+    resetExtractionRulesCache();
+    const candidate = {
+      ...factCandidate("The deploy key is rotated", "the build failed"),
+      classifier_notes: ["classifier saw sk-live", "AbCdEf0123456789 in the turn"],
+    };
+    // Neither note matches on its own; their join does.
+    expect(/sk-live\s+[A-Za-z0-9]{8,}/.test(candidate.classifier_notes[0])).toBe(false);
+    expect(/sk-live\s+[A-Za-z0-9]{8,}/.test(candidate.classifier_notes[1])).toBe(false);
+    expect(/sk-live\s+[A-Za-z0-9]{8,}/.test(candidate.classifier_notes.join("\n"))).toBe(true);
+
+    const outcome = await save([candidate], []);
+    expect(outcome.blockedByRules).toBe(1);
+    expect(count("SELECT COUNT(*) AS n FROM facts")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM fact_revisions WHERE classifier_note IS NOT NULL")).toBe(0);
+    expect(scanWholeDatabase(db, "AbCdEf0123456789")).toEqual([]);
+  });
+
   it("blocks on an EVIDENCE span when the scope says evidence", async () => {
     writeRules(
       path.join(root, "home"),

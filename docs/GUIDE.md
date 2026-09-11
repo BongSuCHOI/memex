@@ -1006,7 +1006,7 @@ README / README-KR의 표와 같은 순서입니다. 모든 서브커맨드는 `
 | `memex recover` | terminal(dead) 작업을 한 트랜잭션에서 되돌리기. `--all-dead`, `--kind`, `--dry-run` | [§15](#작업이-실패했을-때-terminal-상태-복구) |
 | `memex model-work` | `status [budget-id]`, `resume <budget-id> --new-run` | [§17](#17-모델-작업-예산과-대기-진단) |
 | `memex models` (0.7.0 #31) | 모델 작업에 쓸 모델·추론 강도 선택: `show\|set\|reset\|test`. `set`은 `--model`·`--reasoning`(`unset`으로 플래그 제거), `test`는 `--timeout-ms`(기본 `60000`). 모두 `--json` | [§21](#21-모델-선택-070-31) |
-| `memex gate` (0.7.0 #29) | 회수 게이트 오버레이: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 쓰기 동사는 `--dry-run`·`--expect-revision` | [§22](#221-회수-게이트-오버레이-memex-gate) |
+| `memex gate` (0.7.0 #29) | 회수 게이트 오버레이: `show\|patterns\|words\|test\|replay\|validate\|history\|quarantine\|reset\|rollback`. 쓰기 동사는 `--dry-run`·`--expect-revision`(`quarantine clear`는 `--dry-run`만) | [§22](#221-회수-게이트-오버레이-memex-gate) |
 | `memex extract` (0.7.0 #30) | 추출 규칙 오버레이(추출 자체는 하지 않습니다): `rules show\|validate\|set\|test\|history\|reset\|rollback\|reextract`, 그리고 모델을 쓰는 `eval` | [§22](#222-추출-규칙-오버레이-memex-extract) |
 | `memex doctor` | 의존성·빌드·Codex home·hook 등록/관측·주입 출력·recall provenance·sync export 진단 (`--json`) | [§13](#13-진단) |
 | `memex home` | 해석된 Memex data root 출력 (`--json`) | [§10](#10-저장-위치와-sync) |
@@ -1104,8 +1104,8 @@ memex doctor          # dependencies / inject-output / recall-provenance / injec
 | extraction failed range | `terminal state: extractionFailedRanges=…`, `N failed-visible` | 정확히 어떤 구간이 실패했는지 기록된 terminal range | `memex recover …` (CHECK 제약상 `retry`로 되돌아가며 오류 원문은 보존) |
 | capture gap open | `terminal state: captureGapsOpen=…` | capture가 fail-open으로 넘어간 구간 | **`recover` 대상 아님.** 같은 세션의 다음 성공 capture가 닫습니다. 실패를 즉시 드러내려면 `MEMEX_STRICT_CAPTURE=1` |
 | model-work budget exhausted | `terminal state: modelWorkBudgetsExhausted=…` | run 예산(시도·deadline) 소진 | `memex model-work status` → `memex model-work resume <budget-id> --new-run` |
-| 모델 설정 대기 (0.7.0, #31) | `memex status`의 `model config held: N job(s) waiting on a model setting`(`Needs attention` 합계에는 **포함되지 않습니다**), `memex jobs list`의 `waiting on configuration: model_config_rejected`, `doctor`의 `llm-model: warn`, 관리 › 모델 탭 | provider가 **요청 봉투 자체를 거절**했습니다(없는 모델 id, 그 계정이 쓸 수 없는 모델, 그 모델이 받지 않는 추론 강도). 일시적 장애도, 입력이 나쁜 것도 아닙니다 | **`recover` 대상이 아닙니다**(작업은 `dead`가 아니라 `pending`이고 `attempts`는 소모되지 않았습니다). `memex models show`로 거절 원문을 읽고 → `memex models set --model <id> [--reasoning <level>]` → `memex models test`. 설정을 고치면 지문이 바뀌어 다음 유지보수 wake에서 **자동 재개**됩니다. 자세한 내용은 [§21](#21-모델-선택-070-31) |
-| 추출 규칙이 유효하지 않음 (0.7.0, #30) | `doctor`의 `extraction-rules-overlay: fail` + `extraction-rules-hold: fail`, `memex jobs list`의 `waiting on configuration: extraction_rules_invalid`. **`memex status`는 이 보류를 세지 않습니다** | `overlays/extraction-rules.json`이 읽히지 않거나 스키마·version·상한·문법 검증에 실패했거나, `never_extract` 패턴이 격리됐습니다. 금지 검사를 못 했으므로 **아무것도 저장하지 않습니다**(fail-closed) | `memex extract rules validate`로 사유를 읽고 고칩니다(`memex extract rules set <file>`·`rollback <revision>`·`reset --yes`). 규칙 쓰기가 성공하면 이 오버레이가 잡아 둔 작업을 **함께 풀어 줍니다**. 패턴 격리가 원인이면 `memex gate quarantine clear <pattern-id>`. 급하면 `MEMEX_DISABLE_OVERLAYS=1`로 0.6.9 동작으로 되돌릴 수 있습니다 |
+| 모델 설정 대기 (0.7.0, #31) | `memex status`의 `config held: N job(s) waiting on a configuration (model_config_rejected=N)`(`Needs attention` 합계에는 **포함되지 않습니다**), `memex jobs list`의 `waiting on configuration: model_config_rejected`, `doctor`의 `llm-model: warn`, 관리 › 모델 탭, 개요의 "확인이 필요한 상태" 카드, 활동 › 처리 작업 표 | provider가 **요청 봉투 자체를 거절**했습니다(없는 모델 id, 그 계정이 쓸 수 없는 모델, 그 모델이 받지 않는 추론 강도). 일시적 장애도, 입력이 나쁜 것도 아닙니다 | **`recover` 대상이 아닙니다**(작업은 `dead`가 아니라 `pending`이고 `attempts`는 소모되지 않았습니다). `memex models show`로 거절 원문을 읽고 → `memex models set --model <id> [--reasoning <level>]` → `memex models test`. 설정을 고치면 지문이 바뀌어 다음 유지보수 wake에서 **자동 재개**됩니다. 자세한 내용은 [§21](#21-모델-선택-070-31) |
+| 추출 규칙이 유효하지 않음 (0.7.0, #30) | `doctor`의 `extraction-rules-overlay: fail` + `extraction-rules-hold: fail`, `memex jobs list`의 `waiting on configuration: extraction_rules_invalid`, `memex status`의 `config held: … (extraction_rules_invalid=N)`, 개요의 "확인이 필요한 상태" 카드와 활동 › 처리 작업 표 | `overlays/extraction-rules.json`이 읽히지 않거나 스키마·version·상한·문법 검증에 실패했거나, `never_extract` 패턴이 격리됐습니다. 금지 검사를 못 했으므로 **아무것도 저장하지 않습니다**(fail-closed) | `memex extract rules validate`로 사유를 읽고 고칩니다(`memex extract rules set <file>`·`rollback <revision>`·`reset --yes`). 규칙 쓰기가 성공하면 이 오버레이가 잡아 둔 작업을 **함께 풀어 줍니다**. 패턴 격리가 원인이면 `memex gate quarantine clear <pattern-id>`. 급하면 `MEMEX_DISABLE_OVERLAYS=1`로 0.6.9 동작으로 되돌릴 수 있습니다 |
 | 금지 검사를 할 수 없음 (0.7.0, #30) | `doctor`의 `overlay-matcher: fail` + `extraction-rules-hold: fail`, `waiting on configuration: extraction_rules_unavailable` | 패턴 매칭 worker를 띄울 수 없어 `never_extract` 검사를 끝내지 못했습니다. 금지한 문자열이 "규칙이 느렸다"는 이유로 저장되게 두지 않습니다 | worker를 쓸 수 없는 원인(런타임·리소스)을 고치면 다음 pass에서 자동 재개됩니다. `never_extract` 패턴을 쓰지 않기로 하면 그 항목을 비우십시오 — 나머지 규칙은 모델 지시라서 matcher를 요구하지 않습니다 |
 | 내 게이트 규칙이 조용히 꺼짐 (0.7.0, #29) | `doctor`의 `overlay-pattern-quarantine: fail`, `memex gate quarantine list`, 주입 로그 라벨의 `+overlay_timeout` | 사용자 정규식이 프롬프트당 50 ms 실행 상한을 넘겨 **격리**됐습니다. 회수는 내장 규칙으로 계속되므로(fail-open) 증상이 "기억이 예전처럼 안 나온다"뿐입니다 | 정규식을 고치면 **자동으로 풀립니다**(격리 키에 소스 해시가 들어갑니다). 그대로 한 번 더 시도하려면 `memex gate quarantine clear <pattern-id>`(또는 `--all`). 같은 명령이 추출 규칙 패턴의 격리도 풉니다 |
 | 내 게이트 규칙 파일이 깨짐 (0.7.0, #29) | `doctor`의 `recall-gate-overlay: fail` (`running on BUILT-IN DEFAULTS`), `memex gate show`의 `무시됨` | `overlays/recall-gate.json`이 유효하지 않습니다. 절반만 적용하지 않고 **통째로 무시**하며 프롬프트는 정상 처리됩니다 | `memex gate validate`로 줄별 사유를 보고 고치거나, `memex gate history` → `memex gate rollback --to <revision>`. `memex gate reset --yes`는 파일을 지우지 않고 빈 문서를 다음 revision으로 쓰므로 그 자체를 되돌릴 수 있습니다 |
@@ -1231,7 +1231,7 @@ Memex는 이 파일을 **읽기만** 하고 갱신하지 않으며 **신선도�
 
 **`reset`은 실효 embedding model을 건드리지 않습니다.** embedding model과 벡터 공간은 DB가
 소유하며 여전히 `MEMEX_EMBEDDING_MODEL`과 embedding 세대가 정합니다([§19](#모델과-임베딩)).
-**embedding model 전환은 0.7.1입니다.**
+**embedding model 전환은 0.7.1에 없습니다 — 이후 0.7.x 릴리스(#118) 예정입니다.**
 
 ### 적용 시점
 
@@ -1280,20 +1280,23 @@ CLI `test`는 인덱스 DB가 없으면 만들고, Web UI의 테스트 버튼은
 어디에 보이는가:
 
 ```text
-memex status    →  model config held: N job(s) waiting on a model setting — …: memex models show
+memex status    →  config held: N job(s) waiting on a configuration (model_config_rejected=N) — …: memex models show
 memex jobs list →      waiting on configuration: model_config_rejected — no attempt consumed; run: memex models show
 memex doctor    →  llm-model: warn  held — the provider rejected the request envelope for model "…"
 ```
 
 `memex status`의 이 줄은 `Needs attention` 합계에 **포함되지 않습니다**(고장이 아니라 설정 대기이고,
-해야 할 일이 큐 조작이 아니라 설정 하나이기 때문입니다). Web UI에서 이 상태를 볼 수 있는 곳은
-**관리 › 모델 탭뿐**입니다 — 개요의 "확인이 필요한 상태" 카드와 활동 › 처리 작업 표에는 아직
-나타나지 않습니다([WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#관리-탭-레지스트리)).
+해야 할 일이 큐 조작이 아니라 설정 하나이기 때문입니다). 다만 줄 자체는 **모든 HOLD 사유를 사유별로
+함께** 셉니다 — 모델 HOLD만 세던 0.7.0은 추출 규칙 HOLD로 추출 큐가 멈춘 상태를 한가한 파이프라인처럼
+보이게 만들었습니다. Web UI에서도 **관리 › 모델 탭뿐**이 아니라 개요의 "확인이 필요한 상태" 카드와
+활동 › 처리 작업 표에 사유와 함께 나타납니다([WEBUI-WORKSPACE.md](WEBUI-WORKSPACE.md#관리-탭-레지스트리)).
 
 ### 0.7.0이 다루지 않는 것
 
-- **embedding model 전환은 0.7.1입니다.** `models.json`의 `embedding` 블록은 예약 자리이고,
-  0.7.0에서 embedding을 바꾸는 방법은 여전히 `MEMEX_EMBEDDING_MODEL` + 벡터 재생성뿐입니다.
+- **embedding model 전환은 0.7.1에도 없습니다 — 이후 0.7.x 릴리스(#118) 예정입니다.**
+  `models.json`의 `embedding` 블록은 예약 자리이고, `/api/v2/models`가 받는 action도 여전히
+  `status|set-llm|test|reset` 4개뿐입니다. embedding을 바꾸는 방법은 지금도
+  `MEMEX_EMBEDDING_MODEL` + 벡터 재생성뿐입니다.
 - 단계(stage)별 모델 프로파일도 예약 자리입니다.
 
 ## 22. 사용자 오버레이 — 회수 게이트와 추출 규칙 (0.7.0, #29 #30)
@@ -1348,7 +1351,7 @@ memex gate replay [--limit <n>] [--project <path>]
 memex gate validate [--file <path>]
 memex gate history [--limit <n>]
 memex gate quarantine list
-memex gate quarantine clear [<pattern-id>|--all]
+memex gate quarantine clear [<pattern-id>|--all] [--dry-run]
 memex gate reset [--intent <intent>] --yes
 memex gate rollback --to <revision>
 ```
@@ -1365,13 +1368,18 @@ memex gate rollback --to <revision>
 `quarantine list`. `test`와 `replay`는 **모델도 embedding도 호출하지 않고** inject 로그·recall
 영수증·세션 상태를 **쓰지 않습니다**.
 
-**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`,
-`quarantine clear`)는 오버레이 쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고
-`logs/ui-audit.jsonl`과 `overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지
-않습니다). `--dry-run`은 검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을
-출력합니다. `--expect-revision <n>`은 그 사이 오버레이가 다른 곳에서 바뀌었으면 쓰기를 거절합니다
+**쓰기 동사**(`patterns add|disable|enable`, `words add|remove`, `reset`, `rollback`)는 오버레이
+쓰기 lock을 잡고 `revision`을 올리며 rollback 스냅숏을 남기고 `logs/ui-audit.jsonl`과
+`overlays/history.jsonl`에 메타데이터 1줄을 적습니다(규칙 본문은 남기지 않습니다). `--dry-run`은
+검증만 하고 **아무것도 쓰지 않으며** 현재 revision을 박은 재실행 명령을 출력합니다.
+`--expect-revision <n>`은 그 사이 오버레이가 다른 곳에서 바뀌었으면 쓰기를 거절합니다
 (exit `1`, `OVERLAY_STALE`). `reset`은 파일을 지우지 않고 **빈 문서를 다음 revision으로** 쓰므로
 그 자체를 되돌릴 수 있습니다.
+
+`quarantine clear`는 쓰기 동사지만 오버레이 문서가 아니라 `overlays/quarantine.json`을 씁니다.
+따라서 **revision도 rollback 스냅숏도 `--expect-revision`도 없습니다** — 핀으로 박을 revision이
+애초에 없습니다. `--dry-run`은 지원합니다: 무엇이 풀릴지 출력하고 파일도 감사 로그도 건드리지
+않습니다. 실제로 풀 때만 `logs/ui-audit.jsonl`에 1줄을 남깁니다.
 
 #### 실행 시간 상자와 격리
 

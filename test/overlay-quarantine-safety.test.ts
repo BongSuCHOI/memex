@@ -10,8 +10,13 @@
  *     nothing else does.
  *  2. The write was read-merge-rename with no concurrency control at all, so two
  *     processes that read the same previous file lost whichever row the later
- *     rename did not know about — and a successful write dropped the in-memory
- *     copy, so a later overwrite elsewhere silently re-enabled the pattern here.
+ *     rename did not know about. A stamp compare-and-swap narrowed that; it could
+ *     not close it, because the `rename` is a syscall LATER than the check. The
+ *     whole read-merge-rename now runs inside a write mutex.
+ *  3. A row kept in memory for ever after a successful write made a long-running
+ *     process ignore another process's `quarantine clear` — and put the cleared
+ *     row back in the file on its next write. A persisted row is a MIRROR of the
+ *     file; only an unpersisted row is this process's own fallback.
  *
  * A temp `MEMEX_OVERLAY_DIR` is pinned, not just `MEMEX_HOME`: the override wins,
  * and these tests write real overlay files.
@@ -27,6 +32,7 @@ import {
 } from "../src/extraction-rules.js";
 import {
   quarantinePattern,
+  replaceQuarantine,
   readQuarantine,
   resetQuarantineMemory,
   type QuarantineEntry,
@@ -202,16 +208,59 @@ describe("a quarantine write cannot lose a concurrent writer's row", () => {
     expect(fileEntryIds()).toEqual(["concurrent", "first", "ours"]);
   });
 
-  it("keeps its own row in memory after a successful write", () => {
+  it("refuses a concurrent write BETWEEN the stamp check and the rename", () => {
+    // The stamp CAS is read at one instant and the `rename` is a later syscall, so
+    // a second writer that passed the same check in between used to have its rows
+    // overwritten — silently, because a new process cannot tell a lost row from a
+    // row that was never written. The seam is the rename itself: by then the stamp
+    // has been checked and the file has not moved yet.
+    let injected = false;
+    let competitorWrote: boolean | null = null;
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation(((from: never, to: never) => {
+      if (!injected && String(to) === quarantineFile) {
+        injected = true;
+        competitorWrote = replaceQuarantine([entry("concurrent", OTHER)]);
+      }
+      return (realRename as unknown as typeof fs.renameSync)(from, to);
+    }) as typeof fs.renameSync);
+
+    quarantinePattern(entry("ours", PATTERN));
+
+    expect(injected).toBe(true);
+    // Told no, rather than landing a write our rename then erases.
+    expect(competitorWrote).toBe(false);
+    expect(fileEntryIds()).toEqual(["ours"]);
+  });
+
+  it("drops a persisted row once another process has cleared the file", () => {
     quarantinePattern(entry("ours", PATTERN));
     expect(fileEntryIds()).toEqual(["ours"]);
 
-    // Someone else overwrites the file without our row — a older reader that won
-    // the last rename, or an operator clearing a different entry.
-    writeFileAsOtherProcess([entry("theirs", OTHER)]);
+    // Another process ran `memex gate quarantine clear --all`.
+    writeFileAsOtherProcess([]);
 
-    // The EXCLUSION is still in force in this process: losing it would silently
-    // re-enable a pattern that already burned its budget.
+    // A long-running process has to honour that: the file is the source of truth
+    // for a row that reached it, and our copy is only a mirror of it.
+    expect(readQuarantine()).toEqual([]);
+    // And the mirror must not come back through our next write either.
+    quarantinePattern(entry("later", OTHER));
+    expect(fileEntryIds()).toEqual(["later"]);
+  });
+
+  it("keeps an UNPERSISTED row when the file could not be written", () => {
+    // A read-only data root: the exclusion still holds in this process, and that
+    // row exists nowhere else, so a readable file must not prune it away.
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, "renameSync").mockImplementation(((from: never, to: never) => {
+      if (String(to) === quarantineFile) throw new Error("EROFS");
+      return (realRename as unknown as typeof fs.renameSync)(from, to);
+    }) as typeof fs.renameSync);
+    quarantinePattern(entry("ours", PATTERN));
+    vi.restoreAllMocks();
+
+    expect(fs.existsSync(quarantineFile)).toBe(false);
+    writeFileAsOtherProcess([entry("theirs", OTHER)]);
     expect(readQuarantine().map((row) => row.pattern_id).sort()).toEqual(["ours", "theirs"]);
   });
 

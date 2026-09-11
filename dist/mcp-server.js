@@ -10803,12 +10803,22 @@ function quarantineMemoryGeneration() {
 function readQuarantineFile() {
   try {
     const parsed = JSON.parse(fs11.readFileSync(overlayQuarantinePath(), "utf8"));
-    if (parsed?.schema !== QUARANTINE_SCHEMA) return [];
-    if (Number(parsed.version) !== QUARANTINE_VERSION) return [];
-    if (!Array.isArray(parsed.entries)) return [];
-    return parsed.entries.filter(isQuarantineEntry);
+    if (parsed?.schema !== QUARANTINE_SCHEMA) return { readable: false, entries: [] };
+    if (Number(parsed.version) !== QUARANTINE_VERSION) return { readable: false, entries: [] };
+    if (!Array.isArray(parsed.entries)) return { readable: false, entries: [] };
+    return { readable: true, entries: parsed.entries.filter(isQuarantineEntry) };
   } catch {
-    return [];
+    return { readable: false, entries: [] };
+  }
+}
+function pruneMirroredMemory(file) {
+  if (!file.readable) return;
+  const present = new Set(file.entries.map((entry) => quarantineKey(entry.pattern_id, entry.source_sha8)));
+  for (const key of [...memoryQuarantine.keys()]) {
+    if (!persistedKeys.has(key) || present.has(key)) continue;
+    memoryQuarantine.delete(key);
+    persistedKeys.delete(key);
+    memoryGeneration++;
   }
 }
 function isQuarantineEntry(value) {
@@ -10817,8 +10827,10 @@ function isQuarantineEntry(value) {
   return (entry.overlay === "recall-gate" || entry.overlay === "extraction-rules") && typeof entry.pattern_id === "string" && entry.pattern_id.length > 0 && typeof entry.source_sha8 === "string";
 }
 function readQuarantine() {
+  const file = readQuarantineFile();
+  pruneMirroredMemory(file);
   const merged = /* @__PURE__ */ new Map();
-  for (const entry of readQuarantineFile()) {
+  for (const entry of file.entries) {
     merged.set(quarantineKey(entry.pattern_id, entry.source_sha8), entry);
   }
   for (const [key, entry] of memoryQuarantine) merged.set(key, entry);
@@ -10831,6 +10843,111 @@ function quarantineFileStamp() {
   } catch {
     return null;
   }
+}
+function quarantineMutexPath() {
+  return `${overlayQuarantinePath()}.lock`;
+}
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error2) {
+    return error2.code === "EPERM";
+  }
+}
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+    }
+  }
+}
+function quarantineMutexIsDead(mutexPath) {
+  let pid = -1;
+  let at = 0;
+  try {
+    const parsed = JSON.parse(fs11.readFileSync(mutexPath, "utf8"));
+    pid = Number(parsed.pid);
+    at = Number(parsed.at);
+  } catch {
+    pid = -1;
+    at = 0;
+  }
+  if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return false;
+  if (!Number.isFinite(at) || at <= 0) {
+    try {
+      at = fs11.statSync(mutexPath).mtimeMs;
+    } catch {
+      return false;
+    }
+  }
+  return Date.now() - at > QUARANTINE_MUTEX_TTL_MS;
+}
+function acquireQuarantineMutex() {
+  const mutexPath = quarantineMutexPath();
+  const payload = JSON.stringify({ pid: process.pid, at: Date.now() });
+  const staging = `${mutexPath}.${process.pid}.${randomUUID6()}.tmp`;
+  try {
+    fs11.mkdirSync(path12.dirname(mutexPath), { recursive: true, mode: 448 });
+    fs11.writeFileSync(staging, payload, { mode: 384 });
+    try {
+      fs11.linkSync(staging, mutexPath);
+      return payload;
+    } catch (error2) {
+      if (error2.code !== "EEXIST") return null;
+      if (!quarantineMutexIsDead(mutexPath)) return null;
+      try {
+        fs11.unlinkSync(mutexPath);
+      } catch {
+      }
+      try {
+        fs11.linkSync(staging, mutexPath);
+      } catch {
+        return null;
+      }
+      return holdsOurMutex(mutexPath, payload) ? payload : null;
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs11.unlinkSync(staging);
+    } catch {
+    }
+  }
+}
+function holdsOurMutex(mutexPath, payload) {
+  try {
+    return fs11.readFileSync(mutexPath, "utf8") === payload;
+  } catch {
+    return false;
+  }
+}
+function releaseQuarantineMutex(payload) {
+  const mutexPath = quarantineMutexPath();
+  if (!holdsOurMutex(mutexPath, payload)) return;
+  try {
+    fs11.unlinkSync(mutexPath);
+  } catch {
+  }
+}
+function withQuarantineMutex(body, unavailable) {
+  for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+    const payload = acquireQuarantineMutex();
+    if (payload === null) {
+      sleepSync(5 * (attempt + 1));
+      continue;
+    }
+    try {
+      return body();
+    } finally {
+      releaseQuarantineMutex(payload);
+    }
+  }
+  return unavailable;
 }
 function writeQuarantineAtomic(entries, expectedStamp) {
   const target = overlayQuarantinePath();
@@ -10869,21 +10986,31 @@ function quarantinePattern(entry) {
     memoryQuarantine.set(key, entry);
     memoryGeneration++;
   }
-  for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
-    const stamp = quarantineFileStamp();
-    const merged = /* @__PURE__ */ new Map();
-    for (const existing of readQuarantineFile()) {
-      merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+  persistedKeys.delete(key);
+  withQuarantineMutex(() => {
+    for (let attempt = 0; attempt < QUARANTINE_WRITE_ATTEMPTS; attempt++) {
+      const stamp = quarantineFileStamp();
+      const file = readQuarantineFile();
+      pruneMirroredMemory(file);
+      const merged = /* @__PURE__ */ new Map();
+      for (const existing of file.entries) {
+        merged.set(quarantineKey(existing.pattern_id, existing.source_sha8), existing);
+      }
+      for (const [memoryEntryKey, memoryEntry] of memoryQuarantine) merged.set(memoryEntryKey, memoryEntry);
+      let entries = [...merged.values()];
+      if (entries.length > QUARANTINE_MAX_ENTRIES) {
+        entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
+      }
+      if (!writeQuarantineAtomic(entries, stamp)) continue;
+      for (const written of entries) {
+        const writtenKey = quarantineKey(written.pattern_id, written.source_sha8);
+        if (memoryQuarantine.has(writtenKey)) persistedKeys.add(writtenKey);
+      }
+      return;
     }
-    for (const [memoryEntryKey, memoryEntry] of memoryQuarantine) merged.set(memoryEntryKey, memoryEntry);
-    let entries = [...merged.values()];
-    if (entries.length > QUARANTINE_MAX_ENTRIES) {
-      entries = entries.slice(entries.length - QUARANTINE_MAX_ENTRIES);
-    }
-    if (writeQuarantineAtomic(entries, stamp)) return;
-  }
+  }, void 0);
 }
-var MATCH_WALL_MS, MATCHER_STARTUP_MS, MATCHER_RESPAWN_MS, MATCH_INPUT_CHARS, QUARANTINE_MAX_ENTRIES, EMPTY_USER_PATTERN_HITS, TimeBoxedMatcher, QUARANTINE_SCHEMA, QUARANTINE_VERSION, memoryQuarantine, memoryGeneration, QUARANTINE_WRITE_ATTEMPTS;
+var MATCH_WALL_MS, MATCHER_STARTUP_MS, MATCHER_RESPAWN_MS, MATCH_INPUT_CHARS, QUARANTINE_MAX_ENTRIES, EMPTY_USER_PATTERN_HITS, TimeBoxedMatcher, QUARANTINE_SCHEMA, QUARANTINE_VERSION, memoryQuarantine, persistedKeys, memoryGeneration, QUARANTINE_WRITE_ATTEMPTS, QUARANTINE_MUTEX_TTL_MS;
 var init_overlay_matcher = __esm({
   "src/overlay-matcher.ts"() {
     "use strict";
@@ -11144,8 +11271,10 @@ var init_overlay_matcher = __esm({
     QUARANTINE_SCHEMA = "memex.overlay-quarantine";
     QUARANTINE_VERSION = 1;
     memoryQuarantine = /* @__PURE__ */ new Map();
+    persistedKeys = /* @__PURE__ */ new Set();
     memoryGeneration = 0;
     QUARANTINE_WRITE_ATTEMPTS = 3;
+    QUARANTINE_MUTEX_TTL_MS = 2e3;
   }
 });
 
@@ -29303,7 +29432,7 @@ function registerProcessCleanup(cleanup) {
 function note(message) {
   console.error(`[memex] inject-daemon: ${message}`);
 }
-function pidAlive(pid) {
+function pidAlive2(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -29684,7 +29813,7 @@ function startInjectDaemon() {
         } catch {
         }
         const attributable = Number.isInteger(holder) && holder > 0;
-        if (attributable && pidAlive(holder)) {
+        if (attributable && pidAlive2(holder)) {
           note(`another starter holds ${lockPath} (pid ${holder}) \u2014 not serving`);
           return;
         }
@@ -32464,7 +32593,7 @@ function handleError(error2) {
 var server = new Server(
   {
     name: "memex",
-    version: "0.7.1"
+    version: "0.7.2"
   },
   {
     capabilities: {

@@ -304,8 +304,8 @@ export function attentionFromPipeline(p){
  const terminal=p.attention?.terminal||{};
  const detail=(id,count)=>t(`guidance.attention.${id}.detail`,{count:number(count)});
  const rows=[
-  // 보류는 큐가 아니라 **사람의 설정**을 기다린다 — 가장 위에 둔다. 사유별 집계를 합치므로
-  // `pipeline-status`가 세지 않는 추출 규칙 보류 2종도 빠지지 않는다(ui/lib/core.cjs pipeline()).
+  // 보류는 큐가 아니라 **사람의 설정**을 기다린다 — 가장 위에 둔다. `heldJobs`는 사유별 집계
+  // 그대로이므로(ui/lib/core.cjs pipeline()) 모델 HOLD와 추출 규칙 HOLD 2종이 모두 들어간다.
   ['job-held',(p.heldJobs||[]).reduce((sum,row)=>sum+Number(row.jobs||0),0)],
   ['job-dead',(p.attention?.memoryJobsDead||0)+(terminal.checkpointsDeadLetter||0)+(terminal.extractionTargetsDead||0)],
   ['job-retry',p.attention?.memoryJobsRetry||0],

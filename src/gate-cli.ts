@@ -72,7 +72,7 @@ const USAGE = `Usage:
   memex gate validate [--file <path>] [--json]
   memex gate history [--limit <n>] [--json]
   memex gate quarantine list [--json]
-  memex gate quarantine clear [<pattern-id>|--all] [--json]
+  memex gate quarantine clear [<pattern-id>|--all] [--dry-run] [--json]
   memex gate reset [--intent <intent>] --yes [--dry-run] [--json]
   memex gate rollback --to <revision> [--dry-run] [--json]
 
@@ -85,12 +85,17 @@ READ-ONLY verbs: show, patterns list, words list, test, replay, validate,
 history, quarantine list. test and replay call NO model and NO embedding, and
 write neither the inject log nor any recall receipt or session state.
 
-WRITE verbs (patterns add/disable/enable, words add/remove, reset, rollback,
-quarantine clear) take the overlay write lock, bump 'revision', keep a
-rollback snapshot and append one metadata line to logs/ui-audit.jsonl and
-overlays/history.jsonl. --dry-run validates and prints the command to re-run
-with the current revision, writing nothing. --expect-revision <n> refuses the
-write when the overlay changed elsewhere first (exit 1, OVERLAY_STALE).
+WRITE verbs (patterns add/disable/enable, words add/remove, reset, rollback) take
+the overlay write lock, bump 'revision', keep a rollback snapshot and append one
+metadata line to logs/ui-audit.jsonl and overlays/history.jsonl. --dry-run
+validates and prints the command to re-run with the current revision, writing
+nothing. --expect-revision <n> refuses the write when the overlay changed
+elsewhere first (exit 1, OVERLAY_STALE).
+
+'quarantine clear' writes overlays/quarantine.json, NOT the overlay document, so
+it has no revision, no rollback snapshot and no --expect-revision. It does honour
+--dry-run (printing what it would clear and writing nothing at all) and it leaves
+the same one metadata line in logs/ui-audit.jsonl when it really clears.
 
 User patterns run only inside a worker thread with a ${MATCH_WALL_MS} ms budget per prompt.
 A pattern that exceeds it is QUARANTINED: it stops being applied until you fix
@@ -1300,12 +1305,25 @@ async function cmdQuarantineClear(): Promise<void> {
   if (patternId !== undefined && bools.has("--all")) {
     usageError("quarantine clear takes either <pattern-id> or --all, not both");
   }
-  const result = await clearQuarantine(patternId, { surface: "cli" });
+  // `quarantine clear` writes `overlays/quarantine.json`, never the overlay
+  // document, so there is no revision to pin and `--expect-revision` does not
+  // apply to it (docs/GUIDE.md §22 says so). `--dry-run` very much does: it is the
+  // flag that lets an operator see what `--all` would take away first.
+  const dryRun = bools.has("--dry-run");
+  const result = await clearQuarantine(patternId, { surface: "cli", dryRun });
   if (result.cleared === 0) {
-    emit({ cleared: 0, ids: [] }, [
+    emit({ cleared: 0, ids: [], ...(dryRun ? { dryRun: true } : {}) }, [
       patternId === undefined
         ? "격리된 패턴이 없습니다 — 변경 없음."
         : `${patternId}는 격리 목록에 없습니다 — 변경 없음.`,
+    ]);
+    return;
+  }
+  if (dryRun) {
+    emit({ dryRun: true, cleared: 0, wouldClear: result.cleared, ids: result.ids }, [
+      row("해제 예정", `${result.ids.join(" · ")} (${result.cleared}개 항목)`),
+      row("변경", "없음 — --dry-run은 아무것도 쓰지 않습니다(감사 로그도 남기지 않습니다)."),
+      row("실행", `memex gate quarantine clear ${patternId ?? "--all"}`),
     ]);
     return;
   }

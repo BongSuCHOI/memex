@@ -139,22 +139,29 @@ export declare function disabledMatcher(): MatcherHandle;
 export declare function quarantineKey(patternId: string, sourceSha8: string): string;
 /** Bumped whenever an in-memory fallback row appears, so load caches invalidate. */
 export declare function quarantineMemoryGeneration(): number;
-/** File ∪ in-memory fallback, newest last, deduplicated by (pattern_id, sha8). */
+/**
+ * File ∪ in-memory fallback, newest last, deduplicated by (pattern_id, sha8).
+ *
+ * The file is re-read on every call — there is deliberately no cache here, so a
+ * `quarantine clear` in another process is visible to the next read in this one.
+ */
 export declare function readQuarantine(): QuarantineEntry[];
 export declare function isQuarantinedPattern(entries: readonly QuarantineEntry[], patternId: string, source: string, flags: string): boolean;
+/** A write mutex with a dead holder, older than this, is broken. */
+export declare const QUARANTINE_MUTEX_TTL_MS = 2000;
 /**
  * Record a quarantined pattern.
  *
- * The merge is a set union keyed on (pattern_id, source_sha8), but a union built
- * in local memory is NOT enough on its own: two processes that read the same
- * previous file and then both rename lose whichever entry the later rename did not
- * know about. So the write is read-merge-write with a compare-and-swap on the
- * file's identity and a retry when it moved.
+ * The merge is a set union keyed on (pattern_id, source_sha8), and two things make
+ * it safe across processes. The whole read-merge-rename runs inside the write
+ * mutex, so no second writer can pass the same stamp check and overwrite our rows
+ * between our check and our rename; the stamp compare-and-swap stays as the
+ * backstop for a writer that predates the mutex or ignores it.
  *
- * The in-memory row is also kept after a successful write, not dropped. It is this
- * process's own guarantee that the pattern stays excluded here even if a later
- * writer elsewhere overwrites the file — losing the row would silently re-enable a
- * pattern that already burned its budget.
+ * A row that reached the file is then a MIRROR of it (`persistedKeys`), not a
+ * second source of truth: `pruneMirroredMemory` drops it when a readable file no
+ * longer has it, so another process's `quarantine clear` is honoured here instead
+ * of being undone by our next write.
  */
 export declare function quarantinePattern(entry: QuarantineEntry): void;
 /**

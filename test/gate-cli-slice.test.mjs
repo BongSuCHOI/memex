@@ -377,6 +377,28 @@ test('a slow planted pattern is quarantined by the 50 ms box, listed, and cleare
   assert.equal(validated.status, 1);
   assert.match(both(validated), /PATTERN_QUARANTINED/);
 
+  // `--dry-run` on a WRITE verb must be a read. It used to be accepted as a
+  // recognised flag and then ignored, so `--all --dry-run` cleared everything —
+  // the one command an operator runs precisely because they are not yet sure.
+  const quarantineFile = path.join(fixture.overlayDir, 'quarantine.json');
+  const auditFile = path.join(fixture.memexHome, 'logs', 'ui-audit.jsonl');
+  const readAudit = () => (fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : '');
+  const quarantineBefore = fs.readFileSync(quarantineFile, 'utf8');
+  const auditBefore = readAudit();
+  const previewed = asJson(ok(fixture, ['quarantine', 'clear', '--all', '--dry-run', '--json']));
+  assert.equal(previewed.dryRun, true);
+  assert.equal(previewed.cleared, 0);
+  assert.equal(previewed.wouldClear, 1);
+  assert.deepEqual(previewed.ids, ['user.slowcase']);
+  assert.equal(fs.readFileSync(quarantineFile, 'utf8'), quarantineBefore);
+  assert.equal(readAudit(), auditBefore);
+  // Still quarantined, so the hold behind it is still in force.
+  assert.equal(asJson(ok(fixture, ['quarantine', 'list', '--json'])).count, 1);
+  const previewText = ok(fixture, ['quarantine', 'clear', '--all', '--dry-run']);
+  assert.match(previewText.stdout, /해제 예정/);
+  assert.match(previewText.stdout, /user\.slowcase/);
+  assert.equal(fs.readFileSync(quarantineFile, 'utf8'), quarantineBefore);
+
   const cleared = asJson(ok(fixture, ['quarantine', 'clear', 'user.slowcase', '--json']));
   assert.equal(cleared.cleared, 1);
   assert.deepEqual(cleared.ids, ['user.slowcase']);
